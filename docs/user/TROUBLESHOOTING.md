@@ -423,18 +423,19 @@ Project root; see [Doctor waivers](https://booley.dev/docs/doctor/#doctor-waiver
 Doctor fails with `Session store check: ... identity mismatch: <file> is not
 named for the Project Root it holds (<root>)`, and `booley session` commands
 refuse with the same message. Booley keeps one private file per Project for
-Sandbox issuance, pending editor starts, pending refreshes, and pending
-invalidations, and it names each file after its Project Root. A file with the
-wrong name is never trusted. Remove the file the message names, then reissue
-the Sandbox spec on the host:
+Sandbox issuance, pending editor starts, and pending invalidations, and it
+names each file after its Project Root. A file with the wrong name is never
+trusted. Remove the file the message names, then reissue the Sandbox spec on
+the host:
 
 ```bash
 booley init --seed --project <root>
 ```
 
-Doctor names one file per store, so rerun it until it passes. Removing a
-pending refresh file drops its rollback snapshot and its parked prior Sandbox.
-`init --seed` regenerates the spec.
+Doctor names one file per store, so rerun it until it passes. `init --seed`
+regenerates the spec. `booley session refresh` keeps no store of its own; a
+leftover `eda/session-refresh` directory in the Booley config directory, left
+by an older Booley, can be deleted.
 
 <details markdown>
 <summary>On Windows</summary>

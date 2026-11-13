@@ -70,10 +70,12 @@ how long it has run. `down` does not ask or wait. If it cannot read the Job
 records, it says the check was skipped and still stops the Sandbox.
 
 `session refresh` rebuilds only what changed and keeps the current Sandbox if
-nothing did. If the Sandbox replacement fails or you interrupt it, Booley
-restores the previous Sandbox. The Sandbox is unavailable while the new
-container starts. Afterwards it re-applies Project Initialization (Git hooks,
-Git settings, guidance links, exclude entries and the
+nothing did. It replaces the Sandbox without a rollback: the Sandbox is
+unavailable while the new container starts, and a failed or interrupted
+refresh leaves whatever it reached. A failure names the step that failed and
+what is still running; fix the cause and run `booley session refresh` again,
+which continues from that state. Afterwards it re-applies Project
+Initialization (Git hooks, Git settings, guidance links, exclude entries and the
 Dashboard task). It never rewrites tracked files: CRLF files and pending
 `.booley/.gitignore` or `[agent]` changes are reported, and `booley init`
 applies them. If that step fails, you keep the new Sandbox and the command
@@ -83,9 +85,8 @@ exits non-zero.
 <summary>With host-installed licensed tools</summary>
 
 A Sandbox using a
-[floating license](#commercial-eda-provisioning)
-can't be refreshed in place; see
-[Applying Sandbox changes](#applying-sandbox-changes) and
+[floating license](#commercial-eda-provisioning) refreshes like any other; the
+license relay is replaced with the Sandbox. See
 [Commercial EDA provisioning](#commercial-eda-provisioning).
 
 </details>
@@ -94,31 +95,16 @@ can't be refreshed in place; see
 
 Booley fixes a Sandbox's settings, `[agent]` CLIs and logins, EDA requests and
 Grants, and image when it issues the Sandbox. A running Sandbox keeps its
-previous values until you apply the change. Use the first case that applies
-(with host-installed licensed tools, read the callout below the list first):
+previous values until you apply the change. Use the first case that applies:
 
 - **VS Code owns the Sandbox:** stop it in VS Code, run `booley init --force`,
   then **Dev Containers: Rebuild Container**.
 - **An image you manage yourself:** rebuild or pull it, then run
   `booley session down`, `booley init --seed`, and `booley session up`.
-- **Otherwise (headless Sandbox):** run `booley session refresh`.
-
-<details markdown>
-<summary>With host-installed licensed tools</summary>
-
-Two more cases apply. Check **After an EDA Grant change** before every case
-above, and **Floating license** before the headless case. See
-[Commercial EDA provisioning](#commercial-eda-provisioning).
-
-- **After an EDA Grant change** (`booley eda grant add` or `revoke`): Booley
-  withdraws the Sandbox's issuance, so the running Sandbox can't be refreshed. Stop
-  any VS Code Sandbox through its owning app. If you manage the image yourself,
-  rebuild or pull it. Then on the host run `booley session down`,
-  `booley init --seed`, and `booley session up`.
-- **Floating license:** run `booley session down`, then
-  `booley session refresh`.
-
-</details>
+- **Otherwise (headless Sandbox):** run `booley session refresh`. This also
+  applies after an EDA Grant change (`booley eda grant add` or `revoke`) and
+  with a floating license; see
+  [Commercial EDA provisioning](#commercial-eda-provisioning).
 
 When `booley init` or Sandbox validation refuses a running Sandbox, its message
 names the case that applies.

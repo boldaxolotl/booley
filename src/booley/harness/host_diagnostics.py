@@ -15,7 +15,6 @@ from booley.runtime import (
     runtime_context,
     session_admission,
     session_issuance,
-    session_refresh,
 )
 from booley.runtime.host_install import (
     HostInstallationError,
@@ -77,7 +76,6 @@ def _inspect_session_stores(report: Findings) -> None:
     stores: tuple[ProjectStore, ...] = (
         session_issuance.stamp_store(),
         session_admission.claim_store(),
-        session_refresh.journal_store(),
         issuance_invalidation.journal_store(),
     )
     count = 0

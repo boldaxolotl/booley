@@ -983,44 +983,6 @@ def inspect_refreshable_runtime_image(project_root: Path) -> None:
         )
 
 
-def prepare_runtime_image(
-    project_root: Path,
-    *,
-    verbose: bool = False,
-) -> PreparedConvergence:
-    """Build and verify refresh candidates without changing managed tags."""
-    _report_project_requirements(project_root, query_base_image=True)
-    lifecycle_plan = image_lifecycle.plan(ProjectImageScope(project_root))
-    info("Refresh plan:")
-    for step in lifecycle_plan.steps:
-        identity = next(
-            node.effective_inputs or ""
-            for node in lifecycle_plan.nodes
-            if node.reference == step.reference
-        )
-        info(f"  {step.action.value:<5} {step.role.value:<20} {step.reason.code} {identity[:12]}")
-    return image_lifecycle.prepare(lifecycle_plan, verbose=verbose)
-
-
-def commit_runtime_image(
-    prepared: PreparedConvergence,
-) -> LifecycleResult:
-    """Adopt prepared image candidates after refresh state is journaled."""
-    return image_lifecycle.commit(prepared)
-
-
-def validate_runtime_image(
-    prepared: PreparedConvergence,
-) -> None:
-    """Revalidate prepared image inputs before parking the live Sandbox."""
-    image_lifecycle.validate(prepared)
-
-
-def abort_runtime_image(prepared: PreparedConvergence) -> None:
-    """Discard prepared refresh candidates."""
-    image_lifecycle.abort(prepared)
-
-
 def reissue_session_spec(project_root: Path, image_id: str, *, verbose: bool = False) -> None:
     """Regenerate, pin, and stamp the Session spec after an image refresh."""
     ctx = InitContext(project_root=project_root, force=False, verbose=verbose)
@@ -2760,7 +2722,7 @@ def _check_init_layout(args: argparse.Namespace, project_root: Path):
 
 
 def _check_init_only(args: argparse.Namespace, project_root: Path, migration) -> int:
-    from booley.runtime.session_refresh import shared_recovery_blocks_command
+    from booley.runtime.issuance_invalidation import shared_recovery_blocks_command
 
     pending = shared_recovery_blocks_command(read_only=True)
     if migration is not None:
@@ -2780,7 +2742,7 @@ def _check_init_only(args: argparse.Namespace, project_root: Path, migration) ->
 
 def _init_with_migration(args: argparse.Namespace, project_root: Path, migration) -> int:
     from booley.runtime.booley_dir_migration import apply_migration
-    from booley.runtime.session_refresh import shared_recovery_blocks_command
+    from booley.runtime.issuance_invalidation import shared_recovery_blocks_command
 
     if migration is not None:
         apply_migration(migration)
@@ -2956,7 +2918,7 @@ def run_init(args: argparse.Namespace, project_root: Path) -> int:
 def preflight_auth_reseed(project_root: Path) -> None:
     """Validate existing Project/recovery storage before a credential mutation."""
     from booley.runtime import session_issuance
-    from booley.runtime.session_refresh import shared_recovery_blocks_command
+    from booley.runtime.issuance_invalidation import shared_recovery_blocks_command
 
     _check_init_layout(argparse.Namespace(seed=True), project_root)
     shared_recovery_blocks_command(read_only=True)
@@ -2991,7 +2953,7 @@ def _auth_reseed_dependencies(project_root: Path) -> bool:
 
 
 def _reseed_auth_unlocked(project_root: Path) -> int:
-    from booley.runtime.session_refresh import shared_recovery_blocks_command
+    from booley.runtime.issuance_invalidation import shared_recovery_blocks_command
 
     if shared_recovery_blocks_command(read_only=False):
         err("Recovered interrupted Sandbox host state; retry `booley init --seed`.")

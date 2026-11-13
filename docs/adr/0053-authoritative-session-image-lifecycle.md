@@ -39,3 +39,14 @@ Booley no longer supports migrating images from before 0.3.0. An image whose
 missing label, is stale and is rebuilt or re-pulled. No compatibility policy
 applies, and the legacy `booley.build-fingerprint` label is not part of
 lifecycle provenance.
+
+## Amendment (2026-11-13)
+
+Session Runtime replacement rolls forward. A refresh keeps no journal and never
+restores the previous runtime: a failed step names itself and what is left
+running, and running `booley session refresh` again converges from whatever
+state the failure left. Licensed Sandboxes, and Sandboxes whose issuance stamp
+an EDA Grant change withdrew, refresh directly, because there is no snapshot to
+keep consistent. Restore-on-failure was rejected: it needed a journal, a parked
+predecessor, and recovery on every later command, and it could leave nothing
+running when the restore itself failed.

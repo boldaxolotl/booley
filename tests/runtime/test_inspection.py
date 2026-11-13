@@ -599,7 +599,9 @@ class TestDevcontainerSpecStaleness:
         rec = self._run(tmp_path, monkeypatch, image="openc910-booley-sandbox:latest")
         assert rec.fails() == []
         assert any(
-            lvl == "warn" and "openc910-booley-sandbox:latest" in m and "--seed" in m
+            lvl == "warn"
+            and "openc910-booley-sandbox:latest" in m
+            and "booley session refresh" in m
             for lvl, m in rec.events
         )
 

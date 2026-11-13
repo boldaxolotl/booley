@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from booley.eda.provisioning.authority import LicenseProfile
     from booley.runtime.session_admission import Sandbox
     from booley.runtime.session_issuance import Issuance
+    from booley.runtime.session_refresh import RefreshImage
 
 logger = logging.getLogger(__name__)
 
@@ -550,11 +551,6 @@ class ParkedSession:
     name: str
     backup: str
     was_running: bool
-    project_id: str | None = None
-    reconnect_egress: bool = False
-    container_id: str | None = None
-    image_id: str | None = None
-    egress_network_id: str | None = None
 
 
 def _strict_refresh_container(name: str) -> dict[str, Any] | None:
@@ -602,31 +598,6 @@ def _assert_refresh_container_owned(name: str, state: dict[str, Any], project_id
         )
 
 
-def _assert_refresh_predecessor(name: str, state: dict[str, Any], parked: ParkedSession) -> None:
-    assert parked.project_id is not None
-    _assert_refresh_container_owned(name, state, parked.project_id)
-    if parked.container_id is not None and state.get("Id") != parked.container_id:
-        raise SessionError(f"container {name!r} is not the recorded refresh predecessor")
-    if parked.image_id is not None and state.get("Image") != parked.image_id:
-        raise SessionError(f"container {name!r} uses the wrong predecessor image")
-
-
-def _validate_refresh_egress(
-    parked: ParkedSession, state: dict[str, Any], *, recovery: bool = False
-) -> bool:
-    network = state["NetworkSettings"]["Networks"].get(dc.EGRESS_NETWORK)
-    if network is None:
-        return False
-    if not isinstance(network, dict):
-        raise SessionError("Sandbox inspection contains invalid egress network state")
-    actual_id = network.get("NetworkID")
-    if parked.egress_network_id is not None and actual_id != parked.egress_network_id:
-        if recovery:
-            return True
-        raise SessionError("Sandbox egress network identity changed during refresh")
-    return True
-
-
 def _refresh_candidate_matches(state: dict[str, Any], issuance: Issuance) -> bool:
     from booley.runtime import session_issuance as runtime_spec
 
@@ -639,22 +610,6 @@ def _refresh_project_id(issuance: Issuance) -> str:
 
     values = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
     return values["booley.project-id"]
-
-
-def _ensure_unlicensed_refresh(
-    workspace: Path, issuance: Issuance, labels: dict[str, str]
-) -> None:
-    licensed = (
-        issuance.license_profile is not None
-        or issuance.relay_image_id is not None
-        or labels.get("booley.license-profile") != "none"
-        or _relay_objects_exist(_relay_resources(workspace))
-    )
-    if licensed:
-        raise SessionError(
-            "transactional refresh cannot yet preserve a licensed relay topology; "
-            "run `booley session down` before `booley session refresh`"
-        )
 
 
 def _park_session_container(parked: ParkedSession) -> None:
@@ -694,226 +649,6 @@ def _remove_session_candidate(name: str) -> None:
         )
 
 
-def _remove_refresh_predecessor(name: str) -> None:
-    removed = _run(["docker", "rm", "-f", name])
-    if removed.returncode:
-        raise SessionError(
-            f"could not remove verified refresh predecessor {name!r}: {removed.stderr.strip()}"
-        )
-
-
-def _park_refresh_container(parked: ParkedSession) -> None:
-    _park_session_container(parked)
-    if not parked.reconnect_egress:
-        return
-    detached = _run(["docker", "network", "disconnect", dc.EGRESS_NETWORK, parked.backup])
-    if detached.returncode:
-        raise SessionError(
-            f"could not detach recovery Session {parked.backup!r}: {detached.stderr.strip()}"
-        )
-
-
-def _verify_refresh_park(parked: ParkedSession) -> None:
-    assert parked.project_id is not None
-    state = _strict_refresh_container(parked.backup)
-    if state is None:
-        raise SessionError(f"parked Sandbox {parked.backup!r} disappeared")
-    _assert_refresh_container_owned(parked.backup, state, parked.project_id)
-    if state["State"]["Running"]:
-        raise SessionError(f"parked Sandbox {parked.backup!r} is still running")
-    if dc.EGRESS_NETWORK in state["NetworkSettings"]["Networks"]:
-        raise SessionError(f"parked Sandbox {parked.backup!r} is still attached to egress")
-
-
-def _restore_incomplete_park(parked: ParkedSession, *, recovery: bool = False) -> None:
-    """Best-effort compensation while parking has not yet crossed bootstrap."""
-    assert parked.project_id is not None
-    state = _strict_refresh_container(parked.backup)
-    if state is None:
-        original = _strict_refresh_container(parked.name)
-        if original is None:
-            raise SessionError(
-                f"neither Sandbox {parked.name!r} nor recovery container {parked.backup!r} exists"
-            )
-        _assert_refresh_predecessor(parked.name, original, parked)
-        connected = _validate_refresh_egress(parked, original, recovery=recovery)
-        if connected != parked.reconnect_egress:
-            raise SessionError("canonical Sandbox egress state changed during refresh")
-        if parked.was_running and not original["State"]["Running"]:
-            _start_session_container(parked.name)
-        return
-    _assert_refresh_predecessor(parked.backup, state, parked)
-    connected = _validate_refresh_egress(parked, state, recovery=recovery)
-    if parked.reconnect_egress and not connected:
-        connected = _run(["docker", "network", "connect", dc.EGRESS_NETWORK, parked.backup])
-        if connected.returncode:
-            raise SessionError(
-                f"could not reconnect recovery Session {parked.backup!r}: "
-                f"{connected.stderr.strip()}"
-            )
-        verified = _strict_refresh_container(parked.backup)
-        if verified is None or not _validate_refresh_egress(parked, verified, recovery=recovery):
-            raise SessionError("recovery Session did not reconnect to the recorded egress network")
-    elif not parked.reconnect_egress and connected:
-        raise SessionError("recovery Session gained unauthorized egress during refresh")
-    _restore_parked_name(parked)
-
-
-def plan_session_refresh(workspace: Path, issuance: Issuance) -> ParkedSession | None:
-    """Capture the exact Session state required before durable refresh begins."""
-    name = session_container_name(workspace)
-    state = _strict_refresh_container(name)
-    if state is None:
-        return None
-    project_id = _refresh_project_id(issuance)
-    _assert_refresh_container_owned(name, state, project_id)
-    labels = _refresh_container_labels(state)
-    from booley.runtime import session_issuance as runtime_spec
-
-    if missing_labels := runtime_spec.missing_labels(issuance, labels):
-        raise SessionError(
-            "Sandbox labels differ from the prior host issuance: "
-            + format_differences(
-                {"missing_expected_labels": []},
-                {"missing_expected_labels": sorted(missing_labels)},
-            )
-            + "; "
-            + sandbox_remedy(workspace, runtime_only=True)
-        )
-    _ensure_unlicensed_refresh(workspace, issuance, labels)
-    backup = f"{name}{idk.REFRESH_BACKUP_SUFFIX}"
-    if _strict_refresh_container(backup) is not None:
-        raise SessionError(
-            f"cannot refresh while recovery container {backup!r} exists; inspect it first"
-        )
-    was_running = state["State"]["Running"]
-    networks = state["NetworkSettings"]["Networks"]
-    egress = networks.get(dc.EGRESS_NETWORK)
-    egress_network_id = egress.get("NetworkID") if isinstance(egress, dict) else None
-    container_id = state.get("Id")
-    image_id = state.get("Image")
-    return ParkedSession(
-        name=name,
-        backup=backup,
-        was_running=was_running,
-        project_id=project_id,
-        reconnect_egress=dc.EGRESS_NETWORK in networks,
-        container_id=container_id if isinstance(container_id, str) else None,
-        image_id=image_id if isinstance(image_id, str) else None,
-        egress_network_id=egress_network_id if isinstance(egress_network_id, str) else None,
-    )
-
-
-def park_planned_session(parked: ParkedSession) -> None:
-    """Apply a previously captured parking plan with in-process compensation."""
-    try:
-        _park_refresh_container(parked)
-        _verify_refresh_park(parked)
-    except BaseException as park_error:
-        try:
-            _restore_incomplete_park(parked)
-        except BaseException as recovery_error:  # noqa: BLE001 -- report failed compensation
-            raise SessionError(
-                f"Session parking failed ({park_error}); rollback was incomplete: "
-                f"{recovery_error}; inspect containers {parked.name!r} and "
-                f"{parked.backup!r}"
-            ) from park_error
-        raise
-
-
-def park_session_for_refresh(workspace: Path, issuance: Issuance) -> ParkedSession | None:
-    """Stop, retain, and detach this Project's unlicensed headless Session."""
-    parked = plan_session_refresh(workspace, issuance)
-    if parked is None:
-        return None
-    park_planned_session(parked)
-    return parked
-
-
-def restore_refresh_session(
-    parked: ParkedSession,
-    candidate_issuance: Issuance | None = None,
-    *,
-    recovery: bool = False,
-) -> None:
-    """Restore the exact pre-refresh container after a failed replacement."""
-    assert parked.project_id is not None
-    candidate = _strict_refresh_container(parked.name)
-    if (
-        candidate is not None
-        and parked.container_id is not None
-        and candidate.get("Id") == parked.container_id
-    ):
-        if _strict_refresh_container(parked.backup) is not None:
-            raise SessionError("both canonical and recovery predecessor containers exist")
-        _assert_refresh_predecessor(parked.name, candidate, parked)
-        connected = _validate_refresh_egress(parked, candidate, recovery=recovery)
-        if connected != parked.reconnect_egress:
-            raise SessionError("canonical Sandbox egress state changed during refresh")
-        if parked.was_running and not candidate["State"]["Running"]:
-            _start_session_container(parked.name)
-        return
-    if candidate is not None:
-        _assert_refresh_container_owned(parked.name, candidate, parked.project_id)
-        if candidate_issuance is None or not _refresh_candidate_matches(
-            candidate, candidate_issuance
-        ):
-            raise SessionError(
-                f"cannot prove canonical container {parked.name!r} is the refresh replacement; "
-                "it was preserved"
-            )
-        _remove_session_candidate(parked.name)
-    if recovery:
-        _restore_incomplete_park(parked, recovery=True)
-    else:
-        _restore_incomplete_park(parked)
-
-
-def verify_restored_refresh_session(parked: ParkedSession, *, recovery: bool = False) -> None:
-    """Verify the exact predecessor's restored name, state, image, and egress."""
-    state = _strict_refresh_container(parked.name)
-    if state is None:
-        raise SessionError(f"restored Sandbox {parked.name!r} is missing")
-    _assert_refresh_predecessor(parked.name, state, parked)
-    if state["State"]["Running"] != parked.was_running:
-        raise SessionError("restored Sandbox running state is incorrect")
-    if _validate_refresh_egress(parked, state, recovery=recovery) != parked.reconnect_egress:
-        raise SessionError("restored Sandbox egress state is incorrect")
-
-
-def discard_refresh_session(parked: ParkedSession) -> None:
-    """Discard a verified replacement's exact, detached predecessor."""
-    assert parked.project_id is not None
-    state = _strict_refresh_container(parked.backup)
-    if state is None:
-        return
-    _assert_refresh_predecessor(parked.backup, state, parked)
-    _remove_refresh_predecessor(parked.backup)
-
-
-def discard_refresh_candidate(workspace: Path, issuance: Issuance) -> None:
-    """Remove a newly verified candidate after a late refresh conflict."""
-    name = session_container_name(workspace)
-    state = _strict_refresh_container(name)
-    if state is None:
-        return
-    _assert_refresh_container_owned(name, state, _refresh_project_id(issuance))
-    if not _refresh_candidate_matches(state, issuance):
-        raise SessionError(
-            f"cannot prove canonical container {name!r} is the recorded refresh replacement; "
-            "it was preserved"
-        )
-    labels = _refresh_container_labels(state)
-    _remove_session_candidate(name)
-    licensed = (
-        issuance.license_profile is not None
-        or issuance.relay_image_id is not None
-        or labels.get("booley.license-profile") != "none"
-    )
-    if licensed:
-        _remove_license_relay(_relay_resources(workspace))
-
-
 def _park_session_for_rebuild(name: str) -> ParkedSession:
     """Stop and rename an unlicensed Session so refresh can roll it back."""
     backup = f"{name}{idk.REFRESH_BACKUP_SUFFIX}"
@@ -943,7 +678,7 @@ def _discard_parked_session(parked: ParkedSession) -> None:
         )
 
 
-def _remove_failed_candidate(request: _UpRequest, *, remove_relay: bool) -> None:
+def _remove_failed_candidate(request: UpRequest, *, remove_relay: bool) -> None:
     """Remove an unverified candidate and any topology created only for it."""
     if idk.container_exists(request.name):
         _remove_session_candidate(request.name)
@@ -952,7 +687,7 @@ def _remove_failed_candidate(request: _UpRequest, *, remove_relay: bool) -> None
 
 
 @dataclass(frozen=True)
-class _UpRequest:
+class UpRequest:
     spec: dict
     issuance: Any
     profile: Any
@@ -961,7 +696,7 @@ class _UpRequest:
     relay: Any
 
 
-def _validate_up_request(workspace: Path) -> _UpRequest:
+def _validate_up_request(workspace: Path) -> UpRequest:
     from booley.runtime import session_issuance as runtime_spec
 
     spec = _load_spec(workspace)
@@ -975,7 +710,7 @@ def _validate_up_request(workspace: Path) -> _UpRequest:
     profile = _requested_issued_license(workspace, issuance)
     _preflight(spec, license_required=profile is not None)
     _warn_on_stale_booley_bake(spec, workspace)
-    return _UpRequest(
+    return UpRequest(
         spec,
         issuance,
         profile,
@@ -987,10 +722,9 @@ def _validate_up_request(workspace: Path) -> _UpRequest:
 
 def _create_or_resume_session(
     workspace: Path,
-    request: _UpRequest,
+    request: UpRequest,
     *,
     exists: bool,
-    recovery: bool = False,
 ) -> bool:
     from booley.runtime import session_admission
 
@@ -999,7 +733,6 @@ def _create_or_resume_session(
             session_admission.admit_start(
                 workspace,
                 target_name=request.name,
-                recovery=recovery,
                 run=_run,
             )
         except session_admission.AdmissionError as exc:
@@ -1036,19 +769,18 @@ def _create_or_resume_session(
 
 def _run_up_transaction(
     workspace: Path,
-    request: _UpRequest,
+    request: UpRequest,
     *,
     rebuild: bool,
     expected_image_id: str | None,
     expected_wheel_source_fingerprint: str | None = None,
     expected_wheel_sha256: str | None = None,
-    recovery: bool = False,
 ) -> None:
     replacing = rebuild and idk.container_exists(request.name)
     if replacing and request.profile is not None:
         raise SessionError(
-            "transactional refresh cannot yet preserve a licensed relay topology; "
-            "run `booley session down` before `booley session refresh`"
+            "`booley session up --rebuild` cannot preserve a licensed relay topology; "
+            "run `booley session refresh` instead"
         )
     parked = _park_session_for_rebuild(request.name) if replacing else None
     exists = idk.container_exists(request.name)
@@ -1066,7 +798,6 @@ def _run_up_transaction(
             workspace,
             request,
             exists=exists,
-            recovery=recovery,
         )
         candidate_ready = True
         if expected_image_id is not None:
@@ -1112,7 +843,6 @@ def _up_unlocked(
     expected_image_id: str | None = None,
     expected_wheel_source_fingerprint: str | None = None,
     expected_wheel_sha256: str | None = None,
-    recovery: bool = False,
 ) -> str:
     return _ensure_unlocked(
         workspace,
@@ -1120,7 +850,6 @@ def _up_unlocked(
         expected_image_id=expected_image_id,
         expected_wheel_source_fingerprint=expected_wheel_source_fingerprint,
         expected_wheel_sha256=expected_wheel_sha256,
-        recovery=recovery,
     ).name
 
 
@@ -1129,7 +858,7 @@ def ensure(workspace: Path, *, rebuild: bool = False) -> EnsureResult:
     from booley.runtime.lifecycle_lock import host_lifecycle_lock
 
     with host_lifecycle_lock("session up"):
-        _recover_before_lifecycle(workspace, "booley session up")
+        _recover_before_lifecycle("booley session up")
         return _ensure_unlocked(workspace, rebuild=rebuild)
 
 
@@ -1140,7 +869,6 @@ def _ensure_unlocked(
     expected_image_id: str | None = None,
     expected_wheel_source_fingerprint: str | None = None,
     expected_wheel_sha256: str | None = None,
-    recovery: bool = False,
 ) -> EnsureResult:
     """Reuse the selected Sandbox, or run the headless startup transaction."""
     request = _validate_up_request(workspace)
@@ -1176,7 +904,6 @@ def _ensure_unlocked(
         expected_image_id=expected_image_id,
         expected_wheel_source_fingerprint=expected_wheel_source_fingerprint,
         expected_wheel_sha256=expected_wheel_sha256,
-        recovery=recovery,
     )
     for name in stale_vscode:
         _remove_stopped_session_container(name)
@@ -1186,12 +913,132 @@ def _ensure_unlocked(
     return EnsureResult(request.name, False, True)
 
 
-def _recover_before_lifecycle(workspace: Path, retry_command: str | None) -> None:
-    from booley.runtime.session_refresh import RecoveryOutcome, recover_project_locked
+def verified_headless_container(workspace: Path, image: RefreshImage) -> str | None:
+    """Return the running canonical Sandbox's ID when it already matches *image*; else None.
 
+    Read-only. It compares the container with the issued spec, so the calling shell's
+    credential and gateway variables do not matter (the container holds its own), and a
+    licensed Sandbox also needs its relay running as issued.
+    """
+    from booley.runtime import session_issuance as runtime_spec
+
+    try:
+        spec = _load_spec(workspace)
+        issuance = runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
+        profile = _requested_issued_license(workspace, issuance)
+    except runtime_spec.RuntimeSpecError:
+        return None
+    selected = resolve_running_sandbox(workspace)
+    if selected is None or selected.vscode or selected.name != session_container_name(workspace):
+        return None
+    if not container_matches_issuance(
+        selected.container_id,
+        issuance,
+        spec=spec,
+        workspace=workspace,
+        expected_id=selected.container_id,
+        container_held_env=True,
+    ):
+        return None
+    try:
+        if profile is not None:
+            _validate_license_relay(
+                _relay_resources(workspace),
+                selected.name,
+                profile,
+                runtime_spec.labels(issuance),
+                issuance.relay_image_id or "",
+            )
+        verify_refreshed_session(
+            workspace,
+            image.selected_id,
+            expected_wheel_source_fingerprint=image.wheel_source_fingerprint,
+            expected_wheel_sha256=image.wheel_sha256,
+        )
+    except SessionError:
+        return None
+    return selected.container_id
+
+
+def require_only_canonical_sandbox(workspace: Path) -> None:
+    """Refuse while a running Sandbox other than the canonical headless one serves the Project.
+
+    Refresh replaces the shared per-Project relay, which that other Sandbox would lose.
+    """
+    selected = resolve_running_sandbox(workspace)
+    if selected is not None and (
+        selected.vscode or selected.name != session_container_name(workspace)
+    ):
+        raise SessionError(
+            f"Sandbox {selected.name!r} is running and is not this Project's canonical "
+            "headless Sandbox; stop it before refreshing"
+        )
+
+
+def check_refresh_start(workspace: Path) -> UpRequest:
+    """Prove the reissued spec can start a Sandbox here, before the old one is removed."""
+    request = _validate_up_request(workspace)
+    # Built and discarded: it checks the gateway export and credential policy with no Docker call.
+    docker_run_argv(request.spec, workspace, request.name)
+    return request
+
+
+def remove_refresh_predecessor(workspace: Path) -> str | None:
+    """Stop and remove this Project's headless Sandbox; return its container ID, or None."""
+    name = session_container_name(workspace)
+    state = _strict_refresh_container(name)
+    if state is None:
+        return None
+    labels = _refresh_container_labels(state)
+    if (
+        labels.get("booley.role") != "interactive"
+        or labels.get("booley.project-id") != project_label_id(str(workspace.resolve()))
+        or _DEVCONTAINER_FOLDER_LABEL in labels
+    ):
+        raise SessionError(
+            f"container {name!r} is not this Project's headless Sandbox; it was not "
+            "modified; inspect it, then remove or rename it"
+        )
+    container_id = state["Id"]
+    for argv in (["docker", "stop", container_id], ["docker", "rm", "-f", container_id]):
+        result = _run(argv)
+        if result.returncode:
+            detail = result.stderr.strip() or result.stdout.strip() or f"docker {argv[1]} failed"
+            raise SessionError(f"cannot remove headless Sandbox {name!r}: {detail}")
+    return container_id
+
+
+def remove_refresh_relay(workspace: Path) -> None:
+    """Remove the Project's license relay objects when any exist."""
+    relay = _relay_resources(workspace)
+    if _relay_objects_exist(relay):
+        _remove_license_relay(relay)
+
+
+def start_refreshed_sandbox(workspace: Path, request: UpRequest, image: RefreshImage) -> str:
+    """Start and verify the replacement Sandbox; return its immutable container ID.
+
+    Unlike ``session up`` this skips the stopped-VS-Code container cleanup, so a refresh
+    removes only the proven headless Sandbox.
+    """
+    running = resolve_running_sandbox(workspace)
+    if running is not None:
+        raise SessionError(f"Sandbox {running.name!r} started before the replacement")
+    _run_up_transaction(
+        workspace,
+        request,
+        rebuild=False,
+        expected_image_id=image.selected_id,
+        expected_wheel_source_fingerprint=image.wheel_source_fingerprint,
+        expected_wheel_sha256=image.wheel_sha256,
+    )
+    _warn_on_stale_session_containers(request.spec, workspace)
+    return refresh_container_id(workspace)
+
+
+def _recover_before_lifecycle(retry_command: str | None) -> None:
     invalidated = _recover_invalidations_locked()
-    recovered = recover_project_locked(workspace)
-    if invalidated or recovered.outcome is not RecoveryOutcome.NONE:
+    if invalidated:
         retry = f"run `{retry_command}` again" if retry_command else "retry the command"
         raise SessionError(f"recovered interrupted Sandbox host state; {retry}")
 
@@ -1224,7 +1071,7 @@ def up(
     from booley.runtime.lifecycle_lock import host_lifecycle_lock
 
     with host_lifecycle_lock("session up"):
-        _recover_before_lifecycle(workspace, "booley session up")
+        _recover_before_lifecycle("booley session up")
         return _up_unlocked(
             workspace,
             rebuild=rebuild,
@@ -1235,9 +1082,8 @@ def up(
 def validate(workspace: Path) -> str:
     """Validate the host-issued spec used by VS Code and the headless CLI."""
     from booley.runtime import session_issuance as runtime_spec
-    from booley.runtime.session_refresh import has_pending_refresh
 
-    if has_pending_refresh(workspace) or _has_pending_invalidation(workspace):
+    if _has_pending_invalidation(workspace):
         raise SessionError("Sandbox recovery is pending; run a lifecycle command")
 
     spec = _load_spec(workspace)
@@ -1325,7 +1171,7 @@ def prepare(workspace: Path) -> str:
     from booley.runtime.lifecycle_lock import host_lifecycle_lock
 
     with host_lifecycle_lock("session prepare"):
-        _recover_before_lifecycle(workspace, "booley session prepare")
+        _recover_before_lifecycle("booley session prepare")
         return _prepare_unlocked(workspace)
 
 
@@ -1858,12 +1704,15 @@ def container_matches_issuance(  # noqa: PLR0911, PLR0912 - fail-closed inspect 
     spec: dict,
     workspace: Path,
     expected_id: str | None = None,
+    container_held_env: bool = False,
 ) -> bool:
     """True when an existing container exactly matches its trusted issuance.
 
     Doctor inspection and the resume path both call this. Beyond the issuance
     labels it compares the immutable image, user/workdir, mounts, environment,
     hardening, and networks against the spec and workspace.
+    ``container_held_env`` leaves out the ``remoteEnv`` keys the spec fills from the
+    caller's shell (``${localEnv:KEY}``): the container holds its own values for them.
     """
     import json
 
@@ -1925,16 +1774,9 @@ def container_matches_issuance(  # noqa: PLR0911, PLR0912 - fail-closed inspect 
     is_devcontainer = isinstance(devcontainer_workspace, str) and same_host_path(
         devcontainer_workspace, workspace
     )
-    env_sections = (spec.get("containerEnv") or {},)
-    if not is_devcontainer:
-        env_sections += (spec.get("remoteEnv") or {},)
-    expected_env = {
-        f"{key}={substitute(str(value), workspace)}"
-        for section in env_sections
-        for key, value in section.items()
-    }
-    actual_env = config.get("Env")
-    if not isinstance(actual_env, list) or not expected_env.issubset(set(actual_env)):
+    if not _environment_matches(
+        spec, config, workspace, is_devcontainer, container_held_env=container_held_env
+    ):
         return False
     return _mounts_match_spec(
         state.get("Mounts"),
@@ -1942,6 +1784,32 @@ def container_matches_issuance(  # noqa: PLR0911, PLR0912 - fail-closed inspect 
         workspace,
         allow_vscode_mounts=is_devcontainer,
     )
+
+
+def _environment_matches(
+    spec: dict,
+    config: dict,
+    workspace: Path,
+    is_devcontainer: bool,
+    *,
+    container_held_env: bool,
+) -> bool:
+    """True when the container's environment holds every variable the spec sets."""
+    remote_env = spec.get("remoteEnv") or {}
+    if container_held_env:
+        remote_env = {
+            key: value for key, value in remote_env.items() if not _LOCAL_ENV_RE.search(str(value))
+        }
+    env_sections = (spec.get("containerEnv") or {},)
+    if not is_devcontainer:
+        env_sections += (remote_env,)
+    expected_env = {
+        f"{key}={substitute(str(value), workspace)}"
+        for section in env_sections
+        for key, value in section.items()
+    }
+    actual_env = config.get("Env")
+    return isinstance(actual_env, list) and expected_env.issubset(set(actual_env))
 
 
 def _session_hardening_matches(config: dict, host: dict) -> bool:
@@ -2304,7 +2172,7 @@ def resolve_running_sandbox(workspace: Path) -> Sandbox | None:
     return candidates[0] if candidates else None
 
 
-def _validate_selected_runtime(workspace: Path, request: _UpRequest, selected: Sandbox) -> None:
+def _validate_selected_runtime(workspace: Path, request: UpRequest, selected: Sandbox) -> None:
     if not selected.vscode:
         # Name a missing gateway export instead of the generic "does not match" below;
         # a VS Code-owned Sandbox is matched without reading ``localEnv``.
@@ -2395,7 +2263,7 @@ def run_project_command(
     from booley.runtime.lifecycle_lock import host_lifecycle_lock
 
     with host_lifecycle_lock("session command"):
-        _recover_before_lifecycle(workspace, None)
+        _recover_before_lifecycle(None)
         name, command_env = _select_or_start_project_runtime(workspace)
     _warn_on_mangled_args(command)
     from booley.runtime.runtime_attachment import run_command
@@ -2562,15 +2430,13 @@ def down(
     from booley.runtime.lifecycle_lock import host_lifecycle_lock
 
     with host_lifecycle_lock("session down"):
-        _recover_before_lifecycle(workspace, "booley session down")
+        _recover_before_lifecycle("booley session down")
         return _down_unlocked(workspace, before_stop)
 
 
 def status(workspace: Path) -> str:
     """Return the Sandbox state, including pending host recovery."""
-    from booley.runtime.session_refresh import has_pending_refresh
-
-    if has_pending_refresh(workspace) or _has_pending_invalidation(workspace):
+    if _has_pending_invalidation(workspace):
         return "recovery-pending"
     from booley.runtime import session_admission
 
@@ -2619,9 +2485,19 @@ SANDBOX_HOST_INSPECTION_REMEDY = (
 )
 
 
-def sandbox_remedy(
-    workspace: Path, *, runtime_only: bool = False, recovery_unavailable: bool = False
-) -> str:
+_RESEED_REMEDY = (
+    "stop any VS Code Sandbox through its owning app, then on the host run "
+    "`booley session down`, `booley init --seed`, and `booley session up`"
+)
+
+
+_EXTERNAL_REMEDY = (
+    "rebuild/pull the selected external image, then run `booley session down`, "
+    "`booley init --seed`, and `booley session up` on the host"
+)
+
+
+def sandbox_remedy(workspace: Path, *, runtime_only: bool = False) -> str:
     """Choose one host workflow after authenticating ownership and issuance."""
     from booley.runtime import session_issuance as runtime_spec
     from booley.runtime.runtime_context import inside_session_runtime
@@ -2632,8 +2508,10 @@ def sandbox_remedy(
         prior = runtime_spec.load_issued_snapshot(workspace)
     except runtime_spec.RuntimeSpecError:
         prior = None
-    if prior is None:
-        return "stop any VS Code Sandbox through its owning app, then on the host run `booley session down`, `booley init --seed`, and `booley session up`"
+        # A stamp that is merely absent (withdrawn by an EDA Grant change) is what
+        # refresh repairs; a corrupt or misnamed one still needs the reseed workflow.
+        if not runtime_spec.stamp_is_absent(workspace):
+            return _RESEED_REMEDY
     try:
         owner = vscode_session_container(workspace)
     except SessionError:
@@ -2642,7 +2520,7 @@ def sandbox_remedy(
         )
     selected = project_image.project_sandbox_image(workspace)
     external = not project_image.is_managed_sandbox_image(workspace, selected)
-    if owner:
+    if owner and prior is not None:
         prerequisite = "rebuild/pull the selected external image, then " if external else ""
         return (
             "stop the Sandbox in VS Code, then "
@@ -2650,15 +2528,11 @@ def sandbox_remedy(
             + "on the host run `booley init --force`, "
             "then use Dev Containers: Rebuild Container"
         )
-    workflow = "run `booley session refresh` on the host"
-    if external:
-        workflow = "rebuild/pull the selected external image, then run `booley session down`, `booley init --seed`, and `booley session up` on the host"
-    elif recovery_unavailable:
-        workflow = (
-            "on the host run `booley session down`, `booley init --seed`, and `booley session up`"
-        )
-    elif runtime_only:
-        workflow = "run `booley session down`, then `booley session up --rebuild` on the host"
-    elif prior.license_profile is not None:
-        workflow = "run `booley session down`, then `booley session refresh` on the host"
-    return workflow
+    if owner or external:
+        # Without a stamp there is nothing for refresh to build on.
+        return _EXTERNAL_REMEDY if external and prior is not None else _RESEED_REMEDY
+    return (
+        "run `booley session down`, then `booley session up --rebuild` on the host"
+        if runtime_only
+        else "run `booley session refresh` on the host"
+    )

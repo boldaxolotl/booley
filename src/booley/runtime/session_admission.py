@@ -92,14 +92,10 @@ def admit_start(
     project_root: Path,
     *,
     target_name: str,
-    recovery: bool = False,
     run: Run = _run,
     now: datetime | None = None,
 ) -> None:
     """Admit a slot-consuming start or raise an actionable refusal."""
-    if recovery:
-        _report_recovery_capacity(run)
-        return
     root = _canonical_root(project_root)
     live, claims, _candidates, diagnostics = _admission_snapshot(run, requesting_root=root)
     if any(item.name == target_name for item in live):
@@ -677,22 +673,6 @@ def _canonical_text(value: str) -> str:
     if not path.is_absolute() or ".." in path.parts:
         raise AdmissionError(f"Project path is not canonical: {value!r}")
     return _canonical_root(path)
-
-
-def _report_recovery_capacity(run: Run) -> None:
-    """Report a recovery that can temporarily restore the host above its cap."""
-    try:
-        live = _inventory(run)
-        policy = _policy()
-    except (AdmissionError, OSError, subprocess.SubprocessError) as exc:
-        logger.warning("cannot inspect Sandbox capacity during recovery: %s", exc)
-        return
-    if len(live) >= policy.max_sessions:
-        logger.warning(
-            "Sandbox recovery is restoring work at or above sandbox.max_sessions=%d; "
-            "ordinary starts remain blocked until capacity is freed",
-            policy.max_sessions,
-        )
 
 
 def _refusal(

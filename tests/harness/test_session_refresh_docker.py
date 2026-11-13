@@ -1,11 +1,12 @@
 """Opt-in namespaced primitive proof; spec acceptance uses real-builder port tests.
 
 A full refresh would acquire the production image graph and host authority. This
-proof instead exercises real park/restore/inspect/start/removal and owned-ID GC
-under the production host lock, without acquiring that production graph.
+proof instead exercises the real roll-forward primitives (ownership-proven removal
+of the old Sandbox, start verification, rerun convergence after a failed start)
+and owned-ID GC under the production host lock, without acquiring that production
+graph.
 """
 
-import json
 import os
 import subprocess
 from pathlib import Path
@@ -63,21 +64,6 @@ def _start(name: str, image: str, token: str) -> str:
     )
 
 
-def _fail_and_restore(parked, tag: str, containers: list[str]) -> None:
-    session_runtime.park_planned_session(parked)
-    candidate = _start(parked.name, tag, parked.project_id)
-    containers.append(candidate)
-    # Kept on subprocess.run: the `_instrument` guard patches it to refuse foreign Docker mutations.
-    failed = subprocess.run(
-        ["docker", "exec", parked.name, "sh", "-c", "exit 7"], timeout=180, check=False
-    )
-    assert failed.returncode == 7
-    _docker("rm", "-f", candidate)
-    session_runtime.restore_refresh_session(parked)
-    session_runtime.verify_restored_refresh_session(parked)
-    assert json.loads(_docker("inspect", parked.name))[0]["Id"] == parked.container_id
-
-
 def _cleanup(tags, containers, owned) -> None:
     current = _inventory()
     for identity in reversed(containers):
@@ -97,7 +83,7 @@ def _instrument(monkeypatch, name, tags, containers, owned):
 
     def run(argv, *args, **kwargs):
         if argv[0] == "docker":
-            allowed = {name, name + "-pre-refresh", *tags, *containers, *owned}
+            allowed = {name, name + "-pre-refresh", name + "-builder", *tags, *containers, *owned}
             command = argv[1]
             targets = []
             if command == "run":
@@ -137,8 +123,66 @@ def _gc_keeps_conflict_then_retries(name, token, containers, project, base, tag)
     assert image not in _inventory()[0]
 
 
+def _container_ids() -> set[str]:
+    return _inventory()[2]
+
+
+def _roll_forward_replacement(workspace, token, name, tags, containers, old_image, new_image):
+    """Replace an old container on tag A with one on tag B, refusing a foreign owner."""
+    foreign = _start(name, tags[0], "foreign-" + token)
+    containers.append(foreign)
+    with pytest.raises(session_runtime.SessionError, match="not this Project's headless Sandbox"):
+        session_runtime.remove_refresh_predecessor(workspace)
+    assert foreign in _container_ids(), "a container with a foreign token must survive"
+    _docker("rm", "-f", foreign)
+
+    old = _start(name, tags[0], token)
+    containers.append(old)
+    with pytest.raises(session_runtime.SessionError, match="expected " + new_image):
+        session_runtime.verify_refreshed_session(workspace, new_image)
+    session_runtime.verify_refreshed_session(workspace, old_image)
+
+    assert session_runtime.remove_refresh_predecessor(workspace) == old
+    assert old not in _container_ids()
+    assert session_runtime.remove_refresh_predecessor(workspace) is None
+
+    new = _start(name, tags[1], token)
+    containers.append(new)
+    session_runtime.verify_refreshed_session(workspace, new_image)
+    assert old not in _container_ids() and new in _container_ids()
+    return new
+
+
+def _failed_start_convergence(workspace, token, name, tags, containers, new_image):
+    """A candidate left by a start that crashed before verification is replaced on rerun."""
+    candidate = _start(name, tags[1], token)
+    containers.append(candidate)
+    # Kept on subprocess.run: the `_instrument` guard patches it to refuse foreign Docker mutations.
+    failed = subprocess.run(
+        ["docker", "exec", name, "sh", "-c", "exit 7"], timeout=180, check=False
+    )
+    assert failed.returncode == 7  # the start hook failed; nothing cleaned the candidate up
+
+    assert session_runtime.remove_refresh_predecessor(workspace) == candidate
+    assert candidate not in _container_ids()
+    fresh = _start(name, tags[1], token)
+    containers.append(fresh)
+    session_runtime.verify_refreshed_session(workspace, new_image)
+    return fresh
+
+
+def _commit_candidate_image(name, token, tags, containers) -> str:
+    """Tag B's image: tag A's filesystem plus one fixture file."""
+    builder = _start(name + "-builder", tags[0], token)
+    containers.append(builder)
+    _docker("exec", name + "-builder", "sh", "-c", "echo fixture > /tmp/" + token)
+    image = _docker("commit", name + "-builder", tags[1])
+    _docker("rm", "-f", builder)
+    return image
+
+
 @pytest.mark.timeout(600)
-def test_real_namespaced_rollback_and_owned_image_gc(tmp_path: Path, monkeypatch):
+def test_real_roll_forward_replacement_and_failed_start_convergence(tmp_path: Path, monkeypatch):
     assert not os.environ.get("PYTEST_XDIST_WORKER"), "run Docker proof with -n 0"
     token = uuid4().hex
     reference = "booley-proof-" + token
@@ -146,7 +190,12 @@ def test_real_namespaced_rollback_and_owned_image_gc(tmp_path: Path, monkeypatch
     tags = [reference + ":root", reference + ":candidate"]
     containers: list[str] = []
     owned: list[str] = []
+    # Every Docker mutation, `stop` and `rm` by immutable container ID included, must
+    # target a name, tag, or ID this proof created.
     mutations = _instrument(monkeypatch, name, tags, containers, owned)
+    workspace = tmp_path.resolve()
+    monkeypatch.setattr(session_runtime, "session_container_name", lambda _workspace: name)
+    monkeypatch.setattr(session_runtime, "project_label_id", lambda _root: token)
     # Isolate only private authority/provenance. Never relocate the host lock.
     anchor = tmp_path / "private"
     store = PrivateStore(
@@ -156,28 +205,22 @@ def test_real_namespaced_rollback_and_owned_image_gc(tmp_path: Path, monkeypatch
         image_lifecycle.ImageLifecycleError,
     )
     monkeypatch.setattr(image_lifecycle, "_owned_store", lambda: store)
-    with host_lifecycle_lock("issue-1552 isolated Docker primitive proof"):
+    with host_lifecycle_lock("issue-3644 isolated Docker primitive proof"):
         before = _inventory()
         base = _docker("image", "inspect", "booley-sandbox", "--format", "{{.Id}}")
         try:
             _docker("tag", base, tags[0])
-            old = _start(name, tags[0], token)
-            containers.append(old)
-            _docker("exec", name, "sh", "-c", "echo fixture > /tmp/" + token)
-            new_image = _docker("commit", name, tags[1])
+            new_image = _commit_candidate_image(name, token, tags, containers)
             assert new_image not in before[0]
             owned.append(new_image)
             image_lifecycle.OwnedImages(tmp_path).record({tags[1]: new_image}, (new_image,))
-            parked = session_runtime.ParkedSession(
-                name,
-                name + "-pre-refresh",
-                True,
-                project_id=token,
-                reconnect_egress=False,
-                container_id=old,
-                image_id=base,
+
+            new = _roll_forward_replacement(
+                workspace, token, name, tags, containers, base, new_image
             )
-            _fail_and_restore(parked, tags[1], containers)
+            _docker("rm", "-f", new)
+            fresh = _failed_start_convergence(workspace, token, name, tags, containers, new_image)
+            _docker("rm", "-f", fresh)
             _gc_keeps_conflict_then_retries(name, token, containers, tmp_path, base, tags[1])
             _docker("image", "rm", "--no-prune", tags[1])
             assert image_lifecycle.cleanup_owned_images(tmp_path) == ()
