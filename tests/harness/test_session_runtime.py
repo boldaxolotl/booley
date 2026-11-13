@@ -5068,7 +5068,7 @@ def _as_headless_sandbox(workspace: Path, fixture: SimpleNamespace, monkeypatch)
     monkeypatch.setattr(sr, "_docker_stdout", stdout)
 
 
-def test_verified_headless_container_compares_only_exported_shell_env(
+def test_verified_headless_container_ignores_calling_shell_env(
     workspace, project_sandbox_resolution, monkeypatch
 ):
     fixture = project_sandbox_resolution
