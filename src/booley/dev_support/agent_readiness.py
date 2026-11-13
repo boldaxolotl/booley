@@ -21,7 +21,7 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 from booley.core.host_probes import ProbeState, probe_docker
 from booley.dev_support.test_profiles import BWAVE_BUILD, native_test_problem
@@ -931,5 +931,7 @@ def _run_process(
         return None
 
 
-def _successful(result: subprocess.CompletedProcess[str] | None) -> bool:
+def _successful(
+    result: subprocess.CompletedProcess[str] | None,
+) -> TypeGuard[subprocess.CompletedProcess[str]]:
     return result is not None and result.returncode == 0

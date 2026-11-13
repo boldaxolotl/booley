@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +34,7 @@ def flow_enabled_from_config(flow_name: str, cfg: object) -> bool:
     return section.get("enabled", True) is not False
 
 
-def retired_config_error(raw: dict[str, Any]) -> str | None:
+def retired_config_error(raw: Mapping[str, Any]) -> str | None:
     """Return the first hard-migration error for a removed execution surface."""
     flows = raw.get("flows", {})
     if isinstance(flows, dict):

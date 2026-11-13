@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Sequence
-from typing import Any, Protocol
+from collections.abc import Callable
 
-
-class CommandRunner(Protocol):
-    """Subprocess-compatible command runner used by environment audits."""
-
-    def __call__(self, args: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[str]: ...
+# Subprocess-compatible command runner used by environment audits; the keyword
+# set varies per call, so only the return type is fixed.
+CommandRunner = Callable[..., subprocess.CompletedProcess[str]]

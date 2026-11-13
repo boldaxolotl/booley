@@ -63,45 +63,16 @@ except ImportError:
             stealth_enabled,
         )
 
-    run_command = None
-    for _mod in ("booley.core.run_command", "core.run_command", "run_command"):
+    _run_command_modules = ("booley.core.run_command", "core.run_command", "run_command")
+    for _mod in _run_command_modules:
         try:
             run_command = importlib.import_module(_mod).run_command
             break
         except ImportError:
             continue
-
-    if run_command is None:
-        # Last-resort insurance for a *stale* Project bundle predating the
-        # flat run_command.py vendoring (onboarded before that init change and not
-        # re-run): shim the one call we make (git diff) with subprocess,
-        # mirroring CommandRun's used fields so a host commit still validates
-        # instead of crashing on ModuleNotFoundError.
-        import subprocess
-        from dataclasses import dataclass
-
-        @dataclass
-        class _CommandRun:
-            returncode: int
-            stdout: str
-            stderr: str
-
-            @property
-            def ok(self) -> bool:
-                return self.returncode == 0
-
-            def failure_excerpt(self, limit: int = 400) -> str:
-                text = (self.stderr or self.stdout).strip()
-                return f"rc={self.returncode}: {text[:limit]}"
-
-        def run_command(argv, **kwargs):
-            proc = subprocess.run(
-                argv,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            return _CommandRun(proc.returncode, proc.stdout, proc.stderr)
+    else:
+        # Every shipped hook layout vendors run_command.py beside this file.
+        raise ImportError(f"cannot import run_command from any of {_run_command_modules}")
 
 
 ALLOWED_TYPES = _shared_validation.ALLOWED_TYPES
