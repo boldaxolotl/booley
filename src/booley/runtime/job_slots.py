@@ -308,6 +308,136 @@ class MemoryClaim:
             return None
 
 
+@dataclass(frozen=True)
+class JobLabel:
+    """Who an entry belongs to, for queue reports: the Job's run ID, Flow and Target.
+
+    Presentation only: it never takes part in admission, so it lives on the
+    entry beside ``argv`` rather than inside the ``MemoryClaim``. ``target`` is
+    empty when the Job names none.
+    """
+
+    run_id: str
+    flow: str
+    target: str
+
+    def to_payload(self) -> dict[str, str]:
+        return {"run_id": self.run_id, "flow": self.flow, "target": self.target}
+
+    @staticmethod
+    def from_payload(value: object) -> JobLabel | None:
+        """The label an entry persisted, or None when absent or malformed."""
+        if not isinstance(value, dict):
+            return None
+        run_id, flow, target = (value.get(name) for name in ("run_id", "flow", "target"))
+        if isinstance(run_id, str) and isinstance(flow, str) and isinstance(target, str):
+            return JobLabel(run_id, flow, target)
+        return None
+
+
+#: How many of the largest memory holders a queue report names.
+_WAIT_HOLDERS = 3
+
+
+@dataclass(frozen=True)
+class MemoryWait:
+    """What one queued memory claim waits for, in the terms a queue report gives.
+
+    ``position`` is 1-based among the blocked claims. ``free_mb`` is the Memory
+    Budget headroom the running holders leave (what admission judges), not host
+    free memory. ``seats`` lists each ``(tool, held, cap)`` whose seats are all
+    taken. ``holders`` are up to three running claims, largest first
+    (run-alone first, shown with ``None`` for the whole budget).
+    """
+
+    position: int
+    claim: MemoryClaim
+    free_mb: float
+    seats: tuple[tuple[str, int, int], ...]
+    holders: tuple[tuple[str, float | None], ...]
+
+    def describe(self) -> str:
+        """One line: the need, the free memory, any blocked seat and the largest holders."""
+        claim = self.claim
+        if claim.run_alone:
+            reason = (
+                "Memory Budget unavailable"
+                if claim.budget_mb == 0
+                else "memory estimate unknown or above the Memory Budget"
+            )
+            text = f"waits to run alone ({reason})"
+        else:
+            text = (
+                f"needs {claim.reservation_mb or 0.0:,.0f} MiB; {self.free_mb:,.0f} MiB free "
+                f"of the {claim.budget_mb:,.0f} MiB Memory Budget"
+            )
+        text += "".join(
+            f"; waits for a {tool} seat ({held} of {cap} held)" for tool, held, cap in self.seats
+        )
+        if self.holders:
+            named = ", ".join(
+                f"{name} {'whole budget' if mb is None else f'{mb:,.0f} MiB'}"
+                for name, mb in self.holders
+            )
+            text += f"; largest holders: {named}"
+        return text
+
+
+def _holder_name(token: SlotToken) -> str:
+    """``run-1 (synth, a)`` for a labelled holder, ``pid N`` when no run ID is known."""
+    label = token.job
+    if label is None:
+        return f"pid {token.pid}"
+    detail = ", ".join(part for part in (label.flow, label.target) if part)
+    name = label.run_id or f"pid {token.pid}"
+    return f"{name} ({detail})" if detail else name
+
+
+def memory_wait(
+    own: SlotToken, holders: list[SlotToken], waiters: list[SlotToken], now: float
+) -> MemoryWait | None:
+    """What the memory waiter *own* waits for, or None when it holds no memory claim.
+
+    Position counts like the narrator always did: the blocked claims ahead of
+    *own* among the *waiters* ranked before it, behind the running *holders*.
+    "Free" is the Memory Budget minus the holders' reservations (nothing while
+    a run-alone Job runs); waiters ahead that are about to start are not
+    subtracted, so it can overstate what is free the instant a holder leaves.
+    """
+    claim = own.memory
+    if claim is None:
+        return None
+    ahead = [waiter.memory for waiter in waiters if waiter.path.name < own.path.name]
+    running = [
+        (held.memory, parse_stamp(held.promoted_at) or parse_stamp(held.created_at))
+        for held in holders
+    ]
+    _starts, blocked_ahead, _blocked = _memory_queue(running, ahead, claim, now)
+    # Holders whose claim cannot be read say nothing about the budget: skip them.
+    claimed = [(held, held.memory) for held in holders if held.memory is not None]
+    alone = any(held_claim.run_alone for _held, held_claim in claimed)
+    used_mb = sum(held_claim.reservation_mb or 0.0 for _held, held_claim in claimed)
+    seats_held = Counter(tool for _held, held_claim in claimed for tool, _cap in held_claim.seats)
+    largest = sorted(claimed, key=lambda pair: _holder_weight(pair[1]))[:_WAIT_HOLDERS]
+    return MemoryWait(
+        position=blocked_ahead + 1,
+        claim=claim,
+        free_mb=0.0 if alone else max(0.0, claim.budget_mb - used_mb),
+        seats=tuple(
+            (tool, seats_held[tool], cap) for tool, cap in claim.seats if seats_held[tool] >= cap
+        ),
+        holders=tuple(
+            (_holder_name(held), None if held_claim.run_alone else held_claim.reservation_mb)
+            for held, held_claim in largest
+        ),
+    )
+
+
+def _holder_weight(claim: MemoryClaim) -> tuple[int, float]:
+    """Sort key putting run-alone holders first, then the largest reservation."""
+    return (0, 0.0) if claim.run_alone else (1, -(claim.reservation_mb or 0.0))
+
+
 def _reserves(claim: MemoryClaim) -> bool:
     """True when *claim* holds memory: a run-alone claim or a reservation above zero."""
     return claim.run_alone or bool(claim.reservation_mb)
@@ -493,6 +623,7 @@ class SlotToken:
     owner_kind: str = "process"
     lease_health: LeaseHealth = field(default_factory=lambda: LeaseHealth(threading.Event()))
     memory: MemoryClaim | None = None  # set exactly for memory-class entries
+    job: JobLabel | None = None  # who the entry belongs to, for queue reports only
 
     @property
     def is_holder(self) -> bool:
@@ -510,6 +641,7 @@ class _WaiterRequest:
     created: float
     execution_id: ExecutionId | None
     memory: MemoryClaim | None = None
+    job: JobLabel | None = None
 
 
 def slots_dir(booley_dir: Path | None = None) -> Path | None:
@@ -689,6 +821,7 @@ class SlotStore:
         timeout_s: float | None = None,
         execution_id: str | ExecutionId | None = None,
         memory: MemoryClaim | None = None,
+        job: JobLabel | None = None,
         bounded: bool = True,
     ) -> SlotToken:
         """Join *job_class* admission or raise when its bounded queue is full.
@@ -731,6 +864,7 @@ class SlotStore:
                 created=created,
                 execution_id=linked_execution,
                 memory=memory,
+                job=job,
             )
         )
 
@@ -918,6 +1052,8 @@ class SlotStore:
         }
         if request.memory is not None:
             payload["memory"] = request.memory.to_payload()
+        if request.job is not None:
+            payload["job"] = request.job.to_payload()
         return payload
 
     def _new_waiter_token(
@@ -946,6 +1082,7 @@ class SlotStore:
             owner_identity=ProcessIdentity.from_payload(payload["owner_identity"]),
             owner_kind=payload["owner_kind"],
             memory=request.memory,
+            job=request.job,
         )
 
     def _next_seq(self, cls_dir: Path) -> int:
@@ -1104,6 +1241,8 @@ class SlotStore:
         }
         if token.memory is not None:
             payload["memory"] = token.memory.to_payload()
+        if token.job is not None:
+            payload["job"] = token.job.to_payload()
         return payload
 
     def _rewrite_token(self, token: SlotToken) -> bool:
@@ -1149,6 +1288,7 @@ class SlotStore:
         execution_id: str | ExecutionId | None = None,
         on_submitted: Callable[[SlotToken], None] | None = None,
         memory: MemoryClaim | None = None,
+        job: JobLabel | None = None,
         bounded: bool = True,
     ) -> SlotToken:
         """Submit and wait for a holder, withdrawing on cancellation or failure.
@@ -1164,6 +1304,7 @@ class SlotStore:
             timeout_s=timeout_s,
             execution_id=execution_id,
             memory=memory,
+            job=job,
             bounded=bounded,
         )
         if on_submitted is not None:
@@ -1505,6 +1646,7 @@ class SlotStore:
             owner_identity=owner_identity,
             owner_kind=payload.get("owner_kind", "legacy"),
             memory=MemoryClaim.from_payload(payload.get("memory")),
+            job=JobLabel.from_payload(payload.get("job")),
         )
 
     def cancel_waiter(self, pid: int) -> bool:
@@ -1572,6 +1714,14 @@ class SlotStore:
         # An entry that survived reaping but stayed unreadable through every
         # retry (e.g. a Windows scanner holding it) is not proof of absence.
         return not token.path.exists()
+
+    def memory_wait(self, pid: int) -> MemoryWait | None:
+        """What the memory waiter owned by *pid* waits for, or None when it is not one."""
+        holders, waiters = self.snapshot(CLASS_MEMORY)
+        for waiter in waiters:
+            if waiter.pid == pid:
+                return memory_wait(waiter, holders, waiters, self._now())
+        return None
 
     def state_for_pid(self, pid: int) -> TokenState | None:
         """Admission state of the entry owned by *pid*, or None when absent.
