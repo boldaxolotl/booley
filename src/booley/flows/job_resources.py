@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 import tempfile
 import threading
 import time
@@ -23,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from booley.flows.memory_admission import job_thread_count
+from booley.flows.memory_admission import job_thread_count, memory_admission_enabled
 from booley.runtime import job_slots
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.resource_history import DOCTOR_RUN_ENV, append_records
@@ -35,6 +36,26 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MIB = 1024 * 1024
+# The OOM killer sends SIGKILL (a shell reports its child's death as 128 + 9).
+_SIGKILL = 9
+_SIGKILL_STATUSES = (-_SIGKILL, 128 + _SIGKILL)
+# Internal: names the file where a Booley-owned launcher inside a command reports
+# a descendant's SIGKILL death. Set only while memory admission is on (ADR 0087).
+KILL_REPORT_ENV = "BOOLEY_JOB_KILL_REPORT"
+_KILL_REPORT_NAME = ".booley-kills"
+# What a launcher prints, in the command's own output, for a child a signal
+# killed: GNU make (the recipe's ``Killed`` or the shell's ``Error 137``), the
+# GCC driver (``g++`` reporting ``cc1plus``), clang and the ``verilator`` driver
+# (its front end ``verilator_bin`` killed by signal 9). Another Job cannot write
+# into this output. Anything else (Vivado run scripts, a project's own scripts,
+# a non-GNU or localized make) is not detected.
+_LAUNCHER_KILL_RE = re.compile(
+    r"^(?:make(?:\[\d+\])?: \*\*\* (?:\[[^\]\n]*\] )?(?:Killed|Error 137)"
+    r"|\S+: fatal error: Killed signal terminated program \S+"
+    r"|\S+: error: unable to execute command: Killed"
+    r"|%Error: Verilator threw signal 9\b[^\n]*?)[ \t\r]*$",
+    re.MULTILINE,
+)
 _CGROUP_MEMORY_EVENTS = Path("/sys/fs/cgroup/memory.events")
 _CGROUP_MEMORY_CURRENT = Path("/sys/fs/cgroup/memory.current")
 # Bounds one sample's walk of a temporary directory.
@@ -373,6 +394,8 @@ class JobMeasurement:
     cpu_s: tuple[float, float] | None
     oom_kill_delta: int | None
     solo: bool | None
+    # SIGKILL deaths a Booley-owned launcher inside the command reported.
+    descendant_kills: int = 0
 
     @property
     def peak_rss_mb(self) -> float | None:
@@ -398,7 +421,10 @@ class JobResourceMonitor:
 
     def temp_env(self) -> dict[str, str]:
         """Point the command's temporary files into its private directory."""
-        return dict.fromkeys(("TMPDIR", "TMP", "TEMP"), str(self.tmp_dir))
+        env: dict[str, str] = dict.fromkeys(("TMPDIR", "TMP", "TEMP"), str(self.tmp_dir))
+        if memory_admission_enabled():
+            env[KILL_REPORT_ENV] = str(self.tmp_dir / _KILL_REPORT_NAME)
+        return env
 
     def start(self, pid: int) -> None:
         self._pid = pid
@@ -440,7 +466,16 @@ class JobResourceMonitor:
             cpu_s=cpu,
             oom_kill_delta=oom,
             solo=None if None in others else alone and not any(others),
+            descendant_kills=self._count_descendant_kills(),
         )
+
+    def _count_descendant_kills(self) -> int:
+        """Count the kill reports a launcher wrote; none when unreadable."""
+        try:
+            text = (self.tmp_dir / _KILL_REPORT_NAME).read_text(encoding="utf-8")
+        except OSError:
+            return 0
+        return len(text.splitlines())
 
     def _sample(self) -> None:
         now = time.monotonic()
@@ -468,6 +503,42 @@ class JobResourceMonitor:
             self._sample()
 
 
+def report_descendant_kill() -> None:
+    """Tell the command's Job monitor that a process it started died by SIGKILL.
+
+    Called by a Booley-owned launcher (the simulator adapter) for a child nobody
+    in Booley killed. Writes nothing outside a measured command, and never
+    raises: a report that cannot be written means the kill is not seen, so the
+    command is not blamed.
+    """
+    path = os.environ.get(KILL_REPORT_ENV)
+    if not path:
+        return
+    try:
+        with Path(path).open("a", encoding="utf-8") as report:
+            report.write("sigkill\n")
+    except OSError:
+        logger.debug("could not report a descendant kill to %s", path, exc_info=True)
+
+
+def own_oom_kill(measurement: JobMeasurement, result: Any, *, cancelled: bool) -> bool:
+    """Whether the OOM killer took a process of this command's own tree.
+
+    The container's OOM-kill counter rose while the command ran (an unreadable
+    counter blames nothing), the command failed on its own (not Booley's timeout
+    or cancellation), and one of its processes died by a SIGKILL Booley did not
+    send: the root process, a launcher's report, or the kill line a launcher
+    printed. Another Job's kill moves the counter but leaves none of these.
+    """
+    if not measurement.oom_kill_delta:
+        return False
+    if result.returncode == 0 or result.timed_out or cancelled:
+        return False
+    if result.returncode in _SIGKILL_STATUSES or measurement.descendant_kills > 0:
+        return True
+    return any(_LAUNCHER_KILL_RE.search(text) for text in (result.stdout, result.stderr))
+
+
 def _mb(value: int | None) -> float | None:
     return round(value / _MIB, 1) if value is not None else None
 
@@ -485,8 +556,13 @@ def history_records(
 ) -> list[dict[str, Any]]:
     """One record for the command, plus one per phase it was split into."""
     outcome = "exit_zero" if result.returncode == 0 else "exit_nonzero"
-    # The OOM counter is container-wide: blame this command only when it failed.
-    if measurement.oom_kill_delta and result.returncode != 0:
+    # The OOM counter is container-wide. Memory admission blames only a command
+    # whose own process was killed; otherwise any failed command during a kill.
+    if memory_admission_enabled():
+        blamed = result.oom_killed
+    else:
+        blamed = bool(measurement.oom_kill_delta) and result.returncode != 0
+    if blamed:
         outcome = "oom_kill"
     common = {
         "flow": flow,

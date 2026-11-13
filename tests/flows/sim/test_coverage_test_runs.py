@@ -212,7 +212,7 @@ def test_flow_records_every_test_run_in_one_coverage_aggregate(tmp_path, monkeyp
     result = _flow_result(tmp_path, execution, "reset+short", "reset+soak", "wrap@x3")
 
     assert result.exit_code == 0, result.outcome
-    manifest = json.loads(next((tmp_path / "reports").rglob("campaign/manifest.json")).read_text())
+    manifest = json.loads(next((tmp_path / "reports").rglob("record/manifest.json")).read_text())
     (item,) = manifest["work_items"]
     assert item["kind"] == "coverage_aggregate"
     assert item["selection"]["names"] == ["reset", "wrap"]
@@ -233,7 +233,7 @@ def test_flow_records_every_test_run_in_one_coverage_aggregate(tmp_path, monkeyp
     for name in recorded:
         assert name in result.outcome.report_text
     nested = json.loads(
-        next((tmp_path / "reports").rglob("coverage-campaign/coverage.json")).read_text()
+        next((tmp_path / "reports").rglob("coverage-record/coverage.json")).read_text()
     )
     assert [run["test_run"] for run in nested["tests"]["runs"]] == recorded
 
@@ -353,7 +353,7 @@ def test_interrupted_multi_run_collection_names_its_frozen_test_runs_for_the_new
             )
         )
     assert len(execution.runs) == 1
-    manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
+    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
     frozen = manifest.read_bytes()
     names = [run["name"] for run in _recorded_runs(manifest)]
     assert names[:2] == ["reset+short@1", "reset+soak@1"] and len(set(names)) == 5
@@ -406,7 +406,7 @@ def test_resumed_multi_run_coverage_replays_the_frozen_test_runs_byte_identicall
         )
     )
     assert interrupted.exit_code == 2
-    manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
+    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
     frozen = manifest.read_bytes()
     recorded = _recorded_runs(manifest)
     names = [run["name"] for run in recorded]
@@ -424,7 +424,7 @@ def test_resumed_multi_run_coverage_replays_the_frozen_test_runs_byte_identicall
     assert [request.test.run_name for request in execution.runs] == launched
     rows = resumed.outcome.detail["campaigns"]["sim_0"]["test_runs"]
     assert [{key: row[key] for key in recorded[0]} for row in rows] == recorded
-    nested = json.loads(next(reports.rglob("coverage-campaign/coverage.json")).read_text())
+    nested = json.loads(next(reports.rglob("coverage-record/coverage.json")).read_text())
     assert [(run["test_run"], run["fingerprint"]) for run in nested["tests"]["runs"]] == [
         (run["name"], run["fingerprint"]) for run in recorded
     ]

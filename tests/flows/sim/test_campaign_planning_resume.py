@@ -191,7 +191,7 @@ def test_maximum_campaign_previews_authenticated_mixed_resume_without_eda(
     project.mkdir()
     (project / ".booley").mkdir()
     invocation = tmp_path / "reports" / "sim" / "1"
-    store = CampaignStore(invocation / "targets" / "sim" / "campaign")
+    store = CampaignStore(invocation / "targets" / "sim" / "record")
     store.publish_manifest(manifest)
     executor = _NoEdaExecutor()
     _seed_authenticated_states(store, project, executor)
@@ -245,7 +245,7 @@ def test_campaign_previews_expose_the_complete_public_contract(tmp_path: Path) -
     )
     assert preview.workload == manifest.document["workload"]
 
-    store = CampaignStore(tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "campaign")
+    store = CampaignStore(tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "record")
     store.publish_manifest(manifest)
     resumed = SimulationCampaign().preview(_resume_request(store, tmp_path))
     assert resumed.manifest == manifest.document
@@ -261,7 +261,7 @@ def test_resume_endpoint_refreshes_recovery_after_failure(
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
-    store = CampaignStore(tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "campaign")
+    store = CampaignStore(tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "record")
     store.publish_manifest(_manifest_for(("smoke",)))
     validated = _resume_request(store, project).validated
     observed = SimulationCampaign().inspect_resume(validated)
@@ -296,7 +296,7 @@ def test_resume_execution_uses_a_fresh_scan_after_preview(tmp_path: Path) -> Non
     project.mkdir()
     (project / ".booley").mkdir()
     first_invocation = tmp_path / "reports" / "sim" / "1"
-    store = CampaignStore(first_invocation / "targets" / "sim" / "campaign")
+    store = CampaignStore(first_invocation / "targets" / "sim" / "record")
     store.publish_manifest(_manifest_for(("smoke",)))
     preview_request = _resume_request(store, project)
 
@@ -341,7 +341,7 @@ def test_resume_execution_uses_a_fresh_scan_after_preview(tmp_path: Path) -> Non
 def test_resume_inspection_scans_the_validated_manifest_without_rereading(
     tmp_path: Path,
 ) -> None:
-    store = CampaignStore(tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "campaign")
+    store = CampaignStore(tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "record")
     store.publish_manifest(_manifest_for(("smoke",)))
     validated = _resume_request(store, tmp_path).validated
     store.manifest_path.unlink()

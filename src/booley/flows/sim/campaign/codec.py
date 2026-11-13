@@ -30,6 +30,7 @@ from booley.core.boundary import (
 )
 from booley.flows.campaign_results import OlderBooleyRecordError
 from booley.flows.sim.campaign_files import canonical_json
+from booley.flows.sim.record_layout import RECORD_DIRECTORY
 from booley.runtime.timefmt import parse_timestamp
 
 from .model import (
@@ -676,15 +677,19 @@ def linked_manifest_path(invocation: Path, reference: Mapping[str, object]) -> P
     """The prerequisite manifest *reference* names, inside its *invocation*.
 
     Decode does not check the path, so every walk checks it before opening it:
-    exactly ``targets/<Target>/campaign/manifest.json``, relative and contained,
+    exactly ``targets/<Target>/record/manifest.json``, relative and contained,
     which is what planning writes. That also keeps the invocation the same at
     every hop of a prerequisite walk.
     """
     path = reference["path"]
     parts = path.split("/") if isinstance(path, str) else []
-    if len(parts) != 4 or parts[0] != "targets" or parts[2:] != ["campaign", "manifest.json"]:
+    if (
+        len(parts) != 4
+        or parts[0] != "targets"
+        or parts[2:] != [RECORD_DIRECTORY, "manifest.json"]
+    ):
         raise SimulationCampaignIntegrityError(
             f"prerequisite manifest path {path!r} is not "
-            "targets/<Target>/campaign/manifest.json inside its invocation"
+            "targets/<Target>/record/manifest.json inside its invocation"
         )
     return invocation / validate_relative_path(path)

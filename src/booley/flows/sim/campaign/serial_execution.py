@@ -52,7 +52,7 @@ from booley.flows.sim.execution.engine import (
     simulation_target_environment,
 )
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
-from booley.flows.sim.live_progress import attempt_scope
+from booley.flows.sim.live_progress import attempt_scope, end_phase
 from booley.flows.sim.runtime_inputs import (
     RuntimeInputBinding,
     RuntimeInputError,
@@ -269,24 +269,30 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         inputs = self._group_inputs(request)
         handle, names = inputs.handle, inputs.names
         execution, workload = inputs.execution, inputs.workload
-        with self._shared_lock(key):
-            failed = self._shared_failure.get(key)
-            if failed is not None:
-                return _blocked_shared_result(request, failed, time.monotonic() - started)
-            ready = self._recover_shared(request, key)
-            recovered_failure = self._shared_failure.get(key)
-            if recovered_failure is not None:
-                return _blocked_shared_result(
-                    request, recovered_failure, time.monotonic() - started
-                )
-            compiled_group = None
-            if ready is None:
-                built = self._build_shared(
-                    request, key, handle, names, execution, workload, started
-                )
-                if isinstance(built, SimulationResult):
-                    return built
-                ready, compiled_group = built
+        try:
+            with self._shared_lock(key):
+                failed = self._shared_failure.get(key)
+                if failed is not None:
+                    return _blocked_shared_result(request, failed, time.monotonic() - started)
+                ready = self._recover_shared(request, key)
+                recovered_failure = self._shared_failure.get(key)
+                if recovered_failure is not None:
+                    return _blocked_shared_result(
+                        request, recovered_failure, time.monotonic() - started
+                    )
+                compiled_group = None
+                if ready is None:
+                    built = self._build_shared(
+                        request, key, handle, names, execution, workload, started
+                    )
+                    if isinstance(built, SimulationResult):
+                        return built
+                    ready, compiled_group = built
+        finally:
+            # The shared build is settled (built, reused, recovered or failed). Pre-Sim
+            # Commands run unmeasured after it, so their Jobs keep the build estimate.
+            if not _frozen_hook_commands(request):
+                end_phase(handle.selector, "sim_build")
         return self._launch_shared(
             request,
             run_directory,

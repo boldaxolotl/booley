@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+from booley.flows import job_resources
+from booley.flows.base import FlowMechanics
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     EXIT_SUCCESS,
@@ -206,3 +212,43 @@ def test_gate_rejection_finishes_before_admission() -> None:
     assert result.exit_code == EXIT_ERROR
     assert result.outcome.report_text == "unbound target"
     assert endpoint.events == ["gate-rejected", "acceptance:2", "finish:2:True"]
+
+
+class _CommandEndpoint(_Endpoint):
+    """Endpoint whose Job runs one command through a Flow's local executor."""
+
+    def __init__(self, flow: FlowMechanics, code: str) -> None:
+        super().__init__()
+        self.flow, self.code = flow, code
+
+    def invoke_endpoint(
+        self, prepared: object, *, admission: object, started: float
+    ) -> EndpointOutcome:
+        self.flow._execute_local([sys.executable, "-c", self.code])
+        return EndpointOutcome(exit_code=EXIT_SUCCESS)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signals")
+def test_job_outcome_records_only_its_own_oom_kill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.flows.test_flow_base import EchoFlow, _env_with_state
+
+    from booley.criteria.state import DevelopmentState
+
+    state_file = tmp_path / "state.json"
+    DevelopmentState.load(state_file).save()
+    flow = EchoFlow()
+    with patch.dict(os.environ, _env_with_state(state_file)):
+        flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
+    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+    # The container's OOM-kill counter moves during both Jobs' commands.
+    counts = iter([0, 1, 1, 2])
+    monkeypatch.setattr(job_resources, "cgroup_oom_kill_count", lambda: next(counts))
+    killed = "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"
+
+    own_kill = execute_endpoint(_CommandEndpoint(flow, killed), "prepared")
+    other_failure = execute_endpoint(_CommandEndpoint(flow, "raise SystemExit(1)"), "prepared")
+
+    assert own_kill.outcome.oom_killed is True
+    assert other_failure.outcome.oom_killed is False

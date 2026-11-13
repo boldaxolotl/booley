@@ -443,7 +443,7 @@ def _abnormal_build_reason(result: SubprocessResult, timeout_s: int | None, gene
     """Pick the most specific reason: Booley's own timeout kill, then OOM, then *generic*."""
     if result.timed_out:
         return _build_timeout_reason(timeout_s)
-    if result.oom_kill_delta > 0:
+    if result.oom_blamed:
         return _build_oom_reason(result.peak_rss_mb)
     return generic
 
@@ -477,7 +477,7 @@ def _failed_build_outcome(
     timeout_s: int | None,
 ) -> BuildOutcome:
     """Classify one authenticated nonzero build result."""
-    if result.timed_out or result.oom_kill_delta > 0 or build_rc < 0 or build_rc >= 128:
+    if result.timed_out or result.oom_blamed or build_rc < 0 or build_rc >= 128:
         reason = _abnormal_build_reason(result, timeout_s, "abnormal build termination")
         return _infrastructure_outcome(
             result,

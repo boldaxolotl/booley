@@ -21,10 +21,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from booley.flows.job_estimates import Fit, JobRequest, ResourceEstimator
+from booley.flows.job_estimates import (
+    Fit,
+    JobEstimate,
+    JobRequest,
+    ResourceEstimator,
+    phase_occurrences,
+)
 from booley.runtime.job_slots import CLASS_MEMORY, MemoryClaim, SlotStore
 from booley.runtime.memory_budget import compute_memory_budget
-from booley.runtime.resource_history import load_records
+from booley.runtime.resource_history import HistoryKey, load_records
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +44,9 @@ _BYTES_PER_MIB = 1024 * 1024
 
 _job_threads: ContextVar[int | None] = ContextVar("booley_job_threads", default=None)
 
+#: Flows whose Jobs report phase ends, so their reservation can shrink.
+_SHRINKING_FLOWS = frozenset({"sim", "synth", "fpga"})
+
 
 def memory_admission_enabled() -> bool:
     """Whether memory-admitted Jobs (heavy, lint, Custom Flow) take a Memory Reservation."""
@@ -50,6 +59,10 @@ class MemoryAdmissionPlan:
 
     claim: MemoryClaim
     warning: str | None = None
+    #: A shrinkable claim's planned phase runs, in run order, each with its memory
+    #: estimate in MiB (a key repeats once per planned run). Empty when the Job
+    #: holds its claim to the end: run-alone, lint, Custom Flow and coverage Jobs.
+    phases: tuple[tuple[HistoryKey, float], ...] = ()
 
     def describe(self) -> str:
         """What the Job asks of the budget, for queue narration."""
@@ -79,10 +92,11 @@ def plan_memory_claim(
             MemoryClaim(budget_mb=0.0, run_alone=True),
             f"Memory Budget unavailable ({budget_error}); this Job ran alone.",
         )
-    alone = MemoryClaim(budget_mb=budget_mb, run_alone=True)
     if not requests:
-        return MemoryAdmissionPlan(alone)
+        return MemoryAdmissionPlan(MemoryClaim(budget_mb=budget_mb, run_alone=True))
     estimate = ResourceEstimator(records).estimate(requests)
+    wall_s = estimate.own_wall_s
+    alone = MemoryClaim(budget_mb=budget_mb, run_alone=True, wall_s=wall_s)
     reservation = estimate.reservation_mb
     if reservation is None:
         return MemoryAdmissionPlan(alone)
@@ -95,7 +109,31 @@ def plan_memory_claim(
         )
     if fit is Fit.RUN_ALONE or reservation <= 0:
         return MemoryAdmissionPlan(alone)
-    return MemoryAdmissionPlan(MemoryClaim(budget_mb=budget_mb, reservation_mb=reservation))
+    phases = _shrinkable_phases(requests, estimate) if _can_shrink(requests) else ()
+    return MemoryAdmissionPlan(
+        MemoryClaim(budget_mb=budget_mb, reservation_mb=reservation, wall_s=wall_s), phases=phases
+    )
+
+
+def _can_shrink(requests: Sequence[JobRequest]) -> bool:
+    """Whether every request is a sim (not coverage), synth or fpga run.
+
+    Lint, Custom Flows and coverage Jobs report no phase ends: their phase
+    counts are not exactly known from the request, so they hold their claim.
+    """
+    return all(
+        request.flow in _SHRINKING_FLOWS
+        and not (request.flow == "sim" and "coverage" in request.flags)
+        for request in requests
+    )
+
+
+def _shrinkable_phases(
+    requests: Sequence[JobRequest], estimate: JobEstimate
+) -> tuple[tuple[HistoryKey, float], ...]:
+    """Each planned phase run with its memory estimate (every key has one: the Job is sized)."""
+    by_key = {phase.key: phase.memory_mb.value or 0.0 for phase in estimate.phases}
+    return tuple((key, by_key[key]) for request in requests for key in phase_occurrences(request))
 
 
 def measure_memory_claim(

@@ -21,6 +21,7 @@ from booley.flows.sim.coverage_reference import (
     publish_coverage_campaign_reference,
 )
 from booley.flows.sim.execution.contract import PreSimScopeStoppedError, SimulationOptions
+from booley.flows.sim.record_layout import COVERAGE_RECORD_DIRECTORY, RECORD_DIRECTORY
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.domain import TargetHandle
@@ -390,7 +391,7 @@ class SimulationCampaign:
                 )
                 nested = (
                     _coverage_attempt_directory(store, work_item_id, result)
-                    / "coverage-campaign/coverage.json"
+                    / f"{COVERAGE_RECORD_DIRECTORY}/coverage.json"
                 )
                 failure = replace(failure, nested_campaign=nested)
             self._publication_checkpoint("before:summary_replace")
@@ -692,7 +693,7 @@ class SimulationCampaign:
                 store.root.parent,
                 target["selector"],
                 cast(tuple[Mapping[str, object], ...], result.document["observations"]),
-                attempt.directory / "coverage-campaign/coverage.json"
+                attempt.directory / f"{COVERAGE_RECORD_DIRECTORY}/coverage.json"
                 if coverage is True
                 else None,
             )
@@ -821,7 +822,7 @@ def _new_store(request: NewCampaignRunRequest) -> CampaignStore:
     selector = target["selector"]
     if target["role"] == "cycle_count_baseline":
         selector = f"{selector}@baseline-{target['revision'][:12]}"
-    directory = target_report_directory(request.invocation_directory, selector) / "campaign"
+    directory = target_report_directory(request.invocation_directory, selector) / RECORD_DIRECTORY
     return CampaignStore(directory, booley_dir=simulation_booley_dir(request.project_root))
 
 

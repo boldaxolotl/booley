@@ -39,7 +39,7 @@ class _Campaign:
 
     def __init__(self, tmp_path: Path, *, max_heavy: int) -> None:
         self.manifest = _two_item_manifest()
-        self.store = CampaignStore(tmp_path / "campaign")
+        self.store = CampaignStore(tmp_path / "record")
         self.store.publish_manifest(self.manifest)
         project = tmp_path / "project"
         (project / ".booley").mkdir(parents=True)

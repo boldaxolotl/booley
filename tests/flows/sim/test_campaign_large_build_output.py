@@ -94,7 +94,7 @@ def test_flow_sim_with_build_output_over_record_ceiling_passes(
     _make_verilator_noisy(flow_project)
     run = _run_flow_sim(flow_project, tmp_path / "reports")
 
-    (record_path,) = run.glob("targets/sim/campaign/**/evidence/build-execution.json")
+    (record_path,) = run.glob("targets/sim/record/**/evidence/build-execution.json")
     raw = record_path.read_bytes()
     assert len(raw) <= RECORD_MAX_BYTES // 2
     document = json.loads(raw)

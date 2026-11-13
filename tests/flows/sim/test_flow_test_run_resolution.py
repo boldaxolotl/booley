@@ -252,7 +252,7 @@ def test_every_published_manifest_is_registered_with_the_goal_run_before_it_runs
         return StartedCampaign(path, "id", "sha256:" + "0" * 64, ("sim",), True)
 
     monkeypatch.setattr(flow_module, "started_campaign", started)
-    manifest = tmp_path / "campaign" / "manifest.json"
+    manifest = tmp_path / "record" / "manifest.json"
 
     flow = _flow(tmp_path, monkeypatch)
     registry = Registry()

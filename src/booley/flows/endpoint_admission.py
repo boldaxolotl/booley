@@ -20,11 +20,13 @@ from booley.flows.endpoint_events import (
 )
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.memory_admission import (
+    MemoryAdmissionPlan,
     fixed_job_threads,
     job_threads_at_start,
     measure_memory_claim,
     memory_admission_enabled,
 )
+from booley.flows.reservation_phases import PhasePlan, ReservationShrinker, shrinking
 from booley.runtime import job_slots
 from booley.runtime.booley_dir import resolve_common_booley_dir
 from booley.runtime.cpu_budget import available_cpu_count
@@ -97,13 +99,14 @@ class AdmissionContext:
 class _Claim:
     """What one Job's admission claimed; all ``None`` when nothing was claimed.
 
-    ``threads`` is the Job's share of the cores, fixed when its Memory
-    Reservation is admitted; only a memory-admitted Job has one.
+    ``plan`` sized a memory-admitted Job's claim; ``threads`` is the Job's
+    share of the cores, fixed when its Memory Reservation is admitted. Only a
+    memory-admitted Job has either.
     """
 
     store: job_slots.SlotStore | None
     token: object | None
-    warning: str | None = None
+    plan: MemoryAdmissionPlan | None = None
     threads: int | None = None
 
 
@@ -119,7 +122,8 @@ class AdmissionGate:
     def _claim(self) -> _Claim:
         """Claim the Job's admission: a Memory Reservation under the switch, else a slot.
 
-        Under the switch heavy Jobs, lint and Custom Flows are memory-admitted.
+        Under the switch heavy Jobs, lint and Custom Flows are memory-admitted;
+        the claim carries the plan that sized it (``None`` for a slot).
         """
         endpoint = self._endpoint
         if memory_admission_enabled() and endpoint._memory_admitted():
@@ -147,20 +151,31 @@ class AdmissionGate:
             timeout = _slot_timeout_seconds()
             max_heavy = _heavy_lanes(store, token)
             cause = _admission_cancellation_cause(store, token)
-            context = AdmissionContext(
-                mode="managed" if store is not None else "unmanaged",
-                slot_store=store,
-                outer_token=token,
-                max_heavy=max_heavy,
-                role=role,
-                execution_id=execution_id,
-                timeout_seconds=timeout,
-                cancellation=lambda: cause() is not None,
-                cancellation_cause=cause,
-                memory_warning=claim.warning,
-            )
-            with fixed_job_threads(claim.threads):
-                yield context
+            with ExitStack() as scope:
+                # Phase ends lower the claim only while the Job holds it.
+                memory_plan = claim.plan
+                if (
+                    memory_plan is not None
+                    and memory_plan.phases
+                    and memory_plan.claim.reservation_mb is not None
+                    and store is not None
+                    and isinstance(token, job_slots.SlotToken)
+                ):
+                    phase_plan = PhasePlan(memory_plan.phases, memory_plan.claim.reservation_mb)
+                    scope.enter_context(shrinking(ReservationShrinker(phase_plan, store, token)))
+                scope.enter_context(fixed_job_threads(claim.threads))
+                yield AdmissionContext(
+                    mode="managed" if store is not None else "unmanaged",
+                    slot_store=store,
+                    outer_token=token,
+                    max_heavy=max_heavy,
+                    role=role,
+                    execution_id=execution_id,
+                    timeout_seconds=timeout,
+                    cancellation=lambda: cause() is not None,
+                    cancellation_cause=cause,
+                    memory_warning=None if memory_plan is None else memory_plan.warning,
+                )
         finally:
             if store is not None and token is not None:
                 store.release(token)
@@ -438,4 +453,4 @@ def _acquire_memory_reservation(
         # The caller never sees the token, so it cannot release it.
         store.release(token)
         raise
-    return _Claim(store, token, plan.warning, threads)
+    return _Claim(store, token, plan, threads)

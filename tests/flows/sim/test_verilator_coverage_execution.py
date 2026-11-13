@@ -1143,7 +1143,7 @@ def test_coverage_infrastructure_build_failure_publishes_terminal_campaign(
 
     assert outcome.complete is True
     assert outcome.aggregate_grade == "error"
-    store = CampaignStore(invocation / "targets" / "sim" / "campaign")
+    store = CampaignStore(invocation / "targets" / "sim" / "record")
     recovery = store.scan()
     assert recovery.complete
     assert not recovery.interrupted

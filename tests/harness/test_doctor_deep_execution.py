@@ -180,7 +180,7 @@ def test_project_alias_doctor_executes_real_simulation(
         assert reporter.result(0).clean
         assert "correctly graded a failure" in output
     reports = data / doctor.DOCTOR_TMP_DIR / "flow-reports"
-    assert len(list(reports.glob("sim/*/targets/sim/campaign/manifest.json"))) == 3
+    assert len(list(reports.glob("sim/*/targets/sim/record/manifest.json"))) == 3
     assert len(list(reports.glob("sim/*/progress.json"))) == 3
     _assert_doctor_runs_write_no_history(monkeypatch, launches)
 

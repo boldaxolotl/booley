@@ -91,7 +91,7 @@ def test_image_project_alias_good_bad_coverage_and_user_links() -> None:
         assert campaign["artifacts"]["simulation"]["path"]
         assert campaign["artifacts"]["coverage"]["path"]
     reports = data / "reports"
-    assert len(list(reports.glob("sim/*/targets/sim/campaign/manifest.json"))) == 2
+    assert len(list(reports.glob("sim/*/targets/sim/record/manifest.json"))) == 2
     assert len(list(reports.glob("sim/.invocation-*.lock"))) == 2
     assert list(reports.rglob("coverage-points.jsonl.gz"))
     assert list(reports.rglob("*.fst")) or list(reports.rglob("*.vcd"))

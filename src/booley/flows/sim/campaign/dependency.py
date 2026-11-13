@@ -16,6 +16,7 @@ from booley.core.boundary import (
 )
 from booley.flows.sim.campaign_files import read_json_object
 from booley.flows.sim.campaign_reports import is_report_link, write_campaign_json
+from booley.flows.sim.record_layout import RECORD_DIRECTORY
 from booley.runtime.booley_dir import crossed_booley_dir_entry
 
 from .codec import MANIFEST_MAX_BYTES
@@ -155,7 +156,7 @@ def _decode_receipt(
 
 def _regular_manifest(path: Path) -> Path:
     manifest = path.absolute()
-    if manifest.name != "manifest.json" or manifest.parent.name != "campaign":
+    if manifest.name != "manifest.json" or manifest.parent.name != RECORD_DIRECTORY:
         raise ValueError("Dependency origin must be an exact Simulation Campaign manifest")
     info = manifest.lstat()
     if is_report_link(manifest) or not stat.S_ISREG(info.st_mode):

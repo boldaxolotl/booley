@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from contextlib import AbstractContextManager, ExitStack
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Protocol, TypeVar
 
@@ -47,6 +49,9 @@ class EndpointOutcome:
     display_label: str | None = None
     summary: str = ""
     cycle_report_json: str = "{}"
+    # Whether the OOM killer took a process of one of this Job's own commands.
+    # Set by ``execute_endpoint``; an endpoint never sets it itself.
+    oom_killed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +177,19 @@ def _record_and_finish(
     )
 
 
+# Set once any command of the current Job was OOM-killed; shared by the Job's threads.
+_JOB_OOM_VERDICT: ContextVar[threading.Event | None] = ContextVar(
+    "booley_job_oom_verdict", default=None
+)
+
+
+def note_job_oom_kill() -> None:
+    """Record that a command of the current Job was OOM-killed; nothing outside a Job."""
+    verdict = _JOB_OOM_VERDICT.get()
+    if verdict is not None:
+        verdict.set()
+
+
 def execute_endpoint(
     endpoint: ExecutableEndpoint[Prepared_contra],
     request: Prepared_contra,
@@ -190,5 +208,11 @@ def execute_endpoint(
         return _record_and_finish(endpoint, request, exc.outcome, started=None)
     with admission:
         started = time.monotonic()
-        outcome = endpoint.invoke_endpoint(request, admission=borrowed, started=started)
+        verdict = threading.Event()
+        token = _JOB_OOM_VERDICT.set(verdict)
+        try:
+            outcome = endpoint.invoke_endpoint(request, admission=borrowed, started=started)
+        finally:
+            _JOB_OOM_VERDICT.reset(token)
+        outcome.oom_killed = verdict.is_set()
         return _record_and_finish(endpoint, request, outcome, started=started)

@@ -97,7 +97,7 @@ def test_validator_rejects_duplicate_expected_selection(tmp_path: Path) -> None:
 def _campaign_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
     """Write a manifest, summary and v2 projection in the on-disk Target layout."""
     target = tmp_path / "targets" / "sim_campaign"
-    manifest = target / "campaign" / "manifest.json"
+    manifest = target / "record" / "manifest.json"
     manifest.parent.mkdir(parents=True)
     manifest_document = _manifest(["tail", "quick"]) | {"campaign_id": "campaign-1"}
     manifest.write_text(json.dumps(manifest_document, sort_keys=True) + "\n")
@@ -110,7 +110,7 @@ def _campaign_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
     projection = target / "simulation.json"
     reference = {
         "path_base": "origin_target",
-        "path": "campaign/manifest.json",
+        "path": "record/manifest.json",
         "kind": "simulation_campaign_manifest",
         "owner": "campaign-1",
         "bytes": len(raw),
