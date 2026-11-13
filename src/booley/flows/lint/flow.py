@@ -567,8 +567,9 @@ def _lint_result_parts(
         "total_warnings": len(unique),
         **_lint_findings(targets, unique, target_results or []),
         "elapsed_s": round(elapsed, 2),
-        "metrics": _lint_metrics_detail(target_results or []),
     }
+    if target_results:
+        detail["metrics"] = _lint_metrics_detail(target_results)
     eda_tools = sorted({cr.eda_tool for cr in (target_results or []) if cr.eda_tool})
     if eda_tools:
         display.append(f"linter: {', '.join(eda_tools)}")
