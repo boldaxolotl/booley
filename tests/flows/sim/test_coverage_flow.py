@@ -1809,7 +1809,7 @@ def test_requeued_resume_attempt_keeps_the_origin_lock_it_already_holds(tmp_path
     validated = SimpleNamespace(
         path=origin / "targets/sim_0/record/manifest.json",
         booley_dir=None,
-        manifest=SimpleNamespace(document={"campaign_id": "campaign"}),
+        manifest=SimpleNamespace(document={"simulation_record_id": "campaign"}),
         sha256="0" * 64,
     )
     flow = SimulateFlow()
