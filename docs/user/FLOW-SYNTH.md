@@ -128,9 +128,10 @@ sets none. If very high-fanout nets dominate timing, set your own with
 By default a Target runs physical synthesis: mapping, then placement, timing
 repair and timing analysis. Set `synth_mode: logical` on the Target to stop
 after mapping. It runs much faster and needs no SDC, and reports mapped area
-and an estimated Fmax from the longest chain of mapped logic. That Fmax ignores
-placement and wires and is usually optimistic; every run prints that warning,
-and the Crit path column reads `logical estimate`.
+and an estimated Fmax from the longest chain of mapped logic. Both are usually
+optimistic. The Fmax ignores placement and wires; every run prints that
+warning, and the Crit path column reads `logical estimate`. The area leaves out
+the buffers and larger cells that timing repair adds in physical mode.
 Use logical mode for quick area trends on large designs, and physical mode
 whenever timing matters. The mode belongs to the Target. There is
 no per-call `--synth-mode` option, so keep one Target per mode if you need
