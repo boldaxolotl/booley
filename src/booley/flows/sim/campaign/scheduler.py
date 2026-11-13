@@ -323,7 +323,7 @@ class BoundedCampaignScheduler:
         item's claim and passes the turn on once it is admitted.
         """
         with self._requeued_gate:
-            requeued = str(item["work_item_id"]) in self._requeued
+            requeued = item.get("work_item_id") in self._requeued
         with self._allocation_gate:
             attempt = self._allocate(item)
         with self._collision_permit(attempt.collision_key), self._lane_scope(attempt):

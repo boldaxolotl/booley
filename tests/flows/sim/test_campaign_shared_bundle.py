@@ -803,7 +803,7 @@ def _run_failed_shared_build_campaign(
     manifest = _named_manifest(("tail", "quick"))
     plan = create_simulation_campaign_plan(manifest)  # type: ignore[arg-type]
     project = tmp_path / "project"
-    project.mkdir()
+    project.mkdir(parents=True)
     handle = _handle(project)
     monkeypatch.setattr(
         "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
@@ -816,7 +816,10 @@ def _run_failed_shared_build_campaign(
     counters = {"compile": 0, "launch": 0}
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
-    executor = _failed_shared_executor(tmp_path / "engine-build", counters, note_job_oom_kill)
+    # An OOM-killed compiler is an infrastructure failure, which recovery never settles.
+    executor = _failed_shared_executor(
+        tmp_path / "engine-build", counters, note_job_oom_kill, infrastructure=True
+    )
 
     with job_attempt(stop_on_oom=True, work_item=work_item_attempt):
         SimulationCampaign(executor).run(
