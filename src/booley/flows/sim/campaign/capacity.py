@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.memory_admission import fixed_job_threads, job_threads_at_start
 from booley.runtime.cpu_budget import available_cpu_count
 from booley.runtime.execution_records import ExecutionId
 from booley.runtime.job_slots import (
@@ -152,7 +153,8 @@ class HeavyCapacity:
         """Give one lane its identity and slot, retiring both on exit.
 
         ``publish`` gets the lane ID before the slot is requested. A *memory*
-        claim takes a Memory Reservation instead of a heavy slot.
+        claim takes a Memory Reservation instead of a heavy slot, and fixes the
+        item's thread count at its share of the cores for everything it runs.
         """
         store = self._admission.slot_store
         if not self.managed or store is None:
@@ -175,9 +177,23 @@ class HeavyCapacity:
             self._lanes.mark_terminal(prepared, "record_error")
             raise
         with self._held_lane(store, work_item_id, prepared, token) as permit:
-            yield permit
+            if memory is None:
+                yield permit
+            else:
+                with fixed_job_threads(self._item_thread_count(store)):
+                    yield permit
         if not store.token_absent(token):
             raise HeavyCapacityError(f"child token remained after terminal proof: {child_id}")
+
+    def _item_thread_count(self, store) -> int:
+        """The item's share of the cores, counted now that its own claim is admitted.
+
+        The item's Flow holds a zero reservation by now, so its token is left out.
+        """
+        flow_token = self._admission.outer_token
+        if not isinstance(flow_token, SlotToken):
+            raise HeavyCapacityError("a memory-admitted campaign holds a Flow token")
+        return job_threads_at_start(store, available_cpu_count(), own_flow=flow_token)
 
     @contextmanager
     def _held_lane(
