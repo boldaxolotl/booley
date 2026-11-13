@@ -272,9 +272,11 @@ def test_recovered_stale_intent_cannot_erase_an_intervening_failure(
     Recorders account for earlier transactions before they record, so this
     interleaving needs that step switched off; status must still fold the intervening failure.
     """
-    from booley.goals import campaign_accounting
+    from booley.goals import simulation_record_accounting
 
-    monkeypatch.setattr(campaign_accounting, "account_for_campaigns", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        simulation_record_accounting, "account_for_campaigns", lambda *_a, **_k: None
+    )
     passing = [run_row(A), run_row(B)]
     binding = bind(two, "run-a")
     stopped = GoalEvidenceRecorder(

@@ -594,7 +594,7 @@ def test_bounded_scan_examines_current_work_before_older_interactive_sessions(tm
 
 def test_job_completed_between_refreshes_keeps_recorded_figures(tmp_path, monkeypatch):
     from booley.harness.dashboard.model import DashboardReader
-    from tests.flows.sim.test_endpoint_campaign_lifecycle import completed_campaign_report
+    from tests.flows.sim.test_endpoint_record_lifecycle import completed_campaign_report
 
     root = tmp_path / ".interactive_logs/test/.runtime/jobs"
     reader = DashboardReader(tmp_path, tmp_path)

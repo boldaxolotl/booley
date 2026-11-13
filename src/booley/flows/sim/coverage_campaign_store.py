@@ -22,7 +22,6 @@ from booley.runtime.booley_dir import crossed_booley_dir_entry
 from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 
-from .campaign_reports import report_link_ancestor
 from .coverage_campaign import (
     EVALUATION_MISMATCH,
     CoverageCampaign,
@@ -43,6 +42,7 @@ from .coverage_json import (
 )
 from .coverage_policy import score_thresholds
 from .coverage_provisional import ProvisionalCoverageError, criterion_from_evaluation
+from .record_reports import report_link_ancestor
 
 #: The stored Coverage Record: every run names its Test Run and declared-inputs
 #: fingerprint (ADR 0072), and one selected Test may have several runs. Booley reads
@@ -372,8 +372,8 @@ def _load_manifest(
     path: Path, raw: bytes, expected_target: DurableTargetIdentity | None
 ) -> LoadedCoverageCampaign:
     """Deep-load one Coverage Record; the codec validates manifest and points once."""
-    # Imported here: ``booley.flows.sim.campaign`` imports the store through its coordinator.
-    from booley.flows.sim.campaign.codec import (
+    # Imported here: ``booley.flows.sim.record`` imports the store through its coordinator.
+    from booley.flows.sim.record.codec import (
         UnsupportedSimulationCampaignFormatError,
         raise_if_retired_schema,
     )

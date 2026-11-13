@@ -27,7 +27,6 @@ from booley.core.boundary import require_dict, require_list, require_str_value
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
 from booley.evidence.acceptance import PairedProjectBaseline
 from booley.flows.baseline_worktree import baseline_worktree, baseline_worktree_path
-from booley.flows.campaign_results import StartedCampaign
 from booley.flows.execution_persistence import StandaloneFlowExecution
 from booley.flows.frozen_test_runs import current_declaration
 from booley.flows.job_estimates import JobRequest, sim_job_request
@@ -37,6 +36,7 @@ from booley.flows.memory_admission import (
     job_threads_at_start,
     measure_memory_claim,
 )
+from booley.flows.simulation_record_results import StartedCampaign
 from booley.flows.target_test_plan import TargetTestPlan
 from booley.flows.test_runs import TestRun, test_run_document
 from booley.fusesoc.fusesoc_registry import prepare_core_library_plan

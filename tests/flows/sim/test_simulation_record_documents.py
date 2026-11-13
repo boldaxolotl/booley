@@ -5,9 +5,9 @@ Part 4 of ADR 0090. The 0.4.0 documents are read from committed bytes that Boole
 summary and the Simulation projections, ``resumed/sim/2`` the report-only invocation a
 ``--resume-from`` leaves behind, and ``cocotb/cocotb-transport.json`` the cocotb transport.
 The last two were captured from the ``v0.4.0`` tag with its own tests: the tag's
-``tests/flows/sim/test_endpoint_campaign_lifecycle.py::test_ordinary_cli_manifest_and_card_paths``
+``tests/flows/sim/test_endpoint_record_lifecycle.py::test_ordinary_cli_manifest_and_card_paths``
 ran a ``cocotb_batch`` Campaign and its ``*/evidence/*cocotb_results.json`` was copied byte
-for byte; the tag's ``tests/flows/sim/test_campaign_resume_diagnostics.py::_interrupted_campaign``
+for byte; the tag's ``tests/flows/sim/test_simulation_record_resume_diagnostics.py::_interrupted_campaign``
 interrupted a run and ``SimulateFlow().execute(SimRequest(resume_from=<manifest>))`` wrote
 ``sim/2``, whose ``report.json`` and ``progress.json`` are committed with the capture's
 temporary root replaced by ``/booley-0.4.0-capture``.
@@ -22,22 +22,25 @@ from typing import Any
 
 import pytest
 
-from booley.flows.sim.campaign import inspect_retained_campaign
-from booley.flows.sim.campaign.codec import (
+from booley.flows.sim.coverage_analysis_input import CoverageAnalysisError, read_coverage_campaign
+from booley.flows.sim.execution.contract import SimulationTestOutcome
+from booley.flows.sim.record import inspect_retained_campaign
+from booley.flows.sim.record.codec import (
     canonical_json_bytes,
     raise_if_retired,
 )
-from booley.flows.sim.campaign.projection import decode_simulation_projection
-from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
-from booley.flows.sim.coverage_analysis_input import CoverageAnalysisError, read_coverage_campaign
-from booley.flows.sim.execution.contract import SimulationTestOutcome
-from tests.flows.sim.campaign_test_support import _retained_invocation, coverage_invocation
-from tests.flows.sim.test_campaign_cocotb_coverage_items import _run_cocotb
-from tests.flows.sim.test_campaign_unsupported_formats import (
+from booley.flows.sim.record.projection import decode_simulation_projection
+from booley.flows.sim.record_retention import CampaignRetentionError, prune_invocation
+from tests.flows.sim.simulation_record_test_support import (
+    _retained_invocation,
+    coverage_invocation,
+)
+from tests.flows.sim.test_simulation_record_cocotb_coverage_items import _run_cocotb
+from tests.flows.sim.test_simulation_record_unsupported_formats import (
     _assert_refused,
     _assert_unsupported_type,
 )
-from tests.flows.sim.test_campaign_unsupported_formats import (
+from tests.flows.sim.test_simulation_record_unsupported_formats import (
     reports as _reports_fixture,
 )
 

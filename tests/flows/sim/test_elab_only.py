@@ -1029,7 +1029,7 @@ def test_elab_only_dry_run_writes_flow_plan(
 ) -> None:
     """The Elaboration Check keeps printing its elaboration FlowPlan (ordinary runs have none)."""
     from booley.flows.sim.request import SimRequest
-    from tests.flows.sim.test_endpoint_campaign_lifecycle import _ordinary_public_hook_fixture
+    from tests.flows.sim.test_endpoint_record_lifecycle import _ordinary_public_hook_fixture
 
     project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
 
