@@ -40,6 +40,7 @@ from booley.runtime.job_slots import (
     SlotStore,
 )
 from booley.runtime.pid import DEAD, REUSED, RUNNING, ProcessIdentity, ProcessObservation
+from tests.sharing_error_support import hold_unlinks
 
 
 class FakeWorld:
@@ -877,15 +878,8 @@ class TestGhostReaping:
         dead_tok = store.submit(CLASS_LIGHT, pid=100)
         assert store.refresh(dead_tok).state == HOLDING
         del world.alive[100]
-        original_unlink = Path.unlink
-        denied = True
-
-        def sharing_violating_unlink(path, *args, **kwargs):
-            if denied and path == dead_tok.path:
-                raise windows_sharing_error()
-            return original_unlink(path, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "unlink", sharing_violating_unlink)
+        # Deny every attempt of the bounded entry removal, so the retries run out.
+        attempts = hold_unlinks(monkeypatch, {dead_tok.path: job_slots._ENTRY_IO_ATTEMPTS})
         with caplog.at_level(logging.WARNING, logger="booley.runtime.job_slots"):
             assert store.reap(CLASS_LIGHT) == []
 
@@ -893,7 +887,7 @@ class TestGhostReaping:
         assert [r.getMessage() for r in caplog.records] == [
             f"Could not remove slot entry after retries: {dead_tok.path.name}"
         ]
-        denied = False
+        assert attempts[dead_tok.path] == job_slots._ENTRY_IO_ATTEMPTS
         assert store.reap(CLASS_LIGHT) == [dead_tok.path.name]
         assert not dead_tok.path.exists()
 
