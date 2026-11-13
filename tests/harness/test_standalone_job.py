@@ -427,3 +427,31 @@ def test_ctrl_c_prints_one_line_and_dies_by_sigint(tmp_path):
         assert lines == ["interrupted; run cancelled"], stderr
         (rec,) = records(project)
         assert (rec.status, rec.exit_code) == ("cancelled", 130)
+
+
+def test_cancelled_run_reaches_main_and_silences_only_the_interrupt_traceback(
+    monkeypatch, project, capsys
+):
+    """``main()`` re-raises the marker and leaves a hook that drops it but not other errors."""
+    info = McpToolInfo(name="stub", path="stub.py", description="stub", kind="flow")
+    monkeypatch.setattr(sys, "excepthook", sys.__excepthook__)
+    monkeypatch.setattr(cli, "_parse_cli", lambda: command(["flow", "stub"]))
+    monkeypatch.setattr(cli, "find_project_root", lambda: project)
+    monkeypatch.setattr(cli, "_host_install_authority_error", lambda _command: None)
+    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.setattr(cli.runtime_context, "ensure_proxy_env", lambda: False)
+    monkeypatch.setattr(cli, "_discover_project_mcp_tools", lambda _root: [info])
+    monkeypatch.setattr("booley.mcp.registry.discover_mcp_tools", lambda **_kw: [info])
+    monkeypatch.setattr(cli, "_load_mcp_tool_class", lambda _info: StubEndpoint)
+    StubEndpoint.outcome = KeyboardInterrupt()
+
+    with pytest.raises(cli._CancelledRun):
+        cli.main()
+
+    capsys.readouterr()
+    hook = sys.excepthook
+    hook(KeyboardInterrupt, KeyboardInterrupt(), None)
+    hook(cli._CancelledRun, cli._CancelledRun(), None)
+    assert capsys.readouterr().err == ""
+    hook(RuntimeError, RuntimeError("boom"), None)
+    assert "RuntimeError: boom" in capsys.readouterr().err
