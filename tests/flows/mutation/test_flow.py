@@ -442,6 +442,25 @@ def test_auto_dry_run_explains_source_size_count(tmp_path, monkeypatch, sizes, t
     assert f") = {count}" in result.display_lines[-2]
 
 
+def test_auto_count_is_case_insensitive_in_dry_run(tmp_path, monkeypatch):
+    """``--count AUTO`` prints the same auto explanation as ``--count auto``."""
+    for name in ("mod_a.sv", "mod_b.sv"):
+        source = tmp_path / "rtl" / name
+        source.parent.mkdir(exist_ok=True)
+        source.write_bytes(b"// source\n" * 4)
+    extra_args = ["--dry-run", "--timeout-ms", "1800000"]
+    baseline_endpoint = _make_endpoint(tmp_path, monkeypatch, count="auto", extra_args=extra_args)
+    baseline, _ = _run_count_preview(baseline_endpoint, monkeypatch)
+    assert "count (auto):" in baseline.report_text
+
+    for spelling in ("AUTO", "Auto", " auto "):
+        endpoint = _make_endpoint(tmp_path, monkeypatch, count=spelling, extra_args=extra_args)
+        assert endpoint.args.count == "auto"
+        result, _ = _run_count_preview(endpoint, monkeypatch)
+        assert result.exit_code == EXIT_SUCCESS, spelling
+        assert result.report_text == baseline.report_text, spelling
+
+
 def test_fixed_dry_run_identifies_given_count(tmp_path, monkeypatch):
     for name in ("mod_a.sv", "mod_b.sv"):
         source = tmp_path / "rtl" / name
