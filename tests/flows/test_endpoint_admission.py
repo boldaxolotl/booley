@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
@@ -1563,11 +1564,16 @@ def test_requeued_attempt_reruns_the_same_prepared_request(
 
 
 def _requeue_failure_result(
-    failure: Exception, memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
+    failure: Exception,
+    memory_runtime: Path,
+    runtime: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    first_attempt: Callable[[_Harness], Attempt] = lambda _harness: _killed,
 ) -> ExecutionResult:
     """Run a Job whose requeued claim fails with *failure* (its first claim is real)."""
     harness = _requeue_harness("synth", memory_runtime, runtime, monkeypatch)
-    _per_attempt(harness, memory_runtime, _killed)
+    _per_attempt(harness, memory_runtime, first_attempt(harness))
     real_acquire = job_slots.SlotStore.acquire
 
     def acquire(self: job_slots.SlotStore, job_class: str, **kwargs: Any) -> job_slots.SlotToken:
@@ -1673,6 +1679,126 @@ def test_unreadable_goal_identity_counts_as_bound(memory_runtime: Path, runtime:
         assert flow.may_requeue_after_oom(prepared, context)
         flow._acceptance_recorder = UnreadableIdentity()  # type: ignore[assignment]
         assert not flow.may_requeue_after_oom(prepared, context)
+
+
+# --- progress of a requeued Job (#3763) ----------------------------------------------
+
+PROGRESS_RUN_ID = "run-3763"
+
+
+def _progress_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give the Job the run id its progress documents are stamped with."""
+    monkeypatch.setenv("BOOLEY_RUN_ID", PROGRESS_RUN_ID)
+
+
+def _checkpoint(harness: _Harness, outcome: Callable[[], EndpointOutcome]) -> Attempt:
+    """An attempt that checkpoints a ``running`` progress document, then ends as *outcome*."""
+    from booley.flows.progress_lifecycle import progress_document, write_progress_json
+
+    def attempt() -> EndpointOutcome:
+        directory = harness.flow.reserve_invocation_dir()
+        assert directory is not None
+        document = progress_document(
+            flow="synth",
+            run_id=PROGRESS_RUN_ID,
+            phase="running",
+            targets=("demo",),
+            completed_targets=(),
+            detail={},
+        )
+        write_progress_json(directory / "progress.json", document)
+        return outcome()
+
+    return attempt
+
+
+def _progress_of_job(runtime: Path) -> dict[str, Any] | None:
+    """What a caller polling the Job reads as its progress."""
+    from booley.mcp.job_results import _progress_for_run_id
+
+    return _progress_for_run_id("synth", PROGRESS_RUN_ID, report_dirs=(runtime / "reports",))
+
+
+def test_caller_sees_no_progress_from_the_killed_attempt(
+    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _progress_run(monkeypatch)
+
+    # The final attempt runs: nothing of the killed one is visible while it runs, or after.
+    harness = _requeue_harness("synth", memory_runtime, runtime, monkeypatch)
+    seen_by_final_attempt: list[dict[str, Any] | None] = []
+
+    def final_attempt() -> EndpointOutcome:
+        seen_by_final_attempt.append(_progress_of_job(runtime))
+        return EndpointOutcome()
+
+    _per_attempt(harness, memory_runtime, _checkpoint(harness, _killed), final_attempt)
+    harness.execute()
+    assert seen_by_final_attempt == [None]
+    assert _progress_of_job(runtime) is None
+
+    # Refused while queued again: the Job ends with no report, and still no progress.
+    for failure in (
+        job_slots.ClaimLostError("withdrawn"),
+        job_slots.QueueFullError("memory queue is full (1 waiting)"),
+    ):
+        _requeue_failure_result(
+            failure,
+            memory_runtime,
+            runtime,
+            monkeypatch,
+            first_attempt=lambda harness: _checkpoint(harness, _killed),
+        )
+        assert _progress_of_job(runtime) is None
+
+
+def test_progress_retirement_failure_does_not_stop_the_requeue(
+    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.flows import progress_lifecycle
+
+    _progress_run(monkeypatch)
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise OSError("progress is held")
+
+    monkeypatch.setattr(progress_lifecycle, "_replace_if_unchanged", refuse)
+    harness = _requeue_harness("synth", memory_runtime, runtime, monkeypatch)
+    _per_attempt(harness, memory_runtime, _checkpoint(harness, _killed), EndpointOutcome)
+
+    result = harness.execute()
+
+    assert len(harness.invocations) == 2  # the requeue went ahead
+    assert result.exit_code == EXIT_ERROR
+    error = result.outcome.detail["completion_error"]
+    assert error["operation"] == "retire the killed attempt's progress"
+    assert "progress is held" in error["message"]
+
+
+def test_job_that_is_not_requeued_keeps_its_progress(
+    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.flows.progress_lifecycle import read_progress_for_run
+
+    _progress_run(monkeypatch)
+    cases: dict[str, Callable[[], EndpointOutcome]] = {
+        # Armed, but it fails without an OOM kill.
+        "failed": lambda: EndpointOutcome(exit_code=1),
+        # OOM-killed, but the Job still succeeded.
+        "killed but passed": lambda: _killed(exit_code=0),
+    }
+    for name, outcome in cases.items():
+        shutil.rmtree(runtime / "reports", ignore_errors=True)
+        harness = _requeue_harness("synth", memory_runtime, runtime, monkeypatch)
+        _per_attempt(harness, memory_runtime, _checkpoint(harness, outcome))
+
+        harness.execute()
+
+        assert len(harness.invocations) == 1, name
+        found = read_progress_for_run((runtime / "reports",), "synth", PROGRESS_RUN_ID)
+        assert found is not None, name
+        assert found[1]["phase"] == "running", name
+        assert found[1]["run_id"] == PROGRESS_RUN_ID, name
 
 
 def _attempts_of(harness: _Harness, memory_runtime: Path, attempt: Attempt) -> int:

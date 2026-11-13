@@ -18,6 +18,7 @@ from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     EndpointOutcome,
     ExecutionResult,
+    normalize_completion_error,
 )
 from booley.runtime.exception_diagnostics import (
     exception_report_text,
@@ -105,6 +106,7 @@ def prepare_execution(
     endpoint.reset_report_metadata()
     endpoint._report_criteria = ReportCriteria()
     endpoint.reset_evidence_discard()
+    endpoint._requeue_cleanup_errors.clear()
     endpoint._stdout_witness = None
     if (early_outcome := endpoint._apply_pre_state_gate()) is not None:
         if endpoint.endpoint_kind in {"flow", "specialist"}:
@@ -261,6 +263,9 @@ def finish_execution(
     acceptance_recorded: bool,
 ) -> ExecutionResult:
     """Publish completion, persisting only after acceptance succeeds."""
+    for cleanup_error in endpoint._requeue_cleanup_errors:
+        normalize_completion_error(outcome, cleanup_error, "retire the killed attempt's progress")
+    endpoint._requeue_cleanup_errors.clear()
     report_discarded_evidence(endpoint, outcome)
     project(endpoint, outcome)
     exit_code = endpoint._finish_main(

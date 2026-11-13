@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from booley.core.progress_shape import TERMINAL_PHASES, validate_progress_shape
+from booley.runtime.endpoint_execution import OOM_REQUEUE_REASON
 from booley.runtime.file_lock import release_file_lock, wait_for_file_lock
 from booley.runtime.filesystem_utils import (
     is_transient_read_error,
@@ -226,6 +227,39 @@ def supersede_progress(
     except (OSError, ValueError):
         return False
     return True
+
+
+def retire_progress_of_requeued_attempt(
+    path: Path, *, endpoint: str, run_id: str, booley_dir: Path | None = None
+) -> None:
+    """Retire the progress document an OOM-killed attempt left, so no caller reads it.
+
+    The Job's final attempt reports into a new numbered directory; this one keeps
+    its content but becomes ``superseded`` with an empty ``run_id``, so
+    :func:`read_progress_for_run` never matches it for the Job. A missing
+    document, one of another Flow or run, or an empty *run_id* is left alone.
+    Raises ``OSError`` or ``ValueError`` when the document cannot be rewritten.
+
+    *booley_dir* names the Booley Directory entry, the one path component that may
+    be a symlink; links elsewhere stay refused.
+    """
+    if not run_id:
+        return
+    document = _read_trusted_progress(path, (path.parents[2],), booley_dir=booley_dir)
+    if document is None or document.get("flow") != endpoint or document.get("run_id") != run_id:
+        return
+    updated = dict(document)
+    updated.update(
+        {
+            "complete": True,
+            "phase": "superseded",
+            "run_id": "",
+            "terminal_timestamp": utc_now_rfc3339(),
+            "superseded_by": {"reason": OOM_REQUEUE_REASON, "run_id": run_id},
+        }
+    )
+    validate_progress_shape(updated)
+    _replace_if_unchanged(path, document, updated, booley_dir=booley_dir)
 
 
 def validate_coverage_origin_progress(
