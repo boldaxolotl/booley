@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from booley.runtime import platform_paths
 from booley.runtime.atomic_files import fsync_directory
 from booley.runtime.git_environment import inherited_git_environment
 from booley.runtime.history_commit import FileCommitError
@@ -75,13 +75,12 @@ class PublicationOwnership:
         parent = destination.parent.parent / (".publication-" + self.directory.name)
         _require_anchor(parent, root)
         relative = (parent / "staging").relative_to(root).as_posix()
-        result = subprocess.run(
+        result = platform_paths.run_captured_bounded(
             ["git", "check-ignore", "--no-index", "-q", "--", relative],
             cwd=root,
             env={**inherited_git_environment(), "GIT_OPTIONAL_LOCKS": "0"},
-            capture_output=True,
             timeout=60,
-            check=False,
+            text=False,
         )
         if result.returncode != 0:
             raise FileCommitError(
