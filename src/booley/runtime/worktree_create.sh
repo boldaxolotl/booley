@@ -14,8 +14,9 @@
 #   new_branch   (optional) new local branch name to create for the worktree
 #   start_point  (optional) full commit id the new branch starts at; given with
 #                new_branch, which the caller has already validated as a branch
-#                name not combined with branch_ref. An existing new_branch is
-#                refused before anything is created.
+#                name not combined with branch_ref. A branch occupying new_branch (the
+#                name itself, a leading path of it, or one below it) is
+#                refused before anything is created, naming that branch.
 #   on_existing  (optional) policy when the destination already exists:
 #                  "refuse"  (default) exit 1 without touching anything when
 #                            the destination is an existing path, a registered
@@ -349,12 +350,37 @@ if [ "$ON_EXISTING" = "refuse" ]; then
     fi
 fi
 
-# The new branch must not exist. Under the parent-git lock and the per-name lock
-# no other Booley creation can make it, so a ref of this name after the add is ours.
-if [ -n "$NEW_BRANCH" ] && git -C "$CWD" show-ref --verify --quiet "refs/heads/$NEW_BRANCH"; then
-    _parent_lock_release
-    echo "ERROR: branch '$NEW_BRANCH' already exists; choose another name" >&2
-    exit 1
+# No branch may occupy the new branch's name. Under the parent-git lock and the
+# per-name lock no other Booley creation can make it, so a ref of this name after
+# the add is ours. Git cannot create `wt/x` while a branch `wt` or `wt/x/y` exists,
+# so a leading path of the name or a branch below it is in the way as well.
+if [ -n "$NEW_BRANCH" ]; then
+    if git -C "$CWD" show-ref --verify --quiet "refs/heads/$NEW_BRANCH"; then
+        _parent_lock_release
+        echo "ERROR: branch '$NEW_BRANCH' already exists; choose another name" >&2
+        exit 1
+    fi
+    _in_the_way=""
+    _leading=""
+    # Every leading path: for `a/b/c`, `a` then `a/b`.
+    _remaining="$NEW_BRANCH"
+    while [[ "$_remaining" == */* ]]; do
+        _leading="${_leading:+$_leading/}${_remaining%%/*}"
+        _remaining="${_remaining#*/}"
+        if git -C "$CWD" show-ref --verify --quiet "refs/heads/$_leading"; then
+            _in_the_way="$_leading"
+            break
+        fi
+    done
+    if [ -z "$_in_the_way" ]; then
+        _below=$(git -C "$CWD" for-each-ref --count=1 --format='%(refname)' "refs/heads/$NEW_BRANCH/")
+        _in_the_way="${_below#refs/heads/}"
+    fi
+    if [ -n "$_in_the_way" ]; then
+        _parent_lock_release
+        echo "ERROR: branch '$_in_the_way' is in the way of new branch '$NEW_BRANCH'; rename or delete it, or choose another name" >&2
+        exit 1
+    fi
 fi
 
 git -C "$CWD" worktree prune 2>/dev/null || true

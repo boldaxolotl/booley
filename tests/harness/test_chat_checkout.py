@@ -201,6 +201,20 @@ def test_worktree_launch_names_the_worktree_after_the_session_handle(project, mo
     assert started.stderr.rstrip().endswith("Booley is starting the claude interactive agent.")
 
 
+def test_stealth_worktree_launch_uses_a_wt_branch(project, monkeypatch, capsys):
+    # Bug caught (#3608): Stealth Mode still created booley/s1, a banned term in a branch name.
+    _write_toml(project, "[stealth]\nenabled = true\n")
+    with _lock_held_elsewhere(project):
+        started = _start(project, monkeypatch, capsys)
+
+    worktree = project / ".booley" / "worktrees" / "s1"
+    assert _git(project, "branch", "--list", "wt/*", "--format=%(refname:short)").split() == [
+        "wt/s1"
+    ]
+    assert _branches(project) == []
+    assert f"works in worktree {worktree} on branch wt/s1 " in started.stderr
+
+
 def test_worktree_launch_waits_for_a_busy_session_writer(project, monkeypatch, capsys):
     # Bug caught: the handle reservation gave up on the first lock contention, so the
     # launch fell back to an unnamed tab (or no worktree) while an MCP upsert held the lock.
@@ -503,6 +517,25 @@ def test_an_interrupt_that_leaves_the_worktree_behind_says_so(project, monkeypat
     assert "s1 may be left behind" in started.stderr
     assert "was rolled back" not in started.stderr
     assert "branch -D booley/s1" in started.stderr
+
+
+def test_a_stealth_interrupt_names_the_wt_branch(project, monkeypatch, capsys):
+    # Bug caught (#3608): the notice looked for booley/s1 only, so a surviving wt/s1 was
+    # reported as "rolled back".
+    _write_toml(project, "[stealth]\nenabled = true\n")
+
+    def interrupted(root, name):
+        _git(root, "branch", f"wt/{name}")
+        signal.raise_signal(signal.SIGHUP)
+
+    monkeypatch.setattr(worktree_cmd, "create_worktree", interrupted)
+
+    started = _start(project, monkeypatch, capsys, flag="always")
+
+    assert started.code == 128 + int(signal.SIGHUP)
+    assert "s1 may be left behind" in started.stderr
+    assert "was rolled back" not in started.stderr
+    assert "branch -D wt/s1" in started.stderr
 
 
 def test_ctrl_c_while_reserving_the_handle_prints_one_line(project, monkeypatch, capsys):
