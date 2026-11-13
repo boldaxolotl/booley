@@ -546,10 +546,8 @@ def test_public_adapter_registers_before_reconciliation(
 def test_public_adapter_recovers_before_registering_installation(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from booley.runtime import session_refresh
-
     monkeypatch.setattr(
-        session_refresh,
+        issuance_invalidation,
         "shared_recovery_blocks_command",
         lambda *, read_only: not read_only,
     )
@@ -1549,7 +1547,7 @@ def test_host_policy_migration_warning_reaches_init_and_doctor(
 
 @pytest.mark.parametrize("update", [False, True])
 def test_cli_bootstrap_registers_persistent_wheel_venv(tmp_path, monkeypatch, update):
-    from booley.runtime import host_install, session_refresh
+    from booley.runtime import host_install
     from booley.runtime.host_install import HostInstallationIdentity
 
     source = Path(
@@ -1569,7 +1567,9 @@ def test_cli_bootstrap_registers_persistent_wheel_venv(tmp_path, monkeypatch, up
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(host_install, "current_host_installation", lambda _source: identity)
     monkeypatch.setattr(bootstrap_cli, "skills_dir", lambda: source)
-    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kwargs: False)
+    monkeypatch.setattr(
+        issuance_invalidation, "shared_recovery_blocks_command", lambda **_kwargs: False
+    )
     monkeypatch.setattr(
         bootstrap_cli,
         "reconcile_bootstrap",
@@ -1629,7 +1629,7 @@ def test_missing_host_agent_cli_does_not_block_bootstrap(monkeypatch, intent):
 def test_cli_invalid_registration_never_prints_update_success(
     tmp_path, monkeypatch, capsys, failure
 ):
-    from booley.runtime import host_install, session_refresh
+    from booley.runtime import host_install
 
     source = Path(host_install.__file__).resolve().parent.parent / "data/skills"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
@@ -1655,7 +1655,9 @@ def test_cli_invalid_registration_never_prints_update_success(
         ),
     )
     monkeypatch.setattr(bootstrap_cli, "skills_dir", lambda: source)
-    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kwargs: False)
+    monkeypatch.setattr(
+        issuance_invalidation, "shared_recovery_blocks_command", lambda **_kwargs: False
+    )
     calls = []
     monkeypatch.setattr(
         bootstrap_cli,
@@ -1689,7 +1691,6 @@ def test_cli_invalid_registration_never_prints_update_success(
 # skill planning, cache validation, and sidecar orchestration.
 def _inspection_environment(monkeypatch, tmp_path, *, recorded=True, skills_current=False):
     from booley.config import editor
-    from booley.runtime import session_refresh
 
     home = tmp_path / "home"
     home.mkdir()
@@ -1697,7 +1698,9 @@ def _inspection_environment(monkeypatch, tmp_path, *, recorded=True, skills_curr
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     source, path = _inspection_installation(monkeypatch, tmp_path, recorded)
-    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kwargs: False)
+    monkeypatch.setattr(
+        issuance_invalidation, "shared_recovery_blocks_command", lambda **_kwargs: False
+    )
     monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/fake/code")
     monkeypatch.setattr(bootstrap.shutil, "which", lambda name: "/fake/" + name)
     if skills_current:
@@ -1968,15 +1971,13 @@ def test_check_only_cache_permission_error_is_not_pending(monkeypatch, tmp_path,
 def test_check_only_pending_recovery_lists_resources_without_recovering(
     monkeypatch, tmp_path, capsys
 ):
-    from booley.runtime import session_refresh
-
     _inspection_environment(monkeypatch, tmp_path)
 
     def pending(*, read_only):
         assert read_only, "inspection must not attempt recovery"
         return True
 
-    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", pending)
+    monkeypatch.setattr(issuance_invalidation, "shared_recovery_blocks_command", pending)
     status, output = _run_inspection(capsys)
     assert status == 1, "pending recovery must be pending"
     _assert_complete(output)
@@ -1984,7 +1985,7 @@ def test_check_only_pending_recovery_lists_resources_without_recovering(
 
 
 def test_check_only_recovery_error_preserves_other_findings(monkeypatch, tmp_path, capsys):
-    from booley.runtime import session_refresh, session_runtime
+    from booley.runtime import session_runtime
 
     _inspection_environment(monkeypatch, tmp_path)
 
@@ -1992,7 +1993,7 @@ def test_check_only_recovery_error_preserves_other_findings(monkeypatch, tmp_pat
         assert read_only
         raise session_runtime.SessionError("unsafe journal; restore permissions")
 
-    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", failed)
+    monkeypatch.setattr(issuance_invalidation, "shared_recovery_blocks_command", failed)
     before = _tree_snapshot(tmp_path)
     status, output = _run_inspection(capsys)
     assert _tree_snapshot(tmp_path) == before

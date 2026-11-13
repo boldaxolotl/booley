@@ -314,8 +314,7 @@ def _retire_egress(
                 f"is present but unused under {_UNPROXIED_REASON}; "
                 "`booley bootstrap` removes it once no Sandbox runs",
             )
-        # Mutating Bootstrap runs Sandbox recovery before sidecar reconciliation.
-        _require_no_egress_blockers(network, docker, recovery_ran=intent is not Intent.CHECK)
+        _require_no_egress_blockers(network, docker)
         if intent is Intent.CHECK:
             return _egress_rows(
                 present,
@@ -343,16 +342,14 @@ def _egress_rows(
     )
 
 
-def _require_no_egress_blockers(
-    network: _NetworkState, docker: _DockerPort, *, recovery_ran: bool
-) -> None:
+def _require_no_egress_blockers(network: _NetworkState, docker: _DockerPort) -> None:
     """Refuse retirement while a Sandbox or foreign container could still need the network."""
     active = _active_sessions(docker)
     parked = _parked_refresh_predecessors(docker)
     if active or parked:
         summaries = (
             _active_session_summary(active),
-            _parked_predecessor_summary(parked, recovery_ran=recovery_ran),
+            _parked_predecessor_summary(parked),
         )
         described = ", ".join(summary for summary in summaries if summary)
         raise SidecarError(
@@ -1009,24 +1006,16 @@ def _active_session_summary(sessions: tuple[_ActiveSession, ...]) -> str:
     return ", ".join(descriptions)
 
 
-def _parked_predecessor_summary(parked: tuple[_ActiveSession, ...], *, recovery_ran: bool) -> str:
-    """Describe parked refresh predecessors, leading with non-destructive recovery.
-
-    Once this Bootstrap's recovery ran, a remaining predecessor is one it could
-    not restore, so the remedy leads with the rename instead of a rerun.
-    """
-    lead = (
-        "Bootstrap's recovery left it in place; "
-        if recovery_ran
-        else "run `booley bootstrap` to recover it; if it remains, "
-    )
+def _parked_predecessor_summary(parked: tuple[_ActiveSession, ...]) -> str:
+    """Describe parked rebuild predecessors, leading with the non-destructive rename."""
     descriptions = []
     for sandbox in parked:
         original = sandbox.name.removesuffix(legacy.REFRESH_BACKUP_SUFFIX)
         rename = _shell_command(["docker", "rename", sandbox.name, original])
         descriptions.append(
-            f"{sandbox.name} (Project {sandbox.project_root}; parked by an interrupted refresh "
-            f"or rebuild: {lead}rename it back with `{rename}` or remove it after inspection)"
+            f"{sandbox.name} (Project {sandbox.project_root}; parked by an interrupted "
+            "`booley session up --rebuild` or an older refresh: rename it back with "
+            f"`{rename}` when that name is free, or remove it after inspection)"
         )
     return ", ".join(descriptions)
 
@@ -1071,7 +1060,7 @@ def _active_sessions(docker: _DockerPort) -> tuple[_ActiveSession, ...]:
 
 
 def _parked_refresh_predecessors(docker: _DockerPort) -> tuple[_ActiveSession, ...]:
-    """Return stopped Sandboxes parked by refresh or rebuild; restore needs their network."""
+    """Return stopped Sandboxes parked by `session up --rebuild`; restore needs their network."""
     result = docker.run(
         [
             "ps",
