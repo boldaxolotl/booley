@@ -61,9 +61,13 @@ class SupervisedProcessSet:
                 self._write_record("waiting", None, tree_terminal=False)
 
     def pids(self) -> tuple[int, ...]:
-        """The PIDs of the processes registered now."""
+        """The PIDs of the registered processes not yet reaped.
+
+        A reaped process stays registered until its owner unregisters it, and
+        the kernel may reuse its PID before then: never hand out that PID.
+        """
         with self._gate:
-            return tuple(process.pid for process in self._processes)
+            return tuple(process.pid for process in self._processes if process.returncode is None)
 
     def terminate_all(self) -> None:
         with self._gate:

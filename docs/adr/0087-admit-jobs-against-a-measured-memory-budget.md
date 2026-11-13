@@ -149,17 +149,20 @@ hardening), one budget per container, no licence budgets in v1.
   nothing changes.
 - A Campaign work item that holds its own Memory Reservation counts as a Job
   of its own, admitted after its Flow: its simulator processes rank by the
-  item's admission order, so the newest item's simulator is killed first. A
-  Campaign with five or more running items puts older Jobs at 300 and its own
-  coordinator at 275. An item's own OOM kill stops only that item. Its attempt
-  publishes no result, and the item is requeued once: it goes to the back of
-  the Campaign's queue, claims the whole budget with the reason `requeued after
-  out-of-memory`, and runs again alone while the other lanes keep going. If
-  that second attempt is killed too, its failure is the item's result. Only an
-  item's final attempt counts, so a Flow bound to a Goal requeues its items as
-  well. An item running under the Flow's own claim, before the Flow's
-  reservation drops, keeps the Flow-level requeue. A resumed Campaign arms its
-  items again.
+  item's admission order, so the newest item's simulator is killed first. With
+  five items running, the Flow's own processes sit at 300 and its coordinator
+  at 275; each further item moves the next-oldest item to 300.
+- An item's own OOM kill stops only that item. Its attempt publishes no result
+  and the item is requeued once: it goes to the back of the Campaign's queue,
+  claims the whole budget with the reason `requeued after out-of-memory`, waits
+  for the running items to finish, then runs with no other claim that reserves
+  memory. Items already running keep going. If that second attempt is killed
+  too, its failure is the item's result. While the requeued item runs, its
+  Flow reads as requeued in the Job status and its timeout budget restarts
+  once. An item running under the Flow's own claim, before the Flow's
+  reservation drops, is not requeued on its own: its kill requeues the whole
+  Flow Job, as the Job bullet below describes. A resumed Campaign forgets which
+  items were requeued, so each item gets its one requeue again.
 - The levels hold for these reference sizes, shares of the limit defined above,
   for example 32 GiB. Each check is `1000 × share + adj`, the share written as
   a fraction (0.001 is 0.1 %):
@@ -177,6 +180,10 @@ hardening), one budget per container, no licence budgets in v1.
   estimate raised to at least its observed peak. The caller sees it queued
   again with the reason. If it is OOM-killed again while alone, it fails with
   the OOM outcome. Results and Goal evidence come only from the final attempt.
+  A Job bound to a Goal is never requeued as a whole, so its evidence comes
+  from its only attempt (#3511). The items of a Goal-bound Campaign are
+  requeued all the same: each is its own Job, and a killed item attempt
+  publishes no result.
 - The OOM-kill count is container-wide, so a rise alone cannot say which Job
   was hit. With memory admission on, a command counts as OOM-killed only when
   the count rose while it ran, it exited nonzero, and a process of its own

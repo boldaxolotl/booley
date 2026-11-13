@@ -42,7 +42,7 @@ from booley.flows.sim.campaign.planning import finalize_manifest
 from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.synth.flow import AsicSynthesizeFlow
-from booley.runtime import job_slots
+from booley.runtime import job_slots, oom_priority
 from booley.runtime.endpoint_execution import (
     EndpointOutcome,
     job_attempt,
@@ -1077,6 +1077,30 @@ def test_oom_kill_under_the_flow_claim_keeps_the_flow_requeue(
     assert attempts["alpha"][0] == 1  # published, not requeued as an item
     assert flow_attempt.oom_killed.is_set() and flow_attempt.stopped.is_set()
     assert stopped_after == {"beta": True, "gamma": True}
+
+
+def test_only_items_holding_their_own_claim_are_registered_for_oom_ranking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An own-claim item's commands rank as its own Job; the Flow-claim item's do not."""
+    registered: dict[str, int] = {}
+
+    def record(name: str) -> Callable[[], None]:
+        def hook() -> None:
+            holders, _waiters = scenario.store.observe(CLASS_MEMORY)
+            ranked = oom_priority._item_roots({token.lease_id for token in holders})
+            registered[name] = len(ranked)
+
+        return hook
+
+    with _scenario(tmp_path, monkeypatch, history=_history("sim")) as scenario:
+        for name in NAMES:
+            scenario.hooks[name] = record(name)
+        with _deadline(scenario):
+            scenario.campaign().run(scenario.request(_manifest_for(NAMES)))
+
+    # The first item runs under the Flow's claim; the others hold one each.
+    assert registered == {"alpha": 0, "beta": 1, "gamma": 1}
 
 
 def test_item_failing_without_an_oom_kill_is_not_requeued(

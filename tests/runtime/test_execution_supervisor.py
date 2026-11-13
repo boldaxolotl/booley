@@ -37,6 +37,7 @@ from booley.runtime.execution_records import (
     request_cancellation,
     write_attachment_heartbeat,
 )
+from booley.runtime.supervised_execution import SupervisedProcessSet
 
 
 def _unique_execution_id() -> ExecutionId:
@@ -451,12 +452,11 @@ def test_tty_child_owns_the_foreground_process_group(tmp_path: Path) -> None:
     assert payload["tree_terminal"] is True
 
 
-def test_process_set_lists_registered_pids(tmp_path: Path) -> None:
-    from booley.runtime.supervised_execution import SupervisedProcessSet
-
+def test_process_set_lists_registered_pids_not_yet_reaped(tmp_path: Path) -> None:
     class FakePopen:
         def __init__(self, pid: int) -> None:
             self.pid = pid
+            self.returncode: int | None = None
 
     processes = SupervisedProcessSet(None, tmp_path, lambda: False)
     first, second = FakePopen(4101), FakePopen(4102)
@@ -468,3 +468,6 @@ def test_process_set_lists_registered_pids(tmp_path: Path) -> None:
 
     processes.unregister(first)  # type: ignore[arg-type]
     assert processes.pids() == (4102,)
+
+    second.returncode = 0  # reaped, not yet unregistered: its PID may be reused
+    assert processes.pids() == ()
