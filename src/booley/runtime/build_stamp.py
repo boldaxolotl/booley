@@ -402,8 +402,8 @@ def write_build_stamp(
     context = development_context_path(booley_root)
     target.unlink(missing_ok=True)
     context.unlink(missing_ok=True)
-    # Stamp the commit (and its +dirty marker) before the render rewrites any
-    # tracked copy, then render so no builder packs a stale or missing doc.
+    # Stamp the commit (and its +dirty marker) first, then render so no builder packs a
+    # stale or missing doc. The copies are Git-ignored, so rendering never dirties the tree.
     commit = resolve_build_commit(booley_root)
     write_packaged_docs(booley_root)
     from booley.runtime.image_build_contracts import source_image_build_contracts

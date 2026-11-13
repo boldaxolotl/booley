@@ -1,4 +1,7 @@
-"""The packaged user-doc sync: allowlist, link rewriting, and ``--check`` (issue #2495)."""
+"""The packaged-copy tooling: link rewriting, the CHANGELOG mirror sync, and ``--check``.
+
+The user-doc copies are build output (``booley.runtime.build_stamp``); only the CHANGELOG
+mirror is still synchronized here (#2495, #3658)."""
 
 from __future__ import annotations
 
@@ -8,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from booley.dev_support import reference_docs
+from booley.runtime import packaged_docs
 
 SOURCE = "docs/user/CONFIG.md"
 MARKER = "(host doc, not shipped)"
@@ -16,15 +20,13 @@ CHANGELOG_MIRROR = "src/booley/data/refs/CHANGELOG.md"
 
 
 def _render(text: str, source: str = SOURCE) -> str:
-    from booley.runtime.packaged_docs import render_packaged_doc
-
-    return render_packaged_doc(source, text)
+    return packaged_docs.render_packaged_doc(source, text)
 
 
 def _fake_repo(tmp_path: Path, overrides: dict[str, str] | None = None) -> Path:
     """Return a repository root holding every shipped source, with ``overrides`` applied."""
     root = tmp_path / "repo"
-    for source in reference_docs.SHIPPED_DOCS:
+    for source in packaged_docs.SHIPPED_DOCS:
         path = root / source
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(f"# {path.name}\n".encode())
@@ -39,19 +41,7 @@ def _fake_repo(tmp_path: Path, overrides: dict[str, str] | None = None) -> Path:
 
 
 def _packaged(root: Path) -> Path:
-    return root / reference_docs.PACKAGED_DOCS_RELATIVE_DIR
-
-
-def test_sync_writes_one_flat_copy_per_allowlisted_doc(tmp_path: Path) -> None:
-    root = _fake_repo(tmp_path)
-
-    changed = reference_docs.sync_packaged_docs(root)
-
-    expected = sorted(Path(source).name for source in reference_docs.SHIPPED_DOCS)
-    assert sorted(changed) == expected
-    assert sorted(path.name for path in _packaged(root).iterdir()) == expected
-    assert len(expected) == len(reference_docs.SHIPPED_DOCS) == 14
-    assert (_packaged(root) / "CONFIG.md").read_text(encoding="utf-8") == "# CONFIG.md\n"
+    return root / packaged_docs.PACKAGED_DOCS_RELATIVE_DIR
 
 
 def test_sync_mirrors_changelog_byte_for_byte(
@@ -68,7 +58,7 @@ def test_sync_mirrors_changelog_byte_for_byte(
     assert mirror.read_bytes() == changelog
     assert "src/booley/data/refs/CHANGELOG.md" in capsys.readouterr().out
     assert reference_docs.main([], root=root) == 0
-    assert "packaged docs are current" in capsys.readouterr().out
+    assert "packaged CHANGELOG mirror is current" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("state", ["stale", "missing"])
@@ -76,7 +66,6 @@ def test_check_reports_stale_changelog_mirror(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], state: str
 ) -> None:
     root = _fake_repo(tmp_path)
-    reference_docs.sync_packaged_docs(root)
     mirror = root / CHANGELOG_MIRROR
     if state == "stale":
         mirror.write_bytes(b"hand edit\n")
@@ -97,16 +86,34 @@ def test_check_reports_stale_changelog_mirror(
     assert capsys.readouterr().out == ""
 
 
+def test_check_covers_only_the_changelog_mirror(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The user-doc copies are build output: ``--check`` neither needs nor reads them (#3658)."""
+    root = _fake_repo(tmp_path)
+    assert not _packaged(root).exists()
+
+    assert reference_docs.main(["--check"], root=root) == 0
+    assert capsys.readouterr().out == ""
+
+    # A leftover rendered copy, stale or orphaned, is not this check's business.
+    _packaged(root).mkdir(parents=True)
+    (_packaged(root) / "CONFIG.md").write_text("hand edit\n", encoding="utf-8")
+    (_packaged(root) / "RETIRED.md").write_text("old\n", encoding="utf-8")
+
+    assert reference_docs.main(["--check"], root=root) == 0
+    assert capsys.readouterr().out == ""
+
+
 def test_check_prints_the_entry_points_own_fix_command(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = _fake_repo(tmp_path)
-    reference_docs.sync_packaged_docs(root)
     (root / CHANGELOG_MIRROR).write_bytes(b"hand edit\n")
 
     assert reference_docs.main(["--check"], root=root, sync_command="the-fix") == 1
 
-    assert "packaged docs are out of date; run the-fix" in capsys.readouterr().out
+    assert "packaged CHANGELOG mirror is out of date; run the-fix" in capsys.readouterr().out
 
 
 def test_launcher_names_itself_as_the_fix_command(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -124,19 +131,6 @@ def test_launcher_names_itself_as_the_fix_command(monkeypatch: pytest.MonkeyPatc
     assert namespace["main"]() == 0
 
     assert seen["sync_command"] == "python3 .github/scripts/sync_packaged_copies.py"
-
-
-def test_second_sync_is_a_no_op(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    root = _fake_repo(tmp_path)
-    assert reference_docs.main([], root=root) == 0
-    assert "updated packaged docs" in capsys.readouterr().out
-    before = {path.name: path.stat().st_mtime_ns for path in _packaged(root).iterdir()}
-
-    assert reference_docs.sync_packaged_docs(root) == []
-    assert reference_docs.main([], root=root) == 0
-
-    assert "packaged docs are current" in capsys.readouterr().out
-    assert {path.name: path.stat().st_mtime_ns for path in _packaged(root).iterdir()} == before
 
 
 def test_links_to_shipped_docs_become_sibling_links() -> None:
@@ -206,7 +200,7 @@ def test_wrapped_link_text_is_rewritten() -> None:
     ],
 )
 def test_unclassified_link_names_file_link_and_remedy(text: str, fragment: str) -> None:
-    with pytest.raises(reference_docs.UnclassifiedLinkError) as raised:
+    with pytest.raises(packaged_docs.UnclassifiedLinkError) as raised:
         _render(text)
 
     message = str(raised.value)
@@ -214,40 +208,8 @@ def test_unclassified_link_names_file_link_and_remedy(text: str, fragment: str) 
     assert fragment in message
 
 
-def test_unclassified_link_fails_sync_and_check(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    root = _fake_repo(tmp_path, {SOURCE: "# Config\n[new](NEW.md#part)\n"})
-
-    assert reference_docs.main([], root=root) == 1
-    sync_output = capsys.readouterr().out
-    assert reference_docs.main(["--check"], root=root) == 1
-    check_output = capsys.readouterr().out
-
-    for output in (sync_output, check_output):
-        assert SOURCE in output
-        assert "NEW.md" in output
-        assert "add the target to SHIPPED_DOCS or PLAIN_TEXT_TARGETS" in output
-    assert not _packaged(root).exists()
-
-
-def test_link_form_the_scanner_misses_fails() -> None:
-    forms = [
-        "[x][ref]\n\n[ref]: SETUP.md\n",
-        "<https://booley.dev/docs/setup/>\n",
-        "text\n\n    [x](SETUP.md)\n",
-        '<a href="SETUP.md">x</a>\n',
-        'Inline <a href="SETUP.md">x</a> link.\n',
-    ]
-    for text in forms:
-        with pytest.raises(reference_docs.UnclassifiedLinkError, match="cannot classify"):
-            reference_docs.check_link_forms(SOURCE, text)
-
-
 def test_renderer_alone_leaves_a_reference_style_link_unchanged() -> None:
-    """The stdlib renderer has no cross-check; the sync CLI and the doc test own it."""
-    from booley.runtime import packaged_docs
-
+    """The stdlib renderer has no cross-check; ``tests/docs/test_shipped_doc_link_forms.py`` owns it."""
     text = "[x][ref]\n\n[ref]: SETUP.md\n"
 
     assert _render(text) == text
@@ -255,23 +217,19 @@ def test_renderer_alone_leaves_a_reference_style_link_unchanged() -> None:
 
 
 def test_unclassified_link_leaves_the_packaged_directory_untouched(tmp_path: Path) -> None:
-    from booley.runtime import packaged_docs
-
     root = _fake_repo(tmp_path)
     packaged_docs.write_packaged_docs(root)
     before = {path.name: path.read_bytes() for path in _packaged(root).iterdir()}
     (root / "docs/user/TESTS.md").write_bytes(b"[new](NEW.md)\n")
     (root / SOURCE).write_bytes(b"# changed\n")
 
-    with pytest.raises(reference_docs.UnclassifiedLinkError, match=r"NEW\.md"):
+    with pytest.raises(packaged_docs.UnclassifiedLinkError, match=r"NEW\.md"):
         packaged_docs.write_packaged_docs(root)
 
     assert {path.name: path.read_bytes() for path in _packaged(root).iterdir()} == before
 
 
 def test_missing_shipped_source_names_the_repository_path(tmp_path: Path) -> None:
-    from booley.runtime import packaged_docs
-
     root = _fake_repo(tmp_path)
     (root / "docs/user/TESTS.md").unlink()
 
@@ -283,8 +241,6 @@ def test_missing_shipped_source_names_the_repository_path(tmp_path: Path) -> Non
 
 
 def test_orphan_directory_is_removed_not_fatal(tmp_path: Path) -> None:
-    from booley.runtime import packaged_docs
-
     root = _fake_repo(tmp_path)
     packaged_docs.write_packaged_docs(root)
     orphan = root / packaged_docs.PACKAGED_DOCS_RELATIVE_DIR / "stale_dir"
@@ -295,51 +251,9 @@ def test_orphan_directory_is_removed_not_fatal(tmp_path: Path) -> None:
     assert not orphan.exists()
 
 
-def test_check_fails_on_stale_copy(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    root = _fake_repo(tmp_path)
-    reference_docs.sync_packaged_docs(root)
-    (_packaged(root) / "TARGETS.md").write_text("hand edit\n", encoding="utf-8")
-    (_packaged(root) / "TESTS.md").unlink()
-
-    assert reference_docs.main(["--check"], root=root) == 1
-
-    output = capsys.readouterr().out
-    assert "TARGETS.md: packaged copy is stale" in output
-    assert "TESTS.md: packaged copy is missing" in output
-    assert "python -m booley.dev_support.reference_docs" in output
-
-
-def test_check_fails_on_orphaned_packaged_file(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    root = _fake_repo(tmp_path)
-    reference_docs.sync_packaged_docs(root)
-    orphan = _packaged(root) / "RETIRED.md"
-    orphan.write_text("old\n", encoding="utf-8")
-
-    assert reference_docs.main(["--check"], root=root) == 1
-    assert "RETIRED.md: orphaned packaged file" in capsys.readouterr().out
-
-    assert reference_docs.sync_packaged_docs(root) == ["RETIRED.md"]
-    assert not orphan.exists()
-
-
-def test_check_passes_after_fresh_sync(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    root = _fake_repo(tmp_path, {SOURCE: "# Config\n[s](SETUP.md) [t](TARGETS.md)\n"})
-    reference_docs.sync_packaged_docs(root)
-
-    assert reference_docs.main(["--check"], root=root) == 0
-    assert capsys.readouterr().out == ""
-    assert (_packaged(root) / "CONFIG.md").read_text(encoding="utf-8") == (
-        f"# Config\ns {MARKER} [t](TARGETS.md)\n"
-    )
-
-
 def test_atomic_write_failure_removes_temporary_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.runtime import packaged_docs
-
     packaged = tmp_path / "packaged.md"
     packaged.write_text("original\n", encoding="utf-8")
 

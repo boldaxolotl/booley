@@ -24,7 +24,8 @@ _NAMED_CONTENT_TESTS = (
     "tests/docs/test_current_version_docs.py",
     "tests/docs/test_changelog_fragments.py",
     "tests/runtime/test_docs_links.py",
-    "tests/test_paths.py",
+    "tests/docs/test_shipped_doc_link_forms.py",
+    "tests/test_retired_ticket_wording.py",
 )
 
 _BASE_FILES = {

@@ -123,7 +123,7 @@ point at which to run it:
 | Command ID | Runs | When |
 |---|---|---|
 | `ruff.agent-gate` | `ruff check src/ tests/` | Before commit |
-| `packaged-copies.check` | `sync_packaged_copies.py --check`: fails on stale packaged docs or `CHANGELOG.md` mirror | Before commit |
+| `packaged-copies.check` | `sync_packaged_copies.py --check`: fails when the packaged `CHANGELOG.md` mirror is stale | Before commit |
 | `pytest.broad` | `pytest tests/` (which skips `tests/goals/`) with coverage, up to eight xdist workers | Optional broad verification |
 | `ruff.ci-check`, `ruff.ci-format`, `pyright.ci-check` | CI's lint job: `ruff check .`, `ruff format --check .`, `pyright` | Handoff |
 | `coverage.changed-lines` | CI's 90% changed-line coverage gate, against the newest merge base with `main` | Handoff |
@@ -418,27 +418,24 @@ review a doc.
 The Developer Agent in the Sandbox can't read this repository, so a fixed set
 of docs ships inside the package and appears at `/booley-docs/` in the
 Sandbox: `SHIPPED_DOCS` in `src/booley/runtime/packaged_docs.py`, all from
-`docs/user/` plus `docs/internals/FLOW_REPORTS.md`. After editing one of them,
-regenerate the packaged copies in `src/booley/data/docs/`:
+`docs/user/` plus `docs/internals/FLOW_REPORTS.md`. Edit only those sources. The
+build renders them into `src/booley/data/docs/`, a Git-ignored directory,
+through `write_build_stamp` in `src/booley/runtime/build_stamp.py`. Never edit a
+rendered copy. The render turns links to other shipped docs into sibling links
+and links to unshipped docs (`PLAIN_TEXT_TARGETS`) into plain text marked
+`(host doc, not shipped)`. A link to a doc in neither set fails the build and
+`tests/docs` with the file, the link and the fix. A bare `python -m build` runs
+no stamp step: it packs no docs on a clean checkout and any stale copies an
+earlier build left behind, so build through `build.sh`, `booley init`, or
+`.github/scripts/build_development_wheel.py`.
 
-```bash
-python -m booley.dev_support.reference_docs            # add --check to verify only
-python3 .github/scripts/sync_packaged_copies.py        # same, without installing Booley
-```
-
-Never edit a copy by hand. The sync rewrites links between shipped docs, turns
-links to listed unshipped docs (`PLAIN_TEXT_TARGETS`) into plain text, and
-fails on a link to any other doc; `booley.runtime.packaged_docs` has the rules.
-The same command mirrors `CHANGELOG.md` to `src/booley/data/refs/`, which only
-release preparation edits.
-
-Run the sync before committing: the readiness packaged-copies check and
-`tests/test_paths.py` fail on a stale copy. A stamped build
-(`write_build_stamp` in `src/booley/runtime/build_stamp.py`) renders the
-copies too and leaves a stale tracked copy rewritten in the working tree, but
-a bare `python -m build` packs the copies as they are. The copies live under
-`src/booley/`, so a docs edit that regenerates them also runs the Python CI
-jobs.
+`python -m booley.dev_support.reference_docs [--check]` covers only the
+`CHANGELOG.md` mirror at `src/booley/data/refs/CHANGELOG.md`, byte for byte;
+`python3 .github/scripts/sync_packaged_copies.py [--check]` runs it without
+installing Booley. Only release preparation edits `CHANGELOG.md`, so run it
+after such an edit (`release_changelog.py assemble` updates the mirror itself).
+Never edit the mirror by hand. A shipped-doc edit is documentation-only in CI
+and runs the docs-check lane.
 
 ## Branch and pull request workflow
 
