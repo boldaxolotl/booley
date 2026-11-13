@@ -8,7 +8,7 @@ import threading
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from booley.flows.endpoint_admission import AdmissionContext
@@ -136,9 +136,18 @@ class HeavyCapacity:
             self.cancellation_cause,
         )
 
-    def work_item_claim(self, item: Mapping[str, object]) -> MemoryClaim | None:
-        """The Memory Reservation *item* takes itself; ``None`` while it runs under the Flow's."""
-        return None if self._item_claim is None else self._item_claim(item)
+    def work_item_claim(
+        self, item: Mapping[str, object], *, alone: bool = False
+    ) -> MemoryClaim | None:
+        """The Memory Reservation *item* takes itself; ``None`` while it runs under the Flow's.
+
+        With *alone* the claim is the whole budget (an item requeued after an
+        out-of-memory kill), so it runs beside no other claim that reserves memory.
+        """
+        claim = None if self._item_claim is None else self._item_claim(item)
+        if claim is None or not alone:
+            return claim
+        return replace(claim, reservation_mb=None, run_alone=True)
 
     @contextmanager
     def child_permit(
@@ -150,12 +159,14 @@ class HeavyCapacity:
         attempt_directory: Path,
         publish: Callable[[ExecutionId], None],
         memory: MemoryClaim | None = None,
+        queue_reason: str | None = None,
     ) -> Iterator[ChildHeavyPermit]:
         """Give one lane its identity and slot, retiring both on exit.
 
         ``publish`` gets the lane ID before the slot is requested. A *memory*
         claim takes a Memory Reservation instead of a heavy slot, and fixes the
         item's thread count at its share of the cores for everything it runs.
+        *queue_reason* names why a requeued item claims again.
         """
         store = self._admission.slot_store
         if not self.managed or store is None:
@@ -173,7 +184,7 @@ class HeavyCapacity:
             publish(child_id)
             if self._cancelled():
                 raise ClaimAbortedError("campaign shutdown requested")
-            token = self._acquire_child(store, child_id, memory)
+            token = self._acquire_child(store, child_id, memory, queue_reason)
         except BaseException:
             self._lanes.mark_terminal(prepared, "record_error")
             raise
@@ -223,6 +234,9 @@ class HeavyCapacity:
         try:
             try:
                 try:
+                    # A claim admitted as the campaign was cancelled never starts its item.
+                    if self._cancelled():
+                        raise ClaimAbortedError("campaign cancellation requested")
                     yield permit
                 except HeavyCapacityError as exc:
                     cause = self._failed_cause(exc, permit)
@@ -278,7 +292,11 @@ class HeavyCapacity:
         return held
 
     def _acquire_child(
-        self, store, child_execution_id: ExecutionId, memory: MemoryClaim | None
+        self,
+        store,
+        child_execution_id: ExecutionId,
+        memory: MemoryClaim | None,
+        queue_reason: str | None,
     ) -> SlotToken:
         submitted: list[SlotToken] = []
 
@@ -302,6 +320,7 @@ class HeavyCapacity:
                 execution_id=child_execution_id,
                 on_submitted=register,
                 memory=memory,
+                queue_reason=queue_reason,
                 # The item's Flow is admitted already: a full queue never refuses it.
                 bounded=memory is None,
             )

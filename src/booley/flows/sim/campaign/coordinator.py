@@ -23,6 +23,7 @@ from booley.flows.sim.coverage_reference import (
 from booley.flows.sim.execution.contract import PreSimScopeStoppedError, SimulationOptions
 from booley.flows.sim.record_layout import COVERAGE_RECORD_DIRECTORY, RECORD_DIRECTORY
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
+from booley.runtime.endpoint_execution import work_item_attempt_requeues
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.domain import TargetHandle
 
@@ -704,7 +705,14 @@ class SimulationCampaign:
         invocation: int,
         request: CampaignRunRequest,
         child_execution_id: str | None,
-    ) -> None:
+    ) -> bool:
+        """Run one attempt and publish its result; ``True`` when it was OOM-killed instead.
+
+        A work item attempt that was OOM-killed and whose result does not
+        survive the kill publishes no result and does not settle its build: the
+        scheduler runs the item again, alone, as a new attempt, and only the
+        final attempt's result counts.
+        """
         work_item = attempt.item
         work_item_id = cast(str, work_item["work_item_id"])
         assert self._executor is not None
@@ -721,6 +729,9 @@ class SimulationCampaign:
             )
         except PreSimScopeStoppedError as signal:
             raise HeavyCapacityError(str(signal)) from signal
+        if work_item_attempt_requeues(passed=result.document["grade"] == "pass"):
+            raise_if_cancelled_before_publication()  # a cancelled attempt is never requeued
+            return True
         if self._flow_claim is not None:
             # The item's shared build is settled; the last one frees the Flow's reservation.
             self._flow_claim.settle(store.root, work_item)
@@ -740,6 +751,7 @@ class SimulationCampaign:
                 else None,
             )
             raise CampaignPublicationError(str(exc), failure) from exc
+        return False
 
     @staticmethod
     def _work_execution_request(
