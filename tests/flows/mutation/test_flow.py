@@ -1605,9 +1605,11 @@ def test_generator_shortfall_lowers_the_default_threshold(tmp_path: Path, monkey
         "  detected: 2/2 (required: 2, default 80% of 2 scored, 10 requested)"
         in result.report_text
     )
-    assert "only 2 candidate Mutants exist" in result.detail["shortfall"]
-    assert "only 2 candidate Mutants exist" in result.report_text
+    expected = "only 2 Mutants could be scored (10 requested)"
+    assert result.detail["shortfall"] == expected
+    assert expected in result.report_text
     assert (result.detail["min_detected"], result.detail["total_valid"]) == (2, 2)
+    assert (result.detail["total_requested"], result.detail["total_scored"]) == (10, 2)
     assert result.detail["identity"]["count"] == 10  # what was asked for
 
 
@@ -2728,7 +2730,8 @@ def test_verilator_equivalent_mutant_is_replaced_by_the_next_candidate(
 
     assert result.exit_code == EXIT_SUCCESS, result.report_text
     assert [row["id"] for row in result.detail["classified"]] == kept
-    assert result.detail["total_requested"] == len(result.detail["classified"]) == 4
+    assert (result.detail["total_requested"], result.detail["total_scored"]) == (4, 4)
+    assert len(result.detail["classified"]) == 4
     assert "shortfall" not in result.detail
     # The dropped Mutant was built (its C++ was compared) but never simulated, and the
     # next candidate took its number and build directory.
@@ -2797,6 +2800,8 @@ def test_running_out_during_replacement_reports_the_shortfall(tmp_path: Path, mo
     ranked = _candidates(tmp_path)
     kept, dropped = _expected_sweep(ranked, len(ranked))
     assert dropped and len(kept) < len(ranked)
+    # Pin the fixture's counts as literals so the assertions below stay honest.
+    assert (len(ranked), len(kept)) == (17, 15)
 
     _, result, fake = _campaign(
         tmp_path,
@@ -2808,17 +2813,14 @@ def test_running_out_during_replacement_reports_the_shortfall(tmp_path: Path, mo
     )
 
     assert result.exit_code == EXIT_SUCCESS, result.report_text
-    expected = (
-        f"only {len(kept)} candidate Mutants exist; "
-        f"returning all of them ({len(ranked)} requested)"
-    )
+    expected = "only 15 Mutants could be scored (17 requested)"
     assert result.detail["shortfall"] == expected
     assert expected in result.report_text
     assert [row["id"] for row in result.detail["classified"]] == kept  # the Mutants it has
     assert result.detail["equivalent_dropped"] == dropped
     # The default threshold follows the Mutants kept, not the ones asked for.
     assert result.detail["min_detected"] == _eighty_percent(len(kept))
-    assert result.detail["total_requested"] == len(kept)
+    assert (result.detail["total_requested"], result.detail["total_scored"]) == (17, 15)
     assert fake.runs == [None, *range(1, len(kept) + 1)]
 
 
@@ -2933,6 +2935,7 @@ def test_inconclusive_run_after_a_drop_names_only_kept_mutants(
 
     assert result.exit_code == EXIT_ERROR, result.report_text
     assert result.detail["phase"] == "variant_infrastructure"
+    assert (result.detail["total_requested"], result.detail["total_scored"]) == (3, 3)
     assert result.detail["equivalent_dropped"] == dropped
     assert [mutation["id"] for mutation in result.detail["mutations"]] == kept
     assert [row["id"] for row in result.detail["classified"]] == kept
