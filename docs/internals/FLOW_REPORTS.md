@@ -440,7 +440,7 @@ Target.
 | `yosys_complete`, `timing_complete`, `structural_checks_complete`, `ppa_complete`, `peak_rss_mb` | Which stages finished, and peak memory. |
 | `area_um2`, `area_source`, `area_kge`, `cells` | Area and cell count. |
 | `per_clock`, `wns_ns`, `whs_ns`, `reg2reg_slack_ns`, `reg2reg_fmax_mhz` | Physical-mode timing. Each `per_clock` entry has `period_ns`, `wns_ns`, `whs_ns`, `critical_path_ps`, and `fmax_mhz`. Logical mode reports `estimated_fmax_mhz` instead. |
-| `conditions` | `latches`, `expected_latches`, `unexpected_latches`, `comb_loops`, `multi_driven`, and the combined `has_critical`. |
+| `conditions` | `latches`, `expected_latches`, `unexpected_latches`, `comb_loops`, `expected_comb_loops`, `unexpected_comb_loops`, `multi_driven`, and the combined `has_critical`. |
 | `total_warnings`, `warning_summary` | Warning count, plus `unique_warnings` and counts grouped by tool, category, and disposition, with a few sample messages. |
 | `baseline`, `delta_pct`, `timing_delta_pct` | With `--baseline`: the baseline's metrics (`baseline.ref` is the compared revision) and the area and timing deltas. `baseline.timing_unavailable` says why no baseline timing reports were kept. |
 | `baseline_target`, `candidate_target` | Selectors of the compared Targets. |
@@ -474,6 +474,7 @@ set `warn`.
 | `passed`, `returncode`, `timed_out`, `infra_error` | The verdict and how the run ended. |
 | `cached`, `cache_fingerprint` | Whether results came from the implementation cache, and the cache key. |
 | `metrics` | `lut_count`, `ff_count`, `bram_count`, `dsp_count`, `wns_ns`, `whs_ns`, `per_clock`, `latches`, `comb_loops`, `multi_driven`, `elapsed_s`, `cached`, `cache_fingerprint`, `failure_output`, `log_path`, and `artifacts`. Each clock has `period_ns`, `wns_ns`, `whs_ns`, `critical_path_ps`, and `fmax_mhz`. |
+| `implementation.conditions` | `latches`, `expected_latches`, `unexpected_latches`, `comb_loops`, `expected_comb_loops`, `unexpected_comb_loops`, `multi_driven`, and the combined `has_critical`. The expected counts come from `[flows.fpga]`; `metrics` keeps only the raw counts. |
 | `baseline_ref`, `baseline_metrics` | With `--baseline`: the baseline revision and the same metrics, without file paths. |
 | `recipe_fingerprint`, `recipe_snapshot`, `run_evidence` | The implementation recipe and provenance. On a cache hit, `run_evidence` describes the run that produced the cached results. |
 | `baseline_recipe_fingerprint`, `baseline_recipe_snapshot`, `baseline_run_evidence` | The same for the baseline. |

@@ -111,7 +111,7 @@ def test_specialist_pinned_cli_missing_credentials_fail(home, tmp_path):
 
         (missing,) = _with_id(findings, "agent.credential-missing", "codex")
         assert missing.severity is Severity.FAIL
-        assert doctor._missing_credential_fix("codex", codex_auth) in missing.fix
+        assert auth_token.missing_credential_fix("codex", codex_auth) in missing.fix
         assert not [f for f in findings if f.severity is Severity.FAIL and f is not missing]
         assert not _with_id(findings, "agent.rotation-risk", "codex")
 

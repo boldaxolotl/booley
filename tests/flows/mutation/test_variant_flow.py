@@ -16,10 +16,12 @@ from booley.flows.mutation.flow import (
     MutationFlow,
     MutationRunPlan,
     MutationSpec,
+    MutationSummary,
     MutationTestRun,
     UnsupportedSimTargetError,
     VariantSweep,
     compute_source_size_budget,
+    generate_results_markdown,
 )
 from booley.flows.mutation.generator import Mutant
 from booley.flows.mutation.variants import MutationVariantPlan
@@ -359,3 +361,162 @@ def test_generated_direct_source_rejected_before_fusesoc_setup(tmp_path, monkeyp
     assert result.returncode == 1
     assert "unsupported generated/imperative" in result.stderr
     assert source.read_text() == "assign x = a + b;\n"
+
+
+def _sweep_suites(
+    tmp_path: Path,
+    suites: list[list[MutationTestRun]],
+) -> tuple[VariantSweep, str]:
+    """Sweep one Mutant per entry of ``suites`` and render the results table."""
+    scope = "rtl/dut.sv"
+    source = tmp_path / scope
+    source.parent.mkdir(parents=True)
+    source.write_text("assign x = a + b;\nassign y = c & d;\n", encoding="utf-8")
+    specs = [
+        MutationSpec(1, "operator", scope, 1, "a + b", "a - b"),
+        MutationSpec(2, "operator", scope, 2, "c & d", "c | d"),
+    ][: len(suites)]
+    variants = MutationVariantPlan.resolve(specs, tmp_path, [scope])
+    endpoint = _endpoint(tmp_path)
+    endpoint._run_elab = lambda *_args, **_kwargs: _process(0)
+    endpoint._run_target_test_suite = lambda *args, **_kwargs: suites[
+        int(args[2].name.removeprefix("mutant_")) - 1
+    ]
+    sweep = _sweep(endpoint, _plan(tmp_path, scope), specs, variants)
+    summary = MutationSummary(specs=sweep.specs, results=sweep.results)
+    return sweep, generate_results_markdown(summary, 1)
+
+
+def test_detected_snippet_starts_at_the_killing_tests_failure_line(tmp_path: Path) -> None:
+    header = (
+        "CWD: /work/error-correction/rtl\n"
+        "CMD: iverilog -g2012 -o sim /work/error-correction/rtl/dut.sv\n"
+    )
+    failure = "FATAL: tb/mutation_tb.sv:30: mismatch: alu lt"
+    full = MutationTestRun(
+        "full",
+        process=_process(1),
+        output=f"{header}{failure}\n$finish called at 40\n",
+    )
+    smoke_output = '[SIM_SUMMARY] {"passed":true,"sva_errors":0}\niverilog sim PASSED (rc=0)\n'
+    smoke = MutationTestRun("smoke", process=_process(0), output=smoke_output)
+    survivor_output = "ran full\niverilog sim PASSED (rc=0)\n"
+    survivor = [
+        MutationTestRun("full", process=_process(0), output=survivor_output),
+        MutationTestRun("smoke", process=_process(0), output=smoke_output),
+    ]
+
+    sweep, markdown = _sweep_suites(tmp_path, [[full, smoke], survivor])
+
+    killed, survived = sweep.results
+    assert killed.detected
+    assert killed.sim_output_snippet.startswith(failure)
+    assert "PASSED" not in killed.sim_output_snippet
+    assert f"| {failure} " in markdown
+    # A survivor keeps the tail of the joined suite output.
+    assert not survived.detected
+    assert survived.sim_output_snippet.endswith("iverilog sim PASSED (rc=0)")
+
+
+def test_cocotb_detected_snippet_comes_from_the_detecting_batch(tmp_path: Path) -> None:
+    header = "CWD: /work/error-correction\nCMD: make\nFILTER: test_bad|test_done\n"
+    failed_line = (
+        "    60.00ns WARNING  cocotb.regression                  mixed_cases.test_bad failed\n"
+    )
+    traceback = (
+        "                                                        Traceback (most recent call last):\n"
+        "                                                        AssertionError: deliberate failure\n"
+    )
+    first_results = COCOTB_RESULTS_PREFIX + (
+        '{"state":"ok","detail":"","tests":['
+        '{"name":"test_bad","module":"mixed_cases","status":"fail",'
+        '"failure":"deliberate","elapsed_s":0.1}]}'
+    )
+    second_results = COCOTB_RESULTS_PREFIX + (
+        '{"state":"ok","detail":"","tests":['
+        '{"name":"test_done","module":"mixed_cases","status":"pass",'
+        '"failure":"","elapsed_s":0.1}]}'
+    )
+    suites = [
+        [
+            MutationTestRun(
+                "<cocotb-suite 1/2>",
+                process=_process(1),
+                output=header + failed_line + traceback + first_results,
+                requires_cocotb_results=True,
+            ),
+            MutationTestRun(
+                "<cocotb-suite 2/2>",
+                process=_process(0),
+                output="batch two ran\n    30.00ns INFO test_done passed\n" + second_results,
+                requires_cocotb_results=True,
+            ),
+        ]
+    ]
+
+    sweep, markdown = _sweep_suites(tmp_path, suites)
+
+    (result,) = sweep.results
+    assert result.first_killing_test == "test_bad"
+    expected = "60.00ns WARNING cocotb.regression mixed_cases.test_bad failed"
+    assert result.sim_output_snippet.startswith(expected)
+    assert "batch two" not in result.sim_output_snippet
+    assert f"| test_bad | {expected[:60]} |" in markdown
+
+
+def test_timeout_detection_snippet_shows_the_timeout_message(tmp_path: Path) -> None:
+    smoke = MutationTestRun("smoke", process=_process(0), output="iverilog sim PASSED (rc=0)\n")
+    printed = MutationTestRun(
+        "full",
+        process=_process(1),
+        output="CWD: /work/error-correction\nERROR: iverilog simulation timed out (25s)\n",
+    )
+    killed = MutationTestRun("full", timed_out=True, output="[sim] running full\n")
+
+    sweep, _markdown = _sweep_suites(tmp_path, [[printed, smoke], [killed, smoke]])
+
+    by_printed, by_kill = sweep.results
+    assert by_printed.timed_out and by_kill.timed_out
+    assert by_printed.sim_output_snippet.startswith("ERROR: iverilog simulation timed out (25s)")
+    assert by_kill.sim_output_snippet.startswith("full: ran past its time limit and was stopped")
+    assert "[sim] running full" in by_kill.sim_output_snippet
+
+
+def test_failing_run_outranks_a_timed_out_run_in_the_snippet(tmp_path: Path) -> None:
+    timed_out = MutationTestRun("full", timed_out=True, output="[sim] running full\n")
+    failed = MutationTestRun(
+        "smoke", process=_process(1), output="FATAL: tb/smoke_tb.sv:7: mismatch\n"
+    )
+
+    sweep, _markdown = _sweep_suites(tmp_path, [[timed_out, failed]])
+
+    (result,) = sweep.results
+    assert result.detected and not result.timed_out
+    assert result.sim_output_snippet.startswith("FATAL: tb/smoke_tb.sv:7: mismatch")
+    assert "ran past its time limit" not in result.sim_output_snippet
+
+
+def test_cocotb_snippet_anchors_on_the_killing_test_not_an_earlier_test(tmp_path: Path) -> None:
+    output = (
+        (
+            "    10.00ns INFO  cocotb.regression  test_done: error flag cleared\n"
+            "    60.00ns WARNING  cocotb.regression  mixed_cases.test_bad failed\n"
+        )
+        + COCOTB_RESULTS_PREFIX
+        + (
+            '{"state":"ok","detail":"","tests":['
+            '{"name":"test_done","module":"mixed_cases","status":"pass","failure":"","elapsed_s":0.1},'
+            '{"name":"test_bad","module":"mixed_cases","status":"fail","failure":"x","elapsed_s":0.1}]}'
+        )
+    )
+    batch = MutationTestRun(
+        "<cocotb-suite>", process=_process(1), output=output, requires_cocotb_results=True
+    )
+
+    sweep, _markdown = _sweep_suites(tmp_path, [[batch]])
+
+    (result,) = sweep.results
+    assert result.first_killing_test == "test_bad"
+    assert result.sim_output_snippet.startswith(
+        "60.00ns WARNING cocotb.regression mixed_cases.test_bad"
+    )
