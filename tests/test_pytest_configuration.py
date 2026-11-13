@@ -514,10 +514,15 @@ def test_riscv_image_lane_is_path_gated() -> None:
     assert names.index("Prepare exact reviewed Ibex candidate") < names.index(
         "Run pinned Ibex lint demo"
     )
-    assert "Dockerfile.riscv" in riscv["run"]
+    # The image build is shared with the PicoRV32 demo workflow.
+    assert ".github/scripts/riscv_candidate.sh build" in riscv["run"]
+    candidate = (REPOSITORY_ROOT / ".github/scripts/riscv_candidate.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "Dockerfile.riscv" in candidate
+    assert '--build-context "riscv-tooling=${TOOLING_CONTEXT}"' in candidate
     assert "verify_riscv_image_contract.sh" in riscv["run"]
     assert "run_picorv32_ci_demo.sh" in riscv["run"]
-    assert '--build-context "riscv-tooling=${TOOLING_CONTEXT}"' in riscv["run"]
     assert "--network none" in ibex_run["run"]
     for name in ("Restore RISC-V demo checkout ownership", "Upload candidate RISC-V evidence"):
         assert steps[names.index(name)]["if"] == "always()"
