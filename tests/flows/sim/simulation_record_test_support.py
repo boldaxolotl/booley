@@ -1119,6 +1119,20 @@ def _wait_until(predicate, timeout: float = 2.0) -> None:
 _PARALLEL_SYNC_TIMEOUT_S = 20.0
 
 
+def _remove_slot_entry(slots: SlotStore, token: SlotToken) -> None:
+    """Remove *token*'s entry the way a reaper does."""
+    with slots._lease_gate(token) as acquired:
+        assert acquired
+        token.path.unlink()
+
+
+def _remove_child_lease(slots: SlotStore, child_id: str) -> None:
+    """Make exactly this child's lease disappear, as a reaper reclaiming it does."""
+    for token in slots.snapshot(CLASS_MEMORY)[0]:
+        if str(token.execution_id) == child_id:
+            _remove_slot_entry(slots, token)
+
+
 def _scheduled_attempt(store: CampaignStore, item) -> ScheduledAttempt:
     attempt_id = os.urandom(16).hex()
     ordinal, directory = store.allocate_attempt_directory(str(item["work_item_id"]), attempt_id)

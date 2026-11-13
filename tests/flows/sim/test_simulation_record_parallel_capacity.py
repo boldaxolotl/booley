@@ -75,6 +75,7 @@ from tests.flows.sim.simulation_record_test_support import (
     _outer_claim,
     _parallel_environment,
     _ParallelExecution,
+    _remove_child_lease,
     _run_identity,
     _scheduled_attempt,
     _three_item_manifest,
@@ -710,11 +711,7 @@ def _lease_lost_execute(slots, child_finished, child_ids, scope_stop, tmp_path):
         scope = current_supervised_execution()
         assert scope is not None
         _wait_until(lambda: len(slots.snapshot(CLASS_MEMORY)[0]) == 3)
-        for token in slots.snapshot(CLASS_MEMORY)[0]:
-            if str(token.execution_id) == child_id:
-                with slots._lease_gate(token) as acquired:
-                    assert acquired
-                    token.path.unlink()
+        _remove_child_lease(slots, child_id)
         _wait_until(scope.cancelled)
         child_finished.set()
         if scope_stop == "coverage":
