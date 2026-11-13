@@ -24,8 +24,8 @@ instead of discarding them. The parent re-sends its pending copy to the child
 and then releases the child through a pipe; the child unblocks just before exec in
 `exec_agent`, so the signal acts on the agent's process exactly once.
 
-This module must import on Windows (`booley.py` imports `chat_cmd` for every
-command), so POSIX-only names are referenced inside functions only.
+This module must import on Windows (`booley.py` imports `chat_cmd` when `chat`
+is dispatched), so POSIX-only names are referenced inside functions only.
 """
 
 from __future__ import annotations
