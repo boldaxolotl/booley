@@ -681,7 +681,6 @@ def _seed_doctor_init_state(root: Path) -> None:
     dc.write_devcontainer(
         root, build_spec(dc.APP_CLAUDE, image=doctor.pi.project_image_name(root))
     )
-    (root / ".git/info/attributes").unlink()
     (root / ".git/info/exclude").write_text("/.devcontainer\n/home/\n")
     for key, value in (
         ("gc.worktreePruneExpire", "never"),

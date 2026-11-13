@@ -35,8 +35,6 @@ from booley.harness.setup.guidance_links import (
     guidance_links_current,
 )
 from booley.harness.setup.line_endings import (
-    LineEndingActionKind,
-    LineEndingActionState,
     LineEndingMode,
     LineEndingObservation,
     LineEndingObservationCode,
@@ -44,7 +42,6 @@ from booley.harness.setup.line_endings import (
     RepositoryLineEndingReport,
     line_ending_repository_display,
     reconcile_project_line_endings,
-    unknown_attributes_policy_details,
 )
 from booley.harness.setup.project_origin import read_project_origin
 from booley.harness.setup.scaffold import is_scaffold_core_description
@@ -193,7 +190,6 @@ def _report_unreadable_line_endings(
         LineEndingObservationCode.LOCAL_AUTOCRLF_UNREADABLE,
         LineEndingObservationCode.EOL_SCAN_UNREADABLE,
         LineEndingObservationCode.STATUS_UNREADABLE,
-        LineEndingObservationCode.CANDIDATE_UNSAFE,
     )
     if observation is None:
         return False
@@ -206,65 +202,6 @@ def _report_unreadable_line_endings(
     report.warn(
         f"line endings: {identity}: {detail}",
         check_id="git.line-endings-unreadable",
-        subject=repository.repository.role,
-    )
-    return True
-
-
-def _report_attributes_policy_risk(
-    repository: RepositoryLineEndingReport,
-    identity: str,
-    report: Findings,
-) -> bool:
-    policy_risk = _line_ending_observation(
-        repository,
-        LineEndingObservationCode.LOCAL_POLICY_MISSING,
-        LineEndingObservationCode.LEAKED_ROOT_POLICY,
-        LineEndingObservationCode.LOCAL_POLICY_CONFLICT,
-    )
-    if policy_risk is not None:
-        report.warn(
-            f"{identity}: {policy_risk.detail}",
-            f"inspect attributes policy, then re-run {runtime_context.booley_init_hint()}",
-            check_id="git.line-endings-unreadable",
-            subject=repository.repository.role,
-        )
-        return True
-    return _report_unreadable_line_endings(repository, identity, report)
-
-
-def _report_attributes_migration(
-    repository: RepositoryLineEndingReport,
-    identity: str,
-    report: Findings,
-) -> bool:
-    if any(
-        action.kind is LineEndingActionKind.MIGRATE_ATTRIBUTES
-        and action.state is LineEndingActionState.PLANNED
-        for action in repository.actions
-    ):
-        report.warn(
-            f"{identity}: repository-local line-ending default awaits Stealth opt-out migration",
-            f"{runtime_context.booley_init_hint()}   (migrates the local default to the root attributes policy)",
-            check_id="git.line-ending-migration",
-            subject=repository.repository.role,
-        )
-        return True
-    return False
-
-
-def _report_unknown_attributes_policy(
-    repository: RepositoryLineEndingReport,
-    identity: str,
-    report: Findings,
-) -> bool:
-    details = unknown_attributes_policy_details(repository)
-    if not details:
-        return False
-    report.warn(
-        f"{identity}: attributes policy inspection incomplete: {'; '.join(details)}",
-        "preserve existing attributes and worktree registrations; inspect the policy at its source",
-        check_id="git.attributes-policy-unknown",
         subject=repository.repository.role,
     )
     return True
@@ -302,7 +239,6 @@ def _report_repository_line_endings(
     identity = line_ending_repository_display(
         repository.repository.role, repository.repository.root
     )
-    unknown = _report_unknown_attributes_policy(repository, identity, report)
     crlf = _line_ending_observation(repository, LineEndingObservationCode.CRLF_MISMATCH)
     if crlf is not None:
         report.fail(
@@ -314,7 +250,7 @@ def _report_repository_line_endings(
         return
     if _report_autocrlf_risk(repository, identity, report):
         return
-    if _report_attributes_policy_risk(repository, identity, report):
+    if _report_unreadable_line_endings(repository, identity, report):
         return
     stale = _line_ending_observation(repository, LineEndingObservationCode.STALE_INDEX)
     if stale is not None:
@@ -322,8 +258,6 @@ def _report_repository_line_endings(
             f"{identity}: tracked files have stale Git index metadata after line-ending repair — status reports modifications although staged and unstaged diffs are empty",
             f"{runtime_context.booley_init_hint()}   (refreshes the affected tracked index entries)",
         )
-        return
-    if _report_attributes_migration(repository, identity, report) or unknown:
         return
     report.pass_(f"{identity}: working tree is container-safe (no CRLF checkouts, autocrlf off)")
 
