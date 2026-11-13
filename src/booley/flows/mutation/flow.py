@@ -64,6 +64,7 @@ from booley.flows.mutation.operators import (
 )
 from booley.flows.mutation.request import MutationRequest
 from booley.flows.mutation.score import default_min_detected
+from booley.flows.mutation.snippet import detection_snippet, tail, tail_snippet
 from booley.flows.mutation.variants import MutationVariantError, MutationVariantPlan
 from booley.flows.sim.adapter_contract import AdapterKind, PreparedSimulationWork
 from booley.flows.sim.backends.cocotb_results import (
@@ -269,9 +270,12 @@ class MutationResult:
     index: int
     detected: bool = False
     invalid: bool = False
+    #: The failure or timeout line of the run that detected the Mutant, else the
+    #: tail of a survivor's output (both capped at 200 chars), or the reason a
+    #: Mutant was inconclusive or invalid.
     sim_output_snippet: str = ""
     #: Project-relative path of this mutant's full simulator output. The
-    #: snippet above is 200 chars; for a mutant the testbench failed to kill
+    #: snippet above is short; for a mutant the testbench failed to kill
     #: there is no error text at all, so the log is the only place the run's
     #: behaviour can be inspected. Empty when the log could not be written.
     log_path: str = ""
@@ -306,6 +310,9 @@ class VariantSuiteVerdict:
     first_killing_test: str = ""
     inconclusive_reason: str = ""
     timed_out: bool = False
+    #: The run whose verdict this is; set only by ``_classify_variant_suite`` on
+    #: a detection, so the report snippet comes from the run that killed the Mutant.
+    detecting_run: MutationTestRun | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass
@@ -1306,13 +1313,13 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="mutation baseline did not elaborate from pristine source\n"
-                + _tail(elab_output, 50),
+                + tail(elab_output, 50),
                 detail=_failure_detail(
                     phase="baseline_elaboration",
                     reason="pristine source did not elaborate",
                     specs=[],
                     work_dir=plan.work_dir,
-                    log_tail=_tail(elab_output, 50),
+                    log_tail=tail(elab_output, 50),
                 ),
             )
 
@@ -1330,12 +1337,12 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"mutation baseline was inconclusive: {inconclusive}\n"
-                + _tail(output, 50),
+                + tail(output, 50),
             )
         if not self._baseline_suite_passed(runs):
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
-                report_text="mutation baseline failed on pristine source\n" + _tail(output, 50),
+                report_text="mutation baseline failed on pristine source\n" + tail(output, 50),
             )
         timeouts = {run.test_name: _mutant_timeout(run.duration_s) for run in runs}
         return Baseline(timeouts, cpp, version)
@@ -2036,9 +2043,14 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         ]
         if reasons:
             return VariantSuiteVerdict(inconclusive_reason="; ".join(reasons))
-        detected = [verdict for verdict in verdicts if verdict.detected]
+        detected = [
+            (verdict, run) for verdict, run in zip(verdicts, runs, strict=True) if verdict.detected
+        ]
+        if not detected:
+            return VariantSuiteVerdict()
         # A test that failed outright outranks one that merely timed out.
-        return min(detected, key=lambda verdict: verdict.timed_out, default=VariantSuiteVerdict())
+        verdict, run = min(detected, key=lambda pair: pair[0].timed_out)
+        return replace(verdict, detecting_run=run)
 
     @staticmethod
     def _baseline_suite_passed(runs: list[MutationTestRun]) -> bool:
@@ -2159,11 +2171,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         )
         combined = self._suite_output(runs)
         verdict = self._classify_variant_suite(runs)
-        snippet = (
-            f"sim outcome inconclusive: {verdict.inconclusive_reason}"
-            if verdict.inconclusive_reason
-            else _tail(combined, 5)[-200:]
-        )
+        snippet = self._variant_snippet(verdict, combined)
         return (
             MutationResult(
                 index=spec.index,
@@ -2177,12 +2185,27 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             verdict.inconclusive_reason,
         )
 
+    @staticmethod
+    def _variant_snippet(verdict: VariantSuiteVerdict, combined: str) -> str:
+        """The report snippet of a scored Mutant: its detecting run's failure, else the tail."""
+        if verdict.inconclusive_reason:
+            return f"sim outcome inconclusive: {verdict.inconclusive_reason}"
+        if verdict.detecting_run is not None:
+            run = verdict.detecting_run
+            return detection_snippet(
+                run.test_name,
+                run.output,
+                timed_out=verdict.timed_out,
+                killing_test=verdict.first_killing_test,
+            )
+        return tail_snippet(combined)
+
     def _invalid_build(self, spec: MutationSpec, elab_output: str) -> MutationResult:
         """The result of a Mutant whose build failed: reported ``invalid``, never scored."""
         return MutationResult(
             index=spec.index,
             invalid=True,
-            sim_output_snippet="variant did not elaborate: " + _tail(elab_output, 5)[-200:],
+            sim_output_snippet="variant did not elaborate: " + tail_snippet(elab_output),
             log_path=self._persist_mutant_log(spec.index, elab_output),
         )
 
@@ -2726,14 +2749,6 @@ def _timeout_output(exc: subprocess.TimeoutExpired) -> str:
             continue
         parts.append(stream.decode("utf-8", "replace") if isinstance(stream, bytes) else stream)
     return "".join(parts)
-
-
-def _tail(text: str, max_lines: int) -> str:
-    """Return the last *max_lines* of *text* as a single string."""
-    if not text:
-        return ""
-    lines = text.splitlines()
-    return "\n".join(lines[-max_lines:])
 
 
 if __name__ == "__main__":
