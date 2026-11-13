@@ -40,6 +40,7 @@ from booley.flows.sim.campaign_files import (
 )
 from booley.flows.sim.campaign_reports import is_report_link
 from booley.flows.sim.coverage_json import content_digest
+from booley.flows.sim.record_layout import RECORD_DIRECTORY, refuse_older_manifest_path
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.file_lock import nonblocking_file_lock
 
@@ -83,7 +84,7 @@ _T = TypeVar("_T", bound=SimulationCampaignDocument)
 _SUMMARY_SCHEMA = "booley.simulation-campaign-summary/v1"
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _COMMON_BUILD_FIELDS = (
-    "campaign_id",
+    "simulation_record_id",
     "manifest_sha256",
     "workload_sha256",
     "build_variant_id",
@@ -131,7 +132,7 @@ class SharedBuildRecovery:
 
 
 def _invocation_of(campaign_root: Path) -> Path | None:
-    """The invocation directory holding ``<invocation>/targets/<target>/campaign``, if laid out so."""
+    """The invocation directory holding ``<invocation>/targets/<target>/record``, if laid out so."""
     parents = campaign_root.parents
     if len(parents) > 2 and parents[1].name == "targets":
         return parents[2]
@@ -343,7 +344,7 @@ class CampaignStore:
             raise SimulationCampaignIntegrityError("shared build variant is not in manifest")
         eda = cast(Mapping[str, str], workload["eda"])
         return {
-            "campaign_id": manifest.document["campaign_id"],
+            "simulation_record_id": manifest.document["simulation_record_id"],
             "manifest_sha256": self.manifest_sha256(),
             "workload_sha256": fingerprints["workload_sha256"],
             "build_variant_id": build_variant_id,
@@ -712,7 +713,7 @@ class CampaignStore:
         )
         document: dict[str, object] = {
             "$schema": _SUMMARY_SCHEMA,
-            "campaign_id": manifest.document["campaign_id"],
+            "campaign_id": manifest.document["simulation_record_id"],
             "manifest_sha256": manifest_sha256,
             "workload_sha256": cast(Mapping[str, str], manifest.document["fingerprints"])[
                 "workload_sha256"
@@ -766,14 +767,15 @@ def collect_pre_sim_firings(
             raise SimulationCampaignIntegrityError("prerequisite hook evidence exceeds DAG bound")
         allowed_pops -= 1
         path, expected, ancestors = pending.pop()
-        if path.name != "manifest.json" or path.parent.name != "campaign":
+        refuse_older_manifest_path(path)
+        if path.name != "manifest.json" or path.parent.name != RECORD_DIRECTORY:
             raise SimulationCampaignIntegrityError("expected exact Campaign manifest path")
         store = CampaignStore(path.parent, booley_dir=booley_dir)
         manifest = store.load_manifest()
         digest = manifest_digest(manifest)
         if expected is not None and digest != expected:
             raise SimulationCampaignIntegrityError("prerequisite hook manifest digest disagrees")
-        campaign_id = str(manifest.document["campaign_id"])
+        campaign_id = str(manifest.document["simulation_record_id"])
         if campaign_id in ancestors:
             raise SimulationCampaignIntegrityError("cyclic prerequisite hook evidence")
         if path in visited:
@@ -974,7 +976,7 @@ def _is_recorded_reuse_hit(build: Mapping[str, object]) -> bool:
 def _validate_result_attempt_binding(attempt: SimulationAttempt, result: SimulationResult) -> None:
     left, right = attempt.document, result.document
     fields = (
-        "campaign_id",
+        "simulation_record_id",
         "manifest_sha256",
         "workload_sha256",
         "work_item_id",

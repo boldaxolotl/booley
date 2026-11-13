@@ -22,6 +22,7 @@ from booley.harness.setup.common import InitContext
 from booley.runtime import host_base_acquisition as owner
 from booley.runtime import interactive_docker
 from booley.runtime.docker_build import DockerBuildResult
+from booley.runtime.packaged_docs import MissingShippedDocError
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
 
 
@@ -1193,6 +1194,16 @@ class TestWheelFailureReport:
         pyver = f"python{sys.version_info.major}.{sys.version_info.minor}-venv"
         assert f"apt install {pyver}" in out
         assert "--no-isolation" in out
+
+    def test_missing_shipped_doc_does_not_blame_the_build_module(self, capsys):
+        ctx = InitContext(project_root=Path("/tmp/x"))
+        init_docker_image._report_wheel_failure(
+            ctx, MissingShippedDocError("shipped doc source is missing: docs/user/X.md")
+        )
+
+        out = capsys.readouterr().out
+        assert "docs/user/X.md" in out
+        assert "pip install build" not in out
 
     def test_missing_build_module_keeps_its_own_fix(self, capsys):
         ctx = InitContext(project_root=Path("/tmp/x"))

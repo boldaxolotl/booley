@@ -15,8 +15,12 @@ If you suspect the agent planted Git configuration or hooks, read the
 [known Sandbox escape warning](https://booley.dev/docs/sandbox/#known-sandbox-escape-through-shared-git-metadata)
 before you run Doctor on the host: host-side Doctor can trigger it.
 
-Windows-only first-run problems are on the [Windows](https://booley.dev/docs/windows/)
-page.
+<details markdown>
+<summary>On Windows</summary>
+
+First-run problems are on the [Windows](https://booley.dev/docs/windows/) page.
+
+</details>
 
 ## Installation and editor integration
 
@@ -46,10 +50,18 @@ records which installation owns the host and refuses commands from any other:
 this Booley process does not match the canonical host installation (...)
 ```
 
-Run `type -a booley` (`where.exe booley` on Windows), then remove or upgrade
+Run `type -a booley`, then remove or upgrade
 every install listed before the one you want. Compare `booley --version` with
 `pipx list` or `uv tool list`. Then run `booley bootstrap --update` to record
 the right installation; do the same after an intentional upgrade.
+
+<details markdown>
+<summary>On Windows</summary>
+
+Run `where.exe booley` instead of `type -a booley`. See
+[Windows](https://booley.dev/docs/windows/).
+
+</details>
 
 After a distribution Python upgrade, run `pipx reinstall-all` first, then
 `booley bootstrap --update`.
@@ -222,14 +234,60 @@ They share one worktree. Sessions started with `booley chat` get their own
 automatically: while the main checkout is in use, the next one starts in a
 worktree `s<N>`. A plain `claude` tab or VS Code panel started before any
 Booley tool call is not counted, so it may still share the main checkout. Start
-those in a worktree: ask the agent to create one (`booley worktree new <name>`
-in the Sandbox), then start Goal Mode there with `/booley-goal`. The Dashboard
-warns about a shared worktree but doesn't separate the agents.
+such a session in a worktree from a container terminal: run
+`booley chat --new-worktree`, or run `booley worktree new <name>`, `cd` to the
+path it prints, and start `claude` there. Asking an agent that already runs in
+the main checkout to create a worktree is not enough: its Booley tool calls
+keep running on the main checkout. A VS Code panel cannot be started in a
+worktree that way, so use a terminal with `booley chat` for a second editing session,
+and start Codex with `booley chat` too. See
+[Several agents at once](https://booley.dev/docs/usage/#several-agents-at-once).
+The Dashboard warns about a shared worktree but doesn't separate the agents.
 
-If `booley chat` keeps opening worktrees because a Codex session ended without
-notice, Booley counts the main checkout as in use until that session goes quiet
-(`[goals] quiet_after`, two hours by default). Run `booley chat --here` to use
-the main checkout now.
+### `booley chat` starts in a worktree although the main checkout looks free
+
+Read the reason at the end of the `Booley session S<N> works in worktree ...`
+line:
+
+- `the main checkout is in use by another booley chat`: another `booley chat`
+  whose agent runs in the main checkout is still running, perhaps in another
+  terminal or stopped with Ctrl-Z. That includes one started with
+  `--new-worktree` or under `[chat] worktree = "always"` while the main checkout
+  was free: it holds the main checkout until its session ends, although its
+  agent works in a worktree. A `booley chat` that `auto` placed in a worktree
+  holds nothing. A `booley chat` that
+  crashed or was killed does not cause this, because the hold ends when its
+  process exits, however it exits. If the launch also printed
+  `NOTE: main-checkout lock unavailable: ...`, Booley could not open or lock
+  `runtime/chat-main.lock` in the Main Booley Directory and counts the main
+  checkout as in use; fix the error the note names.
+- `Session S<N> is working in the main checkout`: that session made a Booley
+  tool call from the main checkout and has not ended. A Codex started by hand, or a
+  session Booley could not tell apart by process, that ended without notice counts as
+  in use until it goes quiet (`[goals] quiet_after`, two hours by default).
+
+Either way, `booley chat --here` starts in the main checkout now.
+
+### `booley worktree rm` refuses a worktree that is locked by Git
+
+```text
+... is locked by Git (initializing)
+```
+
+`booley worktree gc` keeps such a worktree too. Someone ran
+`git worktree lock`, or a worktree creation stopped abruptly while
+`git worktree add` was checking out (killed with SIGKILL, or the Sandbox
+stopped), which leaves the reason `initializing`. Git removes that lock itself
+when the creation is merely interrupted.
+
+Make sure no `booley chat` or `booley worktree new` is still creating the
+worktree. Then, in the Sandbox, either run `git worktree unlock <path>` followed
+by `booley worktree rm <name>`, or run `booley worktree rm --force <name>`;
+`--force` also removes a Git-locked worktree, and a half-made checkout may
+otherwise be refused again for uncommitted changes.
+
+If `booley worktree rm` itself was interrupted, run it again with the same options:
+it finishes the removal.
 
 ### Worktrees show as `prunable` on the host
 
@@ -239,17 +297,35 @@ commands inside the Sandbox, and remove a worktree with
 `booley worktree rm <name>` (see the
 [CLI reference](https://booley.dev/docs/cli-reference/#worktrees)).
 
-### `booley worktree new` fails in the post-setup hook
+### A new worktree fails in the post-setup hook
 
 ```text
 ERROR: post-setup hook failed (rc=3); log: .../.booley/worktrees/.logs/<name>.log
 ```
+
+The same error appears from `booley worktree new` and from `booley chat` when it
+creates the worktree. Under `booley chat`, the agent does not start and
+`booley chat` exits 1.
 
 Booley removed the worktree and its `booley/<name>` branch, so nothing is left
 to clean up, unless the error also says `outer rollback failed` or the hook
 committed on `booley/<name>`, which Booley keeps. Read the log the error names
 for the hook's output. Fix `.booley/hooks/post-setup.*` and run the command
 again. The same cleanup follows a failed submodule fill.
+
+`booley chat` can also stop before setup starts:
+
+```text
+ERROR: cannot name a worktree for this session: ... Run booley chat --here to use the main checkout.
+```
+
+Booley could not reserve the session handle that names the worktree. Run
+`booley chat --here`, or try again once other launches have finished.
+
+If you press Ctrl-C during setup, `booley chat` prints
+`Worktree setup interrupted; <name> was rolled back.` and nothing is left. If it
+prints `Worktree setup interrupted; <name> may be left behind.` instead, run the
+removal steps printed below it.
 
 <details markdown>
 <summary>In stealth mode</summary>
@@ -266,10 +342,17 @@ Checkout starts from that repository's last commit. See
 This happens only in [Stealth Mode](https://booley.dev/docs/stealth/), where
 the Booley Directory is its own Git repository.
 
-`booley worktree new` warned that files were left out. A Paired Checkout starts
-from the last commit of your Booley Directory's repository, so uncommitted and
-untracked files there are not copied. Commit the files the warning names, then
-create the worktree again with a new name.
+`booley chat` or `booley worktree new` warned that files were left out:
+
+```text
+WARNING: the Paired Checkout was made from the last commit of <dir>; N uncommitted or untracked file(s) there were left out: ... Commit them in <dir> to include them in later worktrees.
+```
+
+A Paired Checkout starts from the last commit of your Booley Directory's
+repository, so uncommitted and untracked files there are not copied. Commit the
+files the warning names, then create the worktree again with a new name. Under
+`booley chat`, commit them, end the session, discard its worktree, and start
+`booley chat` again.
 
 ### `git` cannot see files under `.booley/`
 
@@ -291,6 +374,31 @@ git -C .booley checkout -- booley.toml
 
 If `git -C .booley rev-parse --git-dir` fails, those files aren't under version
 control at all: copy a file aside before you edit it.
+
+### A commit is rejected for a banned term
+
+```text
+commit-msg: Stealth Mode rejected this commit message; it contains banned terms:
+  - 'booley' in the subject
+  - 'booley' on line 3
+Reword the message, or, if a term is an ordinary name in this design, remove it from [stealth] banned_words or banned_substrings in the project config TOML.
+Your message was kept unchanged in "/path/to/repo/.git/COMMIT_EDITMSG".
+```
+
+[Stealth Mode](https://booley.dev/docs/stealth/) rejects a commit message that
+contains a banned word instead of rewriting it, and an attribution footer
+(`Co-Authored-By:`, `Generated with <tool>`) is rejected first. Reword the
+message, or remove the term from `[stealth] banned_words` / `banned_substrings`
+in `.booley/booley.toml` if it is an ordinary name in your design. Your text
+stays in the file the error names.
+
+To retry, rerun the same `git commit` command with its options, replacing
+`-m` or `-F` with `-v -e -F "<that path>"`; the editor opens on the kept message.
+[Stealth Mode](https://booley.dev/docs/stealth/#commit-messages) covers merge
+commits and the rest.
+
+`BOOLEY_SKIP_COMMIT_VALIDATION=1` doesn't bypass this check. If the hook still
+replaces words with `redacted`, run `booley init` to install the current hook.
 
 ### Doctor reports a Sandbox whose egress mode differs from the host
 
@@ -323,13 +431,28 @@ the Sandbox spec on the host:
 booley init --seed --project <root>
 ```
 
+Doctor names one file per store, so rerun it until it passes. Removing a
+pending refresh file drops its rollback snapshot and its parked prior Sandbox.
+`init --seed` regenerates the spec.
+
+<details markdown>
+<summary>On Windows</summary>
+
 After upgrading on Windows, Booley names a Project Root without regard to case.
 Files written by earlier releases are not migrated, so each Project needs this
-once. Doctor names one file per store, so rerun it until it passes. Removing a
-pending refresh file drops its rollback snapshot and its parked prior Sandbox;
-removing a pending invalidation file skips its cleanup of the Project's FlexNet
-relay containers and networks, which then need removing by hand in Docker.
-`init --seed` regenerates the spec.
+once. See [Windows](https://booley.dev/docs/windows/).
+
+</details>
+
+<details markdown>
+<summary>With host-installed licensed tools</summary>
+
+Removing a pending invalidation file skips its cleanup of the Project's FlexNet
+relay containers and networks, which then need removing by hand in Docker. See
+[Commercial EDA provisioning](https://booley.dev/docs/sandbox/#commercial-eda-provisioning)
+and the [Vivado host-provisioning policy](https://booley.dev/docs/supported-eda-tools/#vivado-host-provisioning-policy).
+
+</details>
 
 ### Doctor reports that devcontainer.json differs
 
@@ -353,8 +476,16 @@ Deleting a Project's folder leaves its Sandbox Images and agent state volumes in
 Docker. `booley projects forget <root>` drops the Project and its image tag,
 and lists what remains with sizes. `booley projects forget --purge <root>`,
 with the exact absolute root, also removes the unused images and state volumes,
-including the agent's saved login and history. Both refuse while the Project
-still has a Grant for a host EDA tool.
+including the agent's saved login and history.
+
+<details markdown>
+<summary>With host-installed licensed tools</summary>
+
+Both commands refuse while the Project
+still has a Grant for a host EDA tool. See
+[Commercial EDA provisioning](https://booley.dev/docs/sandbox/#commercial-eda-provisioning).
+
+</details>
 
 For images left over from earlier forgets, run `booley projects prune-keepers`,
 then rerun it with the `--confirm <digest>` it prints. Images marked
@@ -441,16 +572,23 @@ nonzero exit code without a sentinel is a failure, not inconclusive.
 To check:
 
 - Run `booley doctor`. It warns `sim.pass-sentinel-missing` when none of a
-  sim Target's testbench files contains the pass sentinel literally. It
-  skips Cocotb Targets, which take their verdict from cocotb, and with your
-  own `pass_sentinels` it only adds a note, because the testbench may build
-  the message at run time. If the warning says the testbench fileset is
-  Python, the Target is missing `cocotb_module`; see
-  [Cocotb Targets](https://booley.dev/docs/targets/#cocotb-targets-python-testbenches).
+  sim Target's testbench files contains the pass sentinel literally. With
+  your own `pass_sentinels` it only adds a note, because the testbench may
+  build the message at run time.
 - Open the Test Run's log (`…/evidence/*-run.log`, see
   [Reading results](https://booley.dev/docs/flow-sim/#reading-results)) and
   search it for the sentinel. A testbench that ends on a bare `$finish`
   prints none.
+
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+Doctor skips Cocotb Targets, which take their verdict from cocotb. If the
+warning says the testbench fileset is Python, the Target is missing
+`cocotb_module`; see
+[Cocotb Targets](https://booley.dev/docs/targets/#cocotb-targets-python-testbenches).
+
+</details>
 
 To fix it, do one of these:
 
@@ -468,9 +606,15 @@ why no waveform was kept. Fix the cause, often `trace_args` or `trace_files`
 (see [Waveforms](https://booley.dev/docs/flow-sim/#waveforms)), or rerun
 without `--trace`. A failure or timeout keeps its verdict.
 
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
 A Cocotb Target uses no sentinels: its Test Run is inconclusive when cocotb's
 result file is missing or doesn't report that test as passed or failed, and
-its log contains `cocotb sim INCONCLUSIVE (<reason>)`.
+its log contains `cocotb sim INCONCLUSIVE (<reason>)`. See
+[Cocotb Targets](https://booley.dev/docs/targets/#cocotb-targets-python-testbenches).
+
+</details>
 
 ### Simulation stalls at time zero without results
 
@@ -599,9 +743,9 @@ and synthesis Targets at the wrapper. Simulation is unaffected.
 The `slang` frontend is stricter than Verilator, and its error can name the
 wrong thing. Known case: `$size()` on an array of interface instances
 (`.S_COUNT($size(stat_if))`) fails with
-`error: 'stat_if' cannot be used in an expression`. Put the count in a
-`localparam` and use it in both the declaration and the instantiation. If you
-don't need `slang`, stay on the default `sv2v` frontend; see
+`<file>:<line>: ERROR: 'stat_if' cannot be used in an expression`. Put the
+count in a `localparam` and use it in both the declaration and the
+instantiation. If you don't need `slang`, stay on the default `sv2v` frontend; see
 [the frontends](https://booley.dev/docs/supported-eda-tools/#synth-rtl-frontend-sv2v-vs-slang).
 
 ### Yosys rejects transpiled Verilog after `sv2v` succeeds

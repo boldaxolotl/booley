@@ -438,6 +438,28 @@ class TestRunSubprocess:
         assert len(out.encode("utf-8")) <= cap
 
 
+def test_mutation_watchdog_follows_resolved_timeout(tmp_path):
+    mcp_stubs = {
+        "mcp": MagicMock(),
+        "mcp.server": MagicMock(),
+        "mcp.server.models": MagicMock(),
+        "mcp.server.request_state": MagicMock(),
+        "mcp.server.stdio": MagicMock(),
+        "mcp.types": MagicMock(),
+    }
+    with patch.dict(sys.modules, mcp_stubs):
+        from booley.mcp.server import _mcp_tool_timeout_seconds as watchdog
+
+    mutation_def = {"default_timeout": 1800}
+    project = {"work_dir": str(tmp_path)}
+    # No override: the run's 30-minute default, exactly the outer wait it always had.
+    assert watchdog("mutation", project, mutation_def) == 1800
+    # A larger budget (which also raises the --count auto cap) is not cut off at 30 minutes.
+    assert watchdog("mutation", {**project, "timeout_ms": 3_600_000}, mutation_def) == 3600
+    # A smaller one never shrinks the wait below the Flow's default.
+    assert watchdog("mutation", {**project, "timeout_ms": 60_000}, mutation_def) == 1800
+
+
 class TestMcpToolTimeoutSeconds:
     @pytest.fixture(autouse=True)
     def _import(self):
@@ -472,19 +494,19 @@ class TestMcpToolTimeoutSeconds:
 
     def test_simulate_configured_default_gets_small_margin(self, tmp_path):
         with patch(
-            "booley.flows.sim.flow.resolve_sim_timeout_ms",
-            return_value=600_000,
+            "booley.flows.sim.config.resolve_sim_timeout_ms",
+            return_value=900_000,
         ):
             timeout = self._mcp_tool_timeout_seconds(
                 "sim",
                 {"work_dir": str(tmp_path), "trace": False},
                 {"default_timeout": 600},
             )
-        assert timeout == 4830
+        assert timeout == 5130
 
     def test_simulate_campaign_budget_scales_by_work_units(self):
         with patch(
-            "booley.flows.sim.flow.resolve_sim_campaign_work_units",
+            "booley.flows.sim.watchdog_sizing.resolve_sim_campaign_work_units",
             return_value=4,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -496,7 +518,7 @@ class TestMcpToolTimeoutSeconds:
 
     def test_simulate_trace_margin_scales_by_work_units(self):
         with patch(
-            "booley.flows.sim.flow.resolve_sim_campaign_work_units",
+            "booley.flows.sim.watchdog_sizing.resolve_sim_campaign_work_units",
             return_value=3,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -509,7 +531,7 @@ class TestMcpToolTimeoutSeconds:
     def test_coverage_trace_budget_adds_conversion_per_unit(self):
         def coverage_timeout(trace: bool) -> int:
             with patch(
-                "booley.flows.sim.flow.resolve_sim_campaign_work_units",
+                "booley.flows.sim.watchdog_sizing.resolve_sim_campaign_work_units",
                 return_value=2,
             ):
                 return self._mcp_tool_timeout_seconds(
@@ -524,7 +546,7 @@ class TestMcpToolTimeoutSeconds:
         from booley.flows.sim.mode import SimulationMode
 
         with patch(
-            "booley.flows.sim.flow.resolve_sim_campaign_work_units",
+            "booley.flows.sim.watchdog_sizing.resolve_sim_campaign_work_units",
             return_value=3,
         ) as resolve_units:
             timeout = self._mcp_tool_timeout_seconds(
@@ -542,7 +564,7 @@ class TestMcpToolTimeoutSeconds:
     def test_watchdog_sizing_sees_the_requested_seed(self):
         """``--seed random`` splits Cocotb batches, so sizing must know about it."""
         with patch(
-            "booley.flows.sim.flow.resolve_sim_campaign_work_units",
+            "booley.flows.sim.watchdog_sizing.resolve_sim_campaign_work_units",
             return_value=3,
         ) as resolve_units:
             self._mcp_tool_timeout_seconds(
@@ -576,7 +598,7 @@ class TestMcpToolTimeoutSeconds:
         )
         monkeypatch.setenv("BOOLEY_STATE_FILE", str(state))
         with patch(
-            "booley.flows.sim.flow.resolve_sim_campaign_work_units",
+            "booley.flows.sim.watchdog_sizing.resolve_sim_campaign_work_units",
             return_value=1,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -778,7 +800,7 @@ class TestMcpToolTimeoutSeconds:
             encoding="utf-8",
         )
         with patch(
-            "booley.flows.sim.flow.resolve_sim_campaign_work_units",
+            "booley.flows.sim.watchdog_sizing.resolve_sim_campaign_work_units",
             return_value=3,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -982,15 +1004,15 @@ class TestResolveTranscriptDir:
     def test_creates_dir_under_logs(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
         counts = self._new_counts()
-        result = self._resolve("mutation_tester", counts)
-        assert result == tmp_path / ".runtime" / "transcripts" / "mutation_tester" / "1"
+        result = self._resolve("reviewer", counts)
+        assert result == tmp_path / ".runtime" / "transcripts" / "reviewer" / "1"
         assert result.is_dir()
 
     def test_sequential_numbering(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
         counts = self._new_counts()
-        r1 = self._resolve("mutation_tester", counts)
-        r2 = self._resolve("mutation_tester", counts)
+        r1 = self._resolve("reviewer", counts)
+        r2 = self._resolve("reviewer", counts)
         assert r1.name == "1"
         assert r2.name == "2"
 
@@ -998,7 +1020,7 @@ class TestResolveTranscriptDir:
         """Must still return a valid dir (not None) even without BOOLEY_LOGS_DIR."""
         monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
         counts = self._new_counts()
-        result = self._resolve("mutation_tester", counts)
+        result = self._resolve("reviewer", counts)
         assert result.is_dir()
         assert "transcripts" in str(result)
 
@@ -1015,7 +1037,7 @@ class TestMcpExposureFiltering:
         monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
 
-        assert catalog.tool_visible("mutation_tester", catalog.Exposure.from_mapping(os.environ))
+        assert catalog.tool_visible("mutation", catalog.Exposure.from_mapping(os.environ))
         assert catalog.tool_visible("reviewer", catalog.Exposure.from_mapping(os.environ))
         assert catalog.tool_visible("sim", catalog.Exposure.from_mapping(os.environ))
         assert catalog.tool_visible("submit_run_report", catalog.Exposure.from_mapping(os.environ))
@@ -1026,7 +1048,7 @@ class TestMcpExposureFiltering:
         monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
 
         assert catalog.tool_visible("sim", catalog.Exposure.from_mapping(os.environ))
-        assert catalog.tool_visible("mutation_tester", catalog.Exposure.from_mapping(os.environ))
+        assert catalog.tool_visible("mutation", catalog.Exposure.from_mapping(os.environ))
         assert catalog.tool_visible("reviewer", catalog.Exposure.from_mapping(os.environ))
         assert catalog.status_visible(catalog.Exposure.from_mapping(os.environ))
         bwave_tools = [
@@ -1922,7 +1944,7 @@ def test_cycle_card_fits_exact_stream_boundary_until_completion_append(
 ):
     from types import SimpleNamespace
 
-    from booley.flows.sim.flow import _campaign_report_lines
+    from booley.flows.sim.campaign_presentation import _campaign_report_lines
     from booley.flows.test_runs import build_test_run
     from booley.mcp.server import _format_mcp_tool_result
     from booley.runtime.endpoint_execution import EndpointOutcome, normalize_completion_error

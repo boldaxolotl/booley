@@ -88,7 +88,10 @@ def _hook():
     ("target", "expected"),
     [
         ("TESTS.md#seeds-seed-default_seed", "TESTS.md#seeds-seed-default_seed"),
-        ("../internals/WHY.md#why-docker", "{blob}docs/internals/WHY.md#why-docker"),
+        (
+            "../internals/CONTRIBUTING.md#getting-set-up",
+            "{blob}docs/internals/CONTRIBUTING.md#getting-set-up",
+        ),
         ("../../README.md", "{blob}README.md"),
         ("https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#a", "USAGE.md#a"),
         (f"{SITE_URL}docs/usage/#a", "USAGE.md#a"),
@@ -117,7 +120,7 @@ def test_hook_points_doc_links_where_they_work_on_the_site(
         ("../user/USAGE.md#a", "USAGE.md#a"),
         ("../user/assets/architecture.svg", "assets/architecture.svg"),
         ("ARCHITECTURE.md#overview", "ARCHITECTURE.md#overview"),
-        ("WHY.md#why-docker", "{blob}docs/internals/WHY.md#why-docker"),
+        ("CONTRIBUTING.md#getting-set-up", "{blob}docs/internals/CONTRIBUTING.md#getting-set-up"),
     ],
 )
 def test_hook_points_contributor_doc_links_where_they_work_on_the_site(
@@ -133,7 +136,7 @@ def test_hook_points_contributor_doc_links_where_they_work_on_the_site(
 
 
 def test_hook_leaves_fenced_code_alone() -> None:
-    fenced = "```\n[w](../internals/WHY.md)\n```"
+    fenced = "```\n[w](../internals/CONTRIBUTING.md)\n```"
 
     assert _hook().rewrite_links(fenced, PurePosixPath("docs/user")) == fenced
 

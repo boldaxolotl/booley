@@ -1,1281 +1,707 @@
 # Built-in Booley Flow implementation
 
-This document is the implementation and evidence-contract reference for
-Booley's built-in deterministic Flows. It follows a FuseSoC Target through
-command generation, execution, verdict interpretation, and durable evidence.
-The public invocation and result interface lives in
-[FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md).
+How Booley's built-in Booley Flows (`sim`, `lint`, `synth`, `fpga`, `mutation`) turn
+a FuseSoC Target into an EDA command, and the EDA output back into evidence,
+and why they are built that way. It is for contributors and agents changing
+Flow code. Simulation has its own page,
+[FLOW_IMPLEMENTATION_SIM.md](FLOW_IMPLEMENTATION_SIM.md), because it is the
+largest Flow; this page covers what the Flows share plus `lint`, `synth`,
+`fpga`, and `mutation`. To run a Flow, read [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and
+its per-Flow pages instead.
 
-## Document boundary
-
-The documentation is split at the public-interface seam:
-
-| Document | Owns |
+| Document | Covers |
 |---|---|
-| **This document** | The implementation and evidence contracts of the built-in `sim`, `lint`, `synth`, and `fpga` Booley Flows |
-| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and the per-Flow pages ([FLOW-SIM.md](../user/FLOW-SIM.md), [FLOW-LINT.md](../user/FLOW-LINT.md), [FLOW-SYNTH.md](../user/FLOW-SYNTH.md), [FLOW-FPGA.md](../user/FLOW-FPGA.md)) | How to run those built-in Flows and interpret their verdicts and Criteria |
-| [FLOW_REPORTS.md](FLOW_REPORTS.md) | Report locations, JSON schemas, and Campaign file layouts of those built-in Flows |
-| [MCP-TOOLS.md](MCP-TOOLS.md) | The generic MCP tool framework: discovery, lifecycle, base classes, result routing, and Custom Flows |
-| [CONFIG.md](../user/CONFIG.md) | The Project-wide `booley.toml` surface: exact keys, defaults, and examples; each Flow page owns its `[flows.*]` keys |
-| [TARGETS.md](../user/TARGETS.md) | The `.core` design description and Targets |
-| [TESTS.md](../user/TESTS.md) | `tests.toml`: Tests, Test Variants, and seeds |
-| [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) | The source-of-truth matrix of supported EDA engines, provisioning, trace support, and installation requirements |
+| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md), [FLOW-SIM.md](../user/FLOW-SIM.md), [FLOW-LINT.md](../user/FLOW-LINT.md), [FLOW-SYNTH.md](../user/FLOW-SYNTH.md), [FLOW-FPGA.md](../user/FLOW-FPGA.md) | Running each Flow, its options, `[flows.*]` keys, and verdicts |
+| [FLOW_REPORTS.md](FLOW_REPORTS.md) | Report locations, JSON fields, and Simulation Campaign file layout |
+| [MCP-TOOLS.md](MCP-TOOLS.md) | The MCP surface, Custom Flows, and Specialists |
+| [SPECIALIST_IMPLEMENTATION.md](SPECIALIST_IMPLEMENTATION.md) | Reviewer and Coverage Analyst internals |
+| [JOB_RECORDS.md](JOB_RECORDS.md) | How a Flow run is tracked as a Job |
+| [TARGETS.md](../user/TARGETS.md), [TESTS.md](../user/TESTS.md), [CONFIG.md](../user/CONFIG.md) | The `.core` Targets, `tests.toml`, and `booley.toml` |
+| [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) | Which EDA tools each Flow supports and how they are provisioned |
 
-Public behavior is mentioned only where an implementation invariant needs
-context. Use `FLOW_REFERENCE.md` to operate a built-in Flow, `CONFIG.md` to
-configure a project, and `MCP-TOOLS.md` to implement or extend the generic MCP
-tool abstraction.
+## From a Target to a command: FuseSoC and Edalize
 
-## Overview
+Booley does not adapt each project's Makefiles and Tcl scripts. The design is
+described once in a FuseSoC `.core` file, and every Flow run is generated from
+it, so the agent reaches every EDA tool through one interface instead of
+guessing at per-project conventions. That is why porting a project to Booley
+means porting its build description ([SETUP.md](../user/SETUP.md)).
 
-Booley owns a unified build system built on **FuseSoC** rather than adapting each
-project's Makefiles and TCL scripts. The design is described once in a `.core`
-file, and every Flow run is generated from that description. Existing projects
-therefore port their build description when adopting Booley; [SETUP.md](../user/SETUP.md)
-covers that process.
+A `.core` file (CAPI2, FuseSoC's YAML schema) declares Targets. A
+[Target](../GLOSSARY.md#configuration) fixes everything needed to build the
+design: filesets (with `file_type` and `tags: [tb]` testbench markers), typed
+parameters, the toplevel, and `flow_options.tool`, the EDA tool FuseSoC resolves
+for (Verilator, Icarus, Verible, Yosys, or Vivado). `--target` names one or more
+Targets; when it is omitted, the one eligible Target is selected, but only for
+built-in Flows: a Custom Flow requires an explicit Target by default. A Target's
+identity is its declaring core's VLNV (the `.core` file's
+Vendor:Library:Name:Version identifier) plus its Target name; the Flow receives
+the shortest selector that is unambiguous in the Project, the bare name when
+unique, otherwise a VLNV suffix and `#name`. Goals and evidence compare
+identity, while commands render selectors. The CLI (`booley flow sim --target
+sim_core`) and the MCP call run the same Flow code.
 
-Owning the build system is what buys the rest: the agent reaches every EDA tool through one interface instead of guessing at per-project conventions, and **Goals** (the mandatory conditions of Goal Mode; see the [shared glossary](../GLOSSARY.md)) are judged from bound evidence in those results, which is also what makes the whole thing usable in CI.
+`booley.fusesoc.fusesoc_registry` resolves a Target in two steps. A cheap,
+side-effect-free YAML read lists Target names, to validate `--target` and
+expand per-Target Criteria. Then `fusesoc run --setup`, run as a subprocess
+inside the Sandbox, resolves filesets, parameters, and the `depends` graph
+into an EDAM (EDA Metadata) file that Booley reads rather than builds. The
+module's rule is "list names from data you trust; resolve through the FuseSoC
+program": Booley never reimplements FuseSoC's resolution.
 
-A deterministic **Booley Flow** has to do two things: turn the caller's request into a real EDA tool invocation, and turn the result back into facts Booley can reason about. This doc covers both halves for the built-ins: the **invocation** half (FuseSoC and Edalize generate the command) and the **interpretation** half (the per-Flow evidence contract). See [ARCHITECTURE.md](ARCHITECTURE.md) for where this layer sits in the whole system.
+**Command generation is delegated; result interpretation is not.** Edalize,
+FuseSoC's backend library, emits the EDA tool's Makefile or Tcl script, never
+the verdict. Booley runs that command and does all interpretation itself: the
+Simulation Flow reads its verdict sentinels, the Lint Flow parses and
+deduplicates findings, the FPGA Flow parses Vivado reports. That split is what
+makes the evidence contracts below possible. How each Flow gets its command:
 
-Read [From `--target` to a command](#from---target-to-a-command-fusesoc-and-edalize)
-and [Booley Flow evidence contracts](#booley-flow-evidence-contracts) in order: they
-explain how a Target becomes a command and what evidence each built-in Booley Flow
-must return. The remaining sections are per-Flow references for `sim`,
-`lint`, `synth`, and `fpga`.
+| Flow | Command source |
+|---|---|
+| `sim`, `lint` | The build directory `fusesoc run --setup` leaves after Edalize's `configure()`. |
+| `synth` | A Yosys/OpenROAD Makefile Booley generates, because Edalize has no Yosys ASIC-synthesis flow (only the FPGA-oriented `icestorm` and `trellis`). |
+| `fpga` | A Vivado EDAM Booley rebuilds from the resolved Target (`flows/fpga/backends/vivado/edam.py`), so it can apply PPA profiles and its own checks; Edalize's `vivado` flow emits the project. |
 
-## From `--target` to a command: FuseSoC and Edalize
+Only the FPGA EDAM passes through `flows/edam.py`, which allows only listed
+`flow_options` keys and requires file paths under the workspace. Sim and lint
+`*_options` reach the EDA tool as FuseSoC resolved them. The security boundary
+is the Sandbox, not `.core` validation
+([ADR 0079](../adr/0079-trust-the-project-inside-the-sandbox.md)); every Flow
+command runs inside it.
 
-Rather than hand-build commands per EDA tool, Booley builds command generation on two upstream libraries: **FuseSoC** resolves the design description and **Edalize** emits the backend command. These are internal building blocks, not external services. The deliberate line Booley draws is in *what it delegates to them*: it uses them to generate the command, but interpreting the result back into facts stays in Booley's own code.
+### Who owns which input
 
-The canonical design description is a FuseSoC **`.core` file** (CAPI2, FuseSoC's YAML schema). Each `.core` declares one or more **Targets**, and a Target fixes everything needed to *build* the design: the fileset (with `file_type` and `tags: [tb]` testbench markers), typed parameters, the toplevel module, and the EDA tool used for resolution (`flow_options.tool`: Verilator, Icarus, Yosys, or Vivado; [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) is the source-of-truth matrix). Simulation and lint execute that selected tool. FPGA implementation instead rebuilds the resolved Target inputs into a Vivado EDAM; its `fpga` Target-name axis declares Flow intent, while `flow_options.tool` still selects `tool_*` conditional inputs during FuseSoC setup. The `--target` argument to `sim`, `lint`, `synth`, and `fpga` names one of these Targets. Each is both a `booley flow` CLI selection (`booley flow sim --target sim_dut`) and an MCP tool the agent calls during Goal Mode; the Flow contract is the same either way.
-
-Resolution happens in two phases (`src/booley/fusesoc/fusesoc_registry.py`): a cheap,
-side-effect-free parse of the `.core` YAML (to validate `--target` names and
-expand per-target Criteria), and a subprocess pass that runs FuseSoC beside the
-Flow's Python orchestration—inside the Sandbox for agent-facing calls—to
-resolve filesets, parameters, and the `depends` graph into an **EDAM** (EDA
-Metadata) that Booley reads rather than hand-assembles.
-
-**Command generation is delegated; result interpretation is not.** This split is what makes the evidence contracts below possible. The EDAM feeds Edalize, whose flows (`Sim`, `Lint`, `Vivado`, `Generic`) emit an EDA-tool-specific Makefile or TCL script: the *command*, never the verdict. Booley then runs that command and does all interpretation itself: the Simulation Flow appends a `[SIM_SUMMARY]` verdict sentinel (a machine-readable verdict line), the Lint Flow dedupes Verilator warnings, and the FPGA Implementation Flow extracts utilization/timing from Vivado reports. Edalize's flow options are whitelisted per flow (`src/booley/flows/edam.py`) and file paths must resolve under the workspace, so a `.core` Target cannot smuggle arbitrary command structure across the sandbox boundary.
-
-`synth` is the one exception: Edalize ships no Yosys ASIC-synthesis flow, only
-the FPGA-oriented `icestorm`/`trellis`, so it resolves the Target through
-FuseSoC, configures Booley's generated Yosys Makefile in-process, and executes
-that Makefile at the same Sandbox boundary.
-
-### Where configuration lives
-
-Configuration is split across three files by **owner and concern**:
-
-| File | Owner | Scope |
+| File | Owner | Holds |
 |------|-------|-------|
-| `<name>.core` | FuseSoC | Design description: filesets, typed parameters, toplevel, per-flow Targets, and the EDA tool |
-| `.booley/tests.toml` | Booley | Verification intent: per-Target test lists and the run-time test selector (e.g. a `+test_id=` plusarg template; a plusarg is a `+name=value` simulator argument) |
-| `.booley/booley.toml` | Booley | Project metadata, source dirs, per-Flow policy, and approved EDA provisioning requests |
+| `<name>.core` | FuseSoC | Filesets, typed parameters, toplevel, Targets, and the EDA tool |
+| `.booley/tests.toml` | Booley | Per-Target Tests and how the testbench selects one (for example a `+test_id=` plusarg, a `+name=value` simulator argument) |
+| `.booley/booley.toml` | Booley | Project metadata, per-Flow execution policy, and EDA provisioning requests |
 
-[TARGETS.md](../user/TARGETS.md) owns the exact schemas, defaults, and
-examples for the `.core` and `tests.toml`; [CONFIG.md](../user/CONFIG.md) and the
-per-Flow pages own them for `booley.toml`. The table is repeated here only because ownership of an
-input determines which layer may interpret it.
+Ownership decides which layer may interpret an input: anything that changes
+what is built belongs on the Target, so one global setting can never apply
+silently to the wrong Target. Doctor fails Target recipe keys (`part`,
+`ppa_profile`, `synth_mode`, `sdc`, and others) placed under `[flows.*]`
+(`booley/audit/flow_schema.py`).
 
-Every Flow command executes inside the Sandbox. Most EDA binaries ship
-in the Sandbox Image. A supported commercial tool may instead come from an
-administrator-registered host installation mounted read-only under a built-in
-policy. Project configuration requests host provisioning, while the exact host
-Grant selects the Installation Registration; Project configuration cannot select a host
-path, command, execution location, or license server.
-The support matrix lives in
-[SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md#built-in-flows). The per-Flow sections
-below describe only how a built-in Flow uses its selected EDA tool.
+Most EDA binaries ship in the Sandbox Image. A supported commercial tool can
+instead come from an administrator-registered host installation mounted
+read-only. `booley.toml` only requests host provisioning; the host's Project
+Grant selects the installation, and Project configuration cannot choose a host
+path, command, execution location, or license server
+([SANDBOX.md](../user/SANDBOX.md#commercial-eda-provisioning)).
 
-Normalized reports produced in the Sandbox live under the project
-runtime tree, referred to below as `<runtime>` = `.booley/.runtime`.
-The per-Flow report paths that follow (`<runtime>/flow-reports/...`) all resolve
-there.
+## Evidence contracts
 
-## Booley Flow evidence contracts
+A Booley Flow is an evidence contract between the caller and the EDA tools,
+not a wrapper around project commands. Running the simulator is easy; turning
+its logs, exit codes, and generated files into facts Booley can reason about
+is the job. Every built-in Flow provides:
 
-Booley Flows are **evidence contracts** between the caller and project-specific EDA flows, not simple wrappers around project commands. Their job is to turn messy EDA tool behavior (logs, exit codes, generated files, project build conventions) into facts Booley can safely reason about.
+- **Verdict normalization.** A small, explicit outcome vocabulary instead of
+  raw logs, where each outcome points to a different next action (debug a
+  failure, fix elaboration, investigate a hang, repair a testbench that never
+  reported a verdict).
+- **Verdicts never trust a stale artifact.** When a verdict comes from a file
+  the run writes (a report, JUnit XML, a log line), anything present before the
+  run must not count, and the exit code outranks the file. Otherwise a build
+  that fails to compile leaves the previous run's report in place and reads as
+  a pass. A nonzero exit with no fresh evidence is never a pass.
+- **Predictable artifacts.** Logs and reports land in known places, so
+  waveform tools and report readers never search EDA-tool-specific build
+  directories.
+- **Exact identity.** `target` and `test` name entries in the `.core` and
+  `tests.toml`, never command-line fragments, and the result records exactly
+  what ran.
+- **One contract past the boundary.** Verilator or Icarus, image- or
+  host-provisioned, with or without DPI or per-test firmware builds: callers
+  see the same result shape.
 
-`sim` is the clearest example. Running the simulator is the easy part; normalizing the result into a verdict, a resolved Target, a resolved test identity, logs, reports, and optional trace artifacts is the real job.
+All Flows share one exit-code convention (`booley/core/exit_codes.py`): 0 for
+a clean pass, 1 for findings or a design failure, 2 when the Flow itself could
+not reach a verdict (infrastructure, configuration, or publication failure),
+and 130 when cancelled. Each Flow maps its own grades onto these codes; the
+per-Flow sections say how.
 
-Every Booley Flow contract provides the same kind of shared reality:
+## Code structure
 
-- **Verdict normalization.** The Flow produces a small, explicit outcome vocabulary rather than forcing the caller to interpret raw logs. For simulation, only a `pass` verdict satisfies `sim_pass_*`; `fail`, `elab_error`, and `timeout` fail the Criterion, `inconclusive` skips it entirely, and each points toward a different next action. Flow crashes and configuration errors sit outside this vocabulary: they surface as an exit-2 Flow error (Booley Flows exit 0 on a clean pass, 1 on findings or a design failure, 2 when the Flow itself could not run), not a per-test verdict.
-- **Verdict integrity: never trust a stale artifact.** When a verdict comes from a file the run writes (a report, a JUnit XML, a log sentinel), anything present before the run must not survive into this run's evidence, and the exit code outranks the artifact. Otherwise a build that fails to compile leaves the *prior* run's artifact in place, and reading it reports a false pass on RTL that does not even build. A nonzero exit with no fresh evidence maps to `elab_error` or an infra verdict: never `pass`, never a functional `fail`.
-- **Artifact normalization.** Logs, structured reports, and generated artifacts land in predictable locations. Waveform and debug tooling should not hunt through simulator-specific build directories; synthesis consumers should not scrape arbitrary output paths for reports.
-- **Identity normalization.** Arguments such as `target` and `test` name entries in the project's FuseSoC/Booley configuration, not ad-hoc command-line fragments. A request to run one test resolves to exactly the test that ran, and the report carries that resolved identity.
-- **Flow boundary.** Projects may use Verilator, Icarus, Vivado, per-test firmware builds (Pre-Sim Commands, below), or DPI (C code linked into the simulation). Past the Booley Flow boundary, Booley sees the same contract regardless of the EDA tool or how its installation was provisioned.
-- **Actionability.** The structured result tells the caller what to do next: debug a behavioral failure, fix elaboration, investigate a hang, repair an inconclusive testbench verdict, or mark a Criterion satisfied.
+Built-in Flows take typed requests and return
+`booley.runtime.endpoint_execution.ExecutionResult`, whose `outcome` is an
+`EndpointOutcome`. They do not subclass `McpTool` or generate MCP schemas; the
+CLI and MCP layers adapt to them.
 
-This applies to every built-in. Simulation converts authenticated build-stage and
-standalone-module checks into `elab_pass_*` / `elaborate_standalone` evidence. Synthesis converts
-backend-specific timing, area, and failure modes into comparable reports and
-`synthesis_ok` Criteria. FPGA implementation converts Vivado utilization,
-timing, and DRC evidence into stable resource metrics and `fpga_impl_ok`
-Criteria. The stricter the evidence contract, the less the caller has to infer
-from unstructured output.
+```python
+from pathlib import Path
 
-### Progress lifecycle
+from booley.flows.lint.flow import LintFlow
+from booley.flows.lint.request import LintRequest
 
-Flow-owned `progress.json` is a run-scoped observation, not process-liveness or
-resume authority. Every producer stamps its dispatched `run_id` and a canonical
-UTC `timestamp`. While work is active, `complete` is false. Every catchable exit
-publishes a terminal document: `phase: complete` means the planned workload was
-exhausted, regardless of whether its represented design verdict passed;
-`phase: aborted` means orchestration stopped early or normal terminal publication
-failed. Coverage resume may change an authenticated origin to `phase: superseded`.
-That transition preserves the origin's `run_id`, Target partition, and detail and
-adds only `superseded_by` for the new invocation.
+result = LintFlow().execute(LintRequest(target="lint_soc", work_dir=Path.cwd(), diagnostic=True))
+print(result.exit_code, result.outcome.detail)
+```
 
-`targets` is unique, and `completed_targets` plus `pending_targets` is an exact,
-disjoint partition. A Target enters `completed_targets` only after its owner-defined
-durable publication boundary. The shared lifecycle guard retries one failed
-terminal publication: failed normal completion is retried as `aborted`, while a
-failed `aborted` write is retried without masking the original Flow failure. A
-successful repair does not erase the original exit-2 publication error. Progress
-writers and conditional repairs share one file lock, so a supervisor repair cannot
-overwrite a concurrent resume supersession. When an MCP supervisor terminates or
-discovers a dead child, it best-effort repairs a matching, validated, still-live
-checkpoint only after the process group is reaped. Missing, unsafe, malformed, changed, or
-unwritable checkpoints never change the already determined Job outcome.
+This call runs inside the Sandbox and does the same validation, admission,
+and persistence as the CLI. Each Flow's request type (`SimRequest`,
+`LintRequest`, `SynthRequest`, `FpgaRequest`) lives in its package beside its
+implementation. `slug` (the Goal Record ID) and `state_file` are not
+constructor arguments: they come from the environment or the Goal binding, so
+a caller cannot point a run at another Goal's state. A request is copied for
+execution because preparation and baseline work may change it.
+
+Which execution adapter runs decides whether Goal evidence is recorded:
+
+- `StandaloneFlowExecution` (direct calls and `booley flow`) records no Goal
+  evidence and skips final persistence.
+- `GoalFlowExecution` (`booley/goals/flow_execution.py`), which MCP composition
+  supplies with the call's Run Binding, records Goal evidence. A direct caller
+  must compose it explicitly to get the same path. It imports no Flow or MCP
+  code, and MCP builds it lazily, so loading MCP never loads Goal Mode.
+
+| Class or module | Owns |
+|---|---|
+| `FlowMechanics` (`flows/base.py`) | Subprocess execution, timeout and cancellation cleanup, artifact freshness checks, the Flow pre-state gate |
+| `BuiltinFlow` (`flows/base.py`) | Per-invocation state for the built-ins. Every entry point (construction, `execute`, `execute_cli`, `parse_args`) starts a fresh invocation, so no state leaks between calls. |
+| `EndpointState` (`flows/endpoint_state.py`) | Per-invocation state, delegating to the acceptance, admission, reporting, and invocation modules |
+| `builtin_cli` | The CLI parser, built from common definitions plus each Flow's argument adapter, producing the same typed request |
+| `booley.mcp.flow_adapter` | MCP schema extraction and MCP-only adjustments (canonical timeout and mode fields, hidden CLI aliases); the MCP server keeps wire validation, dispatch, budgeting, and result conversion |
+| `booley.runtime.endpoint_execution` | The one execution coordinator |
+
+Flow- and Criteria-aware services live beside their Flow policy, not in
+`booley.runtime`, because Runtime must not import Flows. Custom Flows and
+Specialists use a different base: `BooleyFlow` combines `FlowMechanics` with
+the `EndpointContext` facade (eager `_add_args`, CLI parsing, and the hooks
+Project-local Flows rely on), and Specialists subclass `McpTool`. MCP loading
+accepts both and honors Project-local schema overrides; see
+[MCP-TOOLS.md](MCP-TOOLS.md). Built-ins never inherit `EndpointContext`.
+
+Import rule D15 in [SOURCE-DEPENDENCY-CONTRACT.md](SOURCE-DEPENDENCY-CONTRACT.md)
+forbids every `booley.flows -> booley.mcp` import, including deferred and
+type-only ones. `tests/flows/test_transport_contract.py` covers direct typed
+and CLI calls, acceptance failures, a real lint child through MCP with a fake
+EDA executable, transport schemas, and Project-local `BooleyFlow` and
+`McpTool` loading.
+
+## Invocation lifecycle
+
+### Ordering
+
+Preparation validates the runtime, Flow enablement, the bound Goal worktree,
+and the Target-to-Goal binding before Job admission. An omitted `--target` is
+resolved before the binding check; an explicit one is checked after it. The
+Run Binding captures the Goal Record and specification revisions plus the
+Protected Inputs; publication checks it again before appending evidence or
+merging state, and a binding that has changed discards the evidence
+rather than assigning it to another Goal Record. The admission claim is held
+through the run, final acceptance, state persistence, and reporting, then
+released.
+
+Acceptance is recorded at two points, and both must stay:
+
+1. Each `set_criterion` call computes the change, records immutable evidence,
+   then saves mutable state and emits its update, so a long run shows progress
+   and a crash keeps what was already proven.
+2. At completion the coordinator records final acceptance or invalidation
+   before saving the timeline and final report.
+
+Do not defer all Criteria writes to completion.
+
+### Failures
+
+A failure while recording final acceptance becomes exit 2 with
+`detail.completion_error`. It keeps the Flow's verdict and known Target facts,
+skips final state persistence, and still tries to publish `report.json`.
+Per-Target acceptance already committed before a later failure stays visible
+in `detail.acceptance`, and user-facing output has no traceback.
+
+A failure appending acceptance inside the run (`_run`) is different: that
+update does not save, the invocation adapter turns the exception into an error
+outcome, and a recording adapter then persists the error as usual. Cancellation
+propagates, and subprocess trees, stdout redirection, and admission claims are
+cleaned up.
 
 ### Shared planning and dry-run lifecycle
 
-The four shipped Flows inherit `BuiltinFlow` and project their authoritative
-preparation into `FlowPlan` / `WorkUnitPlan` records. A work unit keeps the
-timeout-bearing execution identity together: Target and revision role, selected
-tests or modules, EDA tool, sources, constraints, parameters, concrete recipe,
-ordered argv, and expected artifacts. Simulation and Lint consume their planned
-recipes during real execution; ASIC and FPGA implementation do the same for
-candidate and optional baseline work units. All requested units are validated
-before the first real command is dispatched.
+`lint`, `synth`, `fpga`, and the Simulation Elaboration Check project their
+preparation into `FlowPlan` / `WorkUnitPlan` records (`flows/plan.py`). A work
+unit keeps everything that identifies one timed execution together: Target and
+revision role, selected tests or modules, EDA tool, sources, constraints,
+parameters, recipe, ordered argv, and expected artifacts. All requested units
+are validated before the first real command runs, so a bad later Target fails
+the call before any EDA time is spent. `synth` and `fpga` execute their
+planned recipes for candidate and baseline units; Lint's plan shows a command
+template and the real run resolves through `fusesoc run --setup`. Ordinary and
+coverage Simulation runs print a Simulation Campaign preview instead. `mutation`
+also inherits `BuiltinFlow` but keeps its own dry-run summary instead of a
+`FlowPlan`.
 
-`semantic_plan_fingerprint` hashes execution meaning while excluding dry-run
-status, cwd and scratch prefixes, report destinations, and invocation IDs. It is
-separate from adapter-owned recipe/cache fingerprints. This lets tests compare
-dry and real preparation without weakening the concrete evidence identity used
-for implementation reuse.
+`semantic_plan_fingerprint` hashes what the work means and leaves out dry-run
+status, cwd and scratch prefixes, report destinations, and invocation IDs,
+which differ per invocation. Tests compare dry and real preparation with it,
+separately from the recipe and cache fingerprints that decide implementation
+reuse.
 
-Built-in dry-run takes a deliberately narrower lifecycle through the endpoint
-coordinator. Boundary and Target validation still run, but heavy Job admission,
-acceptance recording, `_post_run()` state/timeline/Criteria persistence, normal
-verdict reports, and cache population do not. Start and end display events carry
-`dry_run=true`. An explicit report destination may receive only the atomic,
-distinctly typed `<flow>/flow_plan.json` plan.
+A dry run validates the boundary and Targets but skips Job admission, EDA
+execution, acceptance, `_post_run()` persistence, normal reports, and cache
+filling; its display events carry `dry_run=true`. It writes only
+`<report-root>/<flow>/flow_plan.json` ([FLOW_REPORTS.md](FLOW_REPORTS.md#dry-run-plan)).
+`synth` and `fpga` may need FuseSoC setup or generators to produce an EDAM;
+they confine that to an invocation-owned temporary directory in the checkout
+(`.booley-synth-plan-*`, `.booley-fpga-plan-*`), remove it on exit, and
+disclose it in the plan. EDA tools and Pre-Sim Commands never run.
 
-Authoritative FuseSoC setup or declared generators may be necessary to produce
-EDAM. Dry planning confines that work to an invocation-owned temporary directory
-inside the selected checkout and removes it on normal exit or exceptions. The
-plan discloses that limited preparation side effect; EDA and project Pre-Run
-commands are never dispatched.
+### Progress lifecycle
 
-### Goal baselines and editable design inputs
+`progress.json` (written by `sim`, `synth`, and `fpga`) is an observation of
+one run, never liveness or resume authority; its fields are in
+[FLOW_REPORTS.md](FLOW_REPORTS.md#progress). `flows/progress_lifecycle.py`
+enforces:
 
-The internal [Criteria](../GLOSSARY.md#execution-and-evidence)
-names below are the policy and evidence keys used to evaluate declared Goals.
-This vocabulary belongs to shared `criteria/` and `evidence/` policy.
-Ordinary CLI Flow calls remain diagnostic; Goal
-verification uses the MCP-bound execution adapter.
+- Every write carries the dispatched `run_id` and a UTC `timestamp`, and
+  `completed_targets` plus `pending_targets` is an exact, disjoint split of
+  `targets`. A Target becomes completed only after its durable publication.
+- Every catchable exit publishes a terminal document. `phase: complete` means
+  the planned work was exhausted, whatever the design verdict; `aborted` means
+  orchestration stopped early or terminal publication failed.
+- One failed terminal write is retried: a failed `complete` is retried as
+  `aborted`, and a failed `aborted` is retried without hiding the original
+  failure. A successful retry does not erase the exit-2 publication error.
+- Writers and repairs share one file lock (`.progress.lock`), so a supervisor
+  repair cannot overwrite a concurrent coverage-resume supersession.
+- When an MCP supervisor terminates or finds a dead child, it repairs a
+  matching, still-live checkpoint only after reaping the process group, on a
+  best-effort basis. A missing, unsafe, malformed, changed, or unwritable
+  checkpoint never changes the Job outcome already decided.
 
-Goal entry pins the clean linked worktree's HEAD as its base and creates a Goal
-Branch. A baseline-relative Goal resolves its baseline Target at that base;
-the current candidate Target is an editable design input. Renaming or removing
-a bound Target leaves the Goal unmet until it is restored or a human approves a
-retargeting Goal Change Proposal. Target, test-registry, and SDC/XDC changes are
-exposed in the Review Package rather than guarded by a Ticket Scope allowlist.
+### Run logs
 
-Protected Inputs include Project configuration and checkout-root `booley.toml`,
-every configuration candidate's legacy `pipeline.toml` sibling, worktree-root
-`FUSESOC_IGNORE`, and `hooks`, `.managed`, `generators`, and `mcp_tools` at their
-consumer roots. The Protected Input digests cover the Main Booley Directory, Worktree Booley
-Directory, Project Root files, and configured Booley Directory candidates according to the readers described
-in `goals/protected_inputs.py`; it includes fallback copies as well as the
-currently selected configuration. Goal entry captures working and committed
-input identities; drift warns and blocks Finish until reverted.
-A Project adds files to this set with `[project].protected_inputs`, read from
-the Goal worktree's effective configuration and resolved against the worktree
-root. For declared files, Goal entry also stores a versioned per-file capture of
-path, contents, type, and executable bit, separately for the working tree and
-HEAD, so a violation can name the file. The digest uses one format whether or
-not the Project declares files. See [Additional Protected Inputs](../user/CONFIG.md#additional-protected-inputs-projectprotected_inputs).
-Run admission and publication bind evidence to the Goal Record, specification
-revisions, source fingerprints, and Target surface. Approved coverage-policy
-changes use the Goal proposal-and-approval transaction described below.
+Every built-in Flow truncates its `run.log` when a run starts and writes a
+header line, `[BOOLEY RUN_LOG] run=… flow=… target=… started=…`
+(`flows/run_log.py`). While the run is going the body is a
+`(run in progress …)` status line, followed in Simulation by a live tail of up
+to 200 KB; the full output (tail-truncated to 10 MB) replaces it at the end.
+Tailing a log during a wait therefore never shows the previous run's verdict
+as if it were live, and a Flow can use the header to check that a `run.log` its
+report points to really belongs to this run. The generic artifact shape is in
+[MCP-TOOLS.md](MCP-TOOLS.md#common-artifact-contract).
+
+## Goal baselines and editable design inputs
+
+Ordinary CLI calls are diagnostic; Goal verification goes through the
+MCP-bound execution adapter, which binds evidence to the Goal Record. Goal
+entry pins the clean linked worktree's HEAD as the base and creates a Goal
+Branch. A baseline-relative Goal runs its baseline Target at that base. The
+candidate Target is an editable design input: renaming or removing a bound
+Target leaves the Goal unmet until it is restored or a human approves a
+retargeting Goal Change Proposal. Target and constraint (`.sdc`, `.xdc`)
+changes appear in the Review Package rather than being forbidden, because the
+agent may legitimately need to edit them
+([ADR 0067](../adr/0067-replace-ticket-mode-with-goal-mode.md)).
+
+[Protected Inputs](../GLOSSARY.md#execution) are files that decide how
+evidence is produced, so changing them mid-Goal would let the agent move the
+goalposts. They are: Project configuration and checkout-root `booley.toml`,
+the `pipeline.toml` beside every `booley.toml` candidate (the configuration
+reader still falls back to it), worktree-root `FUSESOC_IGNORE`, and `hooks`,
+`.managed`, `generators`, and `mcp_tools` at their consumer roots, plus files
+the Project lists in `[project].protected_inputs`
+([CONFIG.md](../user/CONFIG.md#additional-protected-inputs-projectprotected_inputs)).
+`booley/goals/protected_inputs.py` digests every candidate location a reader
+might use (the Goal worktree, the Main Booley Directory, the primary
+checkout's `.booley/`, and absolute configured paths), not only the one
+currently selected, because emulating each reader's choice would let a
+selection mismatch hide a change. Goal entry captures working-tree and
+committed identities; for declared files it also stores a per-file capture
+(path, contents, type, executable bit) so a violation can name the file.
+Drift warns at once, discards run evidence at publication, refuses Goal Change
+Proposals, and blocks Finish until reverted.
 
 A Goal without a bound Target is checked against authored sources only.
-Generated Build Artifacts are left out of its fingerprints and of the
-committed-input check at Finish, so regenerating one does not stale the Goal
-unless the Reviewer's explicit scope names it. Symlinks, paths outside the
-repository, and files in a nested Git repository are never left out. A Goal
-bound to a Target still needs a selected Simulation producer for each
-uncommitted generated input.
+Generated build artifacts, the Git-ignored files a Target consumes other than
+HDL, `.core` files, and declared programs, are
+left out of its fingerprints and of the committed-input check at Finish, so
+regenerating one does not stale the Goal unless the Reviewer's scope names it.
+HDL, `.core` files, declared programs, symlinks, paths outside the repository,
+and files in a nested Git repository are never left out, so a regenerated
+ignored file cannot hide authored logic. A Goal bound to a Target still needs
+a Simulation producer for each uncommitted generated input.
 
-Goal adapters resolve pinned acceptance inputs before execution. Shared Flow execution consumes resolved Target identities and baselines through its evidence protocols; it does not load workflow documents.
+## Shared implementation-report envelope
 
-### Shared run logs and artifacts
+`synth` and `fpga` publish the same versioned `implementation` envelope
+(`flows/implementation_report.py`) in their per-Target JSON, Criteria detail,
+aggregate MCP detail, and live progress, so consumers read one shape for both
+Flows. Schema version 1 has:
 
-Every built-in Flow that keeps a `run.log` (`sim`, `lint`, `synth`,
-`fpga`) truncates it at the *start* of a run and stamps a one-line header —
-`[BOOLEY RUN_LOG] run=… flow=… target=… started=…` — above the output. The body
-only lands when the run finishes, so a log still showing `(run in progress …)`
-under its header means this run has produced no output yet. Tailing during an
-async-job wait therefore cannot surface a previous run's verdict as live, and
-the same header lets a Flow decide whether a `run.log` pointer in its report is
-honest.
+- `identity`: Flow, Target, EDA tool, invocation ID, timestamp;
+- `status`: the policy-resolved grade (`pass`, `warn`, `fail`, or `error`),
+  tool return code, timeout and infrastructure state, completion facts, and
+  bounded diagnostics;
+- `metrics` and `conditions`: common timing fields plus Flow-specific QoR
+  (ASIC area and cells, or FPGA LUT/FF/BRAM/DSP);
+- `recipe` and `provenance`: the normalized recipe, the producing run, and a
+  separate identity for a run that consumed a cached result;
+- `comparison`: the resolved baseline, mirrored baseline evidence,
+  comparison-basis errors, and a current/baseline/delta record per comparable
+  metric;
+- `cache` and `artifacts`: cache evidence and immutable numbered report and
+  log paths; mutable build directories are labeled `live_dirs`.
 
-The common `artifacts` shape, work-dir-relative path rules, multi-Target nesting,
-and structured-output guarantees belong to the generic MCP tool/report contract
-in [MCP-TOOLS.md](MCP-TOOLS.md#common-artifact-contract). Built-in sections below
-name only their EDA-tool-specific directory roles, files, and freshness rules.
-
-### Shared implementation-report envelope
-
-`synth` and `fpga` expose the same versioned `implementation` envelope in their
-per-Target JSON, Criteria detail, aggregate MCP detail, and live progress. The
-legacy Flow-specific fields remain beside it for compatibility. Schema version
-1 has these common sections:
-
-- `identity`: Flow, Target, EDA tool, invocation ID, and timestamp;
-- `status`: the policy-resolved `pass`, `warn`, `fail`, or `error` grade, tool
-  return code, timeout/infrastructure state, completion facts, and bounded
-  diagnostics;
-- `metrics` and `conditions`: common timing vocabulary plus Flow-specific QoR
-  fields (ASIC area/cells or FPGA LUT/FF/BRAM/DSP utilization);
-- `recipe` and `provenance`: normalized recipe evidence, producing run, and a
-  separate cache-consuming invocation identity;
-- `comparison`: resolved baseline identity, mirrored baseline evidence,
-  comparison-basis errors, and a structured current/baseline/delta record per
-  comparable scalar metric;
-- `cache` and `artifacts`: cache evidence and immutable numbered report/log
-  entry points. Mutable build directories are explicitly labeled `live_dirs`.
-
-`status.passed` is true for `pass` and advisory `warn`; `fail` maps to Flow exit
-1 and `error` maps to exit 2. One policy-resolved status feeds the durable
-report, Criterion, aggregate result, and MCP projection, so those surfaces
-cannot disagree about fatal timing or invalid baseline evidence. Missing an
-optional metric makes only that metric's delta unavailable; it does not erase
-otherwise valid comparison data.
-
-## `sim`
-
-`sim` runs the resolved Target's tests and normalizes the outcome into a
-per-test verdict, a per-target `sim_pass_{target}` Criterion, durable logs and
-reports, and optional trace artifacts. The **EDA tool** (Verilator or Icarus,
-read from the Target's `flow_options.tool`) picks the build-recipe shape.
-Whether the Target is a **cocotb** one (a Python testbench driving the DUT) is
-an independent property, read from the
-Target's `cocotb_module` flow option (never from `tests.toml`); cocotb Targets
-support Icarus and Verilator and drive test selection through `COCOTB_TEST_FILTER`
-rather than a plusarg.
-
-### Internal adapter boundary
-
-Simulation's private adapter boundary is split deliberately. `sim.build`
-prepares and authenticates the shared Edalize build stage. The
-`sim.execution` package owns caller invariants, Project-root-scoped Pre-Run and
-artifact-integrity policy, and the sole adapter composition point. The three
-leaf modules under `sim.backends` execute only their own simulator
-invocation; the composition point renders every launch as one versioned
-prepared-work document that the shared contract module encodes and decodes.
-No leaf imports a sibling adapter or `sim.flow`.
-
-Parent-to-child result transport is a versioned JSON document bound to an
-unpredictable attempt token, adapter name, durable Target identity, and ordered
-selected-test set. Adapters write it atomically and retain the historical
-`[SIM_SUMMARY]`, `[COCOTB_RESULTS]`, `result.json`, and `results.xml` outputs for
-compatibility. A consumer validates the complete identity and rejects malformed,
-stale, reordered, duplicate, or contradictory evidence. Trace artifacts are
-additionally checked for containment, regular-file status, and freshness;
-Project-configured absolute trace paths must be explicitly allowlisted.
-
-`TargetHandle.project_root` is authoritative at this boundary. Test registry
-fields and `[flows.sim]` settings are loaded for that checkout on each current
-or Cycle Count baseline invocation rather than borrowed from the lazy
-active-Project cache.
-
-### Configuration boundary
-
-`[flows.sim]` holds execution and verdict policy; `tests.toml` holds the
-per-Target test list and run-time selector; the FuseSoC Target holds the build
-inputs and simulator choice. [FLOW-SIM.md](../user/FLOW-SIM.md#passfail-sentinels-and-cycle-counts)
-owns the exact simulation keys and defaults, while its
-[design-description section](../user/TARGETS.md#design-description-core)
-owns the `tests.toml` schema.
-
-The CLI selectors `--test` (repeatable exact include), `--tests-file`, `--trace`
-(debug-only; never a pass/fail source), `--timeout`, and `--dry-run` resolve
-against those config entries rather than acting as raw command fragments.
-
-**Pre-Sim Commands** (`[flows.sim].pre_run_commands`) are the one
-project-owned hook, and they do not loosen the contract. Shell lines run at the
-Sandbox immediately before each run (per test for an HDL Target, once per
-Cocotb batch), under a `BOOLEY_*` env contract that names the run
-(`BOOLEY_TEST_NAME` / `BOOLEY_TEST_NAMES`, `BOOLEY_TARGET`) and its authoritative
-run directory (`BOOLEY_RUN_CWD`). The default immutable build-access contract
-withholds the authenticated Simulator Bundle path; `BOOLEY_BUILD_ROOT` exists
-only for an explicit `pre_sim_build_access = "legacy-per-test"` private build.
-This is how a per-test non-RTL build step (e.g. cross-compiling the selected
-test's firmware) joins the Simulation Flow: a failing Pre-Sim Commands
-invocation is recorded as that test's failed result with an attributed tail. It
-can never manufacture a pass, and it never crashes the Flow.
-
-### Verdict semantics
-
-Each test resolves to exactly one of five verdicts:
-
-- `pass`: the run's verdict sentinel reports `passed` with zero SVA (SystemVerilog Assertion) errors.
-- `fail`: a failing sentinel, a nonzero exit with fresh evidence, or SVA errors.
-- `inconclusive`: the sim ran cleanly (exit 0, no SVA errors) but produced *no* verdict sentinel, so nothing affirmatively passed; also where a `--trace` run lands if it otherwise passed but could not confirm the trace was written.
-- `elab_error`: build/elaboration/compile failure, or failed Pre-Sim Commands (the sim never ran).
-- `timeout`: the per-test budget was exceeded.
-
-`SimulateFlow` delegates execution through one `SimulationExecution`
-`preview` / `plan_ordinary_group` / `ordinary_group` boundary. The boundary resolves each
-`TargetHandle` from its own Project Root, prepares and compiles one group's
-build, launches an executable snapshot through one leaf adapter, and returns
-immutable build, test, workload, log, trace, and infrastructure evidence. The
-Simulation Campaign sequences Pre-Sim Commands and runtime inputs around it.
-The Flow retains campaign concerns: Target/test
-selection, Cycle Count baselines, Criteria, report rendering, and public exit
-codes.
-
-The parent-side authority is the adapter's authenticated, versioned terminal
-result, not an output marker or exit code alone. Every result is bound to an
-unpredictable attempt token, adapter, durable Target identity, and complete
-ordered selected-test set; the decoder rejects contradictions and rejects a
-result artifact that predates the invocation or escapes its build root. Leaf
-adapters may use `[SIM_SUMMARY]` and `[SIM_RESULT]` as inputs to normalization.
-Adapter results also carry the exact run termination: `completed`, `timeout`,
-`disk_budget`, `fatal_init`, `sim_time_stall`, or `trace_stall`. Only
-`completed` permits sentinel and return-code inference; a guard termination
-wins even when the child exits zero and is recorded only for a still-live child.
-For Cocotb, per-test verdicts originate in the current run's JUnit
-`results.xml`; unexpected entries remain diagnostics and cannot affect the
-selected tests' verdicts. If a Cocotb batch aborts, completed tests retain their
-verdicts and the remaining tests carry the batch termination. A nonzero
-process/build outcome still outranks an adapter pass. A requested trace must
-independently validate as a fresh regular
-file in an allowed location or an otherwise passing run becomes
-`inconclusive`.
-
-Only a true target-level `pass` satisfies `sim_pass_{target}`; an
-`inconclusive` target skips the Criterion rather than failing it. Flow crashes
-and configuration errors (bad `--target`, disabled Flow, unknown `--test`) are
-exit-2 Flow errors, outside the verdict vocabulary.
-
-### Per-test Cycle Count Goals
-
-`cycle_count` is a specialized simulation Goal. Each Goal binds one Target and
-registered Test Run to one or more numeric thresholds. For example, a concrete
-Goal entry argument is:
-
-```json
-{
-  "family": "CYCLE_COUNT",
-  "target": "sim_coremark",
-  "test": "coremark",
-  "thresholds": {
-    "cycle_count_max": 100000,
-    "cycle_count_reduce_at_least": "5%",
-    "cycle_count_reduce_at_least_cycles": 2000
-  }
-}
-```
-
-The evidence implementation retains Criterion keys internally.
-
-The named test must pass and emit exactly one
-`[SIM_CYCLES] <test> <non-negative-count>` record. Every threshold is ANDed;
-missing, duplicate, malformed, legacy unnamed, failed, or inconclusive evidence
-leaves the Criterion unmet. A passing named cocotb test may satisfy its Cycle
-Count Criterion even when another test in the same batch fails. With no
-`cycle_count` Criterion, Cycle Count records remain observational.
-
-Absolute `_max`/`_min` thresholds use the current run only. Percentage-relative
-and `_cycles` delta thresholds automatically run the same Target/test at the
-Goal Mode's pinned base in an ephemeral worktree. A zero baseline cannot
-define a percentage and fails that check closed. Review reports call the result
-an **observed Cycle Count change** and disclose changes to known declared RTL,
-testbench, firmware, vectors, constraints, and other workload inputs. Such input
-changes do not block the numeric comparison, but they prevent Booley from
-claiming that RTL alone caused it.
-
-### Reports and artifacts
-
-Every simulation run first publishes an immutable per-Target Simulation
-Campaign manifest at
-`<runtime>/flow-reports/sim/<N>/targets/<encoded-target>/campaign/manifest.json`.
-Append-only attempts/results and the ordered `summary.json` remain beside that
-manifest across exact resume. The replaceable compatibility report at
-`<runtime>/flow-reports/sim/<N>/targets/<encoded-target>/simulation.json` uses
-`booley.simulation-projection/v3` and carries typed, digest-bound
-`origin_target` references to the immutable manifest and optional public Coverage
-reference. Legacy producer-absolute strings are compatibility hints only; local
-Simulation Campaign authentication is authoritative. The projection also carries
-the resolved identity (`target`, `target_identity`), the target `passed` and
-`inconclusive` flags, a `test_runs` list, and a `tests` list whose entries
-contain `name`, `passed`, nullable `cycles`, `sva_errors`, `timed_out`,
-`execution`, `failure_kind`, and `error_tail`, plus the observed Test Run's
-`test_run`, `variant`, `seed`, and `fingerprint`, and its `log` and `trace`
-paths (see below). Full cycle counts are also
-copied to `report.json` (see [FLOW_REPORTS.md](FLOW_REPORTS.md)). For native HDL
-Targets, each test's unabridged, attempt-specific simulator output is kept as
-live-log (`live_run_log`) evidence in its Campaign work item; the projection and
-the card name it through `booley.flows.sim.campaign.test_run_files`, the one
-lookup from a Test Run to its accepted attempt's log and `trace` files. A grouped run preserves this copy before starting the next test,
-including for failed, timed-out, and inconclusive tests that produced output.
-Each launched attempt's `execution-evidence` directory, beside its snapshot,
-keeps the live `run.log` (tail-truncated to 10 MB), the adapter result JSON, and
-Cocotb's `results.xml`. A failed build never launches, so its `run.log` stays in
-the generation build root.
-
-Trace artifacts stay off the pass/fail path by design: `--trace` builds a
-separate trace-overlay Target (its own build root) so it never clobbers the fast
-verdict build, and produces a queryable `trace.fst` waveform store next to the
-logs. A trace that fails to materialize downgrades a passing run to
-`inconclusive`: a missing waveform is a tooling failure, never a silent pass.
-
-## Simulation Elaboration Check
-
-`sim --mode elab-only` compiles, elaborates, and links the
-ordinary untraced simulator image without running tests. It skips Pre-Run
-Commands, Cocotb Python import/execution, test selection, run guards, sentinels,
-and tracing. Because it uses the normal Simulation work root and build policy,
-a later full simulation can reuse the retained image.
-
-Only Simulation Targets are eligible. `--mode elab-only-standalone` is a
-cumulative stronger module sweep. Both elaboration modes reject run-only
-arguments such as `--test`, `--tests-file`, `--trace`, `--result-verbosity full`, and
-`--no-kill`.
-
-A compiler diagnostic that proves the design was rejected is a design FAIL
-(exit 1). Setup, missing-tool, timeout, OOM, signal/crash, filesystem, and
-ambiguous nonzero exits are infrastructure ERRORs (exit 2). Multi-Target runs
-continue through every Target, with ERROR taking precedence over FAIL.
-
-Full Simulation records `elab_pass_{target}` from an authenticated build-stage
-record before the run half begins. A later runtime failure, timeout, OOM, or
-signal cannot erase a successful elaboration result. Setup or Pre-Sim Commands
-failure before the build leaves the elaboration Criterion unchanged.
-
-Elaboration reports stay in the Simulation namespace with canonical mode values
-`elab_only` or `elab_only_standalone`.
-Complete build logs are archived beneath the invocation report directory (or a
-unique log directory under the Simulation work root for a bare CLI run), while
-the shared build cache remains mutable and reusable.
-
-The standalone sweep covers the selected Targets' RTL filesets, excludes TB-only
-sources, and includes package/interface files as shared prerequisites. Each
-module is probed with the simulator of every selected Target whose RTL fileset
-contains it ([ADR 0089](../adr/0089-probe-standalone-modules-with-each-targets-simulator.md)):
-`inspection.eda_tool` maps `icarus`/`iverilog` to `iverilog` and `verilator` to
-`verilator`. A probe compiles only the shared package/interface files of the
-Targets that contribute its frontend and dialect flags. The probe forwards only
-the Target's language-dialect options (Icarus `-g*`; Verilator `--language`,
-`--default-language`, `+<generation>ext+`), read from `flow_options` and then
-the legacy tool options; a module shared by Targets with different dialect
-flags is probed once per distinct set. A Target with any other simulator needs a
-fallback probe (Verilator when on PATH, else Icarus); the sim Flow can select
-only Icarus and Verilator Targets today, so this path is unreachable until a
-commercial simulator Target exists. A fallback probe whose compiler already is
-a covering Target's own runs once and is graded normally. A genuine module
-rejection is exit 1; only a fallback probe's parse error, when the per-Target
-builds passed, is "ungraded" (exit 2, prior standalone Criterion state
-unchanged). The retired `[flows.<flow>].standalone_frontend` key is a hard
-migration error for every Flow.
+The Flow-specific fields stay beside the envelope. `status.passed` is true for
+`pass` and `warn`; `fail` exits 1 and `error` exits 2. One resolved status
+feeds the report, the Criterion, the aggregate result, and the MCP result, so
+they cannot disagree about fatal timing or an invalid baseline. A missing
+optional metric makes only that metric's delta unavailable.
 
 ## `lint`
 
-`lint` runs the resolved Target's linter and normalizes its diagnostics into a
-WARN/FAIL/ERROR verdict, a per-target `lint_clean_{target}` Criterion, and
-durable logs and reports (`run.log` plus `lint_report.json`) — deduplicated
-across Targets and scope-filtered along the way. There is one `lint` Booley Flow and
-the **Target** picks the linter: Verilator `--lint-only` for structural/semantic findings,
-Verible `verible-verilog-lint` for style/naming, selected by the Target's
-`flow_options.tool`. Wanting both on the same RTL is two lint Targets (say
-`lint_dut` and `lint_style`), and therefore two Criteria:
-`lint_clean_{target}` means "clean under whatever linter that Target names",
-never "Verilator-clean".
+`lint` runs the resolved Target's linter and turns its diagnostics into a
+PASS/WARN/FAIL/ERROR verdict and a `lint_clean_{target}` Criterion. There is
+one Lint Flow; the Target's `flow_options.tool` picks the linter: Verilator
+`--lint-only` for structural and semantic findings, Verible
+`verible-verilog-lint` for style and naming. Running both on the same RTL takes
+two lint Targets (say `lint_dut` and `lint_style`) and so two Criteria:
+`lint_clean_{target}` means "clean under that Target's linter", never
+"Verilator-clean".
 
 ### Configuration boundary
 
-The Target selects the linter and owns its rules and waivers. `[flows.lint]`
-holds execution policy, including whether warnings affect the process exit.
-[FLOW-LINT.md](../user/FLOW-LINT.md#configuration-flowslint) owns the exact keys and defaults.
-
-Lint *policy*, which rules fire and what is waived, is design description,
-not Booley config, so it lives on the Target. For Verilator, that is a `.vlt`
-file declared with `file_type: vlt` in a selected fileset; for Verible,
-`veribleLintRules` / `veribleLintWaiver` filesets (and the `ruleset` / `rules`
-flow options). Booley adds no severity tiers and no waiver
-machinery of its own: every finding counts against the Criterion, and a waiver
-edit lands in the diff like any other design-input change, where the
-Review Package and Reviewer Specialist ([GLOSSARY.md](../GLOSSARY.md)) expose it
-for inspection. Goal Mode has no Ticket Scope allowlist.
-
-The CLI adds `--scope` (comma-separated path fragments, which filter the findings
-*and* the Criteria counts with them), `--dry-run`, and `--timeout` (positive
-human duration; `[flows.lint].timeout_ms` fallback; default 120000 ms).
+The Target owns the linter and its rules and waivers: a `.vlt` file
+(`file_type: vlt`) for Verilator, `veribleLintRules` / `veribleLintWaiver`
+filesets and the `ruleset` / `rules` flow options for Verible. Rules and
+waivers are design description, not Booley configuration, so Booley adds no
+severity tiers or waiver mechanism of its own. Every finding counts against the
+Criterion, and a waiver edit shows up in the diff like any other design change,
+where the Review Package and the Reviewer can see it. `[flows.lint]` holds
+execution policy only, including whether warnings change the exit code; the
+keys are in [FLOW-LINT.md](../user/FLOW-LINT.md#configuration-flowslint).
 
 ### Verdict semantics
 
 | Outcome | Exit | When |
 |---------|------|------|
-| PASS | 0 | the linter ran and left zero in-scope findings after dedup |
-| WARN / FAIL | 1 | findings remain, or the linter ran and rejected the RTL |
-| ERROR | 2 | no verdict was reached: missing binary, setup failure, timeout |
+| PASS | 0 | The linter ran and left no in-scope findings after deduplication. |
+| WARN / FAIL | 1 | Findings remain, or the linter ran and rejected the RTL. |
+| ERROR | 2 | No verdict was reached: missing binary, setup or planning failure, timeout, an unmatched `--scope` entry, or a Target whose toplevel no linted file declares. |
 
-Two rules carry the weight here.
+**A nonzero linter exit is never a clean lint.** Findings are counted from
+parsed `%Warning` and Verible finding lines, so a run that dies before printing
+any would otherwise score zero and pass. A recorded failure always outranks
+the tally. The one exception is Verilator's location-less
+`Exiting due to N warning(s)` epilogue on a warnings-only run: grading it as a
+hard failure would make `warnings_as_errors = false` useless, so that run is
+graded by its warning count and the setting instead.
 
-**A non-zero linter exit is never a clean lint.** Findings are counted from
-parsed `%Warning` / Verible finding lines, so a run that dies before emitting
-any would otherwise score zero findings and pass. A recorded failure always
-outranks the tally. The one deliberate exception is Verilator's
-location-less `Exiting due to N warning(s)` epilogue on a warnings-only run.
-Grading that a hard failure would make `warnings_as_errors = false` inert, so
-the verdict flows through the warning tally and the knob instead.
+**FAIL versus ERROR depends on who failed.** A linter that ran and rejected the
+design is working, so that is a design FAIL. A linter that could not run is an
+ERROR naming the installation fix (normally rebuilding the Sandbox Image).
+Verible is invoked with `--parse_fatal --lint_fatal=false` to keep that split:
+both flags default to true, so without `--lint_fatal=false` ordinary findings
+would exit 1 and look like a parse failure. With it, a parse failure exits
+nonzero (ERROR) and findings exit 0 with parseable lines (WARN). One unusable
+linter decides the whole run, because the other Targets' verdicts are then not
+trustworthy evidence of a clean design.
 
-**FAIL versus ERROR splits on *who* failed.** A linter that ran and rejected
-the design is the linter working, so that is a design FAIL, the same grade
-Simulation's build stage gives the identical source. A linter that could not run at all is
-an ERROR that names the installation fix (normally rebuilding the Sandbox Image).
-Verible's EDA tool node is invoked
-`--parse_fatal --lint_fatal=false` precisely to preserve that split: a parse
-failure makes Verible itself exit non-zero → ERROR, while findings leave
-Verible at exit 0 with parseable lines → a WARN from Booley. One unusable linter decides the whole run, because the other Targets'
-verdicts are then not trustworthy evidence of a clean design.
+**A Target that lints nothing is an ERROR.** Before running, Booley checks that
+some linted HDL file declares `module <toplevel>`. A style fileset trimmed of
+the top module, or a stale `toplevel`, would otherwise lint against nothing
+and pass. The check is an ERROR rather than a warning, and the linter is not
+run, because its verdict would be meaningless. A file that cannot be read
+counts as declaring the module, so an I/O error never invents a failure.
 
-`warnings_as_errors = false` moves the exit code only. The WARN text stays and
-`lint_clean_{target}` still records the finding count truthfully, so a CI gate
-can pass on warnings-only while the Criteria keep the honest number.
+`warnings_as_errors = false` moves the exit code only: the WARN text stays and
+`lint_clean_{target}` still records the true finding count, so a CI job can
+pass on warnings while the Criteria keep the honest number.
 
-### Findings and reports
+### Findings
 
-Findings are parsed with the shared regexes in the private parser module
-(`booley.flows._eda_parsers`, one source of truth for the Verilator and
-Verible dialects), then deduplicated across Targets on `(rule, file, line)`
-and scope-filtered. Deduplication retains the first finding's diagnostic fields
-and row order while collecting every contributing Target. When different EDA
-tool families contribute to one row, the report also maps each Target to its
-EDA tool. These provenance fields do not change the deduplication key or count.
-The console echoes the first five; the full list always goes to the report:
-
-```text
-<runtime>/flow-reports/lint_report.json           # stable "latest run" path
-<runtime>/flow-reports/lint/<N>/lint_report.json  # per-invocation copy
-```
-
-The numbered copy exists because consecutive runs would otherwise clobber each
-other: a Verilator pass followed by a Verible pass is two runs of one Flow.
-The report carries `passed`, `total_warnings`, per-finding rule/file:line/
-message with contributing Targets and mixed-family EDA tool provenance, any
-`errors`, and a `target_results` entry per Target: the EDA tool that actually
-linted, finding count, `files_linted`, `toplevel`, `toplevel_linted`, and
-duration.
-
-**Coverage guard (`toplevel_linted`).** A Target can lint a fileset that
-excludes its own toplevel: a style fileset trimmed of macro-heavy files, for
-instance. Nothing in the linter's output says so, and the findings then cover
-only part of the design while reading as a clean bill for all of it. Booley
-scans the resolved sources for a `module <toplevel>` declaration and surfaces
-the hole as a warning line. It is best-effort by design: any read failure
-counts as declared, so an I/O hiccup never fabricates a coverage warning.
+Findings are parsed with the shared regular expressions in
+`booley.flows.eda_parsers` (one place for the Verilator and Verible formats),
+then deduplicated across Targets on `(rule, file, line)` and filtered by
+`--scope`. Deduplication keeps the first finding's fields and order and
+collects every contributing Target. The console prints the first five. The
+numbered `lint/<N>/lint_report.json` exists because a Verilator pass followed
+by a Verible pass is two runs of one Flow and would otherwise overwrite each
+other; its fields are in [FLOW_REPORTS.md](FLOW_REPORTS.md#lint). The
+per-Target `warnings` count in that report is the raw count before
+deduplication and `--scope`; the Criterion and `total_warnings` use the
+deduplicated, scoped count.
 
 ## `synth`
 
-`synth` is a fast ASIC quality-of-results (QoR) estimate. It maps RTL through
-Yosys in both modes; physical mode continues through OpenROAD, while logical
-mode stops after mapping. The Flow normalizes area, physical timing or a logical
-frequency estimate, and
-latch/loop conditions into a per-target `synthesis_ok_{target}` Criterion.
-
-> **PPA estimate, not sign-off.** In default `physical` mode, the numbers come
-> after quick floorplan / global placement / setup repair but are still
-> pre-layout estimates, not a tape-out flow. `logical` is a faster mapped-area
-> flow with only a rough logic-delay frequency estimate. See
-> [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md#built-in-flows).
+`synth` is a fast ASIC quality-of-results (QoR) estimate, not sign-off. Both
+modes map the RTL through Yosys. `physical` (the default) continues through
+OpenROAD floorplanning, global placement, setup repair, and STA (static timing
+analysis); its numbers are still pre-layout estimates. `logical` stops after
+technology mapping. The Flow turns area, timing, and structural conditions
+into a `synthesis_ok_{target}` Criterion.
 
 ### Configuration boundary
 
-The `.core` Target owns the persistent recipe and timing inputs: frontend,
-profile, flattening, synthesis mode, backend overrides, source files, SDC, and
-toplevel. `[flows.synth]` owns execution and verdict policy such as the default
-Target, timeout, and intentional-latch allowance.
-[FLOW-SYNTH.md](../user/FLOW-SYNTH.md#configuration-flowssynth) owns the
-`[flows.synth]` policy and option semantics; the Target's `.core` shape and
-example live in the
-[Synthesis Target recipe](../user/TARGETS.md#synthesis-target).
-
-`ppa_profile` and `synth_mode` are the main synthesis controls. The built-in
-backend translates the profile to Yosys and OpenROAD settings; backend-specific
-knobs live under `advanced_settings_yosys` and `advanced_settings_openroad`.
-Per-call profile and expert overrides are resolved before command generation;
-their precedence and profile contents are part of the
-[optimization profiles reference](../user/FLOW-SYNTH.md#optimization-profiles).
-
-Timing intent lives in the Target's SDC fileset (below), not in config scalars.
+The Target's `.core` owns the recipe and timing inputs: frontend, PPA profile,
+flattening, synthesis mode, backend overrides, sources, SDC, and toplevel
+([Synthesis Target](../user/TARGETS.md#synthesis-target)). `[flows.synth]` owns
+execution and verdict policy (`timeout_ms`, `expected_latches`,
+`fail_on_timing_violation`, `timing_report_paths`); see
+[FLOW-SYNTH.md](../user/FLOW-SYNTH.md#configuration-flowssynth). Doctor fails
+recipe keys such as `ppa_profile`, `synth_mode`, or `sdc` placed under a
+`[flows.*]` table (`booley/audit/flow_schema.py`), because a recipe value on
+the Flow table would apply silently to every Target. `ppa_profile` is translated
+to Yosys and OpenROAD settings; `advanced_settings_yosys` and
+`advanced_settings_openroad` override individual knobs, and per-call overrides
+are resolved before command generation
+([optimization profiles](../user/FLOW-SYNTH.md#optimization-profiles)).
 
 ### Constraints (SDC)
 
-Timing constraints are **design intent** (clock period, I/O delays,
-false/multicycle paths), so they live on the FuseSoC Target as a `file_type:
-SDC` fileset, source-controlled and per-target like the RTL, symmetric with how
-FPGA XDC is a Target fileset. The `.core` shape and example live in the
-[Synthesis Target recipe](../user/TARGETS.md#synthesis-target).
+Timing constraints are design intent, so they live on the Target as a
+`file_type: SDC` fileset, like the RTL and like FPGA XDC
+([ADR 0061](../adr/0061-make-target-sdc-the-only-physical-synthesis-timing-authority.md)).
+A physical-mode Target without one is a hard error before any EDA tool runs,
+rather than a clock Booley invents: a default clock produced PPA numbers that
+measured no one's intent. OpenROAD loads the SDC files in fileset order and
+adds no clocks, I/O delays, or other defaults; an SDC that defines no clock is
+an input error. Logical mode runs no STA and ignores SDC.
 
-A physical Target with **no** SDC fileset is a **hard error**, not a silent
-default: the run fails before EDA execution, naming the Target and the fix,
-rather than fabricating a clock the author never chose. Logical mode does not
-run STA, so it neither requires nor consumes SDC. OpenROAD loads the Target's
-SDC files in deterministic fileset order without adding generated clocks, I/O
-delays, drive/load constraints, or other timing defaults. After loading them it
-requires at least one clock; a clockless SDC is classified as an input/config
-error. The Fmax readout recovers the effective period from the authored SDC or
-the clock OpenROAD reports after evaluating dynamic Tcl.
+A clock far tighter than the design can meet (4 ns on a design good for tens
+of MHz) makes `repair_timing` buffer and upsize thousands of instances for
+minutes before STA. Near the achievable period it converges quickly, and Fmax
+falls out of the slack.
 
-**Constrain the clock near the design's realistic target.** Too aggressive a
-clock, say a 4 ns (250 MHz) constraint on a design whose real speed is tens of
-MHz, makes `repair_timing` buffer/upsize thousands of instances chasing an
-impossible constraint, running for minutes before STA. Near the achievable
-period it converges quickly, with Fmax falling out of the slack.
+### Modes and timing evidence
 
-### Synthesis modes and timing evidence
+- **`physical`** reports per-clock `critical_path_ps`, `fmax_mhz`, `wns_ns`,
+  and `whs_ns` from OpenROAD's OpenSTA. `area_um2` is OpenROAD's
+  post-optimization area (`area_source = "openroad_post_optimization"`).
+  Missing OpenROAD or PDK inputs, or incomplete physical results, fail the run;
+  there is no standalone OpenSTA fallback.
+- **`logical`** reports `estimated_fmax_mhz` from ABC's slowest liberty-mapped
+  combinational partition. That is not STA: it ignores placement, wires,
+  clock-to-Q, and setup, so Booley labels it probably inaccurate and never
+  uses it for timing thresholds. `area_um2` is Yosys's mapped area
+  (`area_source = "yosys_mapped"`).
 
-- **`physical`** (default) runs OpenROAD floorplanning, global placement,
-  optimization, placement-based parasitic estimation, and OpenROAD's embedded
-  OpenSTA. Timing is reported per clock, including `critical_path_ps`,
-  `fmax_mhz`, `wns_ns`, and `whs_ns`. `area_um2` is the OpenROAD
-  post-optimization area and `area_source` is
-  `openroad_post_optimization`. Missing OpenROAD/PDK inputs or incomplete
-  physical results fail the run; there is no standalone OpenSTA fallback.
-- **`logical`** stops after Yosys technology mapping. It is the fast option for
-  area iteration. `estimated_fmax_mhz` is derived from ABC's slowest
-  liberty-mapped combinational partition, but it is not STA and is not
-  per-clock. It excludes placement, wire delay, clock-to-Q, and setup time, so
-  Booley warns that the estimate is probably inaccurate and never uses it for
-  timing thresholds. `area_um2` is Yosys's liberty-mapped area and
-  `area_source` is `yosys_mapped`.
+Both modes use the same two area fields, so consumers never pick between
+parallel mapped and post-optimization fields.
 
-Both modes expose the same canonical area fields: `area_um2` and
-`area_source`. There are no parallel mapped/post-optimization area fields.
+A clock's `critical_path_ps` / `fmax_mhz` is its single worst-slack path. With
+a nonzero I/O-delay budget an I/O path can dominate it and hide the internal
+logic speed, so physical mode also reports the worst register-to-register path
+(`reg2reg_fmax_mhz`, `reg2reg_slack_ns`). These are null when STA finds no
+reg-to-reg path, as in a purely combinational design. Compare reg-to-reg
+numbers for A/B logic changes.
 
-Beyond the parsed metrics, [`artifacts.dirs`](#shared-run-logs-and-artifacts) names the two
-directories holding everything the run wrote:
-
-- **`timing`** — physical-mode STA reports: `overall.rpt` and its
-  machine-readable `overall.csv.rpt` twin plus `reg2reg.rpt`. List it for the
-  per-path slack breakdown behind the summarized `per_clock` numbers. Absent
-  in logical mode.
-- **`build`** — everything else: `stat_<design>.txt` (the `stat -liberty` output
-  `area_um2`/`cells` are parsed from, with the per-cell-type breakdown), both
-  netlists, the per-stage `yosys.log` / `openroad.log` / `sv2v.log`,
-  the rendered `synth.ys`, and the SDC actually fed to STA.
-
-Worth reaching for on a large design, where `run.log` inlines every stage's full
-text and runs to megabytes.
-
-A clock's `critical_path_ps` / `fmax_mhz` is its single most-negative-slack
-path. With a non-zero I/O-delay budget from the SDC, an I/O path can dominate
-that number and hide the true internal logic speed, so every run *also* reports
-the worst **register-to-register** path (`reg2reg_fmax_mhz` /
-`reg2reg_slack_ns` in the JSON report and the QoR line), unaffected by the I/O
-budget. Compare reg→reg numbers for A/B logic changes; author
-`set_input/output_delay 0` in the Target SDC only if you also want the
-*overall* path to reflect reg→reg.
+The report lists artifact directories rather than every file, because a file
+inventory was most of the report's size and a hard-coded file name silently
+goes stale. `artifacts.live_dirs.timing` (physical mode) holds the STA reports
+(`overall.rpt`, `overall.csv.rpt`, `reg2reg.rpt` when the design has registers,
+and `pre_repair*.rpt` when repair ran). `artifacts.live_dirs.build` holds the
+rest: the `stat` output, the netlists, the two check outputs, the per-stage
+logs, the rendered `synth.ys`, and the SDC fed to STA. On a large design these
+are easier to search than `run.log`, which holds the tail (up to 10 MB) of all
+stages' output.
 
 ### Intentional latches
 
-An inferred latch is normally a design bug, so any latch fails the run. But not
-every latch is an accident: a standard-cell **integrated clock-gating** cell is
-built from a deliberate `always_latch`, and lowRISC's generic `prim_clock_gating`
-contains exactly one. Declare how many the design contains on purpose with
-`[flows.synth].expected_latches`. It is an **allowance, not a mute**:
-the raw inferred count is always reported, and one latch more than declared still
-fails, so the check keeps catching the accidental latch it exists for. Set it
-only for latches you can point at in the RTL, and prefer mapping the cell to your
-library's real ICG primitive when the technology provides one.
+An inferred latch is normally a bug, so any latch fails the run. An integrated
+clock-gating cell is the exception: it is built from a deliberate
+`always_latch` (lowRISC's generic `prim_clock_gating` has one), and failing on
+it made correct designs unsynthesizable. `[flows.synth].expected_latches`
+declares how many latches are intended. It is an allowance, not a mute: the
+raw count is always reported, and one latch more than declared still fails.
 
 ### RTL frontend
 
-`frontend` picks how the RTL enters Yosys (`--frontend` overrides the Target
-default). `sv2v` (default) transpiles SystemVerilog → Verilog, then
-`read_verilog`, and works on every sandbox image. `slang` reads SystemVerilog
-natively (`read_slang`, no transpile) and needs a **Yosys ≥ 0.67** image; on an
-older one the run fails fast and tells you to switch frontend or rebuild. Reach
-for `slang` when the design puts **parameterized interfaces on module port
-lists** or reads their parameters hierarchically
-(`localparam KEEP_W = s_axis.KEEP_W`). sv2v transpiles neither, so there it is a
-requirement, not a preference. Both frontends feed the same tech-mapping and
-timing tail, so the choice affects RTL frontend processing only, not the PPA
-methodology.
-For the full comparison and known `slang` limitations, see
-[SUPPORTED-EDA-TOOLS.md → RTL frontend](../user/SUPPORTED-EDA-TOOLS.md#synth-rtl-frontend-sv2v-vs-slang).
+`frontend` (Target default, `--frontend` per call) chooses how RTL enters
+Yosys. `sv2v` (default) transpiles SystemVerilog to Verilog and works on every
+Sandbox Image. `slang` reads SystemVerilog directly and needs Yosys 0.67 or
+later; a preflight (`yosys -p 'help read_slang'`) fails fast on an older image.
+`slang` is required when the design puts parameterized interfaces on module
+ports or reads interface parameters hierarchically, which sv2v cannot
+transpile. Both feed the same mapping and timing steps. See
+[SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md#synth-rtl-frontend-sv2v-vs-slang).
 
 ### Verdict semantics
 
 `synthesis_ok_{target}` is satisfied only when:
 
-- the flow exits 0 without hitting the per-config timeout;
-- usable metrics are present (a cell count or an area figure); a clean exit
-  that produced no metrics never passes;
-- no critical condition remains: zero latches beyond `expected_latches`, zero
-  combinational loops, zero multi-driven nets, and zero unmapped processes.
+- the run exits 0 within its timeout;
+- the mode's results are complete: an area figure with the mode's
+  `area_source`, and in physical mode OpenROAD timing evidence; a clean exit
+  without them never passes;
+- no critical condition remains: no latches beyond `expected_latches`, no
+  combinational loops, no multi-driven nets, no unmapped processes.
 
-Exact loop and multi-driver counts come from a dedicated final Yosys `check`
-artifact emitted after technology mapping and optimization. Yosys also runs
-`check` several times during `synth`; earlier-only combinational loops are
-advisory when the completed final check reports zero loops. Their diagnostic
-evidence is retained with a rationale explaining that the final netlist is
-clean. Earlier multi-driver warnings remain inventory-only; the final check
-decides that condition. Missing, stale, or incomplete final-check evidence makes
-`structural_checks_complete` false and cannot produce a passing synthesis result.
+The loop count comes from a Yosys `check` that Booley runs right after `synth`
+and before mapping (`premap_check_<design>.txt`). Mapped library cells are black
+boxes to `check`, so a check after mapping cannot trace a loop through them.
+`check` works per module, so without `flatten` a loop that crosses a module
+boundary is not counted. The multi-driver count comes from a final `check` run
+after mapping and optimization (`check_<design>.txt`). The reported loop count
+is the larger of the two, so a loop that either check reports still fails the
+run. Yosys also runs `check` inside `synth`; loops seen only there (an
+optimization removes them, as in
+[#1417](https://github.com/boldaxolotl/booley/issues/1417)) are advisory when
+neither check finds a loop, and are kept with that rationale. Missing, stale,
+or incomplete output from either check sets `structural_checks_complete` to
+false and cannot pass.
 
-Timeouts, infrastructure errors, and metric-less nonzero exits are Flow
-failures; critical conditions on an otherwise clean run are design failures.
-Either way the failing stage's own output (a missing liberty file, a
-Yosys/sv2v error) is carried into the report, so the reason is named instead
-of a bare "no metrics".
+Negative setup or hold slack grades `warn` and exits 0 unless
+`[flows.synth].fail_on_timing_violation = true`, which makes it a failure
+(exit 1). The default is lenient because early SDC files are often
+placeholders; the cost is that a consumer reading only the exit code misses
+negative slack.
 
-#### Goal baselines and recorded recipes
+Timeouts, infrastructure errors, and nonzero exits without metrics are Flow
+errors (exit 2); critical conditions on an otherwise clean run are design
+failures (exit 1). Either way the failing stage's own output (a missing
+liberty file, a Yosys or sv2v error) is carried into the report.
 
-Goal Mode's base commit and editable Target policy are defined in
-[Goal baselines and editable design inputs](#goal-baselines-and-editable-design-inputs).
+### Warnings and Criteria detail
 
-### Reports and Criteria detail
+Each current and baseline result carries a bounded `warning_summary`: total
+and unique counts, counts by EDA tool, category, and disposition, and one
+representative message per group; `artifacts.log` keeps every raw message.
+Structural warnings become fatal when the check that owns their count
+confirms them. Other actionable warnings grade `warn` but keep `passed: true` and exit 0. A warning
+known to be benign is counted with its rationale and does not downgrade the
+result. A located Yosys warning (`file:line[:col]: Warning:`, in practice from
+the `read_verilog` and `slang` frontends, slang on Yosys 0.69 and 0.70) is counted under category `frontend`
+with disposition `informational`: it never grades `warn`, because it reports
+the source rather than the synthesis. Its message drops the location and the
+echoed source line so the same warning groups across lines, and a trailing
+slang `[-W...]` is kept as the group's `code`. A located loop or multi-driver
+warning keeps its structural classification. Informational groups sort after
+all others (the first-listed loop group aside) in the representatives. Other unknown warning forms default to
+actionable, so a new message is never silently ignored.
 
-For each Target, the Flow writes:
-
-```text
-<runtime>/flow-reports/synth_<target>.json    # per-target metrics (+ baseline)
-<runtime>/flow-reports/synth/<N>/targets/<target>.json # immutable target evidence
-<runtime>/flow-reports/synth/<N>/progress.json # live matrix checkpoint
-<runtime>/flow-reports/synth/<N>/report.json  # per-invocation structured report
-<runtime>/flow-reports/synth.json             # flat compatibility copy of the latest report
-```
-
-The full synthesis output is persisted as `run.log` in the per-target Edalize
-work dir, on pass and fail alike.
-
-Each current and baseline result also carries a bounded `warning_summary`:
-`total_warnings` counts warning-record occurrences, `unique_warnings` counts
-groups normalized by EDA tool, stable code, category, disposition, and complete
-diagnostic text, and the `by_tool`, `by_category`, and `by_disposition` maps
-retain the corresponding occurrence counts. A bounded `representatives` list
-contains one diagnostic per group; `artifacts.log` remains the source for the
-complete output. Structural warnings are always reported and become fatal when
-confirmed by the final check. Other actionable warnings produce grade `warn`
-while retaining `passed: true` and exit zero. An explicitly benign warning is
-still counted and includes its disposition rationale, but does not downgrade a
-clean result. Unknown warning forms default to actionable rather than benign.
-
-The Criteria detail includes:
-
-- `area_um2`, `area_kge`, `cells`, `wire_count`
-- `total_warnings` and `warning_summary` (grouped counts, dispositions, and
-  bounded representatives)
-- `estimated_fmax_mhz` in logical mode; `per_clock` (per-clock
-  `critical_path_ps` / `fmax_mhz` / `wns_ns` /
-  `whs_ns`), aggregate `wns_ns` / `whs_ns`, `reg2reg_fmax_mhz`, `reg2reg_slack_ns`
-- `latches`, `expected_latches`, `unexpected_latches`, `comb_loops`,
-  `multi_driven`, `process_count`
-- `baseline_metrics`, when `--baseline` is used
-- normalized current/baseline recipe fingerprints and snapshots, with their
-  semantic differences summarized in the Review package
-- `_metric_map` and `_min_allowed` for threshold/acceptance display
+The Criterion detail carries the area, cell, and wire counts, the
+`warning_summary`, the timing fields of the mode, the latch, loop,
+multi-driver, and process counts, `baseline_metrics` whenever a baseline ran
+(an explicit `--baseline` or the one pinned at Goal entry), the current and
+baseline recipe fingerprints and snapshots, and `_metric_map` / `_min_allowed`
+for threshold display. Report files are in
+[FLOW_REPORTS.md](FLOW_REPORTS.md#synth).
 
 ## `fpga`
 
-`fpga` is an FPGA quality-of-results check. It runs implementation,
-normalizes utilization and timing metrics, writes Booley reports, and satisfies
-`fpga_impl_ok_{target}` only when implementation evidence is complete and
-timing is met.
+`fpga` is an FPGA quality-of-results check. It runs Vivado implementation,
+normalizes utilization and timing, and satisfies `fpga_impl_ok_{target}` only
+when the implementation evidence is complete and timing is met.
 
 ### Configuration boundary
 
-The selected Target owns FPGA build intent: device part, portable PPA profile,
-out-of-context choice,
-sources, XDC, toplevel, and compile-time defines. `[flows.fpga]` owns execution
-policy; every invocation still names its Target. [FLOW-FPGA.md](../user/FLOW-FPGA.md#configuration-flowsfpga)
-owns the `[flows.fpga]` policy and option semantics; the Target's `.core` shape
-and example live in the [FPGA Target recipe](../user/TARGETS.md#fpga-target).
+The Target owns the build intent under `flow_options`: device `part`,
+`ppa_profile`, and `out_of_context`, plus its sources, `toplevel`, XDC
+fileset, and typed `vlogdefine` parameters
+([FPGA Target](../user/TARGETS.md#fpga-target)). `[flows.fpga]` owns execution
+policy only ([FLOW-FPGA.md](../user/FLOW-FPGA.md#configuration-flowsfpga)), and
+Doctor fails recipe keys such as `part`, `ppa_profile`, or `out_of_context`
+placed there. Keeping the part on the Target stops one global setting from
+silently applying the wrong device to another Target. There is no per-call
+define or clock-name argument: defines come from the Target's parameters and
+clocks from its XDC.
 
-The Target's `fpga` name axis is the drivability discriminator. Its declared
-`flow_options.tool` remains a FuseSoC resolution input—most notably for
-`tool_<name>` conditional files—but it does not select the implementation
-backend. Booley always builds and executes the Vivado EDAM below. Unprefixed
-vendored Targets retain a `tool: vivado` compatibility fallback because they
-cannot be renamed to the Booley convention.
+The Target name's `fpga` axis decides whether the FPGA Flow can drive a Target
+(`booley.targets.target_naming.fpga_intent`). `flow_options.tool` stays a
+FuseSoC resolution input, mainly for `tool_<name>` conditional files, but does
+not choose the backend: Booley always rebuilds the resolved inputs into a
+Vivado EDAM. A Target with no axis prefix counts as FPGA when its tool is
+`vivado`, so vendored upstream cores, which cannot be renamed, stay usable.
 
-The device `part`, `ppa_profile`, `out_of_context` choice, and other
-build-recipe inputs live
-under the selected Target's `flow_options`. XDC constraints are a Target
-`file_type: xdc` fileset, and compile-time defines are typed `vlogdefine`
-parameters. Doctor rejects those build inputs under `[flows.fpga]`.
+XDC is mandatory: a Target with no `file_type: xdc` fileset is a hard error
+naming the Target and the fix, and `booley.toml` has no XDC setting. XDC
+carries clocks, false paths, and pin placement, which are design intent, the
+same reasoning as SDC for `synth`. Reporting and timing thresholds are per
+clock, with clock names taken from the XDC.
 
-Dry-run and real execution share one validated Target-recipe preflight. Both
-run FuseSoC setup, validate part/top/XDC/parameters, partition the resolved
-sources, resolve the portable profile and concrete Vivado mapping, and inspect
-those sources for provenance. Only the real path then
-materializes the Vivado project and creates execution evidence. Multi-Target
-planning is execution-atomic: a later setup failure prevents every real unit,
-while dry-run retains valid earlier work units beside Target-attributed
+Dry-run and real execution share one Target-recipe preflight: FuseSoC setup,
+validation of part, top, XDC, and parameters, source partitioning, and
+resolution of the portable profile to a Vivado mapping. Only a real run then
+materializes the Vivado project. Multi-Target planning is all-or-nothing for
+real runs: a setup failure on a later Target prevents every unit from running,
+while a dry run keeps the valid earlier units next to Target-attributed
 `aggregate_errors` for diagnosis.
 
-Plain Doctor includes the optional FPGA axis when a Target marks
-`booley: {doctor: [fpga]}` or `[flows.fpga]` is present and enabled. It uses the
-same dry-run and checks `vivado` availability. Deep Doctor deliberately does not
-run full implementation; it emits one target-specific SKIP with the manual
-command instead.
-
-The Booley Flow generates an Edalize `vivado` project whose `make` target invokes
-Vivado inside the Sandbox. With `provisioning = "image"`, the runtime
-image must satisfy the built-in Vivado wrapper contract. With
-`provisioning = "host"`, an administrator registers an exact supported Vivado
-release and grants the Project access; Booley mounts that release read-only at
-the fixed path expected by the image-owned wrapper. There is no Project-owned
-host path, `vivado_path`, arbitrary mount, or execution-location knob.
-
-License Profiles are also host-owned. When one is authorized, the runtime
-receives only a fixed pointer to its session-owned relay, never a Project-chosen
-license environment or destination. See
-[SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) for the currently validated
-Vivado version, platform, and licensing status.
-
-### Constraints (XDC)
-
-XDC constraints are **design intent**: they carry `create_clock`, false paths,
-and pin placement (`set_property PACKAGE_PIN`), so they live on the FuseSoC
-Target, not in `booley.toml`, symmetric with how ASIC SDC is a Target
-fileset.
-
-The source is a `file_type: xdc` fileset in the `.core`:
-source-controlled and per-target. Multiple XDC files are supported; the
-`.core` shape and example live in the
-[FPGA Target recipe](../user/TARGETS.md#fpga-target).
-
-The `file_type: xdc` fileset is the **sole** source: a Target with no such
-fileset is a hard error naming the Target and the fix. XDC is mandatory, and
-`booley.toml` has no `xdc` key — constraints belong with the design, not the
-Flow configuration.
-
-The FPGA `part` (e.g. `xc7a200tfbg484-1`) is Target-specific build intent and
-therefore lives at `flow_options.part`. Keeping it beside the Target prevents a
-single global Flow section from silently applying the wrong device to another
-Target.
-
-The public controls and baseline behavior are documented in
-[FLOW-FPGA.md](../user/FLOW-FPGA.md#fpga-implementation-fpga). The implementation receives
-those already-validated arguments from the common Flow interface.
-
-All build-time inputs come from the Target, not the Flow policy section: the
-part from `flow_options.part`, XDC from the Target's `file_type: xdc`
-fileset (see [Constraints (XDC)](#constraints-xdc) above; clock definitions
-live there too, so there is no clock-name argument), the top module from the
-Target's `toplevel` (its absence is a hard error), and defines from the Target's
-declared `vlogdefine` parameters (`-d/--define` was removed).
-
-Reporting and timing thresholds are nonetheless **per-clock**: the clock names
-come from the XDC and surface in the `per_clock` metric map below.
+Plain Doctor covers FPGA when `[flows.fpga]` exists or a Target is marked
+`booley: {doctor: [fpga]}`, and the Flow is enabled. It runs the dry-run and a
+bounded Vivado batch startup. Deep Doctor never runs a full implementation,
+which takes too long for a health check; it prints one SKIP per Target with
+the command to run by hand.
 
 ### Build execution
 
-Both provisioning sources run the **same** Edalize `vivado` project inside the
-Sandbox. The Booley Flow materializes it (sources, XDC, part, defines,
-generated Tcl), applies the characterized non-default `synth_1` and `impl_1`
-strategy properties, then invokes its `make` target. `balanced` performs no Tcl
-write and preserves Edalize's existing defaults byte-for-byte. Strategy
-assignment must precede the out-of-context patch because Vivado resets synthesis
-step properties when a strategy changes. The recipe records the final required
-step. `max_frequency` installs a post-route Tcl hook and requires its completion
-witness before accepting a run or caching its reports, even if routing succeeded.
-A later boardless bitstream failure remains acceptable once that witness exists:
+The Flow generates an Edalize `vivado` project (sources, XDC, part, defines,
+generated Tcl) and runs its `make` target inside the Sandbox:
 
 ```
 make -C .booley/.runtime/edalize/fpga/<target>
 ```
 
-The `make` process and every Vivado subprocess remain in the container whether
-the executable files came from the image or an approved read-only host mount.
-A host-issued immutable specification fixes the image, wrapper, mount target,
-environment, labels, and optional relay topology before Docker creates or
-resumes the container. Provisioning failures stop startup; they cannot fall
-back to executing the command on the host.
+Before that, it writes the non-default `synth_1` / `impl_1` strategy for the
+selected profile into the project Tcl. `balanced` writes nothing, so its Tcl
+matches plain Edalize byte for byte. The strategy goes in before the
+out-of-context patch, because Vivado resets synthesis step properties when the
+strategy changes. `max_frequency` adds a post-route `phys_opt_design` step and
+a Tcl hook that prints a completion marker; a run without that marker is not
+accepted or cached, even if routing succeeded, because its numbers would not
+come from the profile's final step.
+
+`make` and every Vivado process run in the container whether Vivado comes
+from the Sandbox Image (`provisioning = "image"`) or from an administrator's
+registered host installation mounted read-only (`provisioning = "host"`). A
+host-issued specification fixes the image, wrapper, mount, environment, and
+license relay before the container starts, and a provisioning failure stops
+startup rather than running anything on the host. The Project cannot choose a
+host path, mount, execution location, or license environment. See
+[SANDBOX.md](../user/SANDBOX.md#commercial-eda-provisioning) and
+[SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy).
 
 ### Normalized metrics
 
-The build returns only the raw run log, stderr, and exit code; interpretation
-stays in Booley. Booley parses the Vivado-written route reports (`*_utilization_placed.rpt`,
-`*_timing_summary_routed.rpt`, `*_drc_routed.rpt`, plus the impl run log)
-under the materialized project (age-gated so only reports written by this
-run count) into the normalized metric dict. Everything else Vivado wrote —
-power, route status, clock utilization, the synth-stage utilization, the design
-checkpoints, `vivado.log` — is reachable by listing the `impl` / `synth` /
-`build` directories that [`artifacts.dirs`](#shared-run-logs-and-artifacts) names:
-
-```json
-{
-  "status": "pass",
-  "lut_count": 1200,
-  "ff_count": 700,
-  "bram_count": 2,
-  "dsp_count": 1,
-  "wns_ns": 0.25,
-  "whs_ns": 0.10,
-  "per_clock": {
-    "clk_i":  {"period_ns": 10.0, "wns_ns": 0.25,  "whs_ns": 0.10, "critical_path_ps": 9750.0, "fmax_mhz": 102.56},
-    "clk_2x": {"period_ns": 5.0,  "wns_ns": -0.10, "whs_ns": 0.05, "critical_path_ps": 5100.0, "fmax_mhz": 196.08}
-  },
-  "latch_count": 0,
-  "comb_loop_count": 0,
-  "multi_driven_count": 0
-}
-```
+The build returns only the run log, stderr, and exit code; interpretation
+stays in Booley. `parse_fpga_reports` (`flows/fpga/backends/vivado/edam.py`)
+reads the routed reports (`*_utilization_placed.rpt`,
+`*_timing_summary_routed.rpt`, `*_drc_routed.rpt`) and the implementation run
+log, accepting only files written by this run. Everything else Vivado writes
+(power, route status, checkpoints, `vivado.log`) is in the `impl`, `synth`, and
+`build` directories that `artifacts.live_dirs` names.
 
 | Metric | Role |
 |--------|------|
-| `lut_count`, `ff_count` | Required: absence leaves the Criterion unsatisfied |
-| `wns_ns`, `whs_ns` | Required: worst negative setup / worst hold slack in ns, the honest worst case across all clocks |
-| `bram_count`, `dsp_count` | Reported when the FPGA family provides them; not verdict-gating |
-| `latch_count`, `comb_loop_count`, `multi_driven_count` | Critical-condition counters; non-zero fails the run (see Verdict semantics) |
+| `lut_count`, `ff_count` | Required |
+| `wns_ns`, `whs_ns` | Required: worst setup and hold slack across all clocks, in ns |
+| `bram_count`, `dsp_count` | Reported when the device family provides them; never gate the verdict |
+| `latch_count`, `comb_loop_count`, `multi_driven_count` | Critical conditions; nonzero fails the run |
+| `per_clock` | Per-clock `period_ns`, `wns_ns`, `whs_ns`, `critical_path_ps`, `fmax_mhz` |
 
-Per-clock timing (`per_clock`): Fmax and critical-path delay are inherently
-**per-clock**, so they come back as a map keyed by clock name, one entry per
-`create_clock` in Vivado's Clock Summary (a single-clock design has exactly
-one), never as top-level scalars (the old `critical_path_ps` / `fmax_mhz`
-scalars are gone, with no back-compat alias). Each entry carries the clock's
-constrained `period_ns`, its `wns_ns` / `whs_ns`, and two derived fields:
-`critical_path_ps = (period_ns − wns_ns) × 1000` and
-`fmax_mhz = 1e6 / critical_path_ps` (`null` when the derived delay is
-non-positive). Any sub-field may be `null` when the clock has no path or its
-period is unknown.
-
-Timing thresholds (`fpga_impl_ok`) gate on these per-clock values. A **flat**
-`critical_path_ps_max` / `fmax_mhz_min` gates the timing-worst clock, so every
-clock must pass, while a **clock-scoped** `clk_i.fmax_mhz_min` gates just
-clock `clk_i` (see [GOAL-MODE.md](../user/GOAL-MODE.md#thresholds)).
+Fmax and critical path only make sense per clock, so they exist only inside
+`per_clock`, one entry per `create_clock` in Vivado's clock summary. Each entry
+derives `critical_path_ps = (period_ns - wns_ns) * 1000` and
+`fmax_mhz = 1e6 / critical_path_ps` (null when the delay is not positive); any
+field is null when the clock has no path or no known period. A flat threshold
+such as `fmax_mhz_min` applies to every clock; a clock-scoped one such as
+`clk_i.fmax_mhz_min` applies to that clock only
+([GOAL-MODE.md](../user/GOAL-MODE.md#thresholds)).
 
 ### Verdict semantics
 
 `fpga_impl_ok_{target}` is satisfied only when:
 
-- the build completes without infrastructure error;
-- `route_design` completed (the run log's success marker). Route completion
-  (not the `make` exit code) defines success: a boardless QoR target's
-  `write_bitstream` fails by design (no pinout) without failing the run. Only
-  when route did not complete is the `make` exit code surfaced as the failure;
-- LUT and FF metrics are present;
-- `wns_ns >= 0` and `whs_ns >= 0` (both present);
-- latch, combinational-loop, and multi-driven counters are zero.
+- route completed (the implementation run log's success line). Route
+  completion, not the `make` exit code, defines success, because a boardless
+  QoR Target's `write_bitstream` fails by design for lack of a pinout. Only
+  when route did not complete does the `make` exit code become the failure;
+- the profile's completion marker is present (`max_frequency` only);
+- fresh, nonempty utilization, timing, and DRC reports give LUT, FF, `wns_ns`,
+  and `whs_ns`;
+- `wns_ns >= 0` and `whs_ns >= 0`;
+- the latch, loop, and multi-driver counts are zero.
 
-Provisioning and setup failures are Flow errors. Missing metrics, timing
-violations, and critical design conditions are design failures.
+Provisioning and setup failures, a missing completion marker, and a routed run
+whose reports lack the required metrics are Flow errors (exit 2). Timing
+violations and critical design conditions are design failures (exit 1).
 
-#### Goal baselines and recorded recipes
-
-Goal Mode's base commit and editable Target policy are defined in
-[Goal baselines and editable design inputs](#goal-baselines-and-editable-design-inputs).
-
-### Reports and Criteria detail
-
-For each Target, the Flow writes:
-
-```text
-<runtime>/flow-reports/fpga_<target>.json    # per-target metrics (+ baseline)
-<runtime>/flow-reports/fpga/<N>/targets/<target>.json # immutable target evidence
-<runtime>/flow-reports/fpga/<N>/progress.json # live matrix checkpoint
-<runtime>/flow-reports/fpga/<N>/report.json  # per-invocation structured report
-<runtime>/flow-reports/fpga.json             # flat compatibility copy of the latest report
-```
-
-The Criteria detail includes:
-
-- `lut_count`, `ff_count`, `bram_count`, `dsp_count`
-- `wns_ns`, `whs_ns`, `per_clock` (per-clock `period_ns` / `wns_ns` / `whs_ns` /
-  `critical_path_ps` / `fmax_mhz`)
-- `has_primary_metrics`, `timing_met`, `has_critical`
-- `latches`, `comb_loops`, `multi_driven`
-- `baseline_metrics`, when `--baseline` is used
-- normalized current/baseline recipe fingerprints and snapshots, with their
-  semantic differences summarized in the Review package
-- `_metric_map` and `_min_allowed` for threshold/acceptance display
-
-
-### Coverage Campaign orchestration
-
-`SimulateFlow` accepts `SimRequest.coverage=True`, public CLI `--coverage` /
-`--cov`, and MCP boolean `coverage`. Collection defaults to false. The `coverage`
-Criterion and exact-path Coverage Analyst are public alongside these controls.
-A Coverage Criterion never activates collection.
-
-`prepare_coverage_invocation(request, project_context)` resolves all selected
-Targets without EDA, build setup, report allocation, or state mutation. It
-aggregates invalid selections, rejects any non-Verilator Target, validates hook
-contracts, and freezes exact suites and source/build fingerprints. Suite
-selection has two cases: an explicit invocation suite keeps every named
-registered test, overriding configured skips; otherwise the registered suite
-minus configured skips runs. The Coverage Criterion never selects tests. Its
-`tests` list (or, for `tests: all`, the full registered suite) is the required
-suite, so any difference, including configured skips, is a suite mismatch
-during evaluation.
-Execution is sorted and sequential.
-
-`run_coverage_target(plan, execution, *, embedded_root, publication_checkpoint=None)`
-collects through `SimulationExecutionPort`, assembles and validates the canonical Campaign,
-loads approved waivers unless `--no-waivers` is given, evaluates, publishes the
-Campaign under the attempt-owned root, and returns the outcome. The Simulation
-Campaign writes the projection and the Simulation Flow writes progress. Source/Target drift is
-rejected. Ungated evaluation is `not_requested`, including incompatible input, unless the Approved Waiver Set
-fails to load or match, which blocks it (exit 2); collection errors still exit 2.
-Simulation failures exit 1. A valid threshold miss exits 0; the Criterion
-records it. Blocking evaluation, collector, infrastructure, or persistence
-errors take precedence with exit 2.
-Target-local collector failures permit later Targets; shared execution or
-publication failures abort with earlier Target results and pending Targets
-preserved in structured output. Progress is observational and never resumed.
-
-Project-wide waiver configuration is `[coverage.waivers]` in the Booley Directory
-`booley.toml`, with explicit `anchor` (`rtl_repository` or
-`project_data_repository`) and safe relative `directory`. Target window/hook
-configuration remains under `flow_options.booley.coverage`.
-
-In Goal Mode, the Coverage Analyst's deterministic wrapper records screened
-Waiver Candidates in the bound Goal Record's `waiver-candidates.json`, alongside
-strict and provisional verdicts. A Provisional Coverage Verdict informs the
-human's decision and cannot meet a Goal. The agent proposes a coverage waiver
-through `goal_propose_change`; human approval captures promotion effects,
-updates the Approved Waiver Set, recomputes strict coverage, and records the
-change in the Goal Change Log. Candidate, Campaign, source, and policy identities
-are revalidated before application. External waiver-policy changes invalidate
-old coverage evidence; they are not an implicit Goal approval.
-
-#### Coverage Campaign artifacts
-
-The canonical Target directory holds `simulation.json` and a
-`booley.coverage-campaign-reference/v1` `coverage.json`, not the Coverage Campaign
-manifest or point store. Its `coverage_campaign.path_base` is `origin_target`;
-resolve `coverage_campaign.path` against that directory to
-`campaign/work-items/<item>/attempts/<attempt>/coverage-campaign/coverage.json`.
-The nested Coverage Campaign directory holds the current manifest, required
-`coverage-points.jsonl.gz`, `native/raw/`,
-`native/merged/`, and `hooks/` sidecars when collected. Native paths in the
-manifest are relative to that **Coverage Campaign directory**.
-
-The nested manifest contains provenance, overall rollups, deterministic
-source-file rollups, percentages, collection, evaluation, and scoring state
-without inline Coverage Points. The
-[Flow reports reference](FLOW_REPORTS.md#coverage-campaign-files) defines
-scoring and retained diagnostic evidence. Source rollups cover line, branch,
-expression, and toggle with overall eligibility and waiver policy;
-they never aggregate by instance hierarchy. The manifest records the identity of the
-compressed JSON Lines point store. Manifest readers validate the current Campaign manifest at the
-resolved nested path; the Target reference is a separate schema. The Coverage
-Analyst requires the canonical Target-level reference and matching completed
-`simulation.json`; it resolves and authenticates the nested manifest internally
-and does not accept the nested path as its input.
-`booley.simulation-report/v3` artifact
-references use `report_invocation` or `reports_root`, resolved from the containing
-`report.json`; cross-root resume references instead use `external_origin_target`,
-resolved from an explicitly supplied origin Target directory. Resume reports do
-not publish a duplicate Target projection. No flat per-Target compatibility report is
-written in any Simulation mode. Endpoint reporting separately overwrites
-`<reports>/<name>.json` (for example `sim.json`) with a last-writer-wins copy of
-its newest numbered `report.json`. This backward-compatibility copy is mutable;
-a later failure can replace Campaign pointers with empty `detail`. Consumers
-must retain numbered `<reports>/<name>/<N>/...` paths, never use this copy as
-stable Campaign authority. The separate report-driven Analyst consumes the
-exact completed Target Campaign without publishing policy evidence.
-
-#### Persistence and recovery
-
-The point store is flushed and committed without replacement before
-`coverage.json`; the manifest is published last as the Campaign commit marker.
-Deep readers open the canonical store without following links, gunzip it once under the
-uncompressed ceiling, check the header schema, then hand the manifest and points
-to the Campaign codec once. The codec validates every point and the shape of
-the collection state and evaluation, then derives the overall rollups (empty
-when collection is not complete) from the points. A stored pass/fail evaluation
-is re-scored from those rollups and its stored thresholds; the stored rollups
-and verdict rows are discarded. A pass/fail verdict whose suite did not match,
-that carries diagnostics, or that cannot be re-scored is refused before
-point-dependent evidence is accepted. Per-source rollups and scoring are
-writer-derived manifest content that readers do not re-derive. Criteria
-blocks on collection before denominator/metric work. Contract failures expose
-stable `COV_*` error codes. Coverage Criterion evidence comes only from
-Simulation Campaign acceptance (`flows/sim/acceptance.py`), after the Campaign
-is published. Coverage observations use transaction-qualified ledger sequence directories. Their
-transaction identity is included in `acceptance_transactions` in the same atomic
-bound evidence-state save as the updated Criteria. Acceptance readers ignore evidence
-from transactions absent from the saved state, including partially written
-sequences. Thus an interrupted evidence append or failed state save preserves
-the prior authoritative projection without deleting historical observations.
-Ordinary nontransactional ledger observations retain their existing semantics.
-
-Terminal progress follows Simulation publication. If its normal write fails,
-the Flow retries once with `phase: aborted`; the committed Campaign remains
-valid and the command returns 2 even when that repair succeeds. Before the nested
-Coverage Campaign commit marker is published, a persistence error retains any
-observed simulation verdict but reports collection as `infrastructure_error` and
-blocks a requested evaluation. After that commit, later Simulation Campaign,
-reference, summary, acceptance, report, or progress publication failures retain
-the durable collection and evaluation truths as well as the simulation verdict;
-they do not turn a committed evaluation into `blocked`. Report paths are usable
-only when their publication succeeded. No later stage runs after an earlier
-publication failure, except for an observational error checkpoint.
-
-The Simulation Campaign coordinator builds this failed-Target detail from facts
-it already holds. Its publication error carries the Target root and selector,
-the result's observations, the nested Coverage Campaign path for a
-coverage workload, and the public Coverage Campaign reference only after its
-publication. The Flow loads that nested Campaign once for collection and
-evaluation, reporting `collector_error` as `infrastructure_error`, and does not
-re-hash attempt evidence, re-check the Target identity, or re-authenticate the
-reference. As the one exception to retaining committed truths, when that nested
-Campaign cannot be loaded, the detail reports `infrastructure_error` and the
-prepared evaluation.
-
-If retaining a completed coverage outcome fails while resolving its public
-reference, fresh and resumed runs keep `simulation`, `passed`, and tests from
-that outcome's in-memory observations. They report `collection:
-infrastructure_error` and `evaluation: blocked` when evaluation was requested
-(`not_requested` otherwise), without attaching a coverage reference. The Flow
-does not resolve or owner-authenticate that reference again on this failure
-path. This retention failure is distinct from a publication failure after the
-nested Coverage Campaign commit described above.
-
-All Simulation progress producers normalize a failed terminal publication onto
-the result already assembled from durable Target or Campaign outcomes. They do
-not replace that result with a generic error. A per-Target progress failure
-terminalizes as `aborted`, even when every Target execution already completed;
-`phase: complete` is reserved for successful progress publication.
-
-The Flow holds an OS file lock outside the invocation directory while producing
-coverage. Pruning takes the same nonblocking lock, so active invocations cannot
-be removed. Process exit releases ownership; `progress.json` is never lock or
-resume authority. Every subsequent Flow invocation allocates a fresh number,
-and the Target transaction rejects previously started native state.
-
-Coverage resume derives its origin only from the validated manifest path, takes
-the origin invocation lock before recovery, and holds it through the final
-transition. Successful recovery terminalizes the new invocation as `complete`
-and changes an eligible `running` or `aborted` origin to `superseded`. The
-origin's completed and pending lists remain its historical disposition; they are
-not recomputed from the recovered Campaign store. An already `complete` origin
-is unchanged, and an already `superseded` origin keeps its first `superseded_by`.
-Missing, malformed, or concurrently changed origin progress prevents only that
-observational supersession; it never prevents manifest-authoritative recovery.
-
-#### Exact report retention
-
-The maintenance seams in `booley.flows.sim.campaign_retention` accept the report
-root explicitly; callers obtain Booley Directory roots through
-`booley.runtime.booley_dir.resolve_booley_dir()`. They never discover a
-“latest” Campaign or apply age/size rules:
-
-- `prune_native_payload(reports_root, invocation, target)` requires an exact
-  positive invocation number and one exact manifest Target selector. It validates
-  the complete Campaign pair and Simulation identities and link safety before
-  mutation. Symlinks, unsafe paths, ambiguous or unknown Targets, a wrong
-  invocation, and a recorded native payload that is missing on the first attempt
-  are errors. Native files are not re-hashed, and unrecorded files under `native/`
-  are removed with it.
-- `prune_invocation(reports_root, invocation)` validates every existing Target
-  and compares every file with the authenticated invocation, Campaign, and
-  artifact inventory before atomically moving that invocation to `.pruned-N` and
-  removing its contents. An interrupted `.pruned-N` is finished whenever it holds
-  `.prune.json`; without that journal it is refused. Unknown files are named and
-  refused without mutation;
-  changed or missing recorded native payloads are accepted because full pruning
-  removes the entire invocation. A terminal attempt owns its records, the files its
-  result names, and its `private-build/`, `snapshot/` and used shared-build trees;
-  unknown-file refusal inside it applies to its records and its exact-listed
-  directories (`evidence/`, `runtime-inputs/`, `pre-sim/`), not to those build
-  trees. Nonterminal attempts retain directory-level ownership
-  only for producer-private partial outputs that cannot acquire a terminal manifest.
-  Interrupted attempts may be removed after their process releases the lock.
-  Authenticated pending/interrupted Campaigns, missing
-  summaries, and missing compatibility projections are abandoned rather than
-  invalid. A producer-locked reservation abandoned before `progress.json` is also
-  removable when its invocation directory is still empty and its external lock
-  file is intact. A pruning journal permits retry after partial cleanup.
-  The empty `.pruned-N` tombstone reserves the number permanently; it contains no
-  Simulation Campaign or native evidence. Other invocations remain untouched.
-
-Native pruning first deep-validates the Campaign pair, then writes `availability.json`, in the
-nested Coverage Campaign directory the Target's `coverage.json` references, with schema `booley.coverage-availability/v1`, the Campaign
-identity and manifest digest, and
-native artifact IDs, paths, and digests. Status `pruning` means cleanup is pending
-and native availability must not be assumed. Cleanup then deletes `native/` and
-records `pruned`. Retrying the same exact selection completes interrupted cleanup
-and trusts the existing sidecar. Campaign manifest and point-store bytes,
-Simulation bytes, and hook evidence never change. Normalized Campaign evidence
-remains analyzable after native pruning; full pruning prevents re-analysis.
-A Target whose `coverage.json` is not a
-`booley.coverage-campaign-reference/v1` reference (a standalone layout no
-supported Booley writes, or a damaged file) is refused, naming its directory.
-
-Explicit maintenance entry points:
-
-```bash
-python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --native-target sim_example
-python -m booley.flows.sim.campaign_retention --reports-root "$REPORTS_ROOT" --invocation 12 --full
-```
-
-Current Campaigns write no child records: each parallel lane has only its
-execution record and context sidecar, and its attempt names the lane's execution
-ID. Before removing an interrupted attempt's run directory, resume and full
-pruning cancel that lane execution and fail closed unless it is tree-terminal.
-Full pruning also marker-authenticates cleanup of owned templated run directories.
-Recovering one
-invocation requires the Booley Directory only when such a resource survives;
-`--include-dependents` requires it for every interrupted dependent Campaign. It does not
-require or inspect the Booley Directory otherwise. Literal run directories are untouched.
-The Booley Directory root is inferred only when the report
-root is exactly `<booley-directory>/.runtime/flow-reports`. A nonstandard report
-root therefore requires `--project-data <resolved-booley-directory>` for `--full`
-when an interrupted lane or owned run directory must be recovered. Native-only pruning
-does not require the option.
-
-Selection, locking, validation, and filesystem failures exit 2. Both operations
-are retryable for their exact selections. Do not manually remove journals,
-quarantines, invocation locks, or number tombstones.
-
-Simulation acquires `.invocation-N.lock` before publishing `sim/N`. Full pruning
-holds that producer lock and every discovered Campaign mutation lock through a
-second inventory pass, external recovery, journal publication, and invocation
-rename. Producer contention reports that the invocation is still being produced;
-mutation-lock contention reports an exact resume. Neither lock is removed or
-rewritten by retention, and a Campaign lock never recreates a renamed Campaign root.
-
-### Coverage Analysis after Simulation
-
-The Coverage Analyst consumes the exact retained Target `coverage.json`, deep-loads
-its point store, rejects collector-error or incompatible
-collection before provider invocation, and checks its
-matching completed Simulation projection. It is a separate advisory invocation;
-it never calls Simulation or publishes Criterion evidence. Phase 5's native
-pruning leaves its input usable, while full pruning removes that input. The
-Analyst's versioned output and capability-isolated, budgeted evidence boundary are documented in
-[MCP-TOOLS.md](MCP-TOOLS.md#report-driven-coverage-analyst). The release gate and
-validation commands are recorded in [coverage-release-gate.md](coverage-release-gate.md).
-
-
-### RTL source advisories
-
-Preflight scans the Target's inputs with `booley.core.hdl.declares_module`
-(`rtl_module_candidates` in `coverage_source_gaps.py`) and stores the sorted
-module-bearing, non-include, non-`tb` Verilog paths on `CoverageTargetPlan`.
-No dump switch is added to coverage builds, and the scan does not preprocess.
-
-The collector preserves sorted native source presence: every record of every
-type, including unknown ones, is mapped through the same `_match_source` that
-assigns point sources, before metric filtering. `source_gap_findings` warns for
-each candidate that is not present. `validate_coverage_sources` before and after
-collection is the only integrity check. Resume consumes published findings
-instead of rereading present-day Project RTL.
-
-The Analyst `zero_point_sources` view uses normal byte budgets, stable cursors,
-and source-count audit accounting with an empty `point_ids` list. Point-bearing
-views retain their existing returned-count invariant. Minimal overviews retain
-the total source count and the paginated-query hint.
+The Criterion detail carries the utilization and timing metrics,
+`has_primary_metrics`, `timing_met`, `has_critical`, `baseline_metrics` when a
+baseline ran, the current and baseline recipe fingerprints and snapshots, and
+`_metric_map` / `_min_allowed` for threshold display. Report files are in
+[FLOW_REPORTS.md](FLOW_REPORTS.md#fpga).

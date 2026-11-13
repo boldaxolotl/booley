@@ -24,6 +24,7 @@ from tests.sidecar_image_helpers import (
     SIDECAR_ALPINE_BASE,
     SIDECAR_BOOKWORM_BASE,
     SIDECAR_DOCKER_CLI,
+    sidecar_python_version,
 )
 from tests.subprocess_budget import run_bounded_child
 
@@ -100,8 +101,9 @@ def test_base_pyslang_pin_matches_optional_dependency_group() -> None:
     extras = project["optional-dependencies"]
 
     assert "pyslang" in pins
-    for extra in ("hdl-parser", "test", "dev"):
-        assert f"pyslang=={pins['pyslang']}" in extras[extra], extra
+    assert extras["hdl-parser"] == [f"pyslang=={pins['pyslang']}"]
+    # The test extra reaches the same pin through the hdl-parser extra (written once).
+    assert "booley-rtl[hdl-parser]" in extras["test"]
     assert not any(item.startswith("pyslang") for item in project["dependencies"])
 
 
@@ -353,7 +355,7 @@ def test_published_runtime_images_include_sbom_attestations() -> None:
     release = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
     base_release = Path(".github/workflows/docker-base-publish.yml").read_text(encoding="utf-8")
 
-    assert release.count("sbom: true") == 4
+    assert release.count("sbom: true") == 5
     assert base_release.count("sbom: true") == 1
 
 
@@ -411,10 +413,11 @@ def test_ci_builds_sidecar_candidates_and_archives_historical_controls() -> None
         "Dockerfile.reaper",
     ):
         assert dockerfile in evidence_script
-    assert evidence_script.count(":py314") >= 3
+    assert evidence_script.count(":py315") >= 3
     assert ":py313" not in evidence_script
     assert '"Python 3.13.15"' not in evidence_script
-    assert '"Python 3.14' not in evidence_script
+    # No hard-coded sidecar Python version: the script derives it from the Dockerfiles.
+    assert re.search(r'"Python \d', evidence_script) is None
     assert "source-repodigests.tsv" in evidence_script
     assert f'readonly DOCKER_DIND="{DIND_IMAGE}"' in evidence_script
     assert 'capture_source docker-dind "${DOCKER_DIND}"' in evidence_script
@@ -432,8 +435,8 @@ def test_ci_builds_sidecar_candidates_and_archives_historical_controls() -> None
     assert evidence_script.count("src/booley/eda/provisioning/licensing") == 1
     assert archive_script.count(":py313") >= 3
     assert '"Python 3.13.15"' in archive_script
-    assert "BOOLEY_EGRESS_PROXY_IMAGE: booley-egress-proxy:py314" in workflow
-    assert "BOOLEY_REAPER_IMAGE: booley-reaper:py314" in workflow
+    assert "BOOLEY_EGRESS_PROXY_IMAGE: booley-egress-proxy:py315" in workflow
+    assert "BOOLEY_REAPER_IMAGE: booley-reaper:py315" in workflow
     assert "BOOLEY_FLEXNET_DOCKER_TEST" in workflow
     assert "test_egress_proxy_image_e2e.py" in workflow
     assert "test_reaper_image_e2e.py" in workflow
@@ -464,6 +467,12 @@ def test_sidecars_pin_expected_python_bases_without_changing_distributions() -> 
     assert [r.image for r in dockerfile_syntax.from_references(flexnet)] == [SIDECAR_ALPINE_BASE]
     # Flexnet and the reaper share one Alpine base: two declarations held equal.
     assert dockerfile_syntax.from_references(reaper)[-1].image == SIDECAR_ALPINE_BASE
+    # Both flavours track one Python version, whichever release the pins name.
+    assert sidecar_python_version(SIDECAR_BOOKWORM_BASE) == sidecar_python_version(
+        SIDECAR_ALPINE_BASE
+    )
+    assert re.fullmatch(r"python:[0-9.]+-slim-bookworm@sha256:[0-9a-f]{64}", SIDECAR_BOOKWORM_BASE)
+    assert re.fullmatch(r"python:[0-9.]+-alpine3\.24@sha256:[0-9a-f]{64}", SIDECAR_ALPINE_BASE)
 
 
 def test_sandbox_downloads_are_verified_before_use() -> None:
@@ -755,6 +764,7 @@ _CLI_VERSION_ALLOWED = (
     "docs/internals/GATEWAY.md",
     "CHANGELOG.md",
     "src/booley/data/refs/CHANGELOG.md",
+    "changelog.d/",  # entries become CHANGELOG.md text at release
     "docs/adr/",
     "docs/internals/validation/",
 )
@@ -919,12 +929,28 @@ def test_spike_uses_the_validated_snapshot_and_runs_upstream_checks() -> None:
     # The user-facing tool list names the exact pin, so it must move with it.
     supported_tools = Path("docs/user/SUPPORTED-EDA-TOOLS.md").read_text(encoding="utf-8")
     assert f"`{spike_ref.group(1)}`" in supported_tools
+    # ADR 0069: each refresh is announced in the Unreleased changelog section.
+    changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+    unreleased = changelog.split("## Unreleased", 1)[1].split("\n## ", 1)[0]
+    assert spike_ref.group(1)[:8] in unreleased
     assert 'git fetch --depth 1 origin "${SPIKE_REF}"' in riscv
     assert 'test "$(git rev-parse HEAD)" = "${SPIKE_REF}"' in riscv
 
     spike_build = riscv[riscv.index("ARG SPIKE_REF=") : riscv.index("# RISC-V International")]
     assert "make check" in spike_build
     assert "test -x /opt/riscv/bin/spike" in spike_build
+
+
+def test_spike_build_fetches_its_softfloat_submodule() -> None:
+    """Spike master builds softfloat from a git submodule the shallow fetch omits."""
+    riscv = (_DOCKER_DIR / "Dockerfile.riscv").read_text(encoding="utf-8")
+    spike_build = riscv[riscv.index("ARG SPIKE_REF=") : riscv.index("# RISC-V International")]
+
+    step = "git -c protocol.version=0 submodule update --init --recursive"
+    # Full-depth like the Yosys build, so a non-tip gitlink stays fetchable.
+    assert step in spike_build
+    sha_assertion = spike_build.index('test "$(git rev-parse HEAD)" = "${SPIKE_REF}"')
+    assert sha_assertion < spike_build.index(step) < spike_build.index("../configure")
 
 
 def test_riscv_tooling_builds_on_the_runtime_base_ubuntu_digest() -> None:
@@ -1320,6 +1346,8 @@ def test_candidate_ci_runs_openroad_physical_promotion_probe() -> None:
     assert "log_abc_dut.txt" in probe
     assert "abc-control" in probe
     assert 'ABC: Warning: Detected 2 multi-output cells (for example, "FA_X1").' in probe
+    assert "premap_check_dut.txt" in probe
+    assert "comb-loop" in probe
     assert "collision-preserve" in probe
     assert "collision-attribute" in probe
     assert 'grep -Fq "Assertion failed"' in probe

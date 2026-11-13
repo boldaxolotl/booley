@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import os
+import logging
 import re
 import shlex
 from collections.abc import Callable, Sequence
@@ -13,21 +13,15 @@ from typing import Literal
 from booley.audit.resource_policy import GIB_BYTES, heavy_memory_reservation
 from booley.config.jobs import parse_caps
 from booley.core.boundary import as_dict, as_int
+from booley.flows.memory_admission import job_thread_count, memory_admission_enabled
+from booley.runtime.booley_dir import resolve_common_booley_dir
+from booley.runtime.cpu_budget import _affinity_cpu_count, _read_text, available_cpu_count
 from booley.runtime.shared_infra import load_job_budget_config
 from booley.targets.domain import TargetInspection
 
+logger = logging.getLogger(__name__)
+
 LaneKind = Literal["heavy", "unreserved"]
-_CPU_MAX = Path("/sys/fs/cgroup/cpu.max")
-_CPU_V1_LAYOUTS = (
-    (
-        Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us"),
-        Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us"),
-    ),
-    (
-        Path("/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us"),
-        Path("/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_period_us"),
-    ),
-)
 _MEMORY_LIMITS = (
     Path("/sys/fs/cgroup/memory.max"),
     Path("/sys/fs/cgroup/memory/memory.limit_in_bytes"),
@@ -46,56 +40,6 @@ class VerilatorBuildBudget:
     make_jobs: int
 
 
-def _read_text(path: Path) -> str | None:
-    try:
-        return path.read_text(encoding="utf-8").strip()
-    except FileNotFoundError:
-        return None
-
-
-def _affinity_cpu_count() -> int:
-    try:
-        return len(os.sched_getaffinity(0))
-    except AttributeError:
-        return os.cpu_count() or 1
-    except OSError:
-        return os.cpu_count() or 1
-
-
-def _cgroup_cpu_count(read_text: Callable[[Path], str | None]) -> int | None:
-    cpu_max = read_text(_CPU_MAX)
-    if cpu_max:
-        fields = cpu_max.split()
-        if len(fields) == 2 and fields[0] != "max":
-            return _quota_jobs(fields[0], fields[1])
-        if fields and fields[0] == "max":
-            return None
-    for quota_path, period_path in _CPU_V1_LAYOUTS:
-        quota = read_text(quota_path)
-        period = read_text(period_path)
-        if quota is None or period is None:
-            continue
-        quota_value = as_int(quota)
-        if quota_value is None:
-            continue
-        if quota_value < 0:
-            return None
-        jobs = _quota_jobs(quota, period)
-        if jobs is not None:
-            return jobs
-    return None
-
-
-def _quota_jobs(quota: str, period: str) -> int | None:
-    quota_value = as_int(quota)
-    period_value = as_int(period)
-    if quota_value is None or period_value is None:
-        return None
-    if quota_value < 0 or period_value <= 0:
-        return None
-    return max(1, quota_value // period_value)
-
-
 def _cgroup_memory_limit(read_text: Callable[[Path], str | None]) -> int | None:
     for path in _MEMORY_LIMITS:
         value = read_text(path)
@@ -108,6 +52,24 @@ def _cgroup_memory_limit(read_text: Callable[[Path], str | None]) -> int | None:
             continue
         return None if parsed >= _CGROUP_UNLIMITED_FLOOR else parsed
     return None
+
+
+def _load_common_job_budget(project_root: Path | None) -> dict:
+    """The Job budget settings of the Main Booley Directory, as admission reads them.
+
+    Never the checkout's own ``booley.toml``: a checkout run or a linked worktree
+    shares one machine budget, and its commit must not resize it. Bare
+    invocations without a resolvable Project get the defaults.
+    """
+    try:
+        common = resolve_common_booley_dir(project_root)
+    except FileNotFoundError:
+        return {}
+    except (ValueError, RuntimeError) as exc:
+        # Admission tolerates the same unusable selection; the build keeps defaults.
+        logger.warning("Failed to resolve the Main Booley Directory for the build budget: %s", exc)
+        return {}
+    return load_job_budget_config(booley_dir=common)
 
 
 def load_verilator_build_budget(
@@ -128,11 +90,11 @@ def load_verilator_build_budget(
         )
     affinity_cpu_count = affinity_cpu_count or _affinity_cpu_count
     read_text = read_text or _read_text
-    config = config_loader() if config_loader is not None else load_job_budget_config(project_root)
+    config = (
+        config_loader() if config_loader is not None else _load_common_job_budget(project_root)
+    )
     caps = parse_caps(config)
-    affinity = max(1, affinity_cpu_count())
-    quota = _cgroup_cpu_count(read_text)
-    effective_cpu = min(affinity, quota) if quota is not None else affinity
+    effective_cpu = available_cpu_count(affinity_cpu_count, read_text)
     jobs_section = as_dict(config.get("jobs"), default={}) or {}
     reservation = heavy_memory_reservation(
         jobs_section.get("heavy_memory"), calibration=None, selected_targets=()
@@ -185,5 +147,14 @@ def verilator_backend_arguments(
     """Return only Booley-owned backend options for one Verilator setup."""
     if inspection.eda_tool != "verilator" or _has_jobs_option(_make_options(inspection)):
         return ()
-    budget = load_verilator_build_budget(lane_kind, project_root=project_root)
-    return (f"-j{budget.make_jobs}", "VM_PARALLEL_BUILDS=1")
+    if lane_kind == "heavy" and memory_admission_enabled():
+        # Under memory admission the Job, not a heavy lane, shares the cores: its
+        # count was fixed at admission. No count means no admission root, so no
+        # other Job is tracked: use every available core.
+        threads = job_thread_count()
+        make_jobs = (
+            available_cpu_count(_affinity_cpu_count, _read_text) if threads is None else threads
+        )
+    else:
+        make_jobs = load_verilator_build_budget(lane_kind, project_root=project_root).make_jobs
+    return (f"-j{make_jobs}", "VM_PARALLEL_BUILDS=1")

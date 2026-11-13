@@ -21,7 +21,7 @@ from booley.runtime.session_activity import process_session_key
 # Endpoints run as background Jobs (submit, then poll). Only these may fall back
 # to the worktree ``session_key`` for records written before Jobs had an owner.
 ASYNC_JOB_ENDPOINTS = frozenset(
-    {"sim", "fpga", "synth", "reviewer", "mutation_tester", "coverage_analyst"}
+    {"sim", "fpga", "synth", "reviewer", "mutation", "coverage_analyst"}
 )
 
 

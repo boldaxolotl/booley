@@ -130,7 +130,7 @@ def test_campaign_policy_carries_build_budget_into_execution_options(
     build_root = tmp_path / "engine-build"
     build_root.mkdir()
     (build_root / "simv").write_bytes(b"image")
-    store = CampaignStore(tmp_path / "campaign")
+    store = CampaignStore(tmp_path / "record")
     store.publish_manifest(manifest)
     captured: list[SimulationOptions] = []
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
@@ -174,7 +174,7 @@ def test_private_campaign_build_uses_carried_build_budget(
     build_root = tmp_path / "engine-build"
     build_root.mkdir()
     (build_root / "simv").write_bytes(b"image")
-    store = CampaignStore(tmp_path / "campaign")
+    store = CampaignStore(tmp_path / "record")
     store.publish_manifest(manifest)
     captured: list[SimulationOptions] = []
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
@@ -212,7 +212,7 @@ def test_pre_cancelled_campaign_hook_never_compiles_or_runs(tmp_path):
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _pre_sim_plan
 
     plan, _disclosures = _pre_sim_plan("immutable", ("echo actual-hook",), lambda _document: None)
-    store = CampaignStore(tmp_path / "campaign")
+    store = CampaignStore(tmp_path / "record")
     store.publish_manifest(plan.manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -270,7 +270,7 @@ def test_changed_packaged_source_fails_disclosure_equality_before_compile(
     build_root = tmp_path / "engine-build"
     build_root.mkdir()
     (build_root / "simv").write_bytes(b"image")
-    store = CampaignStore(tmp_path / "campaign")
+    store = CampaignStore(tmp_path / "record")
     store.publish_manifest(manifest)
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
 
@@ -322,7 +322,7 @@ def test_immutable_hook_compile_surface_mutation_stops_before_snapshot_launch(
 
     assert counters["compile"] == 1
     assert counters["launch"] == 0
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
     assert len(store.scan().interrupted) == 1
     assert not tuple(store.root.glob("work-items/*/result.json"))
 
@@ -337,7 +337,7 @@ def test_scope_stop_after_real_hook_retains_firing_without_simulator_launch(tmp_
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _pre_sim_plan
 
     plan, disclosures = _pre_sim_plan("immutable", ("echo actual-hook",), None)
-    store = CampaignStore(tmp_path / "campaign")
+    store = CampaignStore(tmp_path / "record")
     store.publish_manifest(plan.manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -533,7 +533,7 @@ def test_campaign_pre_sim_project_relative_hook_uses_project_root(
     (build / "simv").write_bytes(b"image")
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
     monkeypatch.setattr(serial_execution, "simulation_target_environment", lambda _handle: {})
-    store = CampaignStore(tmp_path / "campaign")
+    store = CampaignStore(tmp_path / "record")
     store.publish_manifest(plan.manifest)
     request = _request(
         store, plan.manifest, plan.manifest.document["work_items"][0], project, invocation=1
@@ -581,7 +581,7 @@ def test_store_follows_only_the_booley_dir_entry(tmp_path, linked):
     else:
         (entry / "flow-reports").mkdir()
     store = CampaignStore(
-        entry / "flow-reports" / "sim" / "1" / "targets" / "sim" / "campaign", booley_dir=entry
+        entry / "flow-reports" / "sim" / "1" / "targets" / "sim" / "record", booley_dir=entry
     )
     manifest = _manifest_for(("smoke",))
 
@@ -658,7 +658,7 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_the_la
     tmp_path: Path,
 ) -> None:
     manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "campaign")
+    campaign_store = CampaignStore(tmp_path / "record")
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -691,8 +691,8 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_the_la
         attempts.append(attempt.directory / "attempt.json")
         published = SimulationAttempt(
             {
-                "$schema": "booley.simulation-attempt/v1",
-                "campaign_id": manifest.document["campaign_id"],
+                "$schema": "booley.simulation-attempt/v2",
+                "simulation_record_id": manifest.document["simulation_record_id"],
                 "manifest_sha256": manifest_digest(manifest),
                 "workload_sha256": "sha256:" + "0" * 64,
                 "work_item_id": attempt.item["work_item_id"],
@@ -826,7 +826,7 @@ def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Pa
     assert raised.value.detail["evaluation"] == "not_requested"
     nested = next(
         (tmp_path / "reports/1/targets/sim_0").glob(
-            "campaign/work-items/*/attempts/*/coverage-campaign/coverage.json"
+            "record/work-items/*/attempts/*/coverage-record/coverage.json"
         )
     )
     document = json.loads(nested.read_text(encoding="utf-8"))
@@ -837,7 +837,7 @@ def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Pa
     assert "termination" not in never_run
 
     # This injected external adapter has no observed process exit status.
-    store = CampaignStore(tmp_path / "reports/1/targets/sim_0/campaign")
+    store = CampaignStore(tmp_path / "reports/1/targets/sim_0/record")
     (firing,) = collect_pre_sim_firings(store.manifest_path)
     assert firing.document["status"] == "spawn_error"
     assert firing.document["returncode"] is None
@@ -857,7 +857,7 @@ def test_coverage_rejects_fabricated_hook_with_empty_frozen_commands(tmp_path: P
 
     with pytest.raises(SimulationCampaignIntegrityError, match="command count disagrees"):
         _run_coverage_campaign(tmp_path, FabricatedHook())
-    campaign = tmp_path / "reports/1/targets/sim_0/campaign"
+    campaign = tmp_path / "reports/1/targets/sim_0/record"
     assert list(campaign.glob("work-items/*/attempts/*/attempt.json"))
     assert not list(campaign.glob("work-items/*/attempts/*/pre-sim/*.json"))
 

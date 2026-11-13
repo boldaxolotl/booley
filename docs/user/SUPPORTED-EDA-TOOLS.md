@@ -33,14 +33,20 @@ from one of two places:
 | `synth` | Yosys, plus OpenROAD for timing (`yosys`) | image | ASIC area and timing estimate on Nangate45 |
 | `fpga` | AMD Vivado 2025.2 | host | FPGA utilization and timing; Linux x86-64 hosts only |
 
-**Simulation.** The image ships cocotb 2.x. A testbench pinned to cocotb 1.x
-still runs once you
-[bake its own pins](SANDBOX.md#baking-the-cocotb-stack-into-the-image).
-Waveform setup differs per simulator; see
+**Simulation.** Waveform setup differs per simulator; see
 [FLOW-SIM.md](FLOW-SIM.md#waveforms).
 Coverage needs Verilator; see [COVERAGE.md](COVERAGE.md#collecting-coverage).
 Other simulators, such as Xcelium, VCS, or Questa, are not supported yet; see
 the [roadmap](../internals/ROADMAP.md#commercial-eda-tools).
+
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+The image ships cocotb 2.x. A testbench pinned to cocotb 1.x
+still runs once you [bake its own pins](SANDBOX.md#baking-the-cocotb-stack-into-the-image).
+See [Cocotb Targets](TARGETS.md#cocotb-targets-python-testbenches).
+
+</details>
 
 **Other programs your tests need.** A test that compiles firmware or stages
 vectors first runs that step through
@@ -70,7 +76,7 @@ Target as `flow_options.frontend`, or override it for one run with
 - **`sv2v`** (default): converts SystemVerilog to plain Verilog first, then
   Yosys reads that.
 - **`slang`**: Yosys reads SystemVerilog directly. It needs Yosys 0.67 or
-  newer; the standard image has 0.69.
+  newer; the standard image has 0.70.
 
 Stay on `sv2v` unless it fails. Use `slang` when the design puts
 parameterized interfaces on module ports, or reads an interface's parameters
@@ -144,19 +150,19 @@ can replace the Python packages.
 |---|---|
 | Base image | Ubuntu 26.04 |
 | Python | 3.14 |
-| Verilator | v5.052 (commit `ea338be98e1e838d3518809ce8899f85a009963c`) |
+| Verilator | v5.054 (commit `bbb60a403932a9f695cb6ff001ceb73de6ad9234`) |
 | Icarus Verilog | v13_0 |
-| Yosys | v0.69, with its built-in `slang` frontend |
+| Yosys | v0.70, with its built-in `slang` frontend |
 | sv2v | v0.0.13 |
 | OpenROAD | 26Q4 (commit `c4d317e4fa2398b9880920a1411c20258a2175a9`; reports itself as `26Q3-2927-gc4d317e4fa`) |
 | Verible | v0.0-4298-g085eef05 |
 | FuseSoC / Edalize | 2.4.7 / 0.6.8 |
-| cocotb | 2.1.0, with `cocotbext-axi` 0.1.28, `cocotbext-uart` 0.1.4, `numpy` 2.5.3 |
+| cocotb | 2.1.0, with `cocotbext-axi` 0.1.28, `cocotbext-uart` 0.1.4, `numpy` 2.5.4 |
 | Cell library | Nangate45 typical corner, downloaded by `booley bootstrap` |
 
 The RISC-V image (`booley-sandbox-riscv`) adds the xPack RISC-V GCC
 `15.2.0-1` and upstream Spike at commit
-`609dbe0b9994154833039209fa37151e7c05e9d4` (`1.1.1-dev`). This is upstream
+`4094d29094b690a7c4ae392c6d71260e5ec30b6b` (`1.1.1-dev`). This is upstream
 Spike, not lowRISC's `ibex-cosim` fork that Ibex's UVM co-simulation needs.
 
 To see what your image actually has, run these on the host:

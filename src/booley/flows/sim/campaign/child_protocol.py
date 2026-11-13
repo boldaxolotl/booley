@@ -36,7 +36,7 @@ from .run_directory import (
     restore_run_directory_from_project_data,
 )
 
-_CONTEXT_SCHEMA = "booley.supervised-child-context/v1"
+_CONTEXT_SCHEMA = "booley.supervised-child-context/v2"
 _PROTOCOL_RECORD_LIMIT = 1024 * 1024
 
 
@@ -163,7 +163,7 @@ class ChildExecutionRegistry:
 
     def cancel(self, execution_id: ExecutionId) -> bool:
         paths = execution_paths(execution_id, booley_dir=self._project_data)
-        request_cancellation(paths, reason="campaign_cancelled")
+        request_cancellation(paths, reason="record_cancelled")
         deadline = monotonic() + 5.0
         while True:
             with self._record_lock(execution_id):
@@ -195,7 +195,7 @@ class ChildExecutionRegistry:
             "$schema": _CONTEXT_SCHEMA,
             "child_execution_id": str(identity.execution_id),
             "parent_execution_id": str(identity.parent_execution_id),
-            "campaign_id": self._manifest.document["campaign_id"],
+            "simulation_record_id": self._manifest.document["simulation_record_id"],
             "manifest_sha256": manifest_digest(self._manifest),
             "work_item_id": identity.work_item_id,
             "attempt_id": identity.attempt_id,
@@ -290,7 +290,7 @@ def recover_interrupted_attempts(
         cleanup_interrupted_run_directory(
             run,
             identity={
-                "campaign_id": cast(str, document["campaign_id"]),
+                "simulation_record_id": cast(str, document["simulation_record_id"]),
                 "work_item_id": work_item_id,
                 "attempt_id": cast(str, document["attempt_id"]),
             },

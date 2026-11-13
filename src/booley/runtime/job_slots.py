@@ -15,8 +15,9 @@ except to reap a provably-stale one:
   ``w-`` waiters, then priority, sequence and PID, with the filename suffix breaking ties. Priority 0 is
   Interactive; other requester roles use priority 1. A later Interactive
   request overtakes queued lower-priority work, but *never* a holder: promotion renames only one's **own**
-  ``w-`` entry to ``h-``, and only when its rank is within the class cap, so
-  running work cannot be preempted (ADR 0028 Decision 6).
+  ``w-`` entry to ``h-``, and (for the heavy and light classes) only when its
+  rank is within the class cap, so running work cannot be preempted (ADR 0028
+  Decision 6).
 * Because the ordering is total and each process promotes only itself under a
   short per-class promotion gate, two processes cannot both promote into the
   last free slot.
@@ -26,6 +27,21 @@ except to reap a provably-stale one:
   holder past its deadline — are reaped by whoever notices.  Unique names
   make reaping race-free: the unlink can only ever hit the exact entry that
   was judged stale, never a fresh claim reusing the name.
+
+The **memory** class (ADR 0087) admits by Memory Reservation instead of a slot
+count: a claim holds while the reservations of every holder plus its own fit
+its budget, or alone when it is marked run-alone. Order is the same total
+order; the first waiter that does not fit (the front) blocks the claims behind
+it, except that a claim with its own wall-clock estimate jumps ahead when it
+fits now and is estimated to finish before the front can start. The front's
+earliest start comes from the running claims' estimated finishes; an unknown
+finish makes it unknown, so nothing jumps. An entry whose claim cannot be read
+counts as not fitting and ends jumping. A holder may lower its own reservation
+as its phases finish (``shrink_reservation``), never raise it. A claim may also hold
+a **seat** of a licensed EDA tool, judged against the tool's Seat Cap: it
+starts only while fewer seats of that tool are held than the cap, and keeps the
+cap it was created with, so a cap changed while Jobs wait applies to new claims
+only. A seat is held exactly as long as the entry (and so the reservation) is.
 
 Pure + stdlib-only, like ``runtime.job_records`` (whose deadline/identity
 guards it reuses): PID liveness, ``/proc`` reads, the clock, and sleep are
@@ -40,15 +56,18 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import math
 import os
 import threading
 import time
 import uuid
+from collections import Counter
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from booley.config.jobs import SlotCaps, parse_caps
+from booley.core.boundary import require_finite_number
 from booley.runtime.execution_records import (
     RUNTIME_EXECUTION_ENV,
     ExecutionId,
@@ -77,14 +96,15 @@ from booley.runtime.pid import (
 )
 from booley.runtime.timefmt import format_duration, rfc3339_from_epoch
 
-__all__ = ["SlotCaps", "parse_caps"]
+__all__ = ["MemoryClaim", "SlotCaps", "parse_caps"]
 
 logger = logging.getLogger(__name__)
 
 # Job classes (ADR 0028 Decision 5), resolved by workload type.
 CLASS_HEAVY = "heavy"  # in-container EDA subprocesses (sim/synth)
 CLASS_LIGHT = "light"  # Specialists — model-API-bound, ~no local footprint
-JOB_CLASSES = (CLASS_HEAVY, CLASS_LIGHT)
+CLASS_MEMORY = "memory"  # admitted by Memory Reservation against a budget (ADR 0087)
+JOB_CLASSES = (CLASS_HEAVY, CLASS_LIGHT, CLASS_MEMORY)
 
 # Requester roles → queue priority (lower sorts first). Interactive work
 # jumps ahead of other queued work; holders are never displaced.
@@ -120,6 +140,8 @@ NARRATE_INTERVAL_SECONDS = 30.0
 # permanent phantom-holder deadlocks.
 _ENTRY_IO_ATTEMPTS = 20
 _ENTRY_IO_RETRY_SECONDS = 0.01
+# Relists of the memory class a view makes when an entry vanished under its read.
+_MEMORY_VIEW_ATTEMPTS = 3
 # Bound on waiting for an in-flight renewal in ``release``: lease gate, read and
 # replace each spend up to ~1.1 s of shared sharing-error backoff.
 _RENEWAL_JOIN_SECONDS = 5.0
@@ -149,6 +171,43 @@ class QueueFullError(RuntimeError):
     """
 
 
+# What a read-only look at one slot entry can tell about its future (``_entry_verdict``).
+_VERDICT_LIVE = "live"  # stays; counts toward admission
+_VERDICT_GONE = "gone"  # a reap removes it with no recovery outcome to wait for
+_VERDICT_RECOVERABLE = "recoverable"  # a reap removes it only if a recovery call succeeds
+_VERDICT_ORPHANED = "orphaned"  # as recoverable, and its owner process is gone
+
+
+@dataclass(frozen=True)
+class AdmissionOutlook:
+    """What an ``interactive`` claim on *job_class* would meet: ``ahead`` entries, a cap, a bound."""
+
+    job_class: str
+    ahead: int
+    cap: int
+    queue_max: int
+
+    @property
+    def runs_now(self) -> bool:
+        """True when a slot is free for the claim."""
+        return self.ahead < self.cap
+
+    @property
+    def position(self) -> int:
+        """1-based place in the queue; 0 when the claim runs now."""
+        return 0 if self.runs_now else self.ahead - self.cap + 1
+
+    @property
+    def full(self) -> bool:
+        """True when admission refuses the claim."""
+        return self.ahead >= self.cap + self.queue_max
+
+    @property
+    def refusal(self) -> str:
+        """The reason admission gives when the queue is full."""
+        return f"{self.job_class} queue is full ({self.queue_max} waiting)"
+
+
 class ClaimLostError(RuntimeError):
     """The waiting entry vanished — the queued job was cancelled.
 
@@ -175,10 +234,356 @@ QUEUED = "queued"  # waiting; position is meaningful
 LOST = "lost"  # the entry vanished (reaped or cancelled) — do not run
 
 
+@dataclass(frozen=True)
+class MemoryClaim:
+    """What a memory-class entry asks for: a reservation, or the whole budget.
+
+    ``budget_mb`` is the budget the claim is judged against (it is persisted so
+    a reloaded token equals its owner's). Exactly one of ``reservation_mb`` and
+    ``run_alone`` is given. A reservation above the budget could never start
+    and would block the queue forever, so the caller must mark it run-alone.
+    A holder may drop to zero reservation; it then blocks no claim.
+    ``seats`` lists the licensed EDA tools the Job holds one seat of, each with
+    the Seat Cap it is judged against (persisted like ``budget_mb``).
+    ``wall_s`` is the Job's own wall-clock estimate in seconds (``None`` when it
+    has no history of its own); only such a claim may jump ahead of the queue.
+    """
+
+    budget_mb: float
+    reservation_mb: float | None = None
+    run_alone: bool = False
+    seats: tuple[tuple[str, int], ...] = ()
+    wall_s: float | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.run_alone, bool):
+            raise ValueError(f"run_alone must be a bool, got {self.run_alone!r}")
+        for tool, cap in self.seats:
+            if not isinstance(cap, int) or isinstance(cap, bool) or cap < 1:
+                raise ValueError(f"Seat Cap of {tool!r} must be a whole number >= 1, got {cap!r}")
+        if require_finite_number(self.budget_mb, field="budget_mb") < 0:
+            raise ValueError(f"budget_mb must be >= 0, got {self.budget_mb!r}")
+        if self.wall_s is not None and require_finite_number(self.wall_s, field="wall_s") < 0:
+            raise ValueError(f"wall_s must be >= 0, got {self.wall_s!r}")
+        if self.run_alone:
+            if self.reservation_mb is not None:
+                raise ValueError("a run-alone memory claim carries no reservation_mb")
+            return
+        if self.reservation_mb is None:
+            raise ValueError("a memory claim needs reservation_mb or run_alone")
+        if require_finite_number(self.reservation_mb, field="reservation_mb") < 0:
+            raise ValueError(f"reservation_mb must be >= 0, got {self.reservation_mb!r}")
+        if self.reservation_mb > self.budget_mb:
+            raise ValueError(
+                f"reservation_mb {self.reservation_mb!r} exceeds budget_mb {self.budget_mb!r}: "
+                "mark the claim run_alone"
+            )
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "budget_mb": self.budget_mb,
+            "reservation_mb": self.reservation_mb,
+            "run_alone": self.run_alone,
+            "seats": dict(self.seats),
+            "wall_s": self.wall_s,
+        }
+
+    @staticmethod
+    def from_payload(value: object) -> MemoryClaim | None:
+        """The claim an entry persisted, or None when absent or malformed."""
+        if not isinstance(value, dict):
+            return None
+        seats = value.get("seats", {})  # an entry written before seats existed holds none
+        try:
+            if not isinstance(seats, dict):
+                raise ValueError(f"seats must be a table, got {seats!r}")
+            return MemoryClaim(
+                budget_mb=value["budget_mb"],
+                reservation_mb=value.get("reservation_mb"),
+                run_alone=value.get("run_alone") is True,
+                seats=tuple(seats.items()),
+                wall_s=value.get("wall_s"),
+            )
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+
+
+@dataclass(frozen=True)
+class JobLabel:
+    """Who an entry belongs to, for queue reports: the Job's run ID, Flow and Target.
+
+    Presentation only: it never takes part in admission, so it lives on the
+    entry beside ``argv`` rather than inside the ``MemoryClaim``. ``target`` is
+    empty when the Job names none.
+    """
+
+    run_id: str
+    flow: str
+    target: str
+
+    def to_payload(self) -> dict[str, str]:
+        return {"run_id": self.run_id, "flow": self.flow, "target": self.target}
+
+    @staticmethod
+    def from_payload(value: object) -> JobLabel | None:
+        """The label an entry persisted, or None when absent or malformed."""
+        if not isinstance(value, dict):
+            return None
+        run_id, flow, target = (value.get(name) for name in ("run_id", "flow", "target"))
+        if isinstance(run_id, str) and isinstance(flow, str) and isinstance(target, str):
+            return JobLabel(run_id, flow, target)
+        return None
+
+
+#: How many of the largest memory holders a queue report names.
+_WAIT_HOLDERS = 3
+
+
+@dataclass(frozen=True)
+class MemoryWait:
+    """What one queued memory claim waits for, in the terms a queue report gives.
+
+    ``position`` is 1-based among the blocked claims. ``free_mb`` is the Memory
+    Budget headroom the running holders leave (what admission judges), not host
+    free memory. ``seats`` lists each ``(tool, held, cap)`` whose seats are all
+    taken. ``holders`` are up to three running claims, largest first
+    (run-alone first, shown with ``None`` for the whole budget).
+    """
+
+    position: int
+    claim: MemoryClaim
+    free_mb: float
+    seats: tuple[tuple[str, int, int], ...]
+    holders: tuple[tuple[str, float | None], ...]
+    reason: str | None = None  # why the claim exists again (a requeued Job), else None
+
+    def describe(self) -> str:
+        """One line: the need, the free memory, any blocked seat and the largest holders."""
+        claim = self.claim
+        if claim.run_alone:
+            reason = (
+                "Memory Budget unavailable"
+                if claim.budget_mb == 0
+                else "memory estimate unknown or above the Memory Budget"
+            )
+            text = f"waits to run alone ({reason})"
+        else:
+            text = (
+                f"needs {claim.reservation_mb or 0.0:,.0f} MiB; {self.free_mb:,.0f} MiB free "
+                f"of the {claim.budget_mb:,.0f} MiB Memory Budget"
+            )
+        text += "".join(
+            f"; waits for a {tool} seat ({held} of {cap} held)" for tool, held, cap in self.seats
+        )
+        if self.holders:
+            named = ", ".join(
+                f"{name} {'whole budget' if mb is None else f'{mb:,.0f} MiB'}"
+                for name, mb in self.holders
+            )
+            text += f"; largest holders: {named}"
+        return text if self.reason is None else f"{text}; {self.reason}"
+
+
+def _holder_name(token: SlotToken) -> str:
+    """``run-1 (synth, a)`` for a labelled holder, ``pid N`` when no run ID is known."""
+    label = token.job
+    if label is None:
+        return f"pid {token.pid}"
+    detail = ", ".join(part for part in (label.flow, label.target) if part)
+    name = label.run_id or f"pid {token.pid}"
+    return f"{name} ({detail})" if detail else name
+
+
+def memory_wait(
+    own: SlotToken, holders: list[SlotToken], waiters: list[SlotToken], now: float
+) -> MemoryWait | None:
+    """What the memory waiter *own* waits for, or None when it holds no memory claim.
+
+    Position counts like the narrator always did: the blocked claims ahead of
+    *own* among the *waiters* ranked before it, behind the running *holders*.
+    "Free" is the Memory Budget minus the holders' reservations (nothing while
+    a run-alone Job runs); waiters ahead that are about to start are not
+    subtracted, so it can overstate what is free the instant a holder leaves.
+    """
+    claim = own.memory
+    if claim is None:
+        return None
+    ahead = [waiter.memory for waiter in waiters if waiter.path.name < own.path.name]
+    running = [
+        (held.memory, parse_stamp(held.promoted_at) or parse_stamp(held.created_at))
+        for held in holders
+    ]
+    _starts, blocked_ahead, _blocked = _memory_queue(running, ahead, claim, now)
+    # Holders whose claim cannot be read say nothing about the budget: skip them.
+    claimed = [(held, held.memory) for held in holders if held.memory is not None]
+    alone = any(held_claim.run_alone for _held, held_claim in claimed)
+    used_mb = sum(held_claim.reservation_mb or 0.0 for _held, held_claim in claimed)
+    seats_held = Counter(tool for _held, held_claim in claimed for tool, _cap in held_claim.seats)
+    largest = sorted(claimed, key=lambda pair: _holder_weight(pair[1]))[:_WAIT_HOLDERS]
+    return MemoryWait(
+        position=blocked_ahead + 1,
+        claim=claim,
+        reason=own.queue_reason,
+        free_mb=0.0 if alone else max(0.0, claim.budget_mb - used_mb),
+        seats=tuple(
+            (tool, seats_held[tool], cap) for tool, cap in claim.seats if seats_held[tool] >= cap
+        ),
+        holders=tuple(
+            (_holder_name(held), None if held_claim.run_alone else held_claim.reservation_mb)
+            for held, held_claim in largest
+        ),
+    )
+
+
+def _holder_weight(claim: MemoryClaim) -> tuple[int, float]:
+    """Sort key putting run-alone holders first, then the largest reservation."""
+    return (0, 0.0) if claim.run_alone else (1, -(claim.reservation_mb or 0.0))
+
+
+def _reserves(claim: MemoryClaim) -> bool:
+    """True when *claim* holds memory: a run-alone claim or a reservation above zero."""
+    return claim.run_alone or bool(claim.reservation_mb)
+
+
+def _fits_among(claim: MemoryClaim, running: list[MemoryClaim], budget_mb: float) -> bool:
+    """True when *claim* can start beside the *running* claims under *budget_mb*."""
+    seats_held = Counter(tool for other in running for tool, _cap in other.seats)
+    if any(seats_held[tool] >= cap for tool, cap in claim.seats):
+        return False
+    if claim.run_alone:
+        return not any(_reserves(other) for other in running)
+    if any(other.run_alone for other in running):
+        return False
+    used_mb = sum(other.reservation_mb or 0.0 for other in running)
+    return used_mb + (claim.reservation_mb or 0.0) <= budget_mb
+
+
+def _finish(start: float | None, wall_s: float | None) -> float:
+    """Estimated finish epoch of a claim started at *start*; ``inf`` when either is unknown."""
+    return math.inf if start is None or wall_s is None else start + wall_s
+
+
+@dataclass
+class _MemoryLoad:
+    """Running total of the memory claims virtually started so far."""
+
+    budget_mb: float
+    used_mb: float = 0.0
+    running: int = 0  # claims that reserve memory (a zero holder is none)
+    alone: bool = False
+    stopped: bool = False  # an earlier claim could not start: only a short claim may jump it
+    seats_used: dict[str, int] = field(default_factory=dict[str, int])
+    # Each running claim with its estimated finish (epoch seconds; inf = unknown).
+    finishes: list[tuple[float, MemoryClaim]] = field(default_factory=list)
+    # When the front (first blocked) claim can start; None = unknown, nothing jumps.
+    front_start: float | None = None
+
+    def admit(self, claim: MemoryClaim | None, now: float) -> bool:
+        """Start *claim* if it fits (True); else block it, and the claims behind it unless they jump."""
+        if claim is None:
+            self.stopped = True  # unreadable: an unknown reservation never fits
+            self.front_start = None
+            return False
+        if self.stopped:
+            if not self._may_jump(claim, now):
+                return False
+        elif not self._fits(claim):
+            self.stopped = True
+            self.front_start = self._earliest_start(claim, now)
+            return False
+        self.start(claim, _finish(now, claim.wall_s))
+        return True
+
+    def start(self, claim: MemoryClaim, finish: float) -> None:
+        """Count *claim* as running until the estimated *finish* (``inf`` = unknown)."""
+        self.running += _reserves(claim)
+        self.alone = self.alone or claim.run_alone
+        self.used_mb += claim.reservation_mb or 0.0
+        for tool, _cap in claim.seats:
+            self.seats_used[tool] = self.seats_used.get(tool, 0) + 1
+        self.finishes.append((finish, claim))
+
+    def _fits(self, claim: MemoryClaim) -> bool:
+        """True when *claim* fits the memory budget and a seat of each tool it holds is free."""
+        if any(self.seats_used.get(tool, 0) >= cap for tool, cap in claim.seats):
+            return False
+        if claim.run_alone:
+            return self.running == 0
+        return not self.alone and self.used_mb + (claim.reservation_mb or 0.0) <= self.budget_mb
+
+    def _earliest_start(self, front: MemoryClaim, now: float) -> float | None:
+        """When *front* can start under its own budget, from the running claims' finishes.
+
+        ``now`` when it already fits; else the first finish, in finish order,
+        after which it fits. An unknown finish reached first makes the answer
+        unknown (None).
+        """
+        running = [held for _finish, held in self.finishes]
+        if _fits_among(front, running, front.budget_mb):
+            return now
+        released = sorted(self.finishes, key=lambda pair: pair[0])
+        # Once every claim has finished the front fits, so a finish is always found.
+        finish = next(
+            when
+            for index, (when, _held) in enumerate(released)
+            if _fits_among(front, [held for _f, held in released[index + 1 :]], front.budget_mb)
+        )
+        return None if math.isinf(finish) else finish
+
+    def _may_jump(self, claim: MemoryClaim, now: float) -> bool:
+        """True when *claim* fits now and is estimated to finish before the front starts."""
+        return (
+            self.front_start is not None
+            and claim.wall_s is not None
+            and self._fits(claim)
+            and now + claim.wall_s < self.front_start
+        )
+
+
+def _memory_queue(
+    holders: list[tuple[MemoryClaim | None, float | None]],
+    ahead: list[MemoryClaim | None],
+    claim: MemoryClaim,
+    now: float,
+) -> tuple[bool, int, bool]:
+    """Where *claim* stands behind running *holders* and the waiters *ahead*.
+
+    Each holder comes with its start epoch (``None`` when unstamped). Returns
+    ``(starts_now, position, blocked)``. The walk starts each claim in order
+    against *claim*'s budget: a run-alone claim starts only when nothing runs,
+    any other claim only when nothing run-alone runs and its reservation still
+    fits. A claim holding a seat of a licensed tool also needs a free seat
+    under its own Seat Cap, which each claim carries (a cap changed while Jobs
+    wait applies to new claims only). The first claim that does not start (the
+    front) blocks the claims behind it, except a claim with its own wall-clock
+    estimate that fits now and is estimated to finish before the front can
+    start: it jumps ahead. A holder's
+    finish is its start plus its estimate, unknown without either; an unknown
+    finish the front waits for means nothing jumps. ``None`` (an unreadable
+    claim) never fits and ends jumping, so an unknown reservation cannot
+    overcommit. ``starts_now`` is the promotion rule (no waiter ahead starts
+    first, and the claim starts); ``blocked`` says the claim itself cannot
+    start, and ``position`` counts the blocked claims ahead of it, which is what
+    ``queue_max`` bounds: a claim waiting only for claims that start is not queued.
+    """
+    load = _MemoryLoad(claim.budget_mb)
+    for held, started in holders:
+        if held is None:
+            load.stopped = True
+        else:
+            load.start(held, _finish(started, held.wall_s))
+    started_ahead = [load.admit(waiting, now) for waiting in ahead]
+    fits = load.admit(claim, now)
+    blocked_ahead = started_ahead.count(False)
+    return (fits and not any(started_ahead), 0 if fits else blocked_ahead, not fits)
+
+
 @dataclass
 class TokenState:
     state: str
     position: int | None = None  # 0-based queue position when QUEUED
+    # Why this entry was queued again (a requeued Job's claim); ``None`` for a first claim.
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -221,6 +626,11 @@ class SlotToken:
     owner_identity: ProcessIdentity | None = None
     owner_kind: str = "process"
     lease_health: LeaseHealth = field(default_factory=lambda: LeaseHealth(threading.Event()))
+    memory: MemoryClaim | None = None  # set exactly for memory-class entries
+    # Why this claim exists again after the Job's first attempt was killed
+    # (``None`` for a first claim); shown to the caller while the Job waits.
+    queue_reason: str | None = None
+    job: JobLabel | None = None  # who the entry belongs to, for queue reports only
 
     @property
     def is_holder(self) -> bool:
@@ -237,6 +647,9 @@ class _WaiterRequest:
     timeout_s: float | None
     created: float
     execution_id: ExecutionId | None
+    memory: MemoryClaim | None = None
+    queue_reason: str | None = None
+    job: JobLabel | None = None
 
 
 def slots_dir(booley_dir: Path | None = None) -> Path | None:
@@ -334,6 +747,11 @@ def _parse_entry_name(name: str) -> tuple[str, int, int, int, int] | None:
         return None
 
 
+def _optional_text(value: object) -> str | None:
+    """A payload field that is a non-empty string, else ``None`` (absent or foreign)."""
+    return value if isinstance(value, str) and value else None
+
+
 def _utc_stamp(epoch: float) -> str:
     return rfc3339_from_epoch(epoch)
 
@@ -415,9 +833,25 @@ class SlotStore:
         role: str = ROLE_INTERACTIVE,
         timeout_s: float | None = None,
         execution_id: str | ExecutionId | None = None,
+        memory: MemoryClaim | None = None,
+        queue_reason: str | None = None,
+        job: JobLabel | None = None,
+        bounded: bool = True,
     ) -> SlotToken:
-        """Join *job_class* admission or raise when its bounded queue is full."""
-        cap = self.caps.cap_for(job_class)
+        """Join *job_class* admission or raise when its bounded queue is full.
+
+        *memory* is required for the memory class and refused for the others.
+        *queue_reason* names why a requeued Job claims again; it is stored in
+        the entry so the caller can read it while the Job waits or runs.
+        A claim that opens as zero is refused (only a holder reaches zero).
+        ``bounded=False`` skips the queue bound for an admitted Job's own claim.
+        """
+        if (memory is not None) != (job_class == CLASS_MEMORY):
+            raise ValueError(f"a memory claim goes with the {CLASS_MEMORY} class only")
+        if memory is not None and not _reserves(memory):
+            raise ValueError("a new memory claim must reserve memory or run alone")
+        if memory is None:
+            self.caps.cap_for(job_class)  # an unknown class raises before any directory exists
         cls_dir = self.root / job_class
         cls_dir.mkdir(parents=True, exist_ok=True)
         self.reap(job_class)
@@ -430,25 +864,11 @@ class SlotStore:
         # count can race a concurrent submit; the post-create rank check
         # catches whatever slips through.
         priority = _ROLE_PRIORITY.get(role, _ROLE_PRIORITY[ROLE_BACKGROUND])
-        ahead = [
-            name
-            for name in self._live_entry_names(job_class)
-            if (entry := _parse_entry_name(name)) is not None
-            and (entry[0] == _HOLDER or entry[1] <= priority)
-        ]
-        if len(ahead) >= cap + self.caps.queue_max:
-            raise QueueFullError(f"{job_class} queue is full ({self.caps.queue_max} waiting)")
+        if bounded and self._queue_overfull(job_class, priority, memory):
+            raise QueueFullError(self._refusal(job_class))
 
         created = self._now()
-        if execution_id is not None:
-            linked_execution = ExecutionId(execution_id)
-        else:
-            inherited = os.environ.get(RUNTIME_EXECUTION_ENV) or None
-            linked_execution = (
-                self._inherited_execution_verifier(inherited, self.root, pid)
-                if inherited is not None
-                else None
-            )
+        linked_execution = self._linked_execution(execution_id, pid)
         token = self._create_entry(
             _WaiterRequest(
                 cls_dir=cls_dir,
@@ -459,15 +879,148 @@ class SlotStore:
                 timeout_s=timeout_s,
                 created=created,
                 execution_id=linked_execution,
+                memory=memory,
+                queue_reason=queue_reason,
+                job=job,
             )
         )
 
         # Post-create backstop: if a racing submit pushed us past the bound,
         # withdraw our own entry and refuse — the queue must stay bounded.
-        if self._rank(token) >= cap + self.caps.queue_max:
+        if bounded and self._queue_overfull(job_class, priority, memory, entry=token):
             self.release(token)
-            raise QueueFullError(f"{job_class} queue is full ({self.caps.queue_max} waiting)")
+            raise QueueFullError(self._refusal(job_class))
         return token
+
+    def _linked_execution(
+        self, execution_id: str | ExecutionId | None, pid: int
+    ) -> ExecutionId | None:
+        """The execution a new entry links to: the given one, else the verified inherited one."""
+        if execution_id is not None:
+            return ExecutionId(execution_id)
+        inherited = os.environ.get(RUNTIME_EXECUTION_ENV) or None
+        if inherited is None:
+            return None
+        return self._inherited_execution_verifier(inherited, self.root, pid)
+
+    def _refusal(self, job_class: str) -> str:
+        return f"{job_class} queue is full ({self.caps.queue_max} waiting)"
+
+    def _queue_overfull(
+        self,
+        job_class: str,
+        priority: int,
+        memory: MemoryClaim | None,
+        entry: SlotToken | None = None,
+    ) -> bool:
+        """True when a claim would exceed the queue bound; *entry* is its created waiter.
+
+        Without *entry* this is the pre-create check for a would-be claim of
+        *priority*; with it, the post-create backstop on the real entry.
+        """
+        if memory is not None:
+            list_ahead = (
+                (lambda: self._names_before(entry))
+                if entry
+                else (lambda: self._names_ahead_of(priority))
+            )
+            _starts, position, blocked = self._memory_view(memory, list_ahead)
+            return blocked and position >= self.caps.queue_max
+        if entry is not None:
+            return self._rank(entry) >= self.caps.cap_for(job_class) + self.caps.queue_max
+        return self._outlook_of(job_class, self._live_entry_names(job_class), priority).full
+
+    # ---------------------------------------------------------- memory class
+
+    def _names_ahead_of(self, priority: int) -> list[str]:
+        """Memory entries that would rank ahead of a new claim of *priority*, in order."""
+        ahead: list[str] = []
+        for name in sorted(self._live_entry_names(CLASS_MEMORY)):
+            entry = _parse_entry_name(name)
+            if entry is not None and (entry[0] == _HOLDER or entry[1] <= priority):
+                ahead.append(name)
+        return ahead
+
+    def _names_before(self, token: SlotToken) -> list[str]:
+        """Memory entries that rank before *token*'s own entry, in order."""
+        own = token.path.name
+        return [name for name in sorted(self._live_entry_names(CLASS_MEMORY)) if name < own]
+
+    def _memory_view(
+        self, claim: MemoryClaim, list_ahead: Callable[[], list[str]]
+    ) -> tuple[bool, int, bool]:
+        """``_memory_queue`` over the entries *list_ahead* names, read fresh from disk.
+
+        Reads each entry directly (not through ``snapshot``, which skips
+        unreadable ones): an entry that cannot be read, or carries no claim,
+        is ``None`` and fails closed. An entry that vanished between the
+        listing and the read was released or promoted meanwhile, so the
+        listing is stale: list again (a bounded number of times) instead of
+        counting it as blocking.
+        """
+        for _attempt in range(_MEMORY_VIEW_ATTEMPTS):
+            holders: list[tuple[MemoryClaim | None, float | None]] = []
+            waiters: list[MemoryClaim | None] = []
+            vanished = False
+            for name in list_ahead():
+                path = self.root / CLASS_MEMORY / name
+                held, started = self._read_memory_entry(path)
+                vanished = vanished or (held is None and not path.exists())
+                if name.startswith(f"{_HOLDER}-"):
+                    holders.append((held, started))
+                else:
+                    waiters.append(held)
+            if not vanished:
+                break
+        return _memory_queue(holders, waiters, claim, self._now())
+
+    def _read_memory_entry(self, path: Path) -> tuple[MemoryClaim | None, float | None]:
+        """An entry's claim and start epoch (promotion, else creation), ``(None, None)`` if unreadable."""
+        try:
+            token = self._load_token(path)
+        except OSError:
+            return None, None
+        if token is None:
+            return None, None
+        return token.memory, parse_stamp(token.promoted_at) or parse_stamp(token.created_at)
+
+    def _queue_position(self, token: SlotToken) -> int | None:
+        """0-based queue position of a waiter, or None when its turn has come."""
+        if token.memory is not None:
+            starts_now, position, _blocked = self._memory_view(
+                token.memory, lambda: self._names_before(token)
+            )
+            return None if starts_now else position
+        cap = self.caps.cap_for(token.job_class)
+        rank = self._rank(token)
+        return rank - cap if rank >= cap else None
+
+    def outlook(self, job_class: str) -> AdmissionOutlook:
+        """What an ``interactive`` claim on *job_class* would meet now, changing nothing.
+
+        Counts like :meth:`submit` after its reap, except that an entry whose
+        owner process is gone is not counted even when its removal needs a
+        recovery call: recovery is a mutation this reader may not make, so it
+        can predict a run now where that call fails. Entries a reap removes
+        only after a recovery call, with their owner alive, count. Never
+        creates the class directory (an absent one is an empty queue).
+        """
+        cls_dir = self.root / job_class
+        names = self._live_entry_names(job_class)
+        uncounted = {_VERDICT_GONE, _VERDICT_ORPHANED}
+        names = [name for name in names if self._entry_verdict(cls_dir / name) not in uncounted]
+        return self._outlook_of(job_class, names, _ROLE_PRIORITY[ROLE_INTERACTIVE])
+
+    def _outlook_of(self, job_class: str, names: list[str], priority: int) -> AdmissionOutlook:
+        """Count the *names* that rank ahead of a claim of *priority*, against the class bounds."""
+        ahead = 0
+        for name in names:
+            entry = _parse_entry_name(name)
+            if entry is not None and (entry[0] == _HOLDER or entry[1] <= priority):
+                ahead += 1
+        return AdmissionOutlook(
+            job_class, ahead, self.caps.cap_for(job_class), self.caps.queue_max
+        )
 
     def _create_entry(self, request: _WaiterRequest) -> SlotToken:
         """Create a uniquely-named waiter entry; atomic full-content appearance."""
@@ -500,7 +1053,7 @@ class SlotStore:
         lease_id: str,
         owner_identity: ProcessIdentity | None,
     ) -> dict:
-        return {
+        payload: dict = {
             "schema_version": SLOT_SCHEMA_VERSION,
             "role": request.role,
             "argv": request.argv,
@@ -514,6 +1067,13 @@ class SlotStore:
             "lease_expires_at": None,
             "owner_identity": owner_identity.to_payload() if owner_identity is not None else None,
         }
+        if request.memory is not None:
+            payload["memory"] = request.memory.to_payload()
+        if request.queue_reason is not None:
+            payload["queue_reason"] = request.queue_reason
+        if request.job is not None:
+            payload["job"] = request.job.to_payload()
+        return payload
 
     def _new_waiter_token(
         self,
@@ -540,6 +1100,9 @@ class SlotStore:
             execution_id=payload["execution_id"],
             owner_identity=ProcessIdentity.from_payload(payload["owner_identity"]),
             owner_kind=payload["owner_kind"],
+            memory=request.memory,
+            queue_reason=request.queue_reason,
+            job=request.job,
         )
 
     def _next_seq(self, cls_dir: Path) -> int:
@@ -569,10 +1132,9 @@ class SlotStore:
 
     def _refresh_waiter(self, token: SlotToken) -> TokenState:
         """Recheck and promote one waiter without an observation race."""
-        cap = self.caps.cap_for(token.job_class)
-        rank = self._rank(token)
-        if rank >= cap:
-            return TokenState(QUEUED, position=rank - cap)
+        position = self._queue_position(token)
+        if position is not None:
+            return TokenState(QUEUED, position=position)
 
         with self._promotion_gate(token) as acquired:
             if not acquired:
@@ -584,9 +1146,9 @@ class SlotStore:
             self.reap(token.job_class)
             if not token.path.exists():
                 return TokenState(LOST)
-            rank = self._rank(token)
-            if rank >= cap:
-                return TokenState(QUEUED, position=rank - cap)
+            position = self._queue_position(token)
+            if position is not None:
+                return TokenState(QUEUED, position=position)
 
             return self._promote(token)
 
@@ -679,7 +1241,7 @@ class SlotStore:
         return False
 
     def _token_payload(self, token: SlotToken) -> dict:
-        return {
+        payload: dict = {
             "schema_version": token.schema_version,
             "role": token.role,
             "argv": token.argv,
@@ -697,6 +1259,13 @@ class SlotStore:
                 token.owner_identity.to_payload() if token.owner_identity is not None else None
             ),
         }
+        if token.memory is not None:
+            payload["memory"] = token.memory.to_payload()
+        if token.queue_reason is not None:
+            payload["queue_reason"] = token.queue_reason
+        if token.job is not None:
+            payload["job"] = token.job.to_payload()
+        return payload
 
     def _rewrite_token(self, token: SlotToken) -> bool:
         tmp = token.path.with_name(f".{token.path.name}.{os.getpid()}.rewrite.tmp")
@@ -740,6 +1309,10 @@ class SlotStore:
         narrate_interval_s: float = NARRATE_INTERVAL_SECONDS,
         execution_id: str | ExecutionId | None = None,
         on_submitted: Callable[[SlotToken], None] | None = None,
+        memory: MemoryClaim | None = None,
+        queue_reason: str | None = None,
+        job: JobLabel | None = None,
+        bounded: bool = True,
     ) -> SlotToken:
         """Submit and wait for a holder, withdrawing on cancellation or failure.
 
@@ -753,6 +1326,10 @@ class SlotStore:
             role=role,
             timeout_s=timeout_s,
             execution_id=execution_id,
+            memory=memory,
+            queue_reason=queue_reason,
+            job=job,
+            bounded=bounded,
         )
         if on_submitted is not None:
             on_submitted(token)
@@ -881,6 +1458,47 @@ class SlotStore:
             token.lease_generation = current.lease_generation
             token.lease_expires_at = current.lease_expires_at
             return True
+
+    def shrink_reservation(self, token: SlotToken, reservation_mb: float) -> bool:
+        """Lower an active holder's Memory Reservation; never raise it (ADR 0087).
+
+        Returns True only when the on-disk claim now carries *reservation_mb*.
+        Refuses, writing nothing, when the entry is not this lease's active
+        holder (recovery may have claimed it), carries no sized claim, or
+        *reservation_mb* is negative or not lower than the held value. Zero keeps
+        the lease and also works from a run-alone claim. Waiters
+        read the claim fresh on their next poll, so a lower claim admits them.
+        """
+        with self._lease_gate(token) as acquired:
+            if not acquired:
+                return False
+            try:
+                current = self._load_token(token.path)
+            except OSError:
+                return False
+            if (
+                current is None
+                or not current.is_holder
+                or current.lease_id != token.lease_id
+                or current.lease_state != LEASE_ACTIVE
+                or current.memory is None
+                or reservation_mb < 0
+                or not self._lowers(current.memory, reservation_mb)
+            ):
+                return False
+            lowered = replace(current.memory, reservation_mb=reservation_mb, run_alone=False)
+            current.memory = lowered
+            if not self._rewrite_token(current):
+                return False
+            token.memory = lowered
+            return True
+
+    @staticmethod
+    def _lowers(held: MemoryClaim, reservation_mb: float) -> bool:
+        """True when *reservation_mb* is a drop to zero or strictly under a sized *held* claim."""
+        if reservation_mb == 0:
+            return _reserves(held)
+        return held.reservation_mb is not None and reservation_mb < held.reservation_mb
 
     def _start_renewal(self, token: SlotToken) -> None:
         if not self._auto_renew or not token.lease_id or token.lease_id in self._renewals:
@@ -1051,6 +1669,9 @@ class SlotStore:
             lease_expires_at=payload.get("lease_expires_at"),
             owner_identity=owner_identity,
             owner_kind=payload.get("owner_kind", "legacy"),
+            memory=MemoryClaim.from_payload(payload.get("memory")),
+            queue_reason=_optional_text(payload.get("queue_reason")),
+            job=JobLabel.from_payload(payload.get("job")),
         )
 
     def cancel_waiter(self, pid: int) -> bool:
@@ -1119,6 +1740,14 @@ class SlotStore:
         # retry (e.g. a Windows scanner holding it) is not proof of absence.
         return not token.path.exists()
 
+    def memory_wait(self, pid: int) -> MemoryWait | None:
+        """What the memory waiter owned by *pid* waits for, or None when it is not one."""
+        holders, waiters = self.snapshot(CLASS_MEMORY)
+        for waiter in waiters:
+            if waiter.pid == pid:
+                return memory_wait(waiter, holders, waiters, self._now())
+        return None
+
     def state_for_pid(self, pid: int) -> TokenState | None:
         """Admission state of the entry owned by *pid*, or None when absent.
 
@@ -1129,12 +1758,14 @@ class SlotStore:
         """
         for job_class in JOB_CLASSES:
             holders, waiters = self.snapshot(job_class)
-            for tok in holders:
-                if tok.pid == pid:
-                    return TokenState(HOLDING)
+            holding = [tok for tok in holders if tok.pid == pid]
+            if holding:
+                # A Campaign's work-item claims share the PID; any one may carry the reason.
+                reason = next((tok.queue_reason for tok in holding if tok.queue_reason), None)
+                return TokenState(HOLDING, reason=reason)
             for position, tok in enumerate(waiters):
                 if tok.pid == pid:
-                    return TokenState(QUEUED, position=position)
+                    return TokenState(QUEUED, position=position, reason=tok.queue_reason)
         return None
 
     # ----------------------------------------------------------------- reap
@@ -1168,10 +1799,13 @@ class SlotStore:
         return reaped
 
     def _is_stale(self, path: Path) -> bool:
+        """True when the entry is removed: its verdict is not live and any recovery it needs succeeds."""
+        if self._entry_verdict(path) == _VERDICT_LIVE:
+            return False
         parsed = _parse_entry_name(path.name)
         if parsed is None:
             return self._is_old_junk(path)
-        state, _priority, _seq, _pid, _n = parsed
+        state = parsed[0]
 
         try:
             tok = self._load_token(path)
@@ -1182,6 +1816,51 @@ class SlotStore:
             # Named like an entry but corrupt; same junk rule.
             return self._is_old_junk(path)
         return self._token_is_stale(tok, state)
+
+    def _entry_verdict(self, path: Path) -> str:
+        """Whether a reap would keep, drop or try to recover the entry; reads only.
+
+        The one staleness judgment ``reap`` and ``outlook`` share, so a preview
+        counts what admission counts. ``_token_is_stale`` carries out the
+        actions (lease claim, recovery) the verdict only predicts.
+        """
+        parsed = _parse_entry_name(path.name)
+        if parsed is None:
+            return _VERDICT_GONE if self._is_old_junk(path) else _VERDICT_LIVE
+        try:
+            tok = self._load_token(path)
+        except OSError:
+            gone = not self._is_pid_alive(parsed[3]) and self._is_old_junk(path)
+            return _VERDICT_GONE if gone else _VERDICT_LIVE
+        if tok is None:
+            return _VERDICT_GONE if self._is_old_junk(path) else _VERDICT_LIVE
+        return self._token_verdict(tok, parsed[0])
+
+    def _token_verdict(self, tok: SlotToken, state: str) -> str:
+        """The verdict for a readable entry; unknown future schemas fail closed to live."""
+        if not isinstance(tok.schema_version, int) or isinstance(tok.schema_version, bool):
+            return _VERDICT_LIVE
+        if tok.schema_version > SLOT_SCHEMA_VERSION:
+            return _VERDICT_LIVE
+        deadline_reached = state == _HOLDER and (
+            self._lease_expired(tok) or self._work_deadline_expired(tok)
+        )
+        if tok.owner_kind == "execution":
+            return self._execution_verdict(tok, deadline_reached=deadline_reached)
+        if self._owner_is_stale(tok):
+            return _VERDICT_GONE
+        return _VERDICT_RECOVERABLE if deadline_reached else _VERDICT_LIVE
+
+    def _execution_verdict(self, tok: SlotToken, *, deadline_reached: bool) -> str:
+        """The verdict for an entry owned by a durable execution."""
+        if tok.execution_id is None:
+            return _VERDICT_LIVE  # never reaped: nothing to ask about its owner
+        if self._recovery.execution_is_terminal(tok.execution_id):
+            return _VERDICT_GONE
+        if self._owner_is_stale(tok):
+            return _VERDICT_ORPHANED
+        recovery_due = deadline_reached or tok.lease_state == LEASE_CANCELLING
+        return _VERDICT_RECOVERABLE if recovery_due else _VERDICT_LIVE
 
     def _token_is_stale(self, tok: SlotToken, state: str) -> bool:
         # Unknown future schemas fail closed: this process cannot safely infer

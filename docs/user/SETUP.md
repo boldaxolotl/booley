@@ -71,8 +71,16 @@ adapt it.
 ## Initialize the Project · host
 
 **For an existing project, commit or stash your changes first** (a fresh clone
-is best). If the checkout has Windows (CRLF) line endings, which is common on
-Windows, init converts them to LF, and it refuses to do that on a dirty tree.
+is best).
+
+<details markdown>
+<summary>On Windows</summary>
+
+If the checkout has CRLF line endings, which is common with Git for Windows,
+init converts them to LF, and it refuses to do that on a dirty tree.
+See [Windows](WINDOWS.md#every-file-shows-as-modified-inside-the-container).
+
+</details>
 
 The command is the same for both paths:
 
@@ -250,7 +258,7 @@ Agent's chat to finish.
 
 **Setup asks whether to keep Booley out of your git history.** Yes turns on
 [Stealth Mode](STEALTH.md#stealth-mode), which keeps Booley's files out of
-your repository and cleans AI attribution out of commit messages. No, the
+your repository and rejects commit messages that name AI tools. No, the
 default, leaves Booley's setup in your repository for colleagues to share.
 
 ### Porting an existing project: plan, then execute

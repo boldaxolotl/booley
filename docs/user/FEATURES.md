@@ -1,6 +1,6 @@
 # Features
 
-Booley's core move is giving Developer Agents **one consistent interface to the EDA tools** through Booley Flows, the same for Claude Code and Codex and the same across the EDA tools each Flow supports, and wrapping the result in an agentic development environment (ADE): one VS Code window where you direct and supervise those agents. That makes Developer Agents more capable, but it also gives the engineer a faster, lower-friction RTL workflow. Every feature below builds on that foundation; the reasoning behind the load-bearing choices is in [WHY.md](../internals/WHY.md).
+Booley's core move is giving Developer Agents **one consistent interface to the EDA tools** through Booley Flows, the same for Claude Code and Codex and the same across the EDA tools each Flow supports, and wrapping the result in an agentic development environment (ADE): one VS Code window where you direct and supervise those agents. That makes Developer Agents more capable, but it also gives the engineer a faster, lower-friction RTL workflow. Every feature below builds on that foundation; the reasoning behind the load-bearing choices is in [ARCHITECTURE.md](../internals/ARCHITECTURE.md).
 
 New to Booley's vocabulary (Developer Agent, Specialist, Sandbox, Booley Flow, Target, Goal Mode)? The [context map](../../GLOSSARY-MAP.md) points to each canonical glossary and its rejected synonyms.
 
@@ -25,7 +25,7 @@ New to Booley's vocabulary (Developer Agent, Specialist, Sandbox, Booley Flow, T
 
 ## Same Flows Across Developer Agents and EDA Tools
 
-A Booley Flow (`sim`, `lint`, `synth`, `fpga`) looks the same no matter which Developer Agent calls it or which EDA tool runs underneath.
+A Booley Flow (`sim`, `lint`, `synth`, `fpga`, `mutation`) looks the same no matter which Developer Agent calls it or which EDA tool runs underneath.
 
 - **Claude Code or Codex.** Booley exposes its Flows as MCP tools, which both Claude Code and Codex call natively. Switch Developer Agents and the Flows, Targets, and results stay the same ([details](#llm-backend-selection)).
 - **Same call and result format, whichever EDA tool.** `sim` takes the same call and reports its verdict in the same normalized format whether the Target uses Verilator or Icarus; `lint` does the same for Verilator and Verible. The verdict itself comes from the tool the Target names, so two tools can still disagree on the same design. Open-source tools ship in the Sandbox Image, and Vivado comes from a licensed install on a Linux x86-64 host ([SANDBOX.md](SANDBOX.md#commercial-eda-provisioning)); the Developer Agent drives it the same way.
@@ -68,7 +68,7 @@ Developer Agents run with permission prompts turned off so they can work without
 
 ## Independent Specialists
 
-Specialists (the Reviewer, Mutation Tester, and Coverage Analyst) are separate LLM agents that Booley runs to check the Developer Agent's work. A Specialist didn't write the code and has no memory of the reasoning behind it, so it judges what is actually there rather than what was intended. A Developer Agent reviewing its own work tends to confirm it. Each Specialist also starts from a fresh context, free of the stale logs and drafts a long session accumulates.
+Specialists (the Reviewer and Coverage Analyst) are separate LLM agents that Booley runs to check the Developer Agent's work. A Specialist didn't write the code and has no memory of the reasoning behind it, so it judges what is actually there rather than what was intended. A Developer Agent reviewing its own work tends to confirm it. Each Specialist also starts from a fresh context, free of the stale logs and drafts a long session accumulates.
 
 A Developer Agent could spawn its own subagent, but then it writes the brief, decides what the subagent sees, and reads back a free-form reply. Specialists close those gaps:
 
@@ -80,7 +80,14 @@ A Developer Agent could spawn its own subagent, but then it writes the brief, de
 
 For debugging, Booley **observes actual simulation behavior** through a custom-built Rust waveform EDA tool (`bwave`) instead of just reasoning about the code. It can query signal values at specific time ranges, use one signal as a trigger for sampling another, and trace data through the design: systematic debugging instead of guesswork.
 
-**FST trace store.** Raw VCD files from complex designs can reach 10 GB+, so Booley's successful trace artifact is FST: the open, transition-based waveform format, typically 10-50x smaller than the source VCD and readable by any off-the-shelf viewer (GTKWave, VaporView). `bwave gui` puts a scoped view straight into the user's VS Code window. Booley reads a Target's authored native FST directly. Otherwise Booley converts VCD to FST as the simulation runs; Cocotb Targets convert after the run ([details](FLOW-SIM.md#tracing-a-cocotb-target)). The reasoning is in [WHY.md: Why FST is the trace contract](../internals/WHY.md#why-fst-is-the-trace-contract).
+**FST trace store.** Raw VCD files from complex designs can reach 10 GB+, so Booley's successful trace artifact is FST: the open, transition-based waveform format, typically 10-50x smaller than the source VCD and readable by any off-the-shelf viewer (GTKWave, VaporView). `bwave gui` puts a scoped view straight into the user's VS Code window. Booley reads a Target's authored native FST directly. Otherwise Booley converts VCD to FST (Verilator while the run goes on, Icarus after it; see [FLOW-SIM waveforms](FLOW-SIM.md#waveforms)). The reasoning is in [ARCHITECTURE.md: Why FST is the trace contract](../internals/ARCHITECTURE.md#why-fst-is-the-trace-contract).
+
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+[Cocotb Targets](TARGETS.md#cocotb-targets-python-testbenches) convert after the run ([details](FLOW-SIM.md#tracing-a-cocotb-target)).
+
+</details>
 
 ## Multi-Category Code Review
 
@@ -100,7 +107,7 @@ The early reviews are the equivalent of an engineer's quick look at freshly writ
 
 ## Mutation Testing
 
-Booley includes a mutation testing framework to validate test quality, which matters more in agentic workflows than in human-driven ones. The read-only Mutation Tester Specialist proposes targeted, exact source replacements—subtle bugs a good testbench should detect. It never reads the testbench, so its bugs aren't shaped around what the tests already check. Booley validates the proposal bytes, runs an untouched baseline, then applies and compiles one isolated replacement at a time. It does not parse SystemVerilog or inject runtime selectors; the project's configured compiler decides whether each variant is valid. The deterministic harness counts which variants the testbench catches and measures the detection rate against a configurable threshold. The LLM-proposed mutations are temporary: mutation testing will become fully deterministic, with no LLM involved (see the [roadmap](../internals/ROADMAP.md#deterministic-mutation-testing)).
+Booley includes a mutation testing framework to validate test quality, which matters more in agentic workflows than in human-driven ones. The `mutation` Flow (`booley flow mutation`, [details](FLOW-MUTATION.md)) generates Mutants deterministically from the RTL with no LLM involved: the same RTL, count, and seed always produce the same Mutants, so detection rates are reproducible and comparable across runs. The Flow never reads the testbench, so its bugs aren't shaped around what the tests already check. Booley runs an untouched baseline, then applies and compiles one isolated Mutant at a time; a Mutant that doesn't elaborate is reported `invalid` and not scored. The harness counts which Mutants the testbench detects and compares the detection rate against a threshold (80 % by default, configurable). Some survivors may be equivalent Mutants, which the default threshold allows for.
 
 ## Lint Triage
 

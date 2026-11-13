@@ -459,9 +459,9 @@ def test_full_pruning_rejects_unidentified_quarantine(tmp_path):
 def test_full_pruning_detects_legacy_copied_projection_dependency(tmp_path):
     from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
 
-    manifest = tmp_path / "reports/sim/1/targets/sim_0/campaign/manifest.json"
+    manifest = tmp_path / "reports/sim/1/targets/sim_0/record/manifest.json"
     manifest.parent.mkdir(parents=True)
-    manifest.write_text('{"campaign_id":"01234567-89ab-4def-8123-456789abcdef"}\n')
+    manifest.write_text('{"simulation_record_id":"01234567-89ab-4def-8123-456789abcdef"}\n')
     projection = tmp_path / "reports/sim/2/targets/sim_0/simulation.json"
     projection.parent.mkdir(parents=True)
     projection.write_text(
@@ -700,7 +700,7 @@ def test_report_dependency_scan_tolerates_malformed_report_shapes(tmp_path):
     campaign_id = "01234567-89ab-4def-8123-456789abcdef"
     report = tmp_path / "reports/sim/2/report.json"
     report.parent.mkdir(parents=True)
-    manifest = tmp_path / "reports/sim/1/targets/sim_0/campaign/manifest.json"
+    manifest = tmp_path / "reports/sim/1/targets/sim_0/record/manifest.json"
     manifest.parent.mkdir(parents=True)
     manifest.write_text("{}", encoding="utf-8")
 
@@ -717,10 +717,10 @@ def test_dependent_discovery_translates_invalid_receipt_registry(tmp_path):
     )
 
     root = tmp_path / "reports/sim/1"
-    manifest = root / "targets/sim_0/campaign/manifest.json"
+    manifest = root / "targets/sim_0/record/manifest.json"
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
-        json.dumps({"campaign_id": "01234567-89ab-4def-8123-456789abcdef"}),
+        json.dumps({"simulation_record_id": "01234567-89ab-4def-8123-456789abcdef"}),
         encoding="utf-8",
     )
     (manifest.parent / "dependency-receipts").write_text("unsafe", encoding="utf-8")
@@ -824,7 +824,7 @@ def test_native_pruning_refuses_a_reference_target_without_its_simulation_campai
     from booley.flows.sim.campaign_retention import prune_native_payload
 
     run = coverage_invocation(tmp_path, monkeypatch)
-    (run.target / "campaign/manifest.json").unlink()
+    (run.target / "record/manifest.json").unlink()
 
     with pytest.raises(CampaignRetentionError, match="requires a completed Target"):
         prune_native_payload(run.reports, 1, "sim_0")
@@ -836,7 +836,7 @@ def test_native_pruning_refuses_a_reference_target_without_its_simulation_campai
 def test_interrupted_collection_owns_only_reserved_declaration_evidence(tmp_path):
     from booley.flows.sim.campaign_retention import _campaign_coverage_files
 
-    root = tmp_path / "coverage-campaign"
+    root = tmp_path / "coverage-record"
     (root / "declarations").mkdir(parents=True)
     (root / "build-evidence").mkdir()
     (root / ".collection-started").write_bytes(b"")
@@ -909,7 +909,7 @@ def test_retention_owns_a_shared_build_compiled_by_a_later_invocation(tmp_path: 
     build_root = tmp_path / "engine-build"
     build_root.mkdir()
     (build_root / "simv").write_bytes(b"image")
-    store = CampaignStore(tmp_path / "campaign")
+    store = CampaignStore(tmp_path / "record")
     store.publish_manifest(manifest)
     items = manifest.document["work_items"]
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
@@ -966,7 +966,7 @@ def test_dependency_scan_fails_closed_on_lasting_sharing_error(tmp_path, monkeyp
     projection = tmp_path / "simulation.json"
     projection.write_text("{}", encoding="utf-8")
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps({"campaign_id": campaign_id}), encoding="utf-8")
+    manifest.write_text(json.dumps({"simulation_record_id": campaign_id}), encoding="utf-8")
     hold_opens(monkeypatch, {report: 100, projection: 100, manifest: 100})
     for scan in (
         lambda: _report_references_campaign(report, manifest, campaign_id),
@@ -991,7 +991,7 @@ def test_dependency_scan_keeps_unreadable_non_transient_as_not_dependent(tmp_pat
     report = tmp_path / "report.json"
     report.write_text("{}", encoding="utf-8")
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps({"campaign_id": campaign_id}), encoding="utf-8")
+    manifest.write_text(json.dumps({"simulation_record_id": campaign_id}), encoding="utf-8")
     monkeypatch.setattr(sys, "platform", "linux")
 
     def deny(path, *args, **kwargs):
@@ -1196,7 +1196,7 @@ def test_full_pruning_refuses_a_campaign_owned_by_resume(tmp_path: Path) -> None
 
 
 def test_campaign_mutation_lock_never_recreates_a_missing_root(tmp_path: Path) -> None:
-    store = CampaignStore(tmp_path / "campaign")
+    store = CampaignStore(tmp_path / "record")
 
     with (
         pytest.raises(SimulationCampaignIntegrityError, match="directory disappeared"),

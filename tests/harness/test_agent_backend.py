@@ -588,12 +588,12 @@ _REFUSED_CLAUDE_MODEL = "claude-refused-model"
 
 
 def _settings_resolving_to_refused_model(provider: str, model: str):
-    """Settings whose [models] reviewer and mutation_tester pins both pick the refused model."""
+    """Settings whose [models] reviewer and coverage_analyst pins both pick the refused model."""
     from booley.config import agent as agent_config
 
     settings = AgentSettings(
         default_cli=provider,
-        specialist_models={"reviewer": model, "mutation_tester": model},
+        specialist_models={"reviewer": model, "coverage_analyst": model},
     )
     return settings, agent_config
 
@@ -605,7 +605,7 @@ def _assert_actionable_refusal(error, *, provider: str, model: str, detail_fragm
     message = str(error)
     assert model in message
     assert "[models] reviewer" in message
-    assert "[models] mutation_tester" in message
+    assert "[models] coverage_analyst" in message
     assert "Protected Input" in message
     # The raw provider text is kept on the exception, not in the message.
     assert detail_fragment in error.detail

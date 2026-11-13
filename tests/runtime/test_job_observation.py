@@ -297,6 +297,109 @@ def test_observational_slot_state_and_corrupt_entry_isolation(tmp_path, monkeypa
     assert files(tmp_path) == before
 
 
+def test_observer_reports_queued_memory_claim(tmp_path, monkeypatch):
+    from booley.runtime.pid import ProcessObservation, ProcessState
+
+    identity = ProcessIdentity(99, "fixture", 101)
+    root = tmp_path / "jobs"
+    job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
+    slots = tmp_path / "slots/memory"
+    slots.mkdir(parents=True)
+    token = slots / job_slots._entry_name("w", 1, 1, 99, 0)
+    token.write_text(json.dumps({"owner_identity": identity.to_payload()}))
+    monkeypatch.setattr(
+        _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
+    )
+    view = JobObserver(tmp_path, slots_root=slots.parent).read((root,)).jobs[0]
+    assert view.state == "queued"
+
+
+def _memory_entry(slots: Path, kind: str, seq: int, pid: int, payload: dict) -> None:
+    (slots / job_slots._entry_name(kind, 1, seq, pid, 0)).write_text(json.dumps(payload))
+
+
+def test_observer_reports_the_memory_wait_of_a_queued_claim(tmp_path, monkeypatch):
+    identity = ProcessIdentity(99, "fixture", 101)
+    root = tmp_path / "jobs"
+    job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
+    slots = tmp_path / "slots/memory"
+    slots.mkdir(parents=True)
+    stamp = "2026-10-08T10:00:00Z"
+    for seq, pid, mib, run_id in ((1, 7, 200.0, "run-1"), (2, 8, 500.0, "run-2")):
+        _memory_entry(
+            slots,
+            "h",
+            seq,
+            pid,
+            {
+                "created_at": stamp,
+                "memory": job_slots.MemoryClaim(1000.0, reservation_mb=mib).to_payload(),
+                "job": job_slots.JobLabel(run_id, "synth", "a").to_payload(),
+            },
+        )
+    _memory_entry(
+        slots,
+        "w",
+        3,
+        99,
+        {
+            "owner_identity": identity.to_payload(),
+            "memory": job_slots.MemoryClaim(1000.0, reservation_mb=400.0).to_payload(),
+        },
+    )
+    monkeypatch.setattr(
+        _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
+    )
+    before = files(tmp_path)
+
+    view = JobObserver(tmp_path, slots_root=slots.parent).read((root,)).jobs[0]
+
+    assert view.state == "queued"
+    assert view.queue == (
+        "position 1: needs 400 MiB; 300 MiB free of the 1,000 MiB Memory Budget; "
+        "largest holders: run-2 (synth, a) 500 MiB, run-1 (synth, a) 200 MiB"
+    )
+    assert files(tmp_path) == before
+
+
+def test_slot_queued_job_has_no_queue_detail(tmp_path, monkeypatch):
+    identity = ProcessIdentity(99, "fixture", 101)
+    root = tmp_path / "jobs"
+    job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
+    slots = tmp_path / "slots/heavy"
+    slots.mkdir(parents=True)
+    _memory_entry(slots, "w", 1, 99, {"owner_identity": identity.to_payload()})
+    monkeypatch.setattr(
+        _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
+    )
+
+    view = JobObserver(tmp_path, slots_root=slots.parent).read((root,)).jobs[0]
+
+    assert (view.state, view.queue) == ("queued", "")
+
+
+def test_child_lane_claims_under_the_jobs_pid_do_not_make_its_state_unavailable(
+    tmp_path, monkeypatch
+):
+    from booley.runtime.pid import ProcessObservation, ProcessState
+
+    identity = ProcessIdentity(99, "fixture", 101)
+    root = tmp_path / "jobs"
+    job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
+    slots = tmp_path / "slots/memory"
+    slots.mkdir(parents=True)
+    owner = {"owner_identity": identity.to_payload()}
+    (slots / job_slots._entry_name("h", 1, 1, 99, 0)).write_text(json.dumps(owner))
+    # A work item's own claim: same PID, but a child execution of the Job.
+    child = {**owner, "owner_kind": "execution"}
+    (slots / job_slots._entry_name("w", 1, 2, 99, 1)).write_text(json.dumps(child))
+    monkeypatch.setattr(
+        _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
+    )
+    view = JobObserver(tmp_path, slots_root=slots.parent).read((root,)).jobs[0]
+    assert view.state == "running"
+
+
 def test_snapshot_indexes_reports_and_progress_through_parent_link(tmp_path, monkeypatch):
     real = tmp_path / "real"
     project = real / "project"

@@ -195,10 +195,10 @@ class TestGenerateCodexConfig:
         assert 'PATH = "/home/agent/.local/bin:/usr/local/bin:/usr/bin:/bin"' in config
 
     def test_enabled_mcp_tools_exposed_via_env(self):
-        config = generate_codex_config(enabled_mcp_tools=["mutation_tester", "reviewer"])
+        config = generate_codex_config(enabled_mcp_tools=["mutation", "reviewer"])
         assert "[mcp_servers.booley]" in config
         assert "enabled_mcp_tools" not in config
-        assert 'BOOLEY_MCP_TOOLS = "mutation_tester,reviewer"' in config
+        assert 'BOOLEY_MCP_TOOLS = "mutation,reviewer"' in config
 
     def test_empty_enabled_mcp_tools_exposes_empty_allowlist(self):
         config = generate_codex_config(enabled_mcp_tools=[])

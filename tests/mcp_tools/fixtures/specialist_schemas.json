@@ -26,58 +26,6 @@
     ],
     "type": "object"
   },
-  "mutation_tester": {
-    "additionalProperties": false,
-    "properties": {
-      "count": {
-        "description": "Number of mutations: integer or 'auto' (default: 10)",
-        "type": "string"
-      },
-      "diagnostic": {
-        "default": false,
-        "description": "Run without satisfying Goals. Use for a Flow/Target combination outside the active Goal definition.",
-        "type": "boolean"
-      },
-      "dry_run": {
-        "default": false,
-        "description": "Validate inputs and preview planned work without invoking Specialists or EDA tools",
-        "type": "boolean"
-      },
-      "min_detected": {
-        "description": "Pass threshold: minimum mutations that must be killed (default: all of --count, i.e. all-or-nothing). Lower it to accept a partial mutation score.",
-        "type": "integer"
-      },
-      "regen_lock": {
-        "default": false,
-        "description": "Wipe the mutation lock dir and re-run the Mutation Tester Specialist from scratch.",
-        "type": "boolean"
-      },
-      "scope": {
-        "description": "Comma-separated RTL files eligible for mutation",
-        "type": "string"
-      },
-      "steer": {
-        "description": "Developer Agent context for mutation targeting. Repeatable; over MCP pass an array of strings, not a bare string.",
-        "items": {
-          "type": "string"
-        },
-        "type": "array"
-      },
-      "target": {
-        "description": "Exactly one Simulation Target. The CLI accepts one --target value; MCP accepts one Target selector string.",
-        "type": "string"
-      },
-      "work_dir": {
-        "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo \u2014 create one under .booley/worktrees/ with `booley worktree new <name>`. Omit to use the current workspace.",
-        "type": "string"
-      }
-    },
-    "required": [
-      "target",
-      "scope"
-    ],
-    "type": "object"
-  },
   "reviewer": {
     "additionalProperties": false,
     "properties": {

@@ -15,7 +15,7 @@ in the wrong place stops and prints how to run it in the right one.
 
 | Location | Public commands, in order |
 |---|---|
-| Sandbox | `chat`, `dashboard`, `flow`, `specialist`, `worktree` |
+| Sandbox | `chat`, `dashboard`, `flow`, `measure`, `specialist`, `worktree` |
 | Either | `cheat`, `coverage`, `doctor`, `help`, `init`, `resources`, `targets` |
 | Host-only | `auth`, `bootstrap`, `eda`, `projects` |
 
@@ -23,6 +23,7 @@ in the wrong place stops and prints how to run it in the right one.
 `booley flow <name> --help` and `booley specialist <name> --help` also work on
 the host inside an initialized Project. `booley targets` lists Targets
 anywhere; showing one Target in full detail needs the Sandbox.
+`booley cheat --metrics` lists a Project's Targets, so it needs an initialized Project.
 
 `booley help` and `booley --help` print the same command list.
 `booley --version` prints the version, plus its commit and that commit's UTC
@@ -55,22 +56,31 @@ Initialization only; a Booley-issued Sandbox refuses it. See
 ```bash
 booley                            # open the Developer Agent (same as booley chat)
 booley chat --cli codex           # open another Agent CLI your Project allows
+booley chat --name uart-fix       # label the session: the tab and Dashboard show S3 · uart-fix
 booley chat --new-worktree        # start in a new worktree s<N> even if the main checkout is free
 booley chat --here                # start in the main checkout even if it is in use (in a linked worktree: stay there)
 booley chat --resume <id>         # Claude: arguments after chat and its options go to the agent CLI
 booley chat resume --last         # Codex: the same, with its own subcommands
 booley chat -- --help             # the agent CLI's help (Booley's is booley chat --help)
 booley dashboard                  # sessions and Jobs; see Usage
+booley measure --validate         # check .booley/metrics.toml; measures nothing
 booley worktree new <name>        # a linked worktree for parallel work; see below
 booley worktree list              # each worktree's branch, changes, and use
 booley worktree rm <name>         # remove a worktree, keeping its evidence and branches
 booley worktree gc                # remove idle worktrees (default: a week), where safe
 ```
 
-`--new-worktree` and `--here` are mutually exclusive and are read only before
-the agent's own arguments. `--new-worktree` is refused when you run it from
-inside a linked worktree. If Booley cannot reserve a session handle for a
-worktree launch, it exits with status 2 and suggests `--here`.
+- Booley's `chat` options are read only before the agent's own arguments.
+  Claude's own `--name` is `booley chat -- --name <name>`.
+- `--new-worktree` and `--here` are mutually exclusive.
+- `--name` takes 1-32 ASCII letters, digits, spaces, `.`, `_` or `-`, starting
+  with a letter or digit; an invalid name exits with status 2.
+- `--new-worktree` is refused when you run it from inside a linked worktree.
+- If Booley cannot reserve a session handle for a worktree launch, it exits
+  with status 2 and suggests `--here`.
+
+Measuring a commit is not available yet: `booley measure` without
+`--validate` says so and exits with status 2.
 
 The Dashboard opens by itself when you attach to the container; see
 [The dashboard](USAGE.md#the-dashboard).
@@ -81,6 +91,7 @@ The Dashboard opens by itself when you attach to the container; see
 booley cheat                      # list the cheatsheet sections
 booley cheat --all                # the whole cheatsheet
 booley cheat --goals              # Goal Mode, the Goal catalog, and thresholds
+booley cheat --metrics            # each Target's runnable Flows and their metrics as metrics.toml text (needs a Project)
 booley coverage uncovered <coverage.json>   # uncovered points of a coverage run
 booley coverage uncovered <coverage.json> --metric branch --source rtl/fifo.sv
 booley doctor                     # check setup and environment health
@@ -117,12 +128,20 @@ marks each one `present`, `missing`, or `uninitialized`.
 It stops at each Project it finds, so it doesn't crawl that Project's RTL and
 build trees; to import a Project nested inside another, name its path directly.
 
-`forget` refuses while the Project still has a live Grant (see below). It
-lists what the Project still holds in Docker, with sizes: images, agent state
-volumes (a copy of the agent's login and history), containers, and networks.
-It removes none of them unless you add `--purge`, which removes the unused
-ones, even for a Project already forgotten or deleted. To use a forgotten
-Project again, run `booley init` in it.
+`forget` lists what the Project still holds in Docker, with sizes: images,
+agent state volumes (a copy of the agent's login and history), containers, and
+networks. It removes none of them unless you add `--purge`, which removes the
+unused ones, even for a Project already forgotten or deleted. To use a
+forgotten Project again, run `booley init` in it.
+
+<details markdown>
+<summary>With host-installed licensed tools</summary>
+
+`forget` refuses while the Project still has a live Grant (see
+[Commercial EDA](#commercial-eda--host) and
+[Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning)).
+
+</details>
 
 ### Commercial EDA · host
 
@@ -147,8 +166,8 @@ A worktree is a second checkout of your Project where a separate Developer
 Agent can work without touching your files, for example one per Goal Mode
 session. `booley chat` creates one (`s<N>`, on branch `booley/s<N>`) when the
 main checkout is in use; see
-[Several agents at once](USAGE.md#several-agents-at-once). You can also ask the
-agent to create one, or run, in a container terminal from the main checkout:
+[Several agents at once](USAGE.md#several-agents-at-once). You can also run, in
+a container terminal from the main checkout:
 
 ```bash
 booley worktree new <name>
@@ -200,7 +219,7 @@ under `.booley/worktrees/`, from the main checkout or from any worktree:
 | `UNMERGED` | Commits not yet in the main checkout's branch. Commits whose change is already there count as merged, including a branch merged by squash. A Paired Checkout reads `N, paired M` |
 | `SESSION` | Handles of live sessions in the worktree |
 | `GOAL` | Its active Goal, if any |
-| `LAST USED` | When the worktree was created or a Booley tool call last ran there; `never` for a worktree that predates the record |
+| `LAST USED` | When the worktree was created, a Booley tool call last ran there, `booley chat` was last launched inside it, or the session of a worktree that `booley chat` created ended (a resumed session counts through its tool calls); `never` for a worktree that predates the record |
 
 A worktree whose directory is gone is not listed; a warning names it.
 
@@ -293,6 +312,7 @@ worktree, and also keeps the `booley-worktree/<name>` branch. Uncommitted
 changes in the Paired Checkout count toward the refusal too. To reuse the name,
 also delete that branch with
 `git -C <absolute-booley-directory> branch -D booley-worktree/<name>`.
+See [Stealth Mode](STEALTH.md).
 
 </details>
 
@@ -349,12 +369,13 @@ Deterministic end-to-end orchestration; no LLM:
 | `lint` | Run lint for one or more Targets | `LINT:{target}` |
 | `synth` | Run ASIC synthesis for one or more Targets with optional baseline comparison | `SYNTH:{target}` |
 | `fpga` | Run FPGA implementation for one or more Targets with optional baseline comparison | `FPGA:{target}` |
+| `mutation` | Deterministic mutation testing: seeded Mutants from fixed Mutation Operators, each built and tested in isolation | `MUTATION:{target}` |
 
-Shared Flow options and results are in [FLOW_REFERENCE.md](FLOW_REFERENCE.md), each Flow's own in [FLOW-SIM.md](FLOW-SIM.md), [FLOW-LINT.md](FLOW-LINT.md), [FLOW-SYNTH.md](FLOW-SYNTH.md), and [FLOW-FPGA.md](FLOW-FPGA.md), including the report files each one writes; `booley flow <name> --help` prints the options too.
+Shared Flow options and results are in [FLOW_REFERENCE.md](FLOW_REFERENCE.md), each Flow's own in [FLOW-SIM.md](FLOW-SIM.md), [FLOW-LINT.md](FLOW-LINT.md), [FLOW-SYNTH.md](FLOW-SYNTH.md), [FLOW-FPGA.md](FLOW-FPGA.md), and [FLOW-MUTATION.md](FLOW-MUTATION.md), including the report files each one writes; `booley flow <name> --help` prints the options too.
 
 **Specialists**
 
-LLM-powered Specialists running in scoped, isolated workspaces:
+Specialists running in scoped, isolated workspaces:
 
 Ask your Developer Agent session to invoke a Specialist by name with the arguments below. Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--max-turns` and `--timeout` are CLI-only controls.
 
@@ -363,7 +384,6 @@ For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl
 | Specialist | Purpose | Sets | Modifies code |
 |------------|---------|------|:-------------:|
 | `coverage_analyst` | Explain one exact coverage.json Campaign and propose advisory next steps | — | — |
-| `mutation_tester` | Proposal-locked mutation testing: creator selects exact replacements, tester builds isolated variants | `MUTATION:{target}` | — |
 | `reviewer` | Single-focus code review: reports issues by severity | `REVIEW:rtl_spec`, `REVIEW:rtl_bugs`, `REVIEW:rtl_protocol`, `REVIEW:tb_quality`, `REVIEW:rtl_security`, `REVIEW:rtl_optimization`, `REVIEW:rtl_code_style` | — |
 
 #### `coverage_analyst`
@@ -397,22 +417,6 @@ Call the `reviewer` Specialist from your Developer Agent session with `category=
 **Goal Mode:** the Review Goal fixes scope, spec and verdict, so `scope`, `spec`, `spec_text`, `fail_on` and `steer` are refused. Declare each Review Goal with exactly one `target` or `paths` (see `booley cheat --goals`).
 
 **Verify fixes (both modes):** after fixing findings, call `reviewer` with `verify=true` (CLI: `--verify`). It rechecks only the latest review's open findings and finds nothing new; none remaining open is a pass. To argue a finding away, add `waive=[["<finding-id>", "<justification>"]]` (CLI: `--waive <finding-id> "<justification>"`, repeatable); the Reviewer accepts or rejects each. Outside Goal Mode `fail_on` (CLI: `--fail-on`) is the one other argument accepted with verify, and counts the findings still open. After repeated failed verifies, Goal Mode stops and asks you to change or abandon the Goal; Interactive Mode refuses further verifies.
-
-#### `mutation_tester`
-
-Proposal-locked mutation testing. A read-only LLM creator returns exact source replacements; Booley runs a pristine baseline, then compiles and tests each replacement in isolation. It does not parse HDL or inject runtime selectors.
-
-**Mutation campaign modes:**
-
-| Campaign | Goal arguments | Interactive Mode arguments |
-|----------|-----------------------------------------|------------------------|
-| Default fixed | Target campaign with `target` + `scope` — generate 10 mutations and require all 10 detected | _(no goal arguments)_ — the same 10-of-10 campaign |
-| Explicit fixed | add `total: N` and `min_detected: K` | `count="N"` requires all N; add `min_detected=K` to require K |
-| Size-scaled | add `auto: true` — choose 3-25 mutations from language-neutral source size and the time budget | `count="auto"`; add `min_detected=K` for an explicit threshold |
-
-`dry_run=true` validates Target metadata and prints the source-size breakdown and proposed auto count without invoking a Specialist or simulator.
-
-Call the `mutation_tester` Specialist from your Developer Agent session: `scope="<rtl-file,...>"` chooses mutation sites; `target="<sim-target>"` chooses exactly one complete runnable Target suite; `steer=["<context>"]` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `regen_lock=true`. The Target supplies the testbench top and complete RTL closure; they are not separate caller inputs.
 <!-- END GENERATED: flows -->
 
 ## Running a Flow yourself

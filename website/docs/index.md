@@ -7,7 +7,7 @@ document: Booley product datasheet
 <!-- Masthead: the part number is the one loud element on the page -->
   <section class="mast" aria-labelledby="part">
     <h1 class="mast__part" id="part">BOOLEY</h1>
-    <p class="mast__title">Open-source Agentic Development Environment (ADE) for FPGA and ASIC work</p>
+    <p class="mast__title">Open-source Agentic Development Environment (ADE) for RTL design and verification</p>
     <div class="mast__sub">
       <span>Package <strong>booley-rtl</strong> on PyPI. Works with Claude Code or Codex.</span>
     </div>
@@ -43,7 +43,7 @@ document: Booley product datasheet
         </div>
         <div>
           <h3>Reproducible team environment</h3>
-          <p>Configure the project once, and its Docker environment supplies the same pinned EDA stack, agent tooling, and system dependencies to everyone on the project (<a href="https://github.com/boldaxolotl/Booley/blob/main/docs/internals/WHY.md#why-docker">why Docker</a>).</p>
+          <p>Configure the project once, and its Docker environment supplies the same pinned EDA stack, agent tooling, and system dependencies to everyone on the project (<a href="docs/architecture/#why-docker">why Docker</a>).</p>
         </div>
         <div>
           <h3>One window for all your agents</h3>

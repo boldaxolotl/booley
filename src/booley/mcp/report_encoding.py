@@ -14,6 +14,7 @@ import os
 from typing import Any
 
 from booley.flows.endpoint_reporting import _contains_whole_line_block
+from booley.runtime.endpoint_execution import OOM_REQUEUE_MARKER
 
 logger = logging.getLogger(__name__)
 _DEFAULT_MAX_STDOUT_BYTES = 12_000
@@ -521,6 +522,16 @@ def _append_report_section(
         parts.append("\n--- report ---\n" + "\n".join(report_lines))
 
 
+def _final_attempt_stdout(stdout: str) -> str:
+    """The stdout a requeued Job's final attempt wrote, from its last requeue marker on.
+
+    The agent must not read the killed attempt's verdicts (ADR 0087); the
+    marker line stays so the result says why the output starts there.
+    """
+    start = stdout.rfind(OOM_REQUEUE_MARKER)
+    return stdout if start < 0 else stdout[start:]
+
+
 def _format_mcp_tool_result(
     exit_code: int,
     stdout: str,
@@ -533,7 +544,7 @@ def _format_mcp_tool_result(
     shown_stdout, stdout_truncated = _append_stream_section(
         parts,
         label="stdout",
-        stream=stdout,
+        stream=_final_attempt_stdout(stdout),
         limit=_max_stdout_bytes(),
         mark_truncation=True,
     )

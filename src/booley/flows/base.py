@@ -31,8 +31,14 @@ from booley.flows.display import format_flow_display_label
 from booley.flows.endpoint_context import EndpointContext
 from booley.flows.endpoint_state import EndpointState
 from booley.flows.execution_persistence import FlowExecutionAdapter, StandaloneFlowExecution
+from booley.flows.implementation_comparison import (
+    ImplementationComparisonError,
+    target_pair_plans_for_handles,
+)
 from booley.flows.invocation import resolve_timeout_ms
+from booley.flows.job_estimates import JobRequest
 from booley.flows.job_resources import JobResourceMonitor
+from booley.flows.memory_admission import memory_admission_enabled
 from booley.flows.prepared_invocation import (
     OrdinaryRunInvocation,
     PreparedInvocation,
@@ -41,7 +47,14 @@ from booley.flows.prepared_invocation import (
 from booley.flows.request import FlowRequest
 from booley.runtime import runtime_context
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
-from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome, ExecutionResult
+from booley.runtime.endpoint_execution import (
+    EXIT_ERROR,
+    OOM_STOPPED_MESSAGE,
+    EndpointOutcome,
+    ExecutionResult,
+    job_stopped_after_oom,
+    note_job_oom_kill,
+)
 from booley.runtime.python_artifacts import relocate_python_artifacts
 from booley.targets.catalog import PreparedTargetSelection
 from booley.targets.domain import TARGET_AWARE_FLOWS, FuseSocError, TargetHandle
@@ -68,9 +81,40 @@ class SubprocessResult:
     # Peak resident memory of the locally-executed process tree.  ``None``
     # means the platform could not measure it (not zero usage).
     peak_rss_mb: float | None = None
-    # cgroup v2 OOM-kill counter delta observed across this command.  This
-    # corroborates an otherwise-ambiguous SIGKILL/rc137 as an actual OOM.
+    # cgroup v2 OOM-kill counter delta observed across this command.  It is
+    # container-wide evidence: another Job's kill moves it too.
     oom_kill_delta: int = 0
+    # Under memory admission: a process of this command's own tree was killed by
+    # the OOM killer (``job_resources.own_oom_kill``). Set by ``_execute_local``.
+    oom_killed: bool = False
+
+    @property
+    def oom_blamed(self) -> bool:
+        """Whether to classify this command's failure as an OOM kill.
+
+        With memory admission on, only the command's own kill counts; otherwise
+        any container OOM kill observed while it ran does (ADR 0087).
+        """
+        if memory_admission_enabled():
+            return self.oom_killed
+        return self.oom_kill_delta > 0
+
+
+def _blame_own_oom_kill(
+    measurement: job_resources.JobMeasurement,
+    result: SubprocessResult,
+    scope: Any,
+) -> None:
+    """Under memory admission, mark a command whose own process the OOM killer took.
+
+    A kill also counts for the whole Job, which the requeue reads (ADR 0087).
+    """
+    if not memory_admission_enabled():
+        return
+    cancelled = scope is not None and scope.cancelled()
+    result.oom_killed = job_resources.own_oom_kill(measurement, result, cancelled=cancelled)
+    if result.oom_killed:
+        note_job_oom_kill()
 
 
 def _prepare_supervised_command(cmd: list[str], env: dict[str, str]):
@@ -243,6 +287,23 @@ class FlowMechanics:
         """Return working directory for subprocess."""
         return self.args.work_dir
 
+    def _tool_environment(self, cwd: Path) -> tuple[dict[str, str], Path]:
+        """Return the child environment and Python artifact cache root for a tool in *cwd*.
+
+        *cwd* must be a checkout root (every caller passes ``work_dir`` or another
+        checkout's root): from a subdirectory the lookup would fall through to the
+        ambient ``BOOLEY_DIR``. ``BOOLEY_DIR`` names that checkout's own Booley
+        Directory: tools read this checkout's inputs, never another checkout's
+        (ADR 0082).
+        """
+        env = {**os.environ, **self._extra_subprocess_env()}
+        try:
+            checkout_dir = resolve_checkout_booley_dir(cwd)
+        except (OSError, RuntimeError, ValueError):
+            return env, Path(tempfile.gettempdir()) / "booley-python-artifacts"
+        env["BOOLEY_DIR"] = str(checkout_dir)
+        return env, checkout_dir / ".runtime" / "python-artifacts"
+
     def _execute_local(
         self, cmd: list[str], *, timeout: int | None = None, cwd: Path | None = None
     ) -> SubprocessResult:
@@ -253,17 +314,17 @@ class FlowMechanics:
         """
         import sys as _sys
 
+        if job_stopped_after_oom():
+            # The Job is requeued: start nothing, and do not record a command that never ran.
+            return SubprocessResult(returncode=-1, stderr=OOM_STOPPED_MESSAGE)
+
         # python3 is not on PATH on Windows; use the running interpreter.
         if cmd and cmd[0] == "python3" and _sys.platform == "win32":
             cmd = [_sys.executable, *cmd[1:]]
 
         timeout = self._get_timeout() if timeout is None else timeout
         cwd = self._get_cwd() if cwd is None else cwd
-        env = {**os.environ, **self._extra_subprocess_env()}
-        try:
-            cache_root = resolve_checkout_booley_dir(cwd) / ".runtime" / "python-artifacts"
-        except (OSError, RuntimeError, ValueError):
-            cache_root = Path(tempfile.gettempdir()) / "booley-python-artifacts"
+        env, cache_root = self._tool_environment(cwd)
         env = relocate_python_artifacts(
             env,
             cache_root,
@@ -293,6 +354,7 @@ class FlowMechanics:
             return SubprocessResult(returncode=-1)
         result.peak_rss_mb = measurement.peak_rss_mb
         result.oom_kill_delta = measurement.oom_kill_delta or 0
+        _blame_own_oom_kill(measurement, result, scope)
         job_resources.record_command(flow, label, self._resource_flags(), measurement, result)
         return result
 
@@ -406,12 +468,24 @@ class FlowMechanics:
 class BooleyFlow(FlowMechanics, EndpointContext):
     """Source-compatible Custom Flow extension with its historical CLI hooks."""
 
+    def _memory_admitted(self) -> bool:
+        """A Custom Flow runs commands in the Sandbox, so the switch admits it (ADR 0087)."""
+        return True
+
+    def prepare_endpoint_invocation(self) -> PreparedInvocation | EndpointOutcome:
+        """The ordinary run, sized as the Flow's one phase for the Target it was given.
+
+        The phase is keyed by the Flow's name and the ``--target`` value, or the
+        empty Target when none was given: the key ``_execute_local`` records.
+        """
+        return OrdinaryRunInvocation(self._run, (JobRequest(self.name, self._selected_target),))
+
 
 RequestT = TypeVar("RequestT", bound=FlowRequest)
 
 
 class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
-    """Invocation seam shared only by Booley's four shipped Flows.
+    """Invocation seam shared only by Booley's five shipped Flows.
 
     The Flow is the single owner of its per-invocation state; every entry point
     starts an invocation through ``_start_invocation``.
@@ -424,6 +498,9 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
 
     # Families a non-strict Project may judge under conventional names (lint_clean, ...).
     conventional_families: ClassVar[frozenset[str]] = frozenset()
+
+    # The Criterion family whose baseline Targets this Flow also runs (``None``: no pairs).
+    _PAIR_CRITERION_PREFIX: ClassVar[str | None] = None
 
     target_required: bool = False
     target_help: str = SurfaceHelp(
@@ -465,6 +542,12 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
         self.cycle_report_json: str | None = None
         self._prepared_target_selection = None
         self.begin_invocation()
+
+    def begin_requeued_attempt(self) -> None:
+        """Reset what the killed attempt left behind; keep the prepared Targets and seeds."""
+        super().begin_requeued_attempt()
+        self.cycle_report_json = None
+        job_resources.clear_label()
 
     def _finalize_result(self, result: EndpointOutcome) -> None:
         result.cycle_report_json = self.cycle_report_json or "{}"
@@ -531,6 +614,30 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
     def _selected_target_handles(self) -> tuple[TargetHandle, ...]:
         """Return the immutable selection prepared for this invocation."""
         return self._selected_target_selection().handles
+
+    def memory_job_requests(
+        self, handles: tuple[TargetHandle, ...]
+    ) -> tuple[JobRequest, ...] | None:
+        """The Resource History requests of a Job over *handles* (``None`` when unknown).
+
+        A Flow that pairs each Target with a baseline Target also runs the
+        baseline Target, so its footprint counts toward the Job's reservation.
+        The pairs are built again in ``_run``, which refuses a bad pairing.
+        """
+        selectors = [handle.selector for handle in handles]
+        if self._PAIR_CRITERION_PREFIX is not None:
+            try:
+                pairs = target_pair_plans_for_handles(
+                    self.state.criteria,
+                    self._PAIR_CRITERION_PREFIX,
+                    handles,
+                    basis=self.flow_acceptance if self.flow_acceptance.basis_bound else None,
+                    flow=self.name,
+                )
+            except ImplementationComparisonError:
+                return None
+            selectors.extend(pair.baseline.selector for pair in pairs)
+        return tuple(JobRequest(self.name, selector) for selector in dict.fromkeys(selectors))
 
     @property
     def _paired_project_baseline(self) -> PairedProjectBaseline:

@@ -128,6 +128,24 @@ def test_oom_build_names_oom_evidence_and_remedy(
     assert "BOOLEY_BUILD_STAGE" not in report
 
 
+def test_ordinary_build_failure_during_another_jobs_oom_kill_is_not_oom(monkeypatch) -> None:
+    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+    diagnostic = "%Error: rtl/top.sv:4:3: syntax error"
+    outcome = classify_build_outcome(
+        SubprocessResult(
+            returncode=1,
+            stdout=f"{diagnostic}\nBOOLEY_BUILD_STAGE token=abc123 rc=1\n",
+            oom_kill_delta=1,
+        ),
+        "abc123",
+        timeout_s=600,
+    )
+
+    assert outcome.design_failed
+    assert "OOM" not in (outcome.reason or "")
+    assert diagnostic in outcome.output
+
+
 def test_compile_error_still_shows_compiler_lines(tmp_path: Path) -> None:
     diagnostic = "%Error: rtl/top.sv:4:3: syntax error"
     outcome = classify_build_outcome(
@@ -264,7 +282,7 @@ def test_campaign_build_timeout_publishes_terminal_infrastructure_result(
     assert campaign.complete is True
     assert campaign.aggregate_grade == "error"
     assert campaign.observations[0]["detail"]["reason"].splitlines()[0] == TIMEOUT_REASON
-    store = CampaignStore(invocation / "targets" / "sim" / "campaign")
+    store = CampaignStore(invocation / "targets" / "sim" / "record")
     result = _first_build_result(store)
     assert result["state"] == "infrastructure_error"
     observation = result["observation"]
@@ -383,7 +401,7 @@ def test_coverage_campaign_build_failure_message_is_reason(tmp_path: Path) -> No
     assert campaign.complete is True
     assert campaign.aggregate_grade == "error"
 
-    store = CampaignStore(tmp_path / "reports/1/targets/sim_0/campaign")
+    store = CampaignStore(tmp_path / "reports/1/targets/sim_0/record")
     observation = _first_build_result(store)["observation"]
     assert observation["message"] == TIMEOUT_REASON
     assert LAST_LINE in observation["detail"]["text"]
@@ -397,7 +415,7 @@ def test_coverage_campaign_build_timeout_is_not_an_integrity_error(tmp_path: Pat
     campaign, _invocation = _run_coverage_campaign(tmp_path, failing)
     assert campaign.complete is True
     assert campaign.aggregate_grade == "error"
-    store = CampaignStore(tmp_path / "reports/1/targets/sim_0/campaign")
+    store = CampaignStore(tmp_path / "reports/1/targets/sim_0/record")
     assert store.scan().interrupted == ()
 
 
@@ -410,7 +428,7 @@ def test_reasonless_coverage_infrastructure_keeps_its_message(tmp_path: Path) ->
     assert campaign.complete is True
     assert campaign.aggregate_grade == "error"
 
-    store = CampaignStore(tmp_path / "reports/1/targets/sim_0/campaign")
+    store = CampaignStore(tmp_path / "reports/1/targets/sim_0/record")
     message = _first_build_result(store)["observation"]["message"]
     assert message == "coverage Verilator identity mismatch"
 
@@ -488,7 +506,7 @@ def test_hostile_oom_build_output_publishes_and_decodes(
     assert campaign.complete is True
     assert campaign.aggregate_grade == "error"
 
-    store = CampaignStore(invocation / "targets" / "sim" / "campaign")
+    store = CampaignStore(invocation / "targets" / "sim" / "record")
     result = _first_build_result(store)
     text = result["observation"]["detail"]["text"]
     assert result["state"] == "infrastructure_error"
@@ -502,7 +520,7 @@ def test_hostile_oom_build_output_publishes_and_decodes(
 def test_campaign_resume_failure_reports_build_timeout_first() -> None:
     error = build_module.SimulationBuildInfrastructureError("sim", _timeout_outcome())
 
-    with patch("booley.flows.sim.flow._fresh_campaign_recovery_detail", return_value={}):
+    with patch("booley.flows.sim.flow_resume._fresh_campaign_recovery_detail", return_value={}):
         endpoint = SimulateFlow()._campaign_resume_failure(
             SimpleNamespace(), SimpleNamespace(), Path(), error
         )
@@ -578,7 +596,7 @@ def test_large_batch_build_failure_publishes_bounded_terminal_result(
         )
     )
     assert campaign.complete
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
     result = store.scan().items[0].result
     assert result is not None
     assert result.document["grade"] == "error"
@@ -618,7 +636,7 @@ def test_escaped_build_metadata_stays_within_canonical_detail_budget(
     executor, request, invocation = _run_shared_timeout(tmp_path, monkeypatch, outcome)
     campaign = SimulationCampaign(executor).run(request)
     assert campaign.complete
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
     detail = _first_build_result(store)["observation"]["detail"]
     assert len(canonical_json_bytes(detail)) <= MAX_DETAIL_BYTES
     assert detail["build_stage"]["timed_out"] is True

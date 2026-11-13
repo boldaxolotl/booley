@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import posixpath
 from functools import cache
 from html.parser import HTMLParser
 from pathlib import Path
@@ -12,6 +13,7 @@ from urllib.parse import unquote, urlsplit
 import pytest
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
+from tests.shipped_docs_support import rendered_shipped_docs
 from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime.docs_links import SITE_DOCS, SITE_URL, github_anchor
@@ -55,7 +57,11 @@ def _markdown_files() -> list[Path]:
 
 
 def _destinations(document: Path) -> list[str]:
-    tokens = MarkdownIt().parse(document.read_text(encoding="utf-8"))
+    return _text_destinations(document.read_text(encoding="utf-8"))
+
+
+def _text_destinations(text: str) -> list[str]:
+    tokens = MarkdownIt().parse(text)
     destinations: list[str] = []
     for token in tokens:
         for child in token.children or []:
@@ -151,8 +157,13 @@ def _html_anchors(tokens: list[Token]) -> set[str]:
 
 @cache
 def _markdown_anchors(document: Path) -> frozenset[str]:
-    """Return HTML IDs and GitHub-style headings, including duplicate suffixes."""
-    tokens = MarkdownIt().parse(document.read_text(encoding="utf-8"))
+    """Return HTML IDs and GitHub-style headings of a Markdown file."""
+    return _text_anchors(document.read_text(encoding="utf-8"))
+
+
+def _text_anchors(text: str) -> frozenset[str]:
+    """Return HTML IDs and GitHub-style headings of Markdown text, with duplicate suffixes."""
+    tokens = MarkdownIt().parse(text)
     anchors: set[str] = set()
     for index, token in enumerate(tokens[:-1]):
         if token.type != "heading_open":
@@ -304,47 +315,64 @@ def test_tracked_files_name_the_site_by_its_current_domain() -> None:
         ["git", "grep", "-l", "--fixed-strings", _RETIRED_SITE_HOST], cwd=REPO_ROOT
     )
     assert result.returncode in (0, 1), result.stderr
-    stale = sorted(set(result.stdout.splitlines()) - _RETIRED_HOST_ALLOWED)
+    stale = sorted(
+        path
+        for path in set(result.stdout.splitlines()) - _RETIRED_HOST_ALLOWED
+        if not path.startswith("changelog.d/")  # entries become CHANGELOG.md text
+    )
     assert not stale, f"replace {_RETIRED_SITE_HOST} links with {SITE_URL} in: {stale}"
 
 
-PACKAGED_DOCS = REPO_ROOT / "src/booley/data/docs"
+@pytest.fixture(scope="module")
+def rendered_packaged_docs() -> dict[str, str]:
+    """Return every shipped doc as the build renders it, keyed by flat file name (#3658).
+
+    The packaged directory is Git-ignored build output, so these checks render the
+    sources through the production renderer instead of reading it.
+    """
+    return {
+        posixpath.basename(source): text
+        for source, text in rendered_shipped_docs(REPO_ROOT).items()
+    }
 
 
-def _packaged_links() -> list[tuple[Path, str]]:
-    """Return every ``(packaged doc, destination)`` pair, asserting the copies exist."""
-    documents = sorted(PACKAGED_DOCS.glob("*.md"))
-    assert documents, f"no packaged docs in {PACKAGED_DOCS}; run booley.dev_support.reference_docs"
-    return [
-        (document, destination)
-        for document in documents
-        for destination in _destinations(document)
-    ]
-
-
-def test_packaged_doc_links_resolve_to_sibling_files() -> None:
+def test_packaged_doc_links_resolve_to_sibling_files(
+    rendered_packaged_docs: dict[str, str],
+) -> None:
     """A shipped doc's link to a shipped doc is a bare sibling file name with a live anchor."""
     failures: list[str] = []
-    for document, destination in _packaged_links():
-        parts = urlsplit(destination)
-        if parts.scheme or parts.netloc or not parts.path:
-            continue  # external URL or in-page anchor
-        sibling = PACKAGED_DOCS / parts.path
-        if parts.path != Path(parts.path).name or not sibling.is_file():
-            failures.append(f"{document.name}: {destination} is not a sibling packaged doc")
-        elif reason := _destination_failure(sibling, destination):
-            failures.append(f"{document.name}: {destination} -> {reason}")
+    for name, text in rendered_packaged_docs.items():
+        for destination in _text_destinations(text):
+            parts = urlsplit(destination)
+            if parts.scheme or parts.netloc or not parts.path:
+                continue  # external URL or in-page anchor
+            if (
+                parts.path != posixpath.basename(parts.path)
+                or parts.path not in rendered_packaged_docs
+            ):
+                failures.append(f"{name}: {destination} is not a sibling packaged doc")
+                continue
+            fragment = unquote(parts.fragment)
+            if fragment and fragment not in _text_anchors(rendered_packaged_docs[parts.path]):
+                failures.append(f"{name}: {destination} -> {parts.path} has no anchor #{fragment}")
     assert not failures, "\n".join(failures)
-    assert PACKAGED_DOCS / "TROUBLESHOOTING.md" in _markdown_files()
 
 
-def test_packaged_docs_link_no_unshipped_doc() -> None:
-    """No packaged link, relative or on the docs site, points back at an unshipped repo doc."""
+def test_packaged_docs_link_no_unshipped_doc(rendered_packaged_docs: dict[str, str]) -> None:
+    """No packaged link on the docs site or GitHub points back at an unshipped repo doc.
+
+    A site or blob link to a shipped doc is rewritten to a sibling, so any that remains
+    names a doc that is not shipped and must be plain text.
+    """
     failures: list[str] = []
-    for document, destination in _packaged_links():
-        target = _repository_path(document, destination)
-        if target is not None and not target.is_relative_to(PACKAGED_DOCS.resolve()):
-            failures.append(f"{document.name}: {destination} -> {target.relative_to(REPO_ROOT)}")
+    for name, text in rendered_packaged_docs.items():
+        for destination in _text_destinations(text):
+            parts = urlsplit(destination)
+            if parts.scheme not in {"http", "https"}:
+                continue  # sibling links are checked above
+            target = _web_path(parts.netloc.casefold(), parts.path)
+            if target is not None:
+                failures.append(f"{name}: {destination} -> {target.relative_to(REPO_ROOT)}")
     assert not failures, "links to docs that are not shipped must be plain text:\n" + "\n".join(
         failures
     )

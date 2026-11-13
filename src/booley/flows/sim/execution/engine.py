@@ -18,7 +18,6 @@ from fusesoc.vlnv import Vlnv
 
 from booley.config.project_config import load_test_configuration_field, lookup_target_section
 from booley.config.tests_toml_rules import (
-    VARIANT_SEPARATOR,
     TestVariantError,
     adapter_argument,
     option_key,
@@ -74,7 +73,12 @@ from booley.flows.sim.config import (
     resolve_trace_args,
     resolve_trace_files,
 )
-from booley.flows.sim.live_progress import attempt_scope, observe_stage, prepare_attempt_log
+from booley.flows.sim.live_progress import (
+    attempt_scope,
+    end_phase,
+    observe_stage,
+    prepare_attempt_log,
+)
 from booley.flows.sim.runtime_inputs import (
     declared_runtime_inputs,
     preview_runtime_inputs,
@@ -96,7 +100,7 @@ from booley.flows.target_test_plan_loading import (
 from booley.flows.terminal_progress import announce_unit
 from booley.flows.test_runs import TestRun
 from booley.fusesoc import fusesoc_registry, selftest_overlay
-from booley.runtime.booley_dir import resolve_booley_dir, resolve_checkout_booley_dir
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 
@@ -381,7 +385,7 @@ class PreparedOrdinaryGroup:
         if not selftest_overlay.bad_selftest_requested(os.environ):
             yield run_cwd
             return
-        booley_dir = resolve_booley_dir(self._handle.project_root)
+        booley_dir = resolve_checkout_booley_dir(self._handle.project_root)
         with selftest_overlay.managed_runtime_view(
             self._handle.project_root,
             booley_dir,
@@ -924,6 +928,7 @@ class SimulationExecution:
         try:
             return execute_adapter_attempt(self._invoke, request)
         finally:
+            end_phase(handle.selector, "sim_run", tests=attempt.history_tests)
             observe_stage(
                 handle.selector,
                 "postprocessing",
@@ -1176,13 +1181,7 @@ def history_test_names(
         "cocotb" if prepared.resolved.cocotb_module else prepared.eda_tool,
         prepared.resolved.parameters,
     )
-    return tuple(
-        run.test
-        if _runs_default_variant(plan, run)
-        else f"{run.test}{VARIANT_SEPARATOR}{run.variant}"
-        for run in runs
-        if run.test is not None
-    )
+    return tuple(plan.history_test_name(run) for run in runs if run.test is not None)
 
 
 def _group_names(runs: tuple[TestRun, ...]) -> tuple[str, ...]:
@@ -1303,16 +1302,10 @@ def _artifact_group(plan: TargetTestPlan, runs: tuple[TestRun, ...], cocotb: boo
     if not cocotb:
         return first.name if first.test is not None else ""
     plain = first.seed == plan.default_seed and not first.env
-    if plain and all(_runs_default_variant(plan, run) for run in runs):
+    if plain and all(plan.runs_default_variant(run) for run in runs):
         return "batch"
     names = "\n".join(run.name for run in runs)
     return "batch-" + hashlib.sha256(names.encode("utf-8")).hexdigest()[:12]
-
-
-def _runs_default_variant(plan: TargetTestPlan, run: TestRun) -> bool:
-    """Whether *run* is its Test's default Test Variant (or the Test declares none)."""
-    table = plan.variants_of(run.test) if run.test is not None else None
-    return run.variant is None if table is None else run.variant == table.default
 
 
 def _parameter_plusargs(parameters: Mapping[str, Any]) -> list[str]:

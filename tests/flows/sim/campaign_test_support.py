@@ -214,11 +214,14 @@ def _simulation_outcome(
     required: tuple[str, ...] = ("half", "full"),
     complete: bool = True,
     role: str = "candidate",
+    seeds: Mapping[str, int] | None = None,
 ) -> CampaignOutcome:
+    """A Campaign outcome of *observations*; *seeds* names the seed of a test's Test Run."""
     runs: dict[str | None, TestRun] = {}
     for observation in observations:
         test = cast("str | None", observation["test"])
-        runs.setdefault(test, build_test_run(test))
+        seed = None if test is None or seeds is None else seeds.get(test)
+        runs.setdefault(test, build_test_run(test, seed=seed))
     recorded = _recorded_campaign(tmp_path, tuple(runs.values()), required)
     document = _acceptance_facts(recorded.digest)
     target = dict(document["target"])  # type: ignore[arg-type]
@@ -674,7 +677,7 @@ def _completed(tmp_path: Path) -> _Completed:
     project = tmp_path / "project"
     project.mkdir()
     build_root = _create_build_root(tmp_path / "engine-build")
-    store = CampaignStore(tmp_path / "campaign")
+    store = CampaignStore(tmp_path / "record")
     store.publish_manifest(manifest)
     item = manifest.document["work_items"][0]
     request = _request(store, manifest, item, project, invocation=1)
@@ -687,7 +690,7 @@ def _completed(tmp_path: Path) -> _Completed:
 
 def _run_identity() -> dict[str, str]:
     return {
-        "campaign_id": str(uuid.uuid4()),
+        "simulation_record_id": str(uuid.uuid4()),
         "work_item_id": "item:0000:" + "a" * 16,
         "attempt_id": str(uuid.uuid4()),
     }
@@ -914,7 +917,7 @@ def _maximum_hook_selection_plan(names):
 
 def _hook_publication_request(root, names=("alpha", "beta"), invocation=1):
     plan, _ = _maximum_hook_selection_plan(names)
-    store = CampaignStore(root / "campaign")
+    store = CampaignStore(root / "record")
     store.publish_manifest(plan.manifest)
     request = _request(
         store,
@@ -1175,7 +1178,7 @@ def _interrupted_campaign(tmp_path, monkeypatch, runtime_execution_id):
     _set_runtime_execution_id(monkeypatch, runtime_execution_id)
     monkeypatch.setenv("BOOLEY_RUN_ID", _CampaignAdmissionEndpoint._invocation_id)
     fault_enabled, original_mark = [True], ChildExecutionRegistry.mark_terminal
-    work_items = invocation / "targets/sim/campaign/work-items"
+    work_items = invocation / "targets/sim/record/work-items"
 
     def interrupted_mark(registry, prepared, terminal_cause) -> None:
         if fault_enabled[0]:
@@ -1200,7 +1203,7 @@ def _interrupted_campaign(tmp_path, monkeypatch, runtime_execution_id):
                 plan, project, invocation.parent, CampaignPolicy(), invocation, admission
             )
         )
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
     validated = _validated_campaign(store, manifest, project, state.handle)
     return SimpleNamespace(
         campaign=campaign,
@@ -1447,7 +1450,7 @@ def _run_coverage_campaign(
         plan, root, invocation.parent, CampaignPolicy(), invocation, _admission()
     )
     outcome = SimulationCampaign(executor).run(request)
-    return outcome, CampaignStore(invocation / "targets/sim_0/campaign")
+    return outcome, CampaignStore(invocation / "targets/sim_0/record")
 
 
 _STAMP = "2026-09-22T00:00:00Z"
@@ -1505,7 +1508,7 @@ class _NoEdaExecutor:
         workload = cast(Mapping[str, object], request.manifest.document["workload"])
         run_cwd = cast(Mapping[str, object], workload["run_cwd"])
         document = {
-            "$schema": "booley.simulation-attempt/v1",
+            "$schema": "booley.simulation-attempt/v2",
             **common,
             "attempt_id": request.attempt_id,
             "attempt_ordinal": request.attempt_ordinal,
@@ -1534,8 +1537,11 @@ class _NoEdaExecutor:
         workload = cast(Mapping[str, object], request.manifest.document["workload"])
         eda = cast(Mapping[str, object], workload["eda"])
         document = {
-            "$schema": "booley.bundle-build-attempt/v1",
-            **{key: common[key] for key in ("campaign_id", "manifest_sha256", "workload_sha256")},
+            "$schema": "booley.bundle-build-attempt/v2",
+            **{
+                key: common[key]
+                for key in ("simulation_record_id", "manifest_sha256", "workload_sha256")
+            },
             "build_variant_id": request.work_item["build_variant_id"],
             "build_attempt_id": request.attempt_id,
             "build_attempt_ordinal": 1,
@@ -1559,8 +1565,11 @@ class _NoEdaExecutor:
     def _build_result(request, common, attempt_path, attempt, *, validate):
         raw = attempt.canonical_bytes()
         document = {
-            "$schema": "booley.bundle-build-result/v1",
-            **{key: common[key] for key in ("campaign_id", "manifest_sha256", "workload_sha256")},
+            "$schema": "booley.bundle-build-result/v2",
+            **{
+                key: common[key]
+                for key in ("simulation_record_id", "manifest_sha256", "workload_sha256")
+            },
             "build_variant_id": request.work_item["build_variant_id"],
             "build_attempt": _reference(
                 attempt_path.name, raw, "bundle_build_attempt", request.attempt_id
@@ -1630,7 +1639,7 @@ class _NoEdaExecutor:
 def _common(request: WorkExecutionRequest) -> dict[str, object]:
     fingerprints = cast(Mapping[str, object], request.manifest.document["fingerprints"])
     return {
-        "campaign_id": request.manifest.document["campaign_id"],
+        "simulation_record_id": request.manifest.document["simulation_record_id"],
         "manifest_sha256": manifest_digest(request.manifest),
         "workload_sha256": fingerprints["workload_sha256"],
         "work_item_id": request.work_item["work_item_id"],
@@ -1652,11 +1661,9 @@ def _retained_invocation(
     invocation = reports / "sim" / "1"
     target = invocation / "targets" / "sim"
     target.mkdir(parents=True)
-    shutil.move(str(source_store.root), target / "campaign")
+    shutil.move(str(source_store.root), target / "record")
     # Reports under a symlinked Booley Directory entry need the store to follow it (#2191).
-    store = CampaignStore(
-        target / "campaign", **({"booley_dir": booley_dir} if booley_dir else {})
-    )
+    store = CampaignStore(target / "record", **({"booley_dir": booley_dir} if booley_dir else {}))
     store.regenerate_summary()
     manifest = store.load_manifest().document
     manifest_target = manifest["target"]
@@ -1707,7 +1714,7 @@ def _own_attempt_run_directory(
     run = expand_run_directory(
         "work/{campaign}/{test}/{attempt}",
         project_root=project_root,
-        campaign_id=document["campaign_id"],
+        campaign_id=document["simulation_record_id"],
         target_key="sim",
         work_item_key=store.work_item_directory(work_item_id).name,
         attempt_key=attempt_path.parent.name,
@@ -1727,7 +1734,7 @@ def _own_attempt_run_directory(
     (run.path / ".booley-simulation-attempt.json").write_bytes(
         canonical_json_bytes(
             {
-                "campaign_id": document["campaign_id"],
+                "simulation_record_id": document["simulation_record_id"],
                 "work_item_id": work_item_id,
                 "attempt_id": document["attempt_id"],
             }

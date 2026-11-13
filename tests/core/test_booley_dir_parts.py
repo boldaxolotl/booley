@@ -10,6 +10,7 @@ import pytest
 ADR_0082_SAMPLES = {
     "booley.toml": "checkout",
     "tests.toml": "checkout",
+    "metrics.toml": "checkout",
     "criteria.toml": "checkout",
     "doctor-waivers.toml": "checkout",
     "configs.toml": "checkout",
@@ -82,6 +83,7 @@ WRITTEN_PATH_SAMPLES = {
     ".runtime/syn/x": "checkout",
     ".runtime/simulation-run-locks/x": "checkout",
     ".runtime/flow-console/x": "checkout",
+    ".runtime/mutation/x": "checkout",
     ".runtime/mutation_tester/x": "checkout",
     ".runtime/flow-reports/x": "checkout",
     ".runtime/mcp-tool-reports/x": "checkout",
@@ -110,6 +112,7 @@ WRITTEN_PATH_SAMPLES = {
     "plans/x": "common",
     "logs/x": "common",
     "human-logs/x.md": "common",
+    "measurements/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/r.json": "common",
 }
 
 # Atomic-write temporaries take the part of the file they replace.
@@ -151,6 +154,7 @@ def test_unclassified_path_is_rejected():
 VERSIONED_PATTERNS = {
     "booley.toml",
     "tests.toml",
+    "metrics.toml",
     "criteria.toml",
     "doctor-waivers.toml",
     "configs.toml",
@@ -183,6 +187,7 @@ SOURCE_TIED_PATTERNS = {
     ".runtime/syn/",
     ".runtime/simulation-run-locks/",
     ".runtime/flow-console/",
+    ".runtime/mutation/",
     ".runtime/mutation_tester/",
     ".runtime/flow-reports/",
     ".runtime/mcp-tool-reports/",

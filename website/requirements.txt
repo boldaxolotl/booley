@@ -2,6 +2,6 @@
 mkdocs==1.6.1
 mkdocs-material==9.8.1
 # Heading IDs (the public doc anchors) come from its slugifier.
-pymdown-extensions==12.3
+pymdown-extensions==13.0
 # Site search index; "extended" bundles the binary for every platform.
 pagefind[extended]==1.6.0

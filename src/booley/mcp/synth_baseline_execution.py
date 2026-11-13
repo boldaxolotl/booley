@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from booley.flows.job_estimates import JobRequest
 from booley.goals.freshness import DEFAULT_RESOLVERS
 from booley.goals.sim_baseline_store import SYNTH_BASELINE
 from booley.targets.catalog import TargetCatalog
@@ -40,6 +41,13 @@ def synth_job_class() -> str:
     from booley.flows.synth.flow import AsicSynthesizeFlow
 
     return AsicSynthesizeFlow()._resolve_job_class()
+
+
+def synth_job_requests(
+    _checkout: Path, _target: str, units: tuple[dict[str, Any], ...]
+) -> tuple[JobRequest, ...]:
+    """The synthesis Job the baseline runs: its one baseline Target."""
+    return tuple(JobRequest("synth", unit["name"]) for unit in units)
 
 
 def _synthesize(

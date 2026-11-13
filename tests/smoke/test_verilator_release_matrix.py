@@ -18,6 +18,7 @@ VERILATOR_VERSION = PINNED_VERILATOR.tag.removeprefix("v")
 VERILATOR_REF = PINNED_VERILATOR.commit
 _COVERAGE_FLAGS = (
     "--coverage-line",
+    "--coverage-branch",
     "--coverage-toggle",
     "--coverage-expr",
     "--coverage-user",

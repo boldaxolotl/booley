@@ -77,7 +77,7 @@ def _run_two_lanes(
     ``finish`` runs after the scheduler, while the sink is still installed.
     """
     manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "campaign")
+    campaign_store = CampaignStore(tmp_path / "record")
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()

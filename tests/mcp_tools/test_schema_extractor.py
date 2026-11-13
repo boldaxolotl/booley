@@ -9,12 +9,12 @@ from typing import Any
 
 import pytest
 
+from booley.flows.mutation.flow import MutationFlow
 from booley.mcp.application import McpApplication
 from booley.mcp.base import McpTool, McpToolResult
 from booley.mcp.flow_adapter import flow_schema
 from booley.mcp.schema_extractor import extract_schema
 from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
-from booley.specialists.mutation_tester import MutationTesterSpecialist
 from booley.specialists.reviewer import ReviewerSpecialist
 
 # --- Helpers ---
@@ -234,36 +234,34 @@ class TestRequired:
         assert schema["properties"]["count"]["default"] == 42
 
 
-@pytest.mark.parametrize(
-    ("specialist", "required", "removed"),
-    [
-        (
-            ReviewerSpecialist,
-            set(),
-            {"target", "diff_ref", "ticket"},
-        ),
-        (
-            MutationTesterSpecialist,
-            {"target", "scope"},
-            {"tb_top", "dut_top", "dut_files"},
-        ),
-    ],
-)
-def test_specialist_input_contracts_are_unified(specialist, required, removed) -> None:
-    schema = extract_schema(specialist()._parser)
+def test_specialist_input_contract_is_unified() -> None:
+    schema = extract_schema(ReviewerSpecialist()._parser)
     properties = schema["properties"]
 
     assert schema["additionalProperties"] is False
-    assert required <= set(schema.get("required", []))
     assert {"model", "max_turns", "timeout_ms"}.isdisjoint(properties)
-    assert {"scope", "steer", "dry_run"} <= set(properties)
-    assert properties["steer"]["type"] == "array"
+    assert {"scope", "dry_run"} <= set(properties)
     assert properties["dry_run"]["type"] == "boolean"
-    assert removed.isdisjoint(properties)
+    assert "seed" not in properties
+    assert properties["steer"]["type"] == "array"
+    assert {"target", "diff_ref", "ticket"}.isdisjoint(properties)
 
 
-def test_mutation_tester_target_schema_remains_single_required_scalar() -> None:
-    schema = extract_schema(MutationTesterSpecialist()._parser)
+def test_mutation_flow_input_contract() -> None:
+    schema = flow_schema(MutationFlow())
+    properties = schema["properties"]
+
+    assert schema["additionalProperties"] is False
+    assert {"target"} <= set(schema.get("required", []))
+    assert {"model", "max_turns"}.isdisjoint(properties)
+    assert {"scope", "dry_run"} <= set(properties)
+    assert properties["dry_run"]["type"] == "boolean"
+    assert properties["seed"]["type"] == "integer"
+    assert {"tb_top", "dut_top", "dut_files", "steer", "regen_lock"}.isdisjoint(properties)
+
+
+def test_mutation_target_schema_remains_single_required_scalar() -> None:
+    schema = flow_schema(MutationFlow())
     target = schema["properties"]["target"]
 
     assert target["type"] == "string"
@@ -274,7 +272,7 @@ def test_mutation_tester_target_schema_remains_single_required_scalar() -> None:
 
 @pytest.mark.parametrize(
     "specialist",
-    [ReviewerSpecialist, MutationTesterSpecialist, CoverageAnalystSpecialist],
+    [ReviewerSpecialist, CoverageAnalystSpecialist],
 )
 def test_specialist_schemas_expose_bounded_agent_controls(
     specialist: type[Any],
@@ -314,7 +312,7 @@ def test_specialist_custom_schema_keeps_public_agent_controls() -> None:
 
 @pytest.mark.parametrize(
     "specialist",
-    [ReviewerSpecialist, MutationTesterSpecialist, CoverageAnalystSpecialist],
+    [ReviewerSpecialist, CoverageAnalystSpecialist],
 )
 @pytest.mark.parametrize(
     "undeclared",
@@ -353,7 +351,7 @@ def test_specialist_schema_rejects_undeclared_arguments(
 
 @pytest.mark.parametrize(
     "specialist",
-    [ReviewerSpecialist, MutationTesterSpecialist, CoverageAnalystSpecialist],
+    [ReviewerSpecialist, CoverageAnalystSpecialist],
 )
 def test_specialist_schema_accepts_omitted_agent_controls(specialist: type[Any]) -> None:
     schema = flow_schema(specialist())

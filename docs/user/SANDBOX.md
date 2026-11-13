@@ -77,28 +77,49 @@ Git settings, guidance links, exclude entries and the
 Dashboard task). It never rewrites tracked files: CRLF files and pending
 `.booley/.gitignore` or `[agent]` changes are reported, and `booley init`
 applies them. If that step fails, you keep the new Sandbox and the command
-exits non-zero. A Sandbox
-using a [floating license](SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy)
-can't be refreshed in place; see [Applying Sandbox changes](#applying-sandbox-changes).
+exits non-zero.
+
+<details markdown>
+<summary>With host-installed licensed tools</summary>
+
+A Sandbox using a
+[floating license](SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy)
+can't be refreshed in place; see
+[Applying Sandbox changes](#applying-sandbox-changes) and
+[Commercial EDA provisioning](#commercial-eda-provisioning).
+
+</details>
 
 ## Applying Sandbox changes
 
 Booley fixes a Sandbox's settings, `[agent]` CLIs and logins, EDA requests and
 Grants, and image when it issues the Sandbox. A running Sandbox keeps its
-previous values until you apply the change. Use the first case that applies:
+previous values until you apply the change. Use the first case that applies
+(with host-installed licensed tools, read the callout below the list first):
+
+- **VS Code owns the Sandbox:** stop it in VS Code, run `booley init --force`,
+  then **Dev Containers: Rebuild Container**.
+- **An image you manage yourself:** rebuild or pull it, then run
+  `booley session down`, `booley init --seed`, and `booley session up`.
+- **Otherwise (headless Sandbox):** run `booley session refresh`.
+
+<details markdown>
+<summary>With host-installed licensed tools</summary>
+
+Two more cases apply. Check **After an EDA Grant change** before every case
+above, and **Floating license** before the headless case. See
+[Commercial EDA provisioning](#commercial-eda-provisioning) and the
+[Vivado host-provisioning policy](SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy).
 
 - **After an EDA Grant change** (`booley eda grant add` or `revoke`): Booley
   withdraws the Sandbox's issuance, so the running Sandbox can't be refreshed. Stop
   any VS Code Sandbox through its owning app. If you manage the image yourself,
   rebuild or pull it. Then on the host run `booley session down`,
   `booley init --seed`, and `booley session up`.
-- **VS Code owns the Sandbox:** stop it in VS Code, run `booley init --force`,
-  then **Dev Containers: Rebuild Container**.
-- **An image you manage yourself:** rebuild or pull it, then run
-  `booley session down`, `booley init --seed`, and `booley session up`.
 - **Floating license:** run `booley session down`, then
   `booley session refresh`.
-- **Otherwise (headless Sandbox):** run `booley session refresh`.
+
+</details>
 
 When `booley init` or Sandbox validation refuses a running Sandbox, its message
 names the case that applies.
@@ -123,6 +144,11 @@ login is copied in and its API key is not forwarded, while Codex gets its API ke
 and no login. The Developer Agent's window connects to the CLI that was `default`
 when the Sandbox was issued (run `booley session refresh` after changing `default`
 to move it); Specialists use whichever listed CLI their model needs.
+
+Booley registers its MCP server and skills for every listed CLI, so a plain
+`claude` or `codex` session in the Sandbox terminal sees Booley's tools whichever
+CLI is `default`. If one CLI's registration fails (for example its user config is
+unreadable), the start reports it as `<cli>:refused` and still registers the others.
 
 After you change `clis` or `auth`, or change `default` in a Project that sets
 no `clis` (the set is then just the default CLI), the Sandbox refuses to start until you run
@@ -300,9 +326,17 @@ image and print a warning naming each one:
 
 Every other pin wins over the base image, including `cocotb`. `booley init`
 (without `--check`) and `booley session refresh` print a notice for each pin
-that changes a version the base image ships. The base image checks its own
+that changes a version the base image ships.
+
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+The base image checks its own
 cocotb at build time; that check doesn't cover yours, so the first
-`booley flow sim` after the rebuild is your test of the combination.
+`booley flow sim` after the rebuild is your test of the combination. See
+[Cocotb Targets](TARGETS.md#cocotb-targets-python-testbenches).
+
+</details>
 
 **Where to keep the file.** If the upstream project keeps its test pins in
 `tox.ini`, `setup.py`, or a CI workflow, copy them into a plain requirements
@@ -324,9 +358,17 @@ See [what survives a fresh clone](STEALTH.md#what-survives-a-fresh-clone).
 </details>
 
 The file is read only when the image is built. After changing it, rebuild
-(see [Applying Sandbox changes](#applying-sandbox-changes)). For cocotb 1.x
+(see [Applying Sandbox changes](#applying-sandbox-changes)).
+
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+For cocotb 1.x
 and BFM packages, also read [Baking the cocotb stack into the
-image](#baking-the-cocotb-stack-into-the-image).
+image](#baking-the-cocotb-stack-into-the-image). See also
+[Cocotb Targets](TARGETS.md#cocotb-targets-python-testbenches).
+
+</details>
 
 ## Custom sandbox image
 
@@ -457,28 +499,40 @@ itself an **Unproxied Sandbox**:
 | anything else | `booley` and `booley-mcp` refuse to start (exit 2). `booley doctor` still runs and FAILs. |
 
 Booley never guesses this from the platform (for example from `CODESPACES`).
+The host `[sandbox] egress` setting decides the network of a Sandbox Booley
+creates. `BOOLEY_EGRESS` must match it: Booley refuses to create a Sandbox
+whose declaration differs, and
+[Doctor reports a running one](TROUBLESHOOTING.md#doctor-reports-a-sandbox-whose-egress-mode-differs-from-the-host).
 In an Unproxied Sandbox Doctor WARNs `sandbox.unproxied`; to accept that,
 [waive the check](DOCTOR.md#doctor-waivers-doctor-waiverstoml).
 
 ### Agent app in a hand-written spec (`BOOLEY_AGENT_APP`)
 
 `BOOLEY_AGENT_APP` names the agent app Booley connects to: `claude`, `codex`,
-`none`, or `auto`. With `auto`, Booley picks at every Sandbox start from the
-credentials present:
+`none`, or `auto`. With `auto`, Booley decides at every Sandbox start from the
+credentials present, and allows every CLI that has one:
 
 1. Claude, if there is a Claude credential (`ANTHROPIC_API_KEY`,
-   `CLAUDE_CODE_OAUTH_TOKEN`, a `booley auth` token, or a Claude login), even
-   when a Codex one is also present.
-2. Otherwise Codex, if there is a Codex credential (`OPENAI_API_KEY`, a
+   `CLAUDE_CODE_OAUTH_TOKEN`, a `booley auth` token, or a Claude login).
+2. Codex, if there is a Codex credential (`OPENAI_API_KEY`, a
    `booley auth` token, or a Codex login).
-3. Otherwise Codex through a configured model gateway.
-4. Otherwise Claude, which then asks you to log in.
+
+With both credentials, both CLIs are registered and Claude is the default; with
+one, only that CLI is. With neither, the fallbacks are unchanged (a visitor's own
+credential always beats the gateway):
+
+3. Codex through a configured model gateway.
+4. Claude, which then asks you to log in.
+
+The other allowed CLI works as a plain `claude` or `codex` session in the Sandbox
+terminal. `booley chat --cli` and `[models]` pins still follow
+[`[agent] clis`](CONFIG.md#agent-clis-agent) in `booley.toml`.
 
 Booley makes the choice in its start-up step, so the spec's
 `postStartCommand` (and `postCreateCommand`, if it has one) must run the
 registrar module `booley.harness.incontainer_register` with `python -m`.
 
-`booley doctor` in the Sandbox shows which app `auto` picked and why. If
+`booley doctor` in the Sandbox shows which CLIs `auto` allowed, which is the default, and why. If
 [`[agent] default`](CONFIG.md#agent-clis-agent) (or the older `provider`) pins an app, set
 `BOOLEY_AGENT_APP` to that app or remove the pin. `auto` works only inside a
 container.

@@ -230,7 +230,7 @@ def test_successful_pre_sim_firing_reaches_public_reports(
     assert (invocation / "report.json").read_bytes() == (
         invocation.parent / "sim.json"
     ).read_bytes()
-    sidecars = list(invocation.glob("targets/sim/campaign/work-items/*/attempts/*/pre-sim/*.json"))
+    sidecars = list(invocation.glob("targets/sim/record/work-items/*/attempts/*/pre-sim/*.json"))
     assert len(sidecars) == 1
     evidence = json.loads(sidecars[0].read_bytes())
     assert evidence["returncode"] == 0
@@ -330,12 +330,20 @@ class _Endpoint:
         self.admission_object = object()
 
     @contextmanager
-    def admission(self, prepared: PreparedExecution) -> Iterator[object]:
+    def admission(
+        self, prepared: PreparedExecution, *, requeued: bool = False
+    ) -> Iterator[object]:
         self.events.append("admit")
         try:
             yield self.admission_object
         finally:
             self.events.append("release")
+
+    def may_requeue_after_oom(self, prepared: PreparedExecution, admission: object | None) -> bool:
+        return False
+
+    def begin_requeued_attempt(self) -> None:
+        pass
 
     def invoke_endpoint(
         self,
@@ -1015,7 +1023,7 @@ def test_partial_publication_discloses_only_committed_target(
             if line.startswith("  manifest: ")
         )
     )
-    assert manifest.parts[-4:] == ("targets", "sim_0", "campaign", "manifest.json")
+    assert manifest.parts[-4:] == ("targets", "sim_0", "record", "manifest.json")
     assert manifest.is_absolute() and manifest.is_file()
 
 
@@ -1166,7 +1174,7 @@ def _public_cycle_flow(campaign, monkeypatch):
     prepared = PreparedSimulationEndpoint((), None, (), {})
     prepare_as(monkeypatch, flow, SimulationCampaignInvocation(flow, prepared))
     monkeypatch.setattr(flow, "_resolve_display_label", lambda: None)
-    monkeypatch.setattr(EndpointState, "admission", lambda *_args: nullcontext(None))
+    monkeypatch.setattr(EndpointState, "admission", lambda *_args, **_kwargs: nullcontext(None))
     monkeypatch.setattr(
         flow, "run_prepared_simulation", lambda *_args: flow._campaign_endpoint_outcome([campaign])
     )
@@ -1177,6 +1185,7 @@ def _cycle_publication_fault(flow, monkeypatch, failure):
     import json
 
     from booley.flows import endpoint_reporting
+    from booley.flows.sim import campaign_presentation
     from booley.flows.sim import flow as module
 
     original_dumps, original_write = json.dumps, endpoint_reporting.atomic_write_json
@@ -1204,11 +1213,13 @@ def _cycle_publication_fault(flow, monkeypatch, failure):
     if failure == "acceptance":
         monkeypatch.setattr(flow, "record_campaign_acceptance", fail)
     if failure in {"render", "structured"}:
-        monkeypatch.setattr(
-            module,
-            "_campaign_test_run_lines" if failure == "render" else "_campaign_structured_details",
-            fail,
+        # "render" is looked up by the presentation helpers; "structured" by the flow.
+        target, name = (
+            (campaign_presentation, "_campaign_test_run_lines")
+            if failure == "render"
+            else (module, "_campaign_structured_details")
         )
+        monkeypatch.setattr(target, name, fail)
     return writes
 
 
@@ -1580,7 +1591,7 @@ def test_public_ordinary_prepared_endpoint_reports_each_shared_build_launch(tmp_
     assert (tmp_path / "reports/sim/1/report.json").read_bytes() == (
         tmp_path / "reports/sim.json"
     ).read_bytes()
-    manifest = tmp_path / "reports/sim/1/targets/sim_a/campaign/manifest.json"
+    manifest = tmp_path / "reports/sim/1/targets/sim_a/record/manifest.json"
 
     firings = collect_pre_sim_firings(manifest)
     assert len(firings) == 2
@@ -1665,7 +1676,7 @@ def test_actual_hook_fires_once_for_two_test_cocotb_batch(tmp_path, monkeypatch)
         tmp_path, monkeypatch, "immutable", transform=_cocotb_hook_plan
     )
     assert outcome.aggregate_grade == "pass"
-    firings = collect_pre_sim_firings(invocation / "targets/sim/campaign/manifest.json")
+    firings = collect_pre_sim_firings(invocation / "targets/sim/record/manifest.json")
     assert len(firings) == 1
     assert firings[0].document["test_names"] == ("alpha", "beta")
     assert firings[0].document["stdout_tail"] == "hook-out\n"
@@ -1880,7 +1891,8 @@ def _faulty_campaign(flow, tmp_path, monkeypatch, kind, fault):
     monkeypatch.setattr(flow, "_prepare_campaign_resume_dependency", lambda *_args: None)
     monkeypatch.setattr(flow, "_run_validated_resume_campaign", resumed)
     monkeypatch.setattr(
-        "booley.flows.sim.flow._fresh_campaign_recovery_detail", lambda *_args: {"pending": []}
+        "booley.flows.sim.flow_resume._fresh_campaign_recovery_detail",
+        lambda *_args: {"pending": []},
     )
     return flow._resume_campaign_run(validated, recovery), manifest
 
@@ -1976,7 +1988,7 @@ def test_prepared_campaign_active_write_failure_preserves_durable_success(
         SimRequest(target="sim_a", work_dir=project, report_dir=control_reports)
     )
     assert control.exit_code == 0, control.outcome.report_text
-    control_campaign = control_reports / "sim/1/targets/sim_a/campaign"
+    control_campaign = control_reports / "sim/1/targets/sim_a/record"
     control_records = sorted(
         (
             json.loads(path.read_text())
@@ -2000,7 +2012,7 @@ def test_prepared_campaign_active_write_failure_preserves_durable_success(
     assert failures
     assert "observation_error" in result.outcome.detail
     assert "campaign_error" not in result.outcome.detail
-    campaign = reports / "sim/1/targets/sim_a/campaign"
+    campaign = reports / "sim/1/targets/sim_a/record"
     results = [json.loads(path.read_text()) for path in campaign.glob("work-items/*/result.json")]
     assert len(results) == 2
     assert all(record["grade"] == "pass" for record in results)
@@ -2025,7 +2037,7 @@ def test_hook_success_survives_build_failure(tmp_path, monkeypatch):
 
     def fail_build(group):
         sidecars = list(
-            tmp_path.glob("reports/1/targets/sim/campaign/work-items/*/attempts/*/pre-sim/*.json")
+            tmp_path.glob("reports/1/targets/sim/record/work-items/*/attempts/*/pre-sim/*.json")
         )
         assert len(sidecars) == 1, "hook must be published before the build fails"
         return SimpleNamespace(passed=False)
@@ -2135,7 +2147,7 @@ def test_pre_sim_read_rejects_result_reference_without_published_firing(tmp_path
 
     invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
     outcome.pre_sim_firings[0].path.unlink()
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
 
     with pytest.raises(SimulationCampaignIntegrityError, match="result references disagree"):
         collect_pre_sim_firings(store.manifest_path)

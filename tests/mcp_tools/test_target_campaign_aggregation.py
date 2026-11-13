@@ -4,9 +4,9 @@ import subprocess
 import types
 from pathlib import Path
 
-from booley.specialists.mutation_tester import (
+from booley.flows.mutation.flow import (
+    MutationFlow,
     MutationSpec,
-    MutationTesterSpecialist,
     MutationTestRun,
 )
 
@@ -19,8 +19,8 @@ def _spec() -> MutationSpec:
     return MutationSpec(1, "operator", "rtl/dut.sv", 1, "a+b", "a-b")
 
 
-def _mutation_endpoint(tmp_path: Path) -> MutationTesterSpecialist:
-    endpoint = MutationTesterSpecialist()
+def _mutation_endpoint(tmp_path: Path) -> MutationFlow:
+    endpoint = MutationFlow()
     endpoint._args = types.SimpleNamespace(work_dir=tmp_path)
     endpoint.emit_progress = lambda _line: None
     endpoint._reset_mutant_logs = lambda: None
@@ -77,4 +77,5 @@ def test_mutant_timeout_counts_as_kill_not_invalid(tmp_path: Path) -> None:
     runs = endpoint._run_target_test_suite()
     verdict = endpoint._classify_variant_suite(runs)
     assert verdict.detected is True
+    assert verdict.timed_out is True
     assert verdict.inconclusive_reason == ""

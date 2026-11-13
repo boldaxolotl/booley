@@ -11,6 +11,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from tests.shipped_docs_support import rendered_docs_outside_user_docs
+from tests.source_checkout_support import source_checkout_files
 
 from booley.dev_support.flow_specialist_reference import (
     _FLOW_KEY_CONTROLS,
@@ -101,7 +103,7 @@ def test_flows_follow_hardware_flow_order() -> None:
         for line in render_flow_reference().splitlines()
         if line.startswith("| `")
     ]
-    assert rows == ["sim", "lint", "synth", "fpga"]
+    assert rows == ["sim", "lint", "synth", "fpga", "mutation"]
 
 
 def test_every_builtin_flow_has_key_controls() -> None:
@@ -153,19 +155,26 @@ def test_specialist_reference_lists_every_reviewer_focus_and_mutation_mode() -> 
     for criterion, args in (reviewer.satisfies_args or {}).items():
         assert evidence_goal_name(criterion) in rendered
         assert args.split("--focus ", maxsplit=1)[1] in rendered
-    assert "| Campaign | Goal arguments | Interactive Mode arguments |" in rendered
-    assert "| Default fixed |" in rendered
-    assert "| Explicit fixed |" in rendered
-    assert "| Size-scaled |" in rendered
-    assert "Mutation goals in a ticket" not in rendered
-    assert "Direct goal controls" not in rendered
-    assert "Target campaign with `target` + `scope`" in rendered
-    assert "`total: N` and `min_detected: K`" in rendered
-    assert "`auto: true`" in rendered
-    assert 'count="N"' in rendered
-    assert 'count="auto"' in rendered
-    assert "min_detected=K" in rendered
-    assert "regen_lock=true" in rendered
+    # Mutation testing is a Flow now: no Specialist table, no Specialist section.
+    assert "mutation_tester" not in rendered
+    assert "| Campaign | Goal arguments | Interactive Mode arguments |" not in rendered
+
+
+def test_mutation_flow_page_documents_campaign_controls() -> None:
+    """The Mutation Flow page owns the campaign, seed, threshold, and timeout rules."""
+    page = " ".join((REPO_ROOT / "docs" / "user" / "FLOW-MUTATION.md").read_text("utf-8").split())
+    assert "`total: N`, `min_detected: K`, or `auto: true`" in page
+    assert "`--count <N\\|auto>`" in page
+    assert "`--min-detected <N>`" in page
+    assert "`--seed <N>`" in page and "(default `0`)" in page
+    assert "80 % of `--count`, rounded up" in page
+    assert (
+        "ten times the test's baseline duration, at least 30 seconds and at most 300 seconds"
+        in page
+    )
+    assert "detected (timeout)" in page
+    assert "regen_lock" not in page
+    assert "steer" not in page
 
 
 def test_specialist_examples_use_connected_session_arguments_without_cli_flags() -> None:
@@ -174,7 +183,7 @@ def test_specialist_examples_use_connected_session_arguments_without_cli_flags()
     assert "CLI Flow and Specialist runs never record Goal evidence" in rendered
     assert "Goal-bound MCP calls with `work_dir`" in rendered
     assert "CLI-only controls" in rendered
-    for name in ("coverage_analyst", "reviewer", "mutation_tester"):
+    for name in ("coverage_analyst", "reviewer"):
         assert f"Call the `{name}` Specialist from your Developer Agent session" in rendered
     assert "booley specialist <name> --help" in rendered
     assert 'steer=["<context>"]' in rendered
@@ -185,11 +194,15 @@ def test_shipped_documentation_never_dispatches_a_specialist_as_a_flow() -> None
     specialists = {
         endpoint.name for endpoint in discover_mcp_tools() if endpoint.kind == "specialist"
     }
-    for root in (REPO_ROOT / "docs" / "user", REPO_ROOT / "src" / "booley" / "data"):
-        for document in root.rglob("*.md"):
-            text = document.read_text(encoding="utf-8")
-            for name in specialists:
-                assert f"booley flow {name}" not in text, document
+    texts = {
+        str(document): document.read_text(encoding="utf-8")
+        for document in source_checkout_files(REPO_ROOT, "docs/user", "src/booley/data")
+        if document.suffix == ".md"  # Git-ignored rendered docs come from their sources below
+    }
+    texts.update(rendered_docs_outside_user_docs(REPO_ROOT))
+    for document, text in texts.items():
+        for name in specialists:
+            assert f"booley flow {name}" not in text, document
 
 
 def test_reviewer_reference_states_mode_kind_and_opposite_scope_contract():

@@ -139,9 +139,12 @@ def test_project_alias_doctor_executes_real_simulation(
     request.addfinalizer(reset_cache)
     audit, data, alias = _alias_doctor_project(flow_project, tmp_path, monkeypatch, host)
     if not build_failure:
-        (data / "selftest/sim/bad-overlay/src/acme_lib_demo_1/rtl/tb.sv").write_text(
-            "module tb;\n// [SIM_RESULT] FAILED\nendmodule\n"
-        )
+        # The Flow reads the checkout's own Booley Directory (a copy here, the alias in
+        # a real Sandbox), so the fixture changes both.
+        for booley_dir in (data, flow_project / ".booley"):
+            (booley_dir / "selftest/sim/bad-overlay/src/acme_lib_demo_1/rtl/tb.sv").write_text(
+                "module tb;\n// [SIM_RESULT] FAILED\nendmodule\n"
+            )
     executions, launches = _real_simulation_transport(monkeypatch, flow_project, alias, data, host)
     reporter, tracker = doctor._Reporter.create(), deep.DeepCheckTracker()
     doctor._run_deep_checks(
@@ -177,7 +180,7 @@ def test_project_alias_doctor_executes_real_simulation(
         assert reporter.result(0).clean
         assert "correctly graded a failure" in output
     reports = data / doctor.DOCTOR_TMP_DIR / "flow-reports"
-    assert len(list(reports.glob("sim/*/targets/sim/campaign/manifest.json"))) == 3
+    assert len(list(reports.glob("sim/*/targets/sim/record/manifest.json"))) == 3
     assert len(list(reports.glob("sim/*/progress.json"))) == 3
     _assert_doctor_runs_write_no_history(monkeypatch, launches)
 
@@ -455,16 +458,15 @@ default = "claude"
 
 [models]
 reviewer = "gpt-6-astra"
-coverage_analyst = "claude-sonnet-5-5"
+coverage_analyst = "claude-opus-5-5"
 """
 
 
 def _model_probe_world(tmp_path, monkeypatch, *, gateway=False, config_body=_MODEL_CONFIG):
-    """A Sandbox-side Project whose Specialists run on three models across two CLIs.
+    """A Sandbox-side Project whose Specialists run on two models across two CLIs.
 
-    reviewer on Codex (gpt-6-astra), mutation_tester on Claude's built-in default
-    (claude-opus-5-5), and coverage_analyst on the internal model (claude-sonnet-5-5),
-    which the memory probe already exercises.
+    reviewer on Codex (gpt-6-astra) and coverage_analyst on Claude's built-in default
+    (claude-opus-5-5); the internal model (claude-sonnet-5-5) is the memory probe's own.
     """
     from booley.config import agent as agent_config
     from booley.harness import developer_probe
@@ -546,7 +548,7 @@ def test_deep_probes_every_resolved_model_and_passes_when_accepted(tmp_path, mon
     assert _messages(reporter, Severity.FAIL) == []
     accepted = " ".join(_messages(reporter, Severity.PASS))
     assert "gpt-6-astra accepted by the provider ([models] reviewer)" in accepted
-    assert "claude-opus-5-5 accepted by the provider ([models] mutation_tester)" in accepted
+    assert "claude-opus-5-5 accepted by the provider ([models] coverage_analyst)" in accepted
     assert len(reporter.agent_calls) == 1 + len(probed)
     assert tracker.missing == ()
 
@@ -568,7 +570,12 @@ def test_deep_fails_naming_model_and_config_key_when_provider_refuses_it(tmp_pat
 
 
 def test_deep_internal_model_refusal_is_not_reported_as_an_auth_problem(tmp_path, monkeypatch):
-    project = _model_probe_world(tmp_path, monkeypatch)
+    # coverage_analyst runs on the internal model, so its key is the one a refusal names.
+    project = _model_probe_world(
+        tmp_path,
+        monkeypatch,
+        config_body=_MODEL_CONFIG.replace('"claude-opus-5-5"', '"claude-sonnet-5-5"'),
+    )
 
     _probed, reporter, _tracker = _run_model_probes(
         project, monkeypatch, internal=_refusal("claude-sonnet-5-5", "claude")
@@ -637,7 +644,6 @@ default = "claude"
 
 [models]
 reviewer = ["claude-opus-5-5", "gpt-6-luna"]
-mutation_tester = ["claude-opus-5-5", "gpt-6-luna"]
 coverage_analyst = ["claude-opus-5-5", "gpt-6-luna"]
 """
 
@@ -661,11 +667,11 @@ def test_deep_model_list_passes_when_first_entry_is_accepted(tmp_path, monkeypat
 
     probed, reporter, tracker = _run_model_probes(project, monkeypatch)
 
-    assert probed == ["claude-opus-5-5"]  # one probe serves all three lists
+    assert probed == ["claude-opus-5-5"]  # one probe serves both lists
     assert _messages(reporter, Severity.FAIL) == []
     assert _messages(reporter, Severity.WARN) == []
     passed = _messages(reporter, Severity.PASS)
-    for name in ("reviewer", "mutation_tester", "coverage_analyst"):
+    for name in ("reviewer", "coverage_analyst"):
         assert f"Specialist model list for [models] {name}: claude-opus-5-5 accepted" in " ".join(
             passed
         )
@@ -682,7 +688,7 @@ def test_deep_model_list_warns_naming_skipped_and_refused_entries(tmp_path, monk
     assert probed == ["claude-opus-5-5", "gpt-6-luna"]
     assert _messages(reporter, Severity.FAIL) == []
     warnings = _messages(reporter, Severity.WARN)
-    assert len(warnings) == 3
+    assert len(warnings) == 2
     assert any("[models] reviewer falls back to gpt-6-luna" in w for w in warnings)
     assert "claude-opus-5-5 (refused by the provider)" in " ".join(warnings)
     assert tracker.missing == ()
@@ -711,7 +717,7 @@ def test_deep_model_list_fails_when_no_entry_works(tmp_path, monkeypatch):
 
     assert probed == ["claude-opus-5-5", "gpt-6-luna"]
     failures = _messages(reporter, Severity.FAIL)
-    assert len(failures) == 3
+    assert len(failures) == 2
     reviewer = next(f for f in failures if "`[models] reviewer`" in f)
     assert "No model in `[models] reviewer` could run" in reviewer
     assert "'claude-opus-5-5' (refused by the provider)" in reviewer

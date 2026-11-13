@@ -30,6 +30,8 @@ from .coverage_json import FrozenJson, content_digest
 from .execution.artifacts import artifact_path_component
 from .execution.contract import PreSimEvidence, pre_sim_failure_message
 from .execution.freshness import (
+    ArtifactFailure,
+    ArtifactFreshnessError,
     ArtifactStamp,
     ArtifactValidationError,
     snapshot_artifact,
@@ -41,8 +43,12 @@ CoverageHarness = Literal["generated_main", "custom_main", "cocotb", "hdl_testbe
 CoverageSourceKind = Literal["rtl", "testbench", "generated", "foreign"]
 CoverageCollectionStatus = Literal["complete", "collector_error"]
 
+#: Explicit switches rather than ``--coverage``, which would also enable FSM
+#: coverage. Since Verilator 5.054 ``--coverage-line`` no longer emits
+#: ``branch`` points: ``if``/``else`` and ``?:`` need ``--coverage-branch``.
 VERILATOR_COVERAGE_INSTRUMENTATION = (
     "--coverage-line",
+    "--coverage-branch",
     "--coverage-toggle",
     "--coverage-expr",
     "--coverage-user",
@@ -712,16 +718,9 @@ def _read_raw_artifact(
             roots=(request.artifact_root,),
             before=context.raw_before,
         )
-    except ArtifactValidationError:
-        missing = not context.raw_path.is_file()
-        return _run_failure(
-            request,
-            context,
-            verdict,
-            code="COV_RAW_FILE_MISSING" if missing else "COV_RAW_FILE_STALE",
-            message=_raw_freshness_message(context.test.run_name, missing),
-            state=None if missing else "stale",
-        )
+    except ArtifactFreshnessError as exc:
+        code, message, state = _raw_failure(context.test.run_name, exc.cause)
+        return _run_failure(request, context, verdict, code=code, message=message, state=state)
     try:
         records = _parse_native(context.raw_path)
     except _NativeFormatError:
@@ -752,10 +751,27 @@ def _read_raw_artifact(
     return artifact, records
 
 
-def _raw_freshness_message(test: str, missing: bool) -> str:
-    if missing:
-        return f"Test {test!r} produced no native coverage database."
-    return f"Test {test!r} did not freshly write its native database."
+def _raw_failure(test: str, cause: ArtifactFailure) -> tuple[str, str, str | None]:
+    """Map a validator cause to the finding code, message, and retained artifact state."""
+    match cause:
+        case ArtifactFailure.MISSING:
+            return (
+                "COV_RAW_FILE_MISSING",
+                f"Test {test!r} produced no native coverage database.",
+                None,
+            )
+        case ArtifactFailure.STALE:
+            return (
+                "COV_RAW_FILE_STALE",
+                f"Test {test!r} did not freshly write its native database.",
+                "stale",
+            )
+        case ArtifactFailure.OUTSIDE_ROOTS:
+            detail = "escapes the coverage artifact root"
+        case ArtifactFailure.NOT_REGULAR_FILE:
+            detail = "is not a regular file"
+    # Unsafe files are never read or hashed, so no artifact is retained.
+    return "COV_RAW_FILE_UNSAFE", f"Test {test!r} native coverage database {detail}.", None
 
 
 def _finish_run(
@@ -1122,16 +1138,26 @@ def _validate_merged_freshness(
 ) -> None:
     try:
         validate_fresh_artifact(path, roots=(request.artifact_root,), before=before)
-    except ArtifactValidationError:
-        if not path.is_file():
-            raise _MergeError(
-                "COV_NATIVE_MERGE_MISSING",
-                "Verilator native merge produced no output database.",
-            ) from None
+    except ArtifactFreshnessError as exc:
+        match exc.cause:
+            case ArtifactFailure.MISSING:
+                raise _MergeError(
+                    "COV_NATIVE_MERGE_MISSING",
+                    "Verilator native merge produced no output database.",
+                ) from None
+            case ArtifactFailure.STALE:
+                raise _MergeError(
+                    "COV_NATIVE_MERGE_STALE",
+                    "Verilator native merge output was not freshly written.",
+                    artifact=_merged_artifact(request, path, state="stale"),
+                ) from None
+            case ArtifactFailure.OUTSIDE_ROOTS:
+                detail = "escapes the coverage artifact root"
+            case ArtifactFailure.NOT_REGULAR_FILE:
+                detail = "is not a regular file"
+        # Unsafe output is never read or hashed, so no merged artifact is retained.
         raise _MergeError(
-            "COV_NATIVE_MERGE_STALE",
-            "Verilator native merge output was not freshly written.",
-            artifact=_merged_artifact(request, path, state="stale"),
+            "COV_NATIVE_MERGE_UNSAFE", f"Verilator native merge output {detail}."
         ) from None
 
 

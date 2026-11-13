@@ -143,9 +143,12 @@ def test_direct_subcommand_help_forwards_to_native_bwave(monkeypatch):
 @pytest.fixture(autouse=True)
 def _clean_session():
     """Remove session file before and after each test."""
+    lock_file = SESSION_FILE.with_name(f"{SESSION_FILE.name}.lock")
     SESSION_FILE.unlink(missing_ok=True)
+    lock_file.unlink(missing_ok=True)
     yield
     SESSION_FILE.unlink(missing_ok=True)
+    lock_file.unlink(missing_ok=True)
 
 
 # ── save / load round-trip ───────────────────────────────────────────
@@ -176,10 +179,10 @@ def test_load_corrupt_sessions():
 
 
 def test_register_multiple_aliases():
-    from booley.bwave.cli import _load_sessions, _register_trace
+    from booley.bwave.cli import _load_sessions, register_trace
 
-    _register_trace(Path("/tmp/a.fst"), alias="a")
-    _register_trace(Path("/tmp/b.fst"), alias="b")
+    register_trace(Path("/tmp/a.fst"), alias="a")
+    register_trace(Path("/tmp/b.fst"), alias="b")
     sessions = _load_sessions()
     assert sessions["a"]["trace"].endswith("a.fst")
     assert sessions["b"]["trace"].endswith("b.fst")
@@ -614,6 +617,28 @@ def test_trace_identity_reports_multiple_root_scopes(tmp_path, monkeypatch, caps
     assert "header-only" not in err
 
 
+def test_trace_identity_surfaces_store_load_cause(tmp_path, monkeypatch, capsys):
+    """#3648: a failed identity probe prints bwave's cause line, not only the guess."""
+    from booley.bwave import cli as bwave
+    from booley.bwave import sessions as bwave_sessions
+
+    cause = (
+        "ERROR: cannot load waveform store 'cut.fst': store is truncated; "
+        "re-run the simulation or rebuild it with `bwave build <trace.vcd> -o cut.fst`"
+    )
+    monkeypatch.setattr(bwave, "_bwave_cmd", lambda: ["bwave-bin"])
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr=f"noise\n{cause}\n"
+        ),
+    )
+
+    assert bwave_sessions._trace_identity(tmp_path / "cut.fst") == ""
+    assert f"[bwave] WARNING: {cause}" in capsys.readouterr().err
+
+
 def test_unknown_alias_error():
     _write_sessions({"baseline": _make_entry(str(BWAVE.resolve()))})
     r = _query("@nonexistent", "--wave", "-t", "1:5")
@@ -625,6 +650,81 @@ def test_no_session_error():
     r = _query("--wave", "-t", "1:5", "-s", "*req*")
     assert r.returncode != 0
     assert "no registered session" in r.stderr.lower()
+
+
+def test_no_session_error_names_the_traced_sim_run(monkeypatch, tmp_path):
+    from booley.bwave import cli as bwave
+
+    monkeypatch.setattr(bwave, "SESSION_FILE", tmp_path / "none" / "bwave_sessions.json")
+
+    with pytest.raises(SystemExit) as exc:
+        bwave._resolve_trace_from_session()
+
+    message = str(exc.value)
+    assert "bwave register SIM_DIR --as ALIAS" in message
+    assert "booley flow sim" in message
+    assert "--trace" in message
+    assert "trace: true" in message
+
+
+_REGISTER_MANY_CHILD = """
+import sys
+from pathlib import Path
+from booley.bwave import cli, sessions
+
+cli.SESSION_FILE = Path(sys.argv[1])
+for index in range(20):
+    sessions.register_trace(Path(f"/traces/{sys.argv[2]}{index}.fst"), alias=f"{sys.argv[2]}{index}")
+"""
+
+
+def test_concurrent_registrations_keep_every_alias(monkeypatch, tmp_path):
+    """Two traced runs finishing together must not drop each other's aliases."""
+    import booley
+    from booley.bwave import cli as bwave
+
+    store = tmp_path / "store" / "bwave_sessions.json"
+    monkeypatch.setattr(bwave, "SESSION_FILE", store)
+    env = {**os.environ, "PYTHONPATH": str(Path(booley.__file__).resolve().parents[1])}
+    children = [
+        subprocess.Popen(
+            [sys.executable, "-c", _REGISTER_MANY_CHILD, str(store), prefix],
+            env=env,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for prefix in ("a", "b")
+    ]
+    for child in children:
+        # Kept on communicate: both children must run concurrently to race the store.
+        _, stderr = child.communicate(timeout=120)
+        assert child.returncode == 0, stderr
+
+    aliases = set(bwave._load_sessions())
+    assert {f"{prefix}{index}" for prefix in "ab" for index in range(20)} <= aliases
+
+
+def test_register_trace_raises_when_the_store_cannot_be_written(monkeypatch, tmp_path, capsys):
+    from booley.bwave import cli as bwave
+    from booley.bwave import sessions
+
+    monkeypatch.setattr(bwave, "SESSION_FILE", tmp_path / "bwave_sessions.json")
+    monkeypatch.setattr(sessions, "_save_sessions", lambda _data: False)
+    trace = tmp_path / "trace.fst"
+    trace.write_bytes(b"fixture")
+
+    with pytest.raises(OSError, match="could not write session file"):
+        sessions.register_trace(trace, alias="dut")
+
+    # `bwave register` keeps its old behavior: warn, still report the trace.
+    monkeypatch.setattr(
+        sessions, "inspect_store", lambda *_a, **_k: type("S", (), {"structurally_usable": True})()
+    )
+    monkeypatch.setattr(sessions, "_trace_identity", lambda _: "top")
+    sessions.cmd_register(argparse.Namespace(sim_dir=str(trace), alias="dut"))
+    captured = capsys.readouterr()
+    assert f"@dut -> {trace}" in captured.out
+    assert "could not write session file" in captured.err
 
 
 def test_build_subcommand_does_not_require_registered_session(monkeypatch):
@@ -669,13 +769,13 @@ def test_register_trace_preserves_alias_and_last_markers(tmp_path, monkeypatch):
     a.write_bytes(b"\x00\x00\x00\x00\x00\x00\x00\x01I" + b"\0" * 16)
     b.write_bytes(b"\x00\x00\x00\x00\x00\x00\x00\x01I" + b"\0" * 16)
 
-    bwave._register_trace(a, alias="dut")
+    bwave.register_trace(a, alias="dut")
     sessions = bwave._load_sessions()
     sessions["dut"]["markers"] = {"start": 10}
     sessions["_last"]["markers"] = {"last_only": 99}
     bwave._save_sessions(sessions)
 
-    bwave._register_trace(b, alias="dut")
+    bwave.register_trace(b, alias="dut")
     sessions = bwave._load_sessions()
     assert sessions["dut"]["trace"] == str(b.resolve())
     assert sessions["dut"]["markers"] == {"start": 10}
@@ -699,7 +799,7 @@ def test_markers_set_list_delete(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(bwave, "SESSION_FILE", session_file)
     trace = tmp_path / "trace.fst"
     trace.write_bytes(b"\x00\x00\x00\x00\x00\x00\x00\x01I" + b"\0" * 16)
-    bwave._register_trace(trace, alias="dut")
+    bwave.register_trace(trace, alias="dut")
 
     bwave.cmd_markers(argparse.Namespace(extra=["@dut", "set", "done", "20"]))
     bwave.cmd_markers(argparse.Namespace(extra=["@dut", "set", "start", "10"]))
@@ -1017,7 +1117,7 @@ def test_register_human_trace_age_without_native_reader(
         sessions, "inspect_store", lambda *_a, **_k: SimpleNamespace(structurally_usable=True)
     )
     monkeypatch.setattr(sessions, "_trace_identity", lambda _: "top")
-    monkeypatch.setattr(sessions, "_register_trace", lambda _trace, alias: alias)
+    monkeypatch.setattr(sessions, "register_trace", lambda _trace, alias: alias)
     monkeypatch.setattr(sessions, "format_age", partial(format_age, now=100000))
     sessions.cmd_register(argparse.Namespace(sim_dir=str(trace), alias="dut"))
     assert f"(written {expected})" in capsys.readouterr().err
@@ -1026,6 +1126,58 @@ def test_register_human_trace_age_without_native_reader(
         path.unlink()
         return alias
 
-    monkeypatch.setattr(sessions, "_register_trace", remove_trace)
+    monkeypatch.setattr(sessions, "register_trace", remove_trace)
     sessions.cmd_register(argparse.Namespace(sim_dir=str(trace), alias="dut"))
     assert "written" not in capsys.readouterr().err
+
+
+def _help_section_lines(text: str, headings: tuple[str, ...]) -> list[str]:
+    """Indented lines under each heading line, up to the next blank line."""
+    lines = text.splitlines()
+    collected: list[str] = []
+    for index, line in enumerate(lines):
+        if not any(line.startswith(heading) for heading in headings):
+            continue
+        for body in lines[index + 1 :]:
+            if not body.strip():
+                break
+            collected.append(body)
+    return collected
+
+
+def _help_entry_names(entries: list[str]) -> set[str]:
+    """First token of each `name  description` entry; `a / b` names both."""
+    names: set[str] = set()
+    for entry in entries:
+        head = entry.strip().split("  ")[0]
+        names.update(part.split()[0] for part in head.split(" / "))
+    return names
+
+
+def test_wrapper_help_command_lists_match_accepted_commands():
+    """Every wrapper help surface names exactly the commands it accepts (#3648)."""
+    from booley.bwave import cli as bwave
+
+    wrapper_only = {"register", "markers", "gui"}
+
+    # (a) argparse epilog (the parser's declared help): wrapper + query commands.
+    epilog = bwave._build_parser().format_help()
+    wrapper_names = _help_entry_names(_help_section_lines(epilog, ("Wrapper commands:",)))
+    query_lines = _help_section_lines(epilog, ("Query subcommands",))
+    query_names: set[str] = set()
+    for line in query_lines:
+        # Drop the "Trace-consuming:" / "Meta (no trace):" label, keep the names.
+        body = line.split(":", 1)[1] if ":" in line else line
+        query_names.update(body.split())
+    assert wrapper_names | query_names == bwave._V02_SUBCOMMANDS | wrapper_only | {"query"}
+
+    # (b) `bwave --help` text.
+    top_lines = _help_section_lines(
+        bwave._TOP_HELP_TEXT,
+        ("Setup:", "Viewing", "Trace commands:", "Meta/direct subcommands:"),
+    )
+    assert _help_entry_names(top_lines) == bwave._V02_SUBCOMMANDS | wrapper_only
+
+    # (c) `bwave query --help` text.
+    query_help = _help_entry_names(_help_section_lines(bwave._QUERY_HELP_TEXT, ("Subcommands",)))
+    assert query_help == bwave._V02_CONSUMER_SUBCOMMANDS | bwave._V02_META_SUBCOMMANDS

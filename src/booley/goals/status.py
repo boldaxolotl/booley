@@ -303,7 +303,6 @@ def _goal_status(
                 GoalFamily.REVIEW: "Reviewer",
                 GoalFamily.CYCLE_COUNT: "sim",
                 GoalFamily.COVERAGE: "sim",
-                GoalFamily.MUTATION: "mutation_tester",
             }.get(goal.spec.family, goal.spec.family.value.lower())
             reason = (
                 f"{goal_presentation(goal.spec).name} has no current immutable observation "

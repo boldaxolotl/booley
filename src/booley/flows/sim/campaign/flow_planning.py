@@ -220,7 +220,7 @@ def _manifest_document(
     return finalize_manifest(
         {
             "$schema": MANIFEST_SCHEMA,
-            "campaign_id": str(uuid.uuid4()),
+            "simulation_record_id": str(uuid.uuid4()),
             "created_at": utc_now_rfc3339(),
             "origin": {"execution_id": execution_id, "invocation_id": invocation_id},
             "target": target,

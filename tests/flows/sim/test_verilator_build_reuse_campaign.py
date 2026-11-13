@@ -86,7 +86,7 @@ def _flow_sim(project: Path, report_root: Path, test: str) -> dict[str, object]:
     )
     assert result.exit_code == 0, result.outcome.report_text
     (run,) = _report_runs(report_root) - before
-    (document,) = run.glob("targets/sim/campaign/**/evidence/build-execution.json")
+    (document,) = run.glob("targets/sim/record/**/evidence/build-execution.json")
     return json.loads(document.read_text(encoding="utf-8"))["build"]
 
 
@@ -264,7 +264,7 @@ def test_symlinked_booley_directory_runs_and_reuses_build(
         assert (run / "report.json").is_file()
         progress = json.loads((run / "progress.json").read_text(encoding="utf-8"))
         assert progress["phase"] == "complete"
-        (document,) = run.glob("targets/sim/campaign/**/evidence/build-execution.json")
+        (document,) = run.glob("targets/sim/record/**/evidence/build-execution.json")
         builds.append(json.loads(document.read_text(encoding="utf-8"))["build"])
     _assert_built(builds[0], "missing provenance")
     _assert_hit(builds[1])
@@ -307,7 +307,7 @@ def test_symlinked_booley_directory_accepts_declared_source_below_entry(
 
     reports = tmp_path / "reports"
     _assert_built(_flow_sim(flow_project, reports, "first"), "missing provenance")
-    (manifest,) = reports.glob("sim/*/targets/sim/campaign/manifest.json")
+    (manifest,) = reports.glob("sim/*/targets/sim/record/manifest.json")
     document = json.loads(manifest.read_text(encoding="utf-8"))
     closure = [item["path"] for item in document["build_variants"][0]["source_closure"]]
     assert ".booley/sim/helper.cpp" in closure

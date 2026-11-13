@@ -43,9 +43,9 @@ WORKDIR /
 # fetched full (NOT --shallow-submodules): sv-elab/slang pin non-tip commits a
 # shallow submodule fetch can miss.
 # renovate: datasource=github-tags depName=YosysHQ/yosys
-ARG YOSYS_VERSION=v0.69
+ARG YOSYS_VERSION=v0.70
 # pin-companion: YOSYS_VERSION
-ARG YOSYS_REF=9f75ca1f9834a39a863915b5dae0c7b1e33533bc
+ARG YOSYS_REF=28ba3cb926fe376fa05ebfc1b921747d011d4557
 RUN echo ">>> Building Yosys ${YOSYS_VERSION} (${YOSYS_REF}) + slang from source (this takes a while)..." \
     && apt-get update && apt-get install -y --no-install-recommends \
         cmake gawk pkg-config tcl-dev libreadline-dev libffi-dev zlib1g-dev \
@@ -96,9 +96,9 @@ RUN echo ">>> Building Icarus Verilog ${ICARUS_VERSION} (${ICARUS_REF}) from sou
 # fix (a6f4dd031f50387ae0169490c6d8843b91dd1c07). Keep the full immutable
 # release commit beside the human-readable tag.
 # renovate: datasource=github-tags depName=verilator/verilator
-ARG VERILATOR_VERSION=v5.052
+ARG VERILATOR_VERSION=v5.054
 # pin-companion: VERILATOR_VERSION
-ARG VERILATOR_REF=ea338be98e1e838d3518809ce8899f85a009963c
+ARG VERILATOR_REF=bbb60a403932a9f695cb6ff001ceb73de6ad9234
 RUN echo ">>> Building Verilator ${VERILATOR_VERSION} (${VERILATOR_REF}) from source (this takes a while)..." \
     && apt-get update && apt-get install -y --no-install-recommends help2man liblz4-dev \
     && rm -rf /var/lib/apt/lists/* \
@@ -122,7 +122,7 @@ RUN echo ">>> Building Verilator ${VERILATOR_VERSION} (${VERILATOR_REF}) from so
 # Minimal Sandbox. The immutable upstream development image remains the
 # EDA builder, but none of its compilers, Docker tooling, Pandoc, LLVM, CMake,
 # headers, or build caches become runtime layers.
-FROM docker.io/library/ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7
+FROM docker.io/library/ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=America/Los_Angeles \
@@ -360,11 +360,11 @@ RUN echo ">>> Bundling Live Preview ${LIVE_PREVIEW_VERSION} VSIX..." \
 # them before execution; neither a mutable setup script nor semver ranges are
 # allowed in the release image.
 # renovate: datasource=node-version depName=node
-ARG NODE_VERSION=24.21.0
+ARG NODE_VERSION=24.22.2
 # pin-companion: NODE_VERSION
-ARG NPM_VERSION=11.19.0
+ARG NPM_VERSION=11.19.1
 # pin-companion: NODE_VERSION
-ARG NODE_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
+ARG NODE_SHA256=48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75
 COPY src/booley/data/docker/agent-clis-package.json /opt/agent-clis/package.json
 COPY src/booley/data/docker/agent-clis-package-lock.json /opt/agent-clis/package-lock.json
 RUN echo ">>> Installing Node.js ${NODE_VERSION} and exact agent CLIs..." \
@@ -580,6 +580,6 @@ LABEL org.opencontainers.image.source=https://github.com/boldaxolotl/booley \
       io.booley.openroad.source-revision=${OPENROAD_SOURCE_REF} \
       io.booley.openroad.builder-artifact=docker.io/openroad/ubuntu26.04@sha256:c3185708e2f1cdb4fed9fb4d84d2882d36a1f1f6af90959ceb07dcb7416fe49d \
       io.booley.eda.builder-artifact=docker.io/openroad/ubuntu26.04-dev@sha256:a971c4db78c9a4a8db18a9fe136c9731c613e4582a5093180bc7c07e24351e09 \
-      io.booley.openroad.runtime-parent-artifact=docker.io/library/ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7
+      io.booley.openroad.runtime-parent-artifact=docker.io/library/ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96
 
 WORKDIR /work

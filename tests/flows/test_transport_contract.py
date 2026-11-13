@@ -740,7 +740,7 @@ def test_candidate_mapping_excludes_baseline_prerequisite(
     )
     flow = SimulateFlow()
     prepare_as(monkeypatch, flow, SimulationCampaignInvocation(flow, prepared))
-    monkeypatch.setattr(EndpointState, "admission", lambda *_args: nullcontext())
+    monkeypatch.setattr(EndpointState, "admission", lambda *_args, **_kwargs: nullcontext())
 
     def run(*_args):
         flow.set_criterion("sim_pass_candidate", True)
@@ -1224,7 +1224,7 @@ def test_combined_prepared_mode_freezes_both_eligible_families(
         _headline_state(runtime, monkeypatch, criteria, strict=ticket == "strict")
 
     from booley.flows.sim.build import BuildOutcome
-    from booley.flows.sim.flow import ElabOnlyTargetResult
+    from booley.flows.sim.elab_only import ElabOnlyTargetResult
     from booley.flows.sim.standalone import _StandaloneOutcome
 
     def build(self, target):
@@ -1253,27 +1253,27 @@ def test_combined_prepared_mode_freezes_both_eligible_families(
     _assert_headline(result, runtime / "flow-reports", "sim", expected)
 
 
-@pytest.mark.parametrize("name", ["mutation_tester", "coverage_analyst"])
-def test_specialist_public_completion_projects_actual_evaluations(
+@pytest.mark.parametrize("name", ["mutation", "coverage_analyst"])
+def test_mutation_flow_and_specialist_public_completion_projects_actual_evaluations(
     external_acceptance_owner, runtime, monkeypatch, name
 ):
+    from booley.flows.mutation.flow import MutationFlow
     from booley.mcp.base import McpToolResult
     from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
-    from booley.specialists.mutation_tester import MutationTesterSpecialist
 
     _report_targets(runtime, ("first",))
     classes = {
-        "mutation_tester": MutationTesterSpecialist,
+        "mutation": MutationFlow,
         "coverage_analyst": CoverageAnalystSpecialist,
     }
     endpoint_type = classes[name]
     extras = {
-        "mutation_tester": ["--target", "first", "--scope", "rtl"],
+        "mutation": ["--target", "first", "--scope", "rtl"],
         "coverage_analyst": ["--campaign", str(runtime / "coverage.json")],
     }[name]
 
     def run(self):
-        if name == "mutation_tester":
+        if name == "mutation":
             self.set_criterion("mutation_score_first", False)
         return McpToolResult(exit_code=1, criterion_key="stale", criterion_met=True)
 
@@ -1281,7 +1281,7 @@ def test_specialist_public_completion_projects_actual_evaluations(
     result = endpoint_type().execute_cli(
         ["--work-dir", str(runtime), "--report-dir", str(runtime / "reports"), *extras]
     )
-    expected = ("mutation_score_first", False) if name == "mutation_tester" else ("", None)
+    expected = ("mutation_score_first", False) if name == "mutation" else ("", None)
     _assert_headline(result, runtime / "reports", name, expected)
 
 
@@ -1295,12 +1295,12 @@ def test_specialist_public_completion_projects_actual_evaluations(
         pytest.param("first", ("", None), id="bare"),
     ],
 )
-def test_mutation_tester_qualified_target_keeps_headline(
+def test_mutation_qualified_target_keeps_headline(
     external_acceptance_owner, runtime, monkeypatch, binding, expected
 ):
     """A qualified ``--target`` excludes a same-name Criterion bound to another core."""
+    from booley.flows.mutation.flow import MutationFlow
     from booley.mcp.base import EXIT_FAILURE, McpToolResult
-    from booley.specialists.mutation_tester import MutationTesterSpecialist
     from tests.target_test_support import write_two_core_sim_project
 
     write_two_core_sim_project(
@@ -1317,14 +1317,13 @@ def test_mutation_tester_qualified_target_keeps_headline(
     )
     target = "vendor:a:x:1.0#first"
 
-    def run_cold(self, _plan):
+    def run_campaign(self, _plan):
         self.set_criterion(f"mutation_score_{target}", False, source_target=target)
         return McpToolResult(exit_code=EXIT_FAILURE)
 
-    monkeypatch.setattr(MutationTesterSpecialist, "_prepare_run_plan", lambda _self: object())
-    monkeypatch.setattr(MutationTesterSpecialist, "_load_reusable_lock", lambda _self, _plan: None)
-    monkeypatch.setattr(MutationTesterSpecialist, "_run_cold", run_cold)
-    result = MutationTesterSpecialist().execute_cli(
+    monkeypatch.setattr(MutationFlow, "_prepare_run_plan", lambda _self: object())
+    monkeypatch.setattr(MutationFlow, "_run_campaign", run_campaign)
+    result = MutationFlow().execute_cli(
         [
             "--work-dir",
             str(runtime),
@@ -1336,7 +1335,7 @@ def test_mutation_tester_qualified_target_keeps_headline(
             "x.v",
         ]
     )
-    _assert_headline(result, runtime / "reports", "mutation_tester", expected)
+    _assert_headline(result, runtime / "reports", "mutation", expected)
 
 
 @pytest.mark.parametrize("mode", ["dry_run", "diagnostic"])

@@ -165,11 +165,11 @@ from booley.bwave.sessions import (
     SESSION_FILE,  # noqa: F401  # re-exported for backward compatibility
     _get_markers,
     _load_sessions,
-    _register_trace,  # noqa: F401  # re-exported for backward compatibility
     _save_sessions,  # noqa: F401  # re-exported for backward compatibility
     _validate_marker_name,  # noqa: F401  # re-exported for backward compatibility
     cmd_markers,
     cmd_register,
+    register_trace,  # noqa: F401  # re-exported for the tests and the facade
 )
 
 
@@ -278,7 +278,9 @@ def _resolve_trace_from_session(alias: str | None = None) -> str:
         sys.exit(
             "ERROR: No trace path given and no registered session.\n"
             "Either pass a trace path or register one:\n"
-            "  bwave register SIM_DIR --as ALIAS"
+            "  bwave register SIM_DIR --as ALIAS\n"
+            "Or rerun the simulation with tracing; it registers each Target's waveform:\n"
+            "  booley flow sim --target TARGET --trace   (MCP: sim with trace: true)"
         )
     # session comes from the on-disk JSON session file (external input): it may
     # be a non-object or lack the "trace" key if hand-edited or corrupted.
@@ -2212,7 +2214,7 @@ Wrapper commands:
 
 Query subcommands (forwarded to the bwave binary — see `bwave query --help`):
   Trace-consuming:  list  signal  wave  value  find  sample  diff
-                    distance  stats  stuck  build
+                    distance  overview  stats  stuck  build
   Meta (no trace):  schema  docs  skill
 
 Run 'bwave query --help' for the full query reference, or

@@ -374,7 +374,7 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
                     "bwave",
                     "coverage_analyst",
                     "lint",
-                    "mutation_tester",
+                    "mutation",
                     "reviewer",
                     "sim",
                 ],
@@ -704,7 +704,7 @@ def test_doctor_fails_when_mcp_probe_does_not_set_interactive_logs(
                 "bwave",
                 "coverage_analyst",
                 "lint",
-                "mutation_tester",
+                "mutation",
                 "reviewer",
                 "sim",
             ],
@@ -867,7 +867,7 @@ def _history_repo(tmp_path: Path, monkeypatch) -> Path:
     (tmp_path / "README").write_text("x\n", encoding="utf-8")
     _history_git(tmp_path, "add", "README")
     _history_git(tmp_path, "commit", "-q", "-m", "init")
-    # The default Stealth policy bans "ticket"; this repository opts out.
+    # This repository opts out of Stealth Mode so its history is not banned-term checked.
     (tmp_path / ".booley").mkdir()
     (tmp_path / ".booley" / "booley.toml").write_text(
         "[stealth]\nenabled = false\n", encoding="utf-8"
@@ -5606,7 +5606,7 @@ class TestAdvisoryMcpTools:
         flows = {
             name: config
             for name, config in endpoint_config.items()
-            if name in {"sim", "lint", "synth", "fpga"}
+            if name in {"sim", "lint", "synth", "fpga", "mutation"}
         }
         mcp_tools = {name: config for name, config in endpoint_config.items() if name not in flows}
         return doctor.ProjectAudit(
@@ -5617,13 +5617,68 @@ class TestAdvisoryMcpTools:
             first_target="",
         )
 
+    def test_disabled_endpoints_are_named_in_one_note(self, tmp_path, monkeypatch):
+        """AC5: one NOTE names disabled Specialists and custom Flows, not built-in Flows."""
+        tools_dir = tmp_path / ".booley" / "mcp_tools"
+        tools_dir.mkdir(parents=True)
+        (tools_dir / "custom_flow.py").write_text(
+            "from booley.flows.base import BooleyFlow\n\n\n"
+            "class CustomFlow(BooleyFlow):\n"
+            '    name = "custom_flow"\n'
+            '    description = "A project Flow."\n',
+            encoding="utf-8",
+        )
+        audit = self._project(
+            tmp_path, {"reviewer": {"enabled": False}, "lint": {"enabled": False}}
+        )
+        # A project Flow is configured under [flows]; the helper files unknown names elsewhere.
+        audit.booley_toml["flows"]["custom_flow"] = {"enabled": False}
+        for name in (
+            "_check_ticket_leftovers",
+            "_check_handle_map_size",
+            "_check_project_gitignore",
+            "_check_goal_history_ignored",
+            "_check_project_trackability",
+            "_check_git_state",
+            "_check_repo_footprint",
+            "_check_custom_endpoints_and_criteria",
+            "_check_agent_backend_health",
+        ):
+            monkeypatch.setattr(doctor, name, lambda *args, **kwargs: None)
+        reporter = doctor._Reporter.create()
+
+        doctor._run_project_checks(audit, reporter)
+
+        notes = [f for f in reporter.findings or [] if f.severity is Severity.NOTE]
+        assert [f.message for f in notes] == [
+            "MCP endpoints disabled in booley.toml: custom_flow, reviewer"
+        ]
+
+    @pytest.mark.parametrize("endpoint_config", [{}, {"sim": {"enabled": False}}])
+    def test_no_disabled_endpoints_prints_nothing(self, tmp_path, endpoint_config):
+        """AC5: nothing disabled, or only a built-in Flow the Flow audit names, prints no line."""
+        notes: list[str] = []
+
+        doctor._check_disabled_endpoints(self._project(tmp_path, endpoint_config), notes.append)
+
+        assert notes == []
+
+    def test_invalid_endpoint_config_is_left_to_the_endpoint_check(self, tmp_path):
+        """A disabled name no endpoint carries makes the registry raise: stay silent, never crash."""
+        notes: list[str] = []
+        audit = self._project(tmp_path, {"typo": {"enabled": False}})
+
+        doctor._check_disabled_endpoints(audit, notes.append)
+
+        assert notes == []
+
     def test_default_expects_all_specialists(self, tmp_path):
         p = self._project(tmp_path, {})
-        assert doctor._advisory_mcp_tools(p) == set(doctor._ADVISORY_INTERACTIVE_MCP_TOOLS)
+        assert doctor._advisory_mcp_tools(p) == {"mutation", "reviewer"}
 
     def test_explicitly_disabled_specialist_is_not_expected(self, tmp_path):
         p = self._project(tmp_path, {"reviewer": {"enabled": False}})
-        assert doctor._advisory_mcp_tools(p) == {"mutation_tester"}
+        assert doctor._advisory_mcp_tools(p) == {"mutation"}
 
     def _skill_default_endpoint_config(self, *, reviewer=False):
         """Every flow and optional specialist explicitly disabled."""
@@ -5631,7 +5686,7 @@ class TestAdvisoryMcpTools:
         for name in ("sim", "lint", "synth"):
             endpoint_config[name] = {"enabled": False}
         endpoint_config["reviewer"] = {"enabled": reviewer}
-        endpoint_config["mutation_tester"] = {"enabled": False}
+        endpoint_config["mutation"] = {"enabled": False}
         return endpoint_config
 
     def _payload(self, mcp_tool_names):
@@ -5655,7 +5710,7 @@ class TestAdvisoryMcpTools:
         )
         warns = [m for lvl, m in rec.events if lvl == "warn"]
         assert any("reviewer" in m for m in warns)
-        assert not any("mutation_tester" in m for m in warns)
+        assert not any("mutation" in m for m in warns)
 
 
 class TestFailPathSelfTest:
@@ -9837,3 +9892,49 @@ def test_deep_synth_calibration_follows_flow_check_findings(tmp_path, monkeypatc
     assert "timed out" in events[0][1]
     assert len(tracker.missing) == 1
     assert tracker.missing[0].startswith("synth.smoke.")
+
+
+_SEAT_FPGA_TABLE = {"flows": {"fpga": {"enabled": True}}}
+_SEAT_VIVADO_DECLARED = {"eda": {"vivado": {"provisioning": "host"}}}
+
+
+class TestSeatCapCheck:
+    """ADR 0087: memory admission needs a Seat Cap for every licensed EDA tool in use."""
+
+    def _run(self, tmp_path, booley_toml):
+        rec = _Rec()
+        doctor._check_seat_caps(_adr28_project(tmp_path, booley_toml=booley_toml), rec.p, rec.f)
+        return rec
+
+    def test_fails_when_a_used_vivado_has_no_seat_cap(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+        for booley_toml in (_SEAT_FPGA_TABLE, _SEAT_VIVADO_DECLARED):
+            rec = self._run(tmp_path, booley_toml)
+            assert rec.kinds() == {"fail"}, booley_toml
+            (message,) = rec.fails()
+            assert "vivado has no Seat Cap" in message
+            (fix,) = rec.fix_hints
+            assert "[jobs.seats] vivado = <seats you own>" in fix
+
+    def test_passes_or_stays_silent_when_no_seat_cap_is_owed(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+        capped = {**_SEAT_FPGA_TABLE, "jobs": {"seats": {"vivado": 2}}}
+        rec = self._run(tmp_path, capped)
+        assert rec.events == [("pass", "Seat Cap: vivado = 2")]
+        # Vivado is declared but the FPGA Flow is off: Booley provisions none, no seat is owed.
+        disabled = {**_SEAT_VIVADO_DECLARED, "flows": {"fpga": {"enabled": False}}}
+        assert self._run(tmp_path, disabled).events == []
+        # No FPGA Flow and no Vivado: nothing licensed is in use.
+        assert self._run(tmp_path, {}).events == []
+        # A malformed table is the schema audit's finding, not a second FAIL here.
+        malformed = {**_SEAT_FPGA_TABLE, "jobs": {"seats": {"vivado": 0}}}
+        assert self._run(tmp_path, malformed).events == []
+        # No Project, no check.
+        rec = _Rec()
+        doctor._check_seat_caps(None, rec.p, rec.f)
+        assert rec.events == []
+
+    def test_switch_unset_reports_nothing(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("BOOLEY_DEV_MEMORY_ADMISSION", raising=False)
+        assert self._run(tmp_path, _SEAT_FPGA_TABLE).events == []
+        assert self._run(tmp_path, _SEAT_VIVADO_DECLARED).events == []

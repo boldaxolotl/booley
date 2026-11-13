@@ -9,10 +9,64 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Mutation testing now generates Mutants deterministically and runs no LLM:
+- Stealth Mode now rejects a commit message that contains a banned term
+  instead of rewriting it with `redacted`. The commit-msg hook never changes the
+  message file: it lists each match, says where your message is kept, and gives
+  the `git commit -v -e -F "<path>"` retry (a rejected merge commit says how to
+  finish it). Comment lines and everything below the scissors line aren't
+  checked. `BOOLEY_SKIP_COMMIT_VALIDATION=1` no longer skips banned terms, only
+  the convention and body-length checks. A Specialist whose commit message has a
+  banned term now fails with the validation error instead of committing under
+  its default message. `cursor` and `ticket` left the default banned list; add
+  them to `banned_words` to keep them. Rerun `booley init` in each Stealth
+  Project to install the new hook
+  ([#3597](https://github.com/boldaxolotl/Booley/issues/3597)).
+- The Sandbox start step now registers Booley's MCP server and skills for every
+  allowed Agent CLI, not only the default: a Sandbox issued for `claude` and
+  `codex` serves both. A CLI whose registration is refused is reported as
+  `<cli>:refused` (the error line names the CLI) and no longer stops the others.
+  With `BOOLEY_AGENT_APP=auto`, every CLI with a credential is allowed, Claude
+  the default when both have one; `booley doctor` audits each
+  ([#2756](https://github.com/boldaxolotl/Booley/issues/2756)).
+- A traced `sim` run now registers each traced Target's waveform as B-Wave
+  session `@<target>` (its last Test Run that did not pass, else its last) and
+  the last Target's as the default session, so `bwave @<target> list` and a path-less
+  `bwave list` work without finding the trace file. The session store is shared
+  by the Sandbox, so the latest traced run owns `@<target>` and the default
+  session ([#3483](https://github.com/boldaxolotl/Booley/issues/3483) tracks a
+  per-checkout store). `bwave` without a trace path or session now says to rerun
+  the simulation with `--trace`.
+- The Mutation Tester now generates Mutants deterministically and runs no LLM:
+  the same RTL, `--count`, and the new `--seed` (default 0) give identical
+  Mutants. `--scope` is optional and defaults to the Target's own RTL. The
+  default pass threshold is 80 % of the count, rounded up, also for an
+  existing Goal without `min_detected` (it used to require every Mutant). Each Mutant's per-test timeout scales with the
+  baseline run (10 x, 30 s minimum, 300 s cap), and a timed-out Mutant counts
+  as detected and is reported as `detected (timeout)`. Results record scope
+  file hashes, generator and pyslang versions, seed, and count. `--steer` and
+  `--regen-lock` are removed, and the mutation lock is no longer used.
+  Mutation testing is now the Booley Flow `booley flow mutation` (same flags,
+  MCP tool `mutation`, plus the shared Flow options). `booley specialist
+  mutation_tester`, its MCP tool, and the `[models] mutation_tester` key are
+  removed: delete the key, and replace a `[specialists.mutation_tester]` table
+  with `[flows.mutation]` (`enabled`, `timeout_ms`). Reports move from
+  `mcp-tool-reports/` to `flow-reports/mutation/<N>/`. The `mutation_score`
+  criterion and `MUTATION:` Goals are unchanged.
+
 - The Dashboard top bar has a new **Run** item that starts a built-in Booley Flow
   as a Standalone Job: choose the worktree, the Flow, and its arguments, check
   the equivalent shell command, then submit or copy it. The Jobs window opens
-  with the new Job selected. The Dashboard is no longer read-only.
+  with the new Job selected. The Dashboard is no longer read-only. The review
+  screen says whether the Job runs now or queues (with its position), refuses
+  Submit when the Job queue is full, warns about a connected session, running
+  Jobs, or uncommitted changes in the worktree, and shows the per-work-unit
+  timeout of synth and FPGA runs.
+  as a Standalone Job: choose the worktree and the Flow, fill in a form generated
+  from the Flow's options, check the equivalent shell command, then submit or
+  copy it. The Target and test fields pick from the worktree's compatible
+  Targets and the chosen Target's Test Runs. The Jobs window opens with the new
+  Job selected. The Dashboard is no longer read-only.
 - Job resource history keeps the newest 20 runs per Target, Job phase, flags,
   and Test Run with no overall cap, and deletes a group that has had no run in
   90 days. Peak memory now includes processes forked by any thread of a Job
@@ -80,7 +134,7 @@ Packaged release history starts at 0.2.7. For older changes, see
   no longer hides `.booley/` or gives it its own repository before setup
   records your choice; the booley-setup skill's hidden answer does both. A
   Project set up earlier whose `booley.toml` has no `enabled` key has left
-  Stealth: commit messages are no longer cleaned and pushes are no longer
+  Stealth: commit messages are no longer checked and pushes are no longer
   checked. `booley init` and Doctor warn `stealth.enabled-unset` while
   `.booley/` is still excluded; add `enabled = true` to keep Stealth, or
   `enabled = false` to confirm it is off. A `booley.toml` that can't be read
@@ -167,6 +221,24 @@ Packaged release history starts at 0.2.7. For older changes, see
   VS Code container whose Booley Directory mounts are outdated, including any
   from before 0.3.0. Close VS Code, stop and remove that container, run
   `booley init --seed`, then reopen the folder in the container.
+- The Session Runtime now uses Verilator v5.054 at source commit
+  `bbb60a403932a9f695cb6ff001ceb73de6ad9234`. Verilator 5.054 moved `if`/`else`
+  and `?:` branch points out of `--coverage-line` into the new
+  `--coverage-branch` switch; `booley flow sim --coverage` now passes both, so
+  `branch` points are still collected. A project that passes `--coverage-line`
+  in its own `verilator_options` must add `--coverage-branch` to keep them.
+  ([PR #3464](https://github.com/boldaxolotl/booley/pull/3464))
+- The egress proxy and reaper sidecars now run on Python 3.15.2 and the reaper
+  on the Docker 29.9.3 CLI; Booley rebuilds both automatically. The FlexNet
+  relay image also builds on Python 3.15.2, but an existing
+  `booley-flexnet-relay:1` image is kept: remove it with
+  `docker image rm booley-flexnet-relay:1` and the next licensed session builds
+  it again.
+
+- The RISC-V Sandbox Image moves Spike to upstream master `4094d290`, which adds
+  configurable LR/SC reservation-set size, a Zvt tile fix, and a batch of
+  CSR and PMP fixes (`stopei`, `mstateen0`, `scountovf`, mcontrol6 triggers).
+  ([PR #3633](https://github.com/boldaxolotl/booley/pull/3633))
 
 ## 0.4.0 - 04 NOV 2026
 

@@ -107,6 +107,10 @@ def _job_phase(run_id: str) -> str:
 def _phase_for_record(rec: jobrec.JobRecord | None) -> str:
     """Admission phase of a detached job: "RUNNING" or "QUEUED (position N)".
 
+    A queued memory claim appends ``: <what it waits for>`` (need, free memory,
+    holders; see ``MemoryWait.describe``), and a Job queued again after an OOM
+    kill adds the claim's requeue reason there.
+
     Derived from the child's own slot-store claim (ADR 0028): a waiter entry
     means the child process is alive but idling for its class slot. Position
     is 1-based for humans. Falls back to RUNNING when the store or claim is
@@ -116,12 +120,17 @@ def _phase_for_record(rec: jobrec.JobRecord | None) -> str:
     if rec is None or rec.pid is None or root is None:
         return "RUNNING"
     try:
-        state = job_slots.SlotStore(root).state_for_pid(rec.pid)
+        store = job_slots.SlotStore(root)
+        state = store.state_for_pid(rec.pid)
+        if state is None or state.state != job_slots.QUEUED:
+            return "RUNNING"
+        # Only a memory waiter (admitted under the development switch) has a wait to report.
+        wait = store.memory_wait(rec.pid)
     except OSError:
         return "RUNNING"
-    if state is not None and state.state == job_slots.QUEUED:
-        return f"QUEUED (position {(state.position or 0) + 1})"
-    return "RUNNING"
+    if wait is not None:
+        return f"QUEUED (position {wait.position}): {wait.describe()}"
+    return f"QUEUED (position {(state.position or 0) + 1})"
 
 
 def _running_progress(

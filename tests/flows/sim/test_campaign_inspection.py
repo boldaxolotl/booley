@@ -66,7 +66,7 @@ def test_public_campaign_inspection_returns_typed_evidence_without_writes(
 def test_public_work_item_authentication_rejects_unknown_and_unfinished_items(
     tmp_path: Path,
 ) -> None:
-    store = CampaignStore(tmp_path / "campaign")
+    store = CampaignStore(tmp_path / "record")
     store.publish_manifest(_manifest_for(("smoke",)))
     item = cast(tuple[Mapping[str, object], ...], store.load_manifest().document["work_items"])[0]
     work_item_id = cast(str, item["work_item_id"])
@@ -80,7 +80,7 @@ def test_public_work_item_authentication_rejects_unknown_and_unfinished_items(
 def test_public_campaign_inspection_distinguishes_recovery_and_summary_status(
     tmp_path: Path,
 ) -> None:
-    store = CampaignStore(tmp_path / "campaign")
+    store = CampaignStore(tmp_path / "record")
     store.publish_manifest(_manifest_for(("smoke",)))
     store.regenerate_summary()
     pending = inspect_retained_campaign(store.manifest_path)
@@ -96,7 +96,7 @@ def test_public_campaign_inspection_distinguishes_recovery_and_summary_status(
 
 
 def test_public_campaign_inspection_reports_an_unpublished_summary(tmp_path: Path) -> None:
-    store = CampaignStore(tmp_path / "campaign")
+    store = CampaignStore(tmp_path / "record")
     store.publish_manifest(_manifest_for(("smoke",)))
 
     status = inspect_retained_campaign(store.manifest_path)
@@ -162,7 +162,7 @@ def test_public_work_item_authentication_rejects_file_changed_during_read(
 
 @pytest.mark.parametrize("error", ["truncated", "schema", "missing"])
 def test_summary_reader_rejects_corrupt_record(tmp_path, error):
-    store = CampaignStore(tmp_path / "campaign")
+    store = CampaignStore(tmp_path / "record")
     store.publish_manifest(_manifest_for(("smoke",)))
     store.regenerate_summary()
     document = dict(store.load_summary())
@@ -180,14 +180,14 @@ def test_summary_reader_rejects_corrupt_record(tmp_path, error):
 @pytest.mark.timeout(180)
 def test_maximum_selection_uses_large_sidecar_and_bounded_report_preview(tmp_path):
     from booley.flows.sim.campaign.pre_sim_evidence import publish_pre_sim_firing
+    from booley.flows.sim.campaign_presentation import _pre_sim_projection
     from booley.flows.sim.execution.contract import PreSimEvidence
-    from booley.flows.sim.flow import _pre_sim_projection
 
     names = tuple(f"test{index:04d}" + "x" * 504 for index in range(4000))
 
     manifest, _disclosures = _maximum_hook_selection_manifest(names)
     invocation = tmp_path / "reports/1"
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
     store.publish_manifest(manifest)
     request = _request(store, manifest, manifest.document["work_items"][0], tmp_path, invocation=1)
     _executor(tmp_path / "build", {}).prepare_attempt(request)
@@ -235,7 +235,7 @@ def test_pre_sim_inspection_rereads_evidence_and_rejects_later_tampering(tmp_pat
 
     invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
     firing = outcome.pre_sim_firings[0]
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
 
     def inspect():
         assert collect_pre_sim_firings(store.manifest_path) == outcome.pre_sim_firings
@@ -298,7 +298,7 @@ def test_pre_sim_reader_rejects_bad_binding(tmp_path, monkeypatch, defect, value
         else:
             directory = firing.path.parent.parent
             directory.rename(directory.with_name("0001-other-owner"))
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
     with pytest.raises(SimulationCampaignIntegrityError, match=message):
         if defect == "directory-owner":
             store.scan()  # the owner check lives in the scan, not in firing collection
@@ -311,7 +311,7 @@ def _pre_sim_read_case(tmp_path, monkeypatch, *, interrupted=False):
 
     invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
     firing = outcome.pre_sim_firings[0]
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
     if interrupted:
         (firing.path.parents[3] / "result.json").unlink()
     expected = store.scan()

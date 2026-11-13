@@ -49,14 +49,14 @@ _ORIGIN_INVOCATION_ID = 12
 def _nested_campaign(origin_target: Path, *, attempt_id: str = _SIMULATION_ATTEMPT_ID) -> Path:
     attempt = (
         origin_target
-        / "campaign"
+        / "record"
         / "work-items"
         / "0001-0123456789abcdef"
         / "attempts"
         / f"0001-{attempt_id}"
     )
     campaign = decode_document(_valid_document(), DurableTargetIdentity(_TARGET_IDENTITY))
-    return publish_coverage_campaign(attempt / "coverage-campaign", campaign).campaign
+    return publish_coverage_campaign(attempt / "coverage-record", campaign).campaign
 
 
 def _reference(origin_target: Path, nested: Path) -> CoverageCampaignReference:
@@ -151,16 +151,15 @@ def test_building_and_encoding_a_built_reference_never_decodes(
         (("simulation_attempt_id",), "87654321-4321-1432-a234-cba987654321"),
         (("target", "identity"), ""),
         (("coverage_campaign", "path_base"), "report_root"),
-        (("coverage_campaign", "path"), "/campaign/coverage.json"),
-        (("coverage_campaign", "path"), "campaign/../coverage.json"),
-        (("coverage_campaign", "path"), "campaign/work-items/\0/coverage.json"),
+        (("coverage_campaign", "path"), "/record/coverage.json"),
+        (("coverage_campaign", "path"), "record/../coverage.json"),
+        (("coverage_campaign", "path"), "record/work-items/\0/coverage.json"),
         (("coverage_campaign", "path"), "elsewhere/coverage.json"),
         (("coverage_campaign", "bytes"), True),
         (("coverage_campaign", "bytes"), 0),
         (("coverage_campaign", "sha256"), "sha256:" + "0" * 63),
         (("coverage_campaign", "campaign_id"), ""),
         (("coverage_campaign", "schema"), "booley.coverage-campaign/v2"),
-        (("coverage_campaign", "schema"), "booley.coverage-campaign/v4"),
     ],
 )
 def test_reference_codec_rejects_boundary_and_identity_substitutions(
@@ -171,6 +170,42 @@ def test_reference_codec_rejects_boundary_and_identity_substitutions(
 
     with pytest.raises(CoverageCampaignReferenceError):
         decode_coverage_campaign_reference(_rewrite_reference(value, pointer, replacement))
+
+
+def test_reference_codec_refuses_a_nested_v4_campaign_as_an_older_booley_record(
+    tmp_path: Path,
+) -> None:
+    """Booley 0.3.0 wrote v4: it is too old, not an invalid storage contract."""
+    from booley.flows.sim.campaign.codec import UnsupportedSimulationCampaignFormatError
+
+    target = tmp_path / "targets" / _TARGET_SELECTOR
+    value = _reference(target, _nested_campaign(target))
+
+    with pytest.raises(UnsupportedSimulationCampaignFormatError, match="older Booley"):
+        decode_coverage_campaign_reference(
+            _rewrite_reference(
+                value, ("coverage_campaign", "schema"), "booley.coverage-campaign/v4"
+            )
+        )
+
+
+def test_resolving_a_nested_v4_reference_outside_the_report_layout_cannot_name_a_directory(
+    tmp_path: Path,
+) -> None:
+    from booley.flows.sim.campaign.codec import UnsupportedSimulationCampaignFormatError
+
+    target = tmp_path / "targets" / _TARGET_SELECTOR
+    value = _reference(target, _nested_campaign(target))
+    stray = tmp_path / "stray" / "coverage.json"
+    stray.parent.mkdir()
+    stray.write_bytes(
+        _rewrite_reference(value, ("coverage_campaign", "schema"), "booley.coverage-campaign/v4")
+    )
+
+    with pytest.raises(UnsupportedSimulationCampaignFormatError) as excinfo:
+        resolve_coverage_campaign_reference(stray)
+
+    assert "delete its Simulation invocation directory and start a fresh run" in str(excinfo.value)
 
 
 def test_reference_codec_rejects_unknown_fields_noncanonical_bytes_and_size() -> None:
@@ -381,8 +416,8 @@ def test_resolver_rejects_linked_reference_and_nested_path_components(tmp_path: 
         resolve_coverage_campaign_reference(target / "coverage.json")
 
     (target / "coverage.json").unlink()
-    actual_work_items = target / "campaign" / "work-items"
-    moved_work_items = target / "campaign" / "real-work-items"
+    actual_work_items = target / "record" / "work-items"
+    moved_work_items = target / "record" / "real-work-items"
     actual_work_items.rename(moved_work_items)
     actual_work_items.symlink_to(moved_work_items.name)
     (target / "coverage.json").write_bytes(encode_coverage_campaign_reference(value))
@@ -395,12 +430,12 @@ def test_resolver_rejects_attempt_identity_as_unrelated_path_substring(tmp_path:
     honest = _nested_campaign(target)
     misleading = (
         target
-        / "campaign"
+        / "record"
         / "work-items"
         / "prefix-0123456789abcdef-suffix"
         / "attempts"
         / f"0001-prefix-{_SIMULATION_ATTEMPT_ID}-suffix"
-        / "coverage-campaign"
+        / "coverage-record"
         / "coverage.json"
     )
     misleading.parent.mkdir(parents=True)

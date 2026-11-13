@@ -1,8 +1,16 @@
-"""Booley 0.3.0 Simulation Campaign records are refused with one actionable message."""
+"""Simulation records an older Booley wrote are refused with one actionable message.
+
+``tests/flows/fixtures/booley_0_3_0`` holds three invocation directories (``complete``,
+``interrupted`` and ``coverage``) that Booley 0.3.0's own ``SimulateFlow`` wrote, with only
+the simulator replaced. They are captured data, not test cases: each text file embeds
+its capture's temporary root, replaced by ``/booley-0.3.0-capture``; the lock files,
+run logs and simulator executables were dropped.
+"""
 
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,25 +27,63 @@ from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_in
 from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
+from booley.flows.sim.unpublished_results import read_unpublished_results
+from booley.goals.campaign_accounting import REASON_UNACCOUNTED
+from booley.goals.status import build_status
+from booley.goals.store import GoalStore
+from booley.harness.dashboard.model import project_goal
 from booley.targets.catalog import TargetCatalog
 from tests.flows.sim.campaign_test_support import _retained_invocation, coverage_invocation
 from tests.flows.sim.test_campaign_manifest_codec import _linked_campaign_stores, _manifest
 from tests.flows.sim.test_campaign_resume_diagnostics import _interrupted_campaign
 from tests.flows.sim.test_campaign_retention import _run_retention_cli
+from tests.goals.conftest import SIM_KEY, layout  # noqa: F401  (fixture)
+from tests.goals.test_campaign_accounting import (  # noqa: F401  (fixtures)
+    _Campaign,
+    campaign,
+    two,
+)
 
 _MANIFEST = "booley.simulation-campaign-manifest/"
 _RESULT_V2 = "booley.simulation-result/v2"
 _PROJECTION_V2 = "booley.simulation-projection/v2"
 _UNSUPPORTED = "UnsupportedSimulationCampaignFormatError"
+_FIXTURES = Path(__file__).parents[1] / "fixtures"
+
+
+@pytest.fixture
+def reports(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The report root of a Project whose Booley Directory is empty, inside the Sandbox."""
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    root = tmp_path / ".booley" / ".runtime" / "flow-reports"
+    root.mkdir(parents=True)
+    return root
+
+
+def copy_older_invocation(version: str, kind: str, reports: Path) -> Path:
+    """Put a captured ``complete``, ``interrupted`` or ``coverage`` run of *version* at ``sim/1``."""
+    source = _FIXTURES / f"booley_{version.replace('.', '_')}" / kind / "sim" / "1"
+    return Path(shutil.copytree(source, reports / "sim" / "1"))
 
 
 def _assert_refused(text: str, schema: str, invocation: Path | None = None) -> None:
-    """The one shape of every refusal: 0.3.0, the schema, the directory, no corruption wording."""
-    assert "written by Booley 0.3.0 and is no longer supported" in text
+    """The one shape of every refusal: an older Booley, the schema, the directory, nothing corrupt."""
+    assert "was written by an older Booley and is no longer supported" in text
     assert schema in text
     if invocation is not None:
-        assert f"delete the Simulation invocation directory {invocation} by hand" in text
-    for corrupt in ("integrity failure", "is invalid", "corrupt", "Traceback"):
+        assert (
+            f"delete the Simulation invocation directory {invocation} and start a fresh run"
+            in text
+        )
+    for corrupt in (
+        "integrity failure",
+        "is invalid",
+        "corrupt",
+        "cannot be read",
+        "unreadable",
+        "missing",
+        "Traceback",
+    ):
         assert corrupt not in text
 
 
@@ -80,29 +126,6 @@ def test_manifest_decoder_refuses_0_3_0_manifests(version: str) -> None:
     _assert_refused(str(excinfo.value), _MANIFEST + version)
 
 
-def test_resume_refuses_a_0_3_0_manifest_naming_its_invocation(tmp_path, monkeypatch) -> None:
-    reports, manifest, _executions = _interrupted_campaign(tmp_path, monkeypatch)
-    _rewrite(manifest, _as_030_manifest(manifest.read_bytes(), "v1"))
-
-    result = SimulateFlow().execute(
-        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
-    )
-
-    assert result.exit_code == 2
-    _assert_refused(result.outcome.report_text, _MANIFEST + "v1", reports / "sim/1")
-
-
-def test_full_prune_cli_refuses_a_0_3_0_manifest_naming_its_invocation(tmp_path) -> None:
-    reports, _project_data, store = _retained_invocation(tmp_path)
-    _as_030_invocation(store, "v2")
-
-    result = _run_retention_cli("--reports-root", str(reports), "--invocation", "1", "--full")
-
-    assert result.returncode == 2
-    _assert_refused(result.stderr, _MANIFEST + "v2", reports / "sim/1")
-    assert (reports / "sim/1").is_dir()
-
-
 def test_inspection_refuses_a_0_3_0_manifest_naming_its_invocation(tmp_path) -> None:
     reports, _project_data, store = _retained_invocation(tmp_path)
     _as_030_invocation(store, "v1")
@@ -112,26 +135,6 @@ def test_inspection_refuses_a_0_3_0_manifest_naming_its_invocation(tmp_path) -> 
 
     _assert_unsupported_type(excinfo.value)
     _assert_refused(str(excinfo.value), _MANIFEST + "v1", reports / "sim/1")
-
-
-def test_coverage_analysis_refuses_a_0_3_0_manifest_naming_its_invocation(
-    tmp_path, monkeypatch
-) -> None:
-    from booley.flows.sim.coverage_analysis_input import (
-        CoverageAnalysisError,
-        read_coverage_campaign,
-    )
-
-    run = coverage_invocation(tmp_path, monkeypatch)
-    reports, target = run.reports, run.target
-    manifest = target / "campaign/manifest.json"
-    _rewrite(manifest, _as_030_manifest(manifest.read_bytes(), "v2"))
-
-    with pytest.raises(CoverageAnalysisError) as excinfo:
-        read_coverage_campaign(target / "coverage.json")
-
-    _assert_refused(str(excinfo.value), _MANIFEST + "v2", reports / "sim/1")
-    assert "fully pruned" not in str(excinfo.value)
 
 
 def test_coverage_analysis_refuses_a_0_3_0_projection_naming_its_invocation(
@@ -190,32 +193,7 @@ def test_resume_refuses_a_0_3_0_cycle_count_baseline_naming_its_invocation(
     _assert_refused(str(excinfo.value), _MANIFEST + "v1", tmp_path / "reports" / "000001")
 
 
-def test_dependents_pruning_refuses_a_0_3_0_manifest_naming_its_invocation(tmp_path) -> None:
-    reports, _project_data, store = _retained_invocation(tmp_path)
-    _as_030_invocation(store, "v1")
-
-    with pytest.raises(CampaignRetentionError) as excinfo:
-        prune_invocation(reports, 1, include_dependents=True)
-
-    _assert_refused(str(excinfo.value), _MANIFEST + "v1", reports / "sim/1")
-
-
-def test_pruning_a_0_3_0_coverage_invocation_refuses_as_a_retention_error(
-    tmp_path, monkeypatch
-) -> None:
-    run = coverage_invocation(tmp_path, monkeypatch)
-    reports, target = run.reports, run.target
-    manifest = target / "campaign/manifest.json"
-    _rewrite(manifest, _as_030_manifest(manifest.read_bytes(), "v2"))
-
-    with pytest.raises(CampaignRetentionError) as excinfo:
-        prune_invocation(reports, 1)
-
-    _assert_refused(str(excinfo.value), _MANIFEST + "v2", reports / "sim/1")
-    assert (reports / "sim/1").is_dir()
-
-
-def test_full_prune_cli_refuses_a_0_3_0_coverage_campaign_naming_its_directory(
+def test_full_prune_cli_refuses_an_unsupported_nested_coverage_campaign_naming_its_directory(
     tmp_path, monkeypatch
 ) -> None:
     """``--full`` reaches the nested Coverage Campaign before any Simulation Campaign check."""
@@ -239,21 +217,18 @@ def test_full_prune_cli_refuses_a_0_3_0_coverage_campaign_naming_its_directory(
     assert run.campaign_path.is_file()
 
 
-def test_native_prune_cli_refuses_a_0_3_0_coverage_invocation_at_its_manifest(
-    tmp_path, monkeypatch
-) -> None:
-    """``--native-target`` inspects the Simulation Campaign first: its manifest is the marker."""
-    run = coverage_invocation(tmp_path, monkeypatch)
-    manifest = run.target / "campaign/manifest.json"
-    _rewrite(manifest, _as_030_manifest(manifest.read_bytes(), "v2"))
+def test_the_refusal_names_an_older_booley_and_what_to_do(reports: Path) -> None:
+    invocation = copy_older_invocation("0.3.0", "complete", reports)
 
-    result = _run_retention_cli(
-        "--reports-root", str(run.reports), "--invocation", "1", "--native-target", "sim_0"
+    with pytest.raises(ValueError) as excinfo:
+        CampaignStore(invocation / "targets" / "sim" / "campaign").load_manifest()
+
+    _assert_unsupported_type(excinfo.value)
+    assert str(excinfo.value) == (
+        f"Simulation Campaign manifest {_MANIFEST}v1 was written by an older Booley and is "
+        f"no longer supported; delete the Simulation invocation directory {invocation} "
+        "and start a fresh run"
     )
-
-    assert result.returncode == 2
-    _assert_refused(result.stderr, _MANIFEST + "v2", run.reports / "sim/1")
-    assert run.campaign_path.is_file()
 
 
 def test_a_schema_less_projection_cannot_authenticate_a_coverage_campaign() -> None:
@@ -305,7 +280,7 @@ def test_a_0_3_0_projection_is_refused_naming_its_invocation(tmp_path) -> None:
     projection.update(
         {
             "$schema": _PROJECTION_V2,
-            "campaign_id": store.load_manifest().document["campaign_id"],
+            "simulation_record_id": store.load_manifest().document["simulation_record_id"],
             "campaign_manifest": {},
         }
     )
@@ -327,9 +302,43 @@ def test_resume_ignores_a_leftover_project_child_registry(tmp_path, monkeypatch)
     def resumed(_executor, _request):
         raise KeyboardInterrupt("resume reached execution")
 
-    monkeypatch.setattr("booley.flows.sim.flow.OrdinaryHdlSerialExecutor.execute", resumed)
+    monkeypatch.setattr("booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor.execute", resumed)
 
     with pytest.raises(KeyboardInterrupt, match="resume reached execution"):
         SimulateFlow().execute(
             SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
         )
+
+
+# --- Goal status and the Dashboard (the Goal fixtures live under tests/goals, which the
+# broad run does not collect, so this reader is tested here) ---
+
+
+def test_an_older_layout_campaign_reads_as_refused_in_status_and_the_dashboard(
+    two: SimpleNamespace,  # noqa: F811 (fixture imported from tests/goals)
+    campaign: _Campaign,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    """An older Booley's record is refused as too old, never "cannot be read"."""
+    invocation = tmp_path / "reports" / "sim" / "1"
+    shutil.copytree(_FIXTURES / "booley_0_4_0" / "complete" / "sim" / "1", invocation)
+    campaign.manifest = invocation / "targets" / "sim" / "campaign" / "manifest.json"
+    campaign.start("run-1")
+    two.campaign_reader = read_unpublished_results
+
+    store = GoalStore(two.control)
+    view = build_status(
+        store, two.record, work_dir=two.worktree, campaign_reader=read_unpublished_results
+    )
+    dashboard = project_goal(store, two.record)
+
+    assert dashboard.status is not None
+    for goals in (view.goals, dashboard.status.goals):
+        goal = next(goal for goal in goals if goal.key == SIM_KEY)
+        assert goal.status == "unmet"
+        assert goal.reason.startswith(REASON_UNACCOUNTED)
+        assert "is refused: " in goal.reason
+        assert "was written by an older Booley and is no longer supported" in goal.reason
+        assert "targets/sim/campaign" in goal.reason
+        assert f"delete the Simulation invocation directory {invocation} and start" in goal.reason
+        assert "cannot be read" not in goal.reason

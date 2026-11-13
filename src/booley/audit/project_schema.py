@@ -14,6 +14,7 @@ from booley.audit.config_common import (
 )
 from booley.config.goals import parse_dashboard
 from booley.core.boundary import BoundaryError, as_dict, as_str, is_str_list, require_bool
+from booley.targets.flow_names import RETIRED_SPECIALIST_TO_FLOW
 
 KNOWN_BOOLEY_TOML_TABLES = frozenset(
     {
@@ -112,7 +113,15 @@ def audit_specialist_table(
                 fail_finding(f"{field} must be a table", "use enabled = true or false")
             )
             continue
-        if specialist_names is not None and name not in specialist_names:
+        if specialist_names is not None and name in RETIRED_SPECIALIST_TO_FLOW:
+            flow = RETIRED_SPECIALIST_TO_FLOW[name]
+            findings.append(
+                fail_finding(
+                    f"{field}: {name!r} is no longer a Specialist",
+                    f"replace [specialists.{name}] with [flows.{flow}]",
+                )
+            )
+        elif specialist_names is not None and name not in specialist_names:
             findings.append(
                 fail_finding(
                     f"{field}: {name!r} is not a discovered Specialist",
@@ -391,17 +400,31 @@ def audit_worktree_table(data: Mapping[str, Any]) -> ConfigTableAudit:
 
 
 def audit_jobs_table(data: Mapping[str, Any]) -> ConfigTableAudit:
-    """Validate the undocumented ``[jobs].memory_budget`` override."""
+    """Validate the undocumented ``[jobs].memory_budget`` override and ``[jobs.seats]``."""
     from booley.audit.resource_policy import configured_memory_budget
+    from booley.config.jobs import SeatCapError, parse_seat_caps
 
+    findings: list[Any] = []
     try:
         configured_memory_budget(data)
     except ValueError as exc:
-        return failure(
-            f"booley.toml {exc}",
-            'set [jobs].memory_budget to a positive size such as "24g", or delete it',
+        findings.extend(
+            failure(
+                f"booley.toml {exc}",
+                'set [jobs].memory_budget to a positive size such as "24g", or delete it',
+            ).findings
         )
-    return ConfigTableAudit()
+    try:
+        parse_seat_caps(data)
+    except SeatCapError as exc:
+        findings.extend(
+            failure(
+                f"booley.toml {exc}",
+                "set [jobs.seats] <tool> = <seats you own> (a positive whole number), "
+                "or delete the entry",
+            ).findings
+        )
+    return ConfigTableAudit(tuple(findings))
 
 
 def audit_goals_table(data: Mapping[str, Any]) -> ConfigTableAudit:

@@ -270,3 +270,20 @@ class TestHarnessInfraLines:
     def test_unrelated_dut_open_errors_remain_sva(self, line):
         assert sr.is_harness_infra_line(line) is False
         assert sr.count_sva_errors(line + "\n") == 1
+
+    @pytest.mark.parametrize("tool", ["Verilator", "iverilog", "cocotb"])
+    def test_has_simulation_timeout_finds_the_run_halfs_own_line(self, tool):
+        output = f"[sim] start\nERROR: {tool} simulation timed out (25s)\n"
+        assert sr.has_simulation_timeout(output) is True
+
+    @pytest.mark.parametrize(
+        "output",
+        [
+            "ERROR: fetch simulation timed out waiting for grant\n",
+            "$display: ERROR: Verilator simulation timed out (the TB says so inline)",
+            "ERROR: Verilator elaboration timed out (600s)\n",
+            "",
+        ],
+    )
+    def test_has_simulation_timeout_ignores_testbench_prose(self, output):
+        assert sr.has_simulation_timeout(output) is False

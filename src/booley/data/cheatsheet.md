@@ -16,6 +16,7 @@ the default Agent CLI (`booley chat --cli <name>` picks another allowed one).
 | `booley chat` | Explicit spelling of the Sandbox default `booley` command |
 | `booley dashboard` | Show sessions, Goals, and Jobs |
 | `booley flow` | List or directly run deterministic Booley Flows |
+| `booley measure` | Check `metrics.toml` with `--validate`; measuring is not available yet |
 | `booley specialist` | List or directly run visible Specialists |
 | `booley worktree` | Create, list, remove, or clean up idle linked worktrees (Paired Checkout or Snapshot) |
 
@@ -120,7 +121,7 @@ Goal is decided by its floors alone, whether or not its Test Runs passed.
 | `FPGA:{target}` | FPGA implementation completes within resource/timing budgets | `fpga` |
 | `CYCLE_COUNT:{target}` | A named test passes and its observed Cycle Count meets every declared threshold | `sim` |
 | `COVERAGE:{target}` | Native Coverage Campaign policy for one Simulation Target | `sim` (`coverage=true`) |
-| `MUTATION:{target}` | Mutation testing achieves minimum kill rate | `mutation_tester` |
+| `MUTATION:{target}` | Mutation testing achieves minimum kill rate | `mutation` |
 | `REVIEW:rtl_spec` | RTL review: spec compliance (RTL matches the Goal/spec, no more, no less) | `reviewer` (`category="rtl"`, `focus="spec"`) |
 | `REVIEW:rtl_bugs` | RTL review: bug patterns, synthesis hazards, and ifdef/config consistency (the RTL as hardware, not against the spec) | `reviewer` (`category="rtl"`, `focus="bugs"`) |
 | `REVIEW:rtl_protocol` | RTL review: bus/protocol compliance and clock-domain crossings (CDC) | `reviewer` (`category="rtl"`, `focus="protocol"`) |
@@ -237,6 +238,14 @@ BRAM/DSP/utilization are not clock-scopable):
 `critical_path_ps_max` ⊕ `fmax_mhz_min` is mutually exclusive **per clock**.
 Example: `{"family": "SYNTH", "target": "synth_core", "thresholds": {"clk_i.fmax_mhz_min": 400, "clk_2x.critical_path_ps_max": 5000}}`.
 
+### Metrics
+
+The listing from `booley cheat --metrics` is `metrics.toml` text: save the blocks you keep as `.booley/metrics.toml`, give each bound you keep a number, delete the rest, and check the file with `booley measure --validate`.
+
+<!-- BEGIN GENERATED: metrics -->
+Run `booley cheat --metrics` in a Project to list its Targets' metrics.
+<!-- END GENERATED: metrics -->
+
 ### Booley Flows
 
 <!-- BEGIN GENERATED: flows -->
@@ -248,6 +257,7 @@ Deterministic end-to-end orchestration; no LLM:
 | `lint` | Run lint for one or more Targets | `LINT:{target}` |
 | `synth` | Run ASIC synthesis for one or more Targets with optional baseline comparison | `SYNTH:{target}` |
 | `fpga` | Run FPGA implementation for one or more Targets with optional baseline comparison | `FPGA:{target}` |
+| `mutation` | Deterministic mutation testing: seeded Mutants from fixed Mutation Operators, each built and tested in isolation | `MUTATION:{target}` |
 
 Common controls: repeat `--target` or use comma-separated values; `--target a --target b,c` preserves the order `a`, `b`, `c`, and duplicate resolved Targets are rejected. MCP keeps one comma-separated `target` string. `--dry-run` returns a normalized plan without executing EDA; `booley flow <name> --help` shows the full contract.
 
@@ -257,12 +267,13 @@ Key Flow-specific controls:
 - `lint`: `--scope <file,...>` filters reported findings to selected files
 - `synth`: `--baseline <ref>` compares metrics against a git revision; physical Targets must own an SDC fileset that creates a clock
 - `fpga`: `--baseline <ref>` compares metrics against a git revision; `--ppa-profile compact|balanced|max_frequency` selects portable optimization intent; `--no-cache` forces a fresh implementation
+- `mutation`: `--target` names exactly one Simulation Target whose complete suite judges each Mutant; `--scope <rtl-file,...>` chooses mutation sites (default: the Target's own RTL, minus testbench, vendored, and generated files); `--count N|auto` sets the Mutant count (default 10; `auto` scales 3-25 from source size and the time budget) and `--min-detected K` the pass threshold (default ceil(0.8 x count)); `--seed <N>` (default 0) picks another reproducible Mutant set; `--dry-run` previews the count without running a simulator. A Mutant that fails to elaborate is `invalid` and not scored; a timed-out Mutant counts as `detected (timeout)`. A `MUTATION:{target}` Goal sets the same campaign with `total: N`, `min_detected: K`, or `auto: true` (default: 10 Mutants, 8 detected)
 <!-- END GENERATED: flows -->
 
 ### Specialists
 
 <!-- BEGIN GENERATED: specialists -->
-LLM-powered Specialists running in scoped, isolated workspaces:
+Specialists running in scoped, isolated workspaces:
 
 Ask your Developer Agent session to invoke a Specialist by name with the arguments below. Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--max-turns` and `--timeout` are CLI-only controls.
 
@@ -271,7 +282,6 @@ For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl
 | Specialist | Purpose | Sets | Modifies code |
 |------------|---------|------|:-------------:|
 | `coverage_analyst` | Explain one exact coverage.json Campaign and propose advisory next steps | — | — |
-| `mutation_tester` | Proposal-locked mutation testing: creator selects exact replacements, tester builds isolated variants | `MUTATION:{target}` | — |
 | `reviewer` | Single-focus code review: reports issues by severity | `REVIEW:rtl_spec`, `REVIEW:rtl_bugs`, `REVIEW:rtl_protocol`, `REVIEW:tb_quality`, `REVIEW:rtl_security`, `REVIEW:rtl_optimization`, `REVIEW:rtl_code_style` | — |
 
 #### `coverage_analyst`
@@ -305,22 +315,6 @@ Call the `reviewer` Specialist from your Developer Agent session with `category=
 **Goal Mode:** the Review Goal fixes scope, spec and verdict, so `scope`, `spec`, `spec_text`, `fail_on` and `steer` are refused. Declare each Review Goal with exactly one `target` or `paths` (see `booley cheat --goals`).
 
 **Verify fixes (both modes):** after fixing findings, call `reviewer` with `verify=true` (CLI: `--verify`). It rechecks only the latest review's open findings and finds nothing new; none remaining open is a pass. To argue a finding away, add `waive=[["<finding-id>", "<justification>"]]` (CLI: `--waive <finding-id> "<justification>"`, repeatable); the Reviewer accepts or rejects each. Outside Goal Mode `fail_on` (CLI: `--fail-on`) is the one other argument accepted with verify, and counts the findings still open. After repeated failed verifies, Goal Mode stops and asks you to change or abandon the Goal; Interactive Mode refuses further verifies.
-
-#### `mutation_tester`
-
-Proposal-locked mutation testing. A read-only LLM creator returns exact source replacements; Booley runs a pristine baseline, then compiles and tests each replacement in isolation. It does not parse HDL or inject runtime selectors.
-
-**Mutation campaign modes:**
-
-| Campaign | Goal arguments | Interactive Mode arguments |
-|----------|-----------------------------------------|------------------------|
-| Default fixed | Target campaign with `target` + `scope` — generate 10 mutations and require all 10 detected | _(no goal arguments)_ — the same 10-of-10 campaign |
-| Explicit fixed | add `total: N` and `min_detected: K` | `count="N"` requires all N; add `min_detected=K` to require K |
-| Size-scaled | add `auto: true` — choose 3-25 mutations from language-neutral source size and the time budget | `count="auto"`; add `min_detected=K` for an explicit threshold |
-
-`dry_run=true` validates Target metadata and prints the source-size breakdown and proposed auto count without invoking a Specialist or simulator.
-
-Call the `mutation_tester` Specialist from your Developer Agent session: `scope="<rtl-file,...>"` chooses mutation sites; `target="<sim-target>"` chooses exactly one complete runnable Target suite; `steer=["<context>"]` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `regen_lock=true`. The Target supplies the testbench top and complete RTL closure; they are not separate caller inputs.
 <!-- END GENERATED: specialists -->
 
 Booley validates exact replacements and compiles each in isolation. It emits a
@@ -356,7 +350,7 @@ the design sources they describe.
 | File | Information | Affects |
 |------|-------------|---------|
 | `booley.toml` | Project, Flow, provider, Sandbox, and Job policy | All Flows and Specialists |
-| `tests.toml` | Per-Target Tests, Test Variants, seeds, skips, environment | `sim`, `mutation_tester` |
+| `tests.toml` | Per-Target Tests, Test Variants, seeds, skips, environment | `sim`, `mutation` |
 | `goalsets/*.md` | Project-owned Goal bundles and optional default | `/booley-goal` |
 | `doctor-waivers.toml` | Reviewed warning waivers and expiry | No endpoint; `doctor` only |
 | `AGENTS.md` | Project instructions, ownership, and gotchas | Developer Agent and Specialists |

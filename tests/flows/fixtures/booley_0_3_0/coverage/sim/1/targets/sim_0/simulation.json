@@ -1,0 +1,51 @@
+{
+  "$schema": "booley.simulation-projection/v2",
+  "campaign_id": "46fb4084-1f43-435c-b346-ad65ee0b0a39",
+  "campaign_manifest": {
+    "bytes": 3195,
+    "kind": "simulation_campaign_manifest",
+    "owner": "46fb4084-1f43-435c-b346-ad65ee0b0a39",
+    "path": "campaign/manifest.json",
+    "path_base": "origin_target",
+    "sha256": "sha256:91a071862677ee7f421ff7e60a45ff1f1663a3ca698745e099a4c1bf2cf1dc99"
+  },
+  "collection": "complete",
+  "complete": true,
+  "coverage_campaign": {
+    "bytes": 851,
+    "kind": "coverage_campaign_reference",
+    "owner": "46fb4084-1f43-435c-b346-ad65ee0b0a39",
+    "path": "coverage.json",
+    "path_base": "origin_target",
+    "sha256": "sha256:02a8cf3d73de2ca17381d9963b422965756baf555e3d295e516c10be937a63eb"
+  },
+  "evaluation": "not_requested",
+  "flow": "sim",
+  "inconclusive": false,
+  "mode": "simulate",
+  "passed": true,
+  "target": "sim_0",
+  "target_identity": "acme:demo:counter:1#sim_0",
+  "tests": [
+    {
+      "cycles": null,
+      "error_tail": "",
+      "execution": "completed",
+      "failure_kind": "",
+      "name": "reset",
+      "passed": true,
+      "sva_errors": 0,
+      "timed_out": false
+    },
+    {
+      "cycles": null,
+      "error_tail": "",
+      "execution": "completed",
+      "failure_kind": "",
+      "name": "wrap",
+      "passed": true,
+      "sva_errors": 0,
+      "timed_out": false
+    }
+  ]
+}

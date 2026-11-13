@@ -1,0 +1,9 @@
+{
+  "$schema": "booley.simulation-campaign-dependency/v1",
+  "campaign_id": "db5d60d9-43cd-46f3-9da5-8288c8cf9f57",
+  "dependent_invocation": "/booley-0.4.0-capture/reports/sim/2",
+  "dependent_invocation_id": 2,
+  "manifest_sha256": "sha256:e9b97de5ddc475d9b8be9b9444dbee3934d474ad2d15f7f4cb5c9f7b474a3624",
+  "origin_invocation": "/booley-0.4.0-capture/reports/sim/1",
+  "origin_target": "/booley-0.4.0-capture/reports/sim/1/targets/sim_0"
+}

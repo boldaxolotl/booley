@@ -208,6 +208,7 @@ def test_doctor_reads_session_state_from_main(worktree, monkeypatch):
         "_check_git_state",
         "_check_repo_footprint",
         "_check_custom_endpoints_and_criteria",
+        "_check_disabled_endpoints",
     ):
         monkeypatch.setattr(doctor, name, lambda *_a, **_kw: None)
     project = SimpleNamespace(

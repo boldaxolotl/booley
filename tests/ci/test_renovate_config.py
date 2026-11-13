@@ -25,6 +25,7 @@ import re
 import shlex
 import sys
 import tomllib
+from collections import Counter
 from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
@@ -53,8 +54,6 @@ _VENDORED_MANIFEST = "crates/bwave/vendor/fst-writer/Cargo.toml"
 _EDA_DOC = "docs/user/SUPPORTED-EDA-TOOLS.md"
 _SESSION_CONTRACT = ".github/contracts/session-runtime.toml"
 _TROUBLESHOOTING = "docs/user/TROUBLESHOOTING.md"
-_TROUBLESHOOTING_PACKAGED = "src/booley/data/docs/TROUBLESHOOTING.md"
-_EDA_DOC_PACKAGED = "src/booley/data/docs/SUPPORTED-EDA-TOOLS.md"
 _VERILATOR_IDENTITY = "src/booley/flows/sim/verilator_identity.py"
 _DEVCONTAINER = "src/booley/runtime/devcontainer.py"
 _VAPORVIEW_MODULE = "src/booley/runtime/vaporview.py"
@@ -78,7 +77,7 @@ _ACTIONLINT = "rhysd/actionlint"
 # Every literal copy of a canonical pin that Renovate must rewrite with it: (file,
 # dependency, number of places). A reworded line or a new copy fails the extraction test
 # below until this table and renovate.json agree.
-_AUTHORED_COPIES: tuple[tuple[str, str, int], ...] = (
+_COPIES: tuple[tuple[str, str, int], ...] = (
     (_SESSION_CONTRACT, _VERILATOR, 1),
     (_EDA_DOC, _VERILATOR, 1),
     (_VERILATOR_IDENTITY, _VERILATOR, 1),
@@ -98,25 +97,17 @@ _AUTHORED_COPIES: tuple[tuple[str, str, int], ...] = (
     (_EDA_DOC, _SPIKE, 1),
     (_VAPORVIEW_MODULE, _VAPORVIEW, 1),
     (_TROUBLESHOOTING, _VAPORVIEW, 3),
-    (_TROUBLESHOOTING_PACKAGED, _VAPORVIEW, 3),
     (_DEVCONTAINER, _HDL, 1),
     (_SESSION_CONTRACT, _HDL, 1),
     (_TROUBLESHOOTING, _HDL, 1),
-    (_TROUBLESHOOTING_PACKAGED, _HDL, 1),
     (_DEVCONTAINER, _LIVE_SERVER, 1),
     (_SESSION_CONTRACT, _LIVE_SERVER, 1),
     (_TROUBLESHOOTING, _LIVE_SERVER, 1),
-    (_TROUBLESHOOTING_PACKAGED, _LIVE_SERVER, 1),
     (_EDA_DOC, _UBUNTU, 1),
     (_DOCKERFILE_BASE, _UBUNTU, 1),
     (_DOCKERFILE_BASE, _OPENROAD_BUILDER, 1),
     (_DOCKERFILE_BASE, _OPENROAD_EDA_BUILDER, 1),
 )
-# The generated packaged copy of the supported-tools doc carries every pin its source does.
-_COPIES: tuple[tuple[str, str, int], ...] = _AUTHORED_COPIES + tuple(
-    (_EDA_DOC_PACKAGED, dep, count) for file, dep, count in _AUTHORED_COPIES if file == _EDA_DOC
-)
-
 # Directories that hold the pins Renovate tracks outside Python and Rust manifests.
 _PIN_ROOTS = (
     ".github/actions",
@@ -554,8 +545,9 @@ def _pyproject_names(table: str) -> set[str]:
 
 
 def _requirement_name(requirement: str) -> str:
-    """Return the lower-cased distribution name of a PEP 508 requirement string."""
-    return re.split(r"[^A-Za-z0-9._-]", requirement, maxsplit=1)[0].lower()
+    """Return the PEP 503 normalized distribution name of a PEP 508 requirement string."""
+    name = re.split(r"[^A-Za-z0-9._-]", requirement, maxsplit=1)[0]
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def test_shared_pins_share_one_group() -> None:
@@ -599,6 +591,254 @@ def test_shared_pins_share_one_group() -> None:
         )
         dep = _Dep("docker.io/library/ubuntu", dockerfile, "docker", "dockerfile", "stage")
         assert _resolve(dep)["groupName"] == "sandbox-base", dockerfile
+
+
+def _repeated_pins(path: str, text: str) -> list[str]:
+    """Name each distribution that a manifest writes more than once.
+
+    The Python managers (Renovate 44.219.0) keep one dependency per name per file, so a
+    second copy of a pin in the same file is never rewritten and goes stale (#3475).
+    ``pyproject.toml`` counts the runtime dependencies and every extra; a self-reference
+    (``booley-rtl[extra]``) is not a pin and is asserted to carry no version. A
+    requirements file counts its ``name==version`` lines.
+    """
+    names: list[str] = []
+    if path.endswith("pyproject.toml"):
+        project = tomllib.loads(text)["project"]
+        own_name = _requirement_name(project["name"])
+        declared = list(project.get("dependencies", ()))
+        for extra in project.get("optional-dependencies", {}).values():
+            declared.extend(extra)
+        for requirement in declared:
+            name = _requirement_name(requirement)
+            if name == own_name:
+                assert re.fullmatch(rf"{re.escape(project['name'])}\[[\w,.-]+\]", requirement), (
+                    f"{path}: self-reference {requirement!r} must name extras only"
+                )
+                continue
+            names.append(name)
+    else:
+        names = list(_pins_in_order(text))
+    return [
+        f"{path} writes {name} {count} times"
+        for name, count in sorted(Counter(names).items())
+        if count > 1
+    ]
+
+
+def _pins_in_order(text: str) -> list[str]:
+    """Lower-cased names of every exact ``name==version`` line, repeats kept."""
+    return [
+        found[1].lower().replace("_", "-")
+        for line in text.splitlines()
+        if (found := re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9._-]*)==(\S+)", line.strip()))
+    ]
+
+
+_SINGLE_PIN_MANIFESTS = (
+    "pyproject.toml",
+    *(
+        path.relative_to(_ROOT).as_posix()
+        for path in sorted((_ROOT / ".github/ci").glob("requirements-*.txt"))
+    ),
+    f"{_DOCKER_DIR}/base-python-requirements.txt",
+    "website/requirements.txt",
+)
+
+
+def test_manifests_write_each_pin_once() -> None:
+    """AC4: a pin Renovate updates has no second copy in its file that it would skip.
+
+    Renovate's Python managers extract one dependency per name per file, so the narrow
+    extras and ``dev`` must not both spell a pin: ``dev`` refers to the other extras
+    (``booley-rtl[test]``) instead. Copies across files stay covered by
+    ``test_shared_pins_share_one_group``.
+    """
+    repeated = [
+        message for path in _SINGLE_PIN_MANIFESTS for message in _repeated_pins(path, _text(path))
+    ]
+    assert repeated == []
+
+
+def test_repeated_pin_is_reported() -> None:
+    """AC4: the guard fails on a repeated pin and ignores a self-reference."""
+    project = (
+        '[project]\nname = "demo"\nversion = "0"\ndependencies = []\n'
+        "[project.optional-dependencies]\n"
+        'quality = ["ruff==1", "pyright==2"]\n'
+        'dev = ["ruff==1", "pyright==2"]\n'
+    )
+    assert _repeated_pins("pyproject.toml", project) == [
+        "pyproject.toml writes pyright 2 times",
+        "pyproject.toml writes ruff 2 times",
+    ]
+    spelled = project.replace('pyright==2"]\ndev', 'foo_bar==1"]\ndev').replace(
+        'dev = ["ruff==1", "pyright==2"]', 'dev = ["foo-bar==1"]'
+    )
+    assert _repeated_pins("pyproject.toml", spelled) == ["pyproject.toml writes foo-bar 2 times"]
+    composed = project.replace('dev = ["ruff==1", "pyright==2"]', 'dev = ["demo[quality]"]')
+    assert _repeated_pins("pyproject.toml", composed) == []
+    assert _repeated_pins("requirements-x.txt", "a==1\nA==2\nb==3\n") == [
+        "requirements-x.txt writes a 2 times"
+    ]
+    versioned = composed.replace("demo[quality]", "demo[quality]>=1")
+    with pytest.raises(AssertionError, match="self-reference"):
+        _repeated_pins("pyproject.toml", versioned)
+
+
+# A version hold: a comment block directly above an exact pin whose text says
+# ``hold <version>``. Renovate learns it from a rule with ``allowedVersions`` (#3475).
+_HOLD_COMMENT = re.compile(r"\bhold (\d\S*?)\.?(?:\s|$)", re.IGNORECASE)
+
+
+def _holds(text: str) -> dict[str, str]:
+    """Map each held name to its version, read from the comments above pins."""
+    holds: dict[str, str] = {}
+    block: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            block.append(stripped.lstrip("# ").strip())
+            continue
+        # A quoted pyproject entry (`"name==1",`) or a bare requirements line (`name==1`).
+        pin = re.fullmatch(r'"?([A-Za-z0-9][A-Za-z0-9._-]*)==([^"\s]+?)"?,?', stripped)
+        found = _HOLD_COMMENT.search(" ".join(block))
+        if found and pin:
+            assert pin[2] == found[1], (
+                f"{pin[1]} is pinned {pin[2]} but its comment holds {found[1]}"
+            )
+            holds[pin[1].lower()] = found[1]
+        block = []
+    return holds
+
+
+def _held_by_rules(rules: list[dict[str, Any]]) -> dict[str, str]:
+    """Map each name a rule restricts with ``allowedVersions`` to the version it holds."""
+    held: dict[str, str] = {}
+    for rule in rules:
+        if "allowedVersions" not in rule:
+            continue
+        names = rule.get("matchPackageNames", [])
+        assert len(names) == 1, f"a hold rule names exactly one package: {rule}"
+        allowed = rule["allowedVersions"]
+        assert re.fullmatch(r"==\S+", allowed), f"a hold is an exact version, got {allowed!r}"
+        assert rule.get("description", "").startswith("Hold:"), f"describe the hold: {names[0]}"
+        held[names[0].lower()] = allowed.removeprefix("==")
+    return held
+
+
+def _hold_disagreements(text: str, rules: list[dict[str, Any]]) -> list[str]:
+    """Return one sentence per way the manifest holds and the Renovate rules disagree."""
+    in_manifest = _holds(text)
+    in_rules = _held_by_rules(rules)
+    reasons = [
+        f"{name} is held only in a comment"
+        for name in sorted(in_manifest.keys() - in_rules.keys())
+    ]
+    reasons += [
+        f"{name} is held only in a rule" for name in sorted(in_rules.keys() - in_manifest.keys())
+    ]
+    reasons += [
+        f"{name} is held at {in_manifest[name]} in a comment and {in_rules[name]} in a rule"
+        for name in sorted(in_manifest.keys() & in_rules.keys())
+        if in_manifest[name] != in_rules[name]
+    ]
+    return reasons
+
+
+def test_version_holds_agree_with_renovate_rules() -> None:
+    """AC3/AC5: every hold recorded beside a pin is a Renovate restriction, and no other exists."""
+    # Every manifest Renovate updates, so a hold in a requirements file is checked too.
+    manifests = "\n".join(_text(path) for path in _SINGLE_PIN_MANIFESTS)
+    assert _hold_disagreements(manifests, _rules()) == []
+    for name in _holds(_text("pyproject.toml")):
+        dep = _Dep(name, "pyproject.toml", "pypi", "poetry", "project.optional-dependencies")
+        resolved = _resolve(dep)
+        assert resolved["allowedVersions"] == f"=={_holds(_text('pyproject.toml'))[name]}", name
+        assert resolved["groupName"] == "dev-python", name
+
+
+_FIXTURE_PIN = '    "coverage==7.17.0",\n'
+_FIXTURE_RULE = {
+    "description": "Hold: reason.",
+    "matchPackageNames": ["coverage"],
+    "allowedVersions": "==7.17.0",
+}
+
+
+@pytest.mark.parametrize(
+    ("text", "rules", "expected"),
+    [
+        pytest.param(
+            "    # Upstream bug; hold 7.17.0 until fixed.\n" + _FIXTURE_PIN,
+            [_FIXTURE_RULE],
+            [],
+            id="agree",
+        ),
+        pytest.param(
+            "    # Upstream bug; hold 7.17.0 until fixed.\n" + _FIXTURE_PIN,
+            [],
+            ["coverage is held only in a comment"],
+            id="comment-without-rule",
+        ),
+        pytest.param(
+            _FIXTURE_PIN,
+            [_FIXTURE_RULE],
+            ["coverage is held only in a rule"],
+            id="rule-without-comment",
+        ),
+        pytest.param(
+            "    # Upstream bug; hold 7.17.1 until fixed.\n" + _FIXTURE_PIN.replace('0"', '1"'),
+            [_FIXTURE_RULE],
+            ["coverage is held at 7.17.1 in a comment and 7.17.0 in a rule"],
+            id="comment-version-differs-from-rule",
+        ),
+        pytest.param(
+            "# Upstream bug; hold 7.17.0 until fixed.\ncoverage==7.17.0\n",
+            [],
+            ["coverage is held only in a comment"],
+            id="requirements-file-comment-without-rule",
+        ),
+        pytest.param(
+            "    # The pair holds them equal.\n" + _FIXTURE_PIN,
+            [],
+            [],
+            id="holds-equal-is-not-a-hold",
+        ),
+        pytest.param(
+            "    # Upstream bug until fixed, hold 7.17.0.\n" + _FIXTURE_PIN,
+            [_FIXTURE_RULE],
+            [],
+            id="hold-at-end-of-comment",
+        ),
+    ],
+)
+def test_hold_disagreement_is_reported(
+    text: str, rules: list[dict[str, Any]], expected: list[str]
+) -> None:
+    """AC5: the comparison fails when the comment and the rule disagree."""
+    assert _hold_disagreements(text, rules) == expected
+
+
+def test_hold_pin_must_match_its_comment() -> None:
+    """AC5: a comment that holds one version above a pin of another fails."""
+    with pytest.raises(AssertionError, match=r"holds 7\.17\.1"):
+        _holds("    # Bug; hold 7.17.1 until fixed.\n" + _FIXTURE_PIN)
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        {**_FIXTURE_RULE, "matchPackageNames": ["coverage", "ruff"]},
+        {**_FIXTURE_RULE, "allowedVersions": "<7.17.1"},
+        {**_FIXTURE_RULE, "description": "Keep it."},
+    ],
+    ids=["two-packages", "range-not-exact", "description-not-hold"],
+)
+def test_malformed_hold_rule_is_rejected(rule: dict[str, Any]) -> None:
+    """AC5: a rule restricts versions only as a documented single-package exact hold."""
+    with pytest.raises(AssertionError):
+        _held_by_rules([rule])
 
 
 def test_release_age_applies_only_to_timestamped_datasources() -> None:
@@ -1012,6 +1252,21 @@ def test_every_listed_copy_is_extracted_with_its_canonical_value() -> None:
     patterns = [p for m in _config()["customManagers"] for p in m["managerFilePatterns"]]
     for path in _historical_paths():
         assert not _file_pattern_matches(patterns, path), f"{path} is a dated record"
+
+
+def test_no_manager_names_rendered_doc_copies() -> None:
+    """The packaged doc copies are Git-ignored build output; no rule may track them (#3658)."""
+    config = _config()
+    rendered = "src/booley/data/docs/CONFIG.md"
+    patterns = [
+        pattern
+        for manager in config["customManagers"]
+        for pattern in manager["managerFilePatterns"]
+    ]
+    names = [name for rule in config["packageRules"] for name in rule.get("matchFileNames", [])]
+    assert not [pattern for pattern in patterns if "data/docs" in pattern]
+    assert not [name for name in names if name.startswith("src/booley/data/docs")]
+    assert not _file_pattern_matches(patterns, rendered)
 
 
 def test_copy_match_strings_use_only_re2_syntax() -> None:

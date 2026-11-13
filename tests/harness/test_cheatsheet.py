@@ -120,6 +120,18 @@ class TestSectionsMatchCheatsheet:
 
 
 class TestCheatCommand:
+    @pytest.fixture(autouse=True)
+    def _short_metrics_listing(self, monkeypatch):
+        """Serve a short listing: these tests run in the source checkout, which has no Targets.
+
+        The listing's raw TOML lines are exempt from wrapping by design, so the stub keeps
+        them short and the tests check the Metrics section's own prose and layout.
+        """
+        monkeypatch.setattr(
+            "booley.measurement.metrics_listing.render_metrics_listing",
+            lambda _root: "[sim_core.sim]\ntests_failed_max =  # tests, plain",
+        )
+
     @staticmethod
     def _parse(argv):
         return tlr._build_parser().parse_args(argv)
@@ -171,6 +183,7 @@ class TestCheatCommand:
         assert (
             out.index("\nCommands\n")
             < out.index("\nGoal Mode\n")
+            < out.index("\nMetrics\n")
             < out.index("\nBooley Flows\n")
             < out.index("\nSpecialists\n")
             < out.index("\nProject Files\n")
@@ -217,13 +230,14 @@ class TestCheatCommand:
         flows_out = capsys.readouterr().out
         assert "Booley Flows" in flows_out
         assert "\n  sim " in flows_out
+        assert "\n  mutation " in flows_out
         assert "review_rtl_protocol" not in flows_out
 
         assert tlr._cmd_cheat(self._parse(["cheat", "--specialists"]), Path.cwd()) == 0
         specialists_out = capsys.readouterr().out
         assert "Specialists" in specialists_out
         assert "REVIEW:rtl_protocol" in specialists_out
-        assert "Target campaign with target + scope" in specialists_out
+        assert "\n  mutation " not in specialists_out  # a Flow, not a Specialist
         assert "\n  sim " not in specialists_out
 
     def _stub_terminal(self, monkeypatch, *, tty: bool, columns: int = 100, color: bool = False):

@@ -12,6 +12,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from booley.flows.sim.campaign.codec import MANIFEST_SCHEMA
+
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "qa/missions/picorv32/fixtures/simulation-campaign"
 
@@ -28,7 +30,7 @@ def _validator():
 
 def _manifest(names: list[str]) -> dict[str, object]:
     return {
-        "$schema": "booley.simulation-campaign-manifest/v1",
+        "$schema": MANIFEST_SCHEMA,
         "required_suite": {"names": ["quick", "slow", "tail"]},
         "fingerprints": {"workload_sha256": "sha256:" + "1" * 64},
         "work_items": [{"selection": {"kind": "named", "names": [name]}} for name in names],
@@ -59,15 +61,23 @@ def test_fixture_testbench_runs_under_icarus_with_project_sentinel() -> None:
     assert '$display("ALL TESTS PASSED.");' in testbench
 
 
-@pytest.mark.parametrize("version", [1, 2, 3])
-def test_validator_preserves_requested_work_item_order(tmp_path: Path, version: int) -> None:
+def test_validator_preserves_requested_work_item_order(tmp_path: Path) -> None:
     manifest = tmp_path / "manifest.json"
     document = _manifest(["tail", "quick"])
-    document["$schema"] = f"booley.simulation-campaign-manifest/v{version}"
     manifest.write_text(json.dumps(document, sort_keys=True) + "\n")
     result = _validator().validate(manifest, ["tail", "quick"])
     assert result["selection"] == ["tail", "quick"]
     assert result["work_items"] == 2
+
+
+@pytest.mark.parametrize("version", [1, 2, 3, 4])
+def test_validator_rejects_retired_manifest_schema(tmp_path: Path, version: int) -> None:
+    manifest = tmp_path / "manifest.json"
+    document = _manifest(["quick"])
+    document["$schema"] = f"booley.simulation-campaign-manifest/v{version}"
+    manifest.write_text(json.dumps(document, sort_keys=True) + "\n")
+    with pytest.raises(ValueError, match="unexpected manifest schema"):
+        _validator().validate(manifest, ["quick"])
 
 
 def test_validator_rejects_catalog_reordering(tmp_path: Path) -> None:
@@ -87,9 +97,9 @@ def test_validator_rejects_duplicate_expected_selection(tmp_path: Path) -> None:
 def _campaign_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
     """Write a manifest, summary and v2 projection in the on-disk Target layout."""
     target = tmp_path / "targets" / "sim_campaign"
-    manifest = target / "campaign" / "manifest.json"
+    manifest = target / "record" / "manifest.json"
     manifest.parent.mkdir(parents=True)
-    manifest_document = _manifest(["tail", "quick"]) | {"campaign_id": "campaign-1"}
+    manifest_document = _manifest(["tail", "quick"]) | {"simulation_record_id": "campaign-1"}
     manifest.write_text(json.dumps(manifest_document, sort_keys=True) + "\n")
     raw = manifest.read_bytes()
     summary = manifest.parent / "summary.json"
@@ -100,7 +110,7 @@ def _campaign_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
     projection = target / "simulation.json"
     reference = {
         "path_base": "origin_target",
-        "path": "campaign/manifest.json",
+        "path": "record/manifest.json",
         "kind": "simulation_campaign_manifest",
         "owner": "campaign-1",
         "bytes": len(raw),

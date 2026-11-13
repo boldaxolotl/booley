@@ -21,6 +21,7 @@ here to look up what a setting means and what its default is.
 | `[flows.lint]` | [Lint](FLOW-LINT.md#configuration-flowslint) |
 | `[flows.synth]` | [ASIC synthesis](FLOW-SYNTH.md#configuration-flowssynth) |
 | `[flows.fpga]` | [FPGA implementation](FLOW-FPGA.md#configuration-flowsfpga) |
+| `[flows.mutation]` | [Mutation testing](FLOW-MUTATION.md#configuration-flowsmutation) |
 | `[sandbox]`, host `config.toml`, custom images | [SANDBOX.md](SANDBOX.md) |
 | `[eda.<tool>]` | [Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning) |
 | `[stealth]` | [STEALTH.md](STEALTH.md) |
@@ -127,8 +128,15 @@ then warns when `[sandbox].memory` can't hold `max_heavy` heavy Jobs plus the
 agents. With `max_heavy` above 1, a simulation campaign also runs independent
 tests in parallel.
 
-Caps apply to one Project. They don't share commercial license seats between
-Projects.
+Caps apply to one Project.
+
+<details markdown>
+<summary>With host-installed licensed tools</summary>
+
+Caps don't share commercial license seats between Projects. See
+[Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning).
+
+</details>
 
 ### Job resource history
 
@@ -237,7 +245,9 @@ Decides where `booley chat` starts when you run it from the main checkout:
 
 - `auto`: in the main checkout when no other Booley session is using it,
   otherwise in a new worktree `s<N>` on branch `booley/s<N>`.
-- `always`: always in a new worktree.
+- `always`: always in a new worktree; if the main checkout was free, the launch
+  holds it until its session ends, so a later `auto` launch starts in a
+  worktree too.
 - `never`: always in the main checkout.
 
 `booley chat --new-worktree` and `--here` override it for one launch. Any other
@@ -260,10 +270,11 @@ default = "claude"
 reviewer = "gpt-6-astra"   # runs on Codex
 ```
 
-The `[models]` keys are `reviewer`, `mutation_tester`, and `coverage_analyst`.
-Any other key, a model that is neither `claude-*` nor `gpt-*`, or a model whose
-CLI isn't in `clis` stops Booley from loading the config, and `booley doctor`
-names the entry. The Developer Agent itself uses your Agent CLI's own model
+The `[models]` keys are `reviewer` and `coverage_analyst`. Any other key, a
+model that is neither `claude-*` nor `gpt-*`, or a model whose CLI isn't in
+`clis` stops Booley from loading the config, and `booley doctor`
+names the entry. A leftover `mutation_tester` key is such a key: mutation testing
+is now a [Flow](FLOW-MUTATION.md) and uses no model, so delete it. The Developer Agent itself uses your Agent CLI's own model
 setting, not this table.
 
 A Specialist without an entry, and Booley's own small internal steps, use the
@@ -342,10 +353,18 @@ so the report still reads. `redact_extra` terms are replaced too, as are any
 `[stealth]` `banned_words` and `banned_substrings` you set.
 
 **Kept**, because a report without them can't be acted on: EDA tool names and
-versions, error text, tracebacks, and timing and area numbers. That reveals
-which commercial EDA tools you license, and a design name that appears only
-inside a quoted log line slips through. Attached log tails are redacted with the
-rest, but a log line is arbitrary text, so read them in the shared file.
+versions, error text, tracebacks, and timing and area numbers. A design name
+that appears only inside a quoted log line slips through. Attached log tails
+are redacted with the rest, but a log line is arbitrary text, so read them in
+the shared file.
+
+<details markdown>
+<summary>With host-installed licensed tools</summary>
+
+Kept tool names reveal which commercial EDA tools you license. See
+[Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning).
+
+</details>
 
 Redaction is a best-effort list, not a guarantee. For an open-source design
 whose module names are already public, `redact_identifiers = false` gives the
@@ -381,8 +400,8 @@ description](TARGETS.md#design-description-core)). Two extension points remain
 for what a `.core` can't express:
 
 - **A build step per test**, such as compiling the selected test's firmware or
-  staging vectors: [Pre-run
-  commands](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands).
+  staging vectors: [Pre-Sim
+  Commands](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands).
 - **A new kind of check** with its own pass criteria: a custom MCP tool, below.
 
 The EDA tools Booley supports are listed in

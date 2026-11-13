@@ -15,7 +15,7 @@ from booley.flows.execution_persistence import (
     state_persistence_for,
 )
 from booley.flows.request import FlowRequest
-from booley.flows.sim.flow import _with_frozen_runs_of_a_diagnostic_run
+from booley.flows.sim.campaign_presentation import _with_frozen_runs_of_a_diagnostic_run
 from booley.goals.flow_execution import GoalFlowExecution
 from booley.goals.paths import record_paths
 from booley.goals.presentation import goal_presentation

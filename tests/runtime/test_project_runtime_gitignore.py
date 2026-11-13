@@ -32,7 +32,7 @@ RUNTIME_PATHS = (
     ".runtime/traces/results.json",
     ".runtime/compiler-cache/cache-tag",
     ".runtime/sessions/log.json",
-    ".runtime/mutation_tester/mutant.sv",
+    ".runtime/mutation/mutant.sv",
     ".runtime/executions/id/.record.json.tmp",
     ".runtime/campaign-child-executions/entries/id.json",
     ".managed/project-git-hooks.pyz",
@@ -206,7 +206,7 @@ def _publish_goal_and_ticket(root, data, repo):
 
 def _publish_logs_and_cache(root, data, repo):
     """Build/trace logs, mutation proposals, diagnostics, MCP transcripts."""
-    from booley.dev_support.mutation_lock import LockMeta, lock_json_path, save_lock
+    from booley.flows.mutation import workspace as mutation_workspace
     from booley.flows.run_log import write_run_log
     from booley.flows.sim.trace_session import TraceSession
     from booley.runtime.booley_dir import runtime_dir
@@ -223,8 +223,10 @@ def _publish_logs_and_cache(root, data, repo):
         outputs.append(write_run_log(directory, "actual diagnostic publication\n"))
         assert outputs[-1].is_file()
         assert_clean(repo)
-    save_lock(LockMeta(), runtime)
-    outputs.append(lock_json_path(runtime))
+    mutant_log = mutation_workspace.mutant_logs_dir(runtime) / "mutant_1.log"
+    mutant_log.parent.mkdir(parents=True, exist_ok=True)
+    mutant_log.write_bytes(b"mutant simulator output\n")
+    outputs.append(mutant_log)
     assert outputs[-1].is_file()
     assert_clean(repo)
     trace = TraceSession(runtime / "traces", backend="verilator", target="sim", test="smoke")
@@ -371,7 +373,7 @@ def test_campaign_publications_and_run_lock_keep_project_clean(versioned_project
         work_item_key="smoke",
         attempt_key="first",
     )
-    identity = {"campaign_id": "audit", "work_item_id": "smoke", "attempt_id": "first"}
+    identity = {"simulation_record_id": "audit", "work_item_id": "smoke", "attempt_id": "first"}
     with claimed_run_directory(run, identity=identity) as directory:
         assert (directory / ".booley-simulation-attempt.json").is_file()
         assert run.lock_path.is_file()
@@ -425,11 +427,10 @@ def test_ignored_evidence_is_omitted_from_specialist_visible_inputs(versioned_pr
     assert all((data / name).relative_to(repo) not in visible for name in NEW_RUNTIME_PATHS)
 
 
-def test_specialist_session_and_mutation_round_storage_keep_project_clean(
+def test_specialist_session_and_mutation_log_storage_keep_project_clean(
     versioned_project, monkeypatch
 ):
-    from booley.dev_support.mutation_lock import verification_rounds_dir
-    from booley.specialists.mutation_tester import MutationTesterSpecialist, VerificationOutcome
+    from booley.flows.mutation import workspace as mutation_workspace
     from booley.specialists.reviewer import ReviewerSpecialist
 
     root, data, repo = versioned_project
@@ -441,8 +442,10 @@ def test_specialist_session_and_mutation_round_storage_keep_project_clean(
     endpoint._persist_session_id("reviewer")
     assert (data / ".runtime/sessions/reviewer.session_id").is_file()
     assert_clean(repo)
-    MutationTesterSpecialist()._write_round_log(1, VerificationOutcome(True, True, True))
-    assert (verification_rounds_dir() / "round_1.log").is_file()
+    mutant_log = mutation_workspace.mutant_logs_dir() / "mutant_1.log"
+    mutant_log.parent.mkdir(parents=True, exist_ok=True)
+    mutant_log.write_bytes(b"mutant simulator output\n")
+    assert mutant_log.is_file()
     assert_clean(repo)
 
 

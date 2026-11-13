@@ -20,6 +20,7 @@ from booley.flows.sim.execution.contract import (
     SimulationTestOutcome,
 )
 from booley.flows.sim.live_progress import attempt_scope
+from booley.flows.sim.record_layout import COVERAGE_RECORD_DIRECTORY
 from booley.flows.sim.runtime_inputs import (
     RuntimeInputBinding,
     materialize_campaign_runtime_inputs,
@@ -315,7 +316,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
             return run_coverage_target(
                 nested_plan,
                 execution,
-                embedded_root=request.attempt_directory / "coverage-campaign",
+                embedded_root=request.attempt_directory / COVERAGE_RECORD_DIRECTORY,
                 publication_checkpoint=self._publication_checkpoint,
             )
         except _HookPublicationError as exc:
@@ -410,7 +411,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
 
 def _attempt_identity(request: WorkExecutionRequest) -> dict[str, object]:
     return {
-        "campaign_id": request.manifest.document["campaign_id"],
+        "simulation_record_id": request.manifest.document["simulation_record_id"],
         "work_item_id": request.work_item["work_item_id"],
         "attempt_id": request.attempt_id,
     }
@@ -556,7 +557,7 @@ def _coverage_test_outcome(item: Mapping[str, object]) -> SimulationTestOutcome:
 def _coverage_evidence(
     request: WorkExecutionRequest, outcome: CoverageTargetOutcome
 ) -> list[dict[str, object]]:
-    root = request.attempt_directory / "coverage-campaign"
+    root = request.attempt_directory / COVERAGE_RECORD_DIRECTORY
     paths = [outcome.campaign_path]
     points = root / "coverage-points.jsonl.gz"
     if points.is_file():

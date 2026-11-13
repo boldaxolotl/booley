@@ -146,7 +146,7 @@ def _cycle_prerequisite(
         "role": "cycle_count_baseline",
         "manifest": {
             "path_base": "origin_invocation",
-            "path": "targets/sim_base/campaign/manifest.json",
+            "path": "targets/sim_base/record/manifest.json",
             "bytes": 10,
             "sha256": "sha256:" + "4" * 64,
             "kind": "simulation_campaign_manifest",
@@ -165,7 +165,7 @@ def _cycle_prerequisite(
         "work_item_id": "item:0000:fedcba9876543210",
         "result": {
             "path_base": "origin_invocation",
-            "path": "targets/sim_base/campaign/work-items/item/result.json",
+            "path": "targets/sim_base/record/work-items/item/result.json",
             "bytes": 10,
             "sha256": "sha256:" + "5" * 64,
             "kind": "simulation_result",
@@ -304,8 +304,8 @@ def _v2_facts_with_coverage_and_cycle_baseline() -> dict[str, object]:
                 "coverage_campaign": {
                     "bytes": 5386,
                     "campaign_id": "campaign:sim_counter:2026-09-01T10:30:00Z",
-                    "path": "campaign/work-items/0001-0123456789abcdef/attempts/"
-                    f"0001-{attempt_id}/coverage-campaign/coverage.json",
+                    "path": "record/work-items/0001-0123456789abcdef/attempts/"
+                    f"0001-{attempt_id}/coverage-record/coverage.json",
                     "path_base": "origin_target",
                     "schema": "booley.coverage-campaign/v5",
                     "sha256": "sha256:"
@@ -341,11 +341,11 @@ def test_acceptance_facts_hold_the_built_document_without_decoding(
         raw = facts.canonical_bytes()
         digest = facts.sha256
 
-    # Pinned from the base commit of #2991, where these facts passed full validation.
+    # Pinned from #2991 (base commit) and re-pinned for the Record paths of #3685.
     assert hashlib.sha256(raw).hexdigest() == (
-        "097b6a7468db2ef2d3a4a6992cea148c5f34998ca4e5131162797e7bee5ad0e9"
+        "a30c976b30f4d9434c354b21ace5030d335a1249354b9add5864165ed495cd7f"
     )
-    assert digest == "sha256:5081a781d4df061f6f5d9a340644b6e73afe7a49aca5d17e26a8920530fb2545"
+    assert digest == "sha256:4729599bdf0826e5b46529e864e10f356eab11c7550179a7affe506b8ff55ba8"
     prerequisite = facts.document["prerequisites"][0]  # type: ignore[index]
     with pytest.raises(TypeError):
         prerequisite["cycle_observation"]["cycle_count"] = 0  # type: ignore[index]

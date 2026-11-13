@@ -62,7 +62,7 @@ from booley.config.gateway import (
     gateway_model_pin_from_env,
     gateway_settings_from_env,
 )
-from booley.config.jobs import parse_caps
+from booley.config.jobs import SeatCapError, parse_caps, parse_seat_caps, seat_cap_fix
 from booley.config.project_config import (
     lookup_target_section,
     normalize_tests_toml,
@@ -79,6 +79,7 @@ from booley.core.boundary import (
 )
 from booley.flows import execution, target_test_plan_inspection
 from booley.flows.base import DEFAULT_TIMEOUT_S
+from booley.flows.memory_admission import memory_admission_enabled
 from booley.flows.sim.backends import cocotb_target_checks
 from booley.flows.sim.config import (
     DEFAULT_SIM_BUILD_TIMEOUT_MS,
@@ -246,14 +247,10 @@ _HDL_SUFFIXES = frozenset({".v", ".sv", ".vh", ".svh"})
 _CONTAINER_CLI = "doc" + "ker"
 # B-Wave is unconditionally required; enabled deterministic Flows are added below.
 _BASE_REQUIRED_MCP_TOOLS = frozenset({"bwave"})
-# Specialist MCP tools worth a heads-up when expected-but-absent from
-# the MCP surface. An explicit ``[specialists.<name>].enabled = false`` opts out.
-_ADVISORY_INTERACTIVE_MCP_TOOLS = frozenset(
-    {
-        "mutation_tester",
-        "reviewer",
-    }
-)
+# MCP tools worth a heads-up when expected-but-absent from the MCP surface. An explicit
+# ``[specialists.<name>].enabled = false`` (or ``[flows.<name>].enabled = false``) opts out.
+_ADVISORY_SPECIALIST_TOOLS = frozenset({"reviewer"})
+_ADVISORY_FLOW_TOOLS = frozenset({"mutation"})
 _MCP_PROBE_TIMEOUT_S = 60
 # Budget for the one Sandbox container that resolves every selected Target.
 _CORE_RESOLVE_TIMEOUT_S = 600
@@ -1331,6 +1328,7 @@ def _run_runtime_phase(
         reporter.fail_,
     )
     _check_memory_invariant(project, reporter.pass_, reporter.warn_, reporter.skip_)
+    _check_seat_caps(project, reporter.pass_, reporter.fail_)
     _run_container_checks(
         project,
         docker_exe,
@@ -1697,6 +1695,44 @@ def _heavy_memory_reservation(project: ProjectAudit) -> resource_policy.HeavyMem
         calibration,
         target_matrix.doctor_targets(project.project_root, "synth"),
     )
+
+
+def _licensed_tools_in_use(project: ProjectAudit) -> tuple[str, ...]:
+    """The licensed EDA tools Booley would run for *project*: Vivado, when it provisions it.
+
+    Booley provisions Vivado when the FPGA Flow is enabled and ``[eda.vivado]``
+    is declared; a Project that asks Doctor to cover the FPGA axis also uses it.
+    """
+    eda = project.booley_toml.get("eda")
+    declared = isinstance(eda, dict) and "vivado" in eda
+    if _flow_enabled(project, "fpga") and (declared or _fpga_doctor_applicable(project)):
+        return ("vivado",)
+    return ()
+
+
+def _check_seat_caps(project: ProjectAudit | None, _pass: Check, _fail: Fail) -> None:
+    """ADR 0087: memory admission needs a Seat Cap for every licensed EDA tool in use.
+
+    Only the user knows how many licence seats they own, so this never writes a
+    value: a missing Seat Cap FAILs with the entry to add. Silent unless the
+    development switch is set; a malformed ``[jobs.seats]`` is the schema
+    audit's finding, not a second one here.
+    """
+    if project is None or not memory_admission_enabled():
+        return
+    try:
+        caps = parse_seat_caps(project.booley_toml)
+    except SeatCapError:
+        return
+    for tool in _licensed_tools_in_use(project):
+        if tool in caps:
+            _pass(f"Seat Cap: {tool} = {caps[tool]}")
+        else:
+            _fail(
+                f"{tool} has no Seat Cap: memory admission needs one for every "
+                "licensed EDA tool the Project uses",
+                f"add {seat_cap_fix(tool)} to booley.toml; only you know how many seats you own",
+            )
 
 
 def _check_memory_invariant(
@@ -2848,7 +2884,7 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
     if not reported:
         return
     default_cli = _configured_provider(project)
-    allowed = _allowed_clis(project, default_cli)
+    allowed = _auto_allowed_clis(auto_choice, default_cli) or _allowed_clis(project, default_cli)
     _warn_ignored_gateway_handoff(reporter)
     # Pins apply to gateway-routed Codex only, so judge them under Codex's policy when it is listed.
     pin_cli = auth_token.APP_CODEX if auth_token.APP_CODEX in allowed else default_cli
@@ -2863,6 +2899,13 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
             runs_specialist=cli in specialist_clis,
             auto_choice=auto_choice,
         )
+
+
+def _auto_allowed_clis(choice: AgentAppChoice | None, default_cli: str) -> tuple[str, ...]:
+    """The CLIs ``BOOLEY_AGENT_APP=auto`` allowed, the default first; empty for an explicit app."""
+    if choice is None:
+        return ()
+    return (default_cli, *(cli for cli in choice.clis if cli != default_cli))
 
 
 def _specialist_clis(project: ProjectAudit | None) -> frozenset[str]:
@@ -2995,8 +3038,13 @@ def _report_agent_app_choice(reporter: _Reporter) -> tuple[bool, AgentAppChoice 
         reporter.fail_(str(exc), check_id="agent.credential-policy", subject="BOOLEY_AGENT_APP")
         return False, None
     if choice is not None:
-        label = _AGENT_APP_LABELS[choice.app]
-        reporter.pass_(f"Agent app: {label} chosen by BOOLEY_AGENT_APP=auto ({choice.reason})")
+        labels = [_AGENT_APP_LABELS[cli] for cli in choice.clis]
+        if len(labels) > 1:
+            labels[0] += " (default)"
+            subject = "Agent CLIs: " + ", ".join(labels)
+        else:
+            subject = f"Agent app: {labels[0]}"
+        reporter.pass_(f"{subject} chosen by BOOLEY_AGENT_APP=auto ({choice.reason})")
     return True, choice
 
 
@@ -3651,11 +3699,13 @@ def _advisory_mcp_tools(project: ProjectAudit) -> set[str]:
     specialists_cfg = project.booley_toml.get("specialists", {})
     if not isinstance(specialists_cfg, dict):
         specialists_cfg = {}
-    return {
+    tools = {
         name
-        for name in _ADVISORY_INTERACTIVE_MCP_TOOLS
+        for name in _ADVISORY_SPECIALIST_TOOLS
         if config_section(specialists_cfg, name).get("enabled") is not False
     }
+    tools.update(name for name in _ADVISORY_FLOW_TOOLS if _flow_enabled(project, name))
+    return tools
 
 
 def _run_project_checks(
@@ -3678,6 +3728,7 @@ def _run_project_checks(
     _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
     _check_repo_footprint(project.project_root, reporter.pass_, reporter.warn_)
     _check_custom_endpoints_and_criteria(project.project_root, reporter.pass_, reporter.fail_)
+    _check_disabled_endpoints(project, reporter.note_)
     if reporter.agent_check_enabled("worker backend health check"):
         _check_agent_backend_health(
             project.project_root,
@@ -4063,6 +4114,34 @@ def _check_custom_endpoints_and_criteria(project_root: Path, _pass: Check, _fail
         )
         return
     _pass("custom endpoints and Criteria validated")
+
+
+def _check_disabled_endpoints(project: ProjectAudit, _note: Check) -> None:
+    """NOTE the Specialists and custom Flows that ``booley.toml`` turns off.
+
+    Built-in Flows are left out: the Flow audit already prints a line for each.
+    Invalid endpoint configuration is reported by the custom-endpoint check instead.
+    """
+    from booley.mcp.endpoint_config import EndpointConfigError, parse_endpoint_config
+    from booley.mcp.registry import BUILTIN_FLOW_PACKAGES, discover_mcp_inventory, filter_mcp_tools
+
+    try:
+        specialists, flows = parse_endpoint_config(project.booley_toml)
+        inventory = discover_mcp_inventory(project_mcp_tools_dir=project.booley_dir / "mcp_tools")
+        enabled = filter_mcp_tools(inventory, specialist_config=specialists, flow_config=flows)
+    except EndpointConfigError:
+        return
+    enabled_names = {info.name for info in enabled}
+    disabled = sorted(
+        {
+            info.name
+            for info in inventory
+            if info.name not in enabled_names
+            and not (info.kind == "flow" and info.name in BUILTIN_FLOW_PACKAGES)
+        }
+    )
+    if disabled:
+        _note(f"MCP endpoints disabled in booley.toml: {', '.join(disabled)}")
 
 
 def _check_agent_backend_health(
@@ -5005,7 +5084,7 @@ def _check_sim_target_tb_staging(
     the design:
 
     - files staged but none tagged ``tags:[tb]`` (ADR 0022 dec 13): Source
-      Isolation would mis-classify the TB as RTL (mutation_tester would
+      Isolation would mis-classify the TB as RTL (the Mutation Flow would
       mutate it).
     - ZERO files staged at all: the untagged-TB predicate needs RTL files to
       fire, so a sim Target whose filesets list stages nothing (e.g. the tb

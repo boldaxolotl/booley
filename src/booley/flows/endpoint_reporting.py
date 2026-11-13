@@ -21,6 +21,7 @@ from booley.flows.execution_persistence import EvidenceDiscarded, NoAcceptanceRe
 from booley.presentation.colors import strip_ansi
 from booley.runtime.endpoint_execution import (
     EXIT_SUCCESS,
+    OOM_REQUEUE_NOTE,
     EndpointOutcome,
     normalize_completion_error,
 )
@@ -513,10 +514,12 @@ def _publish_console_verdict(endpoint: EndpointState, result: EndpointOutcome) -
     already_shown = witness is not None and witness.saw(result.report_text)
     if already_shown:
         return
-    original, separator, diagnosis = result.report_text.partition("\nCompletion failure (")
-    if separator and witness is not None and witness.saw(original):
-        print(f"Completion failure ({diagnosis}", file=sys.stderr, flush=True)
-        return
+    # A note appended after the report the witness already saw is all that is new.
+    for opening in ("\nCompletion failure (", f"\n{OOM_REQUEUE_NOTE}"):
+        original, separator, rest = result.report_text.partition(opening)
+        if separator and witness is not None and witness.saw(original):
+            print(f"{opening[1:]}{rest}", file=sys.stderr, flush=True)
+            return
     if result.exit_code != EXIT_SUCCESS:
         print(result.report_text, file=sys.stderr, flush=True)
         return

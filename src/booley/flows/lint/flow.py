@@ -33,6 +33,15 @@ from booley.flows.eda_failures import (
 from booley.flows.job_resources import resolved_source_bytes, resource_phase
 from booley.flows.lint.cli import LintArguments
 from booley.flows.lint.request import LintRequest
+from booley.flows.metric_declarations import (
+    Better,
+    CostTier,
+    FlowMetricValues,
+    MetricDeclaration,
+    MetricKind,
+    MetricsUnavailableError,
+    metric_values,
+)
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -77,6 +86,36 @@ _first_error_line = eda_parsers.first_error_line
 _WARNING_EPILOGUE_RE = re.compile(r"%Error: Exiting due to \d+ warning\(s\)")
 _VERIBLE_FINDING_RE = eda_parsers.VERIBLE_FINDING_RE
 _verible_first_error_line = eda_parsers.verible_first_error_line
+
+
+# Verilator's exit epilogue, ``%Error: Exiting due to N error(s)`` or ``... warning(s)``:
+# a summary of the findings above it, not a finding.
+_EXIT_EPILOGUE_RE = re.compile(r"Exiting due to \d+ (?:error|warning)\(s\)")
+
+LINT_METRIC_DECLARATIONS = (
+    MetricDeclaration("warnings", "warnings", Better.LOWER, CostTier.LOW, MetricKind.PLAIN),
+    MetricDeclaration("errors", "errors", Better.LOWER, CostTier.LOW, MetricKind.PLAIN),
+)
+
+
+def count_lint_errors(output: str, family: str) -> int:
+    """Count the unique error findings in one Target's linter *output*.
+
+    Verilator: every ``%Error`` line but the exit epilogue, keyed by rule, location and
+    message (rule-less, location-less lines are common, so the message tells two apart;
+    a multi-line message counts once because its continuation lines do not start with
+    ``%Error``). Verible: every parse-error line, keyed by file and line.
+    """
+    if family == "verible":
+        return len(
+            {tuple(line.split(":")[:2]) for line in eda_parsers.VERIBLE_ERROR_RE.findall(output)}
+        )
+    findings = {
+        match.groups()
+        for match in eda_parsers.VERILATOR_ERROR_FINDING_RE.finditer(output)
+        if not _EXIT_EPILOGUE_RE.match(match.group("message"))
+    }
+    return len(findings)
 
 
 def _lint_eda_tool_family(eda_tool: str | None) -> str:
@@ -145,11 +184,27 @@ class LintConfigResult:
     real and pass vacuously. Hard-fails the Target (same spirit as the ADR
     0026 doctor hard-fail: an integrity hole must not stay a silent WARN).
     Defaults True to avoid false alarms when unknown."""
+    error_count: int = 0
+    """Unique error findings in the linter output (0 when none could be read)."""
     log_path: str = ""
     """Project-relative path of this Target's persisted ``run.log``. The parsed
     report carries rule/file:line/message and Target provenance per warning,
     but the linter's raw output — banner, include resolution, the lines around
     a diagnostic — only exists there. Empty when the log could not be written."""
+
+    def flow_metrics(self) -> FlowMetricValues:
+        """Typed metrics of this Target: its unique warning and error counts.
+
+        The counts cover the whole Target, whatever ``--scope`` filtered from the
+        printed report. Raises :class:`MetricsUnavailableError` when the linter could
+        not run, or rejected the design without an error finding that could be read.
+        """
+        if self.error_is_eda_tool_failure or (self.error and not self.error_count):
+            raise MetricsUnavailableError(self.error)
+        return metric_values(
+            LINT_METRIC_DECLARATIONS,
+            {"warnings": len(deduplicate_warnings(self.warnings)), "errors": self.error_count},
+        )
 
 
 @dataclass
@@ -546,6 +601,10 @@ class LintFlow(BuiltinFlow[LintRequest]):
 
     # --- Command building ---
 
+    def _memory_admitted(self) -> bool:
+        """A lint Job runs the linter in the Sandbox, so the switch admits it (ADR 0087)."""
+        return True
+
     def _build_command(self) -> list[str]:
         """Not used вЂ” LintFlow overrides _run() for multi-config logic."""
         return []
@@ -818,6 +877,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
             result.warnings = parse_verible_warnings(combined, selector)
         else:
             result.warnings = parse_warnings(combined, selector)
+        result.error_count = count_lint_errors(combined, family)
         if not result.error:
             _classify_lint_failure(result, family, combined, prepared.attempt_token or None)
             if result.error and evidence_log is not None:

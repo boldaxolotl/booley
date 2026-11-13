@@ -41,6 +41,11 @@ SECTIONS: tuple[Section, ...] = (
         "Goals, Goalsets, Goal catalog, threshold params, and session lifecycle",
         aliases=("criteria",),
     ),
+    Section(
+        "metrics",
+        "Metrics",
+        "Each Target's metrics as `metrics.toml` text (needs a Project)",
+    ),
     Section("flows", "Booley Flows", "Deterministic end-to-end orchestration"),
     Section(
         "specialists",

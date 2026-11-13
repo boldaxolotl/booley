@@ -18,7 +18,7 @@ _REPORT_MCP_TOOL_NAME = "booley_report"
 POLL_MCP_TOOL_NAME = "booley_poll"
 
 _POLL_MCP_TOOL_DESCRIPTION = (
-    "Wait for long-running endpoints (sim / fpga / synth / reviewer / mutation_tester / "
+    "Wait for long-running endpoints (sim / fpga / synth / reviewer / mutation / "
     "coverage_analyst) that were started in the background. When such an endpoint takes "
     "longer than the inline wait, its call returns a 'run_id' instead of the result. With "
     "several Jobs running, call with no run_id: it returns the full result of the first of "

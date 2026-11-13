@@ -282,6 +282,13 @@ def test_models_audit_reports_pins() -> None:
     ]
 
 
+def test_models_audit_fails_a_models_value_that_is_not_a_table() -> None:
+    audit = agent_schema.audit_models_table({"models": "reviewer"})
+
+    assert not audit.is_valid
+    assert audit.findings[0].message == "booley.toml [models] must be a table"
+
+
 def test_flow_audit_collects_shape_failures_and_ignored_knob_warning() -> None:
     audit = flow_schema.audit_flow_table(
         "lint",
@@ -508,6 +515,28 @@ def test_jobs_memory_budget_is_accepted() -> None:
     assert audit.is_valid
     assert audit.findings == ()
     assert project_schema.audit_jobs_table({}).findings == ()
+
+
+def test_jobs_seats_audit_fails_a_malformed_count_naming_the_key() -> None:
+    assert project_schema.audit_jobs_table({"jobs": {"seats": {"vivado": 2}}}).is_valid
+
+    audit = project_schema.audit_jobs_table({"jobs": {"seats": {"vivado": 0}}})
+
+    assert not audit.is_valid
+    (finding,) = audit.findings
+    assert "[jobs.seats].vivado" in finding.message
+    assert "[jobs.seats]" in finding.fix
+
+
+def test_jobs_audit_reports_a_bad_budget_and_a_bad_seat_count_together() -> None:
+    audit = project_schema.audit_jobs_table(
+        {"jobs": {"memory_budget": "-1g", "seats": {"vivado": 0}}}
+    )
+
+    messages = " ".join(finding.message for finding in audit.findings)
+    assert len(audit.findings) == 2
+    assert "memory_budget" in messages
+    assert "[jobs.seats].vivado" in messages
 
 
 def test_jobs_memory_budget_audit_fails_invalid_value_naming_key() -> None:

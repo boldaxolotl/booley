@@ -290,7 +290,7 @@ def test_status_uses_the_same_history_snapshot_as_its_projection(goal_mode, monk
 
 
 @pytest.mark.parametrize(
-    "family, producer", [("ELAB", "sim mode=elab_only"), ("MUTATION", "mutation_tester")]
+    "family, producer", [("ELAB", "sim mode=elab_only"), ("MUTATION", "mutation")]
 )
 def test_missing_observation_names_goal_fields_and_actual_producer(layout, family, producer):
     from tests.goals.conftest import enter_goals

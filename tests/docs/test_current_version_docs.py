@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from tests.shipped_docs_support import rendered_docs_outside_user_docs, rendered_shipped_docs
 
 from booley.bwave import cli as bwave_cli
 from booley.flows.base import BuiltinFlow
@@ -73,38 +74,13 @@ ALLOWLIST += tuple(
     for path in ("docs/user/TROUBLESHOOTING.md",)
 )
 
-# The packaged FLOW_REPORTS.md copy (its source is under docs/internals, which is not
-# scanned) documents how Booley reads reports written by older versions.
-ALLOWLIST += (
-    ExceptionRule(
-        "src/booley/data/docs/FLOW_REPORTS.md",
-        "the old Campaign can no longer be resumed",
-        "Current resume behavior after the suite or sources changed.",
-        2,
-    ),
-    ExceptionRule(
-        "src/booley/data/docs/FLOW_REPORTS.md",
-        "legacy reports keep their old artifact hints",
-        "Current reading of reports written by older versions.",
-        2,
-    ),
-    ExceptionRule(
-        "src/booley/data/docs/FLOW_REPORTS.md",
-        "distinct from the legacy",
-        "Current report field that older reports carry.",
-        1,
-    ),
-)
-
-
-def is_scanned_user_doc_copy(root: Path, path: Path) -> bool:
-    """Return whether ``path`` is a generated copy of a ``docs/user`` page scanned at its source."""
-    packaged = root / "src/booley/data/docs"
-    return path.parent == packaged and (root / "docs/user" / path.name).is_file()
-
 
 def document_paths(root: Path) -> list[Path]:
-    """Discover current user text, with explicit history/implementation exclusions."""
+    """Discover current user text, with explicit history/implementation exclusions.
+
+    The Git-ignored build output ``src/booley/data/docs/`` is never listed: its sources are
+    scanned instead (``docs/user`` here, the rest through :func:`document_texts`).
+    """
     paths = [root / "README.md"]
     paths.extend(
         path for path in (root / "docs/user").rglob("*") if path.is_file() and _is_text(path)
@@ -115,7 +91,7 @@ def document_paths(root: Path) -> list[Path]:
         if not path.is_file():
             continue
         relative = path.relative_to(data)
-        if is_scanned_user_doc_copy(root, path):
+        if relative.parts[0] == "docs":
             continue
         if relative.parts[0] in PACKAGE_IMPLEMENTATION_DIRS or relative.as_posix() in {
             "__init__.py",
@@ -125,6 +101,21 @@ def document_paths(root: Path) -> list[Path]:
         if _is_text(path):
             paths.append(path)
     return sorted(paths)
+
+
+def document_texts(root: Path) -> dict[str, str]:
+    """Return ``{relative path: text}`` of every scanned document.
+
+    Adds the shipped docs whose source is outside ``docs/user`` (FLOW_REPORTS) as the
+    build renders them, keyed by source path, so a rendered shipped doc is covered
+    without reading the packaged directory.
+    """
+    texts = {
+        path.relative_to(root).as_posix(): path.read_text(encoding="utf-8")
+        for path in document_paths(root)
+    }
+    texts.update(rendered_docs_outside_user_docs(root))
+    return texts
 
 
 def normalized_text(text: str) -> tuple[str, list[int]]:
@@ -230,11 +221,8 @@ def cli_help() -> dict[str, str]:
 
 
 def test_current_version_documents() -> None:
-    paths = document_paths(ROOT)
-    assert len(paths) > 50
-    documents = {
-        path.relative_to(ROOT).as_posix(): path.read_text(encoding="utf-8") for path in paths
-    }
+    documents = document_texts(ROOT)
+    assert len(documents) > 50
     assert any("/skills/" in path and path.endswith(".toml") for path in documents)
     assert any("/refs/" in path for path in documents)
     failures = history_failures(documents, ALLOWLIST)
@@ -279,10 +267,7 @@ def test_public_documents_and_help_use_canonical_developer_agent_term() -> None:
         r"\b(?:coding|host|main|outer)\s+agents?\b|the\s+agent\s+session\s+in\s+Goal\s+Mode",
         re.IGNORECASE,
     )
-    documents = {
-        path.relative_to(ROOT).as_posix(): path.read_text(encoding="utf-8")
-        for path in document_paths(ROOT)
-    }
+    documents = document_texts(ROOT)
     documents.update(cli_help())
     failures = []
     for name, text in documents.items():
@@ -393,6 +378,7 @@ def test_manifest_covers_each_user_text_family(tmp_path: Path, path: str) -> Non
         "docs/adr/change.md",
         "docs/internals/change.md",
         "docs/research/change.md",
+        "src/booley/data/docs/CONFIG.md",
         "src/booley/data/docker/implementation.txt",
         "src/booley/data/licenses/legal.txt",
         "src/booley/data/edalize/adapter.py",
@@ -403,6 +389,16 @@ def test_manifest_excludes_history_and_implementation(tmp_path: Path, path: str)
     file.parent.mkdir(parents=True, exist_ok=True)
     file.write_text("Previously supported\n")
     assert file not in document_paths(tmp_path)
+
+
+def test_document_texts_include_rendered_shipped_docs_outside_user_docs() -> None:
+    documents = document_texts(ROOT)
+    source = "docs/internals/FLOW_REPORTS.md"
+
+    assert documents[source] == rendered_shipped_docs(ROOT)[source]
+    assert not [path for path in documents if path.startswith("src/booley/data/docs/")]
+    # docs/user sources are scanned as authored, not a second time as rendered.
+    assert "docs/user/CONFIG.md" in documents
 
 
 def test_guard_accepts_current_literals_and_external_requirements() -> None:

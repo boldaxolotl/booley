@@ -700,7 +700,7 @@ def test_deep_history_oldest_leak_and_bounded_batches(
     "trail",
     [
         "Co-Authored-By: Cursor Agent <cursor@example.test>",
-        "Generated with Cursor",
+        "Generated with Copilot",
         "Generated with GPT-5",
         "llm metadata",
     ],

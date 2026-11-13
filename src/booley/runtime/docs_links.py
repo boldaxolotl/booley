@@ -7,9 +7,9 @@ contributor docs from ``docs/internals/`` (:data:`CONTRIBUTOR_DOCS`).
 
 Agent-facing text (skills, the cheatsheet, generated config comments) cannot
 assume a repository checkout. It cites the docs the Sandbox ships at
-``/booley-docs/<FILE>`` (:func:`sandbox_doc_path`; the allowlist and sync live
-in ``booley.dev_support.reference_docs``) and names any other doc only with the
-``(host doc, not shipped)`` marker. ``tests/docs/test_sandbox_doc_citations.py``
+``/booley-docs/<FILE>`` (:func:`sandbox_doc_path`; the allowlist and renderer live
+in ``booley.runtime.packaged_docs``; the build renders them, ``booley.runtime.build_stamp``)
+and names any other doc only with the ``(host doc, not shipped)`` marker. ``tests/docs/test_sandbox_doc_citations.py``
 enforces this.
 
 Standard library only: ``website/hooks/user_docs.py`` loads this file by path
@@ -63,6 +63,7 @@ USER_DOCS = (
     UserDoc("FLOW-LINT.md", "flow-lint", "Lint", "Flows & Specialists"),
     UserDoc("FLOW-SYNTH.md", "flow-synth", "ASIC synthesis", "Flows & Specialists"),
     UserDoc("FLOW-FPGA.md", "flow-fpga", "FPGA implementation", "Flows & Specialists"),
+    UserDoc("FLOW-MUTATION.md", "flow-mutation", "Mutation testing", "Flows & Specialists"),
     UserDoc("SPECIALISTS.md", "specialists", "Specialists", "Flows & Specialists"),
     UserDoc("CONFIG.md", "config", "Config", "Reference"),
     UserDoc("TESTS.md", "tests", "tests.toml", "Reference"),

@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 from dataclasses import replace
+from itertools import pairwise
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -51,6 +52,7 @@ from booley.runtime.execution_records import (
 from booley.runtime.job_slots import (
     CLASS_HEAVY,
     HOLDING,
+    INHERITED_SLOT_ENV,
     QUEUED,
     ROLE_INTERACTIVE,
     SlotStore,
@@ -98,7 +100,7 @@ def _child_permit(capacity: HeavyCapacity, work_item_id: str = "item"):
 
 def _prepared_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "campaign")
+    campaign_store = CampaignStore(tmp_path / "record")
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -383,7 +385,7 @@ def test_child_reacquisition_rejoins_real_slot_fifo_behind_competitor(
 
 def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path) -> None:
     manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "campaign")
+    campaign_store = CampaignStore(tmp_path / "record")
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -425,7 +427,7 @@ def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path
 
 def test_normal_work_runtime_does_not_consume_shutdown_budget(tmp_path: Path) -> None:
     manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "campaign")
+    campaign_store = CampaignStore(tmp_path / "record")
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -455,7 +457,7 @@ def test_shutdown_deadline_returns_bounded_but_retains_outer_until_worker_exits(
     tmp_path: Path,
 ) -> None:
     manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "campaign")
+    campaign_store = CampaignStore(tmp_path / "record")
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -508,7 +510,7 @@ def test_shutdown_deadline_does_not_fail_when_every_worker_already_exited(
 ) -> None:
     """Regression for #977: a lane that exits in the final wait is a clean shutdown."""
     manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "campaign")
+    campaign_store = CampaignStore(tmp_path / "record")
     campaign_store.publish_manifest(manifest)
     # A zero budget means the shutdown deadline has always passed after the wait.
     capacity = SimpleNamespace(
@@ -590,7 +592,7 @@ def _assert_parallel_outcome(outcome, plan, state, first_finisher) -> None:
 
 
 def _assert_child_claim_integrity(invocation, slot_store, plan, project_data) -> None:
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
     summary = json.loads(store.summary_path.read_text())
     assert summary["completed"] == list(plan.work_item_ids)
     attempts = [
@@ -617,7 +619,7 @@ def test_scheduler_preserves_terminal_cause_after_actual_child_lease_loss(
 ) -> None:
     monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 0.01)
     manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "campaign")
+    campaign_store = CampaignStore(tmp_path / "record")
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -687,7 +689,7 @@ def _assert_scheduler_terminal_cause(registry, campaign_store, child_ids, scope_
     terminal = read_json(
         execution_paths(ExecutionId(child_ids[0]), booley_dir=registry.project_data).record
     )
-    assert terminal["terminal_cause"] == ("lease_lost" if scope_stop else "campaign_error")
+    assert terminal["terminal_cause"] == ("lease_lost" if scope_stop else "record_error")
 
 
 def _execute_pre_cancelled_coverage(tmp_path):
@@ -764,3 +766,64 @@ def test_canonical_collision_keys_are_stable_across_threads(tmp_path: Path) -> N
         thread.join()
     assert first.collision_key == alias.collision_key
     assert keys == [first.collision_key, first.collision_key]
+
+
+def test_memory_admitted_campaign_runs_work_items_without_child_lanes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under the memory admission switch a heavy cap of 3 still gives one lane (#3701)."""
+    from booley.flows import endpoint_admission
+    from booley.flows.endpoint_admission import AdmissionGate
+    from booley.flows.synth.flow import AsicSynthesizeFlow
+    from booley.runtime.job_slots import CLASS_MEMORY
+
+    manifest = _three_item_manifest()
+    plan = create_simulation_campaign_plan(manifest)
+    project, state = _parallel_environment(tmp_path, "alpha", 0)
+    # One item at a time: nothing waits for a peer to overlap.
+    state.barrier = threading.Barrier(1)
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",
+        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: state.handle),
+    )
+    executor = OrdinaryHdlSerialExecutor(
+        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+        execution_factory=lambda _options: _ParallelExecution(state),  # type: ignore[arg-type,return-value]
+    )
+    booley_dir = project / ".booley"
+    (booley_dir / "booley.toml").write_text(
+        '[jobs]\nmax_heavy = 3\nmemory_budget = "1000m"\n', encoding="utf-8"
+    )
+    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+    monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", "a" * 32)
+    monkeypatch.delenv("BOOLEY_SLOTS_DIR", raising=False)
+    monkeypatch.delenv(INHERITED_SLOT_ENV, raising=False)
+    monkeypatch.setattr(endpoint_admission, "resolve_common_booley_dir", lambda: booley_dir)
+    invocation = tmp_path / "reports" / "000001"
+    invocation.mkdir(parents=True)
+
+    with AdmissionGate(AsicSynthesizeFlow()).enter() as admission:
+        assert admission.slot_store is not None
+        assert admission.slot_store.caps.max_heavy == 3
+        assert admission.max_heavy == 1
+        outcome = SimulationCampaign(executor).run(
+            NewCampaignRunRequest(
+                plan, project, invocation.parent, CampaignPolicy(), invocation, admission
+            )
+        )
+        (outer,) = admission.slot_store.snapshot(CLASS_MEMORY)[0]
+        assert outer.job_class == CLASS_MEMORY
+        assert admission.slot_store.snapshot(CLASS_HEAVY) == ([], [])
+
+    assert outcome.complete is True
+    # The items ran in series: each ended before the next began.
+    runs = sorted(state.intervals, key=lambda interval: interval[1])
+    assert [name for name, _start, _end in runs] == ["alpha", "beta", "gamma"]
+    assert all(left[2] <= right[1] for left, right in pairwise(runs))
+    store = CampaignStore(invocation / "targets/sim/record")
+    attempts = [
+        json.loads(path.read_bytes())
+        for path in store.root.glob("work-items/*/attempts/*/attempt.json")
+    ]
+    assert len(attempts) == 3
+    assert [attempt["child_execution_id"] for attempt in attempts] == [None] * 3

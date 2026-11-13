@@ -2,7 +2,7 @@
 
 A **Target** is one named build configuration of your design: which source
 files, which top module, which parameters, and which EDA tool. Every Booley
-Flow (sim, lint, synth, fpga) builds from a Target, and the Developer Agent
+Flow (sim, lint, synth, fpga, mutation) builds from a Target, and the Developer Agent
 picks Targets by name instead of inventing its own tool arguments. So every
 result traces back to a configuration you can read and rerun.
 
@@ -132,10 +132,12 @@ runs them:
 | `synth_` | synth | `synth_timing` |
 | `fpga_` | fpga | `fpga_board` |
 
-The prefix matters for synth and fpga: both use FuseSoC's `generic` flow, so
-the `synth_`/`fpga_` prefix decides which Flow runs the Target. Without a
-prefix, a Target whose tool is `vivado` counts as fpga. Every Target needs a
-subject after the axis, even when it is the only one. A bare `lint` still runs
+The prefix matters for synth and fpga: both use FuseSoC's `generic` flow, so the
+`synth_`/`fpga_` prefix decides which Flow runs the Target. Without a prefix, a
+Target whose tool is `vivado` counts as fpga. Every Target needs a subject after
+the axis, even when it is the only one. Order the subject from coarse to fine
+(`sim_smoke`, `sim_smoke_irq`); within each core, `booley targets` lists Targets
+sorted by name, so the axis prefix groups them by Flow. A bare `lint` still runs
 and keeps its axis, but breaks the convention. For the Targets Doctor runs (and
 any in a stealth core), it notes names that break the rule and suggests
 `<axis>_<core name>` for a bare axis (`lint_soc` for a core named `soc`).
@@ -413,6 +415,8 @@ git submodule update --init --recursive
 git -C .booley submodule update --init --recursive
 ```
 
+See [Stealth Mode](STEALTH.md).
+
 </details>
 
 Each submodule must be present, clean, and have its full history (not a
@@ -444,7 +448,7 @@ Submodules nested inside a listed one are always copied.
 <summary>In stealth mode</summary>
 
 The list applies to the RTL repository only: every submodule of the `.booley`
-repository is always copied.
+repository is always copied. See [Stealth Mode](STEALTH.md).
 
 </details>
 

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintFlow
+from booley.flows.mutation.flow import MutationFlow
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.unpublished_results import read_unpublished_results
 from booley.flows.synth.flow import AsicSynthesizeFlow
@@ -19,6 +20,7 @@ from booley.mcp.project_flow_loader import ProjectFlowLoadError, load_project_fl
 _FLOW_TYPES = {
     "fpga": FpgaImplFlow,
     "lint": LintFlow,
+    "mutation": MutationFlow,
     "sim": SimulateFlow,
     "synth": AsicSynthesizeFlow,
 }

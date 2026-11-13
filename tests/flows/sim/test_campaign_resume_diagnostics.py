@@ -25,6 +25,7 @@ def _snapshot(root: Path) -> dict[str, bytes]:
 def _interrupted_campaign(root, monkeypatch, *, parameter_datatype="int", parameter_default="1"):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "a" * 40)
+    monkeypatch.setattr("booley.flows.sim.flow_resume.git_full_sha", lambda *_args: "a" * 40)
     monkeypatch.setattr("booley.flows.sim.campaign.resume.git_full_sha", lambda *_args: "a" * 40)
     project(root)
     core = root / "counter.core"
@@ -53,7 +54,7 @@ def _interrupted_campaign(root, monkeypatch, *, parameter_datatype="int", parame
         raise KeyboardInterrupt("durable ordinary interruption")
 
     monkeypatch.setattr(
-        "booley.flows.sim.flow.OrdinaryHdlSerialExecutor.execute", interrupt_execution
+        "booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor.execute", interrupt_execution
     )
 
     with pytest.raises(KeyboardInterrupt, match="durable ordinary interruption"):
@@ -61,7 +62,7 @@ def _interrupted_campaign(root, monkeypatch, *, parameter_datatype="int", parame
             SimRequest(target="sim_0", work_dir=root, report_dir=reports)
         )
         pytest.fail(str(result.outcome))
-    manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
+    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
     assert list(manifest.parent.rglob("attempt.json"))
     assert (
         json.loads(manifest.read_text())["planning_disclosures"][0]["generated_files"][0]["path"]
@@ -295,11 +296,12 @@ def test_legacy_interrupted_campaign_new_source_mapping_refuses_before_attempt(
         )
         reports, manifest, executions = _interrupted_campaign(tmp_path, legacy)
     document = json.loads(manifest.read_bytes())
-    assert document["$schema"] == "booley.simulation-campaign-manifest/v4"
+    assert document["$schema"] == "booley.simulation-record-manifest/v1"
     assert "source_path" not in document["planning_disclosures"][0]["generated_files"][0]
     before = _snapshot(manifest.parent)
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "a" * 40)
+    monkeypatch.setattr("booley.flows.sim.flow_resume.git_full_sha", lambda *_args: "a" * 40)
     monkeypatch.setattr("booley.flows.sim.campaign.resume.git_full_sha", lambda *_args: "a" * 40)
     result = SimulateFlow().execute(
         SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
@@ -326,7 +328,7 @@ def test_cli_resume_announces_validated_origin_before_execution(
     from tests.flows.sim.test_coverage_transaction import NativeExecution
 
     reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
-    manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
+    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
     destination = tmp_path / "destination reports"
     flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
     executor = flow._resume_campaign_executor

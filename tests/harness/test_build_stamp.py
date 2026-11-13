@@ -12,6 +12,8 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import posixpath
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -48,6 +50,8 @@ from booley.runtime.build_stamp import (
     wheel_embedded_source_fingerprint,
     write_build_stamp,
 )
+from booley.runtime.packaged_docs import PACKAGED_DOCS_RELATIVE_DIR, SHIPPED_DOCS
+from tests.source_checkout_support import copy_source_checkout
 from tests.subprocess_budget import run_bounded_child
 
 BUILD_SH = Path(__file__).resolve().parents[2] / "src" / "booley" / "data" / "docker" / "build.sh"
@@ -68,6 +72,38 @@ def _write_wheel(root: Path, name: str = WHEEL_NAME) -> Path:
 
 def _git(root: Path, *args: str) -> None:
     run_bounded_child(["git", "-C", str(root), *args], check=True)
+
+
+def _doc_source_text(source: str) -> bytes:
+    """Return a shipped doc source with one link to an unshipped doc.
+
+    The link makes the rendered copy differ from its source; it is written as
+    bytes so Windows keeps LF line endings.
+    """
+    setup = posixpath.relpath("docs/user/SETUP.md", posixpath.dirname(source))
+    return f"# {posixpath.basename(source)}\n[setup]({setup})\n".encode()
+
+
+def _write_doc_sources(root: Path) -> None:
+    """Write every shipped doc source under *root*; no packaged copy is written."""
+    for source in SHIPPED_DOCS:
+        path = root / source
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(_doc_source_text(source))
+
+
+def _rendered(root: Path, source: str) -> bytes:
+    """Return the packaged copy of *source* as the renderer defines it."""
+    from booley.runtime.packaged_docs import render_packaged_doc
+
+    return render_packaged_doc(source, (root / source).read_bytes().decode("utf-8")).encode(
+        "utf-8"
+    )
+
+
+def _copy_path(root: Path, source: str) -> Path:
+    """Return where the packaged copy of *source* lives under *root*."""
+    return root / PACKAGED_DOCS_RELATIVE_DIR / posixpath.basename(source)
 
 
 @pytest.fixture
@@ -94,9 +130,24 @@ def repo(tmp_path: Path) -> Path:
         path.write_text(relative + "\n", encoding="utf-8")
     (bwave / "Cargo.toml").write_text("[package]\nname='bwave'\n", encoding="utf-8")
     (bwave / "Cargo.lock").write_text("# lock\n", encoding="utf-8")
+    _write_doc_sources(root)
     _git(root, "add", ".")
     _git(root, "commit", "-m", "init")
     return root
+
+
+def test_rendered_docs_are_untracked_and_ignored() -> None:
+    """No rendered copy is committed and the build output directory is Git-ignored (#3658)."""
+    tracked = run_bounded_child(
+        ["git", "-C", str(SOURCE_ROOT), "ls-files", "--", PACKAGED_DOCS_RELATIVE_DIR], check=True
+    )
+    assert tracked.stdout == ""
+    paths = [
+        f"{PACKAGED_DOCS_RELATIVE_DIR}/{posixpath.basename(source)}" for source in SHIPPED_DOCS
+    ]
+    # Exit 1 means nothing matched, which the comparison below reports.
+    ignored = run_bounded_child(["git", "-C", str(SOURCE_ROOT), "check-ignore", "--", *paths])
+    assert sorted(ignored.stdout.split()) == sorted(paths)
 
 
 class TestResolveBuildCommit:
@@ -148,11 +199,98 @@ class TestWriteBuildStamp:
         assert namespace["OFFICIAL_RELEASE"] is False
         assert namespace["DEVELOPMENT_CONTEXT_SHA256"] == ""
 
+    def test_renders_every_shipped_doc_and_removes_orphans(self, repo: Path):
+        shutil.rmtree(repo / PACKAGED_DOCS_RELATIVE_DIR, ignore_errors=True)
+        directory = repo / PACKAGED_DOCS_RELATIVE_DIR
+        directory.mkdir(parents=True)
+        (directory / "RETIRED.md").write_bytes(b"old\n")
+
+        write_build_stamp(repo, profile=BuildProfile.RUNTIME_IMAGE)
+
+        for source in SHIPPED_DOCS:
+            assert _copy_path(repo, source).read_bytes() == _rendered(repo, source)
+        assert _copy_path(repo, "docs/user/CONFIG.md").read_bytes() == (
+            b"# CONFIG.md\nsetup (host doc, not shipped)\n"
+        )
+        assert not (directory / "RETIRED.md").exists()
+        assert len(list(directory.iterdir())) == len(SHIPPED_DOCS)
+
+    def test_missing_shipped_source_fails_naming_it(self, repo: Path):
+        (repo / "docs/user/TESTS.md").unlink()
+
+        with pytest.raises(ValueError, match=r"docs/user/TESTS\.md"):
+            write_build_stamp(repo, profile=BuildProfile.RUNTIME_IMAGE)
+
+        assert not stamp_path(repo).exists()
+        assert not development_context_path(repo).exists()
+
+    def test_build_leaves_checkout_clean(self, repo: Path):
+        """After a build the checkout has no untracked or modified files (#3658).
+
+        The rendered copies are Git-ignored build output, so a clean tree that holds only
+        committed sources, with the repository's real ``.gitignore``, stays clean.
+        """
+        shutil.copyfile(SOURCE_ROOT / ".gitignore", repo / ".gitignore")
+        _git(repo, "add", ".gitignore")
+        _git(repo, "commit", "-m", "ignore build output")
+
+        with runtime_image_build_stamp(repo) as commit:
+            assert (repo / PACKAGED_DOCS_RELATIVE_DIR / "CONFIG.md").is_file()
+            assert commit != "" and not commit.endswith("+dirty")
+
+        status = run_bounded_child(
+            ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"],
+            check=True,
+        )
+        assert status.stdout == ""
+
+    def test_render_step_runs_without_third_party_packages(self, repo: Path):
+        code = (
+            "import importlib.util, sys\n"
+            "from pathlib import Path\n"
+            "assert importlib.util.find_spec('markdown_it') is None\n"
+            "from booley.runtime.build_stamp import BuildProfile, write_build_stamp\n"
+            "write_build_stamp(Path(sys.argv[1]), profile=BuildProfile.RUNTIME_IMAGE)\n"
+        )
+
+        result = run_bounded_child(
+            [sys.executable, "-S", "-P", "-c", code, str(repo)],
+            env={**os.environ, "PYTHONPATH": str(SOURCE_ROOT / "src")},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _copy_path(repo, "docs/user/CONFIG.md").read_bytes() == (
+            b"# CONFIG.md\nsetup (host doc, not shipped)\n"
+        )
+
+    def test_shipped_sources_enter_fingerprints_and_rendered_copies_do_not(self, repo: Path):
+        for source in SHIPPED_DOCS:
+            before = (resolve_payload_fingerprint(repo), resolve_wheel_source_fingerprint(repo))
+            (repo / source).write_bytes(_doc_source_text(source) + b"edit\n")
+            after = (resolve_payload_fingerprint(repo), resolve_wheel_source_fingerprint(repo))
+            assert after[0] != before[0], source
+            assert after[1] != before[1], source
+
+        baseline = (resolve_payload_fingerprint(repo), resolve_wheel_source_fingerprint(repo))
+        copy = _copy_path(repo, "docs/user/CONFIG.md")
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        copy.write_bytes(b"rendered copy\n")
+        assert (
+            resolve_payload_fingerprint(repo),
+            resolve_wheel_source_fingerprint(repo),
+        ) == baseline
+        copy.unlink()
+        assert (
+            resolve_payload_fingerprint(repo),
+            resolve_wheel_source_fingerprint(repo),
+        ) == baseline
+
     def test_fingerprints_of_fixed_tree_are_pinned(self, tmp_path: Path):
         """Fingerprints are persisted in image labels and stamps (ADR 0053).
 
-        The literal digests below were computed before the tree digest was
-        shared; changing them invalidates every previously built image.
+        Changing the literal digests below invalidates every previously built
+        image; they last changed when the shipped doc sources joined the inputs
+        (#3657).
         The fixture omits ``VERSION``: ``Path`` sorting is case-insensitive on
         Windows, so a mixed-case sibling would order differently there.
         """
@@ -165,11 +303,13 @@ class TestWriteBuildStamp:
             "crates/bwave/Cargo.lock": b"# lock\n",
             ".dockerignore": b"*\n",
             "pyproject.toml": b"[project]\n",
+            "docs/user/CONFIG.md": b"# config\n",
         }
         excluded = {
             "src/booley/_build_commit.py": b"COMMIT = 'x'\n",
             "src/booley/data/development-build-context.tar.gz": b"context",
             "src/booley/__pycache__/a.cpython-312.pyc": b"bytecode",
+            "src/booley/data/docs/CONFIG.md": b"# config copy\n",
         }
         for relative, content in {**included, **excluded}.items():
             path = root / relative
@@ -177,10 +317,10 @@ class TestWriteBuildStamp:
             path.write_bytes(content)
 
         assert resolve_payload_fingerprint(root) == (
-            "4eefdc268142633c6d5f79b655b7080f1669d2f45c1868ddb4e1867baaef8e4a"
+            "b27b90d3504d1a7f37db02e82c4045e8c2e6df8ee1e013263601ce648eefad2a"
         )
         assert resolve_wheel_source_fingerprint(root) == (
-            "a41dde15065a469c31c11eb87f377265cac69bde2d0f82921e7f5d38e87843f0"
+            "dcc42754de17f9855cdfec8e85ec40ddc5e29b59cf680d6ae86dafcd124a6167"
         )
 
     @staticmethod
@@ -413,6 +553,16 @@ class TestDevelopmentBuildContext:
         package_root.joinpath("runtime").mkdir(parents=True)
         stamp_file = package_root / "_build_commit.py"
         context_file = package_root / "data" / "development-build-context.tar.gz"
+        # A copy, not the live checkout: the render step writes into its root.
+        root = tmp_path / "checkout"
+        copy_source_checkout(
+            SOURCE_ROOT,
+            root,
+            "src/booley",
+            "crates/bwave",
+            ".github/scripts",
+            *build_stamp_module._DEVELOPMENT_CONTEXT_FILES,
+        )
 
         with monkeypatch.context() as build_patch:
             build_patch.setattr(build_stamp_module, "stamp_path", lambda _root: stamp_file)
@@ -421,7 +571,7 @@ class TestDevelopmentBuildContext:
                 "development_context_path",
                 lambda _root: context_file,
             )
-            write_build_stamp(SOURCE_ROOT)
+            write_build_stamp(root)
 
         namespace: dict[str, object] = {}
         exec(stamp_file.read_text(encoding="utf-8"), namespace)
@@ -440,6 +590,9 @@ class TestDevelopmentBuildContext:
             assert resolve_payload_fingerprint(extracted) == namespace["PAYLOAD_FINGERPRINT"]
             assert stamp_path(extracted).is_file()
             assert development_context_path(extracted).is_file()
+            for source in SHIPPED_DOCS:
+                assert (extracted / source).read_bytes() == (root / source).read_bytes()
+                assert _copy_path(extracted, source).read_bytes() == _rendered(root, source)
 
     def test_archive_is_deterministic_and_reconstructs_the_payload(self, tmp_path: Path):
         first = tmp_path / "first.tar.gz"
@@ -561,7 +714,10 @@ class TestInitStampsItsWheel:
             # git still has to run for real — the stamp's content comes from it.
             if cmd[0] == "git":
                 return real_run(cmd, **kwargs)
-            seen.append(stamp_path(repo).is_file())
+            seen.append(
+                stamp_path(repo).is_file()
+                and all(_copy_path(repo, source).is_file() for source in SHIPPED_DOCS)
+            )
             _write_wheel(repo)
             return subprocess.CompletedProcess(cmd, 0, "", "")
 

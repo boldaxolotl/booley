@@ -253,6 +253,21 @@ class TestFormatMcpToolResult:
         result = _format_mcp_tool_result(0, "", "")
         assert result == "EXIT_CODE: 0"
 
+    def test_requeued_job_result_shows_only_the_final_attempts_output(self):
+        # A Job requeued after an OOM kill prints a marker line between the killed
+        # attempt's output and the final attempt's; the agent reads from the marker on.
+        marker = (
+            "[requeue] requeued after out-of-memory; the output above is from the killed attempt"
+        )
+        stdout = f"attempt 1 verdict\n{marker}\nattempt 2 verdict\n"
+        result = _format_mcp_tool_result(0, stdout, "")
+        assert marker in result
+        assert "attempt 2 verdict" in result
+        assert "attempt 1 verdict" not in result
+        # Contrast: without the marker all of the stdout is shown.
+        plain = _format_mcp_tool_result(0, "attempt 1 verdict\nattempt 2 verdict\n", "")
+        assert "attempt 1 verdict" in plain and "attempt 2 verdict" in plain
+
     def test_report_text_duplicated_in_stdout_is_deduped(self):
         # Heavy endpoints print report_text to stdout AND return it in report.json;
         # when the stdout copy survives truncation, the report copy is skipped.
@@ -2132,6 +2147,42 @@ class TestJobPhase:
         )
         assert _job_phase("simulate-p-1") == "QUEUED (position 1)"
 
+    def test_memory_waiter_phase_reports_need_free_memory_and_holders(self, _report_env):
+        import os
+
+        jobrec.write_record(
+            jobrec.JobRecord(
+                run_id="simulate-p-4",
+                endpoint="sim",
+                started_at=_utc_stamp(-5),
+                timeout_s=600,
+                pid=os.getpid(),
+                status=jobrec.STATUS_RUNNING,
+            ),
+            root=session_jobs_dir(),
+        )
+        root = job_slots.slots_dir()
+        assert root is not None
+        store = job_slots.SlotStore(root)
+        for run_id, mib in (("run-1", 200.0), ("run-2", 500.0)):
+            holder = store.submit(
+                job_slots.CLASS_MEMORY,
+                pid=os.getppid(),  # another live process: this one is the queued Job
+                memory=job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=mib),
+                job=job_slots.JobLabel(run_id, "synth", "a"),
+            )
+            assert store.refresh(holder).state == job_slots.HOLDING
+        store.submit(
+            job_slots.CLASS_MEMORY,
+            pid=os.getpid(),
+            memory=job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=400.0),
+        )
+
+        assert _job_phase("simulate-p-4") == (
+            "QUEUED (position 1): needs 400 MiB; 300 MiB free of the 1,000 MiB Memory Budget; "
+            "largest holders: run-2 (synth, a) 500 MiB, run-1 (synth, a) 200 MiB"
+        )
+
     def test_no_slot_entry_reads_running(self, _report_env):
         import os
 
@@ -2169,6 +2220,51 @@ class TestJobPhase:
         assert store.refresh(token).state == job_slots.HOLDING
         assert _job_phase("simulate-p-3") == "RUNNING"
 
+    def test_requeued_waiter_reads_queued_with_its_reason(self, _report_env):
+        import os
+
+        jobrec.write_record(
+            jobrec.JobRecord(
+                run_id="simulate-p-4",
+                endpoint="sim",
+                started_at=_utc_stamp(-5),
+                timeout_s=600,
+                pid=os.getpid(),
+                status=jobrec.STATUS_RUNNING,
+            ),
+            root=session_jobs_dir(),
+        )
+        root = job_slots.slots_dir()
+        assert root is not None
+        store = job_slots.SlotStore(root)
+        holder = store.submit(
+            job_slots.CLASS_MEMORY,
+            pid=os.getppid(),  # another live process: this one is the queued Job
+            memory=job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=200.0),
+            job=job_slots.JobLabel("run-1", "synth", "a"),
+        )
+        assert store.refresh(holder).state == job_slots.HOLDING
+        token = store.submit(
+            job_slots.CLASS_MEMORY,
+            pid=os.getpid(),
+            memory=job_slots.MemoryClaim(budget_mb=1000.0, run_alone=True),
+            queue_reason="requeued after out-of-memory",
+        )
+        # The queue detail and the requeue reason read together.
+        assert _job_phase("simulate-p-4") == (
+            "QUEUED (position 1): waits to run alone (memory estimate unknown or above the "
+            "Memory Budget); largest holders: run-1 (synth, a) 200 MiB; "
+            "requeued after out-of-memory"
+        )
+        # Contrast: the same waiter without a reason reads without it.
+        store.release(token)
+        store.submit(
+            job_slots.CLASS_MEMORY,
+            pid=os.getpid(),
+            memory=job_slots.MemoryClaim(budget_mb=1000.0, run_alone=True),
+        )
+        assert "requeued" not in _job_phase("simulate-p-4")
+
 
 class TestAsyncJobToolMembership:
     """Which endpoints route through the submit/poll model (ADR 0027).
@@ -2189,7 +2285,7 @@ class TestAsyncJobToolMembership:
         # loop, so an interactive call came back as a bare client-side timeout
         # (no run_id, no poll) — recoverable only via booley_report.
         assert "reviewer" in mcp_server._ASYNC_JOB_MCP_TOOLS
-        assert "mutation_tester" in mcp_server._ASYNC_JOB_MCP_TOOLS
+        assert "mutation" in mcp_server._ASYNC_JOB_MCP_TOOLS
         assert "coverage_analyst" in mcp_server._ASYNC_JOB_MCP_TOOLS
 
     def test_poll_endpoint_advertises_the_async_tools(self):
@@ -2832,7 +2928,7 @@ def test_mcp_simulation_dispatch_reaches_alias_normalization(
     )
     assert len(results) == 1
     assert results[0].exit_code == 0, results[0].outcome.report_text
-    assert (data / "reports/sim/1/targets/sim/campaign/manifest.json").is_file()
+    assert (data / "reports/sim/1/targets/sim/record/manifest.json").is_file()
 
 
 def _seeded_report_files(reports: Path, endpoint: str) -> list[Path]:

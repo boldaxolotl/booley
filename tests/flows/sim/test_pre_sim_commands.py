@@ -473,3 +473,38 @@ def test_actual_hook_normalizes_invalid_utf8_output(tmp_path: Path) -> None:
     assert evidence is not None and evidence.returncode == 0
     assert evidence.stdout_tail == "�hook-out\n"
     assert evidence.stderr_tail == "�hook-err\n"
+
+
+def test_pre_sim_commands_do_not_run_after_the_jobs_oom_kill(tmp_path: Path) -> None:
+    """An armed attempt that already had an OOM kill spawns no hook; an unarmed one does."""
+    from booley.runtime.endpoint_execution import job_attempt, note_job_oom_kill
+
+    handle = _handle(tmp_path)
+    marker = tmp_path / "hook-ran"
+    # Portable "touch": the interpreter running the tests creates the marker file.
+    touch = f"\"{sys.executable}\" -c \"open(r'{marker}', 'w').close()\""
+
+    def run_hook():
+        return run_pre_sim_commands(
+            handle,
+            test_names=("smoke",),
+            build_root=tmp_path / "build",
+            eda_tool="icarus",
+            timeout_s=30,
+            commands=(touch,),
+        )
+
+    with job_attempt(stop_on_oom=True):
+        note_job_oom_kill()
+        stopped = run_hook()
+    assert stopped is not None
+    assert stopped.status == "failed"
+    assert "OOM-killed" in stopped.detail
+    assert not marker.exists()
+
+    # Contrast: the attempt that will not be requeued still runs its hook after a kill.
+    with job_attempt(stop_on_oom=False):
+        note_job_oom_kill()
+        ran = run_hook()
+    assert ran is not None and ran.status == "passed", ran
+    assert marker.exists()

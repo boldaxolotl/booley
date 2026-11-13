@@ -30,8 +30,8 @@ from uuid import uuid4
 
 from mcp import Client, StdioServerParameters
 
-from booley.dev_support import mutation_lock
 from booley.dev_support.demo_contract_codec import load_contract
+from booley.flows.mutation import workspace as mutation_workspace
 from booley.fusesoc.core_projection import native_cores_ignored
 from booley.goals.model import GoalArg, GoalFamily, GoalRecord, GoalState, goal_arg_to_json
 from booley.goals.naming import resolve_spelling
@@ -55,14 +55,6 @@ TOOL_TIMEOUT_SECONDS = 600
 # Goal's detached baseline Jobs compete for the same host.
 MUTATION_SMOKE_TIMEOUT_SECONDS = 1200
 POLL_WAIT_SECONDS = 30
-MUTATION_SMOKE_SUFFIX = " mutation-smoke"
-# A ``//`` comment that tools read as a directive (or a macro line continuation)
-# is not inert: extending it could change compilation, so the smoke skips it.
-_TOOL_DIRECTIVE = re.compile(
-    r"//\s*(synopsys|pragma|verilator|synthesis|translate|cadence|vcs|xcelium|slang|verible"
-    r"|coverage|lint|iverilog|yosys)",
-    re.IGNORECASE,
-)
 # Bound for detached baseline Jobs to unwind after cancellation.
 BASELINE_STOP_SECONDS = 60
 # A SIGTERM sent before the Job supervisor installs its handler is lost, so the
@@ -73,6 +65,8 @@ BASELINE_KILL_FRACTION = 0.5
 _ENTRY = re.compile(r"^Goal Mode ([A-Za-z0-9-]+) entered in (.+)\.$", re.MULTILINE)
 _EXIT = re.compile(r"EXIT_CODE:\s*(-?\d+)")
 _RUN = re.compile(r"run_id=([^\s)]+)")
+# The Mutation Flow report line: ``N detected (T timeout), Z invalid, W not detected``.
+_ZERO_INVALID = re.compile(r"\b0 invalid\b")
 
 
 class GoalDriverError(RuntimeError):
@@ -229,7 +223,7 @@ async def readiness(
     """Enter the full contract and list every Goal without a lifecycle exception.
 
     With *mutation_smoke_booley_dir* (the Main Booley Directory) set, also run
-    one small ``mutation_tester`` call inside the Goal worktree.
+    one small ``mutation`` call inside the Goal worktree.
     """
     entry = await enter(session, worktree, goals)
     result = await _status(session, worktree, entry, goals)
@@ -237,27 +231,12 @@ async def readiness(
         smoke = await mutation_smoke(
             session, worktree, mutation_smoke_booley_dir, entry["record_id"], goals
         )
-        result["steps"]["mutation_tester"] = smoke
+        result["steps"]["mutation"] = smoke
     return result
 
 
-def _is_inert_line_comment(line: str) -> bool:
-    """Whether appending text to *line* cannot change what a tool builds."""
-    return (
-        line.lstrip().startswith("//")
-        and not line.rstrip().endswith("\\")
-        and not _TOOL_DIRECTIVE.match(line.lstrip())
-    )
-
-
-def _smoke_scope_and_proposal(worktree: Path, goals: Sequence[GoalArg]) -> tuple[str, str, Any]:
-    """Return ``(target, scope file, spec dict)`` for one comment-only mutation.
-
-    The proposal extends the first inert ``//`` line comment of the first RTL file of
-    the contract's mutation Target. The variant therefore compiles and runs
-    exactly like the baseline: the smoke can only fail when a variant does not
-    build or yields no verdict, which is what it guards.
-    """
+def _smoke_target_and_scope(worktree: Path, goals: Sequence[GoalArg]) -> tuple[str, str]:
+    """Return ``(target, scope file)``: the first RTL file of the mutation Target."""
     goal = next((goal for goal in goals if goal.family is GoalFamily.MUTATION), None)
     if goal is None or goal.target is None:
         raise GoalDriverError("mutation smoke needs a mutation Goal with a Target")
@@ -273,20 +252,7 @@ def _smoke_scope_and_proposal(worktree: Path, goals: Sequence[GoalArg]) -> tuple
         raise GoalDriverError(f"mutation smoke Target resolution failed: {exc}") from exc
     if not files:
         raise GoalDriverError(f"mutation smoke Target {goal.target} lists no RTL file")
-    scope = files[0]
-    for number, line in enumerate((worktree / scope).read_text("utf-8").splitlines(), start=1):
-        if _is_inert_line_comment(line):
-            spec = {
-                "index": 1,
-                "category": "comment",
-                "file": scope,
-                "line": number,
-                "original_code": line,
-                "mutated_code": line + MUTATION_SMOKE_SUFFIX,
-                "detectability_argument": "comment-only change: the build must still succeed",
-            }
-            return goal.target, scope, spec
-    raise GoalDriverError(f"mutation smoke found no // line comment in {scope}")
+    return goal.target, files[0]
 
 
 async def mutation_smoke(
@@ -296,28 +262,19 @@ async def mutation_smoke(
     record_id: str,
     goals: Sequence[GoalArg],
 ) -> dict[str, Any]:
-    """Build and run one variant in the Goal worktree through the private mirror.
+    """Build and run one generated Mutant in the Goal worktree through the private mirror.
 
-    A schema-2 proposal lock is seeded in the Goal run's runtime directory
-    (``BOOLEY_RUNTIME_DIR`` for Goal calls) so warm reuse skips the creator
-    agent, which the CI container cannot reach. ``diagnostic`` keeps the
-    one-variant run from recording the Goal's mutation criterion as met.
+    The deterministic generator (seed 0) yields one fixed Mutant for the first
+    RTL file of the Target. The smoke guards that the Mutant builds through the
+    private mirror and is not reported invalid (issue #2776: every variant
+    invalid). ``diagnostic`` keeps the run from recording the Goal's mutation
+    criterion as met.
     """
-    target, scope, spec = _smoke_scope_and_proposal(worktree, goals)
+    target, scope = _smoke_target_and_scope(worktree, goals)
     runtime_dir = record_paths(booley_dir, record_id).runtime_dir
-    mutation_lock.save_lock(
-        mutation_lock.LockMeta(
-            created_at=mutation_lock.now_iso(),
-            scope=[scope],
-            scope_hashes=mutation_lock.compute_scope_hashes([scope], worktree),
-            count=1,
-            mutations=[spec],
-        ),
-        runtime_dir,
-    )
     response = await run_flow(
         session,
-        "mutation_tester",
+        "mutation",
         {
             "work_dir": str(worktree),
             "target": target,
@@ -329,9 +286,11 @@ async def mutation_smoke(
         poll_limit=MUTATION_SMOKE_TIMEOUT_SECONDS // POLL_WAIT_SECONDS,
         timeout_seconds=MUTATION_SMOKE_TIMEOUT_SECONDS,
     )
-    mirror = mutation_lock.variant_build_dir(1, runtime_dir) / "core-mirror"
+    mirror = mutation_workspace.variant_build_dir(1, runtime_dir) / "core-mirror"
     if not mirror.is_dir():
         raise GoalDriverError(f"mutation smoke never built through the private mirror: {mirror}")
+    if _ZERO_INVALID.search(response) is None:
+        raise GoalDriverError(f"mutation smoke Mutant was reported invalid: {response}")
     return {"status": "pass", "response": response}
 
 
@@ -597,7 +556,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--mutation-smoke",
         action="store_true",
-        help="with --readiness, also run one small mutation_tester call in the Goal worktree",
+        help="with --readiness, also run one small mutation call in the Goal worktree",
     )
     parser.add_argument("--evidence", type=Path, required=True)
     args = parser.parse_args(argv)

@@ -34,6 +34,7 @@ from booley.harness.dashboard.launch import Launcher
 from booley.harness.dashboard.links import linked_text, open_in_editor
 from booley.harness.dashboard.model import DashboardSnapshot, GoalDetail, GoalView
 from booley.harness.dashboard.resources import Resources
+from booley.harness.dashboard.review import Occupants
 from booley.harness.dashboard.targets import (
     TargetDetail,
     TargetListing,
@@ -88,6 +89,8 @@ CURSOR_POSITION_REQUEST = "\x1b[6n"
 FINISHED_JOBS = 50
 # An orphaned process is known dead even though its Job record never finalized.
 _REPORT_DETAIL_STATES = TERMINAL_JOB_STATES | {"orphaned"}
+# Fits a queued claim's need, free memory, a blocked seat and three named holders.
+_QUEUE_DETAIL_LIMIT = 400
 HELP = (
     "↑↓ move through the list · Enter opens the selected row · Esc goes back one level\n"
     "←→ switch between the Sessions, Jobs and Targets windows; each keeps its place\n"
@@ -108,7 +111,9 @@ HELP = (
     "Activity is what the agent client last reported: working, waiting for tool call,\n"
     "or waiting for user input. Unknown means no fresh report, never a guess.\n"
     "Run in the top bar starts a built-in Booley Flow as a Standalone Job: pick the worktree,\n"
-    "the Flow and its arguments, then check the equivalent shell command and submit or copy it\n"
+    "the Flow, then fill in its form; check the equivalent shell command and submit or copy it;\n"
+    "the review also says if the Job runs now or queues (a full queue refuses Submit) and warns\n"
+    "about sessions, running Jobs and uncommitted changes in the worktree\n"
     "After Run the Jobs window opens on All sessions with the new Job selected; a Finished\n"
     "filter switches to Running, which keeps the selected Job listed after it finishes\n"
     "Approvals remain in chat."
@@ -192,7 +197,8 @@ class SessionOrientation:
     """
 
     key: str
-    handle: str
+    #: ``S3``, or ``S3 · uart-fix`` for a named session.
+    title: str
     checkout: str
     branch: str
     mode: str
@@ -586,13 +592,19 @@ def _job_metadata(job: JobView, *, now: float | None = None) -> list[ResultLine]
         tool = tool or job.eda_tool
     elif not tool and (
         report.get("flow")
-        or (job.report is None and job.record.endpoint in {"sim", "lint", "synth", "fpga"})
+        or (
+            job.report is None
+            and job.record.endpoint in {"sim", "lint", "synth", "fpga", "mutation"}
+        )
     ):
         tool = "not recorded by this Flow"
     if tool:
         rows.append(ResultLine("EDA tool", tool))
     if job.stage:
         rows.append(ResultLine("Stage", literal(job.stage)))
+    if job.state == "queued" and job.queue:
+        # The text names other processes' run IDs and Targets: shown as data, bounded.
+        rows.append(ResultLine("Queue", literal(job.queue, limit=_QUEUE_DETAIL_LIMIT)))
     rows.extend(_job_resources(job))
     return rows
 
@@ -1032,7 +1044,7 @@ class DashboardApp(App[None]):
 
     def _open_run_wizard(self) -> None:
         """Open the Run wizard over the current window, remembering where it started."""
-        if self.launcher is None:
+        if self.launcher is None or self.targets is None:
             self.notify("Run unavailable: no Project root", severity="warning")
             return
         self._remember()
@@ -1040,7 +1052,14 @@ class DashboardApp(App[None]):
         self._load_worktrees()
         choices, message = self._wizard_worktrees()
         self.push_screen(
-            RunWizard(self.launcher, choices, message, self._default_worktree),
+            RunWizard(
+                self.launcher,
+                self.targets,
+                choices,
+                message,
+                self._default_worktree,
+                self._worktree_occupants,
+            ),
             lambda key: self._after_run(origin, key),
         )
 
@@ -1107,9 +1126,9 @@ class DashboardApp(App[None]):
         row, connected = self._session_row()
         attention = SEMANTIC_STYLE["attention"]
         if row is None:
-            handle = self._session_handle(self.navigation.session or "")
+            title = self._session_title(self.navigation.session or "")
             return _join(
-                (f"{handle} ", "bold " + _ACCENT),
+                (f"{title} ", "bold " + _ACCENT),
                 ("disconnected", attention),
                 "retained Jobs remain available",
             ), None
@@ -1118,7 +1137,7 @@ class DashboardApp(App[None]):
         state = self.snapshot.activity.get(info.key, Activity()).state
         connection_style = "green" if info.connection == "connected" else attention
         header = _join(
-            info.handle,
+            info.title,
             info.checkout,
             info.branch or "branch unavailable",
             info.mode,
@@ -1154,7 +1173,7 @@ class DashboardApp(App[None]):
         now = self.snapshot.observed_at
         return SessionOrientation(
             key=facts.key,
-            handle=self._session_handle(facts.key),
+            title=self._session_title(facts.key),
             checkout=checkout,
             branch=branch,
             mode="Goal Mode" if goal else "Interactive",
@@ -1452,6 +1471,10 @@ class DashboardApp(App[None]):
     def _session_handle(self, key: str) -> str:
         return self.snapshot.session_handles.get(key, "S?")
 
+    def _session_title(self, key: str) -> str:
+        """The handle with its ``--name`` label when the session has one."""
+        return self.snapshot.session_titles.get(key) or self._session_handle(key)
+
     def _owned_by(self, job: JobView, key: str | None) -> bool:
         """Aliases affect presentation membership only; routing keeps durable keys."""
         if key is None:
@@ -1492,6 +1515,7 @@ class DashboardApp(App[None]):
         return sessions.SessionFacts(
             key=facts.key,
             handle=self._session_handle(facts.key),
+            title=self._session_title(facts.key),
             mode=mode,
             branch=branch,
             work_dir=checkout,
@@ -1761,7 +1785,7 @@ class DashboardApp(App[None]):
                 f"{info.last_call} · {info.last_age}" if info.last_call else _ABSENT,
             ),
         ]
-        text = Text(f"{info.handle} · {info.mode}", style="bold " + _ACCENT)
+        text = Text(f"{info.title} · {info.mode}", style="bold " + _ACCENT)
         for label, value in lines:
             text.append("\n")
             text.append(label + ":", style=_CHROME)
@@ -2010,7 +2034,11 @@ class DashboardApp(App[None]):
         return text
 
     def _session_checkouts(self) -> list[tuple[Path, str]]:
-        """Each connected session's checkout and ``S3 Interactive`` label, in handle order."""
+        """Each connected session's checkout and ``S3 · uart-fix Interactive`` label, by handle number.
+
+        The label starts with the session title (the bare handle when unnamed); the order
+        follows the handle number, never the title.
+        """
 
         def number(row: SessionRow) -> int:
             match = _HANDLE_NUMBER.fullmatch(self._session_handle(row.attribution.key))
@@ -2021,9 +2049,26 @@ class DashboardApp(App[None]):
             facts = row.attribution
             checkout = facts.work_dir or facts.default_work_dir
             if checkout:
-                label = f"{self._session_handle(facts.key)} {self._session_facts(row).mode}"
+                label = f"{self._session_title(facts.key)} {self._session_facts(row).mode}"
                 pairs.append((Path(checkout), label))
         return pairs
+
+    def _worktree_occupants(self, worktree: Path) -> Occupants:
+        """The connected sessions and unfinished Jobs in *worktree*, as the last read showed them."""
+        if self.snapshot.observed_at == 0:
+            return Occupants(problem="the Dashboard has not read them yet")
+        here = worktree.resolve()
+        sessions = tuple(
+            label for path, label in self._session_checkouts() if path.resolve() == here
+        )
+        running = tuple(
+            job.handle or job.record.run_id
+            for job in self.snapshot.jobs.jobs
+            if not _finished(job)
+            and job.record.work_dir
+            and Path(job.record.work_dir).resolve() == here
+        )
+        return Occupants(sessions, running)
 
     def _worktree_choices(self) -> tuple[WorktreeChoice, ...]:
         """The worktrees to pick from; sessions' first, the main checkout last."""

@@ -163,11 +163,6 @@ class Specialist(McpTool):
         """Hook for subclasses to add additional arguments."""
 
     @staticmethod
-    def _add_scope_arg(parser: argparse.ArgumentParser, *, help_text: str) -> None:
-        """Register the shared, explicit source-scope interface."""
-        parser.add_argument("--scope", required=True, help=help_text)
-
-    @staticmethod
     def _add_steer_arg(parser: argparse.ArgumentParser, *, help_text: str) -> None:
         """Register repeatable caller context with one MCP array shape."""
         parser.add_argument(
@@ -601,9 +596,8 @@ class Specialist(McpTool):
             "phrases (case-insensitive identifier-token matching, including "
             "CamelCase and digits; known identity names and configured "
             "banned_substrings match anywhere). They are "
-            "rejected by the commit-msg validator and will fail the commit "
-            "after the work is done, forcing a fallback to a generic "
-            f"message:\n  {joined}\n"
+            "rejected by the commit-msg validator, and the commit fails "
+            f"after the work is done:\n  {joined}\n"
             "Pick neutral hardware-design vocabulary instead "
             "(e.g. 'utility', 'helper', 'module', 'block').\n"
         )
@@ -700,26 +694,6 @@ class Specialist(McpTool):
 
         errors = validate_message(msg, project_root=work_dir)
         if errors:
-            # Salvage: if the only errors are banned-phrase hits in the
-            # agent's subject, retry with the Specialist's default commit message.
-            # The agent's freeform text is lost (subject only), but this
-            # avoids burning a full multi-minute agent run to exit-2 on a
-            # stylistic violation the agent could not have known about
-            # (banned-phrase list is project-local config).
-            if all("Banned phrase" in e for e in errors):
-                fallback = _auto_format_commit_message(
-                    self._default_commit_message,
-                    category=category_hint,
-                )
-                fallback_errors = validate_message(fallback, project_root=work_dir)
-                if not fallback_errors:
-                    logger.warning(
-                        "Commit message rejected for banned phrase(s) "
-                        "(%s); falling back to default %r",
-                        "; ".join(errors),
-                        fallback,
-                    )
-                    return fallback
             raise self.GitStatusError(f"Commit message validation failed: {'; '.join(errors)}")
         return msg
 

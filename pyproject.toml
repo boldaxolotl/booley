@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 # PyPI distribution name ("booley" was taken); the import package stays `booley`.
 name = "booley-rtl"
 dynamic = ["version"]
-description = "The open-source Agentic Development Environment (ADE) for FPGA and ASIC development"
+description = "The open-source Agentic Development Environment (ADE) for RTL design and verification"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
@@ -62,33 +62,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Every pin lives once, in its narrow extra: Renovate rewrites one copy of a name
+# per file, so a second copy (the old `dev` list) goes stale and breaks the
+# constraints regeneration. Extras compose by self-reference (`booley-rtl[extra]`).
 test = [
-    "cryptography==50.0.2",
-    "hypothesis>=6.170.14",
-    "pytest==9.2.0",
-    "pytest-asyncio==1.4.0",
-    "pytest-xdist==3.8.0",
-    "pytest-timeout==2.4.0",
-    "pytest-repeat==0.9.4",
-    "pytest-cov==7.1.0",
-    # coverage.py 7.17.1 breaks SIGINT exit codes under patch = ["subprocess"]
-    # (tests expecting 130 get 1); hold 7.17.0 until upstream is fixed.
-    "coverage==7.17.0",
-    "diff-cover==10.6.0",
-    # The Mutant generator tests parse real Verilog (kept equal to hdl-parser).
-    "pyslang==12.1.0",
-]
-# Mutant generator parser (ADR 0088). Installed in the Sandbox image; the host
-# does not need it. Exact pin, held equal to base-python-requirements.txt by
-# tests/docker/test_sandbox_dockerfile.py.
-hdl-parser = [
-    "pyslang==12.1.0",
-]
-quality = [
-    "pyright==1.1.414",
-    "ruff==0.17.2",
-]
-dev = [
     # The repository-owned confidential vocabulary uses AES-GCM in its local
     # guard and the trusted CI scanner.
     "cryptography==50.0.2",
@@ -111,18 +88,29 @@ dev = [
     "pytest-cov==7.1.0",
     # coverage.py 7.17.1 breaks SIGINT exit codes under patch = ["subprocess"]
     # (tests expecting 130 get 1); hold 7.17.0 until upstream is fixed.
+    # The coverage rule in .github/renovate.json repeats this hold.
     "coverage==7.17.0",
-    # CI quality gates. Exact pins keep local and hosted results reproducible;
-    # the quality extra repeats these pins for a smaller hosted install.
-    "diff-cover==10.6.0",
-    "pyright==1.1.414",
-    # Mutant generator parser (kept equal to the hdl-parser extra).
+    # CI quality gate (changed-line coverage). Exact pin keeps hosted results reproducible.
+    "diff-cover==11.0.1",
+    # The Mutant generator tests parse real Verilog.
+    "booley-rtl[hdl-parser]",
+]
+# Mutant generator parser (ADR 0088). Installed in the Sandbox image; the host
+# does not need it. Exact pin, held equal to base-python-requirements.txt by
+# tests/docker/test_sandbox_dockerfile.py.
+hdl-parser = [
     "pyslang==12.1.0",
-    # Exact pin, kept in lockstep with the `pip install ruff==...` step in
-    # .github/workflows/test.yml — a floor here let three different ruff versions
-    # coexist locally, so `ruff format --check` disagreed with CI. Bump both files
-    # in the same commit, and re-run `ruff check .` + `ruff format --check .` first.
+]
+quality = [
+    "pyright==1.1.414",
+    # Exact pin: a floor let three different ruff versions coexist locally, so
+    # `ruff format --check` disagreed with CI. Before bumping, re-run
+    # `ruff check .` + `ruff format --check .`.
     "ruff==0.17.2",
+]
+# Every development tool: the union of the extras above.
+dev = [
+    "booley-rtl[test,quality]",
 ]
 
 [project.scripts]
@@ -360,6 +348,9 @@ include = [
     "src/booley/flows/lint/flow.py",
     "src/booley/flows/sim/build.py",
     "src/booley/flows/sim/flow.py",
+    "src/booley/flows/sim/campaign_presentation.py",
+    "src/booley/flows/sim/campaign_scaffold.py",
+    "src/booley/flows/sim/watchdog_sizing.py",
     "src/booley/flows/sim/verilator_coverage.py",
     "src/booley/flows/sim/verilator_coverage_execution.py",
     "src/booley/flows/sim/coverage_overlay.py",
