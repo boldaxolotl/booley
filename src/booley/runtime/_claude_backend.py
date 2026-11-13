@@ -494,7 +494,7 @@ def _build_sdk_options(
     if params.max_turns is not None:
         options.max_turns = params.max_turns
     if params.allowed_agent_capabilities is not None:
-        options.allowed_tools = params.allowed_agent_capabilities
+        options.allowed_tools = list(params.allowed_agent_capabilities)
     # Provider-hosted web MCP tools bypass the container network namespace. Keep
     # every harness-launched agent offline even when it runs outside Booley's
     # managed image (the image also carries an immutable Claude policy).

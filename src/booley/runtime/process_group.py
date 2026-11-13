@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # ``subprocess.CREATE_NEW_PROCESS_GROUP`` exists only on Windows, so Pyright on other
 # platforms cannot see it; the Windows class is also exercised there with ``is_windows=True``.
-CREATE_NEW_PROCESS_GROUP = 0x00000200
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
 
 
 class NewGroupKwargs(TypedDict, total=False):
@@ -182,7 +182,7 @@ class _WindowsProcessGroups:
 
     @staticmethod
     def new_group_kwargs() -> NewGroupKwargs:
-        return {"creationflags": CREATE_NEW_PROCESS_GROUP}
+        return {"creationflags": _CREATE_NEW_PROCESS_GROUP}
 
     @staticmethod
     def request(group: ProcessGroup) -> None:
