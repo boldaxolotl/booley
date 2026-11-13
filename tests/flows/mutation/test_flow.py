@@ -696,7 +696,8 @@ class FakeSimulation:
 
     builds: list[int | None] = field(default_factory=list)  # Mutant index; None: baseline
     runs: list[int | None] = field(default_factory=list)
-    run_timeouts: list[float] = field(default_factory=list)
+    run_timeouts: list[float] = field(default_factory=list)  # the hard kill of each run
+    run_limits: list[int] = field(default_factory=list)  # the limit the simulator was given
 
 
 def _mutant_index(text: str) -> int | None:
@@ -754,6 +755,7 @@ def _patch_fake_simulation(
             index = _mutant_index(repr(launched_work(cmd)))
             fake.runs.append(index)
             fake.run_timeouts.append(kwargs["timeout"])
+            fake.run_limits.append(launched_work(cmd).timeout_s)
             return run(index) if run else _fake_proc(rc=0, stdout="[sim] ok")
         return original(cmd, *args, **kwargs)
 
@@ -1608,12 +1610,8 @@ def test_missing_pyslang_refuses_with_its_name(tmp_path: Path, monkeypatch) -> N
     assert fake.builds == []
 
 
-@pytest.mark.parametrize(
-    ("baseline_seconds", "limit"), [(1.2, 30), (12.5, 125), (40, 300)], ids=str
-)
-def test_mutant_timeout_scales_with_the_tests_baseline_duration(
-    tmp_path: Path, monkeypatch, baseline_seconds: float, limit: int
-) -> None:
+def _clock_with_baseline(monkeypatch, baseline_seconds: float) -> None:
+    """Make the baseline test last *baseline_seconds*; later readings only move forward."""
     readings = [0.0, baseline_seconds]  # the baseline test starts and ends
     later = itertools.count(1000)
 
@@ -1622,11 +1620,62 @@ def test_mutant_timeout_scales_with_the_tests_baseline_duration(
 
     monkeypatch.setattr("booley.flows.mutation.flow._monotonic", clock, raising=False)
 
+
+@pytest.mark.parametrize(
+    ("baseline_seconds", "limit", "hard_kill"),
+    [(1.2, 30, 35), (12.5, 125, 130), (40, 300, 305)],
+    ids=str,
+)
+def test_mutant_timeout_scales_with_the_tests_baseline_duration(
+    tmp_path: Path, monkeypatch, baseline_seconds: float, limit: int, hard_kill: int
+) -> None:
+    _clock_with_baseline(monkeypatch, baseline_seconds)
+
     _, result, fake = _campaign(tmp_path, monkeypatch, count=1, min_detected=0)
 
     assert result.exit_code == EXIT_SUCCESS, result.report_text
     # The baseline keeps the 300 s cap; the Mutant's limit is max(10 x baseline, 30 s), capped.
-    assert fake.run_timeouts == [300, limit]
+    assert fake.run_limits == [300, limit]
+    assert fake.run_timeouts == [305, hard_kill]  # the hard kill waits 5 s past the limit
+
+
+def test_hanging_mutant_is_stopped_by_the_simulator_at_the_documented_limit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _clock_with_baseline(monkeypatch, 1.2)
+
+    def hangs(index: int | None) -> subprocess.CompletedProcess:
+        if index == 1:  # the adapter cuts the hanging Mutant off at its own limit
+            return _fake_proc(rc=1, stdout="ERROR: Verilator simulation timed out (30s)\n")
+        return _fake_proc(rc=0, stdout="[sim] ok")
+
+    _, result, fake = _campaign(tmp_path, monkeypatch, count=1, min_detected=0, run=hangs)
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    assert fake.run_limits[1] == 30  # the value passed to the simulator, not 25
+    assert fake.run_timeouts[1] > fake.run_limits[1]  # the hard kill comes after the adapter
+    assert fake.run_timeouts[1] > 30
+
+
+def test_campaign_artifacts_show_each_tests_baseline_duration_and_time_limit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _clock_with_baseline(monkeypatch, 1.2)
+
+    _, result, _ = _campaign(tmp_path, monkeypatch, count=1, min_detected=0)
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    manifest = json.loads(
+        (tmp_path / result.detail["artifacts"]["manifest"]).read_text(encoding="utf-8")
+    )
+    name = result.detail["tests"][0]
+    assert manifest["baseline"]["test_runs"] == [
+        {"run": name, "duration_s": 1.2, "time_limit_s": 30}
+    ]
+    markdown = _results_markdown(tmp_path, result)
+    assert "## Time limits" in markdown
+    assert "| Test run | Baseline | Limit |" in markdown
+    assert f"| `{name}` | 1.20 s | 30 s |" in markdown
 
 
 def test_timed_out_mutant_counts_as_detected_timeout(tmp_path: Path, monkeypatch) -> None:
@@ -1634,7 +1683,7 @@ def test_timed_out_mutant_counts_as_detected_timeout(tmp_path: Path, monkeypatch
         if index == 1:  # the run was killed
             raise subprocess.TimeoutExpired(cmd="run", timeout=30)
         if index == 2:  # the adapter cut the run off first
-            return _fake_proc(rc=1, stdout="ERROR: Verilator simulation timed out (25s)\n")
+            return _fake_proc(rc=1, stdout="ERROR: Verilator simulation timed out (30s)\n")
         return _fake_proc(rc=0 if index is None else 1, stdout="[sim] a test failed")
 
     _, result, _ = _campaign(tmp_path, monkeypatch, count=3, run=timeouts)
@@ -1651,7 +1700,7 @@ def test_timed_out_mutant_counts_as_detected_timeout(tmp_path: Path, monkeypatch
 
 def test_baseline_that_times_out_is_inconclusive(tmp_path: Path, monkeypatch) -> None:
     def baseline_times_out(index: int | None) -> subprocess.CompletedProcess:
-        return _fake_proc(rc=1, stdout="ERROR: Verilator simulation timed out (295s)\n")
+        return _fake_proc(rc=1, stdout="ERROR: Verilator simulation timed out (300s)\n")
 
     _, result, fake = _campaign(tmp_path, monkeypatch, count=1, run=baseline_times_out)
 
