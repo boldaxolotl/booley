@@ -250,6 +250,8 @@ DIRECTION_RULES = (
             exact("booley.runtime.core_resolution"),
             exact("booley.runtime.project_image"),
             exact("booley.mcp.server_inspection"),
+            exact("booley.flows.runtime_reality"),
+            exact("booley.flows.fpga.vivado_startup"),
         ),
         (
             exact("booley.harness.doctor"),
