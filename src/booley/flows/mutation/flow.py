@@ -2588,7 +2588,10 @@ def _mutation_detail(
     requested: int,
     valid_count: int,
 ) -> dict[str, Any]:
-    """The tally fields: ``total_requested`` is the ``--count``, ``total_scored`` the Mutants run."""
+    """The tally fields.
+
+    ``total_requested`` is the ``--count``; ``total_scored`` the Mutants kept (invalid included).
+    """
     return {
         "detected": summary.detected_count,
         "not_detected": summary.not_detected_count,
