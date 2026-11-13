@@ -159,8 +159,11 @@ def test_probe_error_fails(tmp_path, monkeypatch):
     """A Sandbox start failure or an OS error is a probe-error FAIL, cut to 500 characters."""
     fix = "run 'booley init --seed' and retry"
     start_failure = session_runtime.SessionError("sandbox did not start")
-    _script_run(monkeypatch, start_failure)
-    assert _summary(_inspect(tmp_path)) == [
+
+    def failing_builder(_argv):
+        raise start_failure
+
+    assert _summary(_inspect(tmp_path, command=failing_builder)) == [
         (Severity.FAIL, f"{_LABEL}: runtime/probe error: sandbox did not start", fix)
     ]
 

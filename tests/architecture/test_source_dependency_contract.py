@@ -500,7 +500,6 @@ def test_diagnostic_owners_do_not_acquire_command_or_rendering_knowledge(
     root = tmp_path / "booley"
     for package in (
         root,
-        root / "flows",
         root / "harness",
         root / "harness" / "setup",
         root / "flows",

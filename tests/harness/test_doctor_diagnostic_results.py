@@ -1255,13 +1255,12 @@ def _run_runtime_scenario(
     flow: str,
     available: bool = True,
     returncode: int = 0,
-    spy: bool = True,
 ):
     """Run the Flow audit for *flow* with a scripted Sandbox answer.
 
     Returns the rendered ANSI-stripped rows from the Flow's ``executes in the
     Sandbox`` row through its dry-run row, the exit code, and the owner
-    entry points that ran (``[]`` when *spy* is false).
+    entry points that ran.
     """
     from booley.presentation import colors
 
@@ -1270,13 +1269,12 @@ def _run_runtime_scenario(
         inside=False, available=available, command=lambda argv, **_kw: ["sandbox", *argv]
     )
     ran: list[tuple[str, Any]] = []
-    if spy:
-        for module_name, entry in (
-            ("booley.flows.runtime_reality", "inspect_flow_runtime_reality"),
-            ("booley.flows.fpga.vivado_startup", "inspect_vivado_startup"),
-        ):
-            owner = importlib.import_module(module_name)
-            monkeypatch.setattr(owner, entry, _recording(ran, entry, getattr(owner, entry)))
+    for module_name, entry in (
+        ("booley.flows.runtime_reality", "inspect_flow_runtime_reality"),
+        ("booley.flows.fpga.vivado_startup", "inspect_vivado_startup"),
+    ):
+        owner = importlib.import_module(module_name)
+        monkeypatch.setattr(owner, entry, _recording(ran, entry, getattr(owner, entry)))
     monkeypatch.setattr(doctor, "_check_design_size", lambda *_args, **_kwargs: None)
     dry_run = DiagnosticReport((DiagnosticFinding(Severity.PASS, f"{flow} dry-run passed"),))
     monkeypatch.setattr(

@@ -10,7 +10,8 @@ Permitted effects: builds a :class:`TargetCatalog` (reads the Project's
 ``.core`` files) and runs one ``sh -c "command -v <binary>"`` per distinct
 binary through the request's Sandbox command builder (30-second timeout; the
 builder may start the Project's Sandbox). Inside the Sandbox it only calls
-``shutil.which``. Writes nothing; never raises on a failed probe.
+``shutil.which``. Writes nothing. Sandbox start, subprocess and missing-executable
+errors become FAIL rows.
 """
 
 from __future__ import annotations
