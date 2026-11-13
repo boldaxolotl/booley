@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib
 import json
 import os
 import re
@@ -3032,6 +3033,21 @@ def _misplaced_booley_project(root: Path) -> doctor.ProjectAudit:
     return _schema_audit(root, {"flows": flows})
 
 
+def _stub_flow_runtime_owners(monkeypatch) -> None:
+    """Make the Flow runtime-reality and Vivado startup owners observe nothing.
+
+    The owners are reached by import so a missing owner fails the test that
+    needs it, not the collection of this module.
+    """
+    empty = DiagnosticReport()
+    for module_name, entry in (
+        ("booley.flows.runtime_reality", "inspect_flow_runtime_reality"),
+        ("booley.flows.fpga.vivado_startup", "inspect_vivado_startup"),
+    ):
+        owner = importlib.import_module(module_name)
+        monkeypatch.setattr(owner, entry, lambda _request: empty)
+
+
 def test_misplaced_booley_key_yields_one_fail_and_skips_sibling_dry_runs(tmp_path, monkeypatch):
     """A `booley:` mapping beside `flow_options` makes FuseSoC ignore the whole core.
 
@@ -3040,7 +3056,7 @@ def test_misplaced_booley_key_yields_one_fail_and_skips_sibling_dry_runs(tmp_pat
     """
     project = _misplaced_booley_project(tmp_path)
     monkeypatch.setattr(doctor, "_check_design_size", lambda *args, **kwargs: None)
-    monkeypatch.setattr(doctor, "_check_flow_runtime_reality", lambda *args, **kwargs: None)
+    _stub_flow_runtime_owners(monkeypatch)
     reporter = doctor._Reporter.create()
 
     doctor._run_flow_and_core_phase(
@@ -3203,7 +3219,7 @@ def _fpga_doctor_project(
     )
 
 
-def _run_isolated_flow_audit(project, monkeypatch):
+def _run_isolated_flow_audit(project, monkeypatch, *, stub_owners=True):
     """Run the Flow audit without a container runtime; return its sinks and dry-run reports.
 
     Every dry-run then reports its real ``runtime not available`` SKIP, so
@@ -3212,7 +3228,8 @@ def _run_isolated_flow_audit(project, monkeypatch):
     rec = _Rec()
     reports: list[DiagnosticReport] = []
     monkeypatch.setattr(doctor, "_check_design_size", lambda *args, **kwargs: None)
-    monkeypatch.setattr(doctor, "_check_flow_runtime_reality", lambda *args, **kwargs: None)
+    if stub_owners:
+        _stub_flow_runtime_owners(monkeypatch)
     doctor._run_flow_audit(
         project,
         doctor._DoctorFlowRuntime(project.project_root, None),
@@ -3267,10 +3284,26 @@ def test_flow_audit_skips_fpga_when_not_configured_or_marked(tmp_path, monkeypat
     )
 
 
-def test_fpga_runtime_probe_checks_vivado_not_resolution_tool(tmp_path):
+def test_fpga_runtime_probe_checks_vivado_not_resolution_tool(tmp_path, monkeypatch):
+    """The FPGA Flow audit routes to the Vivado startup owner, never to a binary probe."""
     project = _fpga_doctor_project(tmp_path, marked=True)
+    runtime_reality = importlib.import_module("booley.flows.runtime_reality")
+    vivado_startup = importlib.import_module("booley.flows.fpga.vivado_startup")
+    requests = []
 
-    assert doctor._runtime_probe_binaries(project, ["fpga_board"], flow_name="fpga") == ["vivado"]
+    def vivado_spy(request):
+        requests.append(request)
+        return DiagnosticReport()
+
+    def binary_spy(request):
+        raise AssertionError("the FPGA Flow must not use the per-binary probe")
+
+    monkeypatch.setattr(vivado_startup, "inspect_vivado_startup", vivado_spy)
+    monkeypatch.setattr(runtime_reality, "inspect_flow_runtime_reality", binary_spy)
+
+    _run_isolated_flow_audit(project, monkeypatch, stub_owners=False)
+
+    assert [(r.flow_name, r.targets) for r in requests] == [("fpga", ("fpga_board",))]
 
 
 def test_fpga_deep_notice_names_marked_target_and_manual_command(tmp_path):
@@ -7084,6 +7117,27 @@ def test_containment_report_rebased_alias_child_symlink(tmp_path, monkeypatch):
     )
 
 
+def _probed_binaries(project, target, flow_name) -> list[str]:
+    """Return the binaries the Flow runtime owner probes for *target* (host path, all present)."""
+    owner = importlib.import_module("booley.flows.runtime_reality")
+    probed: list[list[str]] = []
+
+    def sandbox_command(argv):
+        probed.append(argv)
+        return ["true"]
+
+    request = owner.FlowRuntimeInspectionRequest(
+        flow_name=flow_name,
+        targets=(target,),
+        project_root=project.project_root,
+        runtime_available=True,
+        inside_sandbox=False,
+        sandbox_command=sandbox_command,
+    )
+    owner.inspect_flow_runtime_reality(request)
+    return [argv[-1].removeprefix("command -v ") for argv in probed]
+
+
 @pytest.mark.parametrize(
     "eda_tool,flow,compatible,verible",
     [
@@ -7120,9 +7174,7 @@ def test_authored_lint_doctor_eda_tool_policy(tmp_path, eda_tool, flow, compatib
     assert doctor._project_declares_verible_lint(project) is verible
     if compatible:
         expected = ["verible-verilog-lint"] if verible else ["verilator"]
-        assert (
-            doctor._runtime_probe_binaries(project, ["lint_style"], flow_name="lint") == expected
-        )
+        assert _probed_binaries(project, "lint_style", "lint") == expected
     else:
         assert "incompatible Doctor Flow" in diagnostic[0]
 
@@ -7145,7 +7197,7 @@ def test_mixed_lint_doctor_rejects_but_keeps_inventory(tmp_path, eda_tool):
     assert doctor._doctor_target_incompatibility("lint_mixed", "lint", handle) is not None
     assert not doctor._project_declares_verible_lint(project)
     expected = "verilator" if eda_tool == "verilator" else "verible-verilog-lint"
-    assert doctor._runtime_probe_binaries(project, ["lint_mixed"], flow_name="lint") == [expected]
+    assert _probed_binaries(project, "lint_mixed", "lint") == [expected]
 
 
 @pytest.mark.parametrize(
