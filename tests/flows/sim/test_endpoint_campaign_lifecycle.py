@@ -330,12 +330,20 @@ class _Endpoint:
         self.admission_object = object()
 
     @contextmanager
-    def admission(self, prepared: PreparedExecution) -> Iterator[object]:
+    def admission(
+        self, prepared: PreparedExecution, *, requeued: bool = False
+    ) -> Iterator[object]:
         self.events.append("admit")
         try:
             yield self.admission_object
         finally:
             self.events.append("release")
+
+    def may_requeue_after_oom(self, prepared: PreparedExecution, admission: object | None) -> bool:
+        return False
+
+    def begin_requeued_attempt(self) -> None:
+        pass
 
     def invoke_endpoint(
         self,
@@ -1166,7 +1174,7 @@ def _public_cycle_flow(campaign, monkeypatch):
     prepared = PreparedSimulationEndpoint((), None, (), {})
     prepare_as(monkeypatch, flow, SimulationCampaignInvocation(flow, prepared))
     monkeypatch.setattr(flow, "_resolve_display_label", lambda: None)
-    monkeypatch.setattr(EndpointState, "admission", lambda *_args: nullcontext(None))
+    monkeypatch.setattr(EndpointState, "admission", lambda *_args, **_kwargs: nullcontext(None))
     monkeypatch.setattr(
         flow, "run_prepared_simulation", lambda *_args: flow._campaign_endpoint_outcome([campaign])
     )

@@ -107,6 +107,9 @@ def _job_phase(run_id: str) -> str:
 def _phase_for_record(rec: jobrec.JobRecord | None) -> str:
     """Admission phase of a detached job: "RUNNING" or "QUEUED (position N)".
 
+    A Job queued again after an OOM kill reads "QUEUED (position N, requeued
+    after out-of-memory)": the claim's reason.
+
     Derived from the child's own slot-store claim (ADR 0028): a waiter entry
     means the child process is alive but idling for its class slot. Position
     is 1-based for humans. Falls back to RUNNING when the store or claim is
@@ -120,7 +123,8 @@ def _phase_for_record(rec: jobrec.JobRecord | None) -> str:
     except OSError:
         return "RUNNING"
     if state is not None and state.state == job_slots.QUEUED:
-        return f"QUEUED (position {(state.position or 0) + 1})"
+        position = f"position {(state.position or 0) + 1}"
+        return f"QUEUED ({position}, {state.reason})" if state.reason else f"QUEUED ({position})"
     return "RUNNING"
 
 

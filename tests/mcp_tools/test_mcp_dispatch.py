@@ -253,6 +253,21 @@ class TestFormatMcpToolResult:
         result = _format_mcp_tool_result(0, "", "")
         assert result == "EXIT_CODE: 0"
 
+    def test_requeued_job_result_shows_only_the_final_attempts_output(self):
+        # A Job requeued after an OOM kill prints a marker line between the killed
+        # attempt's output and the final attempt's; the agent reads from the marker on.
+        marker = (
+            "[requeue] requeued after out-of-memory; the output above is from the killed attempt"
+        )
+        stdout = f"attempt 1 verdict\n{marker}\nattempt 2 verdict\n"
+        result = _format_mcp_tool_result(0, stdout, "")
+        assert marker in result
+        assert "attempt 2 verdict" in result
+        assert "attempt 1 verdict" not in result
+        # Contrast: without the marker all of the stdout is shown.
+        plain = _format_mcp_tool_result(0, "attempt 1 verdict\nattempt 2 verdict\n", "")
+        assert "attempt 1 verdict" in plain and "attempt 2 verdict" in plain
+
     def test_report_text_duplicated_in_stdout_is_deduped(self):
         # Heavy endpoints print report_text to stdout AND return it in report.json;
         # when the stdout copy survives truncation, the report copy is skipped.
@@ -2168,6 +2183,35 @@ class TestJobPhase:
         token = store.submit(job_slots.CLASS_HEAVY, pid=os.getpid(), argv=[])
         assert store.refresh(token).state == job_slots.HOLDING
         assert _job_phase("simulate-p-3") == "RUNNING"
+
+    def test_requeued_waiter_reads_queued_with_its_reason(self, _report_env):
+        import os
+
+        jobrec.write_record(
+            jobrec.JobRecord(
+                run_id="simulate-p-4",
+                endpoint="sim",
+                started_at=_utc_stamp(-5),
+                timeout_s=600,
+                pid=os.getpid(),
+                status=jobrec.STATUS_RUNNING,
+            ),
+            root=session_jobs_dir(),
+        )
+        root = job_slots.slots_dir()
+        assert root is not None
+        store = job_slots.SlotStore(root)
+        token = store.submit(
+            job_slots.CLASS_HEAVY,
+            pid=os.getpid(),
+            argv=[],
+            queue_reason="requeued after out-of-memory",
+        )
+        assert _job_phase("simulate-p-4") == "QUEUED (position 1, requeued after out-of-memory)"
+        # Contrast: the same waiter without a reason reads as before.
+        store.release(token)
+        store.submit(job_slots.CLASS_HEAVY, pid=os.getpid(), argv=[])
+        assert _job_phase("simulate-p-4") == "QUEUED (position 1)"
 
 
 class TestAsyncJobToolMembership:

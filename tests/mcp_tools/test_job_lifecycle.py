@@ -522,6 +522,86 @@ async def test_real_queued_job_credit_and_withdrawal(context, withdraw):
         await stop_jobs(jobs)
 
 
+def requeued_command(context):
+    """A child that claims memory again after an OOM kill: run alone, with the reason."""
+    return command(f"""
+        from pathlib import Path
+        import os, time
+        from booley.runtime import job_slots
+        store = job_slots.SlotStore(job_slots.slots_dir())
+        deadline = time.monotonic() + 60
+        claim = job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=None, run_alone=True)
+        token = store.acquire(job_slots.CLASS_MEMORY, pid=os.getpid(), timeout_s=30,
+            poll_interval=0.01, memory=claim, queue_reason='requeued after out-of-memory',
+            on_submitted=lambda _: Path({str(context.work_dir / "queued")!r}).touch(),
+            should_abort=lambda: time.monotonic() > deadline)
+        store.release(token)
+    """)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_requeued_job_names_the_requeue(context):
+    store = job_slots.SlotStore(job_slots.slots_dir())
+    holder_claim = job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=100.0)
+    holder = store.acquire(
+        job_slots.CLASS_MEMORY, pid=os.getpid(), timeout_s=60, memory=holder_claim
+    )
+    jobs = FastSupervisor()
+    try:
+        run_id = jobs.submit("lint", requeued_command(context), JOB_TIMEOUT, context=context)
+        await wait_until((context.work_dir / "queued").exists)
+        queued = await jobs.poll(run_id)
+        assert queued.phase == "QUEUED (position 1, requeued after out-of-memory)"
+        rec = job_records.read_record(run_id, context.jobs_root)
+        assert jobs._child_requeued(rec) is True
+        assert await jobs.cancel(run_id) == "queued"
+        result = (await jobs.poll(run_id)).result
+        assert result.exit_code == 130
+        assert "while queued again (requeued after out-of-memory)" in result.stderr
+    finally:
+        store.release(holder)
+        await stop_jobs(jobs)
+
+
+@pytest.mark.asyncio
+async def test_child_requeued_needs_a_claim_with_a_reason(context):
+    store = job_slots.SlotStore(job_slots.slots_dir())
+    jobs = JobLifecycle()
+    no_pid = job_records.JobRecord(
+        run_id="lint-1",
+        endpoint="lint",
+        started_at=utc_now_rfc3339(),
+        timeout_s=JOB_TIMEOUT,
+        pid=None,
+        status=job_records.STATUS_RUNNING,
+    )
+    assert jobs._child_requeued(no_pid) is False
+    mine = job_records.JobRecord(
+        run_id="lint-2",
+        endpoint="lint",
+        started_at=utc_now_rfc3339(),
+        timeout_s=JOB_TIMEOUT,
+        pid=os.getpid(),
+        status=job_records.STATUS_RUNNING,
+    )
+    assert jobs._child_requeued(mine) is False  # no claim at all
+    plain = store.acquire(job_slots.CLASS_HEAVY, pid=os.getpid(), timeout_s=60)
+    try:
+        assert jobs._child_requeued(mine) is False  # a first claim has no reason
+    finally:
+        store.release(plain)
+    reasoned = store.acquire(
+        job_slots.CLASS_HEAVY,
+        pid=os.getpid(),
+        timeout_s=60,
+        queue_reason="requeued after out-of-memory",
+    )
+    try:
+        assert jobs._child_requeued(mine) is True
+    finally:
+        store.release(reasoned)
+
+
 def _sharing_violation() -> PermissionError:
     """The error Windows raises when unlinking a file another handle holds open."""
     exc = PermissionError(13, "The process cannot access the file")
@@ -743,6 +823,63 @@ async def test_queue_wait_does_not_consume_active_budget(context, monkeypatch):
     assert attempts == [5, 5, 5, 5, 2]
     assert active == [20]
     assert clock.elapsed == 22
+
+
+class _TickedProcess:
+    """A child whose ``wait()`` blocks until the watchdog has sampled *exit_after* times."""
+
+    def __init__(self, exit_after: int):
+        self.exit_after = exit_after
+        self.samples = 0  # one per watchdog loop pass, counted by ``is_queued``
+
+    def is_queued(self) -> bool:
+        self.samples += 1
+        return False
+
+    async def wait(self) -> int:
+        if self.samples >= self.exit_after:
+            return 0
+        await asyncio.sleep(3600)  # cancelled by the watchdog's per-tick timeout
+        return 0
+
+
+@pytest.mark.asyncio
+async def test_requeued_child_gets_its_full_budget_again():
+    ticks_before_requeue = 2
+    ticks_after_requeue = 2
+    # Samples 1..4 are charged ticks; the child exits during the fifth pass.
+    exit_after = ticks_before_requeue + ticks_after_requeue + 1
+    budget = 2.5  # fits either half of the run, never both
+
+    async def run(*, requeue_signal: bool) -> bool:
+        child = _TickedProcess(exit_after)
+        clock_value = 0.0
+
+        def clock() -> float:
+            # Every sample advances one second, so each timed-out tick charges 1.0.
+            nonlocal clock_value
+            clock_value += 1.0
+            return clock_value
+
+        def is_requeued() -> bool:
+            # The claim says "requeued" for the attempt's whole life; the watchdog
+            # first sees it once the killed attempt has used up its two ticks, and
+            # the new claim is granted at once (is_queued stays False throughout).
+            return child.samples >= ticks_before_requeue
+
+        return await endpoint_process._wait_with_queue_credit(
+            child,
+            budget,
+            child.is_queued,
+            None,
+            tick_seconds=0.001,
+            is_requeued=is_requeued if requeue_signal else None,
+            clock=clock,
+        )
+
+    assert await run(requeue_signal=True) is True
+    # Contrast: without the reset the same sequence overruns the budget.
+    assert await run(requeue_signal=False) is False
 
 
 def _orphan_with_report(context):

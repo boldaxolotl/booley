@@ -49,8 +49,10 @@ from booley.runtime import runtime_context
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
+    OOM_STOPPED_MESSAGE,
     EndpointOutcome,
     ExecutionResult,
+    job_stopped_after_oom,
     note_job_oom_kill,
 )
 from booley.runtime.python_artifacts import relocate_python_artifacts
@@ -312,6 +314,10 @@ class FlowMechanics:
         """
         import sys as _sys
 
+        if job_stopped_after_oom():
+            # The Job is requeued: start nothing, and do not record a command that never ran.
+            return SubprocessResult(returncode=-1, stderr=OOM_STOPPED_MESSAGE)
+
         # python3 is not on PATH on Windows; use the running interpreter.
         if cmd and cmd[0] == "python3" and _sys.platform == "win32":
             cmd = [_sys.executable, *cmd[1:]]
@@ -536,6 +542,12 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
         self.cycle_report_json: str | None = None
         self._prepared_target_selection = None
         self.begin_invocation()
+
+    def begin_requeued_attempt(self) -> None:
+        """Reset what the killed attempt left behind; keep the prepared Targets and seeds."""
+        super().begin_requeued_attempt()
+        self.cycle_report_json = None
+        job_resources.clear_label()
 
     def _finalize_result(self, result: EndpointOutcome) -> None:
         result.cycle_report_json = self.cycle_report_json or "{}"

@@ -315,6 +315,13 @@ class SimulateFlow(
         self._target_handles: dict[str, TargetHandle] = {}
         self._standalone_plan_recipe = None
 
+    def begin_requeued_attempt(self) -> None:
+        """Drop the killed attempt's outcomes; keep its Test Runs, seeds and build settings."""
+        super().begin_requeued_attempt()
+        self._simulation_campaign_outcomes = ()
+        self._simulation_acceptance_outcomes = ()
+        self._current_published_pre_sim_keys = set()
+
     request_type = SimRequest
     argument_adapter = SimArguments
     report_schema = "booley.simulation-report/v3"

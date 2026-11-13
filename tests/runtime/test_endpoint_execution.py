@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,9 +29,10 @@ from booley.runtime.endpoint_execution import (
 class _ReleaseWitness(AbstractContextManager[object]):
     events: list[str]
     borrowed: object
+    requeued: bool = False
 
     def __enter__(self) -> object:
-        self.events.append("admit")
+        self.events.append("admit(requeued)" if self.requeued else "admit")
         return self.borrowed
 
     def __exit__(self, *exc_info: object) -> None:
@@ -48,8 +50,10 @@ class _Endpoint:
         reject_admission: bool = False,
         unexpected_failure: bool = False,
         acceptance_failure: bool = False,
+        requeue_after_oom: bool = False,
     ) -> None:
         self.events: list[str] = []
+        self.requeue_after_oom = requeue_after_oom
         self.fail = fail
         self.reject_gate = reject_gate
         self.reject_admission = reject_admission
@@ -57,7 +61,9 @@ class _Endpoint:
         self.acceptance_failure = acceptance_failure
         self.borrowed = object()
 
-    def admission(self, prepared: object) -> AbstractContextManager[object]:
+    def admission(
+        self, prepared: object, *, requeued: bool = False
+    ) -> AbstractContextManager[object]:
         assert prepared == "prepared"
         if self.reject_gate:
             self.events.append("gate-rejected")
@@ -69,7 +75,14 @@ class _Endpoint:
             raise EndpointRejectedError(
                 EndpointOutcome(exit_code=EXIT_ERROR, report_text="queue full")
             )
-        return _ReleaseWitness(self.events, self.borrowed)
+        return _ReleaseWitness(self.events, self.borrowed, requeued)
+
+    def may_requeue_after_oom(self, prepared: object, admission: object) -> bool:
+        assert prepared == "prepared"
+        return self.requeue_after_oom
+
+    def begin_requeued_attempt(self) -> None:
+        self.events.append("begin-requeued-attempt")
 
     def invoke_endpoint(
         self, prepared: object, *, admission: object, started: float
@@ -99,7 +112,7 @@ class _Endpoint:
         acceptance_recorded: bool,
     ) -> ExecutionResult:
         assert prepared == "prepared"
-        if outcome.report_text not in {"queue full", "unbound target"}:
+        if not outcome.report_text.startswith(("queue full", "unbound target")):
             assert started is not None
         self.events.append(f"finish:{outcome.exit_code}:{acceptance_recorded}")
         return ExecutionResult(exit_code=outcome.exit_code, outcome=outcome)
@@ -252,3 +265,162 @@ def test_job_outcome_records_only_its_own_oom_kill(
 
     assert own_kill.outcome.oom_killed is True
     assert other_failure.outcome.oom_killed is False
+
+
+class _RequeueEndpoint(_Endpoint):
+    """Endpoint armed for a requeue whose attempts follow a script of behaviours."""
+
+    def __init__(self, *attempts: Callable[[], EndpointOutcome]) -> None:
+        super().__init__(requeue_after_oom=True)
+        self.attempts = list(attempts)
+        self.armed: list[bool] = []
+
+    def invoke_endpoint(
+        self, prepared: object, *, admission: object, started: float
+    ) -> EndpointOutcome:
+        self.events.append("invoke")
+        # An armed attempt stops its commands at the first OOM kill; the second never does.
+        self.armed.append(_stop_on_oom_armed())
+        return self.attempts[len(self.armed) - 1]()
+
+
+def _stop_on_oom_armed() -> bool:
+    """Whether the current attempt stops its commands after an OOM kill."""
+    from booley.runtime.endpoint_execution import _JOB_ATTEMPT
+
+    attempt = _JOB_ATTEMPT.get()
+    assert attempt is not None
+    return attempt.stop_on_oom
+
+
+def _oom_failure() -> EndpointOutcome:
+    """An attempt whose command was OOM-killed and which failed."""
+    from booley.runtime.endpoint_execution import note_job_oom_kill
+
+    note_job_oom_kill()
+    return EndpointOutcome(exit_code=EXIT_ERROR, report_text="attempt 1 verdict")
+
+
+def _final_success() -> EndpointOutcome:
+    return EndpointOutcome(exit_code=EXIT_SUCCESS, report_text="attempt 2 verdict")
+
+
+def test_requeue_releases_the_claim_before_publishing_the_final_attempt() -> None:
+    endpoint = _RequeueEndpoint(_oom_failure, _final_success)
+
+    result = execute_endpoint(endpoint, "prepared")
+
+    # The killed attempt publishes nothing: acceptance and finish see attempt 2 only.
+    assert endpoint.events == [
+        "admit",
+        "invoke",
+        "begin-requeued-attempt",
+        "release",
+        "admit(requeued)",
+        "invoke",
+        "acceptance:0",
+        "finish:0:True",
+        "release",
+    ]
+    # Attempt 1 was armed (stopped after its kill); attempt 2 never is.
+    assert endpoint.armed == [True, False]
+    assert result.exit_code == EXIT_SUCCESS
+    assert result.outcome.report_text.startswith("attempt 2 verdict\n")
+    assert "attempt 1 verdict" not in result.outcome.report_text
+    assert result.outcome.detail["oom_requeue"] == {
+        "reason": "requeued after out-of-memory",
+        "attempts": 2,
+    }
+    assert result.outcome.oom_killed is False
+
+
+def test_requeued_job_rejected_at_its_second_admission_names_the_requeue() -> None:
+    endpoint = _RequeueEndpoint(_oom_failure)
+    real_admission = endpoint.admission
+
+    def refuse_requeued(
+        prepared: object, *, requeued: bool = False
+    ) -> AbstractContextManager[object]:
+        if requeued:
+            raise EndpointRejectedError(
+                EndpointOutcome(exit_code=EXIT_ERROR, report_text="queue full")
+            )
+        return real_admission(prepared, requeued=requeued)
+
+    endpoint.admission = refuse_requeued  # type: ignore[method-assign]
+
+    result = execute_endpoint(endpoint, "prepared")
+
+    assert endpoint.events == [
+        "admit",
+        "invoke",
+        "begin-requeued-attempt",
+        "release",
+        "acceptance:2",
+        "finish:2:True",
+    ]
+    assert result.outcome.report_text == (
+        "queue full\nThe Job was requeued after out-of-memory and did not start again."
+    )
+    assert result.outcome.detail["oom_requeue"]["attempts"] == 2
+
+
+def test_only_a_failed_or_stopped_oom_killed_job_is_requeued() -> None:
+    from booley.core.exit_codes import EXIT_CANCELLED
+    from booley.runtime.endpoint_execution import note_job_oom_kill
+
+    def oom_cancelled() -> EndpointOutcome:
+        note_job_oom_kill()
+        return EndpointOutcome(exit_code=EXIT_CANCELLED)
+
+    def oom_survived() -> EndpointOutcome:
+        note_job_oom_kill()  # killed command, yet the Job went on and succeeded
+        return EndpointOutcome(exit_code=EXIT_SUCCESS)
+
+    def stopped_but_succeeded() -> EndpointOutcome:
+        note_job_oom_kill()
+        assert _job_stopped()  # a later command was skipped: the result misses work
+        return EndpointOutcome(exit_code=EXIT_SUCCESS)
+
+    def stopped_and_cancelled() -> EndpointOutcome:
+        note_job_oom_kill()
+        assert _job_stopped()
+        return EndpointOutcome(exit_code=EXIT_CANCELLED)
+
+    def plain_failure() -> EndpointOutcome:
+        return EndpointOutcome(exit_code=EXIT_ERROR)
+
+    single_attempt = {
+        "cancelled": oom_cancelled,
+        "survived": oom_survived,
+        "stopped-cancelled": stopped_and_cancelled,
+        "no-oom-failure": plain_failure,
+    }
+    for name, behaviour in single_attempt.items():
+        endpoint = _RequeueEndpoint(behaviour)
+        result = execute_endpoint(endpoint, "prepared")
+        assert endpoint.events.count("invoke") == 1, name
+        assert "oom_requeue" not in result.outcome.detail, name
+
+    # Contrast: succeeding after a skipped command is requeued, so the result is attempt 2's.
+    endpoint = _RequeueEndpoint(stopped_but_succeeded, _final_success)
+    result = execute_endpoint(endpoint, "prepared")
+    assert endpoint.events.count("invoke") == 2
+    assert result.outcome.report_text.startswith("attempt 2 verdict")
+
+
+def _job_stopped() -> bool:
+    from booley.runtime.endpoint_execution import job_stopped_after_oom
+
+    return job_stopped_after_oom()
+
+
+def test_an_unarmed_endpoint_is_never_requeued_after_an_oom_kill() -> None:
+    endpoint = _RequeueEndpoint(_oom_failure)
+    endpoint.requeue_after_oom = False
+
+    result = execute_endpoint(endpoint, "prepared")
+
+    assert endpoint.events.count("invoke") == 1
+    assert result.outcome.oom_killed is True
+    assert "oom_requeue" not in result.outcome.detail

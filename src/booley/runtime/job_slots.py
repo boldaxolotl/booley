@@ -416,6 +416,8 @@ def _memory_queue(
 class TokenState:
     state: str
     position: int | None = None  # 0-based queue position when QUEUED
+    # Why this entry was queued again (a requeued Job's claim); ``None`` for a first claim.
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -459,6 +461,9 @@ class SlotToken:
     owner_kind: str = "process"
     lease_health: LeaseHealth = field(default_factory=lambda: LeaseHealth(threading.Event()))
     memory: MemoryClaim | None = None  # set exactly for memory-class entries
+    # Why this claim exists again after the Job's first attempt was killed
+    # (``None`` for a first claim); shown to the caller while the Job waits.
+    queue_reason: str | None = None
 
     @property
     def is_holder(self) -> bool:
@@ -476,6 +481,7 @@ class _WaiterRequest:
     created: float
     execution_id: ExecutionId | None
     memory: MemoryClaim | None = None
+    queue_reason: str | None = None
 
 
 def slots_dir(booley_dir: Path | None = None) -> Path | None:
@@ -573,6 +579,11 @@ def _parse_entry_name(name: str) -> tuple[str, int, int, int, int] | None:
         return None
 
 
+def _optional_text(value: object) -> str | None:
+    """A payload field that is a non-empty string, else ``None`` (absent or foreign)."""
+    return value if isinstance(value, str) and value else None
+
+
 def _utc_stamp(epoch: float) -> str:
     return rfc3339_from_epoch(epoch)
 
@@ -655,10 +666,13 @@ class SlotStore:
         timeout_s: float | None = None,
         execution_id: str | ExecutionId | None = None,
         memory: MemoryClaim | None = None,
+        queue_reason: str | None = None,
     ) -> SlotToken:
         """Join *job_class* admission or raise when its bounded queue is full.
 
         *memory* is required for the memory class and refused for the others.
+        *queue_reason* names why a requeued Job claims again; it is stored in
+        the entry so the caller can read it while the Job waits or runs.
         """
         if (memory is not None) != (job_class == CLASS_MEMORY):
             raise ValueError(f"a memory claim goes with the {CLASS_MEMORY} class only")
@@ -692,6 +706,7 @@ class SlotStore:
                 created=created,
                 execution_id=linked_execution,
                 memory=memory,
+                queue_reason=queue_reason,
             )
         )
 
@@ -879,6 +894,8 @@ class SlotStore:
         }
         if request.memory is not None:
             payload["memory"] = request.memory.to_payload()
+        if request.queue_reason is not None:
+            payload["queue_reason"] = request.queue_reason
         return payload
 
     def _new_waiter_token(
@@ -907,6 +924,7 @@ class SlotStore:
             owner_identity=ProcessIdentity.from_payload(payload["owner_identity"]),
             owner_kind=payload["owner_kind"],
             memory=request.memory,
+            queue_reason=request.queue_reason,
         )
 
     def _next_seq(self, cls_dir: Path) -> int:
@@ -1065,6 +1083,8 @@ class SlotStore:
         }
         if token.memory is not None:
             payload["memory"] = token.memory.to_payload()
+        if token.queue_reason is not None:
+            payload["queue_reason"] = token.queue_reason
         return payload
 
     def _rewrite_token(self, token: SlotToken) -> bool:
@@ -1110,6 +1130,7 @@ class SlotStore:
         execution_id: str | ExecutionId | None = None,
         on_submitted: Callable[[SlotToken], None] | None = None,
         memory: MemoryClaim | None = None,
+        queue_reason: str | None = None,
     ) -> SlotToken:
         """Submit and wait for a holder, withdrawing on cancellation or failure.
 
@@ -1124,6 +1145,7 @@ class SlotStore:
             timeout_s=timeout_s,
             execution_id=execution_id,
             memory=memory,
+            queue_reason=queue_reason,
         )
         if on_submitted is not None:
             on_submitted(token)
@@ -1456,6 +1478,7 @@ class SlotStore:
             owner_identity=owner_identity,
             owner_kind=payload.get("owner_kind", "legacy"),
             memory=MemoryClaim.from_payload(payload.get("memory")),
+            queue_reason=_optional_text(payload.get("queue_reason")),
         )
 
     def cancel_waiter(self, pid: int) -> bool:
@@ -1534,12 +1557,14 @@ class SlotStore:
         """
         for job_class in JOB_CLASSES:
             holders, waiters = self.snapshot(job_class)
-            for tok in holders:
-                if tok.pid == pid:
-                    return TokenState(HOLDING)
+            holding = [tok for tok in holders if tok.pid == pid]
+            if holding:
+                # A Campaign's work-item claims share the PID; any one may carry the reason.
+                reason = next((tok.queue_reason for tok in holding if tok.queue_reason), None)
+                return TokenState(HOLDING, reason=reason)
             for position, tok in enumerate(waiters):
                 if tok.pid == pid:
-                    return TokenState(QUEUED, position=position)
+                    return TokenState(QUEUED, position=position, reason=tok.queue_reason)
         return None
 
     # ----------------------------------------------------------------- reap

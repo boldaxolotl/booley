@@ -29,6 +29,7 @@ from booley.runtime import job_slots
 from booley.runtime.booley_dir import resolve_common_booley_dir
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
+    OOM_REQUEUE_REASON,
     EndpointOutcome,
     EndpointRejectedError,
 )
@@ -95,10 +96,18 @@ class AdmissionContext:
 class AdmissionGate:
     """Lazy admission entered once, after Target authorization and the binding gate."""
 
-    def __init__(self, endpoint: EndpointState, prepared: PreparedExecution | None = None) -> None:
+    def __init__(
+        self,
+        endpoint: EndpointState,
+        prepared: PreparedExecution | None = None,
+        *,
+        requeued: bool = False,
+    ) -> None:
         self._endpoint = endpoint
         # What the Job will run sizes its Memory Reservation; ``None`` is unknown.
         self._prepared = prepared
+        # The Job's second attempt, after an OOM kill: it claims the memory to itself.
+        self._requeued = requeued
         self._entered = False
 
     def _claim(
@@ -111,7 +120,7 @@ class AdmissionGate:
         """
         endpoint = self._endpoint
         if memory_admission_enabled() and endpoint._memory_admitted():
-            return _acquire_memory_reservation(endpoint, self._prepared)
+            return _acquire_memory_reservation(endpoint, self._prepared, requeued=self._requeued)
         store, token = endpoint._acquire_job_slot()
         return store, token, None
 
@@ -232,7 +241,7 @@ def _admission_cancellation_cause(
 
 @contextmanager
 def admission(
-    endpoint: EndpointState, prepared: PreparedExecution
+    endpoint: EndpointState, prepared: PreparedExecution, *, requeued: bool = False
 ) -> Iterator[AdmissionContext | None]:
     """Gate, then hold one Flow-neutral admission through final reporting.
 
@@ -249,13 +258,17 @@ def admission(
         yield None
         return
     with ExitStack() as held:
-        borrowed = _enter_admission(endpoint, held, prepared)
+        borrowed = _enter_admission(endpoint, held, prepared, requeued=requeued)
         endpoint._pre_run_head = endpoint._get_head_sha()
         yield borrowed
 
 
 def _enter_admission(
-    endpoint: EndpointState, held: ExitStack, prepared: PreparedExecution | None = None
+    endpoint: EndpointState,
+    held: ExitStack,
+    prepared: PreparedExecution | None = None,
+    *,
+    requeued: bool = False,
 ) -> AdmissionContext:
     """Enter the gate on ``held``, mapping admission failures to a rejection.
 
@@ -263,7 +276,7 @@ def _enter_admission(
     body must pass through unchanged.
     """
     try:
-        return held.enter_context(AdmissionGate(endpoint, prepared).enter())
+        return held.enter_context(AdmissionGate(endpoint, prepared, requeued=requeued).enter())
     except (
         job_slots.QueueFullError,
         job_slots.ClaimLostError,
@@ -400,13 +413,16 @@ def _acquire_job_slot(endpoint: EndpointState) -> tuple[job_slots.SlotStore | No
 
 
 def _acquire_memory_reservation(
-    endpoint: EndpointState, prepared: PreparedExecution | None
+    endpoint: EndpointState, prepared: PreparedExecution | None, *, requeued: bool = False
 ) -> tuple[job_slots.SlotStore | None, object | None, MemoryAdmissionPlan | None]:
     """Claim this memory-admitted Job's Memory Reservation, waiting in queue order if needed.
 
     Returns ``(store, token, plan)``; ``(None, None, None)`` when nothing is
     claimed, as for :func:`_acquire_job_slot`. That check comes before any
     sizing, so a child under its parent's claim does no estimate work.
+
+    A *requeued* Job (its first attempt was OOM-killed) claims the whole
+    budget, run alone, and waits at the back of the queue with the reason.
     """
     found = _admission_root(endpoint)
     if found is None:
@@ -416,6 +432,9 @@ def _acquire_memory_reservation(
     store = job_slots.SlotStore(root, parse_caps(config))
     requests = None if prepared is None else prepared.invocation.job_requests()
     plan = measure_memory_claim(project, config, requests)
+    if requeued:
+        _refuse_waiting_behind_own_claim(endpoint, store)
+        plan = plan.alone()
     pid = os.getpid()
     token = store.acquire(
         job_slots.CLASS_MEMORY,
@@ -424,8 +443,33 @@ def _acquire_memory_reservation(
         role=job_slots.ROLE_INTERACTIVE,
         timeout_s=_holder_deadline_seconds(),
         on_queued=_queue_narrator(
-            endpoint, store, job_slots.CLASS_MEMORY, "memory", f": {plan.describe()}"
+            endpoint, store, job_slots.CLASS_MEMORY, "memory", f": {_claim_detail(plan, requeued)}"
         ),
         memory=plan.claim,
+        queue_reason=OOM_REQUEUE_REASON if requeued else None,
     )
     return (store, token, plan)
+
+
+def _claim_detail(plan: MemoryAdmissionPlan, requeued: bool) -> str:
+    """What queue narration says the claim asks for, and why a requeued claim exists."""
+    return f"{plan.describe()}, {OOM_REQUEUE_REASON}" if requeued else plan.describe()
+
+
+def _refuse_waiting_behind_own_claim(endpoint: EndpointState, store: job_slots.SlotStore) -> None:
+    """Refuse a requeued claim while this process still holds a memory entry.
+
+    A deferred release (a Campaign whose shutdown overruns) can keep the killed
+    attempt's claim past its end; queueing behind it would wait for ourselves.
+    """
+    state = store.state_for_pid(os.getpid())
+    if state is not None and state.state == job_slots.HOLDING:
+        raise EndpointRejectedError(
+            EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text=(
+                    f"{endpoint.name}: the Job could not be requeued after out-of-memory: "
+                    "the killed attempt's work still holds its claim."
+                ),
+            )
+        )
