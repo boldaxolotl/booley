@@ -339,20 +339,19 @@ def start_age(token: job_slots.SlotToken, world: FakeWorld, seconds: float) -> N
     token.path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-@pytest.mark.parametrize(
-    ("wall_s", "expected"),
-    [
-        pytest.param(180.0, TokenState(HOLDING), id="3min-starts"),
-        pytest.param(720.0, TokenState(QUEUED, position=1), id="12min-waits"),
-    ],
-)
-def test_short_claim_jumps_a_blocked_front_claim(root, world, wall_s, expected):
-    store = make_store(root, world)
-    hold(store, world, 101, claim(800, wall_s=600.0))  # frees its memory in 10 min
-    front = join(store, world, 102, claim(400))
-    short = join(store, world, 103, claim(100, wall_s=wall_s))
-    assert store.refresh(front) == TokenState(QUEUED, position=0)
-    assert store.refresh(short) == expected
+def test_short_claim_jumps_a_blocked_front_claim(tmp_path):
+    cases = {
+        "3min-starts": (180.0, TokenState(HOLDING)),
+        "12min-waits": (720.0, TokenState(QUEUED, position=1)),
+    }
+    for name, (wall_s, expected) in cases.items():
+        world = FakeWorld()
+        store = make_store(tmp_path / name, world)
+        hold(store, world, 101, claim(800, wall_s=600.0))  # frees its memory in 10 min
+        front = join(store, world, 102, claim(400))
+        short = join(store, world, 103, claim(100, wall_s=wall_s))
+        assert store.refresh(front) == TokenState(QUEUED, position=0), name
+        assert store.refresh(short) == expected, name
 
 
 def test_jumpers_start_in_queue_order(root, world):
@@ -367,77 +366,70 @@ def test_jumpers_start_in_queue_order(root, world):
     assert store.refresh(second).state == HOLDING
 
 
-@pytest.mark.parametrize(
-    ("holders", "front", "jumper", "state"),
-    [
-        # A frees 300 MiB at 5 min, B 500 MiB at 10 min; the front (400) fits after A.
-        pytest.param(
-            [(300, 300.0), (500, 600.0)],
-            {"reservation_mb": 400},
-            {"reservation_mb": 100, "wall_s": 180.0},
-            HOLDING,
-            id="early",
-        ),
-        pytest.param(
-            [(300, 300.0), (500, 600.0)],
-            {"reservation_mb": 400},
-            {"reservation_mb": 100, "wall_s": 420.0},
-            QUEUED,
-            id="late",
-        ),
-        pytest.param(
-            [(300, 300.0), (500, 600.0)],
-            {"reservation_mb": 400},
-            {"reservation_mb": 100, "wall_s": 300.0},
-            QUEUED,
-            id="finishes-as-the-front-starts",
-        ),
-        # A run-alone front waits for the latest finish (10 min).
-        pytest.param(
-            [(300, 300.0), (500, 600.0)],
-            {"run_alone": True},
-            {"reservation_mb": 100, "wall_s": 420.0},
-            HOLDING,
-            id="run-alone-front-early",
-        ),
-        pytest.param(
-            [(300, 300.0), (500, 600.0)],
-            {"run_alone": True},
-            {"reservation_mb": 100, "wall_s": 720.0},
-            QUEUED,
-            id="run-alone-front-late",
-        ),
-        # The front needs A, which has no wall-clock estimate: its start is unknown.
-        pytest.param(
-            [(500, None), (300, 300.0)],
-            {"reservation_mb": 600},
-            {"reservation_mb": 100, "wall_s": 180.0},
-            QUEUED,
-            id="front-needs-an-unknown-finish",
-        ),
-        pytest.param(
-            [(500, None), (300, 300.0)],
-            {"reservation_mb": 400},
-            {"reservation_mb": 100, "wall_s": 180.0},
-            HOLDING,
-            id="front-needs-only-a-known-finish",
-        ),
-        # The front's own 1000 MiB budget applies, not the jumper's 750 MiB one.
-        pytest.param(
-            [(300, 300.0), (200, 600.0)],
-            {"reservation_mb": 600},
-            {"reservation_mb": 250, "wall_s": 420.0, "budget_mb": 750.0},
-            QUEUED,
-            id="front-judged-by-its-own-budget",
-        ),
-    ],
-)
-def test_jump_never_delays_the_front_claim(root, world, holders, front, jumper, state):
-    store = make_store(root, world)
-    for pid, (reservation_mb, wall_s) in enumerate(holders, start=101):
-        hold(store, world, pid, claim(reservation_mb, wall_s=wall_s))
-    assert store.refresh(join(store, world, 201, claim(**front))).state == QUEUED
-    assert store.refresh(join(store, world, 202, claim(**jumper))).state == state
+JUMP_CASES = {
+    # A frees 300 MiB at 5 min, B 500 MiB at 10 min; the front (400) fits after A.
+    "early": (
+        [(300, 300.0), (500, 600.0)],
+        {"reservation_mb": 400},
+        {"reservation_mb": 100, "wall_s": 180.0},
+        HOLDING,
+    ),
+    "late": (
+        [(300, 300.0), (500, 600.0)],
+        {"reservation_mb": 400},
+        {"reservation_mb": 100, "wall_s": 420.0},
+        QUEUED,
+    ),
+    "finishes-as-the-front-starts": (
+        [(300, 300.0), (500, 600.0)],
+        {"reservation_mb": 400},
+        {"reservation_mb": 100, "wall_s": 300.0},
+        QUEUED,
+    ),
+    # A run-alone front waits for the latest finish (10 min).
+    "run-alone-front-early": (
+        [(300, 300.0), (500, 600.0)],
+        {"run_alone": True},
+        {"reservation_mb": 100, "wall_s": 420.0},
+        HOLDING,
+    ),
+    "run-alone-front-late": (
+        [(300, 300.0), (500, 600.0)],
+        {"run_alone": True},
+        {"reservation_mb": 100, "wall_s": 720.0},
+        QUEUED,
+    ),
+    # The front needs A, which has no wall-clock estimate: its start is unknown.
+    "front-needs-an-unknown-finish": (
+        [(500, None), (300, 300.0)],
+        {"reservation_mb": 600},
+        {"reservation_mb": 100, "wall_s": 180.0},
+        QUEUED,
+    ),
+    "front-needs-only-a-known-finish": (
+        [(500, None), (300, 300.0)],
+        {"reservation_mb": 400},
+        {"reservation_mb": 100, "wall_s": 180.0},
+        HOLDING,
+    ),
+    # The front's own 1000 MiB budget applies, not the jumper's 750 MiB one.
+    "front-judged-by-its-own-budget": (
+        [(300, 300.0), (200, 600.0)],
+        {"reservation_mb": 600},
+        {"reservation_mb": 250, "wall_s": 420.0, "budget_mb": 750.0},
+        QUEUED,
+    ),
+}
+
+
+def test_jump_never_delays_the_front_claim(tmp_path):
+    for name, (holders, front, jumper, state) in JUMP_CASES.items():
+        world = FakeWorld()
+        store = make_store(tmp_path / name, world)
+        for pid, (reservation_mb, wall_s) in enumerate(holders, start=101):
+            hold(store, world, pid, claim(reservation_mb, wall_s=wall_s))
+        assert store.refresh(join(store, world, 201, claim(**front))).state == QUEUED, name
+        assert store.refresh(join(store, world, 202, claim(**jumper))).state == state, name
 
 
 def test_jump_past_a_holder_overdue_by_its_estimate_waits(root, world):
