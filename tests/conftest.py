@@ -621,7 +621,9 @@ def _memory_budget_is_measurable_everywhere(monkeypatch: pytest.MonkeyPatch) -> 
 
     real_compute = memory_budget.compute_memory_budget
 
-    def compute_or_fixed(config: Mapping[str, object], **kwargs: Any) -> memory_budget.MemoryBudget:
+    def compute_or_fixed(
+        config: Mapping[str, object], **kwargs: Any
+    ) -> memory_budget.MemoryBudget:
         try:
             return real_compute(config, **kwargs)
         except OSError:
