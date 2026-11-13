@@ -3965,6 +3965,7 @@ def test_runtime_image_stamp_recovery_reaches_consumers(
     tmp_path, monkeypatch, capsys, consumer, runtime_image_stamp_environment
 ):
     from booley.harness import bootstrap, bootstrap_cli, init_cmd
+    from booley.harness import session_refresh as harness_refresh
 
     docker, plan = runtime_image_stamp_environment
     if consumer == "init":
@@ -3998,7 +3999,15 @@ def test_runtime_image_stamp_recovery_reaches_consumers(
             if consumer == "host":
                 harness_lifecycle.reconcile(lifecycle.Intent.ENSURE)
             elif consumer == "refresh":
-                init_cmd.prepare_runtime_image(tmp_path)
+                monkeypatch.setattr(
+                    harness_lifecycle,
+                    "reconcile_planned",
+                    lambda *_a, **_kw: harness_lifecycle.prepare(plan),
+                )
+                monkeypatch.setattr(
+                    init_cmd, "_report_project_requirements", lambda *_a, **_k: None
+                )
+                harness_refresh._RuntimeImages().converge(tmp_path, verbose=False)
             else:
                 harness_lifecycle.prepare(plan)
         message = str(caught.value)
@@ -4122,12 +4131,11 @@ def test_owned_gc_retries_record_in_fresh_process(tmp_path, monkeypatch):
     lifecycle.OwnedImages(tmp_path).record({}, (second,))  # a later refresh adds, never replaces
     code = """
 from pathlib import Path
-from booley.runtime import image_lifecycle as lifecycle, session_refresh
+from booley.runtime import image_lifecycle as lifecycle
 class Docker:  # only the two inventories and exact-ID removal exist
     def image_ids(self): return frozenset({IMAGE, SECOND})
     def image_references(self): return ()
     def remove_tag(self, image): print("deleted", image)
-assert session_refresh.pending_refresh_projects() == ()
 assert lifecycle.cleanup_owned_images(Path(PROJECT), docker=Docker()) == ()
 """
     code = f"IMAGE={image!r}\nSECOND={second!r}\nPROJECT={str(tmp_path)!r}\n" + code

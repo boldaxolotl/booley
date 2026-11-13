@@ -1064,6 +1064,11 @@ class ReviewerSpecialist(Specialist):
         return None
 
     def _prepare_goal_discovery(self) -> McpToolResult | None:
+        from booley.flows.execution_persistence import ReviewGoalInputs
+
+        recorder = self._acceptance_recorder
+        # Only reached when `_goal_mode`, i.e. the recorder provides Review Goal inputs.
+        assert isinstance(recorder, ReviewGoalInputs)
         forbidden = self._supplied_options() & {
             "--scope",
             "--spec",
@@ -1092,7 +1097,7 @@ class ReviewerSpecialist(Specialist):
             )
             if open_key is not None:
                 return self._open_findings_refusal(open_key)
-            params = self._acceptance_recorder.review_goal_inputs(key)
+            params = recorder.review_goal_inputs(key)
             self._resolved_scope = list(params.scope)
             self._goal_target_surface = (
                 dict(params.target_surface) if params.target_surface is not None else None
@@ -1118,6 +1123,8 @@ class ReviewerSpecialist(Specialist):
         )
 
     def _supplied_options(self) -> set[str]:
+        # Every Specialist run enters through parse_args, which records the raw argv.
+        assert self._raw_argv is not None
         return {word.split("=", 1)[0] for word in self._raw_argv if word.startswith("--")}
 
     def _prepare_verify_invocation(self) -> McpToolResult | None:
@@ -2783,7 +2790,7 @@ Schema enforcement (applied upstream by the harness):
         for ord_idx, finding in enumerate(raw_findings, 1):
             errs = _validate_finding_dict(finding)
             idx = finding.get("index") if isinstance(finding, dict) else None
-            if not errs and issue_count is not None and idx > issue_count:
+            if not errs and issue_count is not None and isinstance(idx, int) and idx > issue_count:
                 errs.append("index exceeds the pending finding count")
             if errs:
                 diagnostic = {"ordinal": ord_idx, "raw": finding, "errors": errs}
@@ -2801,7 +2808,7 @@ Schema enforcement (applied upstream by the harness):
                     and isinstance(idx, int)
                     and idx >= 1
                 )
-                if only_support_missing:
+                if only_support_missing and isinstance(idx, int):
                     logger.warning(
                         "Verify finding #%d (idx=%d) lacks required disposition "
                         "support — demoting to STILL_PRESENT",

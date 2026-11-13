@@ -31,7 +31,6 @@ from booley.runtime import (
     inspection,
     project_image,
     session_issuance,
-    session_spec,
     vaporview,
 )
 
@@ -66,15 +65,6 @@ def _same(shown: str) -> dict[str, str]:
 
 def _sites() -> list[_Site]:
     cli = image_lifecycle._DockerCli()
-    snapshot = lambda root: session_spec.SessionSpecSnapshot(  # noqa: E731
-        spec_path=root / "spec.json",
-        spec_content=None,
-        spec_mode=0o644,
-        stamp_path=root / "stamp.json",
-        stamp_content=None,
-        stamp_mode=0o644,
-        image_id="img",
-    )
     return [
         _Site(
             "booley_dir_migration docker ps",
@@ -226,15 +216,6 @@ def _sites() -> list[_Site]:
             lambda _root: project_image._image_history(_IMAGE_ID, "docker"),
             "one\ntwo\n",
             {"ok": "returned:['one', 'two']"} | _same("RuntimeError"),
-        ),
-        _Site(
-            "session_spec restore keeper tag",
-            session_spec,
-            ["docker", "tag", "img"],
-            30,
-            lambda root: session_spec.restore_session_spec(root, snapshot(root)),
-            "",
-            {"ok": "returned:None"} | _same("RuntimeError"),
         ),
         _Site(
             "vaporview probe",

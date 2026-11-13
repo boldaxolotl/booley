@@ -114,8 +114,8 @@ class FlexNetRelay:
 
     def __init__(self, config: RelayConfig) -> None:
         self.config = config
-        self._route_servers: list[asyncio.AbstractServer] = []
-        self._health_server: asyncio.AbstractServer | None = None
+        self._route_servers: list[asyncio.Server] = []
+        self._health_server: asyncio.Server | None = None
         self._active_connections = 0
         self._connection_serial = 0
 
@@ -305,7 +305,8 @@ async def _relay_bidirectional(
                 raise RelayIdleTimeoutError
             if activity_waiter not in done:
                 activity_waiter.cancel()
-            for task in done - {activity_waiter}:
+            finished = [pending for pending in tasks if pending in done]
+            for task in finished:
                 counts[tasks.pop(task)] = task.result()
         return counts[0], counts[1]
     finally:

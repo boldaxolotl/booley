@@ -376,37 +376,26 @@ def _stamp_read_path(project_root: Path) -> Path:
     return stamp_path(project_root)
 
 
-def recovery_stamp_path(project_root: Path) -> Path:
-    """Return the stamp path that recovery must snapshot."""
-    return _stamp_read_path(project_root.resolve(strict=True))
+def stamp_is_absent(project_root: Path) -> bool:
+    """True when no stamp exists (never issued or withdrawn); a misnamed stamp is not absent."""
+    try:
+        return stamp_store().locate(str(project_root.resolve())) is None
+    except RuntimeSpecError:
+        return False
 
 
 def load_issued_snapshot(project_root: Path) -> Issuance:
     """Load structurally valid prior issuance without consulting current authority.
 
-    Session refresh reads the replacement issuance through this view after
-    reissuing, and remedy selection reads the prior one.  The current grant
-    may legitimately have changed — healing that drift is the point of
-    refresh — while the sealed licence decision and Project identity still
-    have to be trusted before Docker mutation.
+    Remedy selection reads the prior issuance through this view.  The current
+    grant may legitimately have changed, while the sealed licence decision and
+    Project identity still have to be trusted before Docker mutation.
     """
     project = project_root.resolve(strict=True)
     issuance = _load_stamp(_stamp_read_path(project))
     if issuance.project_root != str(project):
         raise RuntimeSpecError("host-issued spec stamp belongs to a different Project")
     _require_project_keeper(project, issuance)
-    return issuance
-
-
-def load_recovery_snapshot(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance:
-    """Authenticate the exact prior issuance without consulting current grants."""
-    project = project_root.resolve(strict=True)
-    issuance = _load_stamp(_stamp_read_path(project))
-    if differences := _authentication_differences(issuance, project, spec, spec_path):
-        raise RuntimeSpecError(
-            "prior Sandbox spec differs from its issuance stamp: " + differences
-        )
-    _require_retained_keeper(project, issuance)
     return issuance
 
 

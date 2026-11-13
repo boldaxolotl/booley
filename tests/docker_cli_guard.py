@@ -28,7 +28,6 @@ from booley.runtime import (
     project_image,
     session_admission,
     session_runtime,
-    session_spec,
     vaporview,
 )
 
@@ -94,7 +93,6 @@ HOST_DOCKER_MODULES = (
     image_lifecycle,
     inspection,
     project_image,
-    session_spec,
     vaporview,
 )
 
