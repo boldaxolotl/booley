@@ -494,7 +494,7 @@ inventory was most of the report's size and a hard-coded file name silently
 goes stale. `artifacts.live_dirs.timing` (physical mode) holds the STA reports
 (`overall.rpt`, `overall.csv.rpt`, `reg2reg.rpt` when the design has registers,
 and `pre_repair*.rpt` when repair ran). `artifacts.live_dirs.build` holds the
-rest: the `stat` output, the netlists, the final-check output, the per-stage
+rest: the `stat` output, the netlists, the two check outputs, the per-stage
 logs, the rendered `synth.ys`, and the SDC fed to STA. On a large design these
 are easier to search than `run.log`, which holds the tail (up to 10 MB) of all
 stages' output.
@@ -530,11 +530,19 @@ transpile. Both feed the same mapping and timing steps. See
 - no critical condition remains: no latches beyond `expected_latches`, no
   combinational loops, no multi-driven nets, no unmapped processes.
 
-Loop and multi-driver counts come from a final Yosys `check` run after mapping
-and optimization. Yosys also runs `check` during `synth`; loops seen only
-there are advisory when the final check finds none, and are kept with that
-rationale. Missing, stale, or incomplete final-check output sets
-`structural_checks_complete` to false and cannot pass.
+The loop count comes from a Yosys `check` that Booley runs right after `synth`
+and before mapping (`premap_check_<design>.txt`). Mapped library cells are black
+boxes to `check`, so a check after mapping cannot trace a loop through them.
+`check` works per module, so without `flatten` a loop that crosses a module
+boundary is not counted. The multi-driver count comes from a final `check` run
+after mapping and optimization (`check_<design>.txt`). The reported loop count
+is the larger of the two, so a loop that either check reports still fails the
+run. Yosys also runs `check` inside `synth`; loops seen only there (an
+optimization removes them, as in
+[#1417](https://github.com/boldaxolotl/booley/issues/1417)) are advisory when
+neither check finds a loop, and are kept with that rationale. Missing, stale,
+or incomplete output from either check sets `structural_checks_complete` to
+false and cannot pass.
 
 Negative setup or hold slack grades `warn` and exits 0 unless
 `[flows.synth].fail_on_timing_violation = true`, which makes it a failure
@@ -552,8 +560,8 @@ liberty file, a Yosys or sv2v error) is carried into the report.
 Each current and baseline result carries a bounded `warning_summary`: total
 and unique counts, counts by EDA tool, category, and disposition, and one
 representative message per group; `artifacts.log` keeps every raw message.
-Structural warnings become fatal when the final check confirms them. Other
-actionable warnings grade `warn` but keep `passed: true` and exit 0. A warning
+Structural warnings become fatal when the check that owns their count
+confirms them. Other actionable warnings grade `warn` but keep `passed: true` and exit 0. A warning
 known to be benign is counted with its rationale and does not downgrade the
 result. A located Yosys warning (`file:line[:col]: Warning:`, in practice from
 the `read_verilog` and `slang` frontends, slang on Yosys 0.69 and 0.70) is counted under category `frontend`
