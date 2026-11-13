@@ -136,6 +136,40 @@ _SIGN_CALLS = frozenset({"$signed", "$unsigned"})
 _CONDITION_VARIANTS = ("!({})", "1'b1", "1'b0")
 _LOOP_VARIANTS = ("1'b0",)
 
+
+def _identifier_names(node_type: type, node: Any, *, skip_selects: bool) -> frozenset[str]:
+    """The names of the variables ``node`` mentions, in a plain or a scoped name.
+
+    With ``skip_selects``, names inside a select are left out: ``a[v]`` writes ``a``, not ``v``.
+    A name is keyed by its token's location, since the parser hands out a new wrapper per visit.
+    """
+    named: dict[tuple[Any, int], str] = {}  # token location -> name text
+    selected: set[tuple[Any, int]] = set()  # the names inside a select
+
+    def is_name(current: Any) -> bool:
+        return isinstance(current, node_type) and current.kind.name in (
+            "IdentifierName",
+            "IdentifierSelectName",
+        )
+
+    def location(current: Any) -> tuple[Any, int]:
+        token = current.identifier
+        return token.location.buffer, int(token.location.offset)
+
+    def collect_selected(inner: Any) -> None:
+        if is_name(inner):
+            selected.add(location(inner))
+
+    def collect(current: Any) -> None:
+        if is_name(current):
+            named[location(current)] = str(current.identifier.rawText)
+        elif isinstance(current, node_type) and current.kind.name == "ElementSelect":
+            current.visit(collect_selected)
+
+    node.visit(collect)
+    return frozenset(text for key, text in named.items() if not (skip_selects and key in selected))
+
+
 # Operator 2 (beyond the swaps): unary removal and reduction swaps by syntax kind.  Every
 # replacement is parenthesized so that it cannot glue to a preceding operator (`a|!b`).
 # `!x` becomes `x != 0`: a truth value that, like `!x`, is one bit wide.
@@ -552,12 +586,8 @@ class _SiteCollector:
             self._add_enum_member(node)
         elif kind in ("ConditionalStatement", "ConditionalExpression"):
             self._add_condition(node, node.predicate, _CONDITION_VARIANTS)
-        elif kind == "DoWhileStatement" or (
-            kind == "LoopStatement" and node.repeatOrWhile.kind.name == "WhileKeyword"
-        ):
-            self._add_condition(node, node.expr, _LOOP_VARIANTS)
-        elif kind == "ForLoopStatement" and node.stopExpr is not None:
-            self._add_condition(node, node.stopExpr, _LOOP_VARIANTS)
+        elif (condition := self._loop_condition(node)) is not None:
+            self._add_condition(node, condition, _LOOP_VARIANTS)
         elif kind in _LITERALS:
             self._add_constant(node, kind)
         elif kind == "ElementSelect":
@@ -569,11 +599,49 @@ class _SiteCollector:
         """Operators 1 and 2: swap the operator; for operator 2, also its other mutations."""
         operator, replacement = _BINARY[kind]
         token = node.operatorToken
-        if not self._is_equal_swap(node, kind, token):
+        if not self._is_equal_swap(node, kind, token) and not self._in_loop_control(node):
             self._add(node, operator, token, token, (replacement,))
         if operator == ARITHMETIC_LOGICAL:
             self._add_operand_drops(node, kind)
             self._add_shift_signedness(node, kind)
+
+    @staticmethod
+    def _loop_condition(node: Any) -> Any | None:
+        """The expression that decides whether a ``while``, ``do``-``while``, or ``for`` goes on.
+
+        None for any other node: ``forever``, ``repeat``, ``foreach``, and a generate ``for``
+        have none, and a procedural ``for`` may omit its stop expression.
+        """
+        kind = node.kind.name
+        if kind == "DoWhileStatement" or (
+            kind == "LoopStatement" and node.repeatOrWhile.kind.name == "WhileKeyword"
+        ):
+            return node.expr
+        if kind == "ForLoopStatement":
+            return node.stopExpr
+        return None
+
+    def _in_loop_control(self, node: Any) -> bool:
+        """True if ``node`` is in a loop's condition or in a write to a variable it reads.
+
+        A swapped stop condition or loop-variable update can keep the loop from ending
+        (``j < 2'd3`` to ``j <= 2'd3`` with a 2-bit ``j``).  The rule is syntactic: the
+        names an assignment above ``node`` writes are matched against the names the
+        condition of each enclosing loop reads, so a write through a temporary is not seen.
+        """
+        written: set[str] = set()
+        child, ancestor = node, node.parent
+        while ancestor is not None:
+            if ancestor.kind.name.endswith("AssignmentExpression") and child is ancestor.right:
+                written |= _identifier_names(self._node_type, ancestor.left, skip_selects=True)
+            condition = self._loop_condition(ancestor)
+            if condition is not None and (
+                child is condition
+                or written & _identifier_names(self._node_type, condition, skip_selects=False)
+            ):
+                return True
+            child, ancestor = ancestor, ancestor.parent
+        return False
 
     def _is_equal_swap(self, node: Any, kind: str, token: Any) -> bool:
         """True for a ``+``/``-`` swap that changes nothing, in every way the unit may elaborate.

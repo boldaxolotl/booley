@@ -124,16 +124,24 @@ Only design code is mutated. Booley skips:
 - testbench, vendored, and generated files (by default);
 - classes, programs, checkers, covergroups, and every assertion, because a
   mutated assertion fires and would count as a detection;
-- parameter defaults and overrides, widths, delays, attributes, and the parts
-  of a `for` loop that decide how long it runs;
+- parameter defaults and overrides, widths, delays, and attributes;
+- a loop's condition (`for` stop expression, `while`, `do`-`while`) and any
+  assignment inside the loop to a variable that condition reads: they get no
+  operator swap, and the `condition` operator only forces the condition to
+  `1'b0`; a `for` loop's initializer and step get no Mutants;
+- everything inside a `while`, `do`-`while`, `forever`, or procedural `for`
+  loop, body included, for constants, enum members, bit-select moves,
+  concatenation swaps, and deletions, and for every `arithmetic-logical`
+  mutation except an operator swap (`repeat` and `foreach` loops are not
+  skipped);
 - the arguments of system calls other than `$signed` and `$unsigned`;
 - port connections of gate primitives, `bind` directives, and checker and
   program instances, connections that are a bare name, and every bit-select
   move and deletion in a connection;
 - code a macro or include supplies, and the inactive branch of an `ifdef`
   (Booley applies the build's defines);
-- spots that could make a loop run forever or drive a variable from two
-  places, and `case` labels (moving one can overlap another item).
+- spots that could drive a variable from two places, and `case` labels (moving
+  one can overlap another item).
 
 ## How it chooses which Mutants
 
