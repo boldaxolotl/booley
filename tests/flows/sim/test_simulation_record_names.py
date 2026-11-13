@@ -20,6 +20,7 @@ import json
 import shutil
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -150,6 +151,13 @@ def test_a_run_writes_simulation_record_names(tmp_path: Path) -> None:
             assert "campaign_id" not in document, path
             assert "record_id" not in document, path
 
+    # The summary is retention's projection of the Record: its own schema, same identity key.
+    summary = _json(store.summary_path)
+    assert summary["$schema"] == "booley.simulation-record-summary/v1"
+    assert summary["simulation_record_id"] == record_id
+    assert "campaign_id" not in summary
+    assert "record_id" not in summary
+
 
 def test_prerequisites_and_dependency_receipts_name_the_simulation_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -161,6 +169,15 @@ def test_prerequisites_and_dependency_receipts_name_the_simulation_record(
     for entry in prerequisites:
         assert entry["simulation_record_id"] == baseline_id
         assert "campaign_id" not in entry
+        assert entry["manifest"]["kind"] == "simulation_record_manifest"
+
+    # The Pre-Sim role manifests of the invocation report carry the same kind.
+    flow = SimulateFlow()
+    flow._reserved_invocation_dir = _invocation
+    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    roles = flow._campaign_endpoint_outcome([candidate, baseline]).detail["pre_sim_roles"]
+    kinds = {ref["kind"] for role in roles.values() for ref in role["manifests"]}
+    assert kinds == {"simulation_record_manifest"}
 
     origin, digest = _origin(tmp_path / "origin")
     dependent = tmp_path / "origin" / "reports" / "sim" / "2"

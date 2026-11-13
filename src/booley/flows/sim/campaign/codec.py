@@ -138,6 +138,9 @@ _RETIRED_SCHEMAS = {
     "booley.simulation-campaign-manifest/v2": "Simulation Campaign manifest",
     "booley.simulation-result/v2": "Simulation Result",
     "booley.simulation-projection/v2": "Simulation projection",
+    "booley.simulation-projection/v3": "Simulation projection",
+    "booley.simulation-campaign-summary/v1": "Simulation Campaign summary",
+    "booley.cocotb-campaign-transport/v1": "cocotb Campaign transport",
     "booley.coverage-campaign/v4": "Coverage Campaign",
 }
 

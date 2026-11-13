@@ -27,13 +27,13 @@ def validate_manifest_reference(
     manifest_raw: bytes,
     campaign_id: object,
 ) -> None:
-    """Authenticate the projection's typed ``campaign_manifest`` artifact reference."""
+    """Authenticate the projection's typed ``simulation_record_manifest`` artifact reference."""
     _need(
         isinstance(reference, dict), "compatibility manifest backlink is not an artifact reference"
     )
     _need(reference.get("path_base") == "origin_target", "manifest backlink base differs")
     _need(
-        reference.get("kind") == "simulation_campaign_manifest",
+        reference.get("kind") == "simulation_record_manifest",
         "manifest backlink kind differs",
     )
     _need(reference.get("owner") == campaign_id, "manifest backlink owner differs")
