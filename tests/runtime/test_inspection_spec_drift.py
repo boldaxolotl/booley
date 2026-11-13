@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import functools
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
+from tests.docker_cli_guard import assert_docker_processes_unused, forbid_docker_processes
 from tests.session_issuance_support import install_trusted_validator, stub_keeper
 
 from booley.audit.diagnostic_results import DiagnosticFinding, Findings
@@ -35,6 +36,14 @@ from booley.runtime import session_issuance as runtime_spec
 _IMAGE_A = "sha256:" + "a" * 64
 _IMAGE_B = "sha256:" + "b" * 64
 _DRIFT_ID = "interactive.devcontainer-drift"
+
+
+@pytest.fixture(autouse=True)
+def no_docker_process(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Fail any test that starts a real ``docker`` process, even inside a swallowed error."""
+    forbid_docker_processes(monkeypatch)
+    yield
+    assert_docker_processes_unused()
 
 
 @pytest.fixture
@@ -68,6 +77,9 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     stub_keeper(monkeypatch)
     # No Docker: the image's Booley Directory layout probe reports the plain directory form.
     monkeypatch.setattr(project_image, "project_data_alias_capable", lambda _image_id: False)
+    # ... no Sandbox is running (the one lookup the remedy chain and the active-Sandbox
+    # inspection share) ...
+    monkeypatch.setattr(session_runtime, "resolve_running_sandbox", lambda *_args, **_kwargs: None)
     # ... and there is no Sandbox container to reconcile.
     monkeypatch.setattr(
         session_runtime,

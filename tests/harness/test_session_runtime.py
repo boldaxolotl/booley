@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
@@ -48,6 +49,7 @@ from tests.devcontainer_spec_support import build_spec
 from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
 from tests.harness.booley_dir_support import select_booley_dir
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
+from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
 from tests.subprocess_budget import run_bounded_child
 
 
@@ -5657,3 +5659,42 @@ def test_enter_gateway_sandbox_never_overrides_container_gateway_values(
     assert container_id == fixture.state["Id"]
     assert command_env["BOOLEY_DIR"] == "/booley-project"
     assert not set(command_env) & set(GATEWAY_FORWARDED_ENV)
+
+
+# ---------------------------------------------------------------------------
+# _run timeout contract (real processes, no Docker needed)
+# ---------------------------------------------------------------------------
+
+
+def test_run_timeout_kills_the_tree_and_returns_promptly(tmp_path):
+    """A timed call ends with ``TimeoutExpired`` soon and leaves no descendant running."""
+    with heartbeat_tree(tmp_path) as paths:
+        argv = parent_argv(tmp_path, sys.executable, paths, "live")
+        start = time.monotonic()
+        with pytest.raises(subprocess.TimeoutExpired):
+            sr._run(argv, timeout=2)
+        elapsed = time.monotonic() - start
+        assert elapsed < 25, f"_run hung {elapsed:.1f}s on a pipe held by a grandchild"
+        assert paths["heartbeat"].exists(), "grandchild never started"
+        assert wait_until_heartbeat_stops(paths["heartbeat"]), (
+            "grandchild still running after the timeout"
+        )
+
+
+def test_run_keeps_its_result_contract():
+    """Timed and untimed calls return text, return non-zero exits, and raise on a missing program."""
+    for timeout in (None, 30):
+        ok = sr._run(
+            [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"],
+            timeout=timeout,
+        )
+        assert (ok.returncode, ok.stdout.strip(), ok.stderr.strip()) == (0, "out", "err"), timeout
+        failed = sr._run([sys.executable, "-c", "raise SystemExit(3)"], timeout=timeout)
+        assert failed.returncode == 3, timeout
+        with pytest.raises(FileNotFoundError):
+            sr._run(["booley-no-such-program-3858"], timeout=timeout)
+        env = {**os.environ, "BOOLEY_TEST_3858": "seen"}
+        argv = sr.DockerRunArgv(
+            [sys.executable, "-c", "import os; print(os.environ['BOOLEY_TEST_3858'])"], env
+        )
+        assert sr._run(argv, timeout=timeout).stdout.strip() == "seen", timeout

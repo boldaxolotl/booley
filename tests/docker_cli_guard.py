@@ -9,11 +9,13 @@ test when :func:`assert_docker_cli_unused` runs at teardown.
 
 from __future__ import annotations
 
+import ntpath
+import posixpath
 import subprocess
 
 import pytest
 
-from booley.runtime import interactive_docker
+from booley.runtime import interactive_docker, session_admission, session_runtime
 
 #: Argument lists of every Docker CLI call attempted since the last install.
 DOCKER_CLI_CALLS: list[list[str]] = []
@@ -45,7 +47,9 @@ def route_docker_helper_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) 
     itself now starts the CLI with ``Popen`` (so it can kill the whole process
     tree on timeout), which those fakes cannot see.  Modules that fake
     ``subprocess.run`` call this from an autouse fixture so the helper reaches
-    their fake again, exactly as it did before.
+    their fake again, exactly as it did before.  It also routes the session
+    runtime's and admission's bounded capture (see
+    :func:`route_session_helpers_through_subprocess_run`).
     """
 
     def routed(args: list[str], *, timeout: float = 30, executable: str = "docker"):
@@ -61,3 +65,91 @@ def route_docker_helper_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) 
         )
 
     monkeypatch.setattr(interactive_docker, "_run_docker", routed)
+    route_session_helpers_through_subprocess_run(monkeypatch)
+
+
+def route_session_helpers_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run the session runtime's and admission's timed captures through ``subprocess.run``.
+
+    Their timed, captured commands start with ``Popen`` (via
+    ``platform_paths.run_captured_bounded``) so they can kill the whole process tree on
+    timeout; tests that fake ``subprocess.run`` cannot see that.  This stand-in looks
+    ``subprocess.run`` up at call time and takes the same ``timeout``, ``cwd`` and ``env``.
+    """
+
+    def routed(argv: list[str], *, timeout: float, cwd=None, env=None):
+        # Unbounded child: stands in for production run_captured_bounded; tests' subprocess.run fakes must intercept this call
+        return subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            cwd=cwd,
+            env=env,
+            check=False,
+        )
+
+    monkeypatch.setattr(session_runtime, "run_captured_bounded", routed)
+    monkeypatch.setattr(session_admission, "run_captured_bounded", routed)
+
+
+#: Command lines of every ``docker`` process a guarded test tried to start.
+DOCKER_PROCESS_STARTS: list[str] = []
+
+
+def _program_of(args: object, executable: object) -> str:
+    """Name of the program a ``Popen`` call would start, or ``""`` when unknowable."""
+    if executable:
+        return str(executable)
+    if isinstance(args, str):
+        words = args.split()
+        return words[0] if words else ""
+    try:
+        first = next(iter(args), "")  # type: ignore[call-overload]
+    except TypeError:
+        return ""
+    return str(first)
+
+
+def _is_docker(program: str) -> bool:
+    """True when *program* is ``docker`` (any directory, any case, optional ``.exe``)."""
+    name = ntpath.basename(posixpath.basename(program)).casefold()
+    return name.removesuffix(".exe") == "docker"
+
+
+def forbid_docker_processes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make starting a ``docker`` process fail the running test.
+
+    Replaces ``subprocess.Popen`` with a subclass that records and fails the test
+    when the program it would start is ``docker`` (the ``executable=`` keyword if
+    given, else the first word of a string command or ``args[0]`` of a list).
+    ``subprocess.run`` and ``platform_paths.run_captured_bounded`` both build a
+    ``Popen``, so both are covered.  Pair it with :func:`assert_docker_processes_unused`
+    at teardown to catch a failure swallowed by a broad ``except``.
+
+    It does not catch a ``from subprocess import Popen`` binding made before the
+    patch, ``os.spawn*``/``os.system``, or ``docker`` hidden inside a ``shell=True``
+    pipeline.
+    """
+    DOCKER_PROCESS_STARTS.clear()
+    real_popen = subprocess.Popen
+
+    class _GuardedPopen(real_popen):  # type: ignore[misc, valid-type]
+        def __init__(self, args, *popen_args, **kwargs):
+            program = _program_of(args, kwargs.get("executable"))
+            if _is_docker(program):
+                shown = args if isinstance(args, str) else " ".join(map(str, args))
+                DOCKER_PROCESS_STARTS.append(shown)
+                pytest.fail(f"test started a docker process: {shown}")
+            super().__init__(args, *popen_args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", _GuardedPopen)
+
+
+def assert_docker_processes_unused() -> None:
+    """Fail when a guarded test tried to start ``docker`` (even if swallowed)."""
+    starts = list(DOCKER_PROCESS_STARTS)
+    DOCKER_PROCESS_STARTS.clear()
+    assert not starts, f"test started a docker process: {starts}"

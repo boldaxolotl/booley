@@ -40,6 +40,7 @@ from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.platform_paths import (
     docker_mount_path,
     host_path_from_docker_mount,
+    run_captured_bounded,
     same_host_path,
 )
 
@@ -530,10 +531,22 @@ def _warn_on_stale_session_containers(spec: dict, workspace: Path) -> None:
 def _run(
     argv: list[str], *, capture: bool = True, timeout: int | None = None
 ) -> subprocess.CompletedProcess:
+    """Run *argv*, by default capturing its text output.
+
+    A captured call with a *timeout* is bounded: on timeout the whole process
+    tree is killed and ``subprocess.TimeoutExpired`` is raised within a bounded
+    margin even if a descendant still holds the output pipes. A call without a
+    *timeout* (or without capture) waits for the command.
+    """
     logger.debug("running: %s", " ".join(argv))
+    env = argv.environment if isinstance(argv, DockerRunArgv) else None
+    if capture and timeout is not None:
+        # subprocess.run kills only the direct child on timeout and, on Windows,
+        # then waits on the output pipes with no limit.
+        return run_captured_bounded(argv, timeout=timeout, env=env)
     return subprocess.run(
         argv,
-        env=argv.environment if isinstance(argv, DockerRunArgv) else None,
+        env=env,
         capture_output=capture,
         timeout=timeout,
         text=True,
