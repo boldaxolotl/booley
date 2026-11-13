@@ -169,3 +169,28 @@ def test_flow_state_restarts_with_each_invocation(tmp_path, monkeypatch, name):
     flow._start_invocation(StandaloneFlowExecution())
 
     assert getattr(flow, name) == fresh
+
+
+def test_requeued_attempt_keeps_drawn_seeds_and_drops_campaign_outcomes(
+    tmp_path, monkeypatch, capsys
+):
+    """The OOM requeue reruns the same request: seeds stay, the killed attempt's results go."""
+    flow = _flow(tmp_path, monkeypatch, "--seed", "random", "--test", "stress")
+    drawn = flow._resolve_test_runs("sim", _MAP)
+    # Stand-ins for what the killed attempt left behind.
+    flow._simulation_campaign_outcomes = ("campaign-outcome",)
+    flow._simulation_acceptance_outcomes = ("acceptance-outcome",)
+    flow._current_published_pre_sim_keys = {"pre-sim-key"}
+    flow.cycle_report_json = '{"cycle": 1}'
+    flow._reserved_invocation_dir = tmp_path / "reports" / "sim" / "1"
+
+    flow.begin_requeued_attempt()
+
+    assert flow._resolve_test_runs("sim", _MAP) is drawn
+    assert flow._simulation_campaign_outcomes == ()
+    assert flow._simulation_acceptance_outcomes == ()
+    assert flow._current_published_pre_sim_keys == set()
+    assert flow.cycle_report_json is None
+    assert flow._reserved_invocation_dir is None
+    # The marker separates the killed attempt's stdout from the next attempt's.
+    assert "requeued after out-of-memory" in capsys.readouterr().out

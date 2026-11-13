@@ -108,7 +108,8 @@ def _phase_for_record(rec: jobrec.JobRecord | None) -> str:
     """Admission phase of a detached job: "RUNNING" or "QUEUED (position N)".
 
     A queued memory claim appends ``: <what it waits for>`` (need, free memory,
-    holders; see ``MemoryWait.describe``).
+    holders; see ``MemoryWait.describe``), and a Job queued again after an OOM
+    kill adds the claim's requeue reason there.
 
     Derived from the child's own slot-store claim (ADR 0028): a waiter entry
     means the child process is alive but idling for its class slot. Position

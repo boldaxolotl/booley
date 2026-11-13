@@ -143,8 +143,16 @@ def test_simulation_admission_reports_malformed_runtime_identity(
         def _get_head_sha() -> str:
             return "head"
 
-        def admission(self, prepared):
-            return admission(self, prepared)
+        def admission(self, prepared, *, requeued: bool = False):
+            return admission(self, prepared, requeued=requeued)
+
+        @staticmethod
+        def may_requeue_after_oom(_prepared, _admission) -> bool:
+            return False
+
+        @staticmethod
+        def begin_requeued_attempt() -> None:
+            pass
 
         @staticmethod
         def record_acceptance(_prepared, _outcome) -> None:

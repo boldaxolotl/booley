@@ -14,6 +14,7 @@ from booley.flows.sim.config import resolve_pre_sim_commands, resolve_run_cwd
 from booley.flows.sim.live_progress import observe_stage
 from booley.flows.test_runs import TestRun
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
+from booley.runtime.endpoint_execution import OOM_STOPPED_MESSAGE, job_stopped_after_oom
 from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV
 from booley.runtime.platform_paths import (
     bash_bin,
@@ -171,6 +172,9 @@ def _invoke_pre_sim(
     timeout_s: int,
 ) -> PreSimEvidence:
     """Execute one prepared hook and normalize its result."""
+    if job_stopped_after_oom():
+        # A failure, not a stopped scope: the Campaign must not end cancelled.
+        return PreSimEvidence(commands, test_names, "failed", 0.0, OOM_STOPPED_MESSAGE)
     started = time.monotonic()
     try:
         lease_fd = active_child_lease_fd()

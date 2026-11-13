@@ -298,6 +298,8 @@ class SimulateFlow(
         super()._start_invocation(adapter, request)
         self._simulation_campaign_outcomes: tuple[Any, ...] = ()
         self._simulation_acceptance_outcomes: tuple[Any, ...] = ()
+        # Resumed origins this invocation's `publication_resources` already lock (see flow_resume).
+        self._held_resume_origins: set[Path] = set()
 
     def begin_invocation(self) -> None:
         """Start this invocation's Test Run decisions afresh.
@@ -316,6 +318,13 @@ class SimulateFlow(
         self._target_handles: dict[str, TargetHandle] = {}
         self._work_item_plans: dict[str, TargetTestPlan] = {}
         self._standalone_plan_recipe = None
+
+    def begin_requeued_attempt(self) -> None:
+        """Drop the killed attempt's outcomes; keep its Test Runs, seeds and build settings."""
+        super().begin_requeued_attempt()
+        self._simulation_campaign_outcomes = ()
+        self._simulation_acceptance_outcomes = ()
+        self._current_published_pre_sim_keys = set()
 
     request_type = SimRequest
     argument_adapter = SimArguments

@@ -355,6 +355,7 @@ class MemoryWait:
     free_mb: float
     seats: tuple[tuple[str, int, int], ...]
     holders: tuple[tuple[str, float | None], ...]
+    reason: str | None = None  # why the claim exists again (a requeued Job), else None
 
     def describe(self) -> str:
         """One line: the need, the free memory, any blocked seat and the largest holders."""
@@ -380,7 +381,7 @@ class MemoryWait:
                 for name, mb in self.holders
             )
             text += f"; largest holders: {named}"
-        return text
+        return text if self.reason is None else f"{text}; {self.reason}"
 
 
 def _holder_name(token: SlotToken) -> str:
@@ -422,6 +423,7 @@ def memory_wait(
     return MemoryWait(
         position=blocked_ahead + 1,
         claim=claim,
+        reason=own.queue_reason,
         free_mb=0.0 if alone else max(0.0, claim.budget_mb - used_mb),
         seats=tuple(
             (tool, seats_held[tool], cap) for tool, cap in claim.seats if seats_held[tool] >= cap
@@ -580,6 +582,8 @@ def _memory_queue(
 class TokenState:
     state: str
     position: int | None = None  # 0-based queue position when QUEUED
+    # Why this entry was queued again (a requeued Job's claim); ``None`` for a first claim.
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -623,6 +627,9 @@ class SlotToken:
     owner_kind: str = "process"
     lease_health: LeaseHealth = field(default_factory=lambda: LeaseHealth(threading.Event()))
     memory: MemoryClaim | None = None  # set exactly for memory-class entries
+    # Why this claim exists again after the Job's first attempt was killed
+    # (``None`` for a first claim); shown to the caller while the Job waits.
+    queue_reason: str | None = None
     job: JobLabel | None = None  # who the entry belongs to, for queue reports only
 
     @property
@@ -641,6 +648,7 @@ class _WaiterRequest:
     created: float
     execution_id: ExecutionId | None
     memory: MemoryClaim | None = None
+    queue_reason: str | None = None
     job: JobLabel | None = None
 
 
@@ -739,6 +747,11 @@ def _parse_entry_name(name: str) -> tuple[str, int, int, int, int] | None:
         return None
 
 
+def _optional_text(value: object) -> str | None:
+    """A payload field that is a non-empty string, else ``None`` (absent or foreign)."""
+    return value if isinstance(value, str) and value else None
+
+
 def _utc_stamp(epoch: float) -> str:
     return rfc3339_from_epoch(epoch)
 
@@ -821,12 +834,15 @@ class SlotStore:
         timeout_s: float | None = None,
         execution_id: str | ExecutionId | None = None,
         memory: MemoryClaim | None = None,
+        queue_reason: str | None = None,
         job: JobLabel | None = None,
         bounded: bool = True,
     ) -> SlotToken:
         """Join *job_class* admission or raise when its bounded queue is full.
 
         *memory* is required for the memory class and refused for the others.
+        *queue_reason* names why a requeued Job claims again; it is stored in
+        the entry so the caller can read it while the Job waits or runs.
         A claim that opens as zero is refused (only a holder reaches zero).
         ``bounded=False`` skips the queue bound for an admitted Job's own claim.
         """
@@ -864,6 +880,7 @@ class SlotStore:
                 created=created,
                 execution_id=linked_execution,
                 memory=memory,
+                queue_reason=queue_reason,
                 job=job,
             )
         )
@@ -1052,6 +1069,8 @@ class SlotStore:
         }
         if request.memory is not None:
             payload["memory"] = request.memory.to_payload()
+        if request.queue_reason is not None:
+            payload["queue_reason"] = request.queue_reason
         if request.job is not None:
             payload["job"] = request.job.to_payload()
         return payload
@@ -1082,6 +1101,7 @@ class SlotStore:
             owner_identity=ProcessIdentity.from_payload(payload["owner_identity"]),
             owner_kind=payload["owner_kind"],
             memory=request.memory,
+            queue_reason=request.queue_reason,
             job=request.job,
         )
 
@@ -1241,6 +1261,8 @@ class SlotStore:
         }
         if token.memory is not None:
             payload["memory"] = token.memory.to_payload()
+        if token.queue_reason is not None:
+            payload["queue_reason"] = token.queue_reason
         if token.job is not None:
             payload["job"] = token.job.to_payload()
         return payload
@@ -1288,6 +1310,7 @@ class SlotStore:
         execution_id: str | ExecutionId | None = None,
         on_submitted: Callable[[SlotToken], None] | None = None,
         memory: MemoryClaim | None = None,
+        queue_reason: str | None = None,
         job: JobLabel | None = None,
         bounded: bool = True,
     ) -> SlotToken:
@@ -1304,6 +1327,7 @@ class SlotStore:
             timeout_s=timeout_s,
             execution_id=execution_id,
             memory=memory,
+            queue_reason=queue_reason,
             job=job,
             bounded=bounded,
         )
@@ -1646,6 +1670,7 @@ class SlotStore:
             owner_identity=owner_identity,
             owner_kind=payload.get("owner_kind", "legacy"),
             memory=MemoryClaim.from_payload(payload.get("memory")),
+            queue_reason=_optional_text(payload.get("queue_reason")),
             job=JobLabel.from_payload(payload.get("job")),
         )
 
@@ -1733,12 +1758,14 @@ class SlotStore:
         """
         for job_class in JOB_CLASSES:
             holders, waiters = self.snapshot(job_class)
-            for tok in holders:
-                if tok.pid == pid:
-                    return TokenState(HOLDING)
+            holding = [tok for tok in holders if tok.pid == pid]
+            if holding:
+                # A Campaign's work-item claims share the PID; any one may carry the reason.
+                reason = next((tok.queue_reason for tok in holding if tok.queue_reason), None)
+                return TokenState(HOLDING, reason=reason)
             for position, tok in enumerate(waiters):
                 if tok.pid == pid:
-                    return TokenState(QUEUED, position=position)
+                    return TokenState(QUEUED, position=position, reason=tok.queue_reason)
         return None
 
     # ----------------------------------------------------------------- reap

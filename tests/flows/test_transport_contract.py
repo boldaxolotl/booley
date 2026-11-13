@@ -740,7 +740,7 @@ def test_candidate_mapping_excludes_baseline_prerequisite(
     )
     flow = SimulateFlow()
     prepare_as(monkeypatch, flow, SimulationCampaignInvocation(flow, prepared))
-    monkeypatch.setattr(EndpointState, "admission", lambda *_args: nullcontext())
+    monkeypatch.setattr(EndpointState, "admission", lambda *_args, **_kwargs: nullcontext())
 
     def run(*_args):
         flow.set_criterion("sim_pass_candidate", True)

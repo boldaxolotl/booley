@@ -65,6 +65,13 @@ class MemoryAdmissionPlan:
     #: holds its claim to the end: run-alone, lint, Custom Flow and coverage Jobs.
     phases: tuple[tuple[HistoryKey, float], ...] = ()
 
+    def alone(self) -> MemoryAdmissionPlan:
+        """The same Job claiming the whole budget, never shrinking: a requeued Job's plan."""
+        claim = MemoryClaim(
+            budget_mb=self.claim.budget_mb, run_alone=True, wall_s=self.claim.wall_s
+        )
+        return MemoryAdmissionPlan(claim, self.warning)
+
 
 def plan_memory_claim(
     requests: Sequence[JobRequest] | None,

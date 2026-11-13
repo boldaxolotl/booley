@@ -124,6 +124,8 @@ async def _wait_with_queue_credit(
     on_first_active: Callable[[], None] | None,
     *,
     tick_seconds: float = _WATCHDOG_TICK_SECONDS,
+    is_requeued: Callable[[], bool] | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> bool:
     """Wait for *proc*, charging only non-queued time against *timeout*.
 
@@ -137,10 +139,19 @@ async def _wait_with_queue_credit(
     record. Returns True when the process exited, False on (active-time)
     timeout. State is sampled at tick granularity; a queued→active flip
     mid-tick miscounts at most one tick.
+
+    A Job requeued after an OOM kill starts over with its full budget: the
+    first sample at which ``is_requeued`` is true clears the time the killed
+    attempt used. The claim carries that signal for the attempt's whole life,
+    so a run-alone claim granted at once is still seen.
     """
     active_used = 0.0
     seen_active = False
+    seen_requeued = False
     while True:
+        if is_requeued is not None and not seen_requeued and is_requeued():
+            seen_requeued = True
+            active_used = 0.0
         # This probe performs only a handful of bounded local file reads.  A
         # thread hop is more dangerous than those reads: repeatedly submitting
         # through the default asyncio executor has hung on some runtimes during
@@ -156,13 +167,13 @@ async def _wait_with_queue_credit(
         if not queued and remaining <= 0:
             return False
         tick = tick_seconds if queued else min(tick_seconds, remaining)
-        started = time.monotonic()
+        started = clock()
         try:
             await asyncio.wait_for(proc.wait(), timeout=tick)
             return True
         except TimeoutError:
             if not queued:
-                active_used += time.monotonic() - started
+                active_used += clock() - started
 
 
 def _endpoint_subprocess_env(
@@ -212,6 +223,7 @@ async def _run_subprocess(
     env: dict[str, str] | None = None,
     is_queued: Callable[[], bool] | None = None,
     on_first_active: Callable[[], None] | None = None,
+    is_requeued: Callable[[], bool] | None = None,
     watchdog_tick: float = _WATCHDOG_TICK_SECONDS,
     cancel_grace: float = CANCEL_GRACE_SECONDS,
     log_path: Path | None = None,
@@ -251,6 +263,7 @@ async def _run_subprocess(
             timeout,
             is_queued=is_queued,
             on_first_active=on_first_active,
+            is_requeued=is_requeued,
             watchdog_tick=watchdog_tick,
             cancel_grace=cancel_grace,
         )
@@ -267,6 +280,7 @@ async def _supervise_output(
     *,
     is_queued: Callable[[], bool] | None,
     on_first_active: Callable[[], None] | None,
+    is_requeued: Callable[[], bool] | None,
     watchdog_tick: float,
     cancel_grace: float,
 ) -> tuple[int, str, str, bool]:
@@ -277,6 +291,7 @@ async def _supervise_output(
                 timeout,
                 is_queued=is_queued,
                 on_first_active=on_first_active,
+                is_requeued=is_requeued,
                 watchdog_tick=watchdog_tick,
             )
         except TimeoutError:
@@ -316,6 +331,7 @@ async def _await_supervised_process(
     *,
     is_queued: Callable[[], bool] | None,
     on_first_active: Callable[[], None] | None,
+    is_requeued: Callable[[], bool] | None = None,
     watchdog_tick: float = _WATCHDOG_TICK_SECONDS,
 ) -> None:
     """Wait for a child, charging either wall-clock or active-only time."""
@@ -323,7 +339,12 @@ async def _await_supervised_process(
         await asyncio.wait_for(proc.wait(), timeout=timeout)
         return
     if not await _wait_with_queue_credit(
-        proc, timeout, is_queued, on_first_active, tick_seconds=watchdog_tick
+        proc,
+        timeout,
+        is_queued,
+        on_first_active,
+        tick_seconds=watchdog_tick,
+        is_requeued=is_requeued,
     ):
         raise TimeoutError
 

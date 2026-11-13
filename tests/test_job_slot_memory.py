@@ -711,6 +711,75 @@ def test_front_that_can_start_now_under_its_own_budget_is_not_jumped(root, world
     assert store.refresh(front).state == HOLDING
 
 
+REQUEUE_REASON = "requeued after out-of-memory"
+
+
+def test_requeued_claim_reports_its_queue_reason(root, world):
+    store = make_store(root, world)
+    holder = join(store, world, 101, claim(800))
+    spawn(world, 102)
+    waiter = store.submit(
+        job_slots.CLASS_MEMORY,
+        pid=102,
+        memory=claim(400),
+        role=ROLE_INTERACTIVE,
+        queue_reason=REQUEUE_REASON,
+    )
+    # Queued: the reason is readable from the store that wrote it and from a fresh one.
+    assert store.refresh(holder).state == HOLDING
+    expected = TokenState(QUEUED, position=0, reason=REQUEUE_REASON)
+    assert store.state_for_pid(102) == expected
+    assert make_store(root, world).state_for_pid(102) == expected
+    # The reason lives in the entry file itself.
+    assert json.loads(waiter.path.read_text(encoding="utf-8"))["queue_reason"] == REQUEUE_REASON
+
+    # Promoted: the holder entry keeps carrying the reason.
+    store.release(holder)
+    assert store.refresh(waiter).state == HOLDING
+    held = TokenState(HOLDING, reason=REQUEUE_REASON)
+    assert store.state_for_pid(102) == held
+    assert make_store(root, world).state_for_pid(102) == held
+    store.release(waiter)
+
+    # A first claim writes no key and reads no reason.
+    plain = join(store, world, 103, claim(100))
+    assert "queue_reason" not in json.loads(plain.path.read_text(encoding="utf-8"))
+    state = store.state_for_pid(103)
+    assert state is not None and state.reason is None
+
+
+def test_reason_of_a_later_holder_entry_of_one_pid_is_reported(root, world):
+    store = make_store(root, world)
+    spawn(world, 101)
+    # A Campaign's work-item claims share one PID; only the later one is a requeue.
+    first = store.submit(job_slots.CLASS_MEMORY, pid=101, memory=claim(100), role=ROLE_INTERACTIVE)
+    second = store.submit(
+        job_slots.CLASS_MEMORY,
+        pid=101,
+        memory=claim(100),
+        role=ROLE_INTERACTIVE,
+        queue_reason=REQUEUE_REASON,
+    )
+    # Promotion happens on refresh; both reservations fit the budget.
+    assert store.refresh(first).state == HOLDING
+    assert store.refresh(second).state == HOLDING
+    assert store.state_for_pid(101) == TokenState(HOLDING, reason=REQUEUE_REASON)
+
+
+@pytest.mark.parametrize("foreign", [7, ["x"], {"a": 1}, True])
+def test_non_string_queue_reason_reads_as_none(root, world, foreign):
+    store = make_store(root, world)
+    holder = join(store, world, 101, claim(800))
+    waiter = join(store, world, 102, claim(400))
+    # Rewrite the waiter's entry with a foreign-typed reason, as another writer might.
+    payload = json.loads(waiter.path.read_text(encoding="utf-8"))
+    payload["queue_reason"] = foreign
+    waiter.path.write_text(json.dumps(payload), encoding="utf-8")
+    state = store.state_for_pid(102)
+    assert state is not None and state.state == QUEUED and state.reason is None
+    assert store.refresh(holder).state == HOLDING
+
+
 # --- queue reports: what a queued claim waits for (#3245) ----------------------------
 
 

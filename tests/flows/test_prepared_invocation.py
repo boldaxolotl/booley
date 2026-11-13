@@ -168,8 +168,10 @@ def _spy_lifecycle(monkeypatch: pytest.MonkeyPatch) -> tuple[list[object], list[
         return original_invoke(self, prepared, **kwargs)
 
     @contextmanager
-    def record_admission(self: EndpointState, prepared: PreparedExecution) -> Iterator[Any]:
-        with original_admission(self, prepared) as borrowed:
+    def record_admission(
+        self: EndpointState, prepared: PreparedExecution, *, requeued: bool = False
+    ) -> Iterator[Any]:
+        with original_admission(self, prepared, requeued=requeued) as borrowed:
             entered.append(borrowed)
             yield borrowed
 
