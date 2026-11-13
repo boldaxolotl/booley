@@ -416,6 +416,7 @@ def test_sim_campaign_that_cannot_resolve_its_test_runs_is_unknown(
 def test_work_item_claim_reserves_its_build_only_when_it_builds() -> None:
     """A work item reserves its run; its build too only when it builds inside itself (#3772)."""
     records = [
+        _record("top", "sim_prepare", 50),
         _record("top", "sim_build", 400),
         _record("top", "sim_run", 100, test_run="smoke"),
     ]
@@ -436,10 +437,14 @@ def test_work_item_claim_reserves_its_build_only_when_it_builds() -> None:
         job_slots.MemoryClaim(budget_mb=BUDGET_MIB, run_alone=True),
         None,
     )
-    unestimated, _ = size(request, build=False, records=[_record("top", "sim_build", 400)])
+    unestimated, _ = size(
+        request,
+        build=False,
+        records=[_record("top", "sim_prepare", 50), _record("top", "sim_build", 400)],
+    )
     assert unestimated.run_alone
     # Over the budget it runs alone, with the warning a Job gets; without a budget too.
-    huge = [_record("top", "sim_run", 2000, test_run="smoke")]
+    huge = [_record("top", "sim_prepare", 50), _record("top", "sim_run", 2000, test_run="smoke")]
     over, warning = size(request, build=False, records=huge)
     assert over.run_alone
     assert warning == (
@@ -447,6 +452,32 @@ def test_work_item_claim_reserves_its_build_only_when_it_builds() -> None:
     )
     _, unavailable = size(request, build=False, budget=None, error="no MemTotal")
     assert unavailable == "Memory Budget unavailable (no MemTotal); this Job ran alone."
+
+
+def test_settled_work_item_reserves_sim_prepare_with_its_run() -> None:
+    """A work item reusing a settled build still runs FuseSoC setup, so it reserves it (#3787)."""
+    request = JobRequest("sim", "top", test_runs=("smoke",))
+
+    def size(records):
+        claim, _ = _admission().plan_work_item_claim(
+            request, build=False, records=records, budget_mb=BUDGET_MIB, budget_error=None
+        )
+        return claim
+
+    with_setup = size(
+        [
+            _record("top", "sim_prepare", 300),
+            _record("top", "sim_build", 400),
+            _record("top", "sim_run", 100, test_run="smoke"),
+        ]
+    )
+    # The largest of setup (300) and run (100), plus the 25 % margin; the build is not reserved.
+    assert (with_setup.reservation_mb, with_setup.run_alone) == (375.0, False)
+    # No setup history yet: the unknown-phase rule applies and the item runs alone.
+    without_setup = size(
+        [_record("top", "sim_build", 400), _record("top", "sim_run", 100, test_run="smoke")]
+    )
+    assert without_setup.run_alone
 
 
 def test_work_item_request_resolves_each_target_plan_once(

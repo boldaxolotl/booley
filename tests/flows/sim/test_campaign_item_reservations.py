@@ -68,6 +68,7 @@ NAMES = ("alpha", "beta", "gamma")
 BUDGET_MIB = 1000.0
 _SETTLE_S = 0.3  # time to wait for a wrong extra queued claim to appear
 # History peaks (MiB); the estimator adds 25 %. The build is the largest phase.
+PREPARE_PEAK = 50.0  # FuseSoC setup (#3787): every item runs it, so every item reserves it
 BUILD_PEAK = 400.0
 RUN_PEAKS = {"alpha": 100.0, "beta": 200.0, "gamma": 160.0}
 FLOW_REQUESTS = (JobRequest("sim", "sim", test_runs=NAMES),)
@@ -87,6 +88,7 @@ def _history(*targets: str) -> list[dict]:
         record
         for target in targets
         for record in (
+            _record(target, "sim_prepare", PREPARE_PEAK),
             _record(target, "sim_build", BUILD_PEAK),
             *(_record(target, "sim_run", peak, test_run=name) for name, peak in RUN_PEAKS.items()),
         )
@@ -396,6 +398,19 @@ def test_resumed_campaign_items_take_their_own_claims_after_the_build(
     }
 
 
+def test_items_without_sim_prepare_history_run_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without a measured FuseSoC setup the unknown-phase rule applies to every item (#3787)."""
+    history = [record for record in _history("sim") if record["key"]["phase"] != "sim_prepare"]
+    with _scenario(tmp_path, monkeypatch, history=history) as scenario:
+        outcome = scenario.campaign().run(scenario.request(_manifest_for(NAMES)))
+
+    assert outcome.complete is True
+    assert scenario.seen["beta"]["items"] == ["alone"]
+    assert scenario.seen["gamma"]["items"] == ["alone"]
+
+
 def test_over_budget_item_runs_alone_with_the_job_warning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -665,6 +680,7 @@ def _names(count: int) -> tuple[str, ...]:
 def _sized_history(names: Sequence[str], run_peak: float) -> list[dict]:
     """A history where every run of *names* peaks at *run_peak* MiB (the estimate adds 25 %)."""
     return [
+        _record("sim", "sim_prepare", PREPARE_PEAK),
         _record("sim", "sim_build", BUILD_PEAK),
         *(_record("sim", "sim_run", run_peak, test_run=name) for name in names),
     ]
