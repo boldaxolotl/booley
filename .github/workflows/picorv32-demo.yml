@@ -7,18 +7,26 @@ on:
     # that can alter the public demo contract, while leaving main, merge-queue,
     # nightly, and manual validation unconditional below.
     paths:
+      - ".dockerignore"
+      - ".github/actions/free-runner-disk/**"
       - ".github/actions/prepare-picorv32-demo/**"
+      - ".github/ci/requirements-build.txt"
       - ".github/ci/constraints.txt"
       - ".github/contracts/picorv32-demo.toml"
+      - ".github/contracts/session-runtime.toml"
+      - ".github/scripts/docker_base_contract.py"
       - ".github/scripts/export_demo_contract.py"
       - ".github/scripts/goal_mode_driver.py"
       - ".github/scripts/picorv32_ci_inputs.py"
       - ".github/scripts/picorv32_demo_contract.py"
-      - ".github/scripts/pull_image_identity.py"
+      - ".github/scripts/riscv_candidate.sh"
+      - ".github/scripts/riscv_tooling.py"
+      - ".github/scripts/validate_installed_artifact.py"
       - ".github/scripts/verify_picorv32_demo.sh"
       - ".github/scripts/run_picorv32_ci_demo.sh"
       - ".github/scripts/release_validation/goal_readiness.py"
       - ".github/workflows/picorv32-demo.yml"
+      - "crates/bwave/**"
       - "pyproject.toml"
       - "src/booley/__init__.py"
       - "src/booley/agent_workspace/**"
@@ -27,6 +35,8 @@ on:
       - "src/booley/commit_policy/**"
       - "src/booley/core/**"
       - "src/booley/criteria/**"
+      - "src/booley/data/docker/**"
+      - "src/booley/data/edalize/**"
       - "src/booley/data/__init__.py"
       - "src/booley/data/criteria.toml"
       - "src/booley/dev_support/__init__.py"
@@ -66,26 +76,30 @@ concurrency:
 
 env:
   CONTRACT: .github/contracts/picorv32-demo.toml
-  IMAGE: ghcr.io/boldaxolotl/booley-sandbox-riscv:latest
 
 jobs:
-  demo-contract:
-    name: Demo is execution-ready
+  # Decide where the demo's stable base comes from, with the contract test the
+  # base publisher uses: the published base is current only when it carries
+  # this tree's stable-base contract. That covers a stable-base change in a
+  # PR, a stacked PR, a main push before the base publisher finishes, and
+  # merge_group. A registry error also means "build it", never "use the
+  # released image".
+  base-plan:
+    name: Select RISC-V Sandbox base
     # Draft PRs skip CI until marked ready (ready_for_review re-runs it);
     # Mergify's speculative queue PRs are drafts too, so they still run.
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft || startsWith(github.head_ref, 'mergify/merge-queue/')
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 10
+    outputs:
+      build: ${{ steps.decide.outputs.publish }}
+      image: ${{ steps.published.outputs.image }}
 
     steps:
       - name: Check out Booley
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Prepare exact reviewed demo contract
-        id: demo
-        uses: ./.github/actions/prepare-picorv32-demo
-        with:
-          contract: ${{ env.CONTRACT }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
@@ -93,21 +107,218 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pull and resolve RISC-V Sandbox
-        id: runtime-image
+      - name: Decide whether the published base already has this contract
+        id: decide
         run: |
-          python .github/scripts/pull_image_identity.py \
-            --image "${IMAGE}" \
-            --evidence "${RUNNER_TEMP}/picorv32-demo/image-identity.json" \
+          python .github/scripts/docker_base_contract.py --repo . \
+            --publish-decision ghcr.io/boldaxolotl/booley-sandbox-base:main \
             --github-output "${GITHUB_OUTPUT}"
+
+      # Pin the exact base the decision saw: a publisher promoting a new
+      # `main` meanwhile cannot change what the demo job builds on.
+      - name: Resolve the published stable base
+        id: published
+        if: steps.decide.outputs.publish != 'true'
+        run: |
+          python .github/scripts/docker_base_contract.py --repo . \
+            --resolver remote \
+            --resolve-image ghcr.io/boldaxolotl/booley-sandbox-base:main \
+            --github-output "${GITHUB_OUTPUT}"
+
+  # The demo runs the commit's source in a RISC-V Sandbox image built from the
+  # same commit (#3590), never in the last released image: that image lags
+  # every dependency the recipe added since the release. The build reuses the
+  # published stable base and RISC-V tooling stage (ADR 0070) unless the
+  # stable base changed, so it adds minutes, not an hour.
+  demo-contract:
+    name: Demo is execution-ready
+    needs: base-plan
+    # !cancelled() keeps a failed base-plan from silently skipping this check;
+    # its first step then fails it. The draft gate matches base-plan's.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft || startsWith(github.head_ref, 'mergify/merge-queue/')) }}
+    runs-on: ubuntu-latest
+    # A changed stable base builds the EDA stack from source: same cap as the
+    # Tests workflow's riscv-image job.
+    timeout-minutes: ${{ needs.base-plan.outputs.build == 'true' && 180 || 90 }}
+
+    steps:
+      - name: Require RISC-V Sandbox base selection
+        if: needs.base-plan.result != 'success'
+        run: |
+          echo "::error::The RISC-V Sandbox base selection ${{ needs.base-plan.result }}; the demo cannot run on an unknown base."
+          exit 1
+
+      - name: Check out Booley
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Free unused runner disk
+        uses: ./.github/actions/free-runner-disk
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        id: setup-python
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            .github/ci/constraints.txt
+            .github/ci/requirements-build.txt
+
+      # A prefix-restored pip cache never shrinks; see .github/ci/README.md#pip-cache.
+      - name: Drop pip cache restored from an older dependency set
+        if: steps.setup-python.outputs.cache-hit != 'true'
+        timeout-minutes: 3
+        run: python -m pip cache purge
+
+      - name: Prepare exact reviewed demo contract
+        id: demo
+        uses: ./.github/actions/prepare-picorv32-demo
+        with:
+          contract: ${{ env.CONTRACT }}
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The candidate carries this commit's wheel, as the Tests workflow's
+      # build-dist job builds it. The stamp files are removed again so none
+      # leaks into the /booley-source checkout the demo mounts.
+      - name: Build development wheel
+        run: |
+          pip install -r .github/ci/requirements-build.txt
+          PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.build_stamp import BuildProfile, write_build_stamp; write_build_stamp(Path.cwd(), profile=BuildProfile.DEVELOPMENT_WHEEL)'
+          trap 'rm -rf build src/*.egg-info; rm -f src/booley/_build_commit.py src/booley/data/development-build-context.tar.gz' EXIT
+          python -m build --wheel
+
+      # ADR 0070: the published RISC-V tooling stage, or a local build.
+      - name: Resolve RISC-V tooling source
+        id: riscv-tooling
+        shell: bash
+        run: .github/scripts/riscv_candidate.sh resolve-tooling "${RUNNER_TEMP}/picorv32-image-evidence/tooling-source.json"
+
+      # The standard-substrate steps below mirror the Tests workflow's
+      # riscv-image job; tests/sandbox_image_contract.py checks both.
+      - name: Compute stable-base compatibility contract
+        id: base-contract
+        shell: bash
+        run: |
+          python .github/scripts/docker_base_contract.py \
+            --repo . --github-output "${GITHUB_OUTPUT}"
+          echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${GITHUB_OUTPUT}"
+
+      - name: Select compatible stable runtime base
+        id: runtime-base
+        shell: bash
+        env:
+          BUILD_STABLE_BASE: ${{ needs.base-plan.outputs.build == 'true' }}
+          PUBLISHED_BASE: ${{ needs.base-plan.outputs.image }}
+        run: |
+          if [[ "${BUILD_STABLE_BASE}" == "true" ]]; then
+            echo "build=true" >> "${GITHUB_OUTPUT}"
+            echo "image=booley-runtime-base:ci" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          python .github/scripts/docker_base_contract.py --repo . \
+            --resolver remote --resolve-image "${PUBLISHED_BASE}" \
+            --github-output "${GITHUB_OUTPUT}"
+          echo "build=false" >> "${GITHUB_OUTPUT}"
+
+      - name: Build changed stable runtime base locally
+        if: steps.runtime-base.outputs.build == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: src/booley/data/docker/Dockerfile.base
+          load: true
+          tags: booley-runtime-base:ci
+          build-args: |
+            BOOLEY_BASE_SOURCE_REVISION=${{ github.sha }}
+            BOOLEY_BASE_CONTRACT=${{ steps.base-contract.outputs.contract }}
+            BOOLEY_BASE_BUILT_AT=${{ steps.base-contract.outputs.built_at }}
+          cache-from: type=gha,scope=sandbox-runtime-base
+
+      - name: Build candidate from changed stable base
+        if: steps.runtime-base.outputs.build == 'true'
+        shell: bash
+        run: |
+          docker buildx build --builder default --load \
+            --file src/booley/data/docker/Dockerfile.substrate \
+            --tag booley-standard-substrate:ci \
+            --build-context booley-runtime-base=docker-image://booley-runtime-base:ci .
+
+      # Restores the trusted main-branch cache; this job never writes it.
+      - name: Build candidate from published stable base
+        if: steps.runtime-base.outputs.build != 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: src/booley/data/docker/Dockerfile.substrate
+          build-contexts: |
+            booley-runtime-base=docker-image://${{ steps.runtime-base.outputs.image }}
+          load: true
+          tags: booley-standard-substrate:ci
+          cache-from: type=gha,scope=sandbox-substrate
+
+      - name: Build RISC-V Sandbox candidate
+        id: candidate
+        env:
+          TOOLING_SOURCE: ${{ steps.riscv-tooling.outputs.source }}
+          TOOLING_CONTEXT: ${{ steps.riscv-tooling.outputs.context }}
+        run: .github/scripts/riscv_candidate.sh build "${RUNNER_TEMP}/picorv32-image-evidence"
+
+      # The evidence a reader needs to know what the demo ran on: the image's
+      # local configuration digest (the ID the Docker daemon gives it) and
+      # whether its base was the published one or built from this tree. The
+      # tooling source is read after the build, so a compatibility fallback
+      # shows as local-compat-fallback.
+      - name: Record RISC-V Sandbox candidate identity
+        id: image-identity
+        shell: bash
+        env:
+          BUILD_STABLE_BASE: ${{ steps.runtime-base.outputs.build }}
+          BASE_IMAGE: ${{ steps.runtime-base.outputs.image }}
+          SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          evidence="${RUNNER_TEMP}/picorv32-image-evidence"
+          if [[ "${BUILD_STABLE_BASE}" == "true" ]]; then
+            base_source=source-build
+            base_digest="$(docker image inspect --format '{{.Id}}' "${BASE_IMAGE}")"
+          else
+            base_source=published
+            base_digest="${BASE_IMAGE##*@}"
+          fi
+          image_id="$(docker image inspect --format '{{.Id}}' booley-riscv-test)"
+          tooling_source="$(jq -er .source "${evidence}/tooling-source.json")"
+          jq -n \
+            --arg image_id "${image_id}" \
+            --arg base_source "${base_source}" \
+            --arg base_image "${BASE_IMAGE}" \
+            --arg base_digest "${base_digest}" \
+            --arg tooling_source "${tooling_source}" \
+            --arg source_revision "${SOURCE_REVISION}" \
+            '{schema_version: 1, image: "booley-riscv-test", image_id: $image_id,
+              base_source: $base_source, base_image: $base_image,
+              base_digest: $base_digest, riscv_tooling_source: $tooling_source,
+              source_revision: $source_revision}' \
+            > "${evidence}/image-identity.json"
+          cat "${evidence}/image-identity.json"
+          {
+            echo "RISC-V Sandbox candidate: \`${image_id}\`"
+            echo "Stable base: \`${base_source}\` (\`${base_digest}\`)"
+            echo "RISC-V tooling source: \`${tooling_source}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Retain RISC-V Sandbox identity
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: picorv32-image-identity-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/picorv32-demo/image-identity.json
-          if-no-files-found: error
+          path: ${{ runner.temp }}/picorv32-image-evidence/
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Prepare bind-mount ownership
@@ -128,7 +339,7 @@ jobs:
             -e BOOLEY_GOAL_READINESS_EVIDENCE=/evidence/goal-readiness.json \
             -e PYTHONPATH=/booley-source/src \
             -e BOOLEY_MCP_MODE=interactive \
-            "${{ steps.runtime-image.outputs.image }}" bash -euo pipefail -c '
+            booley-riscv-test bash -euo pipefail -c '
               bash /booley-source/.github/scripts/verify_picorv32_demo.sh
             '
 
