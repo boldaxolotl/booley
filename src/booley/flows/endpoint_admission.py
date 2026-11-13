@@ -464,11 +464,10 @@ def _acquire_memory_reservation(
     plan = measure_memory_claim(project, config, requests)
     claim = dataclasses.replace(plan.claim, seats=seats)
     pid = os.getpid()
-    # A Job that names no request (an unknown invocation) reports the selected Target, if any.
-    targets = (
-        ", ".join(dict.fromkeys(request.target for request in requests or ()))
-        or endpoint._selected_target
-    )
+    # A Job that names no request (an unknown invocation) reports the selected Target, if any;
+    # a Flow whose input is not prepared has none.
+    selected = endpoint._selected_target if endpoint._args is not None else ""
+    targets = ", ".join(dict.fromkeys(request.target for request in requests or ())) or selected
     label = job_slots.JobLabel(os.environ.get("BOOLEY_RUN_ID", ""), endpoint.name, targets)
     token = store.acquire(
         job_slots.CLASS_MEMORY,
