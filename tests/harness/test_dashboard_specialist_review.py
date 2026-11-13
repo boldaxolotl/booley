@@ -151,7 +151,7 @@ def test_timeout_line_shows_the_timeout_the_run_uses_including_a_raised_minimum(
     }
     assert "Timeout: 30m 00s per model call" in lines["default"]
     assert (
-        "Timeout: 10m 00s per model call (raised to the reviewer's minimum;"
+        "Timeout: 10m 00s per model call (raised to the Specialist's minimum;"
         " the form asked for 5m 00s)"
     ) in lines["short"]
 

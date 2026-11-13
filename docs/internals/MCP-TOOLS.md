@@ -260,7 +260,7 @@ override `_add_args`; the base uses it to register `--instruction`,
 | `workspace_access` | `"read_write"` (default) or `"read_only"`, which runs the model on a disposable snapshot |
 
 The parsed timeout is `self.args.timeout_ms`, in milliseconds; for a
-seconds-based `AgentCallParams`, use `self.timeout_seconds()`, which rounds up.
+seconds-based `AgentCallParams`, use `self.timeout_seconds()`, which rounds up and raises the value to `min_timeout`.
 `--max-turns` and `--timeout` are human CLI controls and never appear in a
 Specialist's MCP schema, even one from `mcp_schema()`.
 

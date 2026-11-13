@@ -76,7 +76,7 @@ def specialist_lines(facts: SpecialistFacts) -> list[str]:
     timeout = f"Timeout: {format_duration(facts.timeout_ms / 1000)} per model call"
     if facts.timeout_ms != facts.asked_ms:
         timeout += (
-            f" (raised to the reviewer's minimum; the form asked for"
+            f" (raised to the Specialist's minimum; the form asked for"
             f" {format_duration(facts.asked_ms / 1000)})"
         )
     lines.append(timeout)
@@ -90,7 +90,9 @@ def specialist_lines(facts: SpecialistFacts) -> list[str]:
 
 def agent_refusal(facts: SpecialistFacts) -> str:
     """Why Submit does nothing when the Agent CLI cannot sign in or its settings cannot be checked."""
-    return f"Refused: {facts.refusal}. Copy command still works." if facts.refusal else ""
+    return (
+        f"Refused: {facts.refusal.rstrip('.')}. Copy command still works." if facts.refusal else ""
+    )
 
 
 def warning_lines(occupants: Occupants, uncommitted: int | str) -> list[str]:
