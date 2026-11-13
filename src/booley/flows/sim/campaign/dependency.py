@@ -19,13 +19,13 @@ from booley.flows.sim.campaign_reports import is_report_link, write_campaign_jso
 from booley.flows.sim.record_layout import RECORD_DIRECTORY
 from booley.runtime.booley_dir import crossed_booley_dir_entry
 
-from .codec import MANIFEST_MAX_BYTES
+from .codec import MANIFEST_MAX_BYTES, raise_if_retired_schema
 
-DEPENDENCY_SCHEMA = "booley.simulation-campaign-dependency/v1"
+DEPENDENCY_SCHEMA = "booley.simulation-record-dependency/v1"
 DEPENDENCY_MAX_BYTES = 16 * 1024
 _FIELDS = {
     "$schema",
-    "campaign_id",
+    "simulation_record_id",
     "manifest_sha256",
     "origin_invocation",
     "origin_target",
@@ -67,7 +67,7 @@ def register_campaign_dependency(
     path = manifest.parent / "dependency-receipts" / f"{key}.json"
     document: dict[str, object] = {
         "$schema": DEPENDENCY_SCHEMA,
-        "campaign_id": campaign_id,
+        "simulation_record_id": campaign_id,
         "manifest_sha256": manifest_sha256,
         "origin_invocation": str(origin_invocation),
         "origin_target": str(origin_target),
@@ -116,10 +116,13 @@ def _decode_receipt(
     document = read_json_object(
         path, limit=DEPENDENCY_MAX_BYTES, error=ValueError, booley_dir=booley_dir
     )
+    raise_if_retired_schema(document.get("$schema"))
     if set(document) != _FIELDS or document.get("$schema") != DEPENDENCY_SCHEMA:
         raise ValueError(f"Malformed Simulation Campaign dependency receipt: {path}")
     try:
-        campaign_id = require_str_value(document["campaign_id"], field="campaign_id")
+        campaign_id = require_str_value(
+            document["simulation_record_id"], field="simulation_record_id"
+        )
         manifest_sha256 = require_str_value(document["manifest_sha256"], field="manifest_sha256")
         dependent_id = require_int(
             document["dependent_invocation_id"], field="dependent_invocation_id"
@@ -140,7 +143,7 @@ def _decode_receipt(
         manifest_document = read_json_object(
             manifest, limit=MANIFEST_MAX_BYTES, error=ValueError, booley_dir=booley_dir
         )
-        if manifest_document.get("campaign_id") != campaign_id:
+        if manifest_document.get("simulation_record_id") != campaign_id:
             raise ValueError("Simulation Campaign dependency origin identity disagrees")
     return CampaignDependencyReceipt(
         campaign_id,
@@ -183,7 +186,7 @@ def _absolute_path(value: object, label: str) -> Path:
 
 def _campaign_id(value: object) -> str:
     try:
-        return require_uuid4(value, field="dependency campaign_id")
+        return require_uuid4(value, field="dependency simulation_record_id")
     except BoundaryError as exc:
         raise ValueError("Dependency Simulation Campaign id is invalid") from exc
 

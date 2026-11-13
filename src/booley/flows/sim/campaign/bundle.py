@@ -123,8 +123,8 @@ def _snapshot_document(
     artifacts: list[dict[str, object]],
 ) -> dict[str, object]:
     return {
-        "$schema": "booley.executable-snapshot/v1",
-        "campaign_id": identity.campaign_id,
+        "$schema": "booley.executable-snapshot/v2",
+        "simulation_record_id": identity.campaign_id,
         "manifest_sha256": identity.manifest_sha256,
         "workload_sha256": identity.workload_sha256,
         "work_item_id": identity.work_item_id,

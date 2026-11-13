@@ -324,7 +324,7 @@ def authenticate_coverage_campaign_owner(
             "enclosing Simulation result evidence is malformed"
         ) from exc
     if (
-        manifest.document["campaign_id"] != document["simulation_campaign_id"]
+        manifest.document["simulation_record_id"] != document["simulation_campaign_id"]
         or authenticated.manifest_sha256 != document["simulation_manifest_sha256"]
         or target["selector"] != cast(Mapping[str, str], document["target"])["selector"]
         or f"{target['vlnv']}#{target['name']}"

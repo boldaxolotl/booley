@@ -689,7 +689,7 @@ def _assert_scheduler_terminal_cause(registry, campaign_store, child_ids, scope_
     terminal = read_json(
         execution_paths(ExecutionId(child_ids[0]), booley_dir=registry.project_data).record
     )
-    assert terminal["terminal_cause"] == ("lease_lost" if scope_stop else "campaign_error")
+    assert terminal["terminal_cause"] == ("lease_lost" if scope_stop else "record_error")
 
 
 def _execute_pre_cancelled_coverage(tmp_path):

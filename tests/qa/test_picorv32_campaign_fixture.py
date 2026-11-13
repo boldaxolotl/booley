@@ -70,7 +70,7 @@ def test_validator_preserves_requested_work_item_order(tmp_path: Path) -> None:
     assert result["work_items"] == 2
 
 
-@pytest.mark.parametrize("version", [1, 2, 3])
+@pytest.mark.parametrize("version", [1, 2, 3, 4])
 def test_validator_rejects_retired_manifest_schema(tmp_path: Path, version: int) -> None:
     manifest = tmp_path / "manifest.json"
     document = _manifest(["quick"])
@@ -99,7 +99,7 @@ def _campaign_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
     target = tmp_path / "targets" / "sim_campaign"
     manifest = target / "record" / "manifest.json"
     manifest.parent.mkdir(parents=True)
-    manifest_document = _manifest(["tail", "quick"]) | {"campaign_id": "campaign-1"}
+    manifest_document = _manifest(["tail", "quick"]) | {"simulation_record_id": "campaign-1"}
     manifest.write_text(json.dumps(manifest_document, sort_keys=True) + "\n")
     raw = manifest.read_bytes()
     summary = manifest.parent / "summary.json"

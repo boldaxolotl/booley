@@ -249,7 +249,7 @@ def _prerequisite_entry() -> dict[str, object]:
             "kind": "simulation_campaign_manifest",
             "owner": "550e8400-e29b-41d4-a716-446655440000",
         },
-        "campaign_id": "550e8400-e29b-41d4-a716-446655440000",
+        "simulation_record_id": "550e8400-e29b-41d4-a716-446655440000",
         "target": {**_manifest()["target"], "role": "cycle_count_baseline"},
         "required_observation": "cycle_count",
         "work_item_id": "item:0000:0123456789abcdef",

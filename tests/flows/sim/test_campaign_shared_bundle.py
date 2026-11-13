@@ -389,7 +389,7 @@ def _mutate_build_attempt(case: str, completed: _Completed) -> None:
     path = completed.build_dir / "build-attempt.json"
     document = _read(path)
     if case == "campaign":
-        document["campaign_id"] = str(uuid.uuid4())
+        document["simulation_record_id"] = str(uuid.uuid4())
     elif case in {"manifest", "workload"}:
         document[f"{case}_sha256"] = _BAD_DIGEST
     elif case == "variant":
@@ -452,7 +452,7 @@ def test_shared_recovery_rejects_build_result_reference_mutations(
     path = completed.build_dir / "build-result.json"
     document = _read(path)
     if case == "campaign":
-        document["campaign_id"] = str(uuid.uuid4())
+        document["simulation_record_id"] = str(uuid.uuid4())
     elif case == "owner":
         document["build_attempt"]["owner"] = str(uuid.uuid4())
     elif case == "digest":
@@ -469,7 +469,7 @@ def _mutate_bundle(case: str, completed: _Completed) -> None:
     bundle_path = completed.build_dir / "evidence/bundle.json"
     bundle = _read(bundle_path)
     if case == "campaign":
-        bundle["campaign_id"] = str(uuid.uuid4())
+        bundle["simulation_record_id"] = str(uuid.uuid4())
     elif case == "attempt":
         bundle["build_attempt_id"] = str(uuid.uuid4())
     elif case == "owner":

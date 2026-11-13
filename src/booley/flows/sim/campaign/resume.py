@@ -178,7 +178,7 @@ def _walk_prerequisites(
             raise SimulationCampaignIntegrityError(
                 f"prerequisite manifest reference does not authenticate {linked}"
             )
-        if loaded.manifest.document["campaign_id"] != entry["campaign_id"]:
+        if loaded.manifest.document["simulation_record_id"] != entry["simulation_record_id"]:
             raise SimulationCampaignIntegrityError("prerequisite campaign identity disagrees")
         if loaded.manifest.document["target"] != entry["target"]:
             raise SimulationCampaignIntegrityError("prerequisite Target identity disagrees")

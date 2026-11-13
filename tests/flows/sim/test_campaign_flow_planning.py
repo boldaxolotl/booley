@@ -296,7 +296,7 @@ def test_every_planned_manifest_is_v4_whatever_it_discloses(
     )
     # One written version: it records each work item's Test Runs (ADR 0072),
     # permits source identities, and carries no_waivers only when requested.
-    assert manifest.document["$schema"] == "booley.simulation-campaign-manifest/v4"
+    assert manifest.document["$schema"] == "booley.simulation-record-manifest/v1"
     assert ("no_waivers" in manifest.document["workload"]) is raw_coverage
     assert [run["name"] for run in manifest.document["work_items"][0]["test_runs"]] == [
         "<default>"

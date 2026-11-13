@@ -460,7 +460,7 @@ def _register_pre_sim_role(roles, manifest_refs, firing, invocation, current) ->
             report_invocation=invocation,
             external_origin_target=firing.manifest_path.parent.parent,
             kind="simulation_campaign_manifest",
-            owner=str(document["campaign_id"]),
+            owner=str(document["simulation_record_id"]),
             maximum=16 * 1024 * 1024,
         )
     manifest_ref = manifest_refs[firing.manifest_path]

@@ -461,7 +461,7 @@ def test_full_pruning_detects_legacy_copied_projection_dependency(tmp_path):
 
     manifest = tmp_path / "reports/sim/1/targets/sim_0/record/manifest.json"
     manifest.parent.mkdir(parents=True)
-    manifest.write_text('{"campaign_id":"01234567-89ab-4def-8123-456789abcdef"}\n')
+    manifest.write_text('{"simulation_record_id":"01234567-89ab-4def-8123-456789abcdef"}\n')
     projection = tmp_path / "reports/sim/2/targets/sim_0/simulation.json"
     projection.parent.mkdir(parents=True)
     projection.write_text(
@@ -720,7 +720,7 @@ def test_dependent_discovery_translates_invalid_receipt_registry(tmp_path):
     manifest = root / "targets/sim_0/record/manifest.json"
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
-        json.dumps({"campaign_id": "01234567-89ab-4def-8123-456789abcdef"}),
+        json.dumps({"simulation_record_id": "01234567-89ab-4def-8123-456789abcdef"}),
         encoding="utf-8",
     )
     (manifest.parent / "dependency-receipts").write_text("unsafe", encoding="utf-8")
@@ -966,7 +966,7 @@ def test_dependency_scan_fails_closed_on_lasting_sharing_error(tmp_path, monkeyp
     projection = tmp_path / "simulation.json"
     projection.write_text("{}", encoding="utf-8")
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps({"campaign_id": campaign_id}), encoding="utf-8")
+    manifest.write_text(json.dumps({"simulation_record_id": campaign_id}), encoding="utf-8")
     hold_opens(monkeypatch, {report: 100, projection: 100, manifest: 100})
     for scan in (
         lambda: _report_references_campaign(report, manifest, campaign_id),
@@ -991,7 +991,7 @@ def test_dependency_scan_keeps_unreadable_non_transient_as_not_dependent(tmp_pat
     report = tmp_path / "report.json"
     report.write_text("{}", encoding="utf-8")
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps({"campaign_id": campaign_id}), encoding="utf-8")
+    manifest.write_text(json.dumps({"simulation_record_id": campaign_id}), encoding="utf-8")
     monkeypatch.setattr(sys, "platform", "linux")
 
     def deny(path, *args, **kwargs):

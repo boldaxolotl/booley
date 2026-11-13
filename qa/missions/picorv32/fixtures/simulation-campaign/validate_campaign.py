@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[5]))
 from qa.shared.campaign_artifacts import validate_manifest_reference
 
 #: The only manifest schema Booley writes and reads (codec.MANIFEST_SCHEMA).
-MANIFEST_SCHEMA = "booley.simulation-campaign-manifest/v4"
+MANIFEST_SCHEMA = "booley.simulation-record-manifest/v1"
 
 
 def _load(path: Path) -> tuple[dict[str, object], bytes]:
@@ -62,7 +62,7 @@ def validate_backlinks(
     manifest, manifest_raw = _load(manifest_path)
     summary, _summary_raw = _load(summary_path)
     projection, _projection_raw = _load(projection_path)
-    campaign_id = manifest.get("campaign_id")
+    campaign_id = manifest.get("simulation_record_id")
     digest = _manifest_digest(manifest_raw)
     _need(
         summary.get("campaign_id") == campaign_id,

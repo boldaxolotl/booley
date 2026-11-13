@@ -486,7 +486,7 @@ def _coverage_refusal_files(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     interrupted_attempt = _write(
         tmp_path / "interrupted-attempt.json",
         {
-            "$schema": "booley.simulation-attempt/v1",
+            "$schema": "booley.simulation-attempt/v2",
             "work_item_id": "item:0000:coverage",
             "attempt_id": "first",
         },

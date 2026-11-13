@@ -84,7 +84,7 @@ _T = TypeVar("_T", bound=SimulationCampaignDocument)
 _SUMMARY_SCHEMA = "booley.simulation-campaign-summary/v1"
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _COMMON_BUILD_FIELDS = (
-    "campaign_id",
+    "simulation_record_id",
     "manifest_sha256",
     "workload_sha256",
     "build_variant_id",
@@ -344,7 +344,7 @@ class CampaignStore:
             raise SimulationCampaignIntegrityError("shared build variant is not in manifest")
         eda = cast(Mapping[str, str], workload["eda"])
         return {
-            "campaign_id": manifest.document["campaign_id"],
+            "simulation_record_id": manifest.document["simulation_record_id"],
             "manifest_sha256": self.manifest_sha256(),
             "workload_sha256": fingerprints["workload_sha256"],
             "build_variant_id": build_variant_id,
@@ -713,7 +713,7 @@ class CampaignStore:
         )
         document: dict[str, object] = {
             "$schema": _SUMMARY_SCHEMA,
-            "campaign_id": manifest.document["campaign_id"],
+            "campaign_id": manifest.document["simulation_record_id"],
             "manifest_sha256": manifest_sha256,
             "workload_sha256": cast(Mapping[str, str], manifest.document["fingerprints"])[
                 "workload_sha256"
@@ -775,7 +775,7 @@ def collect_pre_sim_firings(
         digest = manifest_digest(manifest)
         if expected is not None and digest != expected:
             raise SimulationCampaignIntegrityError("prerequisite hook manifest digest disagrees")
-        campaign_id = str(manifest.document["campaign_id"])
+        campaign_id = str(manifest.document["simulation_record_id"])
         if campaign_id in ancestors:
             raise SimulationCampaignIntegrityError("cyclic prerequisite hook evidence")
         if path in visited:
@@ -976,7 +976,7 @@ def _is_recorded_reuse_hit(build: Mapping[str, object]) -> bool:
 def _validate_result_attempt_binding(attempt: SimulationAttempt, result: SimulationResult) -> None:
     left, right = attempt.document, result.document
     fields = (
-        "campaign_id",
+        "simulation_record_id",
         "manifest_sha256",
         "workload_sha256",
         "work_item_id",
