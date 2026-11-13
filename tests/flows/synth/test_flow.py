@@ -6670,7 +6670,7 @@ def test_declared_comb_loop_allowance_passes_and_excess_fails(flow_and_state, tm
     assert conditions["unexpected_comb_loops"] == 0
     assert conditions["has_critical"] is False
     assert DevelopmentState.load(state_file).is_met("synthesis_ok_lite")
-    # Q1 option A: the Yosys loop warning stays actionable, so the run warns.
+    # A declared loop still emits the Yosys warning, so the run grades WARN.
     assert report["implementation"]["status"]["grade"] == "warn"
 
     result, report = _run_latch_case(
@@ -6692,6 +6692,20 @@ def test_declared_comb_loop_allowance_passes_and_excess_fails(flow_and_state, tm
         "actual=2, expected=1, excess=1"
         in report["implementation"]["status"]["diagnostic_excerpt"]
     )
+
+    # The verdict uses the larger of the two checks: a loop only the pre-mapping
+    # check reports still counts against the allowance.
+    artifacts = {
+        "premap_check_dut.txt": _loop_check_artifacts(2)["premap_check_dut.txt"],
+        "check_dut.txt": _loop_check_artifacts(0)["check_dut.txt"],
+    }
+    result, report = _run_latch_case(
+        flow_and_state,
+        tmp_path,
+        {"cell": "NAND2", "extra_toml": "expected_comb_loops = 1\n", "artifacts": artifacts},
+    )
+    assert result.exit_code == EXIT_FAILURE
+    assert "actual=2, expected=1, excess=1" in result.report_text
 
 
 def test_unset_comb_loop_allowance_fails_any_loop(flow_and_state, tmp_path):

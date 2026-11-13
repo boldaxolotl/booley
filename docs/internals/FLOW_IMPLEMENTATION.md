@@ -499,9 +499,9 @@ logs, the rendered `synth.ys`, and the SDC fed to STA. On a large design these
 are easier to search than `run.log`, which holds the tail (up to 10 MB) of all
 stages' output.
 
-### Intentional latches
+### Intentional latches and loops
 
-An inferred latch or combinational loop is normally a bug, so any one fails the run. An integrated
+An inferred latch or combinational loop is normally a bug, so any one fails the run unless it is declared. An integrated
 clock-gating cell is the exception: it is built from a deliberate
 `always_latch` (lowRISC's generic `prim_clock_gating` has one), and failing on
 it made correct designs unsynthesizable. `[flows.synth].expected_latches`

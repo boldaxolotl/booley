@@ -323,9 +323,7 @@ timing_report_paths = 10           # worst setup paths listed per timing report
 structures the design contains on purpose, such as the latch inside a
 standard-cell clock gater. The run reports the actual count and fails only on
 the excess, so one more than declared still fails. A negative, boolean, or
-non-integer value counts as `0`. Multi-driven nets have no allowance. Set
-these only to counts you have checked in the RTL, never to make a failing run
-pass.
+non-integer value counts as `0`. Multi-driven nets have no allowance.
 
 Keep `fail_on_timing_violation = false` while the constraints are
 placeholders. Turn it on once they are real, so a CI step that reads only the

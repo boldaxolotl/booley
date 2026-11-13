@@ -86,16 +86,10 @@ def expected_count(flow_name: str, work_dir: Path, key: str) -> int:
     """Read one declared structural allowance, ``[flows.<flow_name>].<key>``.
 
     One validation rule serves every allowance (``expected_latches`` and
-    ``expected_comb_loops`` under ``synth`` and ``fpga``). A standard-cell
-    integrated clock gater is built from a deliberate ``always_latch``;
-    lowRISC's generic ``prim_clock_gating`` contains exactly one. Failing on
-    any latch at all makes such a design unsynthesizable through Booley even
-    though the RTL is correct (F-19). Declaring the count keeps the check
-    meaningful: one more than declared still fails, and the raw count is
-    always reported.
-
-    A missing, negative, boolean, or non-integer value is treated as 0 rather
-    than silently widening the gate.
+    ``expected_comb_loops`` under ``synth`` and ``fpga``). A missing,
+    negative, boolean, or non-integer value is treated as 0 rather than
+    silently widening the gate. The rationale lives in
+    ``docs/internals/FLOW_IMPLEMENTATION.md`` (Intentional latches and loops).
     """
     raw = _load_flow_config(flow_name, work_dir).get(key, 0)
     if isinstance(raw, bool) or not isinstance(raw, int):

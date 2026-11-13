@@ -175,8 +175,7 @@ expected_comb_loops = 0    # intentional combinational loops allowed before FAIL
 structures the design contains on purpose. The build reports the actual count
 and fails only on the excess, so one more than declared still fails. A
 negative, boolean, or non-integer value counts as `0`. Multi-driven nets have
-no allowance. Set these only to counts you have checked in the RTL, never to
-make a failing build pass. The reasoning is the same as for
+no allowance. The reasoning is the same as for
 [synthesis](FLOW-SYNTH.md#configuration-flowssynth).
 
 Everything about how the design is built lives on the Target in the `.core`
