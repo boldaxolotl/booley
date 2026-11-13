@@ -1,10 +1,12 @@
 """Guard that keeps unit tests from starting a real ``docker`` process.
 
-``booley.runtime.interactive_docker._run_docker`` is the single seam every
-Docker CLI call goes through.  Tests that must never reach Docker replace it
-with a function that fails the test at once and records the call, so a call
-made from a worker thread (where the failure may be swallowed) still fails the
-test when :func:`assert_docker_cli_unused` runs at teardown.
+``booley.runtime.interactive_docker._run_docker`` is the seam the interactive
+Docker CLI calls go through; other runtime modules call
+``booley.runtime.platform_paths.run_captured_bounded`` directly.  Tests that
+must never reach Docker replace the seam with a function that fails the test at
+once and records the call, so a call made from a worker thread (where the
+failure may be swallowed) still fails the test when
+:func:`assert_docker_cli_unused` runs at teardown.
 """
 
 from __future__ import annotations
@@ -12,10 +14,23 @@ from __future__ import annotations
 import ntpath
 import posixpath
 import subprocess
+from types import ModuleType
 
 import pytest
 
-from booley.runtime import interactive_docker, platform_paths, session_admission, session_runtime
+from booley.runtime import (
+    booley_dir_migration,
+    docker_capacity,
+    host_base_acquisition,
+    image_lifecycle,
+    inspection,
+    interactive_docker,
+    platform_paths,
+    project_image,
+    session_admission,
+    session_runtime,
+    vaporview,
+)
 
 #: Argument lists of every Docker CLI call attempted since the last install.
 DOCKER_CLI_CALLS: list[list[str]] = []
@@ -49,7 +64,8 @@ def route_docker_helper_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) 
     ``subprocess.run`` call this from an autouse fixture so the helper reaches
     their fake again, exactly as it did before.  It also routes the session
     runtime's and admission's bounded capture (see
-    :func:`route_session_helpers_through_subprocess_run`).
+    :func:`route_session_helpers_through_subprocess_run`) and that of every other
+    host-side module that runs a timed Docker CLI command (``HOST_DOCKER_MODULES``).
     """
 
     def routed(args: list[str], *, timeout: float = 30, executable: str = "docker"):
@@ -66,6 +82,20 @@ def route_docker_helper_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr(interactive_docker, "_run_docker", routed)
     route_session_helpers_through_subprocess_run(monkeypatch)
+    route_bounded_capture_through_subprocess_run(monkeypatch, *HOST_DOCKER_MODULES)
+
+
+#: Host-side modules, besides the session runtime and admission, whose timed Docker CLI
+#: commands go through ``platform_paths.run_captured_bounded``.
+HOST_DOCKER_MODULES = (
+    booley_dir_migration,
+    docker_capacity,
+    host_base_acquisition,
+    image_lifecycle,
+    inspection,
+    project_image,
+    vaporview,
+)
 
 
 def _routed_bounded_capture(
@@ -92,10 +122,21 @@ def _routed_bounded_capture(
     )
 
 
+def route_bounded_capture_through_subprocess_run(
+    monkeypatch: pytest.MonkeyPatch, *modules: ModuleType
+) -> None:
+    """Run each given module's timed captures through ``subprocess.run``.
+
+    Name only the modules whose commands the test fakes: a module with real-process
+    tests must keep the real helper.
+    """
+    for module in modules:
+        monkeypatch.setattr(module, "run_captured_bounded", _routed_bounded_capture)
+
+
 def route_session_helpers_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
     """Run the session runtime's and admission's timed captures through ``subprocess.run``."""
-    monkeypatch.setattr(session_runtime, "run_captured_bounded", _routed_bounded_capture)
-    monkeypatch.setattr(session_admission, "run_captured_bounded", _routed_bounded_capture)
+    route_bounded_capture_through_subprocess_run(monkeypatch, session_runtime, session_admission)
 
 
 def route_bounded_captures_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:

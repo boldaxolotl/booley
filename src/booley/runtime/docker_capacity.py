@@ -20,6 +20,7 @@ from booley.core.boundary import (
     require_list,
     require_str_value,
 )
+from booley.runtime.platform_paths import run_captured_bounded
 
 GIB = 2**30
 COLD_BUILD_HEADROOM = 30 * GIB
@@ -108,15 +109,7 @@ def _is_docker_build(command: Sequence[str]) -> bool:
 def _run_docker_probe(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
     """Run one bounded Docker inspection command or fail the preflight."""
     try:
-        return subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=15,
-            check=False,
-        )
+        return run_captured_bounded(list(command), timeout=15)
     except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
         raise DockerCapacityError(
             f"could not run Docker capacity probe {' '.join(command[1:])}: {exc}"
