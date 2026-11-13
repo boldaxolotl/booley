@@ -31,8 +31,12 @@ except to reap a provably-stale one:
 The **memory** class (ADR 0087) admits by Memory Reservation instead of a slot
 count: a claim holds while the reservations of every holder plus its own fit
 its budget, or alone when it is marked run-alone. Order is the same total
-order; the first waiter that does not fit blocks every claim behind it, and an
-entry whose claim cannot be read counts as not fitting.
+order; the first waiter that does not fit (the front) blocks the claims behind
+it, except that a claim with its own wall-clock estimate jumps ahead when it
+fits now and is estimated to finish before the front can start. The front's
+earliest start comes from the running claims' estimated finishes; an unknown
+finish makes it unknown, so nothing jumps. An entry whose claim cannot be read
+counts as not fitting and ends jumping.
 
 Pure + stdlib-only, like ``runtime.job_records`` (whose deadline/identity
 guards it reuses): PID liveness, ``/proc`` reads, the clock, and sleep are
@@ -47,6 +51,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -231,17 +236,22 @@ class MemoryClaim:
     a reloaded token equals its owner's). Exactly one of ``reservation_mb`` and
     ``run_alone`` is given. A reservation above the budget could never start
     and would block the queue forever, so the caller must mark it run-alone.
+    ``wall_s`` is the Job's own wall-clock estimate in seconds (``None`` when it
+    has no history of its own); only such a claim may jump ahead of the queue.
     """
 
     budget_mb: float
     reservation_mb: float | None = None
     run_alone: bool = False
+    wall_s: float | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.run_alone, bool):
             raise ValueError(f"run_alone must be a bool, got {self.run_alone!r}")
         if require_finite_number(self.budget_mb, field="budget_mb") < 0:
             raise ValueError(f"budget_mb must be >= 0, got {self.budget_mb!r}")
+        if self.wall_s is not None and require_finite_number(self.wall_s, field="wall_s") < 0:
+            raise ValueError(f"wall_s must be >= 0, got {self.wall_s!r}")
         if self.run_alone:
             if self.reservation_mb is not None:
                 raise ValueError("a run-alone memory claim carries no reservation_mb")
@@ -261,6 +271,7 @@ class MemoryClaim:
             "budget_mb": self.budget_mb,
             "reservation_mb": self.reservation_mb,
             "run_alone": self.run_alone,
+            "wall_s": self.wall_s,
         }
 
     @staticmethod
@@ -273,9 +284,25 @@ class MemoryClaim:
                 budget_mb=value["budget_mb"],
                 reservation_mb=value.get("reservation_mb"),
                 run_alone=value.get("run_alone") is True,
+                wall_s=value.get("wall_s"),
             )
         except (KeyError, TypeError, ValueError, OverflowError):
             return None
+
+
+def _fits_among(claim: MemoryClaim, running: list[MemoryClaim], budget_mb: float) -> bool:
+    """True when *claim* can start beside the *running* claims under *budget_mb*."""
+    if claim.run_alone:
+        return not running
+    if any(other.run_alone for other in running):
+        return False
+    used_mb = sum(other.reservation_mb or 0.0 for other in running)
+    return used_mb + (claim.reservation_mb or 0.0) <= budget_mb
+
+
+def _finish(start: float | None, wall_s: float | None) -> float:
+    """Estimated finish epoch of a claim started at *start*; ``inf`` when either is unknown."""
+    return math.inf if start is None or wall_s is None else start + wall_s
 
 
 @dataclass
@@ -286,56 +313,102 @@ class _MemoryLoad:
     used_mb: float = 0.0
     running: int = 0
     alone: bool = False
-    stopped: bool = False  # an earlier claim could not start: nothing behind it may
+    stopped: bool = False  # an earlier claim could not start: only a short claim may jump it
+    # Each running claim with its estimated finish (epoch seconds; inf = unknown).
+    finishes: list[tuple[float, MemoryClaim]] = field(default_factory=list)
+    # When the front (first blocked) claim can start; None = unknown, nothing jumps.
+    front_start: float | None = None
 
-    def admit(self, claim: MemoryClaim | None) -> bool:
-        """Start *claim* if it fits (True), else block it and everything behind it."""
+    def admit(self, claim: MemoryClaim | None, now: float) -> bool:
+        """Start *claim* if it fits (True); else block it, and the claims behind it unless they jump."""
         if claim is None:
             self.stopped = True  # unreadable: an unknown reservation never fits
+            self.front_start = None
             return False
-        fits = not self.stopped and (
-            self.running == 0
-            if claim.run_alone
-            else not self.alone and self.used_mb + (claim.reservation_mb or 0.0) <= self.budget_mb
-        )
-        if not fits:
+        if self.stopped:
+            if not self._may_jump(claim, now):
+                return False
+        elif not self._fits(claim):
             self.stopped = True
+            self.front_start = self._earliest_start(claim, now)
             return False
-        self.start(claim)
+        self.start(claim, _finish(now, claim.wall_s))
         return True
 
-    def start(self, claim: MemoryClaim) -> None:
+    def start(self, claim: MemoryClaim, finish: float) -> None:
+        """Count *claim* as running until the estimated *finish* (``inf`` = unknown)."""
         self.running += 1
         self.alone = self.alone or claim.run_alone
         self.used_mb += claim.reservation_mb or 0.0
+        self.finishes.append((finish, claim))
+
+    def _fits(self, claim: MemoryClaim) -> bool:
+        if claim.run_alone:
+            return self.running == 0
+        return not self.alone and self.used_mb + (claim.reservation_mb or 0.0) <= self.budget_mb
+
+    def _earliest_start(self, front: MemoryClaim, now: float) -> float | None:
+        """When *front* can start under its own budget, from the running claims' finishes.
+
+        ``now`` when it already fits; else the first finish, in finish order,
+        after which it fits. An unknown finish reached first makes the answer
+        unknown (None).
+        """
+        running = [held for _finish, held in self.finishes]
+        if _fits_among(front, running, front.budget_mb):
+            return now
+        released = sorted(self.finishes, key=lambda pair: pair[0])
+        # Once every claim has finished the front fits, so a finish is always found.
+        finish = next(
+            when
+            for index, (when, _held) in enumerate(released)
+            if _fits_among(front, [held for _f, held in released[index + 1 :]], front.budget_mb)
+        )
+        return None if math.isinf(finish) else finish
+
+    def _may_jump(self, claim: MemoryClaim, now: float) -> bool:
+        """True when *claim* fits now and is estimated to finish before the front starts."""
+        return (
+            self.front_start is not None
+            and claim.wall_s is not None
+            and self._fits(claim)
+            and now + claim.wall_s < self.front_start
+        )
 
 
 def _memory_queue(
-    holders: list[MemoryClaim | None],
+    holders: list[tuple[MemoryClaim | None, float | None]],
     ahead: list[MemoryClaim | None],
     claim: MemoryClaim,
+    now: float,
 ) -> tuple[bool, int, bool]:
     """Where *claim* stands behind running *holders* and the waiters *ahead*.
 
-    Returns ``(starts_now, position, blocked)``. The walk starts each claim in
-    order against *claim*'s budget: a run-alone claim starts only when nothing
-    runs, any other claim only when nothing run-alone runs and its reservation
-    still fits. The first claim that does not start blocks every claim behind
-    it. ``None`` (an unreadable claim) never fits, so an unknown reservation
-    cannot overcommit. ``starts_now`` is the promotion rule (no waiter ahead,
-    and the claim starts); ``blocked`` says the claim itself cannot start, and
-    ``position`` counts the blocked claims ahead of it, which is what
-    ``queue_max`` bounds: a claim waiting only for claims that fit is not queued.
+    Each holder comes with its start epoch (``None`` when unstamped). Returns
+    ``(starts_now, position, blocked)``. The walk starts each claim in order
+    against *claim*'s budget: a run-alone claim starts only when nothing runs,
+    any other claim only when nothing run-alone runs and its reservation still
+    fits. The first claim that does not start (the front) blocks the claims
+    behind it, except a claim with its own wall-clock estimate that fits now and
+    is estimated to finish before the front can start: it jumps ahead. A holder's
+    finish is its start plus its estimate, unknown without either; an unknown
+    finish the front waits for means nothing jumps. ``None`` (an unreadable
+    claim) never fits and ends jumping, so an unknown reservation cannot
+    overcommit. ``starts_now`` is the promotion rule (no waiter ahead starts
+    first, and the claim starts); ``blocked`` says the claim itself cannot
+    start, and ``position`` counts the blocked claims ahead of it, which is what
+    ``queue_max`` bounds: a claim waiting only for claims that start is not queued.
     """
     load = _MemoryLoad(claim.budget_mb)
-    for held in holders:
+    for held, started in holders:
         if held is None:
             load.stopped = True
         else:
-            load.start(held)
-    blocked_ahead = sum(not load.admit(waiting) for waiting in ahead)
-    fits = load.admit(claim)
-    return (fits and not ahead, 0 if fits else blocked_ahead, not fits)
+            load.start(held, _finish(started, held.wall_s))
+    started_ahead = [load.admit(waiting, now) for waiting in ahead]
+    fits = load.admit(claim, now)
+    blocked_ahead = started_ahead.count(False)
+    return (fits and not any(started_ahead), 0 if fits else blocked_ahead, not fits)
 
 
 @dataclass
@@ -695,24 +768,30 @@ class SlotStore:
         counting it as blocking.
         """
         for _attempt in range(_MEMORY_VIEW_ATTEMPTS):
-            holders: list[MemoryClaim | None] = []
+            holders: list[tuple[MemoryClaim | None, float | None]] = []
             waiters: list[MemoryClaim | None] = []
             vanished = False
             for name in list_ahead():
                 path = self.root / CLASS_MEMORY / name
-                held = self._read_memory_claim(path)
+                held, started = self._read_memory_entry(path)
                 vanished = vanished or (held is None and not path.exists())
-                (holders if name.startswith(f"{_HOLDER}-") else waiters).append(held)
+                if name.startswith(f"{_HOLDER}-"):
+                    holders.append((held, started))
+                else:
+                    waiters.append(held)
             if not vanished:
                 break
-        return _memory_queue(holders, waiters, claim)
+        return _memory_queue(holders, waiters, claim, self._now())
 
-    def _read_memory_claim(self, path: Path) -> MemoryClaim | None:
+    def _read_memory_entry(self, path: Path) -> tuple[MemoryClaim | None, float | None]:
+        """An entry's claim and start epoch (promotion, else creation), ``(None, None)`` if unreadable."""
         try:
             token = self._load_token(path)
         except OSError:
-            return None
-        return None if token is None else token.memory
+            return None, None
+        if token is None:
+            return None, None
+        return token.memory, parse_stamp(token.promoted_at) or parse_stamp(token.created_at)
 
     def _queue_position(self, token: SlotToken) -> int | None:
         """0-based queue position of a waiter, or None when its turn has come."""
