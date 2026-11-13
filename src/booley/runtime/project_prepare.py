@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.runtime import platform_paths
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.platform_paths import bash_bin
 from booley.runtime.project_repositories import paired_project_repository
@@ -181,15 +182,8 @@ def prepare_project(
     if log is not None:
         return _prepare_logged(hook, checkout, env, timeout_s, log)
     try:
-        result = subprocess.run(
-            _hook_command(hook),
-            cwd=checkout,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            env=env,
-            timeout=timeout_s,
-            check=False,
+        result = platform_paths.run_captured_bounded(
+            _hook_command(hook), cwd=checkout, env=env, timeout=timeout_s, errors="strict"
         )
     except subprocess.TimeoutExpired:
         return PreparationResult(False, hook, f"post-setup hook timed out ({timeout_s}s)")
