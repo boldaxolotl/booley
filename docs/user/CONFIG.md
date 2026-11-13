@@ -143,13 +143,6 @@ Limits apply to one Project.
 Every licensed tool a Project uses needs one: without it Doctor fails and the
 Flow is refused. See [Missing Seat Cap](TROUBLESHOOTING.md#missing-seat-cap).
 
-Delete `max_heavy` and `heavy_memory` from `[jobs]` if your `booley.toml` sets
-them: memory admission replaced both. While either is set, Flow and Specialist
-runs and every command that works on a Project refuse and name the line;
-`booley doctor` and `booley upgrade` still run. `booley-heal` removes the keys
-too. See
-[Deleted `[jobs]` keys](TROUBLESHOOTING.md#deleted-jobs-keys).
-
 <details markdown>
 <summary>With host-installed licensed tools</summary>
 

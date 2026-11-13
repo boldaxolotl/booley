@@ -26,6 +26,8 @@ _WHOLE_FILES = frozenset(
         "tests/config/test_jobs.py",
         "tests/harness/test_cli_retired_jobs_keys.py",
         "tests/harness/test_doctor.py",
+        "tests/harness/test_doctor_retired_jobs_main_copy.py",
+        "tests/mcp_tools/test_baseline_goal_tools_retired_keys.py",
         "tests/mcp_tools/test_mcp_dispatch.py",
         "tests/test_retired_heavy_slot_wording.py",
         "CHANGELOG.md",
@@ -38,7 +40,6 @@ _WHOLE_PREFIXES = ("docs/adr/",)
 # Docs where only a paragraph that says the keys were retired or replaced may name them.
 _RETIRED_PARAGRAPH_FILES = frozenset(
     {
-        "docs/user/CONFIG.md",
         "docs/user/TROUBLESHOOTING.md",
         "docs/GLOSSARY.md",
         "src/booley/data/skills/booley-setup/steps/2-project-config.md",
