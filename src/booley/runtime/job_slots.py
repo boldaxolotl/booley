@@ -36,7 +36,8 @@ it, except that a claim with its own wall-clock estimate jumps ahead when it
 fits now and is estimated to finish before the front can start. The front's
 earliest start comes from the running claims' estimated finishes; an unknown
 finish makes it unknown, so nothing jumps. An entry whose claim cannot be read
-counts as not fitting and ends jumping.
+counts as not fitting and ends jumping. A holder may lower its own reservation
+as its phases finish (``shrink_reservation``), never raise it.
 
 Pure + stdlib-only, like ``runtime.job_records`` (whose deadline/identity
 guards it reuses): PID liveness, ``/proc`` reads, the clock, and sleep are
@@ -57,7 +58,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from booley.config.jobs import SlotCaps, parse_caps
@@ -1250,6 +1251,39 @@ class SlotStore:
                 return False
             token.lease_generation = current.lease_generation
             token.lease_expires_at = current.lease_expires_at
+            return True
+
+    def shrink_reservation(self, token: SlotToken, reservation_mb: float) -> bool:
+        """Lower an active holder's Memory Reservation; never raise it (ADR 0087).
+
+        Returns True only when the on-disk claim now carries *reservation_mb*.
+        Refuses, writing nothing, when the entry is not this lease's active
+        holder (recovery may have claimed it), carries no sized claim, or
+        *reservation_mb* is not positive and lower than the held value. Waiters
+        read the claim fresh on their next poll, so a lower claim admits them.
+        """
+        with self._lease_gate(token) as acquired:
+            if not acquired:
+                return False
+            try:
+                current = self._load_token(token.path)
+            except OSError:
+                return False
+            if (
+                current is None
+                or not current.is_holder
+                or current.lease_id != token.lease_id
+                or current.lease_state != LEASE_ACTIVE
+                or current.memory is None
+                or current.memory.reservation_mb is None
+                or not 0 < reservation_mb < current.memory.reservation_mb
+            ):
+                return False
+            lowered = replace(current.memory, reservation_mb=reservation_mb)
+            current.memory = lowered
+            if not self._rewrite_token(current):
+                return False
+            token.memory = lowered
             return True
 
     def _start_renewal(self, token: SlotToken) -> None:

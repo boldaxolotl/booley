@@ -66,6 +66,7 @@ from booley.flows.plan import (
     normalize_plan_path,
     stable_unit_id,
 )
+from booley.flows.reservation_phases import report_phase_end
 from booley.flows.result_table import (
     MISSING,
     TARGET_WIDTH,
@@ -805,6 +806,20 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             return self._execute_boundary(run_cmd, timeout=self._get_timeout())
 
     def _run_single_target(self, target: str) -> FpgaMetrics:
+        """Implement one Target and report its ``fpga_impl`` phase ended.
+
+        A phase that is skipped (a setup failure or a fingerprint cache hit) ends
+        at once. A baseline run reports nothing: its Target may be the
+        candidate's, whose phase it must not count out of the Job's Memory
+        Reservation.
+        """
+        try:
+            return self._implement_target(target)
+        finally:
+            if getattr(self, "_execution_role", "candidate") != "baseline":
+                report_phase_end(target, "fpga_impl")
+
+    def _implement_target(self, target: str) -> FpgaMetrics:
         """Configure, run, and interpret Vivado inside the Sandbox."""
         try:
             prepared = self._prepare_fpga_command(target)
