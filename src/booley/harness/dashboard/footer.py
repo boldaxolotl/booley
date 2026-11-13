@@ -31,8 +31,8 @@ def footer_hints(
     scrolling: bool,
     back_to: BackTarget,
     on_run: bool,
-    flows_below: bool = False,
-    run_list: bool = False,
+    flows_below: bool,
+    run_list: bool,
 ) -> str:
     """The one footer line for the current cursor position.
 

@@ -105,8 +105,8 @@ HELP = (
     "The Targets window lists the selected worktree's Targets with their core and Flows;\n"
     "Enter shows filesets, tests, Test Variants and constraints, then the Flows that can\n"
     "drive the Target: ↓ past the end reaches them, Enter opens Run's form with the worktree\n"
-    "and Target filled in, and Esc there returns to the detail. Its top bar Worktree item\n"
-    "picks the worktree: those with sessions first, the main checkout last\n"
+    "and Target filled in, and Esc on the form returns to the detail. The Targets window's\n"
+    "top bar Worktree item picks the worktree: those with sessions first, the main checkout last\n"
     "Job details appear beside the list on wide terminals; Enter opens them on narrow terminals\n"
     "Booley call rows are informational; Enter does not open them\n"
     "The footer shows the keys that apply where the cursor is\n"
@@ -749,7 +749,7 @@ class DetailScroll(VerticalScroll):
         if flows.display and self.scroll_y >= self.max_scroll_y:
             flows.focus()
         else:
-            self.scroll_down(animate=False)
+            super().action_scroll_down()
 
 
 class DashboardApp(App[None]):

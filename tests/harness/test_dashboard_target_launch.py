@@ -14,7 +14,7 @@ import pytest
 from textual.widgets import DataTable, OptionList
 
 from booley.harness.dashboard import app as dashboard_app
-from booley.harness.dashboard.run_form import FormError
+from booley.harness.dashboard.run_form import NO_FORM, FormError
 from booley.harness.dashboard.topbar import TopBar
 from booley.harness.dashboard.wizard import RunWizard
 from tests.harness.test_dashboard_run import (
@@ -152,7 +152,6 @@ async def test_target_detail_lists_exactly_the_flows_that_drive_it(checkout):
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_choosing_a_flow_opens_the_form_with_worktree_and_target_filled_in(checkout):
     wt_a = worktree_a(checkout)
     app = make_app(checkout, FakeLauncher())
@@ -182,6 +181,13 @@ async def test_choosing_a_flow_opens_the_form_with_worktree_and_target_filled_in
             await pilot.press("escape", "escape", "escape")
             await pilot.pause()
             assert app.navigation.view == "targets"
+
+
+class NoTargetField(FakeLauncher):
+    """A launcher whose Flow form has no Target field to hold the preset Target."""
+
+    def form(self, flow):
+        return NO_FORM
 
 
 class BrokenForm(FakeLauncher):
@@ -252,7 +258,13 @@ async def test_a_second_flow_is_chosen_with_the_arrows_and_up_walks_back_to_the_
         await pilot.press("up")
         assert app.focused is flows
         assert flows.highlighted == 0
-        await pilot.press("down", "enter")
+        await pilot.press("down")
+        # A refresh of the same Target keeps the keyboard and the highlight on the second Flow.
+        await app.refresh_snapshot()
+        await pilot.pause()
+        assert app.focused is flows
+        assert flows.highlighted == 1
+        await pilot.press("enter")
         await settle_form(app, pilot)
         assert isinstance(app.screen, RunWizard)
         assert shown(app.screen, "#run-title") == "booley flow sim in wt-a"
@@ -261,12 +273,6 @@ async def test_a_second_flow_is_chosen_with_the_arrows_and_up_walks_back_to_the_
 
 @pytest.mark.asyncio
 async def test_a_form_without_a_target_field_gets_the_target_in_extra_arguments(checkout):
-    from booley.harness.dashboard.run_form import NO_FORM
-
-    class NoTargetField(FakeLauncher):
-        def form(self, flow):
-            return NO_FORM
-
     app = make_app(checkout, NoTargetField())
     async with app.run_test(size=(130, 40)) as pilot:
         await targets_of_wt_a(app, pilot)
@@ -282,8 +288,12 @@ async def test_esc_from_a_target_launched_form_returns_to_the_target_detail(chec
     app = make_app(checkout, FakeLauncher())
     async with app.run_test(size=(130, 40)) as pilot:
         await targets_of_wt_a(app, pilot)
-        wizard = await launch_from_detail(app, pilot, "sim_wide")
+        await open_detail(app, pilot, "sim_wide")
         before = {name: list(history) for name, history in app.windows.items()}
+        await pilot.press("down", "enter")
+        await settle_form(app, pilot)
+        wizard = app.screen
+        assert isinstance(wizard, RunWizard)
         await goto_row(pilot, wizard, "Extra arguments")
         await pilot.press("enter")  # the editor
         assert wizard.query_one("#run-edit").display
@@ -319,3 +329,5 @@ async def test_submit_from_a_target_selects_the_job_and_esc_returns_to_the_detai
         assert app.window == "targets"
         assert app.navigation.view == "target"
         assert app.navigation.selected == "sim_wide"
+        assert app.focused is app.query_one("#aside")
+        assert app.query_one("#target-flows").display
