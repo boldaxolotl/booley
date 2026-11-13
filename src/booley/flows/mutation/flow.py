@@ -58,7 +58,10 @@ from booley.flows.mutation.generator import (
     parser_version,
     shortfall_message,
 )
-from booley.flows.mutation.operators import MissingPyslangError, MutantGeneratorError
+from booley.flows.mutation.operators import (
+    MutantGeneratorError,
+    SourceParseError,
+)
 from booley.flows.mutation.request import MutationRequest
 from booley.flows.mutation.score import default_min_detected
 from booley.flows.mutation.variants import MutationVariantError, MutationVariantPlan
@@ -144,6 +147,9 @@ _MUTATION_SUFFIXES = frozenset({".v", ".vh", ".sv", ".svh"})
 _HDL_FILE_TYPES = ("verilogSource", "systemVerilogSource")
 #: Tags (besides the testbench role) that take a Target input out of the default scope.
 _UNMUTATED_FILE_TAGS = frozenset({"vendored", "generated"})
+
+#: Said only when the Target's own RTL was the scope, where choosing files can fix the run.
+_PASS_SCOPE_HINT = "pass --scope to choose the files to mutate"
 #: Baseline-scaled Mutant time limit: ``max(10 x baseline, 30 s)``, capped at 300 s.
 _MUTANT_TIMEOUT_FACTOR = 10
 _MUTANT_TIMEOUT_FLOOR_S = 30
@@ -592,6 +598,9 @@ class MutationRunPlan:
     #: ``min_detected`` came from the caller or the criterion, so a generator
     #: shortfall does not recompute it.
     explicit_min_detected: bool = True
+    #: The scope is the Target's own RTL because neither ``--scope`` nor a criterion named
+    #: one, so only then does "pass --scope" fit a failure.
+    scope_defaulted: bool = False
 
 
 @dataclass
@@ -701,6 +710,8 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     JOB_CLASS: ClassVar[str | None] = job_slots.CLASS_LIGHT
     default_timeout: ClassVar[int] = 1800
     satisfies: ClassVar[list[str]] = ["mutation_score"]
+    #: Set by ``_apply_campaign_defaults``: no ``--scope`` and no criterion scope was given.
+    _scope_defaulted: bool = False
 
     # ------------------------------------------------------------------
     # Command-backed Flow hooks — _run() drives the campaign directly.
@@ -719,11 +730,14 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     # ------------------------------------------------------------------
 
     def _scope_files(self) -> list[str]:
-        return [
-            fusesoc_registry.canonical_project_path(self.args.work_dir, raw)
-            for value in self.args.scope.split(",")
-            if (raw := value.strip())
-        ]
+        """The scope's canonical paths, each once, at its first position."""
+        return list(
+            dict.fromkeys(
+                fusesoc_registry.canonical_project_path(self.args.work_dir, raw)
+                for value in self.args.scope.split(",")
+                if (raw := value.strip())
+            )
+        )
 
     def _resolve_campaign(self, scope: str | None) -> TargetCampaign | EndpointOutcome | None:
         """Resolve this Target's campaign for *scope*; ``None`` when no scope is known."""
@@ -742,7 +756,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             if exc.reason == "missing":
                 return None
             return EndpointOutcome(
-                exit_code=EXIT_FAILURE,
+                exit_code=EXIT_ERROR,
                 report_text=("mutation: --scope does not match the sealed Target criterion scope"),
             )
         except UnsupportedSimTargetError as exc:
@@ -755,12 +769,23 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
 
         With neither ``--scope`` nor a criterion scope, the scope is the Target's own RTL.
         """
+        if self.args.scope is not None and not any(
+            entry.strip() for entry in self.args.scope.split(",")
+        ):
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR,
+                report_text=(
+                    "mutation: --scope is empty; name at least one RTL file, "
+                    "or omit --scope to mutate the Target's own RTL"
+                ),
+            )
         campaign = self._resolve_campaign(self.args.scope)
+        self._scope_defaulted = campaign is None
         if campaign is None:
             default_scope = self._default_scope()
             if not default_scope:
                 return EndpointOutcome(
-                    exit_code=EXIT_FAILURE,
+                    exit_code=EXIT_ERROR,
                     report_text=(
                         f"mutation: Target {self.args.target!r} has no mutable RTL "
                         "(only testbench, vendored, generated or non-Verilog inputs); "
@@ -822,51 +847,95 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         subprocess-free ``.core`` read, <1s) turns that into an instant,
         self-correcting error with a "did you mean" hint.
 
-        Inspection failures and empty source sets refuse before build work.
+        Every refusal is an ``ERROR`` (exit 2): the input is unusable, so no Mutant
+        was generated and no test ran.  Inspection failures and empty source sets
+        refuse before build work.
         """
         for entry in scope_files:
-            if Path(entry).suffix.lower() not in _MUTATION_SUFFIXES:
+            if problem := self._scope_entry_problem(entry):
                 return EndpointOutcome(
-                    exit_code=EXIT_FAILURE,
-                    report_text=f"mutation: --scope entry '{entry}' is not an HDL RTL mutation source",
+                    exit_code=EXIT_ERROR,
+                    report_text=f"mutation: --scope entry '{entry}' {problem}",
                 )
         target = getattr(self.args, "target", "") or ""
         if not target:
             return EndpointOutcome(
-                exit_code=EXIT_FAILURE,
+                exit_code=EXIT_ERROR,
                 report_text="mutation: scope validation requires a Target",
             )
         try:
             catalog = TargetCatalog.build(self.args.work_dir)
-            resolved = list(catalog.inspect(catalog.select(target)).rtl_files)
+            inspection = catalog.inspect(catalog.select(target))
+            resolved = list(inspection.rtl_files)
             resolved_set = {
                 fusesoc_registry.canonical_project_path(self.args.work_dir, path)
                 for path in resolved
             }
+            testbench_set = {
+                fusesoc_registry.canonical_project_path(self.args.work_dir, item.path)
+                for item in inspection.inputs
+                if "tb" in item.tags
+            }
         except Exception as exc:  # noqa: BLE001 — boundary diagnostic refuses before model/build
             return EndpointOutcome(
-                exit_code=EXIT_FAILURE,
+                exit_code=EXIT_ERROR,
                 report_text=f"mutation: cannot inspect Target '{target}' for scope {scope_files}: {exc}",
             )
         if not resolved:
             return EndpointOutcome(
-                exit_code=EXIT_FAILURE,
+                exit_code=EXIT_ERROR,
                 report_text=f"mutation: Target '{target}' has no RTL sources for scope {scope_files}",
             )
         by_base = {Path(r).name: r for r in resolved}
         for entry in scope_files:
-            if not Path(entry).is_absolute() and entry in resolved_set:
-                continue
-            suggestion = by_base.get(Path(entry).name)
-            hint = f" Did you mean '{suggestion}'?" if suggestion else ""
-            return EndpointOutcome(
-                exit_code=EXIT_FAILURE,
-                report_text=(
-                    f"mutation: --scope entry '{entry}' does not match any "
-                    f"source file resolved for config '{target}'.{hint} "
-                    f"Resolved sources: {', '.join(resolved)}"
-                ),
+            problem = self._target_entry_problem(
+                entry, target, resolved, resolved_set, testbench_set, by_base
             )
+            if problem:
+                return EndpointOutcome(
+                    exit_code=EXIT_ERROR,
+                    report_text=f"mutation: --scope entry '{entry}' {problem}",
+                )
+        return None
+
+    def _target_entry_problem(
+        self,
+        entry: str,
+        target: str,
+        resolved: list[str],
+        resolved_set: set[str],
+        testbench_set: set[str],
+        by_base: dict[str, str],
+    ) -> str | None:
+        """Why *entry* is not a mutable source of *target*, or ``None``.
+
+        A file the Target lists but that is gone from disk is refused here too, so a
+        dry run fails exactly where the real run's generator would.
+        """
+        suggestion = by_base.get(Path(entry).name)
+        hint = f" Did you mean '{suggestion}'?" if suggestion and suggestion != entry else ""
+        if not (self.args.work_dir / entry).exists():
+            return f"does not exist.{hint}"
+        if entry in resolved_set:
+            return None
+        if entry in testbench_set:
+            return f"is a testbench file of Target '{target}'; testbench files are never mutated"
+        return (
+            f"does not match any source file resolved for config '{target}'.{hint} "
+            f"Resolved sources: {', '.join(resolved)}"
+        )
+
+    def _scope_entry_problem(self, entry: str) -> str | None:
+        """Why *entry* cannot be mutated whatever the Target is, or ``None``.
+
+        The text completes ``--scope entry '<entry>' ...``.
+        """
+        if Path(entry).is_absolute():  # canonicalization leaves only outside paths absolute
+            return "is outside the Project"
+        if (self.args.work_dir / entry).is_dir():
+            return "is a directory; name the RTL files in it"
+        if Path(entry).suffix.lower() not in _MUTATION_SUFFIXES:
+            return "is not an HDL RTL mutation source"
         return None
 
     def _dut_files(self) -> list[str]:
@@ -978,6 +1047,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             source_size_budget=source_size_budget,
             seed=self.args.seed,
             explicit_min_detected=explicit_min_detected,
+            scope_defaulted=self._scope_defaulted,
         )
         if getattr(self.args, "dry_run", False):
             return self._dry_run_preview(plan)
@@ -1183,28 +1253,41 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 include_dirs=include_dirs,
             )
             if not selection.mutants:
-                raise MutantGeneratorError("no Mutation Operator site in the scope files")
+                return self._generation_failure(
+                    plan, "no Mutation Operator site in the scope files", _no_site_hint(plan)
+                )
             specs = [
                 _spec_of(index, mutant) for index, mutant in enumerate(selection.mutants, start=1)
             ]
             variants = MutationVariantPlan.resolve(specs, plan.work_dir, plan.scope_files)
+        except SourceParseError as exc:
+            files = ", ".join(name for name, _ in exc.failures)
+            hint = (
+                f"check that {files} parse with the defines "
+                f"({_names_or_none([f'{k}={v}' if v else k for k, v in defines.items()])}) and "
+                f"include directories ({_names_or_none(include_dirs)}) the Target gives them"
+            )
+            return self._generation_failure(plan, str(exc), hint)
         except (MutantGeneratorError, BoundaryError, MutationVariantError) as exc:
-            reason = (
-                str(exc)
-                if isinstance(exc, MissingPyslangError)
-                else f"{exc}\npass --scope to choose the files to mutate"
-            )
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=f"mutation: cannot generate Mutants: {reason}",
-                detail=_failure_detail(
-                    phase="mutant_generation",
-                    reason=reason,
-                    specs=[],
-                    work_dir=plan.work_dir,
-                ),
-            )
+            return self._generation_failure(plan, str(exc), None)
         return GeneratedMutants(plan, variants, identity, selection.ranked)
+
+    @staticmethod
+    def _generation_failure(
+        plan: MutationRunPlan, reason: str, hint: str | None
+    ) -> EndpointOutcome:
+        """The ``ERROR`` for Mutants that cannot be generated: *reason*, then the fitting *hint*."""
+        shown = reason if hint is None else f"{reason}\n{hint}"
+        return EndpointOutcome(
+            exit_code=EXIT_ERROR,
+            report_text=f"mutation: cannot generate Mutants: {shown}",
+            detail=_failure_detail(
+                phase="mutant_generation",
+                reason=shown,
+                specs=[],
+                work_dir=plan.work_dir,
+            ),
+        )
 
     def _run_pristine_baseline(self, plan: MutationRunPlan) -> Baseline | EndpointOutcome:
         """Build and run the byte-identical project before any Mutant is applied.
@@ -1330,9 +1413,15 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             phase="mutant_selection", reason=reason, specs=[], work_dir=plan.work_dir
         )
         detail["equivalent_dropped"] = sweep.dropped
+        hint = (
+            f"none of the Mutants of {', '.join(plan.scope_files)} changes what Target "
+            f"'{plan.target}' builds; scope files whose modules '{plan.tb_top}' elaborates"
+        )
+        if plan.scope_defaulted:
+            hint += f"; {_PASS_SCOPE_HINT}"
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
-            report_text=f"mutation: {reason}\npass --scope to choose the files to mutate",
+            report_text=f"mutation: {reason}\n{hint}",
             detail=detail,
         )
 
@@ -2518,6 +2607,20 @@ def _describe_evidence(evidence: dict[str, Any]) -> str:
     resolved = evidence.get("resolved") or []
     fingerprint = evidence.get("source_fingerprint", "unknown source")
     return f"{len(resolved)} isolated exact replacement(s) from {fingerprint}"
+
+
+def _no_site_hint(plan: MutationRunPlan) -> str:
+    """What to do when the scope files hold no spot a Mutation Operator changes."""
+    if plan.scope_defaulted:
+        return _PASS_SCOPE_HINT
+    return (
+        "the scope files hold no spot a Mutation Operator changes; name RTL files that hold logic"
+    )
+
+
+def _names_or_none(names: Sequence[str]) -> str:
+    """*names* comma-joined, or ``none``."""
+    return ", ".join(names) or "none"
 
 
 def _failure_detail(
