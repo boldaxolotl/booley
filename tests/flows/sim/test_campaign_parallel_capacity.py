@@ -100,7 +100,7 @@ def _child_permit(capacity: HeavyCapacity, work_item_id: str = "item"):
 
 def _prepared_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "campaign")
+    campaign_store = CampaignStore(tmp_path / "record")
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -385,7 +385,7 @@ def test_child_reacquisition_rejoins_real_slot_fifo_behind_competitor(
 
 def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path) -> None:
     manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "campaign")
+    campaign_store = CampaignStore(tmp_path / "record")
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -427,7 +427,7 @@ def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path
 
 def test_normal_work_runtime_does_not_consume_shutdown_budget(tmp_path: Path) -> None:
     manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "campaign")
+    campaign_store = CampaignStore(tmp_path / "record")
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -457,7 +457,7 @@ def test_shutdown_deadline_returns_bounded_but_retains_outer_until_worker_exits(
     tmp_path: Path,
 ) -> None:
     manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "campaign")
+    campaign_store = CampaignStore(tmp_path / "record")
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -510,7 +510,7 @@ def test_shutdown_deadline_does_not_fail_when_every_worker_already_exited(
 ) -> None:
     """Regression for #977: a lane that exits in the final wait is a clean shutdown."""
     manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "campaign")
+    campaign_store = CampaignStore(tmp_path / "record")
     campaign_store.publish_manifest(manifest)
     # A zero budget means the shutdown deadline has always passed after the wait.
     capacity = SimpleNamespace(
@@ -592,7 +592,7 @@ def _assert_parallel_outcome(outcome, plan, state, first_finisher) -> None:
 
 
 def _assert_child_claim_integrity(invocation, slot_store, plan, project_data) -> None:
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
     summary = json.loads(store.summary_path.read_text())
     assert summary["completed"] == list(plan.work_item_ids)
     attempts = [
@@ -619,7 +619,7 @@ def test_scheduler_preserves_terminal_cause_after_actual_child_lease_loss(
 ) -> None:
     monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 0.01)
     manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "campaign")
+    campaign_store = CampaignStore(tmp_path / "record")
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -820,7 +820,7 @@ def test_memory_admitted_campaign_runs_work_items_without_child_lanes(
     runs = sorted(state.intervals, key=lambda interval: interval[1])
     assert [name for name, _start, _end in runs] == ["alpha", "beta", "gamma"]
     assert all(left[2] <= right[1] for left, right in pairwise(runs))
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
     attempts = [
         json.loads(path.read_bytes())
         for path in store.root.glob("work-items/*/attempts/*/attempt.json")

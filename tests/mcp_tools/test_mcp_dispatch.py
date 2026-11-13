@@ -2832,7 +2832,7 @@ def test_mcp_simulation_dispatch_reaches_alias_normalization(
     )
     assert len(results) == 1
     assert results[0].exit_code == 0, results[0].outcome.report_text
-    assert (data / "reports/sim/1/targets/sim/campaign/manifest.json").is_file()
+    assert (data / "reports/sim/1/targets/sim/record/manifest.json").is_file()
 
 
 def _seeded_report_files(reports: Path, endpoint: str) -> list[Path]:

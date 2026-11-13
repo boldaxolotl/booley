@@ -282,7 +282,7 @@ def test_serial_publication_boundary_resume_matrix(
 
     with pytest.raises(_InjectedProcessDeath, match=crash_point):
         campaign.run(new_request)
-    store = CampaignStore(invocation / "targets" / "sim" / "campaign")
+    store = CampaignStore(invocation / "targets" / "sim" / "record")
     outcome = _resume_crashed_campaign(campaign, new_request, store, manifest, plan, crash_point)
     _assert_crash_recovery(outcome, store, crash_point, launches, crash)
     # The route axis must really reach its build: private builds live under the attempt.
@@ -337,7 +337,7 @@ def test_coverage_aggregate_boundary_resume_matrix(tmp_path: Path, crash_point: 
                 plan, tmp_path, invocation.parent, policy, invocation, _admission()
             )
         )
-    store = CampaignStore(invocation / "targets/sim_0/campaign")
+    store = CampaignStore(invocation / "targets/sim_0/record")
     outcome = campaign.run(
         ResumeCampaignRunRequest(
             _validated_resume(store, plan, target, tmp_path),
@@ -436,7 +436,7 @@ def test_invalid_committed_result_fails_closed_before_executor_entry(
     manifest = finalize_manifest(document)
     plan = create_simulation_campaign_plan(manifest)
     invocation = tmp_path / "reports" / "000001"
-    store = CampaignStore(invocation / "targets" / "sim" / "campaign")
+    store = CampaignStore(invocation / "targets" / "sim" / "record")
     store.publish_manifest(manifest)
     work_item_id = manifest.document["work_items"][0]["work_item_id"]  # type: ignore[index]
     result_path = store.work_item_directory(work_item_id) / "result.json"
@@ -606,7 +606,7 @@ def test_failed_build_result_publication_is_retryable_and_never_accepted(
     with pytest.raises(_InjectedProcessDeath):
         SimulationCampaign(executor, publication_checkpoint=crash).run(request)
 
-    store = CampaignStore(invocation / "targets" / "sim" / "campaign")
+    store = CampaignStore(invocation / "targets" / "sim" / "record")
     recovery = store.scan()
     committed = boundary == "after:simulation_result"
     assert bool(recovery.complete) is committed
@@ -634,7 +634,7 @@ def test_failed_build_partial_terminal_result_fails_closed(
         tmp_path, monkeypatch, failure_path, checkpoint
     )
     SimulationCampaign(executor).run(request)
-    store = CampaignStore(invocation / "targets" / "sim" / "campaign")
+    store = CampaignStore(invocation / "targets" / "sim" / "record")
     recovered = store.scan().items[0]
     result_path = store.work_item_directory(recovered.work_item_id) / "result.json"
     result_path.write_bytes(b'{"partial":')
@@ -818,7 +818,7 @@ def test_process_death_at_actual_hook_publication_recovers_immutable_evidence(
         _successful_pre_sim_campaign(tmp_path, monkeypatch, access, checkpoint=crash)
     assert crash.tripped
     invocation = tmp_path / "reports/1"
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
     old = collect_pre_sim_firings(store.manifest_path)
     assert len(old) == int(side == "after")
     assert store.scan().interrupted
@@ -848,7 +848,7 @@ def test_result_commit_and_scan_trust_evidence_changed_after_publication(
     )
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
-    store = CampaignStore(invocation / "targets" / "sim" / "campaign")
+    store = CampaignStore(invocation / "targets" / "sim" / "record")
 
     def change_published_evidence(boundary: str) -> None:
         # Rewrite a snapshot artifact after authentication at launch.

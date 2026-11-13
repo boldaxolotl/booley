@@ -142,7 +142,7 @@ class _Harness:
 
     def assert_nothing_built_or_published(self) -> None:
         assert self.counters == {"compile": 0, "durable_reuse": 0, "launch": 0}
-        root = self.invocation / "targets/sim/campaign"
+        root = self.invocation / "targets/sim/record"
         assert not tuple(root.glob("work-items/*/attempts/*"))
         assert not tuple(root.glob("build-variants/*/attempts/*"))
 
@@ -277,7 +277,7 @@ def test_missing_literal_run_cwd_blocks_baseline_build_across_the_invocation(
         )
 
     assert harness.counters["compile"] == 0
-    assert not tuple(harness.invocation.glob("targets/*/campaign/*manifest*"))
+    assert not tuple(harness.invocation.glob("targets/*/record/*manifest*"))
 
 
 def test_owner_missing_run_cwd_fails_before_prerequisite_build(
@@ -287,7 +287,7 @@ def test_owner_missing_run_cwd_fails_before_prerequisite_build(
     harness = _Harness(tmp_path, monkeypatch, "immutable")
     baseline = _baseline_manifest()  # literal "run"
     (harness.project / "run").mkdir()
-    store = CampaignStore(harness.invocation / "targets" / "base-revision" / "campaign")
+    store = CampaignStore(harness.invocation / "targets" / "base-revision" / "record")
     store.publish_manifest(baseline)
     raw = encode_simulation_campaign_manifest(baseline)
     baseline_json = json.loads(raw)
@@ -320,7 +320,7 @@ def test_owner_missing_run_cwd_fails_before_prerequisite_build(
 
 def _prerequisite_entry(harness, manifest, slug: str) -> dict:
     """Publish ``manifest`` under the invocation and return the entry that references it."""
-    store = CampaignStore(harness.invocation / "targets" / slug / "campaign")
+    store = CampaignStore(harness.invocation / "targets" / slug / "record")
     store.publish_manifest(manifest)
     raw = encode_simulation_campaign_manifest(manifest)
     document = json.loads(raw)
@@ -380,6 +380,6 @@ def test_missing_literal_run_cwd_fails_coverage_before_attempt(
     with pytest.raises(SimulationCampaignIntegrityError, match=_MISSING):
         _run_coverage_campaign(tmp_path, CountingNative())
 
-    store = tmp_path / "reports/1/targets/sim_0/campaign"
+    store = tmp_path / "reports/1/targets/sim_0/record"
     assert builds == []
     assert not tuple(store.glob("work-items/*/attempts/*"))

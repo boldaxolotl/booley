@@ -49,7 +49,7 @@ def test_campaign_baseline_builds_and_runs_in_the_baseline_checkout(tmp_path, mo
 def _observed_cycles(targets: Path) -> dict[str, list[tuple[str, int]]]:
     """Each campaign's observed (Test, cycles), read from its published results."""
     observed: dict[str, list[tuple[str, int]]] = {}
-    for result in sorted(targets.glob("*/campaign/work-items/*/result.json")):
+    for result in sorted(targets.glob("*/record/work-items/*/result.json")):
         document = json.loads(result.read_text())
         observed.setdefault(result.parents[3].name, []).extend(
             (item["test"], item["cycle_count"]) for item in document["observations"]

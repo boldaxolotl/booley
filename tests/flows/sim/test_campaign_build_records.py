@@ -80,7 +80,7 @@ def _execute_route(
     build_root = tmp_path / "engine-build"
     build_root.mkdir()
     (build_root / "simv").write_bytes(b"image")
-    store = CampaignStore(tmp_path / "campaign")
+    store = CampaignStore(tmp_path / "record")
     store.publish_manifest(manifest)
     item = manifest.document["work_items"][0]
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}

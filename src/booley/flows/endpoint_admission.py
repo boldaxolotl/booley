@@ -20,7 +20,12 @@ from booley.flows.endpoint_events import (
     _write_display_event,
 )
 from booley.flows.endpoint_session import PreparedExecution
-from booley.flows.memory_admission import measure_memory_claim, memory_admission_enabled
+from booley.flows.memory_admission import (
+    MemoryAdmissionPlan,
+    measure_memory_claim,
+    memory_admission_enabled,
+)
+from booley.flows.reservation_phases import PhasePlan, ReservationShrinker, shrinking
 from booley.runtime import job_slots
 from booley.runtime.booley_dir import resolve_common_booley_dir
 from booley.runtime.endpoint_execution import (
@@ -97,10 +102,13 @@ class AdmissionGate:
         self._prepared = prepared
         self._entered = False
 
-    def _claim(self) -> tuple[job_slots.SlotStore | None, object | None, str | None]:
+    def _claim(
+        self,
+    ) -> tuple[job_slots.SlotStore | None, object | None, MemoryAdmissionPlan | None]:
         """Claim the Job's admission: a Memory Reservation under the switch, else a slot.
 
-        Under the switch heavy Jobs, lint and Custom Flows are memory-admitted.
+        Under the switch heavy Jobs, lint and Custom Flows are memory-admitted;
+        the third element is the plan that sized the claim (``None`` for a slot).
         """
         endpoint = self._endpoint
         if memory_admission_enabled() and endpoint._memory_admitted():
@@ -117,7 +125,7 @@ class AdmissionGate:
         token: object | None = None
         try:
             execution_id = _runtime_execution_id()
-            store, token, memory_warning = self._claim()
+            store, token, memory_plan = self._claim()
             token_execution_id = getattr(token, "execution_id", None)
             if token_execution_id is not None and token_execution_id != execution_id:
                 raise AdmissionIdentityError(
@@ -127,18 +135,29 @@ class AdmissionGate:
             timeout = _slot_timeout_seconds()
             max_heavy = _heavy_lanes(store, token)
             cause = _admission_cancellation_cause(store, token)
-            yield AdmissionContext(
-                mode="managed" if store is not None else "unmanaged",
-                slot_store=store,
-                outer_token=token,
-                max_heavy=max_heavy,
-                role=role,
-                execution_id=execution_id,
-                timeout_seconds=timeout,
-                cancellation=lambda: cause() is not None,
-                cancellation_cause=cause,
-                memory_warning=memory_warning,
-            )
+            with ExitStack() as scope:
+                # Phase ends lower the claim only while the Job holds it.
+                if (
+                    memory_plan is not None
+                    and memory_plan.phases
+                    and memory_plan.claim.reservation_mb is not None
+                    and store is not None
+                    and isinstance(token, job_slots.SlotToken)
+                ):
+                    phase_plan = PhasePlan(memory_plan.phases, memory_plan.claim.reservation_mb)
+                    scope.enter_context(shrinking(ReservationShrinker(phase_plan, store, token)))
+                yield AdmissionContext(
+                    mode="managed" if store is not None else "unmanaged",
+                    slot_store=store,
+                    outer_token=token,
+                    max_heavy=max_heavy,
+                    role=role,
+                    execution_id=execution_id,
+                    timeout_seconds=timeout,
+                    cancellation=lambda: cause() is not None,
+                    cancellation_cause=cause,
+                    memory_warning=None if memory_plan is None else memory_plan.warning,
+                )
         finally:
             if store is not None and token is not None:
                 store.release(token)
@@ -390,10 +409,10 @@ def _acquire_job_slot(endpoint: EndpointState) -> tuple[job_slots.SlotStore | No
 
 def _acquire_memory_reservation(
     endpoint: EndpointState, prepared: PreparedExecution | None
-) -> tuple[job_slots.SlotStore | None, object | None, str | None]:
+) -> tuple[job_slots.SlotStore | None, object | None, MemoryAdmissionPlan | None]:
     """Claim this memory-admitted Job's Memory Reservation, waiting in queue order if needed.
 
-    Returns ``(store, token, warning)``; ``(None, None, None)`` when nothing is
+    Returns ``(store, token, plan)``; ``(None, None, None)`` when nothing is
     claimed, as for :func:`_acquire_job_slot`. That check comes before any
     sizing, so a child under its parent's claim does no estimate work.
     """
@@ -426,4 +445,4 @@ def _acquire_memory_reservation(
         ),
         memory=claim,
     )
-    return (store, token, plan.warning)
+    return (store, token, plan)

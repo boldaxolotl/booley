@@ -80,9 +80,9 @@ GOLDEN_IDENTITY = {
 }
 GOLDEN_REFERENCE_BYTES = (
     b'{"$schema":"booley.coverage-campaign-reference/v1","coverage_campaign":{"bytes":5386,'
-    b'"campaign_id":"campaign:sim_counter:2026-09-01T10:30:00Z","path":"campaign/work-items/'
+    b'"campaign_id":"campaign:sim_counter:2026-09-01T10:30:00Z","path":"record/work-items/'
     b"0001-0123456789abcdef/attempts/0001-87654321-4321-4432-a234-cba987654321/"
-    b'coverage-campaign/coverage.json","path_base":"origin_target",'
+    b'coverage-record/coverage.json","path_base":"origin_target",'
     b'"schema":"booley.coverage-campaign/v5","sha256":"sha256:' + b"b" * 64 + b'"},'
     b'"origin_invocation_id":12,"producer_invocation_id":19,'
     b'"simulation_attempt_id":"87654321-4321-4432-a234-cba987654321",'
@@ -187,7 +187,7 @@ def test_coverage_campaign_reference_golden() -> None:
                 "sha256": "sha256:" + "b" * 64,
                 "schema": "booley.coverage-campaign/v5",
                 "path_base": "origin_target",
-                "path": "campaign/work-items/0001-0123456789abcdef/attempts/0001-87654321-4321-4432-a234-cba987654321/coverage-campaign/coverage.json",
+                "path": "record/work-items/0001-0123456789abcdef/attempts/0001-87654321-4321-4432-a234-cba987654321/coverage-record/coverage.json",
                 "campaign_id": "campaign:sim_counter:2026-09-01T10:30:00Z",
                 "bytes": 5386,
             },
@@ -198,7 +198,7 @@ def test_coverage_campaign_reference_golden() -> None:
     raw = encode_coverage_campaign_reference(reference)
 
     assert raw == GOLDEN_REFERENCE_BYTES
-    assert _sha256_hex(raw) == "66a1c0eb6e5853ea3285d31156d722a77a65992e1b1ee048e4a8a3a64dc83add"
+    assert _sha256_hex(raw) == "b1e20e636e92fae8ccb04251d374e736683f6a3c7fea279581554432f32c295a"
 
 
 def test_approved_waiver_set_digest_golden(tmp_path: Path) -> None:

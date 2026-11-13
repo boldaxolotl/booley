@@ -677,7 +677,7 @@ def _completed(tmp_path: Path) -> _Completed:
     project = tmp_path / "project"
     project.mkdir()
     build_root = _create_build_root(tmp_path / "engine-build")
-    store = CampaignStore(tmp_path / "campaign")
+    store = CampaignStore(tmp_path / "record")
     store.publish_manifest(manifest)
     item = manifest.document["work_items"][0]
     request = _request(store, manifest, item, project, invocation=1)
@@ -917,7 +917,7 @@ def _maximum_hook_selection_plan(names):
 
 def _hook_publication_request(root, names=("alpha", "beta"), invocation=1):
     plan, _ = _maximum_hook_selection_plan(names)
-    store = CampaignStore(root / "campaign")
+    store = CampaignStore(root / "record")
     store.publish_manifest(plan.manifest)
     request = _request(
         store,
@@ -1178,7 +1178,7 @@ def _interrupted_campaign(tmp_path, monkeypatch, runtime_execution_id):
     _set_runtime_execution_id(monkeypatch, runtime_execution_id)
     monkeypatch.setenv("BOOLEY_RUN_ID", _CampaignAdmissionEndpoint._invocation_id)
     fault_enabled, original_mark = [True], ChildExecutionRegistry.mark_terminal
-    work_items = invocation / "targets/sim/campaign/work-items"
+    work_items = invocation / "targets/sim/record/work-items"
 
     def interrupted_mark(registry, prepared, terminal_cause) -> None:
         if fault_enabled[0]:
@@ -1203,7 +1203,7 @@ def _interrupted_campaign(tmp_path, monkeypatch, runtime_execution_id):
                 plan, project, invocation.parent, CampaignPolicy(), invocation, admission
             )
         )
-    store = CampaignStore(invocation / "targets/sim/campaign")
+    store = CampaignStore(invocation / "targets/sim/record")
     validated = _validated_campaign(store, manifest, project, state.handle)
     return SimpleNamespace(
         campaign=campaign,
@@ -1450,7 +1450,7 @@ def _run_coverage_campaign(
         plan, root, invocation.parent, CampaignPolicy(), invocation, _admission()
     )
     outcome = SimulationCampaign(executor).run(request)
-    return outcome, CampaignStore(invocation / "targets/sim_0/campaign")
+    return outcome, CampaignStore(invocation / "targets/sim_0/record")
 
 
 _STAMP = "2026-09-22T00:00:00Z"
@@ -1655,11 +1655,9 @@ def _retained_invocation(
     invocation = reports / "sim" / "1"
     target = invocation / "targets" / "sim"
     target.mkdir(parents=True)
-    shutil.move(str(source_store.root), target / "campaign")
+    shutil.move(str(source_store.root), target / "record")
     # Reports under a symlinked Booley Directory entry need the store to follow it (#2191).
-    store = CampaignStore(
-        target / "campaign", **({"booley_dir": booley_dir} if booley_dir else {})
-    )
+    store = CampaignStore(target / "record", **({"booley_dir": booley_dir} if booley_dir else {}))
     store.regenerate_summary()
     manifest = store.load_manifest().document
     manifest_target = manifest["target"]

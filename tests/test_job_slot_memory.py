@@ -402,6 +402,77 @@ def test_seat_cap_shape_is_validated():
             seated(100, cast(Any, cap))
 
 
+def _on_disk_reservation(token) -> float | None:
+    """The reservation the token's entry file carries right now."""
+    payload = json.loads(token.path.read_text(encoding="utf-8"))
+    return payload["memory"]["reservation_mb"]
+
+
+def test_shrunk_holder_admits_a_waiter_that_fits_only_after_the_shrink(root, world):
+    store = make_store(root, world)
+    holder = join(store, world, 101, claim(800))
+    assert store.refresh(holder).state == HOLDING
+    waiter = join(store, world, 102, claim(400))
+    assert store.refresh(waiter) == TokenState(QUEUED, position=0)
+    assert store.shrink_reservation(holder, 300)
+    assert holder.memory == claim(300)
+    assert _on_disk_reservation(holder) == 300
+    assert store.refresh(waiter).state == HOLDING
+    # The shrunk claim survives a lease renewal.
+    assert store.renew(holder)
+    assert _on_disk_reservation(holder) == 300
+
+
+def test_shrink_never_grows_a_reservation(root, world):
+    store = make_store(root, world)
+    holder = join(store, world, 101, claim(500))
+    assert store.refresh(holder).state == HOLDING
+    before = holder.path.read_bytes()
+    for value in (500, 700, 0, -1):
+        assert not store.shrink_reservation(holder, value)
+    assert holder.path.read_bytes() == before
+    assert holder.memory == claim(500)
+    # A lease recovery has taken the entry: the holder may no longer rewrite it.
+    on_disk = json.loads(before)
+    on_disk["lease_state"] = job_slots.LEASE_CANCELLING
+    holder.path.write_text(json.dumps(on_disk) + "\n", encoding="utf-8")
+    taken_bytes = holder.path.read_bytes()
+    assert not store.shrink_reservation(holder, 100)
+    assert holder.path.read_bytes() == taken_bytes
+
+
+def test_shrink_refuses_a_run_alone_or_vanished_entry(root, world):
+    store = make_store(root, world)
+    alone = join(store, world, 101, claim(run_alone=True))
+    assert store.refresh(alone).state == HOLDING
+    assert not store.shrink_reservation(alone, 100)
+    store.release(alone)
+    assert not store.shrink_reservation(alone, 100)
+
+
+def test_shrink_keeps_the_claims_seats_and_wall_clock_estimate(root, world):
+    """A shrink lowers only the reservation: the seat stays held and the estimate stays."""
+    store = make_store(root, world)
+    holder = join(
+        store,
+        world,
+        101,
+        job_slots.MemoryClaim(
+            budget_mb=BUDGET_MB, reservation_mb=800, seats=(("vivado", 1),), wall_s=60.0
+        ),
+    )
+    assert store.refresh(holder).state == HOLDING
+    waiter = join(store, world, 102, seated(100, 1))
+    assert store.shrink_reservation(holder, 300)
+    on_disk = json.loads(holder.path.read_text(encoding="utf-8"))["memory"]
+    assert on_disk["reservation_mb"] == 300
+    assert on_disk["seats"] == {"vivado": 1}
+    assert on_disk["wall_s"] == 60.0
+    # Memory now fits the waiter, but the shrunk holder still owns the only seat.
+    assert store.refresh(waiter) == TokenState(QUEUED, position=0)
+    store.release(holder)
+    assert store.refresh(waiter).state == HOLDING
+
 # ------------------------------------------------------------- jumping ahead
 
 
