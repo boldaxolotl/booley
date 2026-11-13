@@ -1886,17 +1886,66 @@ def test_identity_is_in_results_and_criterion_detail(tmp_path: Path, monkeypatch
     markdown = _results_markdown(tmp_path, result)
     for line in (
         "- Seed: 5",
-        "- Count: 2",
         f"- Generator version: {GENERATOR_VERSION}",
         f"- pyslang version: {expected['pyslang_version']}",
         f"- Verilator version: {_VERILATOR_VERSION}",
         f"`{_SCOPE}`: {digest}",
     ):
         assert line in markdown
+    # An explicit count is shown as the bare number and adds no auto fields.
+    assert "- Count: 2\n" in markdown
+    assert not {"auto", "formula_count", "budget_capped"} & manifest.keys()
     assert (
         f"seed 5, count 2, generator {GENERATOR_VERSION}, "
         f"pyslang {expected['pyslang_version']}, {_VERILATOR_VERSION})"
     ) in result.report_text
+
+
+_AUTO_COUNT_LABEL = "auto -> 3 (formula 6, budget cap 3)"
+
+
+def test_auto_count_report_names_formula_and_cap(tmp_path: Path, monkeypatch) -> None:
+    """32 source lines give formula 6; a 450 s timeout caps the count at 3."""
+    _, result, _ = _campaign(
+        tmp_path,
+        monkeypatch,
+        count="auto",
+        min_detected=0,
+        extra_args=["--timeout-ms", "450000"],
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    assert f"count {_AUTO_COUNT_LABEL}, generator" in result.report_text.splitlines()[0]
+    assert f"- Count: {_AUTO_COUNT_LABEL}\n" in _results_markdown(tmp_path, result)
+
+
+def test_auto_count_manifest_keeps_identity_of_the_resolved_count(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _, auto, _ = _campaign(
+        tmp_path,
+        monkeypatch,
+        count="auto",
+        min_detected=0,
+        extra_args=["--timeout-ms", "450000"],
+    )
+    _, explicit, _ = _campaign(tmp_path, monkeypatch, count=3, min_detected=0)
+
+    assert auto.exit_code == explicit.exit_code == EXIT_SUCCESS, auto.report_text
+    auto_manifest = json.loads(
+        (tmp_path / auto.detail["artifacts"]["manifest"]).read_text("utf-8")
+    )
+    explicit_manifest = json.loads(
+        (tmp_path / explicit.detail["artifacts"]["manifest"]).read_text("utf-8")
+    )
+    fields = ("auto", "formula_count", "budget_capped")
+    assert (auto_manifest["auto"], auto_manifest["formula_count"]) == (True, 6)
+    assert auto_manifest["budget_capped"] is True
+    # The manifest mirrors the report detail and keeps the fields out of the identity.
+    assert {key: auto_manifest[key] for key in fields} == {key: auto.detail[key] for key in fields}
+    assert not set(fields) & auto_manifest["identity"].keys()
+    assert auto_manifest["identity"] == explicit_manifest["identity"]
+    assert not set(fields) & explicit_manifest.keys()
 
 
 def test_happy_path_publishes_campaign_artifacts(tmp_path: Path, monkeypatch) -> None:
@@ -1935,6 +1984,11 @@ def test_auto_count_publishes_source_size_budget(tmp_path: Path, monkeypatch) ->
 
     budget = result.detail["source_size_budget"]
     assert budget["method"] == "language_neutral_source_size"
+    # The default timeout caps at 12, above the formula count of 6: the cap did not bind.
+    assert (result.detail["formula_count"], result.detail["budget_capped"]) == (6, False)
+    assert f"count auto -> 6 (formula 6, budget cap {budget['budget_cap']}), generator" in (
+        result.report_text
+    )
     manifest_path = tmp_path / result.detail["artifacts"]["manifest"]
     assert (manifest_path.parent / "source-size-budget.json").is_file()
 
@@ -1959,6 +2013,29 @@ def test_a_run_without_a_verdict_publishes_a_complete_manifest(
     manifest = json.loads((tmp_path / result.detail["artifacts"]["manifest"]).read_text("utf-8"))
     assert [row["status"] for row in manifest["mutants"]] == ["invalid", "detected"]
     assert manifest["identity"]["count"] == 2
+    assert not {"auto", "formula_count", "budget_capped"} & manifest.keys()
+
+
+def test_an_auto_run_without_a_verdict_keeps_the_auto_fields_in_detail_and_manifest(
+    tmp_path: Path, monkeypatch
+) -> None:
+    def first_mutant_has_no_observation(index: int | None) -> subprocess.CompletedProcess:
+        if index == 1:
+            return _fake_proc(rc=1, stdout="[SIM_INFRA_ERROR] the harness broke\n")
+        return _fake_proc(rc=0 if index is None else 1, stdout="[sim] run")
+
+    _, result, _ = _campaign(
+        tmp_path, monkeypatch, count="auto", min_detected=0, run=first_mutant_has_no_observation
+    )
+
+    assert result.exit_code == EXIT_ERROR
+    manifest = json.loads((tmp_path / result.detail["artifacts"]["manifest"]).read_text("utf-8"))
+    for fields in (result.detail, manifest):
+        assert (fields["auto"], fields["formula_count"], fields["budget_capped"]) == (
+            True,
+            6,
+            False,
+        )
 
 
 class TestResidueWarning:
