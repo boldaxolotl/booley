@@ -41,11 +41,11 @@ for you:
 - It adds the rule `* text=auto eol=lf` unless your repository already sets a
   line-ending policy. The rule goes in the root `.gitattributes`, which you
   commit only if you want to share it.
-- It has Git check out again the files that are CRLF only because of the
-  checkout, but only on a clean tree. A file that differs from Git's copy by
-  more than line endings, such as an edit or a mode change, stays as it is and
-  init lists it. If init says the repair is unsafe, commit or stash your
-  changes and run `booley init` again.
+- It converts files already checked out with CRLF back to LF, but only on a
+  clean tree. A file that differs from the committed one by more than line
+  endings, such as a file a Git filter rewrites, stays as it is and init lists
+  it. If init says the repair is unsafe, commit or stash your changes, clear
+  any `assume-unchanged` or `skip-worktree` flag, and run `booley init` again.
 
 <details markdown>
 <summary>In stealth mode</summary>

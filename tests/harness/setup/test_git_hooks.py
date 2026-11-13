@@ -2007,7 +2007,7 @@ class TestLineEndingsAutoFix:
         canonical = booley_dir / "AGENTS.md"
 
         ctx = _ctx(tmp_path)
-        assert _release_guidance_for_line_endings(ctx, booley_dir)
+        assert _release_guidance_for_line_endings(ctx, booley_dir).detached
         _step_line_endings(ctx, booley_dir)
         _step_guidance_links(ctx)
 
@@ -2033,7 +2033,9 @@ class TestLineEndingsAutoFix:
 
         booley_dir = self._hardlinked_guidance_project(tmp_path)
 
-        assert not _release_guidance_for_line_endings(_ctx(tmp_path, check_only=True), booley_dir)
+        assert not _release_guidance_for_line_endings(
+            _ctx(tmp_path, check_only=True), booley_dir
+        ).detached
         assert (tmp_path / "AGENTS.md").samefile(booley_dir / "AGENTS.md")
 
     @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
@@ -2052,7 +2054,7 @@ class TestLineEndingsAutoFix:
         os.link(canonical, foreign)
 
         ctx = _ctx(tmp_path)
-        assert _release_guidance_for_line_endings(ctx, booley_dir)
+        assert _release_guidance_for_line_endings(ctx, booley_dir).detached
         _step_line_endings(ctx, booley_dir)
         _step_guidance_links(ctx)
 
@@ -2104,7 +2106,7 @@ class TestLineEndingsAutoFix:
         for name in ("AGENTS.md", "CLAUDE.md"):
             (tmp_path / name).unlink()
 
-        assert not _release_guidance_for_line_endings(_ctx(tmp_path), booley_dir)
+        assert not _release_guidance_for_line_endings(_ctx(tmp_path), booley_dir).detached
 
     @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
     def test_partial_release_failure_keeps_the_locked_links_bytes_and_reports_it(
@@ -2129,13 +2131,13 @@ class TestLineEndingsAutoFix:
         ctx = _ctx(tmp_path)
         _step_line_endings_and_guidance(ctx, plan)
 
-        # A hardlink no longer blocks the repair. The link that could not be released
-        # keeps its own bytes, and the guidance step reports it instead of linking over it.
-        assert ctx.results[0].status == "ok"
-        assert ctx.results[-1].status != "ok"
-        assert canonical.read_bytes() == b"guidance\n"
-        assert (tmp_path / "CLAUDE.md").read_bytes() == b"guidance\r\n"
-        assert not (tmp_path / "CLAUDE.md").samefile(canonical)
+        # A Booley link that could not be released holds the repair back: replacing the
+        # canonical file would strand that link on stale bytes and block the next run.
+        assert ctx.results[0].status == "err"
+        assert ctx.results[-1].status == "ok"
+        assert canonical.read_bytes() == b"guidance\r\n"
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            assert (tmp_path / name).samefile(canonical)
 
     @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
     def test_linked_project_data_guidance_is_repaired(
@@ -2186,7 +2188,7 @@ class TestLineEndingsAutoFix:
         canonical = booley_dir / "AGENTS.md"
         os.link(canonical, tmp_path / "AGENTS.md")
 
-        assert not _release_guidance_for_line_endings(_ctx(tmp_path), booley_dir)
+        assert not _release_guidance_for_line_endings(_ctx(tmp_path), booley_dir).detached
         assert (tmp_path / "AGENTS.md").samefile(canonical)
 
     @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
@@ -2205,7 +2207,7 @@ class TestLineEndingsAutoFix:
 
         monkeypatch.setattr(init_cmd, "pending_normalization_paths", unreadable)
 
-        assert not init_cmd._release_guidance_for_line_endings(_ctx(tmp_path), booley_dir)
+        assert not init_cmd._release_guidance_for_line_endings(_ctx(tmp_path), booley_dir).detached
         assert "could not release guidance hardlinks" in capsys.readouterr().out
         assert (tmp_path / "AGENTS.md").samefile(booley_dir / "AGENTS.md")
 

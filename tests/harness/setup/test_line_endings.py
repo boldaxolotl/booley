@@ -1271,7 +1271,12 @@ def test_common_destination_is_resolved_once_per_planning_pass(tmp_path, monkeyp
     monkeypatch.setattr(line_endings, "_common_attributes", common)
     report = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
     assert report.status is LineEndingStatus.SAFE
-    assert [a.state for a in report.repositories[0].actions] == [LineEndingActionState.COMPLETED]
+    # The repository supplies only core.autocrlf, so the core.eol pin is a second action.
+    assert [
+        a.state
+        for a in report.repositories[0].actions
+        if a.kind is not LineEndingActionKind.PIN_AUTOCRLF
+    ] == [LineEndingActionState.COMPLETED]
     published = tmp_path / (".gitattributes" if migrate else ".git/info/attributes")
     assert published.read_bytes() == GITATTRIBUTES_RULE.encode() + b"\n"
     assert passes == [1, 1]
@@ -1797,10 +1802,80 @@ def test_failed_recheckout_is_reported_failed_and_unsafe(tmp_path: Path):
     assert normalize.state is LineEndingActionState.FAILED
     assert "simulated failure" in (normalize.detail or "")
     assert "git checkout -- <path>" in (normalize.detail or "")
-    assert "'a.v'" in (normalize.detail or "")
     assert report.status is LineEndingStatus.UNSAFE
     # The shifted mtime is put back for a path Git never rewrote.
     assert _snapshot(tmp_path / "a.v") == before
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs a read-only directory")
+def test_partial_recheckout_failure_leaves_no_phantom_modifications(tmp_path: Path):
+    # Git rewrites every path it can and writes no index when one path cannot be replaced.
+    _crlf_repo(tmp_path)
+    _commit_file(tmp_path, "locked/b.v", b"module b;\nendmodule\n")
+    (tmp_path / "locked" / "b.v").unlink()
+    assert _git(tmp_path, "checkout", "--", "locked/b.v").returncode == 0
+    locked = tmp_path / "locked"
+    locked.chmod(0o555)
+    try:
+        if os.access(locked, os.W_OK):
+            pytest.skip("directory permissions are not enforced for this user")
+        failed = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+    finally:
+        locked.chmod(0o755)
+
+    assert _normalize_action(failed).state is LineEndingActionState.FAILED
+    assert _git(tmp_path, "status", "--porcelain", "--untracked-files=no").stdout == b""
+    # The next run repairs what is left: the tree is not stuck as dirty.
+    retry = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+    assert retry.status is LineEndingStatus.SAFE
+    assert (tmp_path / "locked" / "b.v").read_bytes() == b"module b;\nendmodule\n"
+
+
+def test_failed_stat_refresh_after_partial_checkout_is_reported(tmp_path: Path):
+    _crlf_repo(tmp_path)
+    real_run = subprocess.run
+
+    def fail_checkout_then_refresh(*args, **kwargs):
+        command = args[0]
+        if "checkout-index" in command and "--temp" not in command:
+            # Git rewrote the file, then failed.
+            (tmp_path / "a.v").write_bytes(b"module a;\nendmodule\n")
+            return subprocess.CompletedProcess(command, 1, b"", b"simulated failure")
+        if "--index-info" in command:
+            return subprocess.CompletedProcess(command, 128, b"", b"index failure")
+        return real_run(*args, **kwargs)
+
+    with patch.object(subprocess, "run", side_effect=fail_checkout_then_refresh):
+        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+
+    detail = _normalize_action(report).detail or ""
+    assert "simulated failure" in detail
+    assert "could not refresh the index after the failure" in detail
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a colon is not valid in a Windows file name")
+def test_crlf_path_starting_with_a_colon_is_normalized(tmp_path: Path):
+    # "./" keeps Git from reading the leading colon as pathspec magic.
+    _init(tmp_path, autocrlf="true")
+    _commit_file(tmp_path, "./:a.v", b"module a;\nendmodule\n")
+    (tmp_path / ":a.v").unlink()
+    assert _git(tmp_path, "checkout", "--", "./:a.v").returncode == 0
+    assert b"\r\n" in (tmp_path / ":a.v").read_bytes()
+
+    report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+
+    assert report.status is LineEndingStatus.SAFE
+    assert (tmp_path / ":a.v").read_bytes() == b"module a;\nendmodule\n"
+
+
+def test_many_left_paths_are_listed_with_a_count():
+    left = {f"f{number}.v": "changed" for number in range(5)}
+
+    detail = line_endings._left_detail(2, left)
+
+    assert detail.startswith("normalized 2 file(s) to LF; left 5 tracked file(s) untouched:")
+    assert "'f2.v' (changed), and 2 more" in detail
+    assert "f3.v" not in detail
 
 
 def test_unreadable_index_scan_fails_normalization(tmp_path: Path):
@@ -2146,14 +2221,24 @@ def test_eol_pin_is_applied_when_autocrlf_is_pinned_but_crlf_checkouts_exist(tmp
     assert _local_autocrlf(tmp_path) == "false"
 
 
-def test_eol_pin_is_left_alone_on_a_clean_tree_with_autocrlf_pinned(tmp_path: Path):
+def test_eol_pin_is_written_on_a_clean_tree_with_autocrlf_already_pinned(tmp_path: Path):
+    # A repository an earlier Booley pinned: only core.autocrlf is set, so a native
+    # core.eol=crlf would bring CRLF back on the next checkout.
     _init(tmp_path)
     _commit_file(tmp_path, "a.v", b"module a;\nendmodule\n")
 
     report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
 
-    assert report.repositories[0].actions == ()
-    assert _local_eol(tmp_path) == ""
+    assert [action.kind for action in report.repositories[0].actions] == [
+        LineEndingActionKind.PIN_AUTOCRLF
+    ]
+    assert _local_eol(tmp_path) == "lf"
+    assert (
+        reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+        .repositories[0]
+        .actions
+        == ()
+    )
 
 
 def test_core_eol_changed_after_planning_is_refused_for_that_run(tmp_path: Path):
@@ -2363,7 +2448,9 @@ def test_unreadable_normalized_attributes_fail_the_normalization(tmp_path: Path)
 
     normalize = _normalize_action(report)
     assert normalize.state is LineEndingActionState.FAILED
-    assert normalize.detail == "simulated identity failure"
+    assert normalize.detail == (
+        "normalized 2 file(s) to LF, but could not read .gitattributes: simulated identity failure"
+    )
 
 
 def test_attributes_staging_failure_preserves_the_original_file(tmp_path: Path):

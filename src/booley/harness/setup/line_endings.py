@@ -730,14 +730,14 @@ def _mode_changed_paths(root: Path) -> tuple[set[str] | None, str | None]:
     output, error = _git_output(root, ("-c", "core.fsmonitor=false", "diff-files", "-z"))
     if output is None:
         return None, error
+    # Raw ``-z`` output is strictly ``<header> NUL <path> NUL`` per record, so walk it in pairs: a
+    # path that itself starts with ``:`` is never mistaken for a header.
     fields = output.split(b"\0")
     changed: set[str] = set()
-    for index, field in enumerate(fields[:-1]):
-        if not field.startswith(b":"):
-            continue
-        old_mode, new_mode = field[1:].split(b" ")[:2]
-        if old_mode != new_mode:
-            changed.add(os.fsdecode(fields[index + 1]))
+    for header, path in zip(fields[0::2], fields[1::2], strict=False):
+        modes = header[1:].split(b" ")
+        if len(modes) >= 2 and modes[0] != modes[1]:
+            changed.add(os.fsdecode(path))
     return changed, None
 
 
@@ -938,7 +938,8 @@ def _shift_mtimes(
 ) -> tuple[dict[str, tuple[int, int]], dict[str, str]]:
     """Move each file's mtime two seconds on so Git treats even a stat-clean entry as changed.
 
-    Returns ``{name: (original_ns, shifted_ns)}`` and the paths that could not be shifted.
+    Returns ``{name: (original_ns, shifted_ns)}``, where ``shifted_ns`` is what the
+    filesystem stored (coarse timestamps round it), and the paths that could not be shifted.
     """
     shifted: dict[str, tuple[int, int]] = {}
     failed: dict[str, str] = {}
@@ -946,8 +947,8 @@ def _shift_mtimes(
         path = root / name
         try:
             metadata = path.stat()
-            moved = metadata.st_mtime_ns + 2_000_000_000
-            os.utime(path, ns=(metadata.st_atime_ns, moved))
+            os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 2_000_000_000))
+            moved = path.stat().st_mtime_ns
         except OSError as exc:
             failed[name] = f"could not update mtime: {exc}"
             continue
@@ -955,14 +956,26 @@ def _shift_mtimes(
     return shifted, failed
 
 
-def _restore_mtimes(root: Path, shifted: dict[str, tuple[int, int]]) -> None:
-    """Undo the shift for every path Git did not rewrite (its mtime is still the shifted one)."""
+def _restore_mtimes(
+    root: Path, shifted: dict[str, tuple[int, int]]
+) -> tuple[list[str], list[str]]:
+    """Undo the shift for every path Git did not rewrite (its mtime is still the shifted one).
+
+    Returns the paths Git did rewrite and the paths whose mtime could not be restored.
+    """
+    rewritten: list[str] = []
+    unrestored: list[str] = []
     for name, (original, moved) in shifted.items():
         path = root / name
-        with suppress(OSError):
+        try:
             metadata = path.stat()
-            if metadata.st_mtime_ns == moved:
-                os.utime(path, ns=(metadata.st_atime_ns, original))
+            if metadata.st_mtime_ns != moved:
+                rewritten.append(name)
+                continue
+            os.utime(path, ns=(metadata.st_atime_ns, original))
+        except OSError:
+            unrestored.append(name)
+    return rewritten, unrestored
 
 
 def _checkout_index(root: Path, names: list[str]) -> str | None:
@@ -997,18 +1010,41 @@ def _checkout_index(root: Path, names: list[str]) -> str | None:
         if proc.returncode == 0:
             return None
         detail = _error_text(proc.stderr) or "git checkout-index failed"
-    shown = " ".join(repr(name) for name in names[:3])
     return (
         f"could not re-check out line-ending-only files: {detail}; a file Git removed and "
-        f"could not write is restored by `git checkout -- <path>` (first listed: {shown}), "
-        f"otherwise re-run {runtime_context.booley_init_hint(code=True)}"
+        "could not write is restored by `git checkout -- <path>`, otherwise re-run "
+        f"{runtime_context.booley_init_hint(code=True)}"
     )
 
 
 def _left_detail(normalized: int, left: dict[str, str]) -> str:
-    listing = ", ".join(f"{name!r} ({cause})" for name, cause in left.items())
+    shown = ", ".join(f"{name!r} ({cause})" for name, cause in list(left.items())[:3])
+    more = f", and {len(left) - 3} more" if len(left) > 3 else ""
     prefix = f"normalized {normalized} file(s) to LF; " if normalized else ""
-    return f"{prefix}left {len(left)} tracked file(s) untouched: {listing}"
+    return f"{prefix}left {len(left)} tracked file(s) untouched: {shown}{more}"
+
+
+def _settle_failed_checkout(root: Path, shifted: dict[str, tuple[int, int]], error: str) -> str:
+    """Leave the tree as a failed ``checkout-index`` left it, without phantom modifications.
+
+    Git rewrites every path it can and writes no index when one fails. The rewritten
+    files are LF with a stale index stat, which ``git status`` reports as modified, so
+    their entries are re-recorded for the next refresh to compare by content.
+    """
+    rewritten, unrestored = _restore_mtimes(root, shifted)
+    notes: list[str] = []
+    stat_error: str | None = None
+    if rewritten:
+        stat_error = _reset_index_stat(root, tuple(rewritten))
+        if stat_error is None:
+            _output, stat_error = _git_output(
+                root, ("update-index", "-q", "--unmerged", "--refresh"), timeout=300
+            )
+    if stat_error is not None:
+        notes.append(f"could not refresh the index after the failure: {stat_error}")
+    if unrestored:
+        notes.append(f"could not restore the mtime of {', '.join(map(repr, unrestored[:3]))}")
+    return "; ".join([error, *notes])
 
 
 def _recheckout_eligible(
@@ -1021,12 +1057,13 @@ def _recheckout_eligible(
     if names:
         error = _checkout_index(root, names)
         if error is not None:
-            _restore_mtimes(root, shifted)
+            error = _settle_failed_checkout(root, shifted, error)
             return _NormalizationResult(left=tuple(left.items()), error=error)
     identity = None
     if ".gitattributes" in shifted:
         identity, error = _optional_file_identity(root / ".gitattributes")
         if error is not None:
+            error = f"normalized {len(names)} file(s) to LF, but could not read .gitattributes: {error}"
             return _NormalizationResult(tuple(names), tuple(left.items()), error=error)
     return _NormalizationResult(tuple(names), tuple(left.items()), identity)
 
@@ -1559,11 +1596,12 @@ def _normalization_refusal(plan: _RepositoryPlan) -> _Refusal | None:
 def _pin_needed(plan: _RepositoryPlan) -> bool:
     """Whether the repo-local line-ending pin must be written.
 
-    ``core.autocrlf`` unset or true always needs it. A native ``core.eol=crlf``
-    only matters once CRLF checkouts exist, so a clean tree is left alone.
+    ``core.autocrlf`` unset or true needs it, and so does a ``core.eol`` that is
+    not ``lf`` (Git for Windows' native value is ``crlf``): both decide what the
+    next checkout writes, including in a repository an earlier Booley pinned.
     """
     autocrlf_needed = not plan.local_autocrlf.is_set or plan.local_autocrlf.value
-    return autocrlf_needed or (bool(plan.crlf_paths) and plan.local_eol.casefold() != "lf")
+    return autocrlf_needed or plan.local_eol.casefold() != "lf"
 
 
 def _planned_actions(plan: _RepositoryPlan) -> tuple[LineEndingActionResult, ...]:
