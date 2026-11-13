@@ -42,6 +42,7 @@ class Entry:
     prefix: str | None = None
     test_run: str | None = None
     verdict: Verdict | None = None
+    detail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -106,7 +107,7 @@ def build_run(
                     entry.bound,
                     entry.value,
                     verdict or entry.verdict or default,
-                    None,
+                    entry.detail,
                 )
             )
         rules.append(
