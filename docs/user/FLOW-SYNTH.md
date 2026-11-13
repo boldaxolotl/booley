@@ -1,7 +1,7 @@
 # ASIC synthesis (`synth`)
 
-`synth` maps a Target's RTL to standard cells on an
-[open 45 nm library](SUPPORTED-EDA-TOOLS.md) and
+`synth` maps a Target's RTL to the standard cells of a cell library, the
+[open 45 nm library](SUPPORTED-EDA-TOOLS.md), and
 reports area, cell count, per-clock timing and Fmax. It also fails the run on
 structural problems such as unintended latches and combinational loops. Use it
 while you change RTL to see whether a change makes the design smaller or

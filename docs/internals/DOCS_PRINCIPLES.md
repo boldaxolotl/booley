@@ -214,10 +214,12 @@ drop the rest.
 ### 26. Variants go in collapsed callouts
 
 The main text describes one baseline setup: Stealth Mode off, an HDL
-testbench, Linux, and the EDA tools in the Sandbox Image. A user on that setup
-never has to skip a sentence. When a variant changes what the user sees or
-does, put the difference in a collapsed callout right after the baseline text
-it modifies:
+testbench, Linux, the EDA tools in the Sandbox Image, and the open 45 nm cell
+library. Write the main text for the general case: say "the cell library" and
+name the 45 nm library only where the reader needs its value. A user on that
+setup never has to skip a sentence. When a variant changes what the user sees
+or does, put the difference in a collapsed callout right after the baseline
+text it modifies:
 
 ```markdown
 <details markdown>
@@ -230,7 +232,8 @@ Commit `AGENTS.md` in the Booley Directory's own repository instead:
 ```
 
 - Use one fixed label per variant: `In stealth mode`, `With a cocotb
-  testbench`, `On Windows`, `With host-installed licensed tools`.
+  testbench`, `On Windows`, `With host-installed licensed tools`,
+  `With the <name> library` (one per PDK).
 - Say only what differs, and link the variant's own page (`STEALTH.md`,
   `WINDOWS.md`, ...) for the full story. Keep the callout at block level, not
   inside a list item, and leave blank lines around its Markdown body.
