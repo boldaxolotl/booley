@@ -8,10 +8,17 @@ from pathlib import Path
 import pytest
 
 from booley.runtime import project_image as pi
+from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
 
 # ===========================================================================
 # project_image_name
 # ===========================================================================
+
+
+@pytest.fixture(autouse=True)
+def _route_bounded_capture_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let this file's ``subprocess.run`` fakes see the bounded Docker commands of pi."""
+    route_bounded_capture_through_subprocess_run(monkeypatch, pi)
 
 
 class TestImageName:

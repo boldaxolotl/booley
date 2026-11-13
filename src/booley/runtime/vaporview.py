@@ -22,6 +22,7 @@ from booley.core.boundary import (
     require_opt_str,
 )
 from booley.runtime import runtime_context, vscode_server
+from booley.runtime.platform_paths import run_captured_bounded
 
 EXTENSION_ID = "lramseyer.vaporview"
 VERIFIED_VERSION = "1.6.0"
@@ -375,16 +376,14 @@ def inspect_viewer_bridge(request: ViewerBridgeRequest) -> DiagnosticReport:
     return report.report()
 
 
+#: Seconds one ``python3 -c`` probe may run before its process tree is killed.
+_PROBE_TIMEOUT_S = 20
+
+
 def _run_probe(prefix: list[str], source: str) -> subprocess.CompletedProcess[str] | None:
     """Run one probe source with ``python3 -c``; None when the process cannot run."""
     try:
-        return subprocess.run(
-            [*prefix, "python3", "-c", source],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
+        return run_captured_bounded([*prefix, "python3", "-c", source], timeout=_PROBE_TIMEOUT_S)
     except (subprocess.SubprocessError, FileNotFoundError, OSError):
         return None
 

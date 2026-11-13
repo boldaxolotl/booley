@@ -25,6 +25,7 @@ from booley.runtime.image_lifecycle import _prepared_provenance, _source_graph_b
 from booley.runtime.image_provenance import LABEL_RUNTIME_BASE_CONTRACT
 from booley.runtime.interactive_docker import inspect_image_metadata
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
+from booley.runtime.platform_paths import run_captured_bounded
 from booley.runtime.timefmt import utc_now_rfc3339
 
 REFERENCE = "booley-runtime-base:local"
@@ -151,13 +152,7 @@ def _verified_upgrade(
 
 def _tag(source: str, target: str) -> None:
     try:
-        subprocess.run(
-            ["docker", "tag", source, target],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=30,
-        )
+        run_captured_bounded(["docker", "tag", source, target], timeout=30).check_returncode()
     except (OSError, subprocess.SubprocessError) as exc:
         raise RuntimeError(f"cannot tag Bootstrap image {source!r} as {target!r}: {exc}") from exc
 
@@ -166,13 +161,7 @@ def _cleanup_migration(references: tuple[str, ...], primary: BaseException | Non
     failures = []
     for reference in references:
         try:
-            result = subprocess.run(
-                ["docker", "image", "rm", reference],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=30,
-            )
+            result = run_captured_bounded(["docker", "image", "rm", reference], timeout=30)
             if result.returncode and "no such image" not in (result.stderr or "").lower():
                 failures.append(f"{reference}: {result.stderr or result.returncode}")
         except (OSError, subprocess.SubprocessError) as exc:
