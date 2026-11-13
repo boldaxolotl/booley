@@ -1859,10 +1859,10 @@ class TestMainDisplayEvents:
             assert evt["target"] == "rtl", f"{evt['type']} should have target='rtl'"
 
 
-class HeavyMcpTool(ConcreteMcpTool):
-    """ConcreteMcpTool classed as HEAVY — participates in slot-store admission."""
+class LightMcpTool(ConcreteMcpTool):
+    """ConcreteMcpTool classed as light class — participates in slot-store admission."""
 
-    JOB_CLASS = job_slots.CLASS_HEAVY
+    JOB_CLASS = job_slots.CLASS_LIGHT
 
 
 class TestJobSlotAdmission:
@@ -1908,7 +1908,7 @@ class TestJobSlotAdmission:
         from booley.runtime.booley_dir import reset_cache
 
         reset_cache()
-        endpoint = HeavyMcpTool()
+        endpoint = LightMcpTool()
         assert endpoint.main(["--work-dir", str(tmp_path)]) == EXIT_SUCCESS
         reset_cache()  # don't leak a cached "no project" into other tests
 
@@ -1918,21 +1918,21 @@ class TestJobSlotAdmission:
         slots = self._runtime_env(monkeypatch, tmp_path)
         seen: dict[str, list] = {}
 
-        class ObservingMcpTool(HeavyMcpTool):
+        class ObservingMcpTool(LightMcpTool):
             def _run(inner) -> McpToolResult:  # noqa: N805 — closure style
                 store = job_slots.SlotStore(slots)
-                holders, waiters = store.snapshot(job_slots.CLASS_HEAVY)
+                holders, waiters = store.snapshot(job_slots.CLASS_LIGHT)
                 seen["holders"] = holders
                 seen["waiters"] = waiters
                 return McpToolResult(exit_code=EXIT_SUCCESS)
 
         endpoint = ObservingMcpTool()
         assert endpoint.main(["--work-dir", str(tmp_path)]) == EXIT_SUCCESS
-        # During _run: our PID held the one heavy slot, nothing queued.
+        # During _run: our PID held the one light slot, nothing queued.
         assert [t.pid for t in seen["holders"]] == [os.getpid()]
         assert seen["waiters"] == []
         # After main: the finally released the claim — no live entries remain.
-        assert list((slots / job_slots.CLASS_HEAVY).glob("*.json")) == []
+        assert list((slots / job_slots.CLASS_LIGHT).glob("*.json")) == []
 
     def test_queue_full_returns_blocked_error(
         self,
@@ -1944,23 +1944,23 @@ class TestJobSlotAdmission:
         with EXIT_ERROR and a BLOCKED report_text (ADR 0028 Decision 8: queue
         overflow is the only admission outcome surfaced as BLOCKED)."""
         slots = self._runtime_env(monkeypatch, tmp_path)
-        # Fill the heavy class to its bound with default caps (cap 1 +
-        # queue_max 8 = 9 live entries). pid=our own → provably alive;
+        # Fill the light class to its bound with default caps (cap 3 +
+        # queue_max 8 = 11 live entries). pid=our own → provably alive;
         # argv=[] → the /proc identity check can't judge, so no reap.
         store = job_slots.SlotStore(slots)
         caps = job_slots.SlotCaps()
-        for _ in range(caps.max_heavy + caps.queue_max):
-            store.submit(job_slots.CLASS_HEAVY, pid=os.getpid(), argv=[])
+        for _ in range(caps.max_light + caps.queue_max):
+            store.submit(job_slots.CLASS_LIGHT, pid=os.getpid(), argv=[])
 
-        endpoint = HeavyMcpTool()  # human mode: report_text surfaces on stderr
+        endpoint = LightMcpTool()  # human mode: report_text surfaces on stderr
         exit_code = endpoint.main(["--work-dir", str(tmp_path)])
         assert exit_code == EXIT_ERROR
         err = capsys.readouterr().err
         assert "BLOCKED" in err
         assert "queue is full" in err
         # The refused run withdrew its own entry — the queue did not grow.
-        live = list((slots / job_slots.CLASS_HEAVY).glob("*.json"))
-        assert len(live) == caps.max_heavy + caps.queue_max
+        live = list((slots / job_slots.CLASS_LIGHT).glob("*.json"))
+        assert len(live) == caps.max_light + caps.queue_max
 
 
 class TestMcpToolEventScan:
@@ -2169,7 +2169,7 @@ class TestSlotClaimBudget:
 
         endpoint = ConcreteMcpTool()
         endpoint.parse_args([])
-        monkeypatch.setattr(type(endpoint), "JOB_CLASS", job_slots.CLASS_HEAVY, raising=False)
+        monkeypatch.setattr(type(endpoint), "JOB_CLASS", job_slots.CLASS_LIGHT, raising=False)
         store, token = endpoint._acquire_job_slot()
         assert token is not None
         assert token.timeout_s == 1200.0
@@ -2183,7 +2183,7 @@ class TestSlotClaimBudget:
 
         endpoint = ConcreteMcpTool()
         endpoint.parse_args([])
-        monkeypatch.setattr(type(endpoint), "JOB_CLASS", job_slots.CLASS_HEAVY, raising=False)
+        monkeypatch.setattr(type(endpoint), "JOB_CLASS", job_slots.CLASS_LIGHT, raising=False)
         store, token = endpoint._acquire_job_slot()
         assert token is not None
         assert token.timeout_s is None

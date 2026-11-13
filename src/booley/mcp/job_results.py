@@ -129,7 +129,7 @@ def _phase_for_record(rec: jobrec.JobRecord | None) -> str:
             return f"RUNNING ({state.reason})"
         if state is None or state.state != job_slots.QUEUED:
             return "RUNNING"
-        # Only a memory waiter (admitted under the development switch) has a wait to report.
+        # Only a memory waiter (admitted by Memory Reservation) has a wait to report.
         wait = store.memory_wait(rec.pid)
     except OSError:
         return "RUNNING"

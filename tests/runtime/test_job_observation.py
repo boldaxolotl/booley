@@ -282,7 +282,7 @@ def test_observational_slot_state_and_corrupt_entry_isolation(tmp_path, monkeypa
     identity = ProcessIdentity(99, "fixture", 101)
     root = tmp_path / "jobs"
     job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
-    slots = tmp_path / "slots/heavy"
+    slots = tmp_path / "slots/light"
     slots.mkdir(parents=True)
     token = slots / job_slots._entry_name(slot, 1, 1, 99, 0)
     token.write_text(json.dumps({"owner_identity": identity.to_payload()}))
@@ -366,7 +366,7 @@ def test_slot_queued_job_has_no_queue_detail(tmp_path, monkeypatch):
     identity = ProcessIdentity(99, "fixture", 101)
     root = tmp_path / "jobs"
     job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
-    slots = tmp_path / "slots/heavy"
+    slots = tmp_path / "slots/light"
     slots.mkdir(parents=True)
     _memory_entry(slots, "w", 1, 99, {"owner_identity": identity.to_payload()})
     monkeypatch.setattr(

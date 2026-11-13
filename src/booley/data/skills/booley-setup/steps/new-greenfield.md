@@ -81,10 +81,8 @@ only):
   also removes an empty inner `.booley` repository and `/.booley` git exclusion
   that an older plain init may have set up; if it refuses because that inner
   repository has commits, show the user its message (rerun with `--stealth`, or
-  move the history away) and change nothing yourself. Before a `--stealth`
-  scaffold over an earlier plain init, undo that init's non-Stealth line-ending
-  edit as `SKILL.md`'s Stealth footprint step describes; the scaffold's init
-  then hides `.booley/` and creates its repository. After a
+  move the history away) and change nothing yourself. With `--stealth`, the
+  scaffold's init then hides `.booley/` and creates its repository. After a
   `--stealth` scaffold, commit `.booley/` in its own repository before the
   Doctor gate, or `project.core-file-untracked` blocks it.
 

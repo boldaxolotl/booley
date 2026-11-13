@@ -834,7 +834,7 @@ class TestFlowEnablement:
         _write_project_config(tmp_path)
         flow = _flow(tmp_path, state_file)
         assert flow._flow_enabled()
-        assert flow._resolve_job_class() == job_slots.CLASS_HEAVY
+        assert flow._resolve_job_class() == job_slots.CLASS_MEMORY
 
 
 def _patch_edam_build(captured: dict):
@@ -1923,7 +1923,7 @@ def test_completed_route_missing_required_report_retains_route_fact(
     [
         SubprocessResult(returncode=137),
         SubprocessResult(returncode=-9),
-        SubprocessResult(returncode=0, oom_kill_delta=1),
+        SubprocessResult(returncode=0, oom_kill_delta=1, oom_killed=True),
         SubprocessResult(returncode=0, timed_out=True),
     ],
 )
@@ -1936,7 +1936,6 @@ def test_route_fact_does_not_hide_abnormal_termination(process):
 
 
 def test_ordinary_vivado_failure_during_another_jobs_oom_kill_is_not_abnormal(monkeypatch):
-    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
     metrics = FpgaMetrics(route_completed=True, returncode=0)
     process = SubprocessResult(returncode=1, oom_kill_delta=1)
 
@@ -1947,7 +1946,6 @@ def test_ordinary_vivado_failure_during_another_jobs_oom_kill_is_not_abnormal(mo
 
 
 def test_own_vivado_oom_kill_is_abnormal_termination_under_memory_admission(monkeypatch):
-    monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
     process = SubprocessResult(returncode=1, oom_kill_delta=1, oom_killed=True)
 
     failure = FpgaImplFlow._classify_vivado_failure(process, "")

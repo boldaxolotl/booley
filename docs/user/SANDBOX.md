@@ -252,8 +252,8 @@ memory = "8g"                                  # container memory limit; unset =
 # mask_paths = ["private/notes"]               # directories the agent must not see
 ```
 
-`booley doctor` warns when `memory` looks too small for the
-[`[jobs]`](CONFIG.md#jobs--concurrency-jobs) limits. `[sandbox] dashboard` is
+`memory` sets the [Memory Budget](CONFIG.md#jobs--concurrency-jobs) that
+admits Jobs; `booley doctor` warns while it is unset. `[sandbox] dashboard` is
 covered in [CONFIG.md](CONFIG.md#dashboard-and-quiet-goal-presence-goals).
 
 Changes to `mount_host_skills`, `mask_paths`, `image` and `pip_requirements`

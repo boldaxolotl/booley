@@ -7,6 +7,7 @@ import ast
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -121,7 +122,10 @@ def _write_project(
     (root / "tb").mkdir()
     booley_dir = root / ".booley"
     booley_dir.mkdir()
-    sandbox_section = f'[sandbox]\nimage = "{sandbox_image}"\n' if sandbox_image else ""
+    # A set memory limit keeps the clean fixture free of the unset-memory WARN.
+    sandbox_section = '[sandbox]\nmemory = "16g"\n'
+    if sandbox_image:
+        sandbox_section += f'image = "{sandbox_image}"\n'
     booley_toml = """
 [project]
 name = "unit"
@@ -215,7 +219,6 @@ def _seed_interactive(root: Path) -> None:
     dc.write_devcontainer(root, build_spec(dc.APP_NONE, image=doctor.pi.project_image_name(root)))
     info_dir = root / ".git" / "info"
     info_dir.mkdir(parents=True, exist_ok=True)
-    (info_dir / "attributes").write_text("* text=auto eol=lf\n", encoding="utf-8")
     (info_dir / "exclude").write_text(
         "/.devcontainer\n/.booley\n",
         encoding="utf-8",
@@ -480,7 +483,6 @@ def test_doctor_passes_interactive_checks_when_seeded(tmp_path, monkeypatch, cap
 @pytest.mark.parametrize("concise", [False, True])
 def test_doctor_clean_run_records_freshness_stamp(tmp_path, monkeypatch, capsys, concise):
     booley_dir = _write_project(tmp_path)
-    _disable_line_ending_stealth(tmp_path)
     (tmp_path / ".git").mkdir(exist_ok=True)
     _patch_environment(monkeypatch, tmp_path, booley_dir)
     # This broad integration fixture intentionally leaves several environmental
@@ -4460,127 +4462,56 @@ def _set_agent_session(monkeypatch, app: str | None) -> None:
         monkeypatch.setenv(markers[app][0], "1")
 
 
-class TestMemoryInvariant:
-    """ADR 0028 D12: container_mem >= max_heavy*4g + max_tickets*orch + 2g."""
+class TestRetiredJobsKeys:
+    """ADR 0087: Doctor reports a retired ``[jobs]`` key as a FAIL and keeps checking."""
 
-    def test_warn_shows_arithmetic_with_1g_fallback(self, tmp_path, monkeypatch):
-        _set_venue(monkeypatch, True)
-        _fake_cgroup(tmp_path, monkeypatch, str(6 * _GIB))  # 6g < 7g required
+    def test_fails_with_the_fix_and_keeps_checking(self, tmp_path, monkeypatch, capsys):
+        booley_dir = _write_project(tmp_path)
+        _patch_environment(monkeypatch, tmp_path, booley_dir)
+        toml = booley_dir / "booley.toml"
+        toml.write_bytes(toml.read_bytes() + b'\n[jobs]\nmax_heavy = 2\nheavy_memory = "8g"\n')
+
+        rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
+
+        output = colors.strip_ansi(capsys.readouterr().out)
+        assert rc != 0
+        assert "booley.toml sets retired [jobs] key max_heavy (line 15)" in output
+        assert "delete [jobs].max_heavy (line 15); memory admission replaced it" in output
+        assert "retired [jobs] key heavy_memory (line 16)" in output
+        # Doctor did not stop at the config: later checks still ran.
+        assert "project guidance file missing" in output
+
+
+class TestSandboxMemoryCheck:
+    """ADR 0087: ``[sandbox].memory`` sizes the Memory Budget; unset falls back to installed memory."""
+
+    def test_warns_when_sandbox_memory_is_unset(self, tmp_path):
         rec = _Rec()
-        doctor._check_memory_invariant(_adr28_project(tmp_path), rec.p, rec.w, rec.s)
+        doctor._check_sandbox_memory(_adr28_project(tmp_path), rec.p, rec.w, rec.s)
         assert rec.kinds() == {"warn"}
-        warn = rec.events[0][1]
-        assert (
-            "6g < 1x4g + 1x1g + 2g = 7g — raise the devcontainer memory or lower [jobs] caps"
-        ) in warn
+        assert "the Memory Budget falls back to installed memory" in rec.events[0][1]
 
-    def test_pass_when_cgroup_limit_covers_caps(self, tmp_path, monkeypatch):
-        _set_venue(monkeypatch, True)
-        _fake_cgroup(tmp_path, monkeypatch, str(10 * _GIB))  # 10g >= 7g
+    def test_passes_when_sandbox_memory_is_set(self, tmp_path):
+        toml = {"sandbox": {"memory": "16g"}}
         rec = _Rec()
-        doctor._check_memory_invariant(_adr28_project(tmp_path), rec.p, rec.w, rec.s)
-        assert rec.kinds() == {"pass"}
-        assert "10g ≥ 1x4g + 1x1g + 2g = 7g" in rec.events[0][1]
-        assert "per Sandbox session" in rec.events[0][1]
-
-    def test_unlimited_cgroup_passes_with_note(self, tmp_path, monkeypatch):
-        _set_venue(monkeypatch, True)
-        _fake_cgroup(tmp_path, monkeypatch, "max")
-        rec = _Rec()
-        doctor._check_memory_invariant(_adr28_project(tmp_path), rec.p, rec.w, rec.s)
-        assert rec.kinds() == {"pass"}
-        assert "unlimited" in rec.events[0][1]
-
-    def test_v1_unlimited_sentinel_passes(self, tmp_path, monkeypatch):
-        _set_venue(monkeypatch, True)
-        _fake_cgroup(tmp_path, monkeypatch, str(1 << 62))  # v1 "no limit"
-        rec = _Rec()
-        doctor._check_memory_invariant(_adr28_project(tmp_path), rec.p, rec.w, rec.s)
-        assert rec.kinds() == {"pass"}
-        assert "unlimited" in rec.events[0][1]
-
-    def test_absent_cgroup_files_pass_as_unlimited(self, tmp_path, monkeypatch):
-        _set_venue(monkeypatch, True)
-        monkeypatch.setattr(
-            resource_policy,
-            "CGROUP_MEMORY_LIMIT_PATHS",
-            (tmp_path / "nope",),
+        doctor._check_sandbox_memory(
+            _adr28_project(tmp_path, booley_toml=toml), rec.p, rec.w, rec.s
         )
-        rec = _Rec()
-        doctor._check_memory_invariant(_adr28_project(tmp_path), rec.p, rec.w, rec.s)
         assert rec.kinds() == {"pass"}
+        assert "16g" in rec.events[0][1]
 
-    def test_measured_value_overrides_1g_fallback(self, tmp_path, monkeypatch):
-        # 6.5g limit: fallback needs 1x4 + 1x1 + 2 = 7g (WARN); a measured
-        # 0.5g agent needs 1x4 + 1x0.5 + 2 = 6.5g (PASS).
-        _set_venue(monkeypatch, True)
-        _fake_cgroup(tmp_path, monkeypatch, str(13 * _GIB // 2))
-        project = _adr28_project(tmp_path)
-
-        rec = _Rec()
-        doctor._check_memory_invariant(project, rec.p, rec.w, rec.s)
-        assert rec.kinds() == {"warn"}
-        assert "1g agent fallback" in rec.events[0][1]
-
-        developer_probe.record_measurement(project.booley_dir, _GIB // 2)
-        rec = _Rec()
-        doctor._check_memory_invariant(project, rec.p, rec.w, rec.s)
-        assert rec.kinds() == {"pass"}
-        assert "1x0.5g" in rec.events[0][1]
-        assert "measured agent RSS" in rec.events[0][1]
-
-    def test_caps_come_from_jobs_table(self, tmp_path, monkeypatch):
-        _set_venue(monkeypatch, False)
-        toml = {
-            "sandbox": {"memory": "11g"},
-            "jobs": {"max_heavy": 2, "max_tickets": 1},
-        }
-        rec = _Rec()
-        doctor._check_memory_invariant(
-            _adr28_project(tmp_path, booley_toml=toml),
-            rec.p,
-            rec.w,
-            rec.s,
-        )
-        assert rec.kinds() == {"pass"}  # 2x4 + 1x1 + 2 = 11g exactly
-        assert "2x4g + 1x1g + 2g = 11g" in rec.events[0][1]
-
-    def test_host_side_skips_without_sandbox_memory(self, tmp_path, monkeypatch):
-        _set_venue(monkeypatch, False)
-        rec = _Rec()
-        doctor._check_memory_invariant(_adr28_project(tmp_path), rec.p, rec.w, rec.s)
-        assert rec.kinds() == {"skip"}
-        assert "no [sandbox] memory" in rec.events[0][1]
-
-    def test_host_side_warns_from_sandbox_memory(self, tmp_path, monkeypatch):
-        _set_venue(monkeypatch, False)
-        toml = {"sandbox": {"memory": "6g"}}
-        rec = _Rec()
-        doctor._check_memory_invariant(
-            _adr28_project(tmp_path, booley_toml=toml),
-            rec.p,
-            rec.w,
-            rec.s,
-        )
-        assert rec.kinds() == {"warn"}
-        assert "[sandbox] memory 6g < 1x4g + 1x1g + 2g = 7g" in rec.events[0][1]
-
-    def test_unparseable_sandbox_memory_warns(self, tmp_path, monkeypatch):
-        _set_venue(monkeypatch, False)
+    def test_unparseable_sandbox_memory_warns(self, tmp_path):
         toml = {"sandbox": {"memory": "lots"}}
         rec = _Rec()
-        doctor._check_memory_invariant(
-            _adr28_project(tmp_path, booley_toml=toml),
-            rec.p,
-            rec.w,
-            rec.s,
+        doctor._check_sandbox_memory(
+            _adr28_project(tmp_path, booley_toml=toml), rec.p, rec.w, rec.s
         )
         assert rec.kinds() == {"warn"}
         assert "unparseable" in rec.events[0][1]
 
-    def test_skips_without_project(self, monkeypatch):
+    def test_skips_without_project(self):
         rec = _Rec()
-        doctor._check_memory_invariant(None, rec.p, rec.w, rec.s)
+        doctor._check_sandbox_memory(None, rec.p, rec.w, rec.s)
         assert rec.kinds() == {"skip"}
 
 
@@ -5062,26 +4993,6 @@ class TestFailPathSelfTest:
 class TestDeveloperProbe:
     """doctor --deep measures the developer memory term (ADR 0028 D12)."""
 
-    def test_record_and_load_round_trip(self, tmp_path):
-        pd = tmp_path / ".booley"
-        pd.mkdir()
-        path = developer_probe.record_measurement(pd, 3 * _GIB // 2)
-        assert path == pd / "runtime" / "developer_probe.json"
-        data = json.loads(path.read_text(encoding="utf-8"))
-        assert data["developer_peak_rss_bytes"] == 3 * _GIB // 2
-        assert "measured_at" in data
-        assert developer_probe.load_measurement(pd) == 3 * _GIB // 2
-
-    def test_load_measurement_tolerates_garbage(self, tmp_path):
-        pd = tmp_path / ".booley"
-        assert developer_probe.load_measurement(pd) is None  # absent
-        path = developer_probe.probe_path(pd)
-        path.parent.mkdir(parents=True)
-        path.write_text("not json", encoding="utf-8")
-        assert developer_probe.load_measurement(pd) is None
-        path.write_text('{"developer_peak_rss_bytes": -3}', encoding="utf-8")
-        assert developer_probe.load_measurement(pd) is None
-
     def test_probe_skips_host_side(self, tmp_path, monkeypatch):
         _set_venue(monkeypatch, False)
         rec = _Rec()
@@ -5089,7 +5000,7 @@ class TestDeveloperProbe:
         assert rec.kinds() == {"skip"}
         assert "in-container" in rec.events[0][1]
 
-    def test_probe_records_and_invariant_reads_it(self, tmp_path, monkeypatch):
+    def test_probe_reports_the_peak_rss(self, tmp_path, monkeypatch):
         _set_venue(monkeypatch, True)
         monkeypatch.setattr(
             developer_probe,
@@ -5102,15 +5013,7 @@ class TestDeveloperProbe:
         rec = _Rec()
         doctor._run_developer_probe(project, rec.p, rec.s, rec.f)
         assert rec.kinds() == {"pass"}
-        assert "recorded to" in rec.events[0][1]
-        assert developer_probe.load_measurement(project.booley_dir) == 2 * _GIB
-
-        # The invariant now uses the measurement: 1x4 + 1x2 + 2 = 8g.
-        _fake_cgroup(tmp_path, monkeypatch, str(7 * _GIB))
-        rec = _Rec()
-        doctor._check_memory_invariant(project, rec.p, rec.w, rec.s)
-        assert rec.kinds() == {"warn"}
-        assert "7g < 1x4g + 1x2g + 2g = 8g" in rec.events[0][1]
+        assert "peak RSS measured: 2g" in rec.events[0][1]
 
     def test_probe_failure_is_skip_not_crash(self, tmp_path, monkeypatch):
         _set_venue(monkeypatch, True)
@@ -5123,8 +5026,7 @@ class TestDeveloperProbe:
         rec = _Rec()
         doctor._run_developer_probe(project, rec.p, rec.s, rec.f)
         assert rec.kinds() == {"skip"}
-        assert "1g fallback" in rec.events[0][1]
-        assert developer_probe.load_measurement(project.booley_dir) is None
+        assert "probe agent failed: no auth" in rec.events[0][1]
 
     def test_agent_call_failure_is_fail_not_skip(self, tmp_path, monkeypatch):
         """Regression (2026-07-23): the developer agent crashed at launch on
@@ -5294,25 +5196,6 @@ class TestDeveloperProbe:
         with pytest.raises(developer_probe.ProbeError, match="no backend") as excinfo:
             developer_probe.measure_developer_rss(tmp_path)
         assert excinfo.value.agent_called is False
-
-    def test_probe_record_failure_still_accounts_usage(self, tmp_path, monkeypatch):
-        _set_venue(monkeypatch, True)
-        usage = developer_probe.ProbeUsage(5, 0, 2, 0.001)
-        monkeypatch.setattr(
-            developer_probe,
-            "measure_developer_rss",
-            lambda root: developer_probe.ProbeMeasurement(_GIB, True, usage),
-        )
-
-        def boom(*_args):
-            raise OSError("read-only")
-
-        monkeypatch.setattr(developer_probe, "record_measurement", boom)
-        rec = _Rec()
-        record = doctor._run_developer_probe(_adr28_project(tmp_path), rec.p, rec.s, rec.f)
-        assert rec.kinds() == {"skip"}
-        assert record is not None
-        assert record.usage == usage
 
     def test_probe_agent_failure_reports_unknown_usage(self, tmp_path, monkeypatch, capsys):
         _set_venue(monkeypatch, True)
@@ -6115,7 +5998,6 @@ class TestLineEndingsCheck:
         )
 
     def test_lf_tree_with_autocrlf_off_passes(self, tmp_path: Path):
-        _disable_line_ending_stealth(tmp_path)
         self._repo(tmp_path, autocrlf="false")
         self._commit(tmp_path, "a.v", b"module a;\nendmodule\n")
         report = _inspect_line_endings(tmp_path)
@@ -6125,7 +6007,6 @@ class TestLineEndingsCheck:
         assert not _findings(report, Severity.FAIL)
 
     def test_lf_tree_with_stale_crlf_index_stat_fails(self, tmp_path: Path):
-        _disable_line_ending_stealth(tmp_path)
         self._repo(tmp_path, autocrlf="true")
         self._commit(tmp_path, "a.v", b"module a;\nendmodule\n")
         (tmp_path / "a.v").unlink()
@@ -6228,8 +6109,7 @@ class TestLineEndingsCheck:
         assert not _findings(report, Severity.WARN)
         assert not _findings(report, Severity.FAIL)
 
-    def test_missing_gitattributes_rule_alone_is_silent(self, tmp_path: Path):
-        _disable_line_ending_stealth(tmp_path)
+    def test_lf_tree_without_attributes_is_silent(self, tmp_path: Path):
         # Most vendored upstreams (the pristine picorv32 among them) will never
         # carry the rule, and on an LF host it changes nothing. Warning here
         # would be unfollowable advice on every Linux project.
@@ -6246,7 +6126,6 @@ class TestLineEndingsCheck:
         assert not _findings(report, Severity.FAIL)
 
     def test_nested_crlf_failure_names_project_data_repository(self, tmp_path: Path):
-        _disable_line_ending_stealth(tmp_path)
         self._repo(tmp_path, autocrlf="false")
         self._commit(tmp_path, "a.v", b"module a;\nendmodule\n")
         booley_dir = tmp_path / ".booley"
@@ -6270,7 +6149,6 @@ class TestLineEndingsCheck:
         assert any("Project Root" in f.message for f in _findings(report, Severity.PASS))
 
     def test_nested_autocrlf_warning_has_project_data_subject(self, tmp_path: Path):
-        _disable_line_ending_stealth(tmp_path)
         self._repo(tmp_path, autocrlf="false")
         booley_dir = tmp_path / ".booley"
         booley_dir.mkdir(exist_ok=True)
@@ -6389,7 +6267,7 @@ class TestLineEndingsCheck:
         assert len(warned) == 1
         assert "git diff timed out" in warned[0].message
 
-    def test_crlf_failure_precedes_candidate_warning(
+    def test_crlf_failure_precedes_unreadable_warning(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         from booley.harness.setup.line_endings import (
@@ -6407,8 +6285,8 @@ class TestLineEndingsCheck:
             (
                 LineEndingObservation(LineEndingObservationCode.CRLF_MISMATCH, count=1),
                 LineEndingObservation(
-                    LineEndingObservationCode.CANDIDATE_UNSAFE,
-                    detail="hard-linked candidate",
+                    LineEndingObservationCode.STATUS_UNREADABLE,
+                    detail="git diff timed out",
                 ),
             ),
             (),
@@ -6685,7 +6563,7 @@ class TestNoDockerSkipReason:
         assert not [m for lvl, m in rec.events if lvl == "fail"]
 
 
-class TestSynthHeavyTargetCalibration:
+class TestSynthDoctorTargets:
     def _project(self, tmp_path, *, marked=("asic_small", "asic_full"), booley_toml=None):
         def target(name: str) -> str:
             metadata = ", booley: {doctor: [synth]}" if name in marked else ""
@@ -6724,45 +6602,6 @@ class TestSynthHeavyTargetCalibration:
         rec = _Rec()
         assert doctor._check_doctor_targets(project, "synth", rec.f) == []
         assert rec.kinds() == {"fail"}
-
-    def test_measured_heavy_peak_overrides_undersized_reservation(self, tmp_path, monkeypatch):
-        from booley.harness import synth_probe
-
-        _set_venue(monkeypatch, False)
-        project = self._project(
-            tmp_path,
-            booley_toml={
-                "sandbox": {"memory": "21g"},
-                "jobs": {"heavy_memory": "16g", "max_tickets": 2},
-            },
-        )
-        synth_probe.record_measurement(project.booley_dir, "asic_full", 15.8 * 1024)
-        rec = _Rec()
-        doctor._check_memory_invariant(project, rec.p, rec.w, rec.s)
-        # 15.8 GiB + 15%, rounded up = 19 GiB; + 1 GiB agent + 2 GiB
-        # headroom requires 22 GiB, so the nominal 21 GiB container is unsafe.
-        assert rec.kinds() == {"warn"}
-        assert "1x19g + 1x1g + 2g = 22g" in rec.events[0][1]
-        assert "measured on asic_full" in rec.events[0][1]
-
-    def test_calibration_for_previous_heaviest_target_is_stale(self, tmp_path, monkeypatch):
-        from booley.harness import synth_probe
-
-        _set_venue(monkeypatch, False)
-        project = self._project(
-            tmp_path,
-            marked=("asic_full",),
-            booley_toml={
-                "sandbox": {"memory": "32g"},
-            },
-        )
-        synth_probe.record_measurement(project.booley_dir, "asic_small", 7 * 1024)
-        rec = _Rec()
-
-        doctor._check_memory_invariant(project, rec.p, rec.w, rec.s)
-
-        assert rec.kinds() == {"warn"}
-        assert "unselected Target 'asic_small'" in rec.events[0][1]
 
 
 def test_doctor_reuses_one_target_source_inspector(
@@ -7150,31 +6989,34 @@ targets:
         assert not c.warned and not c.passed
 
 
-def _disable_line_ending_stealth(root: Path) -> None:
-    data = root / ".booley"
-    data.mkdir(parents=True, exist_ok=True)
-    config = data / "booley.toml"
-    existing = config.read_text() if config.exists() else ""
-    config.write_text(existing + "\n[stealth]\nenabled = false\n")
-    # This fixture starts non-Stealth; it is not an on-to-off migration case.
-    (root / ".git/info/attributes").unlink(missing_ok=True)
+def test_doctor_emits_no_attributes_policy_check_ids(tmp_path):
+    removed = {"git.attributes-policy-unknown", "git.line-ending-migration"}
+    for stealth in (True, False):
+        root = tmp_path / f"stealth-{stealth}"
+        root.mkdir()
+        TestLineEndingsCheck._repo(root, autocrlf="false")
+        run_bounded_child(["git", "-C", str(root), "config", "core.eol", "lf"], check=True)
+        TestLineEndingsCheck._commit(root, ".gitignore", b".booley/\n")
+        data = root / ".booley"
+        data.mkdir()
+        (data / "booley.toml").write_text(f"[stealth]\nenabled = {str(stealth).lower()}\n")
+        if stealth:
+            # A registered worktree whose directory is gone used to leave its attributes unknown.
+            sibling = tmp_path / "sibling"
+            run_bounded_child(
+                ["git", "-C", str(root), "worktree", "add", "-q", str(sibling), "-b", "side"],
+                check=True,
+            )
+            shutil.rmtree(sibling)
+        else:
+            # A shared default written by an earlier Booley used to await an opt-out migration.
+            (root / ".git/info/attributes").write_text("* text=auto eol=lf\n")
 
+        report = _inspect_line_endings(root, data)
 
-def test_doctor_stealth_missing_local_policy_is_read_only(tmp_path):
-    TestLineEndingsCheck._repo(tmp_path, autocrlf="false")
-    TestLineEndingsCheck._commit(tmp_path, ".gitignore", b".booley/\n")
-    data = tmp_path / ".booley"
-    data.mkdir()
-    (data / "booley.toml").write_text("[stealth]\nenabled = true\n")
-    paths = [tmp_path / ".git/config", tmp_path / ".git/index"]
-    before = [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths]
-    report = _inspect_line_endings(tmp_path, data)
-    warned = _findings(report, Severity.WARN)
-    assert warned and not _findings(report, Severity.PASS) and not _findings(report, Severity.FAIL)
-    assert str(tmp_path / ".git/info/attributes") in warned[0].message
-    assert [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths] == before
-    assert not (tmp_path / ".git/info/attributes").exists()
-    assert not (tmp_path / ".gitattributes").exists()
+        assert {finding.check_id for finding in report.findings}.isdisjoint(removed)
+        assert _findings(report, Severity.PASS)
+        assert not _findings(report, Severity.WARN) and not _findings(report, Severity.FAIL)
 
 
 def test_containment_report_alias_and_symlinks(tmp_path, monkeypatch):
@@ -7542,22 +7384,6 @@ def test_goal_history_exclusion_uses_rtl_checkout_with_external_control(tmp_path
     assert exclude.read_bytes() == before
 
 
-@pytest.mark.parametrize("max_tickets", [0, 2, 100, "ignored"])
-def test_memory_invariant_is_independent_of_ignored_ticket_cap(tmp_path, monkeypatch, max_tickets):
-    _set_venue(monkeypatch, False)
-    project = _adr28_project(
-        tmp_path,
-        booley_toml={
-            "sandbox": {"memory": "7g"},
-            "jobs": {"max_tickets": max_tickets},
-        },
-    )
-    rec = _Rec()
-    doctor._check_memory_invariant(project, rec.p, rec.w, rec.s)
-    assert rec.kinds() == {"pass"}
-    assert "1x4g + 1x1g + 2g = 7g" in rec.events[0][1]
-
-
 @pytest.mark.parametrize(
     "missing",
     [
@@ -7756,35 +7582,29 @@ def test_goal_history_broken_pair_is_active_and_preserves_exclusion(tmp_path, ig
     assert exclude.read_bytes() == before
 
 
-def test_doctor_opt_out_migration_read_only_and_direct_init_hint(tmp_path):
+def test_booley_written_rules_stay_untouched_and_unreported(tmp_path):
     from booley.harness.setup.line_endings import LineEndingMode, reconcile_project_line_endings
 
-    TestLineEndingsCheck._repo(tmp_path, autocrlf="false")
-    TestLineEndingsCheck._commit(tmp_path, ".gitignore", b".booley/\n")
-    data = tmp_path / ".booley"
-    data.mkdir()
-    config = data / "booley.toml"
-    config.write_text("[stealth]\nenabled = true\n")
-    reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
-    config.write_text("[stealth]\nenabled = false\n")
-    paths = [
-        tmp_path / ".git/config",
-        tmp_path / ".git/index",
-        tmp_path / ".git/info/attributes",
-        config,
-    ]
-    before = [(p.read_bytes(), p.stat().st_mtime_ns) for p in paths]
-    report = _inspect_line_endings(tmp_path, data)
-    warned = _findings(report, Severity.WARN)
-    assert warned and not _findings(report, Severity.FAIL) and not _findings(report, Severity.PASS)
-    assert "migration" in warned[0].message
-    assert "booley init" in warned[0].fix
-    assert "cannot prove ownership" not in warned[0].message
-    assert [(p.read_bytes(), p.stat().st_mtime_ns) for p in paths] == before
-    reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
-    report = _inspect_line_endings(tmp_path, data)
-    assert _findings(report, Severity.PASS)
-    assert not _findings(report, Severity.WARN) and not _findings(report, Severity.FAIL)
+    rule = b"* text=auto eol=lf\n"
+    for stealth in (True, False):
+        for location in (".gitattributes", ".git/info/attributes"):
+            root = tmp_path / f"{'stealth' if stealth else 'plain'}-{location.replace('/', '_')}"
+            root.mkdir()
+            TestLineEndingsCheck._repo(root, autocrlf="false")
+            TestLineEndingsCheck._commit(root, ".gitignore", b".booley/\n")
+            data = root / ".booley"
+            data.mkdir()
+            (data / "booley.toml").write_text(f"[stealth]\nenabled = {str(stealth).lower()}\n")
+            written = root / location
+            written.parent.mkdir(exist_ok=True)
+            written.write_bytes(rule)
+
+            reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR)
+            report = _inspect_line_endings(root, data)
+
+            assert written.read_bytes() == rule
+            assert len(_findings(report, Severity.PASS)) == 1
+            assert not _findings(report, Severity.WARN) and not _findings(report, Severity.FAIL)
 
 
 @pytest.mark.parametrize("ignored", [False, True])
@@ -8358,25 +8178,6 @@ class TestDoctorCommonStateFromWorktree:
         )
         return main / ".booley", project
 
-    def test_developer_probe_is_read_from_main(self, worktree_project):
-        common, project = worktree_project
-        developer_probe.record_measurement(common, 1 << 29)
-        rec = _Rec()
-
-        doctor._check_memory_invariant(project, rec.p, rec.w, rec.s)
-
-        assert rec.kinds() == {"pass"}
-        assert "measured agent RSS" in rec.events[0][1]
-
-    def test_synth_probe_is_read_from_main(self, worktree_project, monkeypatch):
-        from booley.harness import synth_probe
-
-        common, project = worktree_project
-        monkeypatch.setattr(doctor.target_matrix, "doctor_targets", lambda *_args: ("t",))
-        synth_probe.record_measurement(common, "t", 512.0)
-
-        assert "calibrated peak 0.5g" in doctor._heavy_memory_reservation(project).evidence
-
     def test_project_dockerfile_is_read_from_main(self, worktree_project, monkeypatch):
         common, project = worktree_project
         _write_project_dockerfile(common.parent, mtime=2000.0)
@@ -8895,8 +8696,8 @@ def test_flow_check_report_waiver_turns_synth_warning_into_waived(tmp_path, monk
     assert "RESULT: WARN -- timing VIOLATED" in colors.strip_ansi(capsys.readouterr().out)
 
 
-def test_deep_synth_calibration_follows_flow_check_findings(tmp_path, monkeypatch):
-    """Deep synth renders its Flow-check report first; calibration runs only after a launch."""
+def test_deep_synth_reports_a_pass_then_a_timeout(tmp_path, monkeypatch):
+    """Deep synth passes on a clean launch and fails, incomplete, when the Flow hangs."""
     booley_dir = _write_project(tmp_path)
     _patch_environment(monkeypatch, tmp_path, booley_dir)
     project = doctor.ProjectAudit(
@@ -8914,7 +8715,6 @@ def test_deep_synth_calibration_follows_flow_check_findings(tmp_path, monkeypatc
     def run(cmd, **kwargs):
         if "booley.flows.synth" not in cmd:
             return base_run(cmd, **kwargs)
-        # The Flow wrote its report even when it then hung: a timeout must still skip calibration.
         _write_complete_synth_report(booley_dir)
         if timed_out:
             raise subprocess.TimeoutExpired(cmd, 1)
@@ -8941,10 +8741,7 @@ def test_deep_synth_calibration_follows_flow_check_findings(tmp_path, monkeypatc
 
     events, tracker = deep_events()
 
-    assert events == [
-        ("pass", "synth deep check [synth_fast] passed"),
-        ("warn", "synth.memory-calibration-unavailable"),
-    ]
+    assert events == [("pass", "synth deep check [synth_fast] passed")]
     assert tracker.missing == ()
 
     timed_out = True
@@ -8961,15 +8758,14 @@ _SEAT_VIVADO_DECLARED = {"eda": {"vivado": {"provisioning": "host"}}}
 
 
 class TestSeatCapCheck:
-    """ADR 0087: memory admission needs a Seat Cap for every licensed EDA tool in use."""
+    """ADR 0087: every licensed EDA tool in use needs a Seat Cap."""
 
     def _run(self, tmp_path, booley_toml):
         rec = _Rec()
         doctor._check_seat_caps(_adr28_project(tmp_path, booley_toml=booley_toml), rec.p, rec.f)
         return rec
 
-    def test_fails_when_a_used_vivado_has_no_seat_cap(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+    def test_fails_when_a_used_vivado_has_no_seat_cap(self, tmp_path):
         for booley_toml in (_SEAT_FPGA_TABLE, _SEAT_VIVADO_DECLARED):
             rec = self._run(tmp_path, booley_toml)
             assert rec.kinds() == {"fail"}, booley_toml
@@ -8978,8 +8774,7 @@ class TestSeatCapCheck:
             (fix,) = rec.fix_hints
             assert "[jobs.seats] vivado = <seats you own>" in fix
 
-    def test_passes_or_stays_silent_when_no_seat_cap_is_owed(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+    def test_passes_or_stays_silent_when_no_seat_cap_is_owed(self, tmp_path):
         capped = {**_SEAT_FPGA_TABLE, "jobs": {"seats": {"vivado": 2}}}
         rec = self._run(tmp_path, capped)
         assert rec.events == [("pass", "Seat Cap: vivado = 2")]
@@ -8995,8 +8790,3 @@ class TestSeatCapCheck:
         rec = _Rec()
         doctor._check_seat_caps(None, rec.p, rec.f)
         assert rec.events == []
-
-    def test_switch_unset_reports_nothing(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("BOOLEY_DEV_MEMORY_ADMISSION", raising=False)
-        assert self._run(tmp_path, _SEAT_FPGA_TABLE).events == []
-        assert self._run(tmp_path, _SEAT_VIVADO_DECLARED).events == []

@@ -13,6 +13,7 @@ from tests.subprocess_budget import run_bounded_child
 from booley.runtime import project_trackability as pt
 from booley.runtime import runtime_context
 from booley.runtime.booley_dir import reset_cache
+from booley.runtime.git_attributes_policy import GITATTRIBUTES_RULE
 
 
 def git(root: Path, *args: str) -> str:
@@ -310,7 +311,7 @@ def test_registered_submodule_is_inspected_in_its_own_repository(project):
 
 def test_managed_root_attributes_are_candidates(project):
     root, selected = project
-    (root / ".gitattributes").write_text("* text=auto eol=lf\n")
+    (root / ".gitattributes").write_bytes(GITATTRIBUTES_RULE.encode() + b"\n")
     (root / ".gitignore").write_text(".gitattributes\n")
     assert pt.inspect_project_trackability(root, selected).ignored[0].paths == (".gitattributes",)
 

@@ -107,7 +107,7 @@ targets:
     flow: generic
     flow_options: {tool: yosys, arch: xilinx, booley: {doctor: [synth]}}
                              # Every Doctor-marked synth Target is deep-run;
-                             # memory calibration retains the largest peak.
+                             # `booley resources` reports its peak memory.
                              # backend selects synth_<arch> and refuses to
                              # configure without it (external error: "yosys requires tool option
                              # 'arch'"). Booley's synth script overrides the pass,

@@ -1,4 +1,4 @@
-"""Borrow the admitted outer heavy lane and acquire bounded per-item child lanes."""
+"""Borrow the admitted outer lane and acquire per-item child lanes, each under its own claim."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from booley.flows.memory_admission import fixed_job_threads, job_threads_at_star
 from booley.runtime.cpu_budget import available_cpu_count
 from booley.runtime.execution_records import ExecutionId
 from booley.runtime.job_slots import (
-    CLASS_HEAVY,
     CLASS_MEMORY,
     ClaimAbortedError,
     LeaseHealth,
@@ -33,23 +32,23 @@ _MAX_CHILD_ACQUIRE_POLL_SECONDS = 0.01
 _SHUTDOWN_POLL_SLICES = 10
 
 
-class HeavyCapacityError(RuntimeError):
-    """The campaign can no longer safely use heavy capacity."""
+class CampaignCapacityError(RuntimeError):
+    """The campaign can no longer safely use its admitted capacity."""
 
 
-class LeaseLostError(HeavyCapacityError):
+class LeaseLostError(CampaignCapacityError):
     """One child lane lost its lease; the other lanes can still finish."""
 
 
 @dataclass(frozen=True, slots=True)
-class HeavyPermit:
+class OuterPermit:
     """The borrowed outer lane; it is never released by this module."""
 
     execution_id: ExecutionId | None
 
 
 @dataclass(frozen=True, slots=True)
-class ChildHeavyPermit:
+class ChildPermit:
     """One exact child lease acquired for one Simulation Work Item."""
 
     work_item_id: str
@@ -59,7 +58,7 @@ class ChildHeavyPermit:
     scope: SupervisedExecutionScope
 
 
-class HeavyCapacity:
+class CampaignCapacity:
     """Deep adapter from an admitted endpoint context to campaign permits."""
 
     def __init__(
@@ -78,7 +77,7 @@ class HeavyCapacity:
         self._outer_entered = False
         self._waiting: dict[str, SlotToken] = {}
         # Child permits inside their work, and those whose lost lease was handled.
-        self._held: dict[str, ChildHeavyPermit] = {}
+        self._held: dict[str, ChildPermit] = {}
         self._recovered_lost: set[str] = set()
         # Lease IDs proven held after the child's work, so the child may be
         # published terminal. A later token loss is then normal reaping.
@@ -94,10 +93,8 @@ class HeavyCapacity:
     @property
     def max_lanes(self) -> int:
         """Lanes the campaign may start: the container's cores when each item is admitted
-        by memory (admission decides how many run at once), else the heavy cap."""
-        if self.items_admitted:
-            return available_cpu_count()
-        return self._admission.max_heavy
+        by memory (admission decides how many run at once), else one."""
+        return available_cpu_count() if self.items_admitted else 1
 
     @property
     def managed(self) -> bool:
@@ -116,16 +113,16 @@ class HeavyCapacity:
         return self._admission.timeout_seconds or 30.0
 
     @contextmanager
-    def outer_permit(self) -> Iterator[HeavyPermit]:
+    def outer_permit(self) -> Iterator[OuterPermit]:
         """Lend the already-held outer permit exactly once."""
         if self._outer_entered:
-            raise HeavyCapacityError("outer campaign permit may be borrowed exactly once")
+            raise CampaignCapacityError("outer campaign permit may be borrowed exactly once")
         self._outer_entered = True
         if self.managed and (
             self._admission.slot_store is None or self._admission.outer_token is None
         ):
-            raise HeavyCapacityError("managed admission is missing its outer heavy token")
-        yield HeavyPermit(self._admission.execution_id)
+            raise CampaignCapacityError("managed admission is missing its outer token")
+        yield OuterPermit(self._admission.execution_id)
 
     def outer_scope(self, stopped: Callable[[], bool]) -> SupervisedExecutionScope:
         """The supervised scope of the outer lane's items."""
@@ -158,19 +155,19 @@ class HeavyCapacity:
         attempt_ordinal: int,
         attempt_directory: Path,
         publish: Callable[[ExecutionId], None],
-        memory: MemoryClaim | None = None,
+        memory: MemoryClaim,
         queue_reason: str | None = None,
-    ) -> Iterator[ChildHeavyPermit]:
+    ) -> Iterator[ChildPermit]:
         """Give one lane its identity and slot, retiring both on exit.
 
         ``publish`` gets the lane ID before the slot is requested. A *memory*
-        claim takes a Memory Reservation instead of a heavy slot, and fixes the
-        item's thread count at its share of the cores for everything it runs.
+        claim is the item's Memory Reservation; it fixes the item's thread count
+        at its share of the cores for everything it runs.
         *queue_reason* names why a requeued item claims again.
         """
         store = self._admission.slot_store
         if not self.managed or store is None:
-            raise HeavyCapacityError("unmanaged campaigns cannot acquire child permits")
+            raise CampaignCapacityError("unmanaged campaigns cannot acquire child permits")
         child_id = ExecutionId(uuid.uuid4().hex)
         prepared = self._lanes.prepare(
             child_id,
@@ -189,20 +186,19 @@ class HeavyCapacity:
             self._lanes.mark_terminal(prepared, "record_error")
             raise
         try:
-            threads = None if memory is None else self._item_thread_count(store)
+            threads = self._item_thread_count(store)
         except BaseException:
             # The lane never started: prove it terminal first, so retiring releases the claim.
             self._lanes.mark_terminal(prepared, "record_error")
             self._retire(store, child_id, token)
             raise
-        with self._held_lane(store, work_item_id, prepared, token) as permit:
-            if threads is None:
-                yield permit
-            else:
-                with fixed_job_threads(threads):
-                    yield permit
+        with (
+            self._held_lane(store, work_item_id, prepared, token) as permit,
+            fixed_job_threads(threads),
+        ):
+            yield permit
         if not store.token_absent(token):
-            raise HeavyCapacityError(f"child token remained after terminal proof: {child_id}")
+            raise CampaignCapacityError(f"child token remained after terminal proof: {child_id}")
 
     def _item_thread_count(self, store: SlotStore) -> int:
         """The item's share of the cores, counted now that its own claim is admitted.
@@ -211,13 +207,13 @@ class HeavyCapacity:
         """
         flow_token = self._admission.outer_token
         if not isinstance(flow_token, SlotToken):
-            raise HeavyCapacityError("a memory-admitted campaign holds a Flow token")
+            raise CampaignCapacityError("a memory-admitted campaign holds a Flow token")
         return job_threads_at_start(store, available_cpu_count(), own_flow=flow_token)
 
     @contextmanager
     def _held_lane(
         self, store, work_item_id: str, prepared: PreparedChild, token: SlotToken
-    ) -> Iterator[ChildHeavyPermit]:
+    ) -> Iterator[ChildPermit]:
         """Run one lane's work on its slot; mark the lane terminal, then release the slot."""
         child_id = prepared.execution_id
         scope = SupervisedExecutionScope(
@@ -226,10 +222,10 @@ class HeavyCapacity:
             lambda: token.lease_health.lost.is_set() or self.shutdown_requested,
             lambda: self._child_cancellation_cause(permit),
         )
-        permit = ChildHeavyPermit(work_item_id, child_id, token, token.lease_health, scope)
+        permit = ChildPermit(work_item_id, child_id, token, token.lease_health, scope)
         with self._gate:
             self._held[token.lease_id] = permit
-        lease_lost = f"heavy lease lost for child execution {child_id}"
+        lease_lost = f"lease lost for child execution {child_id}"
         cause = "record_error"
         try:
             try:
@@ -238,7 +234,7 @@ class HeavyCapacity:
                     if self._cancelled():
                         raise ClaimAbortedError("campaign cancellation requested")
                     yield permit
-                except HeavyCapacityError as exc:
+                except CampaignCapacityError as exc:
                     cause = self._failed_cause(exc, permit)
                     if permit.lease_health.lost.is_set() and not self.shutdown_requested:
                         raise LeaseLostError(lease_lost) from exc
@@ -269,19 +265,19 @@ class HeavyCapacity:
             store.release(token)
 
     @staticmethod
-    def _failed_cause(exc: HeavyCapacityError, permit: ChildHeavyPermit) -> str:
+    def _failed_cause(exc: CampaignCapacityError, permit: ChildPermit) -> str:
         """The terminal cause of a lane whose work raised a capacity error."""
         from booley.flows.sim.execution.contract import PreSimScopeStoppedError
 
         stopped = isinstance(exc.__cause__, PreSimScopeStoppedError)
         return "lease_lost" if stopped and permit.lease_health.lost.is_set() else "record_error"
 
-    def _child_cancellation_cause(self, permit: ChildHeavyPermit) -> str | None:
+    def _child_cancellation_cause(self, permit: ChildPermit) -> str | None:
         if permit.lease_health.lost.is_set():
             return f"Job Slot lease lost: {permit.token.job_class}/{permit.token.path.name}"
         return self.cancellation_cause()
 
-    def _confirm_lease(self, permit: ChildHeavyPermit) -> bool:
+    def _confirm_lease(self, permit: ChildPermit) -> bool:
         """Prove the lease is held before the lane goes terminal; reaping is normal after."""
         store = self._admission.slot_store
         assert store is not None, "child permits exist only under managed admission"
@@ -295,7 +291,7 @@ class HeavyCapacity:
         self,
         store,
         child_execution_id: ExecutionId,
-        memory: MemoryClaim | None,
+        memory: MemoryClaim,
         queue_reason: str | None,
     ) -> SlotToken:
         submitted: list[SlotToken] = []
@@ -307,7 +303,7 @@ class HeavyCapacity:
 
         try:
             token = store.acquire(
-                CLASS_HEAVY if memory is None else CLASS_MEMORY,
+                CLASS_MEMORY,
                 pid=os.getpid(),
                 argv=list(sys.argv),
                 role=self._admission.role,
@@ -322,7 +318,7 @@ class HeavyCapacity:
                 memory=memory,
                 queue_reason=queue_reason,
                 # The item's Flow is admitted already: a full queue never refuses it.
-                bounded=memory is None,
+                bounded=False,
             )
         except BaseException:
             with self._gate:
@@ -407,9 +403,9 @@ class HeavyCapacity:
 
 
 __all__ = [
-    "ChildHeavyPermit",
-    "HeavyCapacity",
-    "HeavyCapacityError",
-    "HeavyPermit",
+    "CampaignCapacity",
+    "CampaignCapacityError",
+    "ChildPermit",
     "LeaseLostError",
+    "OuterPermit",
 ]

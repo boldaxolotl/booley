@@ -1,4 +1,4 @@
-"""Memory admission of heavy Jobs behind the development switch (#3701, ADR 0087).
+"""Memory admission of sim, synth, fpga, lint and Custom Flow Jobs (#3701, ADR 0087).
 
 The module under test is imported inside each test body (through ``_admission``)
 so a missing module fails the test itself, not its collection.
@@ -227,16 +227,6 @@ def test_invalid_budget_configuration_runs_alone_with_a_warning(tmp_path: Path) 
     assert plan.claim.run_alone
     assert plan.warning is not None and plan.warning.startswith("Memory Budget unavailable (")
     assert "memory_budget" in plan.warning
-
-
-def test_switch_is_on_for_exactly_one(monkeypatch: pytest.MonkeyPatch) -> None:
-    switch = _admission().MEMORY_ADMISSION_ENV
-    assert switch == "BOOLEY_DEV_MEMORY_ADMISSION"
-    monkeypatch.delenv(switch, raising=False)
-    assert _admission().memory_admission_enabled() is False
-    for value, expected in (("1", True), ("0", False), ("true", False), ("", False)):
-        monkeypatch.setenv(switch, value)
-        assert _admission().memory_admission_enabled() is expected, value
 
 
 # --- request producers -------------------------------------------------------------

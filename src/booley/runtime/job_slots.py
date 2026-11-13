@@ -15,7 +15,7 @@ except to reap a provably-stale one:
   ``w-`` waiters, then priority, sequence and PID, with the filename suffix breaking ties. Priority 0 is
   Interactive; other requester roles use priority 1. A later Interactive
   request overtakes queued lower-priority work, but *never* a holder: promotion renames only one's **own**
-  ``w-`` entry to ``h-``, and (for the heavy and light classes) only when its
+  ``w-`` entry to ``h-``, and (for the light class) only when its
   rank is within the class cap, so running work cannot be preempted (ADR 0028
   Decision 6).
 * Because the ordering is total and each process promotes only itself under a
@@ -101,10 +101,12 @@ __all__ = ["MemoryClaim", "SlotCaps", "parse_caps"]
 logger = logging.getLogger(__name__)
 
 # Job classes (ADR 0028 Decision 5), resolved by workload type.
-CLASS_HEAVY = "heavy"  # in-container EDA subprocesses (sim/synth)
 CLASS_LIGHT = "light"  # Specialists — model-API-bound, ~no local footprint
 CLASS_MEMORY = "memory"  # admitted by Memory Reservation against a budget (ADR 0087)
-JOB_CLASSES = (CLASS_HEAVY, CLASS_LIGHT, CLASS_MEMORY)
+JOB_CLASSES = (CLASS_LIGHT, CLASS_MEMORY)
+# Class directories older versions wrote; nothing admits into them, but a live
+# holder there still blocks a legacy-directory migration.
+RETIRED_JOB_CLASSES = ("heavy",)
 
 # Requester roles → queue priority (lower sorts first). Interactive work
 # jumps ahead of other queued work; holders are never displaced.
