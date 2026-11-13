@@ -25,10 +25,14 @@ from booley.flows.sim.trace_session import TraceSession
 from booley.runtime import platform_paths
 from booley.runtime.platform_paths import popen_new_group_kwargs
 
-#: Bound on one stall kill, from report to joined monitor: ``stop_monitor``'s docstring
-#: puts the kill path at about 30 s on Windows (about 10 s on POSIX). Kept below the
-#: 60 s CI test budget so a kill that never happens fails as an assertion.
+#: Bound on one stall kill, from monitor start to every process dead: ``stop_monitor``'s
+#: docstring puts the kill path at about 30 s on Windows (about 10 s on POSIX). Kept below
+#: the 60 s CI test budget so a kill that never happens fails as an assertion.
 _MONITOR_KILL_DEADLINE_S = 40.0
+#: Bound on the ``finally`` stop. Cleanup runs after the test body, which may already have
+#: spent its deadline: a short bound keeps a hung kill inside the 60 s CI budget, so the
+#: body's assertion message survives instead of an unattributed worker timeout.
+_CLEANUP_STOP_S = 5.0
 #: Sleeper lifetime: far beyond every deadline here, so a sleeper can only die early
 #: by being killed. (A 30 s sleeper would exit on its own inside a 40 s deadline and
 #: turn a missing kill into a pass.)
@@ -60,7 +64,8 @@ def _spawn_sleeper() -> subprocess.Popen:
 class _Killable(Protocol):
     """What the kill wait needs from a process or stream: an id and ``poll()``."""
 
-    pid: int
+    @property
+    def pid(self) -> int: ...
 
     def poll(self) -> object: ...
 
@@ -215,7 +220,7 @@ class TestStallKill:
             assert "stalled" in ts.stall_message
         finally:
             _kill_all(sim_proc, bwave_proc)
-            _stop_monitor_within(ts, _MONITOR_KILL_DEADLINE_S)
+            _stop_monitor_within(ts, _CLEANUP_STOP_S)
 
     def test_stall_kill_wait_fails_when_the_tree_survives(self, tmp_path, monkeypatch):
         # The monitor reports the kill but never kills the process tree: the wait
@@ -241,7 +246,7 @@ class TestStallKill:
                 _await_monitor_kill(ts, sim_proc, deadline_s=1.0)
         finally:
             _kill_all(sim_proc, bwave_proc)
-            _stop_monitor_within(ts, _MONITOR_KILL_DEADLINE_S)
+            _stop_monitor_within(ts, _CLEANUP_STOP_S)
 
     def test_natural_exit_during_incident_io_is_not_claimed_as_a_stall_kill(
         self, tmp_path, monkeypatch
@@ -442,7 +447,7 @@ def test_spare_simulator_monitor_kills_only_stalled_converter(tmp_path, fake_bwa
     finally:
         sim_proc.kill()
         sim_proc.wait(timeout=5)
-        _stop_monitor_within(session, _MONITOR_KILL_DEADLINE_S)
+        _stop_monitor_within(session, _CLEANUP_STOP_S)
         conversion.finish(timeout_s=5)
 
 
@@ -740,7 +745,7 @@ class TestTraceStatusManifest:
             assert "processes:" in text
         finally:
             _kill_all(sim_proc, bwave_proc)
-            _stop_monitor_within(ts, _MONITOR_KILL_DEADLINE_S)
+            _stop_monitor_within(ts, _CLEANUP_STOP_S)
 
     def test_no_kill_when_bwave_grows(self, tmp_path):
         ts = TraceSession(work_dir=tmp_path)
