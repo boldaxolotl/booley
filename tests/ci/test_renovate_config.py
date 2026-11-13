@@ -81,7 +81,7 @@ _COPIES: tuple[tuple[str, str, int], ...] = (
     (_SESSION_CONTRACT, _VERILATOR, 1),
     (_EDA_DOC, _VERILATOR, 1),
     (_VERILATOR_IDENTITY, _VERILATOR, 1),
-    (_EDA_DOC, _YOSYS, 2),
+    (_EDA_DOC, _YOSYS, 1),
     (_EDA_DOC, _ICARUS, 1),
     (_EDA_DOC, _SV2V, 1),
     (_EDA_DOC, _VERIBLE, 1),

@@ -76,7 +76,7 @@ Windows uses only the EDA tools inside the Sandbox Image. Vivado isn't one of
 them, so the `fpga` Flow doesn't run on Windows. A Vivado installed on
 Windows can't run in the Linux container, and Booley rejects
 `provisioning = "host"` in `[eda.*]` on Windows. See
-[Supported EDA tools](SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy).
+[Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning).
 
 ## Still stuck
 
