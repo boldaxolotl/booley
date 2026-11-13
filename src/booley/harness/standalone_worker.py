@@ -4,6 +4,8 @@ Kinds: ``standalone <booley_dir> <run_id>`` runs the Flow or Specialist request
 :func:`submit` wrote beside the Job's ``job.log``; ``goal-baseline <request path>``
 supervises a Goal baseline (:mod:`booley.mcp.sim_baseline_jobs`). The worker stamps
 the submitter's pid-less record and writes the terminal state like a shell run.
+A Specialist runs with its worktree's agent settings and a transcript directory
+beside ``job.log``.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.config.settings import set_agent_settings, worktree_agent_settings
 from booley.core.boundary import BoundaryError, require_dict, require_list, require_str
 from booley.harness.standalone_job import (
     RUN_ID_ENV,
@@ -26,6 +29,7 @@ from booley.harness.standalone_job import (
     standalone_jobs_dir,
     standalone_log_path,
     standalone_request_path,
+    standalone_transcript_dir,
 )
 from booley.runtime import detached_job, job_records
 from booley.runtime.atomic_files import atomic_replace_bytes
@@ -105,11 +109,17 @@ def submit(booley_dir: Path, request: StandaloneRequest) -> str:
     return run_id
 
 
-def _start_request(request_path: Path) -> int:
+def _start_request(request_path: Path, transcript_dir: Path) -> int:
     """Validate the request and run it as a human would type it in its worktree.
 
     No outer ``--project``: it would make the CLI refuse endpoints without the shared
     CLI that a shell run accepts. The cwd comes from the request, never the submitter.
+
+    A Specialist also gets its worktree's agent settings (``[models]`` pins, auth
+    policy; an invalid one is a start failure) and ``--transcript-dir`` appended to
+    the CLI argv only, so the recorded command is unchanged. Assumes every
+    ``booley specialist`` endpoint takes the shared Specialist parser's
+    ``--transcript-dir``, as MCP calls already pass it to every Specialist.
     """
     try:
         document = require_dict(json.loads(request_path.read_bytes()), field="request")
@@ -123,7 +133,10 @@ def _start_request(request_path: Path) -> int:
         worktree = Path(require_str(document, "worktree"))
         if not worktree.is_dir():
             raise BoundaryError(f"worktree is not a directory: {worktree}")
-    except (OSError, ValueError) as exc:
+        if kind == "specialist":
+            set_agent_settings(worktree_agent_settings(worktree))
+            argv = [*argv, "--transcript-dir", str(transcript_dir)]
+    except (OSError, ValueError, RuntimeError) as exc:
         print(f"ERROR: Standalone Job not started: {exc}", file=sys.stderr)
         return _START_FAILURE_EXIT_CODE
     from booley.harness import booley as booley_cli
@@ -145,7 +158,9 @@ def _run_standalone(booley_dir: Path, run_id: str) -> int:
     # fd 1 is the block-buffered ``job.log``: a live log would stay empty.
     if isinstance(sys.stdout, io.TextIOWrapper):
         sys.stdout.reconfigure(line_buffering=True)
-    return job.run(lambda: _start_request(standalone_request_path(booley_dir, run_id)))
+    request_path = standalone_request_path(booley_dir, run_id)
+    transcript_dir = standalone_transcript_dir(booley_dir, run_id)
+    return job.run(lambda: _start_request(request_path, transcript_dir))
 
 
 def main(argv: list[str] | None = None) -> int:
