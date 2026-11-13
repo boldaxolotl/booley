@@ -158,7 +158,7 @@ def _assert_selection_and_auto_follow_counts(oracle: dict[str, Any]) -> None:
         assert per_operator == {name: chosen.count(name) for name in OPERATORS}, count
     shortfall = selection["shortfall"]
     assert shortfall["run"] == sum(counts.values())
-    assert shortfall["message"].startswith(f"only {shortfall['run']} candidate Mutants exist")
+    assert shortfall["message"].startswith(f"only {shortfall['run']} Mutants could be scored")
     auto = oracle["auto"]
     formula = max(3, min(25, round(math.sqrt(auto["scope_lines"]))))
     assert auto["size_formula_count"] == formula
