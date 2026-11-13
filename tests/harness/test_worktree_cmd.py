@@ -723,7 +723,7 @@ _UNPLANTABLE_ROWS = {".git/", "directory-layout.lock", ".directory-relocation.js
 
 
 @_real_script
-def test_snapshot_copies_only_versioned_checkout_state(project):
+def test_snapshot_copies_only_versioned_checkout_state(project, capsys):
     from booley.core.booley_dir_parts import BOOLEY_DIR_PATHS, BooleyDirClass
     from booley.runtime import handles
 
@@ -740,6 +740,9 @@ def test_snapshot_copies_only_versioned_checkout_state(project):
     handles.register_job(data, "main-job", "sim", "codex:one")
     handle_store = handles.HandleStore(data, jobs=True).path.relative_to(data)
     assert handle_store.is_relative_to("runtime")
+    # The checkout's bwave session store (#3483) belongs to that checkout's sources.
+    bwave_store = Path(".runtime", "bwave", "bwave_sessions.json")
+    _write(data / bwave_store, "{}\n")
 
     assert _new("allowlist", project) == 0
 
@@ -753,8 +756,11 @@ def test_snapshot_copies_only_versioned_checkout_state(project):
         "findings.jsonl",
         "mcp-tool-reports/sample.txt",
         str(handle_store),
+        str(bwave_store),
     ):
         assert not (copied / leaked).exists(), leaked
+    # It is classified Checkout source-tied, so the Snapshot leaves it without a skip notice.
+    assert "bwave" not in capsys.readouterr().err
     # The main Booley Directory is untouched.
     assert all((data / sample).is_file() for sample in samples.values())
 

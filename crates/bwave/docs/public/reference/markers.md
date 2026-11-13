@@ -46,7 +46,7 @@ state         'h2  'h2  'h2  'h5  'h5  'h5  'h0  'h0  'h0
 ## Wrapper integration: `bwave markers`
 
 The Booley Python wrapper persists named cycle references per registered trace
-alias:
+alias, and each checkout has its own:
 
 1. Register a trace: `bwave register sim.fst --as dut`. A traced
    `booley flow sim` run registers `@<target>` and the default alias itself;
