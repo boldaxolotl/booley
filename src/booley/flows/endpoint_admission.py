@@ -29,7 +29,7 @@ from booley.flows.memory_admission import (
     memory_admission_enabled,
 )
 from booley.flows.reservation_phases import PhasePlan, ReservationShrinker, shrinking
-from booley.runtime import job_slots
+from booley.runtime import job_slots, oom_priority
 from booley.runtime.booley_dir import resolve_common_booley_dir
 from booley.runtime.cpu_budget import available_cpu_count
 from booley.runtime.endpoint_execution import (
@@ -179,6 +179,8 @@ class AdmissionGate:
                     phase_plan = PhasePlan(memory_plan.phases, memory_plan.claim.reservation_mb)
                     scope.enter_context(shrinking(ReservationShrinker(phase_plan, store, token)))
                 scope.enter_context(fixed_job_threads(claim.threads))
+                # Entered last, so ranking stops before the claim is released.
+                scope.enter_context(oom_priority.job_oom_priority(store, token))
                 yield AdmissionContext(
                     mode="managed" if store is not None else "unmanaged",
                     slot_store=store,

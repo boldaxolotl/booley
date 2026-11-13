@@ -15,6 +15,7 @@ from booley.flows.lint.flow import LintFlow
 from booley.flows.sim.flow import SimulateFlow
 from booley.runtime.endpoint_execution import EndpointOutcome
 from tests.flows.report_headline import assert_paired_headline
+from tests.oom_priority_support import FakeProc
 
 # The Criterion key each kind judges, planned before the run and reported after it.
 PLANNED_KEYS = {
@@ -245,6 +246,8 @@ def _assert_holds_reservation_through_run(
     booley_dir.mkdir()
     (booley_dir / "booley.toml").write_text('[jobs]\nmemory_budget = "1000m"\n', encoding="utf-8")
     monkeypatch.setenv("BOOLEY_DEV_MEMORY_ADMISSION", "1")
+    # A fake /proc with no process: ranking never touches the worker's real OOM priority.
+    monkeypatch.setattr("booley.runtime.oom_priority.PROC", FakeProc())
     monkeypatch.delenv("BOOLEY_SLOTS_DIR", raising=False)
     monkeypatch.setattr(endpoint_admission, "resolve_common_booley_dir", lambda: booley_dir)
     key = PLANNED_KEYS[kind]
