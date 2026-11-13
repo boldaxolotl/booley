@@ -20,6 +20,7 @@ import pytest
 
 from booley.audit.diagnostic_results import DiagnosticReport, Severity
 from booley.runtime import session_runtime
+from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
 from tests.subprocess_budget import run_bounded_child
 
 _LABEL = "fpga: Vivado batch startup"
@@ -58,6 +59,8 @@ def _script_run(monkeypatch, outcome: Any) -> list[tuple[list[str], dict[str, An
         if isinstance(outcome, Exception):
             raise outcome
         return subprocess.CompletedProcess(argv, outcome[0], outcome[1], outcome[2])
+
+    route_bounded_capture_through_subprocess_run(monkeypatch, _owner())
 
     monkeypatch.setattr(_owner().subprocess, "run", run)
     return calls

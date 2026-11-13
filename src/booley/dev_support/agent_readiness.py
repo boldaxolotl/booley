@@ -25,6 +25,7 @@ from typing import Any, TypeGuard
 
 from booley.core.host_probes import ProbeState, probe_docker
 from booley.dev_support.test_profiles import BWAVE_BUILD, native_test_problem
+from booley.runtime.platform_paths import run_captured_bounded
 
 SCHEMA_VERSION = 1
 # The runners whose exact versions the shared tools environment must hold. Only
@@ -688,7 +689,7 @@ def validate_environment(
 def _docker_check(required: bool) -> Check:
     observation = probe_docker(
         which=shutil.which,
-        run=subprocess.run,
+        run=run_captured_bounded,
         probe_daemon=required,
         cwd=Path.cwd(),
     )

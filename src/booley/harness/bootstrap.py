@@ -41,6 +41,7 @@ from booley.runtime.image_lifecycle import (
     Status as ImageStatus,
 )
 from booley.runtime.paths import skills_dir
+from booley.runtime.platform_paths import run_captured_bounded
 from booley.runtime.qa_skill_selection import (
     QA_SKILL_NAMES,
     QaSkillSelectionError,
@@ -424,9 +425,7 @@ def _tool_finding(name: str, version_arg: str) -> BootstrapFinding:
     if executable is None:
         return BootstrapFinding(name, BootstrapState.ERROR, f"{name} is required but not on PATH")
     try:
-        result = subprocess.run(
-            [executable, version_arg], capture_output=True, text=True, timeout=5, check=False
-        )
+        result = run_captured_bounded([executable, version_arg], timeout=5)
     except (OSError, subprocess.SubprocessError) as exc:
         return BootstrapFinding(name, BootstrapState.ERROR, f"cannot run {name}: {exc}")
     if result.returncode:
@@ -440,9 +439,7 @@ def _docker_daemon_error() -> str | None:
     executable = shutil.which("docker")
     assert executable is not None
     try:
-        result = subprocess.run(
-            [executable, "info"], capture_output=True, text=True, timeout=10, check=False
-        )
+        result = run_captured_bounded([executable, "info"], timeout=10)
     except subprocess.TimeoutExpired:
         return "Docker daemon did not respond within 10 seconds"
     except (OSError, subprocess.SubprocessError) as exc:

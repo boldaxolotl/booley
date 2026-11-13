@@ -465,7 +465,7 @@ def _concurrent_licensed_project(
     monkeypatch.setattr(
         eda_requirements,
         "_relay_image_id",
-        lambda: "sha256:" + "d" * 64,
+        lambda _runner: "sha256:" + "d" * 64,
     )
     monkeypatch.setattr(runtime_spec, "pin_image", lambda *_args, **_kwargs: "sha256:image")
     monkeypatch.setattr(runtime_spec, "_pin_initialize_command", lambda *_args: None)
@@ -478,7 +478,9 @@ def _concurrent_licensed_project(
         "_issuance",
         lambda *_args, **_kwargs: SimpleNamespace(project_data_layout="legacy"),
     )
-    monkeypatch.setattr(flexnet_docker, "cleanup_project_resources_for_identity", lambda _root: ())
+    monkeypatch.setattr(
+        flexnet_docker, "cleanup_project_resources_for_identity", lambda _root, **_kwargs: ()
+    )
     return project
 
 
@@ -877,7 +879,7 @@ def _revoke_issued_project(project: Path, monkeypatch: pytest.MonkeyPatch) -> Mo
     )
     cleanup = Mock(return_value=())
     monkeypatch.setattr(flexnet_docker, "cleanup_project_resources_for_identity", cleanup)
-    monkeypatch.setattr(session_runtime, "vscode_session_container", lambda _root: None)
+    monkeypatch.setattr(session_runtime, "vscode_session_container", lambda _root, **_kwargs: None)
     docker = Mock(side_effect=AssertionError("Docker must not run after withdrawn issuance"))
     monkeypatch.setattr("booley.runtime.interactive_docker._run_docker", docker)
     monkeypatch.setattr(session_runtime, "_run", docker)
@@ -887,7 +889,7 @@ def _revoke_issued_project(project: Path, monkeypatch: pytest.MonkeyPatch) -> Mo
     assert authority.load_state().grants == ()
     assert issuance_invalidation.pending_invalidations() == ()
     assert not runtime_spec.stamp_path(project).exists()
-    cleanup.assert_called_once_with(str(project.resolve()))
+    cleanup.assert_called_once_with(str(project.resolve()), runner=idk.relay_docker)
     return docker
 
 
@@ -1790,7 +1792,7 @@ def test_unproxied_licensed_seal_joins_routed_and_private_networks(
     profile = SimpleNamespace(name="site", lmgrd_port=2100)
     _license_profile_stubs(monkeypatch, profile)
     monkeypatch.setattr(eda_requirements, "ensure_relay_image", lambda **_kwargs: False)
-    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda: "sha256:" + "d" * 64)
+    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda _runner: "sha256:" + "d" * 64)
     stub_keeper(monkeypatch)
     prepared = runtime_spec.preview(
         project,
@@ -2281,7 +2283,7 @@ def test_relay_image_bytes_are_bound_into_licensed_issuance(
     _license_profile_stubs(monkeypatch, profile)
     monkeypatch.setattr(eda_requirements, "ensure_relay_image", lambda **_kwargs: False)
     first = "sha256:" + "a" * 64
-    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda: first)
+    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda _runner: first)
     prepared, path, stamp = issue_built(
         project,
         lambda inputs: build_spec(
@@ -2293,7 +2295,7 @@ def test_relay_image_bytes_are_bound_into_licensed_issuance(
         monkeypatch,
     )
     assert stamp.relay_image_id == first
-    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda: "sha256:" + "b" * 64)
+    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda _runner: "sha256:" + "b" * 64)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="relay image has drifted"):
         runtime_spec.validate(project, prepared.spec, path)
 
@@ -3446,7 +3448,7 @@ def test_real_grant_changes_let_refresh_reissue_with_current_authority(
     project, _spec, _path, stamp = issued
     monkeypatch.setattr(session_runtime, "vscode_session_container", lambda _root: None)
     monkeypatch.setattr(
-        flexnet_docker, "cleanup_project_resources_for_identity", lambda _identity: ()
+        flexnet_docker, "cleanup_project_resources_for_identity", lambda _identity, **_kwargs: ()
     )
     profile = eda_grant_support.register_license("site")
     if operation == "add":
@@ -3495,7 +3497,7 @@ def test_licensed_prepared_matching_and_relay_drift_use_full_validation(issued, 
     eda_grant_support.add_grant(project, "vivado", license_profile=profile.name)
     relay = {"identity": "sha256:" + "d" * 64}
     monkeypatch.setattr(eda_requirements, "ensure_relay_image", lambda **_kwargs: False)
-    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda: relay["identity"])
+    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda _runner: relay["identity"])
     adapter = _RuntimeImages()
     image = session_refresh.RefreshImage(stamp.image_id, None, None, True)
     adapter.prepare_spec(project, image)
@@ -3520,7 +3522,7 @@ def test_fpga_disabled_prior_license_issuance_detects_withdrawn_grant(issued, mo
     profile = eda_grant_support.register_license("site")
     eda_grant_support.add_grant(project, "vivado", license_profile=profile.name)
     monkeypatch.setattr(eda_requirements, "ensure_relay_image", lambda **_kwargs: False)
-    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda: "sha256:" + "d" * 64)
+    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda _runner: "sha256:" + "d" * 64)
     adapter = _RuntimeImages()
     adapter.prepare_spec(project, session_refresh.RefreshImage(stamp.image_id, None, None, True))
     adapter.reissue(project)

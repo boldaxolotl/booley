@@ -499,7 +499,9 @@ def test_missing_or_withdrawn_stamp_refreshes(
     project, prepared, _path, stamp = issued_preview
     host.project = project
     host.run_old_sandbox()
-    monkeypatch.setattr(flexnet_docker, "cleanup_project_resources_for_identity", lambda _r: ())
+    monkeypatch.setattr(
+        flexnet_docker, "cleanup_project_resources_for_identity", lambda _r, **_kwargs: ()
+    )
     root = str(project.resolve())
 
     for case in ("no stamp", "withdrawn by an EDA Grant change"):

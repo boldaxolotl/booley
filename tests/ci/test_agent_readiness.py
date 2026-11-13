@@ -855,7 +855,10 @@ def test_remaining_readiness_boundaries(monkeypatch, tmp_path):
 
 
 def test_probe_boundaries_and_human_main(monkeypatch, capsys, tmp_path):
-    assert probe_docker(which=lambda _name: None).state is ProbeState.MISSING
+    assert (
+        probe_docker(which=lambda _name: None, run=lambda *_a, **_k: None).state  # type: ignore[arg-type,return-value]
+        is ProbeState.MISSING
+    )
 
     def docker_error(*_args, **_kwargs):
         raise OSError

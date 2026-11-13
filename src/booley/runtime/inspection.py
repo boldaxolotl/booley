@@ -701,6 +701,7 @@ def _check_issued_license_relay(
             ),
             issuance_labels=runtime_spec.labels(issuance),
             image=image_id,
+            runner=idk.relay_docker,
         )
     except RelayDockerError as exc:
         report.fail(
