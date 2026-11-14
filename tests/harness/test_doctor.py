@@ -4532,9 +4532,9 @@ class TestRetiredJobsKeys:
 
         output = colors.strip_ansi(capsys.readouterr().out)
         assert rc != 0
-        assert "booley.toml sets retired [jobs] key queue_max (line 15)" in output
+        assert "booley.toml sets retired [jobs] key queue_max (line 17)" in output
         assert (
-            "delete [jobs].queue_max (line 15); the Job queue has no limit:"
+            "delete [jobs].queue_max (line 17); the Job queue has no limit:"
             " a Job waits until it runs or is cancelled"
         ) in output
         assert "memory admission replaced it" not in output
@@ -4549,8 +4549,8 @@ class TestRetiredJobsKeys:
 
         output = colors.strip_ansi(capsys.readouterr().out)
         assert rc != 0
-        assert "booley.toml sets retired [jobs] key memory_budget (line 15)" in output
-        assert "delete [jobs].memory_budget (line 15);" in output
+        assert "booley.toml sets retired [jobs] key memory_budget (line 17)" in output
+        assert "delete [jobs].memory_budget (line 17);" in output
         assert "set [sandbox].memory instead" in output
         assert "memory admission replaced it" not in output
 
