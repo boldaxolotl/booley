@@ -227,3 +227,24 @@ spot, the same single-file limit the select-range facts have; it can drop a
 Mutant that is not equivalent in the full design. Every other Mutant keeps its
 ID. The generator version is 4: the same inputs give the same Mutants only for
 the same version.
+
+## Amendments (2026-11-14, #3934)
+
+**Unsized plus one.** The `constant` operator gave an unsized literal only values
+that fit the literal's own bit length, so `1`, `3` and `7` never got their plus-one
+Mutant. It now also allows values that fit the narrowest width the literal's value
+is used at, as the file's elaboration reports it. An unsized literal elaborates as a
+32-bit `int` and widens its whole context, so the expression's own width is no
+guide. The width is the minimum of: the literal's own width; the width of every
+narrowing conversion above it, implicit or an explicit cast, applied to every
+unsized literal below it (a misjudgment only withholds a Mutant); and, for the
+operands of a context-determined binary operator, the width of the other operand.
+So `flag <= 1` on a 1-bit `flag` stays `1 -> 0`, and `a == 255` on an 8-bit `a`
+gains no `256`. A literal the elaboration does not reach (from a macro or include,
+or in a connection to a module defined in another file) keeps the bit-length
+rule. Only plus-one Mutants are added: every Mutant of version 4 keeps its ID and
+text. Unlike the `+`/`-` swap filter, a unit that another file may elaborate with
+other parameters is trusted here with its default elaboration: an override that
+narrows the width can give a Mutant that repeats another variant there, or one
+that Verilator rejects for a width warning and the run marks `invalid`. The
+generator version is 5.
