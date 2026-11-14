@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import uuid
@@ -24,12 +25,14 @@ from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.record_retention import SimulationRecordRetentionError, prune_invocation
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.execution_records import ExecutionId
+from tests.conftest import symlink_or_skip
 from tests.flows.sim.simulation_record_test_support import (
     _own_attempt_run_directory,
     _retained_invocation,
     coverage_invocation,
 )
 from tests.fusesoc_test_support import symlinked_booley_dir
+from tests.mount_change_support import simulate_mount_change
 from tests.runtime.test_sandbox_layout import project_alias
 from tests.subprocess_budget import run_bounded_child
 
@@ -1142,15 +1145,102 @@ def test_interrupted_simulation_record_without_surviving_resources_needs_no_proj
     assert list((reports / "sim/.pruned-1").iterdir()) == []
 
 
-def test_interrupted_simulation_record_with_surviving_run_directory_needs_project_data(
-    tmp_path: Path,
+def _record_run_directory_under(
+    store: SimulationRecordStore, former: Path, checkout: Path
+) -> Path:
+    """Rewrite the attempt's run directory as an older writer left it under *former*.
+
+    Returns the former spelling of the run directory.
+    """
+    attempt_path = next(store.root.glob("work-items/*/attempts/*/attempt.json"))
+    document = json.loads(attempt_path.read_bytes())
+    run = document["run_directory"]
+    old = former / Path(run["resolved"]).relative_to(checkout)
+    run["resolved"] = str(old)
+    run["collision_key"] = os.path.normcase(str(old))
+    attempt_path.write_bytes(canonical_json_bytes(document))
+    return old
+
+
+def _prune_run_directory_recorded_under_former_mount(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, alias: bool
 ) -> None:
-    reports, _project_data, store = _retained_invocation(
-        tmp_path, reports=tmp_path / "external-reports"
-    )
-    run_path, _document = _interrupt_latest_attempt(tmp_path, reports, store)
+    root = tmp_path.resolve()
+    reports, _project_data, store = _retained_invocation(root)
+    run_path, _document = _interrupt_latest_attempt(root, reports, store)
+    checkout = root / "checkout"
+    mount = checkout
+    if alias:
+        mount = root / "mount"
+        symlink_or_skip(mount, checkout, target_is_directory=True)
+    former = root / "former-mount"
+    simulate_mount_change(monkeypatch, mount, former)
+    old = _record_run_directory_under(store, former, checkout)
+    shutil.copytree(run_path, old)
+    decoy = sorted(str(p.relative_to(former)) for p in former.rglob("*"))
+
+    prune_invocation(reports, 1)
+
+    assert not run_path.exists()
+    assert not (reports / "sim/1").exists()
+    assert sorted(str(p.relative_to(former)) for p in former.rglob("*")) == decoy
+    assert (old / ".booley-simulation-attempt.json").is_file()
+
+
+def test_full_pruning_cleans_interrupted_run_directory_recorded_under_former_mount(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _prune_run_directory_recorded_under_former_mount(tmp_path, monkeypatch, alias=False)
+
+
+def test_full_pruning_cleans_run_directory_recorded_under_former_mount_through_alias(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The image's mount is a symlink to the Booley Directory: the rebased key is canonical."""
+    _prune_run_directory_recorded_under_former_mount(tmp_path, monkeypatch, alias=True)
+
+
+def test_interrupted_simulation_record_with_surviving_run_directory_needs_project_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path.resolve()
+    reports, _project_data, store = _retained_invocation(root, reports=root / "external-reports")
+    run_path, _document = _interrupt_latest_attempt(root, reports, store)
+    checkout = root / "checkout"
+    former = root / "former-mount"
+    simulate_mount_change(monkeypatch, checkout, former)
+    _record_run_directory_under(store, former, checkout)
 
     with pytest.raises(SimulationRecordRetentionError, match="Booley Directory is required"):
+        prune_invocation(reports, 1)
+
+    assert run_path.exists()
+
+
+def test_surviving_run_directory_under_current_mount_needs_project_data(tmp_path: Path) -> None:
+    root = tmp_path.resolve()
+    reports, _project_data, store = _retained_invocation(root, reports=root / "external-reports")
+    run_path, _document = _interrupt_latest_attempt(root, reports, store)
+
+    with pytest.raises(SimulationRecordRetentionError, match="Booley Directory is required"):
+        prune_invocation(reports, 1)
+
+    assert run_path.exists()
+
+
+def test_unreadable_mount_history_fails_run_directory_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path.resolve()
+    reports, _project_data, store = _retained_invocation(root)
+    run_path, _document = _interrupt_latest_attempt(root, reports, store)
+    checkout = root / "checkout"
+    former = root / "former-mount"
+    simulate_mount_change(monkeypatch, checkout, former)
+    _record_run_directory_under(store, former, checkout)
+    (checkout / ".runtime" / "sandbox-mounts.json").write_bytes(b"{")
+
+    with pytest.raises(SimulationRecordRetentionError, match=r"sandbox-mounts\.json"):
         prune_invocation(reports, 1)
 
     assert run_path.exists()
