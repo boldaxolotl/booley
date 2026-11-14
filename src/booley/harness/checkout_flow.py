@@ -663,9 +663,9 @@ def _failure_excerpt(
 ) -> str:
     """Why a run failed or measured nothing, from the Flow's own words, bounded.
 
-    A timeout line (when ``timeout_s`` is set, meaning the run timed out) comes first, then each unavailable Target's reason (500 characters),
-    then the first 20 lines of the report text (2,000 characters), where a Flow puts
-    its cause. A run that left no report text falls back to the last 20 lines of
+    A timeout line (present when ``timeout_s`` is set, meaning the run timed out)
+    comes first, then each unavailable Target's reason (500 characters), then the
+    first 20 lines of the report text (2,000 characters), where a Flow puts its cause. A run that left no report text falls back to the last 20 lines of
     ``job.log``, which is where a child that died abruptly prints.
     """
     parts: list[str] = []
