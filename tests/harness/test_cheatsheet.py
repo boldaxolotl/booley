@@ -183,7 +183,7 @@ class TestCheatCommand:
         assert (
             out.index("\nCommands\n")
             < out.index("\nGoal Mode\n")
-            < out.index("\nMetrics\n")
+            < out.index("\nMetric-Driven Development\n")
             < out.index("\nBooley Flows\n")
             < out.index("\nSpecialists\n")
             < out.index("\nProject Files\n")

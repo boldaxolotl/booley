@@ -238,7 +238,21 @@ BRAM/DSP/utilization are not clock-scopable):
 `critical_path_ps_max` ⊕ `fmax_mhz_min` is mutually exclusive **per clock**.
 Example: `{"family": "SYNTH", "target": "synth_core", "thresholds": {"clk_i.fmax_mhz_min": 400, "clk_2x.critical_path_ps_max": 5000}}`.
 
-### Metrics
+### Metric-Driven Development
+
+Metric-Driven Development accepts work by measuring a commit against the Target Metrics in `.booley/metrics.toml`. Commit the work, then run `booley measure`: it measures only committed work, prints a report, and exits 0 when every enforced bound is met, 1 when one is unmet, and 2 on an error or when it cannot run.
+
+Rules:
+
+- Measure only when the user asks for a Measured Commit.
+- Iterate with plain `booley flow`, not with `booley measure`.
+- Measure the base at the start of a piece of work (`booley measure --all <base>`) only when the work has a relative target or the user wants a comparison.
+- Exit 1: fix, commit and measure again, up to 3 attempts unless the user's request states another number.
+- Exit 2: stop and report the error to the user.
+- Never edit `metrics.toml` or `tests.toml` to get a met verdict, and never add tables, without asking.
+- The work is complete when the commit is Measured with a green header.
+
+`metrics.toml` holds one `[<target>.<flow>]` table per Target and Flow. A `<metric>_max` or `<metric>_min` key is an enforced bound, `track` lists metrics that are only reported, and `off` removes a bound that `[defaults.<flow>]` would add. `[defaults.<flow>]` adds bounds to every table of that Flow.
 
 The listing from `booley cheat --metrics` is `metrics.toml` text: save the blocks you keep as `.booley/metrics.toml`, give each bound you keep a number, delete the rest, and check the file with `booley measure --validate`.
 
