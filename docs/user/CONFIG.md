@@ -32,8 +32,9 @@ here to look up what a setting means and what its default is.
 ## booley.toml
 
 The file sits in the Booley Directory, `.booley/` at the top of your repository.
-`[project].name` is the Project's name; Booley shows it in messages and
-replaces it in redacted feedback.
+`[project].name` is the Project's name. `booley init` shows it in its output,
+and `booley feedback` replaces it with a placeholder in the redacted copy it
+exports.
 
 `.booley` can be a symlink to a Booley Directory kept elsewhere, for example in
 a separate repository. `booley init` remembers where the link points. If you
