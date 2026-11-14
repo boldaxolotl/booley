@@ -494,7 +494,9 @@ def _model_probe_world(tmp_path, monkeypatch, *, gateway=False, config_body=_MOD
 
     project = _project(tmp_path)
     config = project.booley_dir / "booley.toml"
-    config.write_text(config.read_text() + config_body, encoding="utf-8")
+    # The fixture's own `[agent]` table would duplicate the one in *config_body*.
+    base = config.read_text().replace('[agent]\nauth = "subscription"\n', "")
+    config.write_text(base + config_body, encoding="utf-8")
     for name in (
         "BOOLEY_PRIMARY_AUTH",
         "BOOLEY_PRIMARY_PROVIDER",
