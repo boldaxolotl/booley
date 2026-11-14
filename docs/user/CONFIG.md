@@ -90,10 +90,10 @@ Two limits:
 ## Flow and Specialist availability: `enabled`
 
 Every Flow and Specialist is on by default. Turn one off when the Project has no
-use for it, for example lint on a design whose lint setup isn't ready:
+use for it, for example ASIC synthesis on an FPGA-only Project:
 
 ```toml
-[flows.lint]
+[flows.synth]
 enabled = false
 
 [specialists.coverage_analyst]
