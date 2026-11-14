@@ -7,6 +7,10 @@ the Main Booley Directory, writes the Markdown report and prints the report. A c
 already Measured is not measured again: its stored run is shown, unless ``--again`` is given. The run is a
 Standalone Job of its own, so the Dashboard shows it like any shell run.
 
+``--target <name>`` measures only that Target's tables. Such a run is never stored in the
+Main Booley Directory, so it never makes the commit Measured: its document, Markdown report
+and Flow reports are kept in the ``measure`` Job's own directory, beside its ``job.log``.
+
 Exit status: 0 when every enforced bound is met, 1 when one is unmet, 2 when a Flow errored,
 when nothing was in scope or when the measurement failed before or while storing (nothing
 is stored for a refusal), and 130 for a cancellation, which is stored as a cancelled run
@@ -29,7 +33,7 @@ import time
 import traceback
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import FrameType
@@ -94,6 +98,7 @@ class MeasureRequest:
     again: bool  # --again
     as_json: bool  # --json
     argv: tuple[str, ...]  # the user's arguments, for the Job record
+    target: str | None = None  # --target
 
 
 class MeasureRefusedError(Exception):
@@ -209,6 +214,8 @@ def _key_of(project_root: Path, commit: str, paired_commit: str | None = None) -
 class _Preflight:
     """Everything decided before any child starts."""
 
+    rules: MetricsRules  # scoped to the Target when ``--target`` is given
+    scope: str | None  # the identity of the ``--target`` Target
     protected: tuple[str, ...]
     toolchain: ToolchainFingerprint
     targets: list[str]
@@ -230,12 +237,27 @@ def _load_rules(checkout: Path) -> MetricsRules:
     return rules
 
 
-def _preflight(checkout: Path, main: Path, run_id: str, rules: MetricsRules) -> _Preflight:
-    """Preflight every table in *checkout*; a refusal for any starts no child."""
+def _scoped(catalog: TargetCatalog, rules: MetricsRules, target: str) -> tuple[MetricsRules, str]:
+    """The rules narrowed to *target*'s tables, and its identity; none left is a refusal."""
+    identity = catalog.select(target).identity
+    tables = tuple(table for table in rules.tables if table.identity == identity)
+    if not tables:
+        raise MeasureRefusedError(NOTHING_IN_SCOPE)
+    return replace(rules, tables=tables), identity
+
+
+def _preflight(
+    checkout: Path, main: Path, run_id: str, rules: MetricsRules, target: str | None
+) -> _Preflight:
+    """Preflight the tables in *checkout* (the Target's with ``--target``); a refusal starts no child."""
     try:
+        catalog = TargetCatalog.build(checkout)
+        scope = None
+        if target is not None:
+            rules, scope = _scoped(catalog, rules, target)
         protected = protected_set(checkout)
         toolchain = collect_toolchain_fingerprint()
-        targets = [handle.identity for handle in TargetCatalog.build(checkout).list()]
+        targets = [handle.identity for handle in catalog.list()] if scope is None else [scope]
         prepared = prepare_children(
             rules.tables,
             checkout=checkout,
@@ -246,7 +268,7 @@ def _preflight(checkout: Path, main: Path, run_id: str, rules: MetricsRules) -> 
         )
     except (ValueError, FuseSocError) as exc:  # includes CheckoutFlowError, unpinnable inputs
         raise MeasureRefusedError(str(exc)) from exc
-    return _Preflight(protected, toolchain, targets, prepared)
+    return _Preflight(rules, scope, protected, toolchain, targets, prepared)
 
 
 def _measure(
@@ -358,7 +380,8 @@ def _measure_commit(
             print(notice, file=sys.stderr)
         keyed = _key_of(project_root, commit, export.paired_commit)
         rules = _load_rules(checkout)
-        preflight = _preflight(checkout, main, run_id, rules)
+        preflight = _preflight(checkout, main, run_id, rules, request.target)
+        rules = preflight.rules
         signals.interruptible = False  # the children run: a signal now cancels, never aborts
         try:
             outcome = run_children(
@@ -388,11 +411,19 @@ def _measure_commit(
             tuple(table.run for table in outcome.tables),
             tuple(preflight.targets),
         )
-        store = MeasurementStore(main)
-        stored = store.write(run, flow_reports)
+        # A ``--target`` run is kept with its Job and never reaches the Project's store.
+        kept = main if preflight.scope is None else standalone_log_root(main) / run_id
+        stored = MeasurementStore(kept).write(run, flow_reports)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
-    view = run_view(project_root, store, stored, commit, base=request.base)
+    view = run_view(
+        project_root,
+        MeasurementStore(main),
+        stored,
+        commit,
+        base=request.base,
+        target=preflight.scope,
+    )
     write_markdown_report(view)
     _print_report(view, request)
     # A signal while storing leaves a complete run: the exit must agree with what is stored.
