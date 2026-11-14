@@ -21,11 +21,13 @@ from booley.mcp.registry import McpToolInfo, discover_mcp_inventory, flow_blurb
 from booley.runtime import detached_job
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from booley.config.agent import AgentSettings
     from booley.flows.base import BuiltinFlow
     from booley.flows.endpoint_state import EndpointState
     from booley.harness.dashboard.run_form import RunForm
-    from booley.harness.dashboard.specialist_form import ReviewerForm
+    from booley.harness.dashboard.specialist_form import SpecialistForm
     from booley.runtime.job_slots import AdmissionOutlook
 
 # The child parses and builds a request only; a minute covers a cold import on a slow host.
@@ -51,11 +53,10 @@ class FlowChoice:
 
 @dataclass(frozen=True)
 class SpecialistChoice:
-    """One enabled built-in Specialist; ``selectable`` is whether the wizard has a form for it."""
+    """One enabled built-in Specialist; every one has a form (the drift guard fails CI for one without)."""
 
     name: str
     blurb: str
-    selectable: bool
 
 
 @dataclass(frozen=True)
@@ -87,7 +88,6 @@ def builtin_specialists(worktree: Path) -> SpecialistListing:
     Any failure reading the settings (a bad ``booley.toml``, a Booley Directory the
     layout rules refuse) becomes the listing's ``problem``, as for the Target reads.
     """
-    from booley.harness.dashboard.specialist_form import REVIEWER
     from booley.harness.dashboard.targets import first_line
     from booley.mcp.endpoint_config import endpoint_is_enabled, get_endpoint_config
 
@@ -97,7 +97,7 @@ def builtin_specialists(worktree: Path) -> SpecialistListing:
         return SpecialistListing((), f"{type(exc).__name__}: {first_line(exc)}")
     return SpecialistListing(
         tuple(
-            SpecialistChoice(info.name, flow_blurb(info.description), info.name == REVIEWER)
+            SpecialistChoice(info.name, flow_blurb(info.description))
             for info in _builtin_infos("specialist")
             if endpoint_is_enabled(info.name, "specialist", specialists, flows)
         )
@@ -279,13 +279,28 @@ class Launcher:
     def specialists(self, worktree: Path) -> SpecialistListing:
         return builtin_specialists(worktree)
 
-    def form(self, kind: str, name: str, worktree: Path) -> RunForm | ReviewerForm:
-        """The form of a Flow, or the reviewer's, its spec path prefilled from *worktree*'s Goal."""
+    def form(self, kind: str, name: str, worktree: Path) -> RunForm | SpecialistForm:
+        """The form of a Flow or a built-in Specialist (``KeyError`` for any other name).
+
+        The reviewer's spec path is prefilled from *worktree*'s Goal; the coverage analyst's
+        campaigns are read when its picker opens, so one that finishes meanwhile shows up.
+        """
         if kind == "flow":
             return form(name)
-        from booley.harness.dashboard.specialist_form import ReviewerForm, spec_prefill
+        from booley.harness.dashboard.specialist_form import (
+            COVERAGE_ANALYST,
+            REVIEWER,
+            CoverageAnalystForm,
+            ReviewerForm,
+            spec_prefill,
+        )
 
-        return ReviewerForm(spec_prefill(self._booley_dir, worktree), agent_note(worktree, name))
+        note = agent_note(worktree, name)
+        builders: dict[str, Callable[[], SpecialistForm]] = {
+            REVIEWER: lambda: ReviewerForm(spec_prefill(self._booley_dir, worktree), note),
+            COVERAGE_ANALYST: lambda: CoverageAnalystForm(note),
+        }
+        return builders[name]()
 
     def check(self, worktree: Path, kind: str, name: str, argv: tuple[str, ...]) -> CheckResult:
         return check(worktree, kind, name, argv)

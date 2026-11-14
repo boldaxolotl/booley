@@ -10,6 +10,7 @@ import json
 import shlex
 import sys
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -17,9 +18,12 @@ from textual.widgets import OptionList
 
 from booley.harness.dashboard import app as dashboard_app
 from booley.harness.dashboard import launch
+from booley.harness.dashboard.jobs import JobSnapshot, JobView
+from booley.harness.dashboard.specialist_form import ReviewerForm
 from booley.harness.standalone_job import standalone_jobs_dir, standalone_request_path
 from booley.runtime import auth_token, job_records
 from tests.goals import conftest as goals_conftest
+from tests.harness import test_dashboard as dashboard_tests
 from tests.harness import test_dashboard_run as run_tests
 from tests.harness.test_dashboard_run import (
     FLOW_NAMES,
@@ -27,6 +31,7 @@ from tests.harness.test_dashboard_run import (
     form_rows,
     goto_row,
     make_app,
+    pick_rows,
     real_launcher,
     review_command,
     row_value,
@@ -35,6 +40,7 @@ from tests.harness.test_dashboard_run import (
     settle_form,
     shown,
     start_run,
+    type_text,
     write_config,
 )
 from tests.harness.test_dashboard_targets import settle
@@ -87,7 +93,7 @@ class ReviewerLauncher(FakeLauncher):
     def specialists(self, worktree):
         from booley.harness.dashboard.launch import SpecialistChoice, SpecialistListing
 
-        return SpecialistListing((SpecialistChoice("reviewer", "Review RTL or testbench.", True),))
+        return SpecialistListing((SpecialistChoice("reviewer", "Review RTL or testbench."),))
 
     def form(self, kind, name, worktree):
         from booley.harness.dashboard.specialist_form import ReviewerForm
@@ -122,11 +128,12 @@ async def to_step(app, pilot):
     return wizard
 
 
-async def to_reviewer(app, pilot):
-    """Open the reviewer's form from the step."""
+async def to_reviewer(app, pilot, name="reviewer"):
+    """Open the form of Specialist *name* from the step."""
     wizard = await to_step(app, pilot)
     options = wizard.query_one("#run-flows", OptionList)
-    target = reviewer_row(wizard)
+    rows = [text for text, _ in step_rows(wizard)]
+    target = next(i for i, text in enumerate(rows) if text.startswith(name))
     for _ in range(len(step_rows(wizard))):
         if options.highlighted == target:
             break
@@ -229,7 +236,7 @@ def test_specialist_check_parses_like_the_shell(tmp_path, monkeypatch, capsys):
 
 
 @pytest.mark.asyncio
-async def test_choice_step_lists_enabled_builtin_specialists_and_only_reviewer_is_selectable(
+async def test_choice_step_lists_enabled_builtin_specialists_and_each_is_selectable(
     checkout,
 ):
     (checkout / ".booley" / "mcp_tools").mkdir(parents=True)
@@ -248,9 +255,8 @@ async def test_choice_step_lists_enabled_builtin_specialists_and_only_reviewer_i
             "coverage_analyst",
             "reviewer",
         ]
-        assert [disabled for _, disabled in rows] == [False] * len(FLOW_NAMES) + [True, False]
-        assert rows[-2][0].endswith("(form not built yet)")
-        assert "form not built yet" not in rows[-1][0]
+        assert [disabled for _, disabled in rows] == [False] * (len(FLOW_NAMES) + 2)
+        assert all("form not built yet" not in text for text, _ in rows)
         assert len(rows[-1][0].split(" — ", 1)[1]) > 10
     write_config(checkout, "[specialists.coverage_analyst]\nenabled = false\n")
     app = make_app(checkout, real_launcher(checkout / ".booley"))
@@ -355,7 +361,7 @@ class KeyedListing(ReviewerLauncher):
         assert self.gates.setdefault(worktree, threading.Event()).wait(timeout=60)
         if self.broken:
             return SpecialistListing((), "EndpointConfigError: bad toml")
-        return SpecialistListing((SpecialistChoice("reviewer", str(worktree), True),))
+        return SpecialistListing((SpecialistChoice("reviewer", str(worktree)),))
 
 
 @pytest.mark.asyncio
@@ -447,14 +453,16 @@ async def test_wizard_follows_the_category_and_prefills_the_spec_path(layout, sp
 async def test_spec_path_is_prefilled_from_the_active_spec_review_goal(layout):
     launcher = real_launcher(layout.control)
 
-    def prefill() -> str:
-        return launcher.form("specialist", "reviewer", layout.worktree).initial()["spec"]
+    def prefill(worktree: Path = layout.worktree) -> str:
+        form = launcher.form("specialist", "reviewer", worktree)
+        assert isinstance(form, ReviewerForm)
+        return form.initial()["spec"]
 
     assert prefill() == ""  # no Goal Mode
     other = {"family": "REVIEW", "review": "rtl_bugs", "verdict": "done", "paths": ["rtl.v"]}
     enter_goals(layout, [other, {**SPEC_GOAL, "verdict": "done"}])
     assert prefill() == "docs/spec.md"
-    assert launcher.form("specialist", "reviewer", layout.main).initial()["spec"] == ""
+    assert prefill(layout.main) == ""
     (record_file,) = layout.control.rglob("record.json")
     record_file.write_bytes(b"{ not json")
     assert prefill() == ""  # a corrupt Goal record only loses the prefill
@@ -502,3 +510,193 @@ async def test_review_refuses_an_empty_focus_scope_or_spec_path(checkout):
                 ),
             )
         ]
+
+
+# --- coverage_analyst (#2305) ------------------------------------------------
+
+CAMPAIGN_ENDED = "2024-03-01T10:00:00Z"
+
+
+def write_campaign(root: Path, number: int, target: str = "sim_fifo") -> Path:
+    """A finished coverage campaign of Simulation run *number* under *root*'s Booley Directory."""
+    directory = root / ".booley" / "flow-reports" / "sim" / str(number) / "targets" / target
+    directory.mkdir(parents=True)
+    (directory / "coverage.json").write_text("{}\n", encoding="utf-8")
+    (directory / "simulation.json").write_text(
+        json.dumps({"complete": True, "target": target}), encoding="utf-8"
+    )
+    return directory.parent.parent
+
+
+def sim_job(run_id: str, work_dir: Path, *, endpoint="sim", state="completed", report=True):
+    """A Job view of *endpoint* in *work_dir*; its report sits in sim run ``<run_id>``."""
+    record = job_records.JobRecord(
+        run_id,
+        endpoint,
+        CAMPAIGN_ENDED,
+        60,
+        status="running" if state == "running" else "done",
+        work_dir=str(work_dir),
+        ended_at=CAMPAIGN_ENDED if state != "running" else None,
+    )
+    report_path = work_dir / ".booley" / "flow-reports" / "sim" / run_id / "report.json"
+    return JobView(Path("/jobs"), record, state, report_path=report_path if report else None)
+
+
+@pytest.mark.asyncio
+async def test_sim_runs_are_the_finished_simulation_jobs_of_the_worktree(checkout, tmp_path):
+    from booley.harness.dashboard.specialist_form import SimRun
+
+    other = tmp_path / "other"
+    jobs = (
+        sim_job("4", checkout),
+        sim_job("5", checkout, state="running"),
+        sim_job("6", other),
+        sim_job("7", checkout, endpoint="lint"),
+        sim_job("8", checkout, report=False),
+    )
+    current = replace(
+        dashboard_tests.snapshot(0), sessions=(), session_handles={}, jobs=JobSnapshot(jobs)
+    )
+    app = make_app(checkout, FakeLauncher(), current)
+    assert app._finished_sim_runs(checkout) is None  # the Jobs have not been read yet
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        runs = app._finished_sim_runs(checkout)
+    assert runs == (SimRun(checkout / ".booley" / "flow-reports" / "sim" / "4", CAMPAIGN_ENDED),)
+
+
+async def type_campaign(app, pilot, wizard, old: str, new: str) -> None:
+    """Reopen the Coverage Record picker, take its manual row and replace *old* with *new*."""
+    await goto_row(pilot, wizard, "Coverage Record")
+    await pilot.press("enter")
+    await settle(app, pilot)
+    await pilot.press("down", "enter")  # the manual row opens the editor
+    assert wizard.query_one("#run-edit").display
+    await pilot.press(*["backspace"] * len(old))
+    await type_text(pilot, new)
+    await pilot.press("enter")
+    assert row_value(wizard, "Coverage Record") == new
+
+
+@pytest.mark.asyncio
+async def test_coverage_analyst_launches_a_picked_or_typed_campaign(
+    checkout, spawned, tmp_path, empty_home
+):
+    from booley.harness.dashboard.specialist_form import SimRun
+
+    write_config(checkout, "")
+    booley_dir = tmp_path / "booley"
+    invocation = write_campaign(checkout, 1)
+    app = make_app(checkout, real_launcher(booley_dir))
+    app._finished_sim_runs = lambda _worktree: (SimRun(invocation, CAMPAIGN_ENDED),)  # type: ignore[method-assign]
+    picked = ".booley/flow-reports/sim/1/targets/sim_fifo/coverage.json"
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_reviewer(app, pilot, "coverage_analyst")
+        assert "Extra arguments" not in " ".join(form_rows(wizard))
+        assert row_value(wizard, "Coverage Record") == ""
+        await goto_row(pilot, wizard, "Coverage Record")
+        await pilot.press("enter")
+        await settle(app, pilot)
+        rows = pick_rows(wizard)
+        assert len(rows) == 2
+        assert rows[0].startswith("sim_fifo  ") and rows[0].endswith("  sim #1")
+        assert rows[1] == "Type a coverage.json path…"
+        assert wizard.query_one("#run-picks", OptionList).highlighted == 0  # the newest
+        await pilot.press("enter")  # one Enter picks the newest
+        assert row_value(wizard, "Coverage Record") == picked
+        await review_command(app, pilot, wizard)
+        command = shown(wizard, "#run-command")
+        assert command == (
+            f"cd {shlex.quote(str(checkout))} && booley specialist coverage_analyst --record {picked}"
+        )
+        await pilot.press("escape")
+        await type_campaign(app, pilot, wizard, picked, "other/coverage.json")
+        await review_command(app, pilot, wizard)
+        assert shown(wizard, "#run-command").endswith("--record other/coverage.json")
+        await pilot.press("enter")  # Submit
+        await pilot.pause()
+        _jobs_dir, run_id = json.loads(app.navigation.selected)
+    record = job_records.read_record(run_id, standalone_jobs_dir(booley_dir))
+    assert record is not None
+    assert record.argv == [
+        "booley",
+        "specialist",
+        "coverage_analyst",
+        "--record",
+        "other/coverage.json",
+    ]
+    request = json.loads(standalone_request_path(booley_dir, run_id).read_text(encoding="utf-8"))
+    assert request["argv"] == ["--record", "other/coverage.json"]
+    assert request["name"] == "coverage_analyst"
+    assert len(spawned) == 1
+
+
+@pytest.mark.asyncio
+async def test_reopening_the_picker_keeps_an_older_campaign_chosen(checkout, tmp_path, empty_home):
+    from booley.harness.dashboard.specialist_form import SimRun
+
+    write_config(checkout, "")
+    older = write_campaign(checkout, 1)
+    newer = write_campaign(checkout, 2)
+    runs = (SimRun(newer, "2024-03-02T10:00:00Z"), SimRun(older, CAMPAIGN_ENDED))
+    app = make_app(checkout, real_launcher(tmp_path / "booley"))
+    app._finished_sim_runs = lambda _worktree: runs  # type: ignore[method-assign]
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_reviewer(app, pilot, "coverage_analyst")
+        await goto_row(pilot, wizard, "Coverage Record")
+        await pilot.press("enter")
+        await settle(app, pilot)
+        await pilot.press("down", "enter")  # the older campaign
+        chosen = row_value(wizard, "Coverage Record")
+        assert chosen.endswith("sim/1/targets/sim_fifo/coverage.json")
+        await goto_row(pilot, wizard, "Coverage Record")
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert wizard.query_one("#run-picks", OptionList).highlighted == 1  # the chosen one
+        await pilot.press("enter")
+        assert row_value(wizard, "Coverage Record") == chosen
+
+
+@pytest.mark.asyncio
+async def test_coverage_analyst_without_campaigns_explains_how_to_make_one(checkout, empty_home):
+    from booley.harness.dashboard.specialist_form import NO_CAMPAIGNS
+
+    write_config(checkout, "")
+    app = make_app(checkout, real_launcher(checkout / ".booley"))
+    app._finished_sim_runs = lambda _worktree: ()  # type: ignore[method-assign]
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_reviewer(app, pilot, "coverage_analyst")
+        await review_command(app, pilot, wizard)  # before choosing anything
+        assert shown(wizard, "#run-error") == "Choose a Coverage Record"
+        await goto_row(pilot, wizard, "Coverage Record")
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert shown(wizard, "#run-hint") == NO_CAMPAIGNS
+        assert pick_rows(wizard) == ["Type a coverage.json path…"]
+
+
+@pytest.mark.asyncio
+async def test_coverage_picker_says_when_the_jobs_are_unread_or_the_read_crashes(
+    checkout, empty_home, monkeypatch
+):
+    from booley.harness.dashboard import wizard as wizard_module
+    from booley.harness.dashboard.specialist_form import SimRun
+
+    write_config(checkout, "")
+    app = make_app(checkout, real_launcher(checkout / ".booley"))
+    app._finished_sim_runs = lambda _worktree: None  # type: ignore[method-assign]
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_reviewer(app, pilot, "coverage_analyst")
+        await goto_row(pilot, wizard, "Coverage Record")
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert shown(wizard, "#run-hint") == wizard_module.JOBS_NOT_READ
+        assert pick_rows(wizard) == ["Type a coverage.json path…"]
+        await pilot.press("escape")
+        # A read that crashes lists no campaign instead of waiting forever.
+        wizard._sim_runs = lambda _worktree: (SimRun(checkout, CAMPAIGN_ENDED),)
+        monkeypatch.setattr(wizard_module, "finished_campaigns", lambda *_args: 1 / 0)
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert "No finished Coverage Record" in shown(wizard, "#run-hint")

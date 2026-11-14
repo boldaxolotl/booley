@@ -29,6 +29,7 @@ from tests.harness.test_dashboard_run import (
     review_command,
     row_key,
     row_value,
+    set_text,
     settle_form,
     shown,
 )
@@ -128,15 +129,16 @@ async def launch_from_detail(app: DashboardApp, pilot, selector: str) -> RunWiza
 
 @pytest.mark.asyncio
 async def test_target_detail_lists_exactly_the_flows_that_drive_it(checkout):
+    # A Simulation Target also offers the Mutation Flow, which runs one Simulation Target.
     app = make_app(checkout, FakeLauncher())
     async with app.run_test(size=(130, 40)) as pilot:
         await targets_of_wt_a(app, pilot)
         for selector, flows in [
-            ("sim_fifo", ["sim"]),
+            ("sim_fifo", ["sim", "mutation"]),
             ("synth_fifo", ["synth"]),
             ("lint_fifo", ["lint"]),
             ("fpga_fifo", ["fpga"]),
-            ("dual_target", ["lint", "sim"]),
+            ("dual_target", ["lint", "sim", "mutation"]),
         ]:
             await open_detail(app, pilot, selector)
             assert flow_ids(app) == flows
@@ -182,6 +184,44 @@ async def test_choosing_a_flow_opens_the_form_with_worktree_and_target_filled_in
             await pilot.press("escape", "escape", "escape")
             await pilot.pause()
             assert app.navigation.view == "targets"
+
+
+@pytest.mark.asyncio
+async def test_a_simulation_target_launches_the_mutation_flow_with_its_target(checkout):
+    wt_a = worktree_a(checkout)
+    launcher = FakeLauncher("key")
+    app = make_app(checkout, launcher)
+    async with app.run_test(size=(130, 40)) as pilot:
+        await targets_of_wt_a(app, pilot)
+        await open_detail(app, pilot, "sim_fifo")
+        flows = app.query_one("#target-flows", OptionList)
+        await pilot.press("down", "down")  # past the Simulation Flow, onto the Mutation Flow
+        assert flows.highlighted == 1
+        await pilot.press("enter")
+        await settle_form(app, pilot)
+        wizard = app.screen
+        assert isinstance(wizard, RunWizard)
+        assert shown(wizard, "#run-title") == "booley flow mutation in wt-a"
+        assert row_value(wizard, "--target") == "sim_fifo"
+        await set_text(pilot, wizard, "--count", "3")
+        await review_command(app, pilot, wizard)
+        command = shown(wizard, "#run-command")
+        expected = ("--target", "sim_fifo", "--count", "3")
+        assert command == (
+            f"cd {shlex.quote(str(wt_a))} && booley flow mutation {shlex.join(expected)}"
+        )
+        await pilot.press("enter")  # Submit is highlighted
+        await settle(app, pilot)
+        assert launcher.submitted == [(wt_a, "flow", "mutation", expected)]
+        assert shlex.split(command) == [
+            "cd",
+            str(wt_a),
+            "&&",
+            "booley",
+            "flow",
+            "mutation",
+            *expected,
+        ]
 
 
 class NoTargetField(FakeLauncher):
