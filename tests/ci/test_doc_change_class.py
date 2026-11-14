@@ -7,7 +7,6 @@ import os
 import sys
 from pathlib import Path
 
-import pytest
 import yaml
 from tests.subprocess_budget import run_bounded_child
 
@@ -250,19 +249,11 @@ _POSTREVIEW_CASES: dict[str, tuple[dict[str, str | None], dict[str, tuple[str, s
 }
 
 
-@pytest.mark.parametrize(
-    ("changes", "expected_files", "expected_class"),
-    [(c, f, "premerge") for c, f in _PREMERGE_CASES.values()]
-    + [(c, f, "postreview") for c, f in _POSTREVIEW_CASES.values()],
-    ids=[*_PREMERGE_CASES, *_POSTREVIEW_CASES],
-)
-def test_classifies_each_rule_kind(
-    tmp_path: Path,
-    changes: dict[str, str | None],
-    expected_files: dict[str, tuple[str, str]],
-    expected_class: str,
-) -> None:
-    assert _classify(tmp_path, changes) == (expected_class, expected_files)
+def test_classifies_each_rule_kind(tmp_path: Path) -> None:
+    cases = [(n, c, f, "premerge") for n, (c, f) in _PREMERGE_CASES.items()]
+    cases += [(n, c, f, "postreview") for n, (c, f) in _POSTREVIEW_CASES.items()]
+    for name, changes, expected_files, expected_class in cases:
+        assert _classify(tmp_path / name, changes) == (expected_class, expected_files), name
 
 
 def test_mixed_pr_takes_the_highest_class(tmp_path: Path) -> None:
@@ -295,59 +286,54 @@ def test_rename_reports_the_old_path(tmp_path: Path) -> None:
     ]
 
 
-@pytest.mark.parametrize(
-    ("changes", "expected_files"),
-    [
-        (_append("CHANGELOG.md", "x\n"), {"CHANGELOG.md": ("none", "changelog")}),
-        (
+def test_changelog_and_code_only_diffs_are_none(tmp_path: Path) -> None:
+    cases = {
+        "changelog": (_append("CHANGELOG.md", "x\n"), {"CHANGELOG.md": ("none", "changelog")}),
+        "packaged-changelog": (
             _append("src/booley/data/refs/CHANGELOG.md", "x\n"),
             {"src/booley/data/refs/CHANGELOG.md": ("none", "changelog")},
         ),
-        (_append("src/booley/x.py", "y = 2\n"), {}),
-    ],
-    ids=["changelog", "packaged-changelog", "code-only"],
-)
-def test_changelog_and_code_only_diffs_are_none(
-    tmp_path: Path, changes: dict[str, str | None], expected_files: dict[str, tuple[str, str]]
-) -> None:
-    assert _classify(tmp_path, changes) == ("none", expected_files)
+        "code-only": (_append("src/booley/x.py", "y = 2\n"), {}),
+    }
+    for name, (changes, expected_files) in cases.items():
+        assert _classify(tmp_path / name, changes) == ("none", expected_files), name
 
 
 def _rules_text() -> str:
     return _RULES.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize(
-    ("old", "new", "problem"),
-    [
-        ('doc_paths = ["*.md", "docs/*"]', "doc_paths = [", "cannot read rules"),
-        (
-            'name = "adr"\nclass = "premerge"',
-            'name = "adr"\nclass = "pre"',
-            "class 'pre' is not one of",
-        ),
-        ('check = "page-set"', 'check = "bogus"', "check 'bogus' is not one of"),
-        ('\nclass = "none"', '\nclas = "none"', "each kind needs exactly"),
-        ('name = "adr"', 'name = "glossary"', "unique non-empty string"),
-        ('default_class = "postreview"', 'default_class = "x"', "default_class 'x' is not one of"),
-        ('paths = ["docs/adr/*"]', "paths = []", "paths must be a non-empty list"),
-        ('doc_paths = ["*.md", "docs/*"]', "", "top-level keys must be exactly"),
-    ],
-)
-def test_malformed_rules_exit_nonzero_naming_the_problem(
-    tmp_path: Path, old: str, new: str, problem: str
-) -> None:
-    rules = tmp_path / "doc_change_rules.toml"
+_MALFORMED = [
+    ('doc_paths = ["*.md", "docs/*"]', "doc_paths = [", "cannot read rules"),
+    (
+        'name = "adr"\nclass = "premerge"',
+        'name = "adr"\nclass = "pre"',
+        "class 'pre' is not one of",
+    ),
+    ('check = "page-set"', 'check = "bogus"', "check 'bogus' is not one of"),
+    ('\nclass = "none"', '\nclas = "none"', "each kind needs exactly"),
+    ('name = "adr"', 'name = "glossary"', "unique non-empty string"),
+    ('default_class = "postreview"', 'default_class = "x"', "default_class 'x' is not one of"),
+    ('paths = ["docs/adr/*"]', "paths = []", "paths must be a non-empty list"),
+    ('doc_paths = ["*.md", "docs/*"]', "", "top-level keys must be exactly"),
+]
+
+
+def test_malformed_rules_exit_nonzero_naming_the_problem(tmp_path: Path) -> None:
     text = _rules_text()
-    assert old in text
-    rules.write_bytes(text.replace(old, new, 1).encode("utf-8"))
-    code, payload, stderr = _run(
-        tmp_path, _append("docs/adr/0001-x.md", "x\n"), "--rules", str(rules)
-    )
-    assert code == 2
-    assert payload == {}
-    assert "doc_change_rules.toml" in stderr
-    assert problem in stderr
+    for index, (old, new, problem) in enumerate(_MALFORMED):
+        assert old in text, old
+        directory = tmp_path / str(index)
+        directory.mkdir()
+        rules = directory / "doc_change_rules.toml"
+        rules.write_bytes(text.replace(old, new, 1).encode("utf-8"))
+        code, payload, stderr = _run(
+            directory / "r", _append("docs/adr/0001-x.md", "x\n"), "--rules", str(rules)
+        )
+        assert code == 2, stderr
+        assert payload == {}
+        assert "doc_change_rules.toml" in stderr
+        assert problem in stderr
 
 
 def test_missing_rules_file_and_bad_revision_exit_2(tmp_path: Path) -> None:
@@ -419,40 +405,39 @@ def _fake_gh_env(
     return env, log
 
 
-@pytest.mark.parametrize(
-    ("changes", "present", "writes"),
-    [
-        (
-            _append("docs/adr/0001-x.md", "x\n"),
-            "docs-postreview bug",
-            [
-                f"--method POST {_LABELS} -f labels[]=docs-premerge",
-                f"--method DELETE {_LABELS}/docs-postreview",
-            ],
-        ),
-        (
-            _edit("docs/internals/ARCHITECTURE.md", "Body", "New"),
-            "bug",
-            [f"--method POST {_LABELS} -f labels[]=docs-postreview"],
-        ),
-        (
-            _append("CHANGELOG.md", "x\n"),
-            "docs-premerge",
-            [f"--method DELETE {_LABELS}/docs-premerge"],
-        ),
-        (_append("docs/adr/0001-x.md", "x\n"), "docs-premerge", []),
-    ],
-    ids=["swap", "set", "clear", "already-labeled"],
-)
-def test_label_pr_sets_swaps_and_clears_labels(
-    tmp_path: Path, changes: dict[str, str | None], present: str, writes: list[str]
-) -> None:
-    env, log = _fake_gh_env(tmp_path, present)
-    code, _, stderr = _run(tmp_path, changes, "--label-pr", "7", env=env)
-    assert code == 0, stderr
-    calls = log.read_text(encoding="utf-8").splitlines()
-    assert calls[0] == f"api --paginate {_LABELS} --jq .[].name"
-    assert calls[1:] == [f"api {write}" for write in writes]
+_LABEL_CASES = [
+    (
+        _append("docs/adr/0001-x.md", "x\n"),
+        "docs-postreview bug",
+        [
+            f"--method POST {_LABELS} -f labels[]=docs-premerge",
+            f"--method DELETE {_LABELS}/docs-postreview",
+        ],
+    ),
+    (
+        _edit("docs/internals/ARCHITECTURE.md", "Body", "New"),
+        "bug",
+        [f"--method POST {_LABELS} -f labels[]=docs-postreview"],
+    ),
+    (
+        _append("CHANGELOG.md", "x\n"),
+        "docs-premerge",
+        [f"--method DELETE {_LABELS}/docs-premerge"],
+    ),
+    (_append("docs/adr/0001-x.md", "x\n"), "docs-premerge", []),
+]
+
+
+def test_label_pr_sets_swaps_and_clears_labels(tmp_path: Path) -> None:
+    for index, (changes, present, writes) in enumerate(_LABEL_CASES):
+        case = tmp_path / str(index)
+        case.mkdir()
+        env, log = _fake_gh_env(case, present)
+        code, _, stderr = _run(case / "r", changes, "--label-pr", "7", env=env)
+        assert code == 0, stderr
+        calls = log.read_text(encoding="utf-8").splitlines()
+        assert calls[0] == f"api --paginate {_LABELS} --jq .[].name"
+        assert calls[1:] == [f"api {write}" for write in writes]
 
 
 def test_label_pr_failure_exits_1_naming_the_call(tmp_path: Path) -> None:
