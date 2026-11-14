@@ -12,8 +12,8 @@ Every Monday at 06:00 UTC,
 runs
 [`docs_postreview_digest.py`](../../../.github/scripts/docs_postreview_digest.py).
 It opens one issue, labeled `docs-postreview-digest`, listing every PR that
-carries `docs-postreview` and merged since the previous digest. The issue is
-the maintainer's reading list. It is a stopgap: the weekly patch release
+carries `docs-postreview` and merged into `main` since the previous digest.
+The issue is the maintainer's reading list. It is a stopgap: the weekly patch release
 (#3831) will carry the same list in its release PR and replace this digest.
 
 ## The window
@@ -39,6 +39,8 @@ The body has:
 
 The classifier's current rules apply, run on what the PR's merge commit
 brought into `main`. Edit only the boxes; the hidden markers must stay.
+Never delete or unlabel a digest: the next run reads the newest labeled one
+for its cut-off.
 
 ## Maintainer steps
 

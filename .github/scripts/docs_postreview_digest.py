@@ -156,6 +156,8 @@ def parse_digest(node: dict[str, Any]) -> Digest:
     markers = list(_ENTRY.finditer(body))
     if len(markers) != body.count("<!-- docs-postreview-digest-entry"):
         raise bad("an entry marker is malformed")
+    if len(_REVIEWED.findall(body)) != len(markers) or len(_NEEDED.findall(body)) != len(markers):
+        raise bad("a checkbox is not under an entry marker")
     entries: list[Entry] = []
     for i, marker in enumerate(markers):
         end = markers[i + 1].start() if i + 1 < len(markers) else len(body)

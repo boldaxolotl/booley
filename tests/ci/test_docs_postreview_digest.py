@@ -395,8 +395,11 @@ def test_classifier_failure_names_the_pull_request(
         "<!-- docs-postreview-digest cutoff=yesterday -->",
         _body(_CUTOFF, [(1, "a", "x", "x")]).replace("- [x] needed edits", ""),
         _body(_CUTOFF, [(1, "a", "x", "x")]).replace("kinds=a", "kinds=a b"),
+        _body(_CUTOFF, [(1, "a", "x", "x"), (2, "a", "x", " ")]).replace(
+            "<!-- docs-postreview-digest-entry pr=1 kinds=a -->\n", ""
+        ),
     ],
-    ids=["no-marker", "missing-box", "bad-kinds"],
+    ids=["no-marker", "missing-box", "bad-kinds", "orphaned-entry"],
 )
 def test_unreadable_earlier_digest_fails(
     body: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
