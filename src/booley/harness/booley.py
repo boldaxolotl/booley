@@ -998,7 +998,7 @@ def _add_utility_subparsers(sub) -> None:
         default=None,
         help=(
             "Start in a new worktree `s<N>` even if the main checkout is free "
-            "(overrides [chat] worktree for this launch)"
+            "(overrides [worktree] chat for this launch)"
         ),
     )
     placement.add_argument(
@@ -1009,7 +1009,7 @@ def _add_utility_subparsers(sub) -> None:
         default=None,
         help=(
             "Start in the main checkout even if another session uses it; from inside a "
-            "linked worktree, stay there (overrides [chat] worktree for this launch)"
+            "linked worktree, stay there (overrides [worktree] chat for this launch)"
         ),
     )
     chat_p.add_argument(

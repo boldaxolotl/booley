@@ -299,7 +299,7 @@ A worktree counts as idle when its last use (the `LAST USED` column of
 `booley worktree list`) is older than `AGE`: days, hours, minutes, and seconds
 as `7d`, `36h`, `1d12h`, `90m`, or `30s`. The default is `7d`; set another
 default with `gc_older_than` in the main checkout's `.booley/booley.toml`
-([configuration](CONFIG.md#worktree-cleanup-worktree)). `--older-than` wins over
+([configuration](CONFIG.md#worktree-settings-worktree)). `--older-than` wins over
 the setting. Run it from the main checkout or another worktree.
 
 `booley chat` runs the same cleanup at the start of every launch, with the same

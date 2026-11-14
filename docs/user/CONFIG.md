@@ -258,28 +258,6 @@ Sandbox and leaves your host checkout alone; `git -c`, `--author`, and
 another identity, and names the fix, including for a hand-written devcontainer
 spec such as GitHub Codespaces.
 
-## Interactive sessions (`[chat]`)
-
-```toml
-[chat]
-worktree = "auto"    # "auto" (default), "always", or "never"
-```
-
-Decides where `booley chat` starts when you run it from the main checkout:
-
-- `auto`: in the main checkout when no other Booley session is using it,
-  otherwise in a new worktree `s<N>` on branch `booley/s<N>` (`wt/s<N>` in
-  Stealth Mode).
-- `always`: always in a new worktree; if the main checkout was free, the launch
-  holds it until its session ends, so a later `auto` launch starts in a
-  worktree too.
-- `never`: always in the main checkout.
-
-`booley chat --new-worktree` and `--here` override it for one launch. Any other
-value stops `booley chat` with exit 2 and fails Doctor. Run from inside a
-linked worktree, `booley chat` starts there whatever this says. See
-[Several agents at once](USAGE.md#several-agents-at-once).
-
 ## Model selection (`[models]`)
 
 Each Specialist has its own `[models]` key. The model you name decides which
@@ -339,19 +317,36 @@ a Goal.
 
 ## Worktrees
 
-### Worktree cleanup (`[worktree]`)
+### Worktree settings (`[worktree]`)
 
 ```toml
 [worktree]
+chat = "auto"          # "auto" (default), "always", or "never"
 gc_older_than = "7d"   # d, h, m, s components such as "36h" or "1d12h"
 ```
 
-`booley worktree gc` removes worktrees whose last use is older than this age,
-keeping any that `booley worktree rm` would refuse (default `"7d"`). Every
-`booley chat` launch runs the same cleanup with this age. The setting is read
-from the main checkout's `.booley/booley.toml`; a worktree's own copy is
-ignored. `booley worktree gc --older-than AGE` overrides it. See
-[Cleaning up idle worktrees](CLI-REFERENCE.md#worktrees).
+`chat` decides where `booley chat` starts when you run it from the main
+checkout:
+
+- `auto`: in the main checkout when no other Booley session is using it,
+  otherwise in a new worktree `s<N>` on branch `booley/s<N>` (`wt/s<N>` in
+  Stealth Mode).
+- `always`: always in a new worktree; if the main checkout was free, the launch
+  holds it until its session ends, so a later `auto` launch starts in a
+  worktree too.
+- `never`: always in the main checkout.
+
+`booley chat --new-worktree` and `--here` override it for one launch. Any other
+value stops `booley chat` with exit 2 and fails Doctor. Run from inside a
+linked worktree, `booley chat` starts there whatever this says. See
+[Several agents at once](USAGE.md#several-agents-at-once).
+
+`booley worktree gc` removes worktrees whose last use is older than
+`gc_older_than`, keeping any that `booley worktree rm` would refuse (default
+`"7d"`). Every `booley chat` launch runs the same cleanup with this age.
+`gc_older_than` is read from the main checkout's `.booley/booley.toml`; a
+worktree's own copy is ignored. `booley worktree gc --older-than AGE` overrides
+it. See [Cleaning up idle worktrees](CLI-REFERENCE.md#worktrees).
 
 ### Worktree setup hooks (`.booley/hooks/`)
 

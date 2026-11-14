@@ -326,7 +326,7 @@ Booley session S3 works in worktree <path> on branch booley/s3 (<reason>).
 
 The reason is `the main checkout is in use by another booley chat`,
 `Session S2 is working in the main checkout`, `--new-worktree`, or
-`[chat] worktree = "always"`. A lone session runs in the main checkout and
+`[worktree] chat = "always"`. A lone session runs in the main checkout and
 prints no such line.
 
 The worktree starts at the main checkout's last commit, so commit first what
@@ -353,8 +353,8 @@ See [Stealth Mode](STEALTH.md).
 - `booley chat --new-worktree` always starts in a new worktree.
 - `booley chat --here` always starts in the main checkout, for example to
   read code alongside another session.
-- `[chat] worktree = "auto" | "always" | "never"` in `.booley/booley.toml` sets
-  the default; see [Interactive sessions](CONFIG.md#interactive-sessions-chat).
+- `[worktree] chat = "auto" | "always" | "never"` in `.booley/booley.toml` sets
+  the default; see [Worktree settings](CONFIG.md#worktree-settings-worktree).
 - Run from inside an existing linked worktree, `booley chat` starts there and
   creates nothing.
 
@@ -420,14 +420,14 @@ Booley session S3 resumes conversation <id> in worktree <path>.
 - If the worktree has since been removed, the conversation resumes in the main
   checkout after a `NOTE`.
 - Resuming refuses a checkout that is in use, except the main checkout under
-  `[chat] worktree = "never"`, which is shared. A conversation whose worktree
+  `[worktree] chat = "never"`, which is shared. A conversation whose worktree
   has a running session (a Codex started by hand counts) is refused with exit 2
   (end that session first). A conversation that belongs in the main checkout
   while it is in use is refused too; run `booley chat --here ...` to resume it
   beside that session.
 - `--here` and `--new-worktree` keep their meaning, and a launch from inside a
   linked worktree stays there: none of them is redirected by a resume. The
-  `[chat] worktree` setting decides where new sessions start, not where a
+  `[worktree] chat` setting decides where new sessions start, not where a
   resume goes.
 - A conversation you started by hand inside a worktree (not through
   `booley chat`) reopens in that worktree, but may get a new handle once its

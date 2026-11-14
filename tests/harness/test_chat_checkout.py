@@ -319,24 +319,24 @@ def test_auto_uses_a_worktree_while_a_live_session_works_in_main(
 
 def test_always_creates_a_worktree_and_holds_a_free_lock(project, monkeypatch, capsys):
     # Bug caught: `always` starting in main, or leaving the free main-checkout lock untaken.
-    _write_toml(project, '[chat]\nworktree = "always"\n')
+    _write_toml(project, '[worktree]\nchat = "always"\n')
 
     started = _start(project, monkeypatch, capsys)
 
     assert started.cwd == (project / ".booley" / "worktrees" / "s1").resolve()
-    assert '([chat] worktree = "always").' in started.stderr
+    assert '([worktree] chat = "always").' in started.stderr
     assert not started.lock_free
     assert _lock_is_free(project), "the lock outlived the launch"
 
 
 def test_never_and_here_use_main_without_waiting_for_a_held_lock(project, monkeypatch, capsys):
     # Bug caught: `never`/`--here` ignored, not taking the free lock, or waiting for a held one.
-    _write_toml(project, '[chat]\nworktree = "never"\n')
+    _write_toml(project, '[worktree]\nchat = "never"\n')
     free = _start(project, monkeypatch, capsys)
     assert free.cwd == project
     assert not free.lock_free, "never must take the lock when it is free"
 
-    _write_toml(project, '[chat]\nworktree = "always"\n')
+    _write_toml(project, '[worktree]\nchat = "always"\n')
     with _lock_held_elsewhere(project):
         started_at = time.monotonic()
         busy = _start(project, monkeypatch, capsys, flag="never")
@@ -347,7 +347,7 @@ def test_never_and_here_use_main_without_waiting_for_a_held_lock(project, monkey
 
 
 def test_new_worktree_flag_overrides_the_never_knob(project, monkeypatch, capsys):
-    _write_toml(project, '[chat]\nworktree = "never"\n')
+    _write_toml(project, '[worktree]\nchat = "never"\n')
 
     started = _start(project, monkeypatch, capsys, flag="always")
 
@@ -398,7 +398,7 @@ def test_launch_from_inside_a_linked_worktree_runs_in_place(project, monkeypatch
     assert worktree_cmd.run(argparse.Namespace(worktree_command="new", name="s9"), project) == 0
     inside = project / ".booley" / "worktrees" / "s9"
     monkeypatch.chdir(inside)
-    _write_toml(project, '[chat]\nworktree = "always"\n')
+    _write_toml(project, '[worktree]\nchat = "always"\n')
 
     started = _start(project, monkeypatch, capsys)
 
@@ -435,15 +435,29 @@ def test_unreadable_registry_does_not_send_auto_to_a_worktree(project, monkeypat
 
 
 def test_invalid_worktree_knob_stops_the_launch(project, monkeypatch, capsys):
-    _write_toml(project, '[chat]\nworktree = "sometimes"\n')
+    _write_toml(project, '[worktree]\nchat = "sometimes"\n')
 
     started = _start(project, monkeypatch, capsys)
 
     assert started.code == 2
     assert started.exec_argv == []
     assert started.stderr == (
-        "ERROR: booley.toml [chat].worktree must be one of auto, always, never\n"
+        "ERROR: booley.toml [worktree].chat must be one of auto, always, never\n"
     )
+
+
+def test_invalid_worktree_chat_fails_doctor_validation(tmp_path):
+    from booley.audit.diagnostic_results import Findings
+    from booley.harness.setup import readiness
+
+    findings = Findings()
+
+    assert not readiness._validate_booley_toml(
+        {"worktree": {"chat": "sometimes"}}, tmp_path, findings
+    )
+
+    (failure,) = [f for f in findings.report().findings if "[worktree].chat" in f.message]
+    assert "[worktree].chat" in failure.fix
 
 
 @pytest.mark.parametrize("interrupt", ["SIGINT", "SIGTERM", "SIGHUP", "KeyboardInterrupt"])
@@ -885,9 +899,9 @@ def test_resume_of_a_removed_worktree_starts_in_main_with_a_notice(
 def test_resume_of_a_main_checkout_conversation_starts_in_main(
     project, monkeypatch, capsys, homes, case
 ):
-    # Bug caught: `[chat] worktree = "always"` sent a main-checkout conversation to a new
+    # Bug caught: `[worktree] chat = "always"` sent a main-checkout conversation to a new
     # worktree, where the CLI cannot find it.
-    _write_toml(project, '[chat]\nworktree = "always"\n')
+    _write_toml(project, '[worktree]\nchat = "always"\n')
     if case == "no-record":
         arguments = ["--resume", "conv-9"]
     else:
@@ -985,7 +999,7 @@ def test_resume_into_main_with_a_live_session_names_that_session(project, monkey
 
 def test_never_lets_a_resume_share_the_main_checkout(project, monkeypatch, capsys):
     # Bug caught: the refusal applying to `never`, whose users chose a shared main checkout.
-    _write_toml(project, '[chat]\nworktree = "never"\n')
+    _write_toml(project, '[worktree]\nchat = "never"\n')
     with _lock_held_elsewhere(project):
         started = _start(project, monkeypatch, capsys, agent_args=["--resume", "conv-9"])
 
