@@ -96,7 +96,6 @@ Try:
 - A long queue: submit more blocked Jobs than the old queue limit of 8; every
   one waits with its position and none is refused. Nothing is left in the
   `memory/` directory afterwards.
-- `int-budget`: the run fails with the size-string hint, not a traceback.
 - With agent credentials: submit `lint_caliptra` over MCP while the budget is
   full; `booley_poll` shows `QUEUED (position N)` with the same reasons. On
   the Dashboard, the Job detail has a Queue row.

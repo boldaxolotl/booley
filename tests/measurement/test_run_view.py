@@ -46,10 +46,11 @@ def view_of(
     commit: str,
     *,
     base: str | None = None,
+    target: str | None = None,
 ) -> dict[str, Any]:
     from booley.measurement.run_view import run_view
 
-    return run_view(repo, store, run, commit, base=base)
+    return run_view(repo, store, run, commit, base=base, target=target)
 
 
 def test_view_holds_the_stored_run_unchanged_and_round_trips(
@@ -465,3 +466,24 @@ def test_changed_files_mark_protected_constraint_and_submodule_bumps(tmp_path: P
     assert view["protected_edits"]["repository"] == [".booley/tests.toml", "ip/sub"]
     assert "a = 2" in view["rules_diff"]["tests_diff"]
     assert view["amber"] == ["tests changed"]
+
+
+def test_a_target_view_has_no_history_and_reads_base_runs_from_the_project_store(
+    tmp_path: Path,
+) -> None:
+    repo, base, head = feature_repo(tmp_path)
+    project_store = MeasurementStore(repo / ".booley")
+    job_store = MeasurementStore(tmp_path / "job")
+    project_store.write(make_run(key_of(repo, base), "base", flow="synth"), [])
+    stored = job_store.write(make_run(key_of(repo, head), "scoped", flow="synth"), [])
+
+    view = view_of(repo, project_store, stored, head, target="acme:ip:x:1#x")["view"]
+    in_project = project_store.write(make_run(key_of(repo, head), "full", flow="synth"), [])
+    full = view_of(repo, project_store, in_project, head)["view"]
+
+    assert view["history"] is None
+    assert view["target"] == "acme:ip:x:1#x"
+    assert view["base_run"]["base_run_id"] == "base"
+    assert view["paths"]["json"] == str(stored.path)
+    assert str(tmp_path / "job") in view["paths"]["markdown"]
+    assert full["target"] is None and full["history"] is not None

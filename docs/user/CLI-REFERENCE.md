@@ -67,6 +67,7 @@ booley measure                    # measure HEAD against its committed metrics.t
 booley measure <sha> --base <sha> # measure another commit; compare with another Base
 booley measure --all --json       # evaluate every table after a failure; print the report as JSON
 booley measure --again            # measure again even when the commit is already Measured
+booley measure --target <name>    # measure one Target's tables only
 booley measure --validate         # check .booley/metrics.toml; measures nothing
 booley worktree new <name>        # a linked worktree for parallel work; see below
 booley worktree list              # each worktree's branch, changes, and use
@@ -89,8 +90,14 @@ stores the Measurement Run and prints the report. A commit that is already
 Measured (its latest run met every enforced bound) is not measured again: the
 command prints that run, starts no Flow and exits with status 0; `--again`
 measures it again and stores a second run. A commit whose latest run is unmet,
-errored, stopped or cancelled is measured again without `--again`. When it
-measures `HEAD`, it notes on stderr any uncommitted change to a tracked file
+errored, stopped or cancelled is measured again without `--again`.
+`--target <name>` measures only that Target's tables: it exits with status 2
+and "nothing to measure" when the Target has no table, and a Measured commit
+still shows its stored run unless you add `--again`. A `--target` run is never
+stored and never makes the commit Measured; its report and Flow reports are
+kept in the `measure` Job's directory under
+`.interactive_logs/standalone/<run_id>/`, beside its log. Measuring `HEAD`
+notes on stderr any uncommitted change to a tracked file
 and any submodule whose working tree differs from the commit's pin, because
 neither is measured. It exits with status 0 when
 every enforced bound is met, 1 when one is unmet, and 2 when a Flow errored,

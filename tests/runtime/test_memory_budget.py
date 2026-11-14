@@ -1,4 +1,4 @@
-"""The Sandbox Memory Budget: default rules, override, and measured reserve."""
+"""The Sandbox Memory Budget: the computed rules and the measured reserve."""
 
 from __future__ import annotations
 
@@ -79,7 +79,6 @@ def make_proc(tmp_path: Path, *, dashboard: bool = False) -> Path:
 
 def test_limit_minus_measured_reserve_and_headroom() -> None:
     result = memory_budget.resolve_memory_budget(
-        override_bytes=None,
         limit_bytes=32 * GIB,
         installed_bytes=None,
         processes=(
@@ -101,12 +100,10 @@ def test_limit_minus_measured_reserve_and_headroom() -> None:
         memory_budget.ReserveRole.HEADROOM,
     ]
     assert result.reserve[-1].source is memory_budget.ReserveSource.FIXED
-    assert not result.exceeds_limit
 
 
 def test_reserve_above_the_base_clamps_to_zero_and_stays_visible() -> None:
     result = memory_budget.resolve_memory_budget(
-        override_bytes=None,
         limit_bytes=GIB,
         installed_bytes=None,
         processes=(part(memory_budget.ReserveRole.DEVELOPER_AGENT, GIB),),
@@ -118,14 +115,11 @@ def test_reserve_above_the_base_clamps_to_zero_and_stays_visible() -> None:
 
 def test_resolve_needs_a_limit_or_installed_memory() -> None:
     with pytest.raises(ValueError, match="container limit or the installed memory"):
-        memory_budget.resolve_memory_budget(
-            override_bytes=None, limit_bytes=None, installed_bytes=None, processes=()
-        )
+        memory_budget.resolve_memory_budget(limit_bytes=None, installed_bytes=None, processes=())
 
 
 def test_no_container_limit_uses_installed_memory_and_says_so() -> None:
     result = memory_budget.resolve_memory_budget(
-        override_bytes=None,
         limit_bytes=None,
         installed_bytes=16 * GIB,
         processes=(part(memory_budget.ReserveRole.MCP_SERVER, GIB),),
@@ -135,21 +129,6 @@ def test_no_container_limit_uses_installed_memory_and_says_so() -> None:
     assert result.rule is memory_budget.BudgetRule.NO_LIMIT
     assert result.limit_bytes is None
     assert result.installed_bytes == 16 * GIB
-
-
-def test_override_replaces_default_and_reports_exceeding_limit() -> None:
-    def resolve(limit: int | None) -> Any:
-        return memory_budget.resolve_memory_budget(
-            override_bytes=24 * GIB, limit_bytes=limit, installed_bytes=None, processes=()
-        )
-
-    over = resolve(16 * GIB)
-    assert over.bytes == 24 * GIB
-    assert over.rule is memory_budget.BudgetRule.OVERRIDE
-    assert over.reserve == ()
-    assert over.exceeds_limit
-    assert not resolve(32 * GIB).exceeds_limit
-    assert not resolve(None).exceeds_limit
 
 
 def test_compute_measures_agent_mcp_server_and_dashboard(
@@ -196,7 +175,7 @@ def test_compute_measures_agent_mcp_server_and_dashboard(
         rss_kib=99999,
     )
 
-    result = memory_budget.compute_memory_budget({}, proc_root=proc)
+    result = memory_budget.compute_memory_budget(proc_root=proc)
 
     measured = [(p.role, p.pid, p.bytes, p.source) for p in result.reserve]
     kib = 1024
@@ -244,7 +223,7 @@ def test_compute_without_cgroup_limit_reads_memtotal(
     proc = make_proc(tmp_path)
     (proc / "meminfo").write_text("MemTotal:       16777216 kB\nMemFree: 1 kB\n", encoding="utf-8")
 
-    result = memory_budget.compute_memory_budget({}, proc_root=proc)
+    result = memory_budget.compute_memory_budget(proc_root=proc)
 
     assert result.rule is memory_budget.BudgetRule.NO_LIMIT
     assert result.installed_bytes == 16 * GIB
@@ -253,36 +232,18 @@ def test_compute_without_cgroup_limit_reads_memtotal(
     assert result.bytes == 14 * GIB
 
 
-@pytest.mark.parametrize("text", [None, "MemFree: 1 kB\n", "MemTotal: lots kB\n"])
 def test_compute_without_readable_memtotal_names_the_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str | None
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(f"{MODULE}.cgroup_memory_limit_bytes", lambda: None)
     proc = make_proc(tmp_path)
-    if text is not None:
-        (proc / "meminfo").write_text(text, encoding="utf-8")
 
-    with pytest.raises((OSError, ValueError), match="meminfo"):
-        memory_budget.compute_memory_budget({}, proc_root=proc)
-
-
-def test_compute_override_reads_no_proc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(f"{MODULE}.cgroup_memory_limit_bytes", lambda: 16 * GIB)
-
-    result = memory_budget.compute_memory_budget(
-        {"jobs": {"memory_budget": "24g"}}, proc_root=tmp_path / "no-such-proc"
-    )
-
-    assert (result.bytes, result.rule, result.exceeds_limit) == (
-        24 * GIB,
-        memory_budget.BudgetRule.OVERRIDE,
-        True,
-    )
-
-
-def test_compute_rejects_invalid_override_naming_key() -> None:
-    with pytest.raises(ValueError, match=r"\[jobs\]\.memory_budget"):
-        memory_budget.compute_memory_budget({"jobs": {"memory_budget": "0g"}})
+    # No meminfo file, no MemTotal line, then an unparseable one.
+    for text in (None, "MemFree: 1 kB\n", "MemTotal: lots kB\n"):
+        if text is not None:
+            (proc / "meminfo").write_text(text, encoding="utf-8")
+        with pytest.raises((OSError, ValueError), match="meminfo"):
+            memory_budget.compute_memory_budget(proc_root=proc)
 
 
 def test_unreadable_process_counts_one_gib(tmp_path: Path) -> None:
