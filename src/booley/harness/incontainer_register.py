@@ -181,6 +181,26 @@ def _guarded_step(label: str, step: Callable[[], str]) -> str:
         return "refused"
 
 
+def _repair_worktrees() -> str:
+    """Repair worktree pointers naming a former mount; fail-soft, never blocks registration.
+
+    Returns ``current``, ``repaired``, ``problems`` or ``failed``.
+    """
+    from booley.runtime import worktree_mount_repair
+
+    try:
+        result = worktree_mount_repair.repair_mount_registrations(_hook_start_directory())
+    except (OSError, RuntimeError) as exc:
+        # MountHistoryError is a RuntimeError; either way the Sandbox still starts.
+        print(f"warning: worktree pointers not repaired: {exc}", file=sys.stderr)
+        return "failed"
+    for problem in result.problems:
+        print(f"warning: {problem.message()}", file=sys.stderr)
+    if result.problems:
+        return "problems"
+    return "repaired" if result.repaired or result.pruned else "current"
+
+
 def _register_clis(clis: tuple[str, ...], trust: tuple[str, ...]) -> str:
     """Register every allowed CLI; one CLI's refusal never stops the others.
 
@@ -228,6 +248,7 @@ def main() -> None:
     # Right after the record changes, so no run that already sees the new app is
     # marked stale.
     invalidation = _invalidate_health() if choice_changed else ""
+    worktrees = _repair_worktrees()
     clis = agent.sandbox_agent_clis()
     server = incontainer_setup.ensure_http_server(mode="interactive") if clis else "skipped"
     trust = sandbox_trust_paths(_hook_start_directory()) if clis else ()
@@ -235,7 +256,7 @@ def main() -> None:
     upgrade = observe_upgrade()
     doctor_launch = launch_auto_doctor()
     print(
-        f"booley incontainer-register: server:{server} upgrade:{upgrade} health:{doctor_launch} "
+        f"booley incontainer-register: worktrees:{worktrees} server:{server} upgrade:{upgrade} health:{doctor_launch} "
         f"{status}{_auto_suffix(choice)}{invalidation}",
         file=sys.stderr,
     )

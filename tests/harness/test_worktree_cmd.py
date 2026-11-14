@@ -1964,3 +1964,171 @@ def test_relocated_pairing_failure_rolls_back_both_repositories(
         ).returncode
         != 0
     )
+
+
+# ---------------------------------------------------------------------------
+# A Sandbox mount point change leaves worktree pointers naming the former mount
+# ---------------------------------------------------------------------------
+
+
+def _registrations(root: Path) -> list[Path]:
+    """Every administrative directory of the Project Root's and the Booley Directory's repository."""
+    found: list[Path] = []
+    for repository in (root / ".git", root / ".booley" / ".git"):
+        found.extend(sorted((repository / "worktrees").glob("*")))
+    return found
+
+
+def _bytes_of(directory: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(directory)): path.read_bytes()
+        for path in sorted(directory.rglob("*"))
+        if path.is_file()
+    }
+
+
+def _listed(repository: Path) -> str:
+    return _git(repository, "worktree", "list", "--porcelain").stdout
+
+
+@_real_script
+@pytest.mark.parametrize("relative", [False, True], ids=["absolute", "relative"])
+def test_new_after_mount_change_repairs_surviving_registrations(
+    versioned_project: Path, monkeypatch, tmp_path: Path, relative: bool
+) -> None:
+    from booley.flows.baseline_worktree import baseline_worktree
+    from booley.runtime.conversation_records import ConversationRecord, is_live
+    from booley.runtime.worktree_identity import resolve_worktree_identity
+    from tests.mount_change_support import respell_registration, simulate_mount_change
+
+    root = versioned_project
+    _git(
+        root,
+        "-c",
+        "user.name=T",
+        "-c",
+        "user.email=t@example.com",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "2",
+    )
+    assert _new("first", root) == 0
+    ticket = worktree_cmd.worktree_path(root, "first")
+    paired = ticket / ".booley"
+    identity = resolve_worktree_identity(ticket)
+    with (
+        baseline_worktree(root, "HEAD") as outer_baseline,
+        baseline_worktree(ticket, "HEAD~1") as inner,
+    ):
+        nested = inner / ".booley"
+        assert nested.is_dir()
+        current = root / ".booley"
+        former = tmp_path / "former" / "deeper" / "mount"
+        simulate_mount_change(monkeypatch, current, former)
+        for admin in _registrations(root):
+            respell_registration(admin, current, former, relative=relative)
+        respelled = _registrations(root)
+        stamp = (ticket / ".git").stat().st_mtime_ns
+
+        assert _new("second", root) == 0
+
+        checkouts = (ticket, paired, outer_baseline, inner, nested)
+        for checkout in checkouts:
+            assert _git(checkout, "status", "--porcelain").returncode == 0
+            assert _git(checkout, "rev-parse", "--show-toplevel").stdout.strip() == str(
+                checkout.resolve()
+            )
+        assert resolve_worktree_identity(ticket) == identity
+        for repository in (root, root / ".booley"):
+            listing = _listed(repository)
+            assert "prunable" not in listing
+        assert str(outer_baseline) in _listed(root)
+        assert str(nested) in _listed(root / ".booley")
+        for admin in respelled:
+            pointers = [
+                admin / "gitdir",
+                Path(os.path.normpath(admin / (admin / "gitdir").read_text().strip())),
+            ]
+            for pointer in pointers:
+                text = pointer.read_text(encoding="utf-8").removeprefix("gitdir:").strip()
+                assert Path(text).is_absolute() is not relative
+                assert str(former) not in text
+        record = ConversationRecord("c", "x", str(ticket), "first", None, None, stamp)
+        assert is_live(root / ".booley", record)
+
+
+@_real_script
+def test_new_after_mount_change_prunes_only_absent_disposable_registrations(
+    versioned_project: Path, monkeypatch, tmp_path: Path, capsys
+) -> None:
+    from booley.flows.baseline_worktree import baseline_worktree
+    from tests.mount_change_support import respell_registration, simulate_mount_change
+
+    root = versioned_project
+    _git(
+        root,
+        "-c",
+        "user.name=T",
+        "-c",
+        "user.email=t@example.com",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "2",
+    )
+    assert _new("first", root) == 0
+    assert _new("gone", root) == 0
+    ticket = worktree_cmd.worktree_path(root, "first")
+    with baseline_worktree(root, "HEAD") as kept, baseline_worktree(ticket, "HEAD~1") as lost:
+        shutil.rmtree(worktree_cmd.worktree_path(root, "gone"))
+        shutil.rmtree(lost)
+        current = root / ".booley"
+        former = tmp_path / "former" / "deeper" / "mount"
+        simulate_mount_change(monkeypatch, current, former)
+        for admin in _registrations(root):
+            respell_registration(admin, current, former, relative=False)
+        absent_ticket = [
+            admin
+            for admin in _registrations(root)
+            if "gone" in (admin / "gitdir").read_text(encoding="utf-8")
+        ]
+        assert len(absent_ticket) == 2
+        before = {admin: _bytes_of(admin) for admin in absent_ticket}
+        baselines = [
+            admin
+            for admin in _registrations(root)
+            if ".baseline-wt-" in (admin / "gitdir").read_text(encoding="utf-8")
+        ]
+        assert len(baselines) == 3  # kept, lost, and lost's nested Paired Checkout baseline
+        capsys.readouterr()
+
+        assert _new("second", root) == 1
+
+        error = capsys.readouterr().err
+        assert "gone" in error and "missing" in error
+        assert not (worktree_cmd.worktree_path(root, "second")).exists()
+        assert {admin: _bytes_of(admin) for admin in absent_ticket} == before
+        survivors = [admin for admin in baselines if admin.exists()]
+        assert len(survivors) == 1
+        assert ".baseline-wt-" in (survivors[0] / "gitdir").read_text(encoding="utf-8")
+        assert _git(kept, "status", "--porcelain").returncode == 0
+        assert _git(ticket, "status", "--porcelain").returncode == 0
+        assert _git(ticket / ".booley", "status", "--porcelain").returncode == 0
+        assert str(kept) in _listed(root)
+
+
+@_real_script
+def test_new_refuses_a_malformed_mount_history_before_creating_anything(
+    versioned_project: Path, monkeypatch, tmp_path: Path, capsys
+) -> None:
+    from tests.mount_change_support import simulate_mount_change
+
+    root = versioned_project
+    simulate_mount_change(monkeypatch, root / ".booley", tmp_path / "former")
+    (root / ".booley" / ".runtime" / "sandbox-mounts.json").write_bytes(b"{")
+
+    assert _new("x", root) == 1
+
+    assert "cannot check worktree registrations" in capsys.readouterr().err
+    assert not worktree_cmd.worktree_path(root, "x").exists()
