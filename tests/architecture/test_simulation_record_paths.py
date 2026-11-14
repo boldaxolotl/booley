@@ -23,14 +23,6 @@ _OLD_RECORD_FIXTURE_ROOTS = (
 
 _ALLOWED_PATHS = frozenset(
     {
-        # Coverage Record modules, tests and support: a later part of the Record rename moves them.
-        "src/booley/flows/sim/coverage_campaign.py",
-        "src/booley/flows/sim/coverage_campaign_store.py",
-        "tests/flows/sim/coverage_campaign_test_support.py",
-        "tests/flows/sim/test_coverage_campaign.py",
-        "tests/flows/sim/test_coverage_campaign_reference.py",
-        "tests/flows/sim/test_coverage_campaign_store.py",
-        "tests/qa/test_coverage_campaign_faults.py",
         # Target (Mutation) campaigns keep their name.
         "src/booley/flows/target_campaign.py",
         "tests/flows/test_target_campaign.py",
