@@ -148,6 +148,13 @@ _monotonic = time.monotonic
 _MUTATION_SUFFIXES = frozenset({".v", ".vh", ".sv", ".svh"})
 #: ``file_type`` prefixes of Verilog and SystemVerilog sources.
 _HDL_FILE_TYPES = ("verilogSource", "systemVerilogSource")
+#: Macros a simulator defines itself, by its lower-case ``eda_tool`` name: the elaboration
+#: of the Target takes the same ``ifdef`` branches as its build.
+_SIMULATOR_DEFINES = {
+    "verilator": {"VERILATOR": "1"},
+    "icarus": {"__ICARUS__": "1"},
+    "iverilog": {"__ICARUS__": "1"},
+}
 #: Tags (besides the testbench role) that take a Target input out of the default scope.
 _UNMUTATED_FILE_TAGS = frozenset({"vendored", "generated"})
 
@@ -1291,15 +1298,32 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 defines[name] = str(default)
         include_dirs: dict[str, None] = {}  # ordered set
         for testbench in (False, True):  # a scope file finds its own headers first
-            for item in inspection.inputs:
-                if item.is_include and ("tb" in item.tags) == testbench:
-                    path = fusesoc_registry.canonical_project_path(self.args.work_dir, item.path)
-                    if not Path(path).is_absolute():
-                        include_dirs[PurePosixPath(path).parent.as_posix()] = None
-        return defines, list(include_dirs), self._target_design(inspection)
+            include_dirs.update(dict.fromkeys(self._include_dirs(inspection, testbench=testbench)))
+        design = self._target_design(inspection, self._include_dirs(inspection, testbench=None))
+        return defines, list(include_dirs), design
 
-    def _target_design(self, inspection: TargetInspection) -> TargetDesign:
-        """The top modules, HDL sources in Target order, and parameter overrides of ``inspection``."""
+    def _include_dirs(self, inspection: TargetInspection, *, testbench: bool | None) -> list[str]:
+        """The Project include directories of ``inspection``'s headers in Target order.
+
+        ``testbench`` keeps only the testbench's headers (``True``), only the others
+        (``False``), or all (``None``).
+        """
+        directories: list[str] = []
+        for item in inspection.inputs:
+            if not item.is_include or testbench not in (None, "tb" in item.tags):
+                continue
+            path = fusesoc_registry.canonical_project_path(self.args.work_dir, item.path)
+            if not Path(path).is_absolute():
+                directories.append(PurePosixPath(path).parent.as_posix())
+        return directories
+
+    def _target_design(
+        self, inspection: TargetInspection, include_dirs: Sequence[str]
+    ) -> TargetDesign:
+        """The top modules, HDL sources, parameter overrides and macros of ``inspection``.
+
+        ``include_dirs`` are the build's, in Target order.
+        """
         files: dict[str, None] = {}  # ordered set
         for item in inspection.inputs:
             if item.file_type.startswith(_HDL_FILE_TYPES) and not item.is_include:
@@ -1310,7 +1334,13 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             name: sv_byte_string_literal(value.value) if value.is_string else value.value
             for name, value in vlogparam_specs(inspection.parameters).items()
         }
-        return TargetDesign(tuple(inspection.toplevel.split()), tuple(files), parameters)
+        return TargetDesign(
+            tuple(inspection.toplevel.split()),
+            tuple(files),
+            parameters,
+            tuple(dict.fromkeys(include_dirs)),
+            _SIMULATOR_DEFINES.get(str(inspection.eda_tool).lower(), {}),
+        )
 
     def _generate(self, plan: MutationRunPlan) -> GeneratedMutants | EndpointOutcome:
         """Select the run's Mutants with the deterministic generator and resolve their variants."""

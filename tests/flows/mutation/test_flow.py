@@ -571,6 +571,7 @@ def _fake_inspection(work_dir) -> SimpleNamespace:
     return SimpleNamespace(
         parameters=dict(_TARGET_PARAMETERS),
         toplevel="",
+        eda_tool="verilator",
         rtl_files=tuple(paths),
         inputs=tuple(
             TargetInput(path, "acme:test:fixture:1", "systemVerilogSource", (), False, {})

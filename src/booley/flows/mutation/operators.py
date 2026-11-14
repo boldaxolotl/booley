@@ -509,10 +509,18 @@ def _literal_widths(
 class _FactCollector:
     """Visitor that gathers the semantic facts of every file in ``buffers`` in one pass."""
 
-    def __init__(self, pyslang: Any, buffers: AbstractSet[Any], *, track_units: bool) -> None:
+    def __init__(
+        self,
+        pyslang: Any,
+        buffers: AbstractSet[Any],
+        *,
+        track_units: bool,
+        manager: Any = None,
+    ) -> None:
         self._pyslang = pyslang
         self._buffers = buffers
         self._track_units = track_units
+        self._manager = manager  # resolves a macro's first token to where it is used
         self._skip_instances = False
         self.ranges: dict[_Place, tuple[int, int]] = {}
         self.signed_shifts: set[_Place] = set()
@@ -554,13 +562,17 @@ class _FactCollector:
         elif self._track_units and kind == "InstanceBody" and not self._skip_instances:
             self._record_unit(node)
         elif self._track_units and kind == "Package":
-            self.units.add(_place(node.syntax.getFirstToken().location))
+            self.units.add(self._unit_place(node.syntax.getFirstToken().location))
         return None
+
+    def _unit_place(self, location: Any) -> _Place:
+        """The place of a unit's first token; for a macro's, where the macro is used."""
+        return _place(self._manager.getFullyExpandedLoc(location))
 
     def _record_unit(self, body: Any) -> None:
         """Note the unit ``body`` is an instance of: elaborated, or a module nothing instantiates."""
         definition = body.definition
-        place = _place(definition.syntax.getFirstToken().location)
+        place = self._unit_place(definition.syntax.getFirstToken().location)
         if not body.isUninstantiated:
             self.units.add(place)
         elif place[0] in self._buffers and definition.definitionKind.name == "Module":
@@ -704,18 +716,26 @@ def find_design_sites(
     parameters: Sequence[str],
     defines: Mapping[str, str],
     include_dirs: Sequence[Path],
+    *,
+    design_defines: Mapping[str, str],
+    design_include_dirs: Sequence[Path],
 ) -> DesignSites:
     """Return the sites of every scope file, from one elaboration of all ``files``.
 
     ``files`` are the Target's HDL sources in Target order, parsed as one compilation
     unit (a macro one file defines reaches the next, as in the build); ``top`` names the
-    top modules and ``parameters`` the ``NAME=VALUE`` overrides.  When the design cannot
+    top modules and ``parameters`` the ``NAME=VALUE`` overrides.  The whole design is
+    preprocessed with ``design_defines`` and ``design_include_dirs`` (the build's, in its
+    order); a scope file elaborated alone, in the fallback, with ``defines`` and
+    ``include_dirs``.  When the design cannot
     be elaborated as a whole (a context file that cannot be read, a parser error, or any
     error diagnostic) every scope file goes through :func:`find_sites`, and ``fallback``
     says why.  Raises :class:`SourceParseError` for a scope file that does not parse alone.
     """
     pyslang = _import_pyslang()
-    elaboration = _elaborate_design(pyslang, files, top, parameters, defines, include_dirs)
+    elaboration = _elaborate_design(
+        pyslang, files, top, parameters, design_defines, design_include_dirs
+    )
     if not isinstance(elaboration, str):
         return DesignSites(_design_file_sites(pyslang, elaboration), None)
     sites: dict[str, list[Site]] = {}
@@ -775,7 +795,7 @@ def _elaborate_design(
     if errors:
         return _first_error(pyslang, manager, names, errors)
     scope_buffers = frozenset(buffer.id for buffer, _ in scope.values())
-    collector = _FactCollector(pyslang, scope_buffers, track_units=True)
+    collector = _FactCollector(pyslang, scope_buffers, track_units=True, manager=manager)
     collector.collect(compilation.getRoot())
     if collector.unused:
         # The Target never instantiates these, so slang does not bind their bodies: take
@@ -823,7 +843,13 @@ def _design_file_sites(pyslang: Any, elaboration: _Elaboration) -> dict[str, lis
     for display, (buffer, source) in elaboration.scope.items():
         own = members.get(buffer.id, [])
         collector = _SiteCollector(
-            pyslang.syntax.SyntaxNode, root, own, buffer.id, source, elaboration.facts[buffer.id]
+            pyslang.syntax.SyntaxNode,
+            root,
+            own,
+            buffer.id,
+            source,
+            elaboration.facts[buffer.id],
+            manager,
         )
         for member in own:
             member.visit(collector.visit)
@@ -842,6 +868,7 @@ class _SiteCollector:
         buffer: Any,
         source: bytes,
         facts: _Facts,
+        manager: Any = None,
     ) -> None:
         self.sites: list[Site] = []
         self._facts = facts
@@ -866,11 +893,17 @@ class _SiteCollector:
             id(member)
             for member in self._members
             if self._can_differ(member)
-            and self._units[id(member)][1] not in facts.elaborated_units
+            and self._first_offset(member, manager) not in facts.elaborated_units
         }
         # An instance of a checker or program parses like a module instance but is not design.
         self._checkers: set[str] = set()
         root.visit(self._note_checker)
+
+    def _first_offset(self, member: Any, manager: Any) -> int:
+        """The offset of ``member``'s first token; for a macro's, where the macro is used."""
+        if manager is None:
+            return self._units[id(member)][1]
+        return int(manager.getFullyExpandedLoc(member.getFirstToken().location).offset)
 
     def _can_differ(self, member: Any) -> bool:
         """True if ``member`` declares a parameter or has an interface or named-type port."""

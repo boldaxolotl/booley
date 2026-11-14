@@ -1654,11 +1654,21 @@ def _top_of(widths: tuple[int, ...]) -> str:
 
 
 def _design(
-    *files: str, top: tuple[str, ...] = ("top",), parameters: dict[str, str] | None = None
+    *files: str,
+    top: tuple[str, ...] = ("top",),
+    parameters: dict[str, str] | None = None,
+    include_dirs: tuple[str, ...] = (),
+    builtin_defines: dict[str, str] | None = None,
 ) -> Any:
     """A ``TargetDesign`` of ``files`` in Target order."""
     design = importlib.import_module(_GENERATOR).TargetDesign
-    return design(top=top, files=files, parameters=parameters or {})
+    return design(
+        top=top,
+        files=files,
+        parameters=parameters or {},
+        include_dirs=include_dirs,
+        builtin_defines=builtin_defines or {},
+    )
 
 
 def _leaf_selection(
@@ -1885,3 +1895,77 @@ def test_target_elaboration_keeps_ids_of_unchanged_candidates(tmp_path: Path) ->
     only_alone = {described(alone)[i] for i in described(alone).keys() - common}
     assert only_alone == {(3, "1", "2")}  # the plus-one that does not fit the 1-bit instance
     assert described(elaborated).keys() <= described(alone).keys()
+
+
+def test_target_elaboration_takes_the_simulators_builtin_macros(tmp_path: Path) -> None:
+    """A branch on a macro the simulator defines is the one the build takes."""
+    _write(tmp_path, "leaf.sv", _LEAF.format(default=1))
+    _write(
+        tmp_path,
+        "top.sv",
+        "module top();\n"
+        "`ifdef VERILATOR\n  localparam int N = 8;\n`else\n  localparam int N = 1;\n`endif\n"
+        "  logic [N-1:0] a, b, s, c;\n"
+        "  leaf #(.W(N)) u (a, b, s, c);\n"
+        "endmodule\n",
+    )
+    names = ("top.sv", "leaf.sv")
+
+    plain = generate_mutants(tmp_path, ["leaf.sv"], _ALL, 1, design=_design(*names))
+    verilated = generate_mutants(
+        tmp_path,
+        ["leaf.sv"],
+        _ALL,
+        1,
+        design=_design(*names, builtin_defines={"VERILATOR": "1"}),
+    )
+
+    assert _leaf_facts(plain) == (False, False)
+    assert _leaf_facts(verilated) == (True, True)
+
+
+def test_target_elaboration_searches_include_directories_in_target_order(tmp_path: Path) -> None:
+    """When two directories hold the same header, the build's first one wins."""
+    _write(tmp_path, "narrow/defs.svh", "`define WIDTH 1\n")
+    _write(tmp_path, "wide/defs.svh", "`define WIDTH 8\n")
+    _write(tmp_path, "leaf.sv", _LEAF.format(default=1))
+    _write(
+        tmp_path,
+        "top.sv",
+        '`include "defs.svh"\n'
+        "module top();\n"
+        "  logic [`WIDTH-1:0] a, b, s, c;\n"
+        "  leaf #(.W(`WIDTH)) u (a, b, s, c);\n"
+        "endmodule\n",
+    )
+
+    def facts(*directories: str) -> tuple[bool, bool]:
+        design = _design("top.sv", "leaf.sv", include_dirs=directories)
+        # The per-file include order is the opposite: only the Target's order may count.
+        reversed_dirs = list(reversed(directories))
+        return _leaf_facts(
+            generate_mutants(
+                tmp_path, ["leaf.sv"], _ALL, 1, design=design, include_dirs=reversed_dirs
+            )
+        )
+
+    assert facts("narrow", "wide") == (False, False)
+    assert facts("wide", "narrow") == (True, True)
+
+
+def test_target_elaboration_matches_a_unit_that_a_macro_starts(tmp_path: Path) -> None:
+    """An instantiated unit whose first token is a macro still trusts the Target's facts."""
+    _write(
+        tmp_path,
+        "m.sv",
+        "`define MODULE module\n"
+        "`MODULE m #(parameter int W = 4) (input [3:0] x, output [3:0] y);\n"
+        "  assign y = x + 4'd8;\n"
+        "endmodule\n",
+    )
+    _write(tmp_path, "top.sv", "module top(); logic [3:0] x, y; m u(x, y); endmodule\n")
+
+    selection = generate_mutants(tmp_path, ["m.sv"], _ALL, 1, design=_design("m.sv", "top.sv"))
+
+    assert selection.fallback is None
+    assert not any(m.original_code == "+" for m in selection.mutants)  # equal at 4 bits

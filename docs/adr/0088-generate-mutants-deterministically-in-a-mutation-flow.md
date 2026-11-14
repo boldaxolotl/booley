@@ -278,8 +278,10 @@ build and counts as `invalid`. The generator version is 6.
 alone, so a module's parameters were its defaults and another file's modules, types and
 enums were unknown. It now elaborates the whole Target as one compilation unit: every
 HDL file in Target order (the testbench's too, as context that is never mutated), with
-the Target's top modules and `vlogparam` overrides, so a macro one file defines reaches
-the next as in the build. The facts it reads (literal select bounds, signed right
+the Target's top modules and `vlogparam` overrides, its defines, the macros its simulator
+defines itself (`VERILATOR`, `__ICARUS__`) and its include directories in Target order, so
+a macro one file defines reaches the next and each `ifdef` and `include` resolves as in the
+build. The per-file rules keep their own include order. The facts it reads (literal select bounds, signed right
 shifts, enum members, equal `+`/`-` swaps, unsized literal widths) come from that
 elaboration. Aggregation over several instances is unchanged: a swap is dropped only
 when it is equal in every instance, and a plus-one must fit the narrowest instance.

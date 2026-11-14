@@ -84,6 +84,10 @@ class TargetDesign:
     # HDL sources in Target order, relative to the root (absolute outside the Project).
     files: tuple[str, ...]
     parameters: Mapping[str, str]  # override value text by parameter name
+    # The build's include directories in Target order, and the macros its simulator defines
+    # itself: the elaboration sees the headers and `ifdef` branches the build sees.
+    include_dirs: tuple[str, ...] = ()
+    builtin_defines: Mapping[str, str] = MappingProxyType({})
 
 
 def generate_mutants(
@@ -121,6 +125,10 @@ def generate_mutants(
             [f"{name}={value}" for name, value in design.parameters.items()],
             defines,
             include_paths,
+            design_defines={**design.builtin_defines, **defines},
+            design_include_dirs=[
+                root / rel for rel in _relative_paths(root, design.include_dirs, "include_dirs")
+            ],
         )
         sites, fallback = found.sites, found.fallback
     candidates: dict[str, Mutant] = {}  # by ID: identical sites collapse to one Mutant

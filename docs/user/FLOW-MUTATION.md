@@ -4,8 +4,9 @@
 the RTL, runs the Target's tests against each one, and reports how many Mutants
 the tests detected. A passing simulation only shows the tests accept the
 design; a high mutation score shows they would notice if it were wrong. No LLM
-is involved: the same RTL, `--count`, and `--seed` give the same Mutants (on a
-Verilator Target, with the same Verilator version), so scores are reproducible
+is involved: the same RTL, testbench HDL, Target parameters, `--count`, and
+`--seed` give the same Mutants (on a Verilator Target, with the same Verilator
+version), so scores are reproducible
 and comparable across runs. For what all
 Flows share (choosing Targets, common options, logs, exit codes), see
 [Running Flows](FLOW_REFERENCE.md).
@@ -96,7 +97,7 @@ yields one candidate Mutant per change.
 | `arithmetic-logical` | Turns a signed cast into an unsigned one. | `$signed(x)` -> `$unsigned(x)`, `signed'(x)` -> `unsigned'(x)` |
 | `condition` | Replaces the condition of an `if` or `?:` with its negation, `1'b1`, or `1'b0`. A `while`, `do`-`while`, or `for` condition is only forced to `1'b0`. | `if (valid)` -> `if (!(valid))` |
 | `constant` | Changes a numeric literal's value: lowest bit flipped, plus one, or minus one. Size and base stay. The new value must fit a sized literal's size. | `4'd5` -> `4'd4`, `'0` -> `'1` |
-| `constant` | Gives an unsized literal its plus-one value only if that fits where the value goes: the target it is assigned to, a cast it passes through, and the other side of a comparison or arithmetic operator. Booley reads the widths from the Target's elaboration, with the parameters the Target gives, and takes the narrowest width over every instance of the module. A literal whose width Booley cannot tell, such as a connection to a module the Target does not define, only gets values that fit its own bits. | `a + 1` -> `a + 2` (8-bit `a`); `flag <= 1` (1-bit `flag`) only becomes `0` |
+| `constant` | Gives an unsized literal its plus-one value only if that fits where the value goes: the target it is assigned to, a cast it passes through, and the other side of a comparison or arithmetic operator. Booley takes the narrowest width over every instance of the module in the Target's design. A literal whose width Booley cannot tell, such as one from a macro, or a connection to a module in another file when Booley reads each file alone (see below), only gets values that fit its own bits. | `a + 1` -> `a + 2` (8-bit `a`); `flag <= 1` (1-bit `flag`) only becomes `0` |
 | `constant` | Changes a literal in the initializer of a module-level variable. | `reg [7:0] cnt = 8'd3;` -> `8'd2` |
 | `constant` | Replaces an enum member with the previous or next member of its enum. | `state == IDLE` -> `state == DONE` |
 | `bit-select` | Moves a literal bit index or slice bound up or down by one, within the declared range. | `data[3]` -> `data[2]`, `data[7:4]` -> `data[6:3]` |
@@ -108,15 +109,16 @@ is not swapped for `-` (or the reverse) where both give the same result at the
 expression's width in every instance the Target elaborates, such as a one-bit
 sum.
 
-Booley reads the widths, enum members, and signedness it needs by elaborating
-the whole Target: every HDL file, the testbench's too, with the Target's top
-module and parameters. The testbench is never mutated. When the Target cannot
-be elaborated as a whole (a module that is missing, a vendor primitive, a file
-the parser rejects), Booley elaborates each scope file alone with its default
-parameters, and says so: the report has a `Target elaboration failed` line,
-`mutation-results.md` an `Elaboration` line, and the manifest an `elaboration`
-entry. A module the Target never instantiates is also read with its default
-parameters.
+Booley reads the widths, enum members, and signedness it needs from the whole
+design, compiled the way the build compiles it: every HDL file, the testbench's
+too, with the Target's top module, parameters, defines, and include
+directories. The testbench is never mutated, but editing it can change the
+Mutants. When Booley cannot read the whole design (a module that is missing, a
+vendor primitive, a file the parser rejects, any other error in the design, or
+a Target it cannot inspect), it reads each scope file alone with its default
+parameters, and the report says so on a `Target elaboration failed` line. A
+module the Target never instantiates is also read with its default parameters
+when Booley can reach it.
 
 Mutations also reach the arguments of `$signed` and `$unsigned` and the
 expressions in the port connections of module and interface instances.
@@ -127,9 +129,10 @@ Table details: a `!x` that is a whole `if` or `?:` condition is left to the
 changes a variable is never dropped. A reduction swap trades `&` and `\|`,
 turns `^` into `\|`, and removes the `~` of `~&`, `~\|`, and `~^`. A sign cast
 is never turned the other way. An enum member wraps around its enum, which
-must be declared in a file the Target compiles; a two-member enum yields one Mutant. A
-concatenation swap skips equal neighbours, replication counts, streaming
-concatenations, and assignment patterns.
+must be declared in a file the Target compiles (in the same file, when Booley
+reads each file alone); a two-member enum yields one Mutant. A concatenation
+swap skips equal neighbours, replication counts, streaming concatenations, and
+assignment patterns.
 
 Only design code is mutated. Booley skips:
 
