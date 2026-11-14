@@ -389,9 +389,28 @@ def _enforce_structured_budget(payload: dict[str, Any]) -> None:
 
 
 def _simulation_transport_report(report: dict[str, Any]) -> dict[str, Any]:
-    if report.get("flow") == "sim" and isinstance(report.get("cycle_counts"), dict):
-        report = dict(report)
-        del report["cycle_counts"]
+    """Drop the per-Test-Run maps (``cycle_counts``, ``records.*.metrics``) from a ``sim`` report.
+
+    They grow with the Test Run count; the full values stay in ``report.json``.
+    """
+    if report.get("flow") != "sim":
+        return report
+    report = dict(report)
+    report.pop("cycle_counts", None)
+    detail = report.get("detail")
+    records = detail.get("records") if isinstance(detail, dict) else None
+    if isinstance(detail, dict) and isinstance(records, dict):
+        report["detail"] = {
+            **detail,
+            "records": {
+                selector: (
+                    {key: value for key, value in record.items() if key != "metrics"}
+                    if isinstance(record, dict)
+                    else record
+                )
+                for selector, record in records.items()
+            },
+        }
     return report
 
 

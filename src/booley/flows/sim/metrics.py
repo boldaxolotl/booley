@@ -8,19 +8,24 @@ types and the emission funnel live in :mod:`booley.flows.metric_declarations`.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
-from booley.core.boundary import as_int
+from booley.core.boundary import as_dict, as_int
 from booley.flows.metric_declarations import (
     Better,
     CostTier,
     FlowMetricValues,
     MetricDeclaration,
     MetricKind,
+    MetricsUnavailable,
     MetricsUnavailableError,
     MetricValue,
     metric_values,
+    metrics_from_document,
 )
+from booley.flows.sim.backends.cocotb_results import IMPORT_FAILURE_PREFIX
 from booley.flows.sim.coverage_reference import (
     CoverageCampaignReferenceError,
     resolve_coverage_campaign_reference,
@@ -97,6 +102,27 @@ def _coverage_percents(outcome: CampaignOutcome) -> dict[str, MetricValue]:
     }
 
 
+def _observation_reason(row: Mapping[str, object], limit: int | None = 500) -> str:
+    """The reason text of observation *row*'s ``detail``, cut to *limit* characters."""
+    reason = str((as_dict(row.get("detail")) or {}).get("reason", ""))
+    return reason if limit is None else reason[:limit]
+
+
+def simulation_report_metric_values(
+    detail: dict[str, Any],
+) -> dict[str, FlowMetricValues | MetricsUnavailable]:
+    """Each Target's values from a ``sim`` report's ``detail.records.<selector>.metrics``.
+
+    A Target whose record carries no metrics entry is skipped.
+    """
+    values: dict[str, FlowMetricValues | MetricsUnavailable] = {}
+    for selector, record in (as_dict(detail.get("records")) or {}).items():
+        entry = metrics_from_document((as_dict(record) or {}).get("metrics"))
+        if entry is not None:
+            values[str(selector)] = entry
+    return values
+
+
 def simulation_flow_metrics(outcome: CampaignOutcome) -> FlowMetricValues:
     """Return the typed metrics of one Target's simulation or coverage run.
 
@@ -107,16 +133,23 @@ def simulation_flow_metrics(outcome: CampaignOutcome) -> FlowMetricValues:
     coverage collection did not complete (a failing test is still a value).
 
     Raises :class:`MetricsUnavailableError` when the run produced no verdict for every
-    Test Run: the Campaign did not finish, or a Test Run ended in infrastructure error.
+    Test Run: the Campaign did not finish, a Test Run ended in infrastructure error, or
+    a cocotb test module could not be imported (the run measured nothing of that test).
     """
     if not outcome.complete:
         raise MetricsUnavailableError("the simulation campaign did not finish every Test Run")
     grades = [(row, observation_grade(row)) for row in outcome.observations]
     errored = [str(row["test_run"]) for row, grade in grades if grade == "error"]
     if errored:
+        first = next(row for row, grade in grades if grade == "error")
         raise MetricsUnavailableError(
-            f"Test Runs ended in infrastructure error, with no verdict: {', '.join(sorted(errored))}"
+            "Test Runs ended in infrastructure error, with no verdict: "
+            f"{', '.join(sorted(errored))} ({_observation_reason(first)})"
         )
+    for row, grade in grades:
+        reason = _observation_reason(row, limit=None)
+        if grade == "inconclusive" and IMPORT_FAILURE_PREFIX in reason:
+            raise MetricsUnavailableError(f"Test Run {row['test_run']}: {reason}")
     plain: dict[str, MetricValue | None] = {
         "tests_failed": sum(grade != "pass" for _, grade in grades),
         "tests_total": len(grades),
