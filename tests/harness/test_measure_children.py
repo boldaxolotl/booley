@@ -95,12 +95,14 @@ class FakeChild:
         *,
         exits_on_interrupt: bool = True,
         raise_on_first_wait: bool = False,
+        raise_on_interrupt: bool = False,
     ) -> None:
         self.world = world
         self.pid = pid
         self.token = token
         self.exits_on_interrupt = exits_on_interrupt
         self.raise_on_first_wait = raise_on_first_wait
+        self.raise_on_interrupt = raise_on_interrupt
         self.outcome: CheckoutFlowResult = met()
         self.ended = False
         self.interrupted = False
@@ -118,6 +120,8 @@ class FakeChild:
 
     def interrupt(self) -> None:
         self.interrupted = True
+        if self.raise_on_interrupt:
+            raise KeyboardInterrupt
         if self.exits_on_interrupt:
             self.finish(errored())
 
@@ -461,7 +465,7 @@ def test_requeued_children_are_not_refused_and_report_their_final_attempt(
         )  # raises QueueFullError when refused
     scheduler.step(cancel=False)
     assert fleet.started == ["a", "b"]  # waiting final attempts still occupy the window
-    assert not first.ended and not second.ended  # neither is finished while it waits
+    assert first.settles == 0 and second.settles == 0  # neither is finished while it waits
 
     # The first final attempt runs alone: it can never queue again, so the window opens.
     assert store.refresh(requeued[str(first.pid)]).state == job_slots.HOLDING
@@ -491,3 +495,145 @@ def test_requeued_children_are_not_refused_and_report_their_final_attempt(
 @pytest.fixture()
 def root_dir(tmp_path: Path) -> Path:
     return tmp_path / "slots"
+
+
+def test_a_running_flow_waiting_for_a_work_item_claim_is_not_withdrawn(
+    root_dir: Path, world: FakeWorld
+):
+    """A Campaign's work items claim under the Flow's PID: that Flow is running, not waiting."""
+    from booley.harness.measure_children import STOPPED_REASON, ChildScheduler
+
+    fleet = make_fleet(root_dir, world, max_light=2, queue_max=5)
+    scheduler = ChildScheduler(
+        fleet.plan([table("a"), table("b"), table("c")], light_claim),
+        fleet.store,
+        all_tables=False,
+    )
+    scheduler.step(cancel=False)
+    campaign = fleet.child("b")
+    for name in "ab":  # the two slots are taken: both children hold their admission
+        assert fleet.store.refresh(fleet.child(name).token).state == job_slots.HOLDING  # type: ignore[arg-type]
+    # Its admission is held; one of its work items waits for a slot of its own.
+    item = fleet.store.submit(
+        job_slots.CLASS_LIGHT, pid=campaign.pid, role=job_slots.ROLE_INTERACTIVE
+    )
+    assert fleet.store.refresh(item).state == job_slots.QUEUED  # type: ignore[arg-type]
+    fleet.child("a").finish(unmet())
+    scheduler.step(cancel=False)
+
+    # The item's claim stands (it is queued, or promoted once a's slot went); never withdrawn.
+    assert fleet.store.refresh(item).state in {job_slots.QUEUED, job_slots.HOLDING}  # type: ignore[arg-type]
+    assert fleet.store.state_for_pid(fleet.child("c").pid) is None  # the waiting Flow was
+    campaign.finish(result(1))
+    scheduler.step(cancel=False)
+    outcome = scheduler.outcome()
+    assert by_target(outcome)["b"] == (Verdict.MET,)
+    assert outcome.tables[1].finished
+    assert STOPPED_REASON not in {r.detail for r in outcome.tables[1].run.results}
+
+
+def test_a_work_item_requeue_does_not_end_the_flows_place_in_the_window(
+    root_dir: Path, world: FakeWorld
+):
+    """Only the claim held now marks a final attempt: later item claims of the Flow queue again."""
+    from booley.harness.measure_children import ChildScheduler
+
+    fleet = make_fleet(root_dir, world, max_light=5, queue_max=4)  # window = 3
+    scheduler = ChildScheduler(
+        fleet.plan([table(name) for name in "abcde"], light_claim), fleet.store, all_tables=True
+    )
+    scheduler.step(cancel=False)
+    assert fleet.started == ["a", "b", "c"]
+    first = fleet.child("a")
+    assert first.token is not None
+    for name in "abc":
+        assert fleet.store.refresh(fleet.child(name).token).state == job_slots.HOLDING  # type: ignore[arg-type]
+    # Its item is requeued after an out-of-memory kill and holds a slot with the reason.
+    fleet.store.release(first.token)
+    requeued = fleet.store.submit(
+        job_slots.CLASS_LIGHT,
+        pid=first.pid,
+        role=job_slots.ROLE_INTERACTIVE,
+        queue_reason=OOM_REQUEUE_REASON,
+    )
+    assert fleet.store.refresh(requeued).state == job_slots.HOLDING
+    scheduler.step(cancel=False)
+    assert fleet.started == ["a", "b", "c", "d"]  # a final attempt opens the window
+
+    # The next item of the same Flow claims without a reason: it can queue again.
+    fleet.store.release(requeued)
+    plain = fleet.store.submit(
+        job_slots.CLASS_LIGHT, pid=first.pid, role=job_slots.ROLE_INTERACTIVE
+    )
+    assert fleet.store.refresh(plain).state == job_slots.HOLDING
+    fleet.child("b").finish()
+    scheduler.step(cancel=False)
+    assert fleet.started == ["a", "b", "c", "d"]  # a, c and d fill the window again
+
+
+def test_a_second_interrupt_while_signalling_still_kills_every_child(
+    root_dir: Path, world: FakeWorld
+):
+    from booley.harness.measure_children import ChildScheduler
+
+    fleet = make_fleet(root_dir, world, max_light=3, queue_max=4)
+    fleet.exits_on_interrupt = False
+    scheduler = ChildScheduler(fleet.plan([table("a"), table("b")]), fleet.store, all_tables=True)
+    scheduler.step(cancel=False)
+    first, second = fleet.child("a"), fleet.child("b")
+    first.raise_on_interrupt = True  # a Ctrl-C lands while the children are being signalled
+
+    with pytest.raises(KeyboardInterrupt):
+        scheduler.close()
+
+    assert first.killed and second.killed  # the one never signalled is killed too
+    assert first.settles == 1 and second.settles == 1
+    assert fleet.live() == []
+
+
+def test_measure_tables_starts_children_cheapest_tier_first_and_reports_in_table_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from booley.harness import measure_children
+
+    started: list[str] = []
+
+    class Instant:
+        """A child that has already ended with a result."""
+
+        pid = 4242
+
+        def __init__(self, flow: str) -> None:
+            self.flow = flow
+
+        def start(self) -> Instant:
+            started.append(self.flow)
+            return self
+
+        def discard(self) -> None:
+            pass
+
+        def poll(self) -> bool:
+            return True
+
+        def settle(self) -> CheckoutFlowResult:
+            return met()
+
+    def prepare(request: object) -> Instant:
+        return Instant(request.flow)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(measure_children, "prepare_checkout_flow", prepare)
+    tables = [empty_table("a", "synth"), empty_table("b", "sim"), empty_table("c", "lint")]
+
+    outcome = measure_children.measure_tables(
+        tables,
+        checkout=tmp_path,
+        main_booley_dir=tmp_path,
+        report_dir=tmp_path / "reports",
+        timeout_s=None,
+        all_tables=True,
+        cancelled=lambda: False,
+    )
+
+    assert started == ["lint", "sim", "synth"]  # cheapest first
+    assert [t.run.identity for t in outcome.tables] == [t.identity for t in tables]

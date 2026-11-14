@@ -97,7 +97,7 @@ if TYPE_CHECKING:
 
 # The Flow's tools run in sessions of their own: SIGINT lets the Flow reap them
 # before this grace period ends and the process group is killed.
-_STOP_GRACE_S = 30
+STOP_GRACE_S = 30
 _START_FAILURE_EXIT_CODE = 2
 _FLOW_NAME = re.compile(r"[A-Za-z0-9_-]+")
 # The slot claim records this process's argv, so the bootstrap stays one short line.
@@ -531,7 +531,7 @@ def _stop(process: subprocess.Popen[Any]) -> None:
     """Interrupt the child so the Flow reaps its tools; kill the group if it does not end."""
     process.send_signal(signal.SIGINT)
     try:
-        process.wait(timeout=_STOP_GRACE_S)
+        process.wait(timeout=STOP_GRACE_S)
     except subprocess.TimeoutExpired:
         _kill(process)
     except BaseException:  # a second Ctrl-C: never leave the Flow running

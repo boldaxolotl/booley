@@ -37,8 +37,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from booley.config.jobs import SlotCaps, parse_caps
+from booley.config.jobs import parse_caps
 from booley.harness.checkout_flow import (
+    STOP_GRACE_S,
     CheckoutFlowError,
     CheckoutFlowRequest,
     CheckoutFlowResult,
@@ -62,8 +63,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# One shared grace period for every child to reap its tools after SIGINT; the rest are killed.
-_STOP_GRACE_S = 30
 # Seconds between two passes of the scheduler loop.
 _POLL_S = 0.2
 STOPPED_REASON = "not started: the measurement stopped after an unmet or error verdict"
@@ -154,7 +153,7 @@ class ChildScheduler:
     """Start, watch, withdraw and settle the child Flows of one measurement.
 
     *planned* is the ``(rules, prepared child)`` pairs in the order to start them. *store* is
-    the slot store the children claim admission in, or ``None`` to schedule without reading it.
+    the slot store the children claim admission in.
     Drive it with :meth:`step` until that returns False, read :meth:`outcome`, and always
     call :meth:`close`.
     """
@@ -162,15 +161,14 @@ class ChildScheduler:
     def __init__(
         self,
         planned: Sequence[tuple[TableRules, PreparedChild]],
-        store: job_slots.SlotStore | None,
+        store: job_slots.SlotStore,
         *,
         all_tables: bool,
     ) -> None:
         self._entries = [_Entry(rules, prepared) for rules, prepared in planned]
         self._store = store
         self._all_tables = all_tables
-        caps = store.caps if store is not None else SlotCaps()
-        self._window = max(1, caps.queue_max - 1)
+        self._window = max(1, store.caps.queue_max - 1)
         self._stopping = False
         self._cancelled = False
 
@@ -243,28 +241,38 @@ class ChildScheduler:
     # --------------------------------------------------------------- observation
 
     def _observe(self, entry: _Entry) -> None:
-        """Remember that a child holds a slot on a requeued final attempt."""
-        if self._store is None or entry.final_attempt or entry.child is None:
+        """Note whether a child holds a slot on a requeued final attempt right now.
+
+        Not sticky: a Campaign's work items claim under the Flow's PID as well, and the item
+        claims after a requeued one are not final, so the flag follows the claim held now.
+        """
+        if entry.child is None:
             return
         state = self._store.state_for_pid(entry.child.pid)
-        if state is not None and state.state == job_slots.HOLDING and state.reason:
-            entry.final_attempt = True
+        entry.final_attempt = (
+            state is not None and state.state == job_slots.HOLDING and bool(state.reason)
+        )
 
     def _waiting_first_claim(self, pid: int) -> job_slots.SlotToken | None:
-        """The waiting claim of *pid* that is its first one (no requeue reason), if any."""
-        if self._store is None:
-            return None
+        """The waiting first claim of *pid*, when it holds no slot yet and none is requeued.
+
+        A Flow that holds its admission and waits for a work item's claim (the same PID) is
+        running: its waiting item claim is never withdrawn.
+        """
+        found: job_slots.SlotToken | None = None
         for job_class in job_slots.JOB_CLASSES:
-            _holders, waiters = self._store.snapshot(job_class)
+            holders, waiters = self._store.snapshot(job_class)
+            if any(token.pid == pid for token in holders):
+                return None
             for token in waiters:
                 if token.pid == pid and token.queue_reason is None:
-                    return token
-        return None
+                    found = token
+        return found
 
     def _withdraw_if_waiting(self, entry: _Entry) -> None:
         """Withdraw a child still waiting for its first claim; a promoted one keeps running."""
         child = entry.child
-        if self._store is None or child is None or entry.withdrawn or entry.final_attempt:
+        if child is None or entry.withdrawn:
             return
         token = self._waiting_first_claim(child.pid)
         if token is not None and self._store.cancel_waiter_token(token):
@@ -272,8 +280,6 @@ class ChildScheduler:
 
     def _foreign_waiting(self, own_pids: set[int]) -> int:
         """Waiting claims of both Job classes that belong to no child of this measurement."""
-        if self._store is None:
-            return 0
         count = 0
         for job_class in job_slots.JOB_CLASSES:
             _holders, waiters = self._store.snapshot(job_class)
@@ -380,14 +386,14 @@ def _stop_all(
 
     The *await_exit* children are not interrupted (a withdrawn child ends through its lost
     claim and must say so in its log) but wait for and are killed like the others. A
-    ``BaseException`` while waiting (a second Ctrl-C) kills every child that has not ended yet
-    and propagates: no sibling is left running.
+    ``BaseException`` while signalling or waiting (a second Ctrl-C) kills every child that
+    has not ended yet and propagates: no sibling is left running.
     """
     everyone = [*children, *await_exit]
-    for child in children:
-        child.interrupt()
-    deadline = time.monotonic() + _STOP_GRACE_S
+    deadline = time.monotonic() + STOP_GRACE_S
     try:
+        for child in children:
+            child.interrupt()
         for child in everyone:
             if not child.wait(max(0.0, deadline - time.monotonic())):
                 child.kill()
@@ -420,6 +426,37 @@ def _request_for(
     )
 
 
+def _prepare_all(
+    ordered: Sequence[TableRules],
+    *,
+    checkout: Path,
+    main_booley_dir: Path,
+    report_dir: Path,
+    timeout_s: float | None,
+) -> list[tuple[TableRules, PreparedChild]]:
+    """Preflight every table in order; a refusal for any one discards the others' scratch."""
+    prepared: list[tuple[TableRules, PreparedChild]] = []
+    try:
+        for index, table in enumerate(ordered):
+            request = _request_for(
+                table,
+                index,
+                checkout=checkout,
+                main_booley_dir=main_booley_dir,
+                report_dir=report_dir,
+                timeout_s=timeout_s,
+            )
+            try:
+                prepared.append((table, prepare_checkout_flow(request)))
+            except CheckoutFlowError as exc:
+                raise CheckoutFlowError(f"[{table.target}.{table.flow}] {exc}") from exc
+    except BaseException:
+        for _table, child in prepared:
+            child.discard()
+        raise
+    return prepared
+
+
 def measure_tables(
     tables: Sequence[TableRules],
     *,
@@ -440,26 +477,13 @@ def measure_tables(
         CheckoutFlowError: a table was refused or could not be started; it names the table.
     """
     main = main_booley_dir.resolve()
-    ordered = in_cost_tier_order(tables)
-    prepared: list[tuple[TableRules, PreparedChild]] = []
-    try:
-        for index, table in enumerate(ordered):
-            request = _request_for(
-                table,
-                index,
-                checkout=checkout,
-                main_booley_dir=main,
-                report_dir=report_dir,
-                timeout_s=timeout_s,
-            )
-            try:
-                prepared.append((table, prepare_checkout_flow(request)))
-            except CheckoutFlowError as exc:
-                raise CheckoutFlowError(f"[{table.target}.{table.flow}] {exc}") from exc
-    except BaseException:
-        for _table, child in prepared:
-            child.discard()
-        raise
+    prepared = _prepare_all(
+        in_cost_tier_order(tables),
+        checkout=checkout,
+        main_booley_dir=main,
+        report_dir=report_dir,
+        timeout_s=timeout_s,
+    )
     store = job_slots.SlotStore(
         job_slots.project_slots_dir(main),
         parse_caps(load_job_budget_config(booley_dir=main)),
