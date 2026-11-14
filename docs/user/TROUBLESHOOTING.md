@@ -221,7 +221,7 @@ means the next build rebuilds the layers it removed.
 
 `booley.toml` sets `max_heavy`, `heavy_memory` or `queue_max`. Flow and
 Specialist runs and every command that works on a Project stop with a message
-that names each key, its line, why it was retired and the file, for example
+that names each key, its line, the reason it is refused and the file, for example
 `max_heavy (line 12: memory admission replaced it)`; `booley doctor` and
 `booley upgrade` still run. Delete the named lines from that file. In a
 Developer Agent chat that is already open, `/booley-heal` removes them for you.
