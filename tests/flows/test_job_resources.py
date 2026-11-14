@@ -214,7 +214,7 @@ def test_synth_make_records_yosys_and_openroad_phases(flow, tmp_path):
 
 
 def test_unmeasurable_values_are_absent_not_zero(flow, tmp_path, monkeypatch):
-    monkeypatch.setattr(job_resources, "process_tree", lambda pid: None)
+    monkeypatch.setattr(job_resources, "process_tree", lambda pid, **_: None)
     monkeypatch.setattr(job_resources, "_children_cpu_s", lambda: None)
     monkeypatch.setattr(job_resources, "cgroup_oom_kill_count", lambda: None)
     monkeypatch.setattr(job_resources, "_container_memory_bytes", lambda: None)
@@ -778,3 +778,31 @@ def test_records_carry_the_job_thread_count_only_when_set(flow, tmp_path):
     assert counted["threads"] == 4
     # No count is absent, never zero.
     assert set(uncounted) == RECORD_FIELDS
+
+
+def test_history_keeps_and_reports_specialist_keys_apart(tmp_path, capsys):
+    shared = {"target": "", "phase": "specialist:reviewer", "flags": [], "test_run": ""}
+    records = []
+    for index in range(21):
+        # A Target record and a Specialist record with the very same four key fields.
+        records.append(_record("", peak_memory_mb=float(index)))
+        records[-1]["key"] = dict(shared)
+        records.append(_record("", peak_memory_mb=float(index)))
+        records[-1]["key"] = {**shared, "specialist": "reviewer"}
+
+    resource_history.append_records(tmp_path, records)
+
+    kept = resource_history.load_records(tmp_path)
+    assert len(kept) == 40
+    for name in (None, "reviewer"):
+        group = [r for r in kept if resource_history.specialist_name(r) == name]
+        assert [r["peak_memory_mb"] for r in group] == [float(i) for i in range(1, 21)]
+
+    summaries = resource_history.summarize(kept)
+    assert [s["key"].get("specialist") for s in summaries] == [None, "reviewer"]
+    assert [s["runs"] for s in summaries] == [20, 20]
+    assert (
+        resource_history.render_report(summaries)
+        .splitlines()[1]
+        .startswith("Specialist reviewer: 20 runs; peak memory ")
+    )
