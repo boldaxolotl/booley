@@ -1,0 +1,52 @@
+name: Doc change class
+
+# Labels a pull request docs-premerge or docs-postreview from its doc changes.
+# See docs/internals/agents/doc-change-classes.md.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# Every run classifies its own event's head, so cancelling an older run leaves
+# the newest head labeled.
+concurrency:
+  group: doc-change-class-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  doc-change-class:
+    name: doc-change-class
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # pull_request_target keeps the workflow, script, and rules on the trusted
+      # base revision. Do not execute files from the pull request.
+      - name: Check out trusted classifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Fetch pull-request commit
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/doc-change-class/head"
+          test "$(git rev-parse refs/doc-change-class/head)" = "${HEAD_SHA}"
+
+      - name: Classify and label
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python .github/scripts/doc_change_class.py --base "$BASE_SHA" --head "$HEAD_SHA" --label-pr "$PR_NUMBER"
