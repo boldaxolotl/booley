@@ -1317,8 +1317,11 @@ class TestGateLogic:
 
 class TestScopeValidation:
     def test_rtl_scope_valid(self):
-        errors = validate_scope_category(["rtl/mod_a.sv", "fw/main.c"], "rtl")
-        assert errors == []
+        assert validate_scope_category(["rtl/mod_a.sv"], "rtl") == []
+        # Without a ``.core``, ``fw/`` is no RTL directory (#4052).
+        errors = validate_scope_category(["fw/main.c"], "rtl")
+        assert len(errors) == 1
+        assert "doesn't match RTL" in errors[0]
 
     def test_rtl_scope_invalid_tb_path(self):
         errors = validate_scope_category(["tb/mod_a_tb.sv"], "rtl")
@@ -1338,7 +1341,7 @@ class TestScopeValidation:
 
     @patch(
         "booley.specialists.reviewer._get_rtl_prefixes",
-        return_value=("rtl/", "rtl\\", "fw/", "fw\\"),
+        return_value=("rtl/", "rtl\\"),
     )
     @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("tb/", "tb\\"))
     def test_mixed_scope_rtl_partial_invalid(self, _mock_tb, _mock_rtl):

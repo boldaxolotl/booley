@@ -19,9 +19,11 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
+# Legacy fallback when no ``.core`` is authored. Category membership otherwise
+# comes only from the ``.core`` filesets; no project directory is special-cased.
 CATEGORY_DIRS_DEFAULT: dict[str, tuple[str, ...]] = {
-    "rtl": ("rtl/", "fw/", "util/", "data/"),
-    "tb": ("tb/", "data/"),
+    "rtl": ("rtl/",),
+    "tb": ("tb/",),
 }
 
 # ---------------------------------------------------------------------------
@@ -30,7 +32,7 @@ CATEGORY_DIRS_DEFAULT: dict[str, tuple[str, ...]] = {
 
 
 def get_category_dirs(work_dir: Path | None = None) -> dict[str, tuple[str, ...]]:
-    """Resolve category source prefixes in *work_dir*, merging with defaults.
+    """Resolve category source prefixes in *work_dir* from its ``.core`` filesets.
 
     Reads the worktree's authored cores directly so isolation works even
     when the shared_infra module's CWD-based resolution would miss it.
@@ -79,13 +81,9 @@ def get_category_dirs(work_dir: Path | None = None) -> dict[str, tuple[str, ...]
     from booley.runtime.shared_infra import source_dir_prefixes
 
     rtl_dirs, tb_dirs = parsed
-    rtl_extra = tuple(p for p in source_dir_prefixes(rtl_dirs, work_dir) if "\\" not in p)
-    rtl_merged = set(CATEGORY_DIRS_DEFAULT["rtl"]) | set(rtl_extra)
-    tb_extra = tuple(p for p in source_dir_prefixes(tb_dirs, work_dir) if "\\" not in p)
-    tb_merged = set(CATEGORY_DIRS_DEFAULT["tb"]) | set(tb_extra)
     return {
-        "rtl": tuple(sorted(rtl_merged)),
-        "tb": tuple(sorted(tb_merged)),
+        "rtl": tuple(sorted(p for p in source_dir_prefixes(rtl_dirs, work_dir) if "\\" not in p)),
+        "tb": tuple(sorted(p for p in source_dir_prefixes(tb_dirs, work_dir) if "\\" not in p)),
     }
 
 
@@ -105,15 +103,16 @@ def _validate_snapshot_path(root: Path, path: Path) -> None:
         raise ValueError(f"source parent escapes the disposable snapshot: {path}")
 
 
-_SOURCE_SUFFIXES = frozenset(
-    {".v", ".vh", ".sv", ".svh", ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".py"}
-)
+# Undeclared HDL-named files (stray copies, backups) stay hidden from both
+# Reviewers: they may be RTL or TB sources no fileset admits. Every other
+# undeclared file is readable context.
+_HDL_SUFFIXES = frozenset({".v", ".vh", ".sv", ".svh"})
 
 
-def _source_like(path: Path) -> bool:
-    return bool(
-        {suffix.lower() for suffix in path.suffixes} & _SOURCE_SUFFIXES
-    ) or path.name.lower().rstrip("~").endswith(tuple(_SOURCE_SUFFIXES))
+def _hdl_like(path: Path) -> bool:
+    return bool({suffix.lower() for suffix in path.suffixes} & _HDL_SUFFIXES) or (
+        path.name.lower().rstrip("~").endswith(tuple(_HDL_SUFFIXES))
+    )
 
 
 def _configured_outputs(value: object, table: tuple[str, ...] = ()) -> list[Path]:
@@ -238,10 +237,7 @@ def _snapshot_removals(
             # has no source suffix. Remove the alias without following it.
             paths.add(path)
         elif (
-            path.is_file()
-            and relative not in own
-            and relative not in opposite
-            and _source_like(path)
+            path.is_file() and relative not in own and relative not in opposite and _hdl_like(path)
         ):
             paths.add(path)
     return paths
@@ -270,14 +266,8 @@ def _category_membership(
     category: str,
     category_files: dict[str, tuple[str, ...]],
     scope: tuple[str, ...],
-    shared_files: tuple[str, ...] = (),
 ) -> tuple[set[str], set[str]]:
-    """Validate exact declarations and grant only explicit unregistered files.
-
-    ``shared_files`` are exact non-HDL files both categories may read; they leave
-    the opposite set and join the own set, so they are neither hidden nor
-    removed as undeclared sources.
-    """
+    """Validate exact declarations and grant only explicit unregistered files."""
     if category not in ("rtl", "tb"):
         raise ValueError(f"unknown isolation category {category!r}")
     opposite = set(category_files["tb" if category == "rtl" else "rtl"])
@@ -290,8 +280,6 @@ def _category_membership(
         if name in opposite:
             raise ValueError(f"explicit scope is opposite-category source: {name}")
         own.add(name)  # unregistered explicit scope is a narrow own-category grant
-    opposite.difference_update(shared_files)
-    own.update(shared_files)
     return own, opposite
 
 
@@ -302,7 +290,6 @@ def hide_opposite_sources(
     category_files: dict[str, tuple[str, ...]],
     cwd: Path | None = None,
     scope: tuple[str, ...] = (),
-    shared_files: tuple[str, ...] = (),
     excluded_roots: tuple[Path, ...] = (),
 ) -> list[str]:
     """Sanitize exact sources and owned copies before recording snapshot history."""
@@ -310,7 +297,7 @@ def hide_opposite_sources(
     real = snapshot.real_root.resolve()
     if root.is_relative_to(real) or real.is_relative_to(root):
         raise ValueError("disposable snapshot must be separate from the live worktree")
-    own, opposite = _category_membership(root, category, category_files, scope, shared_files)
+    own, opposite = _category_membership(root, category, category_files, scope)
     excluded = []
     for path in excluded_roots:
         resolved = (path if path.is_absolute() else real / path).resolve()
