@@ -456,33 +456,6 @@ def test_full_pruning_rejects_unidentified_quarantine(tmp_path):
     assert (orphan / "valuable").read_text() == "unrelated"
 
 
-def test_full_pruning_detects_legacy_copied_projection_dependency(tmp_path):
-    from booley.flows.sim.record_retention import CampaignRetentionError, prune_invocation
-
-    manifest = tmp_path / "reports/sim/1/targets/sim_0/record/manifest.json"
-    manifest.parent.mkdir(parents=True)
-    manifest.write_text('{"simulation_record_id":"01234567-89ab-4def-8123-456789abcdef"}\n')
-    projection = tmp_path / "reports/sim/2/targets/sim_0/simulation.json"
-    projection.parent.mkdir(parents=True)
-    projection.write_text(
-        json.dumps(
-            {
-                "flow": "sim",
-                "target": "sim_0",
-                "target_identity": "acme:demo:counter:1#sim_0",
-                "complete": True,
-                "campaign_manifest": str(manifest),
-            }
-        )
-    )
-
-    with pytest.raises(CampaignRetentionError, match=re.escape(str(projection.parents[2]))):
-        prune_invocation(tmp_path / "reports", 1)
-
-    assert manifest.is_file()
-    assert projection.is_file()
-
-
 def test_maintenance_cli_requires_exact_selection_and_executes_both_modes(tmp_path, monkeypatch):
     run = coverage_invocation(tmp_path, monkeypatch)
     base = ("--reports-root", str(tmp_path / "reports"), "--invocation", "1")
@@ -730,20 +703,13 @@ def test_dependent_discovery_translates_invalid_receipt_registry(tmp_path):
 
 
 def test_dependency_scanners_tolerate_malformed_legacy_artifacts(tmp_path):
-    from booley.flows.sim.record_retention import (
-        _projection_references_origin,
-        _report_references_origin,
-    )
+    from booley.flows.sim.record_retention import _report_references_origin
 
     report = tmp_path / "report.json"
     report.write_text("{}", encoding="utf-8")
     manifest = tmp_path / "manifest.json"
     manifest.write_text("not json", encoding="utf-8")
     assert not _report_references_origin(report, (manifest,))
-
-    projection = tmp_path / "simulation.json"
-    projection.write_text("not json", encoding="utf-8")
-    assert not _projection_references_origin(projection, (manifest,))
 
 
 def test_dependent_preflight_recognizes_terminal_and_journal_states(tmp_path):
@@ -954,7 +920,6 @@ def test_retention_read_retries_before_raising_lasting_sharing_error(tmp_path, m
 def test_dependency_scan_fails_closed_on_lasting_sharing_error(tmp_path, monkeypatch):
     from booley.flows.sim.record_retention import (
         CampaignRetentionError,
-        _projection_references_origin,
         _report_references_campaign,
         _report_references_origin,
     )
@@ -963,14 +928,11 @@ def test_dependency_scan_fails_closed_on_lasting_sharing_error(tmp_path, monkeyp
     campaign_id = "01234567-89ab-4def-8123-456789abcdef"
     report = tmp_path / "report.json"
     report.write_text("{}", encoding="utf-8")
-    projection = tmp_path / "simulation.json"
-    projection.write_text("{}", encoding="utf-8")
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"simulation_record_id": campaign_id}), encoding="utf-8")
-    hold_opens(monkeypatch, {report: 100, projection: 100, manifest: 100})
+    hold_opens(monkeypatch, {report: 100, manifest: 100})
     for scan in (
         lambda: _report_references_campaign(report, manifest, campaign_id),
-        lambda: _projection_references_origin(projection, (manifest,)),
         lambda: _report_references_origin(report, (manifest,)),
     ):
         with pytest.raises(CampaignRetentionError, match="cannot read") as refused:
@@ -982,7 +944,6 @@ def test_dependency_scan_keeps_unreadable_non_transient_as_not_dependent(tmp_pat
     import errno
 
     from booley.flows.sim.record_retention import (
-        _projection_references_origin,
         _report_references_campaign,
         _report_references_origin,
     )
@@ -999,7 +960,6 @@ def test_dependency_scan_keeps_unreadable_non_transient_as_not_dependent(tmp_pat
 
     monkeypatch.setattr(Path, "open", deny)
     assert not _report_references_campaign(report, manifest, campaign_id)
-    assert not _projection_references_origin(report, (manifest,))
     assert not _report_references_origin(report, (manifest,))
 
 

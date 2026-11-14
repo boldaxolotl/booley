@@ -563,12 +563,6 @@ def _dependent_invocations(
             continue
         if _report_references_origin(report, manifests):
             found[dependent] = _DependentInvocation(dependent, None, True)
-    for projection in sorted(root.parent.glob("[1-9]*/targets/*/simulation.json")):
-        dependent = projection.parents[2].absolute()
-        if dependent == root.absolute() or dependent in found:
-            continue
-        if _projection_references_origin(projection, manifests):
-            found[dependent] = _DependentInvocation(dependent, None, True)
     if reject_unknown:
         _reject_unknown_producers(root, found)
     return tuple(found[path] for path in sorted(found, key=str))
@@ -602,30 +596,6 @@ def _report_references_origin(report: Path, manifests: tuple[Path, ...]) -> bool
         except (ValueError, json.JSONDecodeError):
             continue
     return False
-
-
-def _projection_references_origin(projection: Path, manifests: tuple[Path, ...]) -> bool:
-    try:
-        document = _read_object(projection)
-        decode_simulation_projection(
-            document, coverage_expected=(projection.parent / "coverage.json").is_file()
-        )
-    except OSError as error:
-        _fail_closed_on_sharing_error(error, projection)
-        return False
-    except UnsupportedSimulationCampaignFormatError as exc:
-        # A sibling an older Booley wrote cannot be told apart from a dependent.
-        raise CampaignRetentionError(str(exc.located(projection.parents[2]))) from exc
-    except (ValueError, json.JSONDecodeError):
-        return False
-    try:
-        reference = require_str_value(document.get("campaign_manifest"), field="campaign_manifest")
-    except BoundaryError:
-        return False
-    candidate = Path(reference)
-    if not candidate.is_absolute() or candidate != candidate.absolute():
-        return False
-    return candidate in {manifest.absolute() for manifest in manifests}
 
 
 def _reject_unknown_producers(root: Path, found: Mapping[Path, _DependentInvocation]) -> None:
