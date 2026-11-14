@@ -25,6 +25,7 @@ here to look up what a setting means and what its default is.
 | `[sandbox]`, host `config.toml`, custom images | [SANDBOX.md](SANDBOX.md) |
 | `[eda.<tool>]` | [Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning) |
 | `[stealth]` | [STEALTH.md](STEALTH.md) |
+| `[feedback]` | [Redacted feedback](STEALTH.md#redacted-feedback-feedback) |
 | `[submodules]`, `.core` files, Cocotb Targets | [TARGETS.md](TARGETS.md) |
 | `tests.toml` | [TESTS.md](TESTS.md) |
 | `.booley/doctor-waivers.toml` | [Doctor waivers](DOCTOR.md#doctor-waivers-doctor-waiverstoml) |
@@ -359,48 +360,8 @@ to share, it writes `.booley/BOOLEY-FEEDBACK.md` with your Project's details
 replaced; read it before you send it. How to report: [When Booley itself
 misbehaves](USAGE.md#when-booley-itself-misbehaves).
 
-The `[feedback]` table tunes only that redaction:
-
-```toml
-[feedback]
-# redact_extra = ["codename"]   # extra terms to replace
-# redact_identifiers = false    # keep module and Target names (default: replace them)
-```
-
-**Replaced:**
-
-| What | Becomes |
-|---|---|
-| Project Root, in every checkout of the repository | `<repo>` |
-| Your home directory, and any `/home/<user>`, `/Users/<user>`, or `C:\Users\<user>` path | `<home>` |
-| Git remote URLs | `<remote>` |
-| The remote's `org/repo` | `<org>/<repo>` |
-| Your Git name and email | `<author>`, `<author-email>` |
-| Any other email address | `<email>` |
-| Design names: the Project name, checkout folder names, and the Target names, VLNV parts, and toplevels in your `.core` files | `<module-1>`, `<module-2>`, … |
-| `redact_extra` terms, and any `[stealth]` `banned_words` and `banned_substrings` | `<redacted>` |
-
-Each design name keeps the same number throughout, so the report still reads.
-`redact_identifiers = false` keeps design names as they are. Names shorter than
-four characters, and generic ones such as `top` or `core`, are never replaced.
-
-**Kept**, because a report without them can't be acted on: EDA tool names and
-versions, error text, tracebacks, and timing and area numbers. A design name
-that appears only inside a quoted log line slips through. Attached log tails
-are redacted with the rest, but a log line is arbitrary text, so read them in
-the shared file.
-
-<details markdown>
-<summary>With host-installed licensed tools</summary>
-
-Kept tool names reveal which commercial EDA tools you license. See
-[Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning).
-
-</details>
-
-Redaction is a best-effort list, not a guarantee. For an open-source design
-whose module names are already public, `redact_identifiers = false` gives the
-maintainer a more useful report.
+To change what the shared copy hides, use the `[feedback]` table; see
+[Redacted feedback](STEALTH.md#redacted-feedback-feedback).
 
 ## Explicit Flow Targets and Doctor selection
 
