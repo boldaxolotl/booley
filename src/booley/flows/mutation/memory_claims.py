@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from booley.runtime.endpoint_execution import EndpointOutcome
 
 
-class MutationClaims:
+class CampaignClaims:
     """What a campaign's tool runs hold: a claim each under managed admission, else nothing."""
 
     def __init__(self, admission: AdmissionContext | None = None) -> None:
@@ -75,7 +75,7 @@ class MutationInvocation(PreparedInvocation):
     flow: MutationFlow
 
     def run(self, admission: object | None) -> EndpointOutcome:
-        claims = MutationClaims(admission if isinstance(admission, AdmissionContext) else None)
+        claims = CampaignClaims(admission if isinstance(admission, AdmissionContext) else None)
         return self.flow.run_with_claims(claims)
 
     def report_scope(self, endpoint: EndpointState) -> ReportScope:

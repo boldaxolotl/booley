@@ -695,6 +695,7 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
             "campaign_error",
         }
     ),
+    "src/booley/flows/mutation/memory_claims.py": frozenset({"CampaignClaims"}),
     "src/booley/flows/target_campaign.py": frozenset(
         {
             "CampaignResults",

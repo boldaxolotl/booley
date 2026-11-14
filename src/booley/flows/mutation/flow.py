@@ -61,7 +61,7 @@ from booley.flows.mutation.generator import (
     generate_mutants,
     parser_version,
 )
-from booley.flows.mutation.memory_claims import MutationClaims, MutationInvocation
+from booley.flows.mutation.memory_claims import CampaignClaims, MutationInvocation
 from booley.flows.mutation.operators import (
     MutantGeneratorError,
     SourceParseError,
@@ -868,7 +868,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     #: Set by ``_apply_campaign_defaults``: no ``--scope`` and no criterion scope was given.
     _scope_defaulted: bool = False
     #: What admits each build and simulation; unmanaged (no claims) outside a managed run.
-    _claims: MutationClaims = MutationClaims()
+    _claims: CampaignClaims = CampaignClaims()
 
     # ------------------------------------------------------------------
     # Command-backed Flow hooks — _run() drives the campaign directly.
@@ -1146,7 +1146,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         """The campaign run, which borrows its admission so each tool run claims memory."""
         return MutationInvocation(self)
 
-    def run_with_claims(self, claims: MutationClaims) -> EndpointOutcome:
+    def run_with_claims(self, claims: CampaignClaims) -> EndpointOutcome:
         """Run the campaign with *claims* admitting each build and simulation."""
         self._claims = claims
         try:
@@ -1160,7 +1160,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 ),
             )
         finally:
-            self._claims = MutationClaims()
+            self._claims = CampaignClaims()
 
     def _run(self) -> EndpointOutcome:
         if campaign_error := self._apply_campaign_defaults():
