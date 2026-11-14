@@ -740,7 +740,7 @@ def test_project_resource_name_identity_bytes_remain_stable(tmp_path):
     assert expected in devcontainer.state_volume_mount("claude", expected)
 
 
-def test_explicit_policy_partitions_persistent_state(tmp_path, monkeypatch):
+def test_subscription_keeps_the_auto_login_volume(tmp_path, monkeypatch):
     from booley.runtime import auth_token
 
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -755,6 +755,13 @@ def test_explicit_policy_partitions_persistent_state(tmp_path, monkeypatch):
         for mode in ("auto", "subscription", "api_key")
     ]
     volumes = [next(mount for mount in spec["mounts"] if "type=volume" in mount) for spec in specs]
-    assert len(set(volumes)) == 3
-    assert "-subscription," in volumes[1]
+    assert volumes[0] == volumes[1]
+    assert "-subscription" not in volumes[1]
+    assert volumes[2] != volumes[0]
     assert "-api_key," in volumes[2]
+    legacy = dc.state_volume_mount("claude", "one-project", "subscription", legacy=True)
+    assert legacy is not None
+    assert "-subscription," in legacy
+    assert dc.legacy_subscription_clis([legacy, volumes[0]], "one-project") == {"claude"}
+    assert dc.legacy_subscription_clis([volumes[0]], "one-project") == frozenset()
+    assert dc.legacy_subscription_clis([legacy], "other-project") == frozenset()
