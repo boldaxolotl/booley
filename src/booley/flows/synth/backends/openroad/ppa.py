@@ -11,7 +11,14 @@ from booley.flows.synth.timing import OpenRoadPpaSettings
 _PROFILES = {
     "compact": OpenRoadPpaSettings(utilization_pct=40.0, placement_density=0.65),
     "balanced": OpenRoadPpaSettings(utilization_pct=50.0, placement_density=0.80),
-    "max_frequency": OpenRoadPpaSettings(utilization_pct=50.0, placement_density=0.80),
+    # Measured winner; see tests/fixtures/synth_profile_characterization.
+    "max_frequency": OpenRoadPpaSettings(
+        utilization_pct=40.0,
+        placement_density=0.70,
+        gate_cloning=True,
+        setup_margin_ns=0.2,
+        repair_tns_percent=100.0,
+    ),
 }
 
 
