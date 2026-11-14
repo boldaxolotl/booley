@@ -23,7 +23,7 @@ from booley.flows.cli_help import option_groups
 from booley.flows.cli_selection import EndpointProjectAction
 from booley.harness.dashboard.launch import split_arguments
 
-FieldKind = Literal["toggle", "three-way", "list", "text", "target", "tests", "more"]
+FieldKind = Literal["toggle", "three-way", "list", "text", "target", "tests", "more", "campaign"]
 
 # Common and each Flow's own options are fields; Output and the Expert groups are extra arguments.
 GROUP_PLACEMENT: Final[dict[str, Literal["field", "extra"]]] = {

@@ -37,6 +37,9 @@ _READ_ERRORS = (FuseSocError, OSError, ValueError)
 # Flow whose Targets can have Tests.
 _SIM_FLOW = "sim"
 _NO_TESTS: tuple[str, ...] = ("only Simulation Targets have tests",)
+# A Flow that is not Target-aware but drives another Flow's Targets: the Mutation Flow runs one
+# Simulation Target, so Targets offer it and its Target picker lists what the Simulation Flow can drive.
+TARGET_KIND_OF_FLOW = {"mutation": "sim"}
 
 
 def first_line(error: BaseException) -> str:
@@ -44,6 +47,14 @@ def first_line(error: BaseException) -> str:
     return next(
         (line.strip() for line in str(error).splitlines() if line.strip()), type(error).__name__
     )
+
+
+def launchable_flows(flows: tuple[str, ...]) -> tuple[str, ...]:
+    """The Flows a Target detail offers: those that drive it, then those that run what they drive.
+
+    ``("sim",)`` becomes ``("sim", "mutation")``; the driving Flows keep their order and lead.
+    """
+    return (*flows, *(flow for flow, kind in TARGET_KIND_OF_FLOW.items() if kind in flows))
 
 
 @dataclass(frozen=True)

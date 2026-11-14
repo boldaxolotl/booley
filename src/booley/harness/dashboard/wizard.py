@@ -3,8 +3,10 @@
 One modal screen shows one stage at a time. A Flow's form stage is generated from its
 human parser (``run_form``): a row per option, changed in a choice list or
 a text editor stage, or for the Target and test fields a picker over the worktree's
-Targets and the chosen Target's Test Runs, plus one extra-arguments row. The ``reviewer``
-Specialist's form is written by hand (``specialist_form``) and has no extra-arguments row. It dismisses with the new
+Targets and the chosen Target's Test Runs, plus one extra-arguments row. A Specialist's form
+(``reviewer``, ``coverage_analyst``) is written by hand (``specialist_form``) and has no
+extra-arguments row; the coverage analyst's campaign field opens a picker over the worktree's
+finished coverage campaigns. It dismisses with the new
 Job's row key once submitted, or ``None`` when the human backs out of the first
 stage.
 """
@@ -55,8 +57,18 @@ from booley.harness.dashboard.run_form import (
     RunForm,
     command_argv,
 )
-from booley.harness.dashboard.specialist_form import FORM_NOT_BUILT, ReviewerForm
+from booley.harness.dashboard.specialist_form import (
+    NO_CAMPAIGNS,
+    TYPE_CAMPAIGN,
+    CampaignChoice,
+    CoverageAnalystForm,
+    ReviewerForm,
+    SimRun,
+    SpecialistForm,
+    finished_campaigns,
+)
 from booley.harness.dashboard.targets import (
+    TARGET_KIND_OF_FLOW,
     RunChoices,
     TargetListing,
     TargetsReader,
@@ -73,13 +85,13 @@ CHECK_GROUP = "run-check"
 FORM_GROUP = "run-form"
 TARGETS_GROUP = "run-targets"
 TESTS_GROUP = "run-tests"
+CAMPAIGNS_GROUP = "run-campaigns"
 SPECIALISTS_GROUP = "run-specialists"
 LOADING_SPECIALISTS = "Loading Specialists…"
 LOADING_TARGETS, LOADING_RUNS = "Loading Targets…", "Loading Test Runs…"
+LOADING_CAMPAIGNS = "Loading Coverage Records…"
+JOBS_NOT_READ = "The Dashboard has not read the Jobs yet; type a coverage.json path."
 NO_TARGET_YET = "Choose a Target first; or type Test Runs in the extra arguments."
-# A Flow that is not Target-aware but drives another Flow's Targets: the Mutation Flow runs one
-# Simulation Target, so its Target picker offers what the Simulation Flow can drive.
-TARGET_KIND_OF_FLOW = {"mutation": "sim"}
 TYPE_TARGETS = "Type Targets in the extra arguments."
 TYPE_RUNS = "Type Test Runs in the extra arguments."
 # What Enter on the Target row says when a Target detail opened the wizard.
@@ -100,6 +112,7 @@ _STAGES: dict[str, str] = {
     "form": "↑↓ move · ⏎ change · esc back",
     "choice": "↑↓ move · ⏎ keep · esc cancel",
     "target": "↑↓ move · ⏎ choose · esc back",
+    "campaign": "↑↓ move · ⏎ choose · esc back",
     "tests": "↑↓ move · ⏎ toggle · esc back",
     "edit": "type the value · ⏎ keep · esc cancel",
     "review": "↑↓ choose · ⏎ apply · esc back",
@@ -110,12 +123,13 @@ _PARENT = {
     "form": "flow",
     "choice": "form",
     "target": "form",
+    "campaign": "form",
     "tests": "form",
     "edit": "form",
     "review": "form",
 }
 # The stages that change one form row; their title names the row.
-_ROW_STAGES = ("choice", "edit", "target", "tests")
+_ROW_STAGES = ("choice", "edit", "target", "campaign", "tests")
 # Which widgets each stage shows; the last one takes the keyboard.
 _SHOWN: dict[str, tuple[str, ...]] = {
     "worktree": ("#run-worktrees",),
@@ -123,6 +137,7 @@ _SHOWN: dict[str, tuple[str, ...]] = {
     "form": ("#run-note", "#run-form"),
     "choice": ("#run-hint", "#run-choices"),
     "target": ("#run-hint", "#run-picks"),
+    "campaign": ("#run-hint", "#run-picks"),
     "tests": ("#run-hint", "#run-picks"),
     "edit": ("#run-hint", "#run-edit"),
     "review": ("#run-command", "#run-review", "#run-actions"),
@@ -190,6 +205,7 @@ class RunWizard(ModalScreen[str | None]):
         message: str,
         preselect: Callable[[tuple[WorktreeChoice, ...]], Path | None],
         occupants: Callable[[Path], Occupants],
+        sim_runs: Callable[[Path], tuple[SimRun, ...] | None],
         preset: RunPreset | None = None,
     ) -> None:
         super().__init__()
@@ -206,6 +222,9 @@ class RunWizard(ModalScreen[str | None]):
         self._message = message
         self._preselect = preselect
         self._occupants = occupants
+        self._sim_runs = (
+            sim_runs  # the finished Simulation Jobs of a worktree; None before the Jobs are read
+        )
         self._stage = "worktree"
         self._worktree: Path | None = None
         self._kind, self._name = "flow", ""
@@ -214,9 +233,9 @@ class RunWizard(ModalScreen[str | None]):
         self._checked: _Checked | None = None  # the check the review screen shows
         # The form belongs to one (worktree, kind, name); None while it is being built or if it failed.
         self._form_for: tuple[Path, str, str] | None = None
-        self._form: RunForm | ReviewerForm | None = None
+        self._form: RunForm | SpecialistForm | None = None
         # The one build whose result counts.
-        self._form_worker: Worker[RunForm | ReviewerForm] | None = None
+        self._form_worker: Worker[RunForm | SpecialistForm] | None = None
         self._building = False
         self._form_error = ""
         self._values: dict[str, str] = {}
@@ -224,6 +243,10 @@ class RunWizard(ModalScreen[str | None]):
         # The worktree's Targets and the chosen Target's Test Runs; None while being read.
         self._listing: TargetListing | None = None
         self._runs: RunChoices | None = None
+        # The campaign picker's read: the Jobs may not be read yet, then the campaigns, None while listing.
+        self._jobs_read = False
+        self._campaigns: tuple[CampaignChoice, ...] | None = None
+        self._campaigns_worker: Worker[tuple[CampaignChoice, ...]] | None = None
         self._pick_values: list[str] = []  # what each row of the open picker stands for
         self._extra = ""
         self._changing = 0  # the form row a choice list or editor is changing
@@ -296,7 +319,7 @@ class RunWizard(ModalScreen[str | None]):
             self.query_one(widget_id, Widget).display = widget_id in _SHOWN[stage]
         if stage == "form":
             self._show_form()
-        elif stage in ("target", "tests"):
+        elif stage in ("target", "tests", "campaign"):
             self._fill_picks(None)
         self.query_one("#run-title", Static).update(self._title())
         self.query_one("#run-error", Static).update("")
@@ -349,9 +372,11 @@ class RunWizard(ModalScreen[str | None]):
     # --- the form -----------------------------------------------------------
 
     def _fields(self) -> tuple[Field, ...]:
-        if isinstance(self._form, ReviewerForm):
-            return self._form.fields(self._values)
-        return self._form.fields if self._form else ()
+        if self._form is None:
+            return ()
+        if isinstance(self._form, RunForm):
+            return self._form.fields
+        return self._form.fields(self._values)
 
     def _has_extra(self) -> bool:
         """Only a Flow's form takes extra arguments: a Specialist runs what its fields write."""
@@ -393,11 +418,7 @@ class RunWizard(ModalScreen[str | None]):
                 (Option(f"Specialists unavailable: {listing.problem}", disabled=True), None)
             )
         for choice in listing.choices if listing else ():
-            text = f"{choice.name} — {choice.blurb}"
-            if choice.selectable:
-                rows.append((Option(text), ("specialist", choice.name)))
-            else:
-                rows.append((Option(f"{text} ({FORM_NOT_BUILT})", disabled=True), None))
+            rows.append((Option(f"{choice.name} — {choice.blurb}"), ("specialist", choice.name)))
         options = self.query_one("#run-flows", OptionList)
         kept = options.highlighted
         options.clear_options()
@@ -445,6 +466,7 @@ class RunWizard(ModalScreen[str | None]):
         self._values = {}
         self._picked = {}
         self._listing = self._runs = None
+        self._campaigns = self._campaigns_worker = None
         self._extra = ""
         self._changing = 0
         # The old Flow's rows must not stay selectable while the new form builds.
@@ -474,7 +496,7 @@ class RunWizard(ModalScreen[str | None]):
         note = BUILDING if self._building else self._form_error
         if note and not self._building:
             note = f"The form cannot be built: {note}"
-        elif isinstance(self._form, ReviewerForm):
+        elif self._form is not None and not isinstance(self._form, RunForm):
             note = self._form.note
         self.query_one("#run-note", Static).update(note)
         self.query_one("#run-note", Static).display = bool(note)
@@ -548,6 +570,8 @@ class RunWizard(ModalScreen[str | None]):
                     self._show_error(PRESET_TARGET)
             elif field.kind == "tests":
                 self._open_tests()
+            elif field.kind == "campaign":
+                self._open_campaigns()
             else:
                 self._choose(field, value)
 
@@ -597,9 +621,61 @@ class RunWizard(ModalScreen[str | None]):
             )
         self._show_stage("tests")
 
+    def _open_campaigns(self) -> None:
+        """Open the campaign picker, reading the worktree's finished campaigns afresh in a worker.
+
+        The Jobs come from the Dashboard's last read (``sim_runs``); a campaign that finished
+        while the wizard was open therefore shows up the next time the picker opens.
+        """
+        assert self._form_for is not None
+        worktree = self._form_for[0]
+        runs = self._sim_runs(worktree)
+        self._jobs_read = runs is not None
+        self._campaigns = None
+        self._campaigns_worker = None
+        if runs is not None:
+            self._campaigns_worker = self.run_worker(
+                lambda: finished_campaigns(worktree, runs),
+                thread=True,
+                exclusive=True,
+                group=CAMPAIGNS_GROUP,
+                exit_on_error=False,
+            )
+        self._show_stage("campaign")
+
+    def _campaigns_read(self, event: Worker.StateChanged) -> None:
+        """Show the campaigns of the read the picker waits for; a crashed read lists none."""
+        if event.worker is not self._campaigns_worker:
+            return  # a read of a picker the human has since reopened
+        if event.state is WorkerState.SUCCESS:
+            assert isinstance(event.worker.result, tuple)
+            self._campaigns = event.worker.result
+        elif event.state is WorkerState.ERROR:
+            logger.error("Run wizard campaigns read failed", exc_info=event.worker.error)
+            self._campaigns = ()
+        else:
+            return
+        event.stop()
+        if self._stage == "campaign":
+            # None: highlight the current campaign, else the newest (the loading row is gone).
+            self._fill_picks(None)
+
     def _picker(self, field: Field) -> tuple[str, list[tuple[str, str]]]:
         """The hint and the (row text, value) rows of the open picker for *field*."""
+        if field.kind == "campaign":
+            return self._campaign_picker(field)
         return self._target_picker(field) if field.kind == "target" else self._tests_picker(field)
+
+    def _campaign_picker(self, field: Field) -> tuple[str, list[tuple[str, str]]]:
+        """The campaigns newest first, then the row that types a path (always there)."""
+        manual = [(TYPE_CAMPAIGN, TYPE_CAMPAIGN)]
+        if not self._jobs_read:
+            return JOBS_NOT_READ, manual
+        if self._campaigns is None:
+            return LOADING_CAMPAIGNS, manual
+        if not self._campaigns:
+            return NO_CAMPAIGNS, manual
+        return field.hint, [(choice.label, choice.path) for choice in self._campaigns] + manual
 
     def _target_picker(self, field: Field) -> tuple[str, list[tuple[str, str]]]:
         rows = [] if field.required else [(AUTOMATIC, "")]
@@ -644,6 +720,9 @@ class RunWizard(ModalScreen[str | None]):
         """Enter in a picker: a Target is chosen and closes it; a Test Run toggles in place."""
         field = self._fields()[self._changing]
         value = self._pick_values[index]
+        if field.kind == "campaign" and value == TYPE_CAMPAIGN:
+            self._edit(self._values.get(field.dest, ""), field.hint)
+            return
         if field.kind == "tests":
             chosen = self._picked.get(field.dest, ())
             self._picked[field.dest] = (
@@ -668,7 +747,7 @@ class RunWizard(ModalScreen[str | None]):
         field = self._fields()[self._changing]
         position = index - self._default_rows(field)
         self._values[field.dest] = field.values()[position] if position >= 0 else ""
-        if isinstance(self._form, ReviewerForm):
+        if self._form is not None and not isinstance(self._form, RunForm):
             self._values = self._form.changed(self._values)
         self._show_stage("form")
 
@@ -676,7 +755,7 @@ class RunWizard(ModalScreen[str | None]):
         """The command's words from the form, or ``None`` after showing why they cannot be built."""
         form = self._form
         try:
-            if isinstance(form, ReviewerForm):
+            if form is not None and not isinstance(form, RunForm):
                 problem = form.refusal(self._values)
                 if problem:
                     raise ArgumentsError(problem)
@@ -768,9 +847,9 @@ class RunWizard(ModalScreen[str | None]):
             )
         elif event.state is WorkerState.SUCCESS:
             built = event.worker.result
-            assert isinstance(built, (RunForm, ReviewerForm))
+            assert isinstance(built, (RunForm, ReviewerForm, CoverageAnalystForm))
             self._form = built
-            if isinstance(built, ReviewerForm):
+            if not isinstance(built, RunForm):
                 self._values = built.initial()
             self._form_error = ""
         else:
@@ -803,6 +882,7 @@ class RunWizard(ModalScreen[str | None]):
             FORM_GROUP: self._form_built,
             TARGETS_GROUP: self._read_finished,
             TESTS_GROUP: self._read_finished,
+            CAMPAIGNS_GROUP: self._campaigns_read,
         }
         if group in handlers:
             handlers[group](event)
