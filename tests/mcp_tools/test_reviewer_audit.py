@@ -82,6 +82,14 @@ def output(reviewer, monkeypatch, payload, mirror=None):
     )
 
 
+GUIDES = ("bugs-checklist", "bugs-hunt")  # rtl/bugs runs one call per guide, same canned answer
+
+
+def by_guide(rows):
+    """Group audit rows by the guide call that produced them."""
+    return {guide: [row for row in rows if row["guide"] == guide] for guide in GUIDES}
+
+
 def evidence(result):
     return json.loads(Path(result.detail["audit_evidence"]).read_text())["detail"]
 
@@ -107,9 +115,12 @@ def test_mixed_rows_preserve_raw_ordinals_and_duplicate_source_proposals(reviewe
     assert result.exit_code == 0
     assert len(result.detail["pending"]) == 1
     assert result.detail["MAJOR"] == 1
-    assert [row["ordinal"] for row in result.detail["filtered"]] == [3, 4]
-    assert [row["raw"] for row in result.detail["rejected"]] == malformed
-    assert result.detail["filtered"][0]["finding_id"] == result.detail["filtered"][1]["finding_id"]
+    # Each guide call audits the same canned answer: rows are per call, ordinals stay raw.
+    for guide, rows in by_guide(result.detail["filtered"]).items():
+        assert [row["ordinal"] for row in rows] == [3, 4], guide
+        assert rows[0]["finding_id"] == rows[1]["finding_id"], guide
+    for guide, rows in by_guide(result.detail["rejected"]).items():
+        assert [row["raw"] for row in rows] == malformed, guide
     assert evidence(result) == result.detail
     assert len(collect_review_dispositions(reviewer.state.criteria)) == 1
     assert result.detail.items() <= persisted_criterion(reviewer).detail.items()
@@ -134,7 +145,7 @@ def test_all_invalid_and_malformed_mirror_persist_on_error(reviewer, monkeypatch
     )
     result = reviewer._run()
     assert result.exit_code == 2
-    assert len(result.detail["rejected"]) == 5
+    assert len(result.detail["rejected"]) == 5 * len(GUIDES)  # 5 rows per guide call
     assert {row["channel"] for row in result.detail["rejected"]} == {
         "canonical",
         "ReportFindings mirror",
@@ -149,7 +160,7 @@ def test_source_only_audit_is_non_gating_and_surfaces_in_mcp(reviewer, monkeypat
     assert result.detail["pending"] == []
     assert collect_review_dispositions(reviewer.state.criteria) == []
     assert result.detail.items() <= persisted_criterion(reviewer).detail.items()
-    assert len(result.detail["filtered"]) == 1
+    assert [len(rows) for rows in by_guide(result.detail["filtered"]).values()] == [1, 1]
     assert result.detail["rejected"] == []
     payload = _structured_from_report(
         {"mcp_tool": "reviewer", "exit_code": 0, "detail": result.detail}
@@ -312,7 +323,7 @@ def test_disagreeing_mirror_keeps_rejections_on_error(reviewer, monkeypatch):
     )
     result = reviewer._run()
     assert result.exit_code == 2
-    assert len(result.detail["rejected"]) == 2
+    assert len(result.detail["rejected"]) == 2 * len(GUIDES)  # 2 rows per guide call
     output(
         reviewer,
         monkeypatch,
@@ -416,8 +427,15 @@ def test_error_diagnostics_accumulate_within_unchanged_contract(reviewer, monkey
     first = reviewer._run()
     output(reviewer, monkeypatch, {"issues": [False]})
     second = reviewer._run()
-    assert [row["raw"] for row in second.detail["rejected"]] == [None, False]
-    assert len({row["attempt_id"] for row in second.detail["rejected"]}) == 2
+    # Two attempts, each audited once per guide call; history keeps attempt order.
+    rows = second.detail["rejected"]
+    assert [row["raw"] for guide_rows in by_guide(rows).values() for row in guide_rows] == [
+        None,
+        False,
+        None,
+        False,
+    ]
+    assert len({row["attempt_id"] for row in rows}) == 2 * len(GUIDES)  # per call
     assert evidence(first) == first.detail
     path = Path(second.detail["audit_evidence"])
     assert second.detail["artifacts"]["reviewer_evidence"] == str(path)
