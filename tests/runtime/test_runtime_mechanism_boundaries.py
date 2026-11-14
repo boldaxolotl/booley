@@ -127,8 +127,11 @@ def test_owned_process_group_primitives_stay_in_runtime_module() -> None:
                     and _qualified_name(node) == "subprocess.CREATE_NEW_PROCESS_GROUP"
                 ):
                     offenders.append(_relative(path, node.lineno))
-            elif isinstance(node, ast.Constant):
-                if path not in allowed_calls and node.value == "taskkill":
-                    offenders.append(_relative(path, node.lineno))
+            elif (
+                isinstance(node, ast.Constant)
+                and path not in allowed_calls
+                and node.value == "taskkill"
+            ):
+                offenders.append(_relative(path, node.lineno))
 
     assert offenders == []

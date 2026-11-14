@@ -205,10 +205,13 @@ def _extract_sandbox_attr(tree: ast.Module) -> str | None:
             if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
                 attr_name = item.target.id
                 val = item.value
-            elif isinstance(item, ast.Assign) and len(item.targets) == 1:
-                if isinstance(item.targets[0], ast.Name):
-                    attr_name = item.targets[0].id
-                    val = item.value
+            elif (
+                isinstance(item, ast.Assign)
+                and len(item.targets) == 1
+                and isinstance(item.targets[0], ast.Name)
+            ):
+                attr_name = item.targets[0].id
+                val = item.value
             if (
                 attr_name == "sandbox"
                 and isinstance(val, ast.Constant)
