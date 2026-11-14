@@ -96,7 +96,7 @@ class TestCriteriaTemplateDefaults:
         t = CriteriaTemplate.for_ticket_type("bugfix")
         expanded = t.expand(["lite"])
         assert "sim_pass_lite" in expanded
-        # Bugfix doesn't require lint, synthesis, or tb-review
+        # Bugfix doesn't require lint, synthesis, or TB quality review
         assert "lint_clean_lite" not in expanded
         assert "synthesis_ok_lite" not in expanded
         assert "review_tb_quality_clean" not in expanded

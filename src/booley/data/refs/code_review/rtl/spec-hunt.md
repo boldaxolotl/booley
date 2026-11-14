@@ -54,7 +54,7 @@ Use the strict JSON schema appended by the reviewer prompt. Do not emit a separa
 
 ---
 
-## Checklist
+## Trace targets
 
 ### A. Stated Behaviors (CRITICAL if violated)
 
