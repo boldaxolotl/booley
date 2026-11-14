@@ -98,6 +98,8 @@ def _state(rec: job_records.JobRecord, slots: list[job_slots.SlotToken], proc_ro
         for token in slots
         if token.owner_identity == identity and token.owner_kind != "execution"
     ]
+    if len(matched) > 1:
+        matched = _with_item_claims(matched)
     if matched:
         return (
             "unavailable"
@@ -105,6 +107,21 @@ def _state(rec: job_records.JobRecord, slots: list[job_slots.SlotToken], proc_ro
             else ("running" if matched[0].is_holder else "queued")
         )
     return "running" if rec.run_started_at else "spawning"
+
+
+def _with_item_claims(matched: list[job_slots.SlotToken]) -> list[job_slots.SlotToken]:
+    """The Job's own entry, standing for a waiting work-item claim when one waits.
+
+    A Job holding a slot may also hold Memory Reservations for its work items, in
+    its own PID. One non-memory entry with item claims beside it is the Job: it is
+    ``queued`` while an item claim waits.
+    """
+    own = [token for token in matched if token.job_class != job_slots.CLASS_MEMORY]
+    items = [token for token in matched if token.job_class == job_slots.CLASS_MEMORY]
+    if len(own) != 1 or not items:
+        return matched
+    waiting = [token for token in items if not token.is_holder]
+    return [waiting[0]] if waiting and own[0].is_holder else own
 
 
 def _snapshot_records(

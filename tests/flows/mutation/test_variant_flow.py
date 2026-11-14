@@ -646,7 +646,9 @@ def _score(
     return verdict, MutationSummary(results=[result])
 
 
-def _simulator_killed(command: list[str], signal_number: int) -> subprocess.CompletedProcess[str]:
+def _simulator_killed(
+    command: list[str], signal_number: int, adapter_status: int = 1
+) -> subprocess.CompletedProcess[str]:
     """What an adapter leaves when its simulator was killed: its authenticated result."""
     identity = work_transport_identity(launched_work(command))
     if identity is not None:  # without transport the run carries no evidence of the kill
@@ -661,7 +663,7 @@ def _simulator_killed(command: list[str], signal_number: int) -> subprocess.Comp
                 termination="completed",
             ),
         )
-    return _process(1, "ordinary failure output")
+    return _process(adapter_status, "ordinary failure output")
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the stand-in build is POSIX-only")
@@ -679,7 +681,29 @@ def test_signal_killed_mutant_run_is_inconclusive_not_a_kill(
 def test_signal_killed_simulator_is_inconclusive_not_a_kill(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, signal_number: int, name: str
 ) -> None:
-    _check_signal_kill(tmp_path, monkeypatch, True, signal_number, name)
+    # Only SIGKILL (the out-of-memory killer's mark) counts for the simulator; any
+    # signal counts for the adapter itself, by its own death.
+    _check_signal_kill(tmp_path, monkeypatch, signal_number == 9, signal_number, name)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the stand-in build is POSIX-only")
+def test_simulator_killed_after_its_pass_verdict_is_inconclusive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The adapter reports the pass its sentinel printed (exit 0), whatever killed the simulator.
+    _check_signal_kill(tmp_path, monkeypatch, True, 9, "SIGKILL", adapter_status=0)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the stand-in build is POSIX-only")
+@pytest.mark.parametrize(
+    ("status", "name"),
+    [pytest.param(137, "SIGKILL", id="kill"), pytest.param(143, "SIGTERM", id="term")],
+)
+def test_adapter_exit_status_of_a_signal_death_is_inconclusive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: int, name: str
+) -> None:
+    # A shell reports a child's death by a signal as 128 + n; the adapter's own handler too.
+    _check_signal_kill(tmp_path, monkeypatch, False, 0, name, adapter_status=status)
 
 
 def _check_signal_kill(
@@ -688,14 +712,17 @@ def _check_signal_kill(
     simulator_killed: bool,
     signal_number: int,
     name: str,
+    adapter_status: int | None = None,
 ) -> None:
     project = _make_project(tmp_path, monkeypatch)
     project.elab()
 
     def launch(command, *_args, **_kwargs):
         if simulator_killed:
-            return _simulator_killed(command, signal_number)
-        return _process(-signal_number)
+            return _simulator_killed(
+                command, signal_number, 1 if adapter_status is None else adapter_status
+            )
+        return _process(-signal_number if adapter_status is None else adapter_status)
 
     monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", launch)
 
@@ -710,7 +737,7 @@ def _check_signal_kill(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the stand-in build is POSIX-only")
-@pytest.mark.parametrize("result", ["missing", "guard-killed"])
+@pytest.mark.parametrize("result", ["missing", "guard-killed", "self-aborted"])
 def test_a_failing_run_without_signal_evidence_still_detects_the_mutant(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, result: str
 ) -> None:
@@ -718,7 +745,7 @@ def test_a_failing_run_without_signal_evidence_still_detects_the_mutant(
     project.elab()
 
     def launch(command, *_args, **_kwargs):
-        if result == "guard-killed":  # Booley's own kill: the simulator did not end `completed`
+        if result != "missing":  # a timeout is Booley's own kill; SIGABRT is `$fatal` aborting
             identity = work_transport_identity(launched_work(command))
             assert identity is not None
             write_adapter_result(
@@ -728,8 +755,8 @@ def test_a_failing_run_without_signal_evidence_still_detects_the_mutant(
                     inconclusive=False,
                     sva_errors=0,
                     tests=identity.selected_tests,
-                    simulator_returncode=-9,
-                    termination="timeout",
+                    simulator_returncode=-9 if result == "guard-killed" else -6,
+                    termination="timeout" if result == "guard-killed" else "completed",
                 ),
             )
         return _process(1, "test failed")
@@ -741,3 +768,22 @@ def test_a_failing_run_without_signal_evidence_still_detects_the_mutant(
 
     assert verdict.detected and not verdict.inconclusive_reason
     assert summary.detected_count == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the stand-in build is POSIX-only")
+def test_a_timed_out_run_leaves_no_adapter_result_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _make_project(tmp_path, monkeypatch)
+    project.elab()
+
+    def launch(command, *_args, **_kwargs):
+        _simulator_killed(command, 9)  # leaves the adapter's result behind
+        raise subprocess.TimeoutExpired(command, 1)
+
+    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", launch)
+
+    runs = project.endpoint._run_target_test_suite("default", tmp_path, project.build, "tb")
+
+    assert all(run.timed_out for run in runs)
+    assert list(project.build.glob("*adapter-*")) == []

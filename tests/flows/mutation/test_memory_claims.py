@@ -95,7 +95,7 @@ class _Managed:
 
 
 @pytest.fixture
-def managed(tmp_path: Path, inert_oom_proc: FakeProc) -> Iterator[_Managed]:  # noqa: F811
+def managed(tmp_path: Path, inert_oom_proc: FakeProc) -> Iterator[_Managed]:  # noqa: F811  (pytest fixture re-declared as a parameter)
     booley_dir = tmp_path / "admission"
     booley_dir.mkdir()
     (booley_dir / "booley.toml").write_text('[jobs]\nmemory_budget = "1000m"\n', encoding="utf-8")
@@ -178,7 +178,7 @@ def test_builds_and_simulations_hold_a_reservation_sized_from_the_target_history
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     managed: _Managed,
-    inert_oom_proc: FakeProc,  # noqa: F811
+    inert_oom_proc: FakeProc,  # noqa: F811  (pytest fixture re-declared as a parameter)
 ) -> None:
     managed.record_history()
     project = _project(tmp_path, monkeypatch)
@@ -202,7 +202,7 @@ def test_unsized_build_and_simulation_run_alone(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     managed: _Managed,
-    inert_oom_proc: FakeProc,  # noqa: F811
+    inert_oom_proc: FakeProc,  # noqa: F811  (pytest fixture re-declared as a parameter)
 ) -> None:
     project = _project(tmp_path, monkeypatch)  # no Resource History
     seen = _watch(monkeypatch, managed, inert_oom_proc)
@@ -223,7 +223,7 @@ def test_campaign_processes_rank_as_the_held_claim(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     managed: _Managed,
-    inert_oom_proc: FakeProc,  # noqa: F811
+    inert_oom_proc: FakeProc,  # noqa: F811  (pytest fixture re-declared as a parameter)
 ) -> None:
     managed.record_history()
     project = _project(tmp_path, monkeypatch)
@@ -241,7 +241,7 @@ def test_queued_claim_is_withdrawn_when_the_campaign_is_cancelled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     managed: _Managed,
-    inert_oom_proc: FakeProc,  # noqa: F811
+    inert_oom_proc: FakeProc,  # noqa: F811  (pytest fixture re-declared as a parameter)
 ) -> None:
     _withdraw_queued_claim(tmp_path, monkeypatch, managed, inert_oom_proc, "cancellation")
 
@@ -250,17 +250,27 @@ def test_queued_claim_is_withdrawn_when_booley_cancel_removes_it(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     managed: _Managed,
-    inert_oom_proc: FakeProc,  # noqa: F811
+    inert_oom_proc: FakeProc,  # noqa: F811  (pytest fixture re-declared as a parameter)
 ) -> None:
     _withdraw_queued_claim(tmp_path, monkeypatch, managed, inert_oom_proc, "booley_cancel")
+
+
+def test_queued_simulation_claim_is_withdrawn_when_the_campaign_is_cancelled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    managed: _Managed,
+    inert_oom_proc: FakeProc,  # noqa: F811  (pytest fixture re-declared as a parameter)
+) -> None:
+    _withdraw_queued_claim(tmp_path, monkeypatch, managed, inert_oom_proc, "cancellation", True)
 
 
 def _withdraw_queued_claim(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     managed: _Managed,
-    inert_oom_proc: FakeProc,  # noqa: F811
+    inert_oom_proc: FakeProc,  # noqa: F811  (pytest fixture re-declared as a parameter)
     withdrawn_by: str,
+    simulation: bool = False,
 ) -> None:
     project = _project(tmp_path, monkeypatch)
     managed.hold_budget()
@@ -275,12 +285,13 @@ def _withdraw_queued_claim(
 
     managed.cancellation = cancel
 
-    outcome = _campaign(monkeypatch, project, managed.context(), _build(tmp_path))
+    tool = _simulate(tmp_path, project) if simulation else _build(tmp_path)
+    outcome = _campaign(monkeypatch, project, managed.context(), tool)
 
     assert outcome.exit_code == EXIT_ERROR
     assert "RESULT: ERROR (cancelled: " in outcome.report_text
     assert "waited for memory" in outcome.report_text
-    assert ran == []  # the build never started
+    assert ran == []  # the tool never started
     holders, waiters = managed.store.snapshot(job_slots.CLASS_MEMORY)
     assert len(holders) == 1 and waiters == []  # only the budget holder; the entry is gone
 
@@ -344,3 +355,26 @@ def test_the_invocation_reports_the_scope_of_an_ordinary_run(
 
     assert invocation.borrows_admission
     assert invocation.report_scope(flow) == OrdinaryRunInvocation(flow._run).report_scope(flow)
+
+
+def test_an_item_that_ran_alone_over_budget_warns_in_the_campaign_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    managed: _Managed,
+    inert_oom_proc: FakeProc,  # noqa: F811  (pytest fixture re-declared as a parameter)
+) -> None:
+    from booley.flows.endpoint_session import _attach_memory_warning
+
+    resource_history.append_records(
+        managed.booley_dir,
+        [_record("sim_prepare", 100), _record("sim_build", 4000), _record("sim_run", 200)],
+    )
+    project = _project(tmp_path, monkeypatch)
+    _watch(monkeypatch, managed, inert_oom_proc)
+    context = managed.context()
+
+    outcome = _campaign(monkeypatch, project, context, _build(tmp_path))
+    _attach_memory_warning(outcome, context)
+
+    assert "exceeds the Memory Budget of 1000 MiB; this Job ran alone." in outcome.report_text
+    assert "memory_admission_warning" in outcome.detail

@@ -190,34 +190,58 @@ _MUTANT_HARD_KILL_MARGIN_S = 5
 _MUTANT_LOG_MAX_BYTES = 256 * 1024
 
 
+#: Statuses a shell or the adapter's own handler report for a death by these signals.
+_SIGNAL_EXIT_BASE = 128
+
+
 def _killing_signal(
     proc: subprocess.CompletedProcess, identity: AdapterTransportIdentity | None
 ) -> str:
     """The signal that killed a run from outside Booley, as its name; ``""`` for none.
 
-    The adapter's own death by a signal counts, and so does its simulator's when the
-    adapter's authenticated result says the run ended ``completed``: a deadline, guard
-    or timeout kill is Booley's own verdict and keeps its classification. An
-    unreadable result is no evidence. The result files are removed once read.
+    The adapter's own death by a signal counts, and so does its simulator's SIGKILL (the
+    out-of-memory killer's mark) when the adapter's authenticated result says the run
+    ended ``completed``, whatever verdict the adapter printed: a deadline, guard or
+    timeout kill is Booley's own verdict, and a simulator that aborts itself (SIGABRT
+    from ``$fatal``) is a detection. An unreadable result is no evidence. The result
+    files are removed once read.
     """
-    number = -proc.returncode if proc.returncode < 0 else 0
-    if identity is not None and proc.returncode > 0:
+    number = _adapter_signal(proc.returncode)
+    if not number and identity is not None:
         try:
             result = read_adapter_result(identity)
         except AdapterTransportError:
             pass
         else:
-            if result.termination == "completed" and result.simulator_returncode < 0:
-                number = -result.simulator_returncode
-    if identity is not None:
-        identity.result_path.unlink(missing_ok=True)
-        partial_result_identity(identity).result_path.unlink(missing_ok=True)
+            if (
+                result.termination == "completed"
+                and result.simulator_returncode == -signal.SIGKILL
+            ):
+                number = int(signal.SIGKILL)
+    _discard_adapter_results(identity)
     if not number:
         return ""
     try:
         return signal.Signals(number).name
     except ValueError:
         return str(number)
+
+
+def _discard_adapter_results(identity: AdapterTransportIdentity | None) -> None:
+    """Remove the adapter's result files, which are not kept once a run is read."""
+    if identity is not None:
+        identity.result_path.unlink(missing_ok=True)
+        partial_result_identity(identity).result_path.unlink(missing_ok=True)
+
+
+def _adapter_signal(returncode: int) -> int:
+    """The signal an adapter's exit status reports, or 0: killed, or SIGKILL/SIGTERM by shell."""
+    if returncode < 0:
+        return -returncode
+    for number in (signal.SIGKILL, signal.SIGTERM):
+        if returncode == _SIGNAL_EXIT_BASE + number:
+            return int(number)
+    return 0
 
 
 def _infra_failure_reason(proc: subprocess.CompletedProcess) -> str:
@@ -2104,25 +2128,29 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         with materialize_runtime_inputs(
             work_dir / pinned.rel, work_dir / resolve_run_cwd(work_dir), pinned.runtime_inputs
         ):
-            proc = subprocess.run(
-                cmd,
-                cwd=work_dir,
-                env=relocate_python_artifacts(
-                    {
-                        **os.environ,
-                        **launch_environment(
-                            _target_environment(work_dir, self._target_identity(target)),
-                            launch.environment,
-                        ),
-                    },
-                    python_artifact_root(os.environ, build_path / "python-artifacts"),
-                    pytest_scope=f"mutation-run:{build_path.resolve()}",
-                ),
-                capture_output=True,
-                text=True,
-                timeout=timeout + _MUTANT_HARD_KILL_MARGIN_S,
-                check=False,
-            )
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    cwd=work_dir,
+                    env=relocate_python_artifacts(
+                        {
+                            **os.environ,
+                            **launch_environment(
+                                _target_environment(work_dir, self._target_identity(target)),
+                                launch.environment,
+                            ),
+                        },
+                        python_artifact_root(os.environ, build_path / "python-artifacts"),
+                        pytest_scope=f"mutation-run:{build_path.resolve()}",
+                    ),
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout + _MUTANT_HARD_KILL_MARGIN_S,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                _discard_adapter_results(identity)
+                raise
         return proc, _killing_signal(proc, identity)
 
     def _run_target_test_suite(
