@@ -298,10 +298,9 @@ reviewer = "gpt-6-astra"   # runs on Codex
 
 The `[models]` keys are `reviewer` and `coverage_analyst`. Any other key, a
 model that is neither `claude-*` nor `gpt-*`, or a model whose CLI isn't in
-`clis` stops Booley from loading the config, and `booley doctor`
-names the entry. A leftover `mutation_tester` key is such a key: mutation testing
-is now a [Flow](FLOW-MUTATION.md) and uses no model, so delete it. The Developer Agent itself uses your Agent CLI's own model
-setting, not this table.
+`clis` stops Booley from loading the config, and `booley doctor` names the
+entry. The Developer Agent itself uses your Agent CLI's own model setting, not
+this table.
 
 A Specialist without an entry, and Booley's own small internal steps, use the
 default CLI's built-in model, so most Projects need no `[models]` at all:
