@@ -62,8 +62,9 @@ def test_goal_record_and_state_under_former_mount_resolve_current_worktree(
     state.save()
     respell(paths.record_file, current, former)
     respell(paths.state_file, current, former)
-    assert former in paths.record_file.read_text(encoding="utf-8")
-    assert former in paths.state_file.read_text(encoding="utf-8")
+    escaped = json.dumps(former)[1:-1]
+    assert escaped in paths.record_file.read_text(encoding="utf-8")
+    assert escaped in paths.state_file.read_text(encoding="utf-8")
 
     record = GoalStore(goal_mode.control).load(goal_mode.record.id)
     loaded = load_goal_state(GoalStore(goal_mode.control), record)
