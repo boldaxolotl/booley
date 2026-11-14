@@ -288,6 +288,29 @@ class TestTimingArgs:
             _build_parser().parse_args(["configure", "-t", "top", option, "4000"])
 
 
+class TestPpaDelayTarget:
+    """``max_frequency`` never derives a mapping delay target from the SDC period."""
+
+    @pytest.mark.parametrize("mode", ["physical", "logical"])
+    def test_max_frequency_sets_no_delay_target(self, mode):
+        from booley.flows.synth.backends import configure as mod
+
+        args = mod._build_parser().parse_args(
+            ["configure", "-t", "top", "--ppa-profile", "max_frequency", "--synth-mode", mode]
+        )
+        _profile, yosys, _openroad = mod._resolve_ppa_settings(args)
+        assert yosys.abc_delay_ps is None
+
+    def test_explicit_abc_delay_overrides_profile(self):
+        from booley.flows.synth.backends import configure as mod
+
+        args = mod._build_parser().parse_args(
+            ["configure", "-t", "top", "--ppa-profile", "max_frequency", "--abc-delay-ps", "1800"]
+        )
+        _profile, yosys, _openroad = mod._resolve_ppa_settings(args)
+        assert yosys.abc_delay_ps == 1800
+
+
 # ---------------------------------------------------------------------------
 # do_clean
 # ---------------------------------------------------------------------------

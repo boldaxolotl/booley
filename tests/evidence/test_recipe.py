@@ -153,3 +153,21 @@ def test_comparison_basis_uses_ordered_constraint_content() -> None:
         invalid = {**first, "constraints": [{"core": "::core:0", "sha256": digest}]}
         with pytest.raises(InvalidRecipeSnapshotError, match="valid SHA-256"):
             implementation_comparison_basis(invalid)
+
+
+def _profiled_synth_snapshot(settings: dict | None) -> dict:
+    snapshot = _synth_snapshot(schema=4)
+    if settings is not None:
+        snapshot["ppa_profile_settings"] = settings
+    return snapshot
+
+
+def test_comparison_basis_tracks_profile_settings() -> None:
+    """Paired Targets whose resolved profile settings differ are not comparable."""
+    same = {"yosys": {"abc_recipe": "balanced"}}
+    other = {"yosys": {"abc_recipe": "fast"}}
+    basis = implementation_comparison_basis
+    assert basis(_profiled_synth_snapshot(same)) == basis(_profiled_synth_snapshot(same))
+    assert basis(_profiled_synth_snapshot(same)) != basis(_profiled_synth_snapshot(other))
+    # A legacy snapshot without the key differs from a current one.
+    assert basis(_profiled_synth_snapshot(None)) != basis(_profiled_synth_snapshot(same))
