@@ -17,14 +17,9 @@ from pathlib import Path
 
 import pytest
 
+from booley.feedback import render
 from booley.feedback.findings import Finding, append, read_log
-from booley.feedback.render import (
-    FEEDBACK_REPORT_NAME,
-    SETUP_REPORT_NAME,
-    render_booley_report,
-    report_origin,
-    write_user_reports,
-)
+from booley.feedback.render import render_booley_report, report_origin
 
 PUBLIC_FEEDBACK_DOCS = (
     "README.md",
@@ -213,22 +208,25 @@ class TestAlreadyFiled:
             ),
             booley_dir,
         )
-        write_user_reports(project, booley_dir)
-        assert "issues/7" in (booley_dir / FEEDBACK_REPORT_NAME).read_text(encoding="utf-8")
+        render.write_user_reports(project, booley_dir)
+        assert "issues/7" in (booley_dir / render.FEEDBACK_REPORT_NAME).read_text(encoding="utf-8")
 
 
 class TestOrigin:
     def test_a_bug_only_log_writes_only_the_feedback_report(self, project, booley_dir):
         append(_bug(), booley_dir)
-        written, _ = write_user_reports(project, booley_dir)
-        assert [w.path.name for w in written] == [FEEDBACK_REPORT_NAME]
-        assert not (booley_dir / SETUP_REPORT_NAME).exists()
+        written, _ = render.write_user_reports(project, booley_dir)
+        assert [w.path.name for w in written] == [render.FEEDBACK_REPORT_NAME]
+        assert not (booley_dir / render.SETUP_REPORT_NAME).exists()
 
     def test_a_setup_and_a_bug_entry_write_both_reports(self, project, booley_dir):
         append(_bug(origin="setup"), booley_dir)
         append(_bug(origin="bug"), booley_dir)
-        written, _ = write_user_reports(project, booley_dir)
-        assert [w.path.name for w in written] == [SETUP_REPORT_NAME, FEEDBACK_REPORT_NAME]
+        written, _ = render.write_user_reports(project, booley_dir)
+        assert [w.path.name for w in written] == [
+            render.SETUP_REPORT_NAME,
+            render.FEEDBACK_REPORT_NAME,
+        ]
 
     def test_an_empty_log_reads_as_setup(self, booley_dir):
         assert report_origin(read_log(booley_dir)) == "setup"
