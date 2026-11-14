@@ -1,0 +1,6 @@
+[
+  {
+    "family": "SIM",
+    "target": "sim_uart"
+  }
+]

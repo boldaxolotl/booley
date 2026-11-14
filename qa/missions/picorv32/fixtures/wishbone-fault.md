@@ -1,7 +1,7 @@
 ### Seeded Wishbone fault
 
-The fault for the picorv32 mission's `interactive-repair` area. Its Interactive Mode child is the
-same kind of child as in `interactive-bwave`: one long-lived session inside the Booley Sandbox with
+Optional bait for the picorv32 mission's hunt. Its Interactive Mode child is
+one long-lived session inside the Booley Sandbox with
 the Project working directory, PTY, Sandbox identity, and MCP tool access preserved. Launch it with
 `booley session enter -- booley`, or as a direct inherited child when those properties demonstrably
 hold. It is not a separate Specialist or delegate.
