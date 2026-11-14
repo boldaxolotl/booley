@@ -98,6 +98,8 @@ def test_validate_without_metrics_file_declares_nothing(
 TWO_LINT_TABLES = "[sim_core.lint]\nwarnings_max = 0\n[sim_two.lint]\nwarnings_max = 0\n"
 ONE_LINT_TABLE = "[sim_core.lint]\nwarnings_max = 0\n"
 DEADLINE_S = 20
+# Windows has no SIGHUP: SIGINT stands in, so the tests still import and run there.
+HANGUP = getattr(signal, "SIGHUP", signal.SIGINT)
 NOTHING_IN_SCOPE = "nothing to measure, add a `[target.flow]` table"
 COMMAND = "booley.harness.measure_command"
 
@@ -512,7 +514,7 @@ def test_signals_during_the_children_cancel_the_measurement(
     assert_cancelled_run_stored(project)
 
 
-@pytest.mark.parametrize("number", [signal.SIGTERM, signal.SIGHUP])
+@pytest.mark.parametrize("number", [signal.SIGTERM, HANGUP])
 def test_a_termination_signal_cancels_the_measurement_like_ctrl_c(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, number: int
 ) -> None:
@@ -546,7 +548,7 @@ def test_a_signal_before_the_children_aborts_at_once_and_stores_nothing(
     project = committed_project(tmp_path, ONE_LINT_TABLE)
 
     def hang() -> None:
-        send(signal.SIGHUP)
+        send(HANGUP)
         time.sleep(DEADLINE_S)  # only reached when the signal did not interrupt
 
     steps = script_children(monkeypatch, lambda *_: pytest.fail("no child may run"), hang)
@@ -563,12 +565,53 @@ def test_a_signal_before_the_children_aborts_at_once_and_stores_nothing(
     assert (record.status, record.exit_code) == ("cancelled", 130)
 
 
+def test_a_signal_while_storing_leaves_a_complete_run_and_a_matching_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = committed_project(tmp_path, ONE_LINT_TABLE)
+    script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
+    write = MeasurementStore.write
+
+    def write_then_signal(store: MeasurementStore, *args: object, **kwargs: object):
+        stored = write(store, *args, **kwargs)  # type: ignore[arg-type]
+        send(signal.SIGINT)  # too late to change what is stored
+        return stored
+
+    monkeypatch.setattr(MeasurementStore, "write", write_then_signal)
+
+    assert run_command(monkeypatch, project) == 0
+
+    (path,) = stored_runs(project)
+    assert json.loads(path.read_text())["status"] == "completed"
+    assert MeasurementStore(project / ".booley").measured(key_of(project)) is not None
+
+
+def test_stored_text_reports_skip_symlinks(tmp_path: Path) -> None:
+    from booley.harness.measure_command import _flow_reports
+
+    reports = tmp_path / "invocation"
+    reports.mkdir()
+    (reports / "report.json").write_bytes(b"{}")
+    secret = tmp_path / "secret.txt"
+    secret.write_bytes(b"outside the report directory")
+    try:
+        (reports / "tool.log").symlink_to(secret)
+    except OSError:  # no symlink privilege on this platform
+        pytest.skip("symlinks are unavailable")
+    run = TableRun("t#lint", "lint", 1.0, None, ())
+    outcome = ChildrenOutcome(
+        RunStatus.COMPLETED, (TableMeasurement(run, (reports / "report.json",), True),)
+    )
+
+    assert [report.path.name for report in _flow_reports(outcome)] == ["report.json"]
+
+
 def test_the_signal_handlers_are_restored_after_the_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = committed_project(tmp_path, ONE_LINT_TABLE)
     script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
-    before = {n: signal.getsignal(n) for n in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+    before = {n: signal.getsignal(n) for n in (signal.SIGINT, signal.SIGTERM, HANGUP)}
 
     assert run_command(monkeypatch, project) == 0
 

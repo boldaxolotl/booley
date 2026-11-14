@@ -326,7 +326,8 @@ class ChildScheduler:
         rules = entry.rules
         results = evaluate_table(rules, FlowFailed(str(error)))
         run = TableRun(rules.identity, rules.flow, None, None, results)
-        entry.measurement = TableMeasurement(run, (), finished=True)
+        # Not finished: no child ran, so a cancellation after it must still store nothing.
+        entry.measurement = TableMeasurement(run, (), finished=False)
         if not self._all_tables:
             self._stopping = True
 

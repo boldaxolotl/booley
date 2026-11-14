@@ -266,6 +266,7 @@ def _measure(
             )
         except CheckoutFlowError as exc:  # the first child could not be launched
             raise MeasureRefusedError(str(exc)) from exc
+        flow_reports = _flow_reports(outcome)  # read before the status: a late signal counts
         status = RunStatus.CANCELLED if signals.is_set() else outcome.status
         if status is RunStatus.CANCELLED and not any(t.finished for t in outcome.tables):
             print("cancelled before any Flow finished; nothing stored", file=sys.stderr)
@@ -283,7 +284,7 @@ def _measure(
             tuple(table.run for table in outcome.tables),
         )
         store = MeasurementStore(main)
-        stored = store.write(run, _flow_reports(outcome))
+        stored = store.write(run, flow_reports)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
     view = run_view(
@@ -294,7 +295,8 @@ def _measure(
         print(json.dumps(view, indent=2))
     else:
         print(terminal_report(view), end="")
-    if status is RunStatus.CANCELLED or signals.is_set():
+    # A signal while storing leaves a complete run: the exit must agree with what is stored.
+    if status is RunStatus.CANCELLED:
         raise KeyboardInterrupt
     return measure_exit_code(
         result.verdict for table in outcome.tables for result in table.run.results
@@ -302,13 +304,15 @@ def _measure(
 
 
 def _flow_reports(outcome: ChildrenOutcome) -> list[FlowReport]:
-    """Every regular file beside each table's final ``report.json``, ``report.json`` first."""
+    """Every regular file (never a symlink) beside each table's final ``report.json``, it first."""
     reports: list[FlowReport] = []
     for table in outcome.tables:
         if not table.reports:
             continue
         directory = table.reports[-1].parent  # the final attempt's invocation directory
-        files = sorted(path for path in directory.iterdir() if path.is_file())
+        files = sorted(
+            path for path in directory.iterdir() if path.is_file() and not path.is_symlink()
+        )
         files.sort(key=lambda path: path.name != table.reports[-1].name)
         reports.extend(FlowReport(table.run.identity, table.run.flow, path) for path in files)
     return reports

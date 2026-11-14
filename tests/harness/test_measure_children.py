@@ -669,7 +669,7 @@ def test_a_child_that_cannot_be_launched_after_another_started_gets_error_verdic
     assert verdicts["a"] == (Verdict.MET,)
     assert verdicts["b"] == (Verdict.ERROR,)
     failed = next(t for t in outcome.tables if t.run.identity.endswith("#b"))
-    assert failed.finished and failed.run.wall_time_s is None and not failed.reports
+    assert not failed.finished and failed.run.wall_time_s is None and not failed.reports
     assert [r.detail for r in failed.run.results] == [
         "Flow 'lint' could not be started: disk full"
     ]
