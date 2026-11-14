@@ -3,8 +3,8 @@
 `.booley/booley.toml` holds your Project's Booley settings. This page covers the
 Project-wide ones: Project identity, extra Protected Inputs, turning Flows and
 Specialists off, Job limits, the Agent CLIs and their billing, models, the
-Dashboard and Goal presence, worktree settings (where `booley chat` starts and
-cleanup of idle worktrees), and feedback redaction. Settings for one Flow, the Sandbox, or
+Dashboard and Goal presence, worktree settings (where `booley chat` starts,
+cleanup of idle worktrees, and Git submodules), and feedback redaction. Settings for one Flow, the Sandbox, or
 Stealth Mode live on their own pages; the table below says where.
 
 You rarely edit this file by hand. The `booley-setup` skill writes it during
@@ -16,7 +16,7 @@ here to look up what a setting means and what its default is.
 
 | Setting | Documented in |
 |---|---|
-| `[project]`, `enabled`, `[jobs]`, `[agent]`, `[models]`, `[goals]`, `[worktree]`, `[sandbox].dashboard`, `[feedback]` | this page |
+| `[project]`, `enabled`, `[jobs]`, `[agent]`, `[models]`, `[goals]`, `[worktree]`, `[submodules]`, `[sandbox].dashboard`, `[feedback]` | this page |
 | `[flows.sim]` | [Simulation](FLOW-SIM.md#configuration-flowssim) |
 | `[coverage.waivers]` and per-Target coverage settings | [Coverage](COVERAGE.md#configuration) |
 | `[flows.lint]` | [Lint](FLOW-LINT.md#configuration-flowslint) |
@@ -27,7 +27,8 @@ here to look up what a setting means and what its default is.
 | `[eda.<tool>]` | [Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning) |
 | `[stealth]` | [STEALTH.md](STEALTH.md) |
 | `[feedback]` | [Redacted feedback](STEALTH.md#redacted-feedback-feedback) |
-| `[submodules]`, `.core` files, Cocotb Targets | [TARGETS.md](TARGETS.md) |
+| `.core` files | [TARGETS.md](TARGETS.md) |
+| Cocotb Targets | [Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches) |
 | `tests.toml` | [TESTS.md](TESTS.md) |
 | `.booley/doctor-waivers.toml` | [Doctor waivers](DOCTOR.md#doctor-waivers-doctor-waiverstoml) |
 
@@ -372,6 +373,65 @@ to it, so files the hook builds (a firmware image, say) exist at the base too. M
 twice and read its inputs from the checkout. If it fails, only the Targets that
 need its output lose their baseline, with the hook's error as the reason. A
 hook that changes a tracked file makes the baseline unavailable.
+
+### Git submodules (`[submodules]`)
+
+Goal Mode and baseline comparisons run in separate git worktrees. Booley
+fills each worktree's submodules from your local copy at the same path, at the
+commit the branch pins, without cloning anything, so private SSH URLs are
+fine. Recursive submodules work the same way.
+
+Run this once on the host:
+
+```bash
+git submodule update --init --recursive
+```
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+`.booley` is its own Git repository, so initialize its submodules too:
+
+```bash
+git -C .booley submodule update --init --recursive
+```
+
+See [Stealth Mode](STEALTH.md).
+
+</details>
+
+Each submodule must be present, clean, and have its full history (not a
+shallow clone) before a Goal or baseline run starts. Otherwise the run stops
+with one of:
+
+- `submodule <path> not found in source Project; initialize it first`
+- `submodule <path> is dirty`
+- `submodule <path> is shallow; fetch its complete history first`
+- `local objects for submodule <path> are incomplete`
+
+The last one means your local copy lacks objects for the commit the branch
+pins; fetch in that submodule. Booley always uses the pinned commit, even when your checkout
+has a newer one.
+
+To copy only some submodules (skip a large docs or board submodule nothing
+builds from), list the ones you want in `booley.toml`:
+
+```toml
+[submodules]
+paths = ["deps/bus_pkg", "deps/axi_verif"]
+```
+
+Without `paths`, every top-level submodule is copied; `paths = []` copies
+none. Unlisted submodules appear as empty directories in the worktree.
+Submodules nested inside a listed one are always copied.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+The list applies to the RTL repository only: every submodule of the `.booley`
+repository is always copied. See [Stealth Mode](STEALTH.md).
+
+</details>
 
 ## Feedback (`[feedback]`)
 
