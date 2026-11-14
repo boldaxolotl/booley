@@ -35,8 +35,6 @@ from booley.runtime.timefmt import format_duration
 
 #: Hex digits of a commit id shown in the line.
 SHORT = 7
-#: Longest first-parent walk; a longer branch reports no Measured ancestor beyond it.
-MAX_WALK = 1000
 _COUNTED = (("error", "error"), ("unmet", "unmet"), ("not_evaluated", "not evaluated"))
 
 
@@ -59,8 +57,9 @@ def checkout_of(attribution: Attribution) -> str:
 
 def measuring_text(progress: Mapping[str, object] | None, elapsed_s: float | None) -> str:
     """``measuring 2/5 · 14m 00s``; without a readable count ``measuring · 14m 00s``."""
-    finished = as_int((progress or {}).get("finished"))
-    total = as_int((progress or {}).get("total"))
+    counts: Mapping[str, object] = progress if isinstance(progress, Mapping) else {}
+    finished = as_int(counts.get("finished"))
+    total = as_int(counts.get("total"))
     count = f" {finished}/{total}" if finished is not None and total is not None else ""
     elapsed = "" if elapsed_s is None else f" · {format_duration(elapsed_s)}"
     return f"measuring{count}{elapsed}"
@@ -132,7 +131,6 @@ def _walk(checkout: Path, head: str) -> list[tuple[str, str]]:
         checkout,
         "log",
         "--first-parent",
-        f"--max-count={MAX_WALK}",
         "--format=%H %T",
         head,
         "--not",
@@ -199,7 +197,10 @@ def _measured_ancestor(
 
 def _summary(run: StoredRun) -> str:
     """The non-zero ``error``, ``unmet`` and ``not evaluated`` counts, else the run status."""
-    verdicts = [r["verdict"] for table in run.document["tables"] for r in table["results"]]
+    try:
+        verdicts = [r["verdict"] for table in run.document["tables"] for r in table["results"]]
+    except (KeyError, TypeError):
+        return "unreadable run"
     parts: list[str] = []
     for verdict, label in _COUNTED:
         count = verdicts.count(verdict)

@@ -245,8 +245,7 @@ The Dashboard has three windows; press `←` or `→` to switch:
   When the session's checkout declares a `[target.flow]` table in
   `metrics.toml`, a second line under the session shows its measurement:
   `Measured 1a2b3c4` when HEAD is Measured, `last Measured 1a2b3c4 · latest
-  5d6e7f8: 1 unmet, 3 not evaluated` when it is not (the history is searched
-  back to the merge-base with the default branch), or `measuring 2/5 · 14m 00s`
+  5d6e7f8: 1 unmet, 3 not evaluated` when it is not, or `measuring 2/5 · 14m 00s`
   while a `booley measure` Job runs there. `Enter` on a line that has a report
   opens its Markdown Measurement Report in your editor.
 - **Jobs:** Running, Finished (the newest 50), or All Jobs, filterable by

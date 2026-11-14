@@ -1656,7 +1656,7 @@ class DashboardApp(App[None]):
             else self._scrolls.get(self._scroll_key(self.navigation), 0)
         )
         rows, job_widths = self._apply_list_columns(table, rows)
-        if rows != self._rows:
+        if rows != self._rows or keys != self.row_keys:
             table.header_rows = frozenset()
             table.clear()
             for row in rows:

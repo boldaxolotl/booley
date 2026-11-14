@@ -8,13 +8,16 @@ from __future__ import annotations
 
 import dataclasses
 import importlib
+import json
+from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from booley.harness.dashboard import app as dashboard_app
 from booley.harness.dashboard import model, sessions
-from booley.harness.dashboard.app import DashboardApp
+from booley.harness.dashboard.app import DashboardApp, SessionList
 from booley.harness.dashboard.jobs import JobSnapshot, JobView
 from booley.measurement.run_document import Verdict
 from booley.measurement.run_store import MeasurementStore
@@ -147,6 +150,24 @@ def test_a_run_without_failing_results_reads_its_status(tmp_path: Path) -> None:
     assert line.text == f"latest {short(head)}: cancelled"
 
 
+@pytest.mark.parametrize("tables", [None, "gone"])
+def test_a_damaged_cancelled_run_reads_unreadable_run(tmp_path: Path, tables: str | None) -> None:
+    repo, head = declared_repository(tmp_path / "repo")
+    store = MeasurementStore(repo / ".booley")
+    stored = store.write(make_run(key_of(repo, head), "r1", status="cancelled"), [])
+    document = json.loads(stored.path.read_text(encoding="utf-8"))
+    if tables == "gone":
+        del document["tables"]
+    else:
+        document["tables"] = tables
+    stored.path.write_bytes(json.dumps(document).encode())
+
+    line = line_of(repo)
+
+    assert line is not None
+    assert line.text == f"latest {short(head)}: unreadable run"
+
+
 # --- AC3 ---------------------------------------------------------------------
 
 
@@ -250,6 +271,7 @@ def test_measuring_text_names_the_count_only_when_it_is_readable() -> None:
     assert reader().measuring_text({"finished": 2, "total": 5}, 840) == "measuring 2/5 · 14m 00s"
     assert reader().measuring_text(None, 840) == "measuring · 14m 00s"
     assert reader().measuring_text({"finished": "x", "total": 5}, None) == "measuring"
+    assert reader().measuring_text(cast("Mapping[str, object]", [1]), None) == "measuring"
 
 
 def test_running_measure_job_shows_progress_then_the_stored_state(tmp_path: Path) -> None:
@@ -316,6 +338,20 @@ async def test_a_line_without_a_report_is_never_selectable() -> None:
         await pilot.pause()
         assert app._selected_key() == "codex:00"  # the cursor never lands on the line
         assert opened == []
+
+
+@pytest.mark.asyncio
+async def test_a_report_appearing_under_unchanged_text_makes_the_line_selectable() -> None:
+    current = {"snapshot": shown(None)}
+    app = DashboardApp(lambda: current["snapshot"], lambda path: "")
+    async with app.run_test(size=(130, 30)) as pilot:
+        await pilot.pause()
+        current["snapshot"] = shown("/store/run.md")
+        app.snapshot = current["snapshot"]
+        app.render_snapshot()
+        await pilot.pause()
+        assert app.row_keys[-1] == sessions.MEASUREMENT_PREFIX + "codex:00"
+        assert app.query_one(SessionList).header_rows == frozenset({0})  # only the group header
 
 
 # --- AC7 ---------------------------------------------------------------------

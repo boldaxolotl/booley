@@ -42,8 +42,9 @@ Registry holds it:
   readable HEAD, shows none). Its key is `measurement:<session key>` when it
   has a Markdown report, and Enter opens that report; otherwise the key
   starts with `HEADER_PREFIX`, so the cursor skips it. While a `measure` Job
-  runs in the checkout the row shows its `progress` instead of the stored
-  state, and opens nothing.
+  runs in the checkout the row shows the Job's finished and total child
+  Flows (its `progress`) and the elapsed time instead of the stored state, and
+  opens nothing.
 - "Too narrow" means the list's own width, not the terminal's. Beside the
   preview the list gets half the terminal, so it drops columns as a narrow
   terminal would.
