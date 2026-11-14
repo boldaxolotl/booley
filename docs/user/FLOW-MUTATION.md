@@ -82,32 +82,28 @@ Mutant runs.
 ## Which Mutants it plants
 
 Booley parses each scope file (Verilog or SystemVerilog) and finds every spot
-where one of six operators applies. Each operator makes small changes of the
-kinds below, one change per Mutant; a spot with several possible changes
-yields one candidate Mutant per change.
+where one of six operators applies. Most operators make several kinds of
+change; the table gives each kind its own row under its operator. Each Mutant
+holds one change, so a spot with several possible changes yields one candidate
+Mutant per change.
 
 | Operator | What it changes | Example |
 |---|---|---|
 | `relational` | Swaps a comparison for its neighbour. | `a < b` -> `a <= b`, `a == b` -> `a != b` |
-| `arithmetic-logical` | Swaps an arithmetic, bitwise, logical, or shift operator. | `a + b` -> `a - b`, `a & b` -> `a \| b`, `a << 2` -> `a >> 2` |
-| `arithmetic-logical` | Removes a unary `~`, `-`, or `!`; `!x` becomes `x != 0`, one bit wide. | `~a` -> `(a)`, `!b` -> `((b) != 0)` |
-| `arithmetic-logical` | Swaps a reduction operator or drops its negation. | `&a` -> `(\|(a))`, `~^a` -> `(^(a))` |
-| `arithmetic-logical` | Drops one operand of `&&`, `\|\|`, `&`, or `\|`, so the other passes through at the same width. | `p && q` -> `1'b1 && q`, `a & b` -> `((a) \| ~(a)) & b` |
-| `arithmetic-logical` | Exchanges `>>>` and `>>` where the shifted operand is signed. | `s >>> 1` -> `s >> 1` |
-| `arithmetic-logical` | Turns a signed cast into an unsigned one. | `$signed(x)` -> `$unsigned(x)`, `signed'(x)` -> `unsigned'(x)` |
+| `arithmetic-logical` | Swaps an arithmetic, bitwise, logical, or shift operator. `/`, `%`, and `**` are never swapped, so Mutants do not divide by zero; `+` and `-` are not swapped where both give the same result at the expression's width in every instance the Target elaborates, such as a one-bit sum. | `a + b` -> `a - b`, `a & b` -> `a \| b`, `a << 2` -> `a >> 2` |
+|  | Removes a unary `~`, `-`, or `!`; `!x` becomes `x != 0`, one bit wide. A `!x` that is a whole `if` or `?:` condition is left to `condition`. | `~a` -> `(a)`, `!b` -> `((b) != 0)` |
+|  | Swaps a reduction operator or drops its negation: `&` and `\|` trade places, `^` becomes `\|`, and `~&`, `~\|`, `~^` lose their `~`. | `&a` -> `(\|(a))`, `~^a` -> `(^(a))` |
+|  | Drops one operand of `&&`, `\|\|`, `&`, or `\|` by putting the operator's identity there (`1'b1` for `&&`, all ones for `&`), so the other passes through at the same width. An operand that calls a function or changes a variable is never dropped. | `p && q` -> `1'b1 && q`, `a & b` -> `((a) \| ~(a)) & b` |
+|  | Exchanges `>>>` and `>>` where the shifted operand is signed. | `s >>> 1` -> `s >> 1` |
+|  | Turns a signed cast into an unsigned one, never the reverse. | `$signed(x)` -> `$unsigned(x)`, `signed'(x)` -> `unsigned'(x)` |
 | `condition` | Replaces the condition of an `if` or `?:` with its negation, `1'b1`, or `1'b0`. A `while`, `do`-`while`, or `for` condition is only forced to `1'b0`. | `if (valid)` -> `if (!(valid))` |
 | `constant` | Changes a numeric literal's value: lowest bit flipped, plus one, or minus one. Size and base stay. The new value must fit a sized literal's size. | `4'd5` -> `4'd4`, `'0` -> `'1` |
-| `constant` | Gives an unsized literal its plus-one value only if that fits where the value goes: the target it is assigned to, a cast it passes through, and the other side of a comparison or arithmetic operator. Booley takes the narrowest width over every instance of the module in the Target's design. A literal whose width Booley cannot tell, such as one from a macro, or a connection to a module in another file when Booley reads each file alone (see below), only gets values that fit its own bits. | `a + 1` -> `a + 2` (8-bit `a`); `flag <= 1` (1-bit `flag`) only becomes `0` |
-| `constant` | Changes a literal in the initializer of a module-level variable. | `reg [7:0] cnt = 8'd3;` -> `8'd2` |
-| `constant` | Replaces an enum member with the previous or next member of its enum. | `state == IDLE` -> `state == DONE` |
+|  | Gives an unsized literal its plus-one value only if that fits where the value goes: the target it is assigned to, a cast it passes through, and the other side of a comparison or arithmetic operator. Booley takes the narrowest width over every instance of the module in the Target's design. A literal whose width Booley cannot tell, such as one from a macro, or a connection to a module in another file when Booley reads each file alone (see below), only gets values that fit its own bits. | `a + 1` -> `a + 2` (8-bit `a`); `flag <= 1` (1-bit `flag`) only becomes `0` |
+|  | Changes a literal in the initializer of a module-level variable. | `reg [7:0] cnt = 8'd3;` -> `8'd2` |
+|  | Replaces an enum member with the previous or next member of its enum, wrapping around. The enum must be declared in a file the Target compiles (in the same file, when Booley reads each file alone); a two-member enum yields one Mutant. | `state == IDLE` -> `state == DONE` |
 | `bit-select` | Moves a literal bit index or slice bound up or down by one, within the declared range. | `data[3]` -> `data[2]`, `data[7:4]` -> `data[6:3]` |
-| `bit-select` | Swaps two neighbouring operands of a concatenation. | `{hi, lo}` -> `{lo, hi}` |
+|  | Swaps two neighbouring operands of a concatenation. Equal neighbours, replication counts, streaming concatenations, and assignment patterns are skipped. | `{hi, lo}` -> `{lo, hi}` |
 | `deletion` | Removes one assignment, net initializer, or `case` item. | `q <= d;` removed, `case` branch removed |
-
-`/`, `%`, and `**` are never swapped, so Mutants do not divide by zero. A `+`
-is not swapped for `-` (or the reverse) where both give the same result at the
-expression's width in every instance the Target elaborates, such as a one-bit
-sum.
 
 Booley reads the widths, enum members, and signedness it needs from the whole
 design, compiled the way the build compiles it: every HDL file, the testbench's
@@ -122,17 +118,6 @@ when Booley can reach it.
 
 Mutations also reach the arguments of `$signed` and `$unsigned` and the
 expressions in the port connections of module and interface instances.
-
-Table details: a `!x` that is a whole `if` or `?:` condition is left to the
-`condition` operator. Dropping an operand puts the operator's identity there
-(`1'b1` for `&&`, all ones for `&`), and an operand that calls a function or
-changes a variable is never dropped. A reduction swap trades `&` and `\|`,
-turns `^` into `\|`, and removes the `~` of `~&`, `~\|`, and `~^`. A sign cast
-is never turned the other way. An enum member wraps around its enum, which
-must be declared in a file the Target compiles (in the same file, when Booley
-reads each file alone); a two-member enum yields one Mutant. A concatenation
-swap skips equal neighbours, replication counts, streaming concatenations, and
-assignment patterns.
 
 Only design code is mutated. Booley skips:
 

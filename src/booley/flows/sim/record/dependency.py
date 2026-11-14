@@ -35,10 +35,10 @@ _FIELDS = {
 
 
 @dataclass(frozen=True, slots=True)
-class CampaignDependencyReceipt:
+class SimulationRecordDependencyReceipt:
     """One validated reverse edge from an origin Simulation Campaign to a resume."""
 
-    campaign_id: str
+    simulation_record_id: str
     manifest_sha256: str
     origin_invocation: Path
     origin_target: Path
@@ -48,10 +48,10 @@ class CampaignDependencyReceipt:
     authoritative: bool
 
 
-def register_campaign_dependency(
+def register_simulation_record_dependency(
     origin_manifest: Path,
     *,
-    campaign_id: str,
+    simulation_record_id: str,
     manifest_sha256: str,
     dependent_invocation: Path,
 ) -> Path:
@@ -61,13 +61,13 @@ def register_campaign_dependency(
     origin_invocation = manifest.parents[3].absolute()
     dependent = dependent_invocation.absolute()
     dependent_id = _positive_invocation(dependent)
-    _campaign_id(campaign_id)
+    _require_simulation_record_id(simulation_record_id)
     _manifest_digest(manifest_sha256)
     key = hashlib.sha256(str(dependent).encode()).hexdigest()
     path = manifest.parent / "dependency-receipts" / f"{key}.json"
     document: dict[str, object] = {
         "$schema": DEPENDENCY_SCHEMA,
-        "simulation_record_id": campaign_id,
+        "simulation_record_id": simulation_record_id,
         "manifest_sha256": manifest_sha256,
         "origin_invocation": str(origin_invocation),
         "origin_target": str(origin_target),
@@ -89,7 +89,9 @@ def register_campaign_dependency(
     return path
 
 
-def read_campaign_dependencies(origin_manifest: Path) -> tuple[CampaignDependencyReceipt, ...]:
+def read_simulation_record_dependencies(
+    origin_manifest: Path,
+) -> tuple[SimulationRecordDependencyReceipt, ...]:
     """Read the bounded, exact-schema receipts owned by one canonical origin."""
     manifest = _regular_manifest(origin_manifest)
     directory = manifest.parent / "dependency-receipts"
@@ -107,12 +109,12 @@ def read_campaign_dependencies(origin_manifest: Path) -> tuple[CampaignDependenc
 
 def dependency_receipt_files(origin_manifest: Path) -> set[Path]:
     """Return authenticated receipt files for invocation inventory validation."""
-    return {item.path.absolute() for item in read_campaign_dependencies(origin_manifest)}
+    return {item.path.absolute() for item in read_simulation_record_dependencies(origin_manifest)}
 
 
 def _decode_receipt(
     path: Path, manifest: Path, booley_dir: Path | None
-) -> CampaignDependencyReceipt:
+) -> SimulationRecordDependencyReceipt:
     document = read_json_object(
         path, limit=DEPENDENCY_MAX_BYTES, error=ValueError, booley_dir=booley_dir
     )
@@ -120,7 +122,7 @@ def _decode_receipt(
     if set(document) != _FIELDS or document.get("$schema") != DEPENDENCY_SCHEMA:
         raise ValueError(f"Malformed Simulation Campaign dependency receipt: {path}")
     try:
-        campaign_id = require_str_value(
+        simulation_record_id = require_str_value(
             document["simulation_record_id"], field="simulation_record_id"
         )
         manifest_sha256 = require_str_value(document["manifest_sha256"], field="manifest_sha256")
@@ -129,7 +131,7 @@ def _decode_receipt(
         )
     except BoundaryError as exc:
         raise ValueError(f"Malformed Simulation Campaign dependency receipt: {path}") from exc
-    _campaign_id(campaign_id)
+    _require_simulation_record_id(simulation_record_id)
     _manifest_digest(manifest_sha256)
     origin_invocation = _absolute_path(document["origin_invocation"], "origin invocation")
     origin_target = _absolute_path(document["origin_target"], "origin Target")
@@ -143,10 +145,10 @@ def _decode_receipt(
         manifest_document = read_json_object(
             manifest, limit=MANIFEST_MAX_BYTES, error=ValueError, booley_dir=booley_dir
         )
-        if manifest_document.get("simulation_record_id") != campaign_id:
+        if manifest_document.get("simulation_record_id") != simulation_record_id:
             raise ValueError("Simulation Campaign dependency origin identity disagrees")
-    return CampaignDependencyReceipt(
-        campaign_id,
+    return SimulationRecordDependencyReceipt(
+        simulation_record_id,
         manifest_sha256,
         origin_invocation,
         origin_target,
@@ -184,7 +186,7 @@ def _absolute_path(value: object, label: str) -> Path:
     return path
 
 
-def _campaign_id(value: object) -> str:
+def _require_simulation_record_id(value: object) -> str:
     try:
         return require_uuid4(value, field="dependency simulation_record_id")
     except BoundaryError as exc:

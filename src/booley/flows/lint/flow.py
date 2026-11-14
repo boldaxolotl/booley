@@ -22,6 +22,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, ClassVar
 
+from booley.core.boundary import as_dict
 from booley.core.build_paths import work_root_for
 from booley.flows import eda_parsers
 from booley.flows.cli_help import CliHelp
@@ -39,8 +40,11 @@ from booley.flows.metric_declarations import (
     FlowMetricValues,
     MetricDeclaration,
     MetricKind,
+    MetricsUnavailable,
     MetricsUnavailableError,
     metric_values,
+    metrics_document,
+    metrics_from_document,
 )
 from booley.flows.plan import (
     CommandPlan,
@@ -527,6 +531,23 @@ def _lint_findings(
     return detail
 
 
+def _lint_metrics_detail(results: list[LintConfigResult]) -> dict[str, dict[str, object]]:
+    """Each Target's typed values for the report, or the reason it has none."""
+    return {result.target: metrics_document(result.flow_metrics) for result in results}
+
+
+def lint_report_metric_values(
+    detail: dict[str, Any],
+) -> dict[str, FlowMetricValues | MetricsUnavailable]:
+    """Each Target's values from a ``lint`` report's ``detail.metrics``; the inverse."""
+    values: dict[str, FlowMetricValues | MetricsUnavailable] = {}
+    for target, raw in (as_dict(detail.get("metrics")) or {}).items():
+        entry = metrics_from_document(raw)
+        if entry is not None:
+            values[str(target)] = entry
+    return values
+
+
 def _lint_result_parts(
     targets: list[str],
     unique: list[LintWarning],
@@ -547,6 +568,8 @@ def _lint_result_parts(
         **_lint_findings(targets, unique, target_results or []),
         "elapsed_s": round(elapsed, 2),
     }
+    if target_results:
+        detail["metrics"] = _lint_metrics_detail(target_results)
     eda_tools = sorted({cr.eda_tool for cr in (target_results or []) if cr.eda_tool})
     if eda_tools:
         display.append(f"linter: {', '.join(eda_tools)}")
@@ -1274,7 +1297,10 @@ class LintFlow(BuiltinFlow[LintRequest]):
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="lint planning failed: " + "; ".join(messages),
-                detail={"plan": self._flow_plan.as_dict()},
+                detail={
+                    "plan": self._flow_plan.as_dict(),
+                    "metrics": _lint_metrics_detail(preparation_errors),
+                },
             )
 
         overall_start = time.monotonic()

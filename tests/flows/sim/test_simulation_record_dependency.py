@@ -41,8 +41,8 @@ def _add_observed_cycles(monkeypatch):
 def _two_role_campaigns(tmp_path, monkeypatch):
     """A candidate and a Cycle Count baseline Campaign sharing one invocation."""
     from booley.flows.sim.flow import SimulateFlow
-    from booley.flows.sim.record.model import create_simulation_campaign_plan
-    from booley.flows.sim.record.store import CampaignStore
+    from booley.flows.sim.record.model import create_simulation_record_plan
+    from booley.flows.sim.record.store import SimulationRecordStore
     from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_campaign
 
     _add_observed_cycles(monkeypatch)
@@ -63,9 +63,9 @@ def _two_role_campaigns(tmp_path, monkeypatch):
         transform=baseline_role,
         invocation_directory=invocation,
     )
-    manifest = CampaignStore(baseline.manifest_path.parent).load_manifest()
+    manifest = SimulationRecordStore(baseline.manifest_path.parent).load_manifest()
     prerequisites = SimulateFlow._campaign_prerequisite_documents(
-        create_simulation_campaign_plan(manifest), baseline.manifest_path.relative_to(invocation)
+        create_simulation_record_plan(manifest), baseline.manifest_path.relative_to(invocation)
     )
     _, candidate = _successful_pre_sim_campaign(
         candidate_root,
@@ -129,27 +129,27 @@ def test_two_role_hooks_share_one_card_and_sim_json_projection(tmp_path, monkeyp
 
 def test_dependency_receipt_round_trips_same_and_cross_root_paths(tmp_path):
     from booley.flows.sim.record.dependency import (
-        read_campaign_dependencies,
-        register_campaign_dependency,
+        read_simulation_record_dependencies,
+        register_simulation_record_dependency,
     )
 
     origin, digest = _origin(tmp_path)
     dependents = (tmp_path / "reports/sim/2", tmp_path / "resumed/sim/1")
     for dependent in dependents:
         dependent.mkdir(parents=True)
-        register_campaign_dependency(
+        register_simulation_record_dependency(
             origin,
-            campaign_id=CAMPAIGN_ID,
+            simulation_record_id=CAMPAIGN_ID,
             manifest_sha256=digest,
             dependent_invocation=dependent,
         )
 
-    receipts = read_campaign_dependencies(origin)
+    receipts = read_simulation_record_dependencies(origin)
     assert tuple(item.dependent_invocation for item in receipts) == tuple(
         sorted((path.absolute() for path in dependents), key=str)
     )
     assert {item.origin_invocation for item in receipts} == {tmp_path / "reports/sim/1"}
-    assert {item.campaign_id for item in receipts} == {CAMPAIGN_ID}
+    assert {item.simulation_record_id for item in receipts} == {CAMPAIGN_ID}
     assert all(item.authoritative for item in receipts)
     assert {item.manifest_sha256 for item in receipts} == {digest}
     for receipt in origin.parent.glob("dependency-receipts/*.json"):
@@ -172,16 +172,16 @@ def test_dependency_receipt_round_trips_same_and_cross_root_paths(tmp_path):
     ],
 )
 def test_dependency_receipt_rejects_invalid_identity(tmp_path, campaign_id, digest):
-    from booley.flows.sim.record.dependency import register_campaign_dependency
+    from booley.flows.sim.record.dependency import register_simulation_record_dependency
 
     origin, _actual = _origin(tmp_path)
     dependent = tmp_path / "reports/sim/2"
     dependent.mkdir(parents=True)
 
     with pytest.raises(ValueError, match="invalid"):
-        register_campaign_dependency(
+        register_simulation_record_dependency(
             origin,
-            campaign_id=campaign_id,
+            simulation_record_id=campaign_id,
             manifest_sha256=digest,
             dependent_invocation=dependent,
         )
@@ -190,16 +190,16 @@ def test_dependency_receipt_rejects_invalid_identity(tmp_path, campaign_id, dige
 def test_dependency_receipt_rejects_changed_oversized_and_linked_files(tmp_path):
     from booley.flows.sim.record.dependency import (
         DEPENDENCY_MAX_BYTES,
-        read_campaign_dependencies,
-        register_campaign_dependency,
+        read_simulation_record_dependencies,
+        register_simulation_record_dependency,
     )
 
     origin, digest = _origin(tmp_path)
     dependent = tmp_path / "reports/sim/2"
     dependent.mkdir(parents=True)
-    receipt = register_campaign_dependency(
+    receipt = register_simulation_record_dependency(
         origin,
-        campaign_id=CAMPAIGN_ID,
+        simulation_record_id=CAMPAIGN_ID,
         manifest_sha256=digest,
         dependent_invocation=dependent,
     )
@@ -207,40 +207,40 @@ def test_dependency_receipt_rejects_changed_oversized_and_linked_files(tmp_path)
     document["dependent_invocation_id"] = True
     receipt.write_text(json.dumps(document), encoding="utf-8")
     with pytest.raises(ValueError, match="Malformed"):
-        read_campaign_dependencies(origin)
+        read_simulation_record_dependencies(origin)
 
     receipt.write_bytes(b"x" * (DEPENDENCY_MAX_BYTES + 1))
     with pytest.raises(ValueError, match="size limit"):
-        read_campaign_dependencies(origin)
+        read_simulation_record_dependencies(origin)
 
     receipt.unlink()
     target = tmp_path / "receipt.json"
     target.write_text("{}", encoding="utf-8")
     receipt.symlink_to(target)
     with pytest.raises(ValueError, match="not a regular file"):
-        read_campaign_dependencies(origin)
+        read_simulation_record_dependencies(origin)
 
     if os.name != "nt":
         # A FIFO is refused before it is opened, so the read cannot block.
         receipt.unlink()
         os.mkfifo(receipt)
         with pytest.raises(ValueError, match="not a regular file"):
-            read_campaign_dependencies(origin)
+            read_simulation_record_dependencies(origin)
 
 
 def test_detached_dependency_receipt_is_inventory_but_not_deletion_authority(tmp_path):
     from booley.flows.sim.record.dependency import (
         dependency_receipt_files,
-        read_campaign_dependencies,
-        register_campaign_dependency,
+        read_simulation_record_dependencies,
+        register_simulation_record_dependency,
     )
 
     origin, digest = _origin(tmp_path)
     dependent = tmp_path / "reports/sim/2"
     dependent.mkdir(parents=True)
-    register_campaign_dependency(
+    register_simulation_record_dependency(
         origin,
-        campaign_id=CAMPAIGN_ID,
+        simulation_record_id=CAMPAIGN_ID,
         manifest_sha256=digest,
         dependent_invocation=dependent,
     )
@@ -248,21 +248,21 @@ def test_detached_dependency_receipt_is_inventory_but_not_deletion_authority(tmp
     shutil.copytree(origin.parent, copied)
     copied_manifest = copied / "manifest.json"
 
-    receipts = read_campaign_dependencies(copied_manifest)
+    receipts = read_simulation_record_dependencies(copied_manifest)
     assert len(receipts) == 1
     assert receipts[0].authoritative is False
     assert dependency_receipt_files(copied_manifest) == {receipts[0].path.absolute()}
 
 
 def test_dependency_receipt_refuses_conflicting_existing_record(tmp_path):
-    from booley.flows.sim.record.dependency import register_campaign_dependency
+    from booley.flows.sim.record.dependency import register_simulation_record_dependency
 
     origin, digest = _origin(tmp_path)
     dependent = tmp_path / "reports/sim/2"
     dependent.mkdir(parents=True)
-    receipt = register_campaign_dependency(
+    receipt = register_simulation_record_dependency(
         origin,
-        campaign_id=CAMPAIGN_ID,
+        simulation_record_id=CAMPAIGN_ID,
         manifest_sha256=digest,
         dependent_invocation=dependent,
     )
@@ -271,9 +271,9 @@ def test_dependency_receipt_refuses_conflicting_existing_record(tmp_path):
     receipt.write_text(json.dumps(document), encoding="utf-8")
 
     with pytest.raises(ValueError, match="disagrees"):
-        register_campaign_dependency(
+        register_simulation_record_dependency(
             origin,
-            campaign_id=CAMPAIGN_ID,
+            simulation_record_id=CAMPAIGN_ID,
             manifest_sha256=digest,
             dependent_invocation=dependent,
         )
@@ -282,13 +282,13 @@ def test_dependency_receipt_refuses_conflicting_existing_record(tmp_path):
 def test_dependency_registry_refuses_non_directory_and_excessive_entries(tmp_path, monkeypatch):
     from pathlib import Path
 
-    from booley.flows.sim.record.dependency import read_campaign_dependencies
+    from booley.flows.sim.record.dependency import read_simulation_record_dependencies
 
     origin, _digest = _origin(tmp_path)
     registry = origin.parent / "dependency-receipts"
     registry.write_text("not a directory", encoding="utf-8")
     with pytest.raises(ValueError, match="unsafe"):
-        read_campaign_dependencies(origin)
+        read_simulation_record_dependencies(origin)
 
     registry.unlink()
     registry.mkdir()
@@ -301,7 +301,7 @@ def test_dependency_registry_refuses_non_directory_and_excessive_entries(tmp_pat
 
     monkeypatch.setattr(Path, "iterdir", excessive)
     with pytest.raises(ValueError, match="too large"):
-        read_campaign_dependencies(origin)
+        read_simulation_record_dependencies(origin)
 
 
 @pytest.mark.parametrize(
@@ -317,21 +317,21 @@ def test_dependency_registry_refuses_non_directory_and_excessive_entries(tmp_pat
 )
 def test_dependency_receipt_rejects_malformed_fields(tmp_path, field, value, message):
     from booley.flows.sim.record.dependency import (
-        read_campaign_dependencies,
-        register_campaign_dependency,
+        read_simulation_record_dependencies,
+        register_simulation_record_dependency,
     )
 
     origin, digest = _origin(tmp_path)
     dependent = tmp_path / "reports/sim/2"
     dependent.mkdir(parents=True)
-    receipt = register_campaign_dependency(
+    receipt = register_simulation_record_dependency(
         origin,
-        campaign_id=CAMPAIGN_ID,
+        simulation_record_id=CAMPAIGN_ID,
         manifest_sha256=digest,
         dependent_invocation=dependent,
     )
     document = json.loads(receipt.read_text())
-    assert len(read_campaign_dependencies(origin)) == 1
+    assert len(read_simulation_record_dependencies(origin)) == 1
     if field == "missing":
         del document["simulation_record_id"]
     else:
@@ -339,7 +339,7 @@ def test_dependency_receipt_rejects_malformed_fields(tmp_path, field, value, mes
     receipt.write_text("{" if field == "truncated" else json.dumps(document), encoding="utf-8")
 
     with pytest.raises(ValueError, match=message):
-        read_campaign_dependencies(origin)
+        read_simulation_record_dependencies(origin)
 
 
 @pytest.mark.parametrize(
@@ -348,35 +348,35 @@ def test_dependency_receipt_rejects_malformed_fields(tmp_path, field, value, mes
 )
 def test_dependency_receipt_reauthenticates_origin_manifest(tmp_path, manifest_document):
     from booley.flows.sim.record.dependency import (
-        read_campaign_dependencies,
-        register_campaign_dependency,
+        read_simulation_record_dependencies,
+        register_simulation_record_dependency,
     )
 
     origin, digest = _origin(tmp_path)
     dependent = tmp_path / "reports/sim/2"
     dependent.mkdir(parents=True)
-    register_campaign_dependency(
+    register_simulation_record_dependency(
         origin,
-        campaign_id=CAMPAIGN_ID,
+        simulation_record_id=CAMPAIGN_ID,
         manifest_sha256=digest,
         dependent_invocation=dependent,
     )
     origin.write_text(json.dumps(manifest_document), encoding="utf-8")
 
     with pytest.raises(ValueError, match=r"JSON object|identity disagrees"):
-        read_campaign_dependencies(origin)
+        read_simulation_record_dependencies(origin)
 
 
 def test_dependency_registration_requires_exact_paths(tmp_path):
-    from booley.flows.sim.record.dependency import register_campaign_dependency
+    from booley.flows.sim.record.dependency import register_simulation_record_dependency
 
     origin, digest = _origin(tmp_path)
     misplaced = tmp_path / "manifest.json"
     misplaced.write_bytes(origin.read_bytes())
     with pytest.raises(ValueError, match="exact"):
-        register_campaign_dependency(
+        register_simulation_record_dependency(
             misplaced,
-            campaign_id=CAMPAIGN_ID,
+            simulation_record_id=CAMPAIGN_ID,
             manifest_sha256=digest,
             dependent_invocation=tmp_path / "reports/sim/2",
         )
@@ -384,9 +384,9 @@ def test_dependency_registration_requires_exact_paths(tmp_path):
     dependent = tmp_path / "reports/sim/zero"
     dependent.mkdir(parents=True)
     with pytest.raises(ValueError, match="positive numeric"):
-        register_campaign_dependency(
+        register_simulation_record_dependency(
             origin,
-            campaign_id=CAMPAIGN_ID,
+            simulation_record_id=CAMPAIGN_ID,
             manifest_sha256=digest,
             dependent_invocation=dependent,
         )
@@ -431,11 +431,11 @@ def _run_campaign(tmp_path, monkeypatch, manifest, invocation):
     from types import SimpleNamespace
 
     from booley.flows.sim.record.coordinator import (
-        CampaignPolicy,
-        NewCampaignRunRequest,
-        SimulationCampaign,
+        NewSimulationRecordRunRequest,
+        SimulationRecord,
+        SimulationRecordPolicy,
     )
-    from booley.flows.sim.record.model import create_simulation_campaign_plan
+    from booley.flows.sim.record.model import create_simulation_record_plan
     from tests.flows.sim.simulation_record_test_support import _admission, _executor, _handle
 
     project = tmp_path / "project"
@@ -451,16 +451,16 @@ def _run_campaign(tmp_path, monkeypatch, manifest, invocation):
         "booley.flows.sim.record.serial_execution.simulation_target_environment",
         lambda _handle: {},
     )
-    request = NewCampaignRunRequest(
-        create_simulation_campaign_plan(manifest),
+    request = NewSimulationRecordRunRequest(
+        create_simulation_record_plan(manifest),
         project,
         invocation.parent,
-        CampaignPolicy(),
+        SimulationRecordPolicy(),
         invocation,
         _admission(),
     )
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
-    return SimulationCampaign(_executor(build, counters)).run(request), counters
+    return SimulationRecord(_executor(build, counters)).run(request), counters
 
 
 def test_relative_cycle_goals_on_two_tests_share_one_baseline_campaign(tmp_path, monkeypatch):
@@ -470,8 +470,8 @@ def test_relative_cycle_goals_on_two_tests_share_one_baseline_campaign(tmp_path,
     as a duplicate ("prerequisite identities must be unique") or run as a cycle.
     """
     from booley.flows.sim.flow import SimulateFlow
-    from booley.flows.sim.record.model import create_simulation_campaign_plan
-    from booley.flows.sim.record.store import CampaignStore
+    from booley.flows.sim.record.model import create_simulation_record_plan
+    from booley.flows.sim.record.store import SimulationRecordStore
 
     _add_observed_cycles(monkeypatch)
     invocation = tmp_path / "reports/1"
@@ -479,9 +479,9 @@ def test_relative_cycle_goals_on_two_tests_share_one_baseline_campaign(tmp_path,
     baseline, _ = _run_campaign(
         tmp_path, monkeypatch, _cycle_baseline_manifest(("alpha", "beta")), invocation
     )
-    manifest = CampaignStore(baseline.manifest_path.parent).load_manifest()
+    manifest = SimulationRecordStore(baseline.manifest_path.parent).load_manifest()
     prerequisites = SimulateFlow._campaign_prerequisite_documents(
-        create_simulation_campaign_plan(manifest), baseline.manifest_path.relative_to(invocation)
+        create_simulation_record_plan(manifest), baseline.manifest_path.relative_to(invocation)
     )
     assert len(prerequisites) == 2
     assert len({item["simulation_record_id"] for item in prerequisites}) == 1
@@ -499,8 +499,8 @@ def test_relative_cycle_goals_on_two_tests_share_one_baseline_campaign(tmp_path,
 def _shared_baseline_candidate(tmp_path, monkeypatch):
     """Run a two-Test baseline and a candidate linking both of its work items."""
     from booley.flows.sim.flow import SimulateFlow
-    from booley.flows.sim.record.model import create_simulation_campaign_plan
-    from booley.flows.sim.record.store import CampaignStore
+    from booley.flows.sim.record.model import create_simulation_record_plan
+    from booley.flows.sim.record.store import SimulationRecordStore
 
     _add_observed_cycles(monkeypatch)
     invocation = tmp_path / "reports/1"
@@ -508,9 +508,9 @@ def _shared_baseline_candidate(tmp_path, monkeypatch):
     baseline, _ = _run_campaign(
         tmp_path, monkeypatch, _cycle_baseline_manifest(("alpha", "beta")), invocation
     )
-    manifest = CampaignStore(baseline.manifest_path.parent).load_manifest()
+    manifest = SimulationRecordStore(baseline.manifest_path.parent).load_manifest()
     prerequisites = SimulateFlow._campaign_prerequisite_documents(
-        create_simulation_campaign_plan(manifest), baseline.manifest_path.relative_to(invocation)
+        create_simulation_record_plan(manifest), baseline.manifest_path.relative_to(invocation)
     )
     candidate, _ = _run_campaign(
         tmp_path, monkeypatch, _candidate_manifest(("alpha", "beta"), prerequisites), invocation
@@ -541,7 +541,7 @@ def test_resume_authenticates_a_shared_baseline_campaign_once(tmp_path, monkeypa
 
 def test_a_campaign_that_lists_itself_as_prerequisite_is_a_cycle(tmp_path, monkeypatch):
     """Sharing a prerequisite campaign is allowed; depending on oneself is not."""
-    from booley.flows.sim.record.codec import SimulationCampaignIntegrityError
+    from booley.flows.sim.record.codec import SimulationRecordIntegrityError
     from tests.flows.sim.simulation_record_test_support import _manifest_for
 
     own = _manifest_for(("alpha",)).document
@@ -563,7 +563,7 @@ def test_a_campaign_that_lists_itself_as_prerequisite_is_a_cycle(tmp_path, monke
     }
     invocation = tmp_path / "reports/1"
     invocation.mkdir(parents=True)
-    with pytest.raises(SimulationCampaignIntegrityError, match="cyclic"):
+    with pytest.raises(SimulationRecordIntegrityError, match="cyclic"):
         _run_campaign(tmp_path, monkeypatch, _candidate_manifest(("alpha",), [entry]), invocation)
 
 
@@ -599,7 +599,7 @@ def _write_candidate_with_prerequisite(tmp_path, manifest_path):
 def test_an_escaping_prerequisite_manifest_path_is_refused_before_use(tmp_path, walk):
     """Decode no longer checks prerequisite paths, so each walk checks the one it opens."""
     from booley.flows.sim.record import collect_pre_sim_firings
-    from booley.flows.sim.record.codec import SimulationCampaignIntegrityError
+    from booley.flows.sim.record.codec import SimulationRecordIntegrityError
     from booley.flows.sim.record.resume import validate_resume_manifest
 
     path = _write_candidate_with_prerequisite(
@@ -612,27 +612,27 @@ def test_an_escaping_prerequisite_manifest_path_is_refused_before_use(tmp_path, 
     )
 
     with pytest.raises(
-        SimulationCampaignIntegrityError, match=r"is not targets/<Target>/record/manifest\.json"
+        SimulationRecordIntegrityError, match=r"is not targets/<Target>/record/manifest\.json"
     ):
         walk_function(path)
 
 
 def test_an_escaping_work_item_id_is_refused_before_use(tmp_path):
     from booley.flows.sim.record.codec import (
-        SimulationCampaignIntegrityError,
+        SimulationRecordIntegrityError,
         canonical_json_bytes,
     )
-    from booley.flows.sim.record.store import CampaignStore
+    from booley.flows.sim.record.store import SimulationRecordStore
     from tests.flows.sim.test_simulation_record_manifest_codec import _manifest
 
     document = _manifest()
     escaping = "item:0000:x/../../e"
     document["work_items"][0]["work_item_id"] = escaping
-    store = CampaignStore(tmp_path / "reports/1/targets/sim/record")
+    store = SimulationRecordStore(tmp_path / "reports/1/targets/sim/record")
     store.root.mkdir(parents=True)
     store.manifest_path.write_bytes(canonical_json_bytes(document))
 
-    with pytest.raises(SimulationCampaignIntegrityError, match="not one contained path component"):
+    with pytest.raises(SimulationRecordIntegrityError, match="not one contained path component"):
         store.work_item_directory(escaping)
 
 

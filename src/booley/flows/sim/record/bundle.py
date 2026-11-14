@@ -16,7 +16,7 @@ from booley.flows.artifact_durability import (
 from booley.flows.sim.record_files import document_digest, stream_digest
 
 from .codec import (
-    SimulationCampaignIntegrityError,
+    SimulationRecordIntegrityError,
     encode_executable_snapshot,
     validate_relative_path,
 )
@@ -27,7 +27,7 @@ from .model import ExecutableSnapshot, SimulatorBundle
 class SnapshotAttemptIdentity:
     """Immutable campaign and attempt identity carried into one snapshot."""
 
-    campaign_id: str
+    simulation_record_id: str
     manifest_sha256: str
     workload_sha256: str
     work_item_id: str
@@ -47,11 +47,11 @@ def require_bundle_inventory(bundle: SimulatorBundle) -> None:
     artifacts = cast(tuple[Mapping[str, object], ...], bundle.document["artifacts"])
     paths = [artifact["path"] for artifact in artifacts]
     if len(set(paths)) != len(paths):
-        raise SimulationCampaignIntegrityError("bundle artifact paths must be unique")
+        raise SimulationRecordIntegrityError("bundle artifact paths must be unique")
     if any(artifact["kind"] not in _BUNDLE_ARTIFACT_KINDS for artifact in artifacts):
-        raise SimulationCampaignIntegrityError("bundle artifact kind is invalid")
+        raise SimulationRecordIntegrityError("bundle artifact kind is invalid")
     if not any(artifact["kind"] == "simulator_executable" for artifact in artifacts):
-        raise SimulationCampaignIntegrityError("ready bundle requires a simulator executable")
+        raise SimulationRecordIntegrityError("ready bundle requires a simulator executable")
 
 
 def authenticate_bundle_artifacts(bundle: SimulatorBundle, root: Path) -> None:
@@ -62,7 +62,7 @@ def authenticate_bundle_artifacts(bundle: SimulatorBundle, root: Path) -> None:
         path = _regular_child(root, cast(str, artifact["path"]))
         size, digest = stream_digest(path)
         if size != artifact["bytes"] or digest != artifact["sha256"]:
-            raise SimulationCampaignIntegrityError(f"bundle artifact changed: {path}")
+            raise SimulationRecordIntegrityError(f"bundle artifact changed: {path}")
 
 
 def create_executable_snapshot(
@@ -77,7 +77,7 @@ def create_executable_snapshot(
     """Copy (never hardlink) the executable surface into an attempt directory."""
     authenticate_bundle_artifacts(bundle, bundle_root)
     if snapshot_root.exists():
-        raise SimulationCampaignIntegrityError("executable snapshot already exists")
+        raise SimulationRecordIntegrityError("executable snapshot already exists")
     durable_directory(snapshot_root)
     snapshot_root.chmod(0o700)
     copied = _copy_snapshot_artifacts(bundle, bundle_root, snapshot_root)
@@ -107,10 +107,10 @@ def _copy_snapshot_artifacts(
             source.stat(follow_symlinks=False).st_ino
             == destination.stat(follow_symlinks=False).st_ino
         ):
-            raise SimulationCampaignIntegrityError("snapshot artifact must not be a hardlink")
+            raise SimulationRecordIntegrityError("snapshot artifact must not be a hardlink")
         size, digest = stream_digest(destination)
         if size != artifact["bytes"] or digest != artifact["sha256"]:
-            raise SimulationCampaignIntegrityError("snapshot copy authentication failed")
+            raise SimulationRecordIntegrityError("snapshot copy authentication failed")
         copied.append(dict(artifact))
     return copied
 
@@ -124,7 +124,7 @@ def _snapshot_document(
 ) -> dict[str, object]:
     return {
         "$schema": "booley.executable-snapshot/v2",
-        "simulation_record_id": identity.campaign_id,
+        "simulation_record_id": identity.simulation_record_id,
         "manifest_sha256": identity.manifest_sha256,
         "workload_sha256": identity.workload_sha256,
         "work_item_id": identity.work_item_id,
@@ -144,7 +144,7 @@ def authenticate_executable_snapshot(snapshot: ExecutableSnapshot, snapshot_root
         path = _regular_child(snapshot_root, cast(str, artifact["path"]))
         size, digest = stream_digest(path)
         if size != artifact["bytes"] or digest != artifact["sha256"]:
-            raise SimulationCampaignIntegrityError(f"executable snapshot changed: {path}")
+            raise SimulationRecordIntegrityError(f"executable snapshot changed: {path}")
     return cast(str, snapshot.document["inventory_sha256"])
 
 
@@ -153,18 +153,18 @@ def _regular_child(root: Path, relative: str) -> Path:
     try:
         path.absolute().relative_to(root.absolute())
     except ValueError as exc:
-        raise SimulationCampaignIntegrityError("bundle artifact escapes its root") from exc
+        raise SimulationRecordIntegrityError("bundle artifact escapes its root") from exc
     try:
         info = path.lstat()
     except OSError as exc:
-        raise SimulationCampaignIntegrityError(f"bundle artifact is unavailable: {path}") from exc
+        raise SimulationRecordIntegrityError(f"bundle artifact is unavailable: {path}") from exc
     if not stat.S_ISREG(info.st_mode):
-        raise SimulationCampaignIntegrityError(f"bundle artifact is not regular: {path}")
+        raise SimulationRecordIntegrityError(f"bundle artifact is not regular: {path}")
     current = root
     for part in Path(relative).parts[:-1]:
         current /= part
         if current.is_symlink():
-            raise SimulationCampaignIntegrityError(f"bundle path contains a link: {current}")
+            raise SimulationRecordIntegrityError(f"bundle path contains a link: {current}")
     return path
 
 

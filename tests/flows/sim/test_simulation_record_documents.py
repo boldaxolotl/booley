@@ -24,7 +24,7 @@ import pytest
 
 from booley.flows.sim.coverage_analysis_input import CoverageAnalysisError, read_coverage_campaign
 from booley.flows.sim.execution.contract import SimulationTestOutcome
-from booley.flows.sim.record import inspect_retained_campaign
+from booley.flows.sim.record import inspect_retained_simulation_record
 from booley.flows.sim.record.codec import (
     canonical_json_bytes,
     raise_if_retired,
@@ -153,7 +153,7 @@ def test_a_0_4_0_summary_is_refused_naming_its_invocation(tmp_path: Path) -> Non
     before = _tree(invocation)
 
     with pytest.raises(ValueError) as inspected:
-        inspect_retained_campaign(store.manifest_path)
+        inspect_retained_simulation_record(store.manifest_path)
     _assert_unsupported_type(inspected.value)
     _assert_refused(str(inspected.value), _OLD_SUMMARY, invocation)
 

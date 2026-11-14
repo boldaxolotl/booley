@@ -15,8 +15,8 @@ from booley.flows.sim.flow import (
     PlannedTarget,
     SimulateFlow,
 )
-from booley.flows.sim.record.codec import SimulationCampaignIntegrityError
-from booley.flows.sim.record.flow_planning import plan_ordinary_hdl_campaign
+from booley.flows.sim.record.codec import SimulationRecordIntegrityError
+from booley.flows.sim.record.flow_planning import plan_ordinary_hdl_simulation_record
 from booley.flows.sim.test_run_invocation import decide_baseline_runs
 from booley.flows.test_runs import build_test_run
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
@@ -134,7 +134,7 @@ def _planning_fixture(tmp_path: Path):
 
 
 def _plan(handle, inspection, preview, required, *, catalog_backed=None):
-    return plan_ordinary_hdl_campaign(
+    return plan_ordinary_hdl_simulation_record(
         handle=handle,
         inspection=inspection,
         preview=preview,
@@ -304,21 +304,21 @@ def test_every_planned_manifest_is_v4_whatever_it_discloses(
 
 
 def test_empty_target_toplevel_is_refused_at_planning(tmp_path):
-    from booley.flows.sim.record.codec import SimulationCampaignIntegrityError
+    from booley.flows.sim.record.codec import SimulationRecordIntegrityError
 
     _project, handle, inspection, preview = _planning_fixture(tmp_path)
-    with pytest.raises(SimulationCampaignIntegrityError, match="empty toplevel; set toplevel"):
+    with pytest.raises(SimulationRecordIntegrityError, match="empty toplevel; set toplevel"):
         _plan(handle, dataclasses.replace(inspection, toplevel=""), preview, ("reset", "count"))
 
 
 def test_copyto_destination_outside_the_run_directory_is_refused_at_planning(tmp_path):
-    from booley.flows.sim.record.codec import SimulationCampaignIntegrityError
+    from booley.flows.sim.record.codec import SimulationRecordIntegrityError
 
     _project, handle, inspection, preview = _planning_fixture(tmp_path)
     (tmp_path / "fw.hex").write_text("00\n", encoding="utf-8")
     staged = TargetInput("fw.hex", "acme:lib:dut:1", "user", (), False, {"copyto": "C:fw.hex"})
     planned = dataclasses.replace(inspection, inputs=(*inspection.inputs, staged))
-    with pytest.raises(SimulationCampaignIntegrityError, match=r"copyto destination 'C:fw\.hex'"):
+    with pytest.raises(SimulationRecordIntegrityError, match=r"copyto destination 'C:fw\.hex'"):
         _plan(handle, planned, preview, ("reset", "count"))
 
 
@@ -364,7 +364,7 @@ def test_target_input_under_symlinked_booley_dir_is_project_relative(
     planned = dataclasses.replace(inspection, inputs=inputs)
 
     if linked == "below":
-        with pytest.raises(SimulationCampaignIntegrityError, match="escapes Project Root"):
+        with pytest.raises(SimulationRecordIntegrityError, match="escapes Project Root"):
             _plan(handle, planned, preview, ("reset", "count"))
         return
     document = _plan(handle, planned, preview, ("reset", "count"))

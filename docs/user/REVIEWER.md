@@ -102,7 +102,7 @@ booley specialist reviewer --verify
 | `--fail-on critical\|major\|minor` | Exit 1 when an open finding is at or above that severity. Without it, a completed review exits 0 even with open findings. |
 | `--verify` | Recheck the latest review's open findings. Accepts only `--waive` and `--fail-on`. |
 | `--waive <finding-id> "<reason>"` | With `--verify`: propose a waiver. Repeatable. |
-| `--dry-run` | Preview the call without running the review. |
+| `--dry-run` | Preview the call without running the review: lists the review guides it would load. |
 
 The options every Specialist shares are in [Specialists](SPECIALISTS.md#running-a-specialist).
 [CLI-REFERENCE.md](CLI-REFERENCE.md#reviewer) has the full reference,

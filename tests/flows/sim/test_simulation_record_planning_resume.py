@@ -17,23 +17,23 @@ from booley.flows.endpoint_admission import AdmissionGate
 from booley.flows.sim.config import parse_run_cwd_template, resolve_pre_sim_build_access
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record.coordinator import (
-    CampaignPolicy,
-    NewCampaignPreviewRequest,
-    ResumeCampaignPreviewRequest,
-    ResumeCampaignRunRequest,
-    SimulationCampaign,
-    SimulationCampaignCancellationError,
+    NewSimulationRecordPreviewRequest,
+    ResumeSimulationRecordPreviewRequest,
+    ResumeSimulationRecordRunRequest,
+    SimulationRecord,
+    SimulationRecordCancellationError,
+    SimulationRecordPolicy,
     WorkExecutionRequest,
 )
 from booley.flows.sim.record.model import (
-    create_simulation_campaign_plan,
+    create_simulation_record_plan,
 )
 from booley.flows.sim.record.planning import manifest_digest
 from booley.flows.sim.record.resume import (
     ValidatedManifestNode,
     ValidatedResumeManifest,
 )
-from booley.flows.sim.record.store import CampaignStore
+from booley.flows.sim.record.store import SimulationRecordStore
 from booley.runtime.endpoint_execution import EXIT_CANCELLED, EXIT_ERROR
 from booley.runtime.execution_records import (
     ExecutionId,
@@ -102,7 +102,7 @@ def _resume_campaign_twice(case, runtime_execution_id):
         case.plan,
         case.project,
         case.invocation.parent,
-        CampaignPolicy(),
+        SimulationRecordPolicy(),
         case.invocation,
     )
     summaries = []
@@ -111,7 +111,9 @@ def _resume_campaign_twice(case, runtime_execution_id):
         with AdmissionGate(
             _CampaignAdmissionEndpoint(case.slots, runtime_execution_id)  # type: ignore[arg-type]
         ).enter() as admission:
-            outcomes.append(case.campaign.run(ResumeCampaignRunRequest(*request_args, admission)))
+            outcomes.append(
+                case.campaign.run(ResumeSimulationRecordRunRequest(*request_args, admission))
+            )
         summaries.append(case.store.summary_path.read_bytes())
     return summaries, outcomes
 
@@ -129,7 +131,7 @@ def _peak_rss() -> int:
 
 
 def _seed_authenticated_states(
-    store: CampaignStore, project: Path, executor: _NoEdaExecutor
+    store: SimulationRecordStore, project: Path, executor: _NoEdaExecutor
 ) -> None:
     manifest = store.load_manifest()
     items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
@@ -148,7 +150,7 @@ def _seed_authenticated_states(
             1,
             directory,
             1,
-            CampaignPolicy(),
+            SimulationRecordPolicy(),
             _admission(),
             project,
         )
@@ -163,19 +165,19 @@ def _seed_authenticated_states(
             (item_root / "result.json").write_bytes(result.canonical_bytes())
 
 
-def _resume_request(store: CampaignStore, project: Path):
+def _resume_request(store: SimulationRecordStore, project: Path):
     manifest = store.load_manifest()
     validated = ValidatedResumeManifest(
         ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest)),
         (),
         (),
     )
-    return ResumeCampaignPreviewRequest(
+    return ResumeSimulationRecordPreviewRequest(
         validated=validated,
-        current_plan=create_simulation_campaign_plan(manifest),
+        current_plan=create_simulation_record_plan(manifest),
         project_root=project,
         report_root=None,
-        policy=CampaignPolicy(),
+        policy=SimulationRecordPolicy(),
     )
 
 
@@ -191,7 +193,7 @@ def test_maximum_campaign_previews_authenticated_mixed_resume_without_eda(
     project.mkdir()
     (project / ".booley").mkdir()
     invocation = tmp_path / "reports" / "sim" / "1"
-    store = CampaignStore(invocation / "targets" / "sim" / "record")
+    store = SimulationRecordStore(invocation / "targets" / "sim" / "record")
     store.publish_manifest(manifest)
     executor = _NoEdaExecutor()
     _seed_authenticated_states(store, project, executor)
@@ -202,12 +204,12 @@ def test_maximum_campaign_previews_authenticated_mixed_resume_without_eda(
         998,
     )
     request = _resume_request(store, project)
-    status = SimulationCampaign().inspect_resume(request.validated)
+    status = SimulationRecord().inspect_resume(request.validated)
 
     before_rss = _peak_rss()
     started = time.monotonic()
     first = store.regenerate_summary()
-    preview = SimulationCampaign().preview(request)
+    preview = SimulationRecord().preview(request)
     elapsed = time.monotonic() - started
     peak_delta = _peak_rss() - before_rss
     first_bytes = store.summary_path.read_bytes()
@@ -236,18 +238,20 @@ def test_maximum_campaign_previews_authenticated_mixed_resume_without_eda(
 
 def test_campaign_previews_expose_the_complete_public_contract(tmp_path: Path) -> None:
     manifest = _manifest_for(("smoke",))
-    plan = create_simulation_campaign_plan(manifest)
-    preview = SimulationCampaign().preview(
-        NewCampaignPreviewRequest(plan, tmp_path, None, CampaignPolicy())
+    plan = create_simulation_record_plan(manifest)
+    preview = SimulationRecord().preview(
+        NewSimulationRecordPreviewRequest(plan, tmp_path, None, SimulationRecordPolicy())
     )
     assert preview.normalized_selection == (
         manifest.document["work_items"][0]["selection"],  # type: ignore[index]
     )
     assert preview.workload == manifest.document["workload"]
 
-    store = CampaignStore(tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "record")
+    store = SimulationRecordStore(
+        tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "record"
+    )
     store.publish_manifest(manifest)
-    resumed = SimulationCampaign().preview(_resume_request(store, tmp_path))
+    resumed = SimulationRecord().preview(_resume_request(store, tmp_path))
     assert resumed.manifest == manifest.document
 
 
@@ -261,10 +265,12 @@ def test_resume_endpoint_refreshes_recovery_after_failure(
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
-    store = CampaignStore(tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "record")
+    store = SimulationRecordStore(
+        tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "record"
+    )
     store.publish_manifest(_manifest_for(("smoke",)))
     validated = _resume_request(store, project).validated
-    observed = SimulationCampaign().inspect_resume(validated)
+    observed = SimulationRecord().inspect_resume(validated)
     work_item_id = observed.pending[0]
     invocation = tmp_path / "reports" / "sim" / "2"
     invocation.mkdir(parents=True)
@@ -275,7 +281,7 @@ def test_resume_endpoint_refreshes_recovery_after_failure(
     def fail_after_attempt(*_args: object) -> None:
         store.allocate_attempt_directory(work_item_id, str(uuid.uuid4()))
         if cancelled:
-            raise SimulationCampaignCancellationError("cancelled")
+            raise SimulationRecordCancellationError("cancelled")
         raise OSError("failed")
 
     monkeypatch.setattr(flow, "_write_campaign_progress", lambda *_args, **_kwargs: None)
@@ -296,21 +302,21 @@ def test_resume_execution_uses_a_fresh_scan_after_preview(tmp_path: Path) -> Non
     project.mkdir()
     (project / ".booley").mkdir()
     first_invocation = tmp_path / "reports" / "sim" / "1"
-    store = CampaignStore(first_invocation / "targets" / "sim" / "record")
+    store = SimulationRecordStore(first_invocation / "targets" / "sim" / "record")
     store.publish_manifest(_manifest_for(("smoke",)))
     preview_request = _resume_request(store, project)
 
-    preview = SimulationCampaign().preview(preview_request)
+    preview = SimulationRecord().preview(preview_request)
     assert preview.recovery.pending
 
     first_executor = _NoEdaExecutor()
-    first_outcome = SimulationCampaign(first_executor).run(
-        ResumeCampaignRunRequest(
+    first_outcome = SimulationRecord(first_executor).run(
+        ResumeSimulationRecordRunRequest(
             preview_request.validated,
             preview_request.current_plan,
             project,
             None,
-            CampaignPolicy(),
+            SimulationRecordPolicy(),
             tmp_path / "reports" / "sim" / "2",
             _admission(),
         )
@@ -320,13 +326,15 @@ def test_resume_execution_uses_a_fresh_scan_after_preview(tmp_path: Path) -> Non
 
     manifest_bytes = store.manifest_path.read_bytes()
     second_executor = _NoEdaExecutor()
-    second_outcome = SimulationCampaign(second_executor).run(
-        ResumeCampaignRunRequest(
+    second_outcome = SimulationRecord(second_executor).run(
+        ResumeSimulationRecordRunRequest(
             preview_request.validated,
             preview_request.current_plan,
             project,
             None,
-            CampaignPolicy(timeout_seconds=42, build_timeout_seconds=17, result_verbosity="full"),
+            SimulationRecordPolicy(
+                timeout_seconds=42, build_timeout_seconds=17, result_verbosity="full"
+            ),
             tmp_path / "reports" / "sim" / "3",
             _admission(),
         )
@@ -341,11 +349,13 @@ def test_resume_execution_uses_a_fresh_scan_after_preview(tmp_path: Path) -> Non
 def test_resume_inspection_scans_the_validated_manifest_without_rereading(
     tmp_path: Path,
 ) -> None:
-    store = CampaignStore(tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "record")
+    store = SimulationRecordStore(
+        tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "record"
+    )
     store.publish_manifest(_manifest_for(("smoke",)))
     validated = _resume_request(store, tmp_path).validated
     store.manifest_path.unlink()
 
-    status = SimulationCampaign().inspect_resume(validated)
+    status = SimulationRecord().inspect_resume(validated)
 
     assert status.manifest_sha256 == validated.sha256

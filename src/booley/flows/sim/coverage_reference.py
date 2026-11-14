@@ -32,7 +32,7 @@ from booley.runtime.booley_dir import crossed_booley_dir_entry
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 if TYPE_CHECKING:
-    from booley.flows.sim.record import CampaignWorkItemEvidence
+    from booley.flows.sim.record import SimulationRecordWorkItemEvidence
 
 REFERENCE_SCHEMA = "booley.coverage-record-reference/v1"
 MAX_REFERENCE_BYTES = 1024 * 1024
@@ -125,11 +125,11 @@ def resolve_coverage_campaign_reference(path: Path) -> ResolvedCoverageCampaign:
 def _resolve_located(absolute: Path, raw: bytes) -> ResolvedCoverageCampaign:
     """Resolve the reference bytes; an older-Booley refusal names the directory to delete."""
     # Imported here: ``booley.flows.sim.record`` imports this module through its coordinator.
-    from booley.flows.sim.record.codec import UnsupportedSimulationCampaignFormatError
+    from booley.flows.sim.record.codec import UnsupportedSimulationRecordFormatError
 
     try:
         return _resolve_coverage_campaign_reference_bytes(absolute, raw)
-    except UnsupportedSimulationCampaignFormatError as exc:
+    except UnsupportedSimulationRecordFormatError as exc:
         # ``<invocation>/targets/<target>/coverage.json``: name the directory to delete.
         if absolute.parent.parent.name == "targets":
             raise exc.located(absolute.parents[2]) from None
@@ -288,11 +288,11 @@ def build_coverage_campaign_reference(
 
 def authenticate_coverage_campaign_owner(
     resolved: ResolvedCoverageCampaign,
-) -> CampaignWorkItemEvidence:
+) -> SimulationRecordWorkItemEvidence:
     """Authenticate the enclosing Simulation manifest, result, and nested evidence."""
     from booley.flows.sim.record import (
-        SimulationCampaignIntegrityError,
-        SimulationCampaignWorkItemError,
+        SimulationRecordIntegrityError,
+        SimulationRecordWorkItemError,
         authenticate_work_item,
     )
 
@@ -305,11 +305,11 @@ def authenticate_coverage_campaign_owner(
             cast(str, document["simulation_work_item_id"]),
             booley_dir=crossed_booley_dir_entry(manifest_path),
         )
-    except SimulationCampaignWorkItemError as exc:
+    except SimulationRecordWorkItemError as exc:
         raise CoverageCampaignReferenceError(
             "reference has no exact enclosing Simulation result"
         ) from exc
-    except SimulationCampaignIntegrityError as exc:
+    except SimulationRecordIntegrityError as exc:
         raise CoverageCampaignReferenceError(
             "enclosing Simulation Campaign cannot be authenticated"
         ) from exc

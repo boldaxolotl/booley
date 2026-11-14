@@ -28,17 +28,17 @@ from booley.flows.sim.acceptance import (
 )
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record.codec import (
-    SimulationCampaignIntegrityError,
+    SimulationRecordIntegrityError,
 )
 from booley.flows.sim.record.coordinator import (
-    CampaignOutcome,
-    CampaignPolicy,
-    NewCampaignRunRequest,
-    SimulationCampaign,
+    NewSimulationRecordRunRequest,
+    SimulationRecord,
+    SimulationRecordOutcome,
+    SimulationRecordPolicy,
     _acceptance_ready,
 )
 from booley.flows.sim.record.facts import AcceptanceFacts
-from booley.flows.sim.record.model import create_simulation_campaign_plan
+from booley.flows.sim.record.model import create_simulation_record_plan
 from booley.flows.sim.request import SimRequest
 from booley.flows.test_runs import build_test_run
 from booley.runtime.endpoint_execution import EXIT_CANCELLED, EndpointOutcome
@@ -62,7 +62,7 @@ def _sha(raw: bytes) -> str:
 def _simulation_changes(
     tmp_path: Path,
     criteria: dict[str, dict[str, object]],
-    outcome: CampaignOutcome,
+    outcome: SimulationRecordOutcome,
 ):
     class Recorder:
         def __init__(self) -> None:
@@ -111,7 +111,7 @@ def _cycle_outcome(
     baseline_selector: str = "sim_base",
     baseline_test: str = "smoke",
     manifest_owner: str = "550e8400-e29b-41d4-a716-446655440000",
-) -> CampaignOutcome:
+) -> SimulationRecordOutcome:
     smoke = build_test_run("smoke")
     recorded = _recorded_campaign(tmp_path, (smoke,))
     document = _acceptance_facts(recorded.digest)
@@ -123,7 +123,7 @@ def _cycle_outcome(
         _cycle_prerequisite(baseline, baseline_selector, baseline_test, manifest_owner)
     ]
     facts = AcceptanceFacts(document)
-    return CampaignOutcome(
+    return SimulationRecordOutcome(
         recorded.manifest_path,
         tmp_path / "summary.json",
         facts.document["target"],  # type: ignore[arg-type]
@@ -186,7 +186,7 @@ def _cycle_reconciliation(
     tmp_path: Path,
     *,
     threshold: dict[str, object],
-    outcome: CampaignOutcome,
+    outcome: SimulationRecordOutcome,
     explicit_baseline: bool = True,
 ):
     class Recorder:
@@ -374,7 +374,7 @@ def test_acceptance_coordinator_records_selected_test_detail(tmp_path: Path) -> 
     document = _acceptance_facts(recorded.digest)
     document["observations"] = [recorded.fact(smoke, **_observation("smoke"))]
     facts = AcceptanceFacts(document)
-    outcome = CampaignOutcome(
+    outcome = SimulationRecordOutcome(
         recorded.manifest_path,
         tmp_path / "summary.json",
         facts.document["target"],  # type: ignore[arg-type]
@@ -428,7 +428,7 @@ def test_passing_subset_does_not_change_target_level_simulation_criterion(
     }
     document["observations"] = [recorded.fact(smoke, **_observation("smoke"))]
     facts = AcceptanceFacts(document)
-    outcome = CampaignOutcome(
+    outcome = SimulationRecordOutcome(
         recorded.manifest_path,
         tmp_path / "summary.json",
         facts.document["target"],  # type: ignore[arg-type]
@@ -602,7 +602,7 @@ def test_absolute_cycle_acceptance_does_not_require_baseline(tmp_path: Path) -> 
     document = dict(outcome.acceptance_facts.document)
     document["prerequisites"] = []
     facts = AcceptanceFacts(document)
-    outcome = CampaignOutcome(
+    outcome = SimulationRecordOutcome(
         outcome.manifest_path,
         outcome.summary_path,
         outcome.target,
@@ -811,15 +811,15 @@ def _one_item_outcome(tmp_path: Path):
     project.mkdir()
     (project / ".booley").mkdir()
     invocation = tmp_path / "reports" / "sim" / "1"
-    request = NewCampaignRunRequest(
-        plan=create_simulation_campaign_plan(_manifest_for(("smoke",))),
+    request = NewSimulationRecordRunRequest(
+        plan=create_simulation_record_plan(_manifest_for(("smoke",))),
         project_root=project,
         report_root=None,
-        policy=CampaignPolicy(),
+        policy=SimulationRecordPolicy(),
         invocation_directory=invocation,
         admission=_admission(),
     )
-    return SimulationCampaign(_NoEdaExecutor()).run(request), invocation
+    return SimulationRecord(_NoEdaExecutor()).run(request), invocation
 
 
 def test_acceptance_result_reference_hashes_exact_stored_bytes(tmp_path: Path) -> None:
@@ -919,7 +919,7 @@ def test_campaign_projection_error_tail_rejects_malformed_detail(tmp_path: Path)
     state = DevelopmentState.load(tmp_path / "state.json")
     recorder = FixtureRecorder(log_dir=tmp_path / "logs", identity={})
 
-    with pytest.raises(SimulationCampaignIntegrityError, match="detail"):
+    with pytest.raises(SimulationRecordIntegrityError, match="detail"):
         record_campaign_acceptance(_acceptance_endpoint(state, recorder, invocation), (malformed,))
 
 

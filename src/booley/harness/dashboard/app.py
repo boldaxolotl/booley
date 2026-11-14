@@ -36,6 +36,7 @@ from booley.harness.dashboard.links import linked_text, open_in_editor
 from booley.harness.dashboard.model import DashboardSnapshot, GoalDetail, GoalView
 from booley.harness.dashboard.resources import Resources
 from booley.harness.dashboard.review import Occupants
+from booley.harness.dashboard.specialist_form import SimRun
 from booley.harness.dashboard.targets import (
     TargetDetail,
     TargetListing,
@@ -43,6 +44,7 @@ from booley.harness.dashboard.targets import (
     WorktreeChoice,
     WorktreeList,
     first_line,
+    launchable_flows,
     order_worktrees,
 )
 from booley.harness.dashboard.topbar import (
@@ -1095,6 +1097,7 @@ class DashboardApp(App[None]):
                 message,
                 self._default_worktree,
                 self._worktree_occupants,
+                self._finished_sim_runs,
                 preset,
             ),
             lambda key: self._after_run(origin, key),
@@ -1908,7 +1911,7 @@ class DashboardApp(App[None]):
             or detail.selector != self.navigation.selected
         ):
             return ()
-        return detail.row.flows
+        return launchable_flows(detail.row.flows)
 
     def _fill_flow_list(self) -> None:
         """List the open Target's Flows; a refresh of the same list keeps the highlight."""
@@ -2145,6 +2148,25 @@ class DashboardApp(App[None]):
             and Path(job.record.work_dir).resolve() == here
         )
         return Occupants(sessions, running)
+
+    def _finished_sim_runs(self, worktree: Path) -> tuple[SimRun, ...] | None:
+        """The finished Simulation Jobs of *worktree* that the last read retained; ``None`` before any read.
+
+        Their invocation directories hold the coverage campaigns the Run wizard offers.
+        No file is read here: this runs on the main thread.
+        """
+        if self.snapshot.observed_at == 0:
+            return None
+        here = worktree.resolve()
+        return tuple(
+            SimRun(job.report_path.parent, job.record.ended_at or "")
+            for job in self.snapshot.jobs.jobs
+            if job.record.endpoint == "sim"
+            and _finished(job)
+            and job.report_path is not None
+            and job.record.work_dir
+            and Path(job.record.work_dir).resolve() == here
+        )
 
     def _worktree_choices(self) -> tuple[WorktreeChoice, ...]:
         """The worktrees to pick from; sessions' first, the main checkout last."""

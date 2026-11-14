@@ -176,12 +176,12 @@ def test_reference_codec_refuses_a_nested_v4_campaign_as_an_older_booley_record(
     tmp_path: Path,
 ) -> None:
     """Booley 0.3.0 wrote v4: it is too old, not an invalid storage contract."""
-    from booley.flows.sim.record.codec import UnsupportedSimulationCampaignFormatError
+    from booley.flows.sim.record.codec import UnsupportedSimulationRecordFormatError
 
     target = tmp_path / "targets" / _TARGET_SELECTOR
     value = _reference(target, _nested_campaign(target))
 
-    with pytest.raises(UnsupportedSimulationCampaignFormatError, match="older Booley"):
+    with pytest.raises(UnsupportedSimulationRecordFormatError, match="older Booley"):
         decode_coverage_campaign_reference(
             _rewrite_reference(value, ("coverage_record", "schema"), "booley.coverage-campaign/v4")
         )
@@ -190,7 +190,7 @@ def test_reference_codec_refuses_a_nested_v4_campaign_as_an_older_booley_record(
 def test_resolving_a_nested_v4_reference_outside_the_report_layout_cannot_name_a_directory(
     tmp_path: Path,
 ) -> None:
-    from booley.flows.sim.record.codec import UnsupportedSimulationCampaignFormatError
+    from booley.flows.sim.record.codec import UnsupportedSimulationRecordFormatError
 
     target = tmp_path / "targets" / _TARGET_SELECTOR
     value = _reference(target, _nested_campaign(target))
@@ -200,7 +200,7 @@ def test_resolving_a_nested_v4_reference_outside_the_report_layout_cannot_name_a
         _rewrite_reference(value, ("coverage_record", "schema"), "booley.coverage-campaign/v4")
     )
 
-    with pytest.raises(UnsupportedSimulationCampaignFormatError) as excinfo:
+    with pytest.raises(UnsupportedSimulationRecordFormatError) as excinfo:
         resolve_coverage_campaign_reference(stray)
 
     assert "delete its Simulation invocation directory and start a fresh run" in str(excinfo.value)

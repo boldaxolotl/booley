@@ -32,18 +32,18 @@ from booley.flows.sim.record import capacity
 from booley.flows.sim.record.capacity import LeaseLostError
 from booley.flows.sim.record.codec import canonical_json_bytes
 from booley.flows.sim.record.coordinator import (
-    CampaignPolicy,
-    NewCampaignRunRequest,
-    ResumeCampaignRunRequest,
-    SimulationCampaign,
+    NewSimulationRecordRunRequest,
+    ResumeSimulationRecordRunRequest,
+    SimulationRecord,
+    SimulationRecordPolicy,
 )
 from booley.flows.sim.record.model import (
-    SimulationCampaignManifest,
-    create_simulation_campaign_plan,
+    SimulationRecordManifest,
+    create_simulation_record_plan,
 )
 from booley.flows.sim.record.planning import finalize_manifest
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
-from booley.flows.sim.record.store import CampaignStore
+from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.runtime import job_slots, oom_priority
 from booley.runtime.endpoint_execution import (
@@ -219,29 +219,29 @@ class _Scenario:
         assert flow_store is not None
         flow_store.caps = replace(flow_store.caps, queue_max=0)
 
-    def record(self) -> CampaignStore:
-        return CampaignStore(self.tmp_path / "reports" / "000001" / "targets/sim/record")
+    def record(self) -> SimulationRecordStore:
+        return SimulationRecordStore(self.tmp_path / "reports" / "000001" / "targets/sim/record")
 
     def request(
-        self, manifest: SimulationCampaignManifest, number: int = 1
-    ) -> NewCampaignRunRequest:
+        self, manifest: SimulationRecordManifest, number: int = 1
+    ) -> NewSimulationRecordRunRequest:
         invocation = self.tmp_path / "reports" / f"{number:06d}"
         invocation.mkdir(parents=True, exist_ok=True)
-        return NewCampaignRunRequest(
-            create_simulation_campaign_plan(manifest),
+        return NewSimulationRecordRunRequest(
+            create_simulation_record_plan(manifest),
             self.project,
             invocation.parent,
-            CampaignPolicy(),
+            SimulationRecordPolicy(),
             invocation,
             self.admission,
         )
 
-    def campaign(self) -> SimulationCampaign:
+    def campaign(self) -> SimulationRecord:
         executor = OrdinaryHdlSerialExecutor(
             invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
             execution_factory=lambda _options: _ObservedExecution(self.state),  # type: ignore[arg-type,return-value]
         )
-        return SimulationCampaign(executor, work_item_request=_sizer)
+        return SimulationRecord(executor, work_item_request=_sizer)
 
 
 def _own_lanes(scenario: _Scenario) -> list[bool]:
@@ -426,12 +426,12 @@ def test_resumed_campaign_items_take_their_own_claims_after_the_build(
         validated = _validated_campaign(store, manifest, scenario.project, scenario.state.handle)
         invocation = scenario.tmp_path / "reports" / "000001"
         outcome = scenario.campaign().run(
-            ResumeCampaignRunRequest(
+            ResumeSimulationRecordRunRequest(
                 validated,
-                create_simulation_campaign_plan(manifest),
+                create_simulation_record_plan(manifest),
                 scenario.project,
                 invocation.parent,
-                CampaignPolicy(),
+                SimulationRecordPolicy(),
                 invocation,
                 scenario.admission,
             )
@@ -488,7 +488,7 @@ def _disclosures() -> dict[str, dict]:
     }
 
 
-def _private_manifest() -> SimulationCampaignManifest:
+def _private_manifest() -> SimulationRecordManifest:
     """Three items that each build privately (the legacy Pre-Sim build access)."""
     document = json.loads(
         canonical_json_bytes(_manifest_for(NAMES, access="legacy-per-test").document)
@@ -899,7 +899,7 @@ def test_lost_flow_lease_cancels_running_lanes_and_withdraws_the_queued_claim(
         try:
             # Which lane fails first (a waiting claim, or a cancelled running item) is a race.
             with pytest.raises(
-                (ClaimAbortedError, ClaimLostError, capacity.CampaignCapacityError)
+                (ClaimAbortedError, ClaimLostError, capacity.SimulationRecordCapacityError)
             ):
                 scenario.campaign().run(scenario.request(_manifest_for(names)))
         finally:
