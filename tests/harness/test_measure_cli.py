@@ -573,3 +573,31 @@ def test_the_signal_handlers_are_restored_after_the_run(
     assert run_command(monkeypatch, project) == 0
 
     assert {n: signal.getsignal(n) for n in before} == before
+
+
+def test_cancel_signals_skip_a_signal_this_platform_lacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from booley.harness import measure_command
+
+    monkeypatch.setattr(measure_command, "_CANCEL_SIGNALS", ("SIGNOSUCH", "SIGINT"))
+    with measure_command._cancel_signals() as signals:
+        assert signal.getsignal(signal.SIGINT) == signals._on_signal
+    assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
+
+
+def test_cancel_signals_do_nothing_outside_the_main_thread() -> None:
+    import threading
+
+    from booley.harness import measure_command
+
+    seen: list[bool] = []
+
+    def attempt() -> None:
+        with measure_command._cancel_signals() as signals:
+            seen.append(signals.is_set())
+
+    worker = threading.Thread(target=attempt)
+    worker.start()
+    worker.join(DEADLINE_S)
+    assert seen == [False]
