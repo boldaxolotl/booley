@@ -147,20 +147,14 @@ A profile states what to optimize for. Set it on the Target as
 
 | Profile | Intent | Mapping recipe (`--abc-recipe`) | Placement utilization / density | Setup repair (physical mode) |
 |---|---|---|---|---|
-| `compact` | Smaller area. | `default` | 40% / 0.65 | Gate cloning off, no setup margin, OpenROAD's default repair share |
-| `balanced` | Default trade-off. | `balanced` | 50% / 0.80 | Gate cloning off, no setup margin, OpenROAD's default repair share |
-| `max_frequency` | Higher Fmax. | `balanced` | 40% / 0.70 | Gate cloning on, 0.2 ns setup margin, repair share 100% |
+| `compact` | Smaller area. | `default` | 40% / 0.65 | Gate cloning off, no setup margin, OpenROAD's default share of violating endpoints |
+| `balanced` | Default trade-off. | `balanced` | 50% / 0.80 | Gate cloning off, no setup margin, OpenROAD's default share of violating endpoints |
+| `max_frequency` | Higher Fmax. | `balanced` | 40% / 0.70 | Gate cloning on, 0.2 ns setup margin, all violating endpoints |
 
-`max_frequency` maps like `balanced`; its gain comes from OpenROAD, so in
-logical mode it gives the same netlist as `balanced`. It sets no mapping delay
-target from the SDC clock period: on the measured design a target equal to the
-period made the placed netlist slower. Set `--abc-delay-ps` yourself to map to
-a target under any profile.
-
-On picorv32 `synth_core` at a 0.8 ns clock that `balanced` just misses,
-`max_frequency` shortens the critical path by 2.3% (807.7 ps against
-826.9 ps) for 0.9% more area, and takes longer to run. `fast` is a shorter
-mapping script than `balanced`; it does not map for speed.
+`max_frequency` maps like `balanced` and adds stronger setup repair, which
+runs in physical mode only, so in logical mode it gives the same netlist as
+`balanced`. Set `--abc-delay-ps` yourself to map to a target under any
+profile.
 
 A profile states intent, not a guaranteed result; compare runs to see which
 suits your design. Name the profile on the Target so results stay comparable over
@@ -174,7 +168,7 @@ second column names.
 
 | Option | Target table | What it changes | Default |
 |---|---|---|---|
-| `--abc-recipe <default\|balanced\|fast>` | `advanced_settings_yosys` | Logic-optimization script used during mapping. `fast` is a shortened `balanced` script. | From the profile |
+| `--abc-recipe <default\|balanced\|fast>` | `advanced_settings_yosys` | Logic-optimization script used during mapping. `fast` is a shortened `balanced` script; it does not map for speed. | From the profile |
 | `--abc-script <script>` | `advanced_settings_yosys` | Your own ABC commands in place of a recipe, starting with `+` (for example `+strash;map`). Write `{D}` where the delay target goes, comma-separated (for example `+strash;map,{D}`); without `{D}` the script ignores `--abc-delay-ps`. Cannot be combined with `--abc-recipe`. | None |
 | `--generic-abc-before-mapping` / `--no-generic-abc-before-mapping` | `advanced_settings_yosys` | Adds a generic logic-optimization pass before mapping. | Off |
 | `--abc-delay-ps <ps>` | `advanced_settings_yosys` | Delay target for mapping, in ps. Every profile maps with it; a custom `--abc-script` uses it only where the script contains `{D}`. | None |
