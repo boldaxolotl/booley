@@ -25,18 +25,16 @@ hold only review checklists, so every category reports in the same shape.
 
 The Reviewer validates the output schema and checks that each finding cites a
 file inside the review's source scope. Specifications and Project policy go
-into the prompt; Booley does not filter findings by their wording. Two path
-rules do change a finding automatically:
+into the prompt; Booley does not filter findings by their wording. One path
+rule does change a finding automatically: a finding outside the source
+scope, including one in a firmware file or any other readable context file,
+moves to the audit as filtered (reason `source_scope`).
 
-- a finding outside the source scope moves to the audit as filtered (reason
-  `source_scope`);
-- outside Goal Mode, a finding in a firmware file becomes `out_of_scope`,
-  because firmware is read-only context for every Reviewer (see
-  [SPECIALISTS.md](../user/SPECIALISTS.md)).
-
-Source isolation is not configurable. A Reviewer sees only the sources of its
-own category; the Coverage Analyst has no category and reads both the RTL and
-the testbench, because its task is to cross-check them.
+Source isolation is not configurable. A Reviewer never sees the sources its
+`.core` filesets declare for the opposite category, nor HDL files no fileset
+declares; every other file is readable context. The Coverage Analyst has no
+category and reads both the RTL and the testbench, because its task is to
+cross-check them.
 
 Dispositions decide what a finding blocks. An in-scope `current` finding can
 leave a `_clean` Criterion unmet; `advisory`, `deferred`, and `out_of_scope`

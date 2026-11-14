@@ -35,7 +35,6 @@ from booley.runtime.job_slots import (
     LOST,
     QUEUED,
     ROLE_INTERACTIVE,
-    QueueFullError,
     SlotCaps,
     SlotStore,
 )
@@ -654,29 +653,13 @@ class TestSingleProcess:
         assert store.refresh(toks[1]).position == 0
         assert store.refresh(toks[2]).position == 1
 
-    def test_queue_full_raises(self, root, world):
+    def test_more_claims_than_can_run_all_queue(self, root, world):
         spawn(world, 100)
-        store = make_store(root, world, SlotCaps(max_light=1, queue_max=2))
-        store.submit(CLASS_LIGHT, pid=100)  # holder
-        store.submit(CLASS_LIGHT, pid=100)  # waiter 1
-        store.submit(CLASS_LIGHT, pid=100)  # waiter 2
-        with pytest.raises(QueueFullError):
-            store.submit(CLASS_LIGHT, pid=100)
-
-    def test_background_waiters_never_fill_the_queue_for_interactive_claims(self, root, world):
-        spawn(world, 100)
-        store = make_store(root, world, SlotCaps(max_light=1, queue_max=2))
-        # One holder plus a full queue of waiting background claims.
-        tokens = [store.submit(CLASS_LIGHT, pid=100, role="background") for _ in range(3)]
-        assert store.refresh(tokens[0]).state == HOLDING
-        interactive = store.submit(CLASS_LIGHT, pid=100, role=ROLE_INTERACTIVE)
-        assert store.refresh(interactive).position == 0  # first of the waiters
-        with pytest.raises(QueueFullError):
-            store.submit(CLASS_LIGHT, pid=100, role="background")
-        # Interactive claims still hit their own bound: holder plus two waiters.
-        store.submit(CLASS_LIGHT, pid=100, role=ROLE_INTERACTIVE)
-        with pytest.raises(QueueFullError):
-            store.submit(CLASS_LIGHT, pid=100, role=ROLE_INTERACTIVE)
+        store = make_store(root, world, SlotCaps(max_light=3))
+        tokens = [store.submit(CLASS_LIGHT, pid=100) for _ in range(12)]
+        assert [store.refresh(token).state for token in tokens[:3]] == [HOLDING] * 3
+        assert [store.refresh(token).state for token in tokens[3:]] == [QUEUED] * 9
+        assert [store.refresh(token).position for token in tokens[3:]] == list(range(9))
 
     def test_unknown_class_rejected(self, root, world):
         store = make_store(root, world)
@@ -728,8 +711,8 @@ def test_same_pid_stores_never_reuse_entry_identity(
     root, world, monkeypatch, promote_before_publication
 ):
     spawn(world, 100)
-    first_store = make_store(root, world, SlotCaps(max_light=2, queue_max=0))
-    second_store = make_store(root, world, SlotCaps(max_light=2, queue_max=0))
+    first_store = make_store(root, world, SlotCaps(max_light=2))
+    second_store = make_store(root, world, SlotCaps(max_light=2))
     monkeypatch.setattr(first_store, "_next_seq", lambda _directory: 1)
     monkeypatch.setattr(second_store, "_next_seq", lambda _directory: 1)
     publish = job_slots.os.link
@@ -752,8 +735,6 @@ def test_same_pid_stores_never_reuse_entry_identity(
     assert second_store.refresh(second).state == HOLDING
     assert first_store.renew(first) and second_store.renew(second)
     assert first.path != second.path
-    with pytest.raises(QueueFullError, match="queue is full"):
-        first_store.submit(CLASS_LIGHT, pid=100)
     first_store.release(first)
     second_store.release(second)
     assert first_store.snapshot(CLASS_LIGHT) == ([], [])
@@ -1570,17 +1551,12 @@ class TestOutlook:
     """``SlotStore.outlook`` predicts admission without touching the store."""
 
     def test_outlook_counts_what_submit_counts(self, root, world):
-        caps = SlotCaps(max_light=1, queue_max=2)
+        caps = SlotCaps(max_light=1)
         for pid in (100, 200, 300, 400, 500):
             spawn(world, pid)
         store = make_store(root, world, caps)
         outlook = store.outlook(CLASS_LIGHT)
-        assert (outlook.ahead, outlook.runs_now, outlook.position, outlook.full) == (
-            0,
-            True,
-            0,
-            False,
-        )
+        assert (outlook.ahead, outlook.runs_now, outlook.position) == (0, True, 0)
 
         holder = store.submit(CLASS_LIGHT, pid=100)
         assert store.refresh(holder).state == HOLDING
@@ -1592,17 +1568,13 @@ class TestOutlook:
 
         waiter = store.submit(CLASS_LIGHT, pid=200)
         outlook = store.outlook(CLASS_LIGHT)
-        assert (outlook.ahead, outlook.position, outlook.full) == (2, 2, False)
+        assert (outlook.ahead, outlook.position) == (2, 2)
         # Submit queues the claim exactly where the outlook said (position is 1-based).
         queued = store.submit(CLASS_LIGHT, pid=400)
         assert store.refresh(waiter).position == 0
         assert store.refresh(queued).position == outlook.position - 1
 
-        outlook = store.outlook(CLASS_LIGHT)
-        assert (outlook.ahead, outlook.full) == (3, True)
-        with pytest.raises(QueueFullError) as refused:
-            store.submit(CLASS_LIGHT, pid=500)
-        assert str(refused.value) == outlook.refusal == "light queue is full (2 waiting)"
+        assert store.outlook(CLASS_LIGHT).ahead == 3
 
     @pytest.mark.parametrize("scenario", sorted(OUTLOOK_SCENARIOS))
     def test_outlook_and_reap_share_one_verdict(self, root, world, scenario):
@@ -1690,7 +1662,6 @@ class TestSlotCaps:
     def test_defaults_preserve_single_flight(self):
         caps = SlotCaps()
         assert caps.cap_for(CLASS_LIGHT) == 3
-        assert caps.queue_max == 8
 
     def test_zero_cap_is_clamped_to_one(self):
         caps = SlotCaps(max_light=0)
@@ -1738,11 +1709,10 @@ class TestJobsConfigParsing:
                 "jobs": {
                     "max_light": 5,
                     "max_tickets": 4,
-                    "queue_max": 16,
                 }
             }
         )
-        assert caps == SlotCaps(max_light=5, queue_max=16)
+        assert caps == SlotCaps(max_light=5)
 
     def test_invalid_values_keep_defaults(self):
         from booley.config.agent import _parse_jobs_config
@@ -1751,18 +1721,10 @@ class TestJobsConfigParsing:
             {
                 "jobs": {
                     "max_light": True,  # bool is not an int here
-                    "queue_max": -1,  # below floor
                 }
             }
         )
         assert caps == SlotCaps()
-
-    def test_queue_max_zero_is_allowed(self):
-        # queue_max=0 means "never queue, refuse at cap" — a legal posture.
-        from booley.config.agent import _parse_jobs_config
-
-        caps = _parse_jobs_config({"jobs": {"queue_max": 0}})
-        assert caps.queue_max == 0
 
     def test_non_table_section_uses_defaults(self):
         from booley.config.agent import _parse_jobs_config

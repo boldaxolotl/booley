@@ -41,11 +41,23 @@ def test_project_commands_refuse_retired_jobs_keys(
     ):
         assert _run(root, monkeypatch, *argv) == 2, argv
         err = capsys.readouterr().err
-        assert "max_heavy (line 5)" in err, argv
-        assert "heavy_memory (line 6)" in err, argv
+        assert "max_heavy (line 5: memory admission replaced it)" in err, argv
+        assert "heavy_memory (line 6: memory admission replaced it)" in err, argv
         assert "delete these lines" in err, argv
-        assert "memory admission replaced them" in err, argv
         assert "booley-heal" in err, argv
+
+
+def test_queue_max_is_refused_with_its_own_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _project(tmp_path / "proj", b'[project]\nname = "unit"\n\n[jobs]\nqueue_max = 8\n')
+
+    assert _run(root, monkeypatch, "targets") == 2
+
+    err = capsys.readouterr().err
+    assert "queue_max (line 5: the Job queue has no limit" in err
+    assert "memory admission replaced" not in err
+    assert "booley-heal" in err
 
 
 def test_doctor_and_upgrade_are_not_refused(

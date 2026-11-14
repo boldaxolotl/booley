@@ -114,9 +114,6 @@ override it. Untyped files count as `user`. Spell the types exactly as shown:
 - Keep `SDC` and `xdc` files out of `tags: [tb]` filesets.
 - Use the unversioned `verilogSource` and `systemVerilogSource`. Coverage and
   build reuse don't recognize version-suffixed names.
-- The fpga Flow picks RTL by filename, not declared type: give FPGA RTL a
-  lowercase `.v` or `.sv` suffix. Its constraints come only from
-  `file_type: xdc` files.
 - SystemC, UHDM, VHDL, and Tcl filesets have no supported path through the
   built-in Flows; see the [EDA-tool matrix](SUPPORTED-EDA-TOOLS.md).
 

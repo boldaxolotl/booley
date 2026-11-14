@@ -1,6 +1,6 @@
 """One Flow-neutral admission path for every endpoint.
 
-The same admission outcomes (queue full, withdrawn queued run, invalid runtime
+The same admission outcomes (withdrawn queued run, invalid runtime
 identity, no-slot cases, release at run end) must hold for Simulation and for a
 non-Simulation Flow, and must not depend on the endpoint's name.
 """
@@ -223,18 +223,6 @@ def test_admitted_endpoint_borrows_admission_context(
     assert isinstance(borrowed, AdmissionContext)
     assert borrowed.mode == "managed"
     assert borrowed.outer_token is claim
-
-
-def test_full_queue_reports_blocked(harness: _Harness, monkeypatch: pytest.MonkeyPatch) -> None:
-    _refuse_slot(monkeypatch, job_slots.QueueFullError("memory queue is full (2 waiting)"))
-
-    result = harness.execute()
-
-    assert result.exit_code == EXIT_ERROR
-    assert result.outcome.report_text == (
-        "BLOCKED: memory queue is full (2 waiting). Retry when queued work drains."
-    )
-    assert harness.invocations == []
 
 
 def test_invalid_runtime_identity_names_endpoint(
@@ -466,11 +454,10 @@ def test_binding_gate_rejects_before_slot_for_non_flow_endpoints(
 @pytest.mark.parametrize(
     "failure",
     (
-        job_slots.QueueFullError("full"),
         job_slots.ClaimLostError("vanished"),
         AdmissionIdentityError("mismatch"),
     ),
-    ids=("queue_full", "claim_lost", "identity"),
+    ids=("claim_lost", "identity"),
 )
 def test_body_failures_are_not_remapped_to_admission_rejections(
     failure: Exception, monkeypatch: pytest.MonkeyPatch
@@ -1492,20 +1479,17 @@ def _requeue_failure_result(
     return result
 
 
-def test_job_cancelled_or_refused_while_requeued_ends_that_way(
+def test_job_cancelled_while_requeued_ends_cancelled(
     memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    for failure, verdict in (
-        (job_slots.ClaimLostError("withdrawn"), "CANCELLED:"),
-        (job_slots.QueueFullError("memory queue is full (1 waiting)"), "BLOCKED:"),
-    ):
-        result = _requeue_failure_result(failure, memory_runtime, runtime, monkeypatch)
+    failure = job_slots.ClaimLostError("withdrawn")
+    result = _requeue_failure_result(failure, memory_runtime, runtime, monkeypatch)
 
-        assert result.exit_code == EXIT_ERROR
-        assert result.outcome.report_text.startswith(verdict)
-        assert "did not start again" in result.outcome.report_text
-        assert result.outcome.detail["oom_requeue"]["reason"] == REQUEUE_REASON
-        assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
+    assert result.exit_code == EXIT_ERROR
+    assert result.outcome.report_text.startswith("CANCELLED:")
+    assert "did not start again" in result.outcome.report_text
+    assert result.outcome.detail["oom_requeue"]["reason"] == REQUEUE_REASON
+    assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the command kills itself with SIGKILL")
@@ -1642,19 +1626,15 @@ def test_caller_sees_no_progress_from_the_killed_attempt(
     assert seen_by_final_attempt == [None]
     assert _progress_of_job(runtime) is None
 
-    # Refused while queued again: the Job ends with no report, and still no progress.
-    for failure in (
+    # Withdrawn while queued again: the Job ends with no report, and still no progress.
+    _requeue_failure_result(
         job_slots.ClaimLostError("withdrawn"),
-        job_slots.QueueFullError("memory queue is full (1 waiting)"),
-    ):
-        _requeue_failure_result(
-            failure,
-            memory_runtime,
-            runtime,
-            monkeypatch,
-            first_attempt=lambda harness: _checkpoint(harness, _killed),
-        )
-        assert _progress_of_job(runtime) is None
+        memory_runtime,
+        runtime,
+        monkeypatch,
+        first_attempt=lambda harness: _checkpoint(harness, _killed),
+    )
+    assert _progress_of_job(runtime) is None
 
 
 def test_progress_retirement_failure_does_not_stop_the_requeue(

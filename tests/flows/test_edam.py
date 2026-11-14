@@ -21,11 +21,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
 from booley.core.build_paths import work_root_for
 from booley.flows.edam import (
+    EdamFile,
     EdamSecurityError,
     WorkRootLeaseError,
     build_edam,
     configure,
-    file_type_for,
     make_command,
     relpath_for_make,
     try_work_root_lease,
@@ -48,28 +48,6 @@ def _wait_for_work_root(path: str, waiting, acquired) -> None:
 
 
 # ---------------------------------------------------------------------------
-# file_type_for
-# ---------------------------------------------------------------------------
-
-
-class TestFileType:
-    def test_known_suffixes(self):
-        assert file_type_for("a.sv") == "systemVerilogSource"
-        assert file_type_for("a.svh") == "systemVerilogSource"
-        assert file_type_for("a.v") == "verilogSource"
-        assert file_type_for("a.vh") == "verilogSource"
-        assert file_type_for("waiver.vlt") == "vlt"
-        assert file_type_for("c.xdc") == "xdc"
-        assert file_type_for("c.sdc") == "SDC"
-
-    def test_case_insensitive(self):
-        assert file_type_for("A.SV") == "systemVerilogSource"
-
-    def test_unknown_suffix_falls_through(self):
-        assert file_type_for("notes.txt") == "user"
-
-
-# ---------------------------------------------------------------------------
 # build_edam — structure + parameter encoding
 # ---------------------------------------------------------------------------
 
@@ -84,24 +62,29 @@ def ws(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def _sv(path: Path) -> EdamFile:
+    return EdamFile(path, "systemVerilogSource")
+
+
 class TestBuildEdam:
-    def test_files_typed_and_absolute(self, ws: Path):
+    def test_files_keep_declared_type_and_are_absolute(self, ws: Path):
+        # pkg.v is declared SystemVerilog: the declared type wins over the suffix.
         edam = build_edam(
             name="design",
-            files=[ws / "rtl" / "top.sv", ws / "rtl" / "pkg.v"],
+            files=[EdamFile(ws / "rtl" / "top.sv", "verilogSource"), _sv(ws / "rtl" / "pkg.v")],
             toplevel="top",
             eda_tool="verilator",
             workspace_root=ws,
         )
         assert edam["toplevel"] == "top"
         names = {e["name"]: e["file_type"] for e in edam["files"]}
-        assert names[str((ws / "rtl" / "top.sv").resolve())] == "systemVerilogSource"
-        assert names[str((ws / "rtl" / "pkg.v").resolve())] == "verilogSource"
+        assert names[str((ws / "rtl" / "top.sv").resolve())] == "verilogSource"
+        assert names[str((ws / "rtl" / "pkg.v").resolve())] == "systemVerilogSource"
 
     def test_include_dirs_marked(self, ws: Path):
         edam = build_edam(
             name="d",
-            files=[ws / "rtl" / "top.sv"],
+            files=[_sv(ws / "rtl" / "top.sv")],
             toplevel="top",
             eda_tool="verilator",
             workspace_root=ws,
@@ -114,7 +97,7 @@ class TestBuildEdam:
     def test_name_sanitized(self, ws: Path):
         edam = build_edam(
             name="my design/cfg:1",
-            files=[ws / "rtl" / "top.sv"],
+            files=[_sv(ws / "rtl" / "top.sv")],
             toplevel="top",
             eda_tool="verilator",
             workspace_root=ws,
@@ -124,7 +107,7 @@ class TestBuildEdam:
     def test_bare_define_is_boolean(self, ws: Path):
         edam = build_edam(
             name="d",
-            files=[ws / "rtl" / "top.sv"],
+            files=[_sv(ws / "rtl" / "top.sv")],
             toplevel="top",
             eda_tool="verilator",
             workspace_root=ws,
@@ -136,7 +119,7 @@ class TestBuildEdam:
     def test_valued_define_int_vs_str(self, ws: Path):
         edam = build_edam(
             name="d",
-            files=[ws / "rtl" / "top.sv"],
+            files=[_sv(ws / "rtl" / "top.sv")],
             toplevel="top",
             eda_tool="verilator",
             workspace_root=ws,
@@ -156,7 +139,7 @@ class TestBuildEdam:
     def test_vlogparams(self, ws: Path):
         edam = build_edam(
             name="d",
-            files=[ws / "rtl" / "top.sv"],
+            files=[_sv(ws / "rtl" / "top.sv")],
             toplevel="top",
             eda_tool="verilator",
             workspace_root=ws,
@@ -172,7 +155,7 @@ class TestBuildEdam:
     def test_plusargs_value_and_declare_only(self, ws: Path):
         edam = build_edam(
             name="d",
-            files=[ws / "rtl" / "top.sv"],
+            files=[_sv(ws / "rtl" / "top.sv")],
             toplevel="top",
             eda_tool="verilator",
             workspace_root=ws,
@@ -192,7 +175,7 @@ class TestBuildEdam:
     def test_empty_defines_skipped(self, ws: Path):
         edam = build_edam(
             name="d",
-            files=[ws / "rtl" / "top.sv"],
+            files=[_sv(ws / "rtl" / "top.sv")],
             toplevel="top",
             eda_tool="verilator",
             workspace_root=ws,
@@ -203,7 +186,7 @@ class TestBuildEdam:
     def test_eda_tool_options_merged_into_flow_options(self, ws: Path):
         edam = build_edam(
             name="d",
-            files=[ws / "rtl" / "top.sv"],
+            files=[_sv(ws / "rtl" / "top.sv")],
             toplevel="top",
             eda_tool="verilator",
             workspace_root=ws,
@@ -227,7 +210,7 @@ class TestSecurity:
         with pytest.raises(EdamSecurityError, match="outside the workspace"):
             build_edam(
                 name="d",
-                files=[outside],
+                files=[_sv(outside)],
                 toplevel="top",
                 eda_tool="verilator",
                 workspace_root=ws,
@@ -249,7 +232,7 @@ class TestSecurity:
 
         edam = build_edam(
             name="d",
-            files=[ws / ".booley" / "build" / "src" / "top.sv"],
+            files=[_sv(ws / ".booley" / "build" / "src" / "top.sv")],
             toplevel="top",
             eda_tool="verilator",
             workspace_root=ws,
@@ -258,7 +241,7 @@ class TestSecurity:
         with pytest.raises(EdamSecurityError, match="outside the workspace"):
             build_edam(
                 name="d",
-                files=[ws / ".booley" / "linked" / "top.sv"],
+                files=[_sv(ws / ".booley" / "linked" / "top.sv")],
                 toplevel="top",
                 eda_tool="verilator",
                 workspace_root=ws,
@@ -272,7 +255,7 @@ class TestSecurity:
         with pytest.raises(EdamSecurityError, match="outside the workspace"):
             build_edam(
                 name="d",
-                files=[link],
+                files=[_sv(link)],
                 toplevel="top",
                 eda_tool="verilator",
                 workspace_root=ws,
@@ -282,7 +265,7 @@ class TestSecurity:
         with pytest.raises(EdamSecurityError, match="not permitted"):
             build_edam(
                 name="d",
-                files=[ws / "rtl" / "top.sv"],
+                files=[_sv(ws / "rtl" / "top.sv")],
                 toplevel="top",
                 eda_tool="verilator",
                 workspace_root=ws,
@@ -301,7 +284,7 @@ class TestSecurity:
         with pytest.raises(EdamSecurityError, match="unknown flow"):
             build_edam(
                 name="d",
-                files=[ws / "rtl" / "top.sv"],
+                files=[_sv(ws / "rtl" / "top.sv")],
                 toplevel="top",
                 eda_tool="verilator",
                 workspace_root=ws,
@@ -333,7 +316,7 @@ class TestRelativePaths:
         work_root = work_root_for(ws, "lint", "cfg")
         edam = build_edam(
             name="d",
-            files=[ws / "rtl" / "top.sv"],
+            files=[_sv(ws / "rtl" / "top.sv")],
             toplevel="top",
             eda_tool="verilator",
             workspace_root=ws,
@@ -350,7 +333,7 @@ class TestRelativePaths:
         with pytest.raises(EdamSecurityError):
             build_edam(
                 name="d",
-                files=[outside],
+                files=[_sv(outside)],
                 toplevel="top",
                 eda_tool="verilator",
                 workspace_root=ws,
@@ -384,7 +367,7 @@ class TestRelativePaths:
         work_root = work_root_for(ws, "lint", "cfg")
         edam = build_edam(
             name="design",
-            files=[ws / "rtl" / "top.sv"],
+            files=[_sv(ws / "rtl" / "top.sv")],
             toplevel="top",
             eda_tool="verilator",
             workspace_root=ws,
@@ -563,7 +546,7 @@ class TestConfigure:
         pytest.importorskip("edalize")
         edam = build_edam(
             name="design",
-            files=[ws / "rtl" / "top.sv"],
+            files=[_sv(ws / "rtl" / "top.sv")],
             toplevel="top",
             eda_tool="verilator",
             workspace_root=ws,
@@ -588,7 +571,7 @@ class TestConfigure:
         pytest.importorskip("edalize")
         edam = build_edam(
             name="design",
-            files=[ws / "rtl" / "top.sv"],
+            files=[_sv(ws / "rtl" / "top.sv")],
             toplevel="top",
             eda_tool="verilator",
             workspace_root=ws,

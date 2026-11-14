@@ -1,8 +1,8 @@
 """The scheduler of a measurement's child Flows (#3952), against a real slot store.
 
 The children are scripted fakes: no process runs. Their admission claims are real entries in
-a :class:`~booley.runtime.job_slots.SlotStore` whose process checks are faked, so the window,
-the foreign waiters and the withdrawal of a waiting claim are the store's own behavior.
+a :class:`~booley.runtime.job_slots.SlotStore` whose process checks are faked, so the start order
+and the withdrawal of a waiting claim are the store's own behavior.
 The real child processes are covered in ``test_measure_children_flows.py``.
 """
 
@@ -217,87 +217,70 @@ def by_target(outcome: ChildrenOutcome) -> dict[str, tuple[Verdict, ...]]:
     }
 
 
-def test_children_start_cheapest_tier_first_within_the_window(root_dir: Path, world: FakeWorld):
+def test_children_all_start_cheapest_tier_first(root_dir: Path, world: FakeWorld):
     from booley.harness.measure_children import ChildScheduler, in_cost_tier_order
 
-    rules = [
-        empty_table("a-synth", "synth"),
-        empty_table("b-lint", "lint"),
-        empty_table("c-sim", "sim"),
-        empty_table("d-lint", "lint"),
-    ]
+    flows = ("synth", "lint", "sim") * 3
+    rules = [empty_table(f"t{number}-{flow}", flow) for number, flow in enumerate(flows)]
     ordered = in_cost_tier_order(rules)
-    assert [entry.target for entry in ordered] == ["b-lint", "d-lint", "c-sim", "a-synth"]
+    assert [entry.flow for entry in ordered] == ["lint"] * 3 + ["sim"] * 3 + ["synth"] * 3
 
-    fleet = make_fleet(root_dir, world, max_light=1, queue_max=3)  # window = 2
-    scheduler = ChildScheduler(fleet.plan(ordered), fleet.store, all_tables=True)
-    widest = 0
+    fleet = make_fleet(root_dir, world, max_light=1)
+    scheduler = ChildScheduler(fleet.plan(ordered, light_claim), fleet.store, all_tables=True)
+    scheduler.step(cancel=False)
+    assert fleet.started == [entry.target for entry in ordered]  # none is held back
+    assert len(fleet.live()) == 9
     while scheduler.step(cancel=False):
-        live = fleet.live()
-        widest = max(widest, len(live))
-        fleet.child(live[0]).finish()  # the oldest live child ends
-    assert fleet.started == ["b-lint", "d-lint", "c-sim", "a-synth"]
-    assert widest == 2
+        fleet.child(fleet.live()[0]).finish()
     assert scheduler.outcome().status is RunStatus.COMPLETED
 
 
-def test_foreign_waiters_hold_back_further_children(root_dir: Path, world: FakeWorld):
-    from booley.harness.measure_children import ChildScheduler
-
-    fleet = make_fleet(root_dir, world, max_light=1, queue_max=3)  # window = 2
-    foreign = []
-    for pid in (900, 901):
-        spawn(world, pid)
-        foreign.append(light_claim(fleet.store, pid))
-    scheduler = ChildScheduler(
-        fleet.plan([table("t0"), table("t1"), table("t2")]), fleet.store, all_tables=True
-    )
-
-    assert scheduler.step(cancel=False)
-    assert scheduler.step(cancel=False)
-    assert fleet.started == ["t0"]  # two foreign waiters take the room of the second child
-
-    for token in foreign:
-        fleet.store.release(token)
-    scheduler.step(cancel=False)
-    assert fleet.started == ["t0", "t1"]
+WAITING = "cdefghi"
 
 
 def failing_script(root_dir: Path, world: FakeWorld, *, all_tables: bool):
-    """Three children (a, b, c) of a window of 3 and one table (d) that does not fit.
+    """Nine children (a, b and seven more), all started at once.
 
-    ``a`` and ``b`` hold the two slots, ``c`` waits behind them.
+    ``a`` and ``b`` hold the two slots, the other seven wait behind them.
     """
     from booley.harness.measure_children import ChildScheduler
 
-    fleet = make_fleet(root_dir, world, max_light=2, queue_max=4)
-    planned = fleet.plan([table(name) for name in "abcd"], light_claim)
+    fleet = make_fleet(root_dir, world, max_light=2)
+    planned = fleet.plan([table(name) for name in "ab" + WAITING], light_claim)
     scheduler = ChildScheduler(planned, fleet.store, all_tables=all_tables)
     scheduler.step(cancel=False)
-    assert fleet.started == ["a", "b", "c"]
+    assert fleet.started == list("ab" + WAITING)
     for name in "ab":
         assert fleet.store.refresh(fleet.child(name).token).state == job_slots.HOLDING  # type: ignore[arg-type]
-    assert fleet.store.state_for_pid(fleet.child("c").pid).state == job_slots.QUEUED  # type: ignore[union-attr]
+    for name in WAITING:
+        assert fleet.store.state_for_pid(fleet.child(name).pid).state == job_slots.QUEUED  # type: ignore[union-attr]
     return fleet, scheduler
 
 
-@pytest.mark.parametrize("failing", ["unmet", "error"])
 def test_a_failing_verdict_withdraws_waiting_children_and_keeps_running_ones(
-    root_dir: Path, world: FakeWorld, failing: str
+    root_dir: Path, world: FakeWorld
 ):
+    _stop_after_failing_verdict(root_dir, world, "unmet")
+
+
+def test_an_error_verdict_withdraws_waiting_children_too(root_dir: Path, world: FakeWorld):
+    _stop_after_failing_verdict(root_dir, world, "error")
+
+
+def _stop_after_failing_verdict(root_dir: Path, world: FakeWorld, failing: str) -> None:
     from booley.harness.measure_children import STOPPED_REASON
 
     fleet, scheduler = failing_script(root_dir, world, all_tables=False)
-    waiting = fleet.child("c")
+    waiting = [fleet.child(name) for name in WAITING]
 
     fleet.child("a").finish(unmet() if failing == "unmet" else errored())
     assert scheduler.step(cancel=False)
-    # The waiting child's claim is withdrawn; the running one keeps its slot.
-    assert fleet.store.state_for_pid(waiting.pid) is None
+    # The waiting children's claims are withdrawn; the running one keeps its slot.
+    assert [fleet.store.state_for_pid(child.pid) for child in waiting] == [None] * 7
     assert fleet.store.state_for_pid(fleet.child("b").pid) is not None
-    waiting.finish(errored())  # the withdrawn child ends through its lost claim
+    for child in waiting:
+        child.finish(errored())  # a withdrawn child ends through its lost claim
     assert scheduler.step(cancel=False)
-    assert fleet.started == ["a", "b", "c"]  # nothing starts once stopping
 
     fleet.child("b").finish(result(1))
     assert not scheduler.step(cancel=False)
@@ -307,16 +290,16 @@ def test_a_failing_verdict_withdraws_waiting_children_and_keeps_running_ones(
     verdicts = by_target(outcome)
     assert verdicts["a"] in {(Verdict.UNMET,), (Verdict.ERROR,)}
     assert verdicts["b"] == (Verdict.MET,)
-    assert verdicts["c"] == verdicts["d"] == (Verdict.NOT_EVALUATED,)
+    assert {verdicts[name] for name in WAITING} == {(Verdict.NOT_EVALUATED,)}
     finished = {run.run.identity.split("#")[1]: run.finished for run in outcome.tables}
-    assert finished == {"a": True, "b": True, "c": False, "d": False}
+    assert finished == {"a": True, "b": True, **dict.fromkeys(WAITING, False)}
     walls = {run.run.identity.split("#")[1]: run.run.wall_time_s for run in outcome.tables}
     assert walls["b"] == 1.5
-    assert walls["c"] is None and walls["d"] is None
+    assert {walls[name] for name in WAITING} == {None}
     details = {r.detail for run in outcome.tables[2:] for r in run.run.results}
     assert details == {STOPPED_REASON}
     scheduler.close()
-    assert fleet.prepared["d"].discarded  # the child that never started drops its scratch
+    assert [child.settles for child in (*waiting, fleet.child("a"), fleet.child("b"))] == [1] * 9
 
 
 def test_all_tables_runs_every_child_after_a_failing_verdict(root_dir: Path, world: FakeWorld):
@@ -325,8 +308,8 @@ def test_all_tables_runs_every_child_after_a_failing_verdict(root_dir: Path, wor
     fleet.child("a").finish(unmet())
     assert scheduler.step(cancel=False)
     assert fleet.store.state_for_pid(fleet.child("c").pid) is not None  # not withdrawn
-    assert fleet.started == ["a", "b", "c", "d"]
-    for name in "bcd":
+    assert fleet.started == list("ab" + WAITING)
+    for name in "b" + WAITING:
         fleet.child(name).finish()
     assert not scheduler.step(cancel=False)
     outcome = scheduler.outcome()
@@ -334,9 +317,7 @@ def test_all_tables_runs_every_child_after_a_failing_verdict(root_dir: Path, wor
     assert outcome.status is RunStatus.COMPLETED
     assert by_target(outcome) == {
         "a": (Verdict.UNMET,),
-        "b": (Verdict.MET,),
-        "c": (Verdict.MET,),
-        "d": (Verdict.MET,),
+        **dict.fromkeys("b" + WAITING, (Verdict.MET,)),
     }
     assert all(run.finished for run in outcome.tables)
 
@@ -346,41 +327,41 @@ def test_cancel_withdraws_waiting_children_and_stops_running_ones(
 ):
     from booley.harness.measure_children import CANCELLED_REASON, ChildScheduler
 
-    fleet = make_fleet(root_dir, world, max_light=1, queue_max=4)
+    waiting_names = [f"waiting{number}" for number in range(7)]
+    fleet = make_fleet(root_dir, world, max_light=1)
     scheduler = ChildScheduler(
-        fleet.plan(
-            [table("exited"), table("running"), table("waiting"), table("later")], light_claim
-        ),
+        fleet.plan([table(name) for name in ("exited", "running", *waiting_names)], light_claim),
         fleet.store,
         all_tables=False,
     )
     scheduler.step(cancel=False)
-    assert fleet.started == ["exited", "running", "waiting"]
-    exited, running, waiting = (fleet.child(n) for n in ("exited", "running", "waiting"))
+    assert fleet.started == ["exited", "running", *waiting_names]  # all nine started
+    exited, running = fleet.child("exited"), fleet.child("running")
+    waiting = [fleet.child(name) for name in waiting_names]
     assert exited.token is not None and running.token is not None
     fleet.store.refresh(exited.token)
     # The first child exits between two ticks: its claim goes, the next one is promoted.
     fleet.store.release(exited.token)
     exited.finish()
     assert fleet.store.refresh(running.token).state == job_slots.HOLDING
-    waiting_pid = waiting.pid
+    waiting_pids = [child.pid for child in waiting]
 
     assert not scheduler.step(cancel=True)
     outcome = scheduler.outcome()
 
-    assert fleet.store.state_for_pid(waiting_pid) is None  # withdrawn
+    assert [fleet.store.state_for_pid(pid) for pid in waiting_pids] == [None] * 7  # withdrawn
     assert running.interrupted and running.settles == 1
-    assert waiting.settles == 1 and exited.settles == 1
+    assert [child.settles for child in waiting] == [1] * 7 and exited.settles == 1
     assert fleet.live() == []
-    assert fleet.prepared["later"].discarded and fleet.prepared["later"].child is None
+    assert all(prepared.child is not None for prepared in fleet.prepared.values())
     assert outcome.status is RunStatus.CANCELLED
     verdicts = by_target(outcome)
     assert verdicts["exited"] == (Verdict.MET,)  # it ended before the cancellation
-    for name in ("running", "waiting", "later"):
+    for name in ("running", *waiting_names):
         assert verdicts[name] == (Verdict.NOT_EVALUATED,)
     finished = {run.run.identity.split("#")[1]: run.finished for run in outcome.tables}
-    assert finished == {"exited": True, "running": False, "waiting": False, "later": False}
-    assert {r.detail for r in outcome.tables[3].run.results} == {CANCELLED_REASON}
+    assert finished == {"exited": True, "running": False, **dict.fromkeys(waiting_names, False)}
+    assert {r.detail for r in outcome.tables[2].run.results} == {CANCELLED_REASON}
 
 
 def test_a_second_interrupt_during_cleanup_still_kills_every_child(
@@ -388,7 +369,7 @@ def test_a_second_interrupt_during_cleanup_still_kills_every_child(
 ):
     from booley.harness.measure_children import ChildScheduler
 
-    fleet = make_fleet(root_dir, world, max_light=3, queue_max=4)
+    fleet = make_fleet(root_dir, world, max_light=3)
     fleet.exits_on_interrupt = False
     scheduler = ChildScheduler(fleet.plan([table("a"), table("b")]), fleet.store, all_tables=True)
     scheduler.step(cancel=False)
@@ -409,7 +390,7 @@ def test_close_settles_every_child_even_when_one_settlement_fails(
 ):
     from booley.harness.measure_children import ChildScheduler
 
-    fleet = make_fleet(root_dir, world, max_light=3, queue_max=4)
+    fleet = make_fleet(root_dir, world, max_light=3)
     scheduler = ChildScheduler(
         fleet.plan([table("a"), table("b"), table("c")]), fleet.store, all_tables=True
     )
@@ -433,26 +414,26 @@ def test_requeued_children_are_not_refused_and_report_their_final_attempt(
 ):
     from booley.harness.measure_children import ChildScheduler
 
-    store = make_store(root_dir, world, SlotCaps(queue_max=3))  # window = 2
+    store = make_store(root_dir, world, SlotCaps())
     budget = 1000.0
     fleet = Fleet(world, store)
+    names = list("abcdefghi")
 
     def first_attempt(store: job_slots.SlotStore, pid: int) -> job_slots.SlotToken:
         claim = job_slots.MemoryClaim(budget_mb=budget, reservation_mb=400)
         return store.submit(job_slots.CLASS_MEMORY, pid=pid, memory=claim)
 
     scheduler = ChildScheduler(
-        fleet.plan([table("a"), table("b"), table("c")], first_attempt), store, all_tables=True
+        fleet.plan([table(name) for name in names], first_attempt), store, all_tables=True
     )
     scheduler.step(cancel=False)
+    assert fleet.started == names  # all nine started; seven of them wait
     first, second = fleet.child("a"), fleet.child("b")
     assert first.token is not None and second.token is not None
     for child in (first, second):
         assert store.refresh(child.token).state == job_slots.HOLDING  # type: ignore[arg-type]
-    scheduler.step(cancel=False)
-    assert fleet.started == ["a", "b"]  # the window is full of first attempts
 
-    # Both are killed for memory and claim again, alone: neither is refused for a full queue.
+    # Both are killed for memory and claim again, alone: neither is refused behind the queue.
     requeued: dict[str, job_slots.SlotToken] = {}
     for child in (first, second):
         store.release(child.token)  # type: ignore[arg-type]
@@ -462,34 +443,31 @@ def test_requeued_children_are_not_refused_and_report_their_final_attempt(
             pid=child.pid,
             memory=claim,
             queue_reason=OOM_REQUEUE_REASON,
-        )  # raises QueueFullError when refused
+        )
     scheduler.step(cancel=False)
-    assert fleet.started == ["a", "b"]  # waiting final attempts still occupy the window
     assert first.settles == 0 and second.settles == 0  # neither is finished while it waits
+    assert store.refresh(requeued[str(first.pid)]).state == job_slots.QUEUED
 
-    # The first final attempt runs alone: it can never queue again, so the window opens.
+    # The waiting children run in queue order; then each final attempt runs alone.
+    for name in names[2:]:
+        child = fleet.child(name)
+        assert store.refresh(child.token).state == job_slots.HOLDING  # type: ignore[arg-type]
+        child.finish()
+        store.release(child.token)  # type: ignore[arg-type]
     assert store.refresh(requeued[str(first.pid)]).state == job_slots.HOLDING
-    scheduler.step(cancel=False)
-    assert fleet.started == ["a", "b", "c"]
-
     first.finish(result(2, elapsed_s=7.0))  # the verdicts come from the final attempt
     store.release(requeued[str(first.pid)])
     assert store.refresh(requeued[str(second.pid)]).state == job_slots.HOLDING
     second.finish(result(3, elapsed_s=9.0))
-    fleet.child("c").finish()
     assert not scheduler.step(cancel=False)
     outcome = scheduler.outcome()
 
     assert outcome.status is RunStatus.COMPLETED
-    assert by_target(outcome) == {
-        "a": (Verdict.MET,),
-        "b": (Verdict.MET,),
-        "c": (Verdict.MET,),
-    }
+    assert by_target(outcome) == dict.fromkeys(names, (Verdict.MET,))
     walls = {run.run.identity.split("#")[1]: run.run.wall_time_s for run in outcome.tables}
     assert walls["a"] == 7.0 and walls["b"] == 9.0
     values = [run.run.values for run in outcome.tables]
-    assert [v.plain["warnings"] for v in values if v is not None] == [2, 3, 0]
+    assert [v.plain["warnings"] for v in values if v is not None] == [2, 3, *[0] * 7]
 
 
 @pytest.fixture()
@@ -503,7 +481,7 @@ def test_a_running_flow_waiting_for_a_work_item_claim_is_not_withdrawn(
     """A Campaign's work items claim under the Flow's PID: that Flow is running, not waiting."""
     from booley.harness.measure_children import STOPPED_REASON, ChildScheduler
 
-    fleet = make_fleet(root_dir, world, max_light=2, queue_max=5)
+    fleet = make_fleet(root_dir, world, max_light=2)
     scheduler = ChildScheduler(
         fleet.plan([table("a"), table("b"), table("c")], light_claim),
         fleet.store,
@@ -532,51 +510,12 @@ def test_a_running_flow_waiting_for_a_work_item_claim_is_not_withdrawn(
     assert STOPPED_REASON not in {r.detail for r in outcome.tables[1].run.results}
 
 
-def test_a_work_item_requeue_does_not_end_the_flows_place_in_the_window(
-    root_dir: Path, world: FakeWorld
-):
-    """Only the claim held now marks a final attempt: later item claims of the Flow queue again."""
-    from booley.harness.measure_children import ChildScheduler
-
-    fleet = make_fleet(root_dir, world, max_light=5, queue_max=4)  # window = 3
-    scheduler = ChildScheduler(
-        fleet.plan([table(name) for name in "abcde"], light_claim), fleet.store, all_tables=True
-    )
-    scheduler.step(cancel=False)
-    assert fleet.started == ["a", "b", "c"]
-    first = fleet.child("a")
-    assert first.token is not None
-    for name in "abc":
-        assert fleet.store.refresh(fleet.child(name).token).state == job_slots.HOLDING  # type: ignore[arg-type]
-    # Its item is requeued after an out-of-memory kill and holds a slot with the reason.
-    fleet.store.release(first.token)
-    requeued = fleet.store.submit(
-        job_slots.CLASS_LIGHT,
-        pid=first.pid,
-        role=job_slots.ROLE_INTERACTIVE,
-        queue_reason=OOM_REQUEUE_REASON,
-    )
-    assert fleet.store.refresh(requeued).state == job_slots.HOLDING
-    scheduler.step(cancel=False)
-    assert fleet.started == ["a", "b", "c", "d"]  # a final attempt opens the window
-
-    # The next item of the same Flow claims without a reason: it can queue again.
-    fleet.store.release(requeued)
-    plain = fleet.store.submit(
-        job_slots.CLASS_LIGHT, pid=first.pid, role=job_slots.ROLE_INTERACTIVE
-    )
-    assert fleet.store.refresh(plain).state == job_slots.HOLDING
-    fleet.child("b").finish()
-    scheduler.step(cancel=False)
-    assert fleet.started == ["a", "b", "c", "d"]  # a, c and d fill the window again
-
-
 def test_a_second_interrupt_while_signalling_still_kills_every_child(
     root_dir: Path, world: FakeWorld
 ):
     from booley.harness.measure_children import ChildScheduler
 
-    fleet = make_fleet(root_dir, world, max_light=3, queue_max=4)
+    fleet = make_fleet(root_dir, world, max_light=3)
     fleet.exits_on_interrupt = False
     scheduler = ChildScheduler(fleet.plan([table("a"), table("b")]), fleet.store, all_tables=True)
     scheduler.step(cancel=False)
@@ -646,7 +585,7 @@ def test_a_child_that_cannot_be_launched_after_another_started_gets_error_verdic
     from booley.harness.checkout_flow import CheckoutFlowError
     from booley.harness.measure_children import STOPPED_REASON, ChildScheduler
 
-    fleet = make_fleet(root_dir, world, max_light=2, queue_max=4)
+    fleet = make_fleet(root_dir, world, max_light=2)
     planned = fleet.plan([table(name) for name in "abc"], light_claim)
 
     def refuse() -> FakeChild:
@@ -687,7 +626,7 @@ def test_the_first_child_that_cannot_be_launched_raises(root_dir: Path, world: F
     from booley.harness.checkout_flow import CheckoutFlowError
     from booley.harness.measure_children import ChildScheduler
 
-    fleet = make_fleet(root_dir, world, max_light=2, queue_max=4)
+    fleet = make_fleet(root_dir, world, max_light=2)
     planned = fleet.plan([table("a"), table("b")], light_claim)
 
     def refuse() -> FakeChild:

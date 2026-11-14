@@ -767,7 +767,7 @@ def _add_init_subparser(sub) -> None:
         "--auth",
         type=_agent_auth_arg,
         metavar="{auto,subscription,api-key}",
-        help="Agent authentication policy to record (default: auto)",
+        help="Agent authentication policy to record (default: detected from your credentials)",
     )
     init_p.add_argument(
         "--repin-booley-dir",
@@ -877,6 +877,12 @@ def _add_measure_subparser(sub) -> None:
         "--all",
         action="store_true",
         help="Evaluate every table even after an unmet or error verdict",
+    )
+    parser.add_argument(
+        "--again",
+        action="store_true",
+        help="Measure again even when the commit is already Measured; "
+        "otherwise its stored run is shown",
     )
     parser.add_argument("--json", action="store_true", help="Print the report as JSON")
     parser.add_argument(
@@ -998,7 +1004,7 @@ def _add_utility_subparsers(sub) -> None:
         default=None,
         help=(
             "Start in a new worktree `s<N>` even if the main checkout is free "
-            "(overrides [chat] worktree for this launch)"
+            "(overrides [worktree] chat for this launch)"
         ),
     )
     placement.add_argument(
@@ -1009,7 +1015,7 @@ def _add_utility_subparsers(sub) -> None:
         default=None,
         help=(
             "Start in the main checkout even if another session uses it; from inside a "
-            "linked worktree, stay there (overrides [chat] worktree for this launch)"
+            "linked worktree, stay there (overrides [worktree] chat for this launch)"
         ),
     )
     chat_p.add_argument(
@@ -2079,11 +2085,12 @@ def _measure_commit(args: argparse.Namespace, project_root: Path) -> int:
     shown = [args.revision] if args.revision != "HEAD" else []
     if args.base is not None:
         shown += ["--base", args.base]
-    shown += ["--all"] * args.all + ["--json"] * args.json
+    shown += ["--all"] * args.all + ["--again"] * args.again + ["--json"] * args.json
     request = MeasureRequest(
         revision=args.revision,
         base=args.base,
         all_tables=args.all,
+        again=args.again,
         as_json=args.json,
         argv=tuple(shown),
     )
@@ -2101,7 +2108,7 @@ def _cmd_measure(args: argparse.Namespace, project_root: Path) -> int:
 
     if not args.validate:
         return _measure_commit(args, project_root)
-    if args.revision != "HEAD" or args.base is not None or args.all or args.json:
+    if args.revision != "HEAD" or args.base is not None or args.all or args.again or args.json:
         print(
             "ERROR: --validate checks the working tree's metrics.toml and takes no other option",
             file=sys.stderr,

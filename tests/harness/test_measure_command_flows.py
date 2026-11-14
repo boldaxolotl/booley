@@ -47,8 +47,8 @@ targets:
     default_tool: icarus
 """
 TARGETS = ("metrics_ok", "metrics_b", "crash")
-# The queue of two leaves a window of one child: the tables run one after another.
-ONE_AT_A_TIME = "queue_max = 2\n"
+# No queue limit: every table starts at once and admission orders them.
+ONE_AT_A_TIME = ""
 
 
 def metrics_project(make_world: WorldBuilder, metrics: str, config: str = ONE_AT_A_TIME) -> World:
@@ -119,6 +119,26 @@ def test_a_met_commit_exits_zero_stores_one_run_and_is_measured(
 
 
 @linux_only
+def test_a_measured_commit_is_shown_and_again_measures_it(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world = metrics_project(make_world, "[metrics_ok.checkout_stub]\nmarker_max = 10\n")
+    assert measure(monkeypatch, world) == 0
+
+    assert measure(monkeypatch, world) == 0  # shown: no Flow starts, nothing is stored
+
+    assert len(stored_documents(world)) == 1
+    assert len(measure_records(world)) == 2
+    assert started_targets(world) == ["metrics_ok"]
+
+    assert measure(monkeypatch, world, "--again") == 0
+
+    assert len(stored_documents(world)) == 2
+    assert len(store_of(world).history(head_key(world))) == 2
+    assert started_targets(world) == ["metrics_ok", "metrics_ok"]
+
+
+@linux_only
 @pytest.mark.parametrize("all_tables", [False, True], ids=["stop", "all"])
 def test_an_unmet_bound_stops_later_tables_unless_all(
     make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, all_tables: bool
@@ -136,14 +156,18 @@ def test_an_unmet_bound_stops_later_tables_unless_all(
     tables = {t["identity"].split("#")[1]: t for t in stored.document["tables"]}
     assert [r["verdict"] for r in tables["metrics_ok"]["results"]] == ["unmet"]
     assert not stored.measured
-    if all_tables:
-        assert started_targets(world) == ["metrics_ok", "metrics_b"]
+    # Both children start at once and race for the one live light slot, so which runs first is
+    # not fixed; the table whose child never ran is the one the unmet bound withdrew.
+    ran_b = "metrics_b" in started_targets(world)
+    assert "metrics_ok" in started_targets(world)
+    if all_tables or ran_b:
         assert [r["verdict"] for r in tables["metrics_b"]["results"]] == ["tracked"]
         assert stored.status == "completed"
     else:
-        assert started_targets(world) == ["metrics_ok"]  # the second child never started
         assert [r["verdict"] for r in tables["metrics_b"]["results"]] == ["not_evaluated"]
         assert stored.status == "stopped"
+    if all_tables:
+        assert ran_b
 
 
 @linux_only
@@ -174,7 +198,7 @@ def test_a_retired_key_in_the_commit_does_not_stop_its_measurement(
         config=ONE_AT_A_TIME + "max_heavy = 1\n",
     )
     live_settings = world.main / "booley.toml"
-    live_settings.write_bytes(b"[jobs]\nmax_light = 1\nqueue_max = 2\n")
+    live_settings.write_bytes(b"[jobs]\nmax_light = 1\n")
 
     assert measure(monkeypatch, world) == 0
     assert len(stored_documents(world)) == 1

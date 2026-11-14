@@ -46,11 +46,10 @@ def view_of(
     commit: str,
     *,
     base: str | None = None,
-    targets: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     from booley.measurement.run_view import run_view
 
-    return run_view(repo, store, run, commit, base=base, targets=targets)
+    return run_view(repo, store, run, commit, base=base)
 
 
 def test_view_holds_the_stored_run_unchanged_and_round_trips(
@@ -416,10 +415,11 @@ def test_target_without_a_table_is_listed_in_given_order(tmp_path: Path) -> None
     repo, _, head = feature_repo(tmp_path)
     store = MeasurementStore(repo / ".booley")
     table = Table("synth", (Entry("cell_count_max", "cell_count", 90, bound=100),))
-    stored = store.write(build_run(key_of(repo, head), "r1", (table,)), [])
     targets = ("acme:b:1.0#x", "acme:core:1.0#top", "acme:other:1.0#top", "acme:a:1.0#x")
+    run = replace(build_run(key_of(repo, head), "r1", (table,)), targets=targets)
+    stored = store.write(run, [])
 
-    view = view_of(repo, store, stored, head, targets=targets)["view"]
+    view = view_of(repo, store, stored, head)["view"]
 
     assert view["targets_without_table"] == ["acme:b:1.0#x", "acme:other:1.0#top", "acme:a:1.0#x"]
 

@@ -14,6 +14,7 @@ from booley.evidence.recipe import (
     recipe_snapshot_fingerprint,
 )
 
+from ..edam import EdamFile
 from ..run_evidence import FlowSourceEvidence
 from .profiles import VivadoProfile, resolve_fpga_profile
 
@@ -27,8 +28,8 @@ class ResolvedFpgaRecipe:
     part: str
     top: str
     xdc_files: tuple[Path, ...]
-    sv_files: tuple[Path, ...]
-    v_files: tuple[Path, ...]
+    # HDL sources in Target order, each with the file_type its .core declares.
+    sources: tuple[EdamFile, ...]
     include_dirs: tuple[Path, ...]
     defines: tuple[str, ...]
     vlogparams: dict[str, Any]

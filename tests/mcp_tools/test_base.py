@@ -411,9 +411,9 @@ class TestClassifyFiles:
         cats = _classify_files(["tb/my_tb.sv"])
         assert cats == {CATEGORY_TB}
 
-    def test_fw_files_are_rtl(self):
+    def test_fw_files_are_not_special(self):
         cats = _classify_files(["fw/boot.s"])
-        assert cats == {CATEGORY_RTL}
+        assert cats == set()
 
     def test_mixed(self):
         cats = _classify_files(["rtl/a.sv", "tb/b.sv"])
@@ -1933,34 +1933,6 @@ class TestJobSlotAdmission:
         assert seen["waiters"] == []
         # After main: the finally released the claim — no live entries remain.
         assert list((slots / job_slots.CLASS_LIGHT).glob("*.json")) == []
-
-    def test_queue_full_returns_blocked_error(
-        self,
-        tmp_path: Path,
-        monkeypatch,
-        capsys,
-    ):
-        """cap + queue_max live entries already present → main() is refused
-        with EXIT_ERROR and a BLOCKED report_text (ADR 0028 Decision 8: queue
-        overflow is the only admission outcome surfaced as BLOCKED)."""
-        slots = self._runtime_env(monkeypatch, tmp_path)
-        # Fill the light class to its bound with default caps (cap 3 +
-        # queue_max 8 = 11 live entries). pid=our own → provably alive;
-        # argv=[] → the /proc identity check can't judge, so no reap.
-        store = job_slots.SlotStore(slots)
-        caps = job_slots.SlotCaps()
-        for _ in range(caps.max_light + caps.queue_max):
-            store.submit(job_slots.CLASS_LIGHT, pid=os.getpid(), argv=[])
-
-        endpoint = LightMcpTool()  # human mode: report_text surfaces on stderr
-        exit_code = endpoint.main(["--work-dir", str(tmp_path)])
-        assert exit_code == EXIT_ERROR
-        err = capsys.readouterr().err
-        assert "BLOCKED" in err
-        assert "queue is full" in err
-        # The refused run withdrew its own entry — the queue did not grow.
-        live = list((slots / job_slots.CLASS_LIGHT).glob("*.json"))
-        assert len(live) == caps.max_light + caps.queue_max
 
 
 class TestMcpToolEventScan:
