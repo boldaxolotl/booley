@@ -7,8 +7,9 @@ picks Targets by name instead of inventing its own tool arguments. So every
 result traces back to a configuration you can read and rerun.
 
 Targets live in [FuseSoC](https://github.com/olofk/fusesoc) `.core` files.
-A Project needs at least one `.core` next to [`booley.toml`](CONFIG.md); the
-`booley-setup` skill writes both during [setup](SETUP.md). Read this page when
+A Project needs at least one `.core` file. Booley finds them anywhere in the
+repository, or in `.booley/cores/` in [Stealth Mode](STEALTH.md). The
+`booley-setup` skill writes them during [setup](SETUP.md). Read this page when
 you review what setup wrote, add a Target, or fix one that Doctor flags. What
 each Target should *verify* (its tests) lives in [`tests.toml`](TESTS.md).
 
