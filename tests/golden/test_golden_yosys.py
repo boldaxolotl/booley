@@ -223,7 +223,9 @@ def test_yosys_script_slang_flatten_params_golden() -> None:
         ("abc_balanced_delay.txt", "balanced", 3333),
     ],
 )
-def test_abc_command_golden(golden_name: str, abc_recipe: str | None, abc_delay_ps: int | None) -> None:
+def test_abc_command_golden(
+    golden_name: str, abc_recipe: str | None, abc_delay_ps: int | None
+) -> None:
     """Snapshot each ABC technology-mapping recipe string, with and without a delay target."""
     # Production always feeds ``_build_abc_command`` a POSIX string (the caller
     # ``_build_yosys_script`` runs both paths through ``_quote_yosys_path``,

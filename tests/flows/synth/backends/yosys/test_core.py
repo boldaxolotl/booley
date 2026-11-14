@@ -197,6 +197,18 @@ class TestAbcDelayTargetReachesMapping:
     pin(A2) { direction: input; capacitance: 1; }
     pin(ZN) { direction: output; function: \"!(A1 & A2)\"; }
   }
+  cell(NOR2_X1) {
+    area: 2;
+    pin(A1) { direction: input; capacitance: 1; }
+    pin(A2) { direction: input; capacitance: 1; }
+    pin(ZN) { direction: output; function: \"!(A1 | A2)\"; }
+  }
+  cell(AND2_X1) {
+    area: 3;
+    pin(A1) { direction: input; capacitance: 1; }
+    pin(A2) { direction: input; capacitance: 1; }
+    pin(ZN) { direction: output; function: \"A1 & A2\"; }
+  }
 }
 """
 
