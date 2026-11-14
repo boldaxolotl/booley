@@ -1,6 +1,6 @@
 ---
 name: booley-qa-run
-description: Only when the user explicitly asks, run a Booley QA mission — a timeboxed bug hunt on a pinned IP against a candidate Booley build — and write findings for later triage.
+description: Only when the user explicitly asks, run a Booley QA mission — a timeboxed bug hunt on a pinned IP against a candidate Booley build — write findings, and triage them automatically.
 disable-model-invocation: true
 ---
 
@@ -25,7 +25,9 @@ breaks.
 
 Inputs from the user: a mission name (`picorv32`, `taxi`, `uart`, `coverage`, `mutation`, `gui` — a directory
 under `qa/missions/`), a Booley build (an exact commit or a published version),
-an artifact root, and optionally `smoke` to also run the release smoke list.
+an artifact root, and optionally `smoke` to also run the release smoke list,
+`no-triage` to leave the findings for later triage, and `jury=<model>,...`
+to pass to automatic triage.
 
 ## Operating principles
 
@@ -50,8 +52,9 @@ an artifact root, and optionally `smoke` to also run the release smoke list.
 
 ## Hard rules
 
-- Keep all changes local: no `git push`, issue or PR creation, or other external
-  submission.
+- Until the run is complete (step 5 done), keep all changes local: no
+  `git push`, issue or PR creation, or other external submission. Step 6's
+  automatic triage then files issues under its own rules.
 - Leave Booley source unchanged; workarounds live in the run dir.
 - Keep credentials and tokens out of evidence, prompts, and Projects. Redact
   secrets from captured output before saving it.
@@ -124,16 +127,26 @@ Write each finding the moment you observe it, before any workaround or retry.
    `logs/acceptance/` into `evidence/cleanup/`; triage needs them to diagnose
    Goal state findings. Last, list `/tmp/qa-*` and other run-named paths
    outside the run dir; report any leftover without a row as a `qa-bug`.
-6. **Report.** Make sure `findings.md` and `log.md` are complete and tell the
-   user: finding count by kind and severity, areas skipped, cleanup failures,
-   smoke verdict, and that `booley-qa-triage` turns the findings into issues.
+6. **Triage.** Make sure `findings.md` and `log.md` are complete. Unless the
+   user passed `no-triage`, read `booley-qa-triage/SKILL.md` under the derived
+   `qa/` directory and run its automatic mode on this run directory,
+   passing any `jury=` argument. A triage stop (no T3 Code, a juror
+   unavailable) leaves the run complete: record it in `log.md` and carry its
+   reason and rerun command into the report.
+7. **Report.** Tell the user: finding count by kind and severity, areas
+   skipped, cleanup failures, smoke verdict, and the triage report (or that
+   `/booley-qa-triage` turns the findings into issues, when triage was skipped
+   or stopped).
 
 The run is complete when every area is `done`, `partial`, or `skipped` with a
-reason, every `resources.md` row is released or marked `failed`, and the report
-is delivered.
+reason and every `resources.md` row is released or marked `failed`. The skill
+is done when triage has finished, stopped, or been skipped, and the report is
+delivered.
 
 ## Resuming
 
 After context compaction or a hand-over, reread this file, the mission,
 `log.md`, and `resources.md`, then continue from the first area that is not
-`done`. An operator that cannot continue the mission runs step 5 and step 6.
+`done`. An operator that cannot continue the mission runs steps 5 to 7. When
+cleanup is done and `<run-dir>/triage.md` exists, resume automatic triage
+instead; it keeps the clusters already decided.

@@ -1,0 +1,26 @@
+# Default jury for booley-qa-triage automatic mode (see AUTO.md).
+#
+# Every juror judges every cluster blind, and an automatic decision needs all
+# of them to agree. A run may replace this list with
+# `jury=<model>,<model>,...`; each listed model then runs at `high` effort.
+# Jurors run as T3 Code child tasks: `provider` is the T3 driver kind that
+# `orchestrator_capabilities` lists, `model` the model ID passed to
+# `delegate_task`.
+
+[[juror]]
+name = "Claude Opus 5.5"
+provider = "claudeAgent"
+model = "claude-opus-5-5"
+effort = "high"
+
+[[juror]]
+name = "Claude Fable 5.2"
+provider = "claudeAgent"
+model = "claude-fable-5-2"
+effort = "high"
+
+[[juror]]
+name = "GPT Sol 6.1"
+provider = "codex"
+model = "gpt-6.1-sol"
+effort = "high"
