@@ -257,10 +257,17 @@ def failing_script(root_dir: Path, world: FakeWorld, *, all_tables: bool):
     return fleet, scheduler
 
 
-@pytest.mark.parametrize("failing", ["unmet", "error"])
 def test_a_failing_verdict_withdraws_waiting_children_and_keeps_running_ones(
-    root_dir: Path, world: FakeWorld, failing: str
+    root_dir: Path, world: FakeWorld
 ):
+    _stop_after_failing_verdict(root_dir, world, "unmet")
+
+
+def test_an_error_verdict_withdraws_waiting_children_too(root_dir: Path, world: FakeWorld):
+    _stop_after_failing_verdict(root_dir, world, "error")
+
+
+def _stop_after_failing_verdict(root_dir: Path, world: FakeWorld, failing: str) -> None:
     from booley.harness.measure_children import STOPPED_REASON
 
     fleet, scheduler = failing_script(root_dir, world, all_tables=False)
