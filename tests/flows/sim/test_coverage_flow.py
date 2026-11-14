@@ -1444,11 +1444,11 @@ def test_interrupted_and_pruned_invocations_are_never_reused(tmp_path, monkeypat
 
 
 def test_full_pruning_refuses_resume_dependent_unless_explicitly_included(tmp_path, monkeypatch):
+    from booley.flows.sim import record_retention
     from booley.flows.sim.record.artifact_reference import (
         resolve_report_artifact_reference,
     )
     from booley.flows.sim.record.codec import MANIFEST_MAX_BYTES
-    from booley.flows.sim import record_retention
     from booley.flows.sim.record_retention import (
         CampaignRetentionError,
         prune_invocation,
