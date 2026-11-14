@@ -77,11 +77,6 @@ Points worth knowing in that example:
 
 - **`tags: [tb]`** is how Booley tells testbench files from RTL; reviews and
   change tracking rely on it, so tag every testbench fileset.
-- **Waveform tracing needs no extra source in the `.core`.** The Icarus trace
-  overlay supplies the packaged dump module when the Target does not already
-  provide one. Existing project-supplied modules remain supported and are
-  reused. Verilator relies on the Target's trace-capable C++ simulation
-  harness and does not need the dump module.
 - **`file_type: user` with `copyto:`** puts a data file (a `$readmemh` image,
   a vectors file) at the path the testbench opens. Booley places it in the
   simulation's working directory ([`run_cwd`](FLOW-SIM.md#sim-working-directory-flowssimrun_cwd))
@@ -380,8 +375,6 @@ How it differs from an SV Target:
   the full matrix, a common choice is every module on the default variant,
   plus only the modules that exercise the difference on the other variants.
 - **Icarus or Verilator only.** Commercial simulators can't run Cocotb Targets.
-- **Tracing needs no `.core` setup.** See
-  [Tracing a Cocotb Target](FLOW-SIM.md#tracing-a-cocotb-target).
 
 ## Flat and vendored repos
 
