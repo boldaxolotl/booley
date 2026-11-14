@@ -13,7 +13,7 @@ from booley.flows.execution_persistence import StandaloneFlowExecution
 from booley.flows.frozen_test_runs import FrozenTestRuns, GoalTestRuns, SeedGroup
 from booley.flows.sim.execution import DefaultSelection, SelectedTestRuns
 from booley.flows.sim.flow import SimulateFlow
-from booley.flows.sim.watchdog_sizing import resolve_sim_campaign_work_units
+from booley.flows.sim.watchdog_sizing import resolve_simulation_record_work_units
 from booley.flows.target_test_plan import build_target_test_plan
 from booley.flows.test_runs import UnseededTargetError, build_test_run, test_run_document
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
@@ -238,18 +238,18 @@ def test_every_published_manifest_is_registered_with_the_goal_run_before_it_runs
 ):
     """A campaign that never returns an outcome must already be known to its Goals."""
     from booley.flows.sim import flow as flow_module
-    from booley.flows.simulation_record_results import StartedCampaign
+    from booley.flows.simulation_record_results import StartedSimulationRecord
 
     class Registry(_GoalAdapter):
         def __init__(self) -> None:
             super().__init__(_frozen(_SUITE))
-            self.campaigns: list[StartedCampaign] = []
+            self.simulation_records: list[StartedSimulationRecord] = []
 
-        def register_campaign(self, campaign: StartedCampaign) -> None:
-            self.campaigns.append(campaign)
+        def register_simulation_record(self, simulation_record: StartedSimulationRecord) -> None:
+            self.simulation_records.append(simulation_record)
 
-    def started(path: Path) -> StartedCampaign:
-        return StartedCampaign(path, "id", "sha256:" + "0" * 64, ("sim",), True)
+    def started(path: Path) -> StartedSimulationRecord:
+        return StartedSimulationRecord(path, "id", "sha256:" + "0" * 64, ("sim",), True)
 
     monkeypatch.setattr(flow_module, "started_simulation_record", started)
     manifest = tmp_path / "record" / "manifest.json"
@@ -261,13 +261,13 @@ def test_every_published_manifest_is_registered_with_the_goal_run_before_it_runs
     publish = flow._manifest_publisher(published)
     publish(manifest)
     publish(manifest)  # a resume names the path again: registered once per invocation
-    assert [item.manifest_path for item in registry.campaigns] == [manifest.resolve()]
+    assert [item.manifest_path for item in registry.simulation_records] == [manifest.resolve()]
 
     diagnostic = _flow(tmp_path, monkeypatch, "--diagnostic")
     silent = Registry()
     diagnostic.configure_flow_execution(silent)
     diagnostic._manifest_publisher([])(manifest)
-    assert silent.campaigns == []
+    assert silent.simulation_records == []
     # Outside Goal Mode nothing wants to know.
     _flow(tmp_path, monkeypatch)._manifest_publisher([])(manifest)
 
@@ -314,4 +314,4 @@ def test_two_keys_for_one_target_refuse_the_run_naming_both(tmp_path):
     assert refusal is not None and refusal.exit_code == EXIT_ERROR
     assert "[vendor:b:y#sim] and [y#sim]" in refusal.report_text
     # The watchdog sizing preflight must not raise: the child Flow reports the refusal.
-    assert resolve_sim_campaign_work_units(tmp_path, "y#sim") == 1
+    assert resolve_simulation_record_work_units(tmp_path, "y#sim") == 1

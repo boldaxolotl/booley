@@ -17,7 +17,7 @@ TAXI = ROOT / "qa/missions/taxi/fixtures/simulation-campaign"
 # measurement of that run with its SlotStore samples thinned.
 CAPTURED = ROOT / "tests/runtime/fixtures/directory_migration/taxi_simulation_record/parallel"
 UART = ROOT / "qa/missions/uart/fixtures/simulation-campaign"
-CAMPAIGN_ID = "9904b376-4087-4d49-a9be-55c4b8e27da8"
+SIMULATION_RECORD_ID = "9904b376-4087-4d49-a9be-55c4b8e27da8"
 OUTER = "539e1228e49a48de8b6f967edbe31ce1"
 WORKLOAD = "sha256:" + "9" * 64
 TESTS = ("slow-first", "slow-fail", "slow-last")
@@ -60,26 +60,28 @@ def _rewrite(path: Path, mutate) -> None:
     _write_json(path, document)
 
 
-def _work_item_directory(campaign: Path, index: int) -> Path:
-    return campaign / "work-items" / f"{index + 1:04d}-{WORK_ITEMS[index].rsplit(':', 1)[1]}"
+def _work_item_directory(simulation_record: Path, index: int) -> Path:
+    return (
+        simulation_record / "work-items" / f"{index + 1:04d}-{WORK_ITEMS[index].rsplit(':', 1)[1]}"
+    )
 
 
-def _attempt_directory(campaign: Path, index: int) -> Path:
-    return _work_item_directory(campaign, index) / "attempts" / f"0001-{ATTEMPTS[index]}"
+def _attempt_directory(simulation_record: Path, index: int) -> Path:
+    return _work_item_directory(simulation_record, index) / "attempts" / f"0001-{ATTEMPTS[index]}"
 
 
 def _run_directory(index: int) -> str:
     work_item = _work_item_directory(Path(), index).name
-    return f"/work/.booley-qa/campaign/{CAMPAIGN_ID}/{work_item}/0001-{ATTEMPTS[index]}"
+    return f"/work/.booley-qa/campaign/{SIMULATION_RECORD_ID}/{work_item}/0001-{ATTEMPTS[index]}"
 
 
-def _write_campaign(campaign: Path) -> None:
+def _write_simulation_record(simulation_record: Path) -> None:
     """Write one completed three-attempt Campaign in the layout Booley publishes."""
     _write_json(
-        campaign / "manifest.json",
+        simulation_record / "manifest.json",
         {
             "$schema": MANIFEST_SCHEMA,
-            "campaign_id": CAMPAIGN_ID,
+            "campaign_id": SIMULATION_RECORD_ID,
             "fingerprints": {"workload_sha256": WORKLOAD},
             "origin": {"execution_id": OUTER, "invocation_id": 12},
             "work_items": [
@@ -93,16 +95,16 @@ def _write_campaign(campaign: Path) -> None:
             ],
         },
     )
-    manifest_sha256 = _digest((campaign / "manifest.json").read_bytes().rstrip(b"\n"))
+    manifest_sha256 = _digest((simulation_record / "manifest.json").read_bytes().rstrip(b"\n"))
     common = {
-        "campaign_id": CAMPAIGN_ID,
+        "campaign_id": SIMULATION_RECORD_ID,
         "manifest_sha256": manifest_sha256,
         "workload_sha256": WORKLOAD,
     }
     for index in range(len(TESTS)):
-        _write_attempt(campaign, index, common)
+        _write_attempt(simulation_record, index, common)
     _write_json(
-        campaign / "summary.json",
+        simulation_record / "summary.json",
         {
             "$schema": "booley.simulation-campaign-summary/v1",
             **common,
@@ -115,8 +117,8 @@ def _write_campaign(campaign: Path) -> None:
     )
 
 
-def _write_attempt(campaign: Path, index: int, common: dict[str, str]) -> None:
-    directory = _attempt_directory(campaign, index)
+def _write_attempt(simulation_record: Path, index: int, common: dict[str, str]) -> None:
+    directory = _attempt_directory(simulation_record, index)
     identity = {**common, "attempt_id": ATTEMPTS[index], "work_item_id": WORK_ITEMS[index]}
     log = f"CMD: snapshot/Vcampaign_tb +test={TESTS[index]}\n[SIM_RESULT] done\n".encode()
     (directory / "evidence").mkdir(parents=True)
@@ -137,7 +139,7 @@ def _write_attempt(campaign: Path, index: int, common: dict[str, str]) -> None:
         },
     )
     _write_json(
-        _work_item_directory(campaign, index) / "result.json",
+        _work_item_directory(simulation_record, index) / "result.json",
         _result(index, identity, log),
     )
 
@@ -208,11 +210,11 @@ def _interval(root: Path, index: int) -> dict[str, object]:
 
 @pytest.fixture
 def evidence(tmp_path: Path) -> tuple[Path, Path]:
-    campaign = tmp_path / "campaign"
+    simulation_record = tmp_path / "campaign"
     timeline = tmp_path / "timeline.json"
-    _write_campaign(campaign)
+    _write_simulation_record(simulation_record)
     _write_timeline(timeline)
-    return timeline, campaign
+    return timeline, simulation_record
 
 
 @pytest.fixture(scope="module")
@@ -220,13 +222,15 @@ def validator():
     return _module("taxi_parallel_validator", TAXI / "validate_parallel.py")
 
 
-def test_taxi_parallel_validator_accepts_published_campaign_shape(validator, evidence) -> None:
-    timeline, campaign = evidence
-    validator.validate_attempt_isolation(timeline, campaign)
+def test_taxi_parallel_validator_accepts_published_simulation_record_shape(
+    validator, evidence
+) -> None:
+    timeline, simulation_record = evidence
+    validator.validate_attempt_isolation(timeline, simulation_record)
     validator.validate_continue_after_failure(
-        campaign / "manifest.json",
-        campaign / "summary.json",
-        [_work_item_directory(campaign, index) / "result.json" for index in range(3)],
+        simulation_record / "manifest.json",
+        simulation_record / "summary.json",
+        [_work_item_directory(simulation_record, index) / "result.json" for index in range(3)],
     )
 
 
@@ -235,59 +239,59 @@ def test_taxi_attempt_isolation_accepts_captured_run(validator) -> None:
 
 
 def test_taxi_continuation_accepts_captured_run(validator) -> None:
-    campaign = CAPTURED / "campaign"
+    simulation_record = CAPTURED / "campaign"
     validator.validate_continue_after_failure(
-        campaign / "manifest.json",
-        campaign / "summary.json",
-        sorted(campaign.glob("work-items/*/result.json")),
+        simulation_record / "manifest.json",
+        simulation_record / "summary.json",
+        sorted(simulation_record.glob("work-items/*/result.json")),
     )
 
 
 def test_taxi_attempt_isolation_rejects_tampered_evidence(validator, evidence) -> None:
-    timeline, campaign = evidence
+    timeline, simulation_record = evidence
     retained = timeline.parent / "outputs" / ATTEMPTS[0] / "qa-shared-name.txt"
     original = retained.read_bytes()
     retained.write_text("forged\n", encoding="utf-8")
     with pytest.raises(ValueError, match="output retained digest differs"):
-        validator.validate_attempt_isolation(timeline, campaign)
+        validator.validate_attempt_isolation(timeline, simulation_record)
     retained.write_bytes(original)
 
-    log = _attempt_directory(campaign, 1) / "evidence/0001-run.log"
+    log = _attempt_directory(simulation_record, 1) / "evidence/0001-run.log"
     original = log.read_bytes()
     log.write_bytes(original.replace(b"done", b"gone"))
     with pytest.raises(ValueError, match="evidence retained digest differs"):
-        validator.validate_attempt_isolation(timeline, campaign)
+        validator.validate_attempt_isolation(timeline, simulation_record)
     log.write_bytes(original)
-    validator.validate_attempt_isolation(timeline, campaign)
+    validator.validate_attempt_isolation(timeline, simulation_record)
 
 
-def _contaminate_log(campaign: Path) -> None:
-    log = _attempt_directory(campaign, 1) / "evidence/0001-run.log"
+def _contaminate_log(simulation_record: Path) -> None:
+    log = _attempt_directory(simulation_record, 1) / "evidence/0001-run.log"
     raw = log.read_bytes() + b"CMD: snapshot/Vcampaign_tb +test=slow-last\n"
     log.write_bytes(raw)
     _rewrite(
-        _work_item_directory(campaign, 1) / "result.json",
+        _work_item_directory(simulation_record, 1) / "result.json",
         lambda document: document["evidence"][0].update(bytes=len(raw), sha256=_digest(raw)),
     )
 
 
-def _disown_run_directory(campaign: Path) -> None:
+def _disown_run_directory(simulation_record: Path) -> None:
     _rewrite(
-        _attempt_directory(campaign, 2) / "attempt.json",
+        _attempt_directory(simulation_record, 2) / "attempt.json",
         lambda document: document["run_directory"].update(owned=False),
     )
 
 
-def _share_run_directory(campaign: Path) -> None:
+def _share_run_directory(simulation_record: Path) -> None:
     _rewrite(
-        _attempt_directory(campaign, 2) / "attempt.json",
+        _attempt_directory(simulation_record, 2) / "attempt.json",
         lambda document: document["run_directory"].update(resolved=_run_directory(1)),
     )
 
 
-def _swap_child(campaign: Path) -> None:
+def _swap_child(simulation_record: Path) -> None:
     _rewrite(
-        _attempt_directory(campaign, 0) / "attempt.json",
+        _attempt_directory(simulation_record, 0) / "attempt.json",
         lambda document: document.update(child_execution_id=CHILDREN[1]),
     )
 
@@ -301,29 +305,29 @@ def _swap_child(campaign: Path) -> None:
         (_swap_child, "attempt child identity differs"),
     ],
 )
-def test_taxi_attempt_isolation_rejects_inconsistent_campaign_records(
+def test_taxi_attempt_isolation_rejects_inconsistent_simulation_record_records(
     validator, evidence, mutation, message
 ) -> None:
-    timeline, campaign = evidence
-    mutation(campaign)
+    timeline, simulation_record = evidence
+    mutation(simulation_record)
     with pytest.raises(ValueError, match=message):
-        validator.validate_attempt_isolation(timeline, campaign)
+        validator.validate_attempt_isolation(timeline, simulation_record)
 
 
-def _misname_attempt_directory(campaign: Path) -> None:
-    directory = _attempt_directory(campaign, 0)
+def _misname_attempt_directory(simulation_record: Path) -> None:
+    directory = _attempt_directory(simulation_record, 0)
     directory.rename(directory.with_name("0001-someone-else"))
 
 
-def _duplicate_attempt(campaign: Path) -> None:
-    source = _attempt_directory(campaign, 0)
-    target = _work_item_directory(campaign, 1) / "attempts" / f"0002-{ATTEMPTS[0]}"
+def _duplicate_attempt(simulation_record: Path) -> None:
+    source = _attempt_directory(simulation_record, 0)
+    target = _work_item_directory(simulation_record, 1) / "attempts" / f"0002-{ATTEMPTS[0]}"
     target.mkdir()
     (target / "attempt.json").write_bytes((source / "attempt.json").read_bytes())
 
 
-def _remove_attempt_records(campaign: Path) -> None:
-    for record in campaign.glob("work-items/*/attempts/*/attempt.json"):
+def _remove_attempt_records(simulation_record: Path) -> None:
+    for record in simulation_record.glob("work-items/*/attempts/*/attempt.json"):
         record.unlink()
 
 
@@ -338,10 +342,10 @@ def _remove_attempt_records(campaign: Path) -> None:
 def test_taxi_attempt_isolation_rejects_broken_attempt_layout(
     validator, evidence, mutation, message
 ) -> None:
-    timeline, campaign = evidence
-    mutation(campaign)
+    timeline, simulation_record = evidence
+    mutation(simulation_record)
     with pytest.raises(ValueError, match=message):
-        validator.validate_attempt_isolation(timeline, campaign)
+        validator.validate_attempt_isolation(timeline, simulation_record)
 
 
 def _retarget_result(document) -> None:
@@ -366,20 +370,22 @@ def _retarget_result(document) -> None:
         ("manifest", lambda value: value.update(created_at="later"), "do not authenticate"),
     ],
 )
-def test_taxi_continuation_rejects_tampered_campaign_records(
+def test_taxi_continuation_rejects_tampered_simulation_record_records(
     validator, evidence, document, mutation, message
 ) -> None:
-    _timeline, campaign = evidence
-    results = [_work_item_directory(campaign, index) / "result.json" for index in range(3)]
+    _timeline, simulation_record = evidence
+    results = [
+        _work_item_directory(simulation_record, index) / "result.json" for index in range(3)
+    ]
     paths = {
         "result": results[1],
-        "summary": campaign / "summary.json",
-        "manifest": campaign / "manifest.json",
+        "summary": simulation_record / "summary.json",
+        "manifest": simulation_record / "manifest.json",
     }
     _rewrite(paths[document], mutation)
     with pytest.raises(ValueError, match=message):
         validator.validate_continue_after_failure(
-            campaign / "manifest.json", campaign / "summary.json", results
+            simulation_record / "manifest.json", simulation_record / "summary.json", results
         )
 
 

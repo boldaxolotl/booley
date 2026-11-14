@@ -381,14 +381,14 @@ def _resolve(monkeypatch: pytest.MonkeyPatch, flow: SimulateFlow) -> list[str]:
     return asked
 
 
-def test_sim_campaign_is_sized_from_its_resolved_test_runs(
+def test_simulation_record_is_sized_from_its_resolved_test_runs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     flow = _sim_flow()
     asked = _resolve(monkeypatch, flow)
 
     # A baseline on a selected Target re-runs that Target's keys: no extra request.
-    requests = flow.campaign_job_requests(_prepared(baselines=("top",)))
+    requests = flow.simulation_record_job_requests(_prepared(baselines=("top",)))
 
     assert requests == (JobRequest("sim", "top", test_runs=("smoke",)),)
     assert asked == ["top"]
@@ -399,12 +399,12 @@ def test_sim_job_with_unresolved_runs_is_unknown(monkeypatch: pytest.MonkeyPatch
     flow = _sim_flow()
     asked = _resolve(monkeypatch, flow)
 
-    assert flow.campaign_job_requests(_prepared(resume=object())) is None
-    assert flow.campaign_job_requests(_prepared(baselines=("other",))) is None
+    assert flow.simulation_record_job_requests(_prepared(resume=object())) is None
+    assert flow.simulation_record_job_requests(_prepared(baselines=("other",))) is None
     assert asked == []
 
 
-def test_sim_campaign_that_cannot_resolve_its_test_runs_is_unknown(
+def test_simulation_record_that_cannot_resolve_its_test_runs_is_unknown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     flow = _sim_flow()
@@ -417,7 +417,7 @@ def test_sim_campaign_that_cannot_resolve_its_test_runs_is_unknown(
         flow, "_registered_test_plan", lambda *_args: SimpleNamespace(target="top")
     )
 
-    assert flow.campaign_job_requests(_prepared()) is None
+    assert flow.simulation_record_job_requests(_prepared()) is None
 
 
 def test_work_item_claim_reserves_its_build_only_when_it_builds() -> None:

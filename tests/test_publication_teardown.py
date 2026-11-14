@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 _CHILD_TESTS = """
 from pathlib import Path
 from booley.flows.sim.flow import SimulateFlow
-from booley.flows.sim.record_reports import campaign_invocation_lock
+from booley.flows.sim.record_reports import simulation_record_invocation_lock
 
 marker = Path(__MARKER__)
 reservation = None
@@ -42,11 +42,11 @@ def test_leak(tmp_path):
     elif __LEAK__ == "lock":
         tmp_path.mkdir(exist_ok=True)
         reservation = tmp_path / "1"
-        campaign_invocation_lock_context = campaign_invocation_lock(reservation)
-        campaign_invocation_lock_context.__enter__()
+        simulation_record_invocation_lock_context = simulation_record_invocation_lock(reservation)
+        simulation_record_invocation_lock_context.__enter__()
         probe = _lock_probe(reservation)
         # Retain it outside the Flow so the independent probe is tested.
-        resources = campaign_invocation_lock_context
+        resources = simulation_record_invocation_lock_context
     else:
         with resources:
             if __LEAK__ == "none":

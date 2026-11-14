@@ -252,7 +252,7 @@ def materialize_runtime_inputs(
 
 
 @contextmanager
-def materialize_campaign_runtime_inputs(
+def materialize_simulation_record_runtime_inputs(
     *,
     bundle_root: Path,
     attempt_root: Path,
@@ -275,7 +275,7 @@ def materialize_campaign_runtime_inputs(
     owned_directories: list[Path] = []
     try:
         for declaration in declarations:
-            binding, destination = _materialize_campaign_input(
+            binding, destination = _materialize_simulation_record_input(
                 declaration,
                 bundle_root,
                 copies_root,
@@ -306,7 +306,7 @@ def materialize_campaign_runtime_inputs(
                 pass
 
 
-def _materialize_campaign_input(
+def _materialize_simulation_record_input(
     declaration: dict[str, str],
     bundle_root: Path,
     copies_root: Path,
@@ -328,7 +328,7 @@ def _materialize_campaign_input(
     size, digest = _runtime_identity(authoritative)
     destination = run_cwd / destination_relative
     _prepare_destination_parent(run_cwd, destination_relative, owned_directories)
-    method, owned = _expose_campaign_input(
+    method, owned = _expose_simulation_record_input(
         authoritative, destination, destination_relative, owned_run_directory
     )
     if _runtime_identity(destination) != (size, digest):
@@ -344,7 +344,7 @@ def _materialize_campaign_input(
     ), destination
 
 
-def _expose_campaign_input(
+def _expose_simulation_record_input(
     authoritative: Path,
     destination: Path,
     relative: Path,
@@ -408,8 +408,8 @@ __all__ = [
     "declared_runtime_inputs",
     "destination_parent_conflict",
     "iter_runtime_inputs",
-    "materialize_campaign_runtime_inputs",
     "materialize_runtime_inputs",
+    "materialize_simulation_record_runtime_inputs",
     "preview_runtime_inputs",
     "runtime_input_matches",
     "safe_runtime_relative",

@@ -21,7 +21,11 @@ import pytest
 import booley
 from booley.flows.base import SubprocessResult
 from booley.flows.sim import bwave_registration
-from tests.flows.sim.simulation_record_boundary import CampaignSimRun, Launch, run_campaign_sim
+from tests.flows.sim.simulation_record_boundary import (
+    Launch,
+    SimulationRecordSimRun,
+    run_simulation_record_sim,
+)
 from tests.subprocess_budget import run_bounded_child
 
 # The child prints the trace a bwave argv resolves to (what ``bwave`` would query).
@@ -64,9 +68,9 @@ def _run(
     failing: tuple[str, ...] = (),
     traced: bool = True,
     target: str = "",
-) -> CampaignSimRun:
+) -> SimulationRecordSimRun:
     """Run *targets* (all of them unless *target* names one) with the fake simulator."""
-    return run_campaign_sim(
+    return run_simulation_record_sim(
         tmp_path,
         monkeypatch,
         targets,

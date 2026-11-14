@@ -74,7 +74,9 @@ def test_a_candidate_that_does_not_resolve_has_no_test_run_to_compare(tmp_path, 
     flow = _flow(tmp_path, monkeypatch)
     _unresolvable(flow, monkeypatch)
     monkeypatch.setattr(
-        flow, "_campaign_baseline_requirements", lambda _targets: (("sim", "ref", "stress"),)
+        flow,
+        "_simulation_record_baseline_requirements",
+        lambda _targets: (("sim", "ref", "stress"),),
     )
 
     links = flow._baseline_links(["sim"], _MAP)

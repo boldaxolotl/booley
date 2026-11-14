@@ -42,7 +42,7 @@ _ALLOWED_PATHS = frozenset(
 )
 
 
-def _says_campaign(relative: str) -> bool:
+def _says_old_term(relative: str) -> bool:
     """Whether a path has a component containing "campaign", ignoring old-record fixture interiors."""
     for root in _OLD_RECORD_FIXTURE_ROOTS:
         if relative.startswith(root + "/"):
@@ -52,11 +52,11 @@ def _says_campaign(relative: str) -> bool:
     return any("campaign" in part.lower() for part in relative.split("/"))
 
 
-def test_simulation_record_paths_do_not_say_campaign() -> None:
+def test_simulation_record_paths_use_record_names() -> None:
     offenders = [
         relative
         for path in source_checkout_files(ROOT, "src", "tests")
         if (relative := path.relative_to(ROOT).as_posix()) not in _ALLOWED_PATHS
-        and _says_campaign(relative)
+        and _says_old_term(relative)
     ]
     assert not offenders, "paths that still say campaign:\n" + "\n".join(offenders)

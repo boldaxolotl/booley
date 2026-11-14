@@ -37,7 +37,7 @@ def job(report=None, exit_code=0, endpoint="sim", **kwargs):
     )
 
 
-def campaign(passed=2, failed=0):
+def simulation_record(passed=2, failed=0):
     return {
         "grade": "fail" if failed else "pass",
         "observation_counts": {
@@ -236,7 +236,7 @@ def test_exit_taxonomy_and_soft_warnings():
 ROWS = [
     (
         "sim",
-        {"records": {"top": {**campaign(), "grade": "inconclusive"}}},
+        {"records": {"top": {**simulation_record(), "grade": "inconclusive"}}},
         "grade inconclusive",
         [],
     ),
@@ -255,7 +255,7 @@ ROWS = [
         )
         for outcome in ("advisory", "corrective", "no_findings")
     ],
-    ("sim", {"records": {"top": campaign()}}, "2/2 tests passed", ["top"]),
+    ("sim", {"records": {"top": simulation_record()}}, "2/2 tests passed", ["top"]),
     (
         "sim",
         {"mode": "elab-only", "targets": [{"target": "top", "passed": True}]},
@@ -282,7 +282,7 @@ ROWS = [
             "targets": {
                 "top": {"simulation": "pass", "collection": "complete", "evaluation": "fail"}
             },
-            "records": {"top": campaign(1, 1)},
+            "records": {"top": simulation_record(1, 1)},
         },
         "Coverage: 0/1 Targets met",
         ["evaluation fail", "1/2 tests passed", "test_bad", "23"],
@@ -416,7 +416,7 @@ def test_report_locations_and_coverage_miss():
                         "top": {"evaluation": evaluation},
                         "other": {"evaluation": "pass"},
                     },
-                    "records": {"top": campaign()},
+                    "records": {"top": simulation_record()},
                 },
             }
             if key:
@@ -429,19 +429,19 @@ def test_report_locations_and_coverage_miss():
 
 
 def test_multitarget_and_list_caps():
-    campaigns = {f"t{i}": campaign(2, 1) for i in range(8)}
-    report = {"flow": "sim", "detail": {"records": campaigns}}
+    simulation_records = {f"t{i}": simulation_record(2, 1) for i in range(8)}
+    report = {"flow": "sim", "detail": {"records": simulation_records}}
     text = job_detail(job(report))
     assert "16/24 tests passed" in text, "aggregate counts must use canonical observation counts"
     assert "3 more Targets" in text and "t7:" not in text
-    campaigns = {
+    simulation_records = {
         "top": {
             "observation_counts": {"functional": {"pass": 2, "fail": 8}},
             "observations": [{"test": f"bad{i}", "functional": "fail"} for i in range(7)],
             "observations_truncated": True,
         }
     }
-    text = job_detail(job({"flow": "sim", "detail": {"records": campaigns}}))
+    text = job_detail(job({"flow": "sim", "detail": {"records": simulation_records}}))
     assert "3 more failures" in text and "bad6" not in text
     assert "preview" in text
 
@@ -557,7 +557,7 @@ def test_goal_proposal_facts_preserved(monkeypatch):
     )
 
 
-def test_campaign_producer_failure_axes_are_visible():
+def test_simulation_record_producer_failure_axes_are_visible():
 
     for execution, functional, assertions in [
         ("crash", "not_observed", "not_observed"),

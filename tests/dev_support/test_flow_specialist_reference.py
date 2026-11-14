@@ -160,7 +160,7 @@ def test_specialist_reference_lists_every_reviewer_focus_and_mutation_mode() -> 
     assert "| Campaign | Goal arguments | Interactive Mode arguments |" not in rendered
 
 
-def test_mutation_flow_page_documents_campaign_controls() -> None:
+def test_mutation_flow_page_documents_simulation_record_controls() -> None:
     """The Mutation Flow page owns the campaign, seed, threshold, and timeout rules."""
     page = " ".join((REPO_ROOT / "docs" / "user" / "FLOW-MUTATION.md").read_text("utf-8").split())
     assert "`total: N`, `min_detected: K`, or `auto: true`" in page

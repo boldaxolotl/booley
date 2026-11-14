@@ -33,7 +33,7 @@ from tests.flows.sim.conftest import (
 from tests.flows.sim.simulation_record_boundary import (
     FAIL_PROCESS,
     PASS_PROCESS,
-    run_campaign_sim,
+    run_simulation_record_sim,
 )
 from tests.flows.sim.simulation_record_test_support import _observation, _simulation_outcome
 from tests.flows.sim.test_cocotb import _cocotb_output, _run_cocotb
@@ -89,7 +89,7 @@ def sim_result(
     outer = tmp_path / "out"
     work = tmp_path / "work"
     work.mkdir(parents=True)
-    run = run_campaign_sim(
+    run = run_simulation_record_sim(
         work,
         monkeypatch,
         {"lite": tests or ["t1"]},
@@ -274,7 +274,7 @@ def test_missing_tool_and_cocotb_import_failure_return_no_values_and_an_excerpt(
     assert "tb_top" in reason and "pyuvm" in reason
 
 
-def unfinished_campaign_result(
+def unfinished_simulation_record_result(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     observations: list[dict[str, Any]],
@@ -284,7 +284,9 @@ def unfinished_campaign_result(
     """The runner's view of a ``sim`` run that stopped, reported by the production failure path."""
     monkeypatch.setenv("BOOLEY_RUN_ID", RUN_ID)
     outcome = _simulation_outcome(tmp_path, observations, complete=complete)
-    reported = SimulateFlow()._ordinary_campaign_failure(RuntimeError("stopped"), [outcome])
+    reported = SimulateFlow()._ordinary_simulation_record_failure(
+        RuntimeError("stopped"), [outcome]
+    )
     report = tmp_path / "out" / "flow-reports" / "sim" / "1" / "report.json"
     report.parent.mkdir(parents=True)
     document = {"run_id": RUN_ID, "detail": reported.detail, "report_text": reported.report_text}
@@ -304,10 +306,10 @@ def test_target_whose_values_cannot_be_produced_returns_the_reason(
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
     cases = {
-        "did not finish": unfinished_campaign_result(
+        "did not finish": unfinished_simulation_record_result(
             tmp_path / "a", monkeypatch, [_observation("t1")], complete=False
         ),
-        "infrastructure error": unfinished_campaign_result(
+        "infrastructure error": unfinished_simulation_record_result(
             tmp_path / "b", monkeypatch, [errored], complete=True
         ),
         "Timed out": lint_result(

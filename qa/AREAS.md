@@ -22,8 +22,8 @@ optional is not covered by a primary run.
 | Sandbox lifecycle | [coverage/cov-analyst](missions/coverage/MISSION.md), [coverage/cov-collect](missions/coverage/MISSION.md), [gui/stop-resume](missions/gui/MISSION.md), [taxi/cleanup](missions/taxi/MISSION.md), [uart/cleanup](missions/uart/MISSION.md), [uart/external-image](missions/uart/MISSION.md) (optional), [uart/runtime-lifecycle](missions/uart/MISSION.md) |
 | Project inventory | [taxi/vivado-fpga](missions/taxi/MISSION.md) (optional), [uart/project-inventory](missions/uart/MISSION.md) (optional) |
 | Host EDA provisioning | [taxi/vivado-fpga](missions/taxi/MISSION.md) (optional) |
-| EDA license policy | [taxi/vivado-fpga](missions/taxi/MISSION.md) (optional) |
-| Doctor diagnostics | [gui/setup](missions/gui/MISSION.md), [picorv32/baseline](missions/picorv32/MISSION.md), [taxi/final-regression](missions/taxi/MISSION.md), [taxi/targets-doctor](missions/taxi/MISSION.md), [taxi/vivado-fpga](missions/taxi/MISSION.md) (optional), [uart/doctor-upgrade](missions/uart/MISSION.md), [uart/external-image](missions/uart/MISSION.md) (optional), [uart/final-regression](missions/uart/MISSION.md), [uart/setup-interactive](missions/uart/MISSION.md) |
+| EDA license policy | [scheduler/sched-seats](missions/scheduler/MISSION.md), [taxi/vivado-fpga](missions/taxi/MISSION.md) (optional) |
+| Doctor diagnostics | [gui/setup](missions/gui/MISSION.md), [picorv32/baseline](missions/picorv32/MISSION.md), [scheduler/sched-cutover](missions/scheduler/MISSION.md), [scheduler/sched-seats](missions/scheduler/MISSION.md), [scheduler/setup](missions/scheduler/MISSION.md), [taxi/final-regression](missions/taxi/MISSION.md), [taxi/targets-doctor](missions/taxi/MISSION.md), [taxi/vivado-fpga](missions/taxi/MISSION.md) (optional), [uart/doctor-upgrade](missions/uart/MISSION.md), [uart/external-image](missions/uart/MISSION.md) (optional), [uart/final-regression](missions/uart/MISSION.md), [uart/setup-interactive](missions/uart/MISSION.md) |
 | Product upgrade | [uart/doctor-upgrade](missions/uart/MISSION.md) |
 | Host policy | [uart/host-policy](missions/uart/MISSION.md) (optional) |
 | Local-first operation | [uart/host-policy](missions/uart/MISSION.md) (optional), [uart/install](missions/uart/MISSION.md) |
@@ -36,16 +36,22 @@ optional is not covered by a primary run.
 | Project Sandbox Image | [taxi/setup](missions/taxi/MISSION.md) |
 | RISC-V toolchain | [picorv32/baseline](missions/picorv32/MISSION.md) |
 | Vendored core discovery | [taxi/submodules](missions/taxi/MISSION.md) (optional), [taxi/targets-doctor](missions/taxi/MISSION.md) |
-| Custom Flow extensions | [uart/interactive-surface](missions/uart/MISSION.md) |
+| Custom Flow extensions | [scheduler/setup](missions/scheduler/MISSION.md), [uart/interactive-surface](missions/uart/MISSION.md) |
 | Interactive Mode | [gui/dashboard-live](missions/gui/MISSION.md), [taxi/bwave](missions/taxi/MISSION.md), [taxi/interactive](missions/taxi/MISSION.md), [uart/interactive-surface](missions/uart/MISSION.md), [uart/setup-interactive](missions/uart/MISSION.md) |
 | MCP job control | [taxi/bwave](missions/taxi/MISSION.md), [taxi/interactive](missions/taxi/MISSION.md) |
 | Mode-specific MCP surface | [uart/interactive-surface](missions/uart/MISSION.md) |
-| Job admission control | [taxi/campaign](missions/taxi/MISSION.md), [taxi/interactive](missions/taxi/MISSION.md) |
+| Job admission control | [scheduler/sched-admission](missions/scheduler/MISSION.md), [scheduler/sched-fullchip](missions/scheduler/MISSION.md) (optional), [scheduler/sched-jump](missions/scheduler/MISSION.md), [scheduler/sched-records](missions/scheduler/MISSION.md), [taxi/campaign](missions/taxi/MISSION.md), [taxi/interactive](missions/taxi/MISSION.md) |
+| Job resource history | [scheduler/sched-history](missions/scheduler/MISSION.md) |
+| Memory reservation shrinking | [scheduler/sched-shrink](missions/scheduler/MISSION.md) |
+| Out-of-memory requeue | [scheduler/sched-oom](missions/scheduler/MISSION.md) |
+| Seat Caps | [scheduler/sched-seats](missions/scheduler/MISSION.md) |
+| Build thread counts | [scheduler/sched-threads](missions/scheduler/MISSION.md) |
+| Retired `[jobs]` keys | [scheduler/sched-cutover](missions/scheduler/MISSION.md) |
 | Public capability discovery | [coverage/cov-collect](missions/coverage/MISSION.md), [taxi/interactive](missions/taxi/MISSION.md), [uart/interactive-surface](missions/uart/MISSION.md) |
 | Simulation Flow | [gui/setup](missions/gui/MISSION.md), [picorv32/baseline](missions/picorv32/MISSION.md), [taxi/baseline](missions/taxi/MISSION.md), [taxi/final-regression](missions/taxi/MISSION.md), [taxi/goal-repair](missions/taxi/MISSION.md), [uart/evaluate](missions/uart/MISSION.md), [uart/final-regression](missions/uart/MISSION.md), [uart/sim-protocol](missions/uart/MISSION.md) (optional) |
-| Simulation Campaign | [coverage/cov-retention](missions/coverage/MISSION.md), [taxi/campaign](missions/taxi/MISSION.md), [uart/sim-campaign](missions/uart/MISSION.md) |
+| Simulation Campaign | [coverage/cov-retention](missions/coverage/MISSION.md), [scheduler/sched-records](missions/scheduler/MISSION.md), [taxi/campaign](missions/taxi/MISSION.md), [uart/sim-campaign](missions/uart/MISSION.md) |
 | Lint Flow | [picorv32/baseline](missions/picorv32/MISSION.md), [taxi/final-regression](missions/taxi/MISSION.md), [taxi/goal-repair](missions/taxi/MISSION.md), [taxi/lint-synth](missions/taxi/MISSION.md), [uart/final-regression](missions/uart/MISSION.md), [uart/goal-feature](missions/uart/MISSION.md), [uart/setup-interactive](missions/uart/MISSION.md) |
-| Synthesis Flow | [picorv32/baseline](missions/picorv32/MISSION.md), [taxi/cleanup](missions/taxi/MISSION.md), [taxi/final-regression](missions/taxi/MISSION.md), [taxi/goal-repair](missions/taxi/MISSION.md), [taxi/lint-synth](missions/taxi/MISSION.md), [uart/final-regression](missions/uart/MISSION.md), [uart/goal-feature](missions/uart/MISSION.md), [uart/setup-interactive](missions/uart/MISSION.md) |
+| Synthesis Flow | [picorv32/baseline](missions/picorv32/MISSION.md), [scheduler/sched-shrink](missions/scheduler/MISSION.md), [taxi/cleanup](missions/taxi/MISSION.md), [taxi/final-regression](missions/taxi/MISSION.md), [taxi/goal-repair](missions/taxi/MISSION.md), [taxi/lint-synth](missions/taxi/MISSION.md), [uart/final-regression](missions/uart/MISSION.md), [uart/goal-feature](missions/uart/MISSION.md), [uart/setup-interactive](missions/uart/MISSION.md) |
 | FPGA Flow | [taxi/vivado-fpga](missions/taxi/MISSION.md) (optional) |
 | Specialist reviews | [taxi/goal-repair](missions/taxi/MISSION.md), [uart/reviews-mutation](missions/uart/MISSION.md) |
 | Mutation testing | [mutation/mut-determinism](missions/mutation/MISSION.md), [mutation/mut-failures](missions/mutation/MISSION.md), [mutation/mut-removed](missions/mutation/MISSION.md), [mutation/mut-scope](missions/mutation/MISSION.md), [mutation/mut-scoring](missions/mutation/MISSION.md), [mutation/mut-selection](missions/mutation/MISSION.md), [mutation/mut-sites](missions/mutation/MISSION.md), [mutation/mut-timeouts](missions/mutation/MISSION.md), [taxi/goal-observability](missions/taxi/MISSION.md), [uart/reviews-mutation](missions/uart/MISSION.md) |
@@ -90,7 +96,7 @@ optional is not covered by a primary run.
 | Yosys physical synthesis integration | [picorv32/baseline](missions/picorv32/MISSION.md), [taxi/lint-synth](missions/taxi/MISSION.md) |
 | sv2v integration | [picorv32/baseline](missions/picorv32/MISSION.md) |
 | OpenROAD integration | [picorv32/baseline](missions/picorv32/MISSION.md), [taxi/lint-synth](missions/taxi/MISSION.md) |
-| Vivado integration | [taxi/vivado-fpga](missions/taxi/MISSION.md) (optional) |
+| Vivado integration | [scheduler/sched-seats](missions/scheduler/MISSION.md), [taxi/vivado-fpga](missions/taxi/MISSION.md) (optional) |
 | B-Wave with Verilator integration | [taxi/bwave](missions/taxi/MISSION.md) |
 | Simulation EDA tool resolution | [picorv32/baseline](missions/picorv32/MISSION.md) |
 | Lint EDA tool resolution | [taxi/lint-synth](missions/taxi/MISSION.md) |

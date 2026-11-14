@@ -13,7 +13,7 @@ from booley.commit_policy import stealth_enabled
 from booley.core.boundary import BoundaryError, require_str_value
 from booley.criteria.evidence_ledger import AcceptanceLedgerError
 from booley.criteria.state import DevelopmentState
-from booley.flows.simulation_record_results import CampaignResultsReader
+from booley.flows.simulation_record_results import SimulationRecordResultsReader
 from booley.goals.apply import ChangeEnvironment, WaiverPort, recover_locked
 from booley.goals.checkout import CheckoutError, GoalCheckout, branch_ref
 from booley.goals.completion_capture import public_capture
@@ -72,7 +72,7 @@ from booley.goals.review_package import (
     completion_authority_digest,
     presentation_observations,
 )
-from booley.goals.simulation_record_accounting import account_for_campaigns
+from booley.goals.simulation_record_accounting import account_for_simulation_records
 from booley.goals.state_store import load_goal_state
 from booley.goals.status import GoalStatus, build_status
 from booley.goals.target_changes import (
@@ -118,7 +118,7 @@ class FinishEnvironment:
     on_boundary: Callable[[str], None] | None = None
     waiver_factory: Callable[[GoalRecord], WaiverPort] | None = None
     #: Reads the finished results of Simulation Campaigns that never published.
-    campaign_reader: CampaignResultsReader | None = None
+    simulation_record_reader: SimulationRecordResultsReader | None = None
     generated_inputs: (
         Callable[[GoalRecord, DevelopmentState, Path], tuple[GeneratedBuildInput, ...]] | None
     ) = None
@@ -242,7 +242,9 @@ def _freeze(
     # Campaigns durably observed but never published first (ADR 0072). Whatever
     # stays unaccounted reads unmet below.
     try:
-        account_for_campaigns(operation.store, record.id, reader=env.campaign_reader)
+        account_for_simulation_records(
+            operation.store, record.id, reader=env.simulation_record_reader
+        )
     except AcceptanceLedgerError as exc:
         raise LifecycleError(f"Goal evidence cannot be accounted for: {exc}") from exc
     selection = select_inputs(record, operation.root)
@@ -257,7 +259,7 @@ def _freeze(
         record,
         work_dir=operation.root,
         resolvers=alias_resolvers(record, selection, operation.store.booley_dir, env.resolvers),
-        campaign_reader=env.campaign_reader,
+        simulation_record_reader=env.simulation_record_reader,
     )
     unmet = [
         row.presentation.text if row.presentation else "Goal unavailable"

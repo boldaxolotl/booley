@@ -297,7 +297,7 @@ def test_build_test_run_refusals(kwargs: dict, reason: str) -> None:
     assert reason in str(excinfo.value)
 
 
-def test_fingerprint_is_stable_and_matches_the_campaign_hash() -> None:
+def test_fingerprint_is_stable_and_matches_the_simulation_record_hash() -> None:
     fingerprint = declared_inputs_fingerprint(("+iters=1000",), {"FAULT_MODE": "1"})
     # Pinned literal: a silent change of the encoding would orphan frozen Goals.
     assert fingerprint == (

@@ -202,10 +202,10 @@ def test_every_direction_rule_selector_family_finds_a_forbidden_edge(
         ),
     ],
 )
-def test_campaign_storage_rule_catches_every_external_import_form(
+def test_simulation_record_storage_rule_catches_every_external_import_form(
     tmp_path: Path, statement: str, target: str
 ) -> None:
-    root = _campaign_rule_seed(tmp_path, "flows/sim/rogue.py", statement)
+    root = _simulation_record_rule_seed(tmp_path, "flows/sim/rogue.py", statement)
 
     problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
     report = format_problems(problems)
@@ -215,8 +215,8 @@ def test_campaign_storage_rule_catches_every_external_import_form(
     assert target in report
 
 
-def test_campaign_storage_rule_allows_public_facade_import(tmp_path: Path) -> None:
-    root = _campaign_rule_seed(
+def test_simulation_record_storage_rule_allows_public_facade_import(tmp_path: Path) -> None:
+    root = _simulation_record_rule_seed(
         tmp_path,
         "flows/sim/rogue.py",
         "from booley.flows.sim import record\n",
@@ -235,7 +235,7 @@ def test_campaign_storage_rule_allows_public_facade_import(tmp_path: Path) -> No
         ("booley.flows.sim.record", "booley.flows.sim.record.inspection"),
     ],
 )
-def test_campaign_storage_permissions_allow_only_their_exact_edges(
+def test_simulation_record_storage_permissions_allow_only_their_exact_edges(
     source: str, target: str
 ) -> None:
     allowed = _dependency(source, target)
@@ -347,7 +347,7 @@ def _dependency(source: str, target: str, *, line: int = 1, path: str = "seed.py
     return Dependency(source, target, Path(path), line, 0)
 
 
-def _campaign_rule_seed(tmp_path: Path, source: str, statement: str) -> Path:
+def _simulation_record_rule_seed(tmp_path: Path, source: str, statement: str) -> Path:
     root = tmp_path / "booley"
     files = (
         "__init__.py",

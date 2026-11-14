@@ -106,9 +106,9 @@ def test_shared_endpoint_code_calls_declared_hooks():
 # the declared hooks, never by attribute name.
 SIMULATION_ACCEPTANCE_NAMES = frozenset(
     {
-        "_simulation_campaign_outcomes",
+        "_simulation_record_outcomes",
         "_simulation_acceptance_outcomes",
-        "record_campaign_acceptance",
+        "record_simulation_record_acceptance",
         "committed",
         "transaction_id",
     }

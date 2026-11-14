@@ -50,8 +50,10 @@ def _assert_trace_reference(root: Path, alias: Path) -> None:
         )
     )
     assert result.exit_code == 0, result.outcome.report_text
-    campaign = result.outcome.detail["records"]["sim"]
-    manifest = root / ".booley/trace-reports/sim/1" / campaign["artifacts"]["manifest"]["path"]
+    simulation_record = result.outcome.detail["records"]["sim"]
+    manifest = (
+        root / ".booley/trace-reports/sim/1" / simulation_record["artifacts"]["manifest"]["path"]
+    )
     receipt = next(manifest.parent.glob("work-items/*/result.json"))
     document = json.loads(receipt.read_text())
     trace = next(item for item in document["evidence"] if item["kind"] == "trace")
@@ -86,10 +88,10 @@ def test_image_project_alias_good_bad_coverage_and_user_links() -> None:
             )
         )
         assert result.exit_code == expected, result.outcome.report_text
-        campaign = result.outcome.detail["records"]["sim"]
-        assert campaign["artifacts"]["manifest"]["path"]
-        assert campaign["artifacts"]["simulation"]["path"]
-        assert campaign["artifacts"]["coverage"]["path"]
+        simulation_record = result.outcome.detail["records"]["sim"]
+        assert simulation_record["artifacts"]["manifest"]["path"]
+        assert simulation_record["artifacts"]["simulation"]["path"]
+        assert simulation_record["artifacts"]["coverage"]["path"]
     reports = data / "reports"
     assert len(list(reports.glob("sim/*/targets/sim/record/manifest.json"))) == 2
     assert len(list(reports.glob("sim/.invocation-*.lock"))) == 2
