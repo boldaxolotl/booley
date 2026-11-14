@@ -44,7 +44,7 @@ def test_observed_hit_candidate_has_proof_to_isolate_contradiction():
     assert result["waiver_candidates"][0]["proof_reference"] == "proof/parity.log"
 
 
-def test_cross_campaign_uses_actual_foreign_selector(tmp_path, monkeypatch):
+def test_cross_simulation_record_uses_actual_foreign_selector(tmp_path, monkeypatch):
     foreign = tmp_path / "coverage.json"
     foreign.write_text("{}")
     monkeypatch.setenv("QA_FOREIGN_CAMPAIGN", str(foreign))

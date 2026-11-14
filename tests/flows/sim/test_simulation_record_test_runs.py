@@ -143,7 +143,9 @@ def test_unnamed_invocation_records_its_seed(tmp_path: Path):
 
 
 @pytest.mark.parametrize("limit", ["work-items", "test-runs"])
-def test_planning_refuses_more_test_runs_than_a_campaign_holds(tmp_path: Path, limit: str):
+def test_planning_refuses_more_test_runs_than_a_simulation_record_holds(
+    tmp_path: Path, limit: str
+):
     """The ceilings are planning's: every planner path reaches ``_work_items`` (#2136)."""
     if limit == "work-items":
         runs = tuple(build_test_run(f"t{index}", seed=1) for index in range(MAX_WORK_ITEMS + 1))
@@ -193,7 +195,9 @@ def test_cocotb_batches_split_by_environment_and_seed(tmp_path: Path):
     [{"seed": "random"}, {"test": ("reset@x3",)}, {"test": ("wrap@9", "reset")}],
     ids=["seed-random", "count", "pinned"],
 )
-def test_interrupted_campaign_resumes_with_byte_identical_test_runs(tmp_path, monkeypatch, fields):
+def test_interrupted_simulation_record_resumes_with_byte_identical_test_runs(
+    tmp_path, monkeypatch, fields
+):
     """Resume re-plans from the manifest's own Test Runs: no seed is drawn again."""
     reports, manifest, executions = _interrupted(tmp_path, monkeypatch, fields)
     published = json.loads(manifest.read_bytes())
@@ -230,12 +234,12 @@ def _interrupted(root, monkeypatch, fields):
 
     monkeypatch.setattr(resume_support, "SimRequest", request)
     try:
-        return resume_support._interrupted_campaign(root, monkeypatch)
+        return resume_support._interrupted_simulation_record(root, monkeypatch)
     finally:
         monkeypatch.setattr(resume_support, "SimRequest", original)
 
 
-def _run_campaign(tmp_path: Path, plan):
+def _run_simulation_record(tmp_path: Path, plan):
     """Run *plan* to terminal acceptance facts without any EDA tool."""
     from booley.flows.sim.record import (
         NewSimulationRecordRunRequest,
@@ -265,7 +269,7 @@ def test_three_seeds_and_two_variants_of_one_test_reach_acceptance_facts(tmp_pat
         _SOAK,
         _FAULT,
     )
-    outcome = _run_campaign(tmp_path, _hdl_plan(tmp_path, tuple((run,) for run in runs)))
+    outcome = _run_simulation_record(tmp_path, _hdl_plan(tmp_path, tuple((run,) for run in runs)))
 
     document = outcome.acceptance_facts.document
     assert document["$schema"] == "booley.simulation-acceptance-facts/v2"
@@ -283,7 +287,7 @@ def test_three_seeds_and_two_variants_of_one_test_reach_acceptance_facts(tmp_pat
 
 def test_unnamed_invocation_observation_is_named_by_its_test_run(tmp_path: Path):
     plan = _hdl_plan(tmp_path, ((build_test_run(None, seed=7),),), ())
-    observations = _run_campaign(tmp_path, plan).acceptance_facts.document["observations"]
+    observations = _run_simulation_record(tmp_path, plan).acceptance_facts.document["observations"]
     assert [(item["test"], item["test_run"]) for item in observations] == [(None, "<default>@7")]
 
 
@@ -325,7 +329,7 @@ def test_acceptance_indexes_by_test_run_and_never_lets_one_run_stand_for_another
     )
 
     runs = (build_test_run("reset", seed=1), _SOAK, _FAULT)
-    outcome = _run_campaign(tmp_path, _hdl_plan(tmp_path, tuple((run,) for run in runs)))
+    outcome = _run_simulation_record(tmp_path, _hdl_plan(tmp_path, tuple((run,) for run in runs)))
     facts = outcome.acceptance_facts.document
 
     by_run = _candidate_observations(facts, outcome.target)
@@ -341,7 +345,7 @@ def test_acceptance_keeps_indexing_one_test_run_per_test_by_test(tmp_path: Path)
     from booley.flows.sim.acceptance import _candidate_simulation_observations
 
     runs = (build_test_run("reset", seed=1), build_test_run("count", seed=1))
-    outcome = _run_campaign(tmp_path, _hdl_plan(tmp_path, tuple((run,) for run in runs)))
+    outcome = _run_simulation_record(tmp_path, _hdl_plan(tmp_path, tuple((run,) for run in runs)))
     indexed = _candidate_simulation_observations(outcome.acceptance_facts.document, outcome.target)
     assert list(indexed) == ["reset", "count"]
 

@@ -196,7 +196,7 @@ def render_goal_briefing(
                 ensure_ascii=False,
             ),
         ]
-    lines += [*_unsettled_campaign_lines(facts), *_earlier_attempt_lines(facts)]
+    lines += [*_unsettled_simulation_record_lines(facts), *_earlier_attempt_lines(facts)]
     return "\n".join(lines)
 
 
@@ -392,7 +392,7 @@ def render_goal_html(
     )
 
 
-def _unsettled_campaign_lines(facts: dict[str, Any]) -> list[str]:
+def _unsettled_simulation_record_lines(facts: dict[str, Any]) -> list[str]:
     """Simulation Campaigns whose results were never fully accounted for (ADR 0072)."""
     if "unsettled_campaigns" not in facts:
         return []

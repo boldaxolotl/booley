@@ -195,7 +195,7 @@ def _assert_dry_run_output(outcome: Any) -> None:
     ]
 
 
-def _assert_refused_before_campaign_state(
+def _assert_refused_before_simulation_record_state(
     reserved: list[object],
     started: list[object],
     reports: Path,
@@ -215,7 +215,9 @@ def _assert_refused_before_campaign_state(
     assert json.loads((reports / "sim/1/report.json").read_text())["exit_code"] == _EXIT_ERROR
 
 
-def _record_campaign_state(monkeypatch: pytest.MonkeyPatch) -> tuple[list[object], list[object]]:
+def _record_simulation_record_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[list[object], list[object]]:
     """Record invocation reservations and launched processes."""
     reserved: list[object] = []
     started: list[object] = []
@@ -235,20 +237,20 @@ def _record_campaign_state(monkeypatch: pytest.MonkeyPatch) -> tuple[list[object
     return reserved, started
 
 
-def test_baseline_identity_mismatch_refuses_before_any_campaign_state(
+def test_baseline_identity_mismatch_refuses_before_any_simulation_record_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     candidate, baseline, flow = cycle_baseline_project(
         tmp_path, monkeypatch, baseline_core_version=2
     )
-    reserved, started = _record_campaign_state(monkeypatch)
+    reserved, started = _record_simulation_record_state(monkeypatch)
 
     with baseline_checkout(baseline):
         result = flow.execute(
             SimRequest(target="sim_a", work_dir=candidate, report_dir=tmp_path / "reports")
         )
 
-    _assert_refused_before_campaign_state(
+    _assert_refused_before_simulation_record_state(
         reserved,
         started,
         tmp_path / "reports",
@@ -258,11 +260,11 @@ def test_baseline_identity_mismatch_refuses_before_any_campaign_state(
     )
 
 
-def test_unresolvable_target_refuses_before_any_campaign_state(
+def test_unresolvable_target_refuses_before_any_simulation_record_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     candidate, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
-    reserved, started = _record_campaign_state(monkeypatch)
+    reserved, started = _record_simulation_record_state(monkeypatch)
 
     def unresolvable(self: SimulationExecution, handle: Any, selection: Any) -> Any:
         raise fusesoc_registry.FuseSocError("core is not resolvable")
@@ -273,7 +275,7 @@ def test_unresolvable_target_refuses_before_any_campaign_state(
         SimRequest(target="sim_a", work_dir=candidate, report_dir=tmp_path / "reports")
     )
 
-    _assert_refused_before_campaign_state(
+    _assert_refused_before_simulation_record_state(
         reserved,
         started,
         tmp_path / "reports",
@@ -286,7 +288,7 @@ def test_unknown_test_is_refused_before_any_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     candidate, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
-    reserved, started = _record_campaign_state(monkeypatch)
+    reserved, started = _record_simulation_record_state(monkeypatch)
 
     result = flow.execute(
         SimRequest(

@@ -27,8 +27,8 @@ from tests.goals.conftest import (
     LINT_KEY,
     bind,
     bump_spec,
-    campaign_facts,
     edit_protected,
+    simulation_record_facts,
     tree_digest,
     update_record,
 )
@@ -147,7 +147,7 @@ def test_in_flight_change_and_revert_is_not_caught(endpoint_env: SimpleNamespace
     assert [entry["mcp_tool"] for entry in saved.timeline] == ["probe-step", "goal_probe"]
 
 
-class _CampaignProbe(McpTool):
+class _SimulationRecordProbe(McpTool):
     """Records Flow-owned V2 acceptance through the declared hook, as Simulation does."""
 
     name = "goal_campaign_probe"
@@ -164,16 +164,18 @@ class _CampaignProbe(McpTool):
         shadow = DevelopmentState.from_json_object(self.state.to_dict())
         changes = shadow.set_criterion(LINT_KEY, True, detail={"warnings": 0})
         self._acceptance_recorder.record_or_verify_transaction(
-            self.state, changes, acceptance_facts=campaign_facts(), identity={}
+            self.state, changes, acceptance_facts=simulation_record_facts(), identity={}
         )
         return True
 
 
-def test_v2_campaign_discard_is_caught_once_at_completion(endpoint_env: SimpleNamespace) -> None:
+def test_v2_simulation_record_discard_is_caught_once_at_completion(
+    endpoint_env: SimpleNamespace,
+) -> None:
     adapter = GoalFlowExecution(bind(endpoint_env))
     bump_spec(endpoint_env, LINT_KEY)
     before = tree_digest(_record_root(endpoint_env))
-    probe = _CampaignProbe()
+    probe = _SimulationRecordProbe()
     probe.configure_flow_execution(adapter)
 
     result = probe.execute_cli(["--work-dir", str(endpoint_env.worktree)])

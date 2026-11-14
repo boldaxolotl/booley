@@ -343,7 +343,7 @@ def test_finalize_manifest_accepts_immutable_nested_planning_input() -> None:
     assert manifest.document["planning_disclosures"][0]["planner"] == "fusesoc_setup"  # type: ignore[index]
 
 
-def _linked_campaign_stores(tmp_path: Path, *, topology_revisions=None):
+def _linked_simulation_record_stores(tmp_path: Path, *, topology_revisions=None):
     baseline = _baseline_manifest()
     if topology_revisions is not None:
         document = json.loads(encode_simulation_record_manifest(baseline))
@@ -406,7 +406,7 @@ def test_finalize_manifest_accepts_immutable_mapping_inputs() -> None:
     assert manifest.document["workload"]["eda"]["kind"] == "icarus"
 
 
-def test_campaign_plan_is_derived_only_from_a_validated_manifest() -> None:
+def test_simulation_record_plan_is_derived_only_from_a_validated_manifest() -> None:
     manifest = decode_simulation_record_manifest(canonical_json_bytes(_manifest()))
     plan = create_simulation_record_plan(manifest)
     assert plan.manifest == manifest
@@ -447,7 +447,7 @@ def test_resume_preview_reports_all_workload_mismatches() -> None:
     }
 
 
-def test_cycle_baseline_campaign_has_a_noncolliding_store_path(tmp_path: Path) -> None:
+def test_cycle_baseline_simulation_record_has_a_noncolliding_store_path(tmp_path: Path) -> None:
     candidate = decode_simulation_record_manifest(canonical_json_bytes(_manifest()))
     baseline_document = _manifest()
     baseline_document.pop("fingerprints")
@@ -489,7 +489,9 @@ def test_cycle_baseline_campaign_has_a_noncolliding_store_path(tmp_path: Path) -
 def test_resume_binds_distinct_candidate_and_baseline_revision_roots(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    candidate, candidate_store, baseline, baseline_store = _linked_campaign_stores(tmp_path)
+    candidate, candidate_store, baseline, baseline_store = _linked_simulation_record_stores(
+        tmp_path
+    )
     candidate_root = tmp_path / "candidate-source"
     baseline_root = tmp_path / "baseline-source"
     candidate_root.mkdir()
@@ -622,7 +624,7 @@ def test_resume_reads_through_the_booley_dir_entry(
     assert isinstance(status, SimulationRecordRecoveryStatus)
 
 
-def test_campaign_store_rejects_linked_root_before_lock_write(tmp_path: Path) -> None:
+def test_simulation_record_store_rejects_linked_root_before_lock_write(tmp_path: Path) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
     linked = tmp_path / "linked"
@@ -718,7 +720,7 @@ def test_resume_rejects_stale_candidate_revision_with_source_equal(
     flow._args = SimpleNamespace(resume_from=store.manifest_path, work_dir=root)
 
     with pytest.raises(SimulationRecordIntegrityError, match="revision"):
-        flow._prepare_campaign_targets()
+        flow._prepare_simulation_record_targets()
 
 
 def test_recovery_retries_a_crash_after_attempt_directory_allocation(
@@ -789,7 +791,9 @@ def test_serial_executor_authenticates_planned_generator_closure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nondeterministic: bool
 ) -> None:
     disclosure = _generator_disclosure()
-    manifest, store, item, ordinal, attempt_directory = _generator_campaign(tmp_path, disclosure)
+    manifest, store, item, ordinal, attempt_directory = _generator_simulation_record(
+        tmp_path, disclosure
+    )
     executor = _generator_executor(tmp_path, disclosure, nondeterministic, monkeypatch)
     request = _generator_request(tmp_path, store, manifest, item, ordinal, attempt_directory)
     if nondeterministic:
@@ -824,7 +828,7 @@ def _generator_disclosure() -> dict[str, object]:
     }
 
 
-def _generator_campaign(tmp_path: Path, disclosure):
+def _generator_simulation_record(tmp_path: Path, disclosure):
     document = _manifest()
     document.pop("fingerprints")
     document["planning_disclosures"] = [disclosure]
@@ -925,7 +929,7 @@ def test_resume_baseline_materializes_project_topologies(tmp_path, monkeypatch, 
 
     root, revision = _project_topology_checkout(tmp_path, monkeypatch, topology)
     current = run_bounded_child(["git", "rev-parse", "HEAD"], cwd=root, check=True).stdout.strip()
-    _candidate, store, _baseline, baseline_store = _linked_campaign_stores(
+    _candidate, store, _baseline, baseline_store = _linked_simulation_record_stores(
         tmp_path, topology_revisions=(current, revision)
     )
     flow, _key = _criterion_flow(relative=True)
@@ -946,7 +950,7 @@ def test_resume_baseline_materializes_project_topologies(tmp_path, monkeypatch, 
 
     monkeypatch.setattr("booley.flows.sim.flow.validate_resume_manifest", validate)
     try:
-        handles, validated, selected, tests = flow._prepare_campaign_targets()
+        handles, validated, selected, tests = flow._prepare_simulation_record_targets()
         assert handles == validated.target_handles
         assert handles[0].project_root == root
         assert handles[1].identity == "acme:lib:top:1#sim_core"
@@ -1521,7 +1525,9 @@ def test_finalize_manifest_writes_the_planned_fingerprints() -> None:
 def test_cycle_prerequisite_refuses_a_baseline_manifest_whose_digest_disagrees(tmp_path) -> None:
     from booley.flows.sim.record.coordinator import _prerequisite_facts
 
-    candidate, candidate_store, _baseline, _baseline_store = _linked_campaign_stores(tmp_path)
+    candidate, candidate_store, _baseline, _baseline_store = _linked_simulation_record_stores(
+        tmp_path
+    )
     document = json.loads(encode_simulation_record_manifest(candidate))
     document.pop("fingerprints")
     document["prerequisites"][0]["manifest"]["sha256"] = "sha256:" + "f" * 64

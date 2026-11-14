@@ -1128,7 +1128,7 @@ def _coverage_build_failure_request(tmp_path: Path):
     return request, invocation
 
 
-def test_coverage_infrastructure_build_failure_publishes_terminal_campaign(
+def test_coverage_infrastructure_build_failure_publishes_terminal_simulation_record(
     tmp_path: Path,
     monkeypatch,
 ) -> None:

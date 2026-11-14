@@ -22,7 +22,9 @@ def _snapshot(root: Path) -> dict[str, bytes]:
     }
 
 
-def _interrupted_campaign(root, monkeypatch, *, parameter_datatype="int", parameter_default="1"):
+def _interrupted_simulation_record(
+    root, monkeypatch, *, parameter_datatype="int", parameter_default="1"
+):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "a" * 40)
     monkeypatch.setattr("booley.flows.sim.flow_resume.git_full_sha", lambda *_args: "a" * 40)
@@ -72,7 +74,7 @@ def _interrupted_campaign(root, monkeypatch, *, parameter_datatype="int", parame
 
 
 def test_public_source_resume_names_cause_without_new_attempt(tmp_path, monkeypatch):
-    reports, manifest, executions = _interrupted_campaign(tmp_path, monkeypatch)
+    reports, manifest, executions = _interrupted_simulation_record(tmp_path, monkeypatch)
     before = _snapshot(manifest.parent)
     (tmp_path / "rtl/counter.sv").write_text("module counter; endmodule\n// change\n")
     result = SimulateFlow().execute(
@@ -107,14 +109,14 @@ def _prime_prior_refusal(root, reports, manifest, executions):
 
 def _capture_resume_comparison(monkeypatch):
     pairs = []
-    original = SimulateFlow._resume_campaign_plan
+    original = SimulateFlow._resume_simulation_record_plan
 
     def capture(flow, validated, *args, **kwargs):
         plan = original(flow, validated, *args, **kwargs)
         pairs.append((validated.manifest, plan.manifest))
         return plan
 
-    monkeypatch.setattr(SimulateFlow, "_resume_campaign_plan", capture)
+    monkeypatch.setattr(SimulateFlow, "_resume_simulation_record_plan", capture)
     return pairs
 
 
@@ -142,7 +144,7 @@ def _assert_durable_evidence_with_one_new_receipt(before, after):
 def test_public_resume_cli_summary_detail_and_dry_run_immutability(
     tmp_path, monkeypatch, dry_run, verbose
 ):
-    reports, manifest, executions = _interrupted_campaign(tmp_path, monkeypatch)
+    reports, manifest, executions = _interrupted_simulation_record(tmp_path, monkeypatch)
     (tmp_path / "rtl/counter.sv").write_text("module counter; endmodule\n// change\n")
     _prime_prior_refusal(tmp_path, reports, manifest, executions)
     before = _snapshot(reports)
@@ -199,7 +201,7 @@ def test_public_resume_cli_summary_detail_and_dry_run_immutability(
 def test_public_resume_parameters_suite_content_and_opaque_options(
     tmp_path, monkeypatch, changed, line
 ):
-    reports, manifest, executions = _interrupted_campaign(tmp_path, monkeypatch)
+    reports, manifest, executions = _interrupted_simulation_record(tmp_path, monkeypatch)
     if changed == "suite":
         path = tmp_path / ".booley/tests.toml"
         path.write_text(path.read_text() + "# catalog bytes changed, names remain frozen\n")
@@ -229,7 +231,7 @@ def test_public_resume_parameters_suite_content_and_opaque_options(
 def test_missing_input_distinguishes_source_planning_error_from_suite_comparison(
     tmp_path, monkeypatch, removed
 ):
-    reports, manifest, executions = _interrupted_campaign(tmp_path, monkeypatch)
+    reports, manifest, executions = _interrupted_simulation_record(tmp_path, monkeypatch)
     if removed == "source":
         (tmp_path / "rtl/counter.sv").unlink()
     else:
@@ -253,7 +255,7 @@ def test_missing_input_distinguishes_source_planning_error_from_suite_comparison
 def test_public_resume_bool_to_int_names_parameter_and_explains_command_digest(
     tmp_path, monkeypatch
 ):
-    reports, manifest, executions = _interrupted_campaign(
+    reports, manifest, executions = _interrupted_simulation_record(
         tmp_path, monkeypatch, parameter_datatype="bool", parameter_default="false"
     )
     core = tmp_path / "counter.core"
@@ -279,7 +281,7 @@ def test_public_resume_bool_to_int_names_parameter_and_explains_command_digest(
     } == before
 
 
-def test_legacy_interrupted_campaign_new_source_mapping_refuses_before_attempt(
+def test_legacy_interrupted_simulation_record_new_source_mapping_refuses_before_attempt(
     tmp_path, monkeypatch
 ):
     from booley.flows.sim.execution.engine import _planning_disclosure
@@ -294,7 +296,7 @@ def test_legacy_interrupted_campaign_new_source_mapping_refuses_before_attempt(
         legacy.setattr(
             "booley.flows.sim.execution.engine._source_declarations", lambda _handle: ()
         )
-        reports, manifest, executions = _interrupted_campaign(tmp_path, legacy)
+        reports, manifest, executions = _interrupted_simulation_record(tmp_path, legacy)
     document = json.loads(manifest.read_bytes())
     assert document["$schema"] == "booley.simulation-record-manifest/v1"
     assert "source_path" not in document["planning_disclosures"][0]["generated_files"][0]
@@ -331,7 +333,7 @@ def test_cli_resume_announces_validated_origin_before_execution(
     manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
     destination = tmp_path / "destination reports"
     flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
-    executor = flow._resume_campaign_executor
+    executor = flow._resume_simulation_record_executor
     witnessed: list[str] = []
 
     def before_executor(plan):
@@ -342,7 +344,7 @@ def test_cli_resume_announces_validated_origin_before_execution(
             raise RuntimeError("resume executor unavailable")
         return executor(plan)
 
-    monkeypatch.setattr(flow, "_resume_campaign_executor", before_executor)
+    monkeypatch.setattr(flow, "_resume_simulation_record_executor", before_executor)
     if mode == "mismatch":
         (tmp_path / "rtl/counter.sv").write_text("module counter; wire changed; endmodule\n")
     capsys.readouterr()

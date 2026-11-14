@@ -90,7 +90,7 @@ ProcessFactory = Callable[[Launch], SubprocessResult]
 
 
 @dataclass
-class CampaignSimRun:
+class SimulationRecordSimRun:
     """Outcome of one campaign-path simulation."""
 
     result: ExecutionResult
@@ -104,7 +104,7 @@ class CampaignSimRun:
         return [(launch.target, launch.tests) for launch in self.launches]
 
 
-def run_campaign_sim(
+def run_simulation_record_sim(
     tmp_path: Path,
     monkeypatch: Any,
     targets: dict[str, list[str]],
@@ -117,7 +117,7 @@ def run_campaign_sim(
     project_data: Path | None = None,
     adapter: Any = None,
     **request: Any,
-) -> CampaignSimRun:
+) -> SimulationRecordSimRun:
     """Run ``SimulateFlow.execute`` for *targets* with only the process edge faked.
 
     *targets* maps each Target to its tests. *process* is the canned simulator
@@ -163,7 +163,7 @@ def run_campaign_sim(
             SimRequest(work_dir=tmp_path, report_dir=report_dir, **request),
             adapter=adapter,
         )
-    return CampaignSimRun(result, flow, launches)
+    return SimulationRecordSimRun(result, flow, launches)
 
 
 def _install_fakes(

@@ -37,7 +37,7 @@ from tests.runtime.test_sandbox_layout import project_alias
 
 __all__ = ["project_alias"]
 
-_SIMULATION_CAMPAIGN_ID = "12345678-1234-4234-9234-123456789abc"
+_SIMULATION_RECORD_ID = "12345678-1234-4234-9234-123456789abc"
 _SIMULATION_ATTEMPT_ID = "87654321-4321-4432-a234-cba987654321"
 _WORK_ITEM_ID = "item:0000:0123456789abcdef"
 _TARGET_IDENTITY = "acme:demo:counter:1.0#sim_counter"
@@ -61,7 +61,7 @@ def _nested_campaign(origin_target: Path, *, attempt_id: str = _SIMULATION_ATTEM
 
 def _reference(origin_target: Path, nested: Path) -> CoverageCampaignReference:
     return build_coverage_campaign_reference(
-        simulation_campaign_id=_SIMULATION_CAMPAIGN_ID,
+        simulation_record_id=_SIMULATION_RECORD_ID,
         simulation_manifest_sha256=_MANIFEST_SHA256,
         target_identity=_TARGET_IDENTITY,
         target_selector=_TARGET_SELECTOR,

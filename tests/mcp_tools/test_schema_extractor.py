@@ -403,7 +403,7 @@ class TestDescription:
         assert "description" not in schema["properties"]["name"]
 
 
-def test_coverage_analyst_accepts_only_exact_campaign_and_instruction():
+def test_coverage_analyst_accepts_only_exact_simulation_record_and_instruction():
     schema = flow_schema(CoverageAnalystSpecialist())
     assert "record" in schema["required"]
     assert "instruction" in schema["properties"]

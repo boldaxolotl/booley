@@ -22,7 +22,7 @@ from booley.flows.lint.flow import LintFlow
 from booley.flows.plan import FlowPlan, WorkUnitPlan
 from booley.flows.request import FlowRequest
 from booley.flows.sim.flow import PreparedSimulationEndpoint, SimulateFlow
-from booley.flows.sim.record_invocation import SimulationCampaignInvocation
+from booley.flows.sim.record_invocation import SimulationRecordInvocation
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.flows.synth.request import SynthRequest
 from booley.mcp.base import EXIT_ERROR
@@ -472,9 +472,9 @@ def test_state_backed_simulation_coverage_verdict_reaches_stdout(
     DevelopmentState.load(state_file).save()
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
     flow = SimulateFlow()
-    prepared_campaign = PreparedSimulationEndpoint((), None, (), {})
+    prepared_simulation_record = PreparedSimulationEndpoint((), None, (), {})
     monkeypatch.setattr(flow, "_pre_state_gate", lambda: None)
-    prepare_as(monkeypatch, flow, SimulationCampaignInvocation(flow, prepared_campaign))
+    prepare_as(monkeypatch, flow, SimulationRecordInvocation(flow, prepared_simulation_record))
     monkeypatch.setattr(
         flow,
         "run_prepared_simulation",

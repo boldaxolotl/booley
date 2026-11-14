@@ -26,7 +26,10 @@ from booley.flows.execution_persistence import EvidenceDiscarded, ReviewInputs
 from booley.flows.frozen_test_runs import FrozenTestRuns
 from booley.flows.request import FlowRequest
 from booley.flows.review_scope import resolve_review_files
-from booley.flows.simulation_record_results import CampaignResultsReader, StartedCampaign
+from booley.flows.simulation_record_results import (
+    SimulationRecordResultsReader,
+    StartedSimulationRecord,
+)
 from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.goals.binding import GoalRunBinding
 from booley.goals.checkout import CheckoutError, GoalCheckout
@@ -50,16 +53,16 @@ class GoalFlowExecution:
         *,
         resolvers: GoalFreshnessResolvers = DEFAULT_RESOLVERS,
         publication_checkpoint: Callable[[str], None] | None = None,
-        campaign_reader: CampaignResultsReader | None = None,
+        simulation_record_reader: SimulationRecordResultsReader | None = None,
     ) -> None:
         self._binding = binding
         self._resolvers = resolvers
-        self._campaign_reader = campaign_reader
+        self._simulation_record_reader = simulation_record_reader
         self._recorder = GoalEvidenceRecorder(
             binding,
             resolvers=resolvers,
             publication_checkpoint=publication_checkpoint,
-            campaign_reader=campaign_reader,
+            simulation_record_reader=simulation_record_reader,
         )
         self._presented_goals: dict[str, GoalSpec] | None = None
 
@@ -212,7 +215,7 @@ class GoalFlowExecution:
                 record,
                 work_dir=self._binding.worktree_root,
                 resolvers=self._resolvers,
-                campaign_reader=self._campaign_reader,
+                simulation_record_reader=self._simulation_record_reader,
             )
             return any(item.key == key and item.status == "met" for item in view.goals)
 
@@ -227,9 +230,9 @@ class GoalFlowExecution:
             raise EvidenceDiscarded(f"Goal Record cannot be read: {exc}") from exc
         return flow_test_runs(record, dict(self._binding.spec_revisions))
 
-    def register_campaign(self, campaign: StartedCampaign) -> None:
+    def register_simulation_record(self, simulation_record: StartedSimulationRecord) -> None:
         """Register a Simulation Campaign the run is about to start (ADR 0072)."""
-        self._recorder.register_campaign(campaign)
+        self._recorder.register_simulation_record(simulation_record)
 
     def state_persistence(self) -> StatePersistence:
         """The gated, merging persistence of the run's state."""
