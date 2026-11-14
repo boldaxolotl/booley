@@ -17,6 +17,57 @@ key means. How to run Tests and read their results is in
 A Target without any registered Tests still runs: Booley starts its testbench
 once with no Test selected, so the testbench runs whatever it runs by default.
 
+## `tests.toml` reference
+
+`tests.toml` lives in the Booley Directory (`.booley/` by default). Each
+section is named after a sim Target; the optional `[test_lists]` table holds
+named lists that several Targets can share.
+
+```toml
+[test_lists]
+smoke = ["reset", "basic"]
+
+[sim_fast]
+test_list = "smoke"
+```
+
+| Key | Meaning |
+|---|---|
+| `tests` | The Target's Tests, in order. |
+| `test_list` | Use a shared `[test_lists]` entry as `tests`. Set `tests` or `test_list`, not both. |
+| [`skip`](#skipping-known-bad-tests-skip) | Tests a run of the whole Target leaves out. |
+| [`select`](#selecting-the-test-in-the-testbench-select) | The argument that tells an HDL testbench which Test to run. Default `+test_id={index}`. Not allowed on a Cocotb Target. |
+| [`env`](#per-target-environment-env) | Environment variables for the Target's build and runs. |
+| [`variants`](#test-variants-variants) | The Test Variants of the Target's Tests, one `[<target>.variants.<test>]` table per Test. |
+| [`seed`](#seeds-seed-default_seed) | The seed argument template. |
+| [`default_seed`](#seeds-seed-default_seed) | The Target's Default Seed. Default `1`. |
+
+Any other key fails to load, and `booley doctor` names it.
+
+- **Section names.** A bare Target name (`[sim_uart]`) applies to every core's
+  Target of that name. To pick one core's Target, quote a qualified name:
+  `["acme:uart:rx#sim_uart"]`. It matches like `--target` does, and it wins over the
+  bare name. Two qualified sections that name one Target, or a section that
+  names no Target, fail `booley doctor`.
+- **Names.** A Test or Variant name has no whitespace, `+`, `@`, `<`, `>`,
+  quotes or backslashes, does not start with `-`, is not `default`, and
+  appears once per list. `booley doctor` prints the full rule.
+- **Arguments.** `select`, `seed` and every Variant argument are each one
+  token with no spaces, starting with `+` (a plusarg) or `-` (an option the
+  simulation program parses itself), and not with `++` or `+-`. `select`
+  uses `{index}` (0-based position in `tests`) or `{name}`; `seed` uses
+  `{seed}` exactly once and cannot be `+verilator+seed+`. `select` and `seed`
+  cannot set the same option.
+- **Argument order.** The simulator gets the Target's plusarg parameters, then
+  `select`, the Variant's arguments, and the seed arguments. A Target plusarg
+  that sets the same option as `select` or `seed` is dropped, so the
+  testbench sees one value.
+- **Environment.** Names are shell identifiers (`[A-Za-z_][A-Za-z0-9_]*`).
+  No `env` table can set `MODULE`, `TESTCASE`, `TOPLEVEL`, `TOPLEVEL_LANG`,
+  `RANDOM_SEED`, `LIBPYTHON_LOC`, `PYTHONPATH`, `LD_LIBRARY_PATH`, or a name
+  starting with `BOOLEY_`, `COCOTB_`, `PYGPI_` or `GPI_`: Booley and the
+  simulator integration own them.
+
 ## Selecting the Test in the testbench (`select`)
 
 The testbench has to know which Test to run. For an HDL testbench Booley
@@ -39,7 +90,7 @@ select = "--meminit=ram,{name}"
 <details markdown>
 <summary>With a cocotb testbench</summary>
 
-For a [Cocotb Target](TARGETS.md#cocotb-targets-python-testbenches) the Tests
+For a [Cocotb Target](FLOW-SIM.md#cocotb-targets-python-testbenches) the Tests
 are the names of its cocotb test functions, and Booley selects them itself.
 
 </details>
@@ -91,7 +142,7 @@ Test and Variant of any such conflict.
 <details markdown>
 <summary>With a cocotb testbench</summary>
 
-On a [Cocotb Target](TARGETS.md#cocotb-targets-python-testbenches) a Variant
+On a [Cocotb Target](FLOW-SIM.md#cocotb-targets-python-testbenches) a Variant
 carries environment variables only.
 
 </details>
@@ -139,7 +190,7 @@ it, give its testbench a seed argument and declare the template.
 <details markdown>
 <summary>With a cocotb testbench</summary>
 
-A [Cocotb Target](TARGETS.md#cocotb-targets-python-testbenches) cannot declare
+A [Cocotb Target](FLOW-SIM.md#cocotb-targets-python-testbenches) cannot declare
 `seed`.
 
 </details>
@@ -169,54 +220,3 @@ Commands](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands) see these
 variables but cannot set them. `--dry-run` shows the exact `export` lines.
 To vary a variable per Test instead of per Target, use a
 [Test Variant](#test-variants-variants).
-
-## `tests.toml` reference
-
-`tests.toml` lives in the Booley Directory (`.booley/` by default). Each
-section is named after a sim Target; the optional `[test_lists]` table holds
-named lists that several Targets can share.
-
-```toml
-[test_lists]
-smoke = ["reset", "basic"]
-
-[sim_fast]
-test_list = "smoke"
-```
-
-| Key | Meaning |
-|---|---|
-| `tests` | The Target's Tests, in order. |
-| `test_list` | Use a shared `[test_lists]` entry as `tests`. Set `tests` or `test_list`, not both. |
-| `skip` | Tests a run of the whole Target leaves out. |
-| `select` | The argument that tells an HDL testbench which Test to run. Default `+test_id={index}`. Not allowed on a Cocotb Target. |
-| `env` | Environment variables for the Target's build and runs. |
-| `variants` | The Test Variants of the Target's Tests, one `[<target>.variants.<test>]` table per Test. |
-| `seed` | The seed argument template. |
-| `default_seed` | The Target's Default Seed. Default `1`. |
-
-Any other key fails to load, and `booley doctor` names it.
-
-- **Section names.** A bare Target name (`[sim_uart]`) applies to every core's
-  Target of that name. To pick one core's Target, quote a qualified name:
-  `["acme:uart:rx#sim_uart"]`. It matches like `--target` does, and it wins over the
-  bare name. Two qualified sections that name one Target, or a section that
-  names no Target, fail `booley doctor`.
-- **Names.** A Test or Variant name has no whitespace, `+`, `@`, `<`, `>`,
-  quotes or backslashes, does not start with `-`, is not `default`, and
-  appears once per list. `booley doctor` prints the full rule.
-- **Arguments.** `select`, `seed` and every Variant argument are each one
-  token with no spaces, starting with `+` (a plusarg) or `-` (an option the
-  simulation program parses itself), and not with `++` or `+-`. `select`
-  uses `{index}` (0-based position in `tests`) or `{name}`; `seed` uses
-  `{seed}` exactly once and cannot be `+verilator+seed+`. `select` and `seed`
-  cannot set the same option.
-- **Argument order.** The simulator gets the Target's plusarg parameters, then
-  `select`, the Variant's arguments, and the seed arguments. A Target plusarg
-  that sets the same option as `select` or `seed` is dropped, so the
-  testbench sees one value.
-- **Environment.** Names are shell identifiers (`[A-Za-z_][A-Za-z0-9_]*`).
-  No `env` table can set `MODULE`, `TESTCASE`, `TOPLEVEL`, `TOPLEVEL_LANG`,
-  `RANDOM_SEED`, `LIBPYTHON_LOC`, `PYTHONPATH`, `LD_LIBRARY_PATH`, or a name
-  starting with `BOOLEY_`, `COCOTB_`, `PYGPI_` or `GPI_`: Booley and the
-  simulator integration own them.
