@@ -29,6 +29,9 @@ from booley.runtime.timefmt import utc_now_rfc3339
 from tests.conftest import symlink_or_skip
 from tests.goals.conftest import git, update_record
 
+# An rtl/bugs discovery makes one agent call per declared guide (checklist + hunt).
+BUGS_DISCOVERY_CALLS = 2
+
 
 @pytest.fixture(autouse=True)
 def preview(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -445,9 +448,9 @@ def test_reviewer_uses_goal_freshness_without_rewriting_producer_evidence(
     assert json.loads(producer.state_file.read_text())["criteria"]["lint_clean_top"] == original
     view = build_status(GoalStore(layout.control), layout.record)
     assert all(goal.status == "met" for goal in view.goals)
-    assert provider.call_count == 1
+    assert provider.call_count == BUGS_DISCOVERY_CALLS
     assert endpoint._run().exit_code == 0
-    assert provider.call_count == 1  # fresh Goal receipt is replayed
+    assert provider.call_count == BUGS_DISCOVERY_CALLS  # fresh Goal receipt is replayed
     (layout.worktree / "rtl.v").write_bytes(b"module top; wire changed; endmodule\n")
     assert endpoint._run().exit_code == 0
     assert provider.call_count >= 2  # stale receipt runs verify/discovery as appropriate
@@ -519,7 +522,7 @@ def test_reviewer_serializes_calls_and_reloads_receipts_before_replay(
             assert result.exit_code == 2 and "Another review is running" in result.report_text
             assert newer_provider.call_count == 0
         else:
-            assert result.exit_code == 0 and newer_provider.call_count == 1
+            assert result.exit_code == 0 and newer_provider.call_count == BUGS_DISCOVERY_CALLS
 
     if after_freshness_check:
         method = "_replay_done_verdict" if mode == "done" else "_already_clean_result"
@@ -539,7 +542,7 @@ def test_reviewer_serializes_calls_and_reloads_receipts_before_replay(
         assert json.loads(path.read_text())["criteria"][key] == old_receipt
         assert build_status(GoalStore(layout.control), layout.record).goals[0].status == "stale"
         assert newer._run().exit_code == 0
-        assert newer_provider.call_count == 1
+        assert newer_provider.call_count == BUGS_DISCOVERY_CALLS
     actual = json.loads(path.read_text())["criteria"][key]
     assert actual["detail"]["_source_fingerprint"] != old_receipt["detail"]["_source_fingerprint"]
     assert build_status(GoalStore(layout.control), layout.record).goals[0].status == "met"
@@ -944,7 +947,7 @@ def test_undeclared_endpoint_criterion_does_not_discard_later_goal_evidence(
     assert endpoint.evidence_discarded is None
     assert diagnostic_key not in endpoint.state.criteria
     assert endpoint._report_criteria.evaluated == {}
-    assert endpoint._run().exit_code == 0 and provider.call_count == 1
+    assert endpoint._run().exit_code == 0 and provider.call_count == BUGS_DISCOVERY_CALLS
     assert endpoint.evidence_discarded is None
     paths = record_paths(layout.control, layout.record.id)
     state = DevelopmentState.load(paths.state_file)

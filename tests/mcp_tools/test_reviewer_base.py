@@ -223,7 +223,8 @@ def test_unchanged_users_are_context_not_reviewed(
     assert "rtl/c.sv" not in prompt
     assert result.detail["issues"] == 0
     assert result.detail["issue_list"] == []
-    assert [row["reason"] for row in result.detail["filtered"]] == ["source_scope"]
+    # The bugs review's two guide calls each report the out-of-scope finding.
+    assert [row["reason"] for row in result.detail["filtered"]] == ["source_scope"] * 2
 
 
 def test_commit_messages_and_diff_are_in_prompt(
@@ -403,3 +404,51 @@ def test_dry_run_with_base_previews_only_changed_files(
     assert result.exit_code == 0
     assert result.detail["scope"] == ["rtl/a.sv"]
     invoke.assert_not_called()
+
+
+def test_base_gives_every_guide_call_the_same_change_section(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bugs review's checklist and hunt calls share one change section and origin rule."""
+    commit_edit(repo, "a.sv", A_SV + "// feature edit\n", "Feature edit")
+    reviewer = ReviewerSpecialist()
+    reviewer.parse_args(
+        [
+            *("--work-dir", str(repo), "--category", "rtl", "--focus", "bugs"),
+            *("--scope", "rtl/a.sv", "--base", "main"),
+        ]
+    )
+    reviewer.read_state()
+    answers = {
+        "bugs-checklist": [finding(line=3, summary="Introduced bug")],
+        "bugs-hunt": [finding(line=1, summary="Old bug", origin="pre_existing")],
+    }
+    prompts: dict[str, Any] = {}
+
+    def fake_agent(params: Any) -> MagicMock:
+        guide = next(g for g in answers if f"({g})" in params.system_prompt)
+        prompts[guide] = params
+        return MagicMock(
+            output=json.dumps({"issues": answers[guide]}), captured_agent_capability_calls={}
+        )
+
+    monkeypatch.setattr(reviewer, "_invoke_agent", fake_agent)
+    result = reviewer._run()
+
+    assert result.exit_code == 0, result.report_text
+    assert set(prompts) == set(answers)
+    user_prompts = {params.prompt for params in prompts.values()}
+    assert len(user_prompts) == 1
+    (prompt,) = user_prompts
+    assert "## Change under review" in prompt
+    assert "Feature edit" in prompt
+    for params in prompts.values():
+        assert '"origin"' in params.system_prompt  # the origin rule reaches every call
+    # A hunt finding that predates the change stays a non-blocking observation.
+    rows = {row["summary"]: row for row in result.detail["issue_list"]}
+    assert rows["Old bug"]["status"] == "reported"
+    assert rows["Old bug"]["guide_kinds"] == ["hunt"]
+    assert result.detail["issues"] == 1
+    assert [row["summary"] for row in ReviewerSpecialist._open_findings(result.detail)] == [
+        "Introduced bug"
+    ]

@@ -17,6 +17,7 @@ import dataclasses
 import logging
 import os
 import subprocess
+import threading
 from abc import abstractmethod
 from pathlib import Path
 from typing import Any
@@ -104,6 +105,9 @@ class Specialist(McpTool):
         self._last_session_id: str | None = None
         # The model the latest agent call ran on (and any [models] list fallback).
         self._model_run: ModelRun | None = None
+        # Concurrent agent calls (one per Reviewer guide kind) share the totals above.
+        self._usage_lock = threading.Lock()
+        self._thread_model_run = threading.local()
 
     def _add_args(self, parser: argparse.ArgumentParser) -> None:
         """Add agent-specific arguments."""
@@ -324,8 +328,16 @@ class Specialist(McpTool):
                 self.emit_progress(f"trying [models] entry {model} on {cli}")
             return self._invoke_agent_once(call_params, on_event)
 
-        result, self._model_run = call_with_fallback(settings, self.name, attempt)
+        result, model_run = call_with_fallback(settings, self.name, attempt)
+        with self._usage_lock:
+            self._model_run = model_run
+        # Concurrent calls share ``_model_run``; each thread also keeps the model its own call ran on.
+        self._thread_model_run.value = model_run
         return result
+
+    def last_call_model_run(self) -> ModelRun | None:
+        """The model the calling thread's latest ``_invoke_agent`` ran on."""
+        return getattr(self._thread_model_run, "value", None)
 
     def _invoke_agent_once(
         self,
@@ -370,17 +382,18 @@ class Specialist(McpTool):
                 result = _call_agent_sync(call_params, on_event=on_event)
             if snapshot is not None:
                 result = restore_result_paths(result, snapshot)
-        self._total_input_tokens += getattr(result, "input_tokens", 0)
-        self._total_output_tokens += getattr(result, "output_tokens", 0)
-        self._total_cached_tokens += getattr(result, "cached_tokens", 0)
-        self._total_cache_create_tokens += getattr(result, "cache_create_tokens", 0)
-        self._total_cost_usd += getattr(result, "cost_usd", 0.0)
         # A session id is a string or nothing. Backends have handed back other
         # shapes (and test doubles hand back mocks), and since F-42 gave
         # standalone runs a real persistence path, anything non-str would now
         # reach `Path.write_text` and raise instead of being quietly ignored.
         session_id = getattr(result, "session_id", None)
-        self._last_session_id = session_id if isinstance(session_id, str) else None
+        with self._usage_lock:
+            self._total_input_tokens += getattr(result, "input_tokens", 0)
+            self._total_output_tokens += getattr(result, "output_tokens", 0)
+            self._total_cached_tokens += getattr(result, "cached_tokens", 0)
+            self._total_cache_create_tokens += getattr(result, "cache_create_tokens", 0)
+            self._total_cost_usd += getattr(result, "cost_usd", 0.0)
+            self._last_session_id = session_id if isinstance(session_id, str) else None
         return result
 
     def _invoke_agent_with_resume(

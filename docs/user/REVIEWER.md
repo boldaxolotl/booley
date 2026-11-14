@@ -23,6 +23,14 @@ use a [Flow](FLOW_REFERENCE.md) instead.
 The early reviews are an engineer's quick look at freshly written code: they
 catch bugs before they cost time in simulate-and-fix loops.
 
+A `bugs` review makes two model calls at the same time: one checks the code
+against a list of known bug patterns, the other hunts for defects by tracing
+scenarios such as reset, back-to-back operations, and full or empty states.
+It reports the findings of both, merging findings that cite the same file,
+line, and kind, and tags each finding with the pass that found it. It costs
+about two reviews. If either call fails, the whole review is an error instead
+of a partial result.
+
 A review sees only one side of the RTL/testbench split. A testbench review
 never reads the RTL, so it judges the tests against the spec rather than
 against what the RTL happens to do.
@@ -102,7 +110,7 @@ booley specialist reviewer --verify
 | `--fail-on critical\|major\|minor` | Exit 1 when an open finding is at or above that severity. Without it, a completed review exits 0 even with open findings. |
 | `--verify` | Recheck the latest review's open findings. Accepts only `--waive` and `--fail-on`. |
 | `--waive <finding-id> "<reason>"` | With `--verify`: propose a waiver. Repeatable. |
-| `--dry-run` | Preview the call without running the review: lists the review guides it would load. |
+| `--dry-run` | Preview the call without running the review: lists the review guides it would run. A checklist guide and a hunt guide run as separate model calls. |
 
 The options every Specialist shares are in [Specialists](SPECIALISTS.md#running-a-specialist).
 [CLI-REFERENCE.md](CLI-REFERENCE.md#reviewer) has the full reference,
