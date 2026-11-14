@@ -34,7 +34,7 @@ _SIMULATION_RECORD_STORAGE_OWNERS = frozenset(
     }
 )
 _SIMULATION_RECORD_PREFIX = "booley.flows.sim.record"
-_SIMULATION_RECORD_SCAN = "campaign-storage-types"
+_SIMULATION_RECORD_SCAN = "simulation-record-storage-types"
 _TARGET_SCAN = "target-mechanics"
 
 

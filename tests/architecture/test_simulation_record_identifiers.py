@@ -1,6 +1,6 @@
 """Architecture guard: Simulation Record names say "record", not "campaign".
 
-The Simulation Record package and every other source and test module name the concept
+The Simulation Record package and every other source, test and QA module name the concept
 with Record names. A name that still says campaign names another concept and is listed
 below with its reason; it is allowed only in the file, and for scoped entries the function or
 class, that is listed.
@@ -113,8 +113,26 @@ def _defined_names(tree: ast.AST) -> list[tuple[int, str, str]]:
     return collector.found
 
 
-# Coverage Record names (the artifact itself, its model, store, reference, picker, waivers and its tests); #3912 and #3913 rename them.
+# Coverage Record names (the artifact itself, its model, store, reference, picker, waivers and
+# its tests); #3912 and #3913 rename them.
 _COVERAGE_RECORD_NAMES: dict[str, frozenset[str]] = {
+    "qa/shared/coverage/evaluator/measurements.py": frozenset(
+        {
+            "CAMPAIGN_SCHEMA",
+            "read_campaign",
+        }
+    ),
+    "qa/shared/coverage/faults/approvals.py": frozenset(
+        {
+            "bind:campaign",
+        }
+    ),
+    "qa/shared/coverage/faults/campaign.py": frozenset(
+        {
+            "nested_campaign",
+            "rebind_reference:campaign",
+        }
+    ),
     "src/booley/flows/sim/acceptance.py": frozenset(
         {
             "_coverage_detail:campaign",
@@ -791,7 +809,7 @@ def test_simulation_record_names_outside_the_package_use_record_names() -> None:
     kept = _kept_entries()
     used: set[tuple[str, str]] = set()
     offenders: list[str] = []
-    for path in source_checkout_files(_ROOT, "src", "tests"):
+    for path in source_checkout_files(_ROOT, "src", "tests", "qa"):
         if path.suffix != ".py":
             continue
         relative = path.relative_to(_ROOT).as_posix()

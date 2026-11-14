@@ -62,15 +62,15 @@ def validate_backlinks(
     manifest, manifest_raw = _load(manifest_path)
     summary, _summary_raw = _load(summary_path)
     projection, _projection_raw = _load(projection_path)
-    campaign_id = manifest.get("simulation_record_id")
+    simulation_record_id = manifest.get("simulation_record_id")
     digest = _manifest_digest(manifest_raw)
     _need(
-        summary.get("simulation_record_id") == campaign_id,
+        summary.get("simulation_record_id") == simulation_record_id,
         "summary identifies a different Simulation Campaign",
     )
     _need(summary.get("manifest_sha256") == digest, "summary manifest digest differs")
     _need(
-        projection.get("simulation_record_id") == campaign_id,
+        projection.get("simulation_record_id") == simulation_record_id,
         "projection identifies a different Simulation Campaign",
     )
     validate_manifest_reference(
@@ -78,9 +78,9 @@ def validate_backlinks(
         projection_path=projection_path,
         manifest_path=manifest_path,
         manifest_raw=manifest_raw,
-        campaign_id=campaign_id,
+        simulation_record_id=simulation_record_id,
     )
-    return {"campaign_id": campaign_id, "manifest_sha256": digest}
+    return {"campaign_id": simulation_record_id, "manifest_sha256": digest}
 
 
 def validate_interrupted_resume(
