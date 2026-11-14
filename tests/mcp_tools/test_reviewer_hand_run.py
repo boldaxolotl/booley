@@ -1,4 +1,4 @@
-"""Hand-run Reviewer: inline spec text, opt-in failing exit, firmware context (issue #3269).
+"""Hand-run Reviewer: inline spec text, opt-in failing exit, unscoped-file findings (issues #3269, #4052).
 
 Every test drives a real Interactive Reviewer (real ``reviewer-state``, no Goal recorder)
 with the agent call mocked to return canned findings.
@@ -232,50 +232,56 @@ def test_goal_mode_refuses_spec_text_and_fail_on(project: Path) -> None:
 
 
 @pytest.mark.parametrize("args", [BASE_ARGS, TB_ARGS], ids=["rtl", "tb"])
-def test_firmware_findings_are_out_of_scope(
+def test_unscoped_file_findings_are_filtered_as_source_scope(
     project: Path, monkeypatch: pytest.MonkeyPatch, args: list[str]
 ) -> None:
+    """A finding in a file outside the review scope is audit evidence, never open (#4052)."""
     category = "quality" if args is TB_ARGS else "bugs"
     in_scope = args[1]
-    firmware = project / "fw/start.c"  # snapshot results are restored to absolute paths
+    (project / "sw").mkdir()
+    (project / "sw/main.c").write_text("// authored\n")
+    unscoped = [project / "fw/start.c", project / "sw/main.c"]  # results use absolute paths
     result, _ = review(
         project,
         monkeypatch,
         [*args, "--fail-on", "major"],
         {
             "issues": [
-                finding("MAJOR", str(firmware), "Stack never initialised", category),
+                *(
+                    finding("MAJOR", str(path), "Stack never initialised", category)
+                    for path in unscoped
+                ),
                 finding("MINOR", in_scope, "Style nit", category),
             ]
         },
     )
     assert result.exit_code == 0, result.report_text
     assert [row["file"] for row in ReviewerSpecialist._open_findings(result.detail)] == [in_scope]
-    (row,) = [r for r in result.detail["issue_list"] if r["file"] == str(firmware)]
-    assert row["disposition"] == "out_of_scope"
-    assert result.report_text.count("OUT OF SCOPE (firmware is read-only context)") == 1
-    assert result.report_text.count("Stack never initialised") == 1
-
-
-@pytest.mark.parametrize("args", [BASE_ARGS, TB_ARGS], ids=["rtl", "tb"])
-@pytest.mark.parametrize("spelling", ["relative", "absolute"])
-def test_firmware_only_scope_is_refused(
-    project: Path, monkeypatch: pytest.MonkeyPatch, args: list[str], spelling: str
-) -> None:
-    scope = "fw/start.c" if spelling == "relative" else str(project / "fw/start.c")
-    result, invoke = review(project, monkeypatch, ["--scope", scope, *args[2:]])
-    assert result.exit_code == 2
-    assert "firmware review is not supported yet" in result.report_text.lower()
-    invoke.assert_not_called()
-
-
-def test_mixed_scope_reviews_non_firmware_and_reports_firmware_as_context(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    result, invoke = review(
-        project, monkeypatch, ["--scope", "rtl/dut.sv,fw/start.c", *BASE_ARGS[2:]]
+    assert [row["file"] for row in result.detail["issue_list"]] == [in_scope]
+    assert sorted((row["file"], row["reason"]) for row in result.detail["filtered"]) == sorted(
+        (str(path), "source_scope") for path in unscoped
     )
+    assert "OUT OF SCOPE (firmware" not in result.report_text
+
+
+def test_fw_scope_follows_scope_contract(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``fw/`` has no scope special case: the ``.core`` roles and the scope contract decide."""
+    (project / "design.core").write_text(
+        "CAPI=2:\nname: ::fw:0\nfilesets:\n"
+        "  rtl:\n    files: [rtl/dut.sv]\n"
+        "  tb:\n    tags: [tb]\n    files: [tb/tb.sv]\n"
+        "targets:\n  sim:\n    default_tool: verilator\n    filesets: [rtl, tb]\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    scope = "fw/start.c"
+    result, invoke = review(project, monkeypatch, ["--scope", scope, *TB_ARGS[2:]])
     assert result.exit_code == 0, result.report_text
-    assert "  - rtl/dut.sv" in prompt_of(invoke)
-    assert "  - fw/start.c" not in prompt_of(invoke)
-    assert "INFO: firmware is read-only context, not reviewed: fw/start.c" in result.report_text
+    assert f"  - {scope}" in prompt_of(invoke)
+    assert "firmware" not in result.report_text.lower()
+
+    result, invoke = review(project, monkeypatch, ["--scope", scope, *BASE_ARGS[2:]])
+    assert result.exit_code == 2
+    assert "Unsupported RTL source kind" in result.report_text
+    assert "firmware" not in result.report_text.lower()
+    invoke.assert_not_called()

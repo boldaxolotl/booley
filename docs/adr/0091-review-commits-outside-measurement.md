@@ -34,7 +34,7 @@ Reviews are declared per Target, in a file of their own beside
   critical finding) and `exclude` globs. `[[<target>.review.paths]]` entries
   add focuses for matching files. `[defaults.review]` fills in Targets that
   have their own review table and never creates one. A focus that does not
-  fit the role, a glob that matches firmware or nothing, and a `spec` focus
+  fit the role, a glob that matches nothing, and a `spec` focus
   without a `spec` are load errors.
 - **`booley review [<sha>]`.** It reviews a commit in the same clean exported
   checkout and against the same Base as `booley measure`. Only Targets
@@ -54,8 +54,9 @@ Reviews are declared per Target, in a file of their own beside
 - **Review Run.** One stored `booley review` run, kept under
   `<booley_dir>/reviews/<sha>/`. A verify run links to the discovery run it
   checked. Its report lists waivers first and every fix made for a finding.
-- **Firmware** is read-only context for every Reviewer until a firmware
-  Reviewer exists. No Reviewer reports findings in it.
+- **Readable context.** Every project file outside a Reviewer's opposite
+  category, except HDL files no fileset declares, is readable context, firmware
+  included. Findings in files outside the review never count.
 - **Hand-run reviews stay** for mid-work checks. `booley specialist reviewer`
   takes the spec as `--spec <path>` or `--spec-text "<text>"` and exits nonzero
   only with `--fail-on`. It never makes a commit Reviewed.
@@ -92,3 +93,12 @@ Decided while finishing the design of
   it is listed there and never blocks. Classifying a change to the review
   rules (tightened or loosened) belongs to the Review Report, not to
   `booley measure`.
+
+## Amendments (2026-11-14)
+
+Decided in [#4052](https://github.com/boldaxolotl/booley/issues/4052).
+
+- **Firmware has no special handling.** The **Firmware** bullet is replaced by
+  **Readable context**: category membership comes only from the `.core`
+  filesets, and every file outside a Reviewer's opposite category, except HDL
+  files no fileset declares, is readable context.

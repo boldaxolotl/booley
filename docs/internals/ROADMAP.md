@@ -112,8 +112,8 @@ describes. The Mutation Tester Specialist and its `[models]` key are gone
 
 ## Firmware Reviewer
 
-**Planned.** The RTL and testbench Reviewers read firmware as context but
-report no findings in it
+**Planned.** The RTL and testbench Reviewers read firmware as context and
+have no firmware guidance
 ([ADR 0091](../adr/0091-review-commits-outside-measurement.md)). A firmware
 Reviewer would review firmware in its own right, for example driver code
 against the register map and the spec, and add a `fw` role that a

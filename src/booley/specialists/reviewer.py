@@ -65,10 +65,8 @@ from booley.targets.flow_names import config_section
 
 from .review_change import ReviewChange, ReviewChangeError, resolve_review_change
 from .review_contract import (
-    FIRMWARE_DIR,
     ReviewContractError,
     ReviewScopeContract,
-    is_firmware_path,
     resolve_review_scope,
 )
 from .review_simulators import render_simulation_context, resolve_scope_simulators
@@ -171,7 +169,7 @@ def _is_observation(disposition: str, origin: str) -> bool:
 
 
 # RTL source prefixes — derived from the authored .core filesets.
-_RTL_PREFIXES_DEFAULT = ("rtl/", "rtl\\", "fw/", "fw\\")
+_RTL_PREFIXES_DEFAULT = ("rtl/", "rtl\\")
 # TB source prefixes — directories end in a separator; flat files do not.
 _TB_PREFIXES_DEFAULT = ("tb/", "tb\\")
 
@@ -196,11 +194,8 @@ def _get_prefixes(
     from booley.runtime.shared_infra import source_dir_prefixes
 
     rtl_names, tb_names = parsed
-    rtl_list = list(rtl_names)
-    if "fw" not in {name.rstrip("/\\") for name in rtl_list}:
-        rtl_list.append("fw")
     return (
-        source_dir_prefixes(rtl_list, work_dir),
+        source_dir_prefixes(list(rtl_names), work_dir),
         source_dir_prefixes(tb_names, work_dir),
     )
 
@@ -1015,8 +1010,6 @@ class ReviewerSpecialist(Specialist):
         self._goal_receipt_replayed = False
         self._goal_mode = False
         self._resolved_scope: list[str] | None = None
-        self._firmware_context: list[str] = []
-        self._firmware_finding_ids: set[str] = set()
         self._review_change: ReviewChange | None = None
         self._full_scope: tuple[str, ...] | None = None
         self._goal_target_surface: dict[str, Any] | None = None
@@ -1070,28 +1063,7 @@ class ReviewerSpecialist(Specialist):
             return McpToolResult(
                 exit_code=EXIT_ERROR, report_text="Discovery requires --category and --focus"
             )
-        if self._goal_mode:
-            return self._prepare_goal_discovery()
-        return self._split_firmware_scope()
-
-    def _split_firmware_scope(self) -> McpToolResult | None:
-        """Keep firmware out of the reviewed scope; refuse a scope with nothing else."""
-        scope = self._parse_scope()
-        firmware = [path for path in scope if is_firmware_path(self.args.work_dir, path)]
-        if not firmware:
-            return None
-        reviewed = [path for path in scope if path not in firmware]
-        if not reviewed:
-            return McpToolResult(
-                exit_code=EXIT_ERROR,
-                report_text=(
-                    f"Firmware review is not supported yet: {', '.join(firmware)} are firmware. "
-                    "Reviewers read firmware as context only; scope RTL or testbench files."
-                ),
-            )
-        self._resolved_scope = reviewed
-        self._firmware_context = firmware
-        return None
+        return self._prepare_goal_discovery() if self._goal_mode else None
 
     def _prepare_goal_discovery(self) -> McpToolResult | None:
         from booley.flows.execution_persistence import ReviewGoalInputs
@@ -1293,22 +1265,6 @@ class ReviewerSpecialist(Specialist):
     def _diff_scoped(self) -> bool:
         """Whether this run reviews a change (``--base``) rather than whole files."""
         return self._review_change is not None
-
-    def _workspace_shared_files(self) -> tuple[str, ...]:
-        """Both Reviewers read firmware (non-HDL files under ``fw/``) as context."""
-        work_dir = getattr(self._args, "work_dir", None)
-        if self._goal_mode or not work_dir:
-            return ()
-        root = Path(work_dir)
-        return tuple(
-            sorted(
-                relative.as_posix()
-                for path in (root / FIRMWARE_DIR).rglob("*")
-                if path.is_file()
-                and not path.is_symlink()
-                and is_firmware_path(root, relative := path.relative_to(root))
-            )
-        )
 
     @property
     def display_tag(self) -> str | None:
@@ -1638,12 +1594,6 @@ match the strength of the evidence.
             if spec_section:
                 sections.append(spec_section)
 
-        if not self._goal_mode:
-            sections.append(
-                "## Firmware\n\nNon-HDL files under `fw/` are firmware: read-only context. "
-                "Read them when useful; never report findings in them.\n"
-            )
-
         if self._review_change is not None:
             sections.append(self._build_change_section(self._review_change))
 
@@ -1938,8 +1888,6 @@ object, even after calling the capability.
         self._scope_contract = None
         self._sampled_contract = None
         self._resolved_scope = None
-        self._firmware_context = []
-        self._firmware_finding_ids = set()
         self._review_change = None
         self._full_scope = None
         self._goal_target_surface = None
@@ -3102,13 +3050,7 @@ Schema enforcement (applied upstream by the harness):
             f"[review] {self.args.category}/{focus}",
             *self._spec_report_lines(),
         ]
-        if self._firmware_context:
-            output_lines.append(
-                "INFO: firmware is read-only context, not reviewed: "
-                + ", ".join(self._firmware_context)
-            )
         self._non_corrective_issues = []
-        self._firmware_finding_ids = set()
         self._attempt_id = f"{self._review_run_id or self._invocation_id}-{uuid4().hex}"
         self._audit_phase = phase
 
@@ -3155,14 +3097,7 @@ Schema enforcement (applied upstream by the harness):
         kept: list[ReviewIssue] = []
         dropped = 0
         for ordinal, issue in enumerate(issues, 1):
-            if not self._goal_mode and is_firmware_path(self.args.work_dir, issue.file):
-                issue.disposition = DISPOSITION_OUT_OF_SCOPE
-                self._non_corrective_issues.append(issue)
-                self._firmware_finding_ids.add(_finding_record(issue)["finding_id"])
-                output_lines.append(
-                    f"OUT OF SCOPE (firmware is read-only context): {_format_issue_line(issue)}"
-                )
-            elif not self._issue_file_in_scope(issue.file):
+            if not self._issue_file_in_scope(issue.file):
                 self._audit["filtered"].append(
                     {
                         **issue.to_dict(),
@@ -3292,13 +3227,7 @@ Schema enforcement (applied upstream by the harness):
         )
         output_lines.append(f"\nRESULT: {result_label} ({count_str})")
         lines = [f"{count_str}, review completed"]
-        # Firmware findings already have their OUT OF SCOPE line; do not list them twice.
-        shown = [
-            row
-            for row in done_outcome.records
-            if row["finding_id"] not in self._firmware_finding_ids
-            and row.get("origin") != ORIGIN_PRE_EXISTING
-        ]
+        shown = [row for row in done_outcome.records if row.get("origin") != ORIGIN_PRE_EXISTING]
         lines.extend(
             f"  {_format_issue_line(ReviewIssue.from_dict(row))} [{row.get('status', 'reported')}]"
             for row in shown

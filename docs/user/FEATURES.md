@@ -73,7 +73,7 @@ Specialists (the Reviewer and Coverage Analyst) are separate LLM agents that Boo
 A Developer Agent could spawn its own subagent, but then it writes the brief, decides what the subagent sees, and reads back a free-form reply. Specialists close those gaps:
 
 - **Booley writes the brief** from expert-written guides. In Goal Mode the Developer Agent can't add its own framing, so it can't steer the verdict.
-- **Each side is judged against the spec, not against the other side.** The RTL and the testbench should be independent readings of the spec. A testbench Reviewer that could read the RTL would check the tests against what the RTL does, not what the spec requires, and miss bugs where both sides share the same misreading. So the testbench Reviewer sees only the testbench and the spec (plus firmware, as read-only context, outside Goal Mode), and the RTL Reviewer doesn't see the testbench.
+- **Each side is judged against the spec, not against the other side.** The RTL and the testbench should be independent readings of the spec. A testbench Reviewer that could read the RTL would check the tests against what the RTL does, not what the spec requires, and miss bugs where both sides share the same misreading. So the testbench Reviewer never sees the RTL (other project files, such as firmware, stay readable), and the RTL Reviewer doesn't see the testbench.
 - **Results count.** Findings come back in a structured form Booley validates, and in Goal Mode they are evidence that can meet a review Goal.
 
 ## Waveform-Based Debug
