@@ -54,6 +54,7 @@ from booley.flows.mutation.equivalence import generated_cpp, verilator_version
 from booley.flows.mutation.generator import (
     GENERATOR_VERSION,
     Mutant,
+    TargetDesign,
     generate_mutants,
     parser_version,
 )
@@ -110,6 +111,7 @@ from booley.flows.target_campaign import (
     resolve_target_campaign,
 )
 from booley.flows.target_criteria import CampaignScopeError
+from booley.flows.target_parameters import sv_byte_string_literal, vlogparam_specs
 from booley.flows.target_test_plan import TargetTestPlan, TestRunLaunch, batch_test_runs
 from booley.flows.target_test_suite import (
     NoRunnableTestsError,
@@ -146,6 +148,13 @@ _monotonic = time.monotonic
 _MUTATION_SUFFIXES = frozenset({".v", ".vh", ".sv", ".svh"})
 #: ``file_type`` prefixes of Verilog and SystemVerilog sources.
 _HDL_FILE_TYPES = ("verilogSource", "systemVerilogSource")
+#: Macros a simulator defines itself, by its lower-case ``eda_tool`` name: the elaboration
+#: of the Target takes the same ``ifdef`` branches as its build.
+_SIMULATOR_DEFINES = {
+    "verilator": {"VERILATOR": "1"},
+    "icarus": {"__ICARUS__": "1"},
+    "iverilog": {"__ICARUS__": "1"},
+}
 #: Tags (besides the testbench role) that take a Target input out of the default scope.
 _UNMUTATED_FILE_TAGS = frozenset({"vendored", "generated"})
 
@@ -513,6 +522,10 @@ def _identity_lines(identity: Mapping[str, Any], count_label: str | None = None)
     ]
     if "verilator_version" in identity:
         lines.append(f"- Verilator version: {identity['verilator_version']}")
+    if identity.get("elaboration") == "target":
+        lines.append("- Elaboration: Target")
+    elif "elaboration" in identity:
+        lines.append(f"- Elaboration: per file ({identity['elaboration_fallback']})")
     lines.append("- Scope file hashes:")
     lines += [f"  - `{name}`: {digest}" for name, digest in identity["scope_hashes"].items()]
     return [*lines, ""]
@@ -1269,15 +1282,19 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         except fusesoc_registry.FuseSocError:
             return None
 
-    def _generator_inputs(self) -> tuple[dict[str, str], list[str]]:
-        """The preprocessor ``defines`` and ``include_dirs`` the Target's build gives its sources.
+    def _generator_inputs(self) -> tuple[dict[str, str], list[str], TargetDesign | None]:
+        """The ``defines``, ``include_dirs`` and :class:`TargetDesign` the Target's build gives its sources.
 
         Include directories are those of the Project's non-testbench include
-        headers, as :attr:`ResolvedTarget.rtl_include_dirs` takes them.
+        headers, as :attr:`ResolvedTarget.rtl_include_dirs` takes them, then the
+        testbench's.  The design is every HDL source of the Target in Target order
+        (the testbench's too: the build compiles them, and an SV testbench is the top)
+        with its top modules and ``vlogparam`` overrides; ``None`` when the Target
+        cannot be inspected.
         """
         inspection = self._inspect_target()
         if inspection is None:
-            return {}, []
+            return {}, [], None
         defines: dict[str, str] = {}
         for name, spec in inspection.parameters.items():
             if not isinstance(spec, Mapping) or spec.get("paramtype") != "vlogdefine":
@@ -1288,16 +1305,54 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             elif default not in (False, None, ""):
                 defines[name] = str(default)
         include_dirs: dict[str, None] = {}  # ordered set
+        for testbench in (False, True):  # a scope file finds its own headers first
+            include_dirs.update(dict.fromkeys(self._include_dirs(inspection, testbench=testbench)))
+        design = self._target_design(inspection, self._include_dirs(inspection, testbench=None))
+        return defines, list(include_dirs), design
+
+    def _include_dirs(self, inspection: TargetInspection, *, testbench: bool | None) -> list[str]:
+        """The Project include directories of ``inspection``'s headers in Target order.
+
+        ``testbench`` keeps only the testbench's headers (``True``), only the others
+        (``False``), or all (``None``).
+        """
+        directories: list[str] = []
         for item in inspection.inputs:
-            if item.is_include and "tb" not in item.tags:
-                path = fusesoc_registry.canonical_project_path(self.args.work_dir, item.path)
-                if not Path(path).is_absolute():
-                    include_dirs[PurePosixPath(path).parent.as_posix()] = None
-        return defines, list(include_dirs)
+            if not item.is_include or testbench not in (None, "tb" in item.tags):
+                continue
+            path = fusesoc_registry.canonical_project_path(self.args.work_dir, item.path)
+            if not Path(path).is_absolute():
+                directories.append(PurePosixPath(path).parent.as_posix())
+        return directories
+
+    def _target_design(
+        self, inspection: TargetInspection, include_dirs: Sequence[str]
+    ) -> TargetDesign:
+        """The top modules, HDL sources, parameter overrides and macros of ``inspection``.
+
+        ``include_dirs`` are the build's, in Target order.
+        """
+        files: dict[str, None] = {}  # ordered set
+        for item in inspection.inputs:
+            if item.file_type.startswith(_HDL_FILE_TYPES) and not item.is_include:
+                files[fusesoc_registry.canonical_project_path(self.args.work_dir, item.path)] = (
+                    None
+                )
+        parameters = {
+            name: sv_byte_string_literal(value.value) if value.is_string else value.value
+            for name, value in vlogparam_specs(inspection.parameters).items()
+        }
+        return TargetDesign(
+            tuple(inspection.toplevel.split()),
+            tuple(files),
+            parameters,
+            tuple(dict.fromkeys(include_dirs)),
+            _SIMULATOR_DEFINES.get(str(inspection.eda_tool).lower(), {}),
+        )
 
     def _generate(self, plan: MutationRunPlan) -> GeneratedMutants | EndpointOutcome:
         """Select the run's Mutants with the deterministic generator and resolve their variants."""
-        defines, include_dirs = self._generator_inputs()
+        defines, include_dirs, design = self._generator_inputs()
         try:
             identity = {
                 "scope_hashes": plan.scope_hashes,
@@ -1313,7 +1368,9 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 plan.seed,
                 defines=defines,
                 include_dirs=include_dirs,
+                design=design,
             )
+            identity.update(self._elaboration_identity(design, selection.fallback))
             if not selection.mutants:
                 return self._generation_failure(
                     plan,
@@ -1338,6 +1395,16 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         except (MutantGeneratorError, BoundaryError, MutationVariantError) as exc:
             return self._generation_failure(plan, "generation", str(exc), None)
         return GeneratedMutants(plan, variants, identity, selection.ranked)
+
+    def _elaboration_identity(
+        self, design: TargetDesign | None, fallback: str | None
+    ) -> dict[str, str]:
+        """The identity keys for how the Mutants' facts were elaborated; progress on a fallback."""
+        reason = "the Target cannot be inspected" if design is None else fallback
+        if reason is None:
+            return {"elaboration": "target"}
+        self.emit_progress(f"Mutant generation: per-file elaboration ({reason})")
+        return {"elaboration": "per-file", "elaboration_fallback": reason}
 
     @staticmethod
     def _generation_failure(
@@ -2706,6 +2773,10 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         gate = "PASS" if passed else "FAIL"
         source = _threshold_source(plan, inputs.count)
         lines: list[str] = [self._identity_header(plan, inputs)]
+        if reason := inputs.identity.get("elaboration_fallback"):
+            lines.append(
+                f"[mutation_test] Target elaboration failed, Mutants generated per file: {reason}"
+            )
         if inputs.shortfall:
             lines.append(f"[mutation_test] {inputs.shortfall}")
         if replaced_line := _replaced_builds_line(len(inputs.invalid_dropped)):
