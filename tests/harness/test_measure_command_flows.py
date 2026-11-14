@@ -119,6 +119,26 @@ def test_a_met_commit_exits_zero_stores_one_run_and_is_measured(
 
 
 @linux_only
+def test_a_measured_commit_is_shown_and_again_measures_it(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world = metrics_project(make_world, "[metrics_ok.checkout_stub]\nmarker_max = 10\n")
+    assert measure(monkeypatch, world) == 0
+
+    assert measure(monkeypatch, world) == 0  # shown: no Flow starts, nothing is stored
+
+    assert len(stored_documents(world)) == 1
+    assert len(measure_records(world)) == 2
+    assert started_targets(world) == ["metrics_ok"]
+
+    assert measure(monkeypatch, world, "--again") == 0
+
+    assert len(stored_documents(world)) == 2
+    assert len(store_of(world).history(head_key(world))) == 2
+    assert started_targets(world) == ["metrics_ok", "metrics_ok"]
+
+
+@linux_only
 @pytest.mark.parametrize("all_tables", [False, True], ids=["stop", "all"])
 def test_an_unmet_bound_stops_later_tables_unless_all(
     make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, all_tables: bool
