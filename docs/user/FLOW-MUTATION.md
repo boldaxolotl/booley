@@ -95,7 +95,8 @@ yields one candidate Mutant per change.
 | `arithmetic-logical` | Exchanges `>>>` and `>>` where the shifted operand is signed. | `s >>> 1` -> `s >> 1` |
 | `arithmetic-logical` | Turns a signed cast into an unsigned one. | `$signed(x)` -> `$unsigned(x)`, `signed'(x)` -> `unsigned'(x)` |
 | `condition` | Replaces the condition of an `if` or `?:` with its negation, `1'b1`, or `1'b0`. A `while`, `do`-`while`, or `for` condition is only forced to `1'b0`. | `if (valid)` -> `if (!(valid))` |
-| `constant` | Changes a numeric literal's value: lowest bit flipped, plus one, or minus one. Size and base stay. | `4'd5` -> `4'd4`, `'0` -> `'1` |
+| `constant` | Changes a numeric literal's value: lowest bit flipped, plus one, or minus one. Size and base stay. The new value must fit a sized literal's size. | `4'd5` -> `4'd4`, `'0` -> `'1` |
+| `constant` | Gives an unsized literal its plus-one value only if that fits where the value goes: the target it is assigned to, a cast it passes through, and the other side of a comparison or arithmetic operator. Booley reads the widths from the file's default parameters. A literal whose width Booley cannot tell from the file, such as a connection to a module defined in another file, only gets values that fit its own bits. | `a + 1` -> `a + 2` (8-bit `a`); `flag <= 1` (1-bit `flag`) only becomes `0` |
 | `constant` | Changes a literal in the initializer of a module-level variable. | `reg [7:0] cnt = 8'd3;` -> `8'd2` |
 | `constant` | Replaces an enum member with the previous or next member of its enum. | `state == IDLE` -> `state == DONE` |
 | `bit-select` | Moves a literal bit index or slice bound up or down by one, within the declared range. | `data[3]` -> `data[2]`, `data[7:4]` -> `data[6:3]` |
@@ -173,7 +174,7 @@ the candidate Mutants) and, on a Verilator Target, the Verilator version
 (Verilator):
 
 ```text
-[mutation_test] 10 Mutants (seed 0, count 10, generator 5, pyslang <version>, Verilator <version>)
+[mutation_test] 10 Mutants (seed 0, count 10, generator 6, pyslang <version>, Verilator <version>)
 [mutation_test] sim sweep: 10/10 tested              4m
   8 detected (1 timeout), 0 invalid, 2 not detected
   detected: 8/10 (required: 8, default 80% of --count)

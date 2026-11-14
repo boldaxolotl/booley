@@ -269,9 +269,11 @@ def test_excluded_contexts_yield_no_mutants(tmp_path: Path) -> None:
 _CONSTANT_SITES = {
     "constants.v": [
         (7, "00", "01"),  # reset value: only +1 / flip, never negative
-        (8, "1", "0"),  # unsized 1 never grows to 2
+        (8, "1", "0"),
+        (8, "1", "2"),  # unsized 1 grows to 2: `q` is 8 bits
         (11, "FF", "FE"),  # 255 + 1 does not fit in 8 bits; hex case kept
-        (12, "7", "6"),  # unsized 7 never grows to 8
+        (12, "7", "6"),
+        (12, "7", "8"),  # unsized 7 grows to 8: `acc` is 8 bits
         (13, "A", "9"),
         (13, "A", "B"),
         (14, "01_01", "0100"),
@@ -313,6 +315,66 @@ def test_constant_operator_sites(tmp_path: Path, name: str) -> None:
     literal under a `for`, `while` or `do` loop.
     """
     assert _sites(_generate(tmp_path, name), ("constant",)) == _CONSTANT_SITES[name]
+
+
+def test_unsized_plus_one_fits_context_width(tmp_path: Path) -> None:
+    """An unsized literal gets plus one if that fits the narrowest width its value is used at.
+
+    Each statement sits on its own line, so the line number names the row.  A literal in a
+    connection to a module this file does not define has no width: it keeps today's rule.
+    """
+    source = "\n".join(
+        [
+            "module m(input [7:0] a, input signed [7:0] s, input sel, output reg flag,",
+            "         output [7:0] o, output o3, output [3:0] o4, output o5, output reg [7:0] acc,",
+            "         output reg c1, output o6, output [7:0] o7, output f1, output f2, output f3);",
+            "  sub u (.en(1));",  # 4: not elaborated
+            "  assign o = a + 1;",  # 5: AC1
+            "  always @* flag = 1;",  # 6: AC2
+            "  assign o3 = sel ? 1 : 0;",  # 7
+            "  always @* acc = 7;",  # 8
+            "  always @* acc = 'h7;",  # 9
+            "  assign o7 = s >>> 1;",  # 10: shift amount
+            "  assign o4 = a[3:0] + 15;",  # 11: fills the 4-bit target
+            "  assign o5 = a == 255;",  # 12: fills `a`
+            "  always @* c1 = c1 + 1'(1);",  # 13: cast to one bit
+            "  always @* flag = $unsigned(1);",  # 14
+            "  assign o6 = a + 255 > 0;",  # 15: fills `a`
+            "  assign f1 = a >> 1;",  # 16: the shift amount has its own width
+            "  assign f2 = 255 == a;",  # 17: literal on the left, capped by `a`
+            "  assign f3 = sel ? a : 1;",  # 18: a branch is sized by the context
+            "endmodule",
+            "",
+        ]
+    )
+    _write(tmp_path, "widths.v", source)
+    sites = _sites(generate_mutants(tmp_path, ["widths.v"], _ALL, 1), ("constant",))
+    assert sites == [
+        (4, "1", "0"),
+        (5, "1", "0"),
+        (5, "1", "2"),
+        (6, "1", "0"),
+        (7, "1", "0"),
+        (7, "0", "1"),
+        (8, "7", "6"),
+        (8, "7", "8"),
+        (9, "7", "6"),
+        (9, "7", "8"),
+        (10, "1", "0"),
+        (10, "1", "2"),
+        (11, "15", "14"),
+        (12, "255", "254"),
+        # The applier anchors the cast's operand on the whole line; only one variant.
+        (13, "  always @* c1 = c1 + 1'(1);", "  always @* c1 = c1 + 1'(0);"),
+        (14, "1", "0"),
+        (15, "255", "254"),
+        (15, "0", "1"),
+        # The applier anchors the shift on the whole line; the amount still reaches 2.
+        (16, "  assign f1 = a >> 1;", "  assign f1 = a >> 0;"),
+        (16, "  assign f1 = a >> 1;", "  assign f1 = a >> 2;"),
+        (17, "255", "254"),
+        (18, "1", "0"),
+    ]
 
 
 _BIT_SELECT_SITES = {
