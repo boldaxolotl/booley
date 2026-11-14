@@ -207,18 +207,24 @@ def test_yosys_script_slang_flatten_params_golden() -> None:
 
 
 @pytest.mark.parametrize(
-    ("golden_name", "abc_recipe"),
+    ("golden_name", "abc_recipe", "abc_delay_ps"),
     [
         # None falls through to the bare liberty mapping (the "default" recipe).
-        ("abc_default.txt", None),
-        ("abc_fast.txt", "fast"),
-        ("abc_balanced.txt", "balanced"),
+        ("abc_default.txt", None, None),
+        ("abc_fast.txt", "fast", None),
+        ("abc_balanced.txt", "balanced", None),
         # A literal "+..." recipe is forwarded verbatim to -script.
-        ("abc_custom_plus.txt", "+strash;dch;map"),
+        ("abc_custom_plus.txt", "+strash;dch;map", None),
+        # With a delay target, every built-in recipe maps with it: "default"
+        # through -D, the scripted recipes through the ``{D}`` placeholder
+        # that Yosys expands to ``-D <ps>``.
+        ("abc_default_delay.txt", None, 3333),
+        ("abc_fast_delay.txt", "fast", 3333),
+        ("abc_balanced_delay.txt", "balanced", 3333),
     ],
 )
-def test_abc_command_golden(golden_name: str, abc_recipe: str | None) -> None:
-    """Snapshot each ABC technology-mapping recipe string."""
+def test_abc_command_golden(golden_name: str, abc_recipe: str | None, abc_delay_ps: int | None) -> None:
+    """Snapshot each ABC technology-mapping recipe string, with and without a delay target."""
     # Production always feeds ``_build_abc_command`` a POSIX string (the caller
     # ``_build_yosys_script`` runs both paths through ``_quote_yosys_path``,
     # which normalizes ``\`` → ``/``). Pass ``.as_posix()`` here so the direct
@@ -229,5 +235,6 @@ def test_abc_command_golden(golden_name: str, abc_recipe: str | None) -> None:
         _YS_WORK_DIR.as_posix(),
         "dut",
         abc_recipe,
+        abc_delay_ps=abc_delay_ps,
     )
     assert_matches_golden(f"yosys/{golden_name}", cmd)

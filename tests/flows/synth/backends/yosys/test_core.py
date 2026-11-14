@@ -181,6 +181,57 @@ class TestFinalCheckImportIsolation:
         assert "Assertion failed" in result.stderr
 
 
+@pytest.mark.skipif(shutil.which("yosys") is None, reason="requires the pinned Yosys executable")
+class TestAbcDelayTargetReachesMapping:
+    """The generated ABC script must use a placeholder spelling Yosys really expands."""
+
+    _LIBERTY = """library(test) {
+  cell(INV_X1) {
+    area: 1;
+    pin(A) { direction: input; capacitance: 1; }
+    pin(ZN) { direction: output; function: \"!A\"; }
+  }
+  cell(NAND2_X1) {
+    area: 2;
+    pin(A1) { direction: input; capacitance: 1; }
+    pin(A2) { direction: input; capacitance: 1; }
+    pin(ZN) { direction: output; function: \"!(A1 & A2)\"; }
+  }
+}
+"""
+
+    @pytest.mark.parametrize("abc_recipe", ["fast", "balanced"])
+    def test_delay_target_is_passed_to_abc_map(self, tmp_path, abc_recipe):
+        from booley.flows.synth.backends.yosys import core as syn_core
+
+        liberty = tmp_path / "toy.lib"
+        liberty.write_text(self._LIBERTY, encoding="utf-8")
+        source = tmp_path / "dut.v"
+        source.write_text(
+            "module dut(input a, input b, output y); assign y = a & b; endmodule\n",
+            encoding="utf-8",
+        )
+        script = syn_core._build_yosys_script(
+            _spec(liberty=liberty, abc_recipe=abc_recipe, abc_delay_ps=3333),
+            sources=[source],
+            inc_dirs=[],
+            work_dir=tmp_path,
+        )
+        script_path = tmp_path / "synth.ys"
+        script_path.write_text("\n".join(script.split("; ")) + "\n", encoding="utf-8")
+        result = subprocess.run(
+            ["yosys", "-q", "-s", str(script_path)],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=SUBPROCESS_TIMEOUT_S,
+        )
+        assert result.returncode == 0, result.stderr
+        abc_log = (tmp_path / "log_abc_dut.txt").read_text(encoding="utf-8")
+        assert "map -D 3333" in abc_log
+
+
 # ---------------------------------------------------------------------------
 # parse_params
 # ---------------------------------------------------------------------------
