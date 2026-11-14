@@ -182,7 +182,6 @@ def isolated_agent_workspace(
     category: str | None = None,
     *,
     scope: tuple[str, ...] = (),
-    shared_files: tuple[str, ...] = (),
     excluded_roots: tuple[Path, ...] = (),
 ) -> Iterator[tuple[AgentCallParams, WorkspaceSnapshot | None]]:
     """Point a read-only agent call at a category-isolated disposable copy."""
@@ -212,7 +211,6 @@ def isolated_agent_workspace(
                 category,
                 category_files=category_files,
                 scope=scope,
-                shared_files=tuple((relative_cwd / name).as_posix() for name in shared_files),
                 excluded_roots=excluded_roots,
                 cwd=snapshot.snapshot_root / relative_cwd,
             )

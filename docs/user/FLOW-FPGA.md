@@ -25,7 +25,7 @@ what all Flows share (choosing Targets, options, logs, exit codes), see
    can write one if you tell it the part and the clocks; to add it yourself,
    name the Target `fpga_<subject>` and see
    [Timing constraints](#timing-constraints) and the
-   [FPGA Target recipe](TARGETS.md#fpga-target).
+   [FPGA Target recipe](#fpga-target).
 3. **Ask the agent**, naming the Target:
 
     > *"Run the FPGA build for `fpga_soc` and tell me LUTs and Fmax."*
@@ -110,13 +110,44 @@ itself, not an estimate. FPGA builds allow no latches or combinational loops
 unless you declare them with `expected_latches` and `expected_comb_loops`
 under [Configuration](#configuration-flowsfpga).
 
+## FPGA Target
+
+An FPGA Target selects the RTL plus an XDC constraints fileset for one part:
+
+```yaml
+CAPI=2:
+name: acme:soc:top:1.0
+filesets:
+  rtl:
+    files: [rtl/top.sv]
+    file_type: systemVerilogSource
+  fpga_constraints:
+    files:
+      - constraints/top.xdc: {file_type: xdc}
+targets:
+  fpga_soc:
+    flow: generic
+    flow_options:
+      tool: vivado
+      part: xc7a100tcsg324-1     # required
+      ppa_profile: balanced      # compact | balanced (default) | max_frequency
+      out_of_context: false      # default false
+    filesets: [rtl, fpga_constraints]
+    toplevel: top
+```
+
+The table under [Running an FPGA build](#running-an-fpga-build) explains each
+option, and [Timing constraints](#timing-constraints) the XDC fileset. Keep
+`tool: vivado`; other `flow_options`, such as `synth` or `pnr`, do not change
+the build.
+
 ## Timing constraints
 
 An FPGA Target reads its constraints from XDC files in a `file_type: xdc`
 fileset. At least one file must create a clock; Booley adds no constraints of
 its own, so the clock periods, I/O delays and pin locations you write are what
 the build is timed and placed against. To declare the fileset, see the
-[FPGA Target recipe](TARGETS.md#fpga-target).
+[FPGA Target recipe](#fpga-target).
 
 ```tcl
 # constraints/soc.xdc
@@ -180,6 +211,6 @@ no allowance. The reasoning is the same as for
 
 Everything about how the design is built lives on the Target in the `.core`
 file, not in `booley.toml`: see the [Target settings](#running-an-fpga-build)
-and the full [FPGA Target recipe](TARGETS.md#fpga-target), with its XDC
+and the full [FPGA Target recipe](#fpga-target), with its XDC
 fileset. How the Flow picks RTL and constraint files:
 [Fileset file types](TARGETS.md#fileset-file-types).

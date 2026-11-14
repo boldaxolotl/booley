@@ -107,7 +107,7 @@ def test_doctor_outside_git_names_the_rtl_repository(tmp_path):
 def test_missing_booley_directory_prevents_agent_selection_write(tmp_path, capsys):
     ctx = InitContext(project_root=tmp_path)
     config = tmp_path / ".booley" / "booley.toml"
-    selection = init_cmd.AgentSelection("claude", "api_key", True, True)
+    selection = init_cmd.AgentSelection("claude", "api_key", True, "api_key")
     assert not init_cmd._step_agent_config(ctx, selection, config)
     assert ctx.results[-1].name == "agent_config"
     assert ctx.results[-1].status == "err"

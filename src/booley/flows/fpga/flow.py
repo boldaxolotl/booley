@@ -55,6 +55,7 @@ from booley.flows.eda_failures import (
     first_tool_diagnostic,
     strip_failure_markers,
 )
+from booley.flows.edam import EdamFile
 from booley.flows.flow_config import expected_count
 from booley.flows.fpga.cli import FpgaArguments
 from booley.flows.fpga.request import FpgaRequest
@@ -135,7 +136,7 @@ from .backends.vivado.metrics import (
     _delta_pct,
     _first_valid_display,
     _metrics_detail,
-    _split_resolved_sources,
+    _resolved_sources,
     _unique_strings,
     _vlogdefine_args,
 )
@@ -430,7 +431,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             timeout_ms=self._timeout_ms(),
             sources=tuple(
                 self._fpga_plan_input_path(path, recipe, root)
-                for path in (*recipe.sv_files, *recipe.v_files)
+                for path, _file_type in recipe.sources
             ),
             constraints=tuple(
                 self._fpga_plan_input_path(path, recipe, root) for path in recipe.xdc_files
@@ -573,7 +574,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             raise ValueError(
                 f"fpga: top module not found for target {target!r} (set the Target toplevel)"
             )
-        sv_files, v_files, include_dirs = _split_resolved_sources(resolved)
+        sources, include_dirs = _resolved_sources(resolved)
         out_of_context = require_bool(
             resolved.flow_options,
             "out_of_context",
@@ -591,8 +592,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             part=part,
             top=top,
             xdc_files=xdc_files,
-            sv_files=tuple(sv_files),
-            v_files=tuple(v_files),
+            sources=tuple(sources),
             include_dirs=tuple(include_dirs),
             defines=tuple(_unique_strings(_vlogdefine_args(resolved.parameters))),
             vlogparams=vlogparam_specs(resolved.parameters),
@@ -601,15 +601,14 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             recipe_snapshot=snapshot,
             recipe_fingerprint=fpga_recipe_snapshot_fingerprint(snapshot),
             source_evidence=run_evidence.capture_flow_source_evidence(work_dir, target),
-            reachable_dirs=self._reachable_dirs(target, resolved, sv_files, v_files, include_dirs),
+            reachable_dirs=self._reachable_dirs(target, resolved, sources, include_dirs),
         )
 
     def _reachable_dirs(
         self,
         target: str,
         resolved: Any,
-        sv_files: Sequence[Path],
-        v_files: Sequence[Path],
+        sources: Sequence[EdamFile],
         include_dirs: Sequence[Path],
     ) -> tuple[Path, ...]:
         """Folders whose files must join the cache key; empty outside isolated Projects.
@@ -622,7 +621,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         folders = {
             Path(resolved.build_root),
             *include_dirs,
-            *(path.parent for path in (*sv_files, *v_files)),
+            *(source.path.parent for source in sources),
         }
         return tuple(sorted(folders))
 

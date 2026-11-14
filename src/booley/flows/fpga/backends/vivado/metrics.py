@@ -14,6 +14,7 @@ from typing import Any
 
 from booley.core.boundary import as_dict, as_float, as_int
 from booley.evidence.timing import ClockTiming, per_clock_from_json, per_clock_to_json
+from booley.flows.edam import EdamFile
 from booley.flows.metric_declarations import (
     Better,
     CostTier,
@@ -277,24 +278,18 @@ def _vlogdefine_args(parameters: Any) -> list[str]:
     return defines
 
 
-def _split_resolved_sources(resolved: Any) -> tuple[list[Path], list[Path], list[Path]]:
-    """Split a resolved Target's RTL sources into (.sv, .v, include dirs).
+def _resolved_sources(resolved: Any) -> tuple[list[EdamFile], list[Path]]:
+    """Return a resolved Target's HDL sources and include dirs for Vivado.
 
-    Shared by :meth:`FpgaImplFlow._prepare_fpga_command` (the real Vivado run)
-    and :meth:`FpgaImplFlow._resolve_fpga_summary` (the dry-run preview) off the
-    ``.core``-resolved file list (decision 4): each source is an absolute path
-    under the FuseSoC build root, so it crosses into the vivado template the
-    same way the legacy ``build_file_list`` paths did.
+    Shared by the real Vivado run and the dry-run preview. Sources keep the
+    Target's order and the ``file_type`` its ``.core`` declares, whatever the
+    file name; each path is absolute under the FuseSoC build root.
     """
-    sv_files: list[Path] = []
-    v_files: list[Path] = []
-    for f in resolved.rtl_source_files:
-        path = f.absolute(resolved.build_root)
-        if path.suffix == ".sv":
-            sv_files.append(path)
-        elif path.suffix == ".v":
-            v_files.append(path)
-    return sv_files, v_files, list(resolved.rtl_include_dirs)
+    sources = [
+        EdamFile(f.absolute(resolved.build_root), f.file_type)
+        for f in resolved.rtl_hdl_source_files
+    ]
+    return sources, list(resolved.rtl_include_dirs)
 
 
 def _unique_strings(values: list[Any]) -> list[str]:

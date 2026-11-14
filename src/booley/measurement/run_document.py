@@ -73,6 +73,7 @@ class MeasurementRun:
     toolchain: ToolchainFingerprint
     protected_paths: tuple[str, ...]  # from #3504's helper; never read by ``is_measured``
     tables: tuple[TableRun, ...]
+    targets: tuple[str, ...]  # Target identities (``vlnv#name``) of the measured checkout
 
 
 def tables_in_rules_order(run: MeasurementRun) -> list[tuple[TableRun, list[MetricResult]]]:
@@ -134,6 +135,7 @@ def run_document(
         "toolchain": asdict(run.toolchain),
         "rules": [asdict(rules) for rules in run.rules.tables],
         "protected_paths": run.protected_paths,
+        "targets": run.targets,
         "tables": [
             {
                 "identity": table.identity,

@@ -1,6 +1,6 @@
 # Give each concurrent Interactive session its own worktree
 
-Status: accepted (2026-11-11; proposed 2026-11-03; amended 2026-11-11: as built; amended 2026-11-12: Stealth Mode branch name, see Amendments)
+Status: accepted (2026-11-11; proposed 2026-11-03; amended 2026-11-11: as built; amended 2026-11-12: Stealth Mode branch name; amended 2026-11-14: knob location, see Amendments)
 
 ## Context
 
@@ -492,3 +492,10 @@ as written.
   `wt/<name>` (the name itself, a leading path such as `wt`, or a branch below
   it) is named in the creation error; `booley/<name>` is checked the same way. The numbering amendment of ADR 0068 is
   extended, not changed.
+
+## Amendments (2026-11-14)
+
+- **Knob location** (When `booley chat` creates a worktree; #4071). The Decision
+  text above names the knob `[chat] worktree`. It is `[worktree] chat`, with the
+  same values (`auto`, `always`, `never`), default, and Doctor check; the
+  `[chat]` table no longer exists and Doctor warns about it as an unknown table.

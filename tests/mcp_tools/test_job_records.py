@@ -474,3 +474,58 @@ def test_list_records_skips_malformed_envelope(tmp_path: Path) -> None:
     )
 
     assert [rec.run_id for rec in jobrec.list_records(tmp_path, skip_malformed=True)] == ["good"]
+
+
+def test_job_record_paths_translate_only_under_former_mount(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.mount_change_support import simulate_mount_change
+
+    current = tmp_path / "current"
+    former = simulate_mount_change(monkeypatch, current, tmp_path / "former")
+    workspace = str(tmp_path / "work" / "project")
+
+    def load(**paths: str) -> jobrec.JobRecord:
+        raw = jobrec.JobRecord("run-1", "sim", "t", 60).to_dict()
+        raw.update(paths)
+        return jobrec.JobRecord.from_dict(raw)
+
+    moved = load(work_dir=f"{former}/worktrees/wt", report_root=f"{former}/runtime")
+    assert moved.work_dir == str(current / "worktrees" / "wt")
+    assert moved.report_root == str(current / "runtime")
+    kept = load(work_dir=workspace, report_root=str(current / "runtime"))
+    assert kept.work_dir == workspace
+    assert kept.report_root == str(current / "runtime")
+    assert load(work_dir="relative/dir").work_dir == "relative/dir"
+    assert load(work_dir=str(tmp_path / "former-other")).work_dir == str(tmp_path / "former-other")
+
+
+def test_malformed_mount_history_names_record_and_fix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.runtime import sandbox_layout
+    from booley.runtime.mount_history import MOUNT_HISTORY, MountHistoryError
+
+    monkeypatch.setattr(sandbox_layout, "BOOLEY_DIR_TARGET", str(tmp_path / "current"))
+    history = tmp_path / "current" / MOUNT_HISTORY
+    history.parent.mkdir(parents=True)
+    root = tmp_path / "jobs"
+    root.mkdir()
+    jobrec.write_record(
+        jobrec.JobRecord("run-9", "sim", "t", 60, work_dir=str(tmp_path / "elsewhere")), root=root
+    )
+    for content in (
+        b"{",
+        b'{"schema": 2, "mounts": []}',
+        b'{"schema": 1, "mounts": [3]}',
+        b"\xff",
+    ):
+        history.write_bytes(content)
+        with pytest.raises(
+            MountHistoryError, match=r"Job record run-9.*sandbox-mounts\.json.*restore"
+        ):
+            jobrec.read_record("run-9", root)
+    history.unlink()
+    history.mkdir()
+    with pytest.raises(MountHistoryError, match="cannot read"):
+        jobrec.read_record("run-9", root)

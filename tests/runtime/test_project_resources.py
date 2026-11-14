@@ -12,6 +12,7 @@ from booley.config.sandbox import project_image_name_for_identity
 from booley.core.project_identity import project_label_id, project_name_id
 from booley.projects.image_keepers import Leftover
 from booley.runtime import image_lifecycle, interactive_docker, project_resources
+from booley.runtime.devcontainer import state_volume_mount
 from booley.runtime.session_issuance import keeper_image_for_identity
 
 
@@ -276,3 +277,24 @@ def test_retained_record_of_a_replaced_root_stays_readable(tmp_path: Path, host:
 
     assert kept == (f"{_id('6')}: retained (conflict: unable to delete {_id('6')})",)
     assert image_lifecycle.OwnedImages(str(root)).ids == [_id("6")]
+
+
+def test_leftovers_lists_legacy_policy_volumes(tmp_path: Path, host: FakeHost) -> None:
+    """Forget finds the unsuffixed (auto, subscription) and the pre-shared ``-subscription`` volumes."""
+    root = str(tmp_path / "chip")
+    base = f"booley-claude-state-{project_name_id(root)}"
+    host.volumes = {base: "N/A", f"{base}-subscription": "N/A"}
+
+    found = project_resources.leftovers(root)
+
+    assert [item.name for item in found if item.kind == "volume"] == [
+        base,
+        f"{base}-subscription",
+    ]
+    # A subscription Sandbox now owns the unsuffixed volume; the old name is the legacy one.
+    assert state_volume_mount("claude", project_name_id(root), "subscription") == (
+        f"source={base},target=/home/agent/.claude,type=volume"
+    )
+    legacy = state_volume_mount("claude", project_name_id(root), "subscription", legacy=True)
+    assert legacy is not None
+    assert f"source={base}-subscription," in legacy

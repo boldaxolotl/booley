@@ -3,8 +3,13 @@
 The command composes the measurement building blocks: it exports the commit, reads the
 checkout's own ``metrics.toml``, preflights and runs one child Flow per rules table inside
 the admission queue (:mod:`booley.harness.measure_children`), stores the Measurement Run in
-the Main Booley Directory, writes the Markdown report and prints the report. The run is a
+the Main Booley Directory, writes the Markdown report and prints the report. A commit that is
+already Measured is not measured again: its stored run is shown, unless ``--again`` is given. The run is a
 Standalone Job of its own, so the Dashboard shows it like any shell run.
+
+``--target <name>`` measures only that Target's tables. Such a run is never stored in the
+Main Booley Directory, so it never makes the commit Measured: its document, Markdown report
+and Flow reports are kept in the ``measure`` Job's own directory, beside its ``job.log``.
 
 Exit status: 0 when every enforced bound is met, 1 when one is unmet, 2 when a Flow errored,
 when nothing was in scope or when the measurement failed before or while storing (nothing
@@ -26,12 +31,13 @@ import sys
 import tempfile
 import time
 import traceback
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import FrameType
+from typing import Any
 
 from booley.harness.checkout_flow import CheckoutFlowError
 from booley.harness.measure_children import (
@@ -55,12 +61,22 @@ from booley.measurement.metrics_file import (
 from booley.measurement.protected_set import protected_set
 from booley.measurement.report import terminal_report, write_markdown_report
 from booley.measurement.run_document import MeasurementRun, RunStatus
-from booley.measurement.run_key import KeyedCommit, RulesNotVersionedError, resolve_measurement_key
-from booley.measurement.run_store import FlowReport, MeasurementStore
+from booley.measurement.run_key import (
+    KeyedCommit,
+    MeasurementKey,
+    RulesNotVersionedError,
+    resolve_measurement_key,
+)
+from booley.measurement.run_store import (
+    FlowReport,
+    MeasurementStore,
+    MeasurementStoreError,
+    StoredRun,
+)
 from booley.measurement.run_view import run_view
 from booley.measurement.toolchain import ToolchainFingerprint, collect_toolchain_fingerprint
 from booley.measurement.verdicts import measure_exit_code
-from booley.runtime.commit_export import CommitExportError, export_commit
+from booley.runtime.commit_export import CommitExportError, SubmoduleDrift, export_commit
 from booley.runtime.pinned_history import FileCommitError, raw_git
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
@@ -68,6 +84,7 @@ from booley.targets.domain import FuseSocError
 NOTHING_IN_SCOPE = "nothing to measure, add a `[target.flow]` table"
 _EXIT_REFUSED = 2
 _CANCEL_NOTICE = "cancelling: stopping the running Flows (up to 30 s)"
+_SHORT = 12  # hex digits of a commit shown in a notice
 _CANCEL_SIGNALS = ("SIGINT", "SIGTERM", "SIGHUP")
 
 
@@ -78,8 +95,10 @@ class MeasureRequest:
     revision: str  # the user's <sha>; ``HEAD`` by default
     base: str | None  # --base
     all_tables: bool  # --all
+    again: bool  # --again
     as_json: bool  # --json
     argv: tuple[str, ...]  # the user's arguments, for the Job record
+    target: str | None = None  # --target
 
 
 class MeasureRefusedError(Exception):
@@ -195,6 +214,8 @@ def _key_of(project_root: Path, commit: str, paired_commit: str | None = None) -
 class _Preflight:
     """Everything decided before any child starts."""
 
+    rules: MetricsRules  # scoped to the Target when ``--target`` is given
+    scope: str | None  # the identity of the ``--target`` Target
     protected: tuple[str, ...]
     toolchain: ToolchainFingerprint
     targets: list[str]
@@ -216,12 +237,27 @@ def _load_rules(checkout: Path) -> MetricsRules:
     return rules
 
 
-def _preflight(checkout: Path, main: Path, run_id: str, rules: MetricsRules) -> _Preflight:
-    """Preflight every table in *checkout*; a refusal for any starts no child."""
+def _scoped(catalog: TargetCatalog, rules: MetricsRules, target: str) -> tuple[MetricsRules, str]:
+    """The rules narrowed to *target*'s tables, and its identity; none left is a refusal."""
+    identity = catalog.select(target).identity
+    tables = tuple(table for table in rules.tables if table.identity == identity)
+    if not tables:
+        raise MeasureRefusedError(NOTHING_IN_SCOPE)
+    return replace(rules, tables=tables), identity
+
+
+def _preflight(
+    checkout: Path, main: Path, run_id: str, rules: MetricsRules, target: str | None
+) -> _Preflight:
+    """Preflight the tables in *checkout* (the Target's with ``--target``); a refusal starts no child."""
     try:
+        catalog = TargetCatalog.build(checkout)
+        scope = None
+        if target is not None:
+            rules, scope = _scoped(catalog, rules, target)
         protected = protected_set(checkout)
         toolchain = collect_toolchain_fingerprint()
-        targets = [handle.identity for handle in TargetCatalog.build(checkout).list()]
+        targets = [handle.identity for handle in catalog.list()] if scope is None else [scope]
         prepared = prepare_children(
             rules.tables,
             checkout=checkout,
@@ -232,7 +268,7 @@ def _preflight(checkout: Path, main: Path, run_id: str, rules: MetricsRules) -> 
         )
     except (ValueError, FuseSocError) as exc:  # includes CheckoutFlowError, unpinnable inputs
         raise MeasureRefusedError(str(exc)) from exc
-    return _Preflight(protected, toolchain, targets, prepared)
+    return _Preflight(rules, scope, protected, toolchain, targets, prepared)
 
 
 def _measure(
@@ -240,11 +276,99 @@ def _measure(
 ) -> int:
     from booley.core.booley_dir import main_booley_dir_of
 
+    commit = _resolve_commit(project_root, request)
+    keyed = _key_of(project_root, commit)  # a refusal now saves the export
+    main = main_booley_dir_of(project_root)
+    store = MeasurementStore(main)
+    if not request.again:
+        stored = _measured_run(store, keyed.key)
+        if stored is not None:
+            return _show(project_root, store, stored, commit, request)
+    return _measure_commit(project_root, request, run_id, signals, commit, main)
+
+
+def _measured_run(store: MeasurementStore, key: MeasurementKey) -> StoredRun | None:
+    """The key's Measured run, or None; an unreadable stored document means not Measured."""
+    try:
+        return store.measured(key)
+    except MeasurementStoreError as exc:  # the store fails closed: the key is not Measured
+        print(f"note: {exc}; measuring again", file=sys.stderr)
+        return None
+
+
+def _show(
+    project_root: Path,
+    store: MeasurementStore,
+    stored: StoredRun,
+    commit: str,
+    request: MeasureRequest,
+) -> int:
+    """Print the stored run of an already Measured commit: no checkout, no Flow, no new run."""
+    print(
+        f"{commit[:_SHORT]} is already Measured by run {stored.run_id}; showing it "
+        "(--again measures it again)",
+        file=sys.stderr,
+    )
+    _print_report(run_view(project_root, store, stored, commit, base=request.base), request)
+    return 0
+
+
+def _print_report(view: dict[str, Any], request: MeasureRequest) -> None:
+    if request.as_json:
+        print(json.dumps(view, indent=2))
+    else:
+        print(terminal_report(view), end="")
+
+
+def _live_tree_notices(
+    project_root: Path, commit: str, drift: Sequence[SubmoduleDrift]
+) -> list[str]:
+    """What the measurement of *commit* leaves out of the live tree; only for ``HEAD``."""
+    head = raw_git(project_root, "rev-parse", "--verify", "HEAD^{commit}").decode().strip()
+    if commit != head:
+        return []
+    notices: list[str] = []
+    changes = raw_git(
+        project_root,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=no",
+        "--ignore-submodules=all",
+    )
+    if changes:
+        notices.append(
+            "note: uncommitted changes in the working tree are not measured; "
+            f"this measures commit {commit[:_SHORT]}"
+        )
+    if drift:
+        notices.append(
+            "note: submodule working-tree differences are not measured: "
+            + ", ".join(_drift_text(entry) for entry in drift)
+        )
+    return notices
+
+
+def _drift_text(entry: SubmoduleDrift) -> str:
+    where = f"checked out at {entry.head[:_SHORT]}, pinned {entry.pinned[:_SHORT]}"
+    if entry.head == entry.pinned:
+        where = "uncommitted changes"
+    elif entry.dirty:
+        where += ", uncommitted changes"
+    return f"{entry.path} ({where})"
+
+
+def _measure_commit(
+    project_root: Path,
+    request: MeasureRequest,
+    run_id: str,
+    signals: _CancelSignals,
+    commit: str,
+    main: Path,
+) -> int:
+    """Export *commit*, run its Flows, store the run and print the report."""
     started_at = datetime.now(UTC)
     started = time.monotonic()
-    commit = _resolve_commit(project_root, request)
-    _key_of(project_root, commit)  # a refusal now saves the export
-    main = main_booley_dir_of(project_root)
     scratch = Path(tempfile.mkdtemp(prefix="booley-measure-"))
     try:
         checkout = scratch / "checkout"
@@ -252,9 +376,12 @@ def _measure(
             export = export_commit(project_root, commit, checkout)
         except CommitExportError as exc:
             raise MeasureRefusedError(f"the commit cannot be exported: {exc}") from exc
+        for notice in _live_tree_notices(project_root, commit, export.drift):
+            print(notice, file=sys.stderr)
         keyed = _key_of(project_root, commit, export.paired_commit)
         rules = _load_rules(checkout)
-        preflight = _preflight(checkout, main, run_id, rules)
+        preflight = _preflight(checkout, main, run_id, rules, request.target)
+        rules = preflight.rules
         signals.interruptible = False  # the children run: a signal now cancels, never aborts
         try:
             outcome = run_children(
@@ -282,19 +409,23 @@ def _measure(
             preflight.toolchain,
             preflight.protected,
             tuple(table.run for table in outcome.tables),
+            tuple(preflight.targets),
         )
-        store = MeasurementStore(main)
-        stored = store.write(run, flow_reports)
+        # A ``--target`` run is kept with its Job and never reaches the Project's store.
+        kept = main if preflight.scope is None else standalone_log_root(main) / run_id
+        stored = MeasurementStore(kept).write(run, flow_reports)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
     view = run_view(
-        project_root, store, stored, commit, base=request.base, targets=preflight.targets
+        project_root,
+        MeasurementStore(main),
+        stored,
+        commit,
+        base=request.base,
+        target=preflight.scope,
     )
     write_markdown_report(view)
-    if request.as_json:
-        print(json.dumps(view, indent=2))
-    else:
-        print(terminal_report(view), end="")
+    _print_report(view, request)
     # A signal while storing leaves a complete run: the exit must agree with what is stored.
     if status is RunStatus.CANCELLED:
         raise KeyboardInterrupt

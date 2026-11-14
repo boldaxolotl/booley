@@ -12,16 +12,19 @@ Exit codes: 0 = review completed, 1 = an open finding at or above ``--fail-on``
 from __future__ import annotations
 
 import argparse
+import contextvars
+import dataclasses
 import hashlib
 import json
 import logging
 import posixpath
 import time
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar
 from uuid import uuid4
 
 from booley.agent_workspace.state_projection import filter_state_file_for_category
@@ -29,6 +32,11 @@ from booley.core.boundary import as_dict, as_int, as_str_list
 from booley.core.models import AgentCallParams
 from booley.criteria.freshness import review_policy_digest
 from booley.criteria.state import DevelopmentState
+from booley.evidence.review_guides import (
+    REVIEW_GUIDES,
+    ReviewGuide,
+    review_guides_root,
+)
 from booley.evidence.review_receipt import (
     REVIEW_DETAIL_VERSION,
     ReviewInvocation,
@@ -59,16 +67,15 @@ from booley.runtime.booley_dir import own_booley_dir, resolve_common_booley_dir
 from booley.runtime.exception_diagnostics import exception_report_text, log_exception
 from booley.runtime.execution_records import atomic_write_json
 from booley.runtime.file_lock import LockContentionError, nonblocking_file_lock
+from booley.runtime.model_fallback import ModelRun
 from booley.runtime.paths import refs_dir
 from booley.specialists.verification_freshness import refresh_verification_freshness
 from booley.targets.flow_names import config_section
 
 from .review_change import ReviewChange, ReviewChangeError, resolve_review_change
 from .review_contract import (
-    FIRMWARE_DIR,
     ReviewContractError,
     ReviewScopeContract,
-    is_firmware_path,
     resolve_review_scope,
 )
 from .review_simulators import render_simulation_context, resolve_scope_simulators
@@ -97,38 +104,6 @@ RTL_FOCUS_CATEGORIES = frozenset(
 # (defects) and ``code_style`` (readability), so the word means one thing here.
 TB_FOCUS_CATEGORIES = frozenset({"quality"})
 
-
-@dataclass(frozen=True)
-class ReviewGuide:
-    """One packaged review guide under ``refs/code_review``."""
-
-    # ``checklist``: items to check against the code. ``hunt``: a method for finding defects.
-    kind: Literal["checklist", "hunt"]
-    # File path relative to ``refs/code_review``; the stem is the guide name shown in prompts.
-    path: str
-    # Testbench guides only: load the guide when the review scope has this source language.
-    language: Literal["hdl", "cocotb", "cpp"] | None = None
-
-    @property
-    def name(self) -> str:
-        """The guide's name: its file stem, which ends in its kind."""
-        return Path(self.path).stem
-
-
-# The one declaration of which guides each ``(category, focus)`` review loads, in prompt order.
-REVIEW_GUIDES: dict[tuple[str, str], tuple[ReviewGuide, ...]] = {
-    ("rtl", "bugs"): (ReviewGuide("checklist", "rtl/bugs-checklist.md"),),
-    ("rtl", "protocol"): (ReviewGuide("checklist", "rtl/protocol-cdc-checklist.md"),),
-    ("rtl", "security"): (ReviewGuide("checklist", "rtl/security-checklist.md"),),
-    ("rtl", "optimization"): (ReviewGuide("checklist", "rtl/optimization-checklist.md"),),
-    ("rtl", "code_style"): (ReviewGuide("checklist", "rtl/code_style-checklist.md"),),
-    ("rtl", "spec"): (ReviewGuide("hunt", "rtl/spec-hunt.md"),),
-    ("tb", "quality"): (
-        ReviewGuide("checklist", "testbench/c-cpp-checklist.md", "cpp"),
-        ReviewGuide("checklist", "testbench/hdl-checklist.md", "hdl"),
-        ReviewGuide("checklist", "testbench/cocotb-checklist.md", "cocotb"),
-    ),
-}
 
 # Spec focus category name
 SPEC_FOCUS = "spec"
@@ -171,7 +146,7 @@ def _is_observation(disposition: str, origin: str) -> bool:
 
 
 # RTL source prefixes — derived from the authored .core filesets.
-_RTL_PREFIXES_DEFAULT = ("rtl/", "rtl\\", "fw/", "fw\\")
+_RTL_PREFIXES_DEFAULT = ("rtl/", "rtl\\")
 # TB source prefixes — directories end in a separator; flat files do not.
 _TB_PREFIXES_DEFAULT = ("tb/", "tb\\")
 
@@ -196,11 +171,8 @@ def _get_prefixes(
     from booley.runtime.shared_infra import source_dir_prefixes
 
     rtl_names, tb_names = parsed
-    rtl_list = list(rtl_names)
-    if "fw" not in {name.rstrip("/\\") for name in rtl_list}:
-        rtl_list.append("fw")
     return (
-        source_dir_prefixes(rtl_list, work_dir),
+        source_dir_prefixes(rtl_names, work_dir),
         source_dir_prefixes(tb_names, work_dir),
     )
 
@@ -381,6 +353,8 @@ class ReviewIssue:
     ticket_clause: str = ""
     origin: str = ""
     proposal_ordinal: int = field(default=0, compare=False)
+    # Kinds of the guides whose calls reported this finding; evidence only, never identity.
+    guide_kinds: tuple[str, ...] = field(default=(), compare=False)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -401,6 +375,8 @@ class ReviewIssue:
             d["ticket_clause"] = self.ticket_clause
         if self.origin:
             d["origin"] = self.origin
+        if self.guide_kinds:
+            d["guide_kinds"] = list(self.guide_kinds)
         return d
 
     @classmethod
@@ -417,7 +393,98 @@ class ReviewIssue:
             disposition=str(d.get("disposition", "")).lower(),
             ticket_clause=str(d.get("ticket_clause", "")),
             origin=str(d.get("origin", "")).lower(),
+            guide_kinds=tuple(as_str_list(d.get("guide_kinds"))),
         )
+
+
+_CONFIDENCE_RANK = {CONFIDENCE_LOW: 1, CONFIDENCE_MEDIUM: 2, CONFIDENCE_HIGH: 3}
+
+
+@dataclass
+class _GuideCallRun:
+    """One model call of a review (one guide kind) and what it produced."""
+
+    guides: tuple[ReviewGuide, ...]
+    params: AgentCallParams
+    attempt_id: str
+    result: Any = None
+    error: Exception | None = None
+    model_run: ModelRun | None = None
+    # Findings the call reported before scope filtering.
+    reported: int = 0
+    # Open findings and observations kept after scope filtering; ``kept`` is None for a failed call.
+    kept: list[ReviewIssue] | None = None
+    observations: list[ReviewIssue] = field(default_factory=list[ReviewIssue])
+    lines: list[str] = field(default_factory=list[str])
+    # Evidence rows of this call's earlier failed attempts (the call is retried once).
+    failed_attempts: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
+
+    @property
+    def name(self) -> str:
+        """The call's guide name(s); empty for a call without a guide section."""
+        return "+".join(guide.name for guide in self.guides)
+
+    @property
+    def kinds(self) -> tuple[str, ...]:
+        """Sorted distinct kinds of the call's guides."""
+        return tuple(sorted({guide.kind for guide in self.guides}))
+
+    def evidence_row(self) -> dict[str, Any]:
+        """This call's entry in the ``guide_calls`` evidence."""
+        transcript = self.params.transcript_path
+        row: dict[str, Any] = {
+            "kind": "+".join(self.kinds),
+            "guides": [guide.name for guide in self.guides],
+            "attempt_id": self.attempt_id,
+            "transcript": str(transcript) if transcript is not None else None,
+            "model": self.model_run.note() if self.model_run is not None else None,
+            "status": "ok" if self.kept is not None else "error",
+        }
+        if self.failed_attempts:
+            row["failed_attempts"] = list(self.failed_attempts)
+        return row
+
+
+def merge_exact_duplicates(per_call: list[list[ReviewIssue]]) -> list[ReviewIssue]:
+    """Merge findings of different calls sharing file, line and kind, in order of first appearance.
+
+    The merged finding takes the highest severity and the highest confidence of the group
+    and the sorted union of its guide kinds; every other field is the first member's with
+    the highest severity, then confidence. Findings of one call are never merged with each
+    other, and findings differing in file, line or kind stay separate.
+    """
+    groups: list[tuple[tuple[str, int, str], set[int], list[ReviewIssue]]] = []
+    for call, issues in enumerate(per_call):
+        for issue in issues:
+            key = (posixpath.normpath(issue.file.replace("\\", "/")), issue.line, issue.kind)
+            target = next(
+                (group for group in groups if group[0] == key and call not in group[1]), None
+            )
+            if target is None:
+                groups.append((key, {call}, [issue]))
+            else:
+                target[1].add(call)
+                target[2].append(issue)
+    merged: list[ReviewIssue] = []
+    for _, _, group in groups:
+        best = max(
+            group,
+            key=lambda i: (
+                _SEVERITY_RANK.get(i.severity, 0),
+                _CONFIDENCE_RANK.get(i.confidence, 0),
+            ),
+        )
+        merged.append(
+            dataclasses.replace(
+                best,
+                severity=max((i.severity for i in group), key=lambda s: _SEVERITY_RANK.get(s, 0)),
+                confidence=max(
+                    (i.confidence for i in group), key=lambda c: _CONFIDENCE_RANK.get(c, 0)
+                ),
+                guide_kinds=tuple(sorted({kind for i in group for kind in i.guide_kinds})),
+            )
+        )
+    return merged
 
 
 @dataclass(frozen=True)
@@ -1010,13 +1077,14 @@ class ReviewerSpecialist(Specialist):
         self._audit: dict[str, list[dict[str, Any]]] = {"filtered": [], "rejected": []}
         self._attempt_id = ""
         self._audit_phase = "initial"
+        # Guide name(s) of the call whose findings are being interpreted; "" outside a multi-call review.
+        self._audit_guide = ""
+        self._guide_call_rows: list[dict[str, Any]] = []
         self._review_run_id = ""
         self._acceptance_current: bool | None = None
         self._goal_receipt_replayed = False
         self._goal_mode = False
         self._resolved_scope: list[str] | None = None
-        self._firmware_context: list[str] = []
-        self._firmware_finding_ids: set[str] = set()
         self._review_change: ReviewChange | None = None
         self._full_scope: tuple[str, ...] | None = None
         self._goal_target_surface: dict[str, Any] | None = None
@@ -1070,28 +1138,7 @@ class ReviewerSpecialist(Specialist):
             return McpToolResult(
                 exit_code=EXIT_ERROR, report_text="Discovery requires --category and --focus"
             )
-        if self._goal_mode:
-            return self._prepare_goal_discovery()
-        return self._split_firmware_scope()
-
-    def _split_firmware_scope(self) -> McpToolResult | None:
-        """Keep firmware out of the reviewed scope; refuse a scope with nothing else."""
-        scope = self._parse_scope()
-        firmware = [path for path in scope if is_firmware_path(self.args.work_dir, path)]
-        if not firmware:
-            return None
-        reviewed = [path for path in scope if path not in firmware]
-        if not reviewed:
-            return McpToolResult(
-                exit_code=EXIT_ERROR,
-                report_text=(
-                    f"Firmware review is not supported yet: {', '.join(firmware)} are firmware. "
-                    "Reviewers read firmware as context only; scope RTL or testbench files."
-                ),
-            )
-        self._resolved_scope = reviewed
-        self._firmware_context = firmware
-        return None
+        return self._prepare_goal_discovery() if self._goal_mode else None
 
     def _prepare_goal_discovery(self) -> McpToolResult | None:
         from booley.flows.execution_persistence import ReviewGoalInputs
@@ -1294,22 +1341,6 @@ class ReviewerSpecialist(Specialist):
         """Whether this run reviews a change (``--base``) rather than whole files."""
         return self._review_change is not None
 
-    def _workspace_shared_files(self) -> tuple[str, ...]:
-        """Both Reviewers read firmware (non-HDL files under ``fw/``) as context."""
-        work_dir = getattr(self._args, "work_dir", None)
-        if self._goal_mode or not work_dir:
-            return ()
-        root = Path(work_dir)
-        return tuple(
-            sorted(
-                relative.as_posix()
-                for path in (root / FIRMWARE_DIR).rglob("*")
-                if path.is_file()
-                and not path.is_symlink()
-                and is_firmware_path(root, relative := path.relative_to(root))
-            )
-        )
-
     @property
     def display_tag(self) -> str | None:
         if not self._args:
@@ -1479,6 +1510,9 @@ class ReviewerSpecialist(Specialist):
                 category=self.args.category,
                 focus=next(iter(self._parse_focus()), ""),
                 scope=tuple(self._parse_scope()),
+                guides=self._review_guides(
+                    next(iter(self._parse_focus()), ""), self.args.category
+                ),
                 mode="clean" if self._is_clean_mode() else "done",
                 spec_path=Path(spec_arg) if spec_arg else None,
                 spec_text=getattr(self.args, "spec_text", None),
@@ -1515,8 +1549,13 @@ class ReviewerSpecialist(Specialist):
         logger.info("Applying project style guide overlay: %s", path)
         return path.read_text(encoding="utf-8", errors="replace")
 
-    def _build_system_prompt(self, focus: str) -> str:
-        """Build focus-specific system prompt with methodology and inlined guide."""
+    def _build_system_prompt(
+        self, focus: str, guides: tuple[ReviewGuide, ...] | None = None
+    ) -> str:
+        """Build focus-specific system prompt with methodology and inlined guides.
+
+        *guides* is one call's guides; None inlines every guide selected for the focus.
+        """
         category = self.args.category
         gp = _guide_paths()
         cat_label = "RTL" if category == "rtl" else "testbench"
@@ -1532,7 +1571,7 @@ anything you cannot substantiate. Make each finding's severity and confidence \
 match the strength of the evidence.
 """,
         ]
-        self._append_review_guides(sections, focus, category)
+        self._append_review_guides(sections, focus, category, guides)
         style_focus = (category == "rtl" and focus == "code_style") or (
             category == "tb" and focus == "quality"
         )
@@ -1546,10 +1585,13 @@ match the strength of the evidence.
         sections: list[str],
         focus: str,
         category: str,
+        guides: tuple[ReviewGuide, ...] | None = None,
     ) -> None:
-        """Append the review guides declared for this focus."""
-        guides_root = refs_dir() / "code_review"
-        for guide in self._review_guides(focus, category):
+        """Append the given review guides, default every guide declared for this focus."""
+        guides_root = review_guides_root()
+        if guides is None:
+            guides = self._review_guides(focus, category)
+        for guide in guides:
             guide_content = self._read_guide(str(guides_root / guide.path))
             if guide_content:
                 sections.append(f"## Review guide — {focus} ({guide.name})\n")
@@ -1637,12 +1679,6 @@ match the strength of the evidence.
             spec_section = self._build_spec_section()
             if spec_section:
                 sections.append(spec_section)
-
-        if not self._goal_mode:
-            sections.append(
-                "## Firmware\n\nNon-HDL files under `fw/` are firmware: read-only context. "
-                "Read them when useful; never report findings in them.\n"
-            )
 
         if self._review_change is not None:
             sections.append(self._build_change_section(self._review_change))
@@ -1938,8 +1974,6 @@ object, even after calling the capability.
         self._scope_contract = None
         self._sampled_contract = None
         self._resolved_scope = None
-        self._firmware_context = []
-        self._firmware_finding_ids = set()
         self._review_change = None
         self._full_scope = None
         self._goal_target_surface = None
@@ -2074,9 +2108,19 @@ object, even after calling the capability.
 
     def _record_rejections(self, rows: list[dict[str, Any]], channel: str) -> None:
         self._audit["rejected"].extend(
-            {**row, "channel": channel, "phase": self._audit_phase, "attempt_id": self._attempt_id}
+            {
+                **row,
+                "channel": channel,
+                "phase": self._audit_phase,
+                "attempt_id": self._attempt_id,
+                **self._audit_guide_tag(),
+            }
             for row in rows
         )
+
+    def _audit_guide_tag(self) -> dict[str, str]:
+        """The ``guide`` field of an audit row: the call that produced it, in a multi-call review."""
+        return {"guide": self._audit_guide} if self._audit_guide else {}
 
     def _audit_detail(self) -> dict[str, Any]:
         """Attach the active audit rows to an outcome."""
@@ -2258,6 +2302,7 @@ object, even after calling the capability.
                 report_text=self._provider_failure_report(
                     output_lines, "Reviewer Specialist invocation failed"
                 ),
+                detail=self._guide_calls_detail(),
             )
 
         elapsed = time.monotonic() - overall_start
@@ -2379,6 +2424,7 @@ object, even after calling the capability.
                 report_text=self._provider_failure_report(
                     output_lines, "Reviewer Specialist invocation failed"
                 ),
+                detail=self._guide_calls_detail(),
             )
         elapsed = time.monotonic() - overall_start
         return self._build_result_clean_initial(
@@ -3066,9 +3112,17 @@ Schema enforcement (applied upstream by the harness):
             return None
         return parsed.issues
 
-    def _single_review_params(self, focus: str) -> AgentCallParams:
+    def _single_review_params(
+        self,
+        focus: str,
+        guides: tuple[ReviewGuide, ...] | None = None,
+        *,
+        prompt: str | None = None,
+        transcript_path: Path | None = None,
+    ) -> AgentCallParams:
+        """Agent parameters for one review call: *guides* only, default every selected guide."""
         return AgentCallParams(
-            prompt=self._build_prompt(focus_override=focus),
+            prompt=prompt if prompt is not None else self._build_prompt(focus_override=focus),
             model=self._resolve_model(),
             cwd=self.args.work_dir,
             allowed_agent_capabilities=[
@@ -3076,25 +3130,194 @@ Schema enforcement (applied upstream by the harness):
                 REPORT_FINDINGS_CAPABILITY,
             ],
             disallowed_agent_capabilities=list(self.READ_ONLY_DENY),
-            system_prompt=self._build_system_prompt(focus),
+            system_prompt=self._build_system_prompt(focus, guides),
             output_format=self._output_format(),
             capture_agent_capability_calls=[REPORT_FINDINGS_CAPABILITY],
             max_turns=self.args.max_turns,
             timeout_seconds=self.timeout_seconds(),
-            transcript_path=self.transcript_path(),
+            transcript_path=transcript_path
+            if transcript_path is not None
+            else self.transcript_path(),
             label=f"review-{self.args.category}-{focus}",
             needs_skills=self._needs_skills(),
             reasoning_effort=self._resolve_effort(),
         )
+
+    def _guide_calls(self, focus: str, category: str) -> tuple[tuple[ReviewGuide, ...], ...]:
+        """Group the focus's selected guides into model calls, one per guide kind.
+
+        Kinds run in order of first appearance. Always at least one call: a focus with no
+        selected guide (a Goal Mode testbench review of support files only) is one call
+        without a guide section, never zero calls.
+        """
+        guides = self._review_guides(focus, category)
+        if not guides:
+            return ((),)
+        kinds = dict.fromkeys(guide.kind for guide in guides)
+        return tuple(tuple(g for g in guides if g.kind == kind) for kind in kinds)
+
+    def _new_guide_call(
+        self,
+        focus: str,
+        prompt: str,
+        guides: tuple[ReviewGuide, ...],
+        *,
+        tagged: bool,
+    ) -> _GuideCallRun:
+        """Prepare one call; a multi-call review gives each its own transcript file."""
+        name = "+".join(guide.name for guide in guides)
+        transcript = self.transcript_path()
+        if tagged and transcript is not None:
+            transcript = transcript.with_name(f"{transcript.stem}-{name}{transcript.suffix}")
+        return _GuideCallRun(
+            guides=guides,
+            params=self._single_review_params(
+                focus, guides, prompt=prompt, transcript_path=transcript
+            ),
+            attempt_id=f"{self._review_run_id or self._invocation_id}-{uuid4().hex}",
+        )
+
+    def _invoke_guide_call(self, run: _GuideCallRun) -> None:
+        """Run one call, keeping its result or its failure on *run*; never raises."""
+        try:
+            run.result = self._invoke_agent(run.params)
+            run.model_run = self.last_call_model_run()
+        except Exception as exc:  # noqa: BLE001 — normalize the review-provider boundary
+            run.error = exc
+
+    def _invoke_guide_calls(self, runs: list[_GuideCallRun]) -> None:
+        """Run every call, concurrently when there are several, and wait for all of them.
+
+        Calls are never cancelled: a running agent CLI cannot be stopped cleanly, and no
+        partial result may be published, so a failing call still waits for the others.
+        """
+        if len(runs) == 1:
+            self._invoke_guide_call(runs[0])
+            return
+        with ThreadPoolExecutor(max_workers=len(runs)) as pool:
+            # Each worker runs in a copy of this context, so it resolves the same project scope.
+            list(
+                pool.map(
+                    lambda run: contextvars.copy_context().run(self._invoke_guide_call, run), runs
+                )
+            )
+
+    def _interpret_guide_call(self, run: _GuideCallRun, focus: str, *, tagged: bool) -> None:
+        """Turn one call's outcome into its findings (``kept``/``observations``) or a failure."""
+        # Audit rows recorded while interpreting belong to this call.
+        self._attempt_id = run.attempt_id
+        self._audit_guide = run.name if tagged else ""
+        try:
+            if run.error is not None:
+                raise run.error
+            issues = self._extract_review_issues(run.result, focus, run.lines)
+            if issues is None:
+                return
+            run.reported = len(issues)
+            for issue in issues:
+                issue.guide_kinds = run.kinds
+            self._non_corrective_issues = []
+            run.kept = self._filter_review_issues(issues, run.lines, observation_info=not tagged)
+            run.observations = self._non_corrective_issues
+        except Exception as exc:  # noqa: BLE001 — normalize the review-provider boundary
+            run.kept = None
+            run.lines.append(
+                self._record_review_provider_failure(
+                    exc,
+                    run.params.transcript_path,
+                    f"Reviewer Specialist failed for focus={focus}",
+                )
+            )
+
+    def _retry_failed_guide_calls(self, focus: str, runs: list[_GuideCallRun]) -> None:
+        """Run each failed call once more, in place, before the review fails.
+
+        One bad answer (for example a ReportFindings entry the consistency check rejects)
+        costs a second call, not the whole review. A call that fails again stays failed, and
+        the review fails naming it. Only a multi-call review retries: with several calls one
+        failure is likelier, and a single-call review keeps its one attempt.
+        """
+        retries: list[_GuideCallRun] = []
+        for index, run in enumerate(runs):
+            if run.kept is not None:
+                continue
+            retry = _GuideCallRun(
+                guides=run.guides,
+                params=dataclasses.replace(run.params),
+                attempt_id=f"{self._review_run_id or self._invocation_id}-{uuid4().hex}",
+                failed_attempts=[*run.failed_attempts, run.evidence_row()],
+                lines=[*run.lines, f"INFO: {run.name} call failed; retrying it once"],
+            )
+            runs[index] = retry
+            retries.append(retry)
+        if not retries:
+            return
+        self._invoke_guide_calls(retries)
+        for retry in retries:
+            self._interpret_guide_call(retry, focus, tagged=True)
+
+    def _collect_guide_calls(
+        self, focus: str, runs: list[_GuideCallRun], output_lines: list[str]
+    ) -> list[ReviewIssue] | None:
+        """Combine the calls' findings; any failed call makes the review a Specialist error."""
+        tagged = len(runs) > 1
+        for run in runs:
+            self._interpret_guide_call(run, focus, tagged=tagged)
+        if tagged:
+            self._retry_failed_guide_calls(focus, runs)
+        self._audit_guide = ""
+        self._guide_call_rows = [run.evidence_row() for run in runs] if tagged else []
+        if not tagged:
+            output_lines.extend(runs[0].lines)
+            return runs[0].kept
+        failed = [run.name for run in runs if run.kept is None]
+        output_lines.extend(
+            f"ERROR: {name} call failed — the review is incomplete, not a clean pass"
+            for name in failed
+        )
+        for run in runs:
+            output_lines.extend(f"[{run.name}] {line}" for line in run.lines)
+        if failed:
+            return None
+        return self._merge_guide_calls(runs, output_lines)
+
+    def _merge_guide_calls(
+        self, runs: list[_GuideCallRun], output_lines: list[str]
+    ) -> list[ReviewIssue]:
+        """Union the calls' findings, merging exact duplicates within open findings and
+        within observations only, so an open finding is never hidden among observations."""
+        kept = merge_exact_duplicates([run.kept or [] for run in runs])
+        observations = merge_exact_duplicates([run.observations for run in runs])
+        retained = sum(len(run.kept or []) + len(run.observations) for run in runs)
+        merged = retained - len(kept) - len(observations)
+        per_call = ", ".join(f"{run.name} {run.reported}" for run in runs)
+        output_lines.append(
+            f"INFO: guide calls reported {per_call}; merged {merged} exact duplicate(s)"
+        )
+        self._non_corrective_issues = observations
+        if observations and self._criterion_key().endswith("_clean"):
+            output_lines.extend(self._observation_info_lines())
+        # The first call's session is the one persisted; a later verify never resumes it.
+        session = next(
+            (s for run in runs if isinstance(s := getattr(run.result, "session_id", None), str)),
+            None,
+        )
+        self._last_session_id = session
+        return kept
+
+    def _guide_calls_detail(self) -> dict[str, Any]:
+        """Evidence of this run's guide calls; empty for a single-call review."""
+        return {"guide_calls": list(self._guide_call_rows)} if self._guide_call_rows else {}
 
     def _run_single_review(
         self, *, phase: str = "discovery"
     ) -> tuple[list[ReviewIssue] | None, list[str]]:
         """Run exactly one focus review. Returns (issues, output_lines) or (None, lines) on error.
 
-        Treats "agent emitted no JSON wrapper at all" as a Specialist error
-        rather than an implicit clean pass — otherwise a stream of
-        free-form prose would slip through as ``0 issues``.
+        The review makes one model call per guide kind of the focus (``_guide_calls``),
+        concurrently, and reports the union of their findings. Treats "agent emitted no
+        JSON wrapper at all" as a Specialist error rather than an implicit clean pass —
+        otherwise a stream of free-form prose would slip through as ``0 issues``.
         """
         focus = next(iter(self._parse_focus()))
         output_lines = [
@@ -3102,41 +3325,38 @@ Schema enforcement (applied upstream by the harness):
             f"[review] {self.args.category}/{focus}",
             *self._spec_report_lines(),
         ]
-        if self._firmware_context:
-            output_lines.append(
-                "INFO: firmware is read-only context, not reviewed: "
-                + ", ".join(self._firmware_context)
-            )
         self._non_corrective_issues = []
-        self._firmware_finding_ids = set()
         self._attempt_id = f"{self._review_run_id or self._invocation_id}-{uuid4().hex}"
         self._audit_phase = phase
 
         start = time.monotonic()
-        params = self._single_review_params(focus)
+        # One user prompt for every call: same scope, spec, change section and origin rule.
+        prompt = self._build_prompt(focus_override=focus)
+        groups = self._guide_calls(focus, self.args.category)
+        runs = [
+            self._new_guide_call(focus, prompt, guides, tagged=len(groups) > 1)
+            for guides in groups
+        ]
+        self._attempt_id = runs[0].attempt_id
+        # Evidence an escaping error reports: every call unfinished until it is interpreted.
+        self._guide_call_rows = [run.evidence_row() for run in runs] if len(runs) > 1 else []
         self.emit_progress(f"invoking Reviewer Specialist ({self.args.category}/{focus})")
         try:
             with self._review_state_filter():
-                result = self._invoke_agent(params)
-                issues = self._extract_review_issues(
-                    result,
-                    focus,
-                    output_lines,
-                )
-                if issues is None:
-                    return None, output_lines
-                issues = self._filter_review_issues(issues, output_lines)
-                self.emit_progress(f"review complete: {len(issues)} finding(s)")
+                self._invoke_guide_calls(runs)
+                issues = self._collect_guide_calls(focus, runs, output_lines)
         except Exception as exc:  # noqa: BLE001 — normalize the review-provider boundary
             output_lines.append(
                 self._record_review_provider_failure(
                     exc,
-                    params.transcript_path,
+                    runs[0].params.transcript_path,
                     f"Reviewer Specialist failed for focus={focus}",
                 )
             )
             return None, output_lines
-
+        if issues is None:
+            return None, output_lines
+        self.emit_progress(f"review complete: {len(issues)} finding(s)")
         self._persist_session_id(f"reviewer-{self.args.category}-{focus}")
 
         duration = time.monotonic() - start
@@ -3150,19 +3370,18 @@ Schema enforcement (applied upstream by the harness):
         self,
         issues: list[ReviewIssue],
         output_lines: list[str],
+        *,
+        observation_info: bool = True,
     ) -> list[ReviewIssue]:
-        """Enforce explicit source membership and honor agent dispositions."""
+        """Enforce explicit source membership and honor agent dispositions.
+
+        *observation_info* adds the clean-mode INFO lines counting observations; a
+        multi-call review adds them once, after merging.
+        """
         kept: list[ReviewIssue] = []
         dropped = 0
         for ordinal, issue in enumerate(issues, 1):
-            if not self._goal_mode and is_firmware_path(self.args.work_dir, issue.file):
-                issue.disposition = DISPOSITION_OUT_OF_SCOPE
-                self._non_corrective_issues.append(issue)
-                self._firmware_finding_ids.add(_finding_record(issue)["finding_id"])
-                output_lines.append(
-                    f"OUT OF SCOPE (firmware is read-only context): {_format_issue_line(issue)}"
-                )
-            elif not self._issue_file_in_scope(issue.file):
+            if not self._issue_file_in_scope(issue.file):
                 self._audit["filtered"].append(
                     {
                         **issue.to_dict(),
@@ -3172,6 +3391,7 @@ Schema enforcement (applied upstream by the harness):
                         "ordinal": issue.proposal_ordinal or ordinal,
                         "attempt_id": self._attempt_id,
                         "phase": self._audit_phase,
+                        **self._audit_guide_tag(),
                     }
                 )
                 dropped += 1
@@ -3183,7 +3403,11 @@ Schema enforcement (applied upstream by the harness):
             output_lines.append(
                 f"INFO: filtered {dropped} proposal(s) outside explicit source scope; preserved in audit evidence"
             )
-        if self._non_corrective_issues and self._criterion_key().endswith("_clean"):
+        if (
+            observation_info
+            and self._non_corrective_issues
+            and self._criterion_key().endswith("_clean")
+        ):
             output_lines.extend(self._observation_info_lines())
         return kept
 
@@ -3246,6 +3470,7 @@ Schema enforcement (applied upstream by the harness):
             "review_detail_version": REVIEW_DETAIL_VERSION,
             "review_call_order": self._next_review_order(),
             **self._audit_detail(),
+            **self._guide_calls_detail(),
             "issues": len(outcome.issues),
             "observation_count": len(outcome.records),
             "issue_list": outcome.records,
@@ -3292,13 +3517,7 @@ Schema enforcement (applied upstream by the harness):
         )
         output_lines.append(f"\nRESULT: {result_label} ({count_str})")
         lines = [f"{count_str}, review completed"]
-        # Firmware findings already have their OUT OF SCOPE line; do not list them twice.
-        shown = [
-            row
-            for row in done_outcome.records
-            if row["finding_id"] not in self._firmware_finding_ids
-            and row.get("origin") != ORIGIN_PRE_EXISTING
-        ]
+        shown = [row for row in done_outcome.records if row.get("origin") != ORIGIN_PRE_EXISTING]
         lines.extend(
             f"  {_format_issue_line(ReviewIssue.from_dict(row))} [{row.get('status', 'reported')}]"
             for row in shown
@@ -3392,6 +3611,7 @@ Schema enforcement (applied upstream by the harness):
             "review_detail_version": REVIEW_DETAIL_VERSION,
             "review_call_order": self._next_review_order(),
             **self._audit_detail(),
+            **self._guide_calls_detail(),
             "issues": len(issues),
             "pending": [_finding_record(iss) for iss in issues],
             "resolved": [],
@@ -3496,6 +3716,7 @@ Schema enforcement (applied upstream by the harness):
             "review_detail_version": REVIEW_DETAIL_VERSION,
             "review_call_order": self._next_review_order(),
             **self._audit_detail(),
+            **self._guide_calls_detail(),
             "issues": len(context.remaining),
             "pending": context.pending,
             "resolved": context.resolved,

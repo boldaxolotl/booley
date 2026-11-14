@@ -3,7 +3,8 @@
 `.booley/booley.toml` holds your Project's Booley settings. This page covers the
 Project-wide ones: Project identity, extra Protected Inputs, turning Flows and
 Specialists off, Job limits, the Agent CLIs and their billing, models, the
-Dashboard and Goal presence, worktree cleanup, and feedback redaction. Settings for one Flow, the Sandbox, or
+Dashboard and Goal presence, worktree settings (where `booley chat` starts,
+cleanup of idle worktrees, and Git submodules), and feedback redaction. Settings for one Flow, the Sandbox, or
 Stealth Mode live on their own pages; the table below says where.
 
 You rarely edit this file by hand. The `booley-setup` skill writes it during
@@ -15,7 +16,7 @@ here to look up what a setting means and what its default is.
 
 | Setting | Documented in |
 |---|---|
-| `[project]`, `enabled`, `[jobs]`, `[agent]`, `[models]`, `[goals]`, `[worktree]`, `[sandbox].dashboard`, `[feedback]` | this page |
+| `[project]`, `enabled`, `[jobs]`, `[agent]`, `[models]`, `[goals]`, `[worktree]`, `[submodules]`, `[sandbox].dashboard`, `[feedback]` | this page |
 | `[flows.sim]` | [Simulation](FLOW-SIM.md#configuration-flowssim) |
 | `[coverage.waivers]` and per-Target coverage settings | [Coverage](COVERAGE.md#configuration) |
 | `[flows.lint]` | [Lint](FLOW-LINT.md#configuration-flowslint) |
@@ -26,7 +27,8 @@ here to look up what a setting means and what its default is.
 | `[eda.<tool>]` | [Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning) |
 | `[stealth]` | [STEALTH.md](STEALTH.md) |
 | `[feedback]` | [Redacted feedback](STEALTH.md#redacted-feedback-feedback) |
-| `[submodules]`, `.core` files, Cocotb Targets | [TARGETS.md](TARGETS.md) |
+| `.core` files | [TARGETS.md](TARGETS.md) |
+| Cocotb Targets | [Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches) |
 | `tests.toml` | [TESTS.md](TESTS.md) |
 | `.booley/doctor-waivers.toml` | [Doctor waivers](DOCTOR.md#doctor-waivers-doctor-waiverstoml) |
 
@@ -114,7 +116,8 @@ To choose a Specialist's model, see [`[models]`](#model-selection-models).
 Every Flow or Specialist run is a **Job**. Simulation, synthesis, FPGA
 implementation, and lint are admitted against a **Memory Budget**: a Job starts
 when its estimated memory fits in what the budget has left, and otherwise waits
-in a queue instead of failing. Specialists are light Jobs, limited by the AI
+in a queue instead of failing. The queue has no limit: a Job waits until it
+runs or you cancel it. Specialists are light Jobs, limited by the AI
 provider rather than memory, so a count (`max_light`) caps them. Running Jobs
 are never interrupted. The defaults:
 
@@ -123,9 +126,7 @@ are never interrupted. The defaults:
 memory = "32g"           # the Sandbox's memory limit; the Memory Budget comes from it
 
 [jobs]
-# memory_budget = "24g"  # a fixed Memory Budget in place of the computed one
 max_light = 3            # Specialist Jobs running at once
-queue_max = 8            # Jobs that may wait per kind; beyond this a request is refused
 
 [jobs.seats]
 # vivado = 1             # licensed seats Booley may use at once; required for Vivado
@@ -135,8 +136,7 @@ The Memory Budget is the Sandbox's memory limit, `[sandbox].memory`, minus a
 reserve: the memory the running agents, the MCP server, and the Dashboard use,
 plus 2 GB. Without `[sandbox].memory` the Sandbox has no limit, so Booley starts
 from the machine's installed memory, which the Sandbox shares with everything
-else; `booley doctor` warns while it is unset. `[jobs].memory_budget` replaces
-the computed budget with a fixed size, and Booley subtracts no reserve from it.
+else; `booley doctor` warns while it is unset.
 
 Booley reserves the largest peak memory it recorded for a Job
 ([resource history](#job-resource-history)), plus 25%. With no record of its
@@ -166,13 +166,16 @@ Seat Caps don't share commercial license seats between Projects. See
 ### Job resource history
 
 Booley measures every Job's peak memory, CPU time, and wall-clock time, and
-keeps the newest 20 runs per Target and Job phase, with no overall cap. A group
+keeps the newest 20 runs per Target and Job phase, with no overall cap. Each
+Specialist run that calls its Agent CLI is measured too (the Agent CLI's
+processes, not Booley's own, and not their temporary files) and kept 20 per
+Specialist; Specialist runs do not change the figures of any Target. An entry
 with no run in the last 90 days is deleted the next time any Job records. Peak
 memory counts the Job's temporary files only when `TMPDIR` is on tmpfs; runs
 recorded before that rule keep their earlier peak. `booley resources` prints the
 run count and the minimum, median, and maximum peak memory and wall-clock time
-for each (`--json` for scripts). Use it to choose `[sandbox].memory` and
-`[jobs].memory_budget`. Each Test Variant of a simulation has its own entry
+for each, with one line per Specialist after the Targets (`--json` for
+scripts). Use it to choose `[sandbox].memory`. Each Test Variant of a simulation has its own entry
 (`tests=first+slow`; the default Variant keeps the bare Test name), and the
 seeds of one Variant share it. Flow runs that `booley doctor` starts are not
 recorded.
@@ -237,7 +240,10 @@ quietly bills the other one:
 - **Another CLI in `clis`**: a missing credential warns. If a `[models]` entry
   runs a Specialist on that CLI, it fails whatever `auth` says.
 
-`booley init --auth api-key` (with a hyphen) records `api_key`. Why to pick one:
+`booley init` records the policy it detects for each CLI in `clis`: one string
+when they agree, an `[agent.auth]` table when they differ. It keeps an explicit
+value and replaces `auto`; `booley init --auth api-key` (with a hyphen) records
+`api_key` without detection. Why to pick one:
 [Sign-in and billing](SETUP.md#sign-in-and-billing).
 
 ### Git identity (`[agent.git]`)
@@ -257,28 +263,6 @@ Sandbox and leaves your host checkout alone; `git -c`, `--author`, and
 (`booley session refresh`). Doctor run in the Sandbox warns when Git would use
 another identity, and names the fix, including for a hand-written devcontainer
 spec such as GitHub Codespaces.
-
-## Interactive sessions (`[chat]`)
-
-```toml
-[chat]
-worktree = "auto"    # "auto" (default), "always", or "never"
-```
-
-Decides where `booley chat` starts when you run it from the main checkout:
-
-- `auto`: in the main checkout when no other Booley session is using it,
-  otherwise in a new worktree `s<N>` on branch `booley/s<N>` (`wt/s<N>` in
-  Stealth Mode).
-- `always`: always in a new worktree; if the main checkout was free, the launch
-  holds it until its session ends, so a later `auto` launch starts in a
-  worktree too.
-- `never`: always in the main checkout.
-
-`booley chat --new-worktree` and `--here` override it for one launch. Any other
-value stops `booley chat` with exit 2 and fails Doctor. Run from inside a
-linked worktree, `booley chat` starts there whatever this says. See
-[Several agents at once](USAGE.md#several-agents-at-once).
 
 ## Model selection (`[models]`)
 
@@ -339,19 +323,36 @@ a Goal.
 
 ## Worktrees
 
-### Worktree cleanup (`[worktree]`)
+### Worktree settings (`[worktree]`)
 
 ```toml
 [worktree]
+chat = "auto"          # "auto" (default), "always", or "never"
 gc_older_than = "7d"   # d, h, m, s components such as "36h" or "1d12h"
 ```
 
-`booley worktree gc` removes worktrees whose last use is older than this age,
-keeping any that `booley worktree rm` would refuse (default `"7d"`). Every
-`booley chat` launch runs the same cleanup with this age. The setting is read
-from the main checkout's `.booley/booley.toml`; a worktree's own copy is
-ignored. `booley worktree gc --older-than AGE` overrides it. See
-[Cleaning up idle worktrees](CLI-REFERENCE.md#worktrees).
+`chat` decides where `booley chat` starts when you run it from the main
+checkout:
+
+- `auto`: in the main checkout when no other Booley session is using it,
+  otherwise in a new worktree `s<N>` on branch `booley/s<N>` (`wt/s<N>` in
+  Stealth Mode).
+- `always`: always in a new worktree; if the main checkout was free, the launch
+  holds it until its session ends, so a later `auto` launch starts in a
+  worktree too.
+- `never`: always in the main checkout.
+
+`booley chat --new-worktree` and `--here` override it for one launch. Any other
+value stops `booley chat` with exit 2 and fails Doctor. Run from inside a
+linked worktree, `booley chat` starts there whatever this says. See
+[Several agents at once](USAGE.md#several-agents-at-once).
+
+`booley worktree gc` removes worktrees whose last use is older than
+`gc_older_than`, keeping any that `booley worktree rm` would refuse (default
+`"7d"`). Every `booley chat` launch runs the same cleanup with this age.
+`gc_older_than` is read from the main checkout's `.booley/booley.toml`; a
+worktree's own copy is ignored. `booley worktree gc --older-than AGE` overrides
+it. See [Cleaning up idle worktrees](CLI-REFERENCE.md#worktrees).
 
 ### Worktree setup hooks (`.booley/hooks/`)
 
@@ -370,11 +371,69 @@ twice and read its inputs from the checkout. If it fails, only the Targets that
 need its output lose their baseline, with the hook's error as the reason. A
 hook that changes a tracked file makes the baseline unavailable.
 
+### Git submodules (`[submodules]`)
+
+Goal Mode and baseline comparisons run in separate git worktrees. Booley
+fills each worktree's submodules from your local copy at the same path, at the
+commit the branch pins, without cloning anything, so private SSH URLs are
+fine. Recursive submodules work the same way.
+
+Run this once on the host:
+
+```bash
+git submodule update --init --recursive
+```
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+`.booley` is its own Git repository, so initialize its submodules too:
+
+```bash
+git -C .booley submodule update --init --recursive
+```
+
+See [Stealth Mode](STEALTH.md).
+
+</details>
+
+Each submodule must be present, clean, and have its full history (not a
+shallow clone) before a Goal or baseline run starts. Otherwise the run stops
+with one of:
+
+- `submodule <path> not found in source Project; initialize it first`
+- `submodule <path> is dirty`
+- `submodule <path> is shallow; fetch its complete history first`
+- `local objects for submodule <path> are incomplete`
+
+The last one means your local copy lacks objects for the commit the branch
+pins; fetch in that submodule. Booley always uses the pinned commit, even when your checkout
+has a newer one.
+
+To copy only some submodules (skip a large docs or board submodule nothing
+builds from), list the ones you want in `booley.toml`:
+
+```toml
+[submodules]
+paths = ["deps/bus_pkg", "deps/axi_verif"]
+```
+
+Without `paths`, every top-level submodule is copied; `paths = []` copies
+none. Unlisted submodules appear as empty directories in the worktree.
+Submodules nested inside a listed one are always copied.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+The list applies to the RTL repository only: every submodule of the `.booley`
+repository is always copied. See [Stealth Mode](STEALTH.md).
+
+</details>
+
 ## Feedback (`[feedback]`)
 
 `/booley-feedback` records bugs, confusion, and opinions in a local report,
-`.booley/SETUP-REPORT.md` (`FEEDBACK-REPORT.md` on a Project that never ran
-setup). Booley never sends feedback anywhere. When you ask the skill for a copy
+`.booley/FEEDBACK-REPORT.md`. Booley never sends feedback anywhere. When you ask the skill for a copy
 to share, it writes `.booley/BOOLEY-FEEDBACK.md` with your Project's details
 replaced; read it before you send it. How to report: [When Booley itself
 misbehaves](USAGE.md#when-booley-itself-misbehaves).

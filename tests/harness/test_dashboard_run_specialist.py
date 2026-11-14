@@ -700,3 +700,17 @@ async def test_coverage_picker_says_when_the_jobs_are_unread_or_the_read_crashes
         await pilot.press("enter")
         await settle(app, pilot)
         assert "No finished Coverage Record" in shown(wizard, "#run-hint")
+
+
+def test_an_issued_auto_record_shows_as_auto_in_the_specialist_facts(
+    empty_home, tmp_path, monkeypatch
+):
+    from booley.harness.dashboard import launch
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BOOLEY_AGENT_CLIS", "claude=auto")
+
+    facts = launch._agent_facts("reviewer", 1000, 1000)
+
+    assert facts["cli"] == "claude"
+    assert facts["policy"] == "auto"

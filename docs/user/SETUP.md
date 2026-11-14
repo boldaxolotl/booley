@@ -28,13 +28,12 @@ host (`/booley-setup new` for a new IP). They differ only in the skill mode:
   restatement of the filelists you already have). See [Ports](#ports) for
   open-source IPs that have gone through this path.
 
-Both paths begin with host-side Project Initialization, then use their own skill mode. For
-what each configuration field *means*, see [CONFIG.md](CONFIG.md) for
-`booley.toml` and `enabled`, [TARGETS.md](TARGETS.md) for `.core` files,
-[`tests.toml`](TESTS.md) for Tests, Test Variants and seeds,
+Both paths begin with host-side Project Initialization, then use their own skill mode.
+[Project files](#project-files) lists the files setup writes and where each is
+documented. See also
 [FLOW-SIM.md](FLOW-SIM.md#passfail-sentinels-and-cycle-counts)
 for sentinels (the log-pattern strings that decide a simulation's pass/fail
-verdict), and [SANDBOX.md](SANDBOX.md#commercial-eda-provisioning) for EDA
+verdict) and [SANDBOX.md](SANDBOX.md#commercial-eda-provisioning) for EDA
 provisioning.
 
 > An agent session can follow this file too. The [context map](../../GLOSSARY-MAP.md)
@@ -92,10 +91,11 @@ booley init
 For a new IP, start from an empty repo (`mkdir my_ip && cd my_ip && git init`).
 When init finds no RTL, its closing advice points you at `/booley-setup new`.
 
-Init asks which default Agent CLI (`claude` or `codex`) and auth policy
-(`subscription`, `api-key`, or `auto`) this project uses; see
-[Sign-in and billing](#sign-in-and-billing) before you answer. Press Enter to
-accept the `claude` and `auto` defaults, or pass them as flags:
+Init asks which default Agent CLI (`claude` or `codex`) this project uses;
+press Enter to accept `claude`. It records the auth policy (`subscription` or
+`api_key`) itself from the credentials it finds for each CLI; see
+[Sign-in and billing](#sign-in-and-billing). Pass either choice as a flag to
+skip the detection or the question:
 
 ```bash
 booley init --provider codex --auth subscription
@@ -103,8 +103,8 @@ booley init --provider codex --auth subscription
 
 The choice is recorded in the `[agent]` table of `.booley/booley.toml`, as
 `default` and `auth`. The flag spells the policy `api-key`; the file spells it
-`api_key`. Re-running init keeps it; to change it later, edit that table (see
-[CONFIG.md](CONFIG.md)).
+`api_key`. Re-running init keeps an explicit value and replaces `auto`; to
+change it later, edit that table (see [CONFIG.md](CONFIG.md)).
 
 `booley init` is safe to re-run. It never overwrites a hand-edited
 `.booley/docker/{Dockerfile,requirements.txt}` (one missing its
@@ -124,8 +124,8 @@ Initialization walks through:
 ### Sign-in and billing
 
 The Developer Agent runs on an Agent CLI, Claude Code (the default) or Codex,
-and Booley bills it through a **subscription** or an **API key**. Init asks
-which one to bill and records it in `.booley/booley.toml`:
+and Booley bills it through a **subscription** or an **API key**. Init
+detects which one each CLI has and records it in `.booley/booley.toml`:
 
 ```toml
 [agent]
@@ -133,8 +133,14 @@ default = "claude"      # or "codex"
 auth = "subscription"   # or "api_key"
 ```
 
-Pick `subscription` or `api_key` explicitly. The default, `auto`, lets the
-Agent CLI decide, and an exported API key always beats a subscription, so
+Init records `subscription` for a CLI that has only a login and `api_key` for
+one that has only a key (a Claude OAuth token counts as a login, a Codex
+`booley auth` token as a key). When a CLI has both, it asks (Enter picks
+`subscription`); without a terminal it records `subscription` and says so.
+With neither, it records `subscription` and prints how to sign in.
+
+Init records a choice instead of `auto` because `auto` lets the Agent CLI
+decide, and an exported API key always beats a subscription, so
 you can end up paying per token without noticing. With an explicit choice,
 `booley doctor` fails when the default Agent CLI's credential is missing instead
 of quietly using another one (for another allowed CLI it only warns, unless a Specialist runs on it). A Project that also runs a Specialist on the other Agent CLI can
@@ -339,6 +345,25 @@ constraints). From there, drive development the normal way: see
 [GOAL-MODE.md](GOAL-MODE.md) to set up your first Goal Mode with `/booley-goal` and run it
 with `/booley-goal start`, or start an
 [Interactive Mode](USAGE.md#interactive-mode) session.
+
+## Project files
+
+These files configure a Booley Project. Setup writes `booley.toml`, the
+`.core` files, `tests.toml` and `AGENTS.md`. All but the `.core` files and the
+host `config.toml` live in the Booley Directory, `.booley/` at the top of your
+repository.
+
+| File | What it holds | Reference |
+|---|---|---|
+| `booley.toml` | Project settings: which Flows and Specialists run, Job limits, Agent CLIs and billing, models, and each Flow's options | [CONFIG.md](CONFIG.md) |
+| `*.core` | Targets: which files, top module, parameters and EDA tool each Flow builds with. They can sit anywhere in the repository, or in `.booley/cores/` in [Stealth Mode](STEALTH.md) | [TARGETS.md](TARGETS.md) |
+| `tests.toml` | The Tests of each simulation Target, their Test Variants and seeds | [TESTS.md](TESTS.md) |
+| `AGENTS.md` | Project guidance for Developer Agents | [Step 3](#porting-an-existing-project-plan-then-execute) |
+| `doctor-waivers.toml` | Doctor warnings you accept, each with a reason | [DOCTOR.md](DOCTOR.md#doctor-waivers-doctor-waiverstoml) |
+| `docker/Dockerfile`, `docker/requirements.txt` | The Project's Sandbox Image. `booley init` generates them; edit them to add tools | [SANDBOX.md](SANDBOX.md#custom-sandbox-image) |
+| `hooks/` | Scripts that prepare a new worktree | [CONFIG.md](CONFIG.md#worktree-setup-hooks-booleyhooks) |
+| `mcp_tools/` | The Project's own tools for the Developer Agent | [CONFIG.md](CONFIG.md#custom-mcp-tools) |
+| `~/.config/booley/config.toml` | Host settings shared by every Project on this machine | [SANDBOX.md](SANDBOX.md#host-configuration-configtoml) |
 
 ## See also
 

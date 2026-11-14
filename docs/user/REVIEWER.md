@@ -25,6 +25,14 @@ code and never edits it. For a pass/fail verdict from an EDA tool, use a
 The `bugs` review also flags some problems that [Lint](FLOW-LINT.md) and
 synthesis already report, such as latches and width mismatches.
 
+A `bugs` review runs two searches side by side: one checks the code against a
+list of known bug patterns, the other hunts for defects by tracing scenarios
+such as reset, back-to-back operations, and full or empty states. It reports
+the findings of both and merges findings the two searches report at the same
+file and line. It uses about twice the model time and tokens of one search. A
+search that fails runs once more; if it fails again, the whole review is an
+error instead of a partial result.
+
 A review sees only one side of the RTL/testbench split. A testbench review
 never reads the RTL, so it judges the tests against the spec rather than
 against what the RTL happens to do.
@@ -60,13 +68,14 @@ messages as its brief. Problems that were already there before the change are
 listed separately as pre-existing, and never count as open. A change that
 touches none of the files in scope finishes without a review.
 
-### Firmware
+### What a review can read
 
-Outside Goal Mode, the Reviewer also reads your firmware as context: the
-non-HDL files under the project's `fw/` directory. HDL files under `fw/`
-(backups like `rom.sv.orig` included) still count as RTL. The Reviewer never
-reports findings in firmware; such a finding is shown as out of scope and
-never counts as open. A review of firmware files alone is refused.
+Each Reviewer has the other side's files hidden, as your `.core` filesets
+declare them, and any HDL file (`.v`, `.vh`, `.sv`, `.svh`, backups like
+`rom.sv.orig` included) that no fileset declares, unless the review's scope
+names that file. Every other project file, firmware included, is readable
+context. A finding in a file outside the review's files is kept in the review
+evidence and never counts as open.
 
 ## In Goal Mode
 
@@ -104,7 +113,7 @@ booley specialist reviewer --verify
 | `--fail-on critical\|major\|minor` | Exit 1 when an open finding is at or above that severity. Without it, a completed review exits 0 even with open findings. |
 | `--verify` | Recheck the latest review's open findings. Accepts only `--waive` and `--fail-on`. |
 | `--waive <finding-id> "<reason>"` | With `--verify`: propose a waiver. Repeatable. |
-| `--dry-run` | Preview the call without running the review: lists the review guides it would load. |
+| `--dry-run` | Preview the call without running the review: lists the checks it would run; a `bugs` review shows two. |
 
 The options every Specialist shares are in [Specialists](SPECIALISTS.md#running-a-specialist).
 [CLI-REFERENCE.md](CLI-REFERENCE.md#reviewer) has the full reference,

@@ -13,10 +13,23 @@ import pytest
 
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
+from booley.runtime import auth_token
 from booley.runtime import session_runtime as sr
 from booley.runtime.image_lifecycle import Diagnostic, ImageCleanup
 from tests.conftest import symlink_or_skip
 from tests.subprocess_budget import run_bounded_child
+
+
+@pytest.fixture(autouse=True)
+def _no_host_credentials(tmp_path, monkeypatch):
+    """Detection reads the host's credentials: run every test on an empty one."""
+    home = tmp_path / "empty-home"
+    home.mkdir()
+    for name in ("HOME", "USERPROFILE"):
+        monkeypatch.setenv(name, str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    for name in (*auth_token.CREDENTIAL_ENV_KEYS, "CODEX_HOME"):
+        monkeypatch.delenv(name, raising=False)
 
 
 def _args(**overrides) -> argparse.Namespace:
@@ -33,7 +46,7 @@ def test_unattended_first_init_records_compatible_defaults(tmp_path, monkeypatch
     config = init_cmd._agent_config_path(tmp_path, seed=False)
     resolved = init_cmd._resolve_agent_selection(ctx, _args(), config)
 
-    assert resolved == init_cmd.AgentSelection("claude", "auto", True, True)
+    assert resolved == init_cmd.AgentSelection("claude", "subscription", True, "subscription")
     assert config == init_cmd.booley_dir_for_init(tmp_path) / "booley.toml"
 
 
@@ -100,7 +113,7 @@ def test_full_init_ignores_ancestor_environment_and_warmed_cache(tmp_path, monke
     )
 
     assert config == child / ".booley" / "booley.toml"
-    assert selection == init_cmd.AgentSelection("codex", "subscription", True, True)
+    assert selection == init_cmd.AgentSelection("codex", "subscription", True, "subscription")
     config.parent.mkdir()
     assert init_cmd._step_agent_config(ctx, selection, config)
     assert 'default = "codex"' in config.read_text(encoding="utf-8")
@@ -225,7 +238,7 @@ def test_full_init_ignores_retired_policy_in_ancestor(tmp_path, monkeypatch):
 
 def test_init_resolves_config_path_once_for_preflight_read_and_write(tmp_path, monkeypatch):
     config = tmp_path / ".booley" / "booley.toml"
-    selection = init_cmd.AgentSelection("codex", "subscription", True, True)
+    selection = init_cmd.AgentSelection("codex", "subscription", True, "subscription")
     calls = []
     monkeypatch.setattr(
         init_cmd,
@@ -266,7 +279,7 @@ def test_init_resolves_config_path_once_for_preflight_read_and_write(tmp_path, m
 
 
 def test_terminal_prompt_accepts_documented_defaults(tmp_path, monkeypatch):
-    answers = iter(("", ""))
+    answers = iter(("",))  # the provider; auth is detected, not asked
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
     ctx = InitContext(project_root=tmp_path, interactive=True)
 
@@ -274,7 +287,7 @@ def test_terminal_prompt_accepts_documented_defaults(tmp_path, monkeypatch):
     resolved = init_cmd._resolve_agent_selection(ctx, _args(), config)
 
     assert resolved is not None
-    assert resolved == init_cmd.AgentSelection("claude", "auto", True, True)
+    assert resolved == init_cmd.AgentSelection("claude", "subscription", True, "subscription")
 
 
 def test_run_init_persists_selection_before_seed(tmp_path, monkeypatch):
@@ -288,7 +301,7 @@ def test_run_init_persists_selection_before_seed(tmp_path, monkeypatch):
 
     def seed(_ctx, selection):
         config = (booley_dir / "booley.toml").read_text(encoding="utf-8")
-        assert selection == init_cmd.AgentSelection("codex", "subscription", True, True)
+        assert selection == init_cmd.AgentSelection("codex", "subscription", True, "subscription")
         assert '[agent]\ndefault = "codex"\nauth = "subscription"' in config
         return 0
 
@@ -313,6 +326,11 @@ def test_terminal_prompt_stops_after_three_invalid_answers(monkeypatch):
 def test_agent_selection_records_an_aborted_auth_prompt(tmp_path, monkeypatch):
     choices = iter(("claude", None))
     monkeypatch.setattr(init_cmd, "_prompt_agent_choice", lambda *_args, **_kwargs: next(choices))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key")  # both credentials: auth is asked
+    (tmp_path / "empty-home" / ".claude").mkdir()
+    (tmp_path / "empty-home" / ".claude" / ".credentials.json").write_bytes(
+        b'{"claudeAiOauth": {"accessToken": "a", "refreshToken": "r", "expiresAt": 4102444800000}}'
+    )
     ctx = InitContext(project_root=tmp_path, interactive=True)
 
     config = init_cmd._agent_config_path(tmp_path, seed=False)
@@ -351,7 +369,7 @@ def test_persist_selection_preserves_existing_config_text(tmp_path):
     config = booley_dir / "booley.toml"
     original = "# user comment\n\n[flows.sim]\nenabled = false\n"
     config.write_text(original, encoding="utf-8")
-    selection = init_cmd.AgentSelection("claude", "api_key", True, True)
+    selection = init_cmd.AgentSelection("claude", "api_key", True, "api_key")
 
     assert init_cmd._step_agent_config(InitContext(project_root=tmp_path), selection, config)
 
@@ -366,7 +384,7 @@ def test_persist_selection_writes_project_data_with_lf(tmp_path):
     booley_dir.mkdir()
     config = booley_dir / "booley.toml"
     config.write_bytes(b"# user comment\n[flows.sim]\nenabled = false\n")
-    selection = init_cmd.AgentSelection("claude", "api_key", True, True)
+    selection = init_cmd.AgentSelection("claude", "api_key", True, "api_key")
 
     assert init_cmd._step_agent_config(InitContext(project_root=tmp_path), selection, config)
 
@@ -382,7 +400,7 @@ def test_agent_config_refuses_symlinked_booley_toml(tmp_path, check_only):
     config = booley_dir / "booley.toml"
     symlink_or_skip(config, destination)
     planted_target = config.readlink()
-    selection = init_cmd.AgentSelection("claude", "api_key", True, True)
+    selection = init_cmd.AgentSelection("claude", "api_key", True, "api_key")
     ctx = InitContext(project_root=tmp_path, check_only=check_only)
 
     assert init_cmd._step_agent_config(ctx, selection, config) is False
@@ -445,10 +463,10 @@ def test_existing_provider_only_receives_and_persists_default_auth(tmp_path):
 
     resolved = init_cmd._resolve_agent_selection(ctx, _args(seed=True), config)
 
-    assert resolved == init_cmd.AgentSelection("claude", "auto", False, True)
+    assert resolved == init_cmd.AgentSelection("claude", "subscription", False, "subscription")
     assert init_cmd._step_agent_config(ctx, resolved, config)
     # Bytes: the older `provider` line must survive byte-identical; init only adds auth.
-    assert config.read_bytes() == b'[agent]\nprovider = "claude"\nauth = "auto"\n'
+    assert config.read_bytes() == b'[agent]\nprovider = "claude"\nauth = "subscription"\n'
 
 
 @pytest.mark.parametrize(
@@ -472,7 +490,7 @@ def test_first_init_records_default_not_provider(tmp_path, existing):
 
     written = config.read_bytes()
     assert written.startswith(existing or b"")
-    assert written.endswith(b'[agent]\ndefault = "claude"\nauth = "auto"\n')
+    assert written.endswith(b'[agent]\ndefault = "claude"\nauth = "subscription"\n')
     assert "provider" not in tomllib.loads(written.decode("utf-8"))["agent"]
 
 
@@ -520,33 +538,33 @@ def test_provider_flag_conflict_names_agent_default(tmp_path, capsys, declared):
     [
         pytest.param(
             '[agent]\nprovider = "codex"\n\n[sandbox]\nenabled = true\n',
-            '[agent]\nprovider = "codex"\nauth = "auto"\n\n[sandbox]\nenabled = true\n',
+            '[agent]\nprovider = "codex"\nauth = "subscription"\n\n[sandbox]\nenabled = true\n',
             id="trailing-blank",
         ),
         pytest.param(
             '[agent]\nprovider = "codex"\n[sandbox]\nenabled = true\n',
-            '[agent]\nprovider = "codex"\nauth = "auto"\n[sandbox]\nenabled = true\n',
+            '[agent]\nprovider = "codex"\nauth = "subscription"\n[sandbox]\nenabled = true\n',
             id="no-blank",
         ),
         pytest.param(
             '[sandbox]\nenabled = true\n\n[agent]\nprovider = "codex"\n\n',
-            '[sandbox]\nenabled = true\n\n[agent]\nprovider = "codex"\nauth = "auto"\n\n',
+            '[sandbox]\nenabled = true\n\n[agent]\nprovider = "codex"\nauth = "subscription"\n\n',
             id="last-table",
         ),
         pytest.param(
             '[agent]\nprovider = "codex"\nnotes = [\n  ["a", "b"],\n]\n\n[sandbox]\n',
-            '[agent]\nprovider = "codex"\nnotes = [\n  ["a", "b"],\n]\nauth = "auto"\n\n[sandbox]\n',
+            '[agent]\nprovider = "codex"\nnotes = [\n  ["a", "b"],\n]\nauth = "subscription"\n\n[sandbox]\n',
             id="nested-array",
         ),
         pytest.param(
             '[agent]\nprovider = "codex"\n\n# sandbox settings\n[sandbox]\nenabled = true\n',
-            '[agent]\nprovider = "codex"\n\n# sandbox settings\nauth = "auto"\n'
+            '[agent]\nprovider = "codex"\n\n# sandbox settings\nauth = "subscription"\n'
             "[sandbox]\nenabled = true\n",
             id="comment-before-header",
         ),
         pytest.param(
             '[agent.git]\nname = "E"\n',
-            '[agent]\ndefault = "claude"\nauth = "auto"\n\n[agent.git]\nname = "E"\n',
+            '[agent]\ndefault = "claude"\nauth = "subscription"\n\n[agent.git]\nname = "E"\n',
             id="agent-git-only",
         ),
     ],
@@ -565,7 +583,7 @@ def test_recorded_auth_follows_last_agent_key(tmp_path, before, after):
 
     written = config.read_text(encoding="utf-8")
     assert written == after
-    assert tomllib.loads(written)["agent"]["auth"] == "auto"
+    assert tomllib.loads(written)["agent"]["auth"] == "subscription"
 
 
 def test_persisting_auth_preserves_existing_git_identity(tmp_path):
@@ -582,17 +600,17 @@ def test_persisting_auth_preserves_existing_git_identity(tmp_path):
 
     resolved = init_cmd._resolve_agent_selection(ctx, _args(seed=True), config)
 
-    assert resolved == init_cmd.AgentSelection("claude", "auto", False, True)
+    assert resolved == init_cmd.AgentSelection("claude", "subscription", False, "subscription")
     assert init_cmd._step_agent_config(ctx, resolved, config)
     assert config.read_text(encoding="utf-8") == (
-        '[agent]\nprovider = "claude"\nauth = "auto"\n\n'
+        '[agent]\nprovider = "claude"\nauth = "subscription"\n\n'
         '[agent.git]\nname = "Expected Developer"\n'
         'email = "developer-identity.invalid"\n'
     )
 
 
 def test_check_only_reports_pending_selection_before_booley_dir_exists(tmp_path):
-    selection = init_cmd.AgentSelection("codex", "subscription", True, True)
+    selection = init_cmd.AgentSelection("codex", "subscription", True, "subscription")
     config = tmp_path / ".booley" / "booley.toml"
     ctx = InitContext(project_root=tmp_path, check_only=True, interactive=False)
 

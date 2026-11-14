@@ -391,16 +391,18 @@ def test_targets_without_metrics_are_named_on_one_line(tmp_path: Path) -> None:
     repo, _, head = feature_repo(tmp_path)
     store = MeasurementStore(repo / ".booley")
     table = Table("synth", (Entry("cell_count_max", "cell_count", 90, bound=100),))
-    stored = store.write(build_run(key_of(repo, head), "r1", (table,)), [])
     targets = ("acme:b:1.0#x", "acme:core:1.0#top", "acme:a:1.0#y")
+    run = replace(build_run(key_of(repo, head), "r1", (table,)), targets=targets)
+    stored = store.write(run, [])
 
-    view = view_of(repo, store, stored, head, targets=targets)
+    view = view_of(repo, store, stored, head)
 
     line = "Targets with no metrics: acme:b:1.0#x, acme:a:1.0#y"
     for text in (markdown_report(view), terminal_report(view)):
         assert text.count("Targets with no metrics") == 1
         assert line in text
-    every = view_of(repo, store, stored, head, targets=("acme:core:1.0#top",))
+    only_tabled = replace(run, run_id="r2", targets=("acme:core:1.0#top",))
+    every = view_of(repo, store, store.write(only_tabled, []), head)
     assert "Targets with no metrics" not in markdown_report(every)
     assert "Targets with no metrics" not in terminal_report(every)
 
@@ -549,3 +551,26 @@ def test_wordings_numbers_and_markdown_escaping_of_user_text(tmp_path: Path) -> 
     assert "core synth: table removed (loosened)" in rules
     assert "core synth k: note edited (neutral) — why \\<b\\>" in rules
     assert "→ 80" not in rules
+
+
+def test_a_target_run_is_never_reported_as_measured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _, head = feature_repo(tmp_path)
+    store = MeasurementStore(tmp_path / "job")
+    table = Table("synth", (Entry("cell_count_max", "cell_count", 90, bound=100),))
+    stored = store.write(build_run(key_of(repo, head), "scoped", (table,)), [])
+    project_store = MeasurementStore(repo / ".booley")
+    view = view_of(repo, project_store, stored, head, target="acme:ip:core:1#core")
+
+    markdown = markdown_report(view)
+    monkeypatch.setattr(colors, "COLORS_ENABLED", True)
+    terminal = terminal_report(view)
+
+    assert "Run scoped: not stored" in section(markdown, "Run")
+    assert "`--target` `acme:ip:core:1#core`: only its tables" in section(markdown, "Run")
+    assert "for this tree" not in markdown
+    assert "measured" not in section(markdown, "Run").replace("never makes the commit", "")
+    assert "**1 of 1 enforced met**" in markdown
+    assert colors.green("Run scoped: not stored") not in terminal
+    assert colors.amber("Run scoped: not stored") in terminal

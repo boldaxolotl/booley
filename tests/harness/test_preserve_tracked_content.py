@@ -51,7 +51,7 @@ def test_preserve_mode_reports_agent_insertion_into_existing_config(root: Path) 
     ctx = InitContext(project_root=root, preserve_tracked_content=True)
 
     assert init_cmd._step_agent_config(
-        ctx, init_cmd.AgentSelection("claude", "auto", True, True), config
+        ctx, init_cmd.AgentSelection("claude", "auto", True, "auto"), config
     )
 
     assert config.read_bytes() == b"[project]\nname = 'x'\n"
@@ -63,7 +63,7 @@ def test_preserve_mode_still_creates_a_missing_config(root: Path) -> None:
     ctx = InitContext(project_root=root, preserve_tracked_content=True)
 
     assert init_cmd._step_agent_config(
-        ctx, init_cmd.AgentSelection("claude", "auto", True, True), config
+        ctx, init_cmd.AgentSelection("claude", "auto", True, "auto"), config
     )
 
     assert "[agent]" in config.read_text(encoding="utf-8")

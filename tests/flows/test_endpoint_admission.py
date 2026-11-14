@@ -1,6 +1,6 @@
 """One Flow-neutral admission path for every endpoint.
 
-The same admission outcomes (queue full, withdrawn queued run, invalid runtime
+The same admission outcomes (withdrawn queued run, invalid runtime
 identity, no-slot cases, release at run end) must hold for Simulation and for a
 non-Simulation Flow, and must not depend on the endpoint's name.
 """
@@ -223,18 +223,6 @@ def test_admitted_endpoint_borrows_admission_context(
     assert isinstance(borrowed, AdmissionContext)
     assert borrowed.mode == "managed"
     assert borrowed.outer_token is claim
-
-
-def test_full_queue_reports_blocked(harness: _Harness, monkeypatch: pytest.MonkeyPatch) -> None:
-    _refuse_slot(monkeypatch, job_slots.QueueFullError("memory queue is full (2 waiting)"))
-
-    result = harness.execute()
-
-    assert result.exit_code == EXIT_ERROR
-    assert result.outcome.report_text == (
-        "BLOCKED: memory queue is full (2 waiting). Retry when queued work drains."
-    )
-    assert harness.invocations == []
 
 
 def test_invalid_runtime_identity_names_endpoint(
@@ -466,11 +454,10 @@ def test_binding_gate_rejects_before_slot_for_non_flow_endpoints(
 @pytest.mark.parametrize(
     "failure",
     (
-        job_slots.QueueFullError("full"),
         job_slots.ClaimLostError("vanished"),
         AdmissionIdentityError("mismatch"),
     ),
-    ids=("queue_full", "claim_lost", "identity"),
+    ids=("claim_lost", "identity"),
 )
 def test_body_failures_are_not_remapped_to_admission_rejections(
     failure: Exception, monkeypatch: pytest.MonkeyPatch
@@ -621,11 +608,12 @@ def memory_runtime(
     runtime: Path,
     monkeypatch: pytest.MonkeyPatch,
     inert_oom_proc: FakeProc,  # noqa: F811  (keeps the worker's own OOM priority out of reach)
+    pin_memory_budget: Callable[[int], None],
 ) -> Path:
-    """The runtime with a real slots root and a 1,000 MiB Memory Budget."""
+    """The runtime with a real slots root and a pinned 1,000 MiB Memory Budget."""
     booley_dir = runtime / ".booley"
     booley_dir.mkdir()
-    (booley_dir / "booley.toml").write_text('[jobs]\nmemory_budget = "1000m"\n', encoding="utf-8")
+    pin_memory_budget(1000)
     monkeypatch.delenv("BOOLEY_SLOTS_DIR", raising=False)
     monkeypatch.setattr(endpoint_admission, "resolve_common_booley_dir", lambda: booley_dir)
     return booley_dir
@@ -710,19 +698,14 @@ def test_memory_admission_without_a_known_job_or_under_a_parent(
             ]
 
 
-@pytest.mark.parametrize("budget", ("lots", None))
 def test_memory_admission_survives_a_budget_it_cannot_compute(
-    budget: str | None, memory_runtime: Path, monkeypatch: pytest.MonkeyPatch
+    memory_runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A bad ``[jobs].memory_budget`` or unreadable MemTotal serializes the Job; never refuses."""
-    if budget is None:
-        (memory_runtime / "booley.toml").unlink()
-        monkeypatch.setattr(
-            "booley.flows.memory_admission.compute_memory_budget",
-            lambda _config: (_ for _ in ()).throw(OSError("MemTotal unreadable")),
-        )
-    else:
-        (memory_runtime / "booley.toml").write_text(f'[jobs]\nmemory_budget = "{budget}"\n')
+    """An unreadable MemTotal serializes the Job; it never refuses."""
+    monkeypatch.setattr(
+        "booley.flows.memory_admission.compute_memory_budget",
+        lambda: (_ for _ in ()).throw(OSError("MemTotal unreadable")),
+    )
 
     with AdmissionGate(AsicSynthesizeFlow()).enter() as context:
         (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
@@ -1077,11 +1060,9 @@ def _fpga_prepared(work_dir: Path, monkeypatch: pytest.MonkeyPatch, *, enabled: 
 
 
 def _write_jobs(booley_dir: Path, seats: str | None) -> None:
-    """Write ``[jobs]`` with the 1,000 MiB Memory Budget, and *seats* as ``[jobs.seats]`` if given."""
+    """Write ``[jobs]``, with *seats* as ``[jobs.seats]`` if given."""
     seats_table = "" if seats is None else f"\n[jobs.seats]\n{seats}\n"
-    (booley_dir / "booley.toml").write_text(
-        f'[jobs]\nmemory_budget = "1000m"\n{seats_table}', encoding="utf-8"
-    )
+    (booley_dir / "booley.toml").write_text(f"[jobs]\n{seats_table}", encoding="utf-8")
 
 
 def _hold_vivado_seat(booley_dir: Path, cap: int) -> tuple[job_slots.SlotStore, Any]:
@@ -1492,20 +1473,17 @@ def _requeue_failure_result(
     return result
 
 
-def test_job_cancelled_or_refused_while_requeued_ends_that_way(
+def test_job_cancelled_while_requeued_ends_cancelled(
     memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    for failure, verdict in (
-        (job_slots.ClaimLostError("withdrawn"), "CANCELLED:"),
-        (job_slots.QueueFullError("memory queue is full (1 waiting)"), "BLOCKED:"),
-    ):
-        result = _requeue_failure_result(failure, memory_runtime, runtime, monkeypatch)
+    failure = job_slots.ClaimLostError("withdrawn")
+    result = _requeue_failure_result(failure, memory_runtime, runtime, monkeypatch)
 
-        assert result.exit_code == EXIT_ERROR
-        assert result.outcome.report_text.startswith(verdict)
-        assert "did not start again" in result.outcome.report_text
-        assert result.outcome.detail["oom_requeue"]["reason"] == REQUEUE_REASON
-        assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
+    assert result.exit_code == EXIT_ERROR
+    assert result.outcome.report_text.startswith("CANCELLED:")
+    assert "did not start again" in result.outcome.report_text
+    assert result.outcome.detail["oom_requeue"]["reason"] == REQUEUE_REASON
+    assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the command kills itself with SIGKILL")
@@ -1642,19 +1620,15 @@ def test_caller_sees_no_progress_from_the_killed_attempt(
     assert seen_by_final_attempt == [None]
     assert _progress_of_job(runtime) is None
 
-    # Refused while queued again: the Job ends with no report, and still no progress.
-    for failure in (
+    # Withdrawn while queued again: the Job ends with no report, and still no progress.
+    _requeue_failure_result(
         job_slots.ClaimLostError("withdrawn"),
-        job_slots.QueueFullError("memory queue is full (1 waiting)"),
-    ):
-        _requeue_failure_result(
-            failure,
-            memory_runtime,
-            runtime,
-            monkeypatch,
-            first_attempt=lambda harness: _checkpoint(harness, _killed),
-        )
-        assert _progress_of_job(runtime) is None
+        memory_runtime,
+        runtime,
+        monkeypatch,
+        first_attempt=lambda harness: _checkpoint(harness, _killed),
+    )
+    assert _progress_of_job(runtime) is None
 
 
 def test_progress_retirement_failure_does_not_stop_the_requeue(

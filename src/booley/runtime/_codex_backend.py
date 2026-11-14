@@ -677,9 +677,9 @@ async def _codex_spawn(
     """
     command_token = await _resolve_gateway_command_token() if auth_mode == GATEWAY_AUTH else None
     env = None
-    if auth_mode != "auto" and os.environ.get("CODEX_HOME"):
-        from .auth_token import subscription_creds_path
+    from .auth_token import credential_plan, defers_to_cli, subscription_creds_path
 
+    if not defers_to_cli(auth_mode) and os.environ.get("CODEX_HOME"):
         env = {**os.environ, "CODEX_HOME": str(subscription_creds_path("codex").parent)}
     if _inside_container() and not params.text_only:
         env = dict(os.environ)
@@ -705,11 +705,9 @@ async def _codex_spawn(
         if auth_mode == "subscription":
             env.pop("OPENAI_API_KEY", None)
 
-    from .auth_token import credential_plan
-
     plan = credential_plan("codex", auth_mode)
     plan.require_credential()
-    if auth_mode != "auto" or plan.values:
+    if not defers_to_cli(auth_mode) or plan.values:
         env = plan.child_environment(dict(os.environ) if env is None else env)
     if command_token is not None:
         env = _with_command_token(env, command_token)

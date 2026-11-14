@@ -66,6 +66,8 @@ booley dashboard                  # sessions and Jobs; see Usage
 booley measure                    # measure HEAD against its committed metrics.toml and store the run
 booley measure <sha> --base <sha> # measure another commit; compare with another Base
 booley measure --all --json       # evaluate every table after a failure; print the report as JSON
+booley measure --again            # measure again even when the commit is already Measured
+booley measure --target <name>    # measure one Target's tables only
 booley measure --validate         # check .booley/metrics.toml; measures nothing
 booley worktree new <name>        # a linked worktree for parallel work; see below
 booley worktree list              # each worktree's branch, changes, and use
@@ -84,7 +86,20 @@ booley worktree gc                # remove idle worktrees (default: a week), whe
 
 `booley measure [<sha>]` measures one commit (`HEAD` by default, never
 uncommitted work) in a clean checkout, one child Flow per `metrics.toml` table,
-stores the Measurement Run and prints the report. It exits with status 0 when
+stores the Measurement Run and prints the report. A commit that is already
+Measured (its latest run met every enforced bound) is not measured again: the
+command prints that run, starts no Flow and exits with status 0; `--again`
+measures it again and stores a second run. A commit whose latest run is unmet,
+errored, stopped or cancelled is measured again without `--again`.
+`--target <name>` measures only that Target's tables: it exits with status 2
+and "nothing to measure" when the Target has no table, and a Measured commit
+still shows its stored run unless you add `--again`. A `--target` run is never
+stored and never makes the commit Measured; its report and Flow reports are
+kept in the `measure` Job's directory under
+`.interactive_logs/standalone/<run_id>/`, beside its log. Measuring `HEAD`
+notes on stderr any uncommitted change to a tracked file
+and any submodule whose working tree differs from the commit's pin, because
+neither is measured. It exits with status 0 when
 every enforced bound is met, 1 when one is unmet, and 2 when a Flow errored,
 when `metrics.toml` declares no table, or when the measurement could not run
 (both unmet and errored: 2). Without `--all`, the first unmet or errored table
@@ -111,7 +126,7 @@ booley doctor --deep --skip-agent-checks   # skip the agent login and provider c
 booley targets                    # list Targets
 booley targets --for sim          # only Targets a Flow can use
 booley targets <name>             # one Target in detail (Sandbox)
-booley resources                  # peak memory and run time per Target and Job phase
+booley resources                  # peak memory and run time per Target and Job phase, and per Specialist
 booley resources --json           # the same, machine-readable
 ```
 
@@ -299,7 +314,7 @@ A worktree counts as idle when its last use (the `LAST USED` column of
 `booley worktree list`) is older than `AGE`: days, hours, minutes, and seconds
 as `7d`, `36h`, `1d12h`, `90m`, or `30s`. The default is `7d`; set another
 default with `gc_older_than` in the main checkout's `.booley/booley.toml`
-([configuration](CONFIG.md#worktree-cleanup-worktree)). `--older-than` wins over
+([configuration](CONFIG.md#worktree-settings-worktree)). `--older-than` wins over
 the setting. Run it from the main checkout or another worktree.
 
 `booley chat` runs the same cleanup at the start of every launch, with the same
@@ -410,7 +425,7 @@ Call the `coverage_analyst` Specialist from your Developer Agent session with `r
 
 Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. In Interactive Mode, review the selected files using your specification or steering. In Goal Mode, `done` reports findings without requiring fixes; the review package includes open findings. `clean` requires every finding to be fixed or waived with a justification.
 
-Interactive source review accepts Verilog/SystemVerilog (.v, .vh, .sv, .svh), plus Python (.py) and explicitly scoped C/C++ testbench sources and headers (.c, .cc, .cpp, .cxx, .h, .hh, .hpp, .hxx) for category=tb. Goal Mode also accepts other explicitly scoped support files. Sim C/C++ harness inputs count as TB for isolation and cannot be mutation scope. Declared opposite-category sources are refused in either mode; unregistered scoped sources retain the registration warning and receive only an exact per-file category grant. Outside Goal Mode, both Reviewers also read firmware, the non-HDL files under `fw/`, as read-only context: they never report findings in it, such a finding is shown as out of scope, and a `scope` of only firmware is refused.
+Interactive source review accepts Verilog/SystemVerilog (.v, .vh, .sv, .svh), plus Python (.py) and explicitly scoped C/C++ testbench sources and headers (.c, .cc, .cpp, .cxx, .h, .hh, .hpp, .hxx) for category=tb. Goal Mode also accepts other explicitly scoped support files. Sim C/C++ harness inputs count as TB for isolation and cannot be mutation scope. Declared opposite-category sources are refused in either mode; unregistered scoped sources retain the registration warning and receive only an exact per-file category grant. Each Reviewer has the opposite category's sources and HDL files no .core fileset declares hidden; all other project files, such as firmware, are readable context, and findings outside the scope are filtered.
 
 The result links saved review evidence, including rejected proposals for inspection. Rejected proposals do not affect Criteria.
 

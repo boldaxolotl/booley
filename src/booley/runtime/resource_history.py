@@ -52,6 +52,21 @@ def history_key(record: dict[str, Any]) -> HistoryKey:
     return HistoryKey(key["target"], key["phase"], tuple(key["flags"]), key["test_run"])
 
 
+def specialist_name(record: dict[str, Any]) -> str | None:
+    """The Specialist a record measures; ``None`` for a Target record.
+
+    A Specialist record keeps the four Target key fields (an empty Target and the
+    phase ``specialist:<name>``) so releases that read every key as a Target key
+    still load it; this field is what tells the two kinds apart.
+    """
+    return record["key"].get("specialist")
+
+
+def _group(record: dict[str, Any]) -> tuple[str | None, HistoryKey]:
+    """What a record is retained and summarized under: never shared across kinds."""
+    return specialist_name(record), history_key(record)
+
+
 def load_records(booley_dir: Path) -> list[dict[str, Any]]:
     """Read the history; a missing file is an empty history."""
     path = history_path(booley_dir)
@@ -66,11 +81,11 @@ def load_records(booley_dir: Path) -> list[dict[str, Any]]:
 
 def _retained(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep each key's newest samples, minus keys idle for longer than ``MAX_KEY_AGE``."""
-    per_key: Counter[HistoryKey] = Counter()
-    newest_run: dict[HistoryKey, datetime] = {}
+    per_key: Counter[tuple[str | None, HistoryKey]] = Counter()
+    newest_run: dict[tuple[str | None, HistoryKey], datetime] = {}
     kept: list[dict[str, Any]] = []
     for record in reversed(records):
-        key = history_key(record)
+        key = _group(record)
         if per_key[key] < MAX_SAMPLES_PER_KEY:
             per_key[key] += 1
             kept.append(record)
@@ -79,7 +94,7 @@ def _retained(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             newest_run[key] = max(finished, newest_run.get(key, finished))
     cutoff = datetime.now(UTC) - MAX_KEY_AGE
     kept.reverse()
-    return [record for record in kept if newest_run[history_key(record)] >= cutoff]
+    return [record for record in kept if newest_run[_group(record)] >= cutoff]
 
 
 def append_records(booley_dir: Path, records: list[dict[str, Any]]) -> None:
@@ -115,13 +130,20 @@ def _spread(values: list[float | None]) -> dict[str, float | None] | None:
     }
 
 
+def _summary_order(
+    item: tuple[tuple[str | None, HistoryKey], Any],
+) -> tuple[bool, str, HistoryKey]:
+    (specialist, key), _ = item
+    return specialist is not None, specialist or "", key
+
+
 def summarize(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Statistics per history key, in key order."""
-    groups: dict[HistoryKey, list[dict[str, Any]]] = {}
+    """Statistics per history key: Target keys in key order, then Specialists by name."""
+    groups: dict[tuple[str | None, HistoryKey], list[dict[str, Any]]] = {}
     for record in records:
-        groups.setdefault(history_key(record), []).append(record)
+        groups.setdefault(_group(record), []).append(record)
     summaries = []
-    for _, group in sorted(groups.items()):
+    for _, group in sorted(groups.items(), key=_summary_order):
         solo = [
             r
             for r in group
@@ -149,11 +171,14 @@ def summarize(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _line(summary: dict[str, Any]) -> str:
     key = summary["key"]
-    flags = f" [{','.join(key['flags'])}]" if key["flags"] else ""
-    tests = f" tests={key['test_run']}" if key["test_run"] else ""
-    parts = [
-        f"{key['target'] or '(no Target)'} {key['phase']}{flags}{tests}: {summary['runs']} run{'' if summary['runs'] == 1 else 's'}"
-    ]
+    runs = f"{summary['runs']} run{'' if summary['runs'] == 1 else 's'}"
+    if key.get("specialist") is not None:
+        head = f"Specialist {key['specialist']}: {runs}"
+    else:
+        flags = f" [{','.join(key['flags'])}]" if key["flags"] else ""
+        tests = f" tests={key['test_run']}" if key["test_run"] else ""
+        head = f"{key['target'] or '(no Target)'} {key['phase']}{flags}{tests}: {runs}"
+    parts = [head]
     for label, field, unit in (("peak memory", "peak_memory_mb", "MiB"), ("wall", "wall_s", "")):
         spread = summary[field]
         if spread is None:

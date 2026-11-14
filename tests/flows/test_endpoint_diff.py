@@ -86,3 +86,29 @@ def test_shared_directory_diff_classifies_typed_sim_harness_exactly(tmp_path):
     assert _classify_files(["shared/main.cpp"], tmp_path) == {"tb"}
     assert _classify_files(["shared/dut.sv"], tmp_path) == {"rtl"}
     assert _classify_files(["shared/new.sv"], tmp_path) == set()
+
+
+def test_fw_only_change_is_unclassified_without_core(tmp_path):
+    """No ``.core``: ``fw/`` is not an RTL directory, so a firmware change classifies as nothing."""
+    from booley.flows.endpoint_diff import _classify_files
+
+    assert _classify_files(["fw/boot.c"], tmp_path) == set()
+
+
+def test_fw_change_listed_in_core_is_rtl(tmp_path):
+    """A ``fw/`` file counts as RTL only because the ``.core`` fileset lists it."""
+    from booley.flows.endpoint_diff import _classify_files
+
+    (tmp_path / "design.core").write_text(
+        "CAPI=2:\n"
+        "name: ::demo\n"
+        "filesets:\n"
+        "  rtl: {files: [rtl/dut.sv, fw/rom.sv]}\n"
+        "  tb: {files: [tb/tb.sv], tags: [tb]}\n"
+        "targets:\n"
+        "  sim: {filesets: [rtl, tb], toplevel: tb}\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert _classify_files(["fw/rom.sv"], tmp_path) == {"rtl"}
+    assert _classify_files(["fw/boot.c"], tmp_path) == set()

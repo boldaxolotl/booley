@@ -122,7 +122,7 @@ class FakeLauncher:
     Its form is the real one, built from the Flow's parser.
 
     ``facts`` (the arguments of ``RunFacts``) is what the check reports; ``outlook`` (``ahead``,
-    ``cap``, ``queue_max``) and ``uncommitted`` are what the review reads, an exception instance
+    ``cap``) and ``uncommitted`` are what the review reads, an exception instance
     being raised instead; ``outlook_reads`` counts the queue reads. Run-module types are built
     when used, so this file still imports without them.
     """
@@ -132,7 +132,7 @@ class FakeLauncher:
         key: str = "",
         error: OSError | None = None,
         facts: tuple | None = None,
-        outlook: tuple[int, int, int] | Exception | None = None,
+        outlook: tuple[int, int] | Exception | None = None,
         uncommitted: int | Exception = 0,
     ) -> None:
         self.key, self.error = key, error
@@ -1147,16 +1147,14 @@ async def test_a_value_changed_while_a_check_runs_keeps_review_closed(checkout):
 class Slots:
     """Real slot entries under a Booley Directory, owned by live or dead processes."""
 
-    def __init__(self, booley_dir: Path, *, max_light: int = 1, queue_max: int = 8) -> None:
+    def __init__(self, booley_dir: Path, *, max_light: int = 1) -> None:
         booley_dir.mkdir(parents=True, exist_ok=True)
-        (booley_dir / "booley.toml").write_bytes(
-            f"[jobs]\nmax_light = {max_light}\nqueue_max = {queue_max}\n".encode()
-        )
+        (booley_dir / "booley.toml").write_bytes(f"[jobs]\nmax_light = {max_light}\n".encode())
         from booley.config.jobs import SlotCaps
 
         root = slots_dir(booley_dir)
         assert root is not None
-        self._store = SlotStore(root, SlotCaps(max_light=max_light, queue_max=queue_max))
+        self._store = SlotStore(root, SlotCaps(max_light=max_light))
         self._tokens: list = []
 
     def occupy(self, count: int) -> None:
@@ -1235,41 +1233,23 @@ async def test_review_shows_whether_the_job_runs_now_or_queues(
         assert shown(wizard, "#run-error") == ""
 
 
-FULL = (9, 1, 8)  # ahead, cap, queue_max: 9 >= 1 + 8
-ROOMY = (0, 1, 8)
+ROOMY = (0, 1)  # ahead, cap
 COUNTED = ("light", False)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("opened", "entered"), [(FULL, ROOMY), (ROOMY, FULL)], ids=["drains", "fills"]
-)
-async def test_full_queue_refuses_submit_and_rereads_on_enter(checkout, opened, entered):
-    launcher = FakeLauncher("key", facts=COUNTED, outlook=opened)
-    app = make_app(checkout, launcher)
+async def test_a_long_queue_never_refuses_submit(checkout, tmp_path, slots, spawned):
+    slots().occupy(9)  # one holder and eight waiters: the old queue bound
+    app = make_app(checkout, real_launcher(tmp_path / "booley"))
     async with app.run_test(size=(120, 40)) as pilot:
-        wizard = await to_form(app, pilot, "sim")
-        await check_arguments(app, pilot, wizard, "")
-        assert launcher.outlook_reads == 1  # read when the review screen opens
-        refused = "Refused: light queue is full (8 waiting). Retry when queued work drains"
-        assert shown(wizard, "#run-error").startswith(refused) == (opened is FULL)
-        launcher.outlook_result = entered
+        wizard = await to_form(app, pilot, "mutation")
+        await check_arguments(app, pilot, wizard, ARGUMENTS)
+        assert "Queues behind 9 Jobs (position 9)" in shown(wizard, "#run-review")
+        assert shown(wizard, "#run-error") == ""
         await pilot.press("enter")  # Submit
         await pilot.pause()
-        assert launcher.outlook_reads == 2  # and read again on Enter
-        if entered is FULL:
-            assert launcher.submitted == []
-            assert shown(wizard, "#run-error").startswith(refused)
-            assert "Queues behind 9 Jobs (position 9)" in shown(wizard, "#run-review")
-            assert type(app.screen).__name__ == "RunWizard"
-        else:
-            assert len(launcher.submitted) == 1
-            assert app.window == "jobs"
-        if entered is FULL:  # Copy is never refused
-            copied: list[str] = []
-            app.copy_to_clipboard = copied.append
-            await pilot.press("down", "enter")
-            assert copied == [f"cd {checkout} && booley flow sim"]
+        assert len(spawned) == 1
+        assert app.window == "jobs"
 
 
 @pytest.mark.asyncio
@@ -1289,10 +1269,10 @@ async def test_memory_admitted_review_reads_no_queue_and_never_refuses_submit(ch
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("flow", "text"), [("sim", "--target t --dry-run")])
-async def test_commands_without_a_slot_run_now_on_a_full_queue(
+async def test_commands_without_a_slot_run_now_on_a_busy_queue(
     checkout, tmp_path, slots, spawned, flow, text
 ):
-    slots(queue_max=0).occupy(1)  # the light class is full: one holder, no room to wait
+    slots().occupy(2)  # the light class is busy: one holder and one waiter
     app = make_app(checkout, real_launcher(tmp_path / "booley"))
     async with app.run_test(size=(120, 40)) as pilot:
         wizard = await to_form(app, pilot, flow)

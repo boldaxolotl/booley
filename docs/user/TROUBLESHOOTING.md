@@ -219,12 +219,14 @@ means the next build rebuilds the layers it removed.
 
 ### Deleted `[jobs]` keys
 
-`booley.toml` sets `max_heavy` or `heavy_memory`. Flow and Specialist runs and
-every command that works on a Project stop with a message that names each key,
-its line and the file, for example `max_heavy (line 12)`; `booley doctor` and
-`booley upgrade` still run. Memory admission replaced both keys. Delete the
-named lines from that file. In a Developer Agent chat that is already open,
-`/booley-heal` removes them for you. Then set `[sandbox].memory` if you want to choose the Memory Budget;
+`booley.toml` sets `max_heavy`, `heavy_memory`, `queue_max` or `memory_budget`. Flow and
+Specialist runs and every command that works on a Project stop with a message
+that names each key, its line, the reason it is refused and the file, for example
+`max_heavy (line 12: memory admission replaced it)`; `booley doctor` and
+`booley upgrade` still run. Delete the named lines from that file. In a
+Developer Agent chat that is already open, `/booley-heal` removes them for you.
+After deleting `max_heavy`, `heavy_memory` or `memory_budget`, set
+`[sandbox].memory` to choose the Memory Budget;
 see [Jobs & concurrency](CONFIG.md#jobs--concurrency-jobs).
 
 ### Job killed out of memory
@@ -282,7 +284,7 @@ line:
 - `the main checkout is in use by another booley chat`: another `booley chat`
   whose agent runs in the main checkout is still running, perhaps in another
   terminal or stopped with Ctrl-Z. That includes one started with
-  `--new-worktree` or under `[chat] worktree = "always"` while the main checkout
+  `--new-worktree` or under `[worktree] chat = "always"` while the main checkout
   was free: it holds the main checkout until its session ends, although its
   agent works in a worktree. A `booley chat` that `auto` placed in a worktree
   holds nothing. A `booley chat` that
@@ -583,6 +585,13 @@ into your repository as a `.core`, or drop it. Often the testbench already
 guards its use with an `ifdef` or defines the module itself; check before you
 remove it.
 
+### Every Flow refuses `standalone_frontend`
+
+`booley.toml` sets `[flows.<name>].standalone_frontend`, and every Flow stops
+with a message that names it. Delete the key. Nothing replaces it:
+`--mode elab-only-standalone` elaborates each module with its Target's own
+simulator (see [Elaboration checks](FLOW-SIM.md#elaboration-checks)).
+
 ### Every simulation test comes back INCONCLUSIVE
 
 Every Test Run of an HDL testbench reads `INCONCLUSIVE`, `booley flow sim`
@@ -615,7 +624,7 @@ To check:
 Doctor skips Cocotb Targets, which take their verdict from cocotb. If the
 warning says the testbench fileset is Python, the Target is missing
 `cocotb_module`; see
-[Cocotb Targets](https://booley.dev/docs/targets/#cocotb-targets-python-testbenches).
+[Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches).
 
 </details>
 
@@ -641,7 +650,7 @@ without `--trace`. A failure or timeout keeps its verdict.
 A Cocotb Target uses no sentinels: its Test Run is inconclusive when cocotb's
 result file is missing or doesn't report that test as passed or failed, and
 its log contains `cocotb sim INCONCLUSIVE (<reason>)`. See
-[Cocotb Targets](https://booley.dev/docs/targets/#cocotb-targets-python-testbenches).
+[Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches).
 
 </details>
 

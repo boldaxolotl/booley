@@ -13,7 +13,7 @@ from booley.harness import booley as cli
 from booley.harness import init_cmd
 from booley.harness.setup import git_hooks
 from booley.harness.setup.common import InitContext
-from booley.runtime import checkout_role, dashboard_tasks, runtime_context
+from booley.runtime import auth_token, checkout_role, dashboard_tasks, runtime_context
 from booley.runtime.booley_dir import init_booley_dir_scope, reset_cache
 from booley.runtime.checkout_role import SourceCheckoutProjectError
 from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
@@ -82,7 +82,15 @@ def sandbox_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iter
     monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo, raising=False)
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")
-    for variable in ("BOOLEY_DIR", "RTL_PROJECT_ROOT", "BOOLEY_AGENT_APP"):
+    for variable in (
+        "BOOLEY_DIR",
+        "RTL_PROJECT_ROOT",
+        "BOOLEY_AGENT_APP",
+        "BOOLEY_PRIMARY_PROVIDER",
+        "BOOLEY_PRIMARY_AUTH",
+        "CODEX_HOME",
+        *auth_token.CREDENTIAL_ENV_KEYS,
+    ):
         monkeypatch.delenv(variable, raising=False)
     forbid_docker_cli(monkeypatch)
     for name in HOST_PRIVATE_ENVIRONMENT:
@@ -205,9 +213,26 @@ def test_sandbox_init_fills_missing_default_cli_from_agent_app(
         assert _booley_init(project, monkeypatch) == 0, app
 
         assert booley_dir.joinpath("booley.toml").read_bytes() == (
-            original + f'\n[agent]\ndefault = "{app}"\n'.encode()
+            original + f'\n[agent]\ndefault = "{app}"\nauth = "subscription"\n'.encode()
         )
         assert _git(booley_dir, "status", "--porcelain") == " M booley.toml\n"
+
+
+def test_sandbox_init_records_detected_auth(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = project / ".booley" / "booley.toml"
+    seed = tmp_path / "absent" / "HOME" / auth_token.TOKEN_SEED_BASENAME["codex"]
+    for token, expected in ((None, "subscription"), ("sk-test-key", "api_key")):
+        _set_booley_toml(project, '[agent]\ndefault = "codex"\n')
+        seed.parent.mkdir(parents=True, exist_ok=True)
+        seed.unlink(missing_ok=True)
+        if token is not None:
+            seed.write_bytes(f"{token}\n".encode())
+
+        assert _booley_init(project, monkeypatch) == 0, expected
+
+        assert config.read_bytes() == f'[agent]\ndefault = "codex"\nauth = "{expected}"\n'.encode()
 
 
 def test_sandbox_init_leaves_default_cli_unset_without_a_source(

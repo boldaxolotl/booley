@@ -463,11 +463,16 @@ def _agent_facts(name: str, asked_ms: int, timeout_ms: int) -> dict[str, Any]:
         set_agent_settings(settings)
         model, cli = run_choice(settings, name)
         policy = settings.auth_for(cli)
-        facts.update(model=model, cli=cli, policy=policy)
+        # The Dashboard speaks the ``booley.toml`` vocabulary: ``visitor`` shows as ``auto``.
+        shown = "auto" if policy == auth_token.VISITOR_AUTH else policy
+        facts.update(model=model, cli=cli, policy=shown)
         problem = get_backend_config().backend_for(cli).health_check()
         if problem:
             facts["refusal"] = problem
-        elif policy == "auto" and auth_token.credential_plan(cli, policy).selected is None:
+        elif (
+            auth_token.defers_to_cli(policy)
+            and auth_token.credential_plan(cli, policy).selected is None
+        ):
             facts["warning"] = auth_token.missing_credential_fix(cli, policy)
     except (OSError, ValueError, RuntimeError) as exc:
         facts["refusal"] = (

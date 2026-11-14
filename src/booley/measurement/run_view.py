@@ -5,7 +5,7 @@ call :func:`run_view` with a stored run and the full sha of the commit the user 
 about. The result is the stored document, unchanged, plus a ``view`` block that holds
 everything derived at read time: the commit, its Base and changed files, the rules diff
 and what turns the header amber, Δ and base-run warnings, the run's place among the runs
-of its key, verdict counts and excerpts, the Targets that no rules table names, and where
+of its key, verdict counts and excerpts, the Targets that no rules table names (from the run's stored Target list), and where
 the evidence is. Everything in it is JSON, and the result equals its own JSON round trip.
 
 The view is derived on every call and never stored. It never changes the stored
@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -246,7 +246,7 @@ def _view(
     run: StoredRun,
     commit: str,
     base: str | None,
-    targets: Sequence[str],
+    target: str | None,
 ) -> dict[str, Any]:
     document = run.document
     tree = _check_tree(repository, commit, run)
@@ -276,9 +276,12 @@ def _view(
         "amber": list(header_amber(diff)),
         "base_run": _base_run_block(repository, store, document, resolved),
         "excerpts": _excerpts(document),
-        "history": _history_block(store, run),
+        "target": target,
+        "history": None if target is not None else _history_block(store, run),
         "counts": _counts_block(document),
-        "targets_without_table": [target for target in targets if target not in tabled],
+        "targets_without_table": [
+            target for target in document["targets"] if target not in tabled
+        ],
         "evidence": _evidence(run),
         "paths": {"json": str(run.path), "markdown": str(run.path.with_suffix(".md"))},
     }
@@ -291,13 +294,14 @@ def run_view(
     commit: str,
     *,
     base: str | None,
-    targets: Sequence[str],
+    target: str | None = None,
 ) -> dict[str, Any]:
     """The stored document of *run* plus a ``view`` block for the asked *commit*.
 
     *commit* is a full sha the caller resolved from user input (#3507); *base* is the
-    user's ``--base`` or None; *targets* are the Target identities (``vlnv#name``) of
-    the Project's catalog, in the order to list them. Everything is a deep copy in JSON
+    user's ``--base`` or None. *target* is the identity of a ``--target`` run, which is
+    kept outside *store* (the Project's store, still the source of Base runs): its
+    ``history`` is None and the view's ``target`` names it; a full run's ``target`` is None. Everything is a deep copy in JSON
     types: ``run.document`` is never changed.
 
     Raises:
@@ -308,7 +312,7 @@ def run_view(
         ValueError: the run's rules came from a Versioned Booley Directory that this
             checkout no longer has.
     """
-    view = _view(repository, store, run, commit, base, targets)
+    view = _view(repository, store, run, commit, base, target)
     result: dict[str, Any] = json.loads(
         json.dumps({**run.document, "view": view}, allow_nan=False)
     )

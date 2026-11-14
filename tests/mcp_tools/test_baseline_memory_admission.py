@@ -38,6 +38,7 @@ from tests.goals.test_sim_baseline_admission import (  # noqa: F401  (fixtures a
     foreign_owner,
     scene,
 )
+from tests.memory_budget_support import pin_budget
 from tests.oom_priority_support import (
     inert_oom_proc,  # noqa: F401  (fixture, used by memory_scene)
     oom_priority,
@@ -59,8 +60,7 @@ def memory_scene(scene, monkeypatch, inert_oom_proc):
 
     # No process is known to the fake /proc, so ranking never touches the worker's real one.
     scene.proc = inert_oom_proc
-    with (scene.control / "booley.toml").open("a", encoding="utf-8") as config:
-        config.write('\n[jobs]\nmemory_budget = "1000m"\n')
+    pin_budget(monkeypatch, 1000)
     records = [
         {
             "key": {"target": "top", "phase": phase, "flags": [], "test_run": test_run},

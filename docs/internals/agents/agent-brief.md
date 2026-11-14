@@ -143,7 +143,10 @@ comment starts with the triage skill's AI-disclaimer line, then a
 A brief covers work that fits one pull request: one coherent change that can
 merge on its own, be reviewed in one pass, and stay within the size caps of
 [coding principle 18](../CODING_PRINCIPLES.md#18-pull-requests-stay-small).
-When the work does not fit, split it before it becomes `ready-for-agent`:
+A rename with no behavior change is one PR with its docs, even when the
+mechanical replacement exceeds those caps; its criteria include a search that
+finds no old name outside an allowlist. When the work does not fit, split it
+before it becomes `ready-for-agent`:
 
 - Create one sub-issue per piece, each with its own brief, and order them with
   `Blocked by: #<n>` lines ([Sub-issues and

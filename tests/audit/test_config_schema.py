@@ -493,31 +493,44 @@ def test_jobs_max_tickets_is_ignored_with_warning():
 
 
 @pytest.mark.parametrize("mode", ["auto", "always", "never"])
-def test_chat_worktree_knob_accepts_its_three_modes(mode: str) -> None:
-    assert project_schema.audit_chat_table({"chat": {"worktree": mode}}).is_valid
-    assert project_schema.audit_chat_table({}).is_valid
+def test_worktree_chat_knob_accepts_its_three_modes(mode: str) -> None:
+    assert project_schema.audit_worktree_table({"worktree": {"chat": mode}}).is_valid
+    assert project_schema.audit_worktree_table({}).is_valid
 
 
-@pytest.mark.parametrize(
-    "data", [{"chat": {"worktree": "sometimes"}}, {"chat": {"worktree": 1}}, {"chat": []}]
-)
-def test_chat_worktree_knob_must_be_auto_always_or_never(data: dict) -> None:
+def test_worktree_chat_knob_must_be_auto_always_or_never() -> None:
     # Bug caught: Doctor passing a value that `booley chat` then refuses at launch.
-    audit = project_schema.audit_chat_table(data)
+    for data in ({"worktree": {"chat": "sometimes"}}, {"worktree": {"chat": 1}}):
+        audit = project_schema.audit_worktree_table(data)
 
-    assert not audit.is_valid
-    assert not project_schema.audit_known_tables({"chat": {}}).findings
+        assert not audit.is_valid
+        assert "[worktree].chat" in audit.findings[0].message
 
 
-def test_jobs_memory_budget_is_accepted() -> None:
-    audit = project_schema.audit_jobs_table({"jobs": {"memory_budget": "24g", "max_light": 2}})
+def test_worktree_table_that_is_not_a_table_reports_once() -> None:
+    assert len(project_schema.audit_worktree_table({"worktree": []}).findings) == 1
 
+
+def test_worktree_table_reports_both_bad_keys() -> None:
+    audit = project_schema.audit_worktree_table(
+        {"worktree": {"chat": "sometimes", "gc_older_than": "soon"}}
+    )
+
+    assert len(audit.findings) == 2
+
+
+def test_chat_table_is_an_unknown_table() -> None:
+    audit = project_schema.audit_known_tables({"chat": {"worktree": "always"}})
+
+    assert "chat" not in project_schema.KNOWN_BOOLEY_TOML_TABLES
     assert audit.is_valid
-    assert audit.findings == ()
-    assert project_schema.audit_jobs_table({}).findings == ()
+    (finding,) = audit.findings
+    assert finding.check_id == "config.unknown-table"
+    assert "chat" in finding.message
 
 
 def test_jobs_seats_audit_fails_a_malformed_count_naming_the_key() -> None:
+    assert project_schema.audit_jobs_table({}).findings == ()
     assert project_schema.audit_jobs_table({"jobs": {"seats": {"vivado": 2}}}).is_valid
 
     audit = project_schema.audit_jobs_table({"jobs": {"seats": {"vivado": 0}}})
@@ -526,24 +539,3 @@ def test_jobs_seats_audit_fails_a_malformed_count_naming_the_key() -> None:
     (finding,) = audit.findings
     assert "[jobs.seats].vivado" in finding.message
     assert "[jobs.seats]" in finding.fix
-
-
-def test_jobs_audit_reports_a_bad_budget_and_a_bad_seat_count_together() -> None:
-    audit = project_schema.audit_jobs_table(
-        {"jobs": {"memory_budget": "-1g", "seats": {"vivado": 0}}}
-    )
-
-    messages = " ".join(finding.message for finding in audit.findings)
-    assert len(audit.findings) == 2
-    assert "memory_budget" in messages
-    assert "[jobs.seats].vivado" in messages
-
-
-def test_jobs_memory_budget_audit_fails_invalid_value_naming_key() -> None:
-    audit = project_schema.audit_jobs_table({"jobs": {"memory_budget": "-1g"}})
-
-    assert not audit.is_valid
-    (finding,) = audit.findings
-    assert "[jobs].memory_budget" in finding.message
-    assert "-1g" in finding.message
-    assert "memory_budget" in finding.fix

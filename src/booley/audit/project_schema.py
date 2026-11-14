@@ -14,7 +14,14 @@ from booley.audit.config_common import (
     failure,
 )
 from booley.config.goals import parse_dashboard
-from booley.core.boundary import BoundaryError, as_dict, as_str, is_str_list, require_bool
+from booley.core.boundary import (
+    BoundaryError,
+    as_dict,
+    as_str,
+    is_str_list,
+    require_bool,
+    require_dict,
+)
 from booley.targets.flow_names import RETIRED_SPECIALIST_TO_FLOW
 
 KNOWN_BOOLEY_TOML_TABLES = frozenset(
@@ -29,7 +36,6 @@ KNOWN_BOOLEY_TOML_TABLES = frozenset(
         "interactive",
         "feedback",
         "goals",
-        "chat",
         "eda",
         "stealth",
         "submodules",
@@ -378,43 +384,39 @@ def audit_eda_config(data: Mapping[str, Any]) -> ConfigTableAudit:
     return ConfigTableAudit()
 
 
-def audit_chat_table(data: Mapping[str, Any]) -> ConfigTableAudit:
-    """Validate the `[chat]` table so Doctor and `booley chat` reject the same values."""
-    from booley.config.chat import parse_chat_worktree
+def audit_worktree_table(data: Mapping[str, Any]) -> ConfigTableAudit:
+    """Validate ``[worktree]``: the ``chat`` placement mode and the ``gc_older_than`` age."""
+    from booley.config.worktree import parse_chat_mode, parse_gc_older_than
 
     try:
-        parse_chat_worktree(data)
+        require_dict(data.get("worktree", {}), field="[worktree]")
     except ValueError as exc:
-        return failure(str(exc), 'set [chat].worktree to "auto", "always" or "never"')
-    return ConfigTableAudit()
-
-
-def audit_worktree_table(data: Mapping[str, Any]) -> ConfigTableAudit:
-    """Validate the ``booley worktree gc`` idle age."""
-    from booley.config.worktree import parse_gc_older_than
-
+        return failure(f"booley.toml {exc}", "make [worktree] a table")
+    findings: list[ConfigFinding] = []
     try:
         parse_gc_older_than(data)
     except ValueError as exc:
-        return failure(f"booley.toml {exc}", 'set [worktree].gc_older_than to an age such as "7d"')
-    return ConfigTableAudit()
+        findings.append(
+            fail_finding(
+                f"booley.toml {exc}", 'set [worktree].gc_older_than to an age such as "7d"'
+            )
+        )
+    try:
+        parse_chat_mode(data)
+    except ValueError as exc:
+        findings.append(
+            fail_finding(
+                f"booley.toml {exc}", 'set [worktree].chat to "auto", "always" or "never"'
+            )
+        )
+    return ConfigTableAudit(tuple(findings))
 
 
 def audit_jobs_table(data: Mapping[str, Any]) -> ConfigTableAudit:
-    """Validate the ``[jobs].memory_budget`` override and ``[jobs.seats]``."""
-    from booley.audit.resource_policy import configured_memory_budget
+    """Validate ``[jobs.seats]``."""
     from booley.config.jobs import SeatCapError, parse_seat_caps
 
     findings: list[Any] = []
-    try:
-        configured_memory_budget(data)
-    except ValueError as exc:
-        findings.extend(
-            failure(
-                f"booley.toml {exc}",
-                'set [jobs].memory_budget to a positive size such as "24g", or delete it',
-            ).findings
-        )
     try:
         parse_seat_caps(data)
     except SeatCapError as exc:

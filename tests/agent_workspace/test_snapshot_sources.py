@@ -107,15 +107,19 @@ def test_agent_cwd_removal_rejected(snapshot):
     assert (snapshot.snapshot_root / "tb/source.sv").is_file()
 
 
-def test_unknown_source_backup_removed_but_scoped_grant_and_support_retained(snapshot):
+def test_undeclared_hdl_backup_removed_but_scoped_grant_and_support_retained(snapshot):
     root = snapshot.snapshot_root
-    for name in ("new.sv", "copy.cpp.bak", "tb.py~", "README.md", "config.toml"):
+    for name in ("new.sv", "old.sv~", "copy.cpp.bak", "tb.py~", "README.md", "config.toml"):
         (root / name).write_text("content")
     hidden = hide_opposite_sources(snapshot, "rtl", category_files=FILES, scope=("new.sv",))
     assert (root / "new.sv").is_file()
     assert (root / "README.md").is_file()
     assert (root / "config.toml").is_file()
-    assert {"copy.cpp.bak", "tb.py~"} <= set(hidden)
+    # Non-HDL files stay readable context; only undeclared HDL names are hidden.
+    assert (root / "copy.cpp.bak").is_file()
+    assert (root / "tb.py~").is_file()
+    assert "old.sv~" in hidden
+    assert not (root / "old.sv~").exists()
 
 
 def test_own_grant_cannot_override_registered_opposite(snapshot):

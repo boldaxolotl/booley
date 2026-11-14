@@ -139,8 +139,8 @@ work (simulation, synthesis, FPGA implementation, lint, Custom Flows) and
 `light` for model-bound work (Specialists and the Mutation Flow). Light Jobs are capped by count
 (`max_light`). A memory Job holds a reservation, estimated from the Resource
 History, and runs while the reservations fit the Memory Budget
-(`runtime/memory_budget.py`, [`[jobs]`](../user/CONFIG.md#jobs--concurrency-jobs)).
-Excess work queues, a full queue refuses new work, and a running Job is never
+(`runtime/memory_budget.py`, computed from `[sandbox].memory`).
+Excess work queues without limit, and a running Job is never
 preempted. Queue order comes from the requester role, not the class:
 `interactive` requests sort ahead of `background` ones, so a human waiting at
 the prompt isn't stuck behind unattended work.

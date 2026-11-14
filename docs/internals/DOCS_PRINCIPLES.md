@@ -43,6 +43,11 @@ Ask of each line: does the reader need this? Apply every rule that covers the
 doc. Each line gets one verdict: keep, rewrite, move (name the target doc), or
 cut. Done when every line has a verdict, not just the ones that look odd.
 
+Ask it of whole sections too, and of text a review asks you to add. A caveat,
+edge case, or extra context that a reviewer wants passes the same test as the
+rest: in a user doc it must clear principles 17, 20, and 21, or it goes
+elsewhere.
+
 ### 3. Verify facts against the source
 
 Check every command, flag, option name, default, path, platform condition,
@@ -125,9 +130,15 @@ warnings, and say when they apply.
 
 Remove statements that stopped being true. History goes in the changelog and
 decision history in ADRs. Words like "no longer", "legacy", "renamed from", or
-"since v0.4" fail `tests/docs/test_current_version_docs.py`. Write a retired
-setting as an action: "Delete `[flows.sim].standalone_frontend` if your
-`booley.toml` sets it."
+"since v0.4" fail `tests/docs/test_current_version_docs.py`. History without
+those words counts too: "it sets no delay target" describes the old version
+when only the old version set one, and "re-running init replaces `auto`"
+describes upgrading from an old default. Say what the thing does now.
+
+A retired setting gets one action, in
+[TROUBLESHOOTING.md](../user/TROUBLESHOOTING.md) under the error it causes:
+"Delete `[flows.sim].standalone_frontend` if your `booley.toml` sets it." A
+reference doc such as `CONFIG.md` lists only the current keys.
 
 ### 15. Credit sources and mark temporary designs
 
@@ -138,7 +149,9 @@ temporary and link the roadmap.
 
 Justify design choices in a sentence: "the testbench reviewer never sees the
 RTL, so it judges the tests against the spec without bias". In an internal doc
-this is the main job: the code already says what happens.
+this is the main job: the code already says what happens. In a user doc, the
+why is what the user gains; the evidence behind a choice (measurements,
+rejected alternatives) goes in its ADR or pull request.
 
 ### 17. Short
 
@@ -183,6 +196,17 @@ Registration mechanics, reapers, heartbeats, caches, what CI does, and the
 full list of steps a command performs belong in internal docs; keep one line
 on what the user gets out of it. Leave out special cases the user never meets,
 such as behavior inside Booley's own source checkout.
+
+Keep what the user needs to trust and read the result: what a Flow changes in
+their design, what it checks, and how it picks. A Mutation Flow doc names the
+kinds of Mutants it plants and how it chooses them.
+
+- **No measurements from one design.** "On picorv32 at 0.8 ns it shortens the
+  critical path by 2.3%" belongs in the pull request or ADR. State the
+  trade-off in general words: "a shorter critical path for a little more area
+  and a longer run".
+- **No tours of a UI the user can see.** A Dashboard form or wizard gets one
+  line: where to find it and what it gives. Its fields explain themselves.
 
 ### 22. User pages stand alone
 
@@ -251,7 +275,8 @@ is added.
 - When a tool changes what the user sees or does, put the difference in a
   `With <Tool>` callout (`With Verilator`, `With Xcelium`).
 - Tool setup, such as waiver files and rule configs, goes in that tool's
-  Target recipe in `TARGETS.md`; the Flow doc links it.
+  Target recipe in the Flow doc. `TARGETS.md` covers only what every Flow's
+  Targets share.
 - Hard limits stay in the main text. So does example output, labeled with
   the tool that produced it: "Example (Verilator):".
 

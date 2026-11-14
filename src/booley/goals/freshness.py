@@ -47,7 +47,12 @@ from booley.goals.target_surface import (
     TargetSurfaceError,
     target_surface_fingerprint,
 )
-from booley.goals.waiver_policy import WAIVER_POLICY_DETAIL_KEY, waiver_policy_fingerprint
+from booley.goals.waiver_policy import (
+    WAIVER_POLICY_DETAIL_KEY,
+    rebased_policy,
+    waiver_policy_fingerprint,
+)
+from booley.runtime.mount_history import translate_stored_path
 from booley.targets.domain import FuseSocError
 
 #: Errors a resolver may raise; each makes the evidence stale rather than fresh.
@@ -331,7 +336,10 @@ def _review_goal_freshness(
             goal_required_categories(key), "Review Goal scope changed; run a new discovery review"
         )
     spec = goal.params.get("spec")
-    if spec and str((root / spec).resolve()) != contract.get("spec_source"):
+    stored_spec = str(contract.get("spec_source", ""))
+    if spec and str((root / spec).resolve()) != translate_stored_path(
+        stored_spec, record="Review Goal evidence"
+    ):
         return _stale(
             goal_required_categories(key), "Review Goal specification changed; re-run Reviewer"
         )
@@ -385,7 +393,8 @@ def _waiver_policy_reason(
         current = resolvers.waiver_policy(work_dir)
     except RESOLVER_ERRORS as exc:
         return f"approved waiver policy cannot be read: {exc}"
-    if _entry_detail(entry).get(WAIVER_POLICY_DETAIL_KEY) != current:
+    stored = _entry_detail(entry).get(WAIVER_POLICY_DETAIL_KEY)
+    if not isinstance(stored, dict) or rebased_policy(cast("dict[str, Any]", stored)) != current:
         return "approved waiver policy changed or has no recorded identity"
     return ""
 

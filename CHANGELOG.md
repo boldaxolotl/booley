@@ -99,7 +99,7 @@ Packaged release history starts at 0.2.7. For older changes, see
   and prints a line saying where it works. The first session and a lone
   session run in the main checkout as before. `booley chat --new-worktree`
   always uses a worktree, `booley chat --here` always uses the main checkout,
-  and `[chat] worktree = "auto" | "always" | "never"` sets the default
+  and `[worktree] chat = "auto" | "always" | "never"` sets the default
   (`auto`). Run from inside an existing worktree, `booley chat` starts there.
   A plain `claude` tab or VS Code panel does not hold the main checkout, so it
   is noticed only on a best-effort basis.

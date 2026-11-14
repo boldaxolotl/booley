@@ -11,11 +11,7 @@ DESIGN_SECTION = (
 CORE_EXAMPLE = DESIGN_SECTION.split("```yaml", 1)[1].split("```", 1)[0]
 
 
-def test_public_core_example_documents_backend_owned_trace_setup():
-    contract = " ".join(DESIGN_SECTION.split())
-
+def test_public_core_example_needs_no_trace_dump_module():
+    # Booley supplies the Icarus dump module itself, so the example must not
+    # teach users to add one to their filesets.
     assert "booley_vcd_dump.sv" not in CORE_EXAMPLE
-    assert "Icarus trace overlay supplies the packaged dump module" in contract
-    assert "already provide one" in contract
-    assert "Existing project-supplied modules remain supported" in contract
-    assert "Verilator relies on the Target's trace-capable C++ simulation harness" in contract

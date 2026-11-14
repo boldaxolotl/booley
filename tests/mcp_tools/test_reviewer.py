@@ -1317,8 +1317,11 @@ class TestGateLogic:
 
 class TestScopeValidation:
     def test_rtl_scope_valid(self):
-        errors = validate_scope_category(["rtl/mod_a.sv", "fw/main.c"], "rtl")
-        assert errors == []
+        assert validate_scope_category(["rtl/mod_a.sv"], "rtl") == []
+        # Without a ``.core``, ``fw/`` is no RTL directory (#4052).
+        errors = validate_scope_category(["fw/main.c"], "rtl")
+        assert len(errors) == 1
+        assert "doesn't match RTL" in errors[0]
 
     def test_rtl_scope_invalid_tb_path(self):
         errors = validate_scope_category(["tb/mod_a_tb.sv"], "rtl")
@@ -1338,7 +1341,7 @@ class TestScopeValidation:
 
     @patch(
         "booley.specialists.reviewer._get_rtl_prefixes",
-        return_value=("rtl/", "rtl\\", "fw/", "fw\\"),
+        return_value=("rtl/", "rtl\\"),
     )
     @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("tb/", "tb\\"))
     def test_mixed_scope_rtl_partial_invalid(self, _mock_tb, _mock_rtl):
@@ -1531,7 +1534,7 @@ class TestPromptConstruction:
 
     def test_each_focus_loads_its_declared_guides(self, tmp_path: Path):
         cases = [
-            ("rtl", "bugs", "rtl/a.sv", ["bugs-checklist"]),
+            ("rtl", "bugs", "rtl/a.sv", ["bugs-checklist", "bugs-hunt"]),
             ("rtl", "protocol", "rtl/a.sv", ["protocol-cdc-checklist"]),
             ("rtl", "security", "rtl/a.sv", ["security-checklist"]),
             ("rtl", "optimization", "rtl/a.sv", ["optimization-checklist"]),
@@ -2121,7 +2124,8 @@ class TestFullRtlReview:
         assert rerun.exit_code == 0
         assert rerun.criterion_met is True
         assert "RESULT: REVIEWED WITH FINDINGS" in rerun.report_text
-        assert mock_agent.call_count == 2
+        # Each bugs review makes two calls (checklist and hunt guides).
+        assert mock_agent.call_count == 4
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_steering_does_not_hide_open_done_correction(
@@ -2147,7 +2151,8 @@ class TestFullRtlReview:
         assert rerun.detail["issues"] == 0
         assert rerun.detail["issue_list"] == []
         assert "NO FINDINGS" in rerun.report_text
-        assert mock_agent.call_count == 2
+        # Each bugs review makes two calls (checklist and hunt guides).
+        assert mock_agent.call_count == 4
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_current_minor_findings_remain_corrective(self, mock_agent, state_file: Path, capsys):
@@ -2306,7 +2311,7 @@ def test_provider_failure_keeps_reviewer_outcome_and_persists_traceback(
             "--category",
             "rtl",
             "--focus",
-            "bugs",
+            "protocol",
             "--work-dir",
             str(tmp_path),
             "--report-dir",
@@ -2658,7 +2663,8 @@ class TestOneShotGuard:
         # A policy refusal is NOT an infra crash: exit 2 is reserved for
         # "the MCP tool could not run" (docs/user/FLOW_REFERENCE.md exit taxonomy).
         assert result.exit_code == 0
-        assert mock_agent.call_count == 1
+        # One bugs review makes two calls (checklist and hunt guides).
+        assert mock_agent.call_count == 2
         assert "RESULT: REVIEWED — NO FINDINGS" in result.report_text
         assert result.criterion_met is True
         detail = DevelopmentState.load(state_file).criteria["review_rtl_bugs_done"].detail
@@ -2774,7 +2780,7 @@ class TestCleanModeInitial:
         mock_agent.return_value = _make_agent_result(
             [
                 _make_issue_dict("CRITICAL"),
-                _make_issue_dict("MINOR", summary="Style nit"),
+                _make_issue_dict("MINOR", line=43, summary="Style nit"),
             ]
         )
         st = DevelopmentState.load(state_file)
@@ -2903,7 +2909,8 @@ class TestCleanModeVerify:
         endpoint.read_state()
         result = endpoint._run()
 
-        assert mock_agent.call_count == 1
+        # One bugs review makes two calls (checklist and hunt guides).
+        assert mock_agent.call_count == 2
         assert result.exit_code == 0
         assert result.criterion_met is False
         assert result.detail["pending"][0]["summary"] == "New final-state issue"
@@ -3876,7 +3883,8 @@ class TestDeadEndMessagesNameARealAction:
         assert result.exit_code == 0
         assert "triage" not in result.report_text.lower()
         assert "explicit human approval" not in result.report_text
-        assert mock_agent.call_count == 2
+        # Each bugs review makes two calls (checklist and hunt guides).
+        assert mock_agent.call_count == 4
 
     def test_replay_message(self):
         from booley.specialists import reviewer as reviewer_mod
@@ -3974,7 +3982,8 @@ def test_incomplete_or_changed_legacy_done_receipt_does_not_replay(
     mock_agent.return_value = _make_agent_result([])
     endpoint.read_state()
     result = endpoint._run()
-    assert mock_agent.call_count == 1
+    # One bugs review makes two calls (checklist and hunt guides).
+    assert mock_agent.call_count == 2
     assert "did NOT re-run" not in result.report_text
 
 
@@ -4218,7 +4227,13 @@ def test_declared_review_guides_are_the_packaged_guides():
 
 def test_dry_run_lists_guides_with_kind(tmp_path):
     cases = [
-        ("bugs", [{"kind": "checklist", "name": "bugs-checklist"}]),
+        (
+            "bugs",
+            [
+                {"kind": "checklist", "name": "bugs-checklist"},
+                {"kind": "hunt", "name": "bugs-hunt"},
+            ],
+        ),
         ("spec", [{"kind": "hunt", "name": "spec-hunt"}]),
     ]
     for focus, expected in cases:
@@ -4239,4 +4254,4 @@ def test_dry_run_lists_guides_with_kind(tmp_path):
         )
         preview = endpoint._dry_run_preview()
         assert preview.detail["guides"] == expected
-        assert f"guides={expected[0]['name']}" in preview.report_text
+        assert f"guides={','.join(g['name'] for g in expected)}" in preview.report_text

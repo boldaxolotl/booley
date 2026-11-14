@@ -37,7 +37,7 @@ def read_source_dirs_from_toml(work_dir: Path) -> tuple[list[str], list[str]] | 
 # Directory prefixes for classifying git diffs into RTL vs TB categories.
 # ---------------------------------------------------------------------------
 
-_RTL_DIRS_DEFAULT = ("rtl/", "fw/")
+_RTL_DIRS_DEFAULT = ("rtl/",)
 _TB_DIRS_DEFAULT = ("tb/",)
 
 
@@ -64,16 +64,12 @@ def _load_classification_dirs(
         except Exception:  # noqa: BLE001 — legacy CWD path unavailable; fall back to default source dirs
             return _RTL_DIRS_DEFAULT, _TB_DIRS_DEFAULT
     rtl_names, tb_names = parsed
-    # 'fw' is always an RTL prefix. Keep entry order stable, dedup, add fw once.
-    rtl_list = list(rtl_names)
-    if "fw" not in {n.rstrip("/\\") for n in rtl_list}:
-        rtl_list.append("fw")
     # File-aware prefixes (ADR 0026): a source_dirs entry that is a file under
     # work_dir classifies by exact path, so flat single-file repos work. Legacy
     # CWD path (work_dir None) can't stat, so entries stay directory prefixes.
     from booley.runtime.shared_infra import source_dir_prefixes
 
-    rtl_dirs = source_dir_prefixes(rtl_list, work_dir)
+    rtl_dirs = source_dir_prefixes(rtl_names, work_dir)
     tb_dirs = source_dir_prefixes(tb_names, work_dir)
     return rtl_dirs, tb_dirs
 

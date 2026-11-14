@@ -519,6 +519,10 @@ def _cpp_source_status(repo):
     )
 
 
+# Undeclared non-HDL files: readable context for both Reviewers, never reviewed (#4052).
+_UNSCOPED_CPP = ["shared/unknown.C", "shared/unknown.HXX", "shared/backup.HPP.bak"]
+
+
 def _cpp_review_project(tmp_path, monkeypatch, layout="flat"):
     from booley.runtime.booley_dir import reset_cache
 
@@ -548,12 +552,9 @@ def _cpp_review_project(tmp_path, monkeypatch, layout="flat"):
     hidden = [
         "shared/dut.sv",
         "shared/rtl.c",
-        "shared/unknown.C",
-        "shared/unknown.HXX",
-        "shared/backup.HPP.bak",
         "tracked.sv",
     ]
-    for name in visible + hidden:
+    for name in visible + hidden + _UNSCOPED_CPP:
         path = repo / name
         path.parent.mkdir(exist_ok=True)
         path.write_text("// authored source\n")
@@ -563,7 +564,7 @@ def _cpp_review_project(tmp_path, monkeypatch, layout="flat"):
     core_path.write_text(_CPP_REVIEW_CORE)
     _git(["add", "--force", str(core_path.relative_to(repo))], repo)
     _git(["add", "shared/main.cpp", "shared/dut.sv", "shared/rtl.c"], repo)
-    before = {name: (repo / name).read_bytes() for name in visible + hidden}
+    before = {name: (repo / name).read_bytes() for name in visible + hidden + _UNSCOPED_CPP}
     status = _cpp_source_status(repo)
     return repo, visible, hidden, before, status
 
@@ -574,6 +575,8 @@ def _assert_cpp_review_snapshot(params, repo, visible, hidden, category):
     for name in visible:
         assert (root / name).is_file(), name
         _git(["show", f"HEAD:./{name}"], root)
+    for name in _UNSCOPED_CPP:
+        assert (root / name).is_file(), name
     for name in hidden:
         assert not (root / name).exists(), name
         assert (
@@ -622,14 +625,9 @@ def test_interactive_cpp_review_uses_real_snapshot(tmp_path, monkeypatch, catego
     """Admission, prompt, isolation and finding filtering use the same exact scope."""
     repo, visible, hidden, before, status = _cpp_review_project(tmp_path, monkeypatch, layout)
     if category == "rtl":
-        hidden = [
-            *visible,
-            "shared/unknown.C",
-            "shared/unknown.HXX",
-            "shared/backup.HPP.bak",
-            "tracked.sv",
-        ]
-        visible = ["shared/dut.sv", "shared/rtl.c"]
+        # helper.CPP is declared nowhere: readable context for the RTL Reviewer too.
+        hidden = [name for name in visible if name != "shared/helper.CPP"] + ["tracked.sv"]
+        visible = ["shared/dut.sv", "shared/rtl.c", "shared/helper.CPP"]
     scope = visible if category == "tb" else ["shared/dut.sv"]
     finding_path = "shared/api.hpp" if category == "tb" else "shared/dut.sv"
     calls = []
@@ -748,46 +746,103 @@ def test_specialist_launch_reclaims_killed_run_scratch(tmp_path, monkeypatch):
             shutil.rmtree(path, ignore_errors=True)
 
 
-@pytest.mark.parametrize("category", ["rtl", "tb"])
-def test_reviewers_read_firmware_in_snapshot(tmp_path, monkeypatch, category):
-    """Both Reviewers read non-HDL firmware under fw/; HDL there keeps its category."""
-    repo = _repo(tmp_path)
-    monkeypatch.chdir(repo)
-    hdl_backups = ("fw/rom.sv.orig", "fw/rom.sv~")
-    for name in ("rtl/dut.sv", "tb/tb.sv", "fw/boot.c", "fw/rom.sv", "fw/start.c", *hdl_backups):
-        (repo / name).parent.mkdir(exist_ok=True)
-        (repo / name).write_text(f"// {name}\n")
-    (repo / "design.core").write_text(
-        "CAPI=2:\nname: ::fw:0\nfilesets:\n"
-        "  rtl:\n    files: [rtl/dut.sv, fw/rom.sv, {fw/boot.c: {file_type: cSource}}]\n"
-        "  tb:\n    tags: [tb]\n    files: [tb/tb.sv]\n"
-        "targets:\n  sim:\n    default_tool: verilator\n    filesets: [rtl, tb]\n"
-    )
-    _git(["add", "design.core", "rtl/dut.sv", "tb/tb.sv", "fw/boot.c", "fw/rom.sv"], repo)
+def _snapshot_view(
+    repo: Path, category: str, names: tuple[str, ...], *, goal_mode: bool
+) -> dict[str, bool]:
+    """Run a Reviewer's agent call and report which of *names* its snapshot holds."""
     scope, focus = ("rtl/dut.sv", "bugs") if category == "rtl" else ("tb/tb.sv", "quality")
     seen: dict[str, bool] = {}
 
     def fake_call(params: AgentCallParams, *, on_event) -> AgentResult:
         root = Path(params.cwd)
-        seen.update({name: (root / name).is_file() for name in ("fw/boot.c", "fw/start.c")})
-        seen["fw/rom.sv"] = (root / "fw/rom.sv").is_file()
-        seen["backups"] = any((root / name).is_file() for name in hdl_backups)
-        seen["opposite"] = (root / ("tb/tb.sv" if category == "rtl" else "rtl/dut.sv")).is_file()
+        seen.update({name: (root / name).is_file() for name in names})
         return AgentResult(output="{}")
 
     endpoint = ReviewerSpecialist()
     endpoint.parse_args(
         ["--work-dir", str(repo), "--category", category, "--focus", focus, "--scope", scope]
     )
+    endpoint._goal_mode = goal_mode
     with (
         patch("booley.specialists.specialist._call_agent_sync", side_effect=fake_call),
         patch("booley.specialists.specialist.parent_death_watchdog", return_value=nullcontext()),
     ):
         endpoint._invoke_agent(AgentCallParams(prompt="review", model="test", cwd=repo))
+    return seen
 
-    assert seen["fw/boot.c"] and seen["fw/start.c"]
-    assert not seen["opposite"]
-    # HDL under fw/ stays RTL: the testbench Reviewer still never sees it.
-    assert seen["fw/rom.sv"] == (category == "rtl")
-    # Undeclared HDL backups are never firmware, so neither Reviewer sees them.
-    assert not seen["backups"]
+
+@pytest.mark.parametrize("goal_mode", [False, True], ids=["interactive", "goal"])
+@pytest.mark.parametrize("category", ["rtl", "tb"])
+def test_reviewers_read_unclassified_files_in_snapshot(tmp_path, monkeypatch, category, goal_mode):
+    """Files in no RTL or TB fileset are readable by both Reviewers, in any mode (#4052).
+
+    Undeclared HDL-named files stay hidden; the opposite category stays hidden.
+    """
+    repo = _repo(tmp_path)
+    monkeypatch.chdir(repo)
+    visible = (
+        "fw/start.c",
+        "fw/boot.hex",
+        "firmware/boot.S",
+        "sw/main.c",
+        "sw/regs.h",
+        "sw/gen.py",
+    )
+    hidden = ("fw/rom.sv~", "sw/stub.SV", "tb/tb.sv" if category == "rtl" else "rtl/dut.sv")
+    for name in ("rtl/dut.sv", "tb/tb.sv", *visible, *hidden):
+        (repo / name).parent.mkdir(exist_ok=True)
+        (repo / name).write_text(f"// {name}\n")
+    (repo / "design.core").write_text(
+        "CAPI=2:\nname: ::fw:0\nfilesets:\n"
+        "  rtl:\n    files: [rtl/dut.sv]\n"
+        "  tb:\n    tags: [tb]\n    files: [tb/tb.sv]\n"
+        "targets:\n  sim:\n    default_tool: verilator\n    filesets: [rtl, tb]\n"
+    )
+    _git(["add", "design.core", "rtl/dut.sv", "tb/tb.sv", *visible], repo)
+
+    seen = _snapshot_view(repo, category, (*visible, *hidden), goal_mode=goal_mode)
+
+    assert {name: seen[name] for name in visible} == dict.fromkeys(visible, True)
+    assert {name: seen[name] for name in hidden} == dict.fromkeys(hidden, False)
+
+
+@pytest.mark.parametrize("category", ["rtl", "tb"])
+def test_rtl_fileset_files_under_fw_follow_their_category(tmp_path, monkeypatch, category):
+    """A source the RTL fileset lists under ``fw/`` is hidden from the TB Reviewer (#4052)."""
+    repo = _repo(tmp_path)
+    monkeypatch.chdir(repo)
+    for name in ("rtl/dut.sv", "tb/tb.sv", "fw/rom.sv", "fw/rom.vhd"):
+        (repo / name).parent.mkdir(exist_ok=True)
+        (repo / name).write_text(f"// {name}\n")
+    (repo / "design.core").write_text(
+        "CAPI=2:\nname: ::fw:0\nfilesets:\n"
+        "  rtl:\n    files: [rtl/dut.sv, fw/rom.sv, {fw/rom.vhd: {file_type: vhdlSource}}]\n"
+        "  tb:\n    tags: [tb]\n    files: [tb/tb.sv]\n"
+        "targets:\n  sim:\n    default_tool: verilator\n    filesets: [rtl, tb]\n"
+    )
+    _git(["add", "design.core", "rtl/dut.sv", "tb/tb.sv", "fw/rom.vhd", "fw/rom.sv"], repo)
+
+    seen = _snapshot_view(repo, category, ("fw/rom.sv", "fw/rom.vhd"), goal_mode=False)
+
+    assert seen == dict.fromkeys(("fw/rom.sv", "fw/rom.vhd"), category == "rtl")
+
+
+@pytest.mark.parametrize("category", ["rtl", "tb"])
+def test_c_source_in_rtl_fileset_follows_sim_harness_rule(tmp_path, monkeypatch, category):
+    """A C source in the RTL fileset is a sim harness input: TB-side, as documented (#4052)."""
+    repo = _repo(tmp_path)
+    monkeypatch.chdir(repo)
+    for name in ("rtl/dut.sv", "tb/tb.sv", "fw/boot.c"):
+        (repo / name).parent.mkdir(exist_ok=True)
+        (repo / name).write_text(f"// {name}\n")
+    (repo / "design.core").write_text(
+        "CAPI=2:\nname: ::fw:0\nfilesets:\n"
+        "  rtl:\n    files: [rtl/dut.sv, {fw/boot.c: {file_type: cSource}}]\n"
+        "  tb:\n    tags: [tb]\n    files: [tb/tb.sv]\n"
+        "targets:\n  sim:\n    default_tool: verilator\n    filesets: [rtl, tb]\n"
+    )
+    _git(["add", "design.core", "rtl/dut.sv", "tb/tb.sv", "fw/boot.c"], repo)
+
+    seen = _snapshot_view(repo, category, ("fw/boot.c",), goal_mode=False)
+
+    assert seen == {"fw/boot.c": category == "tb"}
