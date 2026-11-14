@@ -376,7 +376,7 @@ def test_an_unreadable_metrics_file_is_refused(
     assert "metrics.toml cannot be read: denied" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("option", [["abc"], ["--base", "x"], ["--all"], ["--json"]])
+@pytest.mark.parametrize("option", [["abc"], ["--base", "x"], ["--all"], ["--json"], ["--again"]])
 def test_validate_takes_no_other_option(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -430,6 +430,193 @@ def test_an_unwritable_store_exits_two_with_the_error_in_the_job_log(
     record = job_record(project)
     assert (record.status, record.exit_code) == ("failed", 2)
     assert "measurement failed" in job_log(project)
+
+
+def test_a_measured_commit_is_shown_without_running_a_flow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = committed_project(tmp_path, ONE_LINT_TABLE)
+    steps = script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
+    assert run_command(monkeypatch, project) == 0
+    (first,) = stored_runs(project)
+    capsys.readouterr()
+
+    assert run_command(monkeypatch, project) == 0
+
+    captured = capsys.readouterr()
+    assert steps == ["prepare", "run"]  # the second command started no Flow
+    assert stored_runs(project) == [first]
+    assert "Targets with no metrics: " in captured.out
+    run_id = json.loads(first.read_text())["run_id"]
+    assert f"is already Measured by run {run_id}; showing it" in captured.err
+    assert "--again" in captured.err
+    assert "Measurement Report" not in captured.err
+
+
+def test_the_shown_run_is_the_json_document_on_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = committed_project(tmp_path, ONE_LINT_TABLE)
+    script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
+    assert run_command(monkeypatch, project) == 0
+    capsys.readouterr()
+
+    assert run_command(monkeypatch, project, "--json") == 0
+
+    document = json.loads(capsys.readouterr().out)
+    assert "view" in document and document["status"] == "completed"
+
+
+def test_again_measures_a_measured_commit_and_stores_a_second_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = committed_project(tmp_path, ONE_LINT_TABLE)
+    steps = script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
+    assert run_command(monkeypatch, project) == 0
+
+    assert run_command(monkeypatch, project, "--again") == 0
+
+    assert steps == ["prepare", "run", "prepare", "run"]
+    assert len(stored_runs(project)) == 2
+    assert len(MeasurementStore(project / ".booley").history(key_of(project))) == 2
+
+
+@pytest.mark.parametrize("later", ["unmet", "error", "stopped", "cancelled"])
+def test_a_later_run_that_is_not_measured_is_measured_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, later: str
+) -> None:
+    project = committed_project(tmp_path, ONE_LINT_TABLE)
+    scripted: dict[str, dict[str, object]] = {
+        "unmet": {"warnings": [3]},
+        "error": {"warnings": [None]},
+        "stopped": {"warnings": [0], "status": RunStatus.STOPPED},
+        "cancelled": {"warnings": [0], "status": RunStatus.CANCELLED, "finished": [True]},
+    }
+    queue = [{"warnings": [0]}, scripted[later], {"warnings": [0]}]
+    steps = script_children(
+        monkeypatch,
+        lambda tables, _c: outcome_of(tables, **queue.pop(0)),  # type: ignore[arg-type]
+    )
+    assert run_command(monkeypatch, project) == 0
+    if later == "cancelled":
+        with pytest.raises(KeyboardInterrupt):
+            run_command(monkeypatch, project, "--again")
+    else:
+        run_command(monkeypatch, project, "--again")
+    store = MeasurementStore(project / ".booley")
+    assert len(stored_runs(project)) == 2
+    assert store.measured(key_of(project)) is None  # the later run decides
+
+    assert run_command(monkeypatch, project) == 0  # no --again: the key is not Measured
+
+    assert steps == ["prepare", "run"] * 3
+    assert len(stored_runs(project)) == 3
+    assert store.measured(key_of(project)) is not None
+
+
+def test_an_unreadable_stored_document_is_noted_and_the_commit_is_measured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = committed_project(tmp_path, ONE_LINT_TABLE)
+    steps = script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
+    assert run_command(monkeypatch, project) == 0
+    (first,) = stored_runs(project)
+    first.write_bytes(b"not json")
+    capsys.readouterr()
+
+    assert run_command(monkeypatch, project) == 0
+
+    assert "measuring again" in capsys.readouterr().err
+    assert steps == ["prepare", "run"] * 2
+
+
+def test_a_measured_commit_is_shown_without_creating_a_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _measuring_environment: Path
+) -> None:
+    project = committed_project(tmp_path, ONE_LINT_TABLE)
+    script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
+    assert run_command(monkeypatch, project) == 0
+    exports: list[tuple[object, ...]] = []
+    export = measure_command_module().export_commit
+
+    def recording_export(*args: object):
+        exports.append(args)
+        return export(*args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(f"{COMMAND}.export_commit", recording_export)
+
+    assert run_command(monkeypatch, project) == 0
+
+    assert exports == []
+    assert not list(_measuring_environment.iterdir())
+
+
+def measure_command_module():
+    return importlib.import_module(COMMAND)
+
+
+def project_with_live_changes(tmp_path: Path) -> Path:
+    """A project whose HEAD has a submodule ``ip``; its live tree and ``ip`` have moved on."""
+    origin = tmp_path / "ip-origin"
+    origin.mkdir()
+    git(origin, "init", "-q", "-b", "main")
+    (origin / "lib.v").write_bytes(b"lib v1\n")
+    git(origin, "add", "-A")
+    git(origin, "commit", "-q", "-m", "ip v1")
+    project = committed_project(tmp_path, ONE_LINT_TABLE)
+    git(project, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(origin), "ip")
+    (project / "notes.txt").write_bytes(b"v1\n")
+    git(project, "add", ".gitmodules", "ip", "notes.txt")
+    git(project, "commit", "-q", "-m", "add ip")
+    (project / "notes.txt").write_bytes(b"v2\n")
+    git(project, "commit", "-q", "-am", "notes v2")
+    (project / "notes.txt").write_bytes(b"v3 uncommitted\n")
+    (project / "ip" / "lib.v").write_bytes(b"lib v2\n")
+    git(project / "ip", "commit", "-q", "-am", "ip v2")
+    return project
+
+
+@pytest.mark.parametrize("revision", ["head", "head-sha", "other-commit"])
+def test_live_tree_notices(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    revision: str,
+) -> None:
+    project = project_with_live_changes(tmp_path)
+    script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
+    asked = {
+        "head": [],
+        "head-sha": [git(project, "rev-parse", "HEAD")],
+        "other-commit": ["HEAD~1"],
+    }[revision]
+    changes = "uncommitted changes in the working tree are not measured"
+    drift = "submodule working-tree differences are not measured: ip"
+    if revision == "other-commit":
+        # The same live state does warn for HEAD: only the other commit goes without notices.
+        assert run_command(monkeypatch, project) == 0
+        assert changes in capsys.readouterr().err
+
+    assert run_command(monkeypatch, project, *asked) == 0
+
+    err = capsys.readouterr().err
+    if revision == "other-commit":
+        assert changes not in err and "working-tree differences" not in err
+    else:
+        assert changes in err and drift in err
+        assert "untracked" not in err
+
+
+def test_a_clean_live_tree_prints_no_notice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = committed_project(tmp_path, ONE_LINT_TABLE)
+    (project / "scratch.txt").write_bytes(b"untracked\n")
+    script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
+
+    assert run_command(monkeypatch, project) == 0
+
+    assert "note:" not in capsys.readouterr().err
 
 
 def assert_cancelled_run_stored(project: Path, *, measured: bool = False) -> None:
