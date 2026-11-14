@@ -498,13 +498,13 @@ def test_worktree_chat_knob_accepts_its_three_modes(mode: str) -> None:
     assert project_schema.audit_worktree_table({}).is_valid
 
 
-@pytest.mark.parametrize("data", [{"worktree": {"chat": "sometimes"}}, {"worktree": {"chat": 1}}])
-def test_worktree_chat_knob_must_be_auto_always_or_never(data: dict) -> None:
+def test_worktree_chat_knob_must_be_auto_always_or_never() -> None:
     # Bug caught: Doctor passing a value that `booley chat` then refuses at launch.
-    audit = project_schema.audit_worktree_table(data)
+    for data in ({"worktree": {"chat": "sometimes"}}, {"worktree": {"chat": 1}}):
+        audit = project_schema.audit_worktree_table(data)
 
-    assert not audit.is_valid
-    assert "[worktree].chat" in audit.findings[0].message
+        assert not audit.is_valid
+        assert "[worktree].chat" in audit.findings[0].message
 
 
 def test_worktree_table_that_is_not_a_table_reports_once() -> None:
