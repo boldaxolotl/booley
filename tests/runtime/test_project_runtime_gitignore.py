@@ -349,17 +349,17 @@ def test_campaign_publications_and_run_lock_keep_project_clean(versioned_project
 
     from booley.flows.sim.record.codec import (
         canonical_json_bytes,
-        decode_simulation_campaign_manifest,
+        decode_simulation_record_manifest,
     )
     from booley.flows.sim.record.run_directory import (
         claimed_run_directory,
         expand_run_directory,
     )
-    from booley.flows.sim.record.store import CampaignStore
+    from booley.flows.sim.record.store import SimulationRecordStore
 
     root, data, repo = versioned_project
-    store = CampaignStore(data / ".runtime/campaigns/audit")
-    store.publish_manifest(decode_simulation_campaign_manifest(canonical_json_bytes(_manifest())))
+    store = SimulationRecordStore(data / ".runtime/campaigns/audit")
+    store.publish_manifest(decode_simulation_record_manifest(canonical_json_bytes(_manifest())))
     assert store.manifest_path.is_file()
     assert_clean(repo)
     store.regenerate_summary()
@@ -368,7 +368,7 @@ def test_campaign_publications_and_run_lock_keep_project_clean(versioned_project
     run = expand_run_directory(
         str(data / ".runtime/campaign-runs/{attempt}"),
         project_root=root,
-        campaign_id="audit",
+        simulation_record_id="audit",
         target_key="sim",
         work_item_key="smoke",
         attempt_key="first",

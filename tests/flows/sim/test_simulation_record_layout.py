@@ -28,10 +28,10 @@ from booley.flows.sim.coverage_reference import (
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record import collect_pre_sim_firings, read_durable_results
 from booley.flows.sim.record.codec import (
-    SimulationCampaignIntegrityError,
+    SimulationRecordIntegrityError,
     linked_manifest_path,
 )
-from booley.flows.sim.record.dependency import read_campaign_dependencies
+from booley.flows.sim.record.dependency import read_simulation_record_dependencies
 from booley.flows.sim.record.resume import validate_resume_manifest
 from booley.flows.sim.record_reports import write_campaign_json
 from booley.flows.sim.record_retention import CampaignRetentionError, prune_invocation
@@ -151,7 +151,7 @@ def test_a_campaign_path_naming_no_directory_is_not_called_an_older_record(
     (invocation / "targets" / "sim" / "record").mkdir(parents=True)
     typed = invocation / "targets" / "sim" / "campaign" / "manifest.json"
 
-    with pytest.raises(SimulationCampaignIntegrityError) as excinfo:
+    with pytest.raises(SimulationRecordIntegrityError) as excinfo:
         validate_resume_manifest(typed, project_root=tmp_path)
 
     assert "older Booley" not in str(excinfo.value)
@@ -273,13 +273,13 @@ def test_the_old_directory_names_are_not_aliases(reports: Path, tmp_path: Path) 
     older_manifest = _manifest_of(older, "complete")
 
     # A prerequisite link names the Record directory exactly.
-    with pytest.raises(SimulationCampaignIntegrityError) as linked:
+    with pytest.raises(SimulationRecordIntegrityError) as linked:
         linked_manifest_path(older, {"path": "targets/t/campaign/manifest.json"})
     assert "is not targets/<Target>/record/manifest.json" in str(linked.value)
 
     # A dependency origin is an exact Record manifest.
     with pytest.raises(ValueError, match="exact Simulation Campaign manifest"):
-        read_campaign_dependencies(older_manifest)
+        read_simulation_record_dependencies(older_manifest)
 
     # Readers of a manifest path refuse the old name as an older Booley's record.
     for read in (
@@ -293,7 +293,7 @@ def test_the_old_directory_names_are_not_aliases(reports: Path, tmp_path: Path) 
 
     # A Mutation manifest keeps its own ``campaign/`` name and is not an older Simulation one.
     mutation = tmp_path / "flow-reports" / "mutation" / "1" / "campaign" / "manifest.json"
-    with pytest.raises(SimulationCampaignIntegrityError) as foreign:
+    with pytest.raises(SimulationRecordIntegrityError) as foreign:
         validate_resume_manifest(mutation, project_root=tmp_path)
     assert "must name one exact record/manifest.json" in str(foreign.value)
     assert "older Booley" not in str(foreign.value)

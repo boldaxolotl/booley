@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from booley.flows.sim.record.codec import SimulationCampaignIntegrityError
+from booley.flows.sim.record.codec import SimulationRecordIntegrityError
 from booley.flows.sim.record.store import _validate_build_execution_document
 from tests.flows.sim.simulation_record_test_support import _build_execution
 
@@ -50,7 +50,7 @@ def test_compiler_run_with_a_miss_decision_is_a_successful_build() -> None:
     ids=["miss", "unsupported", "empty", "bare-hit", "hit-prefix-word", "leading-space"],
 )
 def test_build_that_did_not_run_requires_a_hit_decision(decision: str) -> None:
-    with pytest.raises(SimulationCampaignIntegrityError, match="not successful"):
+    with pytest.raises(SimulationRecordIntegrityError, match="not successful"):
         _validate_build_execution_document(_reuse_record(cache_decision=decision))
 
 
@@ -62,10 +62,10 @@ def test_build_that_did_not_run_requires_a_hit_decision(decision: str) -> None:
 def test_hit_record_with_contradicting_process_facts_is_rejected(
     contradiction: dict[str, Any],
 ) -> None:
-    with pytest.raises(SimulationCampaignIntegrityError, match="not successful"):
+    with pytest.raises(SimulationRecordIntegrityError, match="not successful"):
         _validate_build_execution_document(_reuse_record(**contradiction))
 
 
 def test_hit_record_with_non_integer_returncode_is_rejected() -> None:
-    with pytest.raises(SimulationCampaignIntegrityError, match="measurement is invalid"):
+    with pytest.raises(SimulationRecordIntegrityError, match="measurement is invalid"):
         _validate_build_execution_document(_reuse_record(returncode=None))

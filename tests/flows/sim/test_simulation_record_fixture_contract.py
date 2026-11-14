@@ -4,7 +4,7 @@ import json
 
 from booley.flows.sim.record.codec import (
     MANIFEST_SCHEMA,
-    encode_simulation_campaign_manifest,
+    encode_simulation_record_manifest,
 )
 from booley.flows.test_runs import build_test_run, test_run_document
 
@@ -32,7 +32,7 @@ def test_shared_manifest_has_current_test_runs():
         document = (
             manifest
             if isinstance(manifest, dict)
-            else json.loads(encode_simulation_campaign_manifest(manifest))
+            else json.loads(encode_simulation_record_manifest(manifest))
         )
         assert document["$schema"] == MANIFEST_SCHEMA, "shared fixture must use current manifest"
         for item in document["work_items"]:

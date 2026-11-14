@@ -326,19 +326,19 @@ def test_large_persisted_count_mapping_survives_actual_readers(tmp_path, monkeyp
 
 def _resume_hook_campaign(tmp_path, monkeypatch, interrupted, *, external=False):
     from booley.flows.sim.record.coordinator import (
-        CampaignPolicy,
-        ResumeCampaignRunRequest,
-        SimulationCampaign,
+        ResumeSimulationRecordRunRequest,
+        SimulationRecord,
+        SimulationRecordPolicy,
     )
-    from booley.flows.sim.record.model import create_simulation_campaign_plan
+    from booley.flows.sim.record.model import create_simulation_record_plan
     from booley.flows.sim.record.planning import manifest_digest
     from booley.flows.sim.record.resume import ValidatedManifestNode, ValidatedResumeManifest
-    from booley.flows.sim.record.store import CampaignStore
+    from booley.flows.sim.record.store import SimulationRecordStore
     from tests.flows.sim.simulation_record_test_support import _admission, _executor, _handle
     from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_campaign
 
     origin, original = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
-    store = CampaignStore(original.manifest_path.parent)
+    store = SimulationRecordStore(original.manifest_path.parent)
     if interrupted:
         (original.pre_sim_firings[0].path.parents[3] / "result.json").unlink()
     manifest = store.load_manifest()
@@ -348,13 +348,13 @@ def _resume_hook_campaign(tmp_path, monkeypatch, interrupted, *, external=False)
     invocation = tmp_path / "external/reports/1" if external else origin.parent / "2"
     invocation.mkdir(parents=True)
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
-    resumed = SimulationCampaign(_executor(tmp_path / "build", counters)).run(
-        ResumeCampaignRunRequest(
+    resumed = SimulationRecord(_executor(tmp_path / "build", counters)).run(
+        ResumeSimulationRecordRunRequest(
             validated,
-            create_simulation_campaign_plan(manifest),
+            create_simulation_record_plan(manifest),
             project,
             origin.parent,
-            CampaignPolicy(),
+            SimulationRecordPolicy(),
             invocation,
             _admission(),
         )
@@ -392,9 +392,9 @@ def test_resume_separates_historical_hooks_from_real_new_firings(
     assert result.detail["pre_sim_current"] == expected_runs
     assert result.detail["pre_sim_total"] == 1 + expected_runs
     assert result.detail["pre_sim_historical"] == 1
-    from booley.flows.sim.record import inspect_retained_campaign
+    from booley.flows.sim.record import inspect_retained_simulation_record
 
-    retained = inspect_retained_campaign(original.manifest_path)
+    retained = inspect_retained_simulation_record(original.manifest_path)
     assert all(firing.path in retained.retention_files for firing in resumed.pre_sim_firings)
 
 
@@ -436,14 +436,14 @@ def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counter
     from types import SimpleNamespace
 
     from booley.flows.sim.flow import PreparedSimulationEndpoint, SimulateFlow
-    from booley.flows.sim.record.coordinator import CampaignPolicy
-    from booley.flows.sim.record.model import create_simulation_campaign_plan
+    from booley.flows.sim.record.coordinator import SimulationRecordPolicy
+    from booley.flows.sim.record.model import create_simulation_record_plan
     from booley.flows.sim.record.planning import manifest_digest
     from booley.flows.sim.record.resume import ValidatedManifestNode, ValidatedResumeManifest
-    from booley.flows.sim.record.store import CampaignStore
+    from booley.flows.sim.record.store import SimulationRecordStore
     from tests.flows.sim.simulation_record_test_support import _executor, _handle
 
-    manifest = CampaignStore(original.manifest_path.parent).load_manifest()
+    manifest = SimulationRecordStore(original.manifest_path.parent).load_manifest()
     node = ValidatedManifestNode(original.manifest_path, manifest, manifest_digest(manifest))
     validated = ValidatedResumeManifest(node, (), (_handle(tmp_path / "project"),))
     invocation.mkdir(parents=True, exist_ok=True)
@@ -457,14 +457,14 @@ def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counter
         dry_run=False,
         mode=None,
     )
-    monkeypatch.setattr(flow, "_campaign_policy", CampaignPolicy)
+    monkeypatch.setattr(flow, "_campaign_policy", SimulationRecordPolicy)
     monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: invocation)
     # Destination admission/dependency publication is outside this typed execution test.
     monkeypatch.setattr(flow, "_prepare_campaign_resume_dependency", lambda *args: None)
     monkeypatch.setattr(
         flow,
         "_resume_campaign_plan",
-        lambda *args, **kwargs: create_simulation_campaign_plan(manifest),
+        lambda *args, **kwargs: create_simulation_record_plan(manifest),
     )
     monkeypatch.setattr(
         flow, "_resume_campaign_executor", lambda *args: _executor(invocation / "build", counters)
@@ -603,14 +603,14 @@ def _observed_hook_request(tmp_path, observer):
     from dataclasses import replace
 
     from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
-    from booley.flows.sim.record.store import CampaignStore
+    from booley.flows.sim.record.store import SimulationRecordStore
     from tests.flows.sim.simulation_record_test_support import _executor, _handle, _request
     from tests.flows.sim.test_endpoint_record_lifecycle import _pre_sim_plan
 
     (tmp_path / ".booley").mkdir(exist_ok=True)
     commands = ("echo observed-hook",)
     plan, _disclosures = _pre_sim_plan("immutable", commands, lambda document: None)
-    store = CampaignStore(tmp_path / "reports/1/targets/sim/record")
+    store = SimulationRecordStore(tmp_path / "reports/1/targets/sim/record")
     store.publish_manifest(plan.manifest)
     request = _request(
         store, plan.manifest, plan.manifest.document["work_items"][0], tmp_path, invocation=1
@@ -656,8 +656,8 @@ def test_actual_publication_observer_checkpoint_and_exception_semantics(tmp_path
 
 
 def _current_observed_hook_dag(tmp_path, monkeypatch, flow):
-    from booley.flows.sim.record.model import create_simulation_campaign_plan
-    from booley.flows.sim.record.store import CampaignStore
+    from booley.flows.sim.record.model import create_simulation_record_plan
+    from booley.flows.sim.record.store import SimulationRecordStore
     from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_campaign
     from tests.flows.sim.test_simulation_record_dependency import _add_observed_cycles
 
@@ -681,9 +681,9 @@ def _current_observed_hook_dag(tmp_path, monkeypatch, flow):
         invocation_directory=invocation,
         observer=flow._record_pre_sim_firing,
     )
-    manifest = CampaignStore(baseline.manifest_path.parent).load_manifest()
+    manifest = SimulationRecordStore(baseline.manifest_path.parent).load_manifest()
     prerequisites = flow._campaign_prerequisite_documents(
-        create_simulation_campaign_plan(manifest), baseline.manifest_path.relative_to(invocation)
+        create_simulation_record_plan(manifest), baseline.manifest_path.relative_to(invocation)
     )
     _, candidate = _successful_pre_sim_campaign(
         candidate_root,
@@ -723,20 +723,20 @@ def test_published_hook_collection_scans_each_campaign_once(tmp_path, monkeypatc
     from types import SimpleNamespace
 
     from booley.flows.sim.flow import SimulateFlow
-    from booley.flows.sim.record.store import CampaignStore
+    from booley.flows.sim.record.store import SimulationRecordStore
     from booley.runtime.endpoint_execution import EndpointOutcome
 
     flow = SimulateFlow()
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
     candidate = _current_observed_hook_dag(tmp_path, monkeypatch, flow)
     scans = Counter()
-    scan = CampaignStore.scan
+    scan = SimulationRecordStore.scan
 
     def counted(store, *args, **kwargs):
         scans[store.manifest_path] += 1
         return scan(store, *args, **kwargs)
 
-    monkeypatch.setattr(CampaignStore, "scan", counted)
+    monkeypatch.setattr(SimulationRecordStore, "scan", counted)
     result = flow._attach_published_pre_sim(
         EndpointOutcome(report_text=""), candidate.manifest_path
     )
@@ -919,7 +919,7 @@ def test_resume_count_budget_uses_only_actual_current_hook_keys(
 def test_prior_firing_reauthentication_rejects_byte_identical_symlink_attempt(
     tmp_path, monkeypatch
 ):
-    from booley.flows.sim.record import SimulationCampaignIntegrityError
+    from booley.flows.sim.record import SimulationRecordIntegrityError
     from tests.conftest import require_symlinks, symlink_or_skip
     from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_campaign
 
@@ -941,7 +941,7 @@ def test_prior_firing_reauthentication_rejects_byte_identical_symlink_attempt(
     assert (copy / "pre-sim/0001.json").read_bytes() == sidecar_bytes
     symlink_or_skip(directory, copy, target_is_directory=True)
     assert firing.path.read_bytes() == sidecar_bytes
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(SimulationRecordIntegrityError):
         collect_pre_sim_firings(prior=(firing,))
 
 
@@ -1087,7 +1087,7 @@ def test_shared_collection_bound_counts_distinct_prerequisite_references(tmp_pat
     from types import SimpleNamespace
 
     from booley.flows.sim.flow import SimulateFlow
-    from booley.flows.sim.record import SimulationCampaignIntegrityError, store
+    from booley.flows.sim.record import SimulationRecordIntegrityError, store
 
     flow = SimulateFlow()
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
@@ -1101,7 +1101,7 @@ def test_shared_collection_bound_counts_distinct_prerequisite_references(tmp_pat
     )
     assert len(collect_pre_sim_firings(*roots)) == 2
     monkeypatch.setattr(store, "_PRE_SIM_DAG_BOUND", 0)
-    with pytest.raises(SimulationCampaignIntegrityError, match="exceeds DAG bound"):
+    with pytest.raises(SimulationRecordIntegrityError, match="exceeds DAG bound"):
         collect_pre_sim_firings(*roots)
 
 

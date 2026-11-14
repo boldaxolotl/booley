@@ -13,18 +13,18 @@ import pytest
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record import serial_execution
 from booley.flows.sim.record.codec import (
-    SimulationCampaignIntegrityError,
-    encode_simulation_campaign_manifest,
+    SimulationRecordIntegrityError,
+    encode_simulation_record_manifest,
 )
 from booley.flows.sim.record.coordinator import (
-    CampaignPolicy,
-    NewCampaignRunRequest,
-    SimulationCampaign,
+    NewSimulationRecordRunRequest,
+    SimulationRecord,
+    SimulationRecordPolicy,
 )
-from booley.flows.sim.record.model import create_simulation_campaign_plan
+from booley.flows.sim.record.model import create_simulation_record_plan
 from booley.flows.sim.record.planning import finalize_manifest, manifest_digest
 from booley.flows.sim.record.run_directory import RunDirectory, claimed_run_directory
-from booley.flows.sim.record.store import CampaignStore
+from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.verilator_coverage import SimulationBuildResult
 from tests.flows.sim.simulation_record_test_support import (
     _admission,
@@ -128,13 +128,13 @@ class _Harness:
         self.invocation.mkdir(parents=True)
 
     def run(self, manifest=None):
-        plan = create_simulation_campaign_plan(manifest or literal_manifest(self.access))
-        return SimulationCampaign(self.executor).run(
-            NewCampaignRunRequest(
+        plan = create_simulation_record_plan(manifest or literal_manifest(self.access))
+        return SimulationRecord(self.executor).run(
+            NewSimulationRecordRunRequest(
                 plan,
                 self.project,
                 self.invocation.parent,
-                CampaignPolicy(),
+                SimulationRecordPolicy(),
                 self.invocation,
                 _admission(),
             )
@@ -153,7 +153,7 @@ def harness(request, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Harnes
 
 
 def test_missing_literal_run_cwd_fails_before_any_build(harness: _Harness) -> None:
-    with pytest.raises(SimulationCampaignIntegrityError, match=_MISSING) as caught:
+    with pytest.raises(SimulationRecordIntegrityError, match=_MISSING) as caught:
         harness.run()
 
     message = str(caught.value)
@@ -172,7 +172,7 @@ def test_linked_literal_run_cwd_fails_before_any_build(harness: _Harness) -> Non
     except OSError:
         pytest.skip("symlinks unavailable")
 
-    with pytest.raises(SimulationCampaignIntegrityError, match="not a link"):
+    with pytest.raises(SimulationRecordIntegrityError, match="not a link"):
         harness.run()
 
     harness.assert_nothing_built_or_published()
@@ -183,7 +183,7 @@ def test_existing_non_directory_literal_run_cwd_fails_before_any_build(
 ) -> None:
     (harness.project / "run").write_text("not a directory", encoding="utf-8")
 
-    with pytest.raises(SimulationCampaignIntegrityError, match="exists but is not a directory"):
+    with pytest.raises(SimulationRecordIntegrityError, match="exists but is not a directory"):
         harness.run()
 
     harness.assert_nothing_built_or_published()
@@ -230,7 +230,7 @@ def test_legacy_hook_never_runs_when_literal_run_cwd_is_missing(
 ) -> None:
     harness = _Harness(tmp_path, monkeypatch, "legacy-per-test")
 
-    with pytest.raises(SimulationCampaignIntegrityError, match=_MISSING):
+    with pytest.raises(SimulationRecordIntegrityError, match=_MISSING):
         harness.run()
 
     assert harness.hooks == []
@@ -242,7 +242,7 @@ def test_claim_rejects_literal_removed_after_preflight(tmp_path: Path) -> None:
     run = RunDirectory(missing, str(missing), False, tmp_path / "locks" / "gone.lock", None)
 
     with (
-        pytest.raises(SimulationCampaignIntegrityError, match=_MISSING) as caught,
+        pytest.raises(SimulationRecordIntegrityError, match=_MISSING) as caught,
         claimed_run_directory(run, identity=_IDENTITY),
     ):
         pass
@@ -258,12 +258,12 @@ def test_missing_literal_run_cwd_blocks_baseline_build_across_the_invocation(
     baseline_root = tmp_path / "baseline-worktree"
     (baseline_root / "run").mkdir(parents=True)
 
-    def request(manifest, root: Path) -> NewCampaignRunRequest:
-        return NewCampaignRunRequest(
-            create_simulation_campaign_plan(manifest),
+    def request(manifest, root: Path) -> NewSimulationRecordRunRequest:
+        return NewSimulationRecordRunRequest(
+            create_simulation_record_plan(manifest),
             root,
             harness.invocation.parent,
-            CampaignPolicy(),
+            SimulationRecordPolicy(),
             harness.invocation,
             _admission(),
         )
@@ -271,9 +271,9 @@ def test_missing_literal_run_cwd_blocks_baseline_build_across_the_invocation(
     baseline = request(_baseline_manifest(), baseline_root)
     candidate = request(literal_manifest("immutable"), harness.project)
 
-    with pytest.raises(SimulationCampaignIntegrityError, match=_MISSING):
+    with pytest.raises(SimulationRecordIntegrityError, match=_MISSING):
         SimulateFlow._publish_and_run_campaign_requests(
-            SimulationCampaign(harness.executor), [baseline], [candidate]
+            SimulationRecord(harness.executor), [baseline], [candidate]
         )
 
     assert harness.counters["compile"] == 0
@@ -287,9 +287,9 @@ def test_owner_missing_run_cwd_fails_before_prerequisite_build(
     harness = _Harness(tmp_path, monkeypatch, "immutable")
     baseline = _baseline_manifest()  # literal "run"
     (harness.project / "run").mkdir()
-    store = CampaignStore(harness.invocation / "targets" / "base-revision" / "record")
+    store = SimulationRecordStore(harness.invocation / "targets" / "base-revision" / "record")
     store.publish_manifest(baseline)
-    raw = encode_simulation_campaign_manifest(baseline)
+    raw = encode_simulation_record_manifest(baseline)
     baseline_json = json.loads(raw)
     owner_document = literal_document("immutable", configured="owner-run")
     owner_document.pop("fingerprints", None)
@@ -311,7 +311,7 @@ def test_owner_missing_run_cwd_fails_before_prerequisite_build(
         }
     ]
 
-    with pytest.raises(SimulationCampaignIntegrityError, match=_MISSING) as caught:
+    with pytest.raises(SimulationRecordIntegrityError, match=_MISSING) as caught:
         harness.run(finalize_manifest(owner_document))
 
     assert "owner-run" in str(caught.value)
@@ -320,9 +320,9 @@ def test_owner_missing_run_cwd_fails_before_prerequisite_build(
 
 def _prerequisite_entry(harness, manifest, slug: str) -> dict:
     """Publish ``manifest`` under the invocation and return the entry that references it."""
-    store = CampaignStore(harness.invocation / "targets" / slug / "record")
+    store = SimulationRecordStore(harness.invocation / "targets" / slug / "record")
     store.publish_manifest(manifest)
-    raw = encode_simulation_campaign_manifest(manifest)
+    raw = encode_simulation_record_manifest(manifest)
     document = json.loads(raw)
     return {
         "role": "cycle_count_baseline",
@@ -348,7 +348,7 @@ def test_nested_prerequisite_missing_run_cwd_fails_before_deeper_build(
     harness = _Harness(tmp_path, monkeypatch, "immutable")
     (harness.project / "run").mkdir()  # owner A and leaf C use the literal "run"
     leaf = _prerequisite_entry(harness, _baseline_manifest(), "leaf-revision")
-    middle_document = json.loads(encode_simulation_campaign_manifest(_baseline_manifest()))
+    middle_document = json.loads(encode_simulation_record_manifest(_baseline_manifest()))
     middle_document.pop("fingerprints")
     middle_document["simulation_record_id"] = "550e8400-e29b-41d4-a716-446655440001"
     middle_document["workload"]["run_cwd"]["configured"] = "middle-run"
@@ -357,7 +357,7 @@ def test_nested_prerequisite_missing_run_cwd_fails_before_deeper_build(
     owner_document = literal_document("immutable")
     owner_document["prerequisites"] = [middle]
 
-    with pytest.raises(SimulationCampaignIntegrityError, match=_MISSING) as caught:
+    with pytest.raises(SimulationRecordIntegrityError, match=_MISSING) as caught:
         harness.run(finalize_manifest(owner_document))
 
     assert "middle-run" in str(caught.value)
@@ -377,7 +377,7 @@ def test_missing_literal_run_cwd_fails_coverage_before_attempt(
             builds.append(request)
             return SimulationBuildResult(True)
 
-    with pytest.raises(SimulationCampaignIntegrityError, match=_MISSING):
+    with pytest.raises(SimulationRecordIntegrityError, match=_MISSING):
         _run_coverage_campaign(tmp_path, CountingNative())
 
     store = tmp_path / "reports/1/targets/sim_0/record"

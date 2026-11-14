@@ -7,7 +7,7 @@ import json
 import pytest
 
 from booley.flows.sim.record import codec
-from booley.flows.sim.record.codec import SimulationCampaignIntegrityError
+from booley.flows.sim.record.codec import SimulationRecordIntegrityError
 from tests.flows.sim.test_simulation_record_codec_golden import (
     _BUILD_READY,
     _simulation_result,
@@ -25,7 +25,7 @@ from tests.flows.sim.test_simulation_record_model import _attempt
     ],
 )
 def test_json_resource_validation_rejects_unsupported_or_oversized_values(value: object) -> None:
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(SimulationRecordIntegrityError):
         codec._validate_json(value)
 
 
@@ -33,7 +33,7 @@ def test_json_resource_validation_rejects_excessive_depth() -> None:
     value: object = None
     for _ in range(codec.MAX_JSON_DEPTH + 2):
         value = [value]
-    with pytest.raises(SimulationCampaignIntegrityError, match="nesting"):
+    with pytest.raises(SimulationRecordIntegrityError, match="nesting"):
         codec._validate_json(value)
 
 
@@ -47,43 +47,43 @@ def test_json_resource_validation_rejects_excessive_depth() -> None:
     ],
 )
 def test_scalar_contract_helpers_reject_invalid_values(function, value: object) -> None:
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(SimulationRecordIntegrityError):
         function(value, "field")
 
 
 def test_codec_rejects_non_json_wrong_shape_and_wrong_schema() -> None:
-    with pytest.raises(SimulationCampaignIntegrityError, match="canonical JSON"):
+    with pytest.raises(SimulationRecordIntegrityError, match="canonical JSON"):
         codec.canonical_json_bytes({"value": object()})
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(SimulationRecordIntegrityError):
         codec.decode_bundle_build_result(codec.canonical_json_bytes([]))
     document = json.loads(_BUILD_READY)
     document["$schema"] = "unknown"
-    with pytest.raises(SimulationCampaignIntegrityError, match="unsupported"):
+    with pytest.raises(SimulationRecordIntegrityError, match="unsupported"):
         codec.decode_bundle_build_result(codec.canonical_json_bytes(document))
 
 
 def test_common_timestamps_must_be_canonical_utc() -> None:
-    with pytest.raises(SimulationCampaignIntegrityError, match="RFC3339"):
+    with pytest.raises(SimulationRecordIntegrityError, match="RFC3339"):
         codec._validate_common({"created_at": "not-a-date"})
-    with pytest.raises(SimulationCampaignIntegrityError, match="RFC3339"):
+    with pytest.raises(SimulationRecordIntegrityError, match="RFC3339"):
         codec._validate_common({"created_at": "2026-09-21T10:00:00.1Z"})
 
 
 def test_encoder_and_path_type_guards() -> None:
-    with pytest.raises(SimulationCampaignIntegrityError, match="expected"):
+    with pytest.raises(SimulationRecordIntegrityError, match="expected"):
         codec.encode_simulation_result(codec.decode_bundle_build_result(_BUILD_READY))  # type: ignore[arg-type]
-    with pytest.raises(SimulationCampaignIntegrityError, match="unsupported"):
-        codec.encode_simulation_campaign_document(object())  # type: ignore[arg-type]
-    with pytest.raises(SimulationCampaignIntegrityError, match="1 KiB"):
+    with pytest.raises(SimulationRecordIntegrityError, match="unsupported"):
+        codec.encode_simulation_record_document(object())  # type: ignore[arg-type]
+    with pytest.raises(SimulationRecordIntegrityError, match="1 KiB"):
         codec.validate_relative_path("x" * (codec.MAX_PATH_BYTES + 1))
 
 
 def test_additional_scalar_and_collection_ceilings() -> None:
-    with pytest.raises(SimulationCampaignIntegrityError, match="UUIDv4"):
+    with pytest.raises(SimulationRecordIntegrityError, match="UUIDv4"):
         codec._require_uuid("bad", "field")
-    with pytest.raises(SimulationCampaignIntegrityError, match="invalid"):
+    with pytest.raises(SimulationRecordIntegrityError, match="invalid"):
         codec._require_variant_id("variant:bad")
-    with pytest.raises(SimulationCampaignIntegrityError, match="capped"):
+    with pytest.raises(SimulationRecordIntegrityError, match="capped"):
         codec._exact_list([None, None], "values", 1)
 
 
@@ -178,7 +178,7 @@ def test_reader_rejects_corrupt_record(tmp_path, reader, error):
 
     files = Path(__file__).parents[1] / "fixtures/simulation_record"
     readers = {
-        "manifest": (codec.decode_simulation_campaign_manifest, _manifest),
+        "manifest": (codec.decode_simulation_record_manifest, _manifest),
         "attempt": (codec.decode_simulation_attempt, _attempt),
         "build_attempt": (
             codec.decode_bundle_build_attempt,
@@ -203,7 +203,7 @@ def test_reader_rejects_corrupt_record(tmp_path, reader, error):
     elif error == "missing":
         del document[next(key for key in document if key != "$schema")]
     raw = b"{" if error == "truncated" else codec.canonical_json_bytes(document)
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(SimulationRecordIntegrityError):
         decode(raw)
 
 
@@ -227,15 +227,15 @@ def test_manifest_decode_does_not_revalidate_planned_sections() -> None:
     item["fingerprint_sha256"] = "not-a-digest"
     document["fingerprints"]["unexpected"] = "not-a-digest"
     raw = codec.canonical_json_bytes(document)
-    assert codec.decode_simulation_campaign_manifest(raw).canonical_bytes() == raw
+    assert codec.decode_simulation_record_manifest(raw).canonical_bytes() == raw
 
 
 def test_manifest_reader_rejects_a_wrong_nested_type() -> None:
     document = _manifest()
     document["workload"]["run_cwd"]["configured"] = 7
     raw = codec.canonical_json_bytes(document)
-    with pytest.raises(SimulationCampaignIntegrityError, match=r"run_cwd\.configured"):
-        codec.decode_simulation_campaign_manifest(raw)
+    with pytest.raises(SimulationRecordIntegrityError, match=r"run_cwd\.configured"):
+        codec.decode_simulation_record_manifest(raw)
 
 
 def _prerequisite_entry() -> dict[str, object]:
@@ -270,7 +270,7 @@ def _prerequisite_entry() -> dict[str, object]:
     ids=["workload-run-cwd", "target-selector", "work-item-kind", "prerequisite-manifest-path"],
 )
 def test_manifest_reader_rejects_a_missing_nested_field(tmp_path, path, field) -> None:
-    from booley.flows.sim.record.inspection import inspect_retained_campaign
+    from booley.flows.sim.record.inspection import inspect_retained_simulation_record
 
     document = _manifest()
     document["prerequisites"] = [_prerequisite_entry()]
@@ -279,10 +279,10 @@ def test_manifest_reader_rejects_a_missing_nested_field(tmp_path, path, field) -
         parent = parent[part]  # type: ignore[index]
     del parent[path[-1]]  # type: ignore[attr-defined,arg-type]
     raw = codec.canonical_json_bytes(document)
-    with pytest.raises(SimulationCampaignIntegrityError, match=field):
-        codec.decode_simulation_campaign_manifest(raw)
+    with pytest.raises(SimulationRecordIntegrityError, match=field):
+        codec.decode_simulation_record_manifest(raw)
     manifest = tmp_path / "record" / "manifest.json"
     manifest.parent.mkdir()
     manifest.write_bytes(raw)
-    with pytest.raises(SimulationCampaignIntegrityError, match=field):
-        inspect_retained_campaign(manifest)
+    with pytest.raises(SimulationRecordIntegrityError, match=field):
+        inspect_retained_simulation_record(manifest)
