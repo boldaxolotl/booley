@@ -590,7 +590,7 @@ def _publish_current_base_simulation(layout):
     path.write_bytes(encode_simulation_record_manifest(manifest))
     facts = simulation_record_facts()
     facts.update(
-        simulation_record_id=manifest.document["simulation_record_id"],
+        campaign_id=manifest.document["simulation_record_id"],
         manifest_sha256=manifest_digest(manifest),
         origin={"execution_id": "b" * 32, "invocation_id": 8},
         target={"identity": "::base:0#base", "selector": "base"},

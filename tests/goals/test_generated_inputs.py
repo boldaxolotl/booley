@@ -178,9 +178,7 @@ def classified(
         path, raw, digest, retired_manifest, older_layout_invocation
     )
     facts = simulation_record_facts()
-    facts.update(
-        simulation_record_id=manifest.document["simulation_record_id"], manifest_sha256=digest
-    )
+    facts.update(campaign_id=manifest.document["simulation_record_id"], manifest_sha256=digest)
     recorder = GoalEvidenceRecorder(bind(layout))
     state = DevelopmentState.load(paths.state_file, recorder.state_persistence())
     shadow = DevelopmentState.from_json_object(state.to_dict())

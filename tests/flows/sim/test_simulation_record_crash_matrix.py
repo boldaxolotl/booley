@@ -819,11 +819,11 @@ def _resume_real_hook_crash(tmp_path, invocation, store):
 def test_process_death_at_actual_hook_publication_recovers_immutable_evidence(
     tmp_path, monkeypatch, access, side
 ):
-    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_simulation_record
+    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
 
     crash = _CrashOnce(f"{side}:pre_sim_evidence")
     with pytest.raises(_InjectedProcessDeath):
-        _successful_pre_simulation_record(tmp_path, monkeypatch, access, checkpoint=crash)
+        _successful_pre_sim_record(tmp_path, monkeypatch, access, checkpoint=crash)
     assert crash.tripped
     invocation = tmp_path / "reports/1"
     store = SimulationRecordStore(invocation / "targets/sim/record")

@@ -154,7 +154,7 @@ def _bind_result_to_interrupted_attempt(result: dict) -> None:
     ("mutation", "message"),
     [
         (
-            _attempt_mutation(1, lambda value: value.update(simulation_record_id="other")),
+            _attempt_mutation(1, lambda value: value.update(campaign_id="other")),
             "do not bind",
         ),
         (
@@ -171,7 +171,7 @@ def _bind_result_to_interrupted_attempt(result: dict) -> None:
         (_drop_resumed_attempt, "one interrupted and one resumed attempt"),
         (_result_mutation(_bind_result_to_interrupted_attempt), "bind the resumed attempt"),
         (
-            _result_mutation(lambda value: value.update(simulation_record_id="other")),
+            _result_mutation(lambda value: value.update(campaign_id="other")),
             "resumed result does",
         ),
         (_result_mutation(lambda value: value.update(state="aborted")), "did not complete"),
@@ -198,7 +198,7 @@ def test_taxi_batch_validator_rejects_foreign_interrupted_attempt_copy(
     taxi, tmp_path: Path
 ) -> None:
     simulation_record, interrupted = _taxi_batch_files(tmp_path)
-    _rewrite(interrupted, lambda attempt: attempt.update(simulation_record_id="other"))
+    _rewrite(interrupted, lambda attempt: attempt.update(campaign_id="other"))
     with pytest.raises(ValueError, match="copy differs from the Campaign's first attempt"):
         taxi.validate_cocotb_batch(simulation_record, interrupted)
 

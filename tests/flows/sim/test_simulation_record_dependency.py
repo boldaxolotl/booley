@@ -45,7 +45,7 @@ def _two_role_simulation_records(tmp_path, monkeypatch):
     from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.record.model import create_simulation_record_plan
     from booley.flows.sim.record.store import SimulationRecordStore
-    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_simulation_record
+    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
 
     _add_observed_cycles(monkeypatch)
     baseline_root = tmp_path / "baseline"
@@ -58,7 +58,7 @@ def _two_role_simulation_records(tmp_path, monkeypatch):
         document["simulation_record_id"] = SIMULATION_RECORD_ID
         document["target"].update(role="cycle_count_baseline", revision="baseline")
 
-    _, baseline = _successful_pre_simulation_record(
+    _, baseline = _successful_pre_sim_record(
         baseline_root,
         monkeypatch,
         "immutable",
@@ -69,7 +69,7 @@ def _two_role_simulation_records(tmp_path, monkeypatch):
     prerequisites = SimulateFlow._simulation_record_prerequisite_documents(
         create_simulation_record_plan(manifest), baseline.manifest_path.relative_to(invocation)
     )
-    _, candidate = _successful_pre_simulation_record(
+    _, candidate = _successful_pre_sim_record(
         candidate_root,
         monkeypatch,
         "immutable",
@@ -167,7 +167,7 @@ def test_dependency_receipt_round_trips_same_and_cross_root_paths(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("campaign_id", "digest"),
+    ("simulation_record_id", "digest"),
     [
         ("not-a-uuid", "sha256:" + "0" * 64),
         (SIMULATION_RECORD_ID, "sha256:not-a-digest"),

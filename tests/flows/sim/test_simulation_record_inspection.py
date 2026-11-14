@@ -233,9 +233,9 @@ def test_pre_sim_reader_rejects_corrupt_record(tmp_path, error):
 
 
 def test_pre_sim_inspection_rereads_evidence_and_rejects_later_tampering(tmp_path, monkeypatch):
-    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_simulation_record
+    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
 
-    invocation, outcome = _successful_pre_simulation_record(tmp_path, monkeypatch, "immutable")
+    invocation, outcome = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
     firing = outcome.pre_sim_firings[0]
     store = SimulationRecordStore(invocation / "targets/sim/record")
 
@@ -272,9 +272,9 @@ def test_pre_sim_inspection_rereads_evidence_and_rejects_later_tampering(tmp_pat
     ids=lambda value: None if value is None else str(value)[:32],
 )
 def test_pre_sim_reader_rejects_bad_binding(tmp_path, monkeypatch, defect, value, message):
-    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_simulation_record
+    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
 
-    invocation, outcome = _successful_pre_simulation_record(tmp_path, monkeypatch, "immutable")
+    invocation, outcome = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
     firing = outcome.pre_sim_firings[0]
     result_path = firing.path.parents[3] / "result.json"
     if value is not None:
@@ -309,9 +309,9 @@ def test_pre_sim_reader_rejects_bad_binding(tmp_path, monkeypatch, defect, value
 
 
 def _pre_sim_read_case(tmp_path, monkeypatch, *, interrupted=False):
-    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_simulation_record
+    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
 
-    invocation, outcome = _successful_pre_simulation_record(tmp_path, monkeypatch, "immutable")
+    invocation, outcome = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
     firing = outcome.pre_sim_firings[0]
     store = SimulationRecordStore(invocation / "targets/sim/record")
     if interrupted:

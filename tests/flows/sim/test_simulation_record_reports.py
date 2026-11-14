@@ -341,9 +341,9 @@ def _resume_hook_simulation_record(tmp_path, monkeypatch, interrupted, *, extern
     from booley.flows.sim.record.resume import ValidatedManifestNode, ValidatedResumeManifest
     from booley.flows.sim.record.store import SimulationRecordStore
     from tests.flows.sim.simulation_record_test_support import _admission, _executor, _handle
-    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_simulation_record
+    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
 
-    origin, original = _successful_pre_simulation_record(tmp_path, monkeypatch, "immutable")
+    origin, original = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
     store = SimulationRecordStore(original.manifest_path.parent)
     if interrupted:
         (original.pre_sim_firings[0].path.parents[3] / "result.json").unlink()
@@ -412,9 +412,9 @@ def test_hook_reference_resolves_from_numbered_report_and_requires_external_cont
         _pre_sim_projection,
         _simulation_record_hook_inputs,
     )
-    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_simulation_record
+    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
 
-    invocation, outcome = _successful_pre_simulation_record(tmp_path, monkeypatch, "immutable")
+    invocation, outcome = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
     detail = _pre_sim_projection(
         *_simulation_record_hook_inputs([outcome], invocation), invocation
     )[0]
@@ -673,7 +673,7 @@ def test_actual_publication_observer_checkpoint_and_exception_semantics(tmp_path
 def _current_observed_hook_dag(tmp_path, monkeypatch, flow):
     from booley.flows.sim.record.model import create_simulation_record_plan
     from booley.flows.sim.record.store import SimulationRecordStore
-    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_simulation_record
+    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
     from tests.flows.sim.test_simulation_record_dependency import _add_observed_cycles
 
     _add_observed_cycles(monkeypatch)
@@ -688,7 +688,7 @@ def _current_observed_hook_dag(tmp_path, monkeypatch, flow):
         document["simulation_record_id"] = "01234567-89ab-4def-8123-456789abcdef"
         document["target"].update(role="cycle_count_baseline", revision="baseline")
 
-    _, baseline = _successful_pre_simulation_record(
+    _, baseline = _successful_pre_sim_record(
         baseline_root,
         monkeypatch,
         "immutable",
@@ -700,7 +700,7 @@ def _current_observed_hook_dag(tmp_path, monkeypatch, flow):
     prerequisites = flow._simulation_record_prerequisite_documents(
         create_simulation_record_plan(manifest), baseline.manifest_path.relative_to(invocation)
     )
-    _, candidate = _successful_pre_simulation_record(
+    _, candidate = _successful_pre_sim_record(
         candidate_root,
         monkeypatch,
         "immutable",
@@ -940,12 +940,10 @@ def test_prior_firing_reauthentication_rejects_byte_identical_symlink_attempt(
 ):
     from booley.flows.sim.record import SimulationRecordIntegrityError
     from tests.conftest import require_symlinks, symlink_or_skip
-    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_simulation_record
+    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
 
     require_symlinks(tmp_path)
-    _invocation, simulation_record = _successful_pre_simulation_record(
-        tmp_path, monkeypatch, "immutable"
-    )
+    _invocation, simulation_record = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
     firing = simulation_record.pre_sim_firings[0]
     directory = firing.path.parent.parent
     copy = tmp_path / "copied-attempt"

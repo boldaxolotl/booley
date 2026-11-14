@@ -116,7 +116,7 @@ def _hook_executor(build, disclosures, mutate_snapshot, checkpoint):
     )
 
 
-def _successful_pre_simulation_record(
+def _successful_pre_sim_record(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     access: str,
@@ -214,9 +214,7 @@ def test_successful_pre_sim_firing_reaches_public_reports(
 
     from booley.flows.endpoint_reporting import _publish_console_report, write_report
 
-    invocation, simulation_record = _successful_pre_simulation_record(
-        tmp_path, monkeypatch, access
-    )
+    invocation, simulation_record = _successful_pre_sim_record(tmp_path, monkeypatch, access)
     flow = SimulateFlow()
     flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
@@ -247,7 +245,7 @@ def test_successful_pre_sim_firing_reaches_public_reports(
 def test_failed_hook_reports_real_exit_code_without_changing_adapter_grade(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, access: str
 ) -> None:
-    invocation, simulation_record = _successful_pre_simulation_record(
+    invocation, simulation_record = _successful_pre_sim_record(
         tmp_path, monkeypatch, access, commands=("echo failed-out; echo failed-err >&2; exit 7",)
     )
     flow = SimulateFlow()
@@ -268,7 +266,7 @@ def test_downstream_integrity_failure_retains_authenticated_current_hook(
     flow = SimulateFlow()
     flow._current_published_pre_sim_keys = set()
     with pytest.raises(SimulationRecordIntegrityError):
-        _successful_pre_simulation_record(
+        _successful_pre_sim_record(
             tmp_path,
             monkeypatch,
             "immutable",
@@ -287,9 +285,7 @@ def test_downstream_integrity_failure_retains_authenticated_current_hook(
 def test_endpoint_reauthentication_never_renders_corrupt_hook_as_authoritative(
     tmp_path, monkeypatch
 ):
-    invocation, simulation_record = _successful_pre_simulation_record(
-        tmp_path, monkeypatch, "immutable"
-    )
+    invocation, simulation_record = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
     flow = SimulateFlow()
     flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
@@ -1560,7 +1556,7 @@ def _assert_coverage_failure_counts(flow, reports, returned):
 def test_simulation_record_executor_uses_frozen_hook_commands_despite_live_config_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, access: str
 ) -> None:
-    _invocation, outcome = _successful_pre_simulation_record(
+    _invocation, outcome = _successful_pre_sim_record(
         tmp_path,
         monkeypatch,
         access,
@@ -1708,7 +1704,7 @@ def test_actual_hook_fires_once_for_two_test_cocotb_batch(tmp_path, monkeypatch)
         )
 
     monkeypatch.setattr(_Group, "launch_snapshot", two_results)
-    invocation, outcome = _successful_pre_simulation_record(
+    invocation, outcome = _successful_pre_sim_record(
         tmp_path, monkeypatch, "immutable", transform=_cocotb_hook_plan
     )
     assert outcome.aggregate_grade == "pass"
@@ -2098,7 +2094,7 @@ def test_hook_success_survives_build_failure(tmp_path, monkeypatch):
     failed = replace(failed, tests=(replace(failed.tests[0], name="alpha"),))
     monkeypatch.setattr(_Group, "finish_build_failure", lambda self: failed, raising=False)
     monkeypatch.setattr(_Group, "compile", fail_build)
-    invocation, simulation_record = _successful_pre_simulation_record(
+    invocation, simulation_record = _successful_pre_sim_record(
         tmp_path, monkeypatch, "legacy-per-test"
     )
     flow = SimulateFlow()
@@ -2195,7 +2191,7 @@ def test_pre_sim_read_rejects_result_reference_without_published_firing(tmp_path
     from booley.flows.sim.record import SimulationRecordIntegrityError
     from booley.flows.sim.record.store import SimulationRecordStore
 
-    invocation, outcome = _successful_pre_simulation_record(tmp_path, monkeypatch, "immutable")
+    invocation, outcome = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
     outcome.pre_sim_firings[0].path.unlink()
     store = SimulationRecordStore(invocation / "targets/sim/record")
 
