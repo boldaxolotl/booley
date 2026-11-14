@@ -367,12 +367,22 @@ The `[feedback]` table tunes only that redaction:
 # redact_identifiers = false    # keep module and Target names (default: replace them)
 ```
 
-**Replaced:** absolute paths (Project Root, home directory, any `/home/<user>`),
-Git remote URLs and their `org/repo`, your Git name and email, and the design
-names in `booley.toml` and your `.core` files (Project name, Target names, VLNV
-parts, toplevels). Design names become stable placeholders such as `<module-3>`,
-so the report still reads. `redact_extra` terms are replaced too, as are any
-`[stealth]` `banned_words` and `banned_substrings` you set.
+**Replaced:**
+
+| What | Becomes |
+|---|---|
+| Project Root, in every checkout of the repository | `<repo>` |
+| Your home directory, and any `/home/<user>`, `/Users/<user>`, or `C:\Users\<user>` path | `<home>` |
+| Git remote URLs | `<remote>` |
+| The remote's `org/repo` | `<org>/<repo>` |
+| Your Git name and email | `<author>`, `<author-email>` |
+| Any other email address | `<email>` |
+| Design names: the Project name, checkout folder names, and the Target names, VLNV parts, and toplevels in your `.core` files | `<module-1>`, `<module-2>`, … |
+| `redact_extra` terms, and any `[stealth]` `banned_words` and `banned_substrings` | `<redacted>` |
+
+Each design name keeps the same number throughout, so the report still reads.
+`redact_identifiers = false` keeps design names as they are. Names shorter than
+four characters, and generic ones such as `top` or `core`, are never replaced.
 
 **Kept**, because a report without them can't be acted on: EDA tool names and
 versions, error text, tracebacks, and timing and area numbers. A design name
