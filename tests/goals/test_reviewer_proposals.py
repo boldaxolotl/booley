@@ -17,7 +17,7 @@ from booley.goals.proposals import ProposalError
 from booley.goals.status import build_status
 from booley.goals.store import GoalStore
 from tests.goals.conftest import enter_goals
-from tests.goals.test_mcp_routing import _goal_reviewer_endpoint
+from tests.goals.test_mcp_routing import BUGS_DISCOVERY_CALLS, _goal_reviewer_endpoint
 from tests.goals.test_proposal_wire import sdk
 from tests.goals.test_proposals import observations
 
@@ -107,7 +107,7 @@ def test_modern_review_relaxation_preserves_actual_specialist_receipt(
     source = derived["detail"]["goal_derivation"]["source_evidence"][0]
     assert source["sequence"] == original["sequence"]
     assert source["criterion"] == original["criterion"]
-    assert provider.call_count == 1
+    assert provider.call_count == BUGS_DISCOVERY_CALLS
     replay, replay_provider = _goal_reviewer_endpoint(layout, monkeypatch)
     assert replay._run().exit_code == 0
     assert replay_provider.call_count == 0
@@ -115,7 +115,7 @@ def test_modern_review_relaxation_preserves_actual_specialist_receipt(
     (layout.worktree / "rtl.v").write_text("module top; wire changed; endmodule\n")
     changed, changed_provider = _goal_reviewer_endpoint(layout, monkeypatch)
     assert changed._run().exit_code == 0
-    assert changed_provider.call_count == 1
+    assert changed_provider.call_count == BUGS_DISCOVERY_CALLS
 
 
 def test_review_retarget_explains_evidence_reset_and_rejects_unchanged_contract(
