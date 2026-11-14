@@ -1,4 +1,4 @@
-"""Validated ``[worktree]`` configuration: the idle age ``booley worktree gc`` uses."""
+"""Validated ``[worktree]`` configuration: where ``booley chat`` starts and the gc idle age."""
 
 import re
 import tomllib
@@ -10,6 +10,8 @@ from typing import Any
 from booley.core.boundary import require_dict, require_str_value
 
 DEFAULT_GC_OLDER_THAN = "7d"
+CHAT_MODES = ("auto", "always", "never")
+DEFAULT_CHAT_MODE = "auto"
 
 _AGE = re.compile(r"(?:([0-9]+)d)?(?:([0-9]+)h)?(?:([0-9]+)m)?(?:([0-9]+)s)?")
 _AGE_UNIT_SECONDS = (86400, 3600, 60, 1)
@@ -72,3 +74,22 @@ def gc_older_than(booley_dir: Path) -> GcAge:
         return parse_gc_older_than(data)
     except ValueError as exc:
         raise ValueError(f"booley.toml {exc}") from exc
+
+
+def parse_chat_mode(data: Mapping[str, Any]) -> str:
+    """Validate ``[worktree].chat`` without filesystem access; return the placement mode."""
+    section = require_dict(data.get("worktree", {}), field="[worktree]")
+    value = section.get("chat", DEFAULT_CHAT_MODE)
+    if value not in CHAT_MODES:
+        raise ValueError("[worktree].chat must be one of " + ", ".join(CHAT_MODES))
+    return str(value)
+
+
+def chat_mode(booley_dir: Path) -> str:
+    """Read ``[worktree].chat`` from *booley_dir*'s ``booley.toml`` (default ``auto``)."""
+    path = booley_dir / "booley.toml"
+    if not path.exists():
+        return DEFAULT_CHAT_MODE
+    with path.open("rb") as handle:
+        data = tomllib.load(handle)
+    return parse_chat_mode(data)
