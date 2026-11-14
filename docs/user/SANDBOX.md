@@ -281,7 +281,7 @@ that changes a version the base image ships.
 The base image checks its own
 cocotb at build time; that check doesn't cover yours, so the first
 `booley flow sim` after the rebuild is your test of the combination. See
-[Cocotb Targets](TARGETS.md#cocotb-targets-python-testbenches).
+[Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches).
 
 </details>
 
@@ -313,7 +313,7 @@ The file is read only when the image is built. After changing it, rebuild
 For cocotb 1.x
 and BFM packages, also read [Baking the cocotb stack into the
 image](#baking-the-cocotb-stack-into-the-image). See also
-[Cocotb Targets](TARGETS.md#cocotb-targets-python-testbenches).
+[Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches).
 
 </details>
 

@@ -275,7 +275,8 @@ is added.
 - When a tool changes what the user sees or does, put the difference in a
   `With <Tool>` callout (`With Verilator`, `With Xcelium`).
 - Tool setup, such as waiver files and rule configs, goes in that tool's
-  Target recipe in `TARGETS.md`; the Flow doc links it.
+  Target recipe in the Flow doc. `TARGETS.md` covers only what every Flow's
+  Targets share.
 - Hard limits stay in the main text. So does example output, labeled with
   the tool that produced it: "Example (Verilator):".
 

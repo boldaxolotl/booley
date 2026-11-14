@@ -624,7 +624,7 @@ To check:
 Doctor skips Cocotb Targets, which take their verdict from cocotb. If the
 warning says the testbench fileset is Python, the Target is missing
 `cocotb_module`; see
-[Cocotb Targets](https://booley.dev/docs/targets/#cocotb-targets-python-testbenches).
+[Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches).
 
 </details>
 
@@ -650,7 +650,7 @@ without `--trace`. A failure or timeout keeps its verdict.
 A Cocotb Target uses no sentinels: its Test Run is inconclusive when cocotb's
 result file is missing or doesn't report that test as passed or failed, and
 its log contains `cocotb sim INCONCLUSIVE (<reason>)`. See
-[Cocotb Targets](https://booley.dev/docs/targets/#cocotb-targets-python-testbenches).
+[Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches).
 
 </details>
 
