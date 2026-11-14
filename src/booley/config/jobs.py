@@ -18,8 +18,14 @@ logger = logging.getLogger(__name__)
 
 _CLASS_LIGHT = "light"
 
-#: ``[jobs]`` keys that memory admission replaced; ``booley.toml`` may no longer set them.
-RETIRED_JOBS_KEYS = ("max_heavy", "heavy_memory")
+_MEMORY_ADMISSION = "memory admission replaced it"
+
+#: Retired ``[jobs]`` keys and why; ``booley.toml`` may no longer set them.
+RETIRED_JOBS_KEYS: dict[str, str] = {
+    "max_heavy": _MEMORY_ADMISSION,
+    "heavy_memory": _MEMORY_ADMISSION,
+    "queue_max": "the Job queue has no limit: a Job waits until it runs or is cancelled",
+}
 
 #: The commercial EDA tools Booley provisions: the ones that take a licence seat.
 #: Open-source tools have no Seat Cap.
@@ -37,10 +43,9 @@ def seat_cap_fix(tool: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class SlotCaps:
-    """Per-class concurrency caps and the global queue bound."""
+    """Per-class concurrency caps."""
 
     max_light: int = 3
-    queue_max: int = 8
 
     def cap_for(self, job_class: str) -> int:
         """Return the validated cap for a Runtime job class."""
@@ -60,30 +65,20 @@ def parse_caps(data: dict) -> SlotCaps:
     if not isinstance(section, dict):
         logger.warning("[jobs] is not a table; using defaults")
         return defaults
-    values = {
-        "max_light": defaults.max_light,
-        "queue_max": defaults.queue_max,
-    }
-    non_cap_keys = {*RETIRED_JOBS_KEYS, "max_tickets", "memory_budget", "seats"}
-    for key, default in tuple(values.items()):
-        if key not in section:
-            continue
-        value = section[key]
-        floor = 0 if key == "queue_max" else 1
-        if isinstance(value, int) and not isinstance(value, bool) and value >= floor:
-            values[key] = value
+    max_light = defaults.max_light
+    if "max_light" in section:
+        value = section["max_light"]
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+            max_light = value
         else:
             logger.warning(
-                "[jobs] %s = %r is invalid (int >= %d); using %d",
-                key,
-                value,
-                floor,
-                default,
+                "[jobs] max_light = %r is invalid (int >= 1); using %d", value, max_light
             )
+    non_cap_keys = {*RETIRED_JOBS_KEYS, "max_light", "max_tickets", "memory_budget", "seats"}
     for key in section:
-        if key not in values and key not in non_cap_keys:
+        if key not in non_cap_keys:
             logger.warning("[jobs] has unknown key %r (ignored)", key)
-    return SlotCaps(**values)
+    return SlotCaps(max_light=max_light)
 
 
 def parse_seat_caps(data: Mapping[str, Any]) -> dict[str, int]:
@@ -139,7 +134,7 @@ def required_seats(tools: Iterable[str], data: Mapping[str, Any]) -> tuple[tuple
 
 
 class RetiredJobsKeyError(ValueError):
-    """``booley.toml`` still sets a ``[jobs]`` key that memory admission replaced."""
+    """``booley.toml`` still sets a ``[jobs]`` key that was retired."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,16 +215,17 @@ def retired_jobs_keys(path: Path) -> tuple[RetiredKey, ...]:
 
 def retired_jobs_keys_fix(found: RetiredKey) -> str:
     """The one-line repair for a retired key (the message, Doctor and ``booley-heal`` say it)."""
-    return f"delete [jobs].{found.key} (line {found.line}); memory admission replaced it"
+    return f"delete [jobs].{found.key} (line {found.line}); {RETIRED_JOBS_KEYS[found.key]}"
 
 
 def retired_jobs_keys_message(path: Path, found: Iterable[RetiredKey]) -> str:
     """The refusal text naming each retired key and its line, the edit, and ``booley-heal``."""
-    named = ", ".join(f"{item.key} (line {item.line})" for item in found)
+    named = ", ".join(
+        f"{item.key} (line {item.line}: {RETIRED_JOBS_KEYS[item.key]})" for item in found
+    )
     return (
         f"booley.toml sets retired [jobs] keys: {named}. "
-        f"Fix: delete these lines from {path}; memory admission replaced them "
-        "(or run booley-heal to remove them)."
+        f"Fix: delete these lines from {path} (or run booley-heal to remove them)."
     )
 
 

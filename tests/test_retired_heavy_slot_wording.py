@@ -1,8 +1,9 @@
-"""Guard: nothing refers to the retired heavy Job Slot class or its switch and keys.
+"""Guard: nothing refers to the retired heavy Job Slot class, the queue bound, or their keys.
 
 Memory admission is how EDA Jobs are admitted (ADR 0087). The heavy Job Slot
-class, ``max_heavy``, ``heavy_memory`` and the development switch are gone. Only
-the code and docs that explain the retirement may still name them.
+class, ``max_heavy``, ``heavy_memory`` and the development switch are gone, and
+so is the queue bound: ``[jobs].queue_max``, ``QueueFullError`` and every queue-full
+path (#4066). Only the code and docs that explain the retirements may still name them.
 """
 
 from __future__ import annotations
@@ -101,3 +102,37 @@ def test_job_glossary_entries_speak_of_the_memory_budget() -> None:
         entry = _glossary_entry(name)
         assert "Memory Budget" in entry, f"**{name}** does not name the Memory Budget"
         assert "slot" not in entry.replace("light slot", ""), f"**{name}** speaks of slots"
+
+
+_QUEUE_BOUND = re.compile(r"QueueFullError|queue_max|queue is full|full queue|queue_full")
+_QUEUE_WHOLE_FILES = frozenset(
+    {
+        "src/booley/config/jobs.py",
+        "tests/config/test_jobs.py",
+        "tests/harness/test_cli_retired_jobs_keys.py",
+        "tests/harness/test_doctor.py",
+        "tests/test_retired_heavy_slot_wording.py",
+        "CHANGELOG.md",
+        "src/booley/data/refs/CHANGELOG.md",
+        "changelog.d/3247.md",
+        "changelog.d/4066.md",
+    }
+)
+_EXPLAINS_QUEUE_RETIREMENT = re.compile(r"retire|delete", re.IGNORECASE)
+
+
+def test_no_queue_bound_wording_outside_the_allowlist() -> None:
+    offenders: list[str] = []
+    for relative in _tracked_files():
+        if relative in _QUEUE_WHOLE_FILES or relative.startswith(_WHOLE_PREFIXES):
+            continue
+        text = _read_text(relative)
+        if text is None:
+            continue
+        if relative in _RETIRED_PARAGRAPH_FILES:
+            blocks = [
+                b for b in re.split(r"\n\s*\n", text) if not _EXPLAINS_QUEUE_RETIREMENT.search(b)
+            ]
+            text = "\n\n".join(blocks)
+        offenders.extend(f"{relative}: {match.group(0)}" for match in _QUEUE_BOUND.finditer(text))
+    assert offenders == [], "queue-bound wording found:\n" + "\n".join(offenders)

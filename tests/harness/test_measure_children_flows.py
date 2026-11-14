@@ -103,12 +103,12 @@ def processes_in(directory: Path) -> list[int]:
 
 
 @linux_only
-def test_more_tables_than_the_queue_holds_are_measured_without_a_refusal(
+def test_every_table_is_measured_without_a_refusal(
     make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     declare_stub_metrics(monkeypatch)
-    # Main's settings rule: one slot, and a queue of three (a window of two children).
-    world = make_world(config="queue_max = 3\n")
+    # Main's settings rule: one slot, so four children wait behind the first.
+    world = make_world()
     tables = [stub_table(f"metrics-{n}") for n in range(5)]
 
     outcome = measure(world, tables)
@@ -116,7 +116,7 @@ def test_more_tables_than_the_queue_holds_are_measured_without_a_refusal(
     assert outcome.status is RunStatus.COMPLETED
     assert [t.run.identity for t in outcome.tables] == [t.identity for t in tables]
     for measured in outcome.tables:
-        # A child refused for a full queue would have no values: an error verdict.
+        # A child refused admission would have no values: an error verdict.
         assert [r.verdict for r in measured.run.results] == [Verdict.TRACKED]
         assert measured.finished and measured.reports
         assert measured.run.wall_time_s is not None
@@ -128,7 +128,7 @@ def test_cancelled_measurement_leaves_no_child_waiting_or_running(
     make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     declare_stub_metrics(monkeypatch)
-    world = make_world(config="queue_max = 3\n")
+    world = make_world()
     # The caller's own slot directory must not be the one the scheduler watches.
     monkeypatch.setenv("BOOLEY_SLOTS_DIR", str(tmp_path / "elsewhere"))
     store = job_slots.SlotStore(job_slots.project_slots_dir(world.main), SlotCaps(max_light=1))

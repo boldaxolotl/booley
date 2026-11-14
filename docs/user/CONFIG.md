@@ -114,7 +114,8 @@ To choose a Specialist's model, see [`[models]`](#model-selection-models).
 Every Flow or Specialist run is a **Job**. Simulation, synthesis, FPGA
 implementation, and lint are admitted against a **Memory Budget**: a Job starts
 when its estimated memory fits in what the budget has left, and otherwise waits
-in a queue instead of failing. Specialists are light Jobs, limited by the AI
+in a queue instead of failing. The queue has no limit: a Job waits until it
+runs or you cancel it. Specialists are light Jobs, limited by the AI
 provider rather than memory, so a count (`max_light`) caps them. Running Jobs
 are never interrupted. The defaults:
 
@@ -125,7 +126,6 @@ memory = "32g"           # the Sandbox's memory limit; the Memory Budget comes f
 [jobs]
 # memory_budget = "24g"  # a fixed Memory Budget in place of the computed one
 max_light = 3            # Specialist Jobs running at once
-queue_max = 8            # Jobs that may wait per kind; beyond this a request is refused
 
 [jobs.seats]
 # vivado = 1             # licensed seats Booley may use at once; required for Vivado

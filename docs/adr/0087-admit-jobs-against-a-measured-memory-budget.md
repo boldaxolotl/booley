@@ -276,3 +276,20 @@ hardening), one budget per container, no licence budgets in v1.
   entry. Both are fixed in one `booley.toml` edit.
 - The Campaign lease structure stays: a child lane still holds one lease per
   work item, now a Memory Reservation instead of a heavy slot.
+
+## Amendments (2026-11-14)
+
+Recorded while implementing
+[#4066](https://github.com/boldaxolotl/booley/issues/4066).
+
+- **The queue is unbounded; `queue_max` is retired.** "`queue_max` stays" above
+  no longer holds. A Job that cannot start waits until it runs or is
+  cancelled, and `[jobs].queue_max` is refused like `max_heavy` and
+  `heavy_memory`, with its own reason.
+- **Why.** No reason for the cap was recorded. It refused work that was already
+  admitted: out-of-memory requeues and measurement children needed an
+  exemption (`bounded=False`) and a start window to stay clear of it. A refused
+  Job reached the agent as BLOCKED with only "retry". A waiting claim reserves
+  no memory, so a long queue costs a few small files, not capacity.
+- ADR 0086's "a full queue refuses the launch" is superseded: the review screen
+  says where the Job queues and Submit never refuses for a queue.
