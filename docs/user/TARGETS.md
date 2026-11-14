@@ -115,8 +115,9 @@ override it. Untyped files count as `user`. Spell the types exactly as shown:
 
 ### Target authoring
 
-Name your own Targets `<axis>_<subject>`, where the axis is the Flow that
-runs them:
+Name your own Targets `<axis>_<subject>`: the axis is the Flow that runs the
+Target, and the subject says what it covers. Use lowercase letters, digits and
+underscores.
 
 | Axis | Flow | Example |
 | --- | --- | --- |
@@ -125,16 +126,18 @@ runs them:
 | `synth_` | synth | `synth_timing` |
 | `fpga_` | fpga | `fpga_board` |
 
-The prefix matters for synth and fpga: both use FuseSoC's `generic` flow, so the
-`synth_`/`fpga_` prefix decides which Flow runs the Target. Without a prefix, a
-Target whose tool is `vivado` counts as fpga. Every Target needs a subject after
-the axis, even when it is the only one. Order the subject from coarse to fine
-(`sim_smoke`, `sim_smoke_irq`); within each core, `booley targets` lists Targets
-sorted by name, so the axis prefix groups them by Flow. A bare `lint` still runs
-and keeps its axis, but breaks the convention. For the Targets Doctor runs (and
-any in a stealth core), it notes names that break the rule and suggests
-`<axis>_<core name>` for a bare axis (`lint_soc` for a core named `soc`).
-Vendored upstream cores keep their own names.
+- **The axis tells synth from fpga.** Both kinds of Target use FuseSoC's
+  `generic` flow, so only the name separates them. A Target without an axis
+  counts as fpga when its tool is `vivado`.
+- **Always add a subject**, even to the only Target of its kind: `lint_soc`,
+  not `lint`. A bare `lint` still runs as a lint Target.
+- **Order the subject from coarse to fine**: `sim_smoke`, then
+  `sim_smoke_irq`. `booley targets` sorts each core's Targets by name, so they
+  appear grouped by Flow, and related Targets sit together.
+- **Doctor flags names that break these rules** in the Targets it checks and
+  in Stealth Mode cores, and suggests one: `lint_soc` for a bare `lint` in a
+  core named `soc`.
+- **Vendored upstream cores keep their own names.**
 
 Add a `default:` Target only when another core depends on this one. Booley
 doesn't list it as a Target you can run.
