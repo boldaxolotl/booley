@@ -19,8 +19,6 @@ from booley.runtime.job_slots import (
     QUEUED,
     ROLE_BACKGROUND,
     ROLE_INTERACTIVE,
-    QueueFullError,
-    SlotCaps,
     SlotStore,
     TokenState,
 )
@@ -143,42 +141,13 @@ def test_queued_claim_is_reported_and_withdrawn_by_pid(root, world):
     assert store.refresh(waiter).state == LOST
 
 
-def test_full_queue_refuses(root, world):
-    store = make_store(root, world, SlotCaps(queue_max=1))
+def test_a_long_memory_queue_refuses_no_claim(root, world):
+    store = make_store(root, world)
     holder = join(store, world, 101, claim(800))
     assert store.refresh(holder).state == HOLDING
-    join(store, world, 102, claim(400))
-    with pytest.raises(QueueFullError, match="memory queue is full"):
-        join(store, world, 103, claim(100))
-
-
-def test_claims_that_fit_never_count_as_queued(root, world):
-    store = make_store(root, world, SlotCaps(queue_max=0))
-    first = join(store, world, 101, claim(100))
-    second = join(store, world, 102, claim(100))  # waits only for a claim that fits
-    assert store.refresh(first).state == HOLDING
-    assert store.refresh(second).state == HOLDING
-
-
-def test_racing_submit_cannot_overfill_the_queue(root, world, monkeypatch):
-    caps = SlotCaps(queue_max=1)
-    store = make_store(root, world, caps)
-    rival = make_store(root, world, caps)
-    holder = join(store, world, 101, claim(800))
-    assert store.refresh(holder).state == HOLDING
-    real_create = store._create_entry
-    rivals = []
-
-    def create_after_rival(request):
-        # An interactive claim slips in after the background claim's bound check.
-        rivals.append(join(rival, world, 103, claim(400)))
-        return real_create(request)
-
-    monkeypatch.setattr(store, "_create_entry", create_after_rival)
-    with pytest.raises(QueueFullError):
-        join(store, world, 102, claim(400), role=ROLE_BACKGROUND)
-    assert rivals[0].path.exists()
-    assert [path.name for path in (root / "memory").glob("w-*.json")] == [rivals[0].path.name]
+    waiters = [join(store, world, 102 + n, claim(400)) for n in range(12)]
+    assert [store.refresh(waiter).state for waiter in waiters] == [QUEUED] * 12
+    assert [store.refresh(waiter).position for waiter in waiters] == list(range(12))
 
 
 def test_promotion_rereads_holders_inside_the_gate(root, world, monkeypatch):
@@ -289,18 +258,8 @@ def test_only_the_first_waiter_promotes(root, world):
     assert store.refresh(second).state == HOLDING
 
 
-def test_waiting_background_claims_do_not_fill_the_queue_for_interactive(root, world):
-    store = make_store(root, world, SlotCaps(queue_max=1))
-    holder = join(store, world, 101, claim(800))
-    assert store.refresh(holder).state == HOLDING
-    background = join(store, world, 102, claim(400), role=ROLE_BACKGROUND)
-    interactive = join(store, world, 103, claim(400))  # background waiters rank behind it
-    assert store.refresh(interactive).state == QUEUED
-    assert store.refresh(background).state == QUEUED
-
-
 def test_unreadable_waiter_blocks_the_claim_behind_it(root, world, monkeypatch):
-    store = make_store(root, world, SlotCaps(queue_max=1))
+    store = make_store(root, world)
     holder = join(store, world, 101, claim(100))
     assert store.refresh(holder).state == HOLDING
     unreadable = join(store, world, 102, claim(100))
@@ -316,12 +275,10 @@ def test_unreadable_waiter_blocks_the_claim_behind_it(root, world, monkeypatch):
     assert store.refresh(behind) == TokenState(
         QUEUED, position=1
     )  # blocked: its waiter is unknown
-    with pytest.raises(QueueFullError):
-        join(store, world, 104, claim(100))
 
 
-def test_vanished_holder_does_not_refuse_a_claim_that_fits(root, world, monkeypatch):
-    store = make_store(root, world, SlotCaps(queue_max=0))
+def test_vanished_holder_does_not_hold_back_a_claim_that_fits(root, world, monkeypatch):
+    store = make_store(root, world)
     holder = join(store, world, 101, claim(1000))
     assert store.refresh(holder).state == HOLDING
     real_read = store._read_memory_entry
@@ -503,17 +460,25 @@ def test_zero_holder_blocks_no_claim(root, world):
         store.submit(job_slots.CLASS_MEMORY, pid=1, memory=claim(0))
 
 
-def test_an_unbounded_claim_queues_past_the_queue_bound(root, world):
-    store = make_store(root, world, SlotCaps(queue_max=0))
+def test_a_requeued_claim_queues_behind_a_long_queue(root, world):
+    store = make_store(root, world)
     holder = join(store, world, 101, claim(run_alone=True))
     assert store.refresh(holder).state == HOLDING
+    blocked = [join(store, world, 110 + n, claim(run_alone=True)) for n in range(12)]
     spawn(world, 102)
-    with pytest.raises(QueueFullError):
-        store.submit(job_slots.CLASS_MEMORY, pid=102, memory=claim(100))
-    waiter = store.submit(job_slots.CLASS_MEMORY, pid=102, memory=claim(100), bounded=False)
-    assert store.refresh(waiter) == TokenState(QUEUED, position=0)
+    requeued = store.submit(
+        job_slots.CLASS_MEMORY,
+        pid=102,
+        memory=claim(run_alone=True),
+        queue_reason=REQUEUE_REASON,
+    )
+    assert store.state_for_pid(102) == TokenState(QUEUED, position=12, reason=REQUEUE_REASON)
     store.release(holder)
-    assert store.refresh(waiter).state == HOLDING
+    for token in blocked:
+        assert store.refresh(token).state == HOLDING
+        store.release(token)
+    assert store.refresh(requeued).state == HOLDING
+    assert store.state_for_pid(102) == TokenState(HOLDING, reason=REQUEUE_REASON)
 
 
 def test_shrink_keeps_the_claims_seats_and_wall_clock_estimate(root, world):
@@ -655,15 +620,6 @@ def test_jump_never_delays_the_front_claim(tmp_path):
             hold(store, world, pid, claim(reservation_mb, wall_s=wall_s))
         assert store.refresh(join(store, world, 201, claim(**front))).state == QUEUED, name
         assert store.refresh(join(store, world, 202, claim(**jumper))).state == state, name
-
-
-def test_a_jumper_is_not_refused_by_queue_max_but_a_waiter_is(root, world):
-    store = make_store(root, world, SlotCaps(queue_max=1))
-    hold(store, world, 101, claim(800, wall_s=600.0))
-    join(store, world, 102, claim(400))  # the front: position 0, within queue_max
-    assert store.refresh(join(store, world, 103, claim(100, wall_s=60.0))).state == HOLDING
-    with pytest.raises(QueueFullError):
-        join(store, world, 104, claim(400))  # blocked behind the front: position 1
 
 
 def test_jump_past_a_holder_overdue_by_its_estimate_waits(root, world):

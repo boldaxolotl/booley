@@ -64,8 +64,7 @@ class _StartTurn:
     """Lets one lane at a time take the next item and get its claim admitted.
 
     Items then start in manifest order, and the Campaign has at most one item
-    claim waiting in the slot store at any time (a queued claim counts against
-    every other Job's queue bound).
+    claim waiting in the slot store at any time.
     """
 
     def __init__(self, stop: threading.Event) -> None:
