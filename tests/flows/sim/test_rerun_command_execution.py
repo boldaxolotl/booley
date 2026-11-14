@@ -1,6 +1,6 @@
 """A printed rerun command, executed, runs the same Test Run again (ADR 0072).
 
-Each case fails one Test Run on the Simulation Campaign path with a fake
+Each case fails one Test Run on the Simulation Record path with a fake
 simulator, takes the rerun command from the report, executes it as a new
 invocation through the production CLI parser, and compares what reached the
 simulator: the same arguments, the same Test Variant environment, the same
@@ -64,7 +64,7 @@ def _invoke(
     exit_code: int = EXIT_FAILURE,
     stdout: str = "[SIM_RESULT] FAILED\n",
 ):
-    """Run one campaign invocation that fails every launch; return its outcome and launches.
+    """Run one record invocation that fails every launch; return its outcome and launches.
 
     *registry* is the catalog handed to the harness and the ``tests.toml`` text
     written over it (a Target without registered Tests has an empty catalog).

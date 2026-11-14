@@ -1,4 +1,4 @@
-"""Versioned Target-local Simulation Campaign acceptance projections."""
+"""Versioned Target-local Simulation Record acceptance projections."""
 
 from __future__ import annotations
 
@@ -74,9 +74,9 @@ def decode_simulation_projection(
     try:
         record_id = uuid.UUID(str(value["simulation_record_id"]))
     except ValueError as exc:
-        raise ValueError("Simulation projection Campaign identity is invalid") from exc
+        raise ValueError("Simulation projection Simulation Record identity is invalid") from exc
     if record_id.version != 4 or str(record_id) != value["simulation_record_id"]:
-        raise ValueError("Simulation projection Campaign identity is invalid")
+        raise ValueError("Simulation projection Simulation Record identity is invalid")
     return SimulationProjection(value, ProjectionTrust.AUTHENTICATED)
 
 

@@ -1,7 +1,7 @@
 """The sim card and ``simulation.json`` name each Test Run's log and waveform (issue #2758).
 
-Most tests run a real Campaign through the faked process edge of
-``simulation_record_boundary`` (so the evidence files are the ones a Campaign records)
+Most tests run a real Simulation Record through the faked process edge of
+``simulation_record_boundary`` (so the evidence files are the ones the Simulation Record keeps)
 and read the card, ``simulation.json`` and the MCP detail it publishes. The
 card's row budget is checked on rows and files built directly.
 """
@@ -255,7 +255,7 @@ def test_rows_carry_null_paths_when_files_are_absent(
 
 
 def _simulation_record_stand_in(tmp_path: Path) -> SimpleNamespace:
-    """The outcome of the campaign under *tmp_path*, as the lookup reads it from disk."""
+    """The outcome of the record under *tmp_path*, as the lookup reads it from disk."""
     simulation_record = _target_directory(tmp_path) / "record"
     results = sorted(simulation_record.glob("work-items/*/result.json"))
     consumed = [
@@ -286,7 +286,7 @@ def test_paths_name_the_attempt_the_simulation_record_accepted(
     first = result.parent / "attempts" / f"0001-{document['attempt_id']}"
     accepted = result.parent / "attempts" / f"0002-{document['attempt_id']}"
 
-    # The Campaign accepted attempt 2; attempt 1 (an interrupted try) left its own log.
+    # The Simulation Record accepted attempt 2; attempt 1 (an interrupted try) left its own log.
     first.rename(accepted)
     first.joinpath("evidence").mkdir(parents=True)
     first.joinpath("evidence", "0001-run.log").write_bytes(b"interrupted attempt")
@@ -353,7 +353,7 @@ def test_a_reference_that_escapes_its_attempt_names_no_file(
     document = json.loads(result.read_text("utf-8"))
     for reference in document["evidence"]:
         if reference["kind"] == "live_run_log":
-            # Four levels up from the attempt directory is the Campaign manifest: a
+            # Four levels up from the attempt directory is the Simulation Record manifest: a
             # file that exists, so only the containment check can refuse it.
             reference["path"] = "../../../../manifest.json"
     result.write_bytes(canonical_json_bytes(document))

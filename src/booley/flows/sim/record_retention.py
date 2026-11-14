@@ -1,4 +1,4 @@
-"""Exact Simulation Campaign retention operations; normalized evidence is immutable.
+"""Exact Simulation Record retention operations; normalized evidence is immutable.
 
 Native removal writes a ``pruning`` availability sidecar before deleting ``native/``,
 so an interrupted cleanup is explicit and retryable.
@@ -391,7 +391,7 @@ def _prune_invocation_batch(
             if not item.authenticated and not _recoverable_quarantine(member):
                 raise SimulationRecordRetentionError(
                     "Dependent report does not authenticate to the origin "
-                    f"Simulation Campaign: {member}"
+                    f"Simulation Record: {member}"
                 )
             stack.enter_context(_retention_invocation_lock(member))
         _verify_locked_members(root, dependencies)
@@ -409,7 +409,7 @@ def _prune_invocation_batch(
         remaining = _remaining_dependencies(root, members)
         if remaining:
             raise SimulationRecordRetentionError(
-                f"Unselected Simulation Campaign dependency remains: {remaining[0]}"
+                f"Unselected Simulation Record dependency remains: {remaining[0]}"
             )
         _prune_invocation(root, project_data=project_data)
 
@@ -422,7 +422,7 @@ def _verify_locked_members(root: Path, dependencies: tuple[_DependentInvocation,
         refreshed = _dependent_invocations(root)
     if tuple(item.path for item in refreshed) != expected:
         raise SimulationRecordRetentionError(
-            "Simulation Campaign dependencies changed during pruning"
+            "Simulation Record dependencies changed during pruning"
         )
     for item in refreshed:
         if (
@@ -468,7 +468,7 @@ def _preflight_invocation(root: Path, *, project_data: Path | None) -> None:
             raise
         except (OSError, ValueError, SimulationRecordIntegrityError) as exc:
             raise SimulationRecordRetentionError(
-                f"Simulation Campaign resource preflight failed: {exc}"
+                f"Simulation Record resource preflight failed: {exc}"
             ) from exc
 
 
@@ -556,7 +556,7 @@ def _dependent_invocations(
             raise SimulationRecordRetentionError(str(exc.located(root))) from exc
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             raise SimulationRecordRetentionError(
-                f"Simulation Campaign dependency registry is invalid: {exc}"
+                f"Simulation Record dependency registry is invalid: {exc}"
             ) from exc
         for receipt in receipts:
             if not receipt.authoritative:
@@ -635,7 +635,7 @@ def _reject_unknown_producers(root: Path, found: Mapping[Path, _DependentInvocat
     unknown = sorted(producers - accounted - {origin_id})
     if unknown:
         raise SimulationRecordRetentionError(
-            "Simulation Campaign has an unlocatable dependent producer invocation: "
+            "Simulation Record has an unlocatable dependent producer invocation: "
             + ", ".join(str(item) for item in unknown)
         )
 
@@ -658,9 +658,9 @@ def _report_references_simulation_record(
         return False
     for value in simulation_records.values():
         try:
-            simulation_record = require_dict(value, field="report campaign")
+            simulation_record = require_dict(value, field="report Simulation Record")
             artifacts = require_dict(
-                simulation_record.get("artifacts"), field="campaign artifacts"
+                simulation_record.get("artifacts"), field="Simulation Record artifacts"
             )
         except BoundaryError:
             continue
@@ -782,8 +782,8 @@ def _prune_published_invocation(root: Path, project_data: Path | None) -> None:
         write_simulation_record_json(
             root / ".prune.json", {"invocation": int(root.name), "operation": "full"}
         )
-    # Windows cannot rename a directory while a handle inside it (the Campaign
-    # ``.lock``) is open, so rename after releasing the Campaign locks. The held
+    # Windows cannot rename a directory while a handle inside it (the Simulation Record
+    # ``.lock``) is open, so rename after releasing the Simulation Record locks. The held
     # invocation lock still excludes producers and resumes, which lock their origin.
     root.rename(root.with_name(f".pruned-{root.name}"))
 
@@ -822,7 +822,7 @@ def _preflight_simulation_record_resources(root: Path, project_data: Path | None
         )
         if status.interrupted and project_data is None:
             raise SimulationRecordRetentionError(
-                "Booley Directory is required to recover interrupted Simulation Campaign resources"
+                "Booley Directory is required to recover interrupted Simulation Record resources"
             )
 
 
@@ -849,7 +849,7 @@ def _simulation_record_mutation_locks(simulation_records: tuple[Path, ...]) -> I
                 )
             except LockContentionError as exc:
                 raise SimulationRecordRetentionError(
-                    "Simulation Campaign is being resumed; retry after it finishes"
+                    "Simulation Record is being resumed; retry after it finishes"
                 ) from exc
         yield
 
@@ -869,7 +869,9 @@ def _recover_simulation_record_resources(
     except SimulationRecordRetentionError:
         raise
     except (OSError, ValueError, SimulationRecordIntegrityError) as exc:
-        raise SimulationRecordRetentionError(f"Campaign recovery is invalid: {exc}") from exc
+        raise SimulationRecordRetentionError(
+            f"Simulation Record recovery is invalid: {exc}"
+        ) from exc
 
 
 def _infer_project_data(root: Path) -> Path | None:
@@ -915,7 +917,7 @@ def _validate_invocation_targets(root: Path) -> None:
     for directory in directories:
         if directory.name not in expected:
             raise SimulationRecordRetentionError("Invocation contains an unresolved Target")
-        # Partial attempts can be removed; existing Simulation Campaigns must agree.
+        # Partial attempts can be removed; existing Simulation Records must agree.
         if (directory / "coverage.json").exists():
             selector = next(
                 target for target in targets if target_report_directory(root, target) == directory
@@ -1036,7 +1038,7 @@ def _target_owned_files(root: Path, target: Path) -> set[Path]:
     public = target / "coverage.json"
     if public.exists():
         # Already validated by _validate_invocation_targets; the nested storage is owned
-        # through the Simulation Campaign's coverage directories below.
+        # through the Simulation Record's coverage directories below.
         expected.add(public.absolute())
     simulation_record = target / RECORD_DIRECTORY
     manifest = simulation_record / "manifest.json"
@@ -1051,14 +1053,16 @@ def _target_owned_files(root: Path, target: Path) -> set[Path]:
             expected.update(dependency_receipt_files(manifest))
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             raise SimulationRecordRetentionError(
-                f"Simulation Campaign dependency registry is invalid: {exc}"
+                f"Simulation Record dependency registry is invalid: {exc}"
             ) from exc
         for coverage in status.coverage_directories:
             expected.update(_campaign_coverage_files(coverage))
         lock = simulation_record / ".lock"
         if lock.exists():
             if not _valid_lock_sentinel(lock):
-                raise SimulationRecordRetentionError(f"Campaign lock content is invalid: {lock}")
+                raise SimulationRecordRetentionError(
+                    f"Simulation Record lock content is invalid: {lock}"
+                )
             expected.add(lock.absolute())
     return expected
 
@@ -1132,16 +1136,16 @@ def _inspect_simulation_record(
         raise SimulationRecordRetentionError(str(exc)) from exc
     except (OSError, ValueError) as exc:
         raise SimulationRecordRetentionError(
-            f"Simulation Campaign is invalid and cannot be pruned: {exc}"
+            f"Simulation Record is invalid and cannot be pruned: {exc}"
         ) from exc
     incomplete_recovery = bool(status.pending or status.interrupted)
     if status.summary_present and not status.summary_completed_matches:
         raise SimulationRecordRetentionError(
-            "Simulation Campaign acceptance projections are incomplete"
+            "Simulation Record acceptance projections are incomplete"
         )
     if status.summary_present and status.summary_complete == incomplete_recovery:
         raise SimulationRecordRetentionError(
-            "Simulation Campaign acceptance projections are incomplete"
+            "Simulation Record acceptance projections are incomplete"
         )
     projection_path = target / "simulation.json"
     projection = None
@@ -1155,7 +1159,7 @@ def _inspect_simulation_record(
             raise SimulationRecordRetentionError(str(exc.located(target.parents[1]))) from exc
         except (OSError, ValueError) as exc:
             raise SimulationRecordRetentionError(
-                f"Simulation Campaign is invalid and cannot be pruned: {exc}"
+                f"Simulation Record is invalid and cannot be pruned: {exc}"
             ) from exc
         _validate_projection_identity(target, status, projection)
     abandoned = incomplete_recovery or not status.summary_present or projection is None
@@ -1163,9 +1167,7 @@ def _inspect_simulation_record(
         return _SimulationRecordEligibility(status, abandoned)
     if projection is None and abandoned:
         return _SimulationRecordEligibility(status, True)
-    raise SimulationRecordRetentionError(
-        "Simulation Campaign acceptance projections are incomplete"
-    )
+    raise SimulationRecordRetentionError("Simulation Record acceptance projections are incomplete")
 
 
 def _validate_native_pruning_eligibility(root: Path, selector: str) -> None:
@@ -1216,7 +1218,7 @@ def _validate_projection_identity(
         "target_identity": status.target_identity,
     }
     if any(projection.document.get(key) != value for key, value in expected.items()):
-        raise SimulationRecordRetentionError("Simulation Campaign projection identity disagrees")
+        raise SimulationRecordRetentionError("Simulation Record projection identity disagrees")
     if projection.trust is ProjectionTrust.TARGET_CONSISTENT_LEGACY and (
         type(projection.document.get("passed")) is not bool
         or type(projection.document.get("inconclusive")) is not bool
@@ -1231,7 +1233,7 @@ def _validate_authenticated_projection(
     target: Path, status: RetainedSimulationRecordStatus, document: Mapping[str, object]
 ) -> None:
     if document.get("simulation_record_id") != status.simulation_record_id:
-        raise SimulationRecordRetentionError("Simulation Campaign projection owner disagrees")
+        raise SimulationRecordRetentionError("Simulation Record projection owner disagrees")
     booley_dir = invocation_booley_dir(target.parents[1])
     artifact = resolve_artifact_reference(
         document.get("simulation_record_manifest"),
@@ -1243,7 +1245,7 @@ def _validate_authenticated_projection(
         booley_dir=booley_dir,
     )
     if artifact.path != status.manifest_path:
-        raise SimulationRecordRetentionError("Simulation Campaign projection manifest disagrees")
+        raise SimulationRecordRetentionError("Simulation Record projection manifest disagrees")
     if not (target / "coverage.json").is_file():
         return
     coverage = resolve_artifact_reference(
@@ -1257,7 +1259,7 @@ def _validate_authenticated_projection(
     )
     if coverage.path != (target / "coverage.json").absolute():
         raise SimulationRecordRetentionError(
-            "Simulation Campaign projection Coverage Campaign reference disagrees"
+            "Simulation Record projection Coverage Campaign reference disagrees"
         )
 
 
@@ -1337,7 +1339,7 @@ def main() -> None:
         else:
             prune_native_payload(args.reports_root, args.invocation, args.native_target)
     except (OSError, ValueError) as exc:
-        parser.exit(2, f"Campaign pruning failed: {exc}\n")
+        parser.exit(2, f"Simulation Record pruning failed: {exc}\n")
 
 
 if __name__ == "__main__":

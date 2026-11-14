@@ -106,12 +106,12 @@
       },
       "resume_from": {
         "type": "string",
-        "description": "Resume one exact Simulation Campaign manifest.json"
+        "description": "Resume one exact Simulation Record manifest.json"
       },
       "verbose": {
         "type": "boolean",
         "default": false,
-        "description": "Include full Simulation Campaign resume mismatch pointers and values"
+        "description": "Include full Simulation Record resume mismatch pointers and values"
       },
       "trace": {
         "type": "boolean",

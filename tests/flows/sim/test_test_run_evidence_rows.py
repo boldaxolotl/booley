@@ -177,7 +177,7 @@ def _goal_changes(outcome, state, *goals: GoalTestRuns):
 
 
 def _graded(monkeypatch, grades: dict[str, str]) -> None:
-    """Grade the campaign's Test Run rows by name (the fake executor fails every run)."""
+    """Grade the record's Test Run rows by name (the fake executor fails every run)."""
     from booley.flows.sim import acceptance
 
     def rows(outcome):
@@ -210,7 +210,7 @@ def test_same_name_with_other_declared_inputs_is_not_evidence(tmp_path, monkeypa
         _SOAK.test, variant=_SOAK.variant, seed=_SOAK.seed, args=("+other=1",)
     )
     assert other_args.name == _SOAK.name and other_args.fingerprint != _SOAK.fingerprint
-    # Only a run of another seed and one with other arguments: the campaign is diagnostic.
+    # Only a run of another seed and one with other arguments: the record is diagnostic.
     other_seed = build_test_run("reset", seed=99)
     assert _goal_changes(outcome, state, _goal(outcome, key, other_args, other_seed)) == []
 
@@ -221,7 +221,7 @@ def test_partial_run_is_evidence_but_does_not_claim_the_goal(tmp_path, monkeypat
     state = _state(tmp_path, outcome)
     _graded(monkeypatch, {_RESET.name: "pass"})
     (change,) = _goal_changes(outcome, state, _goal(outcome, key, _RESET, _SOAK))
-    # The Goal's recorder folds this run into the ledger; this campaign alone meets nothing.
+    # The Goal's recorder folds this run into the ledger; this record alone meets nothing.
     assert change.met is False
     assert [row["name"] for row in change.detail["test_runs"]] == [_RESET.name]
 
@@ -253,7 +253,7 @@ def test_coverage_goal_takes_run_outcomes_but_no_metric_from_an_ordinary_simulat
     outcome = _outcome(tmp_path, _RESET)
     state = _state(tmp_path, outcome)
     goal = _goal(outcome, f"sim_pass_{outcome.target['name']}", _RESET, kind="coverage")
-    # The campaign collected no coverage, but it ran (and failed) the Goal's frozen run:
+    # The record collected no coverage, but it ran (and failed) the Goal's frozen run:
     # that outcome is evidence for the Goal, its coverage is not measured.
     (change,) = _goal_changes(outcome, state, goal)
     assert change.met is False

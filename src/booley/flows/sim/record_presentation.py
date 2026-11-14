@@ -1,4 +1,4 @@
-"""Simulation Campaign result presentation: report lines, details, artifacts, cards and exit grading."""
+"""Simulation Record result presentation: report lines, details, artifacts, cards and exit grading."""
 
 from __future__ import annotations
 
@@ -304,7 +304,7 @@ def _simulation_record_report_blocks(
         if getattr(outcome, "coverage_reference", None) is not None:
             campaign = coverage_campaigns[selector]
             label = f"simulation {label} · {_coverage_report_suffix(campaign)}"
-        line = f"{selector}: {label} (Simulation Campaign {simulation_record_id})"
+        line = f"{selector}: {label} (Simulation Record {simulation_record_id})"
         reasons = _observation_reasons(outcome)
         build_detail = _simulation_record_build_infrastructure_detail([outcome])
         if build_detail and reasons:
@@ -383,7 +383,7 @@ def _pre_sim_integrity_failure(
             line for line in result.report_text.splitlines() if not _is_pre_sim_card_line(line)
         )
     result.detail["record_integrity_error"] = str(error)
-    line = f"Simulation Campaign integrity failure: {error}"
+    line = f"Simulation Record integrity failure: {error}"
     if line not in result.report_text.splitlines():
         result.report_text += f"\n{line}"
     return result
@@ -532,7 +532,7 @@ def _simulation_record_structured_details(
 
 
 def _coverage_request_target(request: NewSimulationRecordRunRequest) -> Mapping[str, object]:
-    """Expose the typed Target projection from one immutable campaign request."""
+    """Expose the typed Target projection from one immutable record request."""
     return cast(Mapping[str, object], request.plan.manifest.document["target"])
 
 
@@ -589,9 +589,9 @@ def _diagnostic_test_runs(
     frozen: FrozenTestRuns,
     names: Callable[[str], Collection[str]],
 ) -> tuple[list[str], list[str]]:
-    """Test Runs of *detail*'s campaigns no Goal requires, and the failed ones among them.
+    """Test Runs of *detail*'s records no Goal requires, and the failed ones among them.
 
-    Both as ``target: test run``. *names* gives every name of a campaign's
+    Both as ``target: test run``. *names* gives every name of a record's
     Target (selector and identity): a Goal may be written with either.
     """
     simulation_records = detail.get("records")
@@ -798,7 +798,7 @@ def _report_artifact_reference(
 def _simulation_record_recovery_detail(
     status: SimulationRecordRecoveryStatus,
 ) -> dict[str, object]:
-    """Translate campaign-owned recovery state into the endpoint's flat shape."""
+    """Translate record-owned recovery state into the endpoint's flat shape."""
     return {
         "manifest_sha256": status.manifest_sha256,
         "completed": list(status.completed),
@@ -818,7 +818,7 @@ def _baseline_refusal_line(refusal: BaselineRefusal) -> str:
 
 
 def _simulation_record_preview_entry(preview: NewSimulationRecordPreview) -> dict[str, object]:
-    """Summarize one new-campaign preview for the dry-run report and detail."""
+    """Summarize one new-record preview for the dry-run report and detail."""
     return {
         "target": dict(preview.target),
         "work_items": len(preview.work_items),
@@ -1089,7 +1089,7 @@ def _unmatched_coverage_failure(
         },
         report_text="\n".join(
             [
-                "Simulation Campaign coverage execution failed: cannot match failed "
+                "Simulation Record coverage execution failed: cannot match failed "
                 f"Target to the prepared Coverage plan ({error})",
                 *_coverage_campaign_lines(outcomes),
             ]
@@ -1114,7 +1114,7 @@ def _coverage_failure_outcome(
         },
         report_text="\n".join(
             [
-                f"Simulation Campaign coverage execution failed: {error}",
+                f"Simulation Record coverage execution failed: {error}",
                 *_coverage_campaign_lines(outcomes),
             ]
         ),

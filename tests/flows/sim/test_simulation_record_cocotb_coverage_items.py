@@ -1,4 +1,4 @@
-"""Cocotb batch and coverage aggregate work items of Simulation Campaigns."""
+"""Cocotb batch and coverage aggregate work items of Simulation Records."""
 
 from __future__ import annotations
 
@@ -339,7 +339,7 @@ def test_simulation_record_run_adds_no_recovery_scan_for_failure_facts(
     """Failure-detail facts reuse the coordinator's scans.
 
     Run start, summary regeneration, final scan and the outcome collector scan
-    the Campaign (4); a coverage commit adds one (5).
+    the Simulation Record (4); a coverage commit adds one (5).
     """
     calls: list[None] = []
     original = SimulationRecordStore.scan
@@ -724,17 +724,17 @@ def test_cocotb_result_preserves_exact_ordered_observations(tmp_path: Path) -> N
 def test_cocotb_simulation_record_rejects_malformed_results_file(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """A results file the decoder rejects is a campaign integrity error, not a verdict.
+    """A results file the decoder rejects is a record integrity error, not a verdict.
 
-    The file is the payload itself: the campaign must decode it directly instead of
+    The file is the payload itself: the record must decode it directly instead of
     wrapping it in a stdout line for the line parser.
     """
     reported = (SimulationTestOutcome(name="count", verdict="pass", passed=True),)
 
     def forbidden_parse(output: str) -> None:
-        raise AssertionError("campaign decoded the file through the stdout-line parser")
+        raise AssertionError("record decoded the file through the stdout-line parser")
 
-    # Patch the defining module and the campaign's own namespace: either call style fails.
+    # Patch the defining module and the record's own namespace: either call style fails.
     monkeypatch.setattr(cocotb_results, "parse_results_line", forbidden_parse)
     monkeypatch.setattr(serial_execution, "parse_results_line", forbidden_parse, raising=False)
     for name, raw, message in (

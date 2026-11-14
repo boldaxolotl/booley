@@ -1429,7 +1429,7 @@ def test_sim_verbose_mcp_schema_deliberately_exposes_optional_boolean():
     assert schema["properties"]["verbose"] == {
         "type": "boolean",
         "default": False,
-        "description": "Include full Simulation Campaign resume mismatch pointers and values",
+        "description": "Include full Simulation Record resume mismatch pointers and values",
     }
     assert "verbose" not in schema.get("required", [])
     assert "verbose" not in flow_schema(LintFlow())["properties"]

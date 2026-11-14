@@ -64,7 +64,7 @@ __all__ = [
     "seed_mechanism",
 ]
 
-#: Most Test Runs one request may ask of one Target (the Simulation Campaign
+#: Most Test Runs one request may ask of one Target (the Simulation Record
 #: work-item limit: an ordinary HDL Test Run is one work item).
 MAX_TEST_RUNS_PER_REQUEST = 1000
 
@@ -411,7 +411,7 @@ class TargetTestPlan:
         """Refuse a Test Run resolved elsewhere that this Target cannot apply as recorded.
 
         A Test Run can be carried to another checkout of the Target: a
-        resumed campaign, or the baseline revision of a Cycle Count
+        resumed record, or the baseline revision of a Cycle Count
         comparison. If the Target is unseeded there, the recorded seed would
         be dropped silently; if it owns an option one of the run's arguments
         sets, the run would launch with other inputs than it records. Raises

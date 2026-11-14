@@ -156,7 +156,7 @@ def _status_record(view: GoalStatusView) -> dict[str, Any]:
 
 
 def _status_selection(store: GoalStore, root: Path) -> GoalStatusSelection:
-    """Status with the Simulation Flow's reader of unpublished campaign results."""
+    """Status with the Simulation Flow's reader of unpublished record results."""
     from booley.mcp.sim_baseline_jobs import schedule_goal_baselines
 
     selection = select_status(store, root, simulation_record_reader=read_unpublished_results)

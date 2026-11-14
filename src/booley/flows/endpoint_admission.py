@@ -58,11 +58,11 @@ class AdmissionIdentityError(ValueError):
 class AdmissionContext:
     """Borrowed outer admission facts for one admitted endpoint invocation.
 
-    A Simulation Campaign sizes lanes from the container's cores and admits
+    A Simulation Record sizes lanes from the container's cores and admits
     each work item by its own claim, once ``memory_sizing`` is set.
     ``memory_warning`` is the warning that Job's result carries (it ran alone
     because its estimate exceeded the Memory Budget, or the budget was
-    unavailable). ``memory_sizing`` lets its Campaign give each work item its
+    unavailable). ``memory_sizing`` lets its Simulation Record give each work item its
     own claim, and is set only then.
     """
 
@@ -491,7 +491,7 @@ def _acquire_memory_reservation(
 def _refuse_waiting_behind_own_claim(endpoint: EndpointState, store: job_slots.SlotStore) -> None:
     """Refuse a requeued claim while this process still holds an entry in any class.
 
-    A deferred release (a Campaign whose shutdown overruns) can keep the killed
+    A deferred release (a Simulation Record whose shutdown overruns) can keep the killed
     attempt's claim past its end; queueing behind it would wait for ourselves.
     The process runs one Job, so a held entry of any class is the killed attempt's.
     """

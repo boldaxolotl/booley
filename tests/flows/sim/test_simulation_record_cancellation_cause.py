@@ -1,4 +1,4 @@
-"""A Simulation Campaign cancellation names its cause, and unreadable is not absent (#1905)."""
+"""A Simulation Record cancellation names its cause, and unreadable is not absent (#1905)."""
 
 from __future__ import annotations
 
@@ -91,7 +91,7 @@ class _SimulationRecord:
         )
         try:
             self.scheduler.run(self.manifest.document["work_items"][:items])
-        except Exception:  # noqa: BLE001 -- the cancelled campaign may fail; the message is the subject
+        except Exception:  # noqa: BLE001 -- the cancelled record may fail; the message is the subject
             pass
         finally:
             self.slots.release(self.outer)
@@ -153,7 +153,7 @@ def test_outer_worker_failure_names_its_cause(tmp_path: Path) -> None:
     simulation_record.run(1, trigger=boom)
 
     cause = simulation_record.capacity.cancellation_cause()
-    assert cause == "campaign stop requested after a work item failed (RuntimeError)"
+    assert cause == "record stop requested after a work item failed (RuntimeError)"
 
 
 def test_child_cancellation_cause_names_a_lost_lease(tmp_path: Path) -> None:

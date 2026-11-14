@@ -225,7 +225,7 @@ def test_a_baseline_that_owns_an_option_of_the_test_run_refuses_it():
 
 
 def test_simulation_record_planning_runs_no_baseline_for_a_refused_test_run(tmp_path, monkeypatch):
-    """A baseline that cannot run the Test Run gets no campaign and no prerequisite."""
+    """A baseline that cannot run the Test Run gets no record and no prerequisite."""
     from booley.flows.sim.flow import OrdinarySimulationRecordPlanning, PlannedTarget
     from booley.flows.target_test_plan import build_target_test_plan
     from booley.targets.catalog import TargetCatalog
