@@ -282,7 +282,7 @@ line:
 - `the main checkout is in use by another booley chat`: another `booley chat`
   whose agent runs in the main checkout is still running, perhaps in another
   terminal or stopped with Ctrl-Z. That includes one started with
-  `--new-worktree` or under `[chat] worktree = "always"` while the main checkout
+  `--new-worktree` or under `[worktree] chat = "always"` while the main checkout
   was free: it holds the main checkout until its session ends, although its
   agent works in a worktree. A `booley chat` that `auto` placed in a worktree
   holds nothing. A `booley chat` that

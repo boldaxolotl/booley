@@ -248,6 +248,13 @@ def test_chat_help_documents_passthrough(monkeypatch, capsys):
     assert "booley chat -- --help" in help_text
 
 
+def test_chat_help_names_the_worktree_chat_key(monkeypatch, capsys):
+    with pytest.raises(SystemExit):
+        _parse_argv(monkeypatch, "chat", "--help")
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "overrides [worktree] chat for this launch" in help_text
+
+
 def test_chat_help_documents_cli_option(monkeypatch, capsys):
     with pytest.raises(SystemExit):
         _parse_argv(monkeypatch, "chat", "--help")

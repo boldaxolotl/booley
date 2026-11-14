@@ -14,9 +14,9 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from booley.config.agent import AgentSettings, issued_codex_gateway
-from booley.config.chat import chat_worktree
 from booley.config.gateway import GATEWAY_ENV_KEYS, HIDDEN_GATEWAY_ENV, GatewayConfigError
 from booley.config.settings import BackendConfigError, get_agent_settings, load_agent_settings
+from booley.config.worktree import chat_mode
 from booley.core.booley_dir import resolve_main_checkout_root
 from booley.harness import chat_checkout, chat_exit, chat_resume, codex_chat, worktree_cmd
 from booley.harness.chat_checkout import Placement
@@ -367,10 +367,10 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
 
 
 def _worktree_mode(args: argparse.Namespace, booley_dir: Path) -> tuple[str, bool]:
-    """Return the placement mode and whether a flag chose it; the flag beats `[chat] worktree`."""
+    """Return the placement mode and whether a flag chose it; the flag beats `[worktree] chat`."""
     # Bare `booley` builds its namespace without chat options, so the flag may be absent.
     flag = getattr(args, "chat_worktree", None)
-    return (chat_worktree(booley_dir), False) if flag is None else (flag, True)
+    return (chat_mode(booley_dir), False) if flag is None else (flag, True)
 
 
 def _main_user(lock: chat_checkout.MainLock, common: Path, main_root: Path) -> str | None:
