@@ -2781,6 +2781,7 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
     if not reported:
         return
     default_cli = _configured_provider(project)
+    _check_auth_recorded(project, _allowed_clis(project, default_cli), reporter)
     allowed = _auto_allowed_clis(auto_choice, default_cli) or _allowed_clis(project, default_cli)
     _warn_ignored_gateway_handoff(reporter)
     # Pins apply to gateway-routed Codex only, so judge them under Codex's policy when it is listed.
@@ -2795,6 +2796,52 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
             is_default=cli == default_cli,
             runs_specialist=cli in specialist_clis,
             auto_choice=auto_choice,
+        )
+
+
+def _recorded_auth_fix(
+    declared: DeclaredAgent | None, clis: tuple[str, ...], cli: str, value: str
+) -> str:
+    """How to record *value* for *cli*, in the form ``[agent] auth`` already has."""
+    auth = declared.auth if declared else None
+    if isinstance(auth, dict):
+        where = f'set {cli} = "{value}" under [agent.auth]'
+    elif len(clis) == 1:
+        where = f'set auth = "{value}" under [agent]'
+    elif auth is None:
+        where = f'set {cli} = "{value}" under [agent.auth]'
+    else:
+        where = (
+            f'replace auth = "{auth}" under [agent] with an [agent.auth] table that sets '
+            f'{cli} = "{value}"'
+        )
+    return f"{where} in booley.toml, or re-run booley init"
+
+
+def _check_auth_recorded(
+    project: ProjectAudit, clis: tuple[str, ...], reporter: _Reporter
+) -> None:
+    """FAIL each Project CLI whose ``[agent] auth`` is missing or ``auto``.
+
+    ``auto`` bills an exported API key before a subscription login, so a Project
+    must record the choice. The finding names the value ``booley init`` would record.
+    """
+    from booley.harness import init_cmd
+
+    declared = _declared_agent(project)
+    auth = declared.auth if declared else None
+    for cli in clis:
+        recorded = auth if isinstance(auth, str) else (auth or {}).get(cli)
+        if recorded not in (None, "auto"):
+            continue
+        value = init_cmd.detected_auth_policy(cli)
+        state = "is not set" if recorded is None else "is 'auto'"
+        reporter.fail_(
+            f"{cli}: booley.toml [agent] auth {state}, so an exported API key would bill "
+            f"instead of a subscription; detected: {value}",
+            _recorded_auth_fix(declared, clis, cli, value),
+            check_id="agent.credential-policy",
+            subject=cli,
         )
 
 
