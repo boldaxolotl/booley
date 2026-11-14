@@ -173,7 +173,7 @@ def _invoke_pre_sim(
 ) -> PreSimEvidence:
     """Execute one prepared hook and normalize its result."""
     if job_stopped_after_oom():
-        # A failure, not a stopped scope: the Campaign must not end cancelled.
+        # A failure, not a stopped scope: the Simulation Record must not end cancelled.
         return PreSimEvidence(commands, test_names, "failed", 0.0, OOM_STOPPED_MESSAGE)
     started = time.monotonic()
     try:

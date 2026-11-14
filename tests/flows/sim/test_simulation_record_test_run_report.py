@@ -1,4 +1,4 @@
-"""Per-Test-Run report rows and rerun commands of a Simulation Campaign (ADR 0072)."""
+"""Per-Test-Run report rows and rerun commands of a Simulation Record (ADR 0072)."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def _grade_members(*, passed: bool) -> dict:
 
 
 def _outcome(tmp_path: Path, runs: tuple[TestRun, ...], passed: tuple[bool, ...], required=None):
-    """A campaign outcome whose manifest is on disk and whose runs ended as *passed*."""
+    """A record outcome whose manifest is on disk and whose runs ended as *passed*."""
     recorded = _recorded_simulation_record(
         tmp_path, runs, ("reset", "count") if required is None else required
     )

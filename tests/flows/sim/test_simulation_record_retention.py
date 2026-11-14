@@ -1,4 +1,4 @@
-"""Retention exercised against actual canonical Campaigns and filesystem paths."""
+"""Retention exercised against actual canonical Simulation Records and filesystem paths."""
 
 import json
 import os
@@ -352,7 +352,7 @@ def test_native_pruning_validates_every_path_before_deleting(tmp_path, defect, m
         document = json.loads(run.campaign_path.read_text())
         document["invocation"]["id"] = 2
         run.campaign_path.write_text(json.dumps(document))
-    # The tampered nested Campaign fails the reference digest, not retention's own checks.
+    # The tampered nested Simulation Record fails the reference digest, not retention's own checks.
     expected = ValueError if defect == "wrong_invocation" else SimulationRecordRetentionError
     with pytest.raises(expected):
         prune_native_payload(tmp_path / "reports", 1, "sim_0")
@@ -768,7 +768,7 @@ def test_native_pruning_preserves_complete_source_gap_queries(tmp_path, monkeypa
 
 @pytest.mark.parametrize("mode", ["native", "full"])
 def test_pruning_refuses_a_standalone_coverage_target_naming_its_directory(tmp_path, mode):
-    """No supported Booley writes a full Campaign in the Target directory: refuse, never prune."""
+    """No supported Booley writes a full Simulation Record in the Target directory: refuse, never prune."""
     from booley.flows.sim.record_retention import prune_native_payload
     from tests.mcp_tools.test_coverage_analyst import persist_campaign
 
@@ -794,7 +794,7 @@ def test_pruning_refuses_a_standalone_coverage_target_naming_its_directory(tmp_p
 def test_native_pruning_refuses_a_reference_target_without_its_simulation_record(
     tmp_path, monkeypatch
 ):
-    """A reference whose Simulation Campaign manifest is gone is not a completed Target."""
+    """A reference whose Simulation Record manifest is gone is not a completed Target."""
     from booley.flows.sim.record_retention import prune_native_payload
 
     run = coverage_invocation(tmp_path, monkeypatch)
@@ -1019,10 +1019,10 @@ def test_prune_follows_only_the_booley_dir_entry(
 def _interrupt_latest_attempt(
     tmp_path: Path, reports: Path, store: SimulationRecordStore, lane_id: str | None = None
 ) -> tuple[Path, dict[str, object]]:
-    """Turn the retained Campaign's only item into an interrupted one with an owned run directory.
+    """Turn the retained Simulation Record's only item into an interrupted one with an owned run directory.
 
     Returns the owned run directory and the rewritten attempt document. With ``lane_id`` the
-    attempt names that lane execution (a Campaign written by the current release).
+    attempt names that lane execution (a Simulation Record written by the current release).
     """
     status = inspect_retained_simulation_record(store.manifest_path)
     work_item_id = status.completed[0]
@@ -1050,7 +1050,7 @@ def test_full_pruning_cleans_interrupted_owned_run_directory(tmp_path: Path) -> 
 def test_full_pruning_recovers_interrupted_lane_before_run_directory_cleanup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recovered: bool
 ) -> None:
-    """Pruning cancels the lane a crashed Campaign left behind, or keeps everything."""
+    """Pruning cancels the lane a crashed Simulation Record left behind, or keeps everything."""
     from booley.flows.sim.record.child_protocol import ChildExecutionRegistry
 
     reports, project_data, store = _retained_invocation(tmp_path)

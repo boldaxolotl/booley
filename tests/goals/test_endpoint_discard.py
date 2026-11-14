@@ -151,14 +151,14 @@ class _SimulationRecordProbe(McpTool):
     """Records Flow-owned V2 acceptance through the declared hook, as Simulation does."""
 
     name = "goal_campaign_probe"
-    description = "Synthetic Simulation Campaign endpoint"
+    description = "Synthetic Simulation Record endpoint"
     config_aware = False
 
     def _add_args(self, parser: Any) -> None:
         return
 
     def _run(self) -> McpToolResult:
-        return McpToolResult(exit_code=0, report_text="campaign passed")
+        return McpToolResult(exit_code=0, report_text="record passed")
 
     def record_flow_owned_acceptance(self, _outcome: EndpointOutcome) -> bool:
         shadow = DevelopmentState.from_json_object(self.state.to_dict())

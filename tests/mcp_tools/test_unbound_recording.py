@@ -115,7 +115,7 @@ def test_unbound_v2_empty_identity_is_rejected(tmp_path: Path) -> None:
     recorder = UnboundAcceptanceRecorder(log_dir=tmp_path)
     with pytest.raises(
         AcceptanceRecordingError,
-        match="unbound Interactive recording cannot record a Simulation Campaign transaction",
+        match="unbound Interactive recording cannot record a Simulation Record transaction",
     ):
         recorder.record_or_verify_transaction(
             DevelopmentState(), [], acceptance_facts=facts, identity={}
@@ -127,7 +127,7 @@ def test_unbound_v2_nonempty_identity_is_rejected_without_writes(tmp_path):
     recorder = UnboundAcceptanceRecorder(log_dir=tmp_path)
     with pytest.raises(
         AcceptanceRecordingError,
-        match="unbound Interactive recording cannot record a Simulation Campaign transaction",
+        match="unbound Interactive recording cannot record a Simulation Record transaction",
     ):
         recorder.record_or_verify_transaction(
             DevelopmentState(),

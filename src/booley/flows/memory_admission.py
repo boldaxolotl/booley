@@ -116,7 +116,7 @@ def plan_work_item_claim(
     budget_mb: float | None,
     budget_error: str | None,
 ) -> tuple[MemoryClaim, str | None]:
-    """Size one Simulation Campaign work item's claim like a Job's, and its warning.
+    """Size one Simulation Record work item's claim like a Job's, and its warning.
 
     *request* is ``None`` when the item cannot be sized (it runs alone). Its
     build phase counts only when *build* is true: a settled shared build is not
@@ -187,7 +187,7 @@ def measure_memory_claim(
 
 @dataclass
 class MemorySizing:
-    """What an admitted Job lends its Campaign to size each work item's claim.
+    """What an admitted Job lends its Simulation Record to size each work item's claim.
 
     ``warnings`` collects the items' distinct warnings for the Job's result.
     """
@@ -216,7 +216,7 @@ def job_threads_at_start(
     the Job itself; the result is fixed for the Job's run and later Jobs never
     shrink it. It is never above *cores* and never below one.
 
-    A Campaign work item that took its own claim passes its Flow's token as
+    A Simulation Record work item that took its own claim passes its Flow's token as
     *own_flow*: the Flow's reservation is zero by then (an item takes a claim
     only after the Flow dropped to zero), so it holds no share of the cores and
     is left out. Every other caller passes nothing and counts every holder.

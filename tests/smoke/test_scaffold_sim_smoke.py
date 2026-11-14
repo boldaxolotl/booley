@@ -132,7 +132,7 @@ def test_real_scaffold_simulation_modes(
 def _assert_trace(tmp_path, reports, scaffold_native_binary):
     assert os.name == "posix", "streaming smoke requires POSIX FIFOs"
     assert not list(tmp_path.rglob("dump.vcd")), "Flow must honor its per-attempt FIFO"
-    # Campaign publication retains evidence copies as well as producing stores.
+    # Simulation Record publication retains evidence copies as well as producing stores.
     stores = list((reports / "sim/1").rglob("*.fst"))
     assert stores, "current invocation must retain a queryable Trace Artifact"
     for store in stores:

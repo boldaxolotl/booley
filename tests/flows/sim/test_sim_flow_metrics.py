@@ -198,7 +198,7 @@ class _TimedOutCoverageExecution(_MixedCoverageExecution):
 
 
 def _coverage_outcome(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execution: Any) -> Any:
-    """Run ``sim --coverage`` on a two-test Target and return its Campaign outcome."""
+    """Run ``sim --coverage`` on a two-test Target and return its Simulation Record outcome."""
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
     data = tmp_path / ".booley"

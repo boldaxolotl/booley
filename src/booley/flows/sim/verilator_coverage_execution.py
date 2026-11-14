@@ -489,7 +489,7 @@ class VerilatorCoverageExecution:
         return prepared.build_root, self._artifact_paths
 
     def bind_authenticated_attempt(self, snapshot_root: Path, run_cwd: Path) -> None:
-        """Execute only from the campaign-owned snapshot and claimed run directory."""
+        """Execute only from the record-owned snapshot and claimed run directory."""
         prepared = self._prepared
         if prepared is None:
             raise SimulationBuildSlotError("coverage simulator image is not authorized")

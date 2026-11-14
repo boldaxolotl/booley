@@ -700,7 +700,7 @@ def test_backend_timeout_on_simulation_record_path_preserves_detail_and_adds_hin
     """An adapter-reported timeout fails the run (exit 1) with its detail and the hint.
 
     Only the build and the process boundary are faked; planning, the Simulation
-    Campaign, its store, acceptance and reporting are real. Verilator and Icarus
+    Simulation Record, its store, acceptance and reporting are real. Verilator and Icarus
     timeouts use the native default-selection adapter shape (no per-test entry);
     the cocotb detail names its tests, so the adapter writes a per-test entry.
     """

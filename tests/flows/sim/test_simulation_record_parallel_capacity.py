@@ -1,4 +1,4 @@
-"""Bounded parallel execution, capacity, cancellation and lease loss of Simulation Campaigns."""
+"""Bounded parallel execution, capacity, cancellation and lease loss of Simulation Records."""
 
 from __future__ import annotations
 
@@ -263,7 +263,7 @@ def test_child_permit_checks_lease_loss_before_return(tmp_path: Path) -> None:
 def test_child_permit_never_yields_a_claim_admitted_after_cancellation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A claim admitted in the same moment the campaign is cancelled never starts its item."""
+    """A claim admitted in the same moment the record is cancelled never starts its item."""
     store = SlotStore(tmp_path / "slots")
     outer = _outer_claim(store)
     capacity = _capacity(_managed(store, outer), tmp_path)
@@ -860,7 +860,7 @@ def test_canonical_collision_keys_are_stable_across_threads(tmp_path: Path) -> N
 def test_unsized_memory_admitted_simulation_record_runs_work_items_without_child_lanes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A Flow admitted by memory whose Campaign sizes no items runs them in series (#3701)."""
+    """A Flow admitted by memory whose Simulation Record sizes no items runs them in series (#3701)."""
     from booley.flows import endpoint_admission
     from booley.flows.endpoint_admission import AdmissionGate
     from booley.flows.synth.flow import AsicSynthesizeFlow

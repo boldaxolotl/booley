@@ -689,7 +689,9 @@ def _seed_doctor_init_state(root: Path) -> None:
     ):
         run_bounded_child(["git", "config", key, value], cwd=root, check=True, timeout=10)
     config = booley_dir / "booley.toml"
-    config.write_text(config.read_text() + '\n[agent]\ndefault = "claude"\nauth = "auto"\n')
+    config.write_text(
+        config.read_text() + '\n[agent]\ndefault = "claude"\nauth = "subscription"\n'
+    )
     _track_scaffold(root)
 
 
