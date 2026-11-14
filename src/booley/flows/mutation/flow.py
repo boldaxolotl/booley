@@ -1510,9 +1510,10 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         )
         if plan.scope_defaulted:
             hint += f"; {_PASS_SCOPE_HINT}"
-        return _error_outcome(
-            "selection", reason, report_text=f"mutation: {reason}\n{hint}", detail=detail
-        )
+        lines = [f"mutation: {reason}", hint]
+        if replaced_line := _replaced_builds_line(len(sweep.invalid_dropped)):
+            lines.append(replaced_line)
+        return _error_outcome("selection", reason, report_text="\n".join(lines), detail=detail)
 
     @staticmethod
     def _variant_evidence(variants: MutationVariantPlan) -> dict[str, Any]:

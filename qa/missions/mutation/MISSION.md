@@ -76,7 +76,9 @@ Intent: selection follows the documented round-robin and sizing.
 Try:
 - `--count 6` takes one Mutant per operator in `operator_order`; `--count 7`
   adds a second `relational`; `--count 18` and `--count 22` match
-  `picks_per_operator`. Which candidate is seed-dependent and not checked.
+  `picks_per_operator` unless a `rtl/self_check.sv` Mutant is picked: it does not
+  build and is replaced by the next pick, which shifts the operator mix by up to
+  the number in `invalid_dropped`. Which candidate is seed-dependent and not checked.
 - `--count auto --dry-run` at the default timeout and with `--timeout 10m`,
   `1m`, `1h`: compare with the `auto` cases, and check that the dry run
   explains the count it chose.

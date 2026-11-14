@@ -1634,7 +1634,7 @@ def test_build_failure_cap_scores_the_kept_mutants(
 ) -> None:
     _prepare_scope_files(tmp_path, [_SCOPE])
     ranked = _candidates(tmp_path)
-    args = {} if min_detected is None else {"min_detected": min_detected}
+    args: dict[str, Any] = {} if min_detected is None else {"min_detected": min_detected}
 
     _, result, fake = _campaign(
         tmp_path,
@@ -1680,6 +1680,7 @@ def test_run_with_no_buildable_candidate_has_nothing_to_score(tmp_path: Path, mo
         "RESULT: ERROR (selection: no candidate Mutant changes what the Target builds)"
     )
     assert result.detail["invalid_dropped"] == [ranked[i].id for i in range(3)]
+    assert "3 candidate Mutants did not build and were replaced" in result.report_text
     assert fake.runs == [None]
 
 

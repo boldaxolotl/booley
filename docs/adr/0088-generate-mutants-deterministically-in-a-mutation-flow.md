@@ -190,7 +190,7 @@ never drops another one. A build whose layout is not Verilator's (no
   its number and build directory; the kept Mutants are numbered 1 to the count
   without gaps. When the candidates run out, the run scores the Mutants it has
   and reports the shortfall with the same text as a generator shortfall (the
-  report must not mention what was dropped); an unset `--min-detected` follows
+  report must not mention what was dropped; for build failures it states their count, per the 2026-11-14 amendment); an unset `--min-detected` follows
   the number scored.
 - A Mutant that does not build stays `invalid` and is not replaced (superseded by the 2026-11-14 amendment, #4031).
 - The report and `mutation-results.md` never list a dropped Mutant. The
