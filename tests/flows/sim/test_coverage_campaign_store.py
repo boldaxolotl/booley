@@ -60,9 +60,9 @@ def test_nested_coverage_exact_and_over_limit_preserve_authoritative_hook_sideca
     tmp_path, monkeypatch, boundary
 ):
     import booley.flows.sim.coverage_campaign_store as store
-    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_campaign
+    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
 
-    _invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
+    _invocation, outcome = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
     firing = outcome.pre_sim_firings[0]
     before = firing.path.read_bytes()
     attempt = firing.path.parent.parent

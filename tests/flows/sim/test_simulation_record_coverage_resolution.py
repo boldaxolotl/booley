@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from booley.criteria.state import DevelopmentState
-from booley.flows.sim.acceptance import record_campaign_acceptance
+from booley.flows.sim.acceptance import record_simulation_record_acceptance
 from tests.criteria.ledger_support import FixtureRecorder
 from tests.flows.sim.test_simulation_record_acceptance import _acceptance_endpoint, _sha
 
@@ -22,11 +22,11 @@ def test_one_outcome_resolves_its_coverage_reference_once_for_every_coverage_goa
     from booley.flows.sim import acceptance
     from booley.flows.sim.record.test_run_report import evidence_test_run_rows
     from booley.flows.test_runs import build_test_run
-    from tests.flows.sim.simulation_record_test_support import _run_coverage_campaign
+    from tests.flows.sim.simulation_record_test_support import _run_coverage_simulation_record
     from tests.flows.sim.test_coverage_transaction import NativeExecution
 
     monkeypatch.setattr(os, "fsync", lambda _descriptor: None)
-    outcome, _store = _run_coverage_campaign(tmp_path, NativeExecution())
+    outcome, _store = _run_coverage_simulation_record(tmp_path, NativeExecution())
     invocation = outcome.manifest_path.parents[3]
     rows = evidence_test_run_rows(outcome)
     runs = tuple(
@@ -78,7 +78,7 @@ def test_one_outcome_resolves_its_coverage_reference_once_for_every_coverage_goa
         log_dir=tmp_path / "logs", identity={"generation": "d" * 32, "authored_sha256": "e" * 64}
     )
     endpoint = _acceptance_endpoint(state, recorder, invocation)
-    record_campaign_acceptance(endpoint, (outcome,))
+    record_simulation_record_acceptance(endpoint, (outcome,))
 
     public = outcome.manifest_path.parents[1] / "coverage.json"
     raw = public.read_bytes()

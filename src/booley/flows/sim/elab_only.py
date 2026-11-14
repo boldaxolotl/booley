@@ -145,7 +145,7 @@ class ElabOnlyMixin:
         def _mode(self) -> SimulationMode: ...
         def _target_identity(self, target: str) -> str: ...
         def _target_handle(self, target: str) -> TargetHandle: ...
-        def _with_campaign_paths(
+        def _with_simulation_record_paths(
             self, result: EndpointOutcome, published: Sequence[Path] = ()
         ) -> EndpointOutcome: ...
         def _with_live_progress(self, run: Callable[[], EndpointOutcome]) -> EndpointOutcome: ...
@@ -225,7 +225,7 @@ class ElabOnlyMixin:
         preflight = self._elab_only_preflight()
         if isinstance(preflight, EndpointOutcome):
             return (
-                self._with_campaign_paths(preflight)
+                self._with_simulation_record_paths(preflight)
                 if preflight.exit_code != EXIT_SUCCESS
                 else preflight
             )
@@ -243,7 +243,7 @@ class ElabOnlyMixin:
         )
         try:
             with lifecycle:
-                results = self._run_elab_only_campaign(targets)
+                results = self._run_elab_only_simulation_record(targets)
                 self._elab_progress_results = results
                 missing = self._elab_only_missing_executable(results)
                 if missing is not None:
@@ -276,7 +276,7 @@ class ElabOnlyMixin:
                     "publish elaboration progress",
                     path=invocation / "progress.json" if invocation is not None else None,
                 )
-            return self._with_campaign_paths(
+            return self._with_simulation_record_paths(
                 EndpointOutcome(
                     exit_code=EXIT_ERROR,
                     detail={"progress_error": str(exc)},
@@ -468,7 +468,7 @@ class ElabOnlyMixin:
             ),
         )
 
-    def _run_elab_only_campaign(
+    def _run_elab_only_simulation_record(
         self,
         targets: list[str],
     ) -> list[ElabOnlyTargetResult]:
@@ -521,7 +521,7 @@ class ElabOnlyMixin:
         if standalone is not None:
             lines.extend(standalone.lines)
         lines += ["", f"RESULT: {verdict} ({passed}/{len(results)})"]
-        report_text = self._with_campaign_paths(
+        report_text = self._with_simulation_record_paths(
             EndpointOutcome(report_text="\n".join(lines))
         ).report_text
         print(report_text)
@@ -830,7 +830,7 @@ class ElabOnlyMixin:
             "and re-run; `booley doctor` checks the toolchain."
         )
         tail = "\n".join(exc.context.strip().splitlines()[-15:])
-        report_text = self._with_campaign_paths(
+        report_text = self._with_simulation_record_paths(
             EndpointOutcome(
                 report_text=f"{message}\n\n--- output tail ---\n{tail}" if tail else message
             )

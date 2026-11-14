@@ -64,20 +64,20 @@ from .record.dependency import (
 )
 from .record_layout import RECORD_DIRECTORY, refuse_older_layout
 from .record_reports import (
-    campaign_invocation_lock,
     is_report_link,
     report_link_ancestor,
     simulation_booley_dir,
+    simulation_record_invocation_lock,
     target_report_directory,
-    write_campaign_json,
+    write_simulation_record_json,
 )
 
 
-class CampaignRetentionError(ValueError):
+class SimulationRecordRetentionError(ValueError):
     """A selection or filesystem tree cannot be safely pruned."""
 
 
-class _UnreadableDependencyError(CampaignRetentionError):
+class _UnreadableDependencyError(SimulationRecordRetentionError):
     """A dependency scan hit a lasting sharing error and must not guess."""
 
 
@@ -88,7 +88,7 @@ _BATCH_SCHEMA = "booley.simulation-prune-batch/v1"
 
 
 @dataclass(frozen=True, slots=True)
-class _CampaignEligibility:
+class _SimulationRecordEligibility:
     status: RetainedSimulationRecordStatus
     abandoned: bool
 
@@ -111,10 +111,10 @@ def _retention_invocation_lock(root: Path) -> Iterator[None]:
     with ExitStack() as stack:
         try:
             stack.enter_context(
-                campaign_invocation_lock(root, booley_dir=invocation_booley_dir(root))
+                simulation_record_invocation_lock(root, booley_dir=invocation_booley_dir(root))
             )
         except LockContentionError as exc:
-            raise CampaignRetentionError(
+            raise SimulationRecordRetentionError(
                 f"invocation {root.name} is still being produced; retry after it finishes"
             ) from exc
         yield
@@ -168,23 +168,23 @@ def _ends_with(path: Path, suffix: Path) -> bool:
 def _safe_tree(path: Path, booley_dir: Path | None) -> None:
     parent = report_link_ancestor(path, booley_dir)
     if parent is not None:
-        raise CampaignRetentionError(f"Symlinks are not allowed: {parent}")
+        raise SimulationRecordRetentionError(f"Symlinks are not allowed: {parent}")
     if path.is_dir():
         for child in path.rglob("*"):
             if is_report_link(child) or not (child.is_file() or child.is_dir()):
-                raise CampaignRetentionError(f"Unsafe artifact: {child}")
+                raise SimulationRecordRetentionError(f"Unsafe artifact: {child}")
 
 
 def _canonical_retention_path(path: Path) -> Path:
     try:
         return canonical_project_alias_path(Path(path).absolute())
     except ValueError as exc:
-        raise CampaignRetentionError(str(exc)) from exc
+        raise SimulationRecordRetentionError(str(exc)) from exc
 
 
 def _invocation(reports_root: Path, invocation: int) -> Path:
     if type(invocation) is not int or invocation < 1:
-        raise CampaignRetentionError("Select one exact positive invocation number")
+        raise SimulationRecordRetentionError("Select one exact positive invocation number")
     root = _canonical_retention_path(reports_root) / "sim" / str(invocation)
     _safe_tree(root, invocation_booley_dir(root))
     return root
@@ -193,7 +193,7 @@ def _invocation(reports_root: Path, invocation: int) -> Path:
 def _read_object(path: Path) -> dict[str, object]:
     document = json.loads(read_file_bytes(path).decode("utf-8"))
     if not isinstance(document, dict):
-        raise CampaignRetentionError(f"Expected an object: {path}")
+        raise SimulationRecordRetentionError(f"Expected an object: {path}")
     return document
 
 
@@ -212,7 +212,7 @@ def _refuse_older_coverage_schema(root: Path, public: Mapping[str, object]) -> N
     try:
         raise_if_retired_schema(public.get("$schema"))
     except UnsupportedSimulationRecordFormatError as exc:
-        raise CampaignRetentionError(str(exc.located(root))) from exc
+        raise SimulationRecordRetentionError(str(exc.located(root))) from exc
 
 
 def _is_standalone_coverage(public: Mapping[str, object]) -> bool:
@@ -220,13 +220,13 @@ def _is_standalone_coverage(public: Mapping[str, object]) -> bool:
     return public.get("$schema") != REFERENCE_SCHEMA
 
 
-def _refuse_standalone_coverage(root: Path, target: Path) -> CampaignRetentionError:
+def _refuse_standalone_coverage(root: Path, target: Path) -> SimulationRecordRetentionError:
     """Refusal for a Target ``coverage.json`` that is not a Campaign reference.
 
     The usual cause is the dead layout that kept the Coverage Campaign in the Target
     directory; a damaged file reads the same, so the message names both.
     """
-    return CampaignRetentionError(
+    return SimulationRecordRetentionError(
         f"Coverage Campaign in {target} is not a Campaign reference: the standalone layout "
         "no supported Booley version writes, or a damaged file; delete the Simulation "
         f"invocation directory {root} by hand"
@@ -237,7 +237,7 @@ def _target(
     root: Path, selector: str, *, require_projection: bool = True
 ) -> tuple[Path, LoadedCoverageCampaign]:
     if not isinstance(selector, str) or not selector or selector in {".", "..", "latest"}:
-        raise CampaignRetentionError("Select one exact Target selector")
+        raise SimulationRecordRetentionError("Select one exact Target selector")
     progress = _read_object(root / "progress.json")
     targets = progress.get("targets")
     if (
@@ -245,7 +245,7 @@ def _target(
         or not isinstance(targets, list)
         or targets.count(selector) != 1
     ):
-        raise CampaignRetentionError("Target does not resolve exactly in this invocation")
+        raise SimulationRecordRetentionError("Target does not resolve exactly in this invocation")
     target = target_report_directory(root, selector)
     public_path = target / "coverage.json"
     public = _read_object(public_path)
@@ -256,12 +256,14 @@ def _target(
         resolved = resolve_coverage_campaign_reference(public_path)
         authenticate_coverage_campaign_owner(resolved)
     except UnsupportedSimulationRecordFormatError as exc:
-        raise CampaignRetentionError(str(exc)) from exc
+        raise SimulationRecordRetentionError(str(exc)) from exc
     loaded = resolved.loaded
     storage = resolved.campaign_path.parent
     campaign = loaded.campaign
     if campaign.target.selector != selector or campaign.invocation["id"] != int(root.name):
-        raise CampaignRetentionError("Campaign identity disagrees with the exact selection")
+        raise SimulationRecordRetentionError(
+            "Campaign identity disagrees with the exact selection"
+        )
     if not require_projection:
         return storage, loaded
     projection = _read_object(target / "simulation.json")
@@ -269,7 +271,7 @@ def _target(
         projection.get("target_identity") != campaign.target.identity
         or projection.get("complete") is not True
     ):
-        raise CampaignRetentionError(
+        raise SimulationRecordRetentionError(
             "Simulation projection is missing or belongs to another Target"
         )
     return storage, loaded
@@ -282,7 +284,9 @@ def _native_artifacts(campaign: CoverageCampaign) -> list[dict[str, object]]:
             continue
         path = Path(artifact.path)
         if path.is_absolute() or ".." in path.parts or not path.parts or path.parts[0] != "native":
-            raise CampaignRetentionError("Native artifact is outside the Target native directory")
+            raise SimulationRecordRetentionError(
+                "Native artifact is outside the Target native directory"
+            )
         artifacts.append({"id": artifact.id, "path": artifact.path, "sha256": artifact.sha256})
     return artifacts
 
@@ -299,7 +303,7 @@ def _refuse_older_record_layout(root: Path) -> None:
     try:
         refuse_older_layout(root)
     except UnsupportedSimulationRecordFormatError as exc:
-        raise CampaignRetentionError(str(exc)) from exc
+        raise SimulationRecordRetentionError(str(exc)) from exc
 
 
 def _prune_native(root: Path, target: str) -> Path:
@@ -318,14 +322,14 @@ def _prune_native(root: Path, target: str) -> Path:
                 and artifact.sha256
                 and not (directory / artifact.path).is_file()
             ):
-                raise CampaignRetentionError(
+                raise SimulationRecordRetentionError(
                     f"Native payload is unexpectedly missing: {artifact.path}"
                 )
-        write_campaign_json(sidecar, document)
+        write_simulation_record_json(sidecar, document)
     native = directory / "native"
     if native.exists():
         _remove_tree(native)
-    write_campaign_json(sidecar, {**document, "status": "pruned"})
+    write_simulation_record_json(sidecar, {**document, "status": "pruned"})
     return sidecar
 
 
@@ -347,7 +351,7 @@ def prune_invocation(
         batch = _read_prune_batch(root)
         if batch is not None:
             if not include_dependents:
-                raise CampaignRetentionError(
+                raise SimulationRecordRetentionError(
                     "An interrupted dependent prune must resume with --include-dependents"
                 )
             dependencies = _journal_dependents(root, batch.members)
@@ -357,7 +361,7 @@ def prune_invocation(
         live = tuple(item for item in dependencies if not _completed_tombstone(item.path))
         if live and not include_dependents:
             names = ", ".join(f"{item.path} (invocation {item.path.name})" for item in live)
-            raise CampaignRetentionError(f"Invocation has dependent resumes: {names}")
+            raise SimulationRecordRetentionError(f"Invocation has dependent resumes: {names}")
         if not include_dependents:
             _prune_invocation(root, project_data=project_data)
             return
@@ -385,7 +389,7 @@ def _prune_invocation_batch(
                 continue
             item = by_path[member]
             if not item.authenticated and not _recoverable_quarantine(member):
-                raise CampaignRetentionError(
+                raise SimulationRecordRetentionError(
                     "Dependent report does not authenticate to the origin "
                     f"Simulation Campaign: {member}"
                 )
@@ -396,13 +400,15 @@ def _prune_invocation_batch(
                 _preflight_invocation(member, project_data=project_data)
         if _read_prune_batch(root) is None:
             if not root.is_dir():
-                raise CampaignRetentionError("Pruning batch journal is missing during recovery")
-            write_campaign_json(journal_path, document)
+                raise SimulationRecordRetentionError(
+                    "Pruning batch journal is missing during recovery"
+                )
+            write_simulation_record_json(journal_path, document)
         for member in members:
             _prune_invocation(member, project_data=project_data)
         remaining = _remaining_dependencies(root, members)
         if remaining:
-            raise CampaignRetentionError(
+            raise SimulationRecordRetentionError(
                 f"Unselected Simulation Campaign dependency remains: {remaining[0]}"
             )
         _prune_invocation(root, project_data=project_data)
@@ -415,14 +421,16 @@ def _verify_locked_members(root: Path, dependencies: tuple[_DependentInvocation,
     else:
         refreshed = _dependent_invocations(root)
     if tuple(item.path for item in refreshed) != expected:
-        raise CampaignRetentionError("Simulation Campaign dependencies changed during pruning")
+        raise SimulationRecordRetentionError(
+            "Simulation Campaign dependencies changed during pruning"
+        )
     for item in refreshed:
         if (
             not item.authenticated
             and not _completed_tombstone(item.path)
             and not _recoverable_quarantine(item.path)
         ):
-            raise CampaignRetentionError(
+            raise SimulationRecordRetentionError(
                 f"Dependent report no longer authenticates to the origin: {item.path}"
             )
 
@@ -447,19 +455,19 @@ def _preflight_invocation(root: Path, *, project_data: Path | None) -> None:
     if _recoverable_quarantine(root):
         return
     if not root.is_dir():
-        raise CampaignRetentionError(f"Dependent invocation does not exist: {root}")
+        raise SimulationRecordRetentionError(f"Dependent invocation does not exist: {root}")
     if _matching_prune_journal(root):
         return
     if not _empty_abandoned_reservation(root):
         _validate_invocation_targets(root)
         _validate_invocation_inventory(root)
         try:
-            with _campaign_mutation_locks(_campaign_directories(root)):
-                _preflight_campaign_resources(root, project_data)
-        except CampaignRetentionError:
+            with _simulation_record_mutation_locks(_simulation_record_directories(root)):
+                _preflight_simulation_record_resources(root, project_data)
+        except SimulationRecordRetentionError:
             raise
         except (OSError, ValueError, SimulationRecordIntegrityError) as exc:
-            raise CampaignRetentionError(
+            raise SimulationRecordRetentionError(
                 f"Simulation Campaign resource preflight failed: {exc}"
             ) from exc
 
@@ -484,38 +492,38 @@ def _read_prune_batch(root: Path) -> _PruneBatch | None:
     if not candidates:
         return None
     if len(candidates) != 1:
-        raise CampaignRetentionError("Pruning batch journal state is ambiguous")
+        raise SimulationRecordRetentionError("Pruning batch journal state is ambiguous")
     path = candidates[0]
     document = _read_object(path)
     if set(document) != {"$schema", "operation", "origin", "members"}:
-        raise CampaignRetentionError("Pruning batch journal fields are invalid")
+        raise SimulationRecordRetentionError("Pruning batch journal fields are invalid")
     if (
         document["$schema"] != _BATCH_SCHEMA
         or document["operation"] != "full-with-dependents"
         or document["origin"] != str(root.absolute())
     ):
-        raise CampaignRetentionError("Pruning batch journal is invalid")
+        raise SimulationRecordRetentionError("Pruning batch journal is invalid")
     try:
         raw_members = require_list(document["members"], field="pruning batch members")
     except BoundaryError as exc:
-        raise CampaignRetentionError("Pruning batch journal is invalid") from exc
+        raise SimulationRecordRetentionError("Pruning batch journal is invalid") from exc
     members: list[Path] = []
     for value in raw_members:
         try:
             member = Path(require_str_value(value, field="pruning batch member"))
         except BoundaryError as exc:
-            raise CampaignRetentionError("Pruning batch member is invalid") from exc
+            raise SimulationRecordRetentionError("Pruning batch member is invalid") from exc
         if (
             not member.is_absolute()
             or member != member.absolute()
             or not member.name.isdecimal()
             or int(member.name) < 1
         ):
-            raise CampaignRetentionError("Pruning batch member is not canonical")
+            raise SimulationRecordRetentionError("Pruning batch member is not canonical")
         members.append(member)
     ordered = tuple(sorted(members, key=str))
     if tuple(members) != ordered or len(set(ordered)) != len(ordered):
-        raise CampaignRetentionError("Pruning batch membership is invalid")
+        raise SimulationRecordRetentionError("Pruning batch membership is invalid")
     return _PruneBatch(path, ordered)
 
 
@@ -545,9 +553,9 @@ def _dependent_invocations(
         try:
             receipts = read_simulation_record_dependencies(manifest)
         except UnsupportedSimulationRecordFormatError as exc:
-            raise CampaignRetentionError(str(exc.located(root))) from exc
+            raise SimulationRecordRetentionError(str(exc.located(root))) from exc
         except (OSError, ValueError, json.JSONDecodeError) as exc:
-            raise CampaignRetentionError(
+            raise SimulationRecordRetentionError(
                 f"Simulation Campaign dependency registry is invalid: {exc}"
             ) from exc
         for receipt in receipts:
@@ -572,7 +580,7 @@ def _authenticate_dependent_report(receipt: SimulationRecordDependencyReceipt) -
     report = receipt.dependent_invocation / "report.json"
     if not report.is_file():
         return _completed_tombstone(receipt.dependent_invocation)
-    return _report_references_campaign(
+    return _report_references_simulation_record(
         report,
         receipt.origin_target / RECORD_DIRECTORY / "manifest.json",
         receipt.simulation_record_id,
@@ -584,10 +592,10 @@ def _report_references_origin(report: Path, manifests: tuple[Path, ...]) -> bool
     for manifest in manifests:
         try:
             document = _read_object(manifest)
-            campaign_id = require_uuid4(
+            simulation_record_id = require_uuid4(
                 document.get("simulation_record_id"), field="simulation_record_id"
             )
-            if _report_references_campaign(report, manifest, campaign_id):
+            if _report_references_simulation_record(report, manifest, simulation_record_id):
                 return True
         except _UnreadableDependencyError:
             raise
@@ -626,41 +634,43 @@ def _reject_unknown_producers(root: Path, found: Mapping[Path, _DependentInvocat
                 producers.add(producer)
     unknown = sorted(producers - accounted - {origin_id})
     if unknown:
-        raise CampaignRetentionError(
+        raise SimulationRecordRetentionError(
             "Simulation Campaign has an unlocatable dependent producer invocation: "
             + ", ".join(str(item) for item in unknown)
         )
 
 
-def _report_references_campaign(
+def _report_references_simulation_record(
     report_path: Path,
     manifest: Path,
-    campaign_id: str,
+    simulation_record_id: str,
     *,
     external_origin_target: Path | None = None,
 ) -> bool:
     try:
         report = _read_object(report_path)
         detail = require_dict(report.get("detail"), field="report detail")
-        campaigns = require_dict(detail.get("records"), field="report records")
+        simulation_records = require_dict(detail.get("records"), field="report records")
     except OSError as error:
         _fail_closed_on_sharing_error(error, report_path)
         return False
     except (BoundaryError, ValueError, json.JSONDecodeError):
         return False
-    for value in campaigns.values():
+    for value in simulation_records.values():
         try:
-            campaign = require_dict(value, field="report campaign")
-            artifacts = require_dict(campaign.get("artifacts"), field="campaign artifacts")
+            simulation_record = require_dict(value, field="report campaign")
+            artifacts = require_dict(
+                simulation_record.get("artifacts"), field="campaign artifacts"
+            )
         except BoundaryError:
             continue
-        if campaign.get("simulation_record_id") != campaign_id:
+        if simulation_record.get("simulation_record_id") != simulation_record_id:
             continue
         if _manifest_reference_matches(
             report_path,
             artifacts.get("manifest"),
             manifest,
-            campaign_id,
+            simulation_record_id,
             external_origin_target=external_origin_target,
         ):
             return True
@@ -671,7 +681,7 @@ def _manifest_reference_matches(
     report_path: Path,
     reference: object,
     manifest: Path,
-    campaign_id: str,
+    simulation_record_id: str,
     *,
     external_origin_target: Path | None,
 ) -> bool:
@@ -688,7 +698,7 @@ def _manifest_reference_matches(
     elif decoded.path_base == "external_origin_target" and external_origin_target is not None:
         base = external_origin_target
     if (
-        decoded.owner != campaign_id
+        decoded.owner != simulation_record_id
         or decoded.kind != "simulation_record_manifest"
         or base is None
     ):
@@ -705,7 +715,7 @@ def _manifest_reference_matches(
             report_path,
             reference,
             expected_kind="simulation_record_manifest",
-            expected_owner=campaign_id,
+            expected_owner=simulation_record_id,
             maximum=MANIFEST_MAX_BYTES,
             external_origin_target=external_origin_target,
             booley_dir=invocation_booley_dir(report_path.parent),
@@ -722,24 +732,24 @@ def _prune_invocation(root: Path, *, project_data: Path | None = None) -> None:
     _safe_tree(quarantine, booley_dir)
     if root.exists():
         if quarantine.exists():
-            raise CampaignRetentionError("Ambiguous invocation pruning state")
+            raise SimulationRecordRetentionError("Ambiguous invocation pruning state")
         if _matching_prune_journal(root):
             root.rename(quarantine)
         elif _empty_abandoned_reservation(root):
-            write_campaign_json(
+            write_simulation_record_json(
                 root / ".prune.json", {"invocation": int(root.name), "operation": "full"}
             )
             root.rename(quarantine)
         else:
             _prune_published_invocation(root, project_data)
     elif not quarantine.is_dir():
-        raise CampaignRetentionError("Invocation does not exist")
+        raise SimulationRecordRetentionError("Invocation does not exist")
     children = list(quarantine.iterdir())
     if not children:
         return
     journal = quarantine / ".prune.json"
     if not journal.is_file():
-        raise CampaignRetentionError("Quarantine has no pruning journal")
+        raise SimulationRecordRetentionError("Quarantine has no pruning journal")
     for child in children:
         if child == journal:
             continue
@@ -764,12 +774,12 @@ def _prune_published_invocation(root: Path, project_data: Path | None) -> None:
     """Validate and quarantine one invocation that published its progress record."""
     _validate_invocation_targets(root)
     _validate_invocation_inventory(root)
-    campaigns = _campaign_directories(root)
-    with _campaign_mutation_locks(campaigns):
+    simulation_records = _simulation_record_directories(root)
+    with _simulation_record_mutation_locks(simulation_records):
         _validate_invocation_targets(root)
         _validate_invocation_inventory(root)
-        _recover_campaign_resources(root, campaigns, project_data)
-        write_campaign_json(
+        _recover_simulation_record_resources(root, simulation_records, project_data)
+        write_simulation_record_json(
             root / ".prune.json", {"invocation": int(root.name), "operation": "full"}
         )
     # Windows cannot rename a directory while a handle inside it (the Campaign
@@ -804,19 +814,19 @@ def _valid_lock_sentinel(lock: Path) -> bool:
         raise
 
 
-def _preflight_campaign_resources(root: Path, project_data: Path | None) -> None:
+def _preflight_simulation_record_resources(root: Path, project_data: Path | None) -> None:
     booley_dir = invocation_booley_dir(root)
-    for directory in _campaign_directories(root):
+    for directory in _simulation_record_directories(root):
         status = inspect_retained_simulation_record(
             directory / "manifest.json", booley_dir=booley_dir
         )
         if status.interrupted and project_data is None:
-            raise CampaignRetentionError(
+            raise SimulationRecordRetentionError(
                 "Booley Directory is required to recover interrupted Simulation Campaign resources"
             )
 
 
-def _campaign_directories(root: Path) -> tuple[Path, ...]:
+def _simulation_record_directories(root: Path) -> tuple[Path, ...]:
     return tuple(
         sorted(
             path.parent
@@ -827,39 +837,39 @@ def _campaign_directories(root: Path) -> tuple[Path, ...]:
 
 
 @contextmanager
-def _campaign_mutation_locks(campaigns: tuple[Path, ...]) -> Iterator[None]:
+def _simulation_record_mutation_locks(simulation_records: tuple[Path, ...]) -> Iterator[None]:
     with ExitStack() as stack:
-        for campaign in campaigns:
+        for simulation_record in simulation_records:
             try:
                 stack.enter_context(
                     retained_simulation_record_lock(
-                        campaign / "manifest.json",
-                        booley_dir=invocation_booley_dir(campaign.parents[2]),
+                        simulation_record / "manifest.json",
+                        booley_dir=invocation_booley_dir(simulation_record.parents[2]),
                     )
                 )
             except LockContentionError as exc:
-                raise CampaignRetentionError(
+                raise SimulationRecordRetentionError(
                     "Simulation Campaign is being resumed; retry after it finishes"
                 ) from exc
         yield
 
 
-def _recover_campaign_resources(
-    root: Path, campaigns: tuple[Path, ...], project_data: Path | None
+def _recover_simulation_record_resources(
+    root: Path, simulation_records: tuple[Path, ...], project_data: Path | None
 ) -> None:
     try:
         booley_dir = invocation_booley_dir(root)
         # Only this invocation's own lanes and run directories can survive.
         resolved = project_data or _infer_project_data(root)
-        for directory in campaigns:
+        for directory in simulation_records:
             status = inspect_retained_simulation_record(
                 directory / "manifest.json", booley_dir=booley_dir
             )
             recover_retained_simulation_record_resources(status, resolved, booley_dir=booley_dir)
-    except CampaignRetentionError:
+    except SimulationRecordRetentionError:
         raise
     except (OSError, ValueError, SimulationRecordIntegrityError) as exc:
-        raise CampaignRetentionError(f"Campaign recovery is invalid: {exc}") from exc
+        raise SimulationRecordRetentionError(f"Campaign recovery is invalid: {exc}") from exc
 
 
 def _infer_project_data(root: Path) -> Path | None:
@@ -888,32 +898,32 @@ def _validate_invocation_targets(root: Path) -> None:
     try:
         validate_progress_shape(progress)
     except ValueError as exc:
-        raise CampaignRetentionError(f"Invocation progress is invalid: {exc}") from exc
+        raise SimulationRecordRetentionError(f"Invocation progress is invalid: {exc}") from exc
     targets = cast(list[str], progress["targets"])
     if not targets:
-        raise CampaignRetentionError("Invocation has no exact Target manifest")
+        raise SimulationRecordRetentionError("Invocation has no exact Target manifest")
     if any(not target or target in {".", ".."} for target in targets):
-        raise CampaignRetentionError("Invocation has ambiguous Targets")
+        raise SimulationRecordRetentionError("Invocation has ambiguous Targets")
     completed = cast(list[str], progress["completed_targets"])
     pending = cast(list[str], progress["pending_targets"])
     if any(not target_report_directory(root, name).is_dir() for name in completed) and not (
         _is_resume_receipt(root, completed, pending)
     ):
-        raise CampaignRetentionError("Invocation contains an unresolved completed Target")
+        raise SimulationRecordRetentionError("Invocation contains an unresolved completed Target")
     expected = {target_report_directory(root, target).name for target in targets}
     directories = (root / "targets").iterdir() if (root / "targets").exists() else ()
     for directory in directories:
         if directory.name not in expected:
-            raise CampaignRetentionError("Invocation contains an unresolved Target")
+            raise SimulationRecordRetentionError("Invocation contains an unresolved Target")
         # Partial attempts can be removed; existing Simulation Campaigns must agree.
         if (directory / "coverage.json").exists():
             selector = next(
                 target for target in targets if target_report_directory(root, target) == directory
             )
             _target(root, selector, require_projection=False)
-        campaign = directory / RECORD_DIRECTORY
-        if (campaign / "manifest.json").exists():
-            _inspect_simulation_campaign(directory, campaign)
+        simulation_record = directory / RECORD_DIRECTORY
+        if (simulation_record / "manifest.json").exists():
+            _inspect_simulation_record(directory, simulation_record)
 
 
 def _validate_invocation_inventory(root: Path) -> None:
@@ -924,19 +934,19 @@ def _validate_invocation_inventory(root: Path) -> None:
     batch = root / ".prune-batch.json"
     if batch.exists():
         if _read_prune_batch(root) is None:
-            raise CampaignRetentionError("Pruning batch journal is invalid")
+            raise SimulationRecordRetentionError("Pruning batch journal is invalid")
         expected.add(batch.absolute())
     progress_lock = root / ".progress.lock"
     if progress_lock.exists():
         if not _valid_lock_sentinel(progress_lock):
-            raise CampaignRetentionError(
+            raise SimulationRecordRetentionError(
                 f"Invocation progress lock content is invalid: {progress_lock}"
             )
         expected.add(progress_lock.absolute())
     report = root / "report.json"
     if report.exists():
         if _read_object(report).get("flow") != "sim":
-            raise CampaignRetentionError(
+            raise SimulationRecordRetentionError(
                 f"Invocation report does not belong to Simulation: {report}"
             )
         expected.add(report.absolute())
@@ -954,7 +964,7 @@ def _validate_invocation_inventory(root: Path) -> None:
         if path.is_file() and path.absolute() not in expected
     )
     if unexpected:
-        raise CampaignRetentionError(f"Unrecognized invocation content: {unexpected[0]}")
+        raise SimulationRecordRetentionError(f"Unrecognized invocation content: {unexpected[0]}")
 
 
 def _referenced_invocation_artifacts(root: Path, document: Mapping[str, object]) -> set[Path]:
@@ -983,7 +993,7 @@ def _referenced_invocation_artifacts(root: Path, document: Mapping[str, object])
         candidate = root / relative
         _validate_invocation_artifact_layout(relative)
         if candidate.is_symlink() or not candidate.is_file():
-            raise CampaignRetentionError(
+            raise SimulationRecordRetentionError(
                 f"Invocation artifact reference is missing or unsafe: {reference}"
             )
         owned.add(candidate.absolute())
@@ -994,14 +1004,14 @@ def _validate_invocation_artifact_layout(relative: Path) -> None:
     parts = relative.parts
     role_offset = 2 if len(parts) > 1 and parts[1] == "candidate" else 3
     if len(parts) < role_offset + 4 or parts[0] != "artifacts":
-        raise CampaignRetentionError(f"Invalid invocation artifact layout: {relative}")
+        raise SimulationRecordRetentionError(f"Invalid invocation artifact layout: {relative}")
     if parts[1] not in {"candidate", "baseline"}:
-        raise CampaignRetentionError(f"Invalid invocation artifact role: {relative}")
+        raise SimulationRecordRetentionError(f"Invalid invocation artifact role: {relative}")
     tail = parts[role_offset:]
     if len(tail) not in {4, 5} or tail[1] != "tests":
-        raise CampaignRetentionError(f"Invalid invocation artifact layout: {relative}")
+        raise SimulationRecordRetentionError(f"Invalid invocation artifact layout: {relative}")
     if len(tail) == 4 and tail[-1] != "run.log":
-        raise CampaignRetentionError(f"Invalid invocation artifact file: {relative}")
+        raise SimulationRecordRetentionError(f"Invalid invocation artifact file: {relative}")
     if len(tail) == 5:
         expected_names = {
             "result": "result.json",
@@ -1016,9 +1026,9 @@ def _validate_invocation_artifact_layout(relative: Path) -> None:
         else:
             valid = expected_names.get(kind) == filename
         if not valid:
-            raise CampaignRetentionError(f"Invalid invocation artifact file: {relative}")
+            raise SimulationRecordRetentionError(f"Invalid invocation artifact file: {relative}")
     if any(part in {"", ".", ".."} or "/" in part or "\\" in part for part in parts):
-        raise CampaignRetentionError(f"Unsafe invocation artifact path: {relative}")
+        raise SimulationRecordRetentionError(f"Unsafe invocation artifact path: {relative}")
 
 
 def _target_owned_files(root: Path, target: Path) -> set[Path]:
@@ -1028,8 +1038,8 @@ def _target_owned_files(root: Path, target: Path) -> set[Path]:
         # Already validated by _validate_invocation_targets; the nested storage is owned
         # through the Simulation Campaign's coverage directories below.
         expected.add(public.absolute())
-    campaign = target / RECORD_DIRECTORY
-    manifest = campaign / "manifest.json"
+    simulation_record = target / RECORD_DIRECTORY
+    manifest = simulation_record / "manifest.json"
     if manifest.exists():
         booley_dir = invocation_booley_dir(root)
         status = inspect_retained_simulation_record(manifest, booley_dir=booley_dir)
@@ -1040,15 +1050,15 @@ def _target_owned_files(root: Path, target: Path) -> set[Path]:
         try:
             expected.update(dependency_receipt_files(manifest))
         except (OSError, ValueError, json.JSONDecodeError) as exc:
-            raise CampaignRetentionError(
+            raise SimulationRecordRetentionError(
                 f"Simulation Campaign dependency registry is invalid: {exc}"
             ) from exc
         for coverage in status.coverage_directories:
             expected.update(_campaign_coverage_files(coverage))
-        lock = campaign / ".lock"
+        lock = simulation_record / ".lock"
         if lock.exists():
             if not _valid_lock_sentinel(lock):
-                raise CampaignRetentionError(f"Campaign lock content is invalid: {lock}")
+                raise SimulationRecordRetentionError(f"Campaign lock content is invalid: {lock}")
             expected.add(lock.absolute())
     return expected
 
@@ -1059,13 +1069,13 @@ def _campaign_coverage_files(coverage: Path) -> set[Path]:
         try:
             loaded = load_coverage_campaign(campaign_path)
         except UnsupportedSimulationRecordFormatError as exc:
-            raise CampaignRetentionError(str(exc)) from exc
+            raise SimulationRecordRetentionError(str(exc)) from exc
         return _coverage_owned_files(coverage, loaded)
     if not coverage.exists():
         return set()
     marker = coverage / ".collection-started"
     if marker.exists() and marker.read_bytes() != b"":
-        raise CampaignRetentionError(f"Coverage collection marker changed: {marker}")
+        raise SimulationRecordRetentionError(f"Coverage collection marker changed: {marker}")
     return {
         marker.absolute(),
         *(path.absolute() for path in (coverage / "native").rglob("*") if path.is_file()),
@@ -1084,7 +1094,7 @@ def _campaign_coverage_files(coverage: Path) -> set[Path]:
 def _coverage_owned_files(storage: Path, loaded: LoadedCoverageCampaign) -> set[Path]:
     marker = storage / ".collection-started"
     if marker.exists() and marker.read_bytes() != b"":
-        raise CampaignRetentionError(f"Coverage collection marker changed: {marker}")
+        raise SimulationRecordRetentionError(f"Coverage collection marker changed: {marker}")
     expected = {
         (storage / "coverage.json").absolute(),
         (storage / "availability.json").absolute(),
@@ -1110,22 +1120,29 @@ def _availability_document(loaded: LoadedCoverageCampaign, *, status: str) -> di
     }
 
 
-def _inspect_simulation_campaign(target: Path, campaign: Path) -> _CampaignEligibility:
+def _inspect_simulation_record(
+    target: Path, simulation_record: Path
+) -> _SimulationRecordEligibility:
     try:
         status = inspect_retained_simulation_record(
-            campaign / "manifest.json", booley_dir=invocation_booley_dir(target.parents[1])
+            simulation_record / "manifest.json",
+            booley_dir=invocation_booley_dir(target.parents[1]),
         )
     except UnsupportedSimulationRecordFormatError as exc:
-        raise CampaignRetentionError(str(exc)) from exc
+        raise SimulationRecordRetentionError(str(exc)) from exc
     except (OSError, ValueError) as exc:
-        raise CampaignRetentionError(
+        raise SimulationRecordRetentionError(
             f"Simulation Campaign is invalid and cannot be pruned: {exc}"
         ) from exc
     incomplete_recovery = bool(status.pending or status.interrupted)
     if status.summary_present and not status.summary_completed_matches:
-        raise CampaignRetentionError("Simulation Campaign acceptance projections are incomplete")
+        raise SimulationRecordRetentionError(
+            "Simulation Campaign acceptance projections are incomplete"
+        )
     if status.summary_present and status.summary_complete == incomplete_recovery:
-        raise CampaignRetentionError("Simulation Campaign acceptance projections are incomplete")
+        raise SimulationRecordRetentionError(
+            "Simulation Campaign acceptance projections are incomplete"
+        )
     projection_path = target / "simulation.json"
     projection = None
     if projection_path.exists():
@@ -1135,23 +1152,25 @@ def _inspect_simulation_campaign(target: Path, campaign: Path) -> _CampaignEligi
                 coverage_expected=(target / "coverage.json").is_file(),
             )
         except UnsupportedSimulationRecordFormatError as exc:
-            raise CampaignRetentionError(str(exc.located(target.parents[1]))) from exc
+            raise SimulationRecordRetentionError(str(exc.located(target.parents[1]))) from exc
         except (OSError, ValueError) as exc:
-            raise CampaignRetentionError(
+            raise SimulationRecordRetentionError(
                 f"Simulation Campaign is invalid and cannot be pruned: {exc}"
             ) from exc
         _validate_projection_identity(target, status, projection)
     abandoned = incomplete_recovery or not status.summary_present or projection is None
     if projection is not None and projection.document.get("complete") is (not abandoned):
-        return _CampaignEligibility(status, abandoned)
+        return _SimulationRecordEligibility(status, abandoned)
     if projection is None and abandoned:
-        return _CampaignEligibility(status, True)
-    raise CampaignRetentionError("Simulation Campaign acceptance projections are incomplete")
+        return _SimulationRecordEligibility(status, True)
+    raise SimulationRecordRetentionError(
+        "Simulation Campaign acceptance projections are incomplete"
+    )
 
 
 def _validate_native_pruning_eligibility(root: Path, selector: str) -> None:
     if _empty_abandoned_reservation(root):
-        raise CampaignRetentionError(
+        raise SimulationRecordRetentionError(
             "native-only pruning requires a completed Target; use --full to discard "
             "this abandoned invocation"
         )
@@ -1162,7 +1181,7 @@ def _validate_native_pruning_eligibility(root: Path, selector: str) -> None:
         or not isinstance(targets, list)
         or targets.count(selector) != 1
     ):
-        raise CampaignRetentionError("Target does not resolve exactly in this invocation")
+        raise SimulationRecordRetentionError("Target does not resolve exactly in this invocation")
     target = target_report_directory(root, selector)
     public = target / "coverage.json"
     if public.exists():
@@ -1172,17 +1191,17 @@ def _validate_native_pruning_eligibility(root: Path, selector: str) -> None:
     if not manifest.exists():
         if public.exists() and _is_standalone_coverage(_read_object(public)):
             raise _refuse_standalone_coverage(root, target)
-        raise CampaignRetentionError(
+        raise SimulationRecordRetentionError(
             "native-only pruning requires a completed Target; use --full to discard "
             "this abandoned invocation"
         )
-    eligibility = _inspect_simulation_campaign(target, manifest.parent)
+    eligibility = _inspect_simulation_record(target, manifest.parent)
     status = eligibility.status
     workload = cast(Mapping[str, object], status.manifest.document["workload"])
     if workload["coverage"] is not True:
-        raise CampaignRetentionError("--native-target has no native Coverage Campaign")
+        raise SimulationRecordRetentionError("--native-target has no native Coverage Campaign")
     if eligibility.abandoned:
-        raise CampaignRetentionError(
+        raise SimulationRecordRetentionError(
             "native-only pruning requires a completed Target; use --full to discard the "
             f"abandoned invocation or booley flow sim --resume-from {manifest} to preserve "
             "and complete it"
@@ -1197,13 +1216,13 @@ def _validate_projection_identity(
         "target_identity": status.target_identity,
     }
     if any(projection.document.get(key) != value for key, value in expected.items()):
-        raise CampaignRetentionError("Simulation Campaign projection identity disagrees")
+        raise SimulationRecordRetentionError("Simulation Campaign projection identity disagrees")
     if projection.trust is ProjectionTrust.TARGET_CONSISTENT_LEGACY and (
         type(projection.document.get("passed")) is not bool
         or type(projection.document.get("inconclusive")) is not bool
         or not isinstance(projection.document.get("tests"), list)
     ):
-        raise CampaignRetentionError("legacy Simulation verdict projection is invalid")
+        raise SimulationRecordRetentionError("legacy Simulation verdict projection is invalid")
     if projection.trust is ProjectionTrust.AUTHENTICATED:
         _validate_authenticated_projection(target, status, projection.document)
 
@@ -1212,7 +1231,7 @@ def _validate_authenticated_projection(
     target: Path, status: RetainedSimulationRecordStatus, document: Mapping[str, object]
 ) -> None:
     if document.get("simulation_record_id") != status.simulation_record_id:
-        raise CampaignRetentionError("Simulation Campaign projection owner disagrees")
+        raise SimulationRecordRetentionError("Simulation Campaign projection owner disagrees")
     booley_dir = invocation_booley_dir(target.parents[1])
     artifact = resolve_artifact_reference(
         document.get("simulation_record_manifest"),
@@ -1224,7 +1243,7 @@ def _validate_authenticated_projection(
         booley_dir=booley_dir,
     )
     if artifact.path != status.manifest_path:
-        raise CampaignRetentionError("Simulation Campaign projection manifest disagrees")
+        raise SimulationRecordRetentionError("Simulation Campaign projection manifest disagrees")
     if not (target / "coverage.json").is_file():
         return
     coverage = resolve_artifact_reference(
@@ -1237,7 +1256,7 @@ def _validate_authenticated_projection(
         booley_dir=booley_dir,
     )
     if coverage.path != (target / "coverage.json").absolute():
-        raise CampaignRetentionError(
+        raise SimulationRecordRetentionError(
             "Simulation Campaign projection Coverage Campaign reference disagrees"
         )
 
@@ -1245,7 +1264,7 @@ def _validate_authenticated_projection(
 def _is_resume_receipt(root: Path, completed: list[str], pending: list[str]) -> bool:
     """Recognize a complete report-only resume without granting storage authority.
 
-    Raises ``CampaignRetentionError`` for a receipt Booley 0.4.0 wrote.
+    Raises ``SimulationRecordRetentionError`` for a receipt Booley 0.4.0 wrote.
     """
     if pending or not completed or (root / "targets").exists():
         return False
@@ -1258,7 +1277,7 @@ def _is_resume_receipt(root: Path, completed: list[str], pending: list[str]) -> 
         return False
     if report.get("flow") == "sim" and isinstance(detail.get("campaigns"), dict):
         # Booley 0.4.0 named the field ``campaigns``; no current Booley writes it.
-        raise CampaignRetentionError(
+        raise SimulationRecordRetentionError(
             str(
                 UnsupportedSimulationRecordFormatError(
                     "Simulation report field", "detail.campaigns", root

@@ -32,7 +32,7 @@ from booley.flows.sim.execution.contract import (
     SimulationTargetOutcome,
     SimulationTestOutcome,
 )
-from booley.flows.sim.record import capacity as campaign_capacity
+from booley.flows.sim.record import capacity as simulation_record_capacity
 from booley.flows.sim.record.child_protocol import ChildExecutionRegistry
 from booley.flows.sim.record.codec import (
     RESULT_SCHEMA,
@@ -108,7 +108,7 @@ def _recovery_status(tmp_path: Path) -> SimulationRecordRecoveryStatus:
 
 
 @dataclass(frozen=True)
-class _RecordedCampaign:
+class _RecordedSimulationRecord:
     """A current-schema manifest written under a test root, one work item per Test Run."""
 
     manifest_path: Path
@@ -151,9 +151,9 @@ class _RecordedCampaign:
         return members | stamped
 
 
-def _recorded_campaign(
+def _recorded_simulation_record(
     root: Path, runs: Sequence[TestRun], required: tuple[str, ...] = ("reset", "count")
-) -> _RecordedCampaign:
+) -> _RecordedSimulationRecord:
     """Plan *runs* with the real planner and write the manifest as ``manifest.json``.
 
     Each call plans in a fresh directory under *root*: the planner's fixture
@@ -166,7 +166,7 @@ def _recorded_campaign(
     manifest = _hdl_plan(directory, tuple((run,) for run in runs), required).manifest
     manifest_path = directory / "manifest.json"
     manifest_path.write_bytes(encode_simulation_record_manifest(manifest))
-    return _RecordedCampaign(manifest_path, manifest)
+    return _RecordedSimulationRecord(manifest_path, manifest)
 
 
 def _acceptance_facts(manifest_sha256: str) -> dict[str, object]:
@@ -229,7 +229,7 @@ def _simulation_outcome(
         test = cast("str | None", observation["test"])
         seed = None if test is None or seeds is None else seeds.get(test)
         runs.setdefault(test, build_test_run(test, seed=seed))
-    recorded = _recorded_campaign(tmp_path, tuple(runs.values()), required)
+    recorded = _recorded_simulation_record(tmp_path, tuple(runs.values()), required)
     document = _acceptance_facts(recorded.digest)
     target = dict(document["target"])  # type: ignore[arg-type]
     target["role"] = role
@@ -1045,10 +1045,10 @@ def _managed(store: SlotStore, outer, *, holders: int = 2, **overrides: Any) -> 
 
 def _pinned_lanes(
     *args: Any, lanes: int, **kwargs: Any
-) -> campaign_capacity.SimulationRecordCapacity:
+) -> simulation_record_capacity.SimulationRecordCapacity:
     """Real capacity whose lane bound a test pins, not the machine's cores."""
 
-    class _PinnedLanes(campaign_capacity.SimulationRecordCapacity):
+    class _PinnedLanes(simulation_record_capacity.SimulationRecordCapacity):
         @property
         def max_lanes(self) -> int:
             return lanes
@@ -1058,7 +1058,7 @@ def _pinned_lanes(
 
 def _item_capacity(
     admission: AdmissionContext, manifest, project_data: Path, *, lanes: int = 2
-) -> campaign_capacity.SimulationRecordCapacity:
+) -> simulation_record_capacity.SimulationRecordCapacity:
     """Capacity whose every work item takes the admission's claim for itself."""
     sizing = admission.memory_sizing
     claim = sizing.claim if isinstance(sizing, _FixedSizing) else _holder_claim(lanes)
@@ -1067,12 +1067,12 @@ def _item_capacity(
 
 def _capacity(
     admission: AdmissionContext, tmp_path: Path, *, lanes: int = 2
-) -> campaign_capacity.SimulationRecordCapacity:
+) -> simulation_record_capacity.SimulationRecordCapacity:
     """Real capacity, with its lane registry, over a fresh Booley Directory."""
     project_data = tmp_path / "project" / ".booley"
     project_data.mkdir(parents=True, exist_ok=True)
     if admission.memory_sizing is None:  # a Campaign that sizes no item claims
-        return campaign_capacity.SimulationRecordCapacity(
+        return simulation_record_capacity.SimulationRecordCapacity(
             admission, _two_item_manifest(), project_data
         )
     return _item_capacity(admission, _two_item_manifest(), project_data, lanes=lanes)
@@ -1242,7 +1242,7 @@ class _ParallelExecution:
         yield _ParallelGroup(self.state, names)
 
 
-class _CampaignAdmissionEndpoint:
+class _SimulationRecordAdmissionEndpoint:
     _invocation_id = "sim-20260925T153819Z-1"
 
     def __init__(self, slots: SlotStore, runtime_execution_id: str | None) -> None:
@@ -1261,7 +1261,7 @@ class _CampaignAdmissionEndpoint:
         )
 
 
-def _validated_campaign(store, manifest, project, handle) -> ValidatedResumeManifest:
+def _validated_simulation_record(store, manifest, project, handle) -> ValidatedResumeManifest:
     node = ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest))
     return ValidatedResumeManifest(
         node,
@@ -1271,7 +1271,7 @@ def _validated_campaign(store, manifest, project, handle) -> ValidatedResumeMani
     )
 
 
-def _interrupted_campaign(tmp_path, monkeypatch, runtime_execution_id):
+def _interrupted_simulation_record(tmp_path, monkeypatch, runtime_execution_id):
     manifest = _three_item_manifest(runtime_execution_id or "")
     plan = create_simulation_record_plan(manifest)
     project, state = _parallel_environment(tmp_path, "beta", 0)
@@ -1287,7 +1287,7 @@ def _interrupted_campaign(tmp_path, monkeypatch, runtime_execution_id):
     invocation.mkdir(parents=True)
     slots = SlotStore(tmp_path / "slots")
     _set_runtime_execution_id(monkeypatch, runtime_execution_id)
-    monkeypatch.setenv("BOOLEY_RUN_ID", _CampaignAdmissionEndpoint._invocation_id)
+    monkeypatch.setenv("BOOLEY_RUN_ID", _SimulationRecordAdmissionEndpoint._invocation_id)
     fault_enabled, original_mark = [True], ChildExecutionRegistry.mark_terminal
     work_items = invocation / "targets/sim/record/work-items"
 
@@ -1302,7 +1302,7 @@ def _interrupted_campaign(tmp_path, monkeypatch, runtime_execution_id):
         original_mark(registry, prepared, terminal_cause)
 
     monkeypatch.setattr(ChildExecutionRegistry, "mark_terminal", interrupted_mark)
-    campaign = SimulationRecord(executor, work_item_request=lambda *_args: None)
+    simulation_record = SimulationRecord(executor, work_item_request=lambda *_args: None)
     execution_id = ExecutionId(runtime_execution_id) if runtime_execution_id else None
     # The Flow's claim, with three item claims' worth of memory left to lend its Campaign.
     outer = slots.acquire(
@@ -1314,7 +1314,7 @@ def _interrupted_campaign(tmp_path, monkeypatch, runtime_execution_id):
     admission = replace(_managed(slots, outer, holders=3), execution_id=execution_id)
     try:
         with pytest.raises(RuntimeError, match="injected terminal-record interruption"):
-            campaign.run(
+            simulation_record.run(
                 NewSimulationRecordRunRequest(
                     plan,
                     project,
@@ -1327,9 +1327,9 @@ def _interrupted_campaign(tmp_path, monkeypatch, runtime_execution_id):
     finally:
         slots.release(outer)
     store = SimulationRecordStore(invocation / "targets/sim/record")
-    validated = _validated_campaign(store, manifest, project, state.handle)
+    validated = _validated_simulation_record(store, manifest, project, state.handle)
     return SimpleNamespace(
-        campaign=campaign,
+        simulation_record=simulation_record,
         fault_enabled=fault_enabled,
         invocation=invocation,
         manifest=manifest,
@@ -1494,7 +1494,7 @@ def _coverage_runtime_input(root: Path) -> None:
     )
 
 
-def _coverage_campaign_plan(
+def _coverage_simulation_record_plan(
     root: Path, *, runtime_input: bool = False, pre_sim_commands: tuple[str, ...] = ()
 ):
     context = project(root)
@@ -1539,7 +1539,7 @@ def _coverage_campaign_plan(
     return plan, target
 
 
-def _run_coverage_campaign(
+def _run_coverage_simulation_record(
     root: Path,
     native: NativeExecution,
     *,
@@ -1547,7 +1547,7 @@ def _run_coverage_campaign(
     pre_sim_commands: tuple[str, ...] = (),
     publication_checkpoint=None,
 ):
-    plan, target = _coverage_campaign_plan(
+    plan, target = _coverage_simulation_record_plan(
         root, runtime_input=runtime_input, pre_sim_commands=pre_sim_commands
     )
     assert tuple(plan.manifest.document["workload"]["source_recipe"]["pre_sim_commands"]) == (

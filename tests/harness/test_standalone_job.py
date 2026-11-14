@@ -211,7 +211,7 @@ def test_goal_worktree_shell_run_leaves_goal_evidence_unchanged(goal_mode, monke
 CHILD = """
 import signal, sys, time
 from pathlib import Path
-from booley.harness.standalone_job import StandaloneJob
+from booley.harness.standalone_job import StandaloneJob, checkout_report_root
 
 # A runner that started pytest under nohup passes SIGHUP ignored down; the job
 # keeps a signal's existing handler, so start from the default disposition.
@@ -222,7 +222,9 @@ def block():
     time.sleep({timeout})
     return 0
 
-job = StandaloneJob.prepare(Path(sys.argv[1]), "flow", "stub", ["--target", "t1"])
+job = StandaloneJob.prepare(
+    Path(sys.argv[1]), "stub", ["booley", "flow", "stub", "--target", "t1"], report_root=checkout_report_root(Path(sys.argv[1]))
+)
 sys.exit(job.run(block))
 """
 
@@ -331,9 +333,11 @@ def test_signal_leaves_terminal_record(project, tmp_path, name):
     (view,) = JobReader(project / ".booley").read([]).jobs
     assert view.state == "failed"  # the Dashboard sees the dead process
 
-    from booley.harness.standalone_job import StandaloneJob
+    from booley.harness.standalone_job import StandaloneJob, checkout_report_root
 
-    job = StandaloneJob.prepare(project, "flow", "stub", [])
+    job = StandaloneJob.prepare(
+        project, "stub", ["booley", "flow", "stub"], report_root=checkout_report_root(project)
+    )
     assert job is not None
     try:
         assert job.run(lambda: 0) == 0  # the next shell run repairs the dead record
@@ -348,11 +352,13 @@ def test_signal_leaves_terminal_record(project, tmp_path, name):
 def test_cleanup_keeps_a_record_that_finished_after_it_was_listed(monkeypatch, project):
     """A run that ends between the cleanup's listing and its rewrite keeps its own outcome."""
     from booley.harness import standalone_job
-    from booley.harness.standalone_job import StandaloneJob
+    from booley.harness.standalone_job import StandaloneJob, checkout_report_root
     from booley.runtime.pid import DEAD, ProcessIdentity, ProcessObservation
 
     root = project / ".booley" / JOBS_ROOT
-    job = StandaloneJob.prepare(project, "flow", "stub", [])
+    job = StandaloneJob.prepare(
+        project, "stub", ["booley", "flow", "stub"], report_root=checkout_report_root(project)
+    )
     assert job is not None
     job.discard()
     other = job_records.JobRecord(
@@ -380,9 +386,11 @@ def test_cleanup_keeps_a_record_that_finished_after_it_was_listed(monkeypatch, p
 
 def test_closed_standard_streams_do_not_fail_the_run(monkeypatch, project):
     """With fd 1 or 2 closed, Python leaves the stream None; print() drops silently as before."""
-    from booley.harness.standalone_job import StandaloneJob
+    from booley.harness.standalone_job import StandaloneJob, checkout_report_root
 
-    job = StandaloneJob.prepare(project, "flow", "stub", [])
+    job = StandaloneJob.prepare(
+        project, "stub", ["booley", "flow", "stub"], report_root=checkout_report_root(project)
+    )
     assert job is not None
     monkeypatch.setattr(sys, "stdout", None)
     monkeypatch.setattr(sys, "stderr", None)
@@ -457,3 +465,46 @@ def test_cancelled_run_reaches_main_and_silences_only_the_interrupt_traceback(
     assert capsys.readouterr().err == ""
     hook(RuntimeError, RuntimeError("boom"), None)
     assert "RuntimeError: boom" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("inherited", ["outer-run", None])
+def test_an_own_run_job_ignores_an_inherited_run_id_and_restores_it(
+    monkeypatch, project, inherited
+):
+    """``own_run`` gives a run inside another Job its own record; the caller's id comes back."""
+    from booley.harness.standalone_job import StandaloneJob, checkout_report_root
+
+    if inherited is None:
+        monkeypatch.delenv("BOOLEY_RUN_ID", raising=False)
+    else:
+        monkeypatch.setenv("BOOLEY_RUN_ID", inherited)
+    monkeypatch.setenv("_BOOLEY_CLI_INVOCATION_ORIGIN", "transport")
+
+    job = StandaloneJob.prepare(
+        project,
+        "measure",
+        ["booley", "measure"],
+        report_root=checkout_report_root(project),
+        own_run=True,
+    )
+    assert job is not None
+    try:
+        assert os.environ["BOOLEY_RUN_ID"] == job.run_id != inherited
+        assert job.run(lambda: 0) == 0
+    finally:
+        job.discard()
+
+    assert os.environ.get("BOOLEY_RUN_ID") == inherited
+    (rec,) = records(project)
+    assert (rec.run_id, rec.endpoint, rec.status) == (job.run_id, "measure", "done")
+    assert rec.argv == ["booley", "measure"]
+
+
+def test_a_nested_run_without_own_run_is_not_a_job(monkeypatch, project):
+    from booley.harness.standalone_job import StandaloneJob
+
+    monkeypatch.setenv("BOOLEY_RUN_ID", "outer-run")
+    assert (
+        StandaloneJob.prepare(project, "stub", ["booley", "flow", "stub"], report_root=None)
+        is None
+    )

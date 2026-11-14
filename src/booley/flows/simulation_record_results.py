@@ -15,15 +15,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 __all__ = [
-    "CampaignBusyError",
-    "CampaignResultsReader",
-    "DurableCampaignResults",
+    "DurableSimulationRecordResults",
     "OlderBooleyRecordError",
-    "StartedCampaign",
+    "SimulationRecordBusyError",
+    "SimulationRecordResultsReader",
+    "StartedSimulationRecord",
 ]
 
 
-class CampaignBusyError(RuntimeError):
+class SimulationRecordBusyError(RuntimeError):
     """A scheduler owns the Simulation Campaign: its results are still being written."""
 
 
@@ -36,7 +36,7 @@ class OlderBooleyRecordError(ValueError):
 
 
 @dataclass(frozen=True)
-class StartedCampaign:
+class StartedSimulationRecord:
     """A Simulation Campaign whose manifest is published and whose work is about to run.
 
     ``target_names`` are the names its Target goes by (selector and
@@ -44,14 +44,14 @@ class StartedCampaign:
     """
 
     manifest_path: Path
-    campaign_id: str
+    simulation_record_id: str
     manifest_sha256: str
     target_names: tuple[str, ...]
     candidate: bool
 
 
 @dataclass(frozen=True)
-class DurableCampaignResults:
+class DurableSimulationRecordResults:
     """The terminal results one Simulation Campaign holds on disk.
 
     ``results`` names every work item with a terminal result and that
@@ -62,7 +62,7 @@ class DurableCampaignResults:
     """
 
     manifest_sha256: str
-    campaign_id: str
+    simulation_record_id: str
     results: tuple[tuple[str, str], ...]
     rows: tuple[Mapping[str, object], ...]
     complete: bool = False
@@ -74,4 +74,4 @@ class DurableCampaignResults:
 #: :class:`OlderBooleyRecordError` when an older Booley wrote the campaign, and
 #: ``ValueError`` when it is gone, is another one, or any of its results cannot be
 #: authenticated.
-CampaignResultsReader = Callable[[Path, str], DurableCampaignResults]
+SimulationRecordResultsReader = Callable[[Path, str], DurableSimulationRecordResults]

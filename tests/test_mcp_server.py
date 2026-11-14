@@ -504,9 +504,9 @@ class TestMcpToolTimeoutSeconds:
             )
         assert timeout == 5130
 
-    def test_simulate_campaign_budget_scales_by_work_units(self):
+    def test_simulate_simulation_record_budget_scales_by_work_units(self):
         with patch(
-            "booley.flows.sim.watchdog_sizing.resolve_sim_campaign_work_units",
+            "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
             return_value=4,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -518,7 +518,7 @@ class TestMcpToolTimeoutSeconds:
 
     def test_simulate_trace_margin_scales_by_work_units(self):
         with patch(
-            "booley.flows.sim.watchdog_sizing.resolve_sim_campaign_work_units",
+            "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
             return_value=3,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -531,7 +531,7 @@ class TestMcpToolTimeoutSeconds:
     def test_coverage_trace_budget_adds_conversion_per_unit(self):
         def coverage_timeout(trace: bool) -> int:
             with patch(
-                "booley.flows.sim.watchdog_sizing.resolve_sim_campaign_work_units",
+                "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
                 return_value=2,
             ):
                 return self._mcp_tool_timeout_seconds(
@@ -546,7 +546,7 @@ class TestMcpToolTimeoutSeconds:
         from booley.flows.sim.mode import SimulationMode
 
         with patch(
-            "booley.flows.sim.watchdog_sizing.resolve_sim_campaign_work_units",
+            "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
             return_value=3,
         ) as resolve_units:
             timeout = self._mcp_tool_timeout_seconds(
@@ -564,7 +564,7 @@ class TestMcpToolTimeoutSeconds:
     def test_watchdog_sizing_sees_the_requested_seed(self):
         """``--seed random`` splits Cocotb batches, so sizing must know about it."""
         with patch(
-            "booley.flows.sim.watchdog_sizing.resolve_sim_campaign_work_units",
+            "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
             return_value=3,
         ) as resolve_units:
             self._mcp_tool_timeout_seconds(
@@ -598,7 +598,7 @@ class TestMcpToolTimeoutSeconds:
         )
         monkeypatch.setenv("BOOLEY_STATE_FILE", str(state))
         with patch(
-            "booley.flows.sim.watchdog_sizing.resolve_sim_campaign_work_units",
+            "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
             return_value=1,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -800,7 +800,7 @@ class TestMcpToolTimeoutSeconds:
             encoding="utf-8",
         )
         with patch(
-            "booley.flows.sim.watchdog_sizing.resolve_sim_campaign_work_units",
+            "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
             return_value=3,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -1132,7 +1132,7 @@ class TestCoverageEvidenceTool:
         assert "point_refs" in tools[0]["description"]
         assert "point_ids" not in tools[0]["description"]
 
-    def test_coverage_evidence_is_hidden_without_bound_campaign(self, monkeypatch):
+    def test_coverage_evidence_is_hidden_without_bound_simulation_record(self, monkeypatch):
         monkeypatch.setenv("BOOLEY_NESTED_AGENT", "1")
         monkeypatch.setenv("BOOLEY_NESTED_MCP_TOOLS", "coverage_evidence")
         monkeypatch.delenv("BOOLEY_COVERAGE_RECORD", raising=False)
@@ -1991,11 +1991,11 @@ def test_cycle_card_fits_exact_stream_boundary_until_completion_append(
 ):
     from types import SimpleNamespace
 
-    from booley.flows.sim.record_presentation import _campaign_report_lines
+    from booley.flows.sim.record_presentation import _simulation_record_report_lines
     from booley.flows.test_runs import build_test_run
     from booley.mcp.server import _format_mcp_tool_result
     from booley.runtime.endpoint_execution import EndpointOutcome, normalize_completion_error
-    from tests.flows.sim.simulation_record_test_support import _recorded_campaign
+    from tests.flows.sim.simulation_record_test_support import _recorded_simulation_record
 
     manifest = Path("/manifest.json")
     pointer_bytes = len(f"  manifest: {manifest.resolve()}\n".encode())
@@ -2003,7 +2003,7 @@ def test_cycle_card_fits_exact_stream_boundary_until_completion_append(
     monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", str(budget))
     monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", str(budget))
     smoke = build_test_run("smoke")
-    observation = _recorded_campaign(tmp_path, (smoke,)).fact(
+    observation = _recorded_simulation_record(tmp_path, (smoke,)).fact(
         smoke, test="smoke", cycle_count=7, detail={"reason": "x" * 3870}
     )
     outcome = SimpleNamespace(
@@ -2012,7 +2012,7 @@ def test_cycle_card_fits_exact_stream_boundary_until_completion_append(
         aggregate_grade="fail",
         observations=[observation],
     )
-    card = "\n".join(_campaign_report_lines([outcome]))
+    card = "\n".join(_simulation_record_report_lines([outcome]))
     assert len(card.encode()) + 2 <= budget
     result = EndpointOutcome(exit_code=1, report_text=card)
     if completion_error:
@@ -2154,14 +2154,14 @@ def _assert_live_checkpoint(structured, checkpoint):
     assert "exit_code" not in report
 
 
-def test_registered_poll_observes_blocked_campaign_simulation(tmp_path, monkeypatch):
+def test_registered_poll_observes_blocked_simulation_record(tmp_path, monkeypatch):
     """A campaign launch blocked in the simulator shows as one live, running target."""
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
 
     from booley.mcp import server
     from booley.runtime.timefmt import utc_now_rfc3339
-    from tests.flows.sim.simulation_record_boundary import PASS_PROCESS, run_campaign_sim
+    from tests.flows.sim.simulation_record_boundary import PASS_PROCESS, run_simulation_record_sim
 
     run_id = "gated-campaign-sim"
     monkeypatch.setenv("BOOLEY_RUN_ID", run_id)
@@ -2174,7 +2174,7 @@ def test_registered_poll_observes_blocked_campaign_simulation(tmp_path, monkeypa
 
     def submit(pool):
         return pool.submit(
-            run_campaign_sim,
+            run_simulation_record_sim,
             tmp_path,
             monkeypatch,
             {"sim": ["smoke"]},

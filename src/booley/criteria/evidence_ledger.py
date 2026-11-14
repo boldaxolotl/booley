@@ -280,7 +280,7 @@ def _canonical_timestamp(value: object, label: str) -> str:
     return value
 
 
-def _campaign_uuid(value: object) -> str:
+def _simulation_record_uuid(value: object) -> str:
     if not isinstance(value, str):
         raise AcceptanceLedgerError("campaign_id must be a lowercase UUIDv4")
     try:
@@ -356,7 +356,7 @@ def _acceptance_fact_identity(
     )
     if facts.get("$schema") not in ACCEPTANCE_FACTS_SCHEMAS:
         raise AcceptanceLedgerError("unsupported Simulation acceptance facts schema")
-    campaign_id = _campaign_uuid(facts.get("campaign_id"))
+    simulation_record_id = _simulation_record_uuid(facts.get("campaign_id"))
     manifest_sha256 = _sha256_field(facts.get("manifest_sha256"), "manifest_sha256")
     origin = facts.get("origin")
     if not isinstance(origin, Mapping):
@@ -371,17 +371,17 @@ def _acceptance_fact_identity(
         raise AcceptanceLedgerError("origin execution_id is invalid")
     if isinstance(invocation_id, bool) or not isinstance(invocation_id, int) or invocation_id < 1:
         raise AcceptanceLedgerError("origin invocation_id must be a positive integer")
-    return facts, campaign_id, manifest_sha256, origin_value, _recorded_at(facts)
+    return facts, simulation_record_id, manifest_sha256, origin_value, _recorded_at(facts)
 
 
 def _lookup_key(
     scope: EvidenceScope,
-    campaign_id: str,
+    simulation_record_id: str,
     manifest_sha256: str,
     lookup_identity: Mapping[str, Any],
 ) -> dict[str, Any]:
     return {
-        "campaign_id": campaign_id,
+        "campaign_id": simulation_record_id,
         "manifest_sha256": manifest_sha256,
         **lookup_identity,
         "producer": _PRODUCER,
@@ -398,13 +398,13 @@ def _build_transaction_documents(
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
     if len(changes) > _MAX_CHANGES:
         raise AcceptanceLedgerError("acceptance transaction has too many changes")
-    facts, campaign_id, manifest_sha256, origin, recorded_at = _acceptance_fact_identity(
+    facts, simulation_record_id, manifest_sha256, origin, recorded_at = _acceptance_fact_identity(
         acceptance_facts
     )
     lookup_identity = scope.codec.lookup_identity(identity)
     envelope = {
         "$schema": _ENVELOPE_SCHEMA,
-        "campaign_id": campaign_id,
+        "campaign_id": simulation_record_id,
         "manifest_sha256": manifest_sha256,
         "origin": dict(origin),
         "producer": _PRODUCER,
@@ -417,7 +417,7 @@ def _build_transaction_documents(
     envelope_bytes = canonical_json(envelope)
     if len(envelope_bytes) > _MAX_DOCUMENT_BYTES:
         raise AcceptanceLedgerError("acceptance transaction envelope is too large")
-    lookup_key = _lookup_key(scope, campaign_id, manifest_sha256, lookup_identity)
+    lookup_key = _lookup_key(scope, simulation_record_id, manifest_sha256, lookup_identity)
     intent = {
         "$schema": _INTENT_SCHEMA,
         "lookup_key": lookup_key,
@@ -431,10 +431,12 @@ def _build_transaction_documents(
 def _stable_lookup_key(
     scope: EvidenceScope, acceptance_facts: Mapping[str, Any], identity: Mapping[str, Any]
 ) -> dict[str, Any]:
-    _facts, campaign_id, manifest_sha256, _origin, _recorded_at_value = _acceptance_fact_identity(
-        acceptance_facts
+    _facts, simulation_record_id, manifest_sha256, _origin, _recorded_at_value = (
+        _acceptance_fact_identity(acceptance_facts)
     )
-    return _lookup_key(scope, campaign_id, manifest_sha256, scope.codec.lookup_identity(identity))
+    return _lookup_key(
+        scope, simulation_record_id, manifest_sha256, scope.codec.lookup_identity(identity)
+    )
 
 
 def read_json_document(path: Path, limit: int, label: str) -> dict[str, Any]:
@@ -518,7 +520,7 @@ def _validate_envelope(scope: EvidenceScope, envelope: Mapping[str, Any]) -> Non
         or envelope.get("role_derivation") != _ROLE_DERIVATION
     ):
         raise AcceptanceLedgerError("invalid acceptance transaction envelope identity")
-    _campaign_uuid(envelope.get("campaign_id"))
+    _simulation_record_uuid(envelope.get("campaign_id"))
     _sha256_field(envelope.get("manifest_sha256"), "manifest_sha256")
     _canonical_timestamp(envelope.get("recorded_at"), "recorded_at")
     _validate_envelope_origin_and_subject(scope, envelope)

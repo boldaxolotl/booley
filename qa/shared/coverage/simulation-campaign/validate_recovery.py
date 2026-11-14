@@ -91,7 +91,7 @@ def _lookup_from_envelope(envelope: dict[str, object]) -> dict[str, object]:
 
 
 def _acceptance_facts(
-    value: object, campaign_id: object, manifest_sha256: str
+    value: object, simulation_record_id: object, manifest_sha256: str
 ) -> dict[str, object]:
     facts = _exact(
         value,
@@ -110,12 +110,14 @@ def _acceptance_facts(
         "acceptance facts",
     )
     _need(facts["$schema"] == "booley.simulation-acceptance-facts/v1", "facts schema differs")
-    _need(facts["campaign_id"] == campaign_id, "facts campaign identity differs")
+    _need(facts["campaign_id"] == simulation_record_id, "facts campaign identity differs")
     _need(facts["manifest_sha256"] == manifest_sha256, "facts manifest digest differs")
     return facts
 
 
-def _envelope(value: object, campaign_id: object, manifest_sha256: str) -> dict[str, object]:
+def _envelope(
+    value: object, simulation_record_id: object, manifest_sha256: str
+) -> dict[str, object]:
     envelope = _exact(
         value,
         {
@@ -136,7 +138,7 @@ def _envelope(value: object, campaign_id: object, manifest_sha256: str) -> dict[
         envelope["$schema"] == "booley.acceptance-transaction-envelope/v1",
         "envelope schema differs",
     )
-    _need(envelope["campaign_id"] == campaign_id, "envelope campaign identity differs")
+    _need(envelope["campaign_id"] == simulation_record_id, "envelope campaign identity differs")
     _need(envelope["manifest_sha256"] == manifest_sha256, "envelope manifest digest differs")
     _need(envelope["producer"] == "simulation_campaign", "envelope producer differs")
     _need(envelope["purpose"] == "goal_evidence", "envelope purpose differs")
@@ -156,7 +158,7 @@ def _reject_matching_intents(path: Path, lookup: dict[str, object]) -> None:
 
 
 def _validate_intent(
-    path: Path, campaign_id: object, manifest_sha256: str
+    path: Path, simulation_record_id: object, manifest_sha256: str
 ) -> tuple[dict[str, object], dict[str, object]]:
     intent = _load_canonical(path, "acceptance intent")
     _exact(
@@ -165,9 +167,9 @@ def _validate_intent(
         "acceptance intent",
     )
     _need(intent["$schema"] == "booley.simulation-acceptance-intent/v1", "intent schema differs")
-    facts = _acceptance_facts(intent["acceptance_facts"], campaign_id, manifest_sha256)
+    facts = _acceptance_facts(intent["acceptance_facts"], simulation_record_id, manifest_sha256)
     _need(intent["acceptance_facts_sha256"] == _digest(_canonical(facts)), "facts digest differs")
-    envelope = _envelope(intent["envelope"], campaign_id, manifest_sha256)
+    envelope = _envelope(intent["envelope"], simulation_record_id, manifest_sha256)
     lookup = _exact(
         intent["lookup_key"],
         {
@@ -401,9 +403,9 @@ def validate_acceptance_recovery(
 ) -> None:
     """Require byte-authenticated, idempotent acceptance recovery."""
     manifest, _ = _load(manifest_path)
-    campaign_id = manifest.get("simulation_record_id")
+    simulation_record_id = manifest.get("simulation_record_id")
     manifest_sha256 = _digest(_canonical(manifest))
-    facts, envelope = _validate_intent(intent_path, campaign_id, manifest_sha256)
+    facts, envelope = _validate_intent(intent_path, simulation_record_id, manifest_sha256)
     _validate_consumed_results(facts, result_paths)
     transaction_id = _validate_commit(transaction_path, envelope, evidence_root)
     _validate_state_transition(
@@ -416,7 +418,7 @@ def validate_acceptance_recovery(
         projection_path=simulation_path,
         manifest_path=manifest_path,
         manifest_raw=manifest_path.read_bytes(),
-        campaign_id=campaign_id,
+        simulation_record_id=simulation_record_id,
     )
 
 

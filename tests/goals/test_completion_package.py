@@ -564,7 +564,7 @@ def _publish_current_base_simulation(layout):
         _manifest_components,
         _manifest_work,
     )
-    from tests.goals.conftest import bind, campaign_facts
+    from tests.goals.conftest import bind, simulation_record_facts
 
     target, recipe, build, workload, suite = _manifest_components()
     target.update(vlnv="::base:0", name="base", selector="base", revision="abc123")
@@ -588,7 +588,7 @@ def _publish_current_base_simulation(layout):
     path = paths.runtime_dir / "flow-reports/sim/8/targets/base/record/manifest.json"
     path.parent.mkdir(parents=True)
     path.write_bytes(encode_simulation_record_manifest(manifest))
-    facts = campaign_facts()
+    facts = simulation_record_facts()
     facts.update(
         campaign_id=manifest.document["simulation_record_id"],
         manifest_sha256=manifest_digest(manifest),

@@ -87,7 +87,7 @@ def test_selection_rejection_precedes_target_authorization(
     monkeypatch.setattr(flow, "_criterion_binding_gate", lambda: None)
     monkeypatch.setattr(
         flow,
-        "_prepare_campaign_targets",
+        "_prepare_simulation_record_targets",
         lambda: ((handle,), None, ("sim",), {"sim": ["smoke"]}),
     )
     rejected = EndpointOutcome(exit_code=2, report_text="unknown exact test")
@@ -133,7 +133,7 @@ def test_invalid_pre_run_commands_refuse_before_authorization(
     monkeypatch.setattr(flow, "_criterion_binding_gate", lambda: None)
     monkeypatch.setattr(
         flow,
-        "_prepare_campaign_targets",
+        "_prepare_simulation_record_targets",
         lambda: ((handle,), None, ("sim",), {"sim": ["smoke"]}),
     )
     monkeypatch.setattr(flow, "_validate_prepared_selection", lambda *_args: None)
@@ -166,7 +166,7 @@ def test_unfinished_coverage_refusal_precedes_target_authorization(
     resume = SimpleNamespace()
     monkeypatch.setattr(
         flow,
-        "_prepare_campaign_targets",
+        "_prepare_simulation_record_targets",
         lambda: ((handle,), resume, ("sim",), {"sim": ["smoke"]}),
     )
     refused = EndpointOutcome(exit_code=2, report_text="coverage collection never finished")
@@ -269,7 +269,7 @@ def test_ticket_binding_rejects_baseline_identity_drift() -> None:
     assert "sim_old" in rejection.report_text
 
 
-def test_campaign_preflight_orders_candidate_before_historical_baseline(
+def test_simulation_record_preflight_orders_candidate_before_historical_baseline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     candidate_root = tmp_path / "candidate"
@@ -316,7 +316,9 @@ def test_campaign_preflight_orders_candidate_before_historical_baseline(
 
 
 @pytest.mark.parametrize("topology", ["standalone", "linked"])
-def test_campaign_authorization_materializes_project_topologies(tmp_path, monkeypatch, topology):
+def test_simulation_record_authorization_materializes_project_topologies(
+    tmp_path, monkeypatch, topology
+):
     from tests.flows.sim.test_cycle_observation import _criterion_flow, _pin_baseline
     from tests.flows.test_baseline_worktree import (
         _assert_topology_baseline,
@@ -333,7 +335,7 @@ def test_campaign_authorization_materializes_project_topologies(tmp_path, monkey
     monkeypatch.setattr(flow, "_resolve_requested_targets", lambda: ["sim_core"])
     monkeypatch.setattr(flow, "_validate_interactive_args", lambda _targets: None)
     try:
-        handles, resume, selected, _tests = flow._prepare_campaign_targets()
+        handles, resume, selected, _tests = flow._prepare_simulation_record_targets()
         assert resume is None
         assert selected == ("sim_core",)
         assert handles[0] is candidate
@@ -350,13 +352,13 @@ def test_campaign_authorization_materializes_project_topologies(tmp_path, monkey
 def test_prepare_resets_report_only_metadata_before_early_gate(tmp_path, monkeypatch):
     from booley.flows.endpoint_session import prepare_execution
     from booley.flows.sim.request import SimRequest
-    from tests.flows.sim.test_endpoint_record_lifecycle import _public_cycle_campaign
+    from tests.flows.sim.test_endpoint_record_lifecycle import _public_cycle_simulation_record
 
     flow = SimulateFlow()
-    campaign = _public_cycle_campaign(tmp_path, monkeypatch)
+    simulation_record = _public_cycle_simulation_record(tmp_path, monkeypatch)
     flow._args = SimRequest(target="sim", work_dir=tmp_path, report_dir=tmp_path / "rejected")
-    flow._campaign_endpoint_outcome([campaign])
-    previous = flow._simulation_campaign_outcomes
+    flow._simulation_record_endpoint_outcome([simulation_record])
+    previous = flow._simulation_record_outcomes
     flow.record_eda_tool("previous", "verilator")
     rejected = EndpointOutcome(exit_code=2)
 
@@ -367,7 +369,7 @@ def test_prepare_resets_report_only_metadata_before_early_gate(tmp_path, monkeyp
         with flow.publication_resources:
             path = flow.write_report(rejected)
         assert '"cycle_counts"' not in path.read_text()
-        assert flow._simulation_campaign_outcomes is previous
+        assert flow._simulation_record_outcomes is previous
         return rejected
 
     monkeypatch.setattr(flow, "_apply_pre_state_gate", gate)
