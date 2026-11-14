@@ -2799,7 +2799,7 @@ def test_mutation_report_records_resolved_simulator(tmp_path, monkeypatch, cocot
         monkeypatch.setattr(
             endpoint,
             "_pinned_sim_command",
-            lambda *_args, **_kwargs: ([tool], SimpleNamespace(environment={})),
+            lambda *_args, **_kwargs: ([tool], SimpleNamespace(environment={}), None),
         )
         monkeypatch.setattr("booley.flows.mutation.flow._target_environment", lambda *_args: {})
         monkeypatch.setattr("booley.flows.mutation.flow.launch_environment", lambda *_args: {})

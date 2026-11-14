@@ -58,7 +58,10 @@ The shared options (`-C/--project`, `--timeout`, `--report-dir`, `--diagnostic`,
    Target's tests run on it. Your RTL is never modified.
 4. A Mutant is **detected** when a test fails on it, or when a test runs past
    its time limit (reported as `detected (timeout)`): ten times the test's
-   baseline duration, at least 30 seconds and at most 300 seconds. A Mutant
+   baseline duration, at least 30 seconds and at most 300 seconds. A test run
+   that a signal kills from outside, such as the out-of-memory killer, does
+   not detect the Mutant: its outcome cannot be trusted, so the run ends with
+   `ERROR` and the score is unchanged. A Mutant
    that no test fails on **survives**. A Mutant that does not build is dropped
    and the next candidate takes its place, so it never counts toward the
    threshold, which is 80 % of the Mutants scored.
@@ -198,7 +201,7 @@ limit, and N the smaller of the two.
 |---|---|---:|
 | `PASS` | Detected Mutants reach the threshold. | `0` |
 | `FAIL` | Fewer Mutants were detected than required. | `1` |
-| `ERROR` | No verdict: a failing baseline, a Target that cannot run, an unusable `--scope` entry, an invalid option, or a baseline build failure. | `2` |
+| `ERROR` | No verdict: a failing baseline, a Target that cannot run, an unusable `--scope` entry, an invalid option, a baseline build failure, or a test run killed by a signal. | `2` |
 
 Each run's files are in its numbered run directory, under `flow-reports/` in
 the Booley Directory or `--report-dir`

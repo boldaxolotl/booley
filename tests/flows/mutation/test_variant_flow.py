@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import types
 from pathlib import Path
@@ -14,18 +15,27 @@ from booley.flows.mutation.flow import (
     Baseline,
     GeneratedMutants,
     MutationFlow,
+    MutationResult,
     MutationRunPlan,
     MutationSpec,
     MutationSummary,
     MutationTestRun,
     UnsupportedSimTargetError,
+    VariantSuiteVerdict,
     VariantSweep,
     compute_source_size_budget,
     generate_results_markdown,
 )
 from booley.flows.mutation.generator import Mutant
 from booley.flows.mutation.variants import MutationVariantPlan
+from booley.flows.sim.adapter_transport import (
+    AdapterResult,
+    work_transport_identity,
+    write_adapter_result,
+)
 from booley.flows.sim.backends.cocotb_results import COCOTB_RESULTS_PREFIX
+from tests.flows.mutation.test_runtime_inputs import _make_project
+from tests.flows.sim.launched_work import launched_work
 
 
 def _process(returncode: int, output: str = "") -> subprocess.CompletedProcess[str]:
@@ -623,3 +633,102 @@ def test_cocotb_snippet_anchors_on_the_killing_test_not_an_earlier_test(tmp_path
     assert result.sim_output_snippet.startswith(
         "60.00ns WARNING cocotb.regression mixed_cases.test_bad"
     )
+
+
+def _score(
+    endpoint: MutationFlow, runs: list[MutationTestRun]
+) -> tuple[VariantSuiteVerdict, MutationSummary]:
+    """The Mutant's verdict from *runs*, and the summary a campaign would score it in."""
+    verdict = endpoint._classify_variant_suite(runs)
+    result = MutationResult(
+        index=1, inconclusive_reason=verdict.inconclusive_reason, detected=verdict.detected
+    )
+    return verdict, MutationSummary(results=[result])
+
+
+def _simulator_killed(command: list[str], signal_number: int) -> subprocess.CompletedProcess[str]:
+    """What an adapter leaves when its simulator was killed: its authenticated result."""
+    identity = work_transport_identity(launched_work(command))
+    if identity is not None:  # without transport the run carries no evidence of the kill
+        write_adapter_result(
+            identity,
+            AdapterResult(
+                passed=False,
+                inconclusive=False,
+                sva_errors=0,
+                tests=identity.selected_tests,
+                simulator_returncode=-signal_number,
+                termination="completed",
+            ),
+        )
+    return _process(1, "ordinary failure output")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the stand-in build is POSIX-only")
+@pytest.mark.parametrize(
+    ("simulator_killed", "signal_number", "name"),
+    [
+        pytest.param(False, 9, "SIGKILL", id="adapter-killed"),
+        pytest.param(True, 9, "SIGKILL", id="simulator-killed"),
+        pytest.param(True, 99, "99", id="unnamed-signal"),
+    ],
+)
+def test_signal_killed_mutant_run_is_inconclusive_not_a_kill(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    simulator_killed: bool,
+    signal_number: int,
+    name: str,
+) -> None:
+    project = _make_project(tmp_path, monkeypatch)
+    project.elab()
+
+    def launch(command, *_args, **_kwargs):
+        if simulator_killed:
+            return _simulator_killed(command, signal_number)
+        return _process(-signal_number)
+
+    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", launch)
+
+    runs = project.endpoint._run_target_test_suite("default", tmp_path, project.build, "tb")
+    verdict, summary = _score(project.endpoint, runs)
+
+    assert f"killed by signal {name}" in verdict.inconclusive_reason
+    assert not verdict.detected and verdict.first_killing_test == ""
+    # The score counts neither a detection nor a survivor.
+    assert (summary.detected_count, summary.not_detected_count) == (0, 0)
+    assert list(project.build.glob("*adapter-*")) == []  # the result files are removed
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the stand-in build is POSIX-only")
+@pytest.mark.parametrize("result", ["missing", "guard-killed"])
+def test_a_failing_run_without_signal_evidence_still_detects_the_mutant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, result: str
+) -> None:
+    project = _make_project(tmp_path, monkeypatch)
+    project.elab()
+
+    def launch(command, *_args, **_kwargs):
+        if result == "guard-killed":  # Booley's own kill: the simulator did not end `completed`
+            identity = work_transport_identity(launched_work(command))
+            assert identity is not None
+            write_adapter_result(
+                identity,
+                AdapterResult(
+                    passed=False,
+                    inconclusive=False,
+                    sva_errors=0,
+                    tests=identity.selected_tests,
+                    simulator_returncode=-9,
+                    termination="timeout",
+                ),
+            )
+        return _process(1, "test failed")
+
+    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", launch)
+
+    runs = project.endpoint._run_target_test_suite("default", tmp_path, project.build, "tb")
+    verdict, summary = _score(project.endpoint, runs)
+
+    assert verdict.detected and not verdict.inconclusive_reason
+    assert summary.detected_count == 1
