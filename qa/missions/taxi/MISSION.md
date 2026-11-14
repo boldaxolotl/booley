@@ -280,9 +280,13 @@ Try:
   test catalog. `first` + `second` in one campaign → exactly one ready `shared_variant` bundle for
   both attempts, bytes unchanged (cross-check `validate_bundle.py`).
 - Run each slow item once first: an item with no Resource History runs alone. Apply
-  `parallel.toml` with a `[jobs] memory_budget` that admits three items; run `slow-first`,
-  `slow-fail`, `slow-last` and measure the simulator processes: they overlap, each
-  `qa-shared-name.txt` is in its own attempt, pass/fail/pass in manifest order with strict `fail`.
+  `parallel.toml`, and set a `[sandbox].memory` whose Memory Budget fits several of the items but
+  not all three at once (restart the Session as `docs/user/SANDBOX.md` says; read `budget_mb` and
+  each item's `reservation_mb` in the claim files to confirm, and adjust if every item fits;
+  restore the setting after the area). Run `slow-first`, `slow-fail`, `slow-last` and measure the
+  simulator processes: more than one item runs at once, at least one item waits in the queue (copy
+  its `w-*.json` claim or queue line) and starts when memory is freed, with no exact admitted
+  count; each `qa-shared-name.txt` is in its own attempt, pass/fail/pass in manifest order with strict `fail`.
   Cross-check with `validate_parallel.py`; record the timeline in the format its module docstring
   defines.
 - Kill the owned producer mid Taxi Cocotb multi-test batch and copy the interrupted attempt's

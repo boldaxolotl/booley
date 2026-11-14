@@ -529,15 +529,8 @@ def test_chat_table_is_an_unknown_table() -> None:
     assert "chat" in finding.message
 
 
-def test_jobs_memory_budget_is_accepted() -> None:
-    audit = project_schema.audit_jobs_table({"jobs": {"memory_budget": "24g", "max_light": 2}})
-
-    assert audit.is_valid
-    assert audit.findings == ()
-    assert project_schema.audit_jobs_table({}).findings == ()
-
-
 def test_jobs_seats_audit_fails_a_malformed_count_naming_the_key() -> None:
+    assert project_schema.audit_jobs_table({}).findings == ()
     assert project_schema.audit_jobs_table({"jobs": {"seats": {"vivado": 2}}}).is_valid
 
     audit = project_schema.audit_jobs_table({"jobs": {"seats": {"vivado": 0}}})
@@ -546,24 +539,3 @@ def test_jobs_seats_audit_fails_a_malformed_count_naming_the_key() -> None:
     (finding,) = audit.findings
     assert "[jobs.seats].vivado" in finding.message
     assert "[jobs.seats]" in finding.fix
-
-
-def test_jobs_audit_reports_a_bad_budget_and_a_bad_seat_count_together() -> None:
-    audit = project_schema.audit_jobs_table(
-        {"jobs": {"memory_budget": "-1g", "seats": {"vivado": 0}}}
-    )
-
-    messages = " ".join(finding.message for finding in audit.findings)
-    assert len(audit.findings) == 2
-    assert "memory_budget" in messages
-    assert "[jobs.seats].vivado" in messages
-
-
-def test_jobs_memory_budget_audit_fails_invalid_value_naming_key() -> None:
-    audit = project_schema.audit_jobs_table({"jobs": {"memory_budget": "-1g"}})
-
-    assert not audit.is_valid
-    (finding,) = audit.findings
-    assert "[jobs].memory_budget" in finding.message
-    assert "-1g" in finding.message
-    assert "memory_budget" in finding.fix

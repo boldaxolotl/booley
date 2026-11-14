@@ -1,16 +1,15 @@
 """The Sandbox's Memory Budget: what the Jobs may use of the container's memory.
 
-Default budget is the container's memory limit (or installed memory when the
-container has none) minus a reserve for what the Jobs do not own: the running
-Developer Agents, the MCP server, the Dashboard, and fixed headroom. Setting
-``[jobs].memory_budget`` replaces the whole default. Memory admission
-holds each Job's Memory Reservation against this number; the module computes and
-explains it.
+The budget is the container's memory limit (``[sandbox].memory``, or installed
+memory when the container has none) minus a reserve for what the Jobs do not own:
+the running Developer Agents, the MCP server, the Dashboard, and fixed headroom.
+Memory admission holds each Job's Memory Reservation against this number; the
+module computes and explains it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from itertools import islice, pairwise
@@ -20,7 +19,6 @@ from booley.audit.resource_policy import (
     GIB_BYTES,
     MEMORY_HEADROOM_BYTES,
     cgroup_memory_limit_bytes,
-    configured_memory_budget,
 )
 from booley.runtime.chat_sessions import CODEX_NATIVE_NAMES
 from booley.runtime.pid import capture_process_identity
@@ -43,7 +41,6 @@ class BudgetRule(StrEnum):
 
     LIMIT = "limit"  # container limit minus the reserve
     NO_LIMIT = "no-limit"  # installed memory minus the reserve; the container has no limit
-    OVERRIDE = "override"  # ``[jobs].memory_budget``
 
 
 class ReserveRole(StrEnum):
@@ -82,33 +79,21 @@ class MemoryBudget:
     rule: BudgetRule
     limit_bytes: int | None  # the container limit; None when the container has none
     installed_bytes: int | None  # read only when the container has no limit
-    reserve: tuple[ReservePart, ...]  # empty for an override
+    reserve: tuple[ReservePart, ...]
 
     @property
     def reserve_bytes(self) -> int:
         """Total memory held back from the Jobs."""
         return sum(part.bytes for part in self.reserve)
 
-    @property
-    def exceeds_limit(self) -> bool:
-        """Whether an override promises more than the container can give."""
-        return (
-            self.rule is BudgetRule.OVERRIDE
-            and self.limit_bytes is not None
-            and self.bytes > self.limit_bytes
-        )
-
 
 def resolve_memory_budget(
     *,
-    override_bytes: int | None,
     limit_bytes: int | None,
     installed_bytes: int | None,
     processes: Sequence[ReservePart],
 ) -> MemoryBudget:
     """Apply the budget rules to already-measured inputs (pure policy)."""
-    if override_bytes is not None:
-        return MemoryBudget(override_bytes, BudgetRule.OVERRIDE, limit_bytes, None, ())
     if limit_bytes is not None:
         rule, base = BudgetRule.LIMIT, limit_bytes
     elif installed_bytes is not None:
@@ -274,24 +259,15 @@ def measure_reserve(*, proc_root: Path = Path("/proc")) -> tuple[ReservePart, ..
     return tuple(parts)
 
 
-def compute_memory_budget(
-    config: Mapping[str, object], *, proc_root: Path = Path("/proc")
-) -> MemoryBudget:
-    """Compute the Memory Budget for the project configuration *config*.
+def compute_memory_budget(*, proc_root: Path = Path("/proc")) -> MemoryBudget:
+    """Compute the Memory Budget now.
 
-    Raises ``ValueError`` for an invalid ``[jobs].memory_budget``, and
-    ``OSError`` or ``ValueError`` for a missing or unreadable ``MemTotal`` when
-    the container has no limit.
+    Raises ``OSError`` or ``ValueError`` for a missing or unreadable ``MemTotal``
+    when the container has no limit.
     """
-    override = configured_memory_budget(config)
     limit = cgroup_memory_limit_bytes()
-    if override is not None:
-        return resolve_memory_budget(
-            override_bytes=override, limit_bytes=limit, installed_bytes=None, processes=()
-        )
     installed = _read_installed_bytes(proc_root) if limit is None else None
     return resolve_memory_budget(
-        override_bytes=None,
         limit_bytes=limit,
         installed_bytes=installed,
         processes=measure_reserve(proc_root=proc_root),

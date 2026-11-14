@@ -413,20 +413,10 @@ def audit_worktree_table(data: Mapping[str, Any]) -> ConfigTableAudit:
 
 
 def audit_jobs_table(data: Mapping[str, Any]) -> ConfigTableAudit:
-    """Validate the ``[jobs].memory_budget`` override and ``[jobs.seats]``."""
-    from booley.audit.resource_policy import configured_memory_budget
+    """Validate ``[jobs.seats]``."""
     from booley.config.jobs import SeatCapError, parse_seat_caps
 
     findings: list[Any] = []
-    try:
-        configured_memory_budget(data)
-    except ValueError as exc:
-        findings.extend(
-            failure(
-                f"booley.toml {exc}",
-                'set [jobs].memory_budget to a positive size such as "24g", or delete it',
-            ).findings
-        )
     try:
         parse_seat_caps(data)
     except SeatCapError as exc:

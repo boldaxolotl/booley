@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -184,11 +185,9 @@ def test_unavailable_budget_runs_alone_with_a_warning() -> None:
     assert plan.warning == "Memory Budget unavailable (no MemTotal); this Job ran alone."
 
 
-def _booley_dir(tmp_path: Path, *, budget: str | None = "1200m") -> Path:
+def _booley_dir(tmp_path: Path) -> Path:
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
-    if budget is not None:
-        (booley_dir / "booley.toml").write_text(f'[jobs]\nmemory_budget = "{budget}"\n')
     return booley_dir
 
 
@@ -198,35 +197,44 @@ def _write_history(booley_dir: Path, document: object) -> None:
     path.write_text(json.dumps(document), encoding="utf-8")
 
 
-def _measure(booley_dir: Path | None, requests, config: dict[str, object]):
-    return _admission().measure_memory_claim(booley_dir, config, requests)
+def _measure(booley_dir: Path | None, requests):
+    return _admission().measure_memory_claim(booley_dir, requests)
 
 
-def test_measure_reads_the_history_and_the_configured_budget(tmp_path: Path) -> None:
+def test_measure_reads_the_history_and_the_pinned_budget(
+    tmp_path: Path, pin_memory_budget: Callable[[int], None]
+) -> None:
+    pin_memory_budget(1200)
     booley_dir = _booley_dir(tmp_path)
     _write_history(booley_dir, {"$schema": SCHEMA, "records": _history(("a", 400))})
 
-    plan = _measure(booley_dir, _synth("a"), {"jobs": {"memory_budget": "1200m"}})
+    plan = _measure(booley_dir, _synth("a"))
 
     assert (plan.claim.reservation_mb, plan.claim.budget_mb) == (500.0, 1200.0)
 
 
-def test_unreadable_history_reads_as_empty_and_the_job_runs_alone(tmp_path: Path) -> None:
+def test_unreadable_history_reads_as_empty_and_the_job_runs_alone(
+    tmp_path: Path, pin_memory_budget: Callable[[int], None]
+) -> None:
+    pin_memory_budget(1200)
     booley_dir = _booley_dir(tmp_path)
     _write_history(booley_dir, {"$schema": "foreign", "records": []})
-    config: dict[str, object] = {"jobs": {"memory_budget": "1200m"}}
 
-    assert _measure(booley_dir, _synth("a"), config).claim.run_alone
+    assert _measure(booley_dir, _synth("a")).claim.run_alone
     # No Booley Directory has no history at all.
-    assert _measure(None, _synth("a"), config).claim.run_alone
+    assert _measure(None, _synth("a")).claim.run_alone
 
 
-def test_invalid_budget_configuration_runs_alone_with_a_warning(tmp_path: Path) -> None:
-    plan = _measure(None, _synth("a"), {"jobs": {"memory_budget": "lots"}})
+def test_unreadable_memory_runs_alone_with_a_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unreadable(**_: object) -> object:
+        raise OSError("MemTotal unreadable")
+
+    monkeypatch.setattr(_admission(), "compute_memory_budget", unreadable)
+
+    plan = _measure(None, _synth("a"))
 
     assert plan.claim.run_alone
-    assert plan.warning is not None and plan.warning.startswith("Memory Budget unavailable (")
-    assert "memory_budget" in plan.warning
+    assert plan.warning == "Memory Budget unavailable (MemTotal unreadable); this Job ran alone."
 
 
 # --- request producers -------------------------------------------------------------
