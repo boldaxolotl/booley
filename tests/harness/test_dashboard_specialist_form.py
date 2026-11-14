@@ -306,3 +306,25 @@ def test_finished_campaigns_are_listed_newest_first_with_target_and_date(
         "sim_fifo  unknown  sim #12",
     ]
     assert finished_campaigns(worktree, []) == ()
+
+
+def test_an_unreadable_campaign_does_not_hide_the_readable_ones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from booley.harness.dashboard.specialist_form import SimRun, finished_campaigns
+
+    reports = tmp_path / "wt" / ".booley" / "flow-reports" / "sim"
+    write_campaign(reports / "1", "sim_a")
+    write_campaign(reports / "1", "sim_b")
+    real_is_file = Path.is_file
+
+    def is_file(self: Path) -> bool:
+        if self.parent.name == "sim_a":  # e.g. a link into a folder the user cannot enter
+            raise PermissionError(13, "denied", str(self))
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", is_file)
+    found = finished_campaigns(tmp_path / "wt", [SimRun(reports / "1", "2024-03-01T10:00:00Z")])
+    assert [choice.path for choice in found] == [
+        ".booley/flow-reports/sim/1/targets/sim_b/coverage.json"
+    ]

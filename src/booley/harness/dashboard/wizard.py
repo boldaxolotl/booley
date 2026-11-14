@@ -657,7 +657,8 @@ class RunWizard(ModalScreen[str | None]):
             return
         event.stop()
         if self._stage == "campaign":
-            self._fill_picks(self.query_one("#run-picks", OptionList).highlighted)
+            # None: highlight the current campaign, else the newest (the loading row is gone).
+            self._fill_picks(None)
 
     def _picker(self, field: Field) -> tuple[str, list[tuple[str, str]]]:
         """The hint and the (row text, value) rows of the open picker for *field*."""

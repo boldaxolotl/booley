@@ -633,6 +633,32 @@ async def test_coverage_analyst_launches_a_picked_or_typed_campaign(
 
 
 @pytest.mark.asyncio
+async def test_reopening_the_picker_keeps_an_older_campaign_chosen(checkout, tmp_path, empty_home):
+    from booley.harness.dashboard.specialist_form import SimRun
+
+    write_config(checkout, "")
+    older = write_campaign(checkout, 1)
+    newer = write_campaign(checkout, 2)
+    runs = (SimRun(newer, "2024-03-02T10:00:00Z"), SimRun(older, CAMPAIGN_ENDED))
+    app = make_app(checkout, real_launcher(tmp_path / "booley"))
+    app._finished_sim_runs = lambda _worktree: runs  # type: ignore[method-assign]
+    async with app.run_test(size=(120, 40)) as pilot:
+        wizard = await to_reviewer(app, pilot, "coverage_analyst")
+        await goto_row(pilot, wizard, "Coverage Record")
+        await pilot.press("enter")
+        await settle(app, pilot)
+        await pilot.press("down", "enter")  # the older campaign
+        chosen = row_value(wizard, "Coverage Record")
+        assert chosen.endswith("sim/1/targets/sim_fifo/coverage.json")
+        await goto_row(pilot, wizard, "Coverage Record")
+        await pilot.press("enter")
+        await settle(app, pilot)
+        assert wizard.query_one("#run-picks", OptionList).highlighted == 1  # the chosen one
+        await pilot.press("enter")
+        assert row_value(wizard, "Coverage Record") == chosen
+
+
+@pytest.mark.asyncio
 async def test_coverage_analyst_without_campaigns_explains_how_to_make_one(checkout, empty_home):
     from booley.harness.dashboard.specialist_form import NO_CAMPAIGNS
 

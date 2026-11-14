@@ -251,7 +251,7 @@ The Dashboard has three windows; press `←` or `→` to switch:
   can drive them. Press `Enter` on a Target for its filesets, tests, Test
   Variants, and constraints. When Run is available and a Flow can drive the
   Target, the detail ends with those Flows (for a Simulation Target, also the
-  Mutation Flow): press `↓` past its end, then `Enter`
+  [Mutation Flow](FLOW-MUTATION.md)): press `↓` past its end, then `Enter`
   on a Flow to open the Run form with the worktree and Target filled in; `Esc`
   on the form itself returns to the detail.
   The **Worktree** item in the top bar picks the worktree: those with a
@@ -259,8 +259,7 @@ The Dashboard has three windows; press `←` or `→` to switch:
 
 The **Run** item in the top bar starts a built-in Booley Flow, or the `reviewer`
 or `coverage_analyst` Specialist, as a Standalone Job. Pick the worktree and the
-Flow, then fill in
-the form the Dashboard builds from that Flow's options (the Project comes from
+Flow, then fill in the form the Dashboard builds from that Flow's options (the Project comes from
 the worktree, so `-C`, `--project`, and `--work-dir` are never offered). Each
 Common and Flow option is
 a field: `Enter` flips an on/off flag, opens a short list for an option with
@@ -273,10 +272,8 @@ Run at once, and `Esc` only goes back to the form; choosing another Target
 clears them. **Extra arguments** takes seeds and further Targets too. When a
 list cannot be read, the open list says why, and **Extra arguments** still takes
 the Targets and Test Runs you type. Output and Expert options go in the
-**Extra arguments** field, typed as on the command line. The `coverage_analyst` form
-lists the Coverage Records of the worktree's finished Simulation Jobs that the Jobs
-window still holds, newest first; type the path of any other `coverage.json`. `Esc` in a choice list or editor drops the change,
-`Enter` keeps it. **Review the command** checks it and shows the equivalent
+**Extra arguments** field, typed as on the command line. `Esc` in a choice list
+or editor drops the change, `Enter` keeps it. **Review the command** checks it and shows the equivalent
 `cd … && booley flow …` command. The
 review screen also says whether the Job runs now or queues behind other Jobs
 (with its position). A Simulation, synthesis, FPGA, or lint Job is admitted by
@@ -290,6 +287,12 @@ then Submit says why (with the fix) and does nothing until the problem is fixed 
 command instead and always works. The Jobs window then opens on All sessions with the new Job selected; a
 Finished filter switches to Running, which keeps the Job listed after it
 finishes. `Esc` returns to where you started.
+
+The `coverage_analyst` form has no Extra arguments field. Its Coverage Record
+row lists the `coverage.json` of each finished coverage run among the Jobs the
+Dashboard still lists under All, newest first; with none, only the row that
+types the path of any other `coverage.json` is shown. Instruction, max turns,
+and timeout follow, the last two under More.
 
 Click a report, artifact, or log path to open it in the editor. Press `↑` on
 the first row to reach the top bar with the tabs, filters, Run, and Help; the

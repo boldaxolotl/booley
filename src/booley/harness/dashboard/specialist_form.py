@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Final
-from urllib.parse import unquote
 
 from booley.core.boundary import as_dict
 from booley.harness.dashboard.run_form import Field, text_words
@@ -198,7 +197,7 @@ def _complete_target(directory: Path) -> str | None:
     if projection is None or projection.get("complete") is not True:
         return None
     target = projection.get("target")
-    return target if isinstance(target, str) and target else unquote(directory.name)
+    return target if isinstance(target, str) and target else None
 
 
 def _shown_path(worktree: Path, path: Path) -> str:
@@ -233,7 +232,11 @@ def finished_campaigns(worktree: Path, runs: Iterable[SimRun]) -> tuple[Campaign
         for directory in directories:
             target = _complete_target(directory)
             coverage = directory / "coverage.json"
-            if target is None or not coverage.is_file():
+            try:
+                listed = target is not None and coverage.is_file()
+            except OSError:  # e.g. PermissionError on a link into an unreadable folder
+                listed = False
+            if target is None or not listed:
                 continue
             label = f"{target}  {format_clock(run.ended_at)}  sim #{run.invocation.name}"
             choice = CampaignChoice(_shown_path(worktree, coverage), label)
