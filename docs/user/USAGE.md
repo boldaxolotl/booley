@@ -250,14 +250,16 @@ The Dashboard has three windows; press `←` or `→` to switch:
 - **Targets:** the Targets of one worktree, with their core and the Flows that
   can drive them. Press `Enter` on a Target for its filesets, tests, Test
   Variants, and constraints. When Run is available and a Flow can drive the
-  Target, the detail ends with those Flows: press `↓` past its end, then `Enter`
+  Target, the detail ends with those Flows (for a Simulation Target, also the
+  Mutation Flow): press `↓` past its end, then `Enter`
   on a Flow to open the Run form with the worktree and Target filled in; `Esc`
   on the form itself returns to the detail.
   The **Worktree** item in the top bar picks the worktree: those with a
   connected session come first, the main checkout last.
 
 The **Run** item in the top bar starts a built-in Booley Flow, or the `reviewer`
-Specialist, as a Standalone Job. Pick the worktree and the Flow, then fill in
+or `coverage_analyst` Specialist, as a Standalone Job. Pick the worktree and the
+Flow, then fill in
 the form the Dashboard builds from that Flow's options (the Project comes from
 the worktree, so `-C`, `--project`, and `--work-dir` are never offered). Each
 Common and Flow option is
@@ -271,7 +273,9 @@ Run at once, and `Esc` only goes back to the form; choosing another Target
 clears them. **Extra arguments** takes seeds and further Targets too. When a
 list cannot be read, the open list says why, and **Extra arguments** still takes
 the Targets and Test Runs you type. Output and Expert options go in the
-**Extra arguments** field, typed as on the command line. `Esc` in a choice list or editor drops the change,
+**Extra arguments** field, typed as on the command line. The `coverage_analyst` form
+lists the Coverage Records of the worktree's finished Simulation Jobs that the Jobs
+window still holds, newest first; type the path of any other `coverage.json`. `Esc` in a choice list or editor drops the change,
 `Enter` keeps it. **Review the command** checks it and shows the equivalent
 `cd … && booley flow …` command. The
 review screen also says whether the Job runs now or queues behind other Jobs
