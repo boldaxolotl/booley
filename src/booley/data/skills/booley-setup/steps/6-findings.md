@@ -91,7 +91,8 @@ redacted export and shares that file themselves.
 booley feedback report --project-name <name>
 ```
 
-Writes `.booley/SETUP-REPORT.md` from the setup entries — the user's copy,
+Writes `.booley/SETUP-REPORT.md` from the setup entries (it writes no file when
+the log has none; log one `win` first) — the user's copy,
 unredacted and never published. Entries logged later through `/booley-feedback`
 go to `.booley/FEEDBACK-REPORT.md`, and a report whose content did not change is
 left untouched. `booley feedback export` creates the separate redacted view only
@@ -105,7 +106,7 @@ of an inner copy;
 on a real project, never pass the flag.
 
 After the renderer finishes, follow SKILL.md's **Delivered Flow results** contract:
-add or replace that single section at the end of the report at the actual returned path (the
+add or replace that single section at the actual returned path (the
 root report when the enclosing dogfood flow selected it), keeping existing Feedback content
 intact. The contract owns the evidence rows and the pre-cleanup snapshot. Repeat
 after any setup-owned render; later independent Feedback renders keep their

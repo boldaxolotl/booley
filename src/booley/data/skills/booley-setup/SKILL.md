@@ -338,7 +338,7 @@ wants you to break these; it doesn't.
   Booley-generated files into the target repo's tracked tree: no
   `README.booley.md` / integration notes, no logs, no generated artifacts
   explaining the onboarding. **This includes Step 6's own output** — the
-  findings log and the one `SETUP-REPORT.md` live in `.booley/`; a
+  findings log and the setup report `SETUP-REPORT.md` live in `.booley/`; a
   report about the setup is still a Booley-generated file. A redacted
   `BOOLEY-FEEDBACK.md` exists only after an explicit `booley feedback export`.
   The only Booley-touched files that legitimately

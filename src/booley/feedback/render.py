@@ -514,15 +514,17 @@ class WrittenReport:
     changed: bool
 
 
-def _write_if_changed(path: Path, body: str) -> bool:
+def _write_if_changed(path: Path, body: str, stable_body: str) -> bool:
     """Write *body* plus its digest line unless the file already carries it.
 
-    The digest covers the body with its generated date blanked, so re-rendering
-    the same content on another day leaves the file alone, and so does text a
-    skill appended after the digest line. A note cannot spoof the digest of the
-    body that contains it.
+    The digest covers *stable_body*, the same report rendered without the
+    project name and the environment and with its generated date blanked, so
+    re-rendering on another day, from another checkout of the tool, or without
+    ``--project-name`` leaves the file alone, and so does text a skill appended
+    after the digest line. A note cannot spoof the digest of the body that
+    contains it.
     """
-    stable = _GENERATED_HEADER.sub("Generated  from ", body, count=1)
+    stable = _GENERATED_HEADER.sub("Generated  from ", stable_body, count=1)
     line = _DIGEST_LINE.format(hashlib.sha256(stable.encode("utf-8")).hexdigest())
     if path.is_file() and line in path.read_text(encoding="utf-8").splitlines():
         return False
@@ -568,7 +570,9 @@ def write_user_reports(
         WrittenReport(
             path,
             _write_if_changed(
-                path, render_user_report(part, project_name=project_name, env=env, origin=origin)
+                path,
+                render_user_report(part, project_name=project_name, env=env, origin=origin),
+                render_user_report(part, env=Environment(), origin=origin),
             ),
         )
         for part, path, origin in targets

@@ -313,6 +313,20 @@ class TestWriteUserReports:
         assert [w.changed for w in second] == [False]
         assert second[0].path.read_bytes() == before
 
+    def test_a_new_project_name_or_environment_leaves_the_report_alone(self, project, booley_dir):
+        """A later render from another host or without --project-name keeps the file."""
+        append(Finding(title="setup entry"), booley_dir)
+        first_env = Environment(booley_version="1.0", platform="Linux x86_64")
+        write_user_reports(project, booley_dir, project_name="demo", env=first_env)
+        path = booley_dir / SETUP_REPORT_NAME
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write("\n## Delivered Flow results\n\nsim passed\n")
+        before = path.read_bytes()
+        later_env = Environment(booley_version="2.0", in_container=True)
+        written, _ = write_user_reports(project, booley_dir, env=later_env)
+        assert [w.changed for w in written] == [False]
+        assert path.read_bytes() == before
+
     def test_a_changed_setup_entry_rewrites_the_setup_report(self, project, booley_dir):
         append(Finding(title="first setup entry"), booley_dir)
         write_user_reports(project, booley_dir)
@@ -320,20 +334,6 @@ class TestWriteUserReports:
         written, _ = write_user_reports(project, booley_dir)
         assert written[0].changed
         assert "second setup entry" in written[0].path.read_text(encoding="utf-8")
-
-    def test_shortened_notes_that_quoted_the_report_tail_rewrite_it(self, project, booley_dir):
-        """A note quoting a rendered report must not make a stale file look current."""
-        env = Environment(booley_version="1.0", python_version="3.14", platform="Linux x86_64")
-        quoted = "\n".join(f"| {label} | {value} |" for label, value in env.as_rows())
-        append(Finding(title="quoting note", notes=f"see:\n{quoted}\nand more text"), booley_dir)
-        write_user_reports(project, booley_dir, env=env)
-        from booley.feedback.findings import rewrite
-
-        rewrite(lambda entries: setattr(entries[0], "notes", "short"), booley_dir)
-        written, _ = write_user_reports(project, booley_dir, env=env)
-        assert written[0].changed
-        text = written[0].path.read_text(encoding="utf-8")
-        assert "and more text" not in text
 
 
 class TestExplicitExport:

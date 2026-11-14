@@ -4,13 +4,13 @@ Split from the skill on purpose. The tested code decides which findings are
 exportable and what gets redacted. Booley never transmits the result; the
 skill's job shrinks to calling these subcommands and talking to the user.
 
-    booley feedback add --title … --severity … --repro …   # something broke
-    booley feedback friction --title … --expected …        # nothing broke, but…
+    booley feedback add --origin bug --title … --severity … --repro …   # something broke
+    booley feedback friction --origin bug --title … --expected …        # nothing broke, but…
     booley feedback say "…" --sentiment wish               # what you think of Booley
     booley feedback win --origin setup --title …           # a check that passed
     booley feedback triage F-3 --bucket booley             # whose problem is it
     booley feedback list                                   # what's logged so far
-    booley feedback report                                 # render the user report
+    booley feedback report                                 # render the local reports
     booley feedback export F-3                             # optional redacted Markdown
     booley feedback filed F-3 --url …                      # posted it by hand
     booley feedback redact --file notes.md                 # scrub anything by hand
