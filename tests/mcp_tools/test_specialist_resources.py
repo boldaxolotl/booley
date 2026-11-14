@@ -221,37 +221,38 @@ def test_unmeasurable_values_are_recorded_absent(env: _Env, monkeypatch) -> None
     assert record["wall_s"] is not None
 
 
-@pytest.mark.parametrize("failure", ["monitor", "write"])
 def test_failed_measurement_never_changes_the_specialist_result(
-    env: _Env, monkeypatch, caplog, failure: str
+    env: _Env, monkeypatch, caplog
 ) -> None:
     env.respond = lambda _params: AgentResult(structured={"approved": True})
     expected = env.run(MeasuredSpecialist())
     assert len(env.records()) == 1
-    (env.booley_dir / "runtime" / "resources" / "history.json").unlink()
-    if failure == "monitor":
-        monkeypatch.setattr(
-            job_resources.JobResourceMonitor,
-            "start",
-            lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("no thread")),
-        )
-    else:
-        monkeypatch.setattr(
-            job_resources,
-            "append_records",
-            lambda *_a: (_ for _ in ()).throw(OSError("read-only")),
-        )
+    history = resource_history.history_path(env.booley_dir)
+    history.unlink()
 
-    outcome = env.run(MeasuredSpecialist())
+    def fail(error: Exception):
+        def raiser(*_a, **_k):
+            raise error
 
+        return raiser
+
+    # The monitor cannot start: the run is still recorded, with nothing measured.
+    with monkeypatch.context() as patched:
+        patched.setattr(job_resources.JobResourceMonitor, "start", fail(RuntimeError("no thread")))
+        outcome = env.run(MeasuredSpecialist())
     assert (outcome.exit_code, outcome.report_text) == (expected.exit_code, expected.report_text)
-    if failure == "monitor":
-        (record,) = env.records()
-        assert record["peak_rss_mb"] is None and record["cpu_user_s"] is None
-        assert record["wall_s"] is not None
-    else:
-        assert not resource_history.history_path(env.booley_dir).exists()
-        assert "Job resource history not recorded" in caplog.text
+    (record,) = env.records()
+    assert record["peak_rss_mb"] is None and record["cpu_user_s"] is None
+    assert record["wall_s"] is not None
+    history.unlink()
+
+    # The history cannot be written: a warning, no record.
+    with monkeypatch.context() as patched:
+        patched.setattr(job_resources, "append_records", fail(OSError("read-only")))
+        outcome = env.run(MeasuredSpecialist())
+    assert (outcome.exit_code, outcome.report_text) == (expected.exit_code, expected.report_text)
+    assert not history.exists()
+    assert "Job resource history not recorded" in caplog.text
 
 
 def test_run_that_raises_is_recorded_and_still_raises(env: _Env) -> None:
