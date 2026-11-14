@@ -4067,6 +4067,99 @@ def test_gateway_spec_refusals(issued, monkeypatch, request, case):
         runtime_spec.preview(project, fixed(spec))
 
 
+def _with_previous_mount(path: Path, mount: str) -> None:
+    spec = json.loads(path.read_text(encoding="utf-8"))
+    spec["remoteEnv"]["BOOLEY_DIR"] = mount
+    path.write_bytes(json.dumps(spec).encode("utf-8"))
+
+
+def test_reissue_keeps_former_mount_for_unannotated_records(
+    issued_preview, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from booley.runtime import job_records, sandbox_layout
+
+    project, prepared, path, _stamp = issued_preview
+    former = str(tmp_path / "former-mount")
+    _with_previous_mount(path, former)
+
+    runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+
+    source = runtime_spec.authorized_project_data_source(project)
+    history = json.loads((source / ".runtime" / "sandbox-mounts.json").read_bytes())
+    assert history == {"schema": 1, "mounts": [former]}
+    runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+    assert json.loads((source / ".runtime" / "sandbox-mounts.json").read_bytes()) == history
+    monkeypatch.setattr(sandbox_layout, "BOOLEY_DIR_TARGET", str(source))
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    (jobs / "run-1.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run-1",
+                "endpoint": "sim",
+                "started_at": "t",
+                "timeout_s": 60,
+                "work_dir": f"{former}/worktrees/wt",
+            }
+        ),
+        encoding="utf-8",
+    )
+    record = job_records.read_record("run-1", jobs)
+    assert record is not None
+    assert record.work_dir == str(source / "worktrees" / "wt")
+
+
+def test_reissue_refuses_former_mount_overlapping_workspace(issued_preview) -> None:
+    project, prepared, path, _stamp = issued_preview
+    for former in ("/work", "/work/.booley", "/"):
+        _with_previous_mount(path, former)
+        before = path.read_bytes()
+
+        with pytest.raises(
+            runtime_spec.RuntimeSpecError, match=r"devcontainer\.json.*booley init"
+        ):
+            runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+
+        assert path.read_bytes() == before
+
+
+def test_reissue_fails_before_replacing_spec_when_history_is_unwritable(
+    issued_preview, tmp_path: Path
+) -> None:
+    project, prepared, path, _stamp = issued_preview
+    _with_previous_mount(path, str(tmp_path / "former-mount"))
+    before = path.read_bytes()
+    source = runtime_spec.authorized_project_data_source(project)
+    (source / ".runtime").write_bytes(b"not a directory")
+
+    with pytest.raises(runtime_spec.RuntimeSpecError):
+        runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+
+    assert path.read_bytes() == before
+
+
+def test_reissue_ignores_previous_spec_without_a_mount(issued_preview) -> None:
+    project, prepared, path, _stamp = issued_preview
+    path.write_bytes(b"not json")
+
+    runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+
+    source = runtime_spec.authorized_project_data_source(project)
+    assert not (source / ".runtime" / "sandbox-mounts.json").exists()
+
+
+def test_posix_former_mount_is_usable_on_a_windows_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pathlib import PureWindowsPath
+
+    from booley.runtime import mount_history
+
+    monkeypatch.setattr(mount_history, "Path", PureWindowsPath)
+
+    mount_history._require_mount("/former-mount", PureWindowsPath("devcontainer.json"))  # type: ignore[arg-type]
+    with pytest.raises(mount_history.MountHistoryError, match="unusable"):
+        mount_history._require_mount("/work/x", PureWindowsPath("devcontainer.json"))  # type: ignore[arg-type]
+
+
 _CLAUDE_ONLY = '[agent]\nclis = ["claude"]\n'
 _CLAUDE_SUBSCRIPTION = _CLAUDE_ONLY + '\n[agent.auth]\nclaude = "subscription"\n'
 

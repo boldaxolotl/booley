@@ -42,6 +42,7 @@ from booley.goals.protected_inputs import ProtectedPath, ProtectedSnapshot, chec
 from booley.goals.store import GoalStore, GoalStoreError
 from booley.goals.target_surface import TargetSurfaceError
 from booley.goals.test_run_freezing import ensure_test_run_resolutions
+from booley.runtime.mount_history import translate_stored_path
 from booley.runtime.worktree_identity import WorktreeIdentity
 from booley.targets.domain import FuseSocError
 
@@ -153,6 +154,11 @@ class GoalRunBinding:
             raise GoalBindingError(f"invalid Goal run binding: {exc}") from exc
 
 
+def _stored_path(mapping: Mapping[str, Any], field: str) -> Path:
+    value = require_str_value(mapping[field], field=field)
+    return Path(translate_stored_path(value, record=f"Goal run binding {mapping['record_id']}"))
+
+
 def _parse_binding(raw: object) -> GoalRunBinding:
     if not isinstance(raw, Mapping):
         raise ValueError("a binding is a JSON object")
@@ -170,11 +176,11 @@ def _parse_binding(raw: object) -> GoalRunBinding:
         raise ValueError("protected_paths must be a list")
     paths = cast("list[object]", raw_paths)
     return GoalRunBinding(
-        booley_dir=Path(require_str_value(mapping["booley_dir"], field="booley_dir")),
+        booley_dir=_stored_path(mapping, "booley_dir"),
         record_id=validate_goal_id(require_str_value(mapping["record_id"], field="record_id")),
         record_revision=_positive_int(mapping["record_revision"], "record_revision"),
         worktree=worktree_identity_from_json(mapping["worktree"], where="worktree"),
-        worktree_root=Path(require_str_value(mapping["worktree_root"], field="worktree_root")),
+        worktree_root=_stored_path(mapping, "worktree_root"),
         goal_branch=require_str_value(mapping["goal_branch"], field="goal_branch"),
         invocation_id=require_str_value(mapping["invocation_id"], field="invocation_id"),
         spec_revisions=tuple(

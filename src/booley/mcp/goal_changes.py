@@ -226,7 +226,7 @@ def _wire_summary(view: ProposalView) -> str:
     if proposal.waiver is not None:
         value["waiver"] = proposal.waiver.to_json()
         value["commit_files"] = "Commit the installed approval/proof files under " + str(
-            proposal.waiver.approval_root
+            proposal.waiver.approval_path()
         )
     if view.decision is not None:
         value["decision"] = view.decision.to_json()

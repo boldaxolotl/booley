@@ -11,6 +11,8 @@ from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.boundary import require_dict, require_str_value
 from booley.goals.proposals import ProposalError, text
 from booley.runtime.atomic_files import atomic_replace_bytes, durable_unlink
+from booley.runtime.mount_history import translate_stored_path
+from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,12 @@ class FileEffect:
             text(raw["label"], "effect.label"),
         )
 
+    @property
+    def destination(self) -> Path:
+        """The journaled path under the current Sandbox mount point."""
+        moved = Path(translate_stored_path(str(self.path), record="Goal apply transaction"))
+        return canonical_project_alias_path(moved)
+
     def require_expected(self, *, booley_dir: Path | None = None) -> None:
         """Refuse unexpected external bytes or symlink ancestors without mutation.
 
@@ -53,23 +61,23 @@ class FileEffect:
         """
         if any(
             path.is_symlink() and not is_booley_dir_entry(path, booley_dir)
-            for path in (self.path, *self.path.parents)
+            for path in (self.destination, *self.destination.parents)
         ):
-            raise ProposalError(f"recovery conflict: symlink destination {self.path}")
-        if read_bytes(self.path) not in (self.before, self.after):
+            raise ProposalError(f"recovery conflict: symlink destination {self.destination}")
+        if read_bytes(self.destination) not in (self.before, self.after):
             raise ProposalError(
-                f"recovery conflict at {self.path}: expected captured before/after bytes; restore those bytes before retrying"
+                f"recovery conflict at {self.destination}: expected captured before/after bytes; restore those bytes before retrying"
             )
 
     def apply(self, *, booley_dir: Path | None = None) -> None:
         """An idempotent atomic replacement; caller owns lifecycle/storage locks."""
         self.require_expected(booley_dir=booley_dir)
-        if read_bytes(self.path) == self.after:
+        if read_bytes(self.destination) == self.after:
             return
         if self.after is None:
-            durable_unlink(self.path)
+            durable_unlink(self.destination)
         else:
-            atomic_replace_bytes(self.path, self.after, mode=0o644)
+            atomic_replace_bytes(self.destination, self.after, mode=0o644)
 
 
 def read_bytes(path: Path) -> bytes | None:
