@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 from booley.config.gateway import (
     GATEWAY_AUTH,
     GATEWAY_MODEL_ENV,
+    VISITOR_AUTH,
     GatewayModelPin,
     gateway_model_pin_from_env,
 )
@@ -48,6 +49,10 @@ _DEFAULT_PROVIDER = "claude"
 #                  credential, so nothing is scrubbed; the backend health
 #                  check fails loud when the key is absent instead of letting
 #                  agents silently fall back to (and bill) the subscription.
+#
+# ``visitor`` is the Sandbox's reading of ``BOOLEY_PRIMARY_AUTH=auto`` and of an issued
+# ``cli=auto`` record: the visitor's own credential, else the sponsored gateway. It is
+# environment-only, so ``booley.toml`` still rejects it.
 #
 # ``gateway`` routes Codex only. It is honored inside a Sandbox: set by the
 # ``BOOLEY_PRIMARY_AUTH=gateway`` hand-off of a hand-written spec (plus BOOLEY_GATEWAY_URL /
@@ -421,13 +426,18 @@ def _auth_policies(
 
 
 def _recorded_cli_policies() -> dict[str, str]:
-    """The ``BOOLEY_AGENT_CLIS`` record of the issued spec; empty when absent or malformed."""
+    """The ``BOOLEY_AGENT_CLIS`` record of the issued spec; empty when absent or malformed.
+
+    A recorded ``auto`` reads as ``visitor`` here, in Sandbox readers only; the host
+    keeps validating it through :func:`decode_cli_policies`.
+    """
     raw = os.environ.get(AGENT_CLIS_ENV, "")
     try:
-        return decode_cli_policies(raw)
+        decoded = decode_cli_policies(raw)
     except ValueError as exc:
         logger.warning("Ignoring %s: %s", AGENT_CLIS_ENV, exc)
         return {}
+    return {cli: VISITOR_AUTH if policy == "auto" else policy for cli, policy in decoded.items()}
 
 
 def _retired_models_error(models: Mapping[str, Any], default_cli: str) -> BackendConfigError:
@@ -713,7 +723,13 @@ def env_auth_handoff() -> str | None:
 
     choice = agent_app.auto_choice()
     raw = choice.policy if choice else os.environ.get("BOOLEY_PRIMARY_AUTH")
-    return (raw or "").strip().lower() or None
+    return env_auth_mode(raw)
+
+
+def env_auth_mode(raw: str | None) -> str | None:
+    """*raw* normalized as an environment auth mode: ``auto`` reads as ``visitor``, blank as ``None``."""
+    mode = (raw or "").strip().lower() or None
+    return VISITOR_AUTH if mode == "auto" else mode
 
 
 def sandbox_cli_policy(cli: str) -> str | None:
@@ -776,7 +792,9 @@ def _env_auth() -> str:
     ``gateway`` on a host (outside a container) is treated as unknown.
     """
     raw = env_auth_handoff() or _DEFAULT_AUTH
-    if raw not in _ENV_AUTH_MODES or (raw == GATEWAY_AUTH and not _inside_container()):
+    if raw not in (*_ENV_AUTH_MODES, VISITOR_AUTH) or (
+        raw == GATEWAY_AUTH and not _inside_container()
+    ):
         logger.warning("Ignoring BOOLEY_PRIMARY_AUTH %r; using %s", raw, _DEFAULT_AUTH)
         return _DEFAULT_AUTH
     return raw

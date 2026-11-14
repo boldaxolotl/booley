@@ -14,6 +14,9 @@ from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 GATEWAY_AUTH = "gateway"
+# The visitor's own credential under the CLI's own precedence, else the sponsored gateway.
+# Environment-only: never an ``[agent] auth`` value, and never read from ``booley.toml``.
+VISITOR_AUTH = "visitor"
 GATEWAY_URL_ENV = "BOOLEY_GATEWAY_URL"
 GATEWAY_TOKEN_ENV = "BOOLEY_GATEWAY_TOKEN"
 GATEWAY_TOKEN_COMMAND_ENV = "BOOLEY_GATEWAY_TOKEN_COMMAND"

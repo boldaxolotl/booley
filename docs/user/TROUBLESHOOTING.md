@@ -583,6 +583,13 @@ into your repository as a `.core`, or drop it. Often the testbench already
 guards its use with an `ifdef` or defines the module itself; check before you
 remove it.
 
+### Every Flow refuses `standalone_frontend`
+
+`booley.toml` sets `[flows.<name>].standalone_frontend`, and every Flow stops
+with a message that names it. Delete the key. Nothing replaces it:
+`--mode elab-only-standalone` elaborates each module with its Target's own
+simulator (see [Elaboration checks](FLOW-SIM.md#elaboration-checks)).
+
 ### Every simulation test comes back INCONCLUSIVE
 
 Every Test Run of an HDL testbench reads `INCONCLUSIVE`, `booley flow sim`

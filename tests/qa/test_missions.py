@@ -2,6 +2,8 @@
 
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -44,6 +46,7 @@ def test_every_mission_is_present():
         "gui",
         "mutation",
         "picorv32",
+        "scheduler",
         "taxi",
         "uart",
     }
@@ -288,6 +291,83 @@ def test_mutation_mission_is_indexed() -> None:
     )
     linked = set(re.findall(r"\[mutation/(mut-[\w-]+)\]", row))
     assert linked == {slug for slug in MUTATION_AREAS if slug.startswith("mut-")}
+
+
+SCHEDULER_AREAS = [
+    "setup",
+    "sched-history",
+    "sched-admission",
+    "sched-jump",
+    "sched-shrink",
+    "sched-oom",
+    "sched-records",
+    "sched-threads",
+    "sched-seats",
+    "sched-cutover",
+    "sched-fullchip",
+    "cleanup",
+]
+
+
+def _is_optional(text: str, slug: str) -> bool:
+    """Whether the area heading for *slug* marks it as an optional follow-up."""
+    heading = next(line for line in text.splitlines() if re.match(rf"### \d+\. {slug} — ", line))
+    return "optional follow-up" in heading
+
+
+def test_scheduler_mission_covers_the_brief_within_budget() -> None:
+    """The scheduler mission keeps #3896's areas, in order, inside its 8-hour budget."""
+    mission = QA_ROOT / "missions" / "scheduler" / "MISSION.md"
+    text = mission.read_text(encoding="utf-8")
+    areas = _areas(mission)
+    assert [slug for slug, _ in areas] == SCHEDULER_AREAS
+    optional = {slug for slug in SCHEDULER_AREAS if _is_optional(text, slug)}
+    assert optional == {"sched-fullchip"}
+    primary = sum(minutes for slug, minutes in areas if slug not in optional)
+    assert primary <= 480  # the mission's 8-hour budget
+    assert "8 h for the primary run" in text
+
+
+def test_scheduler_mission_is_indexed() -> None:
+    """README lists the mission and every scheduling area appears in the Capability Map."""
+    readme = (QA_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "](missions/scheduler/MISSION.md)" in readme
+    capability_map = (QA_ROOT / "AREAS.md").read_text(encoding="utf-8")
+    linked = set(re.findall(r"\[scheduler/([\w-]+)\]", capability_map))
+    assert linked >= {slug for slug in SCHEDULER_AREAS if slug.startswith("sched-")}
+
+
+def test_scheduler_history_helper_round_trips(tmp_path: Path) -> None:
+    """`history_edit.py` rewrites matching records and restores the original bytes."""
+    helper = QA_ROOT / "missions" / "scheduler" / "fixtures" / "history_edit.py"
+    history = tmp_path / "history.json"
+    record = {
+        "key": {"target": "sim_icarus", "phase": "mem_hog", "flags": [], "test_run": ""},
+        "peak_memory_mb": 300.0,
+        "wall_s": 9.0,
+        "finished_at": "2026-11-14T00:00:00Z",
+    }
+    other = {**record, "key": {**record["key"], "phase": "sim_build"}}
+    original = json.dumps(
+        {"$schema": "booley.job-resource-history/v1", "records": [record, other]}
+    )
+    history.write_text(original, encoding="utf-8")
+
+    def run(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-I", str(helper), *args, str(history)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    assert run("set", "--phase", "mem_hog", "--memory-mb", "40", "--wall-s", "2").returncode == 0
+    edited = json.loads(history.read_text(encoding="utf-8"))["records"]
+    assert [(r["peak_memory_mb"], r["wall_s"]) for r in edited] == [(40.0, 2.0), (300.0, 9.0)]
+    assert run("set", "--phase", "missing", "--wall-s", "1").returncode == 1
+    assert "mem_hog" in run("show").stdout
+    assert run("restore").returncode == 0
+    assert history.read_text(encoding="utf-8") == original
 
 
 # Words of the removed model-driven mutation flow and of its old dry-run wording.

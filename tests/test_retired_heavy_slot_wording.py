@@ -34,6 +34,9 @@ _WHOLE_FILES = frozenset(
         "CHANGELOG.md",
         "src/booley/data/refs/CHANGELOG.md",
         "changelog.d/3247.md",
+        # The scheduler QA mission checks that the retired keys are refused.
+        "qa/missions/scheduler/MISSION.md",
+        "qa/missions/scheduler/RUNBOOK.md",
     }
 )
 # ADRs record decisions as they stood.
