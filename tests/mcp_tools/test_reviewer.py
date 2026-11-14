@@ -4272,7 +4272,7 @@ def test_protocol_cdc_hunt_guide_names_scenarios_and_scope():
     scope = text.split("## Scope Boundaries", 1)[1].split("\n## ", 1)[0]
     assert "Reviewer Specialist for Bugs" in scope
     assert "Reviewer Specialist for Optimization" in scope
-    lowered = text.lower()
+    lowered = text.split("### 2. Enumerate scenarios", 1)[1].split("\n### 3.", 1)[0].lower()
     for category in (
         "start",
         "stall",

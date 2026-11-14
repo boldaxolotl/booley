@@ -758,7 +758,7 @@ def test_verify_after_two_guide_review_is_one_call_and_waives_either_guide(
 def test_single_guide_focus_makes_one_call_as_before(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Spec, protocol and testbench quality reviews still make one call and one transcript."""
+    """Spec, security and testbench quality reviews still make one call and one transcript."""
     cases = [
         (SPEC_ARGS, "spec", "spec-hunt"),
         ([*BASE_ARGS[:-1], "security"], "security", "security-checklist"),
