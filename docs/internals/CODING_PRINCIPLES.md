@@ -302,6 +302,12 @@ lockfiles, and vendored upstream sources. Say in the PR body what was
 excluded and why. A net-reduction PR states its added and deleted line counts
 in its body.
 
+A rename of a term or identifier with no behavior change stays in one PR,
+with its docs, however many lines the mechanical replacement touches. Split
+by layer (code, messages, docs), the names disagree between merges and each
+part rebases over the others. Only its hand-written edits count toward the
+caps; a rename whose hand-written edits exceed them still splits.
+
 Work over a cap is split before implementation into sub-issues that each merge
 on their own. When a change truly cannot be split, the PR body explains why,
 and the maintainer approves the size before review starts. A PR that is over
