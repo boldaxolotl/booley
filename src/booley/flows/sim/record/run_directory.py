@@ -208,14 +208,21 @@ def stored_run_path(document: Mapping[str, object]) -> Path:
     return Path(_current_spelling(str(document["resolved"])))
 
 
+def _stored_collision_key(document: Mapping[str, object]) -> str:
+    """The persisted collision key, canonicalized as the writer did after a mount rebase."""
+    stored = str(document["collision_key"])
+    current = _current_spelling(stored)
+    if current == stored:
+        return stored
+    return os.path.normcase(str(Path(current).resolve(strict=False)))
+
+
 def _restore_run_directory(
     document: Mapping[str, object], runtime: Path, booley_dir: Path | None
 ) -> RunDirectory:
-    stored = str(document["resolved"])
     path = stored_run_path(document)
     collision_key = os.path.normcase(str(path.resolve(strict=False)))
-    # A rebased path has no stored key of its own: the one stored names the former mount.
-    if str(path) == stored and collision_key != document["collision_key"]:
+    if collision_key != _stored_collision_key(document):
         raise SimulationRecordIntegrityError(
             "persisted run-directory collision key disagrees with resolved path"
         )

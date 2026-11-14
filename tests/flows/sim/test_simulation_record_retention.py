@@ -1228,6 +1228,28 @@ def test_surviving_run_directory_under_current_mount_needs_project_data(tmp_path
     assert run_path.exists()
 
 
+def test_run_directory_under_former_mount_with_foreign_collision_key_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path.resolve()
+    reports, _project_data, store = _retained_invocation(root)
+    run_path, _document = _interrupt_latest_attempt(root, reports, store)
+    checkout = root / "checkout"
+    former = root / "former-mount"
+    simulate_mount_change(monkeypatch, checkout, former)
+    old = _record_run_directory_under(store, former, checkout)
+    attempt_path = next(store.root.glob("work-items/*/attempts/*/attempt.json"))
+    document = json.loads(attempt_path.read_bytes())
+    document["run_directory"]["collision_key"] = os.path.normcase(str(former / "elsewhere"))
+    attempt_path.write_bytes(canonical_json_bytes(document))
+    shutil.copytree(run_path, old)
+
+    with pytest.raises(SimulationRecordRetentionError, match="collision key disagrees"):
+        prune_invocation(reports, 1)
+
+    assert run_path.exists()
+
+
 def test_unreadable_mount_history_fails_run_directory_recovery(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
