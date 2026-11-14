@@ -125,7 +125,7 @@ class SpecialistFacts:
     (``refusal`` then says why). ``timeout_ms`` is what each model call will use and
     ``asked_ms`` what the form asked for. ``refusal`` is a failed auth check or an error
     the check could not evaluate (empty: the run may launch); ``warning`` is the sign-in
-    fix shown when ``auth = "auto"`` found no credential (empty: none).
+    fix shown when the visitor mode (shown as ``auto``) found no credential (empty: none).
     """
 
     model: str
@@ -463,7 +463,7 @@ def _agent_facts(name: str, asked_ms: int, timeout_ms: int) -> dict[str, Any]:
         set_agent_settings(settings)
         model, cli = run_choice(settings, name)
         policy = settings.auth_for(cli)
-        # The Dashboard speaks the ``booley.toml`` vocabulary: ``visitor`` shows as ``auto``.
+        # ``visitor`` shows as ``auto``, the ``BOOLEY_PRIMARY_AUTH`` spelling a hand-written spec uses.
         shown = "auto" if policy == auth_token.VISITOR_AUTH else policy
         facts.update(model=model, cli=cli, policy=shown)
         problem = get_backend_config().backend_for(cli).health_check()

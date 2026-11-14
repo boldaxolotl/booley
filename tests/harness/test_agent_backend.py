@@ -219,7 +219,8 @@ class TestLoadBackendConfig:
         assert isinstance(cfg.active_backend, CodexBackend)
         assert cfg.settings.default_cli == "codex"
 
-    def test_models_pin_on_second_cli(self, tmp_path):
+    def test_models_pin_on_second_cli(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("booley.config.agent._inside_container", lambda: False)
         """A [models] pin on a listed non-default CLI selects that CLI for the Specialist."""
         toml_dir = tmp_path / ".booley"
         toml_dir.mkdir(parents=True)
@@ -240,7 +241,10 @@ class TestLoadBackendConfig:
         assert settings.default_cli == "claude"
         assert settings.cli_for_specialist("reviewer") == "codex"
         assert settings.model_for_specialist("reviewer") == "gpt-6-luna"
-        assert (settings.auth_for("claude"), settings.auth_for("codex")) == ("auto", "api_key")
+        assert (settings.auth_for("claude"), settings.auth_for("codex")) == (
+            "subscription",
+            "api_key",
+        )
 
     def test_claude_provider_opt_in(self, tmp_path):
         """[agent] provider = 'claude' flips the active backend to Claude."""
@@ -329,7 +333,8 @@ class TestLoadBackendConfig:
         cfg = get_backend_config()
         assert cfg.settings.auth_for("claude") == "subscription"
 
-    def test_retired_primary_auth_alias_is_ignored(self, tmp_path):
+    def test_retired_primary_auth_alias_is_ignored(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("booley.config.agent._inside_container", lambda: False)
         toml_dir = tmp_path / ".booley"
         toml_dir.mkdir(parents=True)
         (toml_dir / "pipeline.toml").write_text(
@@ -340,7 +345,7 @@ class TestLoadBackendConfig:
         )
         load_backend_config(tmp_path)
         cfg = get_backend_config()
-        assert cfg.settings.auth_for("claude") == "auto"
+        assert cfg.settings.auth_for("claude") == "subscription"
 
     def test_provider_handoff_preserves_project_auth(self, tmp_path, monkeypatch):
         (tmp_path / "booley.toml").write_text(

@@ -6518,7 +6518,7 @@ class TestSubscriptionCredsHealth:
         monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
         monkeypatch.setattr(doctor, "wall_clock", lambda: now)
         monkeypatch.setattr(doctor, "_configured_provider", lambda _: auth_token.APP_CLAUDE)
-        monkeypatch.setattr(doctor, "_configured_auth_policy", lambda *_: "auto")
+        monkeypatch.setattr(doctor, "_configured_auth_policy", lambda *_: auth_token.VISITOR_AUTH)
         monkeypatch.setattr(doctor, "_check_agent_auth_token", lambda *_a, **_k: None)
         monkeypatch.setattr(doctor, "_check_oauth_token", lambda *_a, **_k: None)
         monkeypatch.setattr(doctor, "_check_auth_recorded", lambda *_a: None)
@@ -7834,7 +7834,7 @@ def test_seed_mount_policy_no_app_does_not_inspect_invalid_policy(tmp_path, monk
     assert {f.severity.value for f in report.report().findings} == {"pass"}
 
 
-@pytest.mark.parametrize("policy", ["auto", "subscription", "api_key"])
+@pytest.mark.parametrize("policy", ["subscription", "api_key"])
 def test_seed_mount_policy_state_partitions_belong_to_same_project(tmp_path, monkeypatch, policy):
     from booley.runtime import inspection
 

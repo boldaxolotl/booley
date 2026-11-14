@@ -3127,7 +3127,7 @@ def test_policy_change_requires_refresh_even_when_shell_exports_change(issued, m
     for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
         monkeypatch.setenv(key, "SYNTHETIC")
     runtime_spec.validate(project, spec, path)
-    (project / ".booley" / "booley.toml").write_text('[agent]\nauth="subscription"\n')
+    (project / ".booley" / "booley.toml").write_text('[agent]\nauth="api_key"\n')
     with pytest.raises(runtime_spec.RuntimeSpecError, match=r"credential policy/schema.*refresh"):
         runtime_spec.validate(project, spec, path)
 
@@ -3247,7 +3247,13 @@ def _refresh_source_mutator(project, tmp_path, monkeypatch):
         if setting in files:
             target = files[setting]
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text("fixture")
+            # The default ``subscription`` policy inspects what it seeds, so the login and
+            # the config must be well-formed JSON.
+            fixtures = {
+                "auth-bind": json.dumps({"claudeAiOauth": {"accessToken": "SYNTHETIC_LOGIN"}}),
+                "config-seed": json.dumps({"hasCompletedOnboarding": True}),
+            }
+            target.write_text(fixtures.get(setting, "fixture"))
         if setting == "credential-forwarding":
             monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "SYNTHETIC_REFRESH_OAUTH")
         if setting == "pdk":
@@ -3716,7 +3722,7 @@ def _issue_spec(project: Path, spec: dict, monkeypatch: pytest.MonkeyPatch) -> t
     return prepared.spec, path
 
 
-def _with_codex(spec: dict, project: Path, home: Path, policy: str = "auto") -> None:
+def _with_codex(spec: dict, project: Path, home: Path, policy: str = "subscription") -> None:
     """Turn a Claude-only *spec* into a Claude+Codex one: record, name, login, volume, hook."""
     claude_policy = spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"]
     spec["name"] = "Booley Interactive (claude, codex)"
@@ -3762,10 +3768,10 @@ def test_sealing_accepts_seeds_for_every_listed_cli(issued, monkeypatch, request
 
 
 _DAMAGED_RECORDS = {
-    "widened-record": "claude=auto,codex=auto",
-    "app-outside-record": "codex=auto",
-    "malformed-record": "claude=auto,bogus=auto",
-    "gateway-record": "claude=auto,codex=gateway",
+    "widened-record": "claude=subscription,codex=subscription",
+    "app-outside-record": "codex=subscription",
+    "malformed-record": "claude=subscription,bogus=subscription",
+    "gateway-record": "claude=subscription,codex=gateway",
 }
 # Codex on the gateway is a valid record entry since #2897: the Claude-only Sandbox it is
 # written into then differs from the record in name before anything else is checked.
@@ -3779,7 +3785,7 @@ _REFUSALS = {
     **dict.fromkeys(("state-volume", "stray-volume"), "agent state is not scoped"),
     "credential-env": "credential environment has drifted",
     "widened-record": "Sandbox identity has drifted",
-    "app-outside-record": "Agent CLIs codex=auto differ from",
+    "app-outside-record": "Agent CLIs codex=subscription differ from",
     "app-outside-clis-empty-record": "Agent CLI codex is not in",
     "typeless-volume": "agent state is not scoped",
     "claude-config-bind": "credential seed violates",
@@ -3873,19 +3879,6 @@ def test_sealing_refuses_seed_for_unlisted_cli(issued, monkeypatch, request):
             pytest.fail(f"{damage}: previewed")
 
 
-def test_sealing_checks_claude_config_seed_under_claude_policy(issued, monkeypatch, request):
-    toml = _CLAUDE_AND_CODEX + '\n[agent.auth]\nclaude = "auto"\ncodex = "subscription"\n'
-    project, spec, home = _multi_cli_project(
-        issued, monkeypatch, request, '[agent]\nclis = ["claude"]\n'
-    )
-    # Credential fields are allowed in Claude's config under Claude's own auto policy,
-    # whatever stricter policy another listed CLI has.
-    (home / ".claude.json").write_text(json.dumps({"customApiKeyResponses": {"a": ["x"]}}))
-    _set_toml(project, request, toml)
-    _with_codex(spec, project, home, "subscription")
-    runtime_spec.preview(project, fixed(spec))
-
-
 def _mixed_policy_spec(issued, monkeypatch, request, claude: str, codex: str):
     """Issue and validate a Claude+Codex spec whose CLIs follow different ``[agent.auth]`` policies."""
     toml = _CLAUDE_AND_CODEX + f'\n[agent.auth]\nclaude = "{claude}"\ncodex = "{codex}"\n'
@@ -3967,7 +3960,9 @@ def test_invalid_agent_config_fails_validation_as_spec_error(issued, monkeypatch
         issued, monkeypatch, request, '[agent]\nclis = ["claude"]\n'
     )
     issued_spec, path = _issue_spec(project, spec, monkeypatch)
-    _set_toml(project, request, '[agent]\nclis = ["claude"]\n[agent.auth]\ncodex = "auto"\n')
+    _set_toml(
+        project, request, '[agent]\nclis = ["claude"]\n[agent.auth]\ncodex = "subscription"\n'
+    )
     with pytest.raises(runtime_spec.RuntimeSpecError, match=r"\[agent\] is invalid"):
         runtime_spec.validate(project, issued_spec, path)
 
@@ -3978,7 +3973,7 @@ def test_legacy_single_cli_spec_without_record_still_validates(issued, monkeypat
     )
     spec["remoteEnv"].pop("BOOLEY_AGENT_CLIS", None)
     # A spec issued before the record existed allows its single app under the primary policy.
-    assert dc.spec_cli_policies(spec) == {"claude": "auto"}
+    assert dc.spec_cli_policies(spec) == {"claude": "subscription"}
     issued_spec, path = _issue_spec(project, spec, monkeypatch)
     runtime_spec.validate(project, issued_spec, path)
 
@@ -4162,13 +4157,16 @@ def test_posix_former_mount_is_usable_on_a_windows_host(monkeypatch: pytest.Monk
 
 _CLAUDE_ONLY = '[agent]\nclis = ["claude"]\n'
 _CLAUDE_SUBSCRIPTION = _CLAUDE_ONLY + '\n[agent.auth]\nclaude = "subscription"\n'
+_CLAUDE_API_KEY = _CLAUDE_ONLY + '\n[agent.auth]\nclaude = "api_key"\n'
 
 
 def _claude_volume(spec: dict) -> str:
     return next(raw for raw in spec["mounts"] if "type=volume" in raw)
 
 
-def test_auto_to_subscription_reissue_keeps_the_login_volume(issued, monkeypatch, request):
+def test_unset_to_explicit_subscription_reissue_keeps_the_login_volume(
+    issued, monkeypatch, request
+):
     project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_ONLY)
     auto_spec, path = _issue_spec(project, spec, monkeypatch)
     auto_volume = _claude_volume(auto_spec)
@@ -4197,8 +4195,8 @@ def test_reissue_keeps_a_legacy_subscription_volume(issued, monkeypatch, request
         runtime_spec.validate(project, refreshed, path)
 
     # Moving the CLI off ``subscription`` takes the policy's own volume.
-    project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_ONLY)
-    assert _claude_volume(spec) == dc.state_volume_mount("claude", project_id, "auto")
+    project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_API_KEY)
+    assert _claude_volume(spec) == dc.state_volume_mount("claude", project_id, "api_key")
 
     foreign = legacy.replace(project_id, "foreign-project-id")
     spec["mounts"][spec["mounts"].index(_claude_volume(spec))] = foreign

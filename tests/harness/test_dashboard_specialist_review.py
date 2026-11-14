@@ -108,7 +108,7 @@ async def test_a_failed_auth_check_refuses_the_launch_and_shows_the_fix(
         wizard = await review_reviewer(app, pilot)
         expected = (
             "Refused: [agent] auth = 'api_key' but ANTHROPIC_API_KEY is not set — export it,"
-            " or switch auth to 'subscription' or 'auto'. Copy command still works."
+            " or switch auth to 'subscription'. Copy command still works."
         )
         assert shown(wizard, "#run-error") == expected
         await pilot.press("enter")  # Submit
@@ -120,7 +120,7 @@ async def test_a_failed_auth_check_refuses_the_launch_and_shows_the_fix(
 
 
 @pytest.mark.asyncio
-async def test_auto_without_a_credential_warns_with_the_fix_and_still_submits(
+async def test_visitor_without_a_credential_warns_with_the_fix_and_still_submits(
     checkout, spawned, empty_home
 ):
     write_config(checkout, "")  # The check refuses a checkout without a Booley Directory
@@ -138,7 +138,7 @@ async def test_auto_without_a_credential_warns_with_the_fix_and_still_submits(
         )
         (warning,) = warnings
         assert warning.endswith(f"To sign in: {SIGN_IN}")
-        assert "no claude credential found under auth = 'auto'" in warning
+        assert "no claude credential found in this Sandbox" in warning
         assert shown(wizard, "#run-error") == ""
         await pilot.press("enter")  # Submit
         await pilot.pause()
@@ -201,7 +201,7 @@ def test_malformed_specialist_facts_are_no_facts():
     good = {
         "model": "m",
         "cli": "claude",
-        "policy": "auto",
+        "policy": "subscription",
         "timeout_ms": 5,
         "asked_ms": 5,
         "refusal": "",

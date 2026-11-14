@@ -126,6 +126,14 @@ def test_init_parser_accepts_explicit_agent_selection():
     assert args.auth == "api_key"
 
 
+def test_init_auth_flag_refuses_auto(capsys):
+    with pytest.raises(SystemExit) as exc:
+        tlr._build_parser().parse_args(["init", "--provider", "codex", "--auth", "auto"])
+
+    assert exc.value.code == 2
+    assert "choose subscription or api-key" in capsys.readouterr().err
+
+
 def test_init_scaffold_stealth_flag():
     parser = tlr._build_parser()
 

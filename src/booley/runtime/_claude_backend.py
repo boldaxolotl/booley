@@ -106,7 +106,7 @@ class ClaudeSDKBackend:
     back to — and bill — the subscription.
     """
 
-    def __init__(self, auth_mode: str = "auto") -> None:
+    def __init__(self, auth_mode: str = "subscription") -> None:
         self._auth_mode = auth_mode
 
     @property
@@ -120,7 +120,7 @@ class ClaudeSDKBackend:
         if self._auth_mode == "api_key" and plan.selected is None:
             return (
                 "[agent] auth = 'api_key' but ANTHROPIC_API_KEY is not set — "
-                "export it, or switch auth to 'subscription' or 'auto'"
+                "export it, or switch auth to 'subscription'"
             )
         if self._auth_mode == "subscription" and (plan.selected is None):
             return (
@@ -422,7 +422,7 @@ def _claude_env_overrides(auth_mode: str) -> dict[str, str]:
     from under long-lived containers, crashing every ticket at launch with
     "OAuth session expired and could not be refreshed". An ambient
     ``CLAUDE_CODE_OAUTH_TOKEN`` still wins (``resolve_token`` checks env
-    first); under ``auto`` an exported ``ANTHROPIC_API_KEY`` still outranks it
+    first); in the visitor mode an exported ``ANTHROPIC_API_KEY`` still outranks it
     CLI-side, so precedence holds.
     """
     from booley.runtime import auth_token
@@ -470,7 +470,7 @@ def _options_model(options: ClaudeAgentOptions) -> str:
 
 def _build_sdk_options(
     params: AgentCallParams,
-    auth_mode: str = "auto",
+    auth_mode: str = "subscription",
 ) -> ClaudeAgentOptions:
     """Build ClaudeAgentOptions from AgentCallParams."""
     cwd_path = Path(params.cwd).resolve()

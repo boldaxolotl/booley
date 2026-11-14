@@ -372,7 +372,7 @@ def test_shell_with_codex_gateway_forwards_no_gateway_variable(tmp_path, monkeyp
 
 _INVALID_AGENT_CONFIGS = {
     "default-not-listed": '[agent]\ndefault = "codex"\nclis = ["claude"]\n',
-    "unlisted-auth-key": '[agent]\nclis = ["claude"]\n[agent.auth]\ncodex = "auto"\n',
+    "unlisted-auth-key": '[agent]\nclis = ["claude"]\n[agent.auth]\ncodex = "subscription"\n',
 }
 
 
