@@ -4514,6 +4514,23 @@ class TestRetiredJobsKeys:
         # Doctor did not stop at the config: later checks still ran.
         assert "project guidance file missing" in output
 
+    def test_queue_max_fails_with_its_own_reason(self, tmp_path, monkeypatch, capsys):
+        booley_dir = _write_project(tmp_path)
+        _patch_environment(monkeypatch, tmp_path, booley_dir)
+        toml = booley_dir / "booley.toml"
+        toml.write_bytes(toml.read_bytes() + b"\n[jobs]\nqueue_max = 8\n")
+
+        rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
+
+        output = colors.strip_ansi(capsys.readouterr().out)
+        assert rc != 0
+        assert "booley.toml sets retired [jobs] key queue_max (line 15)" in output
+        assert (
+            "delete [jobs].queue_max (line 15); the Job queue has no limit:"
+            " a Job waits until it runs or is cancelled"
+        ) in output
+        assert "memory admission replaced it" not in output
+
 
 class TestSandboxMemoryCheck:
     """ADR 0087: ``[sandbox].memory`` sizes the Memory Budget; unset falls back to installed memory."""

@@ -287,7 +287,6 @@ def _enter_admission(
     try:
         return held.enter_context(AdmissionGate(endpoint, prepared, requeued=requeued).enter())
     except (
-        job_slots.QueueFullError,
         job_slots.ClaimLostError,
         AdmissionIdentityError,
         SeatCapError,
@@ -297,16 +296,10 @@ def _enter_admission(
 
 def _admission_rejection(
     endpoint: EndpointState,
-    exc: job_slots.QueueFullError
-    | job_slots.ClaimLostError
-    | AdmissionIdentityError
-    | SeatCapError,
+    exc: job_slots.ClaimLostError | AdmissionIdentityError | SeatCapError,
 ) -> EndpointOutcome:
     """Map one admission failure to the outcome every endpoint reports."""
-    if isinstance(exc, job_slots.QueueFullError):
-        logger.error("Job admission refused: %s", exc)
-        text = f"BLOCKED: {exc}. Retry when queued work drains."
-    elif isinstance(exc, job_slots.ClaimLostError):
+    if isinstance(exc, job_slots.ClaimLostError):
         logger.error("Queued %s run was cancelled before it started", endpoint.name)
         text = (
             f"CANCELLED: this queued '{endpoint.name}' run was "
@@ -414,9 +407,7 @@ def _acquire_job_slot(endpoint: EndpointState) -> tuple[job_slots.SlotStore | No
     Returns ``(store, token)`` to release in main()'s finally, or
     ``(None, None)`` when no admission applies: the endpoint is unclassed, the
     parent process already holds this run's slot, or no runtime is configured
-    (bare invocations outside a project keep working unguarded). Raises
-    QueueFullError when the class queue is at ``queue_max``, the only admission
-    outcome surfaced as BLOCKED.
+    (bare invocations outside a project keep working unguarded).
     """
     job_class = endpoint._resolve_job_class()
     if job_class is None:

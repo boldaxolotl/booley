@@ -50,11 +50,6 @@ def queue_line(facts: RunFacts, outlook: AdmissionOutlook | str | None) -> str:
     )
 
 
-def refusal(outlook: AdmissionOutlook) -> str:
-    """Why Submit does nothing while the queue is full."""
-    return f"Refused: {outlook.refusal}. Retry when queued work drains; Copy command still works."
-
-
 def timeout_line(facts: RunFacts) -> str:
     """The per-work-unit timeout of a long-running Flow, or its problem; empty for the others."""
     if facts.timeout_problem:

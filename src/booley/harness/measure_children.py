@@ -2,30 +2,20 @@
 
 Each rules table of a commit is one child Flow in a clean checkout
 (:mod:`booley.harness.checkout_flow`). Every child claims admission like any other Flow
-Job, and the admission queue is bounded, so starting all children at once would get the
-later ones refused for a full queue. The :class:`ChildScheduler` therefore starts them
-cheapest cost tier first, only while the queue has room for them, and reads the shared slot
-store to do so.
+Job, and the admission queue has no limit, so the :class:`ChildScheduler` starts all the
+children at once, cheapest cost tier first, and admission orders them. It reads the shared
+slot store only to withdraw a child that is still waiting.
 
 Three behaviors sit on top of that:
 
 * Without ``all_tables``, the first ``unmet`` or ``error`` verdict stops the measurement:
   children still waiting for admission are withdrawn, children already running finish and
-  keep their verdicts, and the tables of children that never started are ``not_evaluated``.
+  keep their verdicts, and the tables of the withdrawn children are ``not_evaluated``.
 * A cancellation withdraws the waiting children, stops the running ones and settles every
   one of them, so nothing is left waiting or running.
 * A child that was killed for running out of memory claims admission again for its final
   attempt. That claim is never withdrawn, and the child is not finished (nor its verdicts
   read) until that attempt ends.
-
-The window rule: the scheduler counts its *occupying* children, those started and not
-ended, minus those last seen holding a slot on a requeued final attempt (that attempt cannot
-queue again). It starts the next child only while that count is below
-``max(1, queue_max - 1)``. The count rises only when a child starts, so at most ``window - 1``
-of the measurement's own claims are ahead of any new claim of its own, which is below
-``queue_max``: no child of the measurement is refused for a full queue, even when several
-running children requeue at once. Other Jobs' waiting claims take room in the same queue,
-so while a child is live a further one starts only when the foreign waiters fit too.
 """
 
 from __future__ import annotations
@@ -128,8 +118,6 @@ class _Entry:
     ended_at: float = 0.0
     # The scheduler withdrew the child's waiting claim before admission.
     withdrawn: bool = False
-    # Last seen holding a slot on a requeued final attempt: it cannot queue again.
-    final_attempt: bool = False
     result: CheckoutFlowResult | None = None
     settled: bool = False
     # Set when the child ended, or when it could not be launched (then ``child`` stays None).
@@ -169,7 +157,6 @@ class ChildScheduler:
         self._entries = [_Entry(rules, prepared) for rules, prepared in planned]
         self._store = store
         self._all_tables = all_tables
-        self._window = max(1, store.caps.queue_max - 1)
         self._stopping = False
         self._cancelled = False
 
@@ -181,13 +168,11 @@ class ChildScheduler:
         if cancel:
             self._cancel()
             return False
-        for entry in self._live():
-            self._observe(entry)
         if self._stopping:
             for entry in self._live():
                 self._withdraw_if_waiting(entry)
         else:
-            self._start_while_room()
+            self._start_planned()
         return bool(self._live()) or (not self._stopping and self._has_planned())
 
     def _live(self) -> list[_Entry]:
@@ -240,20 +225,7 @@ class ChildScheduler:
     def _ran_for(entry: _Entry) -> float:
         return max(0.0, entry.ended_at - entry.started_at)
 
-    # --------------------------------------------------------------- observation
-
-    def _observe(self, entry: _Entry) -> None:
-        """Note whether a child holds a slot on a requeued final attempt right now.
-
-        Not sticky: a Campaign's work items claim under the Flow's PID as well, and the item
-        claims after a requeued one are not final, so the flag follows the claim held now.
-        """
-        if entry.child is None:
-            return
-        state = self._store.state_for_pid(entry.child.pid)
-        entry.final_attempt = (
-            state is not None and state.state == job_slots.HOLDING and bool(state.reason)
-        )
+    # --------------------------------------------------------------- withdrawal
 
     def _waiting_first_claim(self, pid: int) -> job_slots.SlotToken | None:
         """The waiting first claim of *pid*, when it holds no slot yet and none is requeued.
@@ -280,31 +252,13 @@ class ChildScheduler:
         if token is not None and self._store.cancel_waiter_token(token):
             entry.withdrawn = True
 
-    def _foreign_waiting(self, own_pids: set[int]) -> int:
-        """Waiting claims of both Job classes that belong to no child of this measurement."""
-        count = 0
-        for job_class in job_slots.JOB_CLASSES:
-            _holders, waiters = self._store.snapshot(job_class)
-            count += sum(1 for token in waiters if token.pid not in own_pids)
-        return count
-
     # ------------------------------------------------------------------ starting
 
-    def _start_while_room(self) -> None:
-        """Start planned children while the window, and the foreign waiters, leave room."""
-        live = self._live()
-        foreign = self._foreign_waiting({e.child.pid for e in live if e.child})
-        occupying = sum(1 for entry in live if not entry.final_attempt)
-        any_live = bool(live)
+    def _start_planned(self) -> None:
+        """Start every planned child: admission, not the scheduler, orders them."""
         for entry in self._entries:
             if entry.child is not None or entry.measurement is not None:
                 continue
-            if occupying >= self._window:
-                return
-            # With no child live the next one starts whatever the foreign load: the
-            # measurement keeps moving, bounded by each child's own timeout.
-            if any_live and occupying + foreign >= self._window:
-                return
             try:
                 entry.child = entry.prepared.start()
             except CheckoutFlowError as exc:
@@ -316,8 +270,6 @@ class ChildScheduler:
                     return
                 continue
             entry.started_at = time.monotonic()
-            occupying += 1
-            any_live = True
 
     def _record_launch_failure(self, entry: _Entry, error: CheckoutFlowError) -> None:
         """Give a table whose child could not be launched ``error`` verdicts, so earlier

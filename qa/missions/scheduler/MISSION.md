@@ -93,8 +93,9 @@ Try:
   line about every 30 seconds.
 - `small-budget` below `sim_caliptra`'s estimate: it runs alone with the
   "exceeds the Memory Budget" warning in its result.
-- `queue-zero`: a second blocked Job is refused with a retry hint, and nothing
-  is left in the `memory/` directory afterwards.
+- A long queue: submit more blocked Jobs than the old queue limit of 8; every
+  one waits with its position and none is refused. Nothing is left in the
+  `memory/` directory afterwards.
 - `int-budget`: the run fails with the size-string hint, not a traceback.
 - With agent credentials: submit `lint_caliptra` over MCP while the budget is
   full; `booley_poll` shows `QUEUED (position N)` with the same reasons. On

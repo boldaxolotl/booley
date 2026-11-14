@@ -73,7 +73,7 @@ class _Endpoint:
         if self.reject_admission:
             self.events.append("admission-rejected")
             raise EndpointRejectedError(
-                EndpointOutcome(exit_code=EXIT_ERROR, report_text="queue full")
+                EndpointOutcome(exit_code=EXIT_ERROR, report_text="admission refused")
             )
         return _ReleaseWitness(self.events, self.borrowed, requeued)
 
@@ -112,7 +112,7 @@ class _Endpoint:
         acceptance_recorded: bool,
     ) -> ExecutionResult:
         assert prepared == "prepared"
-        if not outcome.report_text.startswith(("queue full", "unbound target")):
+        if not outcome.report_text.startswith(("admission refused", "unbound target")):
             assert started is not None
         self.events.append(f"finish:{outcome.exit_code}:{acceptance_recorded}")
         return ExecutionResult(exit_code=outcome.exit_code, outcome=outcome)
@@ -174,7 +174,7 @@ def test_admission_rejection_finishes_without_invoking_endpoint() -> None:
     result = execute_endpoint(endpoint, "prepared")
 
     assert result.exit_code == EXIT_ERROR
-    assert result.outcome.report_text == "queue full"
+    assert result.outcome.report_text == "admission refused"
     assert endpoint.events == [
         "admission-rejected",
         "acceptance:2",
@@ -342,7 +342,7 @@ def test_requeued_job_rejected_at_its_second_admission_names_the_requeue() -> No
     ) -> AbstractContextManager[object]:
         if requeued:
             raise EndpointRejectedError(
-                EndpointOutcome(exit_code=EXIT_ERROR, report_text="queue full")
+                EndpointOutcome(exit_code=EXIT_ERROR, report_text="admission refused")
             )
         return real_admission(prepared, requeued=requeued)
 
@@ -359,7 +359,7 @@ def test_requeued_job_rejected_at_its_second_admission_names_the_requeue() -> No
         "finish:2:True",
     ]
     assert result.outcome.report_text == (
-        "queue full\nRequeued after out-of-memory: the Job did not start again."
+        "admission refused\nRequeued after out-of-memory: the Job did not start again."
     )
     assert result.outcome.detail["oom_requeue"]["attempts"] == 2
 

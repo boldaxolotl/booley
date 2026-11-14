@@ -775,9 +775,10 @@ What goes here:
   Target.
 - **Size the Memory Budget.** Booley admits each EDA Job against a Memory
   Budget taken from `[sandbox].memory`, the one container cgroup limit; do not
-  write `[jobs].heavy_memory` or `[jobs].max_heavy`: memory admission
-  replaced them and `booley.toml` refuses them. Step 4 sizes `[sandbox].memory` from the real heaviest-target
-  synthesis. For a Project that uses Vivado, write `[jobs.seats] vivado = <seats>`
+  write `[jobs].heavy_memory`, `[jobs].max_heavy` or `[jobs].queue_max`: these keys are retired
+  (memory admission replaced the first two; the Job queue has no limit) and
+  `booley.toml` refuses them. Step 4 sizes `[sandbox].memory` from the real
+  heaviest-target synthesis. For a Project that uses Vivado, write `[jobs.seats] vivado = <seats>`
   from the license; Doctor fails without it.
 - **Author fail-path self-tests now, before Step 4.** Every enabled verification
   Flow needs a conventional deliberately bad fixture that the Flow grades as a

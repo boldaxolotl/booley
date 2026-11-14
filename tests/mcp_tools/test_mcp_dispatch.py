@@ -3111,5 +3111,5 @@ async def test_flow_tool_call_refuses_retired_jobs_keys(tmp_path, monkeypatch):
 
     assert result.is_error
     text = result.value[0].text
-    assert "max_heavy (line 2)" in text
+    assert "max_heavy (line 2: memory admission replaced it)" in text
     assert "booley-heal" in text

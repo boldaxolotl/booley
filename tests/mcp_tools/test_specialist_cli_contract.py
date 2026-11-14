@@ -463,28 +463,6 @@ def test_builtin_specialist_defaults_stay_seconds_for_watchdogs():
         assert 0 < endpoint.default_timeout < 10000
 
 
-def test_specialist_full_light_queue_rejects_before_model(tmp_path, monkeypatch, sandbox, capsys):
-    import os
-
-    slots = tmp_path / "slots"
-    monkeypatch.setenv("BOOLEY_SLOTS_DIR", str(slots))
-    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path))
-    store = job_slots.SlotStore(slots)
-    caps = job_slots.SlotCaps()
-    for _ in range(caps.max_light + caps.queue_max):
-        store.submit(job_slots.CLASS_LIGHT, pid=os.getpid(), argv=[])
-    endpoint = ProjectSpecialist()
-    monkeypatch.setattr(
-        endpoint, "_invoke_agent", Mock(side_effect=AssertionError("model called"))
-    )
-    assert endpoint.main(["--work-dir", str(tmp_path)]) == 2
-    assert "queue is full" in capsys.readouterr().err
-    assert (
-        len(list((slots / job_slots.CLASS_LIGHT).glob("*.json")))
-        == caps.max_light + caps.queue_max
-    )
-
-
 def invoke_mcp(tmp_path, verdict):
     async def dispatch(_name, arguments, _source):
         assert arguments == {"work_dir": str(tmp_path)}

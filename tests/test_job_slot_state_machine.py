@@ -44,7 +44,7 @@ EXPLORATORY_SETTINGS = settings(
 _CLASSES = (job_slots.CLASS_LIGHT,)
 _PIDS = (101, 102, 103, 104)
 _PRIORITY = {job_slots.ROLE_INTERACTIVE: 0, "background": 1}
-_CAPS = SlotCaps(max_light=2, queue_max=4)
+_CAPS = SlotCaps(max_light=2)
 
 
 class FakeProcessWorld:
@@ -195,13 +195,6 @@ class JobSlotStateMachine(RuleBasedStateMachine):
             return multiple()
         self._reap_class(job_class)
         class_entries = self._ordered(job_class)
-        if len(class_entries) >= _CAPS.cap_for(job_class) + _CAPS.queue_max:
-            try:
-                self.stores[pid].submit(job_class, pid=pid, role=role)
-            except job_slots.QueueFullError:
-                return multiple()
-            raise AssertionError("SlotStore admitted a claim beyond its bounded queue")
-
         expected_seq = max((lease.seq for lease in class_entries), default=0) + 1
         token = self.stores[pid].submit(job_class, pid=pid, role=role)
         assert token.seq == expected_seq

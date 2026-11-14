@@ -321,8 +321,6 @@ class SimulationRecordCapacity:
                 on_submitted=register,
                 memory=memory,
                 queue_reason=queue_reason,
-                # The item's Flow is admitted already: a full queue never refuses it.
-                bounded=False,
             )
         except BaseException:
             with self._gate:
