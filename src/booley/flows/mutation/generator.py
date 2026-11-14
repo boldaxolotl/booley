@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib import metadata
 from itertools import zip_longest
 from pathlib import Path, PurePosixPath
@@ -18,16 +18,18 @@ from booley.core.boundary import BoundaryError, require_int, require_positive_in
 from booley.flows.mutation.operators import (
     OPERATOR_NAMES,
     PYSLANG_MISSING_MESSAGE,
+    DesignFile,
     MissingPyslangError,
     MutantGeneratorError,
     Site,
     SourceParseError,
+    find_design_sites,
     find_sites,
 )
 
 # Bump whenever the operator table, site rules, anchoring, ID recipe, or selection
 # rule changes: the same inputs give the same Mutants only for the same version.
-GENERATOR_VERSION = "6"
+GENERATOR_VERSION = "7"
 
 _ID_LENGTH = 20  # hex characters of the SHA-256 digest kept in a Mutant ID
 
@@ -64,11 +66,28 @@ class MutantSelection:
 
     ranked: tuple[Mutant, ...]
     requested: int
+    # Why the Target's elaboration was not used and each scope file was elaborated alone;
+    # None when it was used, or when no design was given.
+    fallback: str | None = None
 
     @property
     def mutants(self) -> tuple[Mutant, ...]:
         """The selected Mutants: the first ``requested`` candidates."""
         return self.ranked[: self.requested]
+
+
+@dataclass(frozen=True)
+class TargetDesign:
+    """What the Target's build compiles: its top modules, HDL sources and parameter overrides."""
+
+    top: tuple[str, ...]
+    # HDL sources in Target order, relative to the root (absolute outside the Project).
+    files: tuple[str, ...]
+    parameters: Mapping[str, str]  # override value text by parameter name
+    # The build's include directories in Target order, and the macros its simulator defines
+    # itself: the elaboration sees the headers and `ifdef` branches the build sees.
+    include_dirs: tuple[str, ...] = ()
+    builtin_defines: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
 
 
 def generate_mutants(
@@ -79,11 +98,14 @@ def generate_mutants(
     *,
     defines: Mapping[str, str] = MappingProxyType({}),
     include_dirs: Sequence[str] = (),
+    design: TargetDesign | None = None,
 ) -> MutantSelection:
     """Select up to ``count`` Mutants of ``files`` (relative to ``root``) for ``seed``.
 
     ``defines`` and ``include_dirs`` (relative to ``root``) configure the
-    preprocessor like the build, so the live ``ifdef`` branch is mutated.
+    preprocessor like the build, so the live ``ifdef`` branch is mutated.  With a
+    ``design``, the facts come from elaborating the whole Target; if that fails, or
+    without a design, each file is elaborated alone and the selection says why.
     """
     require_positive_int(count, field="count")
     if require_int(seed, field="seed") < 0:
@@ -92,17 +114,29 @@ def generate_mutants(
         raise BoundaryError("files must name at least one source file")
     names = _relative_paths(root, files, field="files")
     include_paths = [root / rel for rel in _relative_paths(root, include_dirs, "include_dirs")]
+    sources = {rel: _read_source(root, rel) for rel in names}
+    fallback = None
+    if design is None:
+        sites = _per_file_sites(root, sources, defines, include_paths)
+    else:
+        found = find_design_sites(
+            _design_files(root, sources, design),
+            design.top,
+            [f"{name}={value}" for name, value in design.parameters.items()],
+            defines,
+            include_paths,
+            design_defines={**design.builtin_defines, **defines},
+            design_include_dirs=[
+                root / rel for rel in _relative_paths(root, design.include_dirs, "include_dirs")
+            ],
+        )
+        sites, fallback = found.sites, found.fallback
     candidates: dict[str, Mutant] = {}  # by ID: identical sites collapse to one Mutant
-    failures: list[tuple[str, str]] = []
-    for rel in names:
-        try:
-            for mutant in _file_mutants(root, rel, defines, include_paths):
+    for rel, source in sources.items():
+        for site in sites[rel]:
+            if (mutant := _to_mutant(source, rel, site)) is not None:
                 candidates[mutant.id] = mutant
-        except SourceParseError as exc:
-            failures.extend(exc.failures)
-    if failures:
-        raise SourceParseError(failures)
-    return _select(list(candidates.values()), count, seed)
+    return _select(list(candidates.values()), count, seed, fallback)
 
 
 def _relative_paths(root: Path, paths: Sequence[str], field: str) -> Sequence[str]:
@@ -120,17 +154,53 @@ def _relative_paths(root: Path, paths: Sequence[str], field: str) -> Sequence[st
     return paths
 
 
-def _file_mutants(
-    root: Path, rel: str, defines: Mapping[str, str], include_dirs: Sequence[Path]
-) -> list[Mutant]:
-    """Parse one file and return its anchored Mutants."""
+def _read_source(root: Path, rel: str) -> bytes:
+    """The bytes of scope file ``rel``."""
     try:
-        source = (root / rel).read_bytes()
+        return (root / rel).read_bytes()
     except OSError as exc:
         raise MutantGeneratorError(f"cannot read source file {rel}: {exc}") from exc
-    sites = find_sites(source, rel, root / rel, defines, include_dirs)
-    mutants = [_to_mutant(source, rel, site) for site in sites]
-    return [mutant for mutant in mutants if mutant is not None]
+
+
+def _per_file_sites(
+    root: Path,
+    sources: Mapping[str, bytes],
+    defines: Mapping[str, str],
+    include_dirs: Sequence[Path],
+) -> dict[str, list[Site]]:
+    """The sites of each file, each elaborated alone; every file that does not parse is reported."""
+    sites: dict[str, list[Site]] = {}
+    failures: list[tuple[str, str]] = []
+    for rel, source in sources.items():
+        try:
+            sites[rel] = find_sites(source, rel, root / rel, defines, include_dirs)
+        except SourceParseError as exc:
+            failures.extend(exc.failures)
+    if failures:
+        raise SourceParseError(failures)
+    return sites
+
+
+def _design_files(
+    root: Path, sources: Mapping[str, bytes], design: TargetDesign
+) -> list[DesignFile]:
+    """The Target's files in Target order: scope files with their bytes, the rest as context.
+
+    A scope file the Target does not list is added at the end: it still gets sites.
+    """
+    by_path = {(root / rel).resolve(): rel for rel in sources}
+    files: list[DesignFile] = []
+    for entry in design.files:
+        path = root / entry
+        rel = by_path.pop(path.resolve(), None)
+        if rel is None:
+            files.append(DesignFile(entry, path, None, is_scope=False))
+        else:
+            files.append(DesignFile(rel, path, sources[rel], is_scope=True))
+    files.extend(
+        DesignFile(rel, root / rel, sources[rel], is_scope=True) for rel in by_path.values()
+    )
+    return files
 
 
 def _to_mutant(source: bytes, rel: str, site: Site) -> Mutant | None:
@@ -175,7 +245,9 @@ def _anchor(source: bytes, start: int, end: int) -> tuple[int, int]:
     return line_start, len(source) if last_line_end < 0 else last_line_end
 
 
-def _select(candidates: list[Mutant], count: int, seed: int) -> MutantSelection:
+def _select(
+    candidates: list[Mutant], count: int, seed: int, fallback: str | None
+) -> MutantSelection:
     """Rank each operator's candidates by hash(seed, ID) and order them round-robin."""
 
     def rank(mutant: Mutant) -> tuple[str, str]:
@@ -183,4 +255,4 @@ def _select(candidates: list[Mutant], count: int, seed: int) -> MutantSelection:
 
     queues = [sorted((m for m in candidates if m.operator == n), key=rank) for n in OPERATOR_NAMES]
     picked = [m for row in zip_longest(*queues) for m in row if m is not None]
-    return MutantSelection(tuple(picked), requested=count)
+    return MutantSelection(tuple(picked), requested=count, fallback=fallback)

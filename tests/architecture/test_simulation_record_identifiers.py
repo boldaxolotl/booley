@@ -730,6 +730,7 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
             "campaign",
             "campaign_dir",
             "test_campaign_artifacts_show_each_tests_baseline_duration_and_time_limit",
+            "test_campaign_without_build_failures_names_no_replacement",
             "test_campaign_runs_the_baseline_then_each_mutant",
             "test_happy_path_publishes_campaign_artifacts",
         }

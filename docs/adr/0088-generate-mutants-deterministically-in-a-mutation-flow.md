@@ -190,9 +190,9 @@ never drops another one. A build whose layout is not Verilator's (no
   its number and build directory; the kept Mutants are numbered 1 to the count
   without gaps. When the candidates run out, the run scores the Mutants it has
   and reports the shortfall with the same text as a generator shortfall (the
-  report must not mention what was dropped); an unset `--min-detected` follows
+  report must not mention what was dropped; for build failures it states their count, per the 2026-11-14 amendment); an unset `--min-detected` follows
   the number scored.
-- A Mutant that does not build stays `invalid` and is not replaced.
+- A Mutant that does not build stays `invalid` and is not replaced (superseded by the 2026-11-14 amendment, #4031).
 - The report and `mutation-results.md` never list a dropped Mutant. The
   Record's detail lists their IDs, in drop order, under `equivalent_dropped`
   (an empty list when none were dropped or the Target is not simulated with
@@ -270,4 +270,65 @@ Mutant of version 5 keeps its ID and text.
 Unlike the `+`/`-` swap filter, a unit that another file may elaborate with other
 parameters is trusted here with its default elaboration. An override that narrows
 the width can give a Mutant that repeats another variant there, or one that fails to
-build and counts as `invalid`. The generator version is 6.
+build and is replaced by the next candidate (#4031). The generator version is 6.
+
+## Amendments (2026-11-14, #4031)
+
+**Build failures are replaced.** A candidate whose build fails is dropped like an
+equivalent one, on every Target: the next candidate takes its number and build
+directory, so the kept Mutants stay numbered 1..N. Both drop kinds share one pick
+order, and the run walks the candidates until `--count` Mutants are kept or none are
+left. The `invalid` status is gone: a Mutant that is scored always built.
+
+**Cap.** The run stops replacing once `--count` candidates have failed to build,
+so a Target that builds no Mutant cannot walk the whole candidate list. Equivalent
+drops do not count toward the cap. The kept Mutants are then scored and the report
+states the shortfall with the usual text. When none is kept the run ends with the
+no-scorable-Mutants `ERROR`.
+
+**Threshold base.** An unset `--min-detected` is 80 % of the Mutants scored,
+rounded up, which equals 80 % of `--count` whenever the run kept `--count` Mutants.
+An explicit `--min-detected` is never changed.
+
+**Result.** The result detail lists the IDs of the dropped build failures, in drop
+order, in `invalid_dropped`, beside `equivalent_dropped`; it has no `invalid` count.
+`total_valid` equals `total_scored`. The report states how many candidates did not
+build and were replaced, only when that count is not zero. A Mutant whose verdict is
+inconclusive still ends the run with an infrastructure `ERROR`; its `classified`
+status is `inconclusive`.
+
+**Generator version.** Not bumped, so it stays 6. The version names the generator's
+candidate output, which this change leaves as it was; which candidates are scored
+already depended on build results once equivalent Mutants were dropped (#3635).
+
+## Amendments (2026-11-14, #4009)
+
+**Facts from the Target's elaboration.** The generator elaborated each scope file
+alone, so a module's parameters were its defaults and another file's modules, types and
+enums were unknown. It now elaborates the whole Target as one compilation unit: every
+HDL file in Target order (the testbench's too, as context that is never mutated), with
+the Target's top modules and `vlogparam` overrides, its defines, the macros its simulator
+defines itself (`VERILATOR`, `__ICARUS__`) and its include directories in Target order, so
+a macro one file defines reaches the next and each `ifdef` and `include` resolves as in the
+build. The per-file rules keep their own include order. The facts it reads (literal select bounds, signed right
+shifts, enum members, equal `+`/`-` swaps, unsized literal widths) come from that
+elaboration. Aggregation over several instances is unchanged: a swap is dropped only
+when it is equal in every instance, and a plus-one must fit the narrowest instance.
+
+**The parameter and interface guard.** `_overridable` keeps a `+`/`-` swap in a unit
+with a parameter, an interface port or a named-type port because another file might
+elaborate it differently. A unit the Target instantiates now trusts the Target's facts.
+A unit the Target never instantiates (slang does not bind its body) is elaborated
+alone as a top with default parameters, and keeps the guard. This supersedes "The file
+is elaborated alone, so ..." in the generator filter and "Unlike the `+`/`-` swap
+filter, a unit that another file may elaborate ..." in the #3934 amendment.
+
+**Fallback.** A context file that cannot be read, a parser error, any error diagnostic
+of the compilation, or a Target that cannot be inspected makes the Target not
+elaborable as a whole. Each scope file then goes through the per-file rules, and the
+run says why: the identity records `elaboration` as `target`, or `per-file` with
+`elaboration_fallback`, and the report, `mutation-results.md` and the progress line
+name the first error.
+
+The Mutant ID recipe is unchanged, so a candidate both rules find keeps its ID. The
+candidate set changes, so the generator version is 7.

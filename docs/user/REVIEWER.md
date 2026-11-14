@@ -2,26 +2,28 @@
 
 The **Reviewer** is a [Specialist](SPECIALISTS.md) that reads your RTL or
 testbench code and reports the problems it finds, graded CRITICAL, MAJOR, or
-MINOR. Each review covers one focus, such as bugs or protocol compliance, so
-it looks hard at one kind of problem instead of skimming for everything at
-once. Use it for a second opinion on a change before you simulate or merge it.
-It reads code and never edits it. For a pass/fail verdict from an EDA tool,
-use a [Flow](FLOW_REFERENCE.md) instead.
+MINOR. It looks for problems that deterministic EDA tools can't judge because
+they depend on the design's intent: RTL that doesn't match its spec, protocol
+and clock-domain-crossing (CDC) mistakes, security weaknesses, and tests that
+pass without checking anything. Each review covers one focus, so it looks hard
+at one kind of problem instead of skimming for everything at once. It reads
+code and never edits it. For a pass/fail verdict from an EDA tool, use a
+[Flow](FLOW_REFERENCE.md) instead.
 
 ## Choosing a focus
 
-| Code | Focus | What it checks | When |
-|---|---|---|---|
-| RTL | `spec` | The RTL does what the spec asks, no more and no less | Before simulation |
-| RTL | `bugs` | Bug patterns, synthesis hazards, reset/width/signing mistakes, `ifdef`/config consistency | Before simulation |
-| RTL | `protocol` | Bus/protocol rules, handshakes, ordering, and clock-domain crossings (CDC) | Before simulation |
-| RTL | `security` | Fault-injection resistance, simple power/timing leakage, secret exposure | After simulation passes |
-| RTL | `optimization` | Dead RTL and power/performance/area wins with no trade-off | After simulation passes |
-| RTL | `code_style` | Comments, naming, readability, magic values, assertion quality | After simulation passes |
-| Testbench | `quality` | False passes, missing checks and edge cases, coverage gaps, sampling mistakes | Any time |
+| Code | Focus | What it checks |
+|---|---|---|
+| RTL | `spec` | The RTL does what the spec asks, no more and no less |
+| RTL | `bugs` | Bug patterns, synthesis hazards, reset/width/signing mistakes, `ifdef`/config consistency |
+| RTL | `protocol` | Bus/protocol rules, handshakes, ordering, and clock-domain crossings (CDC) |
+| RTL | `security` | Fault-injection resistance, simple power/timing leakage, secret exposure |
+| RTL | `optimization` | Dead RTL and power/performance/area wins with no trade-off |
+| RTL | `code_style` | Comments, naming, readability, magic values, assertion quality |
+| Testbench | `quality` | False passes, missing checks and edge cases, coverage gaps, sampling mistakes |
 
-The early reviews are an engineer's quick look at freshly written code: they
-catch bugs before they cost time in simulate-and-fix loops.
+The `bugs` review also flags some problems that [Lint](FLOW-LINT.md) and
+synthesis already report, such as latches and width mismatches.
 
 A review sees only one side of the RTL/testbench split. A testbench review
 never reads the RTL, so it judges the tests against the spec rather than

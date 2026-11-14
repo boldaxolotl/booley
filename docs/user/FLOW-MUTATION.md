@@ -4,8 +4,9 @@
 the RTL, runs the Target's tests against each one, and reports how many Mutants
 the tests detected. A passing simulation only shows the tests accept the
 design; a high mutation score shows they would notice if it were wrong. No LLM
-is involved: the same RTL, `--count`, and `--seed` give the same Mutants (on a
-Verilator Target, with the same Verilator version), so scores are reproducible
+is involved: the same RTL, testbench HDL, Target parameters, `--count`, and
+`--seed` give the same Mutants (on a Verilator Target, with the same Verilator
+version), so scores are reproducible
 and comparable across runs. For what all
 Flows share (choosing Targets, common options, logs, exit codes), see
 [Running Flows](FLOW_REFERENCE.md).
@@ -41,7 +42,7 @@ refused.
 | `--scope <file,...>` | RTL files to plant Mutants in; repeat the flag to add more. Default: the Target's own RTL, without testbench, vendored, and generated files. A file you name must be a Verilog or SystemVerilog source of the Target inside the Project: testbench files are refused, while vendored and generated files may be named explicitly. |
 | `--count <N\|auto>` | Number of Mutants (default `10`). `auto` derives it from the size of the scope, capped by the time limit (about one Mutant per 150 seconds, at least 3). |
 | `--seed <N>` | Non-negative integer that selects the Mutants (default `0`). Change it to try a different sample. |
-| `--min-detected <N>` | Detected Mutants needed to pass. Default: 80 % of `--count`, rounded up; when fewer Mutants run than `--count` (the candidates ran out), 80 % of the Mutants that ran, rounded up, invalid ones included. |
+| `--min-detected <N>` | Detected Mutants needed to pass. Default: 80 % of `--count`, rounded up; when fewer Mutants are scored than `--count` (the candidates ran out or failed to build), 80 % of the Mutants scored, rounded up. |
 | `--dry-run` | Validate the Target and scope and print the count, threshold, and seed. Nothing is built or simulated. |
 
 The shared options (`-C/--project`, `--timeout`, `--report-dir`, `--diagnostic`,
@@ -58,9 +59,9 @@ The shared options (`-C/--project`, `--timeout`, `--report-dir`, `--diagnostic`,
 4. A Mutant is **detected** when a test fails on it, or when a test runs past
    its time limit (reported as `detected (timeout)`): ten times the test's
    baseline duration, at least 30 seconds and at most 300 seconds. A Mutant
-   that no test fails on **survives**. A Mutant that does not compile is
-   `invalid`: it is reported, not scored, and can never be detected, so it uses
-   up part of the threshold's margin.
+   that no test fails on **survives**. A Mutant that does not build is dropped
+   and the next candidate takes its place, so it never counts toward the
+   threshold, which is 80 % of the Mutants scored.
 
 Every run rebuilds the baseline and every Mutant, so a result never depends on
 stale builds. Some survivors may be equivalent Mutants that change no
@@ -72,11 +73,13 @@ On a Verilator Target, Booley compares the C++ Verilator generates for each
 Mutant with the baseline's. A Mutant with identical C++ builds the same
 simulator as the original, so no test could detect it: Booley skips it and
 takes the next candidate instead. The run still scores `--count` Mutants
-unless the candidates run out; the report then states how many it scored. A
-Mutant that does not build is `invalid` and is not replaced. The report does
-not list the skipped Mutants; the run's machine-readable result holds their IDs
-in `equivalent_dropped`. On other Targets, such as Icarus, every selected
-Mutant runs.
+unless the candidates run out or fail to build; the report then states how many it scored. A
+Mutant that does not build is replaced the same way on every Target, and the
+report states how many candidates did not build. The run stops replacing after
+`--count` candidates failed to build and scores the Mutants it kept; with none
+kept it ends with `ERROR`. The report does not list the skipped Mutants; the
+run's machine-readable result holds their IDs. On other Targets, such as
+Icarus, no Mutant is skipped as equivalent.
 
 ## Which Mutants it plants
 
@@ -89,7 +92,7 @@ Mutant per change.
 | Operator | What it changes | Example |
 |---|---|---|
 | `relational` | Swaps a comparison for its neighbour. | `a < b` -> `a <= b`, `a == b` -> `a != b` |
-| `arithmetic-logical` | Swaps an arithmetic, bitwise, logical, or shift operator. `/`, `%`, and `**` are never swapped, so Mutants do not divide by zero; `+` and `-` are not swapped where both give the same result at the expression's width, such as a one-bit sum. | `a + b` -> `a - b`, `a & b` -> `a \| b`, `a << 2` -> `a >> 2` |
+| `arithmetic-logical` | Swaps an arithmetic, bitwise, logical, or shift operator. `/`, `%`, and `**` are never swapped, so Mutants do not divide by zero; `+` and `-` are not swapped where both give the same result at the expression's width in every instance the Target elaborates, such as a one-bit sum. | `a + b` -> `a - b`, `a & b` -> `a \| b`, `a << 2` -> `a >> 2` |
 |  | Removes a unary `~`, `-`, or `!`; `!x` becomes `x != 0`, one bit wide. A `!x` that is a whole `if` or `?:` condition is left to `condition`. | `~a` -> `(a)`, `!b` -> `((b) != 0)` |
 |  | Swaps a reduction operator or drops its negation: `&` and `\|` trade places, `^` becomes `\|`, and `~&`, `~\|`, `~^` lose their `~`. | `&a` -> `(\|(a))`, `~^a` -> `(^(a))` |
 |  | Drops one operand of `&&`, `\|\|`, `&`, or `\|` by putting the operator's identity there (`1'b1` for `&&`, all ones for `&`), so the other passes through at the same width. An operand that calls a function or changes a variable is never dropped. | `p && q` -> `1'b1 && q`, `a & b` -> `((a) \| ~(a)) & b` |
@@ -97,12 +100,23 @@ Mutant per change.
 |  | Turns a signed cast into an unsigned one, never the reverse. | `$signed(x)` -> `$unsigned(x)`, `signed'(x)` -> `unsigned'(x)` |
 | `condition` | Replaces the condition of an `if` or `?:` with its negation, `1'b1`, or `1'b0`. A `while`, `do`-`while`, or `for` condition is only forced to `1'b0`. | `if (valid)` -> `if (!(valid))` |
 | `constant` | Changes a numeric literal's value: lowest bit flipped, plus one, or minus one. Size and base stay. The new value must fit a sized literal's size. | `4'd5` -> `4'd4`, `'0` -> `'1` |
-|  | Gives an unsized literal its plus-one value only if that fits where the value goes: the target it is assigned to, a cast it passes through, and the other side of a comparison or arithmetic operator. Booley reads the widths from the file's default parameters. A literal whose width Booley cannot tell from the file, such as a connection to a module defined in another file, only gets values that fit its own bits. | `a + 1` -> `a + 2` (8-bit `a`); `flag <= 1` (1-bit `flag`) only becomes `0` |
+|  | Gives an unsized literal its plus-one value only if that fits where the value goes: the target it is assigned to, a cast it passes through, and the other side of a comparison or arithmetic operator. Booley takes the narrowest width over every instance of the module in the Target's design. A literal whose width Booley cannot tell, such as one from a macro, or a connection to a module in another file when Booley reads each file alone (see below), only gets values that fit its own bits. | `a + 1` -> `a + 2` (8-bit `a`); `flag <= 1` (1-bit `flag`) only becomes `0` |
 |  | Changes a literal in the initializer of a module-level variable. | `reg [7:0] cnt = 8'd3;` -> `8'd2` |
-|  | Replaces an enum member with the previous or next member of its enum, wrapping around. The enum must be declared in the same file; a two-member enum yields one Mutant. | `state == IDLE` -> `state == DONE` |
+|  | Replaces an enum member with the previous or next member of its enum, wrapping around. The enum must be declared in a file the Target compiles (in the same file, when Booley reads each file alone); a two-member enum yields one Mutant. | `state == IDLE` -> `state == DONE` |
 | `bit-select` | Moves a literal bit index or slice bound up or down by one, within the declared range. | `data[3]` -> `data[2]`, `data[7:4]` -> `data[6:3]` |
 |  | Swaps two neighbouring operands of a concatenation. Equal neighbours, replication counts, streaming concatenations, and assignment patterns are skipped. | `{hi, lo}` -> `{lo, hi}` |
 | `deletion` | Removes one assignment, net initializer, or `case` item. | `q <= d;` removed, `case` branch removed |
+
+Booley reads the widths, enum members, and signedness it needs from the whole
+design, compiled the way the build compiles it: every HDL file, the testbench's
+too, with the Target's top module, parameters, defines, and include
+directories. The testbench is never mutated, but editing it can change the
+Mutants. When Booley cannot read the whole design (a module that is missing, a
+vendor primitive, a file the parser rejects, any other error in the design, or
+a Target it cannot inspect), it reads each scope file alone with its default
+parameters, and the report says so on a `Target elaboration failed` line. A
+module the Target never instantiates is also read with its default parameters
+when Booley can reach it.
 
 Mutations also reach the arguments of `$signed` and `$unsigned` and the
 expressions in the port connections of module and interface instances.
@@ -145,9 +159,9 @@ Only design code is mutated. Booley skips:
    small `--count` therefore covers different kinds of bugs instead of many of
    one kind.
 
-If fewer candidates exist than `--count`, all of them run and the report says
-so. An unset `--min-detected` then becomes 80 % of the Mutants that ran, rounded
-up (invalid Mutants included), and the tally labels that base as scored. The knobs are `--scope` (where to
+If fewer candidates exist than `--count`, all of them that build run and the
+report says so. An unset `--min-detected` then becomes 80 % of the Mutants that ran, rounded
+up, and the tally labels that base as scored. The knobs are `--scope` (where to
 look), `--count` (how many), and `--seed` (which sample); there is no filter by
 operator. The same RTL, scope, count, and seed choose the same Mutants (on a
 Verilator Target, with the same Verilator version).
@@ -161,9 +175,9 @@ the candidate Mutants) and, on a Verilator Target, the Verilator version
 (Verilator):
 
 ```text
-[mutation_test] 10 Mutants (seed 0, count 10, generator 6, pyslang <version>, Verilator <version>)
+[mutation_test] 10 Mutants (seed 0, count 10, generator 7, pyslang <version>, Verilator <version>)
 [mutation_test] sim sweep: 10/10 tested              4m
-  8 detected (1 timeout), 0 invalid, 2 not detected
+  8 detected (1 timeout), 2 not detected
   detected: 8/10 (required: 8, default 80% of --count)
   NOT DETECTED [arithmetic-logical] rtl/alu.sv:42: 'a + b' -> 'a - b'
 …
@@ -171,7 +185,9 @@ RESULT: PASS (8/10 detected)
 ```
 
 Survivors are listed with file, line, and the original and mutated code: each
-is a spot your tests do not check.
+is a spot your tests do not check. When candidates did not build, a line such
+as `[mutation_test] 3 candidate Mutants did not build and were replaced`
+appears in the report header, after the shortfall line if there is one; it is absent when every candidate built.
 
 On a `--count auto` run the header reads
 `count auto -> N (formula F, budget cap C)`, and `mutation-results.md` shows the
@@ -182,7 +198,7 @@ limit, and N the smaller of the two.
 |---|---|---:|
 | `PASS` | Detected Mutants reach the threshold. | `0` |
 | `FAIL` | Fewer Mutants were detected than required. | `1` |
-| `ERROR` | No verdict: a failing baseline, a Target that cannot run, an unusable `--scope` entry, an invalid option, or a build or infrastructure failure. | `2` |
+| `ERROR` | No verdict: a failing baseline, a Target that cannot run, an unusable `--scope` entry, an invalid option, or a baseline build failure. | `2` |
 
 Each run's files are in its numbered run directory, under `flow-reports/` in
 the Booley Directory or `--report-dir`
@@ -192,7 +208,7 @@ the Booley Directory or `--report-dir`
 |---|---|
 | `mutation/<N>/campaign/mutation-results.md` | The Mutants and the outcome of each, and each test run's baseline duration and time limit. |
 | `mutation/<N>/campaign/mutation-specs.md` | Every Mutant: operator, file and line, original and mutated code. |
-| `mutation/<N>/campaign/manifest.json` | The run's identity (seed, count, generator and pyslang versions, the Verilator version on a Verilator Target, scope hashes), each Mutant's status, and each test run's baseline duration and time limit. A `--count auto` run also records how it derived the count. |
+| `mutation/<N>/campaign/manifest.json` | The run's identity (seed, count, generator and pyslang versions, the Verilator version on a Verilator Target, whether the Target or each file alone was elaborated, scope hashes), each Mutant's status, and each test run's baseline duration and time limit. A `--count auto` run also records how it derived the count. |
 | `mutation/<N>/campaign/variants/` | The mutated source of each Mutant. |
 | `mutation/<N>/campaign/baseline.log`, `mutant-logs/` | The simulator output of the baseline and of each Mutant. |
 

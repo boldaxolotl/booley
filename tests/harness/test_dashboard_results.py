@@ -344,7 +344,6 @@ ROWS = [
         {
             "detected": 3,
             "not_detected": 1,
-            "invalid": 2,
             "total_valid": 4,
             "min_detected": 3,
             "classified": [
@@ -352,7 +351,7 @@ ROWS = [
             ],
         },
         "Mutation: 3/4 detected",
-        ["Invalid: 2", "unit.sv:12", "min 3"],
+        ["unit.sv:12", "min 3"],
     ),
     (
         "coverage_analyst",
@@ -392,6 +391,17 @@ def test_each_flow_report_row():
             f"{line.label}: {line.value}" for line in (result.flow_result, *result.result_rows)
         )
         assert headline in pure and all(part in pure for part in required)
+
+
+def test_mutation_detail_has_no_invalid_row():
+    """A Mutant that does not build is replaced, so no result states an invalid count."""
+    detail = {"detected": 3, "not_detected": 1, "invalid": 2, "total_valid": 4, "min_detected": 3}
+    result = present_report({"flow": "mutation", "exit_code": 0, "detail": detail})
+
+    labels = [line.label for line in result.result_rows]
+    assert "Not detected" in labels
+    assert not any("invalid" in label.lower() for label in labels)
+    assert "Invalid" not in job_detail(job({"flow": "mutation", "exit_code": 0, "detail": detail}))
 
 
 def test_report_locations_and_coverage_miss():

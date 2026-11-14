@@ -105,7 +105,7 @@
     {"file": "rtl/self_check.sv", "line": 10, "text": "!OK", "never": "*", "reason": "elaboration-time generate check, not design behavior (`Only design code is mutated`); the doc does not name generate conditions, so a Mutant here is a finding to judge, not a certain bug"}
   ],
   "outcomes": {
-    "note": "Same on sim_icarus and sim_cocotb. Keys are `file:line:site->replacement`. On sim_cocotb (a Verilator Target) the Flow also compares each Mutant's generated C++ with the baseline's and replaces an identical one; Verilator 5.052 (the version checked; another version may differ) writes different C++ for the equivalent `rtl/counter.sv:11` deletion, so it is still run and survives, and no Mutant is dropped.",
+    "note": "Same on sim_icarus and sim_cocotb. Keys are `file:line:site->replacement`. On sim_cocotb (a Verilator Target) the Flow also compares each Mutant's generated C++ with the baseline's and replaces an identical one; Verilator 5.052 (the version checked; another version may differ) writes different C++ for the equivalent `rtl/counter.sv:11` deletion, so it is still run and survives, and no Mutant is dropped as equivalent. The `does_not_build` Mutants are dropped and replaced on both Targets.",
     "survivors": [
       "rtl/status.sv:7:==->!=",
       "rtl/status.sv:7:9->8",
@@ -115,20 +115,20 @@
     ],
     "equivalent": ["rtl/counter.sv:11:q <= q;->begin end"],
     "hanging": ["rtl/handshake.sv:6:assign ack = req;->/* deleted */"],
-    "invalid": [
+    "does_not_build": [
       "rtl/self_check.sv:5:+->-",
       "rtl/self_check.sv:5:1->0",
       "rtl/self_check.sv:5:1->2"
     ]
   },
   "per_file": {
-    "rtl/mutation_top.sv": {"candidates": 0, "survivors": 0, "invalid": 0, "hanging": 0},
-    "rtl/alu.sv": {"candidates": 14, "survivors": 0, "invalid": 0, "hanging": 0},
-    "rtl/counter.sv": {"candidates": 14, "survivors": 1, "invalid": 0, "hanging": 0},
-    "rtl/status.sv": {"candidates": 4, "survivors": 4, "invalid": 0, "hanging": 0},
-    "rtl/handshake.sv": {"candidates": 1, "survivors": 0, "invalid": 0, "hanging": 1},
-    "rtl/self_check.sv": {"candidates": 3, "survivors": 0, "invalid": 3, "hanging": 0},
-    "rtl/decoys.sv": {"candidates": 5, "survivors": 0, "invalid": 0, "hanging": 0}
+    "rtl/mutation_top.sv": {"candidates": 0, "survivors": 0, "does_not_build": 0, "hanging": 0},
+    "rtl/alu.sv": {"candidates": 14, "survivors": 0, "does_not_build": 0, "hanging": 0},
+    "rtl/counter.sv": {"candidates": 14, "survivors": 1, "does_not_build": 0, "hanging": 0},
+    "rtl/status.sv": {"candidates": 4, "survivors": 4, "does_not_build": 0, "hanging": 0},
+    "rtl/handshake.sv": {"candidates": 1, "survivors": 0, "does_not_build": 0, "hanging": 1},
+    "rtl/self_check.sv": {"candidates": 3, "survivors": 0, "does_not_build": 3, "hanging": 0},
+    "rtl/decoys.sv": {"candidates": 5, "survivors": 0, "does_not_build": 0, "hanging": 0}
   },
   "totals": {
     "candidates": 41,
@@ -137,14 +137,16 @@
       "detected": 33,
       "detected_by_timeout": 1,
       "not_detected": 5,
-      "invalid": 3,
-      "threshold": 33,
+      "does_not_build": 3,
+      "scored": 38,
+      "shortfall": "only 38 Mutants could be scored (41 requested)",
+      "threshold": 31,
       "verdict": "PASS",
       "exit": 0,
-      "tally_line": "33 detected (1 timeout), 3 invalid, 5 not detected"
+      "tally_line": "33 detected (1 timeout), 5 not detected"
     },
     "boundary": {"min_detected": 34, "verdict": "FAIL", "exit": 1},
-    "default_threshold_by_count": {"3": 3, "4": 4, "6": 5, "7": 6, "10": 8, "11": 9, "41": 33},
+    "default_threshold_by_count": {"3": 3, "4": 4, "6": 5, "7": 6, "10": 8, "11": 9},
     "mutant_time_limit_s": "min(300, max(30, ceil(10 x baseline_s))): 30 for the hanging Mutant while each baseline test takes 3 s or less"
   },
   "auto": {
@@ -173,10 +175,11 @@
     "which_candidate": "Seed-dependent: ranked by a hash of the seed and the Mutant ID, so the oracle fixes only the operator sequence and the per-operator counts.",
     "shortfall": {
       "count": 50,
-      "run": 41,
-      "message": "only 41 Mutants could be scored (50 requested)",
+      "candidates": 41,
+      "run": 38,
+      "message": "only 38 Mutants could be scored (50 requested)",
       "message_source": "code",
-      "threshold_by_doc": "ceil(0.8 x 41) = 33 (an unset --min-detected follows the number scored), which 33 detected reaches: PASS, exit 0; a FAIL or a label naming 80% of --count is a finding to record"
+      "threshold_by_doc": "ceil(0.8 x 38) = 31 (an unset --min-detected follows the number scored; the 3 candidates that do not build are replaced, and no candidate is left to replace them), which 33 detected reaches: PASS, exit 0; a FAIL or a label naming 80% of --count is a finding to record"
     }
   }
 }

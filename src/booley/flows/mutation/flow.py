@@ -7,8 +7,8 @@ A run needs no model and no agent CLI:
   2. The untouched project is built and run as the campaign baseline; every
      test of the Target must pass on it.
   3. Each Mutant is applied only to private build source copies and simulated.
-     The compiler decides whether a Mutant is valid; an invalid Mutant is
-     reported and not scored.
+     The compiler decides whether a Mutant is valid; a Mutant that does not
+     build is dropped and the next candidate takes its number.
   4. A Mutant is detected when a Target test fails on it or runs past its
      baseline-scaled time limit ("detected (timeout)").
 
@@ -35,7 +35,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 from urllib.parse import quote
 
 from booley.config.project_config import load_test_configuration_field, lookup_target_section
@@ -54,6 +54,7 @@ from booley.flows.mutation.equivalence import generated_cpp, verilator_version
 from booley.flows.mutation.generator import (
     GENERATOR_VERSION,
     Mutant,
+    TargetDesign,
     generate_mutants,
     parser_version,
 )
@@ -110,6 +111,7 @@ from booley.flows.target_campaign import (
     resolve_target_campaign,
 )
 from booley.flows.target_criteria import CampaignScopeError
+from booley.flows.target_parameters import sv_byte_string_literal, vlogparam_specs
 from booley.flows.target_test_plan import TargetTestPlan, TestRunLaunch, batch_test_runs
 from booley.flows.target_test_suite import (
     NoRunnableTestsError,
@@ -146,6 +148,13 @@ _monotonic = time.monotonic
 _MUTATION_SUFFIXES = frozenset({".v", ".vh", ".sv", ".svh"})
 #: ``file_type`` prefixes of Verilog and SystemVerilog sources.
 _HDL_FILE_TYPES = ("verilogSource", "systemVerilogSource")
+#: Macros a simulator defines itself, by its lower-case ``eda_tool`` name: the elaboration
+#: of the Target takes the same ``ifdef`` branches as its build.
+_SIMULATOR_DEFINES = {
+    "verilator": {"VERILATOR": "1"},
+    "icarus": {"__ICARUS__": "1"},
+    "iverilog": {"__ICARUS__": "1"},
+}
 #: Tags (besides the testbench role) that take a Target input out of the default scope.
 _UNMUTATED_FILE_TAGS = frozenset({"vendored", "generated"})
 
@@ -272,10 +281,11 @@ class MutationSpec:
 class MutationResult:
     index: int
     detected: bool = False
-    invalid: bool = False
+    #: Why this Mutant's outcome cannot be trusted; empty for every judged Mutant.
+    inconclusive_reason: str = ""
     #: The failure or timeout line of the run that detected the Mutant, else the
     #: tail of a survivor's output (both capped at 200 chars), or the reason a
-    #: Mutant was inconclusive or invalid.
+    #: Mutant was inconclusive.
     sim_output_snippet: str = ""
     #: Project-relative path of this mutant's full simulator output. The
     #: snippet above is short; for a mutant the testbench failed to kill
@@ -325,16 +335,18 @@ class MutationSummary:
 
     @property
     def detected_count(self) -> int:
-        return sum(1 for r in self.results if r.detected and not r.invalid)
+        return sum(1 for r in self.results if r.detected and not r.inconclusive_reason)
 
     @property
     def detected_timeout_count(self) -> int:
         """Detected Mutants whose detection was a timeout (a subset of ``detected_count``)."""
-        return sum(1 for r in self.results if r.detected and r.timed_out and not r.invalid)
+        return sum(
+            1 for r in self.results if r.detected and r.timed_out and not r.inconclusive_reason
+        )
 
     @property
     def not_detected_count(self) -> int:
-        return sum(1 for r in self.results if not r.detected and not r.invalid)
+        return sum(1 for r in self.results if not r.detected and not r.inconclusive_reason)
 
     def surviving_specs(self) -> list[MutationSpec]:
         """Valid mutants the testbench failed to kill — the real coverage gaps.
@@ -347,12 +359,10 @@ class MutationSummary:
         return [
             spec
             for spec in self.specs
-            if (r := result_map.get(spec.index)) is not None and not r.detected and not r.invalid
+            if (r := result_map.get(spec.index)) is not None
+            and not r.detected
+            and not r.inconclusive_reason
         ]
-
-    @property
-    def invalid_count(self) -> int:
-        return sum(1 for r in self.results if r.invalid)
 
     def classify(self) -> list[dict[str, Any]]:
         classified: list[dict[str, Any]] = []
@@ -361,8 +371,8 @@ class MutationSummary:
             r = result_map.get(spec.index)
             if r is None:
                 status = "untested"
-            elif r.invalid:
-                status = "invalid"
+            elif r.inconclusive_reason:
+                status = "inconclusive"
             elif r.detected:
                 status = "detected"
             else:
@@ -467,12 +477,14 @@ def _status_label(row: dict[str, Any]) -> str:
     return str(row["status"]).replace("_", " ")
 
 
-def _invalid_mutants_line(invalid_count: int) -> str:
-    """Say that invalid Mutants use up the threshold's margin (they can never be detected)."""
-    return (
-        f"{invalid_count} invalid Mutants could not be judged and count as not "
-        "detected toward the threshold."
+def _replaced_builds_line(count: int) -> str | None:
+    """The report line naming the candidates that did not build and were replaced, if any."""
+    if not count:
+        return None
+    noun, verb = (
+        ("candidate Mutant did", "was") if count == 1 else ("candidate Mutants did", "were")
     )
+    return f"[mutation_test] {count} {noun} not build and {verb} replaced"
 
 
 def _time_limit_lines(time_limits: Mapping[str, MutantTimeLimit]) -> list[str]:
@@ -510,6 +522,10 @@ def _identity_lines(identity: Mapping[str, Any], count_label: str | None = None)
     ]
     if "verilator_version" in identity:
         lines.append(f"- Verilator version: {identity['verilator_version']}")
+    if identity.get("elaboration") == "target":
+        lines.append("- Elaboration: Target")
+    elif "elaboration" in identity:
+        lines.append(f"- Elaboration: per file ({identity['elaboration_fallback']})")
     lines.append("- Scope file hashes:")
     lines += [f"  - `{name}`: {digest}" for name, digest in identity["scope_hashes"].items()]
     return [*lines, ""]
@@ -537,11 +553,8 @@ def generate_results_markdown(
         f"- Detected: {summary.detected_count}",
         f"- Detected (timeout): {summary.detected_timeout_count} (included in Detected)",
         f"- Not detected: {summary.not_detected_count}",
-        f"- Invalid: {summary.invalid_count}",
         "",
     ]
-    if summary.invalid_count:
-        lines += [_invalid_mutants_line(summary.invalid_count), ""]
     # Call out the survivors explicitly: the actionable output of the run.
     survivors = summary.surviving_specs()
     if survivors:
@@ -685,6 +698,8 @@ class RunResultInputs:
     #: IDs of the Mutants dropped for building the baseline's C++, in drop order.
     #: The Record's detail lists them; the report never does.
     equivalent_dropped: list[str] = field(default_factory=list)
+    #: IDs of the candidates whose build failed and were replaced, in drop order.
+    invalid_dropped: list[str] = field(default_factory=list)
     #: Each test run's baseline duration and Mutant time limit, for the run artifacts.
     time_limits: Mapping[str, MutantTimeLimit] = field(default_factory=dict)
 
@@ -722,13 +737,18 @@ class Baseline:
     verilator_version: str | None = None
 
 
+#: Why ``_run_one_variant`` dropped a candidate instead of scoring it.
+_Dropped = Literal["equivalent", "build_failure"]
+
+
 @dataclass(frozen=True)
 class VariantSweep:
     """The Mutants a sweep kept and scored, numbered 1..n, and the ones it dropped."""
 
     specs: list[MutationSpec]
     results: list[MutationResult]
-    dropped: list[str]  # IDs of the Mutants whose build equals the baseline's
+    equivalent_dropped: list[str]  # IDs of the Mutants whose build equals the baseline's
+    invalid_dropped: list[str]  # IDs of the Mutants that did not build
     elapsed: float
     inconclusive: str  # why a Mutant's outcome cannot be trusted; empty when all can
 
@@ -1242,7 +1262,8 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             shortfall=_shortfall_message(count, plan.count),
             coverage_gap=self._is_variant_coverage_gap(summary, plan.min_detected),
             evidence=self._variant_evidence(variants),
-            equivalent_dropped=sweep.dropped,
+            equivalent_dropped=sweep.equivalent_dropped,
+            invalid_dropped=sweep.invalid_dropped,
             time_limits=baseline.time_limits,
         )
         if sweep.inconclusive:
@@ -1261,15 +1282,19 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         except fusesoc_registry.FuseSocError:
             return None
 
-    def _generator_inputs(self) -> tuple[dict[str, str], list[str]]:
-        """The preprocessor ``defines`` and ``include_dirs`` the Target's build gives its sources.
+    def _generator_inputs(self) -> tuple[dict[str, str], list[str], TargetDesign | None]:
+        """The ``defines``, ``include_dirs`` and :class:`TargetDesign` the Target's build gives its sources.
 
         Include directories are those of the Project's non-testbench include
-        headers, as :attr:`ResolvedTarget.rtl_include_dirs` takes them.
+        headers, as :attr:`ResolvedTarget.rtl_include_dirs` takes them, then the
+        testbench's.  The design is every HDL source of the Target in Target order
+        (the testbench's too: the build compiles them, and an SV testbench is the top)
+        with its top modules and ``vlogparam`` overrides; ``None`` when the Target
+        cannot be inspected.
         """
         inspection = self._inspect_target()
         if inspection is None:
-            return {}, []
+            return {}, [], None
         defines: dict[str, str] = {}
         for name, spec in inspection.parameters.items():
             if not isinstance(spec, Mapping) or spec.get("paramtype") != "vlogdefine":
@@ -1280,16 +1305,54 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             elif default not in (False, None, ""):
                 defines[name] = str(default)
         include_dirs: dict[str, None] = {}  # ordered set
+        for testbench in (False, True):  # a scope file finds its own headers first
+            include_dirs.update(dict.fromkeys(self._include_dirs(inspection, testbench=testbench)))
+        design = self._target_design(inspection, self._include_dirs(inspection, testbench=None))
+        return defines, list(include_dirs), design
+
+    def _include_dirs(self, inspection: TargetInspection, *, testbench: bool | None) -> list[str]:
+        """The Project include directories of ``inspection``'s headers in Target order.
+
+        ``testbench`` keeps only the testbench's headers (``True``), only the others
+        (``False``), or all (``None``).
+        """
+        directories: list[str] = []
         for item in inspection.inputs:
-            if item.is_include and "tb" not in item.tags:
-                path = fusesoc_registry.canonical_project_path(self.args.work_dir, item.path)
-                if not Path(path).is_absolute():
-                    include_dirs[PurePosixPath(path).parent.as_posix()] = None
-        return defines, list(include_dirs)
+            if not item.is_include or testbench not in (None, "tb" in item.tags):
+                continue
+            path = fusesoc_registry.canonical_project_path(self.args.work_dir, item.path)
+            if not Path(path).is_absolute():
+                directories.append(PurePosixPath(path).parent.as_posix())
+        return directories
+
+    def _target_design(
+        self, inspection: TargetInspection, include_dirs: Sequence[str]
+    ) -> TargetDesign:
+        """The top modules, HDL sources, parameter overrides and macros of ``inspection``.
+
+        ``include_dirs`` are the build's, in Target order.
+        """
+        files: dict[str, None] = {}  # ordered set
+        for item in inspection.inputs:
+            if item.file_type.startswith(_HDL_FILE_TYPES) and not item.is_include:
+                files[fusesoc_registry.canonical_project_path(self.args.work_dir, item.path)] = (
+                    None
+                )
+        parameters = {
+            name: sv_byte_string_literal(value.value) if value.is_string else value.value
+            for name, value in vlogparam_specs(inspection.parameters).items()
+        }
+        return TargetDesign(
+            tuple(inspection.toplevel.split()),
+            tuple(files),
+            parameters,
+            tuple(dict.fromkeys(include_dirs)),
+            _SIMULATOR_DEFINES.get(str(inspection.eda_tool).lower(), {}),
+        )
 
     def _generate(self, plan: MutationRunPlan) -> GeneratedMutants | EndpointOutcome:
         """Select the run's Mutants with the deterministic generator and resolve their variants."""
-        defines, include_dirs = self._generator_inputs()
+        defines, include_dirs, design = self._generator_inputs()
         try:
             identity = {
                 "scope_hashes": plan.scope_hashes,
@@ -1305,7 +1368,9 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 plan.seed,
                 defines=defines,
                 include_dirs=include_dirs,
+                design=design,
             )
+            identity.update(self._elaboration_identity(design, selection.fallback))
             if not selection.mutants:
                 return self._generation_failure(
                     plan,
@@ -1330,6 +1395,16 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         except (MutantGeneratorError, BoundaryError, MutationVariantError) as exc:
             return self._generation_failure(plan, "generation", str(exc), None)
         return GeneratedMutants(plan, variants, identity, selection.ranked)
+
+    def _elaboration_identity(
+        self, design: TargetDesign | None, fallback: str | None
+    ) -> dict[str, str]:
+        """The identity keys for how the Mutants' facts were elaborated; progress on a fallback."""
+        reason = "the Target cannot be inspected" if design is None else fallback
+        if reason is None:
+            return {"elaboration": "target"}
+        self.emit_progress(f"Mutant generation: per-file elaboration ({reason})")
+        return {"elaboration": "per-file", "elaboration_fallback": reason}
 
     @staticmethod
     def _generation_failure(
@@ -1471,9 +1546,12 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             requested=plan.count,
         )
         detail["equivalent_dropped"] = inputs.equivalent_dropped
+        detail["invalid_dropped"] = inputs.invalid_dropped
         detail.update(plan.auto_count_fields(inputs.count))
         self._attach_campaign_artifacts(plan, inputs, detail)
         report_text = f"mutation campaign produced no trustworthy verdict: {reason}"
+        if replaced_line := _replaced_builds_line(len(inputs.invalid_dropped)):
+            report_text = f"{replaced_line}\n{report_text}"
         artifact_lines = self._artifact_display_lines(detail)
         if artifact_lines:
             report_text += "\n\nArtifacts:\n" + "\n".join(f"  {line}" for line in artifact_lines)
@@ -1486,21 +1564,23 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         )
 
     def _no_scorable_mutants(self, plan: MutationRunPlan, sweep: VariantSweep) -> EndpointOutcome:
-        """Every candidate built the baseline's C++ or was not scored: nothing to report."""
+        """Every candidate built the baseline's C++ or did not build: nothing to report."""
         reason = "no candidate Mutant changes what the Target builds"
         detail = _failure_detail(
             phase="mutant_selection", reason=reason, specs=[], work_dir=plan.work_dir
         )
-        detail["equivalent_dropped"] = sweep.dropped
+        detail["equivalent_dropped"] = sweep.equivalent_dropped
+        detail["invalid_dropped"] = sweep.invalid_dropped
         hint = (
             f"none of the Mutants of {', '.join(plan.scope_files)} changes what Target "
             f"'{plan.target}' builds; scope files whose modules '{plan.tb_top}' elaborates"
         )
         if plan.scope_defaulted:
             hint += f"; {_PASS_SCOPE_HINT}"
-        return _error_outcome(
-            "selection", reason, report_text=f"mutation: {reason}\n{hint}", detail=detail
-        )
+        lines = [f"mutation: {reason}", hint]
+        if replaced_line := _replaced_builds_line(len(sweep.invalid_dropped)):
+            lines.append(replaced_line)
+        return _error_outcome("selection", reason, report_text="\n".join(lines), detail=detail)
 
     @staticmethod
     def _variant_evidence(variants: MutationVariantPlan) -> dict[str, Any]:
@@ -2232,34 +2312,40 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         """Build and run candidates in pick order until ``plan.count`` Mutants are kept.
 
         Each candidate takes the next free number and build directory.  One whose build
-        equals the baseline's is dropped and its number goes to the next candidate; running
-        out of candidates leaves fewer Mutants than requested.
+        equals the baseline's, or that does not build at all, is dropped and its number goes
+        to the next candidate; both drop kinds share the one pick order.  Reaching
+        ``plan.count`` candidates that did not build, or running out of candidates, leaves
+        fewer Mutants than requested.  Equivalent drops do not count toward that cap.
         """
         start = time.monotonic()
         self._reset_mutant_logs()
         specs: list[MutationSpec] = []
         results: list[MutationResult] = []
-        dropped: list[str] = []
+        equivalent_dropped: list[str] = []
+        invalid_dropped: list[str] = []
         inconclusive: list[str] = []
         # Progress counts to the Mutants that can run: a generator shortfall has
         # fewer candidates than the requested count.
         planned = min(plan.count, len(generated.ranked))
         for mutant in generated.ranked:
-            if len(specs) == plan.count:
+            if len(specs) == plan.count or len(invalid_dropped) == plan.count:
                 break
             spec = _spec_of(len(specs) + 1, mutant)
             self.emit_progress(f"build and test Mutant {spec.index}/{planned}")
             variants = generated.variants.with_proposals([spec])
-            result, reason = self._run_one_variant(plan, spec, variants, baseline)
-            if result is None:
+            result = self._run_one_variant(plan, spec, variants, baseline)
+            if isinstance(result, str):
+                dropped = equivalent_dropped if result == "equivalent" else invalid_dropped
                 dropped.append(spec.mutant_id)
                 continue
             specs.append(spec)
             results.append(result)
-            if reason:
-                inconclusive.append(f"mutation #{spec.index}: {reason}")
+            if result.inconclusive_reason:
+                inconclusive.append(f"mutation #{spec.index}: {result.inconclusive_reason}")
         elapsed = time.monotonic() - start
-        return VariantSweep(specs, results, dropped, elapsed, "; ".join(inconclusive))
+        return VariantSweep(
+            specs, results, equivalent_dropped, invalid_dropped, elapsed, "; ".join(inconclusive)
+        )
 
     def _run_one_variant(
         self,
@@ -2267,18 +2353,23 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         spec: MutationSpec,
         variants: MutationVariantPlan,
         baseline: Baseline,
-    ) -> tuple[MutationResult | None, str]:
-        """Build and test one Mutant; ``None`` for a Mutant that builds the baseline's C++."""
+    ) -> MutationResult | _Dropped:
+        """Build and test one Mutant, or say why the candidate is dropped.
+
+        ``"equivalent"``: the Mutant builds the baseline's C++.  ``"build_failure"``: the
+        Mutant does not build.  Either way its build directory is removed and it leaves no
+        log, since the next candidate reuses the number.
+        """
         build_path = workspace.variant_build_dir(spec.index)
         shutil.rmtree(build_path, ignore_errors=True)
         build_path.mkdir(parents=True, exist_ok=True)
         elab = self._run_elab(plan.target, plan.work_dir, build_path, (variants, spec.index))
-        elab_output = (elab.stdout or "") + (elab.stderr or "")
         if elab.returncode != 0:
-            return self._invalid_build(spec, elab_output), ""
+            shutil.rmtree(build_path, ignore_errors=True)
+            return "build_failure"
         if self._builds_the_baseline(plan.work_dir, build_path, baseline):
             shutil.rmtree(build_path, ignore_errors=True)
-            return None, ""
+            return "equivalent"
         runs = self._run_target_test_suite(
             plan.target,
             plan.work_dir,
@@ -2289,17 +2380,14 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         combined = self._suite_output(runs)
         verdict = self._classify_variant_suite(runs)
         snippet = self._variant_snippet(verdict, combined)
-        return (
-            MutationResult(
-                index=spec.index,
-                invalid=bool(verdict.inconclusive_reason),
-                detected=verdict.detected,
-                sim_output_snippet=snippet,
-                log_path=self._persist_mutant_log(spec.index, combined),
-                first_killing_test=verdict.first_killing_test,
-                timed_out=verdict.timed_out,
-            ),
-            verdict.inconclusive_reason,
+        return MutationResult(
+            index=spec.index,
+            inconclusive_reason=verdict.inconclusive_reason,
+            detected=verdict.detected,
+            sim_output_snippet=snippet,
+            log_path=self._persist_mutant_log(spec.index, combined),
+            first_killing_test=verdict.first_killing_test,
+            timed_out=verdict.timed_out,
         )
 
     @staticmethod
@@ -2316,15 +2404,6 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 killing_test=verdict.first_killing_test,
             )
         return tail_snippet(combined)
-
-    def _invalid_build(self, spec: MutationSpec, elab_output: str) -> MutationResult:
-        """The result of a Mutant whose build failed: reported ``invalid``, never scored."""
-        return MutationResult(
-            index=spec.index,
-            invalid=True,
-            sim_output_snippet="variant did not elaborate: " + tail_snippet(elab_output),
-            log_path=self._persist_mutant_log(spec.index, elab_output),
-        )
 
     @staticmethod
     def _builds_the_baseline(work_dir: Path, build_path: Path, baseline: Baseline) -> bool:
@@ -2389,10 +2468,9 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         auto_mode, source_size_budget = plan.auto_mode, plan.source_size_budget
         summary, count = inputs.summary, inputs.count
 
-        valid_count = summary.detected_count + summary.not_detected_count
         passed = summary.detected_count >= min_detected
 
-        detail = _mutation_detail(summary, min_detected, plan.count, valid_count)
+        detail = _mutation_detail(summary, min_detected, plan.count)
         detail.update(
             {
                 "target": target,
@@ -2405,6 +2483,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         if inputs.shortfall:
             detail["shortfall"] = inputs.shortfall
         detail["equivalent_dropped"] = inputs.equivalent_dropped
+        detail["invalid_dropped"] = inputs.invalid_dropped
         detail.update(plan.auto_count_fields(count))
         if auto_mode:
             detail["source_size_budget"] = source_size_budget
@@ -2694,23 +2773,26 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         gate = "PASS" if passed else "FAIL"
         source = _threshold_source(plan, inputs.count)
         lines: list[str] = [self._identity_header(plan, inputs)]
+        if reason := inputs.identity.get("elaboration_fallback"):
+            lines.append(
+                f"[mutation_test] Target elaboration failed, Mutants generated per file: {reason}"
+            )
         if inputs.shortfall:
             lines.append(f"[mutation_test] {inputs.shortfall}")
+        if replaced_line := _replaced_builds_line(len(inputs.invalid_dropped)):
+            lines.append(replaced_line)
         lines.append(
             f"[mutation_test] sim sweep: {len(summary.results)}/{len(summary.specs)} "
             f"tested              {inputs.tester_elapsed / 60:.0f}m",
         )
         lines.append(
             f"  {summary.detected_count} detected ({summary.detected_timeout_count} timeout), "
-            f"{summary.invalid_count} invalid, "
             f"{summary.not_detected_count} not detected",
         )
         lines.append(
             f"  detected: {summary.detected_count}/{valid_count} "
             f"(required: {min_detected}, {source})",
         )
-        if summary.invalid_count:
-            lines.append(f"  {_invalid_mutants_line(summary.invalid_count)}")
         if inputs.coverage_gap:
             # Name the diagnosis instead of leaving a bare 0/N to be misread as
             # a broken mutation harness (SETUP-F-38).
@@ -2823,8 +2905,7 @@ def _failure_detail(
         "mutations": [s.to_dict() for s in specs],
     }
     if summary is not None:
-        valid_count = summary.detected_count + summary.not_detected_count
-        detail.update(_mutation_detail(summary, min_detected, requested, valid_count))
+        detail.update(_mutation_detail(summary, min_detected, requested))
         detail["classified"] = summary.classify()
     if evidence:
         detail["evidence"] = evidence
@@ -2852,7 +2933,7 @@ def _threshold_source(plan: MutationRunPlan, scored: int) -> str:
 
     An unset ``--min-detected`` is 80 % of ``--count``, re-based on the Mutants scored
     when fewer than ``--count`` ran (ADR 0088); the label says which base applied.
-    ``scored`` counts every Mutant that ran, invalid ones included.
+    ``scored`` counts every Mutant kept: each one built.
     """
     if plan.explicit_min_detected:
         return "explicit"
@@ -2878,20 +2959,19 @@ def _mutation_detail(
     summary: MutationSummary,
     min_detected: int,
     requested: int,
-    valid_count: int,
 ) -> dict[str, Any]:
     """The tally fields.
 
-    ``total_requested`` is the ``--count``; ``total_scored`` the Mutants kept (invalid included).
+    ``total_requested`` is the ``--count``; ``total_scored`` and ``total_valid`` the Mutants
+    kept, each of which built (a candidate that did not build is replaced, never kept).
     """
     return {
         "detected": summary.detected_count,
         "not_detected": summary.not_detected_count,
-        "invalid": summary.invalid_count,
         "min_detected": min_detected,
         "total_requested": requested,
         "total_scored": len(summary.specs),
-        "total_valid": valid_count,
+        "total_valid": len(summary.specs),
     }
 
 

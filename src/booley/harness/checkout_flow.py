@@ -61,6 +61,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -68,7 +69,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from booley.core.booley_layout import validate_environment
-from booley.core.boundary import as_dict
+from booley.core.boundary import as_dict, as_float
 from booley.flows.metric_declarations import FlowMetricValues, MetricsUnavailable
 from booley.harness.standalone_job import (
     RUN_ID_ENV,
@@ -96,7 +97,7 @@ if TYPE_CHECKING:
 
 # The Flow's tools run in sessions of their own: SIGINT lets the Flow reap them
 # before this grace period ends and the process group is killed.
-_STOP_GRACE_S = 30
+STOP_GRACE_S = 30
 _START_FAILURE_EXIT_CODE = 2
 _FLOW_NAME = re.compile(r"[A-Za-z0-9_-]+")
 # The slot claim records this process's argv, so the bootstrap stays one short line.
@@ -162,6 +163,9 @@ class CheckoutFlowResult:
     # Why the run failed or measured nothing: the Flow's own failure text, bounded; ``None``
     # when the run passed with values for every Target.
     excerpt: str | None = None
+    # The last report's ``elapsed_s``: the Flow's own time after admission; ``None`` when
+    # the run left no readable report.
+    elapsed_s: float | None = None
 
 
 def _refuse_malformed_request(request: CheckoutFlowRequest) -> None:
@@ -527,7 +531,7 @@ def _stop(process: subprocess.Popen[Any]) -> None:
     """Interrupt the child so the Flow reaps its tools; kill the group if it does not end."""
     process.send_signal(signal.SIGINT)
     try:
-        process.wait(timeout=_STOP_GRACE_S)
+        process.wait(timeout=STOP_GRACE_S)
     except subprocess.TimeoutExpired:
         _kill(process)
     except BaseException:  # a second Ctrl-C: never leave the Flow running
@@ -638,6 +642,7 @@ def _result_from(
         log=log_path,
         unavailable=unavailable,
         excerpt=excerpt,
+        elapsed_s=as_float(last.get("elapsed_s")),
     )
 
 
@@ -693,55 +698,158 @@ def _log_tail(log_path: Path) -> str:
     return "\n".join(lines[-_EXCERPT_LINES:])
 
 
-def _execute(
-    request: CheckoutFlowRequest,
-    checkout: Path,
-    main: Path,
-    report_dir: Path,
-    roots: list[LiveRoot],
-    scratch: Path,
-) -> CheckoutFlowResult:
-    """Preflight, record, start and settle the Flow; *scratch* is the caller's to remove."""
-    environment = measurement_environment(
-        os.environ,
-        main_booley_dir=main,
-        home=scratch / "home",
-        tmp=scratch / "tmp",
-        git_refusal=scratch / "bin",
-    )
-    _preflight(request, checkout, roots, scratch, environment)
-    run_id = job_records.make_run_id(request.flow, compact_utc_now(), 1)
-    log_path = standalone_log_path(main, run_id)
-    jobs_root = standalone_jobs_dir(main)
-    record = job_records.JobRecord(
-        run_id=run_id,
-        endpoint=request.flow,
-        started_at=utc_now_rfc3339(),
-        timeout_s=STANDALONE_TIMEOUT_S
-        if request.timeout_s is None
-        else math.ceil(request.timeout_s),
-        argv=["booley", "flow", request.flow, *_flow_arguments(request)],
-        report_root=str(report_dir),
-    )
+@dataclass
+class CheckoutFlowChild:
+    """A started Flow child: poll it, stop it, and settle it into a result.
+
+    The scheduler of a measurement drives many of these without blocking on any one.
+    """
+
+    process: subprocess.Popen[Any]
+    request: CheckoutFlowRequest
+    run_id: str
+    record: job_records.JobRecord
+    jobs_root: Path
+    log_path: Path
+    report_dir: Path
+    scratch: Path
+    started_at: float = field(default_factory=time.monotonic)
+    timed_out: bool = False
+    _result: CheckoutFlowResult | None = field(default=None, init=False)
+
+    @property
+    def pid(self) -> int:
+        """The child's process id: the owner of its admission claim."""
+        return self.process.pid
+
+    def poll(self) -> bool:
+        """Return True once the child has ended; stop it first when its budget has expired."""
+        if self.process.poll() is not None:
+            return True
+        timeout_s = self.request.timeout_s
+        if timeout_s is not None and time.monotonic() - self.started_at >= timeout_s:
+            self.timed_out = True
+            _stop(self.process)
+            return True
+        return False
+
+    def interrupt(self) -> None:
+        """Send the child SIGINT without waiting; the Flow reaps its tools on it."""
+        if self.process.poll() is None:
+            self.process.send_signal(signal.SIGINT)
+
+    def wait(self, timeout_s: float) -> bool:
+        """Return whether the child ended within *timeout_s* seconds."""
+        try:
+            self.process.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            return False
+        return True
+
+    def kill(self) -> None:
+        """End the child's whole process group and reap it."""
+        _kill(self.process)
+
+    def settle(self) -> CheckoutFlowResult:
+        """Settle the Job record, build the result and remove the scratch; idempotent."""
+        if self._result is None:
+            final = _settle_record(
+                self.record, self.jobs_root, self.process.returncode, timed_out=self.timed_out
+            )
+            shutil.rmtree(self.scratch, ignore_errors=True)
+            self._result = _result_from(
+                self.request,
+                self.run_id,
+                final,
+                self.log_path,
+                self.report_dir,
+                timed_out=self.timed_out,
+            )
+        return self._result
+
+
+@dataclass
+class PreparedCheckoutFlow:
+    """A run whose refusals are behind it and whose scratch space exists: nothing has started."""
+
+    request: CheckoutFlowRequest
+    checkout: Path
+    main: Path
+    report_dir: Path
+    scratch: Path
+    environment: dict[str, str]
+
+    def start(self) -> CheckoutFlowChild:
+        """Write the Job record and launch the child.
+
+        Raises:
+            CheckoutFlowError: the child could not be started; the record is failed and the
+                scratch space removed.
+        """
+        request, main = self.request, self.main
+        run_id = job_records.make_run_id(request.flow, compact_utc_now(), 1)
+        log_path = standalone_log_path(main, run_id)
+        jobs_root = standalone_jobs_dir(main)
+        record = job_records.JobRecord(
+            run_id=run_id,
+            endpoint=request.flow,
+            started_at=utc_now_rfc3339(),
+            timeout_s=STANDALONE_TIMEOUT_S
+            if request.timeout_s is None
+            else math.ceil(request.timeout_s),
+            argv=["booley", "flow", request.flow, *_flow_arguments(request)],
+            report_root=str(self.report_dir),
+        )
+        try:
+            job_records.write_record_strict(record, jobs_root)
+            register_job(main, run_id, request.flow, None)
+            process = _launch(
+                request, self.checkout, main, self.report_dir, run_id, log_path, self.environment
+            )
+        except OSError as exc:
+            # Best effort: an unwritable log must not stop the record turning failed.
+            with contextlib.suppress(OSError), log_path.open("ab") as log:
+                log.write(f"Checkout Flow not started: {exc}\n".encode())
+            record.status = job_records.STATUS_FAILED
+            record.exit_code = _START_FAILURE_EXIT_CODE
+            record.ended_at = utc_now_rfc3339()
+            job_records.write_record(record, jobs_root)
+            self.discard()
+            raise CheckoutFlowError(f"Flow {request.flow!r} could not be started: {exc}") from exc
+        return CheckoutFlowChild(
+            process, request, run_id, record, jobs_root, log_path, self.report_dir, self.scratch
+        )
+
+    def discard(self) -> None:
+        """Remove the scratch space of a run that never started."""
+        shutil.rmtree(self.scratch, ignore_errors=True)
+
+
+def prepare_checkout_flow(request: CheckoutFlowRequest) -> PreparedCheckoutFlow:
+    """Refuse an unsafe request and preflight the Target; start nothing and write no record.
+
+    Raises:
+        CheckoutFlowError: the request is refused or an input reads a live root. The
+            scratch space is removed first.
+    """
+    checkout, main, report_dir = _refuse_unsafe(request)
+    request = replace(request, flow=canonical(request.flow))  # the CLI reports under this name
+    roots = _live_roots(main)
+    _refuse_live_inputs(checkout, roots)
+    scratch = _prepare_scratch(checkout)
     try:
-        job_records.write_record_strict(record, jobs_root)
-        register_job(main, run_id, request.flow, None)
-        process = _launch(request, checkout, main, report_dir, run_id, log_path, environment)
-    except OSError as exc:
-        # Best effort: an unwritable log must not stop the record turning failed.
-        with contextlib.suppress(OSError), log_path.open("ab") as log:
-            log.write(f"Checkout Flow not started: {exc}\n".encode())
-        record.status = job_records.STATUS_FAILED
-        record.exit_code = _START_FAILURE_EXIT_CODE
-        record.ended_at = utc_now_rfc3339()
-        job_records.write_record(record, jobs_root)
-        raise CheckoutFlowError(f"Flow {request.flow!r} could not be started: {exc}") from exc
-    timed_out = False
-    try:
-        timed_out = _wait(process, request.timeout_s)
-    finally:
-        final = _settle_record(record, jobs_root, process.returncode, timed_out=timed_out)
-    return _result_from(request, run_id, final, log_path, report_dir, timed_out=timed_out)
+        environment = measurement_environment(
+            os.environ,
+            main_booley_dir=main,
+            home=scratch / "home",
+            tmp=scratch / "tmp",
+            git_refusal=scratch / "bin",
+        )
+        _preflight(request, checkout, roots, scratch, environment)
+    except BaseException:  # includes a Ctrl-C: the directory must not outlive the run
+        shutil.rmtree(scratch, ignore_errors=True)
+        raise
+    return PreparedCheckoutFlow(request, checkout, main, report_dir, scratch, environment)
 
 
 def run_checkout_flow(request: CheckoutFlowRequest) -> CheckoutFlowResult:
@@ -751,15 +859,16 @@ def run_checkout_flow(request: CheckoutFlowRequest) -> CheckoutFlowResult:
         CheckoutFlowError: the request is refused, an input reads a live root, or the
             child cannot be started. A refusal leaves no Job record.
     """
-    checkout, main, report_dir = _refuse_unsafe(request)
-    request = replace(request, flow=canonical(request.flow))  # the CLI reports under this name
-    roots = _live_roots(main)
-    _refuse_live_inputs(checkout, roots)
-    scratch = _prepare_scratch(checkout)
+    prepared = prepare_checkout_flow(request)
     try:
-        return _execute(request, checkout, main, report_dir, roots, scratch)
+        child = prepared.start()
+        try:
+            child.timed_out = _wait(child.process, prepared.request.timeout_s)
+        finally:
+            result = child.settle()
+        return result
     finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+        prepared.discard()
 
 
 def _run_flow_cli(flow: str, flow_argv: list[str]) -> int:

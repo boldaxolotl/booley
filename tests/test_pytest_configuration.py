@@ -1663,6 +1663,22 @@ def test_isolated_git_excludes_keeps_auto_maintenance_off_and_strips_other_comma
     assert _scoped_git_value("core.bigfilethreshold", tmp_path) == ""
 
 
+def test_issuance_journal_store_resolves_under_the_test_tmp_path(tmp_path: Path) -> None:
+    from booley.runtime import issuance_invalidation
+
+    journal = issuance_invalidation.journal_store().path(str((tmp_path / "project").resolve()))
+    assert journal.is_relative_to(tmp_path)
+    assert not journal.is_relative_to(Path.home() / ".config")
+
+
+def test_requested_fixture_xdg_config_home_overrides_the_default(
+    tmp_path: Path, isolated_git_attributes: None
+) -> None:
+    from booley.core.user_paths import config_dir
+
+    assert config_dir() == tmp_path / "isolated-xdg" / "booley"
+
+
 def test_own_empty_global_config_keeps_auto_maintenance_off(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
