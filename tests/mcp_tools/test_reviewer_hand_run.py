@@ -446,6 +446,42 @@ def test_exact_duplicate_findings_merge_with_highest_severity_and_confidence(
     assert "merged 1 exact duplicate" in result.report_text
 
 
+def test_merge_only_joins_findings_of_different_calls_and_counts_real_merges(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two findings of one call at one place stay two; an out-of-scope one is no merge."""
+    first = finding("MAJOR", summary="First defect here")
+    second = finding("MINOR", summary="Second defect here")
+    second["confidence"] = "LOW"
+    outside = finding("MAJOR", summary="Outside the scope", file="rtl/elsewhere.sv")
+    hunt = finding("MAJOR", summary="Hunt defect", line=9)
+    result, _ = review_by_guide(
+        project,
+        monkeypatch,
+        BASE_ARGS,
+        {"bugs-checklist": {"issues": [first, second, outside]}, "bugs-hunt": {"issues": [hunt]}},
+    )
+    summaries = {row["summary"] for row in result.detail["issue_list"]}
+    assert summaries == {"First defect here", "Second defect here", "Hunt defect"}
+    assert "merged 0 exact duplicate" in result.report_text
+
+
+def test_merged_finding_is_represented_by_highest_confidence_on_a_severity_tie(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    low = finding("MAJOR", summary="Less certain wording")
+    low["confidence"] = "LOW"
+    high = finding("MAJOR", summary="More certain wording")
+    result, _ = review_by_guide(
+        project,
+        monkeypatch,
+        BASE_ARGS,
+        {"bugs-checklist": {"issues": [low]}, "bugs-hunt": {"issues": [high]}},
+    )
+    (row,) = result.detail["issue_list"]
+    assert row["summary"] == "More certain wording"
+
+
 def test_near_duplicate_findings_stay_separate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -534,7 +570,7 @@ def _assert_failing_guide_is_error(
             },
         ),
     }
-    healthy = {"issues": []}
+    healthy = {"issues": [finding("MAJOR", summary="Healthy call finding", line=7)]}
     answers = {guide: (broken[failure] if guide == failing else healthy) for guide in BUGS_GUIDES}
     key = "review_rtl_bugs_done"
     if mode == "clean":
@@ -552,6 +588,10 @@ def _assert_failing_guide_is_error(
     assert f"ERROR: {other} call failed" not in result.report_text
     assert "issue_list" not in result.detail
     assert "pending" not in result.detail
+    # The healthy call's finding is published nowhere: not in the report, detail or state.
+    assert "Healthy call finding" not in result.report_text
+    assert "Healthy call finding" not in json.dumps(result.detail, default=str)
+    assert "Healthy call finding" not in (project / "state.json").read_text()
     assert result.detail["review_error"] is True
     status = {c["guides"][0]: c["status"] for c in result.detail["guide_calls"]}
     assert status == {failing: "error", other: "ok"}

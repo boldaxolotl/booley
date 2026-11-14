@@ -12,6 +12,7 @@ Exit codes: 0 = review completed, 1 = an open finding at or above ``--fail-on``
 from __future__ import annotations
 
 import argparse
+import contextvars
 import dataclasses
 import hashlib
 import json
@@ -447,20 +448,35 @@ class _GuideCallRun:
         }
 
 
-def merge_exact_duplicates(issues: list[ReviewIssue]) -> list[ReviewIssue]:
-    """Merge findings sharing file, line and kind into one, in order of first appearance.
+def merge_exact_duplicates(per_call: list[list[ReviewIssue]]) -> list[ReviewIssue]:
+    """Merge findings of different calls sharing file, line and kind, in order of first appearance.
 
     The merged finding takes the highest severity and the highest confidence of the group
-    and the sorted union of its guide kinds; every other field is the first
-    highest-severity member's. Findings differing in file, line or kind stay separate.
+    and the sorted union of its guide kinds; every other field is the first member's with
+    the highest severity, then confidence. Findings of one call are never merged with each
+    other, and findings differing in file, line or kind stay separate.
     """
-    groups: dict[tuple[str, int, str], list[ReviewIssue]] = {}
-    for issue in issues:
-        key = (posixpath.normpath(issue.file.replace("\\", "/")), issue.line, issue.kind)
-        groups.setdefault(key, []).append(issue)
+    groups: list[tuple[tuple[str, int, str], set[int], list[ReviewIssue]]] = []
+    for call, issues in enumerate(per_call):
+        for issue in issues:
+            key = (posixpath.normpath(issue.file.replace("\\", "/")), issue.line, issue.kind)
+            target = next(
+                (group for group in groups if group[0] == key and call not in group[1]), None
+            )
+            if target is None:
+                groups.append((key, {call}, [issue]))
+            else:
+                target[1].add(call)
+                target[2].append(issue)
     merged: list[ReviewIssue] = []
-    for group in groups.values():
-        best = max(group, key=lambda i: _SEVERITY_RANK.get(i.severity, 0))
+    for _, _, group in groups:
+        best = max(
+            group,
+            key=lambda i: (
+                _SEVERITY_RANK.get(i.severity, 0),
+                _CONFIDENCE_RANK.get(i.confidence, 0),
+            ),
+        )
         merged.append(
             dataclasses.replace(
                 best,
@@ -3229,7 +3245,12 @@ Schema enforcement (applied upstream by the harness):
             self._invoke_guide_call(runs[0])
             return
         with ThreadPoolExecutor(max_workers=len(runs)) as pool:
-            list(pool.map(self._invoke_guide_call, runs))
+            # Each worker runs in a copy of this context, so it resolves the same project scope.
+            list(
+                pool.map(
+                    lambda run: contextvars.copy_context().run(self._invoke_guide_call, run), runs
+                )
+            )
 
     def _interpret_guide_call(self, run: _GuideCallRun, focus: str, *, tagged: bool) -> None:
         """Turn one call's outcome into its findings (``kept``/``observations``) or a failure."""
@@ -3295,10 +3316,10 @@ Schema enforcement (applied upstream by the harness):
     ) -> list[ReviewIssue]:
         """Union the calls' findings, merging exact duplicates within open findings and
         within observations only, so an open finding is never hidden among observations."""
-        kept = merge_exact_duplicates([i for run in runs for i in run.kept or []])
-        observations = merge_exact_duplicates([i for run in runs for i in run.observations])
-        reported = sum(run.reported for run in runs)
-        merged = reported - len(kept) - len(observations)
+        kept = merge_exact_duplicates([run.kept or [] for run in runs])
+        observations = merge_exact_duplicates([run.observations for run in runs])
+        retained = sum(len(run.kept or []) + len(run.observations) for run in runs)
+        merged = retained - len(kept) - len(observations)
         per_call = ", ".join(f"{run.name} {run.reported}" for run in runs)
         output_lines.append(
             f"INFO: guide calls reported {per_call}; merged {merged} exact duplicate(s)"
@@ -3352,7 +3373,8 @@ Schema enforcement (applied upstream by the harness):
             for guides in groups
         ]
         self._attempt_id = runs[0].attempt_id
-        self._guide_call_rows = []
+        # Evidence an escaping error reports: every call unfinished until it is interpreted.
+        self._guide_call_rows = [run.evidence_row() for run in runs] if len(runs) > 1 else []
         self.emit_progress(f"invoking Reviewer Specialist ({self.args.category}/{focus})")
         try:
             with self._review_state_filter():
