@@ -45,7 +45,7 @@ from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
 from booley.eda.provisioning import session_requirements as eda_requirements
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET
-from booley.runtime import interactive_docker
+from booley.runtime import interactive_docker, mount_history
 from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV, ISSUED_COMPILER_CACHE_ROOT
 from booley.runtime.devcontainer import (
     BOOLEY_DIR_TARGET,
@@ -749,6 +749,15 @@ def _persist_prepared(
         if previous_issuance is not None
         else _current_keeper_id(project)
     )
+    try:
+        mount_history.record_former_mount(
+            authorized_project_data_source(project),
+            previous,
+            BOOLEY_DIR_TARGET,
+            path,
+        )
+    except mount_history.MountHistoryError as exc:
+        raise RuntimeSpecError(str(exc)) from exc
     task_transaction = None
     try:
         written = devcontainer.write_devcontainer(project, prepared.spec)
