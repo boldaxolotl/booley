@@ -442,7 +442,7 @@ class SimulationRecord:
         origin = cast(Mapping[str, object], manifest.document["origin"])
         try:
             reference = build_coverage_campaign_reference(
-                simulation_campaign_id=cast(str, manifest.document["simulation_record_id"]),
+                simulation_record_id=cast(str, manifest.document["simulation_record_id"]),
                 simulation_manifest_sha256=manifest_digest(manifest),
                 target_identity=f"{target['vlnv']}#{target['name']}",
                 target_selector=target["selector"],

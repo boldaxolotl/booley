@@ -48,7 +48,7 @@ from booley.runtime.supervised_execution import (
 )
 from booley.specialists import coverage_analyst as coverage_analyst_module
 from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
-from tests.flows.sim.simulation_record_boundary import run_campaign_sim
+from tests.flows.sim.simulation_record_boundary import run_simulation_record_sim
 from tests.flows.sim.simulation_record_test_support import coverage_invocation
 from tests.flows.sim.test_coverage_flow import NativeExecution, _interrupt_coverage_publication
 from tests.flows.sim.test_flow import PASS_PROCESS, _preview
@@ -71,7 +71,9 @@ def _json(path: Path) -> dict[str, Any]:
 
 
 def _ordinary_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    run = run_campaign_sim(tmp_path, monkeypatch, {"lite": ["smoke"]}, PASS_PROCESS, target="lite")
+    run = run_simulation_record_sim(
+        tmp_path, monkeypatch, {"lite": ["smoke"]}, PASS_PROCESS, target="lite"
+    )
     assert run.result.exit_code == 0, run.result.outcome.report_text
     return run
 
@@ -263,7 +265,7 @@ def test_an_old_run_cwd_placeholder_fails_validation_naming_record(
     assert "{record}" in str(refused.value)
     assert "{campaign}" in str(refused.value)
 
-    run = run_campaign_sim(
+    run = run_simulation_record_sim(
         tmp_path,
         monkeypatch,
         {"lite": ["smoke"]},

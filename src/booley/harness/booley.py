@@ -1097,7 +1097,9 @@ def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
 
             store = GoalStore(resolve_booley_dir(_project_root))
             checkout = _goal_checkout(args, _project_root)
-            selection = select_status(store, checkout, campaign_reader=read_unpublished_results)
+            selection = select_status(
+                store, checkout, simulation_record_reader=read_unpublished_results
+            )
             from booley.mcp.sim_baseline_jobs import schedule_goal_baselines
 
             for view in selection.views:

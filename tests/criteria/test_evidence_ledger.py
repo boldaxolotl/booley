@@ -26,14 +26,14 @@ def _accepted_state() -> DevelopmentState:
     return state
 
 
-def _campaign_facts(
+def _simulation_record_facts(
     *,
     finished_at: str = "2026-09-21T10:00:00Z",
-    campaign_id: str = "12345678-1234-4234-9234-123456789abc",
+    simulation_record_id: str = "12345678-1234-4234-9234-123456789abc",
 ) -> dict:
     return {
         "$schema": "booley.simulation-acceptance-facts/v1",
-        "campaign_id": campaign_id,
+        "campaign_id": simulation_record_id,
         "manifest_sha256": f"sha256:{'a' * 64}",
         "origin": {"execution_id": "b" * 32, "invocation_id": 7},
         "target": {"identity": "acme:lib:uart:1#sim_uart", "selector": "sim_uart"},
@@ -55,7 +55,7 @@ def _transaction_state(tmp_path: Path) -> tuple[Path, DevelopmentState, list]:
     state.slug = "fix-uart"
     state.init_criteria({"sim_pass_uart": True}, strict=True)
     changes = state.set_criterion(
-        "sim_pass_uart", True, detail={"campaign_id": _campaign_facts()["campaign_id"]}
+        "sim_pass_uart", True, detail={"campaign_id": _simulation_record_facts()["campaign_id"]}
     )
     return log_dir, state, changes
 
@@ -111,13 +111,15 @@ def test_normalized_observations_receive_deterministic_completion_sequences(tmp_
     assert [row["sequence"] for row in rows] == [1, 2]
 
 
-def test_campaign_transaction_recovers_uncommitted_canonical_prefix(tmp_path: Path) -> None:
+def test_simulation_record_transaction_recovers_uncommitted_canonical_prefix(
+    tmp_path: Path,
+) -> None:
     log_dir, state, changes = _transaction_state(tmp_path)
     second = state.set_criterion("sim_pass_uart", False, detail={"second": True})
     changes.extend(second)
     identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
     lookup, intent, transaction_id = evidence_ledger._build_transaction_documents(
-        FIXTURE_SCOPE, state, changes, _campaign_facts(), identity
+        FIXTURE_SCOPE, state, changes, _simulation_record_facts(), identity
     )
     evidence_ledger._load_or_publish_intent(FIXTURE_SCOPE, log_dir, lookup, intent)
     evidence_root = log_dir / "acceptance" / "evidence"
@@ -130,7 +132,7 @@ def test_campaign_transaction_recovers_uncommitted_canonical_prefix(tmp_path: Pa
         log_dir,
         state,
         changes,
-        acceptance_facts=_campaign_facts(),
+        acceptance_facts=_simulation_record_facts(),
         identity=identity,
     )
 
@@ -139,13 +141,13 @@ def test_campaign_transaction_recovers_uncommitted_canonical_prefix(tmp_path: Pa
     assert state.acceptance_transactions == [transaction_id]
 
 
-def test_campaign_transaction_removes_truncated_current_temp_and_republishes(
+def test_simulation_record_transaction_removes_truncated_current_temp_and_republishes(
     tmp_path: Path,
 ) -> None:
     log_dir, state, changes = _transaction_state(tmp_path)
     identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
     _lookup, _intent, transaction_id = evidence_ledger._build_transaction_documents(
-        FIXTURE_SCOPE, state, changes, _campaign_facts(), identity
+        FIXTURE_SCOPE, state, changes, _simulation_record_facts(), identity
     )
     temp = (
         log_dir
@@ -160,7 +162,7 @@ def test_campaign_transaction_removes_truncated_current_temp_and_republishes(
         log_dir,
         state,
         changes,
-        acceptance_facts=_campaign_facts(),
+        acceptance_facts=_simulation_record_facts(),
         identity=identity,
     )
 
@@ -173,7 +175,7 @@ def test_selecting_committed_transaction_replays_later_plain_evidence(tmp_path: 
     log_dir, state, changes = _transaction_state(tmp_path)
     identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
     lookup, intent, transaction_id = evidence_ledger._build_transaction_documents(
-        FIXTURE_SCOPE, state, changes, _campaign_facts(), identity
+        FIXTURE_SCOPE, state, changes, _simulation_record_facts(), identity
     )
     evidence_ledger._load_or_publish_intent(FIXTURE_SCOPE, log_dir, lookup, intent)
     evidence_root = log_dir / "acceptance" / "evidence"
@@ -203,7 +205,7 @@ def test_selecting_committed_transaction_replays_later_plain_evidence(tmp_path: 
         log_dir,
         state,
         changes,
-        acceptance_facts=_campaign_facts(),
+        acceptance_facts=_simulation_record_facts(),
         identity=identity,
     )
 
@@ -238,10 +240,10 @@ def test_current_generation_filters_valid_historical_records(
     second = state.set_criterion("sim_pass_uart", True)
     if encoding == "v2":
         record_or_verify_transaction(
-            log, state, first, acceptance_facts=_campaign_facts(), identity=old
+            log, state, first, acceptance_facts=_simulation_record_facts(), identity=old
         )
         record_or_verify_transaction(
-            log, state, second, acceptance_facts=_campaign_facts(), identity=current
+            log, state, second, acceptance_facts=_simulation_record_facts(), identity=current
         )
     else:
         transaction = "e" * 64 if encoding == "v1" else ""
@@ -267,7 +269,7 @@ def test_foreign_v2_manifest_corruption_is_still_fatal(tmp_path: Path) -> None:
     identity = {"generation": "a" * 32}
     log, state, changes = _transaction_state(tmp_path)
     record_or_verify_transaction(
-        log, state, changes, acceptance_facts=_campaign_facts(), identity=identity
+        log, state, changes, acceptance_facts=_simulation_record_facts(), identity=identity
     )
     path = next((log / "acceptance/evidence").glob("*/record.json"))
     row = json.loads(path.read_text())
@@ -311,7 +313,9 @@ def test_concurrent_observations_receive_unique_completion_sequences(tmp_path):
     assert sorted(sequences) == list(range(1, 25))
 
 
-def test_campaign_transaction_commits_before_selecting_mutable_state(tmp_path: Path) -> None:
+def test_simulation_record_transaction_commits_before_selecting_mutable_state(
+    tmp_path: Path,
+) -> None:
     log_dir, state, changes = _transaction_state(tmp_path)
     identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
 
@@ -319,7 +323,7 @@ def test_campaign_transaction_commits_before_selecting_mutable_state(tmp_path: P
         log_dir,
         state,
         changes,
-        acceptance_facts=_campaign_facts(),
+        acceptance_facts=_simulation_record_facts(),
         identity=identity,
     )
 
@@ -345,7 +349,7 @@ def test_campaign_transaction_commits_before_selecting_mutable_state(tmp_path: P
     assert persisted.criteria["sim_pass_uart"].met is True
 
 
-def test_campaign_replay_preserves_fail_to_pass_transition_once(tmp_path: Path) -> None:
+def test_simulation_record_replay_preserves_fail_to_pass_transition_once(tmp_path: Path) -> None:
     log_dir = tmp_path / "logs" / "fix-uart"
     state = DevelopmentState.load(log_dir / ".runtime" / "booley_state.json")
     state.slug = "fix-uart"
@@ -355,10 +359,10 @@ def test_campaign_replay_preserves_fail_to_pass_transition_once(tmp_path: Path) 
     )
     identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
 
-    _record_campaign_transition(log_dir, state, identity, met=False)
-    green_facts = _campaign_facts(
+    _record_simulation_record_transition(log_dir, state, identity, met=False)
+    green_facts = _simulation_record_facts(
         finished_at="2026-09-21T10:01:00Z",
-        campaign_id="22345678-1234-4234-9234-123456789abc",
+        simulation_record_id="22345678-1234-4234-9234-123456789abc",
     )
     green_shadow = deepcopy(state)
     green = green_shadow.set_criterion("sim_pass_uart", True, detail={"passed_tests": ["tx"]})
@@ -384,7 +388,7 @@ def test_campaign_replay_preserves_fail_to_pass_transition_once(tmp_path: Path) 
     assert state.criteria["sim_pass_uart"].transition_evidence == _transition_evidence()
 
 
-def _record_campaign_transition(log_dir, state, identity, *, met: bool) -> None:
+def _record_simulation_record_transition(log_dir, state, identity, *, met: bool) -> None:
     detail = {"passed_tests" if met else "failed_tests": ["tx"]}
     shadow = deepcopy(state)
     changes = shadow.set_criterion("sim_pass_uart", met, detail=detail)
@@ -392,7 +396,7 @@ def _record_campaign_transition(log_dir, state, identity, *, met: bool) -> None:
         log_dir,
         state,
         changes,
-        acceptance_facts=_campaign_facts(finished_at="2026-09-21T10:00:00Z"),
+        acceptance_facts=_simulation_record_facts(finished_at="2026-09-21T10:00:00Z"),
         identity=identity,
     )
 
@@ -412,14 +416,16 @@ def _transition_evidence() -> list[dict[str, object]]:
     ]
 
 
-def test_campaign_transaction_retry_uses_frozen_intent_after_mutable_drift(tmp_path: Path) -> None:
+def test_simulation_record_transaction_retry_uses_frozen_intent_after_mutable_drift(
+    tmp_path: Path,
+) -> None:
     log_dir, state, changes = _transaction_state(tmp_path)
     identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
     first = record_or_verify_transaction(
         log_dir,
         state,
         changes,
-        acceptance_facts=_campaign_facts(),
+        acceptance_facts=_simulation_record_facts(),
         identity=identity,
     )
     state.slug = ""
@@ -429,7 +435,7 @@ def test_campaign_transaction_retry_uses_frozen_intent_after_mutable_drift(tmp_p
         log_dir,
         state,
         drifted,
-        acceptance_facts=_campaign_facts(),
+        acceptance_facts=_simulation_record_facts(),
         identity=identity,
     )
 

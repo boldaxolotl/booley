@@ -13,7 +13,7 @@ from booley.flows.execution_persistence import StandaloneFlowExecution
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintFlow
 from booley.flows.sim.flow import SimulateFlow
-from booley.flows.sim.record_invocation import SimulationCampaignInvocation
+from booley.flows.sim.record_invocation import SimulationRecordInvocation
 from booley.flows.sim.verilator_identity import PINNED_VERILATOR
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.mcp.flow_adapter import flow_schema
@@ -746,7 +746,7 @@ def test_candidate_mapping_excludes_baseline_prerequisite(
         {"candidate": ["smoke"]},
     )
     flow = SimulateFlow()
-    prepare_as(monkeypatch, flow, SimulationCampaignInvocation(flow, prepared))
+    prepare_as(monkeypatch, flow, SimulationRecordInvocation(flow, prepared))
     monkeypatch.setattr(EndpointState, "admission", lambda *_args, **_kwargs: nullcontext())
 
     def run(*_args):
@@ -958,7 +958,7 @@ def self_scope(flow):
     return {handle.identity for handle in flow._selected_target_handles()}
 
 
-def _report_campaign_document(handle, inspection, preview, mode, selected):
+def _report_simulation_record_document(handle, inspection, preview, mode, selected):
     from dataclasses import replace
 
     from tests.flows.sim.test_simulation_record_flow_planning import _plan
@@ -989,7 +989,7 @@ def _report_campaign_document(handle, inspection, preview, mode, selected):
     return document
 
 
-def _prepared_report_campaign(runtime, mode, resume):
+def _prepared_report_simulation_record(runtime, mode, resume):
     from dataclasses import replace
 
     from booley.flows.sim.flow import PreparedSimulationEndpoint
@@ -1011,7 +1011,7 @@ def _prepared_report_campaign(runtime, mode, resume):
     selected = ("reset", "count") if mode != "default" else ()
     if mode in {"default", "unfiltered"}:
         preview = replace(preview, groups=((),), commands=(("run",),), run_groups=())
-    document = _report_campaign_document(handle, inspection, preview, mode, selected)
+    document = _report_simulation_record_document(handle, inspection, preview, mode, selected)
     manifest = decode_simulation_record_manifest(
         encode_simulation_record_manifest(SimulationRecordManifest(document))
     )
@@ -1028,12 +1028,12 @@ def _prepared_report_campaign(runtime, mode, resume):
 
 @pytest.mark.parametrize("mode", ["named", "default", "unfiltered", "coverage"])
 @pytest.mark.parametrize("resume", [False, True])
-def test_prepared_campaign_plural_mapping_survives_partial_evaluation(
+def test_prepared_simulation_record_plural_mapping_survives_partial_evaluation(
     external_acceptance_owner, runtime, monkeypatch, mode, resume
 ):
     from booley.runtime.endpoint_execution import EndpointOutcome
 
-    prepared, handle, cycle_test = _prepared_report_campaign(runtime, mode, resume)
+    prepared, handle, cycle_test = _prepared_report_simulation_record(runtime, mode, resume)
     criteria = {"sim_pass_sim": True, "cycle_count_policy": True}
     if mode == "coverage":
         criteria["coverage_sim"] = True
@@ -1515,7 +1515,7 @@ def test_prepared_workload_scope_follows_resolved_test_runs(
     # run that judged only sim_pass reports no headline instead of a partial one.
     from booley.runtime.endpoint_execution import EndpointOutcome
 
-    prepared, handle, _ = _prepared_report_campaign(runtime, "named", False)
+    prepared, handle, _ = _prepared_report_simulation_record(runtime, "named", False)
     tests_toml = runtime / ".booley/tests.toml"
     tests_toml.write_text(
         '[sim]\nselect = "+test={name}"\ntests = ["reset", "count"]\n\n'
@@ -1548,7 +1548,7 @@ def test_prepared_workload_scope_keeps_whole_suite_criterion_with_skipped_test(
     # whole-suite sim_pass Criterion stays planned beside the judged cycle Criterion.
     from booley.runtime.endpoint_execution import EndpointOutcome
 
-    prepared, handle, _ = _prepared_report_campaign(runtime, "named", False)
+    prepared, handle, _ = _prepared_report_simulation_record(runtime, "named", False)
     tests_toml = runtime / ".booley/tests.toml"
     tests_toml.write_text('[sim]\ntests = ["reset", "count"]\nskip = ["count"]\n')
     scope = {"target": handle.identity, "_target_selector": "sim"}
@@ -1579,7 +1579,7 @@ def test_prepared_coverage_workload_keeps_declared_suite_with_skipped_test(
     # selection leaves the whole-suite sim_pass Criterion out of the planned scope.
     from booley.runtime.endpoint_execution import EndpointOutcome
 
-    prepared, _, _ = _prepared_report_campaign(runtime, "named", False)
+    prepared, _, _ = _prepared_report_simulation_record(runtime, "named", False)
     tests_toml = runtime / ".booley/tests.toml"
     tests_toml.write_text('[sim]\ntests = ["reset", "count"]\nskip = ["count"]\n')
     criteria = {"sim_pass_sim": True, "coverage_sim": True}

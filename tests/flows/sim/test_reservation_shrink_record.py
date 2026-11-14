@@ -64,7 +64,7 @@ def probes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, f
     original_run = SimulateFlow.run_prepared_simulation
 
     def run_under_claim(self, prepared, admission):
-        requests = self.campaign_job_requests(prepared)
+        requests = self.simulation_record_job_requests(prepared)
         assert requests
         records = [
             {
@@ -100,7 +100,7 @@ def probes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, f
     return seen
 
 
-def test_sim_campaign_drops_to_run_estimate_after_build(
+def test_simulation_record_drops_to_run_estimate_after_build(
     flow_project: Path,
     tmp_path: Path,
     probes: list[tuple[str, float | None]],

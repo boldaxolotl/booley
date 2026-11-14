@@ -23,7 +23,10 @@ from booley.flows.sim.execution import engine as execution_engine
 from booley.flows.sim.result import format_summary
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from tests.flows.sim.launched_work import launched_work
-from tests.flows.sim.simulation_record_boundary import CampaignSimRun, run_campaign_sim
+from tests.flows.sim.simulation_record_boundary import (
+    SimulationRecordSimRun,
+    run_simulation_record_sim,
+)
 from tests.flows.sim.test_flow import SimulateFlow
 
 # A .core declaring a Cocotb Target (flow_options.cocotb_module — decision 2).
@@ -106,10 +109,10 @@ def _run_cocotb(
     build: SubprocessResult | None = None,
     skip: dict[str, list[str]] | None = None,
     **request: Any,
-) -> CampaignSimRun:
+) -> SimulationRecordSimRun:
     """Run the Cocotb Target ``ccfg`` through the campaign with *stdout* as the run-half output."""
     process = SubprocessResult(returncode=returncode, stdout=stdout, duration_s=2.0)
-    return run_campaign_sim(
+    return run_simulation_record_sim(
         tmp_path,
         monkeypatch,
         _TESTS,
@@ -289,7 +292,7 @@ _ZERO_MATCH_RESULTS = cr.CocotbResults(
         ),
     ],
 )
-def test_cocotb_campaign_verdicts(
+def test_cocotb_simulation_record_verdicts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     stdout: str,
@@ -425,7 +428,7 @@ def test_select_template_rejected_only_on_cocotb(
     assert cocotb.launched == []
 
     # The rejection keys off cocotb-ness, not the mere presence of select.
-    native = run_campaign_sim(
+    native = run_simulation_record_sim(
         tmp_path / "native",
         monkeypatch,
         {"lite": ["t0"]},

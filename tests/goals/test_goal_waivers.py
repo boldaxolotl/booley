@@ -257,7 +257,7 @@ def persist_campaign(paths, campaign):
     ).campaign
     loaded = load_coverage_campaign(nested)
     reference = build_coverage_campaign_reference(
-        simulation_campaign_id=str(uuid4()),
+        simulation_record_id=str(uuid4()),
         simulation_manifest_sha256="sha256:" + "a" * 64,
         target_identity=str(IDENTITY),
         target_selector="top",

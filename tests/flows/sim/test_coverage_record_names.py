@@ -34,7 +34,7 @@ from booley.flows.sim.coverage_reference import (
 )
 from booley.flows.sim.record.codec import canonical_json_bytes
 from booley.flows.sim.record_retention import (
-    CampaignRetentionError,
+    SimulationRecordRetentionError,
     prune_invocation,
     prune_native_payload,
 )
@@ -352,11 +352,11 @@ def test_retention_reports_a_0_4_0_reference_as_older(
     invocation = run.reports / "sim" / "1"
     before = _tree(invocation)
 
-    with pytest.raises(CampaignRetentionError) as full:
+    with pytest.raises(SimulationRecordRetentionError) as full:
         prune_invocation(run.reports, 1)
     _assert_refused(str(full.value), _OLD_REFERENCE, invocation)
 
-    with pytest.raises(CampaignRetentionError) as native:
+    with pytest.raises(SimulationRecordRetentionError) as native:
         prune_native_payload(run.reports, 1, "sim_0")
     _assert_refused(str(native.value), _OLD_REFERENCE, invocation)
     assert _tree(invocation) == before
@@ -370,7 +370,7 @@ def test_retention_reports_a_0_4_0_coverage_record_as_older(
     invocation = run.reports / "sim" / "1"
     before = _tree(invocation)
 
-    with pytest.raises(CampaignRetentionError) as full:
+    with pytest.raises(SimulationRecordRetentionError) as full:
         prune_invocation(run.reports, 1)
 
     _assert_refused(str(full.value), _OLD_RECORD, invocation)

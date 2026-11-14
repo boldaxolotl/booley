@@ -510,12 +510,12 @@ def test_a_running_flow_waiting_for_a_work_item_claim_is_not_withdrawn(
         all_tables=False,
     )
     scheduler.step(cancel=False)
-    campaign = fleet.child("b")
+    simulation_record_child = fleet.child("b")
     for name in "ab":  # the two slots are taken: both children hold their admission
         assert fleet.store.refresh(fleet.child(name).token).state == job_slots.HOLDING  # type: ignore[arg-type]
     # Its admission is held; one of its work items waits for a slot of its own.
     item = fleet.store.submit(
-        job_slots.CLASS_LIGHT, pid=campaign.pid, role=job_slots.ROLE_INTERACTIVE
+        job_slots.CLASS_LIGHT, pid=simulation_record_child.pid, role=job_slots.ROLE_INTERACTIVE
     )
     assert fleet.store.refresh(item).state == job_slots.QUEUED  # type: ignore[arg-type]
     fleet.child("a").finish(unmet())
@@ -524,7 +524,7 @@ def test_a_running_flow_waiting_for_a_work_item_claim_is_not_withdrawn(
     # The item's claim stands (it is queued, or promoted once a's slot went); never withdrawn.
     assert fleet.store.refresh(item).state in {job_slots.QUEUED, job_slots.HOLDING}  # type: ignore[arg-type]
     assert fleet.store.state_for_pid(fleet.child("c").pid) is None  # the waiting Flow was
-    campaign.finish(result(1))
+    simulation_record_child.finish(result(1))
     scheduler.step(cancel=False)
     outcome = scheduler.outcome()
     assert by_target(outcome)["b"] == (Verdict.MET,)

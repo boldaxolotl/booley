@@ -20,9 +20,9 @@ from tests.goals.conftest import (
     SIM_KEY,
     bind,
     bump_spec,
-    campaign_facts,
     edit_protected,
     git,
+    simulation_record_facts,
     tree_digest,
     update_record,
 )
@@ -170,7 +170,7 @@ def test_discarded_evidence_leaves_state_and_ledger_byte_identical(
         state.save()
     with pytest.raises(EvidenceDiscarded, match="changed during the run"):
         stale.record_or_verify_transaction(
-            state, changes, acceptance_facts=campaign_facts(), identity={}
+            state, changes, acceptance_facts=simulation_record_facts(), identity={}
         )
 
     assert tree_digest(paths.root) == before

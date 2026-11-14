@@ -20,7 +20,7 @@ def target_report_directory(invocation: Path, selector: str) -> Path:
     return invocation / "targets" / quote(selector, safe="")
 
 
-def write_campaign_json(path: Path, document: dict[str, object]) -> None:
+def write_simulation_record_json(path: Path, document: dict[str, object]) -> None:
     """Publish a complete JSON document, never a partially written report."""
     text = json.dumps(document, sort_keys=True, indent=2, allow_nan=False) + "\n"
     atomic_replace_bytes(path, text.encode("utf-8"))
@@ -43,7 +43,7 @@ def write_compatibility_projection(
     projection["complete"] = acceptance_committed
     checkpoint = publication_checkpoint or (lambda _boundary: None)
     checkpoint("before:compatibility_projection")
-    write_campaign_json(path, projection)
+    write_simulation_record_json(path, projection)
     checkpoint("after:compatibility_projection")
 
 
@@ -70,7 +70,7 @@ def report_link_ancestor(path: Path, booley_dir: Path | None = None) -> Path | N
 
 
 @contextmanager
-def campaign_invocation_lock(
+def simulation_record_invocation_lock(
     invocation: Path, *, booley_dir: Path | None = None
 ) -> Iterator[None]:
     """Exclude pruning and execution; OS ownership ends automatically on interruption."""

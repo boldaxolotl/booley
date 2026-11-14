@@ -144,7 +144,7 @@ def test_two_variants_and_a_seed_count_are_one_process_each(tmp_path, monkeypatc
     ]
 
 
-def test_one_failing_run_fails_the_coverage_campaign(tmp_path, monkeypatch):
+def test_one_failing_run_fails_the_coverage_simulation_record(tmp_path, monkeypatch):
     context = _project(tmp_path, monkeypatch)
     plan = _target_plan(tmp_path, context, _runs(tmp_path, "reset", "reset+soak", "wrap"))
 
@@ -222,11 +222,11 @@ def test_flow_records_every_test_run_in_one_coverage_aggregate(tmp_path, monkeyp
     assert all(name.startswith("wrap@") for name in recorded[2:])
     # Each simulator process is one recorded Test Run, in the recorded order.
     assert [request.test.run_name for request in execution.runs] == recorded
-    campaign = result.outcome.detail["records"]["sim_0"]
+    simulation_record = result.outcome.detail["records"]["sim_0"]
     stored = json.loads(next((tmp_path / "reports").rglob("work-items/*/result.json")).read_text())
     assert [row["test_run"] for row in stored["observations"]] == recorded
-    assert [row["name"] for row in campaign["test_runs"]] == recorded
-    assert [(row["variant"], row["grade"]) for row in campaign["test_runs"][:2]] == [
+    assert [row["name"] for row in simulation_record["test_runs"]] == recorded
+    assert [(row["variant"], row["grade"]) for row in simulation_record["test_runs"][:2]] == [
         ("short", "pass"),
         ("soak", "pass"),
     ]
@@ -399,7 +399,7 @@ def test_resumed_multi_run_coverage_replays_the_frozen_test_runs_byte_identicall
             raise OSError("injected crash before:summary_replace")
 
     interrupted = SimulateFlow(
-        coverage_execution=lambda *_args: execution, campaign_publication_checkpoint=crash
+        coverage_execution=lambda *_args: execution, simulation_record_publication_checkpoint=crash
     ).execute(
         SimRequest(
             target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports, test=_MULTI_RUN

@@ -56,9 +56,9 @@ def test_timestamp_must_be_canonical(value: object) -> None:
 
 
 @pytest.mark.parametrize("value", [1, "bad", "550e8400-e29b-11d4-a716-446655440000"])
-def test_campaign_id_must_be_lowercase_uuid4(value: object) -> None:
+def test_simulation_record_id_must_be_lowercase_uuid4(value: object) -> None:
     with pytest.raises(ledger.AcceptanceLedgerError, match="UUIDv4"):
-        ledger._campaign_uuid(value)
+        ledger._simulation_record_uuid(value)
 
 
 def test_scalar_identity_fields_are_authenticated() -> None:
@@ -299,10 +299,10 @@ def test_acceptance_fact_identity_accepts_both_written_facts_versions(version: s
     """v2 facts name each observation's Test Run (ADR 0072); the identity is unchanged."""
     document = _acceptance_facts()
     document["$schema"] = f"booley.simulation-acceptance-facts/{version}"
-    _facts, campaign_id, manifest_sha256, origin, _finished = ledger._acceptance_fact_identity(
-        document
+    _facts, simulation_record_id, manifest_sha256, origin, _finished = (
+        ledger._acceptance_fact_identity(document)
     )
-    assert campaign_id == document["campaign_id"]
+    assert simulation_record_id == document["campaign_id"]
     assert manifest_sha256 == document["manifest_sha256"]
     assert origin == document["origin"]
 

@@ -36,9 +36,9 @@ from tests.goals.conftest import (
     SIM_KEY,
     bind,
     bump_spec,
-    campaign_facts,
     enter_goals,
     passing_sim,
+    simulation_record_facts,
 )
 from tests.golden.conftest import assert_matches_golden, normalize_work_dir
 
@@ -100,7 +100,7 @@ def _v2(
         *shadow.set_criterion(LINT_KEY, True, detail={"warnings": 0}),
     ]
     transaction = recorder.record_or_verify_transaction(
-        state, changes, acceptance_facts=campaign_facts(), identity={}
+        state, changes, acceptance_facts=simulation_record_facts(), identity={}
     )
     return state, transaction
 
@@ -277,7 +277,7 @@ def test_ticket_intent_cross_check_rejects_a_mismatched_envelope(tmp_path: Path)
             tmp_path,
             state,
             changes,
-            acceptance_facts=campaign_facts(),
+            acceptance_facts=simulation_record_facts(),
             identity=identity,
             publication_checkpoint=_interrupt("after:acceptance_intent"),
         )
@@ -289,7 +289,7 @@ def test_ticket_intent_cross_check_rejects_a_mismatched_envelope(tmp_path: Path)
 
     with pytest.raises(AcceptanceLedgerError, match="envelope does not match its lookup key"):
         fixture_ledger.record_or_verify_transaction(
-            tmp_path, state, changes, acceptance_facts=campaign_facts(), identity=identity
+            tmp_path, state, changes, acceptance_facts=simulation_record_facts(), identity=identity
         )
 
 
@@ -450,7 +450,7 @@ def test_recovery_from_a_stale_instance_keeps_a_concurrently_selected_observatio
     shadow = DevelopmentState.from_json_object(other.to_dict())
     changes = shadow.set_criterion(LINT_KEY, False, detail={"warnings": 9})
     second = concurrent.record_or_verify_transaction(
-        other, changes, acceptance_facts=campaign_facts(), identity={}
+        other, changes, acceptance_facts=simulation_record_facts(), identity={}
     )
     # Before it recorded anything, the concurrent run completed the crashed transaction
     # (ADR 0072: no new evidence while an earlier transaction is left unselected).
