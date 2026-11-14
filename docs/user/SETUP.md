@@ -92,10 +92,11 @@ booley init
 For a new IP, start from an empty repo (`mkdir my_ip && cd my_ip && git init`).
 When init finds no RTL, its closing advice points you at `/booley-setup new`.
 
-Init asks which default Agent CLI (`claude` or `codex`) and auth policy
-(`subscription`, `api-key`, or `auto`) this project uses; see
-[Sign-in and billing](#sign-in-and-billing) before you answer. Press Enter to
-accept the `claude` and `auto` defaults, or pass them as flags:
+Init asks which default Agent CLI (`claude` or `codex`) this project uses;
+press Enter to accept `claude`. It records the auth policy (`subscription` or
+`api_key`) itself from the credentials it finds for each CLI; see
+[Sign-in and billing](#sign-in-and-billing). Pass either choice as a flag to
+skip the detection or the question:
 
 ```bash
 booley init --provider codex --auth subscription
@@ -103,8 +104,8 @@ booley init --provider codex --auth subscription
 
 The choice is recorded in the `[agent]` table of `.booley/booley.toml`, as
 `default` and `auth`. The flag spells the policy `api-key`; the file spells it
-`api_key`. Re-running init keeps it; to change it later, edit that table (see
-[CONFIG.md](CONFIG.md)).
+`api_key`. Re-running init keeps an explicit value and replaces `auto`; to
+change it later, edit that table (see [CONFIG.md](CONFIG.md)).
 
 `booley init` is safe to re-run. It never overwrites a hand-edited
 `.booley/docker/{Dockerfile,requirements.txt}` (one missing its
@@ -124,8 +125,8 @@ Initialization walks through:
 ### Sign-in and billing
 
 The Developer Agent runs on an Agent CLI, Claude Code (the default) or Codex,
-and Booley bills it through a **subscription** or an **API key**. Init asks
-which one to bill and records it in `.booley/booley.toml`:
+and Booley bills it through a **subscription** or an **API key**. Init
+detects which one each CLI has and records it in `.booley/booley.toml`:
 
 ```toml
 [agent]
@@ -133,7 +134,13 @@ default = "claude"      # or "codex"
 auth = "subscription"   # or "api_key"
 ```
 
-Pick `subscription` or `api_key` explicitly. The default, `auto`, lets the
+Init records `subscription` for a CLI that has only a login and `api_key` for
+one that has only a key (a Claude OAuth token counts as a login, a Codex
+`booley auth` token as a key). When a CLI has both, it asks (Enter picks
+`subscription`); without a terminal it records `subscription` and says so.
+With neither, it records `subscription` and prints how to sign in.
+
+An explicit choice matters because `auto` lets the
 Agent CLI decide, and an exported API key always beats a subscription, so
 you can end up paying per token without noticing. With an explicit choice,
 `booley doctor` fails when the default Agent CLI's credential is missing instead

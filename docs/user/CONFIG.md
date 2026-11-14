@@ -237,7 +237,10 @@ quietly bills the other one:
 - **Another CLI in `clis`**: a missing credential warns. If a `[models]` entry
   runs a Specialist on that CLI, it fails whatever `auth` says.
 
-`booley init --auth api-key` (with a hyphen) records `api_key`. Why to pick one:
+`booley init` records the policy it detects for each CLI in `clis`: one string
+when they agree, an `[agent.auth]` table when they differ. It keeps an explicit
+value and replaces `auto`; `booley init --auth api-key` (with a hyphen) records
+`api_key` without detection. Why to pick one:
 [Sign-in and billing](SETUP.md#sign-in-and-billing).
 
 ### Git identity (`[agent.git]`)

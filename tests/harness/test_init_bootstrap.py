@@ -244,7 +244,7 @@ def test_check_only_continues_project_planning_and_returns_pending(
             (_finding(init_cmd.BootstrapState.PENDING),),
         ),
     )
-    selection = init_cmd.AgentSelection("claude", "auto", True, True)
+    selection = init_cmd.AgentSelection("claude", "auto", True, "auto")
     monkeypatch.setattr(
         init_cmd,
         "_resolve_agent_selection",
@@ -303,7 +303,7 @@ def _image_command_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
     monkeypatch.setattr(
         init_cmd,
         "_resolve_agent_selection",
-        lambda *_args: init_cmd.AgentSelection("claude", "auto", True, True),
+        lambda *_args: init_cmd.AgentSelection("claude", "auto", True, "auto"),
     )
     monkeypatch.setattr(init_cmd, "_plan_existing_guidance", lambda _ctx: (None, True))
     monkeypatch.setattr(init_cmd, "_step_agent_config", lambda *_args: True)
