@@ -8,13 +8,15 @@ from types import SimpleNamespace
 
 import pytest
 
-CAMPAIGN_ID = "01234567-89ab-4def-8123-456789abcdef"
+SIMULATION_RECORD_ID = "01234567-89ab-4def-8123-456789abcdef"
 
 
 def _origin(tmp_path):
     origin = tmp_path / "reports/sim/1/targets/sim_0/record/manifest.json"
     origin.parent.mkdir(parents=True)
-    origin.write_text(json.dumps({"simulation_record_id": CAMPAIGN_ID}) + "\n", encoding="utf-8")
+    origin.write_text(
+        json.dumps({"simulation_record_id": SIMULATION_RECORD_ID}) + "\n", encoding="utf-8"
+    )
     digest = "sha256:" + hashlib.sha256(origin.read_bytes()).hexdigest()
     return origin, digest
 
@@ -38,12 +40,12 @@ def _add_observed_cycles(monkeypatch):
     monkeypatch.setattr(_Group, "launch_snapshot", with_cycles)
 
 
-def _two_role_campaigns(tmp_path, monkeypatch):
+def _two_role_simulation_records(tmp_path, monkeypatch):
     """A candidate and a Cycle Count baseline Campaign sharing one invocation."""
     from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.record.model import create_simulation_record_plan
     from booley.flows.sim.record.store import SimulationRecordStore
-    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_campaign
+    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
 
     _add_observed_cycles(monkeypatch)
     baseline_root = tmp_path / "baseline"
@@ -53,10 +55,10 @@ def _two_role_campaigns(tmp_path, monkeypatch):
     invocation = tmp_path / "reports/1"
 
     def baseline_role(document):
-        document["simulation_record_id"] = CAMPAIGN_ID
+        document["simulation_record_id"] = SIMULATION_RECORD_ID
         document["target"].update(role="cycle_count_baseline", revision="baseline")
 
-    _, baseline = _successful_pre_sim_campaign(
+    _, baseline = _successful_pre_sim_record(
         baseline_root,
         monkeypatch,
         "immutable",
@@ -64,10 +66,10 @@ def _two_role_campaigns(tmp_path, monkeypatch):
         invocation_directory=invocation,
     )
     manifest = SimulationRecordStore(baseline.manifest_path.parent).load_manifest()
-    prerequisites = SimulateFlow._campaign_prerequisite_documents(
+    prerequisites = SimulateFlow._simulation_record_prerequisite_documents(
         create_simulation_record_plan(manifest), baseline.manifest_path.relative_to(invocation)
     )
-    _, candidate = _successful_pre_sim_campaign(
+    _, candidate = _successful_pre_sim_record(
         candidate_root,
         monkeypatch,
         "immutable",
@@ -83,14 +85,14 @@ def test_two_role_hooks_share_one_card_and_sim_json_projection(tmp_path, monkeyp
     from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.record import collect_pre_sim_firings
 
-    invocation, candidate, baseline = _two_role_campaigns(tmp_path, monkeypatch)
+    invocation, candidate, baseline = _two_role_simulation_records(tmp_path, monkeypatch)
     firings = collect_pre_sim_firings(candidate.manifest_path)
     assert len(firings) == 2
 
     flow = SimulateFlow()
     flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
-    result = flow._campaign_endpoint_outcome([candidate, baseline])
+    result = flow._simulation_record_endpoint_outcome([candidate, baseline])
     detail = result.detail
     assert detail["pre_sim_total"] == detail["pre_sim_current"] == 2
     assert detail["pre_sim_historical"] == 0
@@ -139,7 +141,7 @@ def test_dependency_receipt_round_trips_same_and_cross_root_paths(tmp_path):
         dependent.mkdir(parents=True)
         register_simulation_record_dependency(
             origin,
-            simulation_record_id=CAMPAIGN_ID,
+            simulation_record_id=SIMULATION_RECORD_ID,
             manifest_sha256=digest,
             dependent_invocation=dependent,
         )
@@ -149,7 +151,7 @@ def test_dependency_receipt_round_trips_same_and_cross_root_paths(tmp_path):
         sorted((path.absolute() for path in dependents), key=str)
     )
     assert {item.origin_invocation for item in receipts} == {tmp_path / "reports/sim/1"}
-    assert {item.simulation_record_id for item in receipts} == {CAMPAIGN_ID}
+    assert {item.simulation_record_id for item in receipts} == {SIMULATION_RECORD_ID}
     assert all(item.authoritative for item in receipts)
     assert {item.manifest_sha256 for item in receipts} == {digest}
     for receipt in origin.parent.glob("dependency-receipts/*.json"):
@@ -165,13 +167,13 @@ def test_dependency_receipt_round_trips_same_and_cross_root_paths(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("campaign_id", "digest"),
+    ("simulation_record_id", "digest"),
     [
         ("not-a-uuid", "sha256:" + "0" * 64),
-        (CAMPAIGN_ID, "sha256:not-a-digest"),
+        (SIMULATION_RECORD_ID, "sha256:not-a-digest"),
     ],
 )
-def test_dependency_receipt_rejects_invalid_identity(tmp_path, campaign_id, digest):
+def test_dependency_receipt_rejects_invalid_identity(tmp_path, simulation_record_id, digest):
     from booley.flows.sim.record.dependency import register_simulation_record_dependency
 
     origin, _actual = _origin(tmp_path)
@@ -181,7 +183,7 @@ def test_dependency_receipt_rejects_invalid_identity(tmp_path, campaign_id, dige
     with pytest.raises(ValueError, match="invalid"):
         register_simulation_record_dependency(
             origin,
-            simulation_record_id=campaign_id,
+            simulation_record_id=simulation_record_id,
             manifest_sha256=digest,
             dependent_invocation=dependent,
         )
@@ -199,7 +201,7 @@ def test_dependency_receipt_rejects_changed_oversized_and_linked_files(tmp_path)
     dependent.mkdir(parents=True)
     receipt = register_simulation_record_dependency(
         origin,
-        simulation_record_id=CAMPAIGN_ID,
+        simulation_record_id=SIMULATION_RECORD_ID,
         manifest_sha256=digest,
         dependent_invocation=dependent,
     )
@@ -240,7 +242,7 @@ def test_detached_dependency_receipt_is_inventory_but_not_deletion_authority(tmp
     dependent.mkdir(parents=True)
     register_simulation_record_dependency(
         origin,
-        simulation_record_id=CAMPAIGN_ID,
+        simulation_record_id=SIMULATION_RECORD_ID,
         manifest_sha256=digest,
         dependent_invocation=dependent,
     )
@@ -262,7 +264,7 @@ def test_dependency_receipt_refuses_conflicting_existing_record(tmp_path):
     dependent.mkdir(parents=True)
     receipt = register_simulation_record_dependency(
         origin,
-        simulation_record_id=CAMPAIGN_ID,
+        simulation_record_id=SIMULATION_RECORD_ID,
         manifest_sha256=digest,
         dependent_invocation=dependent,
     )
@@ -273,7 +275,7 @@ def test_dependency_receipt_refuses_conflicting_existing_record(tmp_path):
     with pytest.raises(ValueError, match="disagrees"):
         register_simulation_record_dependency(
             origin,
-            simulation_record_id=CAMPAIGN_ID,
+            simulation_record_id=SIMULATION_RECORD_ID,
             manifest_sha256=digest,
             dependent_invocation=dependent,
         )
@@ -326,7 +328,7 @@ def test_dependency_receipt_rejects_malformed_fields(tmp_path, field, value, mes
     dependent.mkdir(parents=True)
     receipt = register_simulation_record_dependency(
         origin,
-        simulation_record_id=CAMPAIGN_ID,
+        simulation_record_id=SIMULATION_RECORD_ID,
         manifest_sha256=digest,
         dependent_invocation=dependent,
     )
@@ -357,7 +359,7 @@ def test_dependency_receipt_reauthenticates_origin_manifest(tmp_path, manifest_d
     dependent.mkdir(parents=True)
     register_simulation_record_dependency(
         origin,
-        simulation_record_id=CAMPAIGN_ID,
+        simulation_record_id=SIMULATION_RECORD_ID,
         manifest_sha256=digest,
         dependent_invocation=dependent,
     )
@@ -376,7 +378,7 @@ def test_dependency_registration_requires_exact_paths(tmp_path):
     with pytest.raises(ValueError, match="exact"):
         register_simulation_record_dependency(
             misplaced,
-            simulation_record_id=CAMPAIGN_ID,
+            simulation_record_id=SIMULATION_RECORD_ID,
             manifest_sha256=digest,
             dependent_invocation=tmp_path / "reports/sim/2",
         )
@@ -386,7 +388,7 @@ def test_dependency_registration_requires_exact_paths(tmp_path):
     with pytest.raises(ValueError, match="positive numeric"):
         register_simulation_record_dependency(
             origin,
-            simulation_record_id=CAMPAIGN_ID,
+            simulation_record_id=SIMULATION_RECORD_ID,
             manifest_sha256=digest,
             dependent_invocation=dependent,
         )
@@ -401,7 +403,7 @@ def _cycle_baseline_manifest(names):
 
     document = json.loads(canonical_json_bytes(_manifest_for(names).document))
     document.pop("fingerprints")
-    document["simulation_record_id"] = CAMPAIGN_ID
+    document["simulation_record_id"] = SIMULATION_RECORD_ID
     document["target"].update(role="cycle_count_baseline", revision="baseline")
     for ordinal, item in enumerate(document["work_items"]):
         item.update(target=document["target"], role="cycle_count_baseline", revision="baseline")
@@ -427,7 +429,7 @@ def _candidate_manifest(names, prerequisites):
     return finalize_manifest(document)
 
 
-def _run_campaign(tmp_path, monkeypatch, manifest, invocation):
+def _run_simulation_record(tmp_path, monkeypatch, manifest, invocation):
     from types import SimpleNamespace
 
     from booley.flows.sim.record.coordinator import (
@@ -463,7 +465,9 @@ def _run_campaign(tmp_path, monkeypatch, manifest, invocation):
     return SimulationRecord(_executor(build, counters)).run(request), counters
 
 
-def test_relative_cycle_goals_on_two_tests_share_one_baseline_campaign(tmp_path, monkeypatch):
+def test_relative_cycle_goals_on_two_tests_share_one_baseline_simulation_record(
+    tmp_path, monkeypatch
+):
     """Two relative Cycle Count Goals of one Target link two work items of one baseline.
 
     Both prerequisites name the same baseline campaign, which used to be refused
@@ -476,17 +480,17 @@ def test_relative_cycle_goals_on_two_tests_share_one_baseline_campaign(tmp_path,
     _add_observed_cycles(monkeypatch)
     invocation = tmp_path / "reports/1"
     invocation.mkdir(parents=True)
-    baseline, _ = _run_campaign(
+    baseline, _ = _run_simulation_record(
         tmp_path, monkeypatch, _cycle_baseline_manifest(("alpha", "beta")), invocation
     )
     manifest = SimulationRecordStore(baseline.manifest_path.parent).load_manifest()
-    prerequisites = SimulateFlow._campaign_prerequisite_documents(
+    prerequisites = SimulateFlow._simulation_record_prerequisite_documents(
         create_simulation_record_plan(manifest), baseline.manifest_path.relative_to(invocation)
     )
     assert len(prerequisites) == 2
     assert len({item["simulation_record_id"] for item in prerequisites}) == 1
 
-    candidate, counters = _run_campaign(
+    candidate, counters = _run_simulation_record(
         tmp_path, monkeypatch, _candidate_manifest(("alpha", "beta"), prerequisites), invocation
     )
 
@@ -505,20 +509,20 @@ def _shared_baseline_candidate(tmp_path, monkeypatch):
     _add_observed_cycles(monkeypatch)
     invocation = tmp_path / "reports/1"
     invocation.mkdir(parents=True)
-    baseline, _ = _run_campaign(
+    baseline, _ = _run_simulation_record(
         tmp_path, monkeypatch, _cycle_baseline_manifest(("alpha", "beta")), invocation
     )
     manifest = SimulationRecordStore(baseline.manifest_path.parent).load_manifest()
-    prerequisites = SimulateFlow._campaign_prerequisite_documents(
+    prerequisites = SimulateFlow._simulation_record_prerequisite_documents(
         create_simulation_record_plan(manifest), baseline.manifest_path.relative_to(invocation)
     )
-    candidate, _ = _run_campaign(
+    candidate, _ = _run_simulation_record(
         tmp_path, monkeypatch, _candidate_manifest(("alpha", "beta"), prerequisites), invocation
     )
     return baseline, candidate
 
 
-def test_resume_authenticates_a_shared_baseline_campaign_once(tmp_path, monkeypatch):
+def test_resume_authenticates_a_shared_baseline_simulation_record_once(tmp_path, monkeypatch):
     """Resuming a candidate whose links share one baseline manifest walks it once."""
     from types import SimpleNamespace
 
@@ -539,7 +543,7 @@ def test_resume_authenticates_a_shared_baseline_campaign_once(tmp_path, monkeypa
     assert [node.path for node in validated.prerequisites] == [baseline.manifest_path]
 
 
-def test_a_campaign_that_lists_itself_as_prerequisite_is_a_cycle(tmp_path, monkeypatch):
+def test_a_simulation_record_that_lists_itself_as_prerequisite_is_a_cycle(tmp_path, monkeypatch):
     """Sharing a prerequisite campaign is allowed; depending on oneself is not."""
     from booley.flows.sim.record.codec import SimulationRecordIntegrityError
     from tests.flows.sim.simulation_record_test_support import _manifest_for
@@ -564,7 +568,9 @@ def test_a_campaign_that_lists_itself_as_prerequisite_is_a_cycle(tmp_path, monke
     invocation = tmp_path / "reports/1"
     invocation.mkdir(parents=True)
     with pytest.raises(SimulationRecordIntegrityError, match="cyclic"):
-        _run_campaign(tmp_path, monkeypatch, _candidate_manifest(("alpha",), [entry]), invocation)
+        _run_simulation_record(
+            tmp_path, monkeypatch, _candidate_manifest(("alpha",), [entry]), invocation
+        )
 
 
 def _write_candidate_with_prerequisite(tmp_path, manifest_path):
@@ -581,9 +587,9 @@ def _write_candidate_with_prerequisite(tmp_path, manifest_path):
             "bytes": 1,
             "sha256": "sha256:" + "a" * 64,
             "kind": "simulation_record_manifest",
-            "owner": CAMPAIGN_ID,
+            "owner": SIMULATION_RECORD_ID,
         },
-        "simulation_record_id": CAMPAIGN_ID,
+        "simulation_record_id": SIMULATION_RECORD_ID,
         "target": {**document["target"], "role": "cycle_count_baseline"},
         "required_observation": "cycle_count",
         "work_item_id": "item:0000:0123456789abcdef",
@@ -644,7 +650,7 @@ def test_planning_refuses_a_duplicate_prerequisite_link():
 
     def document(ordinal):
         return {
-            "simulation_record_id": CAMPAIGN_ID,
+            "simulation_record_id": SIMULATION_RECORD_ID,
             "work_item_id": f"item:{ordinal:04d}:0123456789abcdef",
         }
 

@@ -63,6 +63,9 @@ booley chat --resume <id>         # Claude: arguments after chat and its options
 booley chat resume --last         # Codex: the same, with its own subcommands
 booley chat -- --help             # the agent CLI's help (Booley's is booley chat --help)
 booley dashboard                  # sessions and Jobs; see Usage
+booley measure                    # measure HEAD against its committed metrics.toml and store the run
+booley measure <sha> --base <sha> # measure another commit; compare with another Base
+booley measure --all --json       # evaluate every table after a failure; print the report as JSON
 booley measure --validate         # check .booley/metrics.toml; measures nothing
 booley worktree new <name>        # a linked worktree for parallel work; see below
 booley worktree list              # each worktree's branch, changes, and use
@@ -79,8 +82,15 @@ booley worktree gc                # remove idle worktrees (default: a week), whe
 - If Booley cannot reserve a session handle for a worktree launch, it exits
   with status 2 and suggests `--here`.
 
-Measuring a commit is not available yet: `booley measure` without
-`--validate` says so and exits with status 2.
+`booley measure [<sha>]` measures one commit (`HEAD` by default, never
+uncommitted work) in a clean checkout, one child Flow per `metrics.toml` table,
+stores the Measurement Run and prints the report. It exits with status 0 when
+every enforced bound is met, 1 when one is unmet, and 2 when a Flow errored,
+when `metrics.toml` declares no table, or when the measurement could not run
+(both unmet and errored: 2). Without `--all`, the first unmet or errored table
+stops the run and the later tables are "not evaluated". `--validate` takes no
+other option. Ctrl-C cancels the measurement: a run with a finished Flow is
+stored as cancelled, never as measured, and the command ends with status 130.
 
 The Dashboard opens by itself when you attach to the container; see
 [The dashboard](USAGE.md#the-dashboard).

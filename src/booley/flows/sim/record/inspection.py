@@ -15,9 +15,9 @@ from booley.flows.sim.record_layout import (
     refuse_older_manifest_path,
 )
 from booley.flows.simulation_record_results import (
-    CampaignBusyError,
-    DurableCampaignResults,
-    StartedCampaign,
+    DurableSimulationRecordResults,
+    SimulationRecordBusyError,
+    StartedSimulationRecord,
 )
 
 from .codec import (
@@ -264,7 +264,7 @@ def _has_resources_to_recover(attempt: Mapping[str, object]) -> bool:
     return attempt["child_execution_id"] is not None or owned_run
 
 
-def started_simulation_record(manifest_path: Path) -> StartedCampaign:
+def started_simulation_record(manifest_path: Path) -> StartedSimulationRecord:
     """The identity of the campaign whose manifest was just published at *manifest_path*.
 
     Raises :class:`SimulationCampaignIntegrityError` when the manifest cannot
@@ -277,7 +277,7 @@ def started_simulation_record(manifest_path: Path) -> StartedCampaign:
             f"cannot read Simulation Campaign manifest: {exc}"
         ) from exc
     target = cast(Mapping[str, object], manifest.document["target"])
-    return StartedCampaign(
+    return StartedSimulationRecord(
         manifest_path,
         str(manifest.document["simulation_record_id"]),
         manifest_digest(manifest),
@@ -286,7 +286,9 @@ def started_simulation_record(manifest_path: Path) -> StartedCampaign:
     )
 
 
-def read_durable_results(manifest_path: Path, manifest_sha256: str) -> DurableCampaignResults:
+def read_durable_results(
+    manifest_path: Path, manifest_sha256: str
+) -> DurableSimulationRecordResults:
     """Authenticate and return the terminal results of the campaign at *manifest_path*.
 
     For a campaign that never returned an outcome (it was cancelled or
@@ -311,7 +313,7 @@ def read_durable_results(manifest_path: Path, manifest_sha256: str) -> DurableCa
         with store.mutation_lock():
             return _durable_results(store, manifest_sha256)
     except LockContentionError as exc:
-        raise CampaignBusyError(
+        raise SimulationRecordBusyError(
             f"Simulation Campaign {manifest_path} is running: its results are not final"
         ) from exc
     except OSError as exc:
@@ -320,7 +322,9 @@ def read_durable_results(manifest_path: Path, manifest_sha256: str) -> DurableCa
         ) from exc
 
 
-def _durable_results(store: SimulationRecordStore, manifest_sha256: str) -> DurableCampaignResults:
+def _durable_results(
+    store: SimulationRecordStore, manifest_sha256: str
+) -> DurableSimulationRecordResults:
     manifest = store.load_manifest()
     digest = manifest_digest(manifest)
     if digest != manifest_sha256:
@@ -336,7 +340,7 @@ def _durable_results(store: SimulationRecordStore, manifest_sha256: str) -> Dura
         for fact in consumed
     )
     rows = tuple(observation_test_run_rows(manifest, observations))
-    return DurableCampaignResults(
+    return DurableSimulationRecordResults(
         digest,
         str(manifest.document["simulation_record_id"]),
         results,

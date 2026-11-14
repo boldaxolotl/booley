@@ -25,7 +25,7 @@ from booley.flows.sim.flow import (
 )
 from booley.flows.sim.mode import SimulationMode
 from booley.flows.sim.test_selection import _filter_tests
-from booley.flows.sim.watchdog_sizing import resolve_sim_campaign_work_units
+from booley.flows.sim.watchdog_sizing import resolve_simulation_record_work_units
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime.endpoint_execution import ExecutionResult
 from tests.flows.sim.leased_session import canned_build_session
@@ -33,9 +33,9 @@ from tests.flows.sim.simulation_record_boundary import (
     FAIL_PROCESS,
     INCONCLUSIVE_PROCESS,
     PASS_PROCESS,
-    CampaignSimRun,
     Launch,
-    run_campaign_sim,
+    SimulationRecordSimRun,
+    run_simulation_record_sim,
 )
 from tests.target_test_support import write_sim_preview_project
 
@@ -162,7 +162,7 @@ def test_display_label_does_not_resolve_target_catalog(tmp_path: Path):
     build_catalog.assert_not_called()
 
 
-def test_campaign_work_units_count_native_tests_and_cocotb_batches(tmp_path: Path):
+def test_simulation_record_work_units_count_native_tests_and_cocotb_batches(tmp_path: Path):
     with (
         patch(
             "booley.flows.sim.watchdog_sizing._target_is_cocotb",
@@ -180,7 +180,7 @@ def test_campaign_work_units_count_native_tests_and_cocotb_batches(tmp_path: Pat
             return_value={"native": ["known_hang"]},
         ),
     ):
-        units = resolve_sim_campaign_work_units(
+        units = resolve_simulation_record_work_units(
             tmp_path,
             "native,cocotb",
         )
@@ -195,12 +195,12 @@ def test_campaign_work_units_count_native_tests_and_cocotb_batches(tmp_path: Pat
         (SimulationMode.ELAB_ONLY_STANDALONE, 3),
     ],
 )
-def test_campaign_work_units_count_elaboration_modes(
+def test_simulation_record_work_units_count_elaboration_modes(
     tmp_path: Path,
     mode: SimulationMode,
     expected: int,
 ) -> None:
-    assert resolve_sim_campaign_work_units(tmp_path, "one,two", mode=mode) == expected
+    assert resolve_simulation_record_work_units(tmp_path, "one,two", mode=mode) == expected
 
 
 def test_artifact_path_component_never_embeds_unsafe_test_names():
@@ -588,14 +588,14 @@ def _projection(tmp_path: Path, target: str = "lite") -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _launched_tests(run: CampaignSimRun) -> list[str]:
+def _launched_tests(run: SimulationRecordSimRun) -> list[str]:
     return [test for _target, tests in run.launched for test in tests]
 
 
-def test_campaign_rejects_unknown_test_without_launching(tmp_path: Path, monkeypatch):
+def test_simulation_record_rejects_unknown_test_without_launching(tmp_path: Path, monkeypatch):
     # The reported bug: --test no_such_test used to run the TB's default test and
     # report PASS. The campaign must reject it before any simulator launches.
-    run = run_campaign_sim(
+    run = run_simulation_record_sim(
         tmp_path,
         monkeypatch,
         {"lite": ["smoke", "stress"]},
@@ -617,11 +617,11 @@ def test_campaign_rejects_unknown_test_without_launching(tmp_path: Path, monkeyp
     [(None, ["smoke", "boot"]), (("stress",), ["stress"])],
     ids=["one-skip", "explicit-test-overrides-skip"],
 )
-def test_campaign_runs_tests_left_by_skip_list(
+def test_simulation_record_runs_tests_left_by_skip_list(
     tmp_path: Path, monkeypatch, selector: tuple[str, ...] | None, expected: list[str]
 ):
     # Naming a skipped test by hand is a clear override of the skip list.
-    run = run_campaign_sim(
+    run = run_simulation_record_sim(
         tmp_path,
         monkeypatch,
         {"lite": ["smoke", "stress", "boot"]},
@@ -634,8 +634,8 @@ def test_campaign_runs_tests_left_by_skip_list(
     assert _launched_tests(run) == expected
 
 
-def test_campaign_rejects_target_whose_tests_are_all_skipped(tmp_path: Path, monkeypatch):
-    run = run_campaign_sim(
+def test_simulation_record_rejects_target_whose_tests_are_all_skipped(tmp_path: Path, monkeypatch):
+    run = run_simulation_record_sim(
         tmp_path,
         monkeypatch,
         {"lite": ["smoke", "stress"]},
@@ -681,10 +681,10 @@ def _lite_passes_full_fails(launch: Launch) -> SubprocessResult:
     ],
     ids=["summary-pass", "summary-fail", "inconclusive", "two-tests-pass", "mixed-targets"],
 )
-def test_campaign_verdict_sets_exit_code(
+def test_simulation_record_verdict_sets_exit_code(
     tmp_path: Path, monkeypatch, targets, process, target, exit_code, grades
 ):
-    run = run_campaign_sim(tmp_path, monkeypatch, targets, process, target=target)
+    run = run_simulation_record_sim(tmp_path, monkeypatch, targets, process, target=target)
     outcome = run.result.outcome
     assert run.result.exit_code == exit_code, outcome.report_text
     assert {name: row["grade"] for name, row in outcome.detail["records"].items()} == grades
@@ -723,7 +723,7 @@ def _ticket_state(tmp_path: Path, monkeypatch, keys: list[str]) -> Path:
         "standalone-inconclusive",
     ],
 )
-def test_campaign_records_criteria(
+def test_simulation_record_records_criteria(
     tmp_path: Path, monkeypatch, process, ticket: bool, expected: dict[str, bool]
 ):
     """Ticket Mode reconciles every declared Criterion through the acceptance
@@ -733,7 +733,7 @@ def test_campaign_records_criteria(
     targets = {"lite": ["smoke"], "full": ["smoke"]} if ticket else {"lite": ["smoke"]}
     if not ticket:
         monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
-        run = run_campaign_sim(tmp_path, monkeypatch, targets, process, target="lite")
+        run = run_simulation_record_sim(tmp_path, monkeypatch, targets, process, target="lite")
         criteria = run.flow.state.criteria
         assert {key: criterion.met for key, criterion in criteria.items()} == expected
         return
@@ -742,7 +742,9 @@ def test_campaign_records_criteria(
         log_dir=tmp_path / "logs",
         identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
     )
-    run_campaign_sim(tmp_path, monkeypatch, targets, process, target="lite,full", adapter=recorder)
+    run_simulation_record_sim(
+        tmp_path, monkeypatch, targets, process, target="lite,full", adapter=recorder
+    )
     saved = DevelopmentState.load(state_path)
     assert {key: saved.is_met(key) for key in expected} == expected
     # One acceptance transaction per declared Criterion: the coordinator recorded them.
@@ -758,7 +760,7 @@ def test_unreadable_unrelated_directory_does_not_block_plain_simulation(
     unreadable.mkdir(parents=True)
     unreadable.chmod(0)
     try:
-        run = run_campaign_sim(
+        run = run_simulation_record_sim(
             tmp_path, monkeypatch, {"lite": ["smoke"]}, PASS_PROCESS, target="lite"
         )
     finally:
@@ -767,8 +769,8 @@ def test_unreadable_unrelated_directory_does_not_block_plain_simulation(
     assert run.result.exit_code == EXIT_SUCCESS, run.result.outcome.report_text
 
 
-def test_campaign_projection_reports_tests_and_label(tmp_path: Path, monkeypatch):
-    run = run_campaign_sim(
+def test_simulation_record_projection_reports_tests_and_label(tmp_path: Path, monkeypatch):
+    run = run_simulation_record_sim(
         tmp_path, monkeypatch, {"lite": ["smoke", "stress"]}, PASS_PROCESS, target="lite"
     )
     report = _projection(tmp_path)
@@ -795,7 +797,9 @@ def test_configured_cycle_sentinel_reaches_report_and_projection(tmp_path: Path,
         ),
         duration_s=1.0,
     )
-    run = run_campaign_sim(tmp_path, monkeypatch, {"lite": ["coremark"]}, process, target="lite")
+    run = run_simulation_record_sim(
+        tmp_path, monkeypatch, {"lite": ["coremark"]}, process, target="lite"
+    )
 
     assert "coremark: cycles=31415" in run.result.outcome.report_text
     assert _projection(tmp_path)["tests"][0]["cycles"] == 31415
@@ -806,7 +810,7 @@ def _run_logs(tmp_path: Path) -> list[Path]:
     return sorted((tmp_path / "reports").rglob("execution-evidence/run.log"))
 
 
-def test_campaign_keeps_each_test_log_in_its_own_work_item(tmp_path: Path, monkeypatch):
+def test_simulation_record_keeps_each_test_log_in_its_own_work_item(tmp_path: Path, monkeypatch):
     """Each HDL launch gets durable evidence before the next one starts."""
     first_bytes: list[bytes] = []
 
@@ -820,7 +824,7 @@ def test_campaign_keeps_each_test_log_in_its_own_work_item(tmp_path: Path, monke
             returncode=0, stdout="SMOKE_ONLY\n[SIM_RESULT] PASSED\n", duration_s=0.1
         )
 
-    run = run_campaign_sim(
+    run = run_simulation_record_sim(
         tmp_path, monkeypatch, {"lite": ["smoke", "stress"]}, process, target="lite"
     )
 
@@ -834,9 +838,9 @@ def test_campaign_keeps_each_test_log_in_its_own_work_item(tmp_path: Path, monke
     assert "SMOKE_ONLY" not in stress_log.read_text(encoding="utf-8")
 
 
-def test_consecutive_campaigns_preserve_first_evidence(tmp_path: Path, monkeypatch):
+def test_consecutive_simulation_records_preserve_first_evidence(tmp_path: Path, monkeypatch):
     def run(output: str) -> tuple[Path, bytes]:
-        run_campaign_sim(
+        run_simulation_record_sim(
             tmp_path,
             monkeypatch,
             {"lite": ["smoke"]},
@@ -856,14 +860,14 @@ def test_consecutive_campaigns_preserve_first_evidence(tmp_path: Path, monkeypat
     assert b"SECOND_ONLY" in second_bytes
 
 
-def test_campaign_crash_keeps_completed_target_in_progress(tmp_path: Path, monkeypatch):
+def test_simulation_record_crash_keeps_completed_target_in_progress(tmp_path: Path, monkeypatch):
     def process(launch: Launch) -> SubprocessResult:
         if launch.target == "full":
             raise RuntimeError("simulated outer interruption")
         return PASS_PROCESS
 
     monkeypatch.setenv("BOOLEY_RUN_ID", "sim-checkpoint-1")
-    run = run_campaign_sim(
+    run = run_simulation_record_sim(
         tmp_path, monkeypatch, {"lite": ["smoke"], "full": ["smoke"]}, process, target="lite,full"
     )
 
@@ -881,7 +885,7 @@ def test_default_report_root_uses_project_data(tmp_path: Path, monkeypatch):
     rtl = tmp_path / "rtl-checkout"
     rtl.mkdir()
     project_data = tmp_path / "project-data"
-    run = run_campaign_sim(
+    run = run_simulation_record_sim(
         rtl,
         monkeypatch,
         {"lite": []},
@@ -922,7 +926,9 @@ class TestTimeout:
             timed_out=True,
             duration_s=600.0,
         )
-        run = run_campaign_sim(tmp_path, monkeypatch, {"lite": ["smoke"]}, process, target="lite")
+        run = run_simulation_record_sim(
+            tmp_path, monkeypatch, {"lite": ["smoke"]}, process, target="lite"
+        )
 
         assert run.result.exit_code == EXIT_FAILURE
         test = _projection(tmp_path)["tests"][0]
@@ -956,7 +962,9 @@ class TestErrorTailSource:
             stderr=noise,
             duration_s=5.0,
         )
-        run = run_campaign_sim(tmp_path, monkeypatch, {"lite": ["smoke"]}, process, target="lite")
+        run = run_simulation_record_sim(
+            tmp_path, monkeypatch, {"lite": ["smoke"]}, process, target="lite"
+        )
 
         assert run.result.exit_code == EXIT_FAILURE
         tail = _projection(tmp_path)["tests"][0]["error_tail"]
@@ -967,7 +975,7 @@ class TestErrorTailSource:
         """A failed build produces no sim stdout — the excerpt must carry the
         stderr diagnostic so it is not lost."""
         build = SubprocessResult(returncode=1, stderr="%Error: rtl/top.sv:17: syntax error\n")
-        run = run_campaign_sim(
+        run = run_simulation_record_sim(
             tmp_path, monkeypatch, {"lite": ["smoke"]}, PASS_PROCESS, target="lite", build=build
         )
 
@@ -1037,7 +1045,7 @@ class TestMissingExecutableIsEdaToolError:
                 "ERROR: Verilator elaboration failed (rc=127)\n"
             ),
         )
-        run = run_campaign_sim(
+        run = run_simulation_record_sim(
             tmp_path, monkeypatch, {"lite": ["t1"]}, PASS_PROCESS, target="lite", build=build
         )
         outcome = run.result.outcome
@@ -1055,7 +1063,9 @@ class TestMissingExecutableIsEdaToolError:
                 '[SIM_RESULT] FAILED\n[SIM_SUMMARY] {"passed":false,"sva_errors":0}\n'
             ),
         )
-        run = run_campaign_sim(tmp_path, monkeypatch, {"lite": ["t1"]}, process, target="lite")
+        run = run_simulation_record_sim(
+            tmp_path, monkeypatch, {"lite": ["t1"]}, process, target="lite"
+        )
         assert run.result.exit_code == EXIT_FAILURE
         assert "eda_tool_error" not in run.result.outcome.detail
 

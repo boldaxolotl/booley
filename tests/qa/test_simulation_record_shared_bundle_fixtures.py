@@ -88,7 +88,7 @@ def _instrument_compiler(
     return log
 
 
-def _run_owned_campaign(
+def _run_owned_simulation_record(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -111,20 +111,20 @@ def _run_owned_campaign(
         )
     )
     assert result.exit_code == 0, result.outcome.report_text
-    campaigns = tuple(report_root.glob(f"sim/*/targets/{target}/record"))
-    assert len(campaigns) == 1
-    return campaigns[0], compiler_log
+    simulation_records = tuple(report_root.glob(f"sim/*/targets/{target}/record"))
+    assert len(simulation_records) == 1
+    return simulation_records[0], compiler_log
 
 
-def _assert_shared_campaign(
-    campaign: Path,
+def _assert_shared_simulation_record(
+    simulation_record: Path,
     compiler_log: Path,
     *,
     compiler: str,
     tests: tuple[str, ...],
 ) -> None:
     assert compiler_log.read_text(encoding="utf-8").splitlines() == [compiler]
-    manifest_path = campaign / "manifest.json"
+    manifest_path = simulation_record / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest_sha256 = (
         "sha256:" + hashlib.sha256(manifest_path.read_bytes().rstrip(b"\n")).hexdigest()
@@ -133,8 +133,10 @@ def _assert_shared_campaign(
         [name] for name in tests
     ]
 
-    build_results = tuple(campaign.glob("build-variants/*/attempts/*/build-result.json"))
-    build_attempts = tuple(campaign.glob("build-variants/*/attempts/*/build-attempt.json"))
+    build_results = tuple(simulation_record.glob("build-variants/*/attempts/*/build-result.json"))
+    build_attempts = tuple(
+        simulation_record.glob("build-variants/*/attempts/*/build-attempt.json")
+    )
     assert len(build_results) == len(build_attempts) == 1
     build_path = build_results[0]
     build = json.loads(build_path.read_text(encoding="utf-8"))
@@ -146,8 +148,8 @@ def _assert_shared_campaign(
     assert build["bundle"]["sharing"] == bundle["sharing"] == "shared_variant"
     assert build["bundle"]["bundle_id"] == bundle["bundle_id"]
 
-    results = tuple(campaign.glob("work-items/*/result.json"))
-    attempts = tuple(campaign.glob("work-items/*/attempts/*/attempt.json"))
+    results = tuple(simulation_record.glob("work-items/*/result.json"))
+    attempts = tuple(simulation_record.glob("work-items/*/attempts/*/attempt.json"))
     assert len(results) == len(attempts) == len(tests)
     documents = [json.loads(path.read_text(encoding="utf-8")) for path in results]
     assert {item["manifest_sha256"] for item in documents} == {manifest_sha256}
@@ -157,12 +159,12 @@ def _assert_shared_campaign(
     assert len({item["attempt_id"] for item in documents}) == len(tests)
 
 
-def test_taxi_fixture_runs_real_verilator_simulation_campaign(
+def test_taxi_fixture_runs_real_verilator_simulation_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _require_tools("verilator", "make", "g++")
     _require_python_modules("fusesoc", "edalize")
-    campaign, compiler_log = _run_owned_campaign(
+    simulation_record, compiler_log = _run_owned_simulation_record(
         tmp_path,
         monkeypatch,
         fixture=TAXI,
@@ -170,20 +172,20 @@ def test_taxi_fixture_runs_real_verilator_simulation_campaign(
         tests=("first", "second"),
         compiler="verilator",
     )
-    _assert_shared_campaign(
-        campaign,
+    _assert_shared_simulation_record(
+        simulation_record,
         compiler_log,
         compiler="verilator",
         tests=("first", "second"),
     )
 
 
-def test_uart_fixture_runs_real_icarus_simulation_campaign(
+def test_uart_fixture_runs_real_icarus_simulation_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _require_tools("iverilog", "vvp", "make")
     _require_python_modules("fusesoc", "edalize")
-    campaign, compiler_log = _run_owned_campaign(
+    simulation_record, compiler_log = _run_owned_simulation_record(
         tmp_path,
         monkeypatch,
         fixture=UART,
@@ -191,8 +193,8 @@ def test_uart_fixture_runs_real_icarus_simulation_campaign(
         tests=("alpha", "beta"),
         compiler="iverilog",
     )
-    _assert_shared_campaign(
-        campaign,
+    _assert_shared_simulation_record(
+        simulation_record,
         compiler_log,
         compiler="iverilog",
         tests=("alpha", "beta"),

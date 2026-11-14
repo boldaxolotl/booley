@@ -173,7 +173,7 @@ def test_attempt_unknown_field_mutation_is_rejected(field: str) -> None:
 
 
 @given(st.sampled_from(["", "/root", "../escape", "a/../b", "a//b", "C:/run", "a\\b"]))
-def test_campaign_paths_reject_traversal_and_nonportable_forms(path: str) -> None:
+def test_simulation_record_paths_reject_traversal_and_nonportable_forms(path: str) -> None:
     with pytest.raises(SimulationRecordIntegrityError):
         validate_relative_path(path)
 
@@ -186,7 +186,7 @@ def test_campaign_paths_reject_traversal_and_nonportable_forms(path: str) -> Non
         unique=True,
     )
 )
-def test_campaign_paths_accept_normalized_components(parts: list[str]) -> None:
+def test_simulation_record_paths_accept_normalized_components(parts: list[str]) -> None:
     safe = [part.replace("/", "_").replace("\\", "_") for part in parts]
     if any(part in {"", ".", ".."} or ":" in part for part in safe):
         return

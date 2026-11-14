@@ -13,17 +13,17 @@ from booley.flows.sim.coverage_campaign import CoverageRollup
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record import collect_pre_sim_firings
 from booley.flows.sim.record_presentation import (
-    _campaign_report_lines,
-    _campaign_structured_details,
     _compact_coverage_number,
     _coverage_report_suffix,
+    _simulation_record_report_lines,
+    _simulation_record_structured_details,
 )
-from booley.flows.sim.record_retention import CampaignRetentionError, prune_invocation
+from booley.flows.sim.record_retention import SimulationRecordRetentionError, prune_invocation
 from booley.flows.sim.request import SimRequest
 from booley.flows.test_runs import build_test_run
 from booley.mcp.job_results import _read_report_json
 from tests.conftest import symlink_or_skip
-from tests.flows.sim.simulation_record_test_support import _recorded_campaign
+from tests.flows.sim.simulation_record_test_support import _recorded_simulation_record
 from tests.flows.sim.test_verilator_build_reuse_record import flow_project
 from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.runtime.test_sandbox_layout import project_alias
@@ -32,7 +32,9 @@ __all__ = ["flow_project", "project_alias"]
 
 
 @pytest.mark.parametrize("relative", [False, True])
-def test_project_alias_simulation_executes_campaign(flow_project, tmp_path, monkeypatch, relative):
+def test_project_alias_simulation_executes_simulation_record(
+    flow_project, tmp_path, monkeypatch, relative
+):
     from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.request import SimRequest
     from booley.harness import doctor
@@ -107,7 +109,7 @@ def _no_files(count: int) -> list[Any]:
 
 
 def test_infrastructure_termination_is_reported_beyond_observation_preview() -> None:
-    from booley.flows.sim.record_presentation import _campaign_observation_preview
+    from booley.flows.sim.record_presentation import _simulation_record_observation_preview
 
     observation = {
         "test": "first",
@@ -127,7 +129,7 @@ def test_infrastructure_termination_is_reported_beyond_observation_preview() -> 
         assertions="not_observed",
         detail={"termination": "disk_budget", "reason": "disk guard"},
     )
-    preview = _campaign_observation_preview(
+    preview = _simulation_record_observation_preview(
         [observation] * 32 + [aborted], _no_files(33), Path("target")
     )
     assert preview["observations_truncated"] is True
@@ -135,8 +137,8 @@ def test_infrastructure_termination_is_reported_beyond_observation_preview() -> 
     assert preview["observations"][0]["failure_class"] is None
 
 
-def test_campaign_build_diagnostics_survive_preview_limit() -> None:
-    from booley.flows.sim.record_presentation import _campaign_observation_preview
+def test_simulation_record_build_diagnostics_survive_preview_limit() -> None:
+    from booley.flows.sim.record_presentation import _simulation_record_observation_preview
 
     observation = {
         "test": "ok",
@@ -159,7 +161,7 @@ def test_campaign_build_diagnostics_survive_preview_limit() -> None:
         execution="aborted",
         detail={"termination": "build_infrastructure", "build_stage": stage},
     )
-    preview = _campaign_observation_preview(
+    preview = _simulation_record_observation_preview(
         [observation] * 32 + [failed], _no_files(33), Path("target")
     )
     assert preview["build_stage"] == [stage]
@@ -169,12 +171,12 @@ def test_campaign_build_diagnostics_survive_preview_limit() -> None:
 def test_cycle_card_global_limits_and_utf8_names(tmp_path, monkeypatch, budget):
     from types import SimpleNamespace
 
-    from booley.flows.sim.record_presentation import _campaign_report_lines
+    from booley.flows.sim.record_presentation import _simulation_record_report_lines
 
     monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", str(budget * 2))
     monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", str(budget))
     run = build_test_run("é" * 256)
-    recorded = _recorded_campaign(tmp_path, (run,))
+    recorded = _recorded_simulation_record(tmp_path, (run,))
     outcomes = [
         SimpleNamespace(
             target={"selector": str(index)},
@@ -196,8 +198,8 @@ def test_cycle_card_global_limits_and_utf8_names(tmp_path, monkeypatch, budget):
         )
         for item in outcomes
     ]
-    plain = "\n".join(_campaign_report_lines(base))
-    rendered = "\n".join(_campaign_report_lines(outcomes))
+    plain = "\n".join(_simulation_record_report_lines(base))
+    rendered = "\n".join(_simulation_record_report_lines(outcomes))
     added = len(rendered.encode()) - len(plain.encode())
     assert added <= min(budget // 4, max(0, budget - len(plain.encode()) - 2))
     assert rendered.count("cycles=") <= 32
@@ -232,7 +234,7 @@ def test_cycle_card_preserves_complete_reason_strings(reason, tmp_path, monkeypa
     monkeypatch.setattr(record_presentation, "source_gap_report_lines", lambda _campaign: [])
 
     one, two = build_test_run("one"), build_test_run("two")
-    recorded = _recorded_campaign(tmp_path, (one, two))
+    recorded = _recorded_simulation_record(tmp_path, (one, two))
     outcome = SimpleNamespace(
         target={"selector": "sim"},
         manifest_path=Path("/target/record/manifest.json"),
@@ -243,7 +245,7 @@ def test_cycle_card_preserves_complete_reason_strings(reason, tmp_path, monkeypa
             recorded.fact(two, test="two", cycle_count=None, detail={"reason": "y"}),
         ],
     )
-    rendered = record_presentation._campaign_report_lines([outcome])[0]
+    rendered = record_presentation._simulation_record_report_lines([outcome])[0]
     assert f"\n  {reason}\n  y\n  one: cycles=7\ncoverage hint" in rendered
     assert resolved == [True]
 
@@ -279,11 +281,13 @@ def test_authenticated_coverage_resume_keeps_report_counts(tmp_path, monkeypatch
     progress = json.loads((resumed / "sim/1/progress.json").read_text())
     assert "cycle_counts" not in json.dumps(progress)
     if failure:
-        assert flow._simulation_campaign_outcomes == ()
+        assert flow._simulation_record_outcomes == ()
     else:
-        campaign = report["detail"]["records"]["sim_0"]
-        assert all(item["cycle_count"] is None for item in campaign["observations"])
-        assert campaign["artifacts"]["simulation"]["path_base"] == "external_origin_target"
+        simulation_record = report["detail"]["records"]["sim_0"]
+        assert all(item["cycle_count"] is None for item in simulation_record["observations"])
+        assert (
+            simulation_record["artifacts"]["simulation"]["path_base"] == "external_origin_target"
+        )
 
 
 def test_large_persisted_count_mapping_survives_actual_readers(tmp_path, monkeypatch):
@@ -291,26 +295,28 @@ def test_large_persisted_count_mapping_survives_actual_readers(tmp_path, monkeyp
 
     from booley.flows.endpoint_reporting import write_report
     from booley.flows.sim.flow import SimulateFlow
-    from booley.flows.sim.record_presentation import _campaign_observation_preview
+    from booley.flows.sim.record_presentation import _simulation_record_observation_preview
     from booley.flows.sim.record_retention import _read_object
     from booley.flows.sim.request import SimRequest
     from booley.mcp.server import _structured_from_report
-    from tests.flows.sim.test_endpoint_record_lifecycle import _public_cycle_campaign
+    from tests.flows.sim.test_endpoint_record_lifecycle import _public_cycle_simulation_record
 
-    campaign = _public_cycle_campaign(tmp_path, monkeypatch)
+    simulation_record = _public_cycle_simulation_record(tmp_path, monkeypatch)
     observations = tuple(
         dict(
-            campaign.observations[0], test=None if i == 0 else '\\"é' * 100 + str(i), cycle_count=i
+            simulation_record.observations[0],
+            test=None if i == 0 else '\\"é' * 100 + str(i),
+            cycle_count=i,
         )
         for i in range(2000)
     )
     outcomes = [
-        replace(campaign, target={"selector": name}, observations=observations)
+        replace(simulation_record, target={"selector": name}, observations=observations)
         for name in ("one", "two")
     ]
     flow = SimulateFlow()
     flow._args = SimRequest(target="one,two", report_dir=tmp_path / "large", work_dir=tmp_path)
-    result = flow._campaign_endpoint_outcome(outcomes)
+    result = flow._simulation_record_endpoint_outcome(outcomes)
     with flow.publication_resources:
         path = write_report(flow, result)
     report = _read_report_json(path)
@@ -319,12 +325,12 @@ def test_large_persisted_count_mapping_survives_actual_readers(tmp_path, monkeyp
     assert report["cycle_counts"]["one"][0] == {"test": None, "cycle_count": 0}
     assert len(json.dumps(_structured_from_report(report)).encode()) < 65536
     assert "cycle_counts" not in report["detail"]
-    preview = _campaign_observation_preview(observations[:40], _no_files(40), tmp_path)
+    preview = _simulation_record_observation_preview(observations[:40], _no_files(40), tmp_path)
     assert len(preview["observations"]) == 32 and preview["observations"][-1]["cycle_count"] == 31
     assert "cycle_counts" not in preview
 
 
-def _resume_hook_campaign(tmp_path, monkeypatch, interrupted, *, external=False):
+def _resume_hook_simulation_record(tmp_path, monkeypatch, interrupted, *, external=False):
     from booley.flows.sim.record.coordinator import (
         ResumeSimulationRecordRunRequest,
         SimulationRecord,
@@ -335,9 +341,9 @@ def _resume_hook_campaign(tmp_path, monkeypatch, interrupted, *, external=False)
     from booley.flows.sim.record.resume import ValidatedManifestNode, ValidatedResumeManifest
     from booley.flows.sim.record.store import SimulationRecordStore
     from tests.flows.sim.simulation_record_test_support import _admission, _executor, _handle
-    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_campaign
+    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
 
-    origin, original = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
+    origin, original = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
     store = SimulationRecordStore(original.manifest_path.parent)
     if interrupted:
         (original.pre_sim_firings[0].path.parents[3] / "result.json").unlink()
@@ -372,7 +378,7 @@ def test_resume_separates_historical_hooks_from_real_new_firings(
 
     from booley.flows.sim.flow import SimulateFlow
 
-    original, resumed, counters, invocation = _resume_hook_campaign(
+    original, resumed, counters, invocation = _resume_hook_simulation_record(
         tmp_path, monkeypatch, interrupted, external=external
     )
     if external:  # an external invocation reuses the number of the producing one
@@ -386,7 +392,7 @@ def test_resume_separates_historical_hooks_from_real_new_firings(
     flow = SimulateFlow()
     flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
-    result = flow._campaign_endpoint_outcome([resumed])
+    result = flow._simulation_record_endpoint_outcome([resumed])
     assert len(result.detail["pre_sim_lines"]) == expected_runs
     assert result.report_text.count("pre_run_commands") == expected_runs
     assert result.detail["pre_sim_current"] == expected_runs
@@ -402,11 +408,16 @@ def test_hook_reference_resolves_from_numbered_report_and_requires_external_cont
     tmp_path, monkeypatch
 ):
     from booley.flows.sim.record import ArtifactReferenceError, resolve_report_artifact_reference
-    from booley.flows.sim.record_presentation import _campaign_hook_inputs, _pre_sim_projection
-    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_campaign
+    from booley.flows.sim.record_presentation import (
+        _pre_sim_projection,
+        _simulation_record_hook_inputs,
+    )
+    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
 
-    invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
-    detail = _pre_sim_projection(*_campaign_hook_inputs([outcome], invocation), invocation)[0]
+    invocation, outcome = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
+    detail = _pre_sim_projection(
+        *_simulation_record_hook_inputs([outcome], invocation), invocation
+    )[0]
     reference = detail["pre_sim_runs"][0]["reference"]
     owner = outcome.pre_sim_firings[0].document["attempt_id"]
     options = {
@@ -417,9 +428,9 @@ def test_hook_reference_resolves_from_numbered_report_and_requires_external_cont
     resolved = resolve_report_artifact_reference(invocation / "report.json", reference, **options)
     assert resolved.path == outcome.pre_sim_firings[0].path
     destination = tmp_path / "external/reports/2"
-    external = _pre_sim_projection(*_campaign_hook_inputs([outcome], destination), destination)[0][
-        "pre_sim_runs"
-    ][0]["reference"]
+    external = _pre_sim_projection(
+        *_simulation_record_hook_inputs([outcome], destination), destination
+    )[0]["pre_sim_runs"][0]["reference"]
     assert external["path_base"] == "external_origin_target"
     with pytest.raises(ArtifactReferenceError):
         resolve_report_artifact_reference(destination / "report.json", external, **options)
@@ -457,24 +468,26 @@ def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counter
         dry_run=False,
         mode=None,
     )
-    monkeypatch.setattr(flow, "_campaign_policy", SimulationRecordPolicy)
+    monkeypatch.setattr(flow, "_simulation_record_policy", SimulationRecordPolicy)
     monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: invocation)
     # Destination admission/dependency publication is outside this typed execution test.
-    monkeypatch.setattr(flow, "_prepare_campaign_resume_dependency", lambda *args: None)
+    monkeypatch.setattr(flow, "_prepare_simulation_record_resume_dependency", lambda *args: None)
     monkeypatch.setattr(
         flow,
-        "_resume_campaign_plan",
+        "_resume_simulation_record_plan",
         lambda *args, **kwargs: create_simulation_record_plan(manifest),
     )
     monkeypatch.setattr(
-        flow, "_resume_campaign_executor", lambda *args: _executor(invocation / "build", counters)
+        flow,
+        "_resume_simulation_record_executor",
+        lambda *args: _executor(invocation / "build", counters),
     )
     return flow, PreparedSimulationEndpoint((), validated, ("sim",), {})
 
 
 def _third_invocation_resume(tmp_path, monkeypatch, *, interrupted=False):
     """Resume an externally resumed Campaign again from a third invocation."""
-    original, _prior, _counters, _invocation = _resume_hook_campaign(
+    original, _prior, _counters, _invocation = _resume_hook_simulation_record(
         tmp_path, monkeypatch, False, external=True
     )
     if interrupted:
@@ -487,7 +500,7 @@ def _third_invocation_resume(tmp_path, monkeypatch, *, interrupted=False):
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
-def test_production_resume_corruption_uses_campaign_integrity_outcome(
+def test_production_resume_corruption_uses_simulation_record_integrity_outcome(
     tmp_path, monkeypatch, dry_run
 ):
     from tests.flows.sim.simulation_record_test_support import _admission
@@ -503,14 +516,14 @@ def test_production_resume_corruption_uses_campaign_integrity_outcome(
 
 
 def _serialize_resume_waiter(monkeypatch, flow, waiting, completed):
-    run = flow._run_validated_resume_campaign
+    run = flow._run_validated_resume_simulation_record
 
     def wait_for_owner(*args, **kwargs):
         waiting.set()
         assert completed.wait(10)
         return run(*args, **kwargs)
 
-    monkeypatch.setattr(flow, "_run_validated_resume_campaign", wait_for_owner)
+    monkeypatch.setattr(flow, "_run_validated_resume_simulation_record", wait_for_owner)
 
 
 def test_concurrent_production_resume_waiter_does_not_claim_owner_firing(tmp_path, monkeypatch):
@@ -519,7 +532,7 @@ def test_concurrent_production_resume_waiter_does_not_claim_owner_firing(tmp_pat
 
     from tests.flows.sim.simulation_record_test_support import _admission
 
-    original, _prior, _counters, _invocation = _resume_hook_campaign(
+    original, _prior, _counters, _invocation = _resume_hook_simulation_record(
         tmp_path, monkeypatch, False, external=True
     )
     (original.pre_sim_firings[0].path.parents[3] / "result.json").unlink()
@@ -550,7 +563,7 @@ def test_concurrent_production_resume_waiter_does_not_claim_owner_firing(tmp_pat
     assert waiter_result.detail["pre_sim_historical"] == 2
 
 
-def test_campaign_scan_error_retains_independently_authenticated_hook_lines():
+def test_simulation_record_scan_error_retains_independently_authenticated_hook_lines():
     from booley.flows.sim.record_presentation import _pre_sim_integrity_failure
     from booley.runtime.endpoint_execution import EndpointOutcome
 
@@ -580,7 +593,7 @@ def test_production_postscan_corruption_preserves_authenticated_current_evidence
         tmp_path, monkeypatch, interrupted=True
     )
     result_path = original.pre_sim_firings[0].path.parents[3] / "result.json"
-    project = flow._campaign_endpoint_outcome
+    project = flow._simulation_record_endpoint_outcome
 
     def corrupt_after_authenticated_projection(outcomes):
         result = project(outcomes)
@@ -588,7 +601,9 @@ def test_production_postscan_corruption_preserves_authenticated_current_evidence
         result_path.write_text("{}")
         return result
 
-    monkeypatch.setattr(flow, "_campaign_endpoint_outcome", corrupt_after_authenticated_projection)
+    monkeypatch.setattr(
+        flow, "_simulation_record_endpoint_outcome", corrupt_after_authenticated_projection
+    )
     result = flow.run_prepared_simulation(prepared, _admission())
     assert counters["launch"] == 1
     assert result.exit_code == 2
@@ -658,7 +673,7 @@ def test_actual_publication_observer_checkpoint_and_exception_semantics(tmp_path
 def _current_observed_hook_dag(tmp_path, monkeypatch, flow):
     from booley.flows.sim.record.model import create_simulation_record_plan
     from booley.flows.sim.record.store import SimulationRecordStore
-    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_campaign
+    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
     from tests.flows.sim.test_simulation_record_dependency import _add_observed_cycles
 
     _add_observed_cycles(monkeypatch)
@@ -673,7 +688,7 @@ def _current_observed_hook_dag(tmp_path, monkeypatch, flow):
         document["simulation_record_id"] = "01234567-89ab-4def-8123-456789abcdef"
         document["target"].update(role="cycle_count_baseline", revision="baseline")
 
-    _, baseline = _successful_pre_sim_campaign(
+    _, baseline = _successful_pre_sim_record(
         baseline_root,
         monkeypatch,
         "immutable",
@@ -682,10 +697,10 @@ def _current_observed_hook_dag(tmp_path, monkeypatch, flow):
         observer=flow._record_pre_sim_firing,
     )
     manifest = SimulationRecordStore(baseline.manifest_path.parent).load_manifest()
-    prerequisites = flow._campaign_prerequisite_documents(
+    prerequisites = flow._simulation_record_prerequisite_documents(
         create_simulation_record_plan(manifest), baseline.manifest_path.relative_to(invocation)
     )
-    _, candidate = _successful_pre_sim_campaign(
+    _, candidate = _successful_pre_sim_record(
         candidate_root,
         monkeypatch,
         "immutable",
@@ -704,7 +719,7 @@ def test_retained_current_baseline_uses_actual_flow_publication_authority(tmp_pa
     flow = SimulateFlow()
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
     candidate = _current_observed_hook_dag(tmp_path, monkeypatch, flow)
-    result = flow._campaign_endpoint_outcome([candidate])
+    result = flow._simulation_record_endpoint_outcome([candidate])
     assert result.detail["pre_sim_current"] == 1
     firing = next(f for f in candidate.pre_sim_firings if f.document["role"] == "candidate")
     (firing.path.parents[3] / "result.json").write_text("{}")
@@ -718,7 +733,7 @@ def test_retained_current_baseline_uses_actual_flow_publication_authority(tmp_pa
     assert all(record["terminal"] is False for record in result.detail["pre_sim_runs"])
 
 
-def test_published_hook_collection_scans_each_campaign_once(tmp_path, monkeypatch):
+def test_published_hook_collection_scans_each_simulation_record_once(tmp_path, monkeypatch):
     from collections import Counter
     from types import SimpleNamespace
 
@@ -750,7 +765,9 @@ def _published_hook_budget_boundary(flow, candidate, roomy):
     from booley.runtime.endpoint_execution import EndpointOutcome
 
     baseline = EndpointOutcome(
-        report_text="\n".join(record_presentation._campaign_report_lines([candidate], {}, None))
+        report_text="\n".join(
+            record_presentation._simulation_record_report_lines([candidate], {}, None)
+        )
     )
     baseline = flow._attach_published_pre_sim(baseline)
     line = record_presentation._cycle_display_line(candidate.observations[0], 10000)
@@ -759,7 +776,9 @@ def _published_hook_budget_boundary(flow, candidate, roomy):
     assert len(baseline.report_text.encode()) + 2 <= budget
     assert not roomy or budget // 4 >= allowance
     if roomy:
-        candidate_hooks = flow._campaign_endpoint_outcome([candidate]).detail["pre_sim_lines"]
+        candidate_hooks = flow._simulation_record_endpoint_outcome([candidate]).detail[
+            "pre_sim_lines"
+        ]
         assert allowance < len("\n".join(candidate_hooks).encode()) + 1
     return {"baseline": baseline, "budget": budget, "candidate": candidate}
 
@@ -792,14 +811,14 @@ def _published_hook_budget_run(tmp_path, monkeypatch, *, roomy=False, corrupt=Fa
             )
             (firing.path.parents[3] / "result.json").write_text("{}")
             flow._pending_criteria_set = ("before-final-integrity",)
-        result = flow._campaign_endpoint_outcome([candidate])
+        result = flow._simulation_record_endpoint_outcome([candidate])
         assert reads == []
         evidence["reads"] = reads
         evidence["endpoint"] = result
         evidence["endpoint_text"] = result.report_text
         return result
 
-    monkeypatch.setattr(flow, "_ordinary_campaign", run)
+    monkeypatch.setattr(flow, "_ordinary_simulation_record", run)
     prepared = module.PreparedSimulationEndpoint((), None, ("sim",), {})
     result = flow.run_prepared_simulation(prepared, None)
     return flow, result, evidence
@@ -836,10 +855,10 @@ def test_missing_published_hook_key_suppresses_optional_budget(tmp_path, monkeyp
     flow._args = SimRequest(target="sim")
     flow._current_published_pre_sim_keys.add(("missing", "key", "id", 1))
     before = candidate.pre_sim_firings
-    result = flow._campaign_endpoint_outcome([candidate])
+    result = flow._simulation_record_endpoint_outcome([candidate])
     assert "cycles=" not in result.report_text and "integrity" not in result.report_text
     assert candidate.pre_sim_firings is before
-    assert flow._simulation_campaign_outcomes == (candidate,)
+    assert flow._simulation_record_outcomes == (candidate,)
 
 
 @pytest.mark.parametrize("count", [None, 0, 1234])
@@ -849,9 +868,9 @@ def test_initialized_empty_hook_authority_keeps_authenticated_counts(tmp_path, m
     from booley.flows.sim import record
     from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.request import SimRequest
-    from tests.flows.sim.test_endpoint_record_lifecycle import _public_cycle_campaign
+    from tests.flows.sim.test_endpoint_record_lifecycle import _public_cycle_simulation_record
 
-    outcome = _public_cycle_campaign(tmp_path, monkeypatch)
+    outcome = _public_cycle_simulation_record(tmp_path, monkeypatch)
     outcome = replace(outcome, observations=(dict(outcome.observations[0], cycle_count=count),))
     flow = SimulateFlow()
     flow._args = SimRequest(target="sim")
@@ -862,7 +881,7 @@ def test_initialized_empty_hook_authority_keeps_authenticated_counts(tmp_path, m
         raise AssertionError("endpoint must not scan hook storage")
 
     monkeypatch.setattr(record, "collect_pre_sim_firings", unexpected_read)
-    result = flow._campaign_endpoint_outcome([outcome])
+    result = flow._simulation_record_endpoint_outcome([outcome])
     assert ("cycles=" in result.report_text) is (count is not None)
     assert "cycle counts omitted" not in result.report_text
     assert result.detail["pre_sim_current"] == 0
@@ -876,7 +895,7 @@ def test_corruption_before_endpoint_keeps_final_integrity_policy(tmp_path, monke
     assert "integrity" not in evidence["endpoint_text"]
     assert result.exit_code == 2 and result.criterion_met is False
     assert "Simulation Campaign integrity failure:" in result.report_text
-    assert flow._simulation_campaign_outcomes == ()
+    assert flow._simulation_record_outcomes == ()
     assert flow._pending_criteria_set == ()
     assert result.detail["pre_sim_current"] == 2
     assert all(record["terminal"] is False for record in result.detail["pre_sim_runs"])
@@ -894,7 +913,7 @@ def test_resume_count_budget_uses_only_actual_current_hook_keys(
     original, flow, prepared, counters = _third_invocation_resume(
         tmp_path, monkeypatch, interrupted=interrupted
     )
-    probe = module._campaign_report_lines
+    probe = module._simulation_record_report_lines
     calls = []
 
     def inspect(outcomes, coverage_campaigns, trailing_lines, **kwargs):
@@ -902,7 +921,7 @@ def test_resume_count_budget_uses_only_actual_current_hook_keys(
         calls.append((frozenset(flow._current_published_pre_sim_keys), trailing_lines))
         return probe(outcomes, coverage_campaigns, trailing_lines, **kwargs)
 
-    monkeypatch.setattr(module, "_campaign_report_lines", inspect)
+    monkeypatch.setattr(module, "_simulation_record_report_lines", inspect)
     result = flow.run_prepared_simulation(prepared, _admission())
     assert counters["launch"] == int(interrupted)
     assert result.report_text.count("cycles=17") == 1
@@ -921,11 +940,11 @@ def test_prior_firing_reauthentication_rejects_byte_identical_symlink_attempt(
 ):
     from booley.flows.sim.record import SimulationRecordIntegrityError
     from tests.conftest import require_symlinks, symlink_or_skip
-    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_campaign
+    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
 
     require_symlinks(tmp_path)
-    _invocation, campaign = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
-    firing = campaign.pre_sim_firings[0]
+    _invocation, simulation_record = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
+    firing = simulation_record.pre_sim_firings[0]
     directory = firing.path.parent.parent
     copy = tmp_path / "copied-attempt"
     sidecar_bytes = firing.path.read_bytes()
@@ -1012,7 +1031,7 @@ def test_alias_normalization_precedes_simulation_preparation(
 
 @pytest.mark.parametrize("error", ["truncated", "schema", "missing"])
 def test_projection_rejects_corrupt_record(tmp_path, error):
-    from booley.flows.sim.acceptance import _campaign_projection, _OutcomeEvidence
+    from booley.flows.sim.acceptance import _OutcomeEvidence, _simulation_record_projection
     from booley.flows.sim.record import decode_simulation_projection
     from booley.flows.sim.record_retention import _read_object
     from tests.flows.sim.test_test_run_evidence_rows import _RESET, _outcome
@@ -1020,7 +1039,7 @@ def test_projection_rejects_corrupt_record(tmp_path, error):
     document = json.loads(
         json.dumps(
             {
-                **_campaign_projection(_OutcomeEvidence(_outcome(tmp_path, _RESET))),
+                **_simulation_record_projection(_OutcomeEvidence(_outcome(tmp_path, _RESET))),
                 "complete": True,
             }
         )
@@ -1041,7 +1060,7 @@ def _two_firing_store(tmp_path):
     """Run a coverage Campaign whose one attempt holds two failed Pre-Sim firings."""
     from booley.flows.sim.execution.contract import PreSimEvidence
     from booley.flows.sim.verilator_coverage import SimulationRunResult
-    from tests.flows.sim.simulation_record_test_support import _run_coverage_campaign
+    from tests.flows.sim.simulation_record_test_support import _run_coverage_simulation_record
     from tests.flows.sim.test_coverage_transaction import NativeExecution
 
     class Hooks(NativeExecution):
@@ -1056,7 +1075,7 @@ def _two_firing_store(tmp_path):
             )
             return SimulationRunResult("elab_error", evidence.detail, evidence)
 
-    outcome, store = _run_coverage_campaign(
+    outcome, store = _run_coverage_simulation_record(
         tmp_path, Hooks(), pre_sim_commands=("prepare-vectors",)
     )
     firings = collect_pre_sim_firings(store.manifest_path)
@@ -1105,7 +1124,7 @@ def test_shared_collection_bound_counts_distinct_prerequisite_references(tmp_pat
         collect_pre_sim_firings(*roots)
 
 
-def test_campaign_card_renders_each_target_once(tmp_path, monkeypatch):
+def test_simulation_record_card_renders_each_target_once(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     from booley.flows.sim import record_presentation
@@ -1115,11 +1134,11 @@ def test_campaign_card_renders_each_target_once(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", "12000")
     monkeypatch.setattr(
         record_presentation,
-        "_campaign_test_run_lines",
+        "_simulation_record_test_run_lines",
         lambda selector, *args: calls.append(selector) or [],
     )
     smoke = build_test_run("smoke")
-    recorded = _recorded_campaign(tmp_path, (smoke,))
+    recorded = _recorded_simulation_record(tmp_path, (smoke,))
     outcomes = [
         SimpleNamespace(
             target={"selector": name},
@@ -1129,7 +1148,7 @@ def test_campaign_card_renders_each_target_once(tmp_path, monkeypatch):
         )
         for name in ("one", "two")
     ]
-    text = "\n".join(record_presentation._campaign_report_lines(outcomes))
+    text = "\n".join(record_presentation._simulation_record_report_lines(outcomes))
     assert text.count("smoke: cycles=0") == 2
     assert calls == ["one", "two"]
 
@@ -1158,11 +1177,11 @@ def test_invocation_lock_follows_only_the_booley_dir_entry(tmp_path, linked):
     if linked != "entry":
         with (
             pytest.raises(ValueError, match="must not contain symlinks"),
-            record_reports.campaign_invocation_lock(invocation, booley_dir=entry),
+            record_reports.simulation_record_invocation_lock(invocation, booley_dir=entry),
         ):
             pass
         return
-    with record_reports.campaign_invocation_lock(invocation, booley_dir=entry):
+    with record_reports.simulation_record_invocation_lock(invocation, booley_dir=entry):
         assert (invocation.parent / ".invocation-1.lock").exists()
 
 
@@ -1234,23 +1253,27 @@ def test_host_run_reserves_through_the_entry_only_for_a_derivable_report_root(
         assert flow._next_invocation_dir(report_dir) == report_dir / "sim" / "1"
 
 
-def test_campaign_json_write_survives_transient_replace_sharing_error(tmp_path, monkeypatch):
+def test_simulation_record_json_write_survives_transient_replace_sharing_error(
+    tmp_path, monkeypatch
+):
     from tests.sharing_error_support import hold_replaces
 
     path = tmp_path / "simulation.json"
     attempts = hold_replaces(monkeypatch, {path: 1})
-    record_reports.write_campaign_json(path, {"passed": True})
+    record_reports.write_simulation_record_json(path, {"passed": True})
     assert json.loads(path.read_text(encoding="utf-8")) == {"passed": True}
     assert attempts[path] == 2
 
 
-def test_campaign_json_write_retries_before_raising_lasting_sharing_error(tmp_path, monkeypatch):
+def test_simulation_record_json_write_retries_before_raising_lasting_sharing_error(
+    tmp_path, monkeypatch
+):
     from tests.sharing_error_support import hold_replaces
 
     path = tmp_path / "simulation.json"
     attempts = hold_replaces(monkeypatch, {path: 100})
     with pytest.raises(PermissionError):
-        record_reports.write_campaign_json(path, {"passed": True})
+        record_reports.write_simulation_record_json(path, {"passed": True})
     assert attempts[path] > 1
 
 
@@ -1285,11 +1308,11 @@ def test_coverage_report_keeps_nonpassing_status_without_optional_detail(
     assert _coverage_report_suffix(campaign) == expected
 
 
-def test_mcp_campaign_details_bound_observations_without_collapsing_axes(
+def test_mcp_simulation_record_details_bound_observations_without_collapsing_axes(
     tmp_path: Path,
 ) -> None:
     runs = [build_test_run(f"test_{index:02d}") for index in range(40)]
-    recorded = _recorded_campaign(tmp_path, runs)
+    recorded = _recorded_simulation_record(tmp_path, runs)
     observations = tuple(
         recorded.fact(
             run,
@@ -1314,7 +1337,7 @@ def test_mcp_campaign_details_bound_observations_without_collapsing_axes(
         observations=observations,
     )
 
-    details = _campaign_structured_details((outcome,))["sim"]
+    details = _simulation_record_structured_details((outcome,))["sim"]
 
     assert details["observation_total"] == 40
     assert details["observations_truncated"] is True
@@ -1334,9 +1357,9 @@ def test_mcp_campaign_details_bound_observations_without_collapsing_axes(
     assert details["observation_counts"]["execution"] == {"completed": 39, "timeout": 1}
 
 
-def test_campaign_report_preserves_the_failed_simulator_reason(tmp_path: Path) -> None:
+def test_simulation_record_report_preserves_the_failed_simulator_reason(tmp_path: Path) -> None:
     unnamed = build_test_run(None)
-    recorded = _recorded_campaign(tmp_path, (unnamed,), ())
+    recorded = _recorded_simulation_record(tmp_path, (unnamed,), ())
     outcome = SimpleNamespace(
         target={"selector": "sim_fail"},
         manifest_path=tmp_path / "record/manifest.json",
@@ -1346,7 +1369,7 @@ def test_campaign_report_preserves_the_failed_simulator_reason(tmp_path: Path) -
         ),
     )
 
-    assert _campaign_report_lines((outcome,), report_path=tmp_path / "sim.json")[0] == (
+    assert _simulation_record_report_lines((outcome,), report_path=tmp_path / "sim.json")[0] == (
         "sim_fail: FAIL (Simulation Campaign unavailable)\n"
         f"  manifest: {(tmp_path / 'record/manifest.json').resolve()}\n"
         f"  report: {(tmp_path / 'sim.json').resolve()}\n"
@@ -1366,7 +1389,7 @@ def test_simulation_reservation_locks_before_directory_publication(
     def inspect_before_publish(path: Path, *args: object, **kwargs: object) -> None:
         nonlocal observed
         if path == reports / "sim/1":
-            with pytest.raises(CampaignRetentionError, match="still being produced"):
+            with pytest.raises(SimulationRecordRetentionError, match="still being produced"):
                 prune_invocation(reports, 1)
             observed = True
         mkdir(path, *args, **kwargs)
@@ -1381,7 +1404,7 @@ def test_simulation_reservation_locks_before_directory_publication(
 def test_simulation_reservation_skips_contended_and_raced_numbers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.flows.sim.record_reports import campaign_invocation_lock
+    from booley.flows.sim.record_reports import simulation_record_invocation_lock
 
     reports = tmp_path / "reports"
     (reports / "sim").mkdir(parents=True)
@@ -1396,10 +1419,10 @@ def test_simulation_reservation_skips_contended_and_raced_numbers(
         mkdir(path, *args, **kwargs)
 
     monkeypatch.setattr(type(reports), "mkdir", lose_race_for_two)
-    with campaign_invocation_lock(reports / "sim/1"), flow.publication_resources:
+    with simulation_record_invocation_lock(reports / "sim/1"), flow.publication_resources:
         assert flow.reserve_invocation_dir() == reports / "sim/3"
         # The raced number's producer lock was released, not leaked.
-        with campaign_invocation_lock(reports / "sim/2"):
+        with simulation_record_invocation_lock(reports / "sim/2"):
             pass
 
 
@@ -1407,7 +1430,7 @@ def test_simulation_reservation_releases_its_lock_when_publication_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A non-race mkdir failure (EACCES, ENOSPC) must not leave the number busy."""
-    from booley.flows.sim.record_reports import campaign_invocation_lock
+    from booley.flows.sim.record_reports import simulation_record_invocation_lock
 
     reports = tmp_path / "reports"
     (reports / "sim").mkdir(parents=True)
@@ -1430,7 +1453,7 @@ def test_simulation_reservation_releases_its_lock_when_publication_fails(
     # The retained traceback keeps the reservation frame alive, so only an
     # explicit release (not refcount or GC finalization) frees the number.
     assert raised.tb is not None
-    with campaign_invocation_lock(reports / "sim/1"):
+    with simulation_record_invocation_lock(reports / "sim/1"):
         pass
 
 
@@ -1488,7 +1511,7 @@ def _coverage_card(
         coverage_reference=object(),
         observations=(),
     )
-    return _campaign_report_lines(
+    return _simulation_record_report_lines(
         (outcome,), {"sim_soc": campaign}, trailing_lines=None, report_path=tmp_path / "r.json"
     )[0].splitlines()
 

@@ -115,15 +115,15 @@ def _protected_outputs(root, monkeypatch):
     outputs.append(ReportEncoder.text_result(0, report["report_text"] + "\n", "", report))
     outputs.append(ReportEncoder.structured_report(report))
     outputs.extend(_protected_transport())
-    outputs.extend(_protected_campaign(root / "campaign", monkeypatch))
+    outputs.extend(_protected_simulation_record(root / "campaign", monkeypatch))
     outputs.append(_protected_targets(root))
     return json.dumps(outputs, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
-def _protected_campaign(root, monkeypatch):
+def _protected_simulation_record(root, monkeypatch):
     """Campaign report lines and ``simulation.json`` test entries for a fixed passing campaign."""
-    from booley.flows.sim.acceptance import _campaign_projection, _OutcomeEvidence
-    from tests.flows.sim.test_endpoint_record_lifecycle import _public_cycle_campaign
+    from booley.flows.sim.acceptance import _OutcomeEvidence, _simulation_record_projection
+    from tests.flows.sim.test_endpoint_record_lifecycle import _public_cycle_simulation_record
 
     # These budgets size the cycle lines, so the golden must not depend on the host.
     monkeypatch.delenv("BOOLEY_MCP_MAX_STDOUT_BYTES", raising=False)
@@ -132,13 +132,13 @@ def _protected_campaign(root, monkeypatch):
     # monkeypatch restores the cache entry at teardown, so later tests do not see this root.
     monkeypatch.setattr("booley.core.booley_dir._cache", None)
     monkeypatch.setenv("BOOLEY_DIR", str(root))
-    outcome = _public_cycle_campaign(root, monkeypatch)
+    outcome = _public_cycle_simulation_record(root, monkeypatch)
     manifest = str(outcome.manifest_path.resolve())
     lines = [
         line.replace(manifest, "<manifest>")
-        for line in record_presentation._campaign_report_lines((outcome,))
+        for line in record_presentation._simulation_record_report_lines((outcome,))
     ]
-    return [lines, _campaign_projection(_OutcomeEvidence(outcome))["tests"]]
+    return [lines, _simulation_record_projection(_OutcomeEvidence(outcome))["tests"]]
 
 
 def _protected_transport():

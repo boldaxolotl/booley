@@ -24,17 +24,17 @@ from .conftest import assert_matches_golden, normalize_work_dir
 GOLDEN = "acceptance_ledger/generic_evidence_tree.txt"
 IDENTITY = {"generation": "d" * 32, "authored_sha256": "e" * 64}
 FIXED_NOW = "2026-09-21T08:00:00Z"
-CAMPAIGN_ID = "12345678-1234-4234-9234-123456789abc"
+SIMULATION_RECORD_ID = "12345678-1234-4234-9234-123456789abc"
 
 
 class _InterruptedError(Exception):
     """Simulated process death at one publication checkpoint."""
 
 
-def _campaign_facts() -> dict[str, Any]:
+def _simulation_record_facts() -> dict[str, Any]:
     return {
         "$schema": "booley.simulation-acceptance-facts/v1",
-        "campaign_id": CAMPAIGN_ID,
+        "campaign_id": SIMULATION_RECORD_ID,
         "manifest_sha256": f"sha256:{'a' * 64}",
         "origin": {"execution_id": "b" * 32, "invocation_id": 7},
         "target": {"identity": "acme:lib:uart:1#sim_uart", "selector": "sim_uart"},
@@ -70,7 +70,7 @@ def _transact(log_dir: Path, state: DevelopmentState, changes: list, checkpoint)
         log_dir,
         state,
         changes,
-        acceptance_facts=_campaign_facts(),
+        acceptance_facts=_simulation_record_facts(),
         identity=IDENTITY,
         publication_checkpoint=checkpoint,
     )
@@ -142,7 +142,7 @@ def _rejection(log_dir: Path, state: DevelopmentState, identity: dict[str, Any])
             log_dir,
             state,
             [],
-            acceptance_facts=_campaign_facts(),
+            acceptance_facts=_simulation_record_facts(),
             identity=identity,
         )
     return str(caught.value)

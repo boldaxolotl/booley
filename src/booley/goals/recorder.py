@@ -66,7 +66,10 @@ from booley.criteria.evidence_ledger import (
 from booley.criteria.state import CriterionChange, DevelopmentState, StatePersistence
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY, SOURCE_INVALIDATED_REASON
 from booley.flows.execution_persistence import AcceptanceRecordingError
-from booley.flows.simulation_record_results import CampaignResultsReader, StartedCampaign
+from booley.flows.simulation_record_results import (
+    SimulationRecordResultsReader,
+    StartedSimulationRecord,
+)
 from booley.goals import simulation_record_accounting
 from booley.goals.apply_barrier import require_no_apply
 from booley.goals.binding import GoalRunBinding
@@ -321,10 +324,10 @@ class GoalEvidenceRecorder:
         *,
         resolvers: GoalFreshnessResolvers = DEFAULT_RESOLVERS,
         publication_checkpoint: Callable[[str], None] | None = None,
-        campaign_reader: CampaignResultsReader | None = None,
+        simulation_record_reader: SimulationRecordResultsReader | None = None,
     ) -> None:
         self._binding = binding
-        self._campaign_reader = campaign_reader
+        self._simulation_record_reader = simulation_record_reader
         self._gate = PublicationGate(binding)
         self._resolvers = resolvers
         self._checkpoint = publication_checkpoint
@@ -442,7 +445,7 @@ class GoalEvidenceRecorder:
                 raise AcceptanceRecordingError(str(exc)) from exc
             return transaction
 
-    def register_campaign(self, campaign: StartedCampaign) -> None:
+    def register_simulation_record(self, simulation_record: StartedSimulationRecord) -> None:
         """Register a Simulation Campaign this run is about to start (ADR 0072).
 
         Earlier campaigns are accounted for first, then the campaign is
@@ -456,22 +459,22 @@ class GoalEvidenceRecorder:
         try:
             with self._gate.publishing(()):
                 self._account(store)
-                simulation_record_accounting.register_campaign(
-                    store, self._binding, campaign, self._start_stamp
+                simulation_record_accounting.register_simulation_record(
+                    store, self._binding, simulation_record, self._start_stamp
                 )
         except EvidenceDiscarded:
             return
         except (AcceptanceLedgerError, GoalStoreError, ValueError) as exc:
             raise AcceptanceRecordingError(
-                f"Simulation Campaign {campaign.manifest_path} cannot be registered: {exc}"
+                f"Simulation Campaign {simulation_record.manifest_path} cannot be registered: {exc}"
             ) from exc
 
     def _account(self, store: GoalStore) -> None:
         """Bring earlier durable evidence into the ledger; this run's campaigns are its own."""
-        simulation_record_accounting.account_for_campaigns(
+        simulation_record_accounting.account_for_simulation_records(
             store,
             self._binding.record_id,
-            reader=self._campaign_reader,
+            reader=self._simulation_record_reader,
             own_run=self._binding.invocation_id,
         )
 

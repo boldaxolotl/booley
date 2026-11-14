@@ -53,7 +53,9 @@ def _goal_acceptance_recorder(binding: GoalRunBinding) -> Callable[[], Acceptanc
         from booley.mcp.goal_freshness import GOAL_FRESHNESS_RESOLVERS
 
         return GoalFlowExecution(
-            binding, resolvers=GOAL_FRESHNESS_RESOLVERS, campaign_reader=read_unpublished_results
+            binding,
+            resolvers=GOAL_FRESHNESS_RESOLVERS,
+            simulation_record_reader=read_unpublished_results,
         )
 
     return build

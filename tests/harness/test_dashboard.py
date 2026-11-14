@@ -1467,10 +1467,10 @@ def _compact_result_job(report, code=0):
 async def _result_pilot(report, expected, code=0, compact=False):
     from textual.containers import VerticalScroll
 
-    from tests.harness.test_dashboard_results import campaign
+    from tests.harness.test_dashboard_results import simulation_record
 
     if report == "passing":
-        report = {"flow": "sim", "detail": {"records": {"top": campaign()}}}
+        report = {"flow": "sim", "detail": {"records": {"top": simulation_record()}}}
     item = _compact_result_job(report, code)
     current = replace(snapshot(1), jobs=JobSnapshot((item,)))
     app = DashboardApp(lambda: current)
@@ -1508,10 +1508,10 @@ async def test_pilot_compact_passing_result():
 
 @pytest.mark.asyncio
 async def test_pilot_failing_result_names():
-    from tests.harness.test_dashboard_results import campaign
+    from tests.harness.test_dashboard_results import simulation_record
 
     await _result_pilot(
-        {"flow": "sim", "detail": {"records": {"top": campaign(1, 1)}}}, "test_bad", 1
+        {"flow": "sim", "detail": {"records": {"top": simulation_record(1, 1)}}}, "test_bad", 1
     )
 
 

@@ -10,7 +10,7 @@ import pytest
 
 from booley.flows.sim.execution.contract import SimulationPreview
 from booley.flows.sim.flow import (
-    OrdinaryCampaignPlanning,
+    OrdinarySimulationRecordPlanning,
     PlannedBaselines,
     PlannedTarget,
     SimulateFlow,
@@ -164,7 +164,9 @@ def test_source_recipe_ignores_flow_options_defines(tmp_path):
         assert document["workload"]["build_recipe"]["command_model_sha256"] != baseline_command
 
 
-def _planning_with_baseline(tmp_path: Path) -> tuple[SimulateFlow, OrdinaryCampaignPlanning]:
+def _planning_with_baseline(
+    tmp_path: Path,
+) -> tuple[SimulateFlow, OrdinarySimulationRecordPlanning]:
     """A planned candidate and one planned baseline Target in its own checkout."""
     from tests.flows.sim.test_cycle_observation import _criterion_flow, _pin_baseline
 
@@ -180,10 +182,10 @@ def _planning_with_baseline(tmp_path: Path) -> tuple[SimulateFlow, OrdinaryCampa
     flow._test_runs.baseline = decide_baseline_runs(
         flow._baseline_links(["sim_core"], tests), flow._target_test_plan, "a" * 40
     )
-    return flow, OrdinaryCampaignPlanning((candidate,), baselines, tests)
+    return flow, OrdinarySimulationRecordPlanning((candidate,), baselines, tests)
 
 
-def test_campaign_baseline_planning_builds_requests_in_the_baseline_checkout(tmp_path):
+def test_simulation_record_baseline_planning_builds_requests_in_the_baseline_checkout(tmp_path):
     flow, planning = _planning_with_baseline(tmp_path)
     candidate_checkout = Path(flow.args.work_dir)
     assert planning.baselines is not None
@@ -200,7 +202,7 @@ def test_campaign_baseline_planning_builds_requests_in_the_baseline_checkout(tmp
         return request, {"coremark@1": prerequisite}
 
     flow._planned_baseline_request = plan
-    requests, prerequisites = flow._plan_campaign_baselines(
+    requests, prerequisites = flow._plan_simulation_record_baselines(
         tmp_path / "invocation", None, planning
     )
 
@@ -209,24 +211,26 @@ def test_campaign_baseline_planning_builds_requests_in_the_baseline_checkout(tmp
     assert flow.args.work_dir == candidate_checkout
 
 
-def test_campaign_baseline_preview_runs_in_the_baseline_checkout(tmp_path):
+def test_simulation_record_baseline_preview_runs_in_the_baseline_checkout(tmp_path):
     flow, planning = _planning_with_baseline(tmp_path)
     candidate_checkout = Path(flow.args.work_dir)
     assert planning.baselines is not None
-    campaign = object()
+    simulation_record = object()
     prerequisite = {"revision": "a" * 40, "target_identity": "sim_core"}
     preview = {"target": "sim_core"}
 
     def inspect(owner, planned, baselines, tests):
-        assert owner is campaign
+        assert owner is simulation_record
         assert planned.selector == "sim_core"
         assert baselines is planning.baselines
         assert tests == {"sim_core": ["coremark"]}
         assert flow.args.work_dir == baselines.worktree
         return preview, {"coremark@1": prerequisite}
 
-    flow._preview_one_campaign_baseline = inspect
-    prerequisites, previews = flow._preview_campaign_baselines(campaign, planning)
+    flow._preview_one_simulation_record_baseline = inspect
+    prerequisites, previews = flow._preview_simulation_record_baselines(
+        simulation_record, planning
+    )
 
     assert previews == [preview]
     assert prerequisites == {"sim_core": [prerequisite]}

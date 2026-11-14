@@ -13,8 +13,8 @@ from booley.criteria.templates import cycle_count_criterion_key
 from booley.flows.frozen_test_runs import OUTCOMES_ONLY_DETAIL_KEY, FrozenTestRuns, GoalTestRuns
 from booley.flows.sim.acceptance import (
     SimulationAcceptanceCoordinator,
-    _campaign_projection,
     _OutcomeEvidence,
+    _simulation_record_projection,
 )
 from booley.flows.sim.record import AcceptanceFacts, decode_simulation_projection
 from booley.flows.sim.record.codec import (
@@ -28,7 +28,7 @@ from tests.flows.sim.test_simulation_record_test_runs import (
     _FAULT,
     _SOAK,
     _hdl_plan,
-    _run_campaign,
+    _run_simulation_record,
 )
 
 _RESET = build_test_run("reset", seed=1)
@@ -36,7 +36,7 @@ _COUNT = build_test_run("count", variant="soak", seed=42, args=("+iters=9",))
 
 
 def _outcome(tmp_path: Path, *runs):
-    return _run_campaign(tmp_path, _hdl_plan(tmp_path, tuple((run,) for run in runs)))
+    return _run_simulation_record(tmp_path, _hdl_plan(tmp_path, tuple((run,) for run in runs)))
 
 
 def _rows(*runs, classified=True) -> list[dict]:
@@ -55,7 +55,7 @@ def _rows(*runs, classified=True) -> list[dict]:
     ]
 
 
-def test_evidence_rows_are_the_recorded_test_runs_of_the_campaign(tmp_path: Path):
+def test_evidence_rows_are_the_recorded_test_runs_of_the_simulation_record(tmp_path: Path):
     outcome = _outcome(tmp_path, _RESET, _SOAK, _FAULT)
     assert evidence_test_run_rows(outcome) == _rows(_RESET, _SOAK, _FAULT)
 
@@ -74,7 +74,7 @@ def test_evidence_rows_refuse_a_manifest_the_facts_do_not_name(tmp_path: Path):
 
 def test_projection_v3_carries_a_row_per_test_run_and_decodes(tmp_path: Path):
     outcome = _outcome(tmp_path, _RESET, _COUNT)
-    projection = _campaign_projection(_OutcomeEvidence(outcome))
+    projection = _simulation_record_projection(_OutcomeEvidence(outcome))
 
     assert projection["$schema"] == "booley.simulation-projection/v4"
     assert projection["test_runs"] == _rows(_RESET, _COUNT, classified=False)
@@ -91,7 +91,7 @@ def test_projection_v3_carries_a_row_per_test_run_and_decodes(tmp_path: Path):
 
 
 def _v3_document(tmp_path: Path) -> dict:
-    projection = _campaign_projection(_OutcomeEvidence(_outcome(tmp_path, _RESET)))
+    projection = _simulation_record_projection(_OutcomeEvidence(_outcome(tmp_path, _RESET)))
     return json.loads(json.dumps({**projection, "complete": True}))
 
 
@@ -247,7 +247,9 @@ def test_cycle_count_goal_is_judged_from_its_frozen_test_run_only(tmp_path):
     assert _goal_changes(outcome, state, _goal(outcome, key, other, kind="cycle_count")) == []
 
 
-def test_coverage_goal_takes_run_outcomes_but_no_metric_from_an_ordinary_campaign(tmp_path):
+def test_coverage_goal_takes_run_outcomes_but_no_metric_from_an_ordinary_simulation_record(
+    tmp_path,
+):
     outcome = _outcome(tmp_path, _RESET)
     state = _state(tmp_path, outcome)
     goal = _goal(outcome, f"sim_pass_{outcome.target['name']}", _RESET, kind="coverage")
@@ -274,7 +276,7 @@ def test_cycle_count_goal_keeps_a_failing_frozen_run_without_a_cycle_observation
     assert change.detail[OUTCOMES_ONLY_DETAIL_KEY] is True
 
 
-def test_an_incomplete_campaign_still_records_its_matching_failure(tmp_path):
+def test_an_incomplete_simulation_record_still_records_its_matching_failure(tmp_path):
     outcome = replace(_outcome(tmp_path, _RESET), complete=False)
     key = f"sim_pass_{outcome.target['name']}"
     (change,) = _goal_changes(outcome, _state(tmp_path, outcome), _goal(outcome, key, _RESET))

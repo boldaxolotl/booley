@@ -91,7 +91,7 @@ def _intervals(document: dict[str, object]) -> list[dict[str, object]]:
     return intervals
 
 
-def validate_attempt_isolation(timeline_path: Path, campaign_path: Path) -> None:
+def validate_attempt_isolation(timeline_path: Path, simulation_record_path: Path) -> None:
     """Require one common relative output name with distinct attempt-owned content.
 
     ``campaign_path`` is the Campaign directory holding ``manifest.json`` and
@@ -110,7 +110,7 @@ def validate_attempt_isolation(timeline_path: Path, campaign_path: Path) -> None
     _need(len(set(directories)) == len(directories), "parallel run directories collide")
     _need(len(set(tokens)) == len(tokens), "parallel attempt tokens collide")
     _need(len(set(work_items)) == len(intervals), "process intervals reuse a work item")
-    attempts = _attempt_directories(campaign_path)
+    attempts = _attempt_directories(simulation_record_path)
     for item in intervals:
         _need(item.get("token") == item.get("test"), "attempt token is not the test name")
         _need(item.get("token") == item.get("output_text"), "attempt output is contaminated")
@@ -124,10 +124,10 @@ def validate_attempt_isolation(timeline_path: Path, campaign_path: Path) -> None
         _validate_attempt_log(item, attempts[attempt_id], tokens)
 
 
-def _attempt_directories(campaign_path: Path) -> dict[str, Path]:
+def _attempt_directories(simulation_record_path: Path) -> dict[str, Path]:
     """Index the Campaign's Simulation Attempt directories by attempt id."""
     attempts: dict[str, Path] = {}
-    for path in sorted(campaign_path.glob("work-items/*/attempts/*/attempt.json")):
+    for path in sorted(simulation_record_path.glob("work-items/*/attempts/*/attempt.json")):
         attempt_id = _load(path).get("attempt_id")
         _need(
             isinstance(attempt_id, str) and path.parent.name.endswith(f"-{attempt_id}"),

@@ -293,10 +293,10 @@ def test_baseline_execution_stamps_every_observed_fingerprint(baseline, monkeypa
         SimpleNamespace(fingerprint=lambda *_args, **_kwargs: fingerprint),
     )
     adapter = execution.BaselineExecution(baseline.worktree, "top")
-    campaign = SimpleNamespace()
-    adapter.register_campaign(campaign)
+    simulation_record = SimpleNamespace()
+    adapter.register_simulation_record(simulation_record)
     assert adapter.criterion_source_fingerprint("k", baseline.worktree, "top") == fingerprint
-    assert adapter.campaigns == [campaign]
+    assert adapter.simulation_records == [simulation_record]
     assert adapter.stamps == [execution.contents_stamp(fingerprint)] * 2
 
 

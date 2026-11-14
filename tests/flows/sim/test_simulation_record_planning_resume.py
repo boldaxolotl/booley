@@ -43,10 +43,10 @@ from booley.runtime.job_slots import (
 )
 from tests.flows.sim.simulation_record_test_support import (
     _admission,
-    _CampaignAdmissionEndpoint,
-    _interrupted_campaign,
+    _interrupted_simulation_record,
     _manifest_for,
     _NoEdaExecutor,
+    _SimulationRecordAdmissionEndpoint,
 )
 
 
@@ -71,22 +71,25 @@ def _child_parent_ids(project: Path) -> set[str]:
 
 
 @pytest.mark.parametrize("runtime_execution_id", ["b" * 32, None])
-def test_interrupted_managed_campaign_exact_resume_preserves_parent_identity(
+def test_interrupted_managed_simulation_record_exact_resume_preserves_parent_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     runtime_execution_id: str | None,
 ) -> None:
-    case = _interrupted_campaign(tmp_path, monkeypatch, runtime_execution_id)
+    case = _interrupted_simulation_record(tmp_path, monkeypatch, runtime_execution_id)
     assert not case.store.summary_path.exists()
     assert len(case.state.completion_order) == 3
     parent_ids = _child_parent_ids(case.project)
     if runtime_execution_id is not None:
         assert parent_ids == {runtime_execution_id}
-    assert len(parent_ids) == 1 and _CampaignAdmissionEndpoint._invocation_id not in parent_ids
+    assert (
+        len(parent_ids) == 1
+        and _SimulationRecordAdmissionEndpoint._invocation_id not in parent_ids
+    )
     ExecutionId(next(iter(parent_ids)))
 
     case.fault_enabled[0] = False
-    summaries, outcomes = _resume_campaign_twice(case, runtime_execution_id)
+    summaries, outcomes = _resume_simulation_record_twice(case, runtime_execution_id)
     assert summaries[0] == summaries[1]
     assert all(outcome.complete for outcome in outcomes)
     assert len(case.state.completion_order) == 3
@@ -96,7 +99,7 @@ def test_interrupted_managed_campaign_exact_resume_preserves_parent_identity(
     assert case.slots.snapshot(CLASS_MEMORY) == ([], [])
 
 
-def _resume_campaign_twice(case, runtime_execution_id):
+def _resume_simulation_record_twice(case, runtime_execution_id):
     request_args = (
         case.validated,
         case.plan,
@@ -109,10 +112,12 @@ def _resume_campaign_twice(case, runtime_execution_id):
     outcomes = []
     for _ in range(2):
         with AdmissionGate(
-            _CampaignAdmissionEndpoint(case.slots, runtime_execution_id)  # type: ignore[arg-type]
+            _SimulationRecordAdmissionEndpoint(case.slots, runtime_execution_id)  # type: ignore[arg-type]
         ).enter() as admission:
             outcomes.append(
-                case.campaign.run(ResumeSimulationRecordRunRequest(*request_args, admission))
+                case.simulation_record.run(
+                    ResumeSimulationRecordRunRequest(*request_args, admission)
+                )
             )
         summaries.append(case.store.summary_path.read_bytes())
     return summaries, outcomes
@@ -183,7 +188,7 @@ def _resume_request(store: SimulationRecordStore, project: Path):
 
 # Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
 @pytest.mark.timeout(90)
-def test_maximum_campaign_previews_authenticated_mixed_resume_without_eda(
+def test_maximum_simulation_record_previews_authenticated_mixed_resume_without_eda(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -236,7 +241,7 @@ def test_maximum_campaign_previews_authenticated_mixed_resume_without_eda(
     assert peak_delta < 128 * 1024
 
 
-def test_campaign_previews_expose_the_complete_public_contract(tmp_path: Path) -> None:
+def test_simulation_record_previews_expose_the_complete_public_contract(tmp_path: Path) -> None:
     manifest = _manifest_for(("smoke",))
     plan = create_simulation_record_plan(manifest)
     preview = SimulationRecord().preview(
@@ -284,11 +289,11 @@ def test_resume_endpoint_refreshes_recovery_after_failure(
             raise SimulationRecordCancellationError("cancelled")
         raise OSError("failed")
 
-    monkeypatch.setattr(flow, "_write_campaign_progress", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(flow, "_run_validated_resume_campaign", fail_after_attempt)
+    monkeypatch.setattr(flow, "_write_simulation_record_progress", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(flow, "_run_validated_resume_simulation_record", fail_after_attempt)
     with flow.publication_resources:
-        result = flow._execute_campaign(
-            _admission(), flow._resume_campaign_run(validated, observed)
+        result = flow._execute_simulation_record(
+            _admission(), flow._resume_simulation_record_run(validated, observed)
         )
 
     assert result.exit_code == (EXIT_CANCELLED if cancelled else EXIT_ERROR)

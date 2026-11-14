@@ -26,9 +26,9 @@ from tests.goals.conftest import (
     SIM_NAME,
     bind,
     bump_spec,
-    campaign_facts,
     enter_goals,
     run_row,
+    simulation_record_facts,
     write_tests_toml,
 )
 
@@ -73,8 +73,8 @@ def _record(
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Record one V1 observation of *key* with Test Run *rows*; return its stored detail."""
-    reader = getattr(layout, "campaign_reader", None)
-    recorder = GoalEvidenceRecorder(bind(layout, run_id), campaign_reader=reader)
+    reader = getattr(layout, "simulation_record_reader", None)
+    recorder = GoalEvidenceRecorder(bind(layout, run_id), simulation_record_reader=reader)
     state = DevelopmentState.load(_state_file(layout), recorder.state_persistence())
     changes = state.set_criterion(key, met, detail={**(extra or {}), "test_runs": rows})
     recorder.record_changes(state, changes, invocation_id="ignored", producer="sim")
@@ -98,7 +98,7 @@ def _replayed(layout: SimpleNamespace, key: str) -> Any:
 def _transaction(
     layout: SimpleNamespace,
     recorder: GoalEvidenceRecorder,
-    campaign: str,
+    simulation_record: str,
     rows: list[dict[str, Any]],
 ) -> None:
     """Record or recover one V2 campaign transaction of the simulation Goal."""
@@ -106,14 +106,16 @@ def _transaction(
     shadow = DevelopmentState.from_json_object(state.to_dict())
     changes = shadow.set_criterion(SIM_KEY, True, detail={"test_runs": rows})
     recorder.record_or_verify_transaction(
-        state, changes, acceptance_facts=campaign_facts(campaign), identity={}
+        state, changes, acceptance_facts=simulation_record_facts(simulation_record), identity={}
     )
 
 
 def _status(layout: SimpleNamespace, key: str = SIM_KEY) -> GoalStatus:
-    reader = getattr(layout, "campaign_reader", None)
+    reader = getattr(layout, "simulation_record_reader", None)
     store = GoalStore(layout.control)
-    view = build_status(store, layout.record, work_dir=layout.worktree, campaign_reader=reader)
+    view = build_status(
+        store, layout.record, work_dir=layout.worktree, simulation_record_reader=reader
+    )
     return next(goal for goal in view.goals if goal.key == key)
 
 
@@ -157,7 +159,7 @@ def test_fold_failed_is_absorbing_and_errors_change_nothing() -> None:
 # --- Accumulation ----------------------------------------------------------------
 
 
-def test_partial_runs_accumulate_across_campaigns(two: SimpleNamespace) -> None:
+def test_partial_runs_accumulate_across_simulation_records(two: SimpleNamespace) -> None:
     """A partial run extends the ledger; the other runs stay missing until they pass."""
     _record(two, "run-1", [run_row(A)])
     assert _outcomes(two) == {"a@1": "passed", "b@1": "missing"}
@@ -242,13 +244,13 @@ def test_stopped_transaction_is_completed_before_the_next_evidence_is_recorded(
 ) -> None:
     """Campaign A freezes a passing intent and stops; B records a failure; A is recovered."""
     passing = [run_row(A), run_row(B)]
-    campaign = "11111111-1111-4111-8111-111111111111"
+    simulation_record = "11111111-1111-4111-8111-111111111111"
     binding = bind(two, "run-a")
     stopped = GoalEvidenceRecorder(
         binding, publication_checkpoint=_interrupt("before:acceptance_record")
     )
     with pytest.raises(_InterruptedError):
-        _transaction(two, stopped, campaign, passing)
+        _transaction(two, stopped, simulation_record, passing)
 
     # B's recorder completes A's transaction first, so B's failure folds after it.
     _record(two, "run-b", [run_row(A, "fail"), run_row(B)], met=False)
@@ -256,7 +258,7 @@ def test_stopped_transaction_is_completed_before_the_next_evidence_is_recorded(
     assert _status(two).reason.startswith("goal-test-run-failed")
 
     # Recovering A now only verifies it: the failure stays the selected observation.
-    _transaction(two, GoalEvidenceRecorder(binding), campaign, passing)
+    _transaction(two, GoalEvidenceRecorder(binding), simulation_record, passing)
     assert _status(two).reason.startswith("goal-test-run-failed")
     _record(two, "run-c", passing)
     assert _outcomes(two) == {"a@1": "failed", "b@1": "passed"}
@@ -275,7 +277,7 @@ def test_recovered_stale_intent_cannot_erase_an_intervening_failure(
     from booley.goals import simulation_record_accounting
 
     monkeypatch.setattr(
-        simulation_record_accounting, "account_for_campaigns", lambda *_a, **_k: None
+        simulation_record_accounting, "account_for_simulation_records", lambda *_a, **_k: None
     )
     passing = [run_row(A), run_row(B)]
     binding = bind(two, "run-a")
@@ -521,7 +523,9 @@ def _contributors(layout: SimpleNamespace, key: str = SIM_KEY) -> list[int]:
     return [row["sequence"] for row in original_observations(selected, indexed, record)]
 
 
-def test_accumulated_goal_discloses_its_contributing_campaigns(two: SimpleNamespace) -> None:
+def test_accumulated_goal_discloses_its_contributing_simulation_records(
+    two: SimpleNamespace,
+) -> None:
     """The review package and generated-input authorization read these observations."""
     from booley.goals.derivation import selected_observations
     from booley.goals.review_package import original_observations, presentation_observations
@@ -738,13 +742,13 @@ def test_record_time_and_status_agree_after_transaction_recovery(two: SimpleName
     stopped = GoalEvidenceRecorder(
         binding, publication_checkpoint=_interrupt("before:acceptance_state")
     )
-    campaign = "11111111-1111-4111-8111-111111111111"
+    simulation_record = "11111111-1111-4111-8111-111111111111"
     with pytest.raises(_InterruptedError):
-        _transaction(two, stopped, campaign, [run_row(A, "fail")])
+        _transaction(two, stopped, simulation_record, [run_row(A, "fail")])
     state = DevelopmentState.load(_state_file(two))
     logs = record_paths(two.control, two.record.id).logs_dir
     assert validated_evidence_records(GOAL_SCOPE, logs, state, {}) == []
-    _transaction(two, GoalEvidenceRecorder(binding), campaign, [run_row(A, "fail")])
+    _transaction(two, GoalEvidenceRecorder(binding), simulation_record, [run_row(A, "fail")])
     detail = _record(two, "later", [run_row(A), run_row(B)])
     state = DevelopmentState.load(_state_file(two))
     assert not state.criteria[SIM_KEY].met and _status(two).status == "unmet"

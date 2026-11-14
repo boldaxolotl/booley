@@ -54,7 +54,7 @@ def test_selected_variants_share_a_batch_their_defaults_could_not():
         plan.launch(plan.default_runs_for(("a", "b")))
 
 
-def test_campaign_inputs_disclose_the_concrete_test_runs(tmp_path, monkeypatch):
+def test_simulation_record_inputs_disclose_the_concrete_test_runs(tmp_path, monkeypatch):
     flow = _flow(tmp_path, monkeypatch, "--test", "a+shared", "--test", "b+shared")
     plan = _plan()
     monkeypatch.setattr(flow, "_target_test_plan", lambda _target: plan)
@@ -74,7 +74,7 @@ def test_campaign_inputs_disclose_the_concrete_test_runs(tmp_path, monkeypatch):
     )
     handle = SimpleNamespace(project_root=tmp_path, selector="sim", identity="sim")
 
-    flow._ordinary_campaign_inputs(PlannedTarget("sim", handle, preview), _MAP)
+    flow._ordinary_simulation_record_inputs(PlannedTarget("sim", handle, preview), _MAP)
 
     assert disclosed == [(("a", "b"), runs)]
     assert [run.name for run in runs] == ["a+shared@1", "b+shared@1"]
@@ -148,7 +148,7 @@ def test_resume_discloses_the_test_runs_the_manifest_froze(tmp_path, monkeypatch
         lambda **kwargs: planned.update(kwargs) or "plan",
     )
 
-    assert flow._resume_campaign_plan(validated, 1) == "plan"
+    assert flow._resume_simulation_record_plan(validated, 1) == "plan"
 
     assert disclosed == [(("reset", "count"), groups[0]), (("count",), groups[1])]
     assert planned["planning_disclosures"] == (

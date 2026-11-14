@@ -145,7 +145,7 @@ def test_work_items_rank_by_their_own_admission_order(
     assert proc.values[1] == 0
 
 
-def test_other_jobs_count_each_campaign_item_as_newer(
+def test_other_jobs_count_each_simulation_record_item_as_newer(
     store: job_slots.SlotStore, world: FakeWorld, proc: FakeProc
 ) -> None:
     flow, flow_tool = _admit(store, world, proc, 101)
