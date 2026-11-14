@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -304,3 +305,54 @@ def test_atomic_replace_publishes_the_given_modification_time(tmp_path: Path) ->
 
     assert path.read_bytes() == b"new"
     assert path.stat().st_mtime_ns == 1_000_000_000_000_000_000
+
+
+def test_overlapping_former_mounts_repair_a_pointer_under_the_deeper_one(repo: _Repo) -> None:
+    checkout = repo.add("a")
+    repo.respell(checkout)
+    history = repo.booley / ".runtime" / "sandbox-mounts.json"
+    mounts = [str(repo.former.parents[1]), str(repo.former)]
+    history.write_bytes(json.dumps({"schema": 1, "mounts": mounts}).encode())
+
+    result = repo.repair()
+
+    assert result.repaired == (repo.admin(checkout),)
+    assert result.problems == ()
+    assert _git(checkout, "rev-parse", "--show-toplevel") == str(checkout)
+
+
+def test_a_hooks_path_whose_directory_does_not_exist_is_still_rebased(repo: _Repo) -> None:
+    checkout = repo.add("a")
+    config = repo.admin(checkout) / "config.worktree"
+    hooks = repo.former / "worktrees" / "a" / "hooks"
+    _git(repo.root, "config", "--file", str(config), "core.hooksPath", str(hooks))
+    repo.respell(checkout)
+
+    repo.repair()
+
+    value = _git(repo.root, "config", "--file", str(config), "--get", "core.hooksPath")
+    assert value == str(checkout / "hooks")
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+        subprocess.TimeoutExpired("git config", 30),
+    ],
+)
+def test_a_config_read_that_raises_is_reported_not_raised(
+    repo: _Repo, monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    checkout = repo.add("a")
+    repo.respell(checkout)
+    (repo.admin(checkout) / "config.worktree").write_bytes(b"[core]\n")
+
+    def fail(*_args: object, **_kwargs: object) -> None:
+        raise failure
+
+    monkeypatch.setattr(worktree_mount_repair, "_git_config", fail)
+
+    result = repo.repair()
+
+    assert "cannot rewrite its pointers" in result.problems[0].message()

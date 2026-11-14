@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import re
 import stat
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -66,7 +67,8 @@ def _candidates(raw: str, base: Path, former: tuple[str, ...]) -> list[Path]:
     pointer = Path(raw)
     first = pointer if pointer.is_absolute() else Path(os.path.normpath(base.resolve() / pointer))
     add(first)
-    add(mount_history.rebase(first, former))
+    for mount in former:
+        add(mount_history.rebase(first, (mount,)))
     if pointer.is_absolute():
         return found
     # A relative pointer written from a base under a former mount of another depth
@@ -80,7 +82,8 @@ def _candidates(raw: str, base: Path, former: tuple[str, ...]) -> list[Path]:
         guess = Path(os.path.normpath(Path(mount) / inside / pointer))
         if guess.exists():
             add(guess)
-        add(mount_history.rebase(guess, former))
+        for older in former:
+            add(mount_history.rebase(guess, (older,)))
     return found
 
 
@@ -134,9 +137,12 @@ def _config_fixes(admin: Path, checkout: Path, former: tuple[str, ...]) -> list[
             continue
         base = admin if owner == "admin" else checkout
         candidates = _candidates(raw, base, former)
-        existing = _first_existing(candidates)
-        if existing is not None and existing != candidates[0]:
-            fixes.append((key, _spelling(existing, base, relative=not Path(raw).is_absolute())))
+        # The hooks directory may not exist yet: a lone former-mount meaning is unambiguous.
+        chosen = _first_existing(candidates)
+        if chosen is None and len(candidates) == 2:
+            chosen = candidates[1]
+        if chosen is not None and chosen != candidates[0]:
+            fixes.append((key, _spelling(chosen, base, relative=not Path(raw).is_absolute())))
     return fixes
 
 
@@ -167,6 +173,13 @@ def _is_disposable(admin: Path, checkout: Path, project_root: Path) -> bool:
         _BASELINE_NAME.fullmatch(owner.name) is not None and owner.parent.resolve() == state_dir
         for owner in (checkout, checkout.parent)
     )
+
+
+def _names(path: Path, admin: Path) -> bool:
+    try:
+        return path.exists() and path.samefile(admin)
+    except OSError:
+        return False
 
 
 class _Registration:
@@ -249,16 +262,9 @@ class _Registration:
                 _rewrite(pointer, back, keep_time=False)
             for key, value in fixes:
                 _git_config(self.admin / "config.worktree", key, value.replace(os.sep, "/"))
-        except OSError as exc:
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
             return "current", self._problem(pointer, f"cannot rewrite its pointers: {exc}")
         return ("repaired" if (gitfile or back or fixes) else "current"), None
-
-
-def _names(path: Path, admin: Path) -> bool:
-    try:
-        return path.exists() and path.samefile(admin)
-    except OSError:
-        return False
 
 
 def _registrations(repository_root: Path) -> list[Path]:
