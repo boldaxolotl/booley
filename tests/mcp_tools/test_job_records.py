@@ -514,7 +514,12 @@ def test_malformed_mount_history_names_record_and_fix(
     jobrec.write_record(
         jobrec.JobRecord("run-9", "sim", "t", 60, work_dir=str(tmp_path / "elsewhere")), root=root
     )
-    for content in (b"{", b'{"schema": 2, "mounts": []}', b'{"schema": 1, "mounts": [3]}'):
+    for content in (
+        b"{",
+        b'{"schema": 2, "mounts": []}',
+        b'{"schema": 1, "mounts": [3]}',
+        b"\xff",
+    ):
         history.write_bytes(content)
         with pytest.raises(
             MountHistoryError, match=r"Job record run-9.*sandbox-mounts\.json.*restore"

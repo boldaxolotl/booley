@@ -12,6 +12,7 @@ from booley.core.boundary import require_dict, require_str_value
 from booley.goals.proposals import ProposalError, text
 from booley.runtime.atomic_files import atomic_replace_bytes, durable_unlink
 from booley.runtime.mount_history import translate_stored_path
+from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 
 @dataclass(frozen=True)
@@ -50,7 +51,8 @@ class FileEffect:
     @property
     def destination(self) -> Path:
         """The journaled path under the current Sandbox mount point."""
-        return Path(translate_stored_path(str(self.path), record="Goal apply transaction"))
+        moved = Path(translate_stored_path(str(self.path), record="Goal apply transaction"))
+        return canonical_project_alias_path(moved)
 
     def require_expected(self, *, booley_dir: Path | None = None) -> None:
         """Refuse unexpected external bytes or symlink ancestors without mutation.

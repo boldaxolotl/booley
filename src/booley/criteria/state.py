@@ -410,7 +410,7 @@ class AtomicStateFile:
 _DEFAULT_PERSISTENCE = AtomicStateFile()
 
 
-def _state_work_dir(data: Any) -> str:
+def _state_work_dir(data: Any) -> Any:
     value = data.get("work_dir", "")
     if not isinstance(value, str):
         return value

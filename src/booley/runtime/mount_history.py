@@ -9,7 +9,7 @@ mount when a record is parsed. Paths outside every former mount are unchanged.
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from booley.runtime import sandbox_layout
@@ -36,7 +36,7 @@ def _read(path: Path) -> list[str]:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return []
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise MountHistoryError(f"cannot read {path}: {exc}") from exc
     try:
         data: Any = json.loads(text)
@@ -80,11 +80,12 @@ def _former_mount_of(spec: bytes) -> str | None:
 
 
 def _require_mount(value: str, spec_file: Path) -> None:
-    path = Path(value)
-    work = Path(sandbox_layout.WORK_DIR)
+    # Sandbox paths are POSIX whatever the host: a native Windows host issues the spec too.
+    path = PurePosixPath(value)
+    work = PurePosixPath(sandbox_layout.WORK_DIR)
     if (
-        not path.is_absolute()
-        or path == Path(path.anchor)
+        not (path.is_absolute() or Path(value).is_absolute())
+        or path == PurePosixPath("/")
         or path.is_relative_to(work)
         or work.is_relative_to(path)
     ):

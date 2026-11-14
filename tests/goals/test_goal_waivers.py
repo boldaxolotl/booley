@@ -868,3 +868,14 @@ def test_interrupted_waiver_apply_recovers_after_mount_change(layout, monkeypatc
         load_proposal(record_paths(layout.control, layout.record.id).root, view.proposal.id).state
         == "applied"
     )
+
+
+def test_translated_destination_goes_through_the_image_alias(monkeypatch, tmp_path):
+    from booley.goals import apply_effects
+
+    effect = apply_effects.FileEffect(tmp_path / "x", None, b"a", "label")
+    monkeypatch.setattr(
+        apply_effects, "canonical_project_alias_path", lambda path: tmp_path / "real" / path.name
+    )
+
+    assert effect.destination == tmp_path / "real" / "x"

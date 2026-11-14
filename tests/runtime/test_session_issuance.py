@@ -4146,3 +4146,15 @@ def test_reissue_ignores_previous_spec_without_a_mount(issued_preview) -> None:
 
     source = runtime_spec.authorized_project_data_source(project)
     assert not (source / ".runtime" / "sandbox-mounts.json").exists()
+
+
+def test_posix_former_mount_is_usable_on_a_windows_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pathlib import PureWindowsPath
+
+    from booley.runtime import mount_history
+
+    monkeypatch.setattr(mount_history, "Path", PureWindowsPath)
+
+    mount_history._require_mount("/former-mount", PureWindowsPath("devcontainer.json"))  # type: ignore[arg-type]
+    with pytest.raises(mount_history.MountHistoryError, match="unusable"):
+        mount_history._require_mount("/work/x", PureWindowsPath("devcontainer.json"))  # type: ignore[arg-type]
