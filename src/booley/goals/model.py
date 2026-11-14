@@ -61,6 +61,7 @@ from booley.goals.test_run_resolution import (
     resolutions_from_json,
     resolutions_to_json,
 )
+from booley.runtime.mount_history import translate_stored_path
 from booley.runtime.timefmt import parse_timestamp
 from booley.runtime.worktree_identity import CHECKOUT_PATTERN, WorktreeIdentity
 
@@ -1007,7 +1008,10 @@ def _identity_fields(mapping: dict[str, Any]) -> dict[str, Any]:
         "revision": mapping["revision"],
         "state": state,
         "worktree": worktree_identity_from_json(mapping["worktree"], where="record.worktree"),
-        "worktree_path": _record_str(mapping["worktree_path"], "record.worktree_path"),
+        "worktree_path": translate_stored_path(
+            _record_str(mapping["worktree_path"], "record.worktree_path"),
+            record=f"Goal Record {mapping['id']}",
+        ),
         "branch": _record_str(mapping["branch"], "record.branch"),
         "original_ref": _record_str(mapping["original_ref"], "record.original_ref"),
         "base_sha": mapping["base_sha"],

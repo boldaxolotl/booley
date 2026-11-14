@@ -52,7 +52,7 @@ from booley.goals.change_service import create_proposal
 from booley.goals.entry import EntryEnvironment
 from booley.goals.freshness import DEFAULT_RESOLVERS
 from booley.goals.paths import record_paths
-from booley.goals.proposals import Approval, Decision, ProposalError, load_proposal
+from booley.goals.proposals import Approval, Decision, ProposalError, digest, load_proposal
 from booley.goals.recorder import GoalEvidenceRecorder
 from booley.goals.state_store import load_goal_state
 from booley.goals.status import build_status
@@ -781,3 +781,90 @@ def test_candidate_campaign_mismatch_is_ineligible(layout):
     path.write_text(json.dumps(value))
     with pytest.raises(ProposalError, match="not eligible"):
         propose(layout, env, candidate)
+
+
+def _under(former: str, layout, path: str) -> str:
+    return former + path.removeprefix(str(layout.control.resolve()))
+
+
+def _rebuild_policy(layout, policy, former):
+    value = {key: item for key, item in policy.items() if key != "digest"}
+    value["root"] = _under(former, layout, value["root"])
+    return {**value, "digest": digest(value)}
+
+
+def _respell_proposal(layout, proposal_id, former):
+    """Rewrite a proposal as a writer under the former mount point stored it."""
+    from booley.goals.proposals import Proposal, proposal_path
+
+    root = proposal_path(record_paths(layout.control, layout.record.id).root, proposal_id)
+    payload = json.loads((root / "payload.json").read_bytes())
+    old = Proposal.from_json(payload).payload_digest
+    waiver = payload["waiver"]
+    for name in ("approval_root", "anchor_root", "candidate_root"):
+        waiver[name] = _under(former, layout, waiver[name])
+    waiver["policy"] = _rebuild_policy(layout, waiver["policy"], former)
+    new = Proposal.from_json(payload).payload_digest
+    (root / "payload.json").write_bytes(json.dumps(payload).encode("utf-8"))
+    state = root / "state.json"
+    state.write_bytes(state.read_bytes().replace(old.encode(), new.encode()))
+    return root, old, new
+
+
+def _respell_producer_policy(layout, former):
+    state_file = record_paths(layout.control, layout.record.id).state_file
+    document = json.loads(state_file.read_bytes())
+    detail = document["criteria"][KEY]["detail"]
+    detail["goal_waiver_policy"] = _rebuild_policy(layout, detail["goal_waiver_policy"], former)
+    state_file.write_bytes(json.dumps(document).encode("utf-8"))
+
+
+def test_pending_waiver_proposal_bound_under_former_mount_applies(layout, monkeypatch, tmp_path):
+    from tests.mount_change_support import simulate_mount_change
+
+    env, candidate, root = prepared(layout)
+    view = propose(layout, env, candidate)
+    former = simulate_mount_change(
+        monkeypatch, layout.control.resolve(), tmp_path / "former-mount"
+    )
+    _respell_proposal(layout, view.proposal.id, former)
+    _respell_producer_policy(layout, former)
+    stored = load_proposal(record_paths(layout.control, layout.record.id).root, view.proposal.id)
+    assert stored.proposal.waiver.approval_root.startswith(former)
+
+    approve(layout, env, view.proposal.id)
+
+    assert list(root.rglob("*.toml")) and list(root.rglob("*.md"))
+    assert not Path(former).exists()
+    assert env.waivers._current_waivers().waivers[0].waiver_id == candidate
+
+
+def test_interrupted_waiver_apply_recovers_after_mount_change(layout, monkeypatch, tmp_path):
+    from tests.mount_change_support import respell, simulate_mount_change
+
+    env, candidate, root = prepared(layout)
+    view = propose(layout, env, candidate)
+    path, _transaction = interrupted_transaction(layout, env, view)
+    current = layout.control.resolve()
+    former = simulate_mount_change(monkeypatch, current, tmp_path / "former-mount")
+    proposal_root, old, new = _respell_proposal(layout, view.proposal.id, former)
+    respell(path, current, former)
+    path.write_bytes(path.read_bytes().replace(old.encode(), new.encode()))
+    state = proposal_root / "state.json"
+    stored = json.loads(state.read_bytes())
+    old_transaction = stored["transaction_digest"]
+    new_transaction = digest(json.loads(path.read_bytes()))
+    state.write_bytes(
+        state.read_bytes().replace(old_transaction.encode(), new_transaction.encode())
+    )
+    assert all(
+        effect["path"].startswith(former) for effect in json.loads(path.read_bytes())["effects"]
+    )
+
+    recover(env.store, layout.record.id, env)
+
+    assert list(root.rglob("*.toml")) and list(root.rglob("*.md"))
+    assert (
+        load_proposal(record_paths(layout.control, layout.record.id).root, view.proposal.id).state
+        == "applied"
+    )
