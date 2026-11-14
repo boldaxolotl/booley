@@ -8,11 +8,13 @@ the process boundary rather than Booley's internals.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -67,6 +69,11 @@ if token_run and token_run["stdout"] == "SYNTHETIC_STALE_TOKEN":
     print(json.dumps({"type": "error", "message": failure}))
     print(json.dumps({"type": "turn.failed", "error": {"message": failure}}))
     sys.exit(1)
+# Like a real codex exec, read the whole prompt before doing any work.
+# The stale-token branch above exits first on purpose: it never reads stdin.
+if os.environ.get("FAKE_CODEX_READING"):
+    open(os.environ["FAKE_CODEX_READING"], "w").close()
+prompt = sys.stdin.buffer.read()
 catalog = None
 for index, argument in enumerate(sys.argv):
     if argument == "-c" and sys.argv[index + 1].startswith("model_catalog_json="):
@@ -91,6 +98,7 @@ report = {
     "home": home,
     "argv": sys.argv[1:],
     "catalog": catalog,
+    "prompt_bytes": len(prompt),
 }
 message = {"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(report)}}
 print(json.dumps(message))
@@ -431,6 +439,63 @@ async def test_gateway_repeated_auth_failure_stops_after_one_refresh(
 
     assert count_runs(command_runs) == 2
     assert count_runs(launches) == 2
+
+
+_HOLD_BACK_DEADLINE_SECONDS = 30
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "prompt",
+    ["p", "x" * (4 * 1024 * 1024)],
+    ids=["short-prompt", "prompt-larger-than-pipe-buffer"],
+)
+async def test_fake_codex_reads_whole_prompt_written_after_it_could_have_exited(
+    gateway_sandbox, tmp_path, monkeypatch, prompt
+):
+    """A prompt written late must still be read: the fake may not exit 0 first (#3886).
+
+    The write is held back until the fake has either exited (the old fake, which
+    never read stdin) or reached its stdin read (``FAKE_CODEX_READING`` exists).
+    No fixed sleep: the wait ends on the child's own state.
+    """
+    reading = tmp_path / "fake-codex-reading"
+    monkeypatch.setenv("FAKE_CODEX_READING", str(reading))
+    spawned: list[asyncio.subprocess.Process] = []
+    real_spawn = cb._codex_spawn
+    real_feed = cb._feed_prompt
+
+    async def recording_spawn(*args, **kwargs):
+        proc, session_root = await real_spawn(*args, **kwargs)
+        spawned.append(proc)
+        return proc, session_root
+
+    async def late_feed(stdin, text):
+        deadline = time.monotonic() + _HOLD_BACK_DEADLINE_SECONDS
+        while spawned[0].returncode is None and not reading.exists():
+            assert time.monotonic() < deadline, "fake codex neither exited nor reached stdin"
+            await asyncio.sleep(0.01)
+        return await real_feed(stdin, text)
+
+    monkeypatch.setattr(cb, "_codex_spawn", recording_spawn)
+    monkeypatch.setattr(cb, "_feed_prompt", late_feed)
+
+    try:
+        result = await cb.CodexBackend(auth_mode="gateway")._call_once(
+            _params(tmp_path, prompt=prompt),
+            full_prompt=prompt,
+            transcript_path=tmp_path / "transcript.jsonl",
+        )
+    finally:
+        # The backend kills its child only on timeout or cancellation.
+        for proc in spawned:
+            if proc.returncode is None:
+                proc.kill()
+            await proc.wait()
+
+    report = json.loads(result.output)
+    assert report["model_provider"] == "booley_gateway"
+    assert report["prompt_bytes"] == len(prompt.encode())
 
 
 def test_auth_failure_text_is_classified_only_under_a_gateway_token_command(monkeypatch):
