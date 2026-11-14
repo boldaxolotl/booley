@@ -1529,9 +1529,8 @@ class TestPromptConstruction:
         assert "bugs" in system
         assert "Review methodology" in system
 
-    @pytest.mark.parametrize(
-        ("category", "focus", "scope", "expected"),
-        [
+    def test_each_focus_loads_its_declared_guides(self, tmp_path: Path):
+        cases = [
             ("rtl", "bugs", "rtl/a.sv", ["bugs-checklist"]),
             ("rtl", "protocol", "rtl/a.sv", ["protocol-cdc-checklist"]),
             ("rtl", "security", "rtl/a.sv", ["security-checklist"]),
@@ -1546,30 +1545,29 @@ class TestPromptConstruction:
                 "tb/main.cpp,tb/test.py,tb/tb.sv",
                 ["c-cpp-checklist", "hdl-checklist", "cocotb-checklist"],
             ),
-        ],
-    )
-    def test_each_focus_loads_its_declared_guides(
-        self, tmp_path: Path, category: str, focus: str, scope: str, expected: list[str]
-    ):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--work-dir",
-                str(tmp_path),
-                "--scope",
-                scope,
-                "--category",
-                category,
-                "--focus",
-                focus,
-            ]
-        )
-        system = endpoint._build_system_prompt(focus)
-        headings = re.findall(r"^## Review guide — .*$", system, flags=re.MULTILINE)
-        assert headings == [f"## Review guide — {focus} ({name})" for name in expected]
-        if focus == "spec":
-            assert "## Trace targets" in system
-            assert "## Checklist" not in system
+        ]
+        for index, (category, focus, scope, expected) in enumerate(cases):
+            work_dir = tmp_path / f"case{index}"
+            work_dir.mkdir()
+            endpoint = ReviewerSpecialist()
+            endpoint.parse_args(
+                [
+                    "--work-dir",
+                    str(work_dir),
+                    "--scope",
+                    scope,
+                    "--category",
+                    category,
+                    "--focus",
+                    focus,
+                ]
+            )
+            system = endpoint._build_system_prompt(focus)
+            headings = re.findall(r"^## Review guide — .*$", system, flags=re.MULTILINE)
+            assert headings == [f"## Review guide — {focus} ({name})" for name in expected]
+            if focus == "spec":
+                assert "## Trace targets" in system
+                assert "## Checklist" not in system
 
     def test_rtl_optimization_prompt_checks_for_runtime_constant_work(self, state_file: Path):
         endpoint = ReviewerSpecialist()
@@ -4145,35 +4143,44 @@ def test_cpp_opposite_role_refuses_before_provider(tmp_path, name):
     assert validate_scope_category(["tagged.hxx"], "tb", tmp_path) == []
 
 
-@pytest.mark.parametrize(
-    "scope,labels",
-    [
+def test_cpp_guidance_preview_and_project_overlay(tmp_path):
+    from booley.specialists.reviewer import _STYLE_OVERLAYS
+
+    cases = [
         ("tb/main.cpp", ["c-cpp-checklist"]),
         (
             "tb/main.cpp,tb/test.py,tb/tb.sv",
             ["c-cpp-checklist", "hdl-checklist", "cocotb-checklist"],
         ),
-    ],
-)
-def test_cpp_guidance_preview_and_project_overlay(tmp_path, scope, labels):
-    endpoint = ReviewerSpecialist()
-    endpoint.parse_args(
-        ["--work-dir", str(tmp_path), "--scope", scope, "--category", "tb", "--focus", "quality"]
-    )
-    assert endpoint._resolve_scope_contract() is None
-    # Use the established project overlay path.
-    from booley.specialists.reviewer import _STYLE_OVERLAYS
-
-    overlay = tmp_path / ".booley" / _STYLE_OVERLAYS["tb"]
-    overlay.parent.mkdir(parents=True, exist_ok=True)
-    overlay.write_text("Project C lifecycle rule")
-    prompt = endpoint._build_system_prompt("quality")
-    assert "C/C++ testbench" in prompt
-    assert "Project C lifecycle rule" in prompt
-    assert ("Canonical style guide for SystemVerilog" in prompt) == ("tb/tb.sv" in scope)
-    assert endpoint._dry_run_preview().detail["guides"] == [
-        {"kind": "checklist", "name": name} for name in labels
     ]
+    for index, (scope, labels) in enumerate(cases):
+        work_dir = tmp_path / f"case{index}"
+        work_dir.mkdir()
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(
+            [
+                "--work-dir",
+                str(work_dir),
+                "--scope",
+                scope,
+                "--category",
+                "tb",
+                "--focus",
+                "quality",
+            ]
+        )
+        assert endpoint._resolve_scope_contract() is None
+        # Use the established project overlay path.
+        overlay = work_dir / ".booley" / _STYLE_OVERLAYS["tb"]
+        overlay.parent.mkdir(parents=True, exist_ok=True)
+        overlay.write_text("Project C lifecycle rule")
+        prompt = endpoint._build_system_prompt("quality")
+        assert "C/C++ testbench" in prompt
+        assert "Project C lifecycle rule" in prompt
+        assert ("Canonical style guide for SystemVerilog" in prompt) == ("tb/tb.sv" in scope)
+        assert endpoint._dry_run_preview().detail["guides"] == [
+            {"kind": "checklist", "name": name} for name in labels
+        ]
 
 
 @pytest.mark.parametrize("suffix", ["hh", "hxx", "HH", "HXX"])
@@ -4209,18 +4216,27 @@ def test_declared_review_guides_are_the_packaged_guides():
     assert declared == packaged
 
 
-@pytest.mark.parametrize(
-    ("category", "focus", "scope", "expected"),
-    [
-        ("rtl", "bugs", "rtl/a.sv", [{"kind": "checklist", "name": "bugs-checklist"}]),
-        ("rtl", "spec", "rtl/a.sv", [{"kind": "hunt", "name": "spec-hunt"}]),
-    ],
-)
-def test_dry_run_lists_guides_with_kind(tmp_path, category, focus, scope, expected):
-    endpoint = ReviewerSpecialist()
-    endpoint.parse_args(
-        ["--work-dir", str(tmp_path), "--scope", scope, "--category", category, "--focus", focus]
-    )
-    preview = endpoint._dry_run_preview()
-    assert preview.detail["guides"] == expected
-    assert f"guides={expected[0]['name']}" in preview.report_text
+def test_dry_run_lists_guides_with_kind(tmp_path):
+    cases = [
+        ("bugs", [{"kind": "checklist", "name": "bugs-checklist"}]),
+        ("spec", [{"kind": "hunt", "name": "spec-hunt"}]),
+    ]
+    for focus, expected in cases:
+        work_dir = tmp_path / focus
+        work_dir.mkdir()
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(
+            [
+                "--work-dir",
+                str(work_dir),
+                "--scope",
+                "rtl/a.sv",
+                "--category",
+                "rtl",
+                "--focus",
+                focus,
+            ]
+        )
+        preview = endpoint._dry_run_preview()
+        assert preview.detail["guides"] == expected
+        assert f"guides={expected[0]['name']}" in preview.report_text
