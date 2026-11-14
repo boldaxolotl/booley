@@ -14,13 +14,13 @@ from booley.flows.sim.coverage_campaign import DurableTargetIdentity
 from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
 from booley.flows.sim.coverage_progress import CoverageProgress
 from booley.flows.sim.record import (
-    inspect_retained_campaign,
+    inspect_retained_simulation_record,
 )
 from booley.flows.sim.record.codec import (
-    SimulationCampaignIntegrityError,
+    SimulationRecordIntegrityError,
     canonical_json_bytes,
 )
-from booley.flows.sim.record.store import CampaignStore
+from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.record_retention import CampaignRetentionError, prune_invocation
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.execution_records import ExecutionId
@@ -862,10 +862,10 @@ def test_prune_canonicalizes_explicit_project_data(project_alias, monkeypatch) -
 
 def test_retention_owns_a_shared_build_compiled_by_a_later_invocation(tmp_path: Path) -> None:
     from booley.flows.sim.record.inspection import (
-        authenticate_retained_campaign_inventory,
-        inspect_retained_campaign,
+        authenticate_retained_simulation_record_inventory,
+        inspect_retained_simulation_record,
     )
-    from booley.flows.sim.record.store import CampaignStore
+    from booley.flows.sim.record.store import SimulationRecordStore
     from tests.flows.sim.simulation_record_test_support import _executor, _manifest_for, _request
 
     manifest = _manifest_for(("alpha", "beta"))
@@ -874,7 +874,7 @@ def test_retention_owns_a_shared_build_compiled_by_a_later_invocation(tmp_path: 
     build_root = tmp_path / "engine-build"
     build_root.mkdir()
     (build_root / "simv").write_bytes(b"image")
-    store = CampaignStore(tmp_path / "record")
+    store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(manifest)
     items = manifest.document["work_items"]
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
@@ -884,8 +884,8 @@ def test_retention_owns_a_shared_build_compiled_by_a_later_invocation(tmp_path: 
         )
         store.publish_result(item["work_item_id"], result)  # type: ignore[index]
 
-    status = inspect_retained_campaign(store.manifest_path)
-    owned = {*status.retention_files, *authenticate_retained_campaign_inventory(status)}
+    status = inspect_retained_simulation_record(store.manifest_path)
+    owned = {*status.retention_files, *authenticate_retained_simulation_record_inventory(status)}
     produced = {
         path.absolute() for path in (store.root / "build-variants").rglob("*") if path.is_file()
     }
@@ -994,7 +994,7 @@ def test_prune_follows_only_the_booley_dir_entry(
         reset_cache()
 
     if layout == "below":
-        with pytest.raises((CampaignRetentionError, SimulationCampaignIntegrityError)):
+        with pytest.raises((CampaignRetentionError, SimulationRecordIntegrityError)):
             prune_invocation(reports, 1)
         assert (reports / "sim/1").is_dir()
         return
@@ -1004,14 +1004,14 @@ def test_prune_follows_only_the_booley_dir_entry(
 
 
 def _interrupt_latest_attempt(
-    tmp_path: Path, reports: Path, store: CampaignStore, lane_id: str | None = None
+    tmp_path: Path, reports: Path, store: SimulationRecordStore, lane_id: str | None = None
 ) -> tuple[Path, dict[str, object]]:
     """Turn the retained Campaign's only item into an interrupted one with an owned run directory.
 
     Returns the owned run directory and the rewritten attempt document. With ``lane_id`` the
     attempt names that lane execution (a Campaign written by the current release).
     """
-    status = inspect_retained_campaign(store.manifest_path)
+    status = inspect_retained_simulation_record(store.manifest_path)
     work_item_id = status.completed[0]
     (store.work_item_directory(work_item_id) / "result.json").unlink()
     store.summary_path.unlink()
@@ -1087,7 +1087,7 @@ def test_full_pruning_accepts_authenticated_abandoned_campaign(tmp_path: Path, s
     store.summary_path.unlink()
     (target / "simulation.json").unlink()
     if state == "interrupted":
-        status = inspect_retained_campaign(store.manifest_path)
+        status = inspect_retained_simulation_record(store.manifest_path)
         result = store.work_item_directory(status.completed[0]) / "result.json"
         result.unlink()
         progress_path = reports / "sim/1/progress.json"
@@ -1112,7 +1112,7 @@ def test_interrupted_campaign_without_surviving_resources_needs_no_project_data(
     target = store.root.parent
     store.summary_path.unlink()
     (target / "simulation.json").unlink()
-    status = inspect_retained_campaign(store.manifest_path)
+    status = inspect_retained_simulation_record(store.manifest_path)
     result = store.work_item_directory(status.completed[0]) / "result.json"
     result.unlink()
     progress_path = reports / "sim/1/progress.json"
@@ -1155,10 +1155,10 @@ def test_full_pruning_refuses_a_campaign_owned_by_resume(tmp_path: Path) -> None
 
 
 def test_campaign_mutation_lock_never_recreates_a_missing_root(tmp_path: Path) -> None:
-    store = CampaignStore(tmp_path / "record")
+    store = SimulationRecordStore(tmp_path / "record")
 
     with (
-        pytest.raises(SimulationCampaignIntegrityError, match="directory disappeared"),
+        pytest.raises(SimulationRecordIntegrityError, match="directory disappeared"),
         store.mutation_lock(),
     ):
         raise AssertionError("unreachable")

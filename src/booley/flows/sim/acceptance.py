@@ -37,12 +37,12 @@ from booley.flows.sim.coverage_reference import (
 )
 from booley.flows.sim.record import (
     SIMULATION_PROJECTION_SCHEMA,
-    CampaignOutcome,
+    SimulationRecordOutcome,
     build_artifact_reference,
     encode_artifact_reference,
 )
-from booley.flows.sim.record.codec import MANIFEST_MAX_BYTES, SimulationCampaignIntegrityError
-from booley.flows.sim.record.test_run_files import campaign_test_run_files
+from booley.flows.sim.record.codec import MANIFEST_MAX_BYTES, SimulationRecordIntegrityError
+from booley.flows.sim.record.test_run_files import simulation_record_test_run_files
 from booley.flows.sim.record.test_run_report import evidence_test_run_rows
 from booley.flows.sim.record_reports import (
     simulation_booley_dir,
@@ -103,7 +103,7 @@ class _OutcomeEvidence:
     resolved at most once, however many Criteria or Goals read them.
     """
 
-    def __init__(self, outcome: CampaignOutcome) -> None:
+    def __init__(self, outcome: SimulationRecordOutcome) -> None:
         self.outcome = outcome
         self._rows: dict[object, dict[str, object]] | None = None
         self._coverage: _PublicCoverage | None = None
@@ -192,7 +192,7 @@ class SimulationAcceptanceCoordinator:
 
 
 def _simulation_changes(
-    outcome: CampaignOutcome,
+    outcome: SimulationRecordOutcome,
     shadow: DevelopmentState,
     target: Mapping[str, object],
     target_name: str,
@@ -287,7 +287,7 @@ def _candidate_observations(
             continue
         name = str(item["test_run"])
         if name in indexed:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 f"validated acceptance facts repeat Test Run {name!r}"
             )
         indexed[name] = item
@@ -351,7 +351,7 @@ def _observation_passed(observation: Mapping[str, object]) -> bool:
 
 
 def _simulation_criterion_met(
-    outcome: CampaignOutcome,
+    outcome: SimulationRecordOutcome,
     contract: SimulationCriterionContract,
     observations: tuple[Mapping[str, object], ...],
 ) -> bool:
@@ -368,7 +368,7 @@ def _test_name(value: object) -> str:
 
 
 def _simulation_detail(
-    outcome: CampaignOutcome,
+    outcome: SimulationRecordOutcome,
     contract: SimulationCriterionContract,
     registered: set[str],
     observations: tuple[Mapping[str, object], ...],
@@ -437,7 +437,7 @@ def record_campaign_acceptance(
     keys: list[str] = []
     acceptances = []
     for item in outcomes:
-        if not isinstance(item, CampaignOutcome):
+        if not isinstance(item, SimulationRecordOutcome):
             raise TypeError("invalid Simulation Campaign outcome")
         evidence = _OutcomeEvidence(item)
         if endpoint.state._file_path is None and not context.diagnostic:
@@ -524,7 +524,7 @@ def _campaign_projection(
 
 
 def _campaign_test_projections(
-    outcome: CampaignOutcome, test_runs: list[dict[str, object]], target_directory: Path
+    outcome: SimulationRecordOutcome, test_runs: list[dict[str, object]], target_directory: Path
 ) -> list[dict[str, object]]:
     """One row per observation, with the Test Run it observed.
 
@@ -533,7 +533,7 @@ def _campaign_test_projections(
     directory of ``simulation.json``), ``None`` where a file does not exist.
     They stay out of the ``test_runs`` rows, which rerun matching reads.
     """
-    files = campaign_test_run_files(outcome)
+    files = simulation_record_test_run_files(outcome)
     return [
         {
             "name": observation["test"] or "default",
@@ -564,7 +564,7 @@ def _test_run_fields(run: Mapping[str, object]) -> dict[str, object]:
 def _observation_error_tail(observation: Mapping[str, object]) -> str:
     detail = observation["detail"]
     if not isinstance(detail, Mapping) or not isinstance(detail.get("reason"), str):
-        raise SimulationCampaignIntegrityError(
+        raise SimulationRecordIntegrityError(
             "Simulation Campaign observation detail must contain a string reason"
         )
     if _observation_passed(observation):
@@ -660,7 +660,7 @@ def _coverage_changes(
     return changes
 
 
-def _resolve_facts_coverage(outcome: CampaignOutcome) -> _PublicCoverage:
+def _resolve_facts_coverage(outcome: SimulationRecordOutcome) -> _PublicCoverage:
     """Resolve the campaign's public ``coverage.json`` against its Acceptance Facts."""
     public_path = outcome.manifest_path.parents[1] / "coverage.json"
     facts = outcome.acceptance_facts.document
@@ -725,7 +725,7 @@ class _CycleFacts:
     @classmethod
     def of(
         cls,
-        outcome: CampaignOutcome,
+        outcome: SimulationRecordOutcome,
         target: Mapping[str, object],
         refusals: Mapping[tuple[str, str], str],
     ) -> _CycleFacts:
@@ -739,7 +739,7 @@ class _CycleFacts:
 
 
 def _cycle_changes(
-    outcome: CampaignOutcome,
+    outcome: SimulationRecordOutcome,
     shadow: DevelopmentState,
     target: Mapping[str, object],
     evidence: _OutcomeEvidence,
@@ -939,7 +939,7 @@ def _cycle_detail(
 
 
 def _goal_changes(
-    outcome: CampaignOutcome,
+    outcome: SimulationRecordOutcome,
     shadow: DevelopmentState,
     target: Mapping[str, object],
     evidence: _OutcomeEvidence,
@@ -989,7 +989,7 @@ def _graded(rows: Sequence[Mapping[str, object]]) -> bool:
 
 
 def _goal_simulation_detail(
-    outcome: CampaignOutcome, matched: list[dict[str, object]]
+    outcome: SimulationRecordOutcome, matched: list[dict[str, object]]
 ) -> dict[str, object]:
     """What one campaign observed of a simulation Goal's frozen Test Runs."""
     facts = outcome.acceptance_facts.document
@@ -1011,7 +1011,7 @@ def _goal_simulation_detail(
 
 
 def _goal_cycle_change(
-    outcome: CampaignOutcome,
+    outcome: SimulationRecordOutcome,
     shadow: DevelopmentState,
     goal: GoalTestRuns,
     matched: list[dict[str, object]],
@@ -1030,7 +1030,7 @@ def _goal_cycle_change(
 
 
 def _goal_coverage_change(
-    outcome: CampaignOutcome,
+    outcome: SimulationRecordOutcome,
     shadow: DevelopmentState,
     goal: GoalTestRuns,
     evidence: _OutcomeEvidence,

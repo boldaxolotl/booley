@@ -251,7 +251,7 @@ def test_every_published_manifest_is_registered_with_the_goal_run_before_it_runs
     def started(path: Path) -> StartedCampaign:
         return StartedCampaign(path, "id", "sha256:" + "0" * 64, ("sim",), True)
 
-    monkeypatch.setattr(flow_module, "started_campaign", started)
+    monkeypatch.setattr(flow_module, "started_simulation_record", started)
     manifest = tmp_path / "record" / "manifest.json"
 
     flow = _flow(tmp_path, monkeypatch)

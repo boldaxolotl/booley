@@ -40,16 +40,16 @@ from .coverage_reference import (
 )
 from .record import (
     ProjectionTrust,
-    RetainedCampaignStatus,
-    SimulationCampaignIntegrityError,
+    RetainedSimulationRecordStatus,
     SimulationProjection,
-    UnsupportedSimulationCampaignFormatError,
-    authenticate_retained_campaign_inventory,
+    SimulationRecordIntegrityError,
+    UnsupportedSimulationRecordFormatError,
+    authenticate_retained_simulation_record_inventory,
     decode_simulation_projection,
-    inspect_retained_campaign,
-    recover_retained_campaign_resources,
+    inspect_retained_simulation_record,
+    recover_retained_simulation_record_resources,
     resolve_artifact_reference,
-    retained_campaign_lock,
+    retained_simulation_record_lock,
 )
 from .record.artifact_reference import (
     ArtifactReferenceError,
@@ -58,9 +58,9 @@ from .record.artifact_reference import (
 )
 from .record.codec import MANIFEST_MAX_BYTES, raise_if_retired_schema
 from .record.dependency import (
-    CampaignDependencyReceipt,
+    SimulationRecordDependencyReceipt,
     dependency_receipt_files,
-    read_campaign_dependencies,
+    read_simulation_record_dependencies,
 )
 from .record_layout import RECORD_DIRECTORY, refuse_older_layout
 from .record_reports import (
@@ -89,14 +89,14 @@ _BATCH_SCHEMA = "booley.simulation-prune-batch/v1"
 
 @dataclass(frozen=True, slots=True)
 class _CampaignEligibility:
-    status: RetainedCampaignStatus
+    status: RetainedSimulationRecordStatus
     abandoned: bool
 
 
 @dataclass(frozen=True, slots=True)
 class _DependentInvocation:
     path: Path
-    receipt: CampaignDependencyReceipt | None
+    receipt: SimulationRecordDependencyReceipt | None
     authenticated: bool
 
 
@@ -211,7 +211,7 @@ def _refuse_older_coverage_schema(root: Path, public: Mapping[str, object]) -> N
     """Report a Target ``coverage.json`` an older Booley wrote as old, not damaged or standalone."""
     try:
         raise_if_retired_schema(public.get("$schema"))
-    except UnsupportedSimulationCampaignFormatError as exc:
+    except UnsupportedSimulationRecordFormatError as exc:
         raise CampaignRetentionError(str(exc.located(root))) from exc
 
 
@@ -255,7 +255,7 @@ def _target(
     try:
         resolved = resolve_coverage_campaign_reference(public_path)
         authenticate_coverage_campaign_owner(resolved)
-    except UnsupportedSimulationCampaignFormatError as exc:
+    except UnsupportedSimulationRecordFormatError as exc:
         raise CampaignRetentionError(str(exc)) from exc
     loaded = resolved.loaded
     storage = resolved.campaign_path.parent
@@ -298,7 +298,7 @@ def _refuse_older_record_layout(root: Path) -> None:
     """Report an invocation Booley 0.4.0 or earlier wrote as an older record, not corrupt."""
     try:
         refuse_older_layout(root)
-    except UnsupportedSimulationCampaignFormatError as exc:
+    except UnsupportedSimulationRecordFormatError as exc:
         raise CampaignRetentionError(str(exc)) from exc
 
 
@@ -458,7 +458,7 @@ def _preflight_invocation(root: Path, *, project_data: Path | None) -> None:
                 _preflight_campaign_resources(root, project_data)
         except CampaignRetentionError:
             raise
-        except (OSError, ValueError, SimulationCampaignIntegrityError) as exc:
+        except (OSError, ValueError, SimulationRecordIntegrityError) as exc:
             raise CampaignRetentionError(
                 f"Simulation Campaign resource preflight failed: {exc}"
             ) from exc
@@ -543,8 +543,8 @@ def _dependent_invocations(
     manifests = tuple(sorted(root.glob(f"targets/*/{RECORD_DIRECTORY}/manifest.json")))
     for manifest in manifests:
         try:
-            receipts = read_campaign_dependencies(manifest)
-        except UnsupportedSimulationCampaignFormatError as exc:
+            receipts = read_simulation_record_dependencies(manifest)
+        except UnsupportedSimulationRecordFormatError as exc:
             raise CampaignRetentionError(str(exc.located(root))) from exc
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             raise CampaignRetentionError(
@@ -568,14 +568,14 @@ def _dependent_invocations(
     return tuple(found[path] for path in sorted(found, key=str))
 
 
-def _authenticate_dependent_report(receipt: CampaignDependencyReceipt) -> bool:
+def _authenticate_dependent_report(receipt: SimulationRecordDependencyReceipt) -> bool:
     report = receipt.dependent_invocation / "report.json"
     if not report.is_file():
         return _completed_tombstone(receipt.dependent_invocation)
     return _report_references_campaign(
         report,
         receipt.origin_target / RECORD_DIRECTORY / "manifest.json",
-        receipt.campaign_id,
+        receipt.simulation_record_id,
         external_origin_target=receipt.origin_target,
     )
 
@@ -807,7 +807,9 @@ def _valid_lock_sentinel(lock: Path) -> bool:
 def _preflight_campaign_resources(root: Path, project_data: Path | None) -> None:
     booley_dir = invocation_booley_dir(root)
     for directory in _campaign_directories(root):
-        status = inspect_retained_campaign(directory / "manifest.json", booley_dir=booley_dir)
+        status = inspect_retained_simulation_record(
+            directory / "manifest.json", booley_dir=booley_dir
+        )
         if status.interrupted and project_data is None:
             raise CampaignRetentionError(
                 "Booley Directory is required to recover interrupted Simulation Campaign resources"
@@ -830,7 +832,7 @@ def _campaign_mutation_locks(campaigns: tuple[Path, ...]) -> Iterator[None]:
         for campaign in campaigns:
             try:
                 stack.enter_context(
-                    retained_campaign_lock(
+                    retained_simulation_record_lock(
                         campaign / "manifest.json",
                         booley_dir=invocation_booley_dir(campaign.parents[2]),
                     )
@@ -850,11 +852,13 @@ def _recover_campaign_resources(
         # Only this invocation's own lanes and run directories can survive.
         resolved = project_data or _infer_project_data(root)
         for directory in campaigns:
-            status = inspect_retained_campaign(directory / "manifest.json", booley_dir=booley_dir)
-            recover_retained_campaign_resources(status, resolved, booley_dir=booley_dir)
+            status = inspect_retained_simulation_record(
+                directory / "manifest.json", booley_dir=booley_dir
+            )
+            recover_retained_simulation_record_resources(status, resolved, booley_dir=booley_dir)
     except CampaignRetentionError:
         raise
-    except (OSError, ValueError, SimulationCampaignIntegrityError) as exc:
+    except (OSError, ValueError, SimulationRecordIntegrityError) as exc:
         raise CampaignRetentionError(f"Campaign recovery is invalid: {exc}") from exc
 
 
@@ -1028,9 +1032,11 @@ def _target_owned_files(root: Path, target: Path) -> set[Path]:
     manifest = campaign / "manifest.json"
     if manifest.exists():
         booley_dir = invocation_booley_dir(root)
-        status = inspect_retained_campaign(manifest, booley_dir=booley_dir)
+        status = inspect_retained_simulation_record(manifest, booley_dir=booley_dir)
         expected.update(status.retention_files)
-        expected.update(authenticate_retained_campaign_inventory(status, booley_dir=booley_dir))
+        expected.update(
+            authenticate_retained_simulation_record_inventory(status, booley_dir=booley_dir)
+        )
         try:
             expected.update(dependency_receipt_files(manifest))
         except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -1052,7 +1058,7 @@ def _campaign_coverage_files(coverage: Path) -> set[Path]:
     if campaign_path.exists():
         try:
             loaded = load_coverage_campaign(campaign_path)
-        except UnsupportedSimulationCampaignFormatError as exc:
+        except UnsupportedSimulationRecordFormatError as exc:
             raise CampaignRetentionError(str(exc)) from exc
         return _coverage_owned_files(coverage, loaded)
     if not coverage.exists():
@@ -1106,10 +1112,10 @@ def _availability_document(loaded: LoadedCoverageCampaign, *, status: str) -> di
 
 def _inspect_simulation_campaign(target: Path, campaign: Path) -> _CampaignEligibility:
     try:
-        status = inspect_retained_campaign(
+        status = inspect_retained_simulation_record(
             campaign / "manifest.json", booley_dir=invocation_booley_dir(target.parents[1])
         )
-    except UnsupportedSimulationCampaignFormatError as exc:
+    except UnsupportedSimulationRecordFormatError as exc:
         raise CampaignRetentionError(str(exc)) from exc
     except (OSError, ValueError) as exc:
         raise CampaignRetentionError(
@@ -1128,7 +1134,7 @@ def _inspect_simulation_campaign(target: Path, campaign: Path) -> _CampaignEligi
                 _read_object(projection_path),
                 coverage_expected=(target / "coverage.json").is_file(),
             )
-        except UnsupportedSimulationCampaignFormatError as exc:
+        except UnsupportedSimulationRecordFormatError as exc:
             raise CampaignRetentionError(str(exc.located(target.parents[1]))) from exc
         except (OSError, ValueError) as exc:
             raise CampaignRetentionError(
@@ -1184,7 +1190,7 @@ def _validate_native_pruning_eligibility(root: Path, selector: str) -> None:
 
 
 def _validate_projection_identity(
-    target: Path, status: RetainedCampaignStatus, projection: SimulationProjection
+    target: Path, status: RetainedSimulationRecordStatus, projection: SimulationProjection
 ) -> None:
     expected = {
         "target": status.target_selector,
@@ -1203,9 +1209,9 @@ def _validate_projection_identity(
 
 
 def _validate_authenticated_projection(
-    target: Path, status: RetainedCampaignStatus, document: Mapping[str, object]
+    target: Path, status: RetainedSimulationRecordStatus, document: Mapping[str, object]
 ) -> None:
-    if document.get("simulation_record_id") != status.campaign_id:
+    if document.get("simulation_record_id") != status.simulation_record_id:
         raise CampaignRetentionError("Simulation Campaign projection owner disagrees")
     booley_dir = invocation_booley_dir(target.parents[1])
     artifact = resolve_artifact_reference(
@@ -1213,7 +1219,7 @@ def _validate_authenticated_projection(
         bases={"origin_target": target},
         allowed_bases={"origin_target"},
         expected_kind="simulation_record_manifest",
-        expected_owner=status.campaign_id,
+        expected_owner=status.simulation_record_id,
         maximum=MANIFEST_MAX_BYTES,
         booley_dir=booley_dir,
     )
@@ -1226,7 +1232,7 @@ def _validate_authenticated_projection(
         bases={"origin_target": target},
         allowed_bases={"origin_target"},
         expected_kind="coverage_record_reference",
-        expected_owner=status.campaign_id,
+        expected_owner=status.simulation_record_id,
         maximum=MAX_REFERENCE_BYTES,
         booley_dir=booley_dir,
     )
@@ -1254,7 +1260,7 @@ def _is_resume_receipt(root: Path, completed: list[str], pending: list[str]) -> 
         # Booley 0.4.0 named the field ``campaigns``; no current Booley writes it.
         raise CampaignRetentionError(
             str(
-                UnsupportedSimulationCampaignFormatError(
+                UnsupportedSimulationRecordFormatError(
                     "Simulation report field", "detail.campaigns", root
                 )
             )

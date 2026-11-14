@@ -70,13 +70,13 @@ from .codec import (
     MAX_DETAIL_BYTES,
     RECORD_MAX_BYTES,
     RESULT_SCHEMA,
-    SimulationCampaignIntegrityError,
+    SimulationRecordIntegrityError,
     canonical_json_bytes,
     encode_bundle_build_attempt,
     encode_bundle_build_result,
     encode_executable_snapshot,
     encode_simulator_bundle,
-    reads_campaign_records,
+    reads_simulation_record_documents,
 )
 from .coordinator import (
     SerialWorkExecutor,
@@ -237,7 +237,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             raise PreSimScopeStoppedError("execution scope stopped before Pre-Sim Commands")
         item = request.work_item
         if item["kind"] not in {"ordinary_hdl", "cocotb_batch"}:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 "HDL campaign executor supports only ordinary or Cocotb work items"
             )
         with self._prepared_attempts_gate:
@@ -536,7 +536,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             target["selector"], for_flow="sim"
         )
         if handle.identity != f"{target['vlnv']}#{target['name']}":
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 "current Target identity disagrees with campaign manifest"
             )
         selection = cast(Mapping[str, object], request.work_item["selection"])
@@ -712,7 +712,7 @@ def _authenticate_planning_disclosure(request: WorkExecutionRequest, group: obje
         or canonical_json_bytes(group.planning_disclosure())  # type: ignore[attr-defined]
         != canonical_json_bytes(disclosures[ordinal])
     ):
-        raise SimulationCampaignIntegrityError(
+        raise SimulationRecordIntegrityError(
             "prepared generator source closure disagrees with campaign plan"
         )
 
@@ -748,15 +748,13 @@ def _immutable_hook_failure(
     if pre_sim is not None:
         publish_pre_sim_firing(request, pre_sim, checkpoint=checkpoint)
     if project_compile_surface(group.compile_surface) != surface:
-        raise SimulationCampaignIntegrityError(
+        raise SimulationRecordIntegrityError(
             "Project compile inputs changed during immutable Pre-Sim Commands"
         )
     if pre_sim is None or pre_sim.status == "passed":
         return None
     if pre_sim.status == "spawn_error":
-        raise SimulationCampaignIntegrityError(
-            pre_sim.detail or "Pre-Sim Commands could not start"
-        )
+        raise SimulationRecordIntegrityError(pre_sim.detail or "Pre-Sim Commands could not start")
     return _setup_result(
         request,
         build_directory,
@@ -778,7 +776,7 @@ def simulation_attempt(request: WorkExecutionRequest) -> tuple[SimulationAttempt
     run = expand_run_directory(
         configured,
         project_root=request.project_root,
-        campaign_id=cast(str, request.manifest.document["simulation_record_id"]),
+        simulation_record_id=cast(str, request.manifest.document["simulation_record_id"]),
         target_key=target["selector"].replace("/", "%2F"),
         work_item_key=request.store.work_item_directory(
             cast(str, request.work_item["work_item_id"])
@@ -892,13 +890,13 @@ def _hook_infrastructure_outcome(
     )
 
 
-@reads_campaign_records
+@reads_simulation_record_documents
 def _recovered_shared_failure(directory: Path, result: BundleBuildResult) -> _SharedFailure:
     observation = cast(Mapping[str, object], result.document["observation"])
     detail = cast(Mapping[str, object], observation["detail"])
     text = detail.get("text", observation["message"])
     if not isinstance(text, str):
-        raise SimulationCampaignIntegrityError("shared build failure text must be a string")
+        raise SimulationRecordIntegrityError("shared build failure text must be a string")
     return _SharedFailure(
         directory,
         result,
@@ -1163,7 +1161,7 @@ def _capture_build_execution(
     if len(raw) > RECORD_MAX_BYTES:
         # Only the scalar fields remain unbounded; refuse to publish a record
         # that every reader would reject.
-        raise SimulationCampaignIntegrityError(
+        raise SimulationRecordIntegrityError(
             f"build execution evidence is {len(raw)} bytes, over the {RECORD_MAX_BYTES}-byte"
             " record ceiling"
         )
@@ -1458,7 +1456,7 @@ def create_snapshot(
         bundle_root=build_directory,
         snapshot_root=snapshot_root,
         identity=SnapshotAttemptIdentity(
-            campaign_id=cast(str, request.manifest.document["simulation_record_id"]),
+            simulation_record_id=cast(str, request.manifest.document["simulation_record_id"]),
             manifest_sha256=manifest_digest(request.manifest),
             workload_sha256=fingerprints["workload_sha256"],
             work_item_id=cast(str, request.work_item["work_item_id"]),
@@ -1786,7 +1784,7 @@ def capture_private_image(
 ) -> list[dict[str, object]]:
     """Copy the build artifacts into *destination* and return their evidence records."""
     if not paths:
-        raise SimulationCampaignIntegrityError("successful build has no authenticated image")
+        raise SimulationRecordIntegrityError("successful build has no authenticated image")
     destination.mkdir(parents=True, mode=0o700, exist_ok=True)
     sources: list[tuple[Path, str]] = []
     executable_assigned = False
@@ -1807,10 +1805,10 @@ def capture_private_image(
         try:
             relative = safe_runtime_relative(declaration["source_artifact_path"])
         except RuntimeInputError as exc:
-            raise SimulationCampaignIntegrityError(str(exc)) from exc
+            raise SimulationRecordIntegrityError(str(exc)) from exc
         sources.append((source_root / relative, "runtime_input"))
     if not executable_assigned:
-        raise SimulationCampaignIntegrityError("private image has no simulator executable")
+        raise SimulationRecordIntegrityError("private image has no simulator executable")
     records = []
     for source, kind in sources:
         authenticated = _regular_child(source_root, source.relative_to(source_root).as_posix())
@@ -1905,11 +1903,11 @@ def _decode_cocotb_source(raw: bytes, selected: tuple[str, ...]) -> list[dict[st
     try:
         encoded = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise SimulationCampaignIntegrityError("Cocotb transport is not UTF-8") from exc
+        raise SimulationRecordIntegrityError("Cocotb transport is not UTF-8") from exc
     try:
         decoded = decode_results_payload(json.loads(encoded))
     except (json.JSONDecodeError, BoundaryError) as exc:
-        raise SimulationCampaignIntegrityError("Cocotb transport is invalid") from exc
+        raise SimulationRecordIntegrityError("Cocotb transport is invalid") from exc
     names = selected or tuple(test.name for test in decoded.tests if test.name)
     return [
         {"test": name, "verdict": verdict, "detail": detail}
@@ -1968,9 +1966,9 @@ def _regular_child(root: Path, relative: str) -> Path:
         path.resolve().relative_to(root.resolve())
         info = path.lstat()
     except (OSError, ValueError) as exc:
-        raise SimulationCampaignIntegrityError("private image artifact escapes its root") from exc
+        raise SimulationRecordIntegrityError("private image artifact escapes its root") from exc
     if not stat.S_ISREG(info.st_mode) or path.is_symlink():
-        raise SimulationCampaignIntegrityError("private image artifact is not a regular file")
+        raise SimulationRecordIntegrityError("private image artifact is not a regular file")
     return path
 
 

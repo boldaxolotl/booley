@@ -144,7 +144,7 @@ def test_resume_discloses_the_test_runs_the_manifest_froze(tmp_path, monkeypatch
     planned: dict[str, object] = {}
     monkeypatch.setattr(
         resume_module,
-        "plan_coarse_simulation_campaign",
+        "plan_coarse_simulation_record",
         lambda **kwargs: planned.update(kwargs) or "plan",
     )
 

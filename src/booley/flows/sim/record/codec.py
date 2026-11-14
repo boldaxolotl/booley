@@ -38,8 +38,8 @@ from .model import (
     BundleBuildResult,
     ExecutableSnapshot,
     SimulationAttempt,
-    SimulationCampaignDocument,
-    SimulationCampaignManifest,
+    SimulationRecordDocument,
+    SimulationRecordManifest,
     SimulationResult,
     SimulatorBundle,
 )
@@ -64,11 +64,11 @@ _VARIANT_ID_RE = re.compile(r"variant:[0-9a-f]{64}\Z")
 _WINDOWS_DRIVE_RE = re.compile(r"[A-Za-z]:")
 
 
-class SimulationCampaignIntegrityError(ValueError):
+class SimulationRecordIntegrityError(ValueError):
     """An authoritative campaign value violates its exact contract."""
 
 
-class UnsupportedSimulationCampaignFormatError(OlderBooleyRecordError):
+class UnsupportedSimulationRecordFormatError(OlderBooleyRecordError):
     """A record an older Booley wrote.
 
     Deliberately not an integrity error: the storage is intact, only too old, so no
@@ -89,15 +89,15 @@ class UnsupportedSimulationCampaignFormatError(OlderBooleyRecordError):
         self.label = label
         self.schema = schema
 
-    def located(self, invocation: Path) -> UnsupportedSimulationCampaignFormatError:
+    def located(self, invocation: Path) -> UnsupportedSimulationRecordFormatError:
         """The same refusal naming the invocation directory to delete."""
-        return UnsupportedSimulationCampaignFormatError(self.label, self.schema, invocation)
+        return UnsupportedSimulationRecordFormatError(self.label, self.schema, invocation)
 
 
 def raise_if_retired_schema(schema: object) -> None:
     """Refuse a schema identifier an older Booley wrote, before any other check."""
     if isinstance(schema, str) and schema in _RETIRED_SCHEMAS:
-        raise UnsupportedSimulationCampaignFormatError(_RETIRED_SCHEMAS[schema], schema)
+        raise UnsupportedSimulationRecordFormatError(_RETIRED_SCHEMAS[schema], schema)
 
 
 def raise_if_retired(document: Mapping[str, object]) -> None:
@@ -110,7 +110,7 @@ def canonical_json_bytes(value: object) -> bytes:
     try:
         return canonical_json(value)
     except (TypeError, ValueError) as exc:
-        raise SimulationCampaignIntegrityError(f"value is not canonical JSON: {exc}") from exc
+        raise SimulationRecordIntegrityError(f"value is not canonical JSON: {exc}") from exc
 
 
 # v1 of the Simulation Record manifest (it replaces simulation-campaign-manifest/v4):
@@ -274,12 +274,12 @@ _SNAPSHOT_FIELDS = frozenset(
     }
 )
 
-T = TypeVar("T", bound=SimulationCampaignDocument)
+T = TypeVar("T", bound=SimulationRecordDocument)
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
 
 
-def reads_campaign_records(function: Callable[_P, _R]) -> Callable[_P, _R]:
+def reads_simulation_record_documents(function: Callable[_P, _R]) -> Callable[_P, _R]:
     """Report bad nested data in a published record as campaign corruption.
 
     Attempt, build, bundle and result decoders check only the document boundary (#1743, #1744),
@@ -293,10 +293,10 @@ def reads_campaign_records(function: Callable[_P, _R]) -> Callable[_P, _R]:
     def guarded(*args: _P.args, **kwargs: _P.kwargs) -> _R:
         try:
             return function(*args, **kwargs)
-        except (SimulationCampaignIntegrityError, UnsupportedSimulationCampaignFormatError):
+        except (SimulationRecordIntegrityError, UnsupportedSimulationRecordFormatError):
             raise
         except (AttributeError, KeyError, TypeError, ValueError) as exc:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 f"published campaign record is malformed: {exc!r}"
             ) from exc
 
@@ -306,7 +306,7 @@ def reads_campaign_records(function: Callable[_P, _R]) -> Callable[_P, _R]:
 def _require_within_ceiling(raw: bytes, limit: int) -> None:
     """Refuse *raw* larger than its record's size ceiling."""
     if len(raw) > limit:
-        raise SimulationCampaignIntegrityError(f"document exceeds {limit}-byte size ceiling")
+        raise SimulationRecordIntegrityError(f"document exceeds {limit}-byte size ceiling")
 
 
 def _decode(
@@ -321,20 +321,20 @@ def _decode(
     try:
         value = json.loads(raw.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError) as exc:
-        raise SimulationCampaignIntegrityError(f"document is not valid UTF-8 JSON: {exc}") from exc
+        raise SimulationRecordIntegrityError(f"document is not valid UTF-8 JSON: {exc}") from exc
     try:
         document = require_dict(value, field="document")
     except BoundaryError as exc:
-        raise SimulationCampaignIntegrityError(str(exc)) from exc
+        raise SimulationRecordIntegrityError(str(exc)) from exc
     raise_if_retired(document)
     if set(document) != fields:
         missing = sorted(fields - set(document))
         unknown = sorted(set(document) - fields)
-        raise SimulationCampaignIntegrityError(
+        raise SimulationRecordIntegrityError(
             f"document must have exact fields; missing={missing}, unknown={unknown}"
         )
     if document.get("$schema") != schema:
-        raise SimulationCampaignIntegrityError(f"unsupported $schema {document.get('$schema')!r}")
+        raise SimulationRecordIntegrityError(f"unsupported $schema {document.get('$schema')!r}")
     try:
         # The depth/size walk bounds recursion for every record. Records without
         # a reader get nothing more than the canonical-bytes check (#1743);
@@ -344,20 +344,20 @@ def _decode(
         if reader is not None:
             _validate_common(document)
         if canonical_json_bytes(document) != raw:
-            raise SimulationCampaignIntegrityError("document is not canonical JSON")
+            raise SimulationRecordIntegrityError("document is not canonical JSON")
         if reader is not None:
             reader(document)
     except BoundaryError as exc:
-        raise SimulationCampaignIntegrityError(str(exc)) from exc
+        raise SimulationRecordIntegrityError(str(exc)) from exc
     return value_type(cast(Mapping[str, FrozenJson], document))
 
 
 def _validate_json(value: object, *, depth: int = 0) -> None:
     if depth > MAX_JSON_DEPTH:
-        raise SimulationCampaignIntegrityError("JSON nesting exceeds resource ceiling")
+        raise SimulationRecordIntegrityError("JSON nesting exceeds resource ceiling")
     if isinstance(value, str):
         if len(value.encode("utf-8")) > MAX_COMMAND_BYTES:
-            raise SimulationCampaignIntegrityError("string exceeds resource ceiling")
+            raise SimulationRecordIntegrityError("string exceeds resource ceiling")
         return
     if isinstance(value, bool | int) or value is None:
         return
@@ -366,7 +366,7 @@ def _validate_json(value: object, *, depth: int = 0) -> None:
         return
     if isinstance(value, list):
         if len(value) > MAX_LIST_ITEMS:
-            raise SimulationCampaignIntegrityError("list exceeds resource ceiling")
+            raise SimulationRecordIntegrityError("list exceeds resource ceiling")
         for item in value:
             _validate_json(item, depth=depth + 1)
         return
@@ -375,27 +375,27 @@ def _validate_json(value: object, *, depth: int = 0) -> None:
             require_str_value(key, field="object key", allow_empty=True)
             _validate_json(item, depth=depth + 1)
         return
-    raise SimulationCampaignIntegrityError(f"unsupported JSON type {type(value).__name__}")
+    raise SimulationRecordIntegrityError(f"unsupported JSON type {type(value).__name__}")
 
 
 def _require_digest(value: object, field: str) -> str:
     try:
         return require_sha256_digest(value, field=field)
     except BoundaryError as exc:
-        raise SimulationCampaignIntegrityError(f"{field} must be a sha256 digest") from exc
+        raise SimulationRecordIntegrityError(f"{field} must be a sha256 digest") from exc
 
 
 def _require_uuid(value: object, field: str) -> str:
     try:
         return require_uuid4(value, field=field)
     except BoundaryError as exc:
-        raise SimulationCampaignIntegrityError(f"{field} must be lowercase UUIDv4") from exc
+        raise SimulationRecordIntegrityError(f"{field} must be lowercase UUIDv4") from exc
 
 
 def _require_variant_id(value: object) -> str:
     parsed = _bounded_string(value, "build_variant_id")
     if not _VARIANT_ID_RE.fullmatch(parsed):
-        raise SimulationCampaignIntegrityError("build_variant_id is invalid")
+        raise SimulationRecordIntegrityError("build_variant_id is invalid")
     return parsed
 
 
@@ -408,7 +408,7 @@ def _bounded_string(
 ) -> str:
     parsed = require_str_value(value, field=field, allow_empty=allow_empty)
     if len(parsed.encode("utf-8")) > limit:
-        raise SimulationCampaignIntegrityError(f"{field} exceeds {limit}-byte ceiling")
+        raise SimulationRecordIntegrityError(f"{field} exceeds {limit}-byte ceiling")
     return parsed
 
 
@@ -427,9 +427,9 @@ def _bounded_string_list(
 
 
 def _validate_common(value: Mapping[str, object]) -> None:
-    campaign_id = value.get("simulation_record_id")
-    if campaign_id is not None:
-        _require_uuid(campaign_id, "simulation_record_id")
+    simulation_record_id = value.get("simulation_record_id")
+    if simulation_record_id is not None:
+        _require_uuid(simulation_record_id, "simulation_record_id")
     for key in ("manifest_sha256", "workload_sha256"):
         digest = value.get(key)
         if digest is not None:
@@ -441,18 +441,18 @@ def _validate_common(value: Mapping[str, object]) -> None:
             try:
                 parsed_timestamp = parse_timestamp(parsed_value)
             except (TypeError, ValueError) as exc:
-                raise SimulationCampaignIntegrityError(
+                raise SimulationRecordIntegrityError(
                     f"{key} must be canonical UTC RFC3339"
                 ) from exc
             if "." in parsed_value or not parsed_value.endswith("Z"):
-                raise SimulationCampaignIntegrityError(f"{key} must be canonical UTC RFC3339")
+                raise SimulationRecordIntegrityError(f"{key} must be canonical UTC RFC3339")
             del parsed_timestamp
 
 
 def _exact_list(value: object, field: str, ceiling: int) -> list[object]:
     decoded = require_list(value, field=field)
     if len(decoded) > ceiling:
-        raise SimulationCampaignIntegrityError(f"{field} must be a list capped at {ceiling}")
+        raise SimulationRecordIntegrityError(f"{field} must be a list capped at {ceiling}")
     return decoded
 
 
@@ -541,10 +541,10 @@ def _read_build_variant_ids(value: object) -> None:
 
 
 _DOCUMENT_SPECS: dict[
-    type[SimulationCampaignDocument],
+    type[SimulationRecordDocument],
     tuple[str, frozenset[str], int, Callable[[Mapping[str, object]], None] | None],
 ] = {
-    SimulationCampaignManifest: (
+    SimulationRecordManifest: (
         MANIFEST_SCHEMA,
         _MANIFEST_FIELDS,
         MANIFEST_MAX_BYTES,
@@ -595,8 +595,8 @@ def _decode_registered(raw: bytes, value_type: type[T]) -> T:
     return _decode(raw, schema=schema, fields=fields, limit=limit, value_type=value_type)
 
 
-def decode_simulation_campaign_manifest(raw: bytes) -> SimulationCampaignManifest:
-    return _decode_registered(raw, SimulationCampaignManifest)
+def decode_simulation_record_manifest(raw: bytes) -> SimulationRecordManifest:
+    return _decode_registered(raw, SimulationRecordManifest)
 
 
 def decode_simulation_attempt(raw: bytes) -> SimulationAttempt:
@@ -624,19 +624,19 @@ def decode_executable_snapshot(raw: bytes) -> ExecutableSnapshot:
 
 
 def _encode_checked(
-    value: SimulationCampaignDocument,
+    value: SimulationRecordDocument,
     expected_type: type[T],
 ) -> bytes:
     if type(value) is not expected_type:
-        raise SimulationCampaignIntegrityError(f"expected {expected_type.__name__}")
+        raise SimulationRecordIntegrityError(f"expected {expected_type.__name__}")
     raw = canonical_json_bytes(value.document)
     # Builders never decode what they build, so publication enforces each record's ceiling.
     _require_within_ceiling(raw, _DOCUMENT_SPECS[expected_type][2])
     return raw
 
 
-def encode_simulation_campaign_manifest(value: SimulationCampaignManifest) -> bytes:
-    return _encode_checked(value, SimulationCampaignManifest)
+def encode_simulation_record_manifest(value: SimulationRecordManifest) -> bytes:
+    return _encode_checked(value, SimulationRecordManifest)
 
 
 def encode_simulation_attempt(value: SimulationAttempt) -> bytes:
@@ -663,13 +663,11 @@ def encode_executable_snapshot(value: ExecutableSnapshot) -> bytes:
     return _encode_checked(value, ExecutableSnapshot)
 
 
-def encode_simulation_campaign_document(value: SimulationCampaignDocument) -> bytes:
+def encode_simulation_record_document(value: SimulationRecordDocument) -> bytes:
     """Canonically encode any Phase-1 campaign document value."""
     value_type = type(value)
     if value_type not in _DOCUMENT_SPECS:
-        raise SimulationCampaignIntegrityError(
-            f"unsupported campaign value {type(value).__name__}"
-        )
+        raise SimulationRecordIntegrityError(f"unsupported campaign value {type(value).__name__}")
     return _encode_checked(value, value_type)
 
 
@@ -678,14 +676,14 @@ def validate_relative_path(path: object) -> str:
     try:
         parsed = require_str_value(path, field="path")
     except BoundaryError as exc:
-        raise SimulationCampaignIntegrityError(str(exc)) from exc
+        raise SimulationRecordIntegrityError(str(exc)) from exc
     if len(parsed.encode("utf-8")) > MAX_PATH_BYTES:
-        raise SimulationCampaignIntegrityError("path must be nonempty and at most 1 KiB")
+        raise SimulationRecordIntegrityError("path must be nonempty and at most 1 KiB")
     if "\\" in parsed or parsed.startswith("/") or _WINDOWS_DRIVE_RE.match(parsed):
-        raise SimulationCampaignIntegrityError("path must be separator-normalized and relative")
+        raise SimulationRecordIntegrityError("path must be separator-normalized and relative")
     parts = parsed.split("/")
     if any(part in {"", ".", ".."} for part in parts):
-        raise SimulationCampaignIntegrityError("path must be contained and normalized")
+        raise SimulationRecordIntegrityError("path must be contained and normalized")
     return parsed
 
 
@@ -704,7 +702,7 @@ def linked_manifest_path(invocation: Path, reference: Mapping[str, object]) -> P
         or parts[0] != "targets"
         or parts[2:] != [RECORD_DIRECTORY, "manifest.json"]
     ):
-        raise SimulationCampaignIntegrityError(
+        raise SimulationRecordIntegrityError(
             f"prerequisite manifest path {path!r} is not "
             "targets/<Target>/record/manifest.json inside its invocation"
         )

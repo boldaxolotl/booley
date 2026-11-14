@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from booley.criteria.state import DevelopmentState
-from booley.flows.sim.record import read_durable_results, started_campaign
+from booley.flows.sim.record import read_durable_results, started_simulation_record
 from booley.flows.simulation_record_results import (
     CampaignBusyError,
     DurableCampaignResults,
@@ -506,7 +506,7 @@ def test_appended_records_that_were_never_selected_are_selected(two: SimpleNames
 
 
 def test_durable_results_of_a_real_campaign_are_its_authenticated_rows(tmp_path: Path) -> None:
-    from booley.flows.sim.record.codec import SimulationCampaignIntegrityError
+    from booley.flows.sim.record.codec import SimulationRecordIntegrityError
     from booley.flows.sim.record.planning import manifest_digest
     from booley.flows.sim.record.test_run_report import evidence_test_run_rows
     from tests.flows.sim.test_simulation_record_test_runs import _hdl_plan, _run_campaign
@@ -516,14 +516,14 @@ def test_durable_results_of_a_real_campaign_are_its_authenticated_rows(tmp_path:
     digest = manifest_digest(plan.manifest)
 
     durable = read_durable_results(outcome.manifest_path, digest)
-    started = started_campaign(outcome.manifest_path)
+    started = started_simulation_record(outcome.manifest_path)
     assert (started.campaign_id, started.manifest_sha256) == (durable.campaign_id, digest)
     assert started.candidate is True and str(outcome.target["selector"]) in started.target_names
 
     assert list(durable.rows) == evidence_test_run_rows(outcome)
     assert [row["grade"] for row in durable.rows] == ["fail", "fail"]  # no simulator ran
     assert len(durable.results) == 2
-    with pytest.raises(SimulationCampaignIntegrityError, match="not the one that was registered"):
+    with pytest.raises(SimulationRecordIntegrityError, match="not the one that was registered"):
         read_durable_results(outcome.manifest_path, "sha256:" + "0" * 64)
 
     # A work item whose result is gone is simply not there; a torn one fails closed.
@@ -533,7 +533,7 @@ def test_durable_results_of_a_real_campaign_are_its_authenticated_rows(tmp_path:
     partial = read_durable_results(outcome.manifest_path, digest)
     assert [row["name"] for row in partial.rows] == ["a@1"]
     results[1].write_bytes(kept[: len(kept) // 2])
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(SimulationRecordIntegrityError):
         read_durable_results(outcome.manifest_path, digest)
 
 

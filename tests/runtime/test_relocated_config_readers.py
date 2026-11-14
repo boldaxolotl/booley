@@ -236,12 +236,12 @@ def test_inventory_ignores_booley_dir_outside_the_checkout(tmp_path: Path) -> No
 
 def test_required_suite_reports_booley_dir_outside_the_checkout(tmp_path: Path) -> None:
     from booley.flows.sim.record import flow_planning
-    from booley.flows.sim.record.codec import SimulationCampaignIntegrityError
+    from booley.flows.sim.record.codec import SimulationRecordIntegrityError
 
     elsewhere = tmp_path / "elsewhere"
     _write(elsewhere / "tests.toml", "[tests]\n")
     project = tmp_path / "repo"
     _write(project / "booley.toml", f'[project]\ndir = "{elsewhere.as_posix()}"\n')
 
-    with pytest.raises(SimulationCampaignIntegrityError, match=r"no readable tests\.toml"):
+    with pytest.raises(SimulationRecordIntegrityError, match=r"no readable tests\.toml"):
         flow_planning._required_suite(project, ["t"])

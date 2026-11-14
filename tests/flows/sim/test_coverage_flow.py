@@ -18,7 +18,7 @@ from booley.flows.sim.coverage_reference import (
 from booley.flows.sim.execution.contract import SimulationOptions
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record import (
-    SimulationCampaign,
+    SimulationRecord,
     collect_pre_sim_firings,
     resolve_report_artifact_reference,
 )
@@ -179,7 +179,7 @@ def test_pre_outcome_coverage_failure_keeps_prepared_console_scope(
     def fail_before_outcome(_campaign, _request):
         raise RuntimeError("failed before nested outcome")
 
-    monkeypatch.setattr(SimulationCampaign, "run", fail_before_outcome)
+    monkeypatch.setattr(SimulationRecord, "run", fail_before_outcome)
     result = SimulateFlow().execute(
         SimRequest(
             target="sim_0,sim_1",
@@ -314,9 +314,9 @@ def _prepare_atomic_coverage_state(
 def _assert_enclosing_result_is_authenticated(campaign_path, resolved) -> None:
     from booley.flows.sim.coverage_analysis_input import read_coverage_campaign
     from booley.flows.sim.record.codec import canonical_json_bytes
-    from booley.flows.sim.record.store import CampaignStore
+    from booley.flows.sim.record.store import SimulationRecordStore
 
-    store = CampaignStore(campaign_path.parent / "record")
+    store = SimulationRecordStore(campaign_path.parent / "record")
     work_item_id = resolved.reference.document["simulation_work_item_id"]
     simulation_result = store.work_item_directory(work_item_id) / "result.json"
     result_raw = simulation_result.read_bytes()
@@ -524,7 +524,7 @@ def _publish_real_hook_series(request, handle, commands, count):
 def test_many_current_coverage_firings_keep_all_lines_and_bounded_preview(tmp_path, monkeypatch):
     import json
 
-    from booley.flows.sim.record.store import CampaignStore
+    from booley.flows.sim.record.store import SimulationRecordStore
     from booley.runtime.endpoint_execution import EndpointOutcome
     from tests.flows.sim.simulation_record_test_support import _executor, _handle, _request
     from tests.flows.sim.test_endpoint_record_lifecycle import _pre_sim_plan
@@ -536,7 +536,7 @@ def test_many_current_coverage_firings_keep_all_lines_and_bounded_preview(tmp_pa
     commands = ("echo hook-out; echo hook-err >&2",)
     plan, _disclosures = _pre_sim_plan("immutable", commands, transform)
     invocation = tmp_path / "reports/1"
-    store = CampaignStore(invocation / "targets/sim/record")
+    store = SimulationRecordStore(invocation / "targets/sim/record")
     store.publish_manifest(plan.manifest)
     handle = _handle(tmp_path)
     request = _request(
@@ -886,14 +886,14 @@ def test_fatal_coverage_failure_lists_completed_campaigns(tmp_path, monkeypatch)
     data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text("".join(f'[sim_{i}]\ntests = ["reset"]\n' for i in range(2)))
-    original = SimulationCampaign.run
+    original = SimulationRecord.run
 
     def run(self, request):
         if _coverage_request_selector(request) == "sim_1":
             raise RuntimeError("second Target exploded")
         return original(self, request)
 
-    monkeypatch.setattr(SimulationCampaign, "run", run)
+    monkeypatch.setattr(SimulationRecord, "run", run)
     flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
     result = flow.execute(
         SimRequest(
@@ -1025,7 +1025,7 @@ def test_pre_outcome_coverage_failure_uses_prepared_policy(
     def fail_before_outcome(_campaign, _request):
         raise RuntimeError("failed before nested outcome")
 
-    monkeypatch.setattr(SimulationCampaign, "run", fail_before_outcome)
+    monkeypatch.setattr(SimulationRecord, "run", fail_before_outcome)
     result = SimulateFlow().execute(
         SimRequest(
             target=target,
@@ -1779,7 +1779,7 @@ def test_resume_reports_dependency_registration_failure(tmp_path, monkeypatch):
         raise ValueError("injected dependency failure")
 
     monkeypatch.setattr(
-        "booley.flows.sim.record.dependency.register_campaign_dependency",
+        "booley.flows.sim.record.dependency.register_simulation_record_dependency",
         fail_registration,
     )
     result = SimulateFlow(coverage_execution=lambda *_args: NativeExecution()).execute(
@@ -1811,7 +1811,7 @@ def test_requeued_resume_attempt_keeps_the_origin_lock_it_already_holds(tmp_path
     from types import SimpleNamespace
 
     monkeypatch.setattr(
-        "booley.flows.sim.record.dependency.register_campaign_dependency",
+        "booley.flows.sim.record.dependency.register_simulation_record_dependency",
         lambda *_args, **_kwargs: tmp_path,
     )
     origin = tmp_path / "sim/1"
@@ -1919,7 +1919,7 @@ def _campaign_bytes(root):
 @pytest.mark.parametrize("dry_run", [False, True])
 @pytest.mark.parametrize("state", ["interrupted", "pending"])
 def test_resume_refuses_unfinished_coverage_collection(tmp_path, monkeypatch, state, dry_run):
-    from booley.flows.sim.record.store import CampaignStore
+    from booley.flows.sim.record.store import SimulationRecordStore
 
     reports, _request = _interrupt_coverage_collection(
         tmp_path,
@@ -1928,7 +1928,7 @@ def test_resume_refuses_unfinished_coverage_collection(tmp_path, monkeypatch, st
     )
     campaign = reports / "sim/1/targets/sim_0/record"
     manifest = campaign / "manifest.json"
-    observed = CampaignStore(manifest.parent).scan()
+    observed = SimulationRecordStore(manifest.parent).scan()
     assert len(getattr(observed, state)) == 1
     tree_before = set(reports.rglob("*"))
     bytes_before = _campaign_bytes(campaign)
@@ -2980,10 +2980,10 @@ def test_actual_coverage_hook_publication_crash_keeps_only_durable_evidence(
 
 def test_coverage_hook_publication_integrity_failure_keeps_error_category(tmp_path, monkeypatch):
     from booley.flows.sim import flow as flow_module
-    from booley.flows.sim.record.codec import SimulationCampaignIntegrityError
-    from booley.flows.sim.record.store import CampaignStore
+    from booley.flows.sim.record.codec import SimulationRecordIntegrityError
+    from booley.flows.sim.record.store import SimulationRecordStore
 
-    original = CampaignStore.publish_pre_sim_evidence
+    original = SimulationRecordStore.publish_pre_sim_evidence
     failure_outcome = flow_module._coverage_failure_outcome
     categories = []
 
@@ -2995,9 +2995,9 @@ def test_coverage_hook_publication_integrity_failure_keeps_error_category(tmp_pa
 
     def fail_after_publication(store, directory, ordinal, raw, **kwargs):
         original(store, directory, ordinal, raw, **kwargs)
-        raise SimulationCampaignIntegrityError("hook publication integrity probe")
+        raise SimulationRecordIntegrityError("hook publication integrity probe")
 
-    monkeypatch.setattr(CampaignStore, "publish_pre_sim_evidence", fail_after_publication)
+    monkeypatch.setattr(SimulationRecordStore, "publish_pre_sim_evidence", fail_after_publication)
     flow = _coverage_hook_flow_fixture(tmp_path, monkeypatch)
     result = flow.execute(
         SimRequest(
@@ -3007,7 +3007,7 @@ def test_coverage_hook_publication_integrity_failure_keeps_error_category(tmp_pa
     assert result.exit_code == 2
     assert "hook publication integrity probe" in result.outcome.report_text
     assert "collector_error" not in result.outcome.report_text
-    assert categories == [SimulationCampaignIntegrityError]
+    assert categories == [SimulationRecordIntegrityError]
 
     firings = collect_pre_sim_firings(
         tmp_path / "reports/sim/1/targets/sim_0/record/manifest.json"
@@ -3048,7 +3048,7 @@ def _owned_coverage_hook_request(tmp_path):
     from booley.flows.sim.record.codec import canonical_json_bytes
     from booley.flows.sim.record.planning import finalize_manifest
     from booley.flows.sim.record.serial_execution import simulation_attempt
-    from booley.flows.sim.record.store import CampaignStore
+    from booley.flows.sim.record.store import SimulationRecordStore
     from tests.flows.sim.simulation_record_test_support import (
         _maximum_hook_selection_plan,
         _request,
@@ -3062,7 +3062,7 @@ def _owned_coverage_hook_request(tmp_path):
     document["workload"]["source_recipe"]["pre_sim_commands"] = ["echo owned-hook"]
     _refresh_hook_workload_identity(document)
     manifest = finalize_manifest(document)
-    store = CampaignStore(tmp_path / "reports/1/targets/sim/record")
+    store = SimulationRecordStore(tmp_path / "reports/1/targets/sim/record")
     store.publish_manifest(manifest)
     request = _request(store, manifest, manifest.document["work_items"][0], tmp_path, invocation=1)
     store.publish_attempt(request.attempt_directory, simulation_attempt(request)[0])

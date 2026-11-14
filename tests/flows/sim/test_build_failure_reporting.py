@@ -25,13 +25,13 @@ from booley.flows.sim.record.codec import (
     canonical_json_bytes,
 )
 from booley.flows.sim.record.coordinator import (
-    CampaignPolicy,
-    NewCampaignRunRequest,
-    SimulationCampaign,
+    NewSimulationRecordRunRequest,
+    SimulationRecord,
+    SimulationRecordPolicy,
 )
-from booley.flows.sim.record.model import create_simulation_campaign_plan
+from booley.flows.sim.record.model import create_simulation_record_plan
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
-from booley.flows.sim.record.store import CampaignStore
+from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.verilator_coverage import SimulationBuildResult
 from booley.mcp.base import EXIT_ERROR
 from tests.flows.sim import test_simulation_record_crash_matrix as crash_matrix
@@ -218,7 +218,7 @@ class _InfrastructureGroup:
         return self._outcome
 
 
-def _first_build_result(store: CampaignStore) -> dict[str, object]:
+def _first_build_result(store: SimulationRecordStore) -> dict[str, object]:
     (path,) = store.root.glob("**/build-result.json")
     return json.loads(path.read_text())
 
@@ -241,7 +241,7 @@ def _run_shared_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome
     from tests.flows.sim.simulation_record_test_support import _handle as shared_handle
     from tests.flows.sim.simulation_record_test_support import _named_manifest
 
-    plan = create_simulation_campaign_plan(_named_manifest(("tail", "quick")))
+    plan = create_simulation_record_plan(_named_manifest(("tail", "quick")))
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
@@ -265,8 +265,8 @@ def _run_shared_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome
     )
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
-    request = NewCampaignRunRequest(
-        plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
+    request = NewSimulationRecordRunRequest(
+        plan, project, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
     )
     return executor, request, invocation
 
@@ -279,11 +279,11 @@ def test_campaign_build_timeout_publishes_terminal_infrastructure_result(
     runner = _run_shared_timeout if path == "shared" else _run_private_timeout
     executor, request, invocation = runner(tmp_path, monkeypatch, outcome)
 
-    campaign = SimulationCampaign(executor).run(request)
+    campaign = SimulationRecord(executor).run(request)
     assert campaign.complete is True
     assert campaign.aggregate_grade == "error"
     assert campaign.observations[0]["detail"]["reason"].splitlines()[0] == TIMEOUT_REASON
-    store = CampaignStore(invocation / "targets" / "sim" / "record")
+    store = SimulationRecordStore(invocation / "targets" / "sim" / "record")
     result = _first_build_result(store)
     assert result["state"] == "infrastructure_error"
     observation = result["observation"]
@@ -402,7 +402,7 @@ def test_coverage_campaign_build_failure_message_is_reason(tmp_path: Path) -> No
     assert campaign.complete is True
     assert campaign.aggregate_grade == "error"
 
-    store = CampaignStore(tmp_path / "reports/1/targets/sim_0/record")
+    store = SimulationRecordStore(tmp_path / "reports/1/targets/sim_0/record")
     observation = _first_build_result(store)["observation"]
     assert observation["message"] == TIMEOUT_REASON
     assert LAST_LINE in observation["detail"]["text"]
@@ -416,7 +416,7 @@ def test_coverage_campaign_build_timeout_is_not_an_integrity_error(tmp_path: Pat
     campaign, _invocation = _run_coverage_campaign(tmp_path, failing)
     assert campaign.complete is True
     assert campaign.aggregate_grade == "error"
-    store = CampaignStore(tmp_path / "reports/1/targets/sim_0/record")
+    store = SimulationRecordStore(tmp_path / "reports/1/targets/sim_0/record")
     assert store.scan().interrupted == ()
 
 
@@ -429,7 +429,7 @@ def test_reasonless_coverage_infrastructure_keeps_its_message(tmp_path: Path) ->
     assert campaign.complete is True
     assert campaign.aggregate_grade == "error"
 
-    store = CampaignStore(tmp_path / "reports/1/targets/sim_0/record")
+    store = SimulationRecordStore(tmp_path / "reports/1/targets/sim_0/record")
     message = _first_build_result(store)["observation"]["message"]
     assert message == "coverage Verilator identity mismatch"
 
@@ -509,11 +509,11 @@ def test_hostile_oom_build_output_publishes_and_decodes(
     )
     executor, request, invocation = _run_shared_timeout(tmp_path, monkeypatch, outcome)
 
-    campaign = SimulationCampaign(executor).run(request)
+    campaign = SimulationRecord(executor).run(request)
     assert campaign.complete is True
     assert campaign.aggregate_grade == "error"
 
-    store = CampaignStore(invocation / "targets" / "sim" / "record")
+    store = SimulationRecordStore(invocation / "targets" / "sim" / "record")
     result = _first_build_result(store)
     text = result["observation"]["detail"]["text"]
     assert result["state"] == "infrastructure_error"
@@ -597,13 +597,13 @@ def test_large_batch_build_failure_publishes_bounded_terminal_result(
     )
     invocation = tmp_path / "reports/1"
     invocation.mkdir(parents=True)
-    campaign = SimulationCampaign(executor).run(
-        NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
+    campaign = SimulationRecord(executor).run(
+        NewSimulationRecordRunRequest(
+            plan, tmp_path, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
         )
     )
     assert campaign.complete
-    store = CampaignStore(invocation / "targets/sim/record")
+    store = SimulationRecordStore(invocation / "targets/sim/record")
     result = store.scan().items[0].result
     assert result is not None
     assert result.document["grade"] == "error"
@@ -641,9 +641,9 @@ def test_escaped_build_metadata_stays_within_canonical_detail_budget(
         ),
     )
     executor, request, invocation = _run_shared_timeout(tmp_path, monkeypatch, outcome)
-    campaign = SimulationCampaign(executor).run(request)
+    campaign = SimulationRecord(executor).run(request)
     assert campaign.complete
-    store = CampaignStore(invocation / "targets/sim/record")
+    store = SimulationRecordStore(invocation / "targets/sim/record")
     detail = _first_build_result(store)["observation"]["detail"]
     assert len(canonical_json_bytes(detail)) <= MAX_DETAIL_BYTES
     assert detail["build_stage"]["timed_out"] is True

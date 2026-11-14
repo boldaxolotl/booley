@@ -21,8 +21,8 @@ import pytest
 
 from booley.flows.sim.execution.pre_sim import _run_pre_sim_process
 from booley.flows.sim.record.child_protocol import ChildExecutionRegistry
-from booley.flows.sim.record.scheduler import BoundedCampaignScheduler, ScheduledAttempt
-from booley.flows.sim.record.store import CampaignStore
+from booley.flows.sim.record.scheduler import BoundedSimulationRecordScheduler, ScheduledAttempt
+from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.terminal_progress import TerminalProgress, announce_unit
 from booley.runtime.job_slots import SlotStore
 from tests.flows.sim.simulation_record_test_support import (
@@ -79,7 +79,7 @@ def _run_two_lanes(
     ``finish`` runs after the scheduler, while the sink is still installed.
     """
     manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "record")
+    campaign_store = SimulationRecordStore(tmp_path / "record")
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -104,7 +104,7 @@ def _run_two_lanes(
     capacity = _item_capacity(_managed(slot_store, outer), manifest, registry.project_data)
     try:
         with sink.installed():
-            BoundedCampaignScheduler(capacity, allocate=allocate, execute=execute).run(
+            BoundedSimulationRecordScheduler(capacity, allocate=allocate, execute=execute).run(
                 manifest.document["work_items"]  # type: ignore[attr-defined]
             )
             if finish is not None:

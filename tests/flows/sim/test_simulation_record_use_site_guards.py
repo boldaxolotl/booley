@@ -12,17 +12,17 @@ import pytest
 from booley.flows.sim.config import parse_run_cwd_template
 from booley.flows.sim.record.bundle import authenticate_bundle_artifacts
 from booley.flows.sim.record.codec import (
-    SimulationCampaignIntegrityError,
+    SimulationRecordIntegrityError,
     canonical_json_bytes,
     decode_simulation_result,
     decode_simulator_bundle,
     linked_manifest_path,
 )
-from booley.flows.sim.record.flow_planning import plan_ordinary_hdl_campaign
+from booley.flows.sim.record.flow_planning import plan_ordinary_hdl_simulation_record
 from booley.flows.sim.record.inspection import (
-    inspect_retained_campaign,
+    inspect_retained_simulation_record,
     read_durable_results,
-    recover_retained_campaign_resources,
+    recover_retained_simulation_record_resources,
 )
 from booley.flows.sim.record.planning import manifest_digest
 from tests.flows.sim.simulation_record_test_support import (
@@ -62,7 +62,7 @@ def test_a_planned_prerequisite_path_stays_inside_its_invocation(
 def test_a_prerequisite_path_that_is_not_a_contained_manifest_is_refused(
     tmp_path: Path, path: object
 ) -> None:
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(SimulationRecordIntegrityError):
         linked_manifest_path(tmp_path, {"path": path})
 
 
@@ -72,9 +72,9 @@ def test_planning_refuses_a_prerequisite_not_planned_as_a_baseline(tmp_path: Pat
     prerequisite = {"target": {"selector": "base", "role": "candidate"}}
 
     with pytest.raises(
-        SimulationCampaignIntegrityError, match=r"'base' was not planned as a Cycle Count baseline"
+        SimulationRecordIntegrityError, match=r"'base' was not planned as a Cycle Count baseline"
     ):
-        plan_ordinary_hdl_campaign(
+        plan_ordinary_hdl_simulation_record(
             handle=handle,
             inspection=inspection,
             preview=preview,
@@ -106,7 +106,7 @@ def test_a_bundle_artifact_path_outside_its_root_is_refused_before_use(tmp_path:
     artifact.update(path="../escape", bytes=1, sha256="sha256:" + hashlib.sha256(b"x").hexdigest())
     bundle = decode_simulator_bundle(canonical_json_bytes(document))
 
-    with pytest.raises(SimulationCampaignIntegrityError, match="contained"):
+    with pytest.raises(SimulationRecordIntegrityError, match="contained"):
         authenticate_bundle_artifacts(bundle, bundle_root)
 
 
@@ -147,12 +147,12 @@ def test_a_malformed_published_record_is_corrupt_storage(tmp_path: Path, case: s
         manifest = store.load_manifest()
         item = manifest.document["work_items"][0]
         request = _request(store, manifest, item, tmp_path / "project", invocation=1)
-        with pytest.raises(SimulationCampaignIntegrityError):
+        with pytest.raises(SimulationRecordIntegrityError):
             _recovery_executor(tmp_path / "engine-build").execute(request)
     elif case == "ordinal":
         attempt_path = completed.attempt_dir / "attempt.json"
         _write(attempt_path, _read(attempt_path) | {"attempt_ordinal": "1"})
-        with pytest.raises(SimulationCampaignIntegrityError):
+        with pytest.raises(SimulationRecordIntegrityError):
             store.scan()
     elif case == "run_directory":
         attempt_path = completed.attempt_dir / "attempt.json"
@@ -160,11 +160,11 @@ def test_a_malformed_published_record_is_corrupt_storage(tmp_path: Path, case: s
         result_path = store.work_item_directory(completed.item_id) / "result.json"
         result_path.chmod(0o600)
         result_path.unlink()
-        status = inspect_retained_campaign(store.manifest_path)
+        status = inspect_retained_simulation_record(store.manifest_path)
         assert status.interrupted == (completed.item_id,)
         for project_data in (None, tmp_path / "project"):
-            with pytest.raises(SimulationCampaignIntegrityError):
-                recover_retained_campaign_resources(status, project_data)
+            with pytest.raises(SimulationRecordIntegrityError):
+                recover_retained_simulation_record_resources(status, project_data)
     else:
         if case == "ready_bundle":
             build_result["bundle"] = None
@@ -173,7 +173,7 @@ def test_a_malformed_published_record_is_corrupt_storage(tmp_path: Path, case: s
         else:
             build_result["state"] = "bogus"
         _write(build_path, build_result)
-        with pytest.raises(SimulationCampaignIntegrityError):
+        with pytest.raises(SimulationRecordIntegrityError):
             store.recover_shared_build(variant, 1)
 
 
@@ -194,7 +194,7 @@ def test_a_bundle_inventory_the_decoder_no_longer_checks_is_refused(case: str) -
         "duplicate_path": [executable, executable],
         "no_executable": [executable | {"kind": "runtime_data"}],
     }[case]
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(SimulationRecordIntegrityError):
         require_bundle_inventory(_bundle_with_artifacts(artifacts))
 
 
@@ -204,7 +204,7 @@ def test_a_deeply_nested_record_is_refused_at_decode() -> None:
     document = json.loads(fixture.read_bytes())
     document["created_at"] = "X"
     raw = canonical_json_bytes(document).replace(b'"X"', b"[" * 600 + b"]" * 600)
-    with pytest.raises(SimulationCampaignIntegrityError, match="nesting"):
+    with pytest.raises(SimulationRecordIntegrityError, match="nesting"):
         decode_simulator_bundle(raw)
 
 
@@ -229,13 +229,13 @@ def _refuse_malformed_result(root: Path, case: str) -> None:
     _write(result_path, result)
     manifest = store.load_manifest()
     digest = manifest_digest(manifest)
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(SimulationRecordIntegrityError):
         if case == "grade":
             store.regenerate_summary(manifest, digest)
         elif case.startswith("observation"):
             read_durable_results(store.manifest_path, digest)
         else:
-            inspect_retained_campaign(store.manifest_path)
+            inspect_retained_simulation_record(store.manifest_path)
 
 
 def test_a_malformed_published_result_is_corrupt_storage(tmp_path: Path) -> None:
@@ -258,7 +258,7 @@ def test_result_observations_refuses_a_malformed_baseline_cycle_count() -> None:
         document = json.loads(_simulation_result("completed"))
         document["observations"][0]["cycle_count"] = cycle_count
         result = decode_simulation_result(canonical_json_bytes(document))
-        with pytest.raises(SimulationCampaignIntegrityError):
+        with pytest.raises(SimulationRecordIntegrityError):
             result_observations(result)
 
 
@@ -269,7 +269,7 @@ def test_result_observations_refuses_an_observation_that_could_override_identity
     document = json.loads(_simulation_result("completed"))
     document["observations"][0]["role"] = "candidate"
     result = decode_simulation_result(canonical_json_bytes(document))
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(SimulationRecordIntegrityError):
         result_observations(result)
 
 
@@ -280,7 +280,7 @@ def test_result_observations_refuses_observations_that_are_not_a_list() -> None:
     document = json.loads(_simulation_result("completed"))
     document["observations"] = {}
     result = decode_simulation_result(canonical_json_bytes(document))
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(SimulationRecordIntegrityError):
         result_observations(result)
 
 

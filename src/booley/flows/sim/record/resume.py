@@ -18,13 +18,13 @@ from booley.targets.domain import TargetHandle
 
 from .codec import (
     MANIFEST_MAX_BYTES,
-    SimulationCampaignIntegrityError,
-    UnsupportedSimulationCampaignFormatError,
-    decode_simulation_campaign_manifest,
-    encode_simulation_campaign_manifest,
+    SimulationRecordIntegrityError,
+    UnsupportedSimulationRecordFormatError,
+    decode_simulation_record_manifest,
+    encode_simulation_record_manifest,
     linked_manifest_path,
 )
-from .model import SimulationCampaignManifest
+from .model import SimulationRecordManifest
 from .planning import manifest_digest
 
 _MAX_PREREQUISITES = 1_000
@@ -35,7 +35,7 @@ class ValidatedManifestNode:
     """One canonical decoded manifest in an exact prerequisite graph."""
 
     path: Path
-    manifest: SimulationCampaignManifest
+    manifest: SimulationRecordManifest
     sha256: str
 
 
@@ -64,14 +64,14 @@ class ValidatedResumeManifest:
         return self.candidate.path
 
     @property
-    def manifest(self) -> SimulationCampaignManifest:
+    def manifest(self) -> SimulationRecordManifest:
         return self.candidate.manifest
 
     @property
     def sha256(self) -> str:
         return self.candidate.sha256
 
-    def binding_for(self, manifest: SimulationCampaignManifest) -> ValidatedTargetBinding | None:
+    def binding_for(self, manifest: SimulationRecordManifest) -> ValidatedTargetBinding | None:
         """Return the authorization-time binding for one exact manifest value."""
         digest = manifest_digest(manifest)
         return next((item for item in self.bindings if item.node.sha256 == digest), None)
@@ -87,7 +87,7 @@ class ValidatedResumeManifest:
             if node.sha256 == expected and node.path == expected_path
         )
         if len(matches) != 1:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 "resume prerequisite does not select one authenticated manifest"
             )
         return matches[0]
@@ -103,10 +103,10 @@ def validate_resume_manifest(
     try:
         canonical = canonical_project_alias_path(manifest_path.absolute())
     except ValueError as exc:
-        raise SimulationCampaignIntegrityError(str(exc)) from exc
+        raise SimulationRecordIntegrityError(str(exc)) from exc
     refuse_older_manifest_path(canonical)
     if canonical.name != "manifest.json" or canonical.parent.name != RECORD_DIRECTORY:
-        raise SimulationCampaignIntegrityError(
+        raise SimulationRecordIntegrityError(
             "--resume-from must name one exact record/manifest.json"
         )
     booley_dir = simulation_booley_dir(project_root)
@@ -117,7 +117,7 @@ def validate_resume_manifest(
     prerequisites: list[ValidatedManifestNode] = []
     _walk_prerequisites(candidate, invocation, frozenset({canonical}), prerequisites, booley_dir)
     if len(prerequisites) > _MAX_PREREQUISITES:
-        raise SimulationCampaignIntegrityError("manifest prerequisite limit exceeded")
+        raise SimulationRecordIntegrityError("manifest prerequisite limit exceeded")
     root_for = revision_root or (lambda _target: project_root)
     handles: list[TargetHandle] = []
     bindings: list[ValidatedTargetBinding] = []
@@ -128,7 +128,7 @@ def validate_resume_manifest(
         _verify_revision(root, target)
         handle = TargetCatalog.build(root).select(target["selector"], for_flow="sim")
         if handle.identity != target["vlnv"] + "#" + target["name"]:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 f"resolved Target identity disagrees with manifest: {target['selector']}"
             )
         identity = (handle.identity, target["revision"])
@@ -144,9 +144,9 @@ def validate_resume_manifest(
 def _verify_revision(root: Path, target: Mapping[str, str]) -> None:
     actual = git_full_sha("HEAD", root)
     if actual is None:
-        raise SimulationCampaignIntegrityError(f"cannot verify resume Target revision at {root}")
+        raise SimulationRecordIntegrityError(f"cannot verify resume Target revision at {root}")
     if actual != target["revision"]:
-        raise SimulationCampaignIntegrityError(
+        raise SimulationRecordIntegrityError(
             "resume Target checkout revision disagrees with manifest: "
             f"{target['selector']} expected {target['revision']}, got {actual}"
         )
@@ -169,30 +169,30 @@ def _walk_prerequisites(
         reference = cast(Mapping[str, object], entry["manifest"])
         linked = linked_manifest_path(invocation, reference).absolute()
         if linked in ancestors:
-            raise SimulationCampaignIntegrityError("cyclic prerequisite manifest")
+            raise SimulationRecordIntegrityError("cyclic prerequisite manifest")
         walked = next((item for item in result if item.path == linked), None)
         loaded = walked or _load_node(linked, booley_dir)
-        raw = encode_simulation_campaign_manifest(loaded.manifest)
+        raw = encode_simulation_record_manifest(loaded.manifest)
         expected_digest = cast(str, reference["sha256"])
         if len(raw) != reference["bytes"] or loaded.sha256 != expected_digest:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 f"prerequisite manifest reference does not authenticate {linked}"
             )
         if loaded.manifest.document["simulation_record_id"] != entry["simulation_record_id"]:
-            raise SimulationCampaignIntegrityError("prerequisite campaign identity disagrees")
+            raise SimulationRecordIntegrityError("prerequisite campaign identity disagrees")
         if loaded.manifest.document["target"] != entry["target"]:
-            raise SimulationCampaignIntegrityError("prerequisite Target identity disagrees")
+            raise SimulationRecordIntegrityError("prerequisite Target identity disagrees")
         if walked is not None:
             continue
         result.append(loaded)
         if len(result) > _MAX_PREREQUISITES:
-            raise SimulationCampaignIntegrityError("manifest prerequisite limit exceeded")
+            raise SimulationRecordIntegrityError("manifest prerequisite limit exceeded")
         _walk_prerequisites(loaded, invocation, ancestors | {linked}, result, booley_dir)
 
 
 def _origin_invocation(path: Path) -> Path:
     if len(path.parents) < 4 or path.parents[2].name != "targets":
-        raise SimulationCampaignIntegrityError("manifest is outside an invocation Target path")
+        raise SimulationRecordIntegrityError("manifest is outside an invocation Target path")
     return path.parents[3]
 
 
@@ -200,13 +200,13 @@ def _load_node(path: Path, booley_dir: Path | None) -> ValidatedManifestNode:
     raw = read_bounded(
         path,
         limit=MANIFEST_MAX_BYTES,
-        error=SimulationCampaignIntegrityError,
+        error=SimulationRecordIntegrityError,
         booley_dir=booley_dir,
         single_link=True,
     )
     try:
-        manifest = decode_simulation_campaign_manifest(raw)
-    except UnsupportedSimulationCampaignFormatError as exc:
+        manifest = decode_simulation_record_manifest(raw)
+    except UnsupportedSimulationRecordFormatError as exc:
         raise exc.located(_origin_invocation(path)) from None
     return ValidatedManifestNode(path, manifest, manifest_digest(manifest))
 
