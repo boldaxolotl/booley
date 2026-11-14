@@ -55,3 +55,11 @@ def test_default_model_table_matches_builtin_defaults() -> None:
     assert set(documented) == set(rows.values()), "CONFIG.md default-model table not found"
     for attribute, models in documented.items():
         assert models == getattr(bc, attribute), attribute
+
+
+def test_worktrees_section_documents_every_worktree_key() -> None:
+    text = CONFIG_REFERENCE.read_text(encoding="utf-8")
+    section = text.split("\n## Worktrees\n", 1)[1].split("\n## ", 1)[0]
+
+    assert "[worktree]\nchat = " in section
+    assert "gc_older_than = " in section
