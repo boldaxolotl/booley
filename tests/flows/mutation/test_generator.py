@@ -1795,43 +1795,40 @@ def test_target_elaboration_resolves_types_of_other_files(tmp_path: Path) -> Non
     assert (">>>", ">>") not in kinds(alone)
 
 
-@pytest.mark.parametrize(
-    ("cause", "fragment"),
-    [
-        ("unknown-module", "vendor_pll"),
-        ("context-parse-error", "broken.sv"),
-        ("missing-top", "nowhere"),
-        ("missing-context-file", "absent.sv"),
-    ],
-    ids=["unknown-module", "context-parse-error", "missing-top", "missing-context-file"],
-)
-def test_unelaborable_target_falls_back_to_per_file_rules(
-    tmp_path: Path, cause: str, fragment: str
-) -> None:
+def test_unelaborable_target_falls_back_to_per_file_rules(tmp_path: Path) -> None:
     """Whatever stops the Target's elaboration, the per-file Mutants come out, with the reason."""
-    _write(tmp_path, "leaf.sv", _LEAF.format(default=8))
-    _write(tmp_path, "broken.sv", "module broken(;\nendmodule\n")
-    top = {
-        "unknown-module": "module top(); vendor_pll pll(); endmodule\n",
-        "context-parse-error": "module top(); endmodule\n",
-        "missing-top": "module top(); endmodule\n",
-        "missing-context-file": "module top(); endmodule\n",
-    }[cause]
-    _write(tmp_path, "top.sv", top)
-    files = {
-        "context-parse-error": ("broken.sv", "leaf.sv", "top.sv"),
-        "missing-context-file": ("absent.sv", "leaf.sv", "top.sv"),
-    }.get(cause, ("leaf.sv", "top.sv"))
-    design = _design(*files, top=("nowhere",) if cause == "missing-top" else ("top",))
+    ok_top = "module top(); endmodule\n"
+    # cause -> (top module source, Target files, top names, text the reason names)
+    causes = {
+        "unknown-module": (
+            "module top(); vendor_pll pll(); endmodule\n",
+            ("leaf.sv", "top.sv"),
+            ("top",),
+            "vendor_pll",
+        ),
+        "context-parse-error": (ok_top, ("broken.sv", "leaf.sv", "top.sv"), ("top",), "broken.sv"),
+        "missing-top": (ok_top, ("leaf.sv", "top.sv"), ("nowhere",), "nowhere"),
+        "missing-context-file": (
+            ok_top,
+            ("absent.sv", "leaf.sv", "top.sv"),
+            ("top",),
+            "absent.sv",
+        ),
+    }
+    for cause, (top_source, files, top, fragment) in causes.items():
+        root = tmp_path / cause
+        _write(root, "leaf.sv", _LEAF.format(default=8))
+        _write(root, "broken.sv", "module broken(;\nendmodule\n")
+        _write(root, "top.sv", top_source)
 
-    fallen = generate_mutants(tmp_path, ["leaf.sv"], _ALL, 1, design=design)
-    alone = generate_mutants(tmp_path, ["leaf.sv"], _ALL, 1)
+        fallen = generate_mutants(root, ["leaf.sv"], _ALL, 1, design=_design(*files, top=top))
+        alone = generate_mutants(root, ["leaf.sv"], _ALL, 1)
 
-    assert fallen.fallback is not None
-    assert fragment in fallen.fallback
-    assert "\n" not in fallen.fallback
-    assert [m.id for m in fallen.ranked] == [m.id for m in alone.ranked]
-    assert alone.fallback is None
+        assert fallen.fallback is not None, cause
+        assert fragment in fallen.fallback, cause
+        assert "\n" not in fallen.fallback, cause
+        assert [m.id for m in fallen.ranked] == [m.id for m in alone.ranked], cause
+        assert alone.fallback is None
 
 
 def test_unelaborable_target_reports_how_many_more_errors(tmp_path: Path) -> None:
