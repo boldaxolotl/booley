@@ -19,6 +19,9 @@ in [DOCS_PRINCIPLES.md](../DOCS_PRINCIPLES.md).
 A PR gets the highest class among its doc changes. A PR with no doc change, or
 only `none` changes, carries no label.
 
+The weekly [Docs post-review digest](docs-postreview-digest.md) lists every
+merged `docs-postreview` PR.
+
 ## What counts as a doc change
 
 A changed file is a doc change when its path (or, for a rename, its old path)
