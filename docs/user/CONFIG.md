@@ -37,9 +37,10 @@ and `booley feedback` replaces it with a placeholder in the redacted copy it
 exports.
 
 `.booley` can be a symlink to a Booley Directory kept elsewhere, for example in
-a separate repository. `booley init` remembers where the link points. If you
-move the link on purpose, run `booley init --repin-booley-dir`; otherwise point
-it back. Until the two agree, `booley doctor` fails with `project.booley-dir-pin`.
+a separate repository. Booley follows the link on the host and mounts its
+target into the Sandbox separately. `booley init` remembers where the link
+points. If you move the link on purpose, run `booley init --repin-booley-dir`;
+otherwise point it back. Until the two agree, `booley doctor` fails with `project.booley-dir-pin`.
 A running Sandbox keeps using the location it started with until you run
 `booley session refresh`.
 
