@@ -1190,6 +1190,7 @@ class _InteractiveSpecSources:
     memory: str
     dashboard: bool
     timezone: str
+    legacy_subscription_clis: frozenset[str] = frozenset()
 
     def build(self, inputs: SessionSpecInputs) -> dict:
         if inputs.project_data_source != self.project_data_source:
@@ -1220,7 +1221,25 @@ class _InteractiveSpecSources:
             mask_source=docker_mount_path(_mask_source_dir()) if self.mask_paths else "",
             local_timezone=self.timezone,
             egress=inputs.egress,
+            legacy_subscription_clis=self.legacy_subscription_clis,
         )
+
+
+def _legacy_subscription_clis(project_root: Path) -> frozenset[str]:
+    """The CLIs whose on-disk spec mounts the pre-shared ``-subscription`` state volume.
+
+    A missing, unreadable or non-JSON spec has none.
+    """
+    try:
+        spec = json.loads(dc.devcontainer_path(project_root).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return frozenset()
+    mounts = spec.get("mounts") if isinstance(spec, dict) else None
+    if not isinstance(mounts, list):
+        return frozenset()
+    return dc.legacy_subscription_clis(
+        [raw for raw in mounts if isinstance(raw, str)], dc.canonical_project_id(project_root)
+    )
 
 
 def _cli_seeds(plan: auth_token.CredentialPlan) -> dc.CliSeeds:
@@ -1301,6 +1320,7 @@ def _interactive_spec_sources(
         memory=_project_sandbox_memory(ctx.project_root, source),
         dashboard=_dashboard_enabled(source),
         timezone=detect_host_timezone(),
+        legacy_subscription_clis=_legacy_subscription_clis(ctx.project_root),
     )
 
 

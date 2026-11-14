@@ -454,3 +454,51 @@ def test_failed_resolution_leaves_no_stale_choice(sandbox, monkeypatch, capsys):
 
     message = _refusal(get_agent_settings)
     assert "incontainer_register" in message
+
+
+@pytest.mark.parametrize("kind", ["claude-api-key", "gateway"])
+def test_handwritten_auto_policy_selects_the_visitor_mode(sandbox, monkeypatch, capsys, kind):
+    """``BOOLEY_PRIMARY_AUTH=auto``: the visitor's credential, else the sponsored gateway."""
+    from booley.runtime import auth_token
+
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "auto")
+    _give(kind, sandbox.home, monkeypatch)
+    app, policy = ("claude", "visitor") if kind == "claude-api-key" else ("codex", "gateway")
+
+    status = _start(capsys)
+
+    assert f"app:{app} " in status
+    assert get_agent_settings().auth_for(app) == policy
+    if kind == "claude-api-key":
+        plan = auth_token.credential_plan("claude", policy)
+        assert [key for key, _ in plan.values] == ["ANTHROPIC_API_KEY"]
+        assert "booley_gateway" not in _codex_config(sandbox.home)
+    else:
+        assert 'model_provider = "booley_gateway"' in _codex_config(sandbox.home)
+
+
+@pytest.mark.parametrize("auth", [None, "auto", "gateway", "subscription"])
+def test_gateway_fallback_keys_on_the_visitor_mode(sandbox, monkeypatch, auth):
+    """The gateway fallback depends on the visitor mode, not on the ``auto`` config policy."""
+    from booley.runtime import auth_token
+
+    lookups: list[str] = []
+    real = auth_token.login_credential
+
+    def spy(app, policy="auto", *, home=None):
+        lookups.append(policy)
+        return real(app, policy, home=home)
+
+    monkeypatch.setattr(auth_token, "login_credential", spy)
+    _give("gateway", sandbox.home, monkeypatch)
+    if auth:
+        monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", auth)
+
+    choice = entry.resolve_auto_choice()
+
+    if auth == "subscription":
+        assert (choice.app, choice.policy) == ("claude", "subscription")
+        assert set(lookups) == {"subscription"}
+    else:
+        assert (choice.app, choice.policy) == ("codex", "gateway")
+        assert set(lookups) == {"visitor"}

@@ -276,3 +276,17 @@ def test_retained_record_of_a_replaced_root_stays_readable(tmp_path: Path, host:
 
     assert kept == (f"{_id('6')}: retained (conflict: unable to delete {_id('6')})",)
     assert image_lifecycle.OwnedImages(str(root)).ids == [_id("6")]
+
+
+def test_leftovers_lists_legacy_policy_volumes(tmp_path: Path, host: FakeHost) -> None:
+    """Forget finds the unsuffixed (auto, subscription) and the pre-shared ``-subscription`` volumes."""
+    root = str(tmp_path / "chip")
+    base = f"booley-claude-state-{project_name_id(root)}"
+    host.volumes = {base: "N/A", f"{base}-subscription": "N/A"}
+
+    found = project_resources.leftovers(root)
+
+    assert [item.name for item in found if item.kind == "volume"] == [
+        base,
+        f"{base}-subscription",
+    ]

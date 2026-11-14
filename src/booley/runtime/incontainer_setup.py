@@ -699,7 +699,8 @@ def _validate_persisted_policy(app: str, policy: str, home: Path | None) -> None
                 policy == "subscription" and environment.get("ANTHROPIC_API_KEY")
             ):
                 raise ValueError(
-                    "Claude settings conflict with subscription policy; recreate the Sandbox"
+                    f"Claude settings conflict with subscription policy: remove env.ANTHROPIC_API_KEY "
+                    f"from {settings}, then restart"
                 )
         if policy == "api_key":
             if (base / ".claude" / ".credentials.json").exists():
@@ -721,7 +722,8 @@ def _validate_codex_persisted_policy(policy: str, home: Path | None) -> None:
             auth_token.APP_CODEX, policy, path
         ):
             raise ValueError(
-                "Codex credential state conflicts with subscription policy; recreate the Sandbox"
+                f"Codex credential state conflicts with subscription policy: remove {path}, "
+                "then run `codex login`"
             )
     elif policy == "api_key":
         try:
@@ -754,7 +756,7 @@ def apply_stored_credential(app: str, home: Path | None = None) -> str:
     plan = auth_token.credential_plan(app, policy, home=home or _agent_home())
     credential = auth_token.credential_for_app(app)
     token = dict(plan.values).get(credential.env_var) if credential else None
-    if policy != "auto":
+    if not auth_token.defers_to_cli(policy):
         _validate_persisted_policy(app, policy, home)
     if app == auth_token.APP_CLAUDE:
         return _apply_claude_credential(token, home)

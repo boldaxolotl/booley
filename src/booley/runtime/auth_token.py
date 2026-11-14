@@ -50,6 +50,7 @@ from pathlib import Path
 
 from booley.config.gateway import (
     GATEWAY_AUTH,
+    VISITOR_AUTH,
     GatewayConfigError,
     gateway_settings_from_env,
 )
@@ -307,7 +308,8 @@ def _native_credential(
 ) -> EffectiveCredential | None:
     """Resolve which credential *app*'s agents would actually use, CLI-style.
 
-    *policy* is the project's ``[agent] auth`` knob. ``auto`` models the bare
+    *policy* is the project's ``[agent] auth`` knob. ``auto`` (and the Sandbox's
+    ``visitor``, which resolves identically) models the bare
     CLI precedence below. ``subscription`` resolves as if the API-key env var
     were scrubbed (which is what Booley does to agent envs under that policy);
     for Codex the API key IS the rotation-free credential, so only the login
@@ -475,9 +477,18 @@ CREDENTIAL_ENV_KEYS = frozenset(
 CREDENTIAL_SCHEMA = "1"
 
 
+def defers_to_cli(policy: str) -> bool:
+    """Whether *policy* leaves the credential choice to the CLI's own precedence.
+
+    ``auto`` is the ``[agent] auth`` spelling and ``visitor`` the Sandbox one;
+    ``auto`` leaves this check with the move to a required ``auth`` value.
+    """
+    return policy in {"auto", VISITOR_AUTH}
+
+
 def subscription_available(app: str, policy: str, path: Path) -> bool:
     """Inspect explicit-policy login material without exposing its contents."""
-    if policy == "auto":
+    if defers_to_cli(policy):
         return path.is_file()
     if not path.exists():
         return False
@@ -507,7 +518,7 @@ def subscription_available(app: str, policy: str, path: Path) -> bool:
 
 def allowed_credential_keys(app: str, policy: str) -> frozenset[str]:
     """Deterministic transport permissions, independent of shell exports."""
-    if policy not in {"auto", "subscription", "api_key", GATEWAY_AUTH}:
+    if policy not in {"auto", VISITOR_AUTH, "subscription", "api_key", GATEWAY_AUTH}:
         raise ValueError("invalid credential policy; refresh the Sandbox")
     if app not in CREDENTIALS or policy == GATEWAY_AUTH:
         return frozenset()
@@ -554,7 +565,7 @@ class CredentialPlan:
                     f"auth '{GATEWAY_AUTH}' routes Codex only; set [agent] default = 'codex'"
                 )
             gateway_settings_from_env()  # raises GatewayConfigError naming the variable
-        if self.policy != "auto" and self.selected is None:
+        if not defers_to_cli(self.policy) and self.selected is None:
             raise ValueError(
                 f"{self.app}: no usable credential under auth = '{self.policy}'; provide that credential and refresh the Sandbox"
             )
@@ -562,7 +573,7 @@ class CredentialPlan:
 
 def inspect_config_seed(path: Path, policy: str) -> None:
     """Refuse ambiguous auth-bearing Claude config; never edit host config."""
-    if policy == "auto" or not path.exists():
+    if defers_to_cli(policy) or not path.exists():
         return
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -632,7 +643,7 @@ def link_codex_auth(source: Path, destination: Path, policy: str = "auto") -> No
     the policy excludes the login, or it is missing, no entry remains.
     """
     allowed_credential_keys(APP_CODEX, policy)
-    allowed = policy == "auto" or (
+    allowed = defers_to_cli(policy) or (
         policy == "subscription" and subscription_available(APP_CODEX, policy, source)
     )
     if not (source.is_file() and allowed):
