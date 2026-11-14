@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 import types
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from booley.flows.sim.record.codec import SimulationRecordIntegrityError
 from booley.runtime.file_lock import LockTimeoutError
 from tests.conftest import symlink_or_skip
 from tests.fusesoc_test_support import symlinked_booley_dir
+from tests.mount_change_support import simulate_mount_change
 
 PARENT_MARKER = ".booley-simulation-parent.json"
 
@@ -208,3 +210,41 @@ def test_templated_run_directory_follows_only_the_booley_dir_entry(
         return
     with rd.claimed_run_directory(run, identity=identity) as directory:
         assert (directory / ".booley-simulation-attempt.json").is_file()
+
+
+def _former_mount_document(root: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    """A persisted run directory an older writer left under a former mount of *root*."""
+    former = root.parent / f"{root.name}-former-mount"
+    simulate_mount_change(monkeypatch, root, former)
+    old = former / "work/c/t/a1"
+    return {
+        "configured": "work/{record}/{test}/{attempt}",
+        "resolved": str(old),
+        "collision_key": os.path.normcase(str(old)),
+        "owned": True,
+    }
+
+
+def test_run_directory_recorded_under_a_former_mount_restores_under_the_current_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path.resolve()
+    document = _former_mount_document(root, monkeypatch)
+
+    run = rd.restore_run_directory_from_project_data(document, project_data=root)
+
+    assert run.path == root / "work/c/t/a1"
+    assert run.collision_key == os.path.normcase(str(root / "work/c/t/a1"))
+
+
+def test_run_directory_under_a_former_mount_with_a_foreign_collision_key_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path.resolve()
+    document = _former_mount_document(root, monkeypatch)
+    document["collision_key"] = os.path.normcase(
+        str(root.parent / f"{root.name}-former-mount/elsewhere")
+    )
+
+    with pytest.raises(SimulationRecordIntegrityError, match="collision key disagrees"):
+        rd.restore_run_directory_from_project_data(document, project_data=root)
