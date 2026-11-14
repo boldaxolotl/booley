@@ -129,7 +129,7 @@ A Job with no owning session, started by a human from a Sandbox shell or the Boo
 _Avoid_: human run, dashboard job, manual job
 
 **Job Class**:
-How a Job is admitted. The **memory** class holds EDA Jobs (simulation, synthesis, FPGA implementation, lint, Custom Flows): each reserves its estimated peak memory and runs while the reservations fit the Memory Budget, which is `[jobs].memory_budget` if set, otherwise the container's memory limit, else the installed memory, minus a reserve for the agents. The **light** class holds Specialists and the Mutation Flow: a count (`max_light`) caps them, because the AI provider, not memory, limits them.
+How a Job is admitted. The **memory** class holds EDA Jobs (simulation, synthesis, FPGA implementation, lint, Custom Flows): each reserves its estimated peak memory and runs while the reservations fit the Memory Budget, which is the container's memory limit (`[sandbox].memory`), else the installed memory, minus a reserve for the agents. The **light** class holds Specialists and the Mutation Flow: a count (`max_light`) caps them, because the AI provider, not memory, limits them.
 _Avoid_: Job type, Job kind, queue
 
 ### Configuration
@@ -304,6 +304,7 @@ _Avoid_: approved commit, signed-off commit, clean review; review session, revie
 You will not need these unless you are reading older work records, code, or docs; they are terms that were renamed or removed. Skim now, refer back when you hit one.
 
 - **heavy Job**, **Job slot (for EDA Jobs)**, `max_heavy`, `heavy_memory` → **Job Class** (memory) and the Memory Budget: Retired. EDA Jobs are admitted by their memory reservation, and `booley.toml` refuses the two keys.
+- **`[jobs].memory_budget`** → the Memory Budget computed from `[sandbox].memory`: Retired. It replaced the computed budget without subtracting the reserve; `booley.toml` refuses it.
 - **`queue_max`**, **full queue** → **none**: Retired. The queue has no limit: a Job waits until it runs or is cancelled, and `booley.toml` refuses `[jobs].queue_max`.
 - **Ticket Mode** → **Goal Mode**: Retired ticket-driven workflow. `booley run` and `booley board` now print a migration pointer and exit 2.
 - **Harness** → **none**: Retired name for Ticket lifecycle orchestration. Name the Goal Record, evidence machinery, or Sandbox capability concerned. The `booley.harness` package still contains active CLI, Doctor, and setup code.

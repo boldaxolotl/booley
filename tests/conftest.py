@@ -6,13 +6,14 @@ import os
 import shutil
 import sys
 import tempfile
-from collections.abc import Generator, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import ExitStack
 from pathlib import Path, PureWindowsPath
 from typing import Any, BinaryIO
 
 import pytest
 
+from tests.memory_budget_support import budget_of, pin_budget
 from tests.python_command_support import interpreter_first_path, python_path_entry
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[1]
@@ -627,25 +628,31 @@ def _memory_budget_is_measurable_everywhere(monkeypatch: pytest.MonkeyPatch) -> 
 
     Windows has no ``/proc``, so the real Memory Budget is unavailable there and
     every Job would run alone with an extra "Memory Budget unavailable" note in
-    its reports and refusals. Fall back to a fixed override when measuring fails;
-    tests of the unavailable path patch ``compute_memory_budget`` themselves.
+    its reports and refusals. Fall back to a fixed 64 GiB budget when measuring
+    fails; tests of the unavailable path patch ``compute_memory_budget`` themselves.
     """
     from booley.flows import memory_admission
     from booley.runtime import memory_budget
 
     real_compute = memory_budget.compute_memory_budget
 
-    def compute_or_fixed(
-        config: Mapping[str, object], **kwargs: Any
-    ) -> memory_budget.MemoryBudget:
+    def compute_or_fixed(**kwargs: Any) -> memory_budget.MemoryBudget:
         try:
-            return real_compute(config, **kwargs)
+            return real_compute(**kwargs)
         except OSError:
-            return memory_budget.resolve_memory_budget(
-                override_bytes=64 * 1024**3, limit_bytes=None, installed_bytes=None, processes=()
-            )
+            return budget_of(64 * 1024**3)
 
     monkeypatch.setattr(memory_admission, "compute_memory_budget", compute_or_fixed)
+
+
+@pytest.fixture
+def pin_memory_budget(monkeypatch: pytest.MonkeyPatch) -> Callable[[int], None]:
+    """Return ``pin(mib)``: fix the Memory Budget admission tests see, in MiB.
+
+    The budget comes from the budget computation, never from ``booley.toml``:
+    no key there sets it, and the host's memory must not matter.
+    """
+    return lambda mib: pin_budget(monkeypatch, mib)
 
 
 @pytest.fixture(autouse=True)

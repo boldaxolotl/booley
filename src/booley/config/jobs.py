@@ -25,6 +25,9 @@ RETIRED_JOBS_KEYS: dict[str, str] = {
     "max_heavy": _MEMORY_ADMISSION,
     "heavy_memory": _MEMORY_ADMISSION,
     "queue_max": "the Job queue has no limit: a Job waits until it runs or is cancelled",
+    "memory_budget": (
+        "the Memory Budget is computed from [sandbox].memory: set [sandbox].memory instead"
+    ),
 }
 
 #: The commercial EDA tools Booley provisions: the ones that take a licence seat.
@@ -74,7 +77,7 @@ def parse_caps(data: dict) -> SlotCaps:
             logger.warning(
                 "[jobs] max_light = %r is invalid (int >= 1); using %d", value, max_light
             )
-    non_cap_keys = {*RETIRED_JOBS_KEYS, "max_light", "max_tickets", "memory_budget", "seats"}
+    non_cap_keys = {*RETIRED_JOBS_KEYS, "max_light", "max_tickets", "seats"}
     for key in section:
         if key not in non_cap_keys:
             logger.warning("[jobs] has unknown key %r (ignored)", key)

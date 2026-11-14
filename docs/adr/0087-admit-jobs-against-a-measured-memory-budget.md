@@ -293,3 +293,19 @@ Recorded while implementing
   no memory, so a long queue costs a few small files, not capacity.
 - ADR 0086's "a full queue refuses the launch" is superseded: the review screen
   says where the Job queues and Submit never refuses for a queue.
+
+## Amendments (2026-11-15)
+
+Recorded while implementing
+[#4069](https://github.com/boldaxolotl/booley/issues/4069).
+
+- **The override is retired; the budget is always computed.** The
+  `[jobs] memory_budget` bullet in "The budget" above no longer holds.
+  `[jobs].memory_budget` is refused like `max_heavy`, `heavy_memory` and
+  `queue_max`, with the fix "set `[sandbox].memory` instead".
+- **Why.** The override replaced the computed budget and subtracted no reserve,
+  so the natural setting (equal to `[sandbox].memory`) let Jobs claim memory
+  that the agents, the MCP server and the Dashboard were using, and invited
+  out-of-memory kills. The check meant to catch an override above the container
+  limit never had a caller. Its stated use, room for hand work in a Sandbox
+  terminal, gets no replacement until a need is shown.
