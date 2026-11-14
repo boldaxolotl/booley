@@ -237,8 +237,25 @@ def test_campaign_processes_rank_as_the_held_claim(
     assert inert_oom_proc.values[os.getpid()] == 0
 
 
-@pytest.mark.parametrize("withdrawn_by", ["cancellation", "booley_cancel"])
 def test_queued_claim_is_withdrawn_when_the_campaign_is_cancelled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    managed: _Managed,
+    inert_oom_proc: FakeProc,  # noqa: F811
+) -> None:
+    _withdraw_queued_claim(tmp_path, monkeypatch, managed, inert_oom_proc, "cancellation")
+
+
+def test_queued_claim_is_withdrawn_when_booley_cancel_removes_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    managed: _Managed,
+    inert_oom_proc: FakeProc,  # noqa: F811
+) -> None:
+    _withdraw_queued_claim(tmp_path, monkeypatch, managed, inert_oom_proc, "booley_cancel")
+
+
+def _withdraw_queued_claim(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     managed: _Managed,

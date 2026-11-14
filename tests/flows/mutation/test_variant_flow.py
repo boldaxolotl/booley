@@ -665,15 +665,24 @@ def _simulator_killed(command: list[str], signal_number: int) -> subprocess.Comp
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the stand-in build is POSIX-only")
-@pytest.mark.parametrize(
-    ("simulator_killed", "signal_number", "name"),
-    [
-        pytest.param(False, 9, "SIGKILL", id="adapter-killed"),
-        pytest.param(True, 9, "SIGKILL", id="simulator-killed"),
-        pytest.param(True, 99, "99", id="unnamed-signal"),
-    ],
-)
 def test_signal_killed_mutant_run_is_inconclusive_not_a_kill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _check_signal_kill(tmp_path, monkeypatch, False, 9, "SIGKILL")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the stand-in build is POSIX-only")
+@pytest.mark.parametrize(
+    ("signal_number", "name"),
+    [pytest.param(9, "SIGKILL", id="simulator-killed"), pytest.param(99, "99", id="unnamed")],
+)
+def test_signal_killed_simulator_is_inconclusive_not_a_kill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, signal_number: int, name: str
+) -> None:
+    _check_signal_kill(tmp_path, monkeypatch, True, signal_number, name)
+
+
+def _check_signal_kill(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     simulator_killed: bool,
