@@ -156,14 +156,14 @@ def worktree_sessions(common: Path) -> dict[str, str]:
 def choose_placement(
     mode: str, *, lock_held: bool, session: str | None, flagged: bool = False
 ) -> Placement:
-    """Apply the `[chat] worktree` rules: `never` main, `always` worktree, `auto` by use.
+    """Apply the `[worktree] chat` rules: `never` main, `always` worktree, `auto` by use.
 
     *flagged* marks an `always` that came from `--new-worktree` rather than the knob.
     """
     if mode == "never":
         return Placement(worktree=False)
     if mode == "always":
-        return Placement(True, "--new-worktree" if flagged else '[chat] worktree = "always"')
+        return Placement(True, "--new-worktree" if flagged else '[worktree] chat = "always"')
     if not lock_held:
         return Placement(True, "the main checkout is in use by another booley chat")
     if session is not None:
