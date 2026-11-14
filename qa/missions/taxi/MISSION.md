@@ -15,11 +15,12 @@ directory, findings format, and cleanup bookkeeping; this file says where to loo
   clone on a run-owned branch (no wrapper; no submodules).
 - Needs: Docker ≥6 GB free plus run-dir room; Codex or Claude login; Sandbox Image with Verilator,
   Cocotb, Verible, Yosys+slang, OpenROAD; VS Code attached for the area-6 viewer.
+- Optional: Vivado on x86-64 Linux, plus a paid license and relay, for area 14.
 - Primary: Ubuntu x86-64 + Codex CLI; rerun on Windows (Docker Desktop, WSL2), VS Code Codex or
   Claude CLI for coverage.
 - Budget: 8 h for the primary run: 460 area minutes plus 20 contingency.
-  Area 8 is an optional 35-minute follow-up outside this timebox. Log it as
-  skipped unless a follow-up is requested. Run primary areas sequentially;
+  Areas 8 and 14 are optional follow-up work outside this timebox (75 minutes
+  total). Log them as skipped unless a follow-up is requested. Run primary areas sequentially;
   Interactive children never overlap an active Goal in the same Project.
   Rerun on the other host/client only when asked.
 
@@ -261,6 +262,10 @@ Try:
   disposable Goal for the Project-wide Protected Input probe: change
   `booley.toml`, observe warnings, discarded evidence and blocked Finish, restore
   byte-exactly and rerun. Never contaminate concurrent Goals with this probe.
+- Entry refuses the main checkout, a dirty tree and an existing same-day Goal Branch, each
+  probed alone. With a disposable `default.md` committed in the primary checkout's goalsets,
+  entry asks to include or skip it. Retrying `goal_finish` with the same operation ID returns
+  the same completion.
 - Test wrong worktree identity and occupied-worktree entry refusals, fresh evidence
   after relevant edits, unmet mandatory Goal blocking Finish, and explicit abandon
   preserving branch/worktree. Save diagnostics and resolve all records before cleanup.
@@ -295,10 +300,33 @@ Try:
   expected syntax error), logical and fresh physical synthesis, B-Wave PFC checks. Pre-existing Taxi bytes match the pin; only `qa/taxi_eth_mac_10g/` and the ordinary
   Target changed.
 
-### 14. cleanup — Product cleanup (~20 min)
+### 14. vivado-fpga — Provisioned Vivado, Grants, FPGA Flow, licenses (~40 min, Linux, optional follow-up)
+Intent: host EDA provisioning is exact, read-only and revocable, and the FPGA Flow grades honestly.
+Try:
+- Register host Vivado under a run-owned name, then list and show it (canonical paths match;
+  symlink spelling may differ). Grant it to this Project and set `[flows.fpga] enabled = true`
+  and `[eda.vivado] provisioning = "host"`. After every Grant change, reissue the Session before
+  any check (`session down`, `init --seed`, `session validate`, `session up`). The Vivado mount
+  is read-only.
+- Add a run-owned FPGA Target on the flat `synth_mac_10g` wrapper with `out_of_context: true`
+  and a clock-only XDC (the wrapper has more ports than a small part has pins), on any part your
+  license covers (WebPACK parts need none), with its Doctor check enabled. Dry run lists part,
+  top, XDC and sources. An uncached run gives a fresh PASS with a routed DCP plus timing and
+  utilization reports; the same inputs hit the cache and `--no-cache` runs fresh; a bad design
+  gives rc 1; a baseline/candidate pair gives a delta.
+- Revoke the Grant and grade the Flow before recovering: exit 2, no Vivado run, no mount. Then
+  re-grant, reissue, and Doctor is clean. `booley projects forget` on a granted root is refused;
+  after revoking, it removes exactly that root.
+- With a paid license only: a License Profile attaches through the Grant; a relay fault fails,
+  restoring the relay recovers, and unapproved destinations stay blocked.
+Look for: a stale Session spec after regrant, borrowed Grants or installations changed, cached
+results passed off as fresh.
+
+### 15. cleanup — Product cleanup (~20 min)
 - Save a git bundle of accepted/seed/repair history and the physical reports in `evidence/`.
 - With Booley's own commands, release Sandboxes (`booley session down`), processes, Goal worktrees
-  and branches, Project inventory entries, derived images, volumes and mounts; no owned process or
+  and branches, Project inventory entries, run-owned Grants, EDA registrations and License
+  Profiles, derived images, volumes and mounts; no owned process or
   container may remain.
 - Remove the companion Project and clone unless the run skill keeps them for review; release the
   `resources.md` rows. Credentials, base images, caches and remotes are unchanged; nothing pushed.

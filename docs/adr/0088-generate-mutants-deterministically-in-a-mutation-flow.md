@@ -243,3 +243,31 @@ generator version 2 are no longer produced (the swaps of five `for` stop
 expressions, two `while` conditions, one `do`-`while` condition, and three
 loop-variable updates in the fixtures); every other Mutant keeps its ID. The
 generator version is 5.
+
+## Amendments (2026-11-14, #3934)
+
+**Unsized plus one.** The `constant` operator gave an unsized literal only values
+that fit the literal's own bit length, so `1`, `3` and `7` never got their plus-one
+Mutant. It now also allows values that fit the narrowest width the literal's value
+is used at, as the file's elaboration reports it. An unsized literal elaborates as a
+32-bit `int` and widens its whole context, so the expression's own width is no
+guide.
+
+The width is the minimum of:
+
+- the literal's own width;
+- the width of every narrowing conversion above it, implicit or an explicit cast,
+  for the operands the context sizes (not a shift amount, a selector, a comparison
+  or logical operand, or a function argument);
+- for the operands of a context-determined binary operator, the width of the other
+  operand.
+
+So `flag <= 1` on a 1-bit `flag` stays `1 -> 0`, and `a == 255` on an 8-bit `a`
+gains no `256`. A literal in a connection to a module defined in another file is not
+elaborated and keeps the bit-length rule. Only plus-one Mutants are added: every
+Mutant of version 5 keeps its ID and text.
+
+Unlike the `+`/`-` swap filter, a unit that another file may elaborate with other
+parameters is trusted here with its default elaboration. An override that narrows
+the width can give a Mutant that repeats another variant there, or one that fails to
+build and counts as `invalid`. The generator version is 6.

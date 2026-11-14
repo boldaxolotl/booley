@@ -163,6 +163,21 @@ _OPERAND_DROPS = {
 _SHIFT_FLIPS = {"ArithmeticShiftRightExpression": ">>", "LogicalShiftRightExpression": ">>>"}
 _SHIFT_OPERATORS = _names("ArithmeticShiftRight LogicalShiftRight")
 _ADD_SUBTRACT_OPERATORS = _names("Add Subtract")
+# Binary operators whose operands are context-determined: both are widened to the wider
+# of the two (and of the assignment target, for the arithmetic and bitwise ones).
+_VALUE_OPERATORS = _names(
+    "Add Subtract Multiply Divide Mod BinaryAnd BinaryOr BinaryXor BinaryXnor"
+)
+_CONTEXT_OPERATORS = _VALUE_OPERATORS | _names(
+    "Equality Inequality CaseEquality CaseInequality WildcardEquality WildcardInequality "
+    "LessThan LessThanEqual GreaterThan GreaterThanEqual"
+)
+# Only the left operand of a shift or power is sized by the context; the other is its own.
+_LEFT_SIZED_OPERATORS = _names(
+    "ArithmeticShiftLeft ArithmeticShiftRight LogicalShiftLeft LogicalShiftRight Power"
+)
+_VALUE_UNARY_OPERATORS = _names("Plus Minus BitwiseNot")
+_SIGN_CASTS = frozenset({"$signed", "$unsigned"})
 # Syntax that lets another file elaborate a module differently from this file alone: a
 # parameter that is not `localparam` (overridable by an instance or `defparam`), or an
 # interface or named-type port.
@@ -228,20 +243,23 @@ _EMPTY_BLOCK = "begin end"
 _LOOPS = _names("ForeverStatement DoWhileStatement ForLoopStatement")
 
 
-def _constant_variants(size: str, base: str, digits: str) -> tuple[str, ...]:
+def _constant_variants(
+    size: str, base: str, digits: str, context_width: int | None
+) -> tuple[str, ...]:
     """Value digits for a literal: lowest bit flipped, plus one, minus one.
 
     ``size`` is empty for an unsized literal; ``base`` is the base letter.  Digits
     stay in the literal's base and case, zero-padded to the original count.  A
     variant never goes negative, never reaches ``2**size`` for a sized literal, and
-    never needs more bits than the original for an unsized one.  A literal with
-    ``x``, ``z`` or ``?`` digits has no variants.
+    never needs more bits than the original, or than ``context_width`` (the narrowest
+    width its value is used at) when the elaboration reports one, for an unsized one.
+    A literal with ``x``, ``z`` or ``?`` digits has no variants.
     """
     clean = digits.replace("_", "")
     if not re.fullmatch(_BASE_DIGITS[base], clean):
         return ()
     value = int(clean, _BASE_RADIX[base])
-    bits = int(size.replace("_", "")) if size else max(1, value.bit_length())
+    bits = int(size.replace("_", "")) if size else max(1, value.bit_length(), context_width or 0)
     code = "X" if clean.isupper() else "x" if base == "h" else base  # all-uppercase stays so
     variants: dict[str, None] = {}  # insertion-ordered set
     for new in (value ^ 1, value + 1, value - 1):
@@ -325,6 +343,8 @@ class _Facts:
     enums: Mapping[tuple[int, int], _EnumRef]  # (start, end) of each enum member reference
     # Operator offsets of `+`/`-` whose swap gives the same value at the expression's width.
     modular_add_sub: frozenset[int]
+    # Narrowest width each unsized literal's value is used at, by its first character.
+    literal_widths: Mapping[int, int]
 
 
 # Syntax nodes that open a scope: an enum declared directly in a package is reachable as
@@ -383,15 +403,98 @@ def _signed_shift_offset(expression: Any, buffer: Any) -> int | None:
     return int(token.location.offset)
 
 
+def _note_literal(widths: dict[int, int], expression: Any, width: int, buffer: Any) -> None:
+    """Lower the recorded width of ``expression`` to ``width`` if it is an unsized literal."""
+    if expression.kind.name != "IntegerLiteral" or not expression.isDeclaredUnsized:
+        return
+    start = expression.sourceRange.start
+    if start.buffer == buffer:
+        offset = int(start.offset)
+        widths[offset] = min(widths.get(offset, width), width)
+
+
+def _strip_propagated(expression: Any) -> Any:
+    """``expression`` without the widening conversions its context put around it."""
+    while expression.kind.name == "Conversion" and expression.conversionKind.name == "Propagated":
+        expression = expression.operand
+    return expression
+
+
+def _cap_sized_by_context(
+    inner: Any, widths: dict[int, int], width: int, buffer: Any, pyslang: Any
+) -> Any:
+    """Visitor step: cap the unsized literals ``width`` narrows, not self-determined ones.
+
+    Reached from a narrowing conversion over ``inner``.  The context sizes the operands
+    of arithmetic and bitwise operators, a conditional's branches, the left operand of a
+    shift, and a sign cast's argument.  A selector, a shift amount, a comparison or logical
+    operand and a function argument have their own width: they are left to the visit that
+    reaches them.
+    """
+    _note_literal(widths, inner, width, buffer)
+    kind = inner.kind.name
+    descend: tuple[Any, ...]  # the children the context sizes
+    if kind == "BinaryOp":
+        op = inner.op.name
+        descend = (inner.left, inner.right) if op in _VALUE_OPERATORS else ()
+        descend = (inner.left,) if op in _LEFT_SIZED_OPERATORS else descend
+    elif kind == "UnaryOp":
+        descend = (inner.operand,) if inner.op.name in _VALUE_UNARY_OPERATORS else ()
+    elif kind == "ConditionalOp":
+        descend = (inner.left, inner.right)
+    elif kind in ("ElementSelect", "RangeSelect"):
+        descend = (inner.value,)
+    elif kind == "Call":
+        sized = inner.isSystemCall and inner.subroutineName in _SIGN_CASTS
+        descend = tuple(inner.arguments) if sized else ()
+    else:
+        return None  # a conversion, assignment pattern, or leaf: visit everything below
+    for child in descend:
+        child.visit(lambda node: _cap_sized_by_context(node, widths, width, buffer, pyslang))
+    return pyslang.ast.VisitAction.Skip
+
+
+def _literal_widths(pyslang: Any, root: Any, buffer: Any) -> dict[int, int]:
+    """The narrowest width each unsized literal in ``buffer`` is used at, by file offset.
+
+    An unsized literal elaborates as a 32-bit ``int`` and widens its context, so the
+    expression's own width says nothing.  The narrowest width on the way from the literal
+    to where its value is consumed is: its own width; the width of every narrowing
+    conversion above it, implicit or an explicit cast, for the operands the context sizes;
+    and, for a context-determined binary operator, the width of the other operand.  A literal that is not elaborated (a
+    macro, or a connection to a module defined in another file) has no entry.
+    """
+    widths: dict[int, int] = {}
+
+    def narrow(width: int) -> Callable[[Any], Any]:
+        return lambda inner: _cap_sized_by_context(inner, widths, width, buffer, pyslang)
+
+    def record(expression: Any) -> None:
+        kind = expression.kind.name
+        if kind == "IntegerLiteral":
+            _note_literal(widths, expression, int(expression.type.bitWidth), buffer)
+        elif kind == "Conversion" and expression.type.bitWidth < expression.operand.type.bitWidth:
+            expression.operand.visit(narrow(int(expression.type.bitWidth)))
+        elif kind == "BinaryOp" and expression.op.name in _CONTEXT_OPERATORS:
+            left = _strip_propagated(expression.left)
+            right = _strip_propagated(expression.right)
+            _note_literal(widths, left, int(right.type.bitWidth), buffer)
+            _note_literal(widths, right, int(left.type.bitWidth), buffer)
+
+    root.visit(record)
+    return widths
+
+
 def _semantic_facts(pyslang: Any, tree: Any, buffer: Any) -> _Facts:
     """Elaborate ``tree`` (the one the sites come from) and record what syntax cannot tell.
 
     These are the declared bounds of each literal select, the right shifts whose left
     operand is signed in at least one instance (elsewhere ``>>`` and ``>>>`` are the same),
-    each reference to an enum member, and the ``+``/``-`` operators whose swap is equal at
-    the expression's width in every instance.  Diagnostics, such as modules or packages
-    defined in other files, are ignored: an enum that cannot be resolved has no member
-    symbol, so it yields no reference.  Only locations in ``buffer`` are kept.
+    each reference to an enum member, the ``+``/``-`` operators whose swap is equal at the
+    expression's width in every instance, and the narrowest width each unsized literal's
+    value is used at.  Diagnostics, such as modules or packages defined in other files, are
+    ignored: an enum that cannot be resolved has no member symbol, so it yields no
+    reference.  Only locations in ``buffer`` are kept.
     """
     compilation = pyslang.ast.Compilation()
     compilation.addSyntaxTree(tree)
@@ -429,7 +532,8 @@ def _semantic_facts(pyslang: Any, tree: Any, buffer: Any) -> _Facts:
 
     compilation.getRoot().visit(record)
     equal_swaps = frozenset(offset for offset, equal in modular.items() if equal)
-    return _Facts(ranges, frozenset(signed_shifts), enums, equal_swaps)
+    literal_widths = _literal_widths(pyslang, compilation.getRoot(), buffer)
+    return _Facts(ranges, frozenset(signed_shifts), enums, equal_swaps, literal_widths)
 
 
 def find_sites(
@@ -847,15 +951,23 @@ class _SiteCollector:
         if kind == "IntegerVectorExpression":
             token = node.value
             variants = _constant_variants(
-                node.size.rawText, node.base.rawText[-1].lower(), token.rawText
+                node.size.rawText,
+                node.base.rawText[-1].lower(),
+                token.rawText,
+                self._context_width(node),
             )
         elif kind == "IntegerLiteralExpression":
             token = node.literal
-            variants = _constant_variants("", "d", token.rawText)
+            variants = _constant_variants("", "d", token.rawText, self._context_width(node))
         else:  # '0 and '1; 'x and 'z have no variants
             token = node.literal
             variants = {"'0": ("'1",), "'1": ("'0",)}.get(token.rawText, ())
         self._add(node, CONSTANT, token, token, variants, avoid_loops=True, reach=_CONSTANT_REACH)
+
+    def _context_width(self, node: Any) -> int | None:
+        """The narrowest width the elaboration says the unsized literal ``node`` is used at."""
+        offset = self._offset(node.getFirstToken())
+        return None if offset is None else self._facts.literal_widths.get(offset)
 
     @staticmethod
     def _in_case_label(node: Any) -> bool:

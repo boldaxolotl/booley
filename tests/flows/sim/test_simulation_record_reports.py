@@ -1299,6 +1299,7 @@ def test_mcp_campaign_details_bound_observations_without_collapsing_axes(
             functional="fail" if index % 2 else "pass",
             assertions="dirty" if index % 3 == 0 else "clean",
             assertion_count=index,
+            cycle_count=None,  # every real observation carries one; the metrics read it
             detail={"reason": f"detail-{index}"},
         )
         for index, run in enumerate(runs)

@@ -1,6 +1,6 @@
 ---
 name: booley-qa-triage
-description: Only when the user explicitly asks, triage finished Booley QA runs with the maintainer one finding at a time — verify each against current main, decide together, and file or fix as each decision lands.
+description: Only when the user explicitly asks, triage finished Booley QA runs — interactively with the maintainer one cluster at a time, or automatically by a unanimous model jury — verify each against current main, and file or fix as each decision lands.
 disable-model-invocation: true
 ---
 
@@ -18,9 +18,14 @@ the build it tested. Resolve repository inputs such as
 `docs/internals/agents/triage-labels.md`, `qa/missions/`, and `qa/shared/` from
 that derived root, never from the process working directory.
 
-Input: one or more QA run directories (each has `findings.md` and `log.md`).
-The maintainer decides; you verify each finding and prepare the decision.
-Triage is a conversation, one **cluster summary** per turn.
+Input: one or more QA run directories (each has `findings.md` and `log.md`),
+and optionally `auto` with an optional `jury=<model>,<model>,...`.
+
+**Mode.** With `auto`, or when `booley-qa-run` hands you its run, run
+**automatic** mode: read [`AUTO.md`](AUTO.md) and follow it; it reuses steps
+1–4 and 6–8 below. Otherwise run **interactive** mode: the maintainer decides;
+you verify each finding and prepare the decision. Interactive triage is a
+conversation, one **cluster summary** per turn.
 
 1. **Read.** Read every run's `log.md` and `findings.md` in full. Note each
    run's identity header (build under test, mission revision) so findings from
@@ -36,8 +41,10 @@ Triage is a conversation, one **cluster summary** per turn.
    the fix), or `new`.
 4. **Open the decision log.** Create `<run-dir>/triage.md`: one line per cluster
    with its finding refs, the decision, and the issue number or mission change.
-   It is the resume point after an interruption or handoff. Show the maintainer a
-   short overview (counts by kind and severity, the cluster order) and start.
+   It is the resume point after an interruption or handoff. When it already
+   exists, keep its decided clusters and triage only the rest; an `escalated`
+   cluster is undecided. Show the maintainer a short overview (counts by kind
+   and severity, the cluster order) and start.
 5. **Summarize one cluster, then wait.** Order: `qa-bug` clusters first, then product
    clusters by severity. Start every cluster summary, and every batch of
    low-severity clusters, with a progress line computed from `triage.md`:
@@ -55,7 +62,9 @@ Triage is a conversation, one **cluster summary** per turn.
      commands? Answer yes, no, or likely from the cause and a quick look at its
      callers and siblings. Stop there: the audit belongs to the agent that works
      the issue;
-   - fix directions as lettered options with your recommendation.
+   - fix directions as lettered options with your recommendation;
+   - for an `escalated` cluster, each juror's verdict and reason from
+     `triage.md`, and where you side with or against them.
 
    Wait for the maintainer's decision. Answer their questions with more code
    reading before re-proposing. Done when the maintainer has decided this cluster.

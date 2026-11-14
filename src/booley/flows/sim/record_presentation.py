@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from booley.flows.frozen_test_runs import FrozenTestRuns
+from booley.flows.metric_declarations import metrics_document
 from booley.flows.sim.coverage_campaign import CoverageCampaign, CoverageRollup
 from booley.flows.sim.coverage_json import FrozenJson
 from booley.flows.sim.coverage_policy import coverage_metrics
@@ -44,7 +45,7 @@ from .coverage_reference import (
     resolve_coverage_campaign_reference,
 )
 from .coverage_source_gaps import source_gap_report_lines
-from .metrics import coverage_campaign_path
+from .metrics import coverage_campaign_path, simulation_flow_metrics
 from .record import (
     NewSimulationRecordPreview,
     NewSimulationRecordRunRequest,
@@ -563,6 +564,8 @@ def _campaign_report_detail(
         "grade": outcome.aggregate_grade,
         "complete": outcome.complete,
         "observation_counts": _campaign_observation_counts(outcome.observations),
+        # The Target's typed metric values (or why it has none), for a measurement run.
+        "metrics": metrics_document(lambda: simulation_flow_metrics(outcome)),
         **_campaign_observation_preview(
             outcome.observations,
             simulation_record_test_run_files(outcome),
