@@ -216,15 +216,16 @@ default = "claude"
 auth = "subscription"   # "subscription" or "api_key"
 ```
 
-- **`auto`**: the Agent CLI decides, and an API key beats a subscription. A
-  missing `auth` means `auto`, and `booley doctor` fails on it.
 - **`subscription`**: Booley removes API keys from the agents' environment so
   the subscription pays.
 - **`api_key`**: the API key pays.
 
+Leave `auth` out and the Agent CLI decides, with an exported API key beating a
+subscription. `booley doctor` fails on a missing `auth`, and on `auth = "auto"`.
+
 A single value applies to every CLI in `clis`. To bill each CLI differently,
-use a table with one entry per CLI; a CLI you leave out runs as `auto`, which
-`booley doctor` fails on:
+use a table with one entry per CLI; `booley doctor` fails for a CLI you leave
+out:
 
 ```toml
 [agent]
@@ -240,7 +241,7 @@ A table may name only CLIs listed in `clis`.
 `booley doctor` checks that the credential you picked exists, so Booley never
 quietly bills the other one:
 
-- **Any CLI in `clis`** whose `auth` is missing or `auto`: fails, naming the
+- **Any CLI in `clis`** whose `auth` is missing or `"auto"`: fails, naming the
   value `booley init` would record (`subscription` with a login, `api_key` with
   only a key). Set it under `[agent]` or `[agent.auth]`, or re-run `booley init`.
 - **Default CLI**, with `subscription` or `api_key`: a missing credential fails.
@@ -249,7 +250,7 @@ quietly bills the other one:
 
 `booley init` records the policy it detects for each CLI in `clis`: one string
 when they agree, an `[agent.auth]` table when they differ. It keeps an explicit
-value and replaces `auto`; `booley init --auth api-key` (with a hyphen) records
+value; `booley init --auth api-key` (with a hyphen) records
 `api_key` without detection. Why to pick one:
 [Sign-in and billing](SETUP.md#sign-in-and-billing).
 
