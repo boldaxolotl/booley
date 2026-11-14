@@ -524,7 +524,7 @@ If a command must write into the build tree, set
 exposed as `BOOLEY_BUILD_ROOT`, which is slower.
 
 For a setup step that runs once per worktree rather than before every test, use
-the [worktree setup hook](CONFIG.md#worktree-setup-hooks) instead.
+the [worktree setup hook](CONFIG.md#worktree-setup-hooks-booleyhooks) instead.
 
 ## Sim working directory (`[flows.sim].run_cwd`)
 

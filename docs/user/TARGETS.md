@@ -301,6 +301,27 @@ targets:
   change the build. An unprefixed vendored Target still counts as fpga when
   its tool is `vivado`.
 
+### Marking Targets for Doctor
+
+[Doctor](DOCTOR.md) checks only the Targets you mark for it. The mark sits in the `.core`
+file, beside the Target:
+
+```yaml
+targets:
+  lint_core:
+    flow: lint
+    flow_options:
+      tool: verilator
+      booley: {doctor: [lint]}
+```
+
+The allowed names are `sim`, `lint`, `synth`, and `fpga`. Plain `booley doctor`
+dry-runs each marked Target and `booley doctor --deep` runs it. For `fpga`,
+deep Doctor skips the full implementation and prints the command to run it
+yourself. An unmarked Target still runs whenever you or the agent ask for it.
+With an enabled `[flows.fpga]` table, Doctor fails until some Target is marked
+`fpga`; set `enabled = false` there if the Project has no FPGA build yet.
+
 ## Cocotb Targets (Python testbenches)
 
 A **Cocotb Target** is a sim Target whose testbench is a
