@@ -101,7 +101,7 @@ booley doctor --deep --skip-agent-checks   # skip the agent login and provider c
 booley targets                    # list Targets
 booley targets --for sim          # only Targets a Flow can use
 booley targets <name>             # one Target in detail (Sandbox)
-booley resources                  # peak memory and run time per Target and Job phase
+booley resources                  # peak memory and run time per Target and Job phase, and per Specialist
 booley resources --json           # the same, machine-readable
 ```
 

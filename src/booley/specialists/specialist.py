@@ -35,8 +35,10 @@ from booley.dev_support.commit_git_io import (
     _save_files_to_logs,
 )
 from booley.dev_support.commit_message_format import _auto_format_commit_message
+from booley.flows import job_resources
 from booley.flows.cli_arguments import HumanParser, add_timeout_args
 from booley.flows.cli_help import SurfaceHelp
+from booley.flows.prepared_invocation import OrdinaryRunInvocation, PreparedInvocation
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpTool, McpToolResult
 from booley.runtime import job_slots
 from booley.runtime.agent_execution import configure_agent_call
@@ -104,6 +106,8 @@ class Specialist(McpTool):
         self._last_session_id: str | None = None
         # The model the latest agent call ran on (and any [models] list fallback).
         self._model_run: ModelRun | None = None
+        # The agent CLI call windows of this run, measured for the resource history.
+        self._agent_calls: list[job_resources.AgentCallUsage] = []
 
     def _add_args(self, parser: argparse.ArgumentParser) -> None:
         """Add agent-specific arguments."""
@@ -366,7 +370,10 @@ class Specialist(McpTool):
             call_params,
             snapshot,
         ):
-            with parent_death_watchdog(self.name):
+            with (
+                parent_death_watchdog(self.name),
+                job_resources.measure_agent_call(self._agent_calls),
+            ):
                 result = _call_agent_sync(call_params, on_event=on_event)
             if snapshot is not None:
                 result = restore_result_paths(result, snapshot)
@@ -514,6 +521,28 @@ class Specialist(McpTool):
             exit_code=EXIT_ERROR,
             report_text=exception_report_text(self.name, exc, diagnostic_path),
         )
+
+    def prepare_endpoint_invocation(self) -> PreparedInvocation | McpToolResult:
+        """The ordinary run, wrapped to record its agent calls in the resource history."""
+        return OrdinaryRunInvocation(self._measured_run)
+
+    def _measured_run(self) -> McpToolResult:
+        """Run the Specialist, then append its agent calls' record; the result is unchanged.
+
+        A run that made no agent call (a dry run, a refused argument) records
+        nothing. A run that raises is recorded as an error and raises again.
+        """
+        try:
+            result = self._run()
+        except Exception:
+            self._record_agent_calls(None)
+            raise
+        self._record_agent_calls(result.exit_code)
+        return result
+
+    def _record_agent_calls(self, returncode: int | None) -> None:
+        if self._agent_calls:
+            job_resources.record_specialist(self.name, self._agent_calls, returncode)
 
     def _run(self) -> McpToolResult:
         """Invoke the agent and interpret results."""

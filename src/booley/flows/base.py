@@ -344,7 +344,8 @@ class FlowMechanics:
             result = self._run_measured(cmd, cwd, env, scope, observer, monitor, timeout)
         finally:
             measurement = monitor.finish()  # also when interrupted, so its thread stops
-            shutil.rmtree(monitor.tmp_dir, ignore_errors=True)
+            if monitor.tmp_dir is not None:
+                shutil.rmtree(monitor.tmp_dir, ignore_errors=True)
         if result is None:
             return SubprocessResult(returncode=-1)
         result.peak_rss_mb = measurement.peak_rss_mb
