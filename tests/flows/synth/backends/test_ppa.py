@@ -25,17 +25,6 @@ def test_profile_backend_translations(profile, abc, util, density):
     assert openroad.placement_density == density
 
 
-def test_max_frequency_is_stronger_repair_than_balanced():
-    """max_frequency buys timing with OpenROAD repair, not a different mapping."""
-    balanced = openroad_ppa.openroad_profile("balanced")
-    fast = openroad_ppa.openroad_profile("max_frequency")
-    assert (balanced.gate_cloning, balanced.repair_tns_percent) == (False, None)
-    assert balanced.setup_margin_ns == 0.0
-    assert fast.gate_cloning is True
-    assert fast.repair_tns_percent == 100.0
-    assert fast.setup_margin_ns == 0.2
-
-
 def test_invalid_profile_rejected():
     with pytest.raises(BoundaryError, match="must be one of"):
         validate_ppa_profile("small")

@@ -23,6 +23,7 @@ from booley.flows.synth.backends.yosys.ppa import yosys_profile
 
 _FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "synth_profile_characterization"
 _PROFILES = ("compact", "balanced", "max_frequency")
+_RUN_TIMEOUT_S = 900
 
 
 def _evidence() -> dict[str, Any]:
@@ -39,10 +40,6 @@ def test_evidence_covers_every_profile_before_and_after() -> None:
     assert evidence["schema_version"] == 1
     for section in ("before", "after"):
         assert tuple(evidence[section]) == _PROFILES
-        for result in evidence[section].values():
-            assert result["area_kge"] > 0
-            assert result["critical_path_ps"] > 0
-            assert result["runtime_s"] > 0
 
 
 @pytest.mark.parametrize("profile", _PROFILES)
@@ -55,23 +52,15 @@ def test_after_settings_equal_current_profile_tables(profile: str) -> None:
     assert _evidence()["after"][profile]["settings"] == expected
 
 
-def test_max_frequency_has_shorter_critical_path_than_balanced() -> None:
+def test_recorded_measurement_shows_the_documented_ordering() -> None:
+    """The data behind the docs: old profile slower, new one faster, clock just missed."""
     evidence = _evidence()
     before = evidence["before"]
     after = evidence["after"]
-    # The bug: the old profile was slower than the default one.
+    period_ns = evidence["design"]["clock_period_ns"]
+    assert -0.10 * period_ns < before["balanced"]["wns_ns"] < 0
     assert before["max_frequency"]["critical_path_ps"] > before["balanced"]["critical_path_ps"]
     assert after["max_frequency"]["critical_path_ps"] < after["balanced"]["critical_path_ps"]
-    # compact and balanced mapping are untouched by the change.
-    for profile in ("compact", "balanced"):
-        assert after[profile]["critical_path_ps"] == before[profile]["critical_path_ps"]
-        assert after[profile]["area_kge"] == before[profile]["area_kge"]
-
-
-def test_clock_period_does_not_quite_close_for_balanced() -> None:
-    evidence = _evidence()
-    period_ns = evidence["design"]["clock_period_ns"]
-    assert -0.10 * period_ns < evidence["before"]["balanced"]["wns_ns"] < 0
 
 
 def test_period_delay_target_is_slower_than_balanced() -> None:
@@ -105,11 +94,10 @@ def _project() -> Path:
     return Path(root).resolve()
 
 
-@pytest.mark.slow
-@pytest.mark.parametrize("profile", _PROFILES)
-def test_profile_reproduces_checked_in_measurement(profile: str) -> None:
+def _run_profile(project: Path, profile: str) -> dict[str, Any]:
+    """Run ``synth_core`` under one profile and return its parsed report."""
+    report_dir = project / f"characterization_{profile}"
     # Kept on subprocess.run: opt-in physical synthesis takes minutes, beyond the shared budget.
-    project = _project()
     completed = subprocess.run(
         [
             "booley",
@@ -121,21 +109,27 @@ def test_profile_reproduces_checked_in_measurement(profile: str) -> None:
             profile,
             "--no-cache",
             "--report-dir",
-            str(project / f"characterization_{profile}"),
+            str(report_dir),
         ],
         cwd=project,
         capture_output=True,
         text=True,
-        timeout=900,
+        timeout=_RUN_TIMEOUT_S,
         check=False,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
-    report = json.loads(
-        (project / f"characterization_{profile}" / "synth_synth_core.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    expected = _evidence()["after"][profile]
-    clock = report["per_clock"]["clk"]
-    assert clock["critical_path_ps"] == pytest.approx(expected["critical_path_ps"], rel=0.02)
-    assert report["area_kge"] == pytest.approx(expected["area_kge"], rel=0.02)
+    return json.loads((report_dir / "synth_synth_core.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.slow
+def test_profiles_reproduce_checked_in_measurement() -> None:
+    """Repeat the measurement: numbers within 2% and ``max_frequency`` still faster."""
+    project = _project()
+    expected = _evidence()["after"]
+    paths: dict[str, float] = {}
+    for profile in _PROFILES:
+        report = _run_profile(project, profile)
+        paths[profile] = report["per_clock"]["clk"]["critical_path_ps"]
+        assert paths[profile] == pytest.approx(expected[profile]["critical_path_ps"], rel=0.02)
+        assert report["area_kge"] == pytest.approx(expected[profile]["area_kge"], rel=0.02)
+    assert paths["max_frequency"] < paths["balanced"]

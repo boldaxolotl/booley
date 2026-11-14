@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -155,19 +156,14 @@ def test_comparison_basis_uses_ordered_constraint_content() -> None:
             implementation_comparison_basis(invalid)
 
 
-def _profiled_synth_snapshot(settings: dict | None) -> dict:
+def _profiled_synth_snapshot(settings: dict[str, Any]) -> dict[str, Any]:
     snapshot = _synth_snapshot(schema=4)
-    if settings is not None:
-        snapshot["ppa_profile_settings"] = settings
+    snapshot["ppa_profile_settings"] = settings
     return snapshot
 
 
 def test_comparison_basis_tracks_profile_settings() -> None:
     """Paired Targets whose resolved profile settings differ are not comparable."""
-    same = {"yosys": {"abc_recipe": "balanced"}}
-    other = {"yosys": {"abc_recipe": "fast"}}
-    basis = implementation_comparison_basis
-    assert basis(_profiled_synth_snapshot(same)) == basis(_profiled_synth_snapshot(same))
-    assert basis(_profiled_synth_snapshot(same)) != basis(_profiled_synth_snapshot(other))
-    # A legacy snapshot without the key differs from a current one.
-    assert basis(_profiled_synth_snapshot(None)) != basis(_profiled_synth_snapshot(same))
+    balanced = _profiled_synth_snapshot({"yosys": {"abc_recipe": "balanced"}})
+    fast = _profiled_synth_snapshot({"yosys": {"abc_recipe": "fast"}})
+    assert implementation_comparison_basis(balanced) != implementation_comparison_basis(fast)

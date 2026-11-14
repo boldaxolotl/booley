@@ -147,20 +147,20 @@ A profile states what to optimize for. Set it on the Target as
 
 | Profile | Intent | Mapping recipe (`--abc-recipe`) | Placement utilization / density | Setup repair (physical mode) |
 |---|---|---|---|---|
-| `compact` | Smaller area. | `default` | 40% / 0.65 | OpenROAD defaults |
-| `balanced` | Default trade-off. | `balanced` | 50% / 0.80 | OpenROAD defaults |
-| `max_frequency` | Higher Fmax. | `balanced` | 40% / 0.70 | Gate cloning on, all violating endpoints repaired, 0.2 ns setup margin |
+| `compact` | Smaller area. | `default` | 40% / 0.65 | Gate cloning off, no setup margin, OpenROAD's default repair share |
+| `balanced` | Default trade-off. | `balanced` | 50% / 0.80 | Gate cloning off, no setup margin, OpenROAD's default repair share |
+| `max_frequency` | Higher Fmax. | `balanced` | 40% / 0.70 | Gate cloning on, 0.2 ns setup margin, repair share 100% |
 
 `max_frequency` maps like `balanced`; its gain comes from OpenROAD, so in
 logical mode it gives the same netlist as `balanced`. It sets no mapping delay
 target from the SDC clock period: on the measured design a target equal to the
-period made the placed netlist slower, because ABC then recovers area up to a
-delay that its wire-free model meets easily. Set `--abc-delay-ps` yourself to
-map to a target under any profile. On picorv32 `synth_core` at a clock that
-`balanced` just misses, `max_frequency` shortens the critical path by 2%
-(807.7 ps against 826.9 ps) for 1% more area. `fast` stays a valid
-`--abc-recipe` choice: it is a shortened script that runs faster, not one that
-maps for speed.
+period made the placed netlist slower. Set `--abc-delay-ps` yourself to map to
+a target under any profile.
+
+On picorv32 `synth_core` at a 0.8 ns clock that `balanced` just misses,
+`max_frequency` shortens the critical path by 2.3% (807.7 ps against
+826.9 ps) for 0.9% more area, and takes longer to run. `fast` is a shorter
+mapping script than `balanced`; it does not map for speed.
 
 A profile states intent, not a guaranteed result; compare runs to see which
 suits your design. Name the profile on the Target so results stay comparable over
@@ -174,7 +174,7 @@ second column names.
 
 | Option | Target table | What it changes | Default |
 |---|---|---|---|
-| `--abc-recipe <default\|balanced\|fast>` | `advanced_settings_yosys` | Logic-optimization script used during mapping. `fast` is a shortened `balanced` script that runs faster. | From the profile |
+| `--abc-recipe <default\|balanced\|fast>` | `advanced_settings_yosys` | Logic-optimization script used during mapping. `fast` is a shortened `balanced` script. | From the profile |
 | `--abc-script <script>` | `advanced_settings_yosys` | Your own ABC commands in place of a recipe, starting with `+` (for example `+strash;map`). Write `{D}` where the delay target goes, comma-separated (for example `+strash;map,{D}`); without `{D}` the script ignores `--abc-delay-ps`. Cannot be combined with `--abc-recipe`. | None |
 | `--generic-abc-before-mapping` / `--no-generic-abc-before-mapping` | `advanced_settings_yosys` | Adds a generic logic-optimization pass before mapping. | Off |
 | `--abc-delay-ps <ps>` | `advanced_settings_yosys` | Delay target for mapping, in ps. Every profile maps with it; a custom `--abc-script` uses it only where the script contains `{D}`. | None |
@@ -182,14 +182,14 @@ second column names.
 | `--placement-density <fraction>` | `advanced_settings_openroad` | Target density for placement. | From the profile |
 | `--repair-setup` / `--no-repair-setup` | `advanced_settings_openroad` | Repairs setup violations after placement. | On |
 | `--repair-hold` / `--no-repair-hold` | `advanced_settings_openroad` | Repairs hold violations. | Off |
-| `--gate-cloning` / `--no-gate-cloning` | `advanced_settings_openroad` | Lets setup repair duplicate gates. | Off |
-| `--setup-margin-ns <ns>` | `advanced_settings_openroad` | Extra setup slack that repair aims for, in ns. | 0 |
-| `--repair-tns-percent <percent>` | `advanced_settings_openroad` | Share of violating endpoints that setup repair works on. | OpenROAD's default |
+| `--gate-cloning` / `--no-gate-cloning` | `advanced_settings_openroad` | Lets setup repair duplicate gates. | From the profile |
+| `--setup-margin-ns <ns>` | `advanced_settings_openroad` | Extra setup slack that repair aims for, in ns. | From the profile |
+| `--repair-tns-percent <percent>` | `advanced_settings_openroad` | Share of violating endpoints that setup repair works on. | From the profile |
 
 ```yaml
 flow_options:
   ppa_profile: balanced
-  advanced_settings_yosys: {abc_recipe: fast}
+  advanced_settings_yosys: {abc_recipe: default}
   advanced_settings_openroad: {utilization_pct: 60, gate_cloning: true}
 ```
 

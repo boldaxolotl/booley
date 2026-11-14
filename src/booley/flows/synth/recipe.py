@@ -155,6 +155,28 @@ def resolve_synth_mode(
     return SynthMode(mode)
 
 
+def _ppa_profile_settings(
+    flow_options: Mapping[str, Any],
+    args: SynthRequest | argparse.Namespace,
+    synth_mode: SynthMode,
+    *,
+    target: str,
+) -> dict[str, Any]:
+    """Return the selected profile's own settings for the recipe identity.
+
+    Explicit overrides are already in ``recipe_args``; these are the profile's
+    defaults, so editing a profile table changes the fingerprint. OpenROAD
+    settings count only when the mode runs OpenROAD.
+    """
+    profile = resolve_ppa_profile(
+        flow_options, args, field_prefix=f"Target {target!r} flow_options"
+    )
+    settings: dict[str, Any] = {"yosys": jsonable(asdict(yosys_profile(profile)))}
+    if synth_mode.runs_openroad:
+        settings["openroad"] = jsonable(asdict(openroad_profile(profile)))
+    return settings
+
+
 def synthesis_recipe_snapshot(
     resolved: Any,
     args: SynthRequest | argparse.Namespace,
@@ -178,14 +200,6 @@ def synthesis_recipe_snapshot(
         )
 
     synth_mode = resolve_synth_mode(resolved.flow_options, target=target)
-    # Explicit overrides are already in recipe_args; this is the selected
-    # profile's own defaults, so editing a profile table changes the identity.
-    profile = resolve_ppa_profile(
-        resolved.flow_options, args, field_prefix=f"Target {target!r} flow_options"
-    )
-    profile_settings: dict[str, Any] = {"yosys": jsonable(asdict(yosys_profile(profile)))}
-    if synth_mode.runs_openroad:
-        profile_settings["openroad"] = jsonable(asdict(openroad_profile(profile)))
     liberty, _found = resolve_liberty_lenient(None)
     return {
         "schema": 5 if synth_mode.runs_openroad else 4,
@@ -206,7 +220,9 @@ def synthesis_recipe_snapshot(
         "toplevel": resolved.toplevel,
         "parameters": jsonable(resolved.parameters),
         "recipe_args": synthesis_recipe_args(resolved.flow_options, args, target=target),
-        "ppa_profile_settings": profile_settings,
+        "ppa_profile_settings": _ppa_profile_settings(
+            resolved.flow_options, args, synth_mode, target=target
+        ),
         "constraints": constraints,
         "technology": {
             "liberty": liberty.as_posix(),

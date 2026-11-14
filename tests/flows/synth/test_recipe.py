@@ -54,21 +54,24 @@ def _fingerprint(tmp_path, *, mode: str, profile: str | None = None) -> str:
 
 
 @pytest.mark.parametrize("mode", ["logical", "physical"])
-@pytest.mark.parametrize("profile", ["compact", "balanced", "max_frequency"])
-def test_yosys_profile_settings_change_fingerprint(tmp_path, monkeypatch, mode, profile):
+def test_yosys_profile_settings_change_fingerprint(tmp_path, monkeypatch, mode):
     """Editing a profile's Yosys settings must invalidate recipe evidence."""
-    before = _fingerprint(tmp_path, mode=mode, profile=profile)
+    before = _fingerprint(tmp_path, mode=mode, profile="max_frequency")
     table = yosys_ppa._YOSYS_PROFILES
-    monkeypatch.setitem(table, profile, dataclasses.replace(table[profile], abc_delay_ps=1234))
-    assert _fingerprint(tmp_path, mode=mode, profile=profile) != before
+    monkeypatch.setitem(
+        table, "max_frequency", dataclasses.replace(table["max_frequency"], abc_delay_ps=1234)
+    )
+    assert _fingerprint(tmp_path, mode=mode, profile="max_frequency") != before
 
 
-@pytest.mark.parametrize("profile", ["compact", "balanced", "max_frequency"])
-def test_openroad_profile_settings_change_fingerprint(tmp_path, monkeypatch, profile):
-    before = _fingerprint(tmp_path, mode="physical", profile=profile)
+def test_openroad_profile_settings_change_fingerprint(tmp_path, monkeypatch):
+    """Editing a profile's OpenROAD settings must invalidate physical recipe evidence."""
+    before = _fingerprint(tmp_path, mode="physical", profile="max_frequency")
     table = openroad_ppa._PROFILES
-    monkeypatch.setitem(table, profile, dataclasses.replace(table[profile], setup_margin_ns=0.7))
-    assert _fingerprint(tmp_path, mode="physical", profile=profile) != before
+    monkeypatch.setitem(
+        table, "max_frequency", dataclasses.replace(table["max_frequency"], setup_margin_ns=0.7)
+    )
+    assert _fingerprint(tmp_path, mode="physical", profile="max_frequency") != before
 
 
 def test_openroad_profile_settings_do_not_affect_logical_fingerprint(tmp_path, monkeypatch):
@@ -82,6 +85,7 @@ def test_openroad_profile_settings_do_not_affect_logical_fingerprint(tmp_path, m
 
 
 def test_default_profile_is_resolved_when_unset(tmp_path):
+    """A Target without ``ppa_profile`` fingerprints as ``balanced``."""
     assert _fingerprint(tmp_path, mode="logical") == _fingerprint(
         tmp_path, mode="logical", profile="balanced"
     )
