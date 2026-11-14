@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,7 +40,7 @@ def vlogparam_specs(parameters: Any) -> dict[str, ParameterValue]:
     """Retain declared types, using the resolved CAPI2 value contract."""
     values = {}
     for name, spec in (parameters or {}).items():
-        if not isinstance(spec, dict) or spec.get("paramtype") != "vlogparam":
+        if not isinstance(spec, Mapping) or spec.get("paramtype") != "vlogparam":
             continue
         default = spec.get("default")
         if default is None:

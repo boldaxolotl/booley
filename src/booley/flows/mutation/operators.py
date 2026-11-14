@@ -5,13 +5,14 @@ Beyond swapping, deleting and moving, the operators also cover (ADR 0088, amende
 operand and flips shift signedness and sign casts; ``constant`` changes enum members and
 module-level initializers; ``bit-select`` swaps neighbouring concatenation operands.
 
-pyslang is imported only inside :func:`find_sites`: the host install does not need it.
+pyslang is imported only inside the site finders: the host install does not need it.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
@@ -334,6 +335,14 @@ class _EnumRef:
     package: str  # the declaring package's name, or "" when the enum is not in a package
 
 
+_Place = tuple[Any, int]  # a location in a file: (buffer, byte offset)
+
+
+def _place(location: Any) -> _Place:
+    """The (buffer, offset) of a pyslang source location."""
+    return location.buffer, int(location.offset)
+
+
 @dataclass(frozen=True)
 class _Facts:
     """What the semantic model says about one file, keyed by file offsets."""
@@ -345,6 +354,9 @@ class _Facts:
     modular_add_sub: frozenset[int]
     # Narrowest width each unsized literal's value is used at, by its first character.
     literal_widths: Mapping[int, int]
+    # First-token offsets of the units a Target elaboration instantiates (and its packages):
+    # their facts are the Target's.  Empty for a file elaborated alone.
+    elaborated_units: frozenset[int] = frozenset()
 
 
 # Syntax nodes that open a scope: an enum declared directly in a package is reachable as
@@ -367,12 +379,14 @@ def _declaring_package(symbol: Any) -> str:
     return ""
 
 
-def _add_subtract_fact(pyslang: Any, expression: Any, buffer: Any) -> tuple[int, bool] | None:
-    """The (operator offset, swap is equal) of a `+` or `-` written in ``buffer``, else None."""
+def _add_subtract_fact(
+    pyslang: Any, expression: Any, buffers: AbstractSet[Any]
+) -> tuple[_Place, bool] | None:
+    """The (operator place, swap is equal) of a `+` or `-` written in ``buffers``, else None."""
     token = getattr(expression.syntax, "operatorToken", None)
-    if token is None or token.location.buffer != buffer:
+    if token is None or token.location.buffer not in buffers:
         return None  # a compound assignment, or an operator from a macro or include
-    return int(token.location.offset), _swap_is_equal(pyslang, expression)
+    return _place(token.location), _swap_is_equal(pyslang, expression)
 
 
 def _swap_is_equal(pyslang: Any, expression: Any) -> bool:
@@ -394,23 +408,25 @@ def _swap_is_equal(pyslang: Any, expression: Any) -> bool:
     return (2 * int(value)) % (1 << width) == 0
 
 
-def _signed_shift_offset(expression: Any, buffer: Any) -> int | None:
-    """The operator offset of a right shift in ``buffer`` whose left operand is signed, else None."""
+def _signed_shift_place(expression: Any, buffers: AbstractSet[Any]) -> _Place | None:
+    """The operator place of a right shift in ``buffers`` whose left operand is signed, else None."""
     # A compound assignment (`x >>>= 1`) is a shift without an operator expression.
     token = getattr(expression.syntax, "operatorToken", None)
-    if token is None or token.location.buffer != buffer or not expression.left.type.isSigned:
+    if token is None or token.location.buffer not in buffers or not expression.left.type.isSigned:
         return None
-    return int(token.location.offset)
+    return _place(token.location)
 
 
-def _note_literal(widths: dict[int, int], expression: Any, width: int, buffer: Any) -> None:
+def _note_literal(
+    widths: dict[_Place, int], expression: Any, width: int, buffers: AbstractSet[Any]
+) -> None:
     """Lower the recorded width of ``expression`` to ``width`` if it is an unsized literal."""
     if expression.kind.name != "IntegerLiteral" or not expression.isDeclaredUnsized:
         return
     start = expression.sourceRange.start
-    if start.buffer == buffer:
-        offset = int(start.offset)
-        widths[offset] = min(widths.get(offset, width), width)
+    if start.buffer in buffers:
+        place = _place(start)
+        widths[place] = min(widths.get(place, width), width)
 
 
 def _strip_propagated(expression: Any) -> Any:
@@ -421,7 +437,7 @@ def _strip_propagated(expression: Any) -> Any:
 
 
 def _cap_sized_by_context(
-    inner: Any, widths: dict[int, int], width: int, buffer: Any, pyslang: Any
+    inner: Any, widths: dict[_Place, int], width: int, buffers: AbstractSet[Any], pyslang: Any
 ) -> Any:
     """Visitor step: cap the unsized literals ``width`` narrows, not self-determined ones.
 
@@ -431,7 +447,7 @@ def _cap_sized_by_context(
     operand and a function argument have their own width: they are left to the visit that
     reaches them.
     """
-    _note_literal(widths, inner, width, buffer)
+    _note_literal(widths, inner, width, buffers)
     kind = inner.kind.name
     descend: tuple[Any, ...]  # the children the context sizes
     if kind == "BinaryOp":
@@ -450,12 +466,14 @@ def _cap_sized_by_context(
     else:
         return None  # a conversion, assignment pattern, or leaf: visit everything below
     for child in descend:
-        child.visit(lambda node: _cap_sized_by_context(node, widths, width, buffer, pyslang))
+        child.visit(lambda node: _cap_sized_by_context(node, widths, width, buffers, pyslang))
     return pyslang.ast.VisitAction.Skip
 
 
-def _literal_widths(pyslang: Any, root: Any, buffer: Any) -> dict[int, int]:
-    """The narrowest width each unsized literal in ``buffer`` is used at, by file offset.
+def _literal_widths(
+    pyslang: Any, root: Any, buffers: AbstractSet[Any], *, skip_instances: bool
+) -> dict[_Place, int]:
+    """The narrowest width each unsized literal in ``buffers`` is used at, by place.
 
     An unsized literal elaborates as a 32-bit ``int`` and widens its context, so the
     expression's own width says nothing.  The narrowest width on the way from the literal
@@ -464,29 +482,147 @@ def _literal_widths(pyslang: Any, root: Any, buffer: Any) -> dict[int, int]:
     and, for a context-determined binary operator, the width of the other operand.  A literal that is not elaborated (a
     macro, or a connection to a module defined in another file) has no entry.
     """
-    widths: dict[int, int] = {}
+    widths: dict[_Place, int] = {}
 
     def narrow(width: int) -> Callable[[Any], Any]:
-        return lambda inner: _cap_sized_by_context(inner, widths, width, buffer, pyslang)
+        return lambda inner: _cap_sized_by_context(inner, widths, width, buffers, pyslang)
 
-    def record(expression: Any) -> None:
+    def record(expression: Any) -> Any:
         kind = expression.kind.name
+        if skip_instances and kind == "Instance":
+            return pyslang.ast.VisitAction.Skip  # a child's widths are its own elaboration's
         if kind == "IntegerLiteral":
-            _note_literal(widths, expression, int(expression.type.bitWidth), buffer)
+            _note_literal(widths, expression, int(expression.type.bitWidth), buffers)
         elif kind == "Conversion" and expression.type.bitWidth < expression.operand.type.bitWidth:
             expression.operand.visit(narrow(int(expression.type.bitWidth)))
         elif kind == "BinaryOp" and expression.op.name in _CONTEXT_OPERATORS:
             left = _strip_propagated(expression.left)
             right = _strip_propagated(expression.right)
-            _note_literal(widths, left, int(right.type.bitWidth), buffer)
-            _note_literal(widths, right, int(left.type.bitWidth), buffer)
+            _note_literal(widths, left, int(right.type.bitWidth), buffers)
+            _note_literal(widths, right, int(left.type.bitWidth), buffers)
+        return None
 
     root.visit(record)
     return widths
 
 
-def _semantic_facts(pyslang: Any, tree: Any, buffer: Any) -> _Facts:
-    """Elaborate ``tree`` (the one the sites come from) and record what syntax cannot tell.
+class _FactCollector:
+    """Visitor that gathers the semantic facts of every file in ``buffers`` in one pass."""
+
+    def __init__(
+        self,
+        pyslang: Any,
+        buffers: AbstractSet[Any],
+        *,
+        track_units: bool,
+        manager: Any = None,
+    ) -> None:
+        self._pyslang = pyslang
+        self._buffers = buffers
+        self._track_units = track_units
+        self._manager = manager  # resolves a macro's first token to where it is used
+        self._skip_instances = False
+        self.ranges: dict[_Place, tuple[int, int]] = {}
+        self.signed_shifts: set[_Place] = set()
+        self.enums: dict[tuple[Any, int, int], _EnumRef] = {}
+        self.modular: dict[_Place, bool] = {}  # operator place -> equal in every instance so far
+        self.widths: dict[_Place, int] = {}
+        self.units: set[_Place] = set()  # first tokens of the units the elaboration instantiates
+        self.unused: set[str] = set()  # modules of the files that no instance elaborates
+
+    def collect(self, node: Any, *, skip_instances: bool = False) -> None:
+        """Gather the facts below ``node``.
+
+        ``skip_instances`` is for the body of a top module elaborated only to learn its own
+        facts: its child instances are left out, and it does not count as instantiated.
+        """
+        self._skip_instances = skip_instances
+        node.visit(self.record)
+        widths = _literal_widths(self._pyslang, node, self._buffers, skip_instances=skip_instances)
+        for place, width in widths.items():
+            self.widths[place] = min(self.widths.get(place, width), width)
+
+    def record(self, node: Any) -> Any:
+        """Visitor step: note what ``node`` (a symbol or an expression) tells."""
+        kind = node.kind.name
+        if kind == "BinaryOp" and node.op.name in _SHIFT_OPERATORS:
+            if (place := _signed_shift_place(node, self._buffers)) is not None:
+                self.signed_shifts.add(place)
+        elif kind == "BinaryOp" and node.op.name in _ADD_SUBTRACT_OPERATORS:
+            if (fact := _add_subtract_fact(self._pyslang, node, self._buffers)) is not None:
+                self.modular[fact[0]] = self.modular.get(fact[0], True) and fact[1]
+        elif kind == "NamedValue" and node.symbol.kind.name == "EnumValue":
+            self._record_enum(node)
+        elif kind == "ElementSelect":
+            self._record_select(node, node.selector)
+        elif kind == "RangeSelect" and node.selectionKind.name == "Simple":
+            self._record_select(node, node.left)
+        elif kind == "Instance" and self._skip_instances:
+            return self._pyslang.ast.VisitAction.Skip
+        elif self._track_units and kind == "InstanceBody" and not self._skip_instances:
+            self._record_unit(node)
+        elif self._track_units and kind == "Package":
+            self.units.add(self._unit_place(node.syntax.getFirstToken().location))
+        return None
+
+    def _unit_place(self, location: Any) -> _Place:
+        """The place of a unit's first token; for a macro's, where the macro is used."""
+        return _place(self._manager.getFullyExpandedLoc(location))
+
+    def _record_unit(self, body: Any) -> None:
+        """Note the unit ``body`` is an instance of: elaborated, or a module nothing instantiates."""
+        definition = body.definition
+        place = self._unit_place(definition.syntax.getFirstToken().location)
+        if not body.isUninstantiated:
+            self.units.add(place)
+        elif place[0] in self._buffers and definition.definitionKind.name == "Module":
+            self.unused.add(str(definition.name))
+
+    def _record_enum(self, expression: Any) -> None:
+        span = expression.sourceRange
+        if span.start.buffer in self._buffers:
+            symbol = expression.symbol
+            members = tuple(str(member.name) for member in symbol.type.canonicalType)
+            key = (span.start.buffer, int(span.start.offset), int(span.end.offset))
+            self.enums[key] = _EnumRef(
+                members, members.index(str(symbol.name)), _declaring_package(symbol)
+            )
+
+    def _record_select(self, expression: Any, first: Any) -> None:
+        location = first.sourceRange.start
+        limits = (
+            _select_limits(self._pyslang, expression) if location.buffer in self._buffers else None
+        )
+        if limits is not None:
+            self.ranges[_place(location)] = limits
+
+    def facts(self) -> dict[Any, _Facts]:
+        """The facts of each file in the buffers gathered for."""
+        equal_swaps = {place for place, equal in self.modular.items() if equal}
+
+        def offsets(places: AbstractSet[_Place], buffer: Any) -> frozenset[int]:
+            return frozenset(offset for owner, offset in places if owner == buffer)
+
+        def by_offset(values: Mapping[_Place, Any], buffer: Any) -> dict[int, Any]:
+            return {place[1]: value for place, value in values.items() if place[0] == buffer}
+
+        return {
+            buffer: _Facts(
+                by_offset(self.ranges, buffer),
+                offsets(self.signed_shifts, buffer),
+                {key[1:]: ref for key, ref in self.enums.items() if key[0] == buffer},
+                offsets(equal_swaps, buffer),
+                by_offset(self.widths, buffer),
+                offsets(self.units, buffer),
+            )
+            for buffer in self._buffers
+        }
+
+
+def _semantic_facts(
+    pyslang: Any, compilation: Any, buffers: AbstractSet[Any]
+) -> dict[Any, _Facts]:
+    """Elaborate ``compilation`` and record, per file in ``buffers``, what syntax cannot tell.
 
     These are the declared bounds of each literal select, the right shifts whose left
     operand is signed in at least one instance (elsewhere ``>>`` and ``>>>`` are the same),
@@ -494,46 +630,37 @@ def _semantic_facts(pyslang: Any, tree: Any, buffer: Any) -> _Facts:
     expression's width in every instance, and the narrowest width each unsized literal's
     value is used at.  Diagnostics, such as modules or packages defined in other files, are
     ignored: an enum that cannot be resolved has no member symbol, so it yields no
-    reference.  Only locations in ``buffer`` are kept.
+    reference.  Only locations in ``buffers`` are kept.
     """
-    compilation = pyslang.ast.Compilation()
-    compilation.addSyntaxTree(tree)
-    ranges: dict[int, tuple[int, int]] = {}
-    signed_shifts: set[int] = set()
-    enums: dict[tuple[int, int], _EnumRef] = {}
-    modular: dict[int, bool] = {}  # operator offset -> equal in every instance seen so far
+    collector = _FactCollector(pyslang, buffers, track_units=False)
+    collector.collect(compilation.getRoot())
+    return collector.facts()
 
-    def record(expression: Any) -> None:
-        kind = expression.kind.name
-        if kind == "BinaryOp" and expression.op.name in _SHIFT_OPERATORS:
-            if (offset := _signed_shift_offset(expression, buffer)) is not None:
-                signed_shifts.add(offset)
-        elif kind == "BinaryOp" and expression.op.name in _ADD_SUBTRACT_OPERATORS:
-            if (fact := _add_subtract_fact(pyslang, expression, buffer)) is not None:
-                modular[fact[0]] = modular.get(fact[0], True) and fact[1]
-        elif kind == "NamedValue" and expression.symbol.kind.name == "EnumValue":
-            span = expression.sourceRange
-            if span.start.buffer == buffer:
-                symbol = expression.symbol
-                members = tuple(str(member.name) for member in symbol.type.canonicalType)
-                enums[int(span.start.offset), int(span.end.offset)] = _EnumRef(
-                    members, members.index(str(symbol.name)), _declaring_package(symbol)
-                )
-        elif kind == "ElementSelect":
-            record_select(expression, expression.selector)
-        elif kind == "RangeSelect" and expression.selectionKind.name == "Simple":
-            record_select(expression, expression.left)
 
-    def record_select(expression: Any, first: Any) -> None:
-        location = first.sourceRange.start
-        limits = _select_limits(pyslang, expression) if location.buffer == buffer else None
-        if limits is not None:
-            ranges[int(location.offset)] = limits
+def _sanitized(source: bytes) -> str:
+    """The text of ``source`` with each invalid byte one '?': byte offsets stay the file's."""
+    return _INVALID_BYTE.sub("?", source.decode("utf-8", "surrogateescape"))
 
-    compilation.getRoot().visit(record)
-    equal_swaps = frozenset(offset for offset, equal in modular.items() if equal)
-    literal_widths = _literal_widths(pyslang, compilation.getRoot(), buffer)
-    return _Facts(ranges, frozenset(signed_shifts), enums, equal_swaps, literal_widths)
+
+def _import_pyslang() -> Any:
+    """The pyslang module; :class:`MissingPyslangError` if it is not installed."""
+    try:
+        import pyslang
+    except ModuleNotFoundError as exc:
+        if exc.name != "pyslang":
+            raise
+        raise MissingPyslangError(PYSLANG_MISSING_MESSAGE) from exc
+    return pyslang
+
+
+def _preprocessor_options(
+    pyslang: Any, defines: Mapping[str, str], include_dirs: Sequence[Path]
+) -> Any:
+    """The preprocessor options of the Target's build: its defines and include directories."""
+    options = pyslang.parsing.PreprocessorOptions()
+    options.predefines = [f"{name}={value}" for name, value in defines.items()]
+    options.additionalIncludePaths = [str(include_dir) for include_dir in include_dirs]
+    return options
 
 
 def find_sites(
@@ -542,30 +669,192 @@ def find_sites(
     """Parse one file and return every operator site in its design code.
 
     ``rel`` names the file in diagnostics; ``path`` lets relative ``include``
-    directives resolve beside it.  Raises :class:`SourceParseError` on a parser
-    error and :class:`MissingPyslangError` without pyslang.
+    directives resolve beside it.  The file is elaborated alone, with default parameters.
+    Raises :class:`SourceParseError` on a parser error and :class:`MissingPyslangError`
+    without pyslang.
     """
-    try:
-        import pyslang
-    except ModuleNotFoundError as exc:
-        if exc.name != "pyslang":
-            raise
-        raise MissingPyslangError(PYSLANG_MISSING_MESSAGE) from exc
-    # One invalid byte becomes one '?': byte offsets in the parse stay the file's.
-    text = _INVALID_BYTE.sub("?", source.decode("utf-8", "surrogateescape"))
-    options = pyslang.parsing.PreprocessorOptions()
-    options.predefines = [f"{name}={value}" for name, value in defines.items()]
-    options.additionalIncludePaths = [str(include_dir) for include_dir in include_dirs]
+    pyslang = _import_pyslang()
+    options = _preprocessor_options(pyslang, defines, include_dirs)
     manager = pyslang.SourceManager()
-    buffer = manager.assignText(str(path), text)
+    buffer = manager.assignText(str(path), _sanitized(source))
     tree = pyslang.syntax.SyntaxTree.fromBuffer(buffer, manager, pyslang.Bag([options]))
     if errors := [d for d in tree.diagnostics if d.isError()]:
         rendered = pyslang.DiagnosticEngine.reportAll(manager, errors)
         raise SourceParseError([(rel, rendered.replace(str(path), rel).rstrip())])
-    facts = _semantic_facts(pyslang, tree, buffer.id)
-    collector = _SiteCollector(pyslang.syntax.SyntaxNode, tree.root, buffer.id, source, facts)
+    compilation = pyslang.ast.Compilation()
+    compilation.addSyntaxTree(tree)
+    facts = _semantic_facts(pyslang, compilation, {buffer.id})[buffer.id]
+    members = list(tree.root.members)
+    collector = _SiteCollector(
+        pyslang.syntax.SyntaxNode, tree.root, members, buffer.id, source, facts
+    )
     tree.root.visit(collector.visit)
     return collector.sites
+
+
+@dataclass(frozen=True)
+class DesignFile:
+    """One HDL file of the Target; ``source`` is None for a context file, read from ``path``."""
+
+    display: str  # the name diagnostics use: relative to the root, or absolute outside it
+    path: Path
+    source: bytes | None
+    is_scope: bool  # scope files get sites; the others are compiled as context only
+
+
+@dataclass(frozen=True)
+class DesignSites:
+    """The sites of each scope file (by display name), and why Target elaboration was not used."""
+
+    sites: Mapping[str, list[Site]]
+    fallback: str | None
+
+
+def find_design_sites(
+    files: Sequence[DesignFile],
+    top: Sequence[str],
+    parameters: Sequence[str],
+    defines: Mapping[str, str],
+    include_dirs: Sequence[Path],
+    *,
+    design_defines: Mapping[str, str],
+    design_include_dirs: Sequence[Path],
+) -> DesignSites:
+    """Return the sites of every scope file, from one elaboration of all ``files``.
+
+    ``files`` are the Target's HDL sources in Target order, parsed as one compilation
+    unit (a macro one file defines reaches the next, as in the build); ``top`` names the
+    top modules and ``parameters`` the ``NAME=VALUE`` overrides.  The whole design is
+    preprocessed with ``design_defines`` and ``design_include_dirs`` (the build's, in its
+    order); a scope file elaborated alone, in the fallback, with ``defines`` and
+    ``include_dirs``.  When the design cannot
+    be elaborated as a whole (a context file that cannot be read, a parser error, or any
+    error diagnostic) every scope file goes through :func:`find_sites`, and ``fallback``
+    says why.  Raises :class:`SourceParseError` for a scope file that does not parse alone.
+    """
+    pyslang = _import_pyslang()
+    elaboration = _elaborate_design(
+        pyslang, files, top, parameters, design_defines, design_include_dirs
+    )
+    if not isinstance(elaboration, str):
+        return DesignSites(_design_file_sites(pyslang, elaboration), None)
+    sites: dict[str, list[Site]] = {}
+    failures: list[tuple[str, str]] = []
+    for file in files:
+        if not file.is_scope:
+            continue
+        try:
+            sites[file.display] = find_sites(
+                file.source or b"", file.display, file.path, defines, include_dirs
+            )
+        except SourceParseError as exc:
+            failures.extend(exc.failures)
+    if failures:
+        raise SourceParseError(failures)
+    return DesignSites(sites, elaboration)
+
+
+@dataclass(frozen=True)
+class _Elaboration:
+    """A design elaborated as a whole: the shared tree, its buffers and the facts per buffer."""
+
+    tree: Any
+    scope: Mapping[str, tuple[Any, bytes]]  # display name -> (buffer, source) of a scope file
+    manager: Any
+    facts: Mapping[Any, _Facts]
+
+
+def _elaborate_design(
+    pyslang: Any,
+    files: Sequence[DesignFile],
+    top: Sequence[str],
+    parameters: Sequence[str],
+    defines: Mapping[str, str],
+    include_dirs: Sequence[Path],
+) -> _Elaboration | str:
+    """Elaborate ``files`` as one compilation unit; the reason it cannot be, as a string."""
+    manager = pyslang.SourceManager()
+    buffers: list[Any] = []
+    names: dict[Any, str] = {}  # buffer -> display name
+    scope: dict[str, tuple[Any, bytes]] = {}
+    for file in files:
+        try:
+            source = file.path.read_bytes() if file.source is None else file.source
+        except OSError as exc:
+            return f"cannot read {file.display}: {exc.strerror or exc}"
+        buffer = manager.assignText(str(file.path), _sanitized(source))
+        buffers.append(buffer)
+        names[buffer.id] = file.display
+        if file.is_scope:
+            scope[file.display] = (buffer, source)
+    options = _preprocessor_options(pyslang, defines, include_dirs)
+    tree = pyslang.syntax.SyntaxTree.fromBuffers(buffers, manager, pyslang.Bag([options]))
+    compilation = _compile(pyslang, tree, options, top, parameters)
+    errors = [d for d in compilation.getAllDiagnostics() if d.isError()]
+    errors = errors or [d for d in tree.diagnostics if d.isError()]
+    if errors:
+        return _first_error(pyslang, manager, names, errors)
+    scope_buffers = frozenset(buffer.id for buffer, _ in scope.values())
+    collector = _FactCollector(pyslang, scope_buffers, track_units=True, manager=manager)
+    collector.collect(compilation.getRoot())
+    if collector.unused:
+        # The Target never instantiates these, so slang does not bind their bodies: take
+        # their facts as a file elaborated alone gives them, each with default parameters.
+        alone = _compile(pyslang, tree, options, [*top, *sorted(collector.unused)], [])
+        for instance in alone.getRoot().topInstances:
+            if str(instance.body.definition.name) in collector.unused:
+                collector.collect(instance.body, skip_instances=True)
+    return _Elaboration(tree, scope, manager, collector.facts())
+
+
+def _compile(
+    pyslang: Any, tree: Any, options: Any, top: Sequence[str], parameters: Sequence[str]
+) -> Any:
+    """A compilation of ``tree`` with the given top modules (slang infers them if none)."""
+    compilation_options = pyslang.ast.CompilationOptions()
+    compilation_options.topModules = set(top)
+    compilation_options.paramOverrides = list(parameters)
+    compilation = pyslang.ast.Compilation(pyslang.Bag([options, compilation_options]))
+    compilation.addSyntaxTree(tree)
+    return compilation
+
+
+def _first_error(
+    pyslang: Any, manager: Any, names: Mapping[Any, str], errors: Sequence[Any]
+) -> str:
+    """The first of ``errors`` on one line, with its file's display name, plus how many more."""
+    first = errors[0]
+    location = first.location
+    name = names.get(location.buffer) or str(manager.getFileName(location))
+    message = pyslang.DiagnosticEngine(manager).formatMessage(first)
+    more = f" and {len(errors) - 1} more" if len(errors) > 1 else ""
+    return f"{name}:{manager.getLineNumber(location)}: {message}{more}"
+
+
+def _design_file_sites(pyslang: Any, elaboration: _Elaboration) -> dict[str, list[Site]]:
+    """The sites of each scope file, walking only the unit that file holds in the shared tree."""
+    root = elaboration.tree.root
+    manager = elaboration.manager
+    members: dict[Any, list[Any]] = {}  # buffer -> the root members that start in that file
+    for member in root.members:
+        where = manager.getFullyExpandedLoc(member.getFirstToken().location)
+        members.setdefault(where.buffer, []).append(member)
+    result: dict[str, list[Site]] = {}
+    for display, (buffer, source) in elaboration.scope.items():
+        own = members.get(buffer.id, [])
+        collector = _SiteCollector(
+            pyslang.syntax.SyntaxNode,
+            root,
+            own,
+            buffer.id,
+            source,
+            elaboration.facts[buffer.id],
+            manager,
+        )
+        for member in own:
+            member.visit(collector.visit)
+        result[display] = collector.sites
+    return result
 
 
 class _SiteCollector:
@@ -575,18 +864,20 @@ class _SiteCollector:
         self,
         node_type: type,
         root: Any,
+        members: Sequence[Any],
         buffer: Any,
         source: bytes,
         facts: _Facts,
+        manager: Any = None,
     ) -> None:
         self.sites: list[Site] = []
         self._facts = facts
         self._node_type = node_type
         self._buffer = buffer  # tokens of other buffers (macros, includes) are not in this file
         self._source = source
-        # Number each top-level unit by kind, name and ordinal; the list keeps the
-        # wrappers alive so id() stays unique.
-        self._members = list(root.members)
+        # Number each top-level unit of this file by kind, name and ordinal; the list keeps
+        # the wrappers alive so id() stays unique.
+        self._members = list(members)
         self._units: dict[int, tuple[str, int]] = {}
         seen: dict[tuple[str, str], int] = {}
         for member in self._members:
@@ -596,11 +887,23 @@ class _SiteCollector:
             first = member.getFirstToken()
             # A unit that starts inside a macro has no file offset: use 0.
             self._units[id(member)] = (f"{kind}:{name}#{ordinal}", self._offset(first) or 0)
-        # Units another file may elaborate with other parameters or through an interface.
-        self._overridable = {id(member) for member in self._members if self._can_differ(member)}
+        # Units another file may elaborate with other parameters or through an interface, unless
+        # the Target's own elaboration (which has them all) instantiates them.
+        self._overridable = {
+            id(member)
+            for member in self._members
+            if self._can_differ(member)
+            and self._first_offset(member, manager) not in facts.elaborated_units
+        }
         # An instance of a checker or program parses like a module instance but is not design.
         self._checkers: set[str] = set()
         root.visit(self._note_checker)
+
+    def _first_offset(self, member: Any, manager: Any) -> int:
+        """The offset of ``member``'s first token; for a macro's, where the macro is used."""
+        if manager is None:
+            return self._units[id(member)][1]
+        return int(manager.getFullyExpandedLoc(member.getFirstToken().location).offset)
 
     def _can_differ(self, member: Any) -> bool:
         """True if ``member`` declares a parameter or has an interface or named-type port."""
@@ -751,8 +1054,10 @@ class _SiteCollector:
     def _is_equal_swap(self, node: Any, kind: str, token: Any) -> bool:
         """True for a ``+``/``-`` swap that changes nothing, in every way the unit may elaborate.
 
-        The file is elaborated alone, so a unit with a parameter or an interface port may be
-        elaborated at another width elsewhere: its swaps are kept.
+        The facts cover every instance the elaboration has.  A file elaborated alone has none
+        but the defaults, so a unit with a parameter or an interface port may be elaborated at
+        another width elsewhere: its swaps are kept.  So are those of a unit the Target's
+        elaboration does not instantiate.
         """
         if kind not in ("AddExpression", "SubtractExpression"):
             return False
