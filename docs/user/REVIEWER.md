@@ -60,13 +60,14 @@ messages as its brief. Problems that were already there before the change are
 listed separately as pre-existing, and never count as open. A change that
 touches none of the files in scope finishes without a review.
 
-### Firmware
+### What a review can read
 
-Outside Goal Mode, the Reviewer also reads your firmware as context: the
-non-HDL files under the project's `fw/` directory. HDL files under `fw/`
-(backups like `rom.sv.orig` included) still count as RTL. The Reviewer never
-reports findings in firmware; such a finding is shown as out of scope and
-never counts as open. A review of firmware files alone is refused.
+Each Reviewer has the other side's files hidden, as your `.core` filesets
+declare them, and any HDL file (`.v`, `.vh`, `.sv`, `.svh`, backups like
+`rom.sv.orig` included) that no fileset declares, unless the review's scope
+names that file. Every other project file, firmware included, is readable
+context. A finding in a file outside the review's files is kept in the review
+evidence and never counts as open.
 
 ## In Goal Mode
 

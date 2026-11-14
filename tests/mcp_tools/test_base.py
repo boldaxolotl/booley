@@ -411,9 +411,9 @@ class TestClassifyFiles:
         cats = _classify_files(["tb/my_tb.sv"])
         assert cats == {CATEGORY_TB}
 
-    def test_fw_files_are_rtl(self):
+    def test_fw_files_are_not_special(self):
         cats = _classify_files(["fw/boot.s"])
-        assert cats == {CATEGORY_RTL}
+        assert cats == set()
 
     def test_mixed(self):
         cats = _classify_files(["rtl/a.sv", "tb/b.sv"])
