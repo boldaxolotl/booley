@@ -145,9 +145,9 @@ booley feedback report
 booley feedback list
 ```
 
-The local unredacted report is `SETUP-REPORT.md` for a setup-origin log or
-`FEEDBACK-REPORT.md` otherwise. Run `report` without `--user-report-path` and use
-its printed report path: the parent directory is the feedback storage directory
+The local unredacted report is `FEEDBACK-REPORT.md` in the feedback storage
+directory (`.booley/FEEDBACK-REPORT.md` in a Project). Run `report` without
+`--user-report-path` and use the printed `FEEDBACK-REPORT.md` path: the parent directory is the feedback storage directory
 for this interaction. Keep reports and reproducer scratch work outside the RTL
 repository's tracked tree.
 

@@ -7,7 +7,7 @@ skill's job shrinks to calling these subcommands and talking to the user.
     booley feedback add --title … --severity … --repro …   # something broke
     booley feedback friction --title … --expected …        # nothing broke, but…
     booley feedback say "…" --sentiment wish               # what you think of Booley
-    booley feedback win --title …                          # a check that passed
+    booley feedback win --origin setup --title …           # a check that passed
     booley feedback triage F-3 --bucket booley             # whose problem is it
     booley feedback list                                   # what's logged so far
     booley feedback report                                 # render the user report
@@ -74,15 +74,24 @@ def add_subparser(sub: argparse._SubParsersAction) -> None:
     _add_reporting_subcommands(fb)
 
 
-def _add_shared_arguments(parser: argparse.ArgumentParser) -> None:
-    """Arguments every log-writing subcommand takes."""
+def _add_origin_argument(parser: argparse.ArgumentParser, *, default: str | None = None) -> None:
+    """``--origin``: required unless the subcommand has a natural default.
+
+    The origin picks the local report an entry lands in, so a writer that forgets
+    it is told rather than guessed for.
+    """
     parser.add_argument(
         "--origin",
         choices=ORIGINS,
-        default="setup",
-        help="Which flow logged this: a setup run, an ad-hoc bug report (`bug`), "
+        default=default,
+        required=default is None,
+        help="Which flow logged this: a setup run (`setup`, what the booley-setup "
+        "skill passes), an ad-hoc bug report (`bug`, what /booley-feedback passes), "
         "or an unprompted impression (`impression`)",
     )
+
+
+def _add_attach_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--attach",
         action="append",
@@ -125,7 +134,8 @@ def _add_friction_subcommand(fb: argparse._SubParsersAction) -> None:
         default="booley",
         help="Defaults to booley: friction is by definition about Booley's own surface",
     )
-    _add_shared_arguments(friction_p)
+    _add_origin_argument(friction_p)
+    _add_attach_argument(friction_p)
 
 
 def _add_say_subcommand(fb: argparse._SubParsersAction) -> None:
@@ -160,11 +170,11 @@ def _add_say_subcommand(fb: argparse._SubParsersAction) -> None:
     )
     say_p.add_argument("--notes", default="", help="The longer version, if you have one")
     say_p.add_argument("--step", default="", help="What you were doing at the time")
-    _add_shared_arguments(say_p)
-    # An impression is its own provenance: it came from neither a setup run nor a
-    # bug report, and mislabelling it as either would skew what the reports say
-    # the batch is.
-    say_p.set_defaults(origin="impression")
+    # An impression is its own provenance by default: it came from neither a
+    # setup run nor a bug report, and mislabelling it as either would skew what
+    # the reports say the batch is.
+    _add_origin_argument(say_p, default="impression")
+    _add_attach_argument(say_p)
 
 
 def _add_logging_subcommands(fb: argparse._SubParsersAction) -> None:
@@ -190,7 +200,8 @@ def _add_logging_subcommands(fb: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Set once you have confirmed the claim against Booley's own source",
     )
-    _add_shared_arguments(add_p)
+    _add_origin_argument(add_p)
+    _add_attach_argument(add_p)
 
     _add_friction_subcommand(fb)
     _add_say_subcommand(fb)
@@ -199,6 +210,7 @@ def _add_logging_subcommands(fb: argparse._SubParsersAction) -> None:
     win_p.add_argument("--title", required=True)
     win_p.add_argument("--exposed-by", default="")
     win_p.add_argument("--step", default="")
+    _add_origin_argument(win_p)
 
     triage_p = fb.add_parser("triage", help="Re-bucket or re-grade a logged finding")
     triage_p.add_argument("finding_id", metavar="F-N", help="Finding to update")
@@ -238,13 +250,14 @@ def _add_reporting_subcommands(fb: argparse._SubParsersAction) -> None:
     list_p.add_argument("--bucket", choices=BUCKETS, help="Only this bucket")
     list_p.add_argument("--kind", choices=KINDS, help="Only findings, or only wins")
 
-    report_p = fb.add_parser("report", help="Render the one local user report")
+    report_p = fb.add_parser("report", help="Render the local user reports")
     report_p.add_argument("--project-name", default="", help="Name for the report title")
     report_p.add_argument(
         "--user-report-path",
         metavar="PATH",
-        help="Write the user report here instead of the default feedback storage directory "
-        "(maintainer dogfood runs only — a real project keeps it out of the tracked tree)",
+        help="Write only SETUP-REPORT.md, here, instead of the default feedback storage "
+        "directory (maintainer dogfood runs only — a real project keeps it out of "
+        "the tracked tree)",
     )
 
     export_p = fb.add_parser("export", help="Explicitly write redacted Markdown for sharing")
@@ -390,7 +403,13 @@ def _cmd_filed(args: argparse.Namespace, booley_dir: Path) -> int:
 
 def _cmd_win(args: argparse.Namespace, booley_dir: Path) -> int:
     finding = append(
-        Finding(title=args.title, kind="win", exposed_by=args.exposed_by, step=args.step),
+        Finding(
+            title=args.title,
+            kind="win",
+            exposed_by=args.exposed_by,
+            step=args.step,
+            origin=args.origin,
+        ),
         booley_dir,
     )
     print(f"{finding.id} logged (win)")
@@ -458,14 +477,17 @@ def _cmd_report(
     env: render.Environment | None = None,
 ) -> int:
     override = Path(args.user_report_path).resolve() if args.user_report_path else None
-    user_path, report = render.write_user_report(
+    written, report = render.write_user_reports(
         project_root,
         booley_dir,
         project_name=args.project_name,
-        user_report_path=override,
+        setup_report_path=override,
         env=env,
     )
-    print(f"Wrote {user_path}")
+    for entry in written:
+        print(f"{'Wrote' if entry.changed else 'Unchanged'} {entry.path}")
+    if not written:
+        print(f"No entries to report in {booley_dir / 'findings.jsonl'}; no report written.")
     if not report.has_content:
         print("No Booley-attributable findings with enough evidence to export.")
     else:
