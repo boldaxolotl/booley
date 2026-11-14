@@ -67,7 +67,8 @@ def build_fpga_edam(
     default (it is in the :mod:`edam` whitelist and unambiguously safe). The XDC
     constraint files (``recipe.xdc_files``, per-target and sourced from the Target's
     ``file_type: xdc`` fileset since ADR 0031) are each carried as a typed
-    constraint file (``file_type: xdc``, inferred from suffix), ``recipe.defines`` become
+    constraint file (``file_type: xdc``), the sources keep their declared types,
+    ``recipe.defines`` become
     ``vlogdefine`` parameters, ``recipe.vlogparams`` remain top-level parameter
     overrides, and ``recipe.top`` is the EDAM ``toplevel``. *name* names the
     EDAM project; the caller owns that choice.
@@ -90,7 +91,7 @@ def build_fpga_edam(
         name=name,
         flow="vivado",
         eda_tool="vivado",
-        files=[*recipe.sv_files, *recipe.v_files, *recipe.xdc_files],
+        files=[*recipe.sources, *(edam_layer.EdamFile(path, "xdc") for path in recipe.xdc_files)],
         include_dirs=list(recipe.include_dirs),
         toplevel=recipe.top,
         defines=list(recipe.defines),
