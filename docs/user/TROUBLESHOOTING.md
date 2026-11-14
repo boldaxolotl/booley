@@ -282,7 +282,7 @@ line:
 - `the main checkout is in use by another booley chat`: another `booley chat`
   whose agent runs in the main checkout is still running, perhaps in another
   terminal or stopped with Ctrl-Z. That includes one started with
-  `--new-worktree` or under `[chat] worktree = "always"` while the main checkout
+  `--new-worktree` or under `[worktree] chat = "always"` while the main checkout
   was free: it holds the main checkout until its session ends, although its
   agent works in a worktree. A `booley chat` that `auto` placed in a worktree
   holds nothing. A `booley chat` that
@@ -582,6 +582,13 @@ fails, and Doctor reports the Target as failing to resolve. Copy the dependency
 into your repository as a `.core`, or drop it. Often the testbench already
 guards its use with an `ifdef` or defines the module itself; check before you
 remove it.
+
+### Every Flow refuses `standalone_frontend`
+
+`booley.toml` sets `[flows.<name>].standalone_frontend`, and every Flow stops
+with a message that names it. Delete the key. Nothing replaces it:
+`--mode elab-only-standalone` elaborates each module with its Target's own
+simulator (see [Elaboration checks](FLOW-SIM.md#elaboration-checks)).
 
 ### Every simulation test comes back INCONCLUSIVE
 
