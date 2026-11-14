@@ -40,6 +40,7 @@ from booley.runtime.job_slots import (
     SlotStore,
 )
 from booley.runtime.pid import DEAD, REUSED, RUNNING, ProcessIdentity, ProcessObservation
+from tests.sharing_error_support import hold_unlinks
 
 
 class FakeWorld:
@@ -868,6 +869,27 @@ class TestGhostReaping:
         b = make_store(root, world)
         tok = b.submit(CLASS_LIGHT, pid=200)
         assert b.refresh(tok).state == HOLDING
+
+    def test_reap_leaves_entry_for_a_later_reap_when_sharing_violation_outlasts_retries(
+        self, root, world, monkeypatch, caplog
+    ):
+        spawn(world, 100)
+        store = make_store(root, world)
+        dead_tok = store.submit(CLASS_LIGHT, pid=100)
+        assert store.refresh(dead_tok).state == HOLDING
+        del world.alive[100]
+        # Deny every attempt of the bounded entry removal, so the retries run out.
+        attempts = hold_unlinks(monkeypatch, {dead_tok.path: job_slots._ENTRY_IO_ATTEMPTS})
+        with caplog.at_level(logging.WARNING, logger="booley.runtime.job_slots"):
+            assert store.reap(CLASS_LIGHT) == []
+
+        assert dead_tok.path.exists()
+        assert [r.getMessage() for r in caplog.records] == [
+            f"Could not remove slot entry after retries: {dead_tok.path.name}"
+        ]
+        assert attempts[dead_tok.path] == job_slots._ENTRY_IO_ATTEMPTS
+        assert store.reap(CLASS_LIGHT) == [dead_tok.path.name]
+        assert not dead_tok.path.exists()
 
     def test_dead_waiter_is_reaped_out_of_the_queue(self, root, world):
         spawn(world, 100)

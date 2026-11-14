@@ -228,6 +228,22 @@ Mutant that is not equivalent in the full design. Every other Mutant keeps its
 ID. The generator version is 4: the same inputs give the same Mutants only for
 the same version.
 
+## Amendments (2026-11-13, #3925)
+
+Recorded while implementing
+[#3925](https://github.com/boldaxolotl/booley/issues/3925).
+
+The `relational` and `arithmetic-logical` operator swaps skip a loop's
+condition (a `for` stop expression, a `while` or `do`-`while` condition) and any
+assignment inside the loop to a variable that condition reads, because a
+swapped stop condition or loop counter can keep the loop from ending. The rule
+is syntactic: a write through a temporary is not traced. The `condition`
+operator still forces a loop condition to `1'b0`. Eleven Mutant IDs recorded at
+generator version 2 are no longer produced (the swaps of five `for` stop
+expressions, two `while` conditions, one `do`-`while` condition, and three
+loop-variable updates in the fixtures); every other Mutant keeps its ID. The
+generator version is 5.
+
 ## Amendments (2026-11-14, #3934)
 
 **Unsized plus one.** The `constant` operator gave an unsized literal only values
@@ -249,9 +265,9 @@ The width is the minimum of:
 So `flag <= 1` on a 1-bit `flag` stays `1 -> 0`, and `a == 255` on an 8-bit `a`
 gains no `256`. A literal in a connection to a module defined in another file is not
 elaborated and keeps the bit-length rule. Only plus-one Mutants are added: every
-Mutant of version 4 keeps its ID and text.
+Mutant of version 5 keeps its ID and text.
 
 Unlike the `+`/`-` swap filter, a unit that another file may elaborate with other
 parameters is trusted here with its default elaboration. An override that narrows
 the width can give a Mutant that repeats another variant there, or one that fails to
-build and counts as `invalid`. The generator version is 5.
+build and counts as `invalid`. The generator version is 6.

@@ -9,6 +9,7 @@ scope_matches_file, is_scope_unknown, commit_scope with mocks).  This file adds:
 
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 import sys
@@ -608,3 +609,24 @@ def test_git_run_keeps_its_result_contract(
     monkeypatch.setenv("PATH", "")
     with pytest.raises(FileNotFoundError):
         git_run(repo, ["status"])
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="a fake `powershell` script cannot shadow powershell.exe"
+)
+def test_windows_git_process_probe_stops_a_hung_tree(tmp_path: Path, monkeypatch) -> None:
+    from booley.runtime.git import _iter_git_process_cmdlines_windows
+
+    with heartbeat_tree(tmp_path) as paths:
+        fake = tmp_path / "bin" / "powershell"
+        fake.parent.mkdir()
+        argv = parent_argv(tmp_path, sys.executable, paths, "live-until-stop")
+        fake.write_text(f"#!/bin/sh\nexec {shlex.join(argv)}\n", encoding="utf-8")
+        fake.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{fake.parent}{os.pathsep}{os.environ['PATH']}")
+        started = time.monotonic()
+
+        assert _iter_git_process_cmdlines_windows() == []
+
+        assert time.monotonic() - started < 38
+        assert wait_until_heartbeat_stops(paths["heartbeat"]), "the descendant was left running"

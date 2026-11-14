@@ -237,8 +237,8 @@ def test_every_published_manifest_is_registered_with_the_goal_run_before_it_runs
     tmp_path, monkeypatch
 ):
     """A campaign that never returns an outcome must already be known to its Goals."""
-    from booley.flows.campaign_results import StartedCampaign
     from booley.flows.sim import flow as flow_module
+    from booley.flows.simulation_record_results import StartedCampaign
 
     class Registry(_GoalAdapter):
         def __init__(self) -> None:

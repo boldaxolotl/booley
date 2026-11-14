@@ -27,7 +27,7 @@ from booley.flows.mutation.operators import (
 
 # Bump whenever the operator table, site rules, anchoring, ID recipe, or selection
 # rule changes: the same inputs give the same Mutants only for the same version.
-GENERATOR_VERSION = "5"
+GENERATOR_VERSION = "6"
 
 _ID_LENGTH = 20  # hex characters of the SHA-256 digest kept in a Mutant ID
 
@@ -69,25 +69,6 @@ class MutantSelection:
     def mutants(self) -> tuple[Mutant, ...]:
         """The selected Mutants: the first ``requested`` candidates."""
         return self.ranked[: self.requested]
-
-    @property
-    def available(self) -> int:
-        """How many candidate Mutants exist."""
-        return len(self.ranked)
-
-    @property
-    def shortfall(self) -> str | None:
-        """A message when fewer candidates exist than were requested, else None."""
-        return shortfall_message(self.available, self.requested)
-
-
-def shortfall_message(available: int, requested: int) -> str | None:
-    """A message when ``available`` Mutants fall short of ``requested``, else None."""
-    if available >= requested:
-        return None
-    return (
-        f"only {available} candidate Mutants exist; returning all of them ({requested} requested)"
-    )
 
 
 def generate_mutants(

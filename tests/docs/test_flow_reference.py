@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from typing import Any, TypeVar
 
 import pytest
-from tests.flows.sim.test_endpoint_campaign_lifecycle import _native_cycle_campaign
+from tests.flows.sim.test_endpoint_record_lifecycle import _native_cycle_campaign
 from tests.target_test_support import make_target_handle
 
 from booley.flows.base import BooleyFlow
@@ -20,10 +20,10 @@ from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintConfigResult, LintFlow, LintWarning
 from booley.flows.mutation.flow import MutationFlow
 from booley.flows.sim.build import BuildOutcome
-from booley.flows.sim.campaign_presentation import _campaign_report_lines
 from booley.flows.sim.coverage_campaign import CoverageRollup
 from booley.flows.sim.elab_only import ElabOnlyTargetResult
 from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.record_presentation import _campaign_report_lines
 from booley.flows.synth.flow import AsicSynthesizeFlow, SynthMetrics
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -346,6 +346,7 @@ def test_synth_help_lists_live_policy_keys():
         "enabled",
         "timeout_ms",
         "expected_latches",
+        "expected_comb_loops",
         "fail_on_timing_violation",
         "timing_report_paths",
     ):
@@ -353,6 +354,19 @@ def test_synth_help_lists_live_policy_keys():
         if key != "enabled":
             assert "synth" in SELECTIVE_FLOW_KNOBS[key]
     assert "timing_report_paths" in (USER_DOCS / "FLOW-SYNTH.md").read_text(encoding="utf-8")
+
+
+def test_structural_allowance_knobs_documented_per_flow() -> None:
+    """Each Flow's user page documents its own allowance keys in ``## Configuration``."""
+    expected = {
+        "FLOW-SYNTH.md": ("expected_latches", "expected_comb_loops"),
+        "FLOW-FPGA.md": ("expected_latches", "expected_comb_loops"),
+    }
+    for page, keys in expected.items():
+        text = (USER_DOCS / page).read_text(encoding="utf-8")
+        configuration = text.split("\n## Configuration", 1)[1].split("\n## ", 1)[0]
+        for key in keys:
+            assert key in configuration, (page, key)
 
 
 def test_target_omission_rule_matches_usage_and_reference() -> None:

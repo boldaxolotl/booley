@@ -11,17 +11,6 @@ from typing import TYPE_CHECKING, cast
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.booley_layout import BOOLEY_DIR_NAME
 from booley.core.boundary import BoundaryError, require_dict
-from booley.flows.sim.campaign import (
-    SimulationProjection,
-    decode_simulation_projection,
-    resolve_artifact_reference,
-)
-from booley.flows.sim.campaign.codec import (
-    MANIFEST_MAX_BYTES,
-    UnsupportedSimulationCampaignFormatError,
-    raise_if_retired_schema,
-)
-from booley.flows.sim.campaign_reports import report_link_ancestor, target_report_directory
 from booley.flows.sim.coverage_campaign import CoverageCampaign
 from booley.flows.sim.coverage_campaign_store import (
     LoadedCoverageCampaign,
@@ -35,12 +24,23 @@ from booley.flows.sim.coverage_reference import (
     authenticate_coverage_campaign_owner,
     resolve_coverage_campaign_reference,
 )
+from booley.flows.sim.record import (
+    SimulationProjection,
+    decode_simulation_projection,
+    resolve_artifact_reference,
+)
+from booley.flows.sim.record.codec import (
+    MANIFEST_MAX_BYTES,
+    UnsupportedSimulationCampaignFormatError,
+    raise_if_retired_schema,
+)
 from booley.flows.sim.record_layout import RECORD_DIRECTORY
+from booley.flows.sim.record_reports import report_link_ancestor, target_report_directory
 from booley.runtime.booley_dir import crossed_booley_dir_entry
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 if TYPE_CHECKING:
-    from booley.flows.sim.campaign import CampaignWorkItemEvidence
+    from booley.flows.sim.record import CampaignWorkItemEvidence
 
 
 class CoverageAnalysisError(ValueError):

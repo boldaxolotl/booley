@@ -17,6 +17,7 @@ from typing import Any
 
 from booley.audit.diagnostic_results import DiagnosticReport, Severity
 from booley.runtime.booley_dir import reset_cache
+from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
 
 _ALL_TOOLS = ["bwave", "lint", "mutation", "reviewer", "sim", "synth"]
 _ADVISORY_ID = "interactive.mcp-tool-advisory-missing"
@@ -50,6 +51,7 @@ class _Probe:
         self.root = tmp_path / "rtl"
         self.root.mkdir(parents=True, exist_ok=True)
         self._answer = answer
+        route_bounded_capture_through_subprocess_run(monkeypatch, _owner())
         monkeypatch.setattr(_owner().subprocess, "run", self._run)
 
     def _run(self, cmd, **kwargs):
@@ -243,8 +245,6 @@ def test_probe_command_mounts_project_and_relocated_booley_dir(monkeypatch, tmp_
     assert kwargs["timeout"] == 60
     assert kwargs["env"]["BOOLEY_DIR"] == str(host_booley_dir)
     assert kwargs["env"]["BOOLEY_MCP_MODE"] == "interactive"
-    assert kwargs["capture_output"] is True
-    assert kwargs["text"] is True
 
     default = _Probe(monkeypatch, tmp_path / "plain", _completed(json.dumps(_payload())))
     reset_cache()

@@ -18,12 +18,6 @@ from typing import Any
 
 import pytest
 
-from booley.flows.sim.campaign.codec import canonical_json_bytes
-from booley.flows.sim.campaign_retention import (
-    CampaignRetentionError,
-    prune_invocation,
-    prune_native_payload,
-)
 from booley.flows.sim.coverage_analysis_input import CoverageAnalysisError, read_coverage_campaign
 from booley.flows.sim.coverage_campaign import DurableTargetIdentity
 from booley.flows.sim.coverage_campaign_store import (
@@ -38,20 +32,26 @@ from booley.flows.sim.coverage_reference import (
     decode_coverage_campaign_reference,
     resolve_coverage_campaign_reference,
 )
+from booley.flows.sim.record.codec import canonical_json_bytes
+from booley.flows.sim.record_retention import (
+    CampaignRetentionError,
+    prune_invocation,
+    prune_native_payload,
+)
 from booley.harness import booley as cli
 from booley.specialists.coverage_analysis import CoverageAnalysisError as AnalystError
 from booley.specialists.coverage_analysis import CoverageAnalyzer
-from tests.flows.sim.campaign_test_support import CoverageInvocation, coverage_invocation
 from tests.flows.sim.coverage_campaign_test_support import decode_document
-from tests.flows.sim.test_campaign_unsupported_formats import (
+from tests.flows.sim.simulation_record_test_support import CoverageInvocation, coverage_invocation
+from tests.flows.sim.test_coverage_campaign import _valid_document
+from tests.flows.sim.test_coverage_campaign_store import TARGET, _evaluated_campaign
+from tests.flows.sim.test_simulation_record_unsupported_formats import (
     _assert_refused,
     _assert_unsupported_type,
 )
-from tests.flows.sim.test_campaign_unsupported_formats import (
+from tests.flows.sim.test_simulation_record_unsupported_formats import (
     reports as _reports_fixture,
 )
-from tests.flows.sim.test_coverage_campaign import _valid_document
-from tests.flows.sim.test_coverage_campaign_store import TARGET, _evaluated_campaign
 from tests.harness.test_coverage_cli import _booley
 
 # The report-root fixture of the Part 1 tests, collected here under the same name.
@@ -473,9 +473,7 @@ def _evidence_kind_refusal(run: CoverageInvocation, monkeypatch: pytest.MonkeyPa
             }
         ),
     )
-    monkeypatch.setattr(
-        "booley.flows.sim.campaign.authenticate_work_item", lambda *_a, **_k: forged
-    )
+    monkeypatch.setattr("booley.flows.sim.record.authenticate_work_item", lambda *_a, **_k: forged)
     with pytest.raises(CoverageCampaignReferenceError, match="disagrees with reference") as kind:
         authenticate_coverage_campaign_owner(resolved)
     return str(kind.value)

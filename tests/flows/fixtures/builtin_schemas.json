@@ -322,7 +322,7 @@
       },
       "count": {
         "type": "string",
-        "description": "Number of Mutants: integer or 'auto' (default: 10)"
+        "description": "Number of Mutants: a positive integer or 'auto' (default: 10)"
       },
       "min_detected": {
         "type": "integer",

@@ -12,6 +12,10 @@ from booley.audit import host_environment
 _ROOT = Path(__file__).resolve().parents[2]
 
 
+def _unused_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+    raise AssertionError("this runtime audit must not probe the daemon")
+
+
 def test_python_version_audit_preserves_pass_and_actionable_failure() -> None:
     healthy = host_environment.audit_python_version((3, 14), (3, 11))
     stale = host_environment.audit_python_version((3, 10), (3, 11))
@@ -30,6 +34,7 @@ def test_container_runtime_skips_inside_session_without_discovery() -> None:
         "docker",
         inside_session_runtime=True,
         which=lambda name: discovered.append(name) or "/usr/bin/docker",
+        run=_unused_run,
     )
 
     assert audit.executable is None
@@ -42,6 +47,7 @@ def test_container_runtime_reports_missing_and_running_states() -> None:
         "docker",
         inside_session_runtime=False,
         which=lambda _name: None,
+        run=_unused_run,
     )
     running = host_environment.probe_container_runtime(
         "docker",

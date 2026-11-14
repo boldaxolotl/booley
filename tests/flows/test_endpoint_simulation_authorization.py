@@ -350,7 +350,7 @@ def test_campaign_authorization_materializes_project_topologies(tmp_path, monkey
 def test_prepare_resets_report_only_metadata_before_early_gate(tmp_path, monkeypatch):
     from booley.flows.endpoint_session import prepare_execution
     from booley.flows.sim.request import SimRequest
-    from tests.flows.sim.test_endpoint_campaign_lifecycle import _public_cycle_campaign
+    from tests.flows.sim.test_endpoint_record_lifecycle import _public_cycle_campaign
 
     flow = SimulateFlow()
     campaign = _public_cycle_campaign(tmp_path, monkeypatch)

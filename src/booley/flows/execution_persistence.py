@@ -10,9 +10,9 @@ from typing import Any, Protocol, runtime_checkable
 from booley.criteria.presentation import CriterionPresentation, criterion_presentation
 from booley.criteria.state import CriterionChange, DevelopmentState, StatePersistence
 from booley.evidence.acceptance import ResolvedFlowAcceptance
-from booley.flows.campaign_results import StartedCampaign
 from booley.flows.frozen_test_runs import FrozenTestRuns
 from booley.flows.request import FlowRequest
+from booley.flows.simulation_record_results import StartedCampaign
 from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.runtime.endpoint_execution import EndpointOutcome
 

@@ -15,9 +15,9 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
 from booley.flows.sim.config import resolve_run_cwd
 from booley.flows.sim.execution import SimulationExecution, SimulationTargetOutcome
+from booley.flows.sim.record.codec import SimulationCampaignIntegrityError
 from booley.flows.sim.runtime_inputs import materialize_campaign_runtime_inputs
 from booley.targets.domain import TargetHandle
 

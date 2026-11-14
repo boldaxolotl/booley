@@ -6,7 +6,6 @@ import email.utils
 import getpass
 import os
 import shutil
-import subprocess
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -184,7 +183,7 @@ def probe_container_runtime(
     *,
     inside_session_runtime: bool,
     which: Callable[[str], str | None] = shutil.which,
-    run: CommandRunner = subprocess.run,
+    run: CommandRunner,
 ) -> ContainerRuntimeAudit:
     """Discover and probe the host container runtime."""
     if inside_session_runtime:

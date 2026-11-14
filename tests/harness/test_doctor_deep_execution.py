@@ -16,8 +16,16 @@ from booley.harness import doctor
 from booley.harness import doctor_deep as deep
 from booley.runtime import health, runtime_context
 from tests.booley_checkouts_support import LAYOUTS, linked_worktree
-from tests.flows.sim.test_verilator_build_reuse_campaign import flow_project
+from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
+from tests.flows.sim.test_verilator_build_reuse_record import flow_project
 from tests.harness.test_doctor import _write_project
+
+
+@pytest.fixture(autouse=True)
+def _doctor_probes_use_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """This module fakes the doctor probes through ``subprocess.run``."""
+    route_bounded_capture_through_subprocess_run(monkeypatch, doctor)
+
 
 __all__ = ["flow_project"]
 

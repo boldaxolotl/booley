@@ -181,5 +181,8 @@ def _unlicensed_relay_pending(project_root: Path) -> bool:
 def _remove_unlicensed_relay(project_root: Path) -> bool:
     if not _unlicensed_relay_pending(project_root):
         return False
-    remove_relay(resources_for_session(str(project_root.resolve())))
+    remove_relay(
+        resources_for_session(str(project_root.resolve())),
+        runner=interactive_docker.relay_docker,
+    )
     return True

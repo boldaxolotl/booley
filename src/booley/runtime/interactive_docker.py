@@ -69,6 +69,16 @@ def _run_docker(
     return run_captured_bounded([executable, *args], timeout=timeout)
 
 
+def relay_docker(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    """Bounded ``docker <args>`` in the shape the FlexNet relay's ``Runner`` expects.
+
+    ``booley.eda`` cannot import this package, so runtime composers inject this
+    function as the relay's runner. It shares :func:`_run_docker`, so a hung Docker
+    CLI is killed as a whole process tree within *timeout* plus the bounded margin.
+    """
+    return _run_docker(args, timeout=timeout)
+
+
 # ---------------------------------------------------------------------------
 # Existence / status probes
 # ---------------------------------------------------------------------------

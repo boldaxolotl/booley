@@ -21,7 +21,9 @@ def test_unlicensed_reseed_removes_exact_orphan_topology(tmp_path: Path) -> None
     ):
         assert interactive_init._remove_unlicensed_relay(tmp_path) is True
 
-    remove.assert_called_once_with(resources)
+    remove.assert_called_once_with(
+        resources, runner=interactive_init.interactive_docker.relay_docker
+    )
 
 
 def test_unlicensed_reseed_is_silent_without_orphan(tmp_path: Path) -> None:

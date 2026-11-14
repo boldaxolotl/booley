@@ -21,8 +21,8 @@ from booley.flows.invocation import BudgetPlan, resolve_timeout_ms
 from booley.flows.lint.flow import LintFlow
 from booley.flows.plan import FlowPlan, WorkUnitPlan
 from booley.flows.request import FlowRequest
-from booley.flows.sim.campaign_invocation import SimulationCampaignInvocation
 from booley.flows.sim.flow import PreparedSimulationEndpoint, SimulateFlow
+from booley.flows.sim.record_invocation import SimulationCampaignInvocation
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.flows.synth.request import SynthRequest
 from booley.mcp.base import EXIT_ERROR

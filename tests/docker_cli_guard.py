@@ -18,6 +18,11 @@ from types import ModuleType
 
 import pytest
 
+from booley.flows import runtime_reality
+from booley.flows.fpga import vivado_startup
+from booley.harness import bootstrap, doctor, sandbox, sandbox_stop_warning
+from booley.harness.setup import docker_image, readiness
+from booley.mcp import server_inspection
 from booley.runtime import (
     booley_dir_migration,
     docker_capacity,
@@ -88,6 +93,15 @@ def route_docker_helper_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) 
 #: Host-side modules, besides the session runtime and admission, whose timed Docker CLI
 #: commands go through ``platform_paths.run_captured_bounded``.
 HOST_DOCKER_MODULES = (
+    bootstrap,
+    doctor,
+    docker_image,
+    readiness,
+    runtime_reality,
+    sandbox,
+    sandbox_stop_warning,
+    server_inspection,
+    vivado_startup,
     booley_dir_migration,
     docker_capacity,
     host_base_acquisition,
@@ -99,26 +113,39 @@ HOST_DOCKER_MODULES = (
 
 
 def _routed_bounded_capture(
-    argv: list[str], *, timeout: float, cwd=None, env=None, errors: str = "replace"
+    argv: list[str],
+    *,
+    timeout: float,
+    cwd=None,
+    env=None,
+    errors: str = "replace",
+    input: bytes | None = None,  # noqa: A002 - mirrors run_captured_bounded
+    stdin=None,
+    stdout=None,
+    text: bool = True,
 ):
     """Stand in for ``platform_paths.run_captured_bounded`` using ``subprocess.run``.
 
     Production starts the child with ``Popen`` so it can kill the whole process tree on
     timeout; tests that fake ``subprocess.run`` cannot see that.  This looks
-    ``subprocess.run`` up at call time and takes the same ``timeout``, ``cwd``, ``env``
-    and ``errors`` (decoding mode).
+    ``subprocess.run`` up at call time and takes the same ``timeout``, ``cwd``, ``env``,
+    ``errors`` (decoding mode), ``input``, ``stdin``, ``stdout`` (a redirect leaves
+    ``result.stdout`` ``None``) and ``text`` (``False`` returns bytes).
     """
+    codec = {"encoding": "utf-8", "errors": errors} if text else {}
     # Unbounded child on purpose: the tests' subprocess.run fakes must intercept this call.
     return subprocess.run(
         argv,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors=errors,
+        input=input,
+        stdin=stdin,
+        stdout=subprocess.PIPE if stdout is None else stdout,
+        stderr=subprocess.PIPE,
+        text=text,
         timeout=timeout,
         cwd=cwd,
         env=env,
         check=False,
+        **codec,
     )
 
 

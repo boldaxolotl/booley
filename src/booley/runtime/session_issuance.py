@@ -45,6 +45,7 @@ from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
 from booley.eda.provisioning import session_requirements as eda_requirements
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET
+from booley.runtime import interactive_docker
 from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV, ISSUED_COMPILER_CACHE_ROOT
 from booley.runtime.devcontainer import (
     BOOLEY_DIR_TARGET,
@@ -479,7 +480,7 @@ def _issuance_requirements(
         vivado_enabled=flow_enabled("fpga", project_root),
         prior_eda=prior_eda,
     ) as leased:
-        yield eda_requirements.with_relay_identity(leased)
+        yield eda_requirements.with_relay_identity(leased, runner=interactive_docker.relay_docker)
 
 
 def _seal_with_requirements(
@@ -706,6 +707,7 @@ def issue_prepared(
             _revalidate_prepared(project, prepared, leased, current_builder)
             requirements = eda_requirements.prepare_runtime_dependencies(
                 leased,
+                runner=interactive_docker.relay_docker,
                 force_relay=force_dependencies,
             )
             return _persist_prepared(

@@ -24,6 +24,7 @@ from booley.eda.provisioning.licensing.flexnet_docker import (
     remove_relay,
     validate_relay,
 )
+from booley.runtime.interactive_docker import relay_docker
 
 
 def _docker(*args: str) -> subprocess.CompletedProcess[str]:
@@ -86,7 +87,7 @@ def test_production_relay_lifecycle_is_healthy_labeled_and_hardened() -> None:
     labels = ("booley.project-id=e2e-project", "booley.spec-digest=e2e-spec")
     profile = RelayProfile("10.20.30.40", "license-server-01", 32100, 32101)
     session = "booley-flexnet-session-e2e"
-    resources = provision_relay(profile, identity, issuance_labels=labels)
+    resources = provision_relay(profile, identity, issuance_labels=labels, runner=relay_docker)
     try:
         created = _docker(
             "container",
@@ -100,8 +101,8 @@ def test_production_relay_lifecycle_is_healthy_labeled_and_hardened() -> None:
             "60",
         )
         assert created.returncode == 0, created.stderr
-        connect_session(resources, session)
-        validate_relay(resources, session, profile, issuance_labels=labels)
+        connect_session(resources, session, runner=relay_docker)
+        validate_relay(resources, session, profile, issuance_labels=labels, runner=relay_docker)
 
         inspected = _docker("container", "inspect", resources.relay_container)
         assert inspected.returncode == 0, inspected.stderr
@@ -120,7 +121,7 @@ def test_production_relay_lifecycle_is_healthy_labeled_and_hardened() -> None:
         assert network["Options"] == {"com.docker.network.bridge.gateway_mode_ipv4": "isolated"}
     finally:
         _docker("container", "rm", "-f", session)
-        remove_relay(resources)
+        remove_relay(resources, runner=relay_docker)
 
 
 @pytest.mark.slow()
@@ -174,7 +175,9 @@ def test_production_relay_forwards_both_ports_without_direct_or_unrelated_access
         _wait_for_tcp_listeners(upstream, (first, second))
 
         profile = RelayProfile(ip, "license-server-01", first, second)
-        created_resources = provision_relay(profile, identity, issuance_labels=labels)
+        created_resources = provision_relay(
+            profile, identity, issuance_labels=labels, runner=relay_docker
+        )
         _assert_ok(
             _docker("network", "connect", upstream_network, created_resources.relay_container)
         )
@@ -284,7 +287,7 @@ def test_production_relay_forwards_both_ports_without_direct_or_unrelated_access
         _docker("rm", "-f", session, unrelated)
         if created_resources is not None:
             _docker("network", "disconnect", upstream_network, created_resources.relay_container)
-            remove_relay(created_resources)
+            remove_relay(created_resources, runner=relay_docker)
         _docker("rm", "-f", upstream)
         _docker("network", "rm", upstream_network)
 
@@ -302,7 +305,7 @@ def test_idle_reaper_removes_licensed_vscode_container_and_owned_topology() -> N
     )
     profile = RelayProfile("10.20.30.40", "license-server-01", 32120, 32121)
     session = "booley-vscode-licensed-reaper-e2e"
-    resources = provision_relay(profile, identity, issuance_labels=labels)
+    resources = provision_relay(profile, identity, issuance_labels=labels, runner=relay_docker)
     try:
         created = _docker(
             "container",
@@ -322,7 +325,7 @@ def test_idle_reaper_removes_licensed_vscode_container_and_owned_topology() -> N
             "60",
         )
         _assert_ok(created)
-        connect_session(resources, session)
+        connect_session(resources, session, runner=relay_docker)
         container_id = created.stdout.strip()
 
         def isolated_run(args: list[str], *, timeout: int = 30):

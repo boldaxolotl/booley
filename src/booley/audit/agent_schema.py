@@ -18,6 +18,7 @@ from booley.config.agent import (
     BackendConfigError,
     parse_agent_section,
     settings_from_data,
+    unknown_models_key_message,
 )
 from booley.config.gateway import GatewayConfigError
 from booley.core.boundary import as_dict
@@ -71,9 +72,7 @@ def _models_table_problem(models: dict[str, Any] | None) -> ConfigTableAudit | N
         valid = ", ".join(sorted(SPECIALISTS))
         keys = ", ".join(f"[models] {key}" for key in unknown)
         return failure(
-            # Same text as the loader's error (parse_models_section): Doctor and loading agree.
-            f"booley.toml [models] has an unknown key {unknown[0]!r}; valid keys are {valid}; "
-            f"delete [models] {unknown[0]} or rename it to a valid key.",
+            unknown_models_key_message(unknown[0]),
             f"delete {keys}; valid keys are {valid}",
         )
     return None
