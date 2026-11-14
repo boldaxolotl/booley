@@ -118,8 +118,11 @@ provider rather than memory, so a count (`max_light`) caps them. Running Jobs
 are never interrupted. The defaults:
 
 ```toml
+[sandbox]
+memory = "32g"           # the Sandbox's memory limit; the Memory Budget comes from it
+
 [jobs]
-# memory_budget = "24g"  # memory all running Jobs may reserve together
+# memory_budget = "24g"  # a fixed Memory Budget in place of the computed one
 max_light = 3            # Specialist Jobs running at once
 queue_max = 8            # Jobs that may wait per kind; beyond this a request is refused
 
@@ -127,12 +130,18 @@ queue_max = 8            # Jobs that may wait per kind; beyond this a request is
 # vivado = 1             # licensed seats Booley may use at once; required for Vivado
 ```
 
-Unset, the Memory Budget is the Sandbox's container memory limit, or the
-installed memory when there is no limit, minus a reserve for the agents. Set
-`[sandbox].memory` so the limit is the one you chose. `booley doctor` warns
-while it is unset. Booley sizes each Job's reservation from its recorded peak
-memory ([resource history](#job-resource-history)); a Job with no history
-runs alone. A simulation campaign runs independent tests
+The Memory Budget is the Sandbox's memory limit, `[sandbox].memory`, minus a
+reserve: the memory the running agents, the MCP server, and the Dashboard use,
+plus 2 GB. Without `[sandbox].memory` the Sandbox has no limit, so Booley starts
+from the machine's installed memory, which the Sandbox shares with everything
+else; `booley doctor` warns while it is unset. `[jobs].memory_budget` replaces
+the computed budget with a fixed size, and Booley subtracts no reserve from it.
+
+Booley reserves the largest peak memory it recorded for a Job
+([resource history](#job-resource-history)), plus 25%. With no record of its
+own, the Job borrows the largest peak recorded for the same Target and step,
+then for that step anywhere in the Project. Only a step Booley has never
+measured makes the Job run alone. A simulation campaign runs independent tests
 in parallel while their reservations fit.
 
 If the kernel kills a Job for running out of memory, Booley runs it again once,
