@@ -1444,6 +1444,7 @@ def test_interrupted_and_pruned_invocations_are_never_reused(tmp_path, monkeypat
 
 
 def test_full_pruning_refuses_resume_dependent_unless_explicitly_included(tmp_path, monkeypatch):
+    from booley.flows.sim import record_retention
     from booley.flows.sim.record.artifact_reference import (
         resolve_report_artifact_reference,
     )
@@ -1459,6 +1460,14 @@ def test_full_pruning_refuses_resume_dependent_unless_explicitly_included(tmp_pa
         coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
     ).execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports))
     assert result.exit_code == 0
+
+    # The resumed invocation is a dependent of the origin through its receipt.
+    (dependent,) = record_retention._dependent_invocations(reports / "sim/1")
+    assert dependent.path == (reports / "sim/2").absolute()
+    assert dependent.receipt is not None
+    assert dependent.receipt.authoritative
+    assert dependent.receipt.dependent_invocation == dependent.path
+    assert dependent.authenticated is True
 
     with pytest.raises(CampaignRetentionError, match=re.escape(str(reports / "sim/2"))):
         prune_invocation(reports, 1)

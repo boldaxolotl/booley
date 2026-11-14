@@ -41,7 +41,6 @@ def publish_mutation(layout, argument):
         detail={
             "detected": 8,
             "not_detected": 2,
-            "invalid": 0,
             "min_detected": 10,
             "total_requested": 10,
             "total_valid": 10,
