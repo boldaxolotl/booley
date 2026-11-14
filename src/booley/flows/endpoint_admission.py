@@ -463,7 +463,7 @@ def _acquire_memory_reservation(
     seats = required_seats(endpoint._licensed_tools(), config)
     store = job_slots.SlotStore(root, parse_caps(config))
     requests = None if prepared is None else prepared.invocation.job_requests()
-    plan = measure_memory_claim(project, config, requests)
+    plan = measure_memory_claim(project, requests)
     if requeued:
         _refuse_waiting_behind_own_claim(endpoint, store)
         plan = plan.alone()
@@ -491,7 +491,7 @@ def _acquire_memory_reservation(
         # The caller never sees the token, so it cannot release it.
         store.release(token)
         raise
-    return _Claim(store, token, plan, threads, MemorySizing(project, config))
+    return _Claim(store, token, plan, threads, MemorySizing(project))
 
 
 def _refuse_waiting_behind_own_claim(endpoint: EndpointState, store: job_slots.SlotStore) -> None:

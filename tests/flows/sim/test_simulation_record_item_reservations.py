@@ -71,6 +71,7 @@ from tests.flows.sim.simulation_record_test_support import (
 )
 from tests.flows.sim.test_build_parallelism import _inspection
 from tests.flows.test_endpoint_admission import _selection_prepared
+from tests.memory_budget_support import pin_budget
 from tests.oom_priority_support import FakeProc
 
 NAMES = ("alpha", "beta", "gamma")
@@ -268,7 +269,7 @@ def _scenario(
     project, state = _parallel_environment(tmp_path, "beta", 0)
     state.barrier = threading.Barrier(1)  # one item at a time: nothing waits for a peer
     booley_dir = project / ".booley"
-    (booley_dir / "booley.toml").write_text('[jobs]\nmemory_budget = "1000m"\n', encoding="utf-8")
+    pin_budget(monkeypatch, 1000)
     # The container's cores, as the CPU budget reads them (affinity bounded by the cgroup quota).
     monkeypatch.setattr("booley.runtime.cpu_budget._affinity_cpu_count", lambda: cores)
     monkeypatch.setattr("booley.runtime.cpu_budget._cgroup_cpu_count", lambda _read_text: None)

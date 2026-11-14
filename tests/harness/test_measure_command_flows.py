@@ -15,7 +15,7 @@ import sys
 import pytest
 
 from booley.harness import booley as cli
-from booley.harness.standalone_job import standalone_jobs_dir
+from booley.harness.standalone_job import standalone_jobs_dir, standalone_log_root
 from booley.measurement import metrics_file
 from booley.measurement.run_key import resolve_measurement_key
 from booley.measurement.run_store import MeasurementStore
@@ -208,3 +208,26 @@ def test_a_retired_key_in_the_commit_does_not_stop_its_measurement(
     assert measure(monkeypatch, world, entry="main") == 2
     assert "max_heavy" in capsys.readouterr().err
     assert len(stored_documents(world)) == 1  # nothing new was stored
+
+
+@linux_only
+def test_a_target_run_measures_one_target_and_keeps_its_reports_with_the_job(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world = metrics_project(
+        make_world,
+        "[metrics_ok.checkout_stub]\nmarker_max = 10\n[metrics_b.checkout_stub]\nmarker_max = 10\n",
+    )
+
+    assert measure(monkeypatch, world, "--target", "metrics_b") == 0
+
+    assert started_targets(world) == ["metrics_b"]
+    assert not (world.main / "measurements").exists()
+    assert store_of(world).measured(head_key(world)) is None
+    (record,) = measure_records(world)
+    job_dir = standalone_log_root(world.main) / record.run_id
+    (document_path,) = (job_dir / "measurements").glob(f"*/{record.run_id}.json")
+    document = json.loads(document_path.read_text(encoding="utf-8"))
+    assert [table["identity"].split("#")[1] for table in document["tables"]] == ["metrics_b"]
+    (report,) = [r for r in document["reports"] if r["name"] == "report.json"]
+    assert (document_path.parent / report["path"]).is_file()

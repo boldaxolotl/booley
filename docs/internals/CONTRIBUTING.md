@@ -425,6 +425,9 @@ the reason and that the named outside assertion exists.
 Follow [DOCS_PRINCIPLES.md](DOCS_PRINCIPLES.md) when you write, edit, or
 review a doc.
 
+A PR that changes docs gets the label `docs-premerge` or `docs-postreview`;
+[doc-change-classes.md](agents/doc-change-classes.md) says what each means.
+
 The Developer Agent in the Sandbox can't read this repository, so a fixed set
 of docs ships inside the package and appears at `/booley-docs/` in the
 Sandbox: `SHIPPED_DOCS` in `src/booley/runtime/packaged_docs.py`, all from

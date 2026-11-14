@@ -608,11 +608,12 @@ def memory_runtime(
     runtime: Path,
     monkeypatch: pytest.MonkeyPatch,
     inert_oom_proc: FakeProc,  # noqa: F811  (keeps the worker's own OOM priority out of reach)
+    pin_memory_budget: Callable[[int], None],
 ) -> Path:
-    """The runtime with a real slots root and a 1,000 MiB Memory Budget."""
+    """The runtime with a real slots root and a pinned 1,000 MiB Memory Budget."""
     booley_dir = runtime / ".booley"
     booley_dir.mkdir()
-    (booley_dir / "booley.toml").write_text('[jobs]\nmemory_budget = "1000m"\n', encoding="utf-8")
+    pin_memory_budget(1000)
     monkeypatch.delenv("BOOLEY_SLOTS_DIR", raising=False)
     monkeypatch.setattr(endpoint_admission, "resolve_common_booley_dir", lambda: booley_dir)
     return booley_dir
@@ -697,19 +698,14 @@ def test_memory_admission_without_a_known_job_or_under_a_parent(
             ]
 
 
-@pytest.mark.parametrize("budget", ("lots", None))
 def test_memory_admission_survives_a_budget_it_cannot_compute(
-    budget: str | None, memory_runtime: Path, monkeypatch: pytest.MonkeyPatch
+    memory_runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A bad ``[jobs].memory_budget`` or unreadable MemTotal serializes the Job; never refuses."""
-    if budget is None:
-        (memory_runtime / "booley.toml").unlink()
-        monkeypatch.setattr(
-            "booley.flows.memory_admission.compute_memory_budget",
-            lambda _config: (_ for _ in ()).throw(OSError("MemTotal unreadable")),
-        )
-    else:
-        (memory_runtime / "booley.toml").write_text(f'[jobs]\nmemory_budget = "{budget}"\n')
+    """An unreadable MemTotal serializes the Job; it never refuses."""
+    monkeypatch.setattr(
+        "booley.flows.memory_admission.compute_memory_budget",
+        lambda: (_ for _ in ()).throw(OSError("MemTotal unreadable")),
+    )
 
     with AdmissionGate(AsicSynthesizeFlow()).enter() as context:
         (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
@@ -1075,11 +1071,9 @@ def _fpga_prepared(work_dir: Path, monkeypatch: pytest.MonkeyPatch, *, enabled: 
 
 
 def _write_jobs(booley_dir: Path, seats: str | None) -> None:
-    """Write ``[jobs]`` with the 1,000 MiB Memory Budget, and *seats* as ``[jobs.seats]`` if given."""
+    """Write ``[jobs]``, with *seats* as ``[jobs.seats]`` if given."""
     seats_table = "" if seats is None else f"\n[jobs.seats]\n{seats}\n"
-    (booley_dir / "booley.toml").write_text(
-        f'[jobs]\nmemory_budget = "1000m"\n{seats_table}', encoding="utf-8"
-    )
+    (booley_dir / "booley.toml").write_text(f"[jobs]\n{seats_table}", encoding="utf-8")
 
 
 def _hold_vivado_seat(booley_dir: Path, cap: int) -> tuple[job_slots.SlotStore, Any]:
