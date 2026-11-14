@@ -18,7 +18,7 @@ options, logs, exit codes), see [Running Flows](FLOW_REFERENCE.md).
    them. Each needs a timing constraints file that defines at least one
    clock. Project Setup normally creates both; to add them yourself, name the
    Target `synth_<subject>` and see [Timing constraints](#timing-constraints)
-   and the [Synthesis Target recipe](TARGETS.md#synthesis-target).
+   and the [Synthesis Target recipe](#synthesis-target).
 2. **Ask the agent**, naming the Target and, to compare, a git revision:
 
     > *"Synthesize `synth_core` and compare area and Fmax with `main`."*
@@ -118,13 +118,51 @@ warning is still checked and can fail the run. A loop within
 `expected_comb_loops` doesn't fail the run, but Yosys still prints its
 warning, so the run ends `WARN` rather than `PASS`.
 
+## Synthesis Target
+
+A synthesis Target selects the RTL plus an SDC timing-constraints fileset. The
+`flow_options` after `arch` are optional and shown with their defaults:
+
+```yaml
+CAPI=2:
+name: acme:ip:core:1.0
+filesets:
+  rtl:
+    files: [rtl/core.sv]
+    file_type: systemVerilogSource
+  timing_constraints:
+    files:
+      - constraints/core.sdc: {file_type: SDC}
+targets:
+  synth_core:
+    flow: generic
+    flow_options:
+      tool: yosys
+      arch: xilinx               # required by Edalize; Booley ignores it
+      synth_mode: physical       # physical (default) | logical
+      ppa_profile: balanced      # compact | balanced (default) | max_frequency
+      flatten: true              # default true
+      frontend: sv2v             # sv2v (default) | slang
+      # slang_options: [--single-unit]   # raw options for the slang frontend
+      # advanced_settings_yosys: {abc_recipe: balanced}   # expert settings nest here
+      # advanced_settings_openroad: {utilization_pct: 50}  # physical mode only
+    filesets: [rtl, timing_constraints]
+    toplevel: core
+```
+
+The table under [Running synthesis](#running-synthesis) explains each option.
+The SDC fileset is described under [Timing constraints](#timing-constraints).
+To keep a large RAM from distorting results, swap in a Memory Timing Surrogate
+with a define and a synthesis-only fileset, not a Target option; see
+[Large memories](#large-memories).
+
 ## Timing constraints
 
 A synthesis Target reads its timing constraints from SDC files in a
 `file_type: SDC` fileset. At least one file must create a clock; Booley adds
 no constraints of its own, so the clock periods and I/O delays you write are
 what the timing numbers mean. To declare the fileset, see the
-[Synthesis Target recipe](TARGETS.md#synthesis-target).
+[Synthesis Target recipe](#synthesis-target).
 
 ```tcl
 # constraints/core.sdc
@@ -343,5 +381,5 @@ still come from the single worst path.
 
 Everything about how the design is built lives on the Target in the `.core`
 file, not in `booley.toml`: see the [Target settings](#running-synthesis) and
-the full [Synthesis Target recipe](TARGETS.md#synthesis-target), with its SDC
+the full [Synthesis Target recipe](#synthesis-target), with its SDC
 fileset.

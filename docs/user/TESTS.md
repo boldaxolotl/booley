@@ -90,7 +90,7 @@ select = "--meminit=ram,{name}"
 <details markdown>
 <summary>With a cocotb testbench</summary>
 
-For a [Cocotb Target](TARGETS.md#cocotb-targets-python-testbenches) the Tests
+For a [Cocotb Target](FLOW-SIM.md#cocotb-targets-python-testbenches) the Tests
 are the names of its cocotb test functions, and Booley selects them itself.
 
 </details>
@@ -142,7 +142,7 @@ Test and Variant of any such conflict.
 <details markdown>
 <summary>With a cocotb testbench</summary>
 
-On a [Cocotb Target](TARGETS.md#cocotb-targets-python-testbenches) a Variant
+On a [Cocotb Target](FLOW-SIM.md#cocotb-targets-python-testbenches) a Variant
 carries environment variables only.
 
 </details>
@@ -190,7 +190,7 @@ it, give its testbench a seed argument and declare the template.
 <details markdown>
 <summary>With a cocotb testbench</summary>
 
-A [Cocotb Target](TARGETS.md#cocotb-targets-python-testbenches) cannot declare
+A [Cocotb Target](FLOW-SIM.md#cocotb-targets-python-testbenches) cannot declare
 `seed`.
 
 </details>

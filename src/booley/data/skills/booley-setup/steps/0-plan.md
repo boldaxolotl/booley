@@ -564,7 +564,7 @@ separate columns (see "How a row resolves"). The standard checklist:
    **Enumerate the full
    Target list here**, not just a name per intent: each Target with its intent,
    toplevel, and test list. The counting rule depends on the TB flavor (row 4);
-   `/booley-docs/TARGETS.md` is authoritative:
+   `/booley-docs/FLOW-SIM.md` (Cocotb Targets) is authoritative:
    - **Classic sentinel SV/UVM TB** — one Target per *intent* (sim / lint /
      asic / fpga). A distinct config (parameter/define set) or a distinct
      toplevel gets its own Target; nothing else does.

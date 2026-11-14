@@ -94,12 +94,12 @@ override it. Untyped files count as `user`. Spell the types exactly as shown:
 | --- | --- |
 | `verilogSource` | Verilog RTL and testbenches. |
 | `systemVerilogSource` | SystemVerilog RTL and testbenches. |
-| `vlt` | Verilator waiver files; see the [Verilator recipe](#verilator-lint-target). |
+| `vlt` | Verilator waiver files; see the [Verilator recipe](FLOW-LINT.md#verilator-lint-target). |
 | `cSource`, `cppSource` | C/C++ sources of a Verilator simulation harness. |
 | `veribleLintRules` | Verible rules file; at most one per Target. |
-| `veribleLintWaiver` | Verible waiver files; see the [Verible recipe](#verible-lint-target). |
-| `SDC` | ASIC timing constraints (uppercase); see the [Synthesis recipe](#synthesis-target). |
-| `xdc` | Vivado constraints; see the [FPGA recipe](#fpga-target). |
+| `veribleLintWaiver` | Verible waiver files; see the [Verible recipe](FLOW-LINT.md#verible-lint-target). |
+| `SDC` | ASIC timing constraints (uppercase); see the [Synthesis recipe](FLOW-SYNTH.md#synthesis-target). |
+| `xdc` | Vivado constraints; see the [FPGA recipe](FLOW-FPGA.md#fpga-target). |
 | `user` | Firmware, vectors, cocotb Python modules; `copyto:` sets where they land. |
 
 - Give headers (`.vh`, `.svh`) the same type as their sources and mark them
@@ -142,160 +142,11 @@ underscores.
 Add a `default:` Target only when another core depends on this one. Booley
 doesn't list it as a Target you can run.
 
-A lint Target needs `flow: lint` and `flow_options.tool` set to `verilator` or
-`verible` (`veriblelint` also works). Other tools don't show up in `booley targets --for lint`.
-For Python testbenches, see [Cocotb Targets](#cocotb-targets-python-testbenches).
-A synth Target sets `flow: generic` and `tool: yosys`, an fpga Target
-`flow: generic` and `tool: vivado`; see the recipes below.
-
-#### Verilator lint Target
-
-To waive Verilator warnings, add a `.vlt` control file with `file_type: vlt`
-and include its fileset in the lint Target. The type must be exactly `vlt`:
-an untyped `.vlt` file, or a guessed type such as `verilatorConfig`, is
-silently ignored. Paths are relative to the `.core` file:
-
-```yaml
-CAPI=2:
-name: acme:ip:top:1.0
-filesets:
-  rtl:
-    files: [rtl/top.sv]
-    file_type: systemVerilogSource
-  lint_config:
-    files:
-      - lint/waivers.vlt: {file_type: vlt}
-targets:
-  lint_structural:
-    flow: lint
-    flow_options:
-      tool: verilator
-      verilator_options: [-Wall]   # optional: more warnings, unrelated to the waiver
-    filesets: [rtl, lint_config]
-    toplevel: top
-```
-
-`lint/waivers.vlt` starts with the control-file directive, then lists what to
-waive:
-
-```text
-`verilator_config
-lint_off -rule WIDTHTRUNC -file "*top.sv"
-```
-
-This waives `WIDTHTRUNC` in files ending in `top.sv` (the pattern also matches
-FuseSoC's build-tree copy); every other warning stays on. Keep patterns
-specific, and narrow further with `-lines` (see Verilator's
-[control-file reference](https://verilator.org/guide/latest/control.html)).
-Add `lint_config` to other Verilator Targets only where the same waiver
-should apply.
-
-#### Verible lint Target
-
-A style Target selects the RTL plus a rules file and, optionally, waivers:
-
-```yaml
-CAPI=2:
-name: acme:ip:top:1.0
-filesets:
-  rtl:
-    files: [rtl/top.sv]
-    file_type: systemVerilogSource
-  lint_config:
-    files:
-      - lint/rules.cfg: {file_type: veribleLintRules}
-      - lint/waivers.txt: {file_type: veribleLintWaiver}
-targets:
-  lint_style:
-    flow: lint
-    flow_options: {tool: verible}
-    filesets: [rtl, lint_config]
-    toplevel: top
-```
-
-Use at most one rules file; waiver files are optional. For what lint reports,
-see [Lint](FLOW-LINT.md).
-
-#### Synthesis Target
-
-A synthesis Target selects the RTL plus an SDC timing-constraints fileset. The
-`flow_options` after `arch` are optional and shown with their defaults:
-
-```yaml
-CAPI=2:
-name: acme:ip:core:1.0
-filesets:
-  rtl:
-    files: [rtl/core.sv]
-    file_type: systemVerilogSource
-  timing_constraints:
-    files:
-      - constraints/core.sdc: {file_type: SDC}
-targets:
-  synth_core:
-    flow: generic
-    flow_options:
-      tool: yosys
-      arch: xilinx               # required by Edalize; Booley ignores it
-      synth_mode: physical       # physical (default) | logical
-      ppa_profile: balanced      # compact | balanced (default) | max_frequency
-      flatten: true              # default true
-      frontend: sv2v             # sv2v (default) | slang
-      # slang_options: [--single-unit]   # raw options for the slang frontend
-      # advanced_settings_yosys: {abc_recipe: balanced}   # expert settings nest here
-      # advanced_settings_openroad: {utilization_pct: 50}  # physical mode only
-    filesets: [rtl, timing_constraints]
-    toplevel: core
-```
-
-- The SDC fileset (`file_type: SDC`, uppercase) must create a clock and is
-  required in physical mode; a `synth_mode: logical` Target needs none. See
-  [Timing constraints](FLOW-SYNTH.md#timing-constraints) and
-  [Fast logical estimates](FLOW-SYNTH.md#fast-logical-estimates).
-- `slang_options` is a non-empty list passed to the `slang` frontend
-  unchanged.
-- Expert `advanced_settings_yosys` and `advanced_settings_openroad` settings
-  are described under
-  [Optimization profiles](FLOW-SYNTH.md#optimization-profiles).
-- To keep a large RAM from distorting results, swap in a Memory Timing
-  Surrogate with a define and a synthesis-only fileset, not a Target option;
-  see [Large memories](FLOW-SYNTH.md#large-memories).
-
-#### FPGA Target
-
-An FPGA Target selects the RTL plus an XDC constraints fileset for one part:
-
-```yaml
-CAPI=2:
-name: acme:soc:top:1.0
-filesets:
-  rtl:
-    files: [rtl/top.sv]
-    file_type: systemVerilogSource
-  fpga_constraints:
-    files:
-      - constraints/top.xdc: {file_type: xdc}
-targets:
-  fpga_soc:
-    flow: generic
-    flow_options:
-      tool: vivado
-      part: xc7a100tcsg324-1     # required
-      ppa_profile: balanced      # compact | balanced (default) | max_frequency
-      out_of_context: false      # default false
-    filesets: [rtl, fpga_constraints]
-    toplevel: top
-```
-
-- The `xdc` fileset is required and is the only constraint source. The XDC
-  must `create_clock`; without one the run ends in `ERROR`
-  ([Reading results](FLOW-FPGA.md#reading-results)).
-- `part` is required. `out_of_context: true` builds a block without I/O
-  buffers ([Out-of-context builds](FLOW-FPGA.md#out-of-context-builds)). For
-  `ppa_profile`, see [Optimization profiles](FLOW-FPGA.md#optimization-profiles).
-- Keep `tool: vivado`; other `flow_options`, such as `synth` or `pnr`, do not
-  change the build. An unprefixed vendored Target still counts as fpga when
-  its tool is `vivado`.
+Each Flow's page shows a complete Target for that Flow and the
+`flow_options` it reads: [Lint Targets](FLOW-LINT.md#lint-targets),
+[Synthesis Target](FLOW-SYNTH.md#synthesis-target),
+[FPGA Target](FLOW-FPGA.md#fpga-target), and, for Python testbenches,
+[Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches).
 
 ### Marking Targets for Doctor
 
@@ -317,65 +168,6 @@ deep Doctor skips the full implementation and prints the command to run it
 yourself. An unmarked Target still runs whenever you or the agent ask for it.
 With an enabled `[flows.fpga]` table, Doctor fails until some Target is marked
 `fpga`; set `enabled = false` there if the Project has no FPGA build yet.
-
-## Cocotb Targets (Python testbenches)
-
-A **Cocotb Target** is a sim Target whose testbench is a
-[cocotb](https://www.cocotb.org/) Python module instead of HDL. Setting
-`cocotb_module` in the Target's flow options is all it takes:
-
-```yaml
-filesets:
-  rtl:
-    files:
-      - rtl/counter.sv: {file_type: systemVerilogSource}
-  tb:
-    files:
-      - tb/test_counter.py: {file_type: user, copyto: test_counter.py}
-      # multi-file TBs: copyto keeps the package layout
-      - tb/helpers/util.py: {file_type: user, copyto: helpers/util.py}
-    tags: [tb]                       # required, as for an SV testbench
-
-targets:
-  sim_cocotb:
-    flow: sim
-    flow_options:
-      tool: icarus                   # icarus | verilator
-      cocotb_module: test_counter    # this makes it a Cocotb Target
-      iverilog_options: [-g2012]     # SystemVerilog sources need -g2012
-      timescale: 1ns/1ps
-    filesets: [rtl, tb]
-    toplevel: counter                # what the Python TB attaches to
-```
-
-```toml
-# .booley/tests.toml
-[sim_cocotb]
-tests = ["test_reset", "test_basic"]   # the @cocotb.test() function names
-```
-
-How it differs from an SV Target:
-
-- **`toplevel` is the module the Python testbench drives.** Usually that is
-  the DUT itself. A DUT with SystemVerilog interface ports needs a thin HDL
-  wrapper that instantiates the interfaces and the DUT, because cocotb's bus
-  models bind to interface instances; then the wrapper is the `toplevel`.
-- **`tests.toml` lists cocotb test-function names.** Tests generated by
-  `TestFactory`, `generate_tests`, or `@cocotb.parametrize` are listed by their
-  rendered names (for example `run_test_tx/ifg=12`). Doctor can't check these
-  names ahead of time; a wrong one shows up when the test runs.
-- **No `select` or `seed` template in `tests.toml`.** Booley picks tests and
-  seeds through cocotb's own environment variables; a `select` is a setup
-  error. Test Variants carry `env` only. See [Seeds](TESTS.md#seeds-seed-default_seed).
-- **Pass/fail comes from cocotb's `results.xml`**, not from
-  [sentinels](FLOW-SIM.md#passfail-sentinels-and-cycle-counts). A missing
-  or truncated `results.xml` is *inconclusive*, never a pass. RTL assertion
-  output is still checked.
-- **One test module per Target.** A second module is a second Target, and
-  build variants (a `-D` set per hardware flavour) multiply that. Rather than
-  the full matrix, a common choice is every module on the default variant,
-  plus only the modules that exercise the difference on the other variants.
-- **Icarus or Verilator only.** Commercial simulators can't run Cocotb Targets.
 
 ## Flat and vendored repos
 

@@ -26,7 +26,8 @@ here to look up what a setting means and what its default is.
 | `[eda.<tool>]` | [Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning) |
 | `[stealth]` | [STEALTH.md](STEALTH.md) |
 | `[feedback]` | [Redacted feedback](STEALTH.md#redacted-feedback-feedback) |
-| `[submodules]`, `.core` files, Cocotb Targets | [TARGETS.md](TARGETS.md) |
+| `[submodules]`, `.core` files | [TARGETS.md](TARGETS.md) |
+| Cocotb Targets | [Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches) |
 | `tests.toml` | [TESTS.md](TESTS.md) |
 | `.booley/doctor-waivers.toml` | [Doctor waivers](DOCTOR.md#doctor-waivers-doctor-waiverstoml) |
 
