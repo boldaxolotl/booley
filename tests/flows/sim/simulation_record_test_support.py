@@ -41,25 +41,25 @@ from booley.flows.sim.record.codec import (
     decode_bundle_build_result,
     decode_simulation_attempt,
     decode_simulation_result,
-    encode_simulation_campaign_manifest,
+    encode_simulation_record_manifest,
 )
 from booley.flows.sim.record.coordinator import (
-    CampaignOutcome,
-    CampaignPolicy,
-    CampaignRecoveryStatus,
-    NewCampaignRunRequest,
-    SimulationCampaign,
+    NewSimulationRecordRunRequest,
+    SimulationRecord,
+    SimulationRecordOutcome,
+    SimulationRecordPolicy,
+    SimulationRecordRecoveryStatus,
     WorkExecutionRequest,
 )
 from booley.flows.sim.record.coverage_execution import (
     CoverageAggregateExecutor,
 )
 from booley.flows.sim.record.facts import ACCEPTANCE_FACTS_SCHEMA, AcceptanceFacts
-from booley.flows.sim.record.flow_planning import plan_coarse_simulation_campaign
+from booley.flows.sim.record.flow_planning import plan_coarse_simulation_record
 from booley.flows.sim.record.model import (
-    SimulationCampaignManifest,
+    SimulationRecordManifest,
     SimulationResult,
-    create_simulation_campaign_plan,
+    create_simulation_record_plan,
 )
 from booley.flows.sim.record.planning import finalize_manifest, manifest_digest
 from booley.flows.sim.record.resume import (
@@ -73,7 +73,7 @@ from booley.flows.sim.record.scheduler import (
 from booley.flows.sim.record.serial_execution import (
     OrdinaryHdlSerialExecutor,
 )
-from booley.flows.sim.record.store import CampaignStore
+from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.verilator_coverage import SimulationBuildResult
 from booley.flows.test_runs import TestRun, build_test_run, discovered_test_run
 from booley.runtime.execution_records import (
@@ -97,8 +97,8 @@ from tests.flows.sim.test_simulation_record_manifest_codec import (
 )
 
 
-def _recovery_status(tmp_path: Path) -> CampaignRecoveryStatus:
-    return CampaignRecoveryStatus(
+def _recovery_status(tmp_path: Path) -> SimulationRecordRecoveryStatus:
+    return SimulationRecordRecoveryStatus(
         tmp_path / "manifest.json",
         "sha256:" + "1" * 64,
         (),
@@ -112,7 +112,7 @@ class _RecordedCampaign:
     """A current-schema manifest written under a test root, one work item per Test Run."""
 
     manifest_path: Path
-    manifest: SimulationCampaignManifest
+    manifest: SimulationRecordManifest
 
     @property
     def digest(self) -> str:
@@ -165,7 +165,7 @@ def _recorded_campaign(
     directory = Path(tempfile.mkdtemp(prefix="recorded-campaign-", dir=root))
     manifest = _hdl_plan(directory, tuple((run,) for run in runs), required).manifest
     manifest_path = directory / "manifest.json"
-    manifest_path.write_bytes(encode_simulation_campaign_manifest(manifest))
+    manifest_path.write_bytes(encode_simulation_record_manifest(manifest))
     return _RecordedCampaign(manifest_path, manifest)
 
 
@@ -222,7 +222,7 @@ def _simulation_outcome(
     complete: bool = True,
     role: str = "candidate",
     seeds: Mapping[str, int] | None = None,
-) -> CampaignOutcome:
+) -> SimulationRecordOutcome:
     """A Campaign outcome of *observations*; *seeds* names the seed of a test's Test Run."""
     runs: dict[str | None, TestRun] = {}
     for observation in observations:
@@ -264,7 +264,7 @@ def _simulation_outcome(
             else set(required).issubset(selected)
         )
     )
-    return CampaignOutcome(
+    return SimulationRecordOutcome(
         recorded.manifest_path,
         tmp_path / "summary.json",
         facts.document["target"],  # type: ignore[arg-type]
@@ -505,7 +505,7 @@ def _failed_shared_outcome() -> SimulationTargetOutcome:
     )
 
 
-def _completed_result_documents(store: CampaignStore) -> list[dict[str, object]]:
+def _completed_result_documents(store: SimulationRecordStore) -> list[dict[str, object]]:
     return [
         json.loads((store.work_item_directory(item) / "result.json").read_text())
         for item in store.scan().complete
@@ -580,7 +580,7 @@ _BAD_DIGEST = "sha256:" + "f" * 64
 
 @dataclass(frozen=True)
 class _Completed:
-    store: CampaignStore
+    store: SimulationRecordStore
     item_id: str
     attempt_dir: Path
     build_dir: Path
@@ -698,7 +698,7 @@ def _completed(tmp_path: Path) -> _Completed:
     project = tmp_path / "project"
     project.mkdir()
     build_root = _create_build_root(tmp_path / "engine-build")
-    store = CampaignStore(tmp_path / "record")
+    store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(manifest)
     item = manifest.document["work_items"][0]
     request = _request(store, manifest, item, project, invocation=1)
@@ -866,13 +866,13 @@ def _executor(
 
 
 def _request(
-    store: CampaignStore,
+    store: SimulationRecordStore,
     manifest,
     item: object,
     project: Path,
     *,
     invocation: int,
-    policy: CampaignPolicy | None = None,
+    policy: SimulationRecordPolicy | None = None,
 ) -> WorkExecutionRequest:
     item_id = item["work_item_id"]  # type: ignore[index]
     attempt_id = str(uuid.uuid4())
@@ -885,7 +885,7 @@ def _request(
         ordinal,
         directory,
         invocation,
-        policy or CampaignPolicy(),
+        policy or SimulationRecordPolicy(),
         _admission(),
         project,
         _handle(project),  # type: ignore[arg-type]
@@ -930,15 +930,15 @@ def _maximum_hook_selection_manifest(names):
 
 
 def _maximum_hook_selection_plan(names):
-    from booley.flows.sim.record.model import create_simulation_campaign_plan
+    from booley.flows.sim.record.model import create_simulation_record_plan
 
     manifest, disclosures = _maximum_hook_selection_manifest(names)
-    return create_simulation_campaign_plan(manifest), disclosures
+    return create_simulation_record_plan(manifest), disclosures
 
 
 def _hook_publication_request(root, names=("alpha", "beta"), invocation=1):
     plan, _ = _maximum_hook_selection_plan(names)
-    store = CampaignStore(root / "record")
+    store = SimulationRecordStore(root / "record")
     store.publish_manifest(plan.manifest)
     request = _request(
         store,
@@ -977,7 +977,7 @@ def _observe_pre_sim_reads(monkeypatch):
 
         return read
 
-    read_bytes = CampaignStore._read
+    read_bytes = SimulationRecordStore._read
 
     def count_results(store, path, **kwargs):
         if path.name == "result.json":
@@ -991,8 +991,10 @@ def _observe_pre_sim_reads(monkeypatch):
         decodes[(document["attempt_id"], document["ordinal"])] += 1
         return document
 
-    monkeypatch.setattr(CampaignStore, "_read", observe(count_results))
-    monkeypatch.setattr(CampaignStore, "_identity", observe(CampaignStore._identity))
+    monkeypatch.setattr(SimulationRecordStore, "_read", observe(count_results))
+    monkeypatch.setattr(
+        SimulationRecordStore, "_identity", observe(SimulationRecordStore._identity)
+    )
     monkeypatch.setattr(PreSimFiringDecoder, "decode", count_decode)
     return accesses, decodes, results
 
@@ -1041,10 +1043,12 @@ def _managed(store: SlotStore, outer, *, holders: int = 2, **overrides: Any) -> 
     )
 
 
-def _pinned_lanes(*args: Any, lanes: int, **kwargs: Any) -> campaign_capacity.CampaignCapacity:
+def _pinned_lanes(
+    *args: Any, lanes: int, **kwargs: Any
+) -> campaign_capacity.SimulationRecordCapacity:
     """Real capacity whose lane bound a test pins, not the machine's cores."""
 
-    class _PinnedLanes(campaign_capacity.CampaignCapacity):
+    class _PinnedLanes(campaign_capacity.SimulationRecordCapacity):
         @property
         def max_lanes(self) -> int:
             return lanes
@@ -1054,7 +1058,7 @@ def _pinned_lanes(*args: Any, lanes: int, **kwargs: Any) -> campaign_capacity.Ca
 
 def _item_capacity(
     admission: AdmissionContext, manifest, project_data: Path, *, lanes: int = 2
-) -> campaign_capacity.CampaignCapacity:
+) -> campaign_capacity.SimulationRecordCapacity:
     """Capacity whose every work item takes the admission's claim for itself."""
     sizing = admission.memory_sizing
     claim = sizing.claim if isinstance(sizing, _FixedSizing) else _holder_claim(lanes)
@@ -1063,12 +1067,14 @@ def _item_capacity(
 
 def _capacity(
     admission: AdmissionContext, tmp_path: Path, *, lanes: int = 2
-) -> campaign_capacity.CampaignCapacity:
+) -> campaign_capacity.SimulationRecordCapacity:
     """Real capacity, with its lane registry, over a fresh Booley Directory."""
     project_data = tmp_path / "project" / ".booley"
     project_data.mkdir(parents=True, exist_ok=True)
     if admission.memory_sizing is None:  # a Campaign that sizes no item claims
-        return campaign_capacity.CampaignCapacity(admission, _two_item_manifest(), project_data)
+        return campaign_capacity.SimulationRecordCapacity(
+            admission, _two_item_manifest(), project_data
+        )
     return _item_capacity(admission, _two_item_manifest(), project_data, lanes=lanes)
 
 
@@ -1144,7 +1150,7 @@ def _remove_child_lease(slots: SlotStore, child_id: str) -> None:
             _remove_slot_entry(slots, token)
 
 
-def _scheduled_attempt(store: CampaignStore, item) -> ScheduledAttempt:
+def _scheduled_attempt(store: SimulationRecordStore, item) -> ScheduledAttempt:
     attempt_id = os.urandom(16).hex()
     ordinal, directory = store.allocate_attempt_directory(str(item["work_item_id"]), attempt_id)
     return ScheduledAttempt(item, attempt_id, ordinal, directory, attempt_id)
@@ -1267,7 +1273,7 @@ def _validated_campaign(store, manifest, project, handle) -> ValidatedResumeMani
 
 def _interrupted_campaign(tmp_path, monkeypatch, runtime_execution_id):
     manifest = _three_item_manifest(runtime_execution_id or "")
-    plan = create_simulation_campaign_plan(manifest)
+    plan = create_simulation_record_plan(manifest)
     project, state = _parallel_environment(tmp_path, "beta", 0)
     monkeypatch.setattr(
         "booley.flows.sim.record.serial_execution.TargetCatalog.build",
@@ -1296,7 +1302,7 @@ def _interrupted_campaign(tmp_path, monkeypatch, runtime_execution_id):
         original_mark(registry, prepared, terminal_cause)
 
     monkeypatch.setattr(ChildExecutionRegistry, "mark_terminal", interrupted_mark)
-    campaign = SimulationCampaign(executor, work_item_request=lambda *_args: None)
+    campaign = SimulationRecord(executor, work_item_request=lambda *_args: None)
     execution_id = ExecutionId(runtime_execution_id) if runtime_execution_id else None
     # The Flow's claim, with three item claims' worth of memory left to lend its Campaign.
     outer = slots.acquire(
@@ -1309,13 +1315,18 @@ def _interrupted_campaign(tmp_path, monkeypatch, runtime_execution_id):
     try:
         with pytest.raises(RuntimeError, match="injected terminal-record interruption"):
             campaign.run(
-                NewCampaignRunRequest(
-                    plan, project, invocation.parent, CampaignPolicy(), invocation, admission
+                NewSimulationRecordRunRequest(
+                    plan,
+                    project,
+                    invocation.parent,
+                    SimulationRecordPolicy(),
+                    invocation,
+                    admission,
                 )
             )
     finally:
         slots.release(outer)
-    store = CampaignStore(invocation / "targets/sim/record")
+    store = SimulationRecordStore(invocation / "targets/sim/record")
     validated = _validated_campaign(store, manifest, project, state.handle)
     return SimpleNamespace(
         campaign=campaign,
@@ -1442,7 +1453,7 @@ def _plan(
     access: str = "immutable",
 ):
     handle, inspection, preview = _facts(root, cocotb=cocotb, preview_names=names, access=access)
-    return plan_coarse_simulation_campaign(
+    return plan_coarse_simulation_record(
         handle=handle,
         inspection=inspection,
         preview=preview,
@@ -1513,7 +1524,7 @@ def _coverage_campaign_plan(
         parameters=inspection.parameters,
         flow_options=inspection.flow_options,
     )
-    plan = plan_coarse_simulation_campaign(
+    plan = plan_coarse_simulation_record(
         handle=target.handle,
         inspection=inspection,
         preview=preview,
@@ -1558,11 +1569,11 @@ def _run_coverage_campaign(
     )
     invocation = root / "reports" / "1"
     invocation.mkdir(parents=True)
-    request = NewCampaignRunRequest(
-        plan, root, invocation.parent, CampaignPolicy(), invocation, _admission()
+    request = NewSimulationRecordRunRequest(
+        plan, root, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
     )
-    outcome = SimulationCampaign(executor).run(request)
-    return outcome, CampaignStore(invocation / "targets/sim_0/record")
+    outcome = SimulationRecord(executor).run(request)
+    return outcome, SimulationRecordStore(invocation / "targets/sim_0/record")
 
 
 _STAMP = "2026-09-22T00:00:00Z"
@@ -1763,7 +1774,7 @@ def _retained_invocation(
     *,
     reports: Path | None = None,
     booley_dir: Path | None = None,
-) -> tuple[Path, Path, CampaignStore]:
+) -> tuple[Path, Path, SimulationRecordStore]:
     source = tmp_path / "source"
     source.mkdir()
     (source / ".booley").mkdir()
@@ -1775,7 +1786,9 @@ def _retained_invocation(
     target.mkdir(parents=True)
     shutil.move(str(source_store.root), target / "record")
     # Reports under a symlinked Booley Directory entry need the store to follow it (#2191).
-    store = CampaignStore(target / "record", **({"booley_dir": booley_dir} if booley_dir else {}))
+    store = SimulationRecordStore(
+        target / "record", **({"booley_dir": booley_dir} if booley_dir else {})
+    )
     store.regenerate_summary()
     manifest = store.load_manifest().document
     manifest_target = manifest["target"]
@@ -1812,7 +1825,7 @@ def _retained_invocation(
 
 
 def _own_attempt_run_directory(
-    tmp_path: Path, store: CampaignStore, work_item_id: str, lane_id: str | None
+    tmp_path: Path, store: SimulationRecordStore, work_item_id: str, lane_id: str | None
 ) -> tuple[Path, dict[str, object]]:
     """Give one work item's attempt an owned run directory and the lane it ran on."""
     from booley.flows.sim.record.run_directory import expand_run_directory
@@ -1826,7 +1839,7 @@ def _own_attempt_run_directory(
     run = expand_run_directory(
         "work/{record}/{test}/{attempt}",
         project_root=project_root,
-        campaign_id=document["simulation_record_id"],
+        simulation_record_id=document["simulation_record_id"],
         target_key="sim",
         work_item_key=store.work_item_directory(work_item_id).name,
         attempt_key=attempt_path.parent.name,

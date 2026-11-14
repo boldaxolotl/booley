@@ -36,7 +36,7 @@ from booley.flows.sim.verilator_coverage import (
 )
 from booley.runtime.timefmt import utc_now_rfc3339
 
-from .codec import SimulationCampaignIntegrityError, encode_executable_snapshot
+from .codec import SimulationRecordIntegrityError, encode_executable_snapshot
 from .coordinator import (
     SerialWorkExecutor,
     WorkExecutionRequest,
@@ -187,7 +187,7 @@ def _publish_hook(request, evidence, ordinal, checkpoint) -> None:
 
     try:
         publish_pre_sim_firing(request, evidence, ordinal=ordinal, checkpoint=checkpoint)
-    except SimulationCampaignIntegrityError as exc:
+    except SimulationRecordIntegrityError as exc:
         raise _HookPublicationError(str(exc)) from exc
 
 
@@ -231,7 +231,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
         """Collect, merge and commit one nested Coverage Campaign atomically."""
         _raise_if_pre_sim_scope_stopped(request)
         if request.work_item["kind"] != "coverage_aggregate":
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 "coverage aggregate executor received another work-item kind"
             )
         if request.attempt_directory not in self._prepared:
@@ -269,7 +269,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
         _raise_if_coverage_aborted(outcome, capturing.build_result)
         if capturing.captured is None:
             detail = outcome.detail.get("error") or outcome.detail.get("collection")
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 "coverage collection has no authenticated simulator build"
                 f" (build={capturing.build_result!r}, detail={detail!r})"
             )
@@ -303,7 +303,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
         try:
             plan = self._plans[identity]
         except KeyError as exc:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 "coverage plan is missing for campaign Target"
             ) from exc
         origin_invocation = request.store.root.parents[2]
@@ -320,7 +320,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
                 publication_checkpoint=self._publication_checkpoint,
             )
         except _HookPublicationError as exc:
-            assert isinstance(exc.__cause__, SimulationCampaignIntegrityError)
+            assert isinstance(exc.__cause__, SimulationRecordIntegrityError)
             raise exc.__cause__ from None
 
     def _execution(self, request: WorkExecutionRequest) -> SimulationExecutionPort:
@@ -329,7 +329,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
         try:
             plan = self._plans[identity]
         except KeyError as exc:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 "coverage plan is missing for campaign Target"
             ) from exc
         options = simulation_options_from_policy(
@@ -458,7 +458,7 @@ def _publish_coverage_build_failure(
 ) -> SimulationResult | None:
     if build is None or build.success:
         detail = outcome.detail.get("error") or outcome.detail.get("collection")
-        raise SimulationCampaignIntegrityError(
+        raise SimulationRecordIntegrityError(
             "coverage collection has no authenticated simulator build"
             f" (build={build!r}, detail={detail!r})"
         )
@@ -513,9 +513,9 @@ def _publish_coverage_build_failure(
 def _coverage_tests(outcome: CoverageTargetOutcome) -> tuple[Mapping[str, object], ...]:
     tests = outcome.detail.get("tests", ())
     if not isinstance(tests, tuple):
-        raise SimulationCampaignIntegrityError("Coverage Campaign returned invalid test evidence")
+        raise SimulationRecordIntegrityError("Coverage Campaign returned invalid test evidence")
     if not tests:
-        raise SimulationCampaignIntegrityError("Coverage Campaign returned no test evidence")
+        raise SimulationRecordIntegrityError("Coverage Campaign returned no test evidence")
     return cast(tuple[Mapping[str, object], ...], tests)
 
 
@@ -535,7 +535,7 @@ def _coverage_test_outcome(item: Mapping[str, object]) -> SimulationTestOutcome:
         or not name
         or verdict not in {"pass", "fail", "timeout", "crash", "inconclusive", "elab_error"}
     ):
-        raise SimulationCampaignIntegrityError("Coverage Campaign test evidence is invalid")
+        raise SimulationRecordIntegrityError("Coverage Campaign test evidence is invalid")
     error_tail = item.get("error_tail")
     if not isinstance(error_tail, str):
         error_tail = "" if verdict == "pass" else f"coverage simulation {verdict}"

@@ -121,7 +121,7 @@ def test_fault_reaches_product_content_validation(tmp_path: Path, monkeypatch) -
     from booley.flows.sim.coverage_campaign_store import CoverageCampaignStoreError
     from booley.flows.sim.coverage_json import MANIFEST_JSON
     from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
-    from booley.flows.sim.record.codec import UnsupportedSimulationCampaignFormatError
+    from booley.flows.sim.record.codec import UnsupportedSimulationRecordFormatError
 
     # One node, every mode; resource-ceiling is last because it patches the ceiling.
     for mode, expected_codes in _product_faults().items():
@@ -156,12 +156,12 @@ def test_fault_reaches_product_content_validation(tmp_path: Path, monkeypatch) -
             (
                 CoverageCampaignValidationError,
                 CoverageCampaignStoreError,
-                UnsupportedSimulationCampaignFormatError,
+                UnsupportedSimulationRecordFormatError,
             )
         ) as caught:
             resolve_coverage_campaign_reference(reference)
         error = caught.value
-        if isinstance(error, UnsupportedSimulationCampaignFormatError):
+        if isinstance(error, UnsupportedSimulationRecordFormatError):
             codes = {_OLDER_BOOLEY}
         elif isinstance(error, CoverageCampaignValidationError):
             codes = {finding.code for finding in error.findings}

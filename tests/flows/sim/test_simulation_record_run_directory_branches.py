@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from booley.flows.sim.record import run_directory as rd
-from booley.flows.sim.record.codec import SimulationCampaignIntegrityError
+from booley.flows.sim.record.codec import SimulationRecordIntegrityError
 from booley.runtime.file_lock import LockTimeoutError
 from tests.conftest import symlink_or_skip
 from tests.fusesoc_test_support import symlinked_booley_dir
@@ -21,7 +21,7 @@ def _run(root: Path, test: str = "t") -> tuple[rd.RunDirectory, dict[str, str]]:
     run = rd.expand_run_directory(
         "work/{record}/{test}/{attempt}",
         project_root=root,
-        campaign_id="c",
+        simulation_record_id="c",
         target_key="sim",
         work_item_key=test,
         attempt_key="a1",
@@ -129,7 +129,7 @@ def test_creation_gives_up_after_repeated_vanishing(
 
     monkeypatch.setattr(rd, "_create_marked_chain", always_vanishes)
     with (
-        pytest.raises(SimulationCampaignIntegrityError, match="could not be created"),
+        pytest.raises(SimulationRecordIntegrityError, match="could not be created"),
         rd.claimed_run_directory(run, identity=identity),
     ):
         pytest.fail("body must not run")
@@ -192,7 +192,7 @@ def test_templated_run_directory_follows_only_the_booley_dir_entry(
     run = rd.expand_run_directory(
         ".booley/.runtime/runs/{attempt}",
         project_root=project,
-        campaign_id="c",
+        simulation_record_id="c",
         target_key="sim",
         work_item_key="t",
         attempt_key="a1",
@@ -201,7 +201,7 @@ def test_templated_run_directory_follows_only_the_booley_dir_entry(
 
     if linked == "below":
         with (
-            pytest.raises(SimulationCampaignIntegrityError, match="contains a link"),
+            pytest.raises(SimulationRecordIntegrityError, match="contains a link"),
             rd.claimed_run_directory(run, identity=identity),
         ):
             pass

@@ -196,7 +196,7 @@ def test_run_cwd_expands_the_record_placeholder(tmp_path: Path) -> None:
     run = expand_run_directory(
         "runs/{record}/{test}",
         project_root=tmp_path,
-        campaign_id="rec-1",
+        simulation_record_id="rec-1",
         target_key="lite",
         work_item_key="smoke",
         attempt_key="a1",

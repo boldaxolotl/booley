@@ -14,7 +14,7 @@ from booley.flows.builtin_cli import parse_request
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record.test_run_report import (
     _recorded_test_runs,
-    campaign_test_run_rows,
+    simulation_record_test_run_rows,
     test_run_report_lines,
 )
 from booley.flows.sim.record_presentation import (
@@ -56,7 +56,7 @@ def _outcome(tmp_path: Path, runs: tuple[TestRun, ...], passed: tuple[bool, ...]
 
 def test_rows_join_each_observation_to_its_recorded_test_run(tmp_path: Path):
     runs = (build_test_run("reset", seed=1), _SOAK)
-    rows = campaign_test_run_rows(_outcome(tmp_path, runs, (True, False)))
+    rows = simulation_record_test_run_rows(_outcome(tmp_path, runs, (True, False)))
     assert rows == [
         {**test_run_document(runs[0]), "grade": "pass"},
         {**test_run_document(_SOAK), "grade": "fail"},
@@ -82,7 +82,7 @@ def test_default_runs_that_pass_add_no_rows_to_the_target_line(tmp_path: Path):
     runs = (build_test_run("reset", seed=1), build_test_run("count", seed=1))
     outcome = _outcome(tmp_path, runs, (True, True))
     assert _campaign_test_run_lines("sim", outcome) == []
-    assert len(campaign_test_run_rows(outcome)) == 2
+    assert len(simulation_record_test_run_rows(outcome)) == 2
 
 
 def test_a_failing_default_run_is_listed_with_its_rerun_command(tmp_path: Path):
@@ -127,7 +127,7 @@ def test_structured_detail_carries_bounded_rows(tmp_path: Path):
 def test_a_campaign_whose_manifest_is_gone_has_no_rows(tmp_path: Path):
     outcome = _outcome(tmp_path, (_SOAK,), (False,))
     gone = SimpleNamespace(manifest_path=tmp_path / "gone.json", observations=outcome.observations)
-    assert campaign_test_run_rows(gone) == []
+    assert simulation_record_test_run_rows(gone) == []
 
 
 _TESTS = {
@@ -198,7 +198,7 @@ def test_tests_an_unfiltered_cocotb_batch_discovered_get_rows(tmp_path: Path):
         recorded.fact(unnamed, discovered="found_a", **_grade_members(passed=True)),
         recorded.fact(unnamed, discovered="found_b", **_grade_members(passed=False)),
     )
-    rows = campaign_test_run_rows(
+    rows = simulation_record_test_run_rows(
         SimpleNamespace(manifest_path=recorded.manifest_path, observations=observations)
     )
     assert [(row["name"], row["grade"]) for row in rows] == [

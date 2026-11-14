@@ -11,18 +11,18 @@ from booley.flows.sim.record import codec
 from booley.flows.sim.record.codec import (
     MANIFEST_MAX_BYTES,
     RECORD_MAX_BYTES,
-    SimulationCampaignIntegrityError,
+    SimulationRecordIntegrityError,
     canonical_json_bytes,
     decode_bundle_build_attempt,
     decode_executable_snapshot,
     decode_simulation_attempt,
-    decode_simulation_campaign_manifest,
+    decode_simulation_record_manifest,
     decode_simulator_bundle,
     encode_bundle_build_attempt,
     encode_bundle_build_result,
     encode_executable_snapshot,
     encode_simulation_attempt,
-    encode_simulation_campaign_manifest,
+    encode_simulation_record_manifest,
     encode_simulation_result,
     encode_simulator_bundle,
     validate_relative_path,
@@ -38,7 +38,7 @@ from booley.flows.sim.record.model import (
     SimulationAttempt,
     SimulationResult,
     SimulatorBundle,
-    create_simulation_campaign_plan,
+    create_simulation_record_plan,
     grade_observations,
     simulation_status_from_observations,
 )
@@ -91,7 +91,7 @@ def test_encoding_and_planning_never_decode_their_own_output(monkeypatch) -> Non
     """Writers trust documents that were decoded once; they do not re-decode them."""
     from tests.flows.sim.test_simulation_record_manifest_codec import _manifest
 
-    manifest = decode_simulation_campaign_manifest(canonical_json_bytes(_manifest()))
+    manifest = decode_simulation_record_manifest(canonical_json_bytes(_manifest()))
     attempt = decode_simulation_attempt(canonical_json_bytes(_attempt()))
 
     def refuse(*args: object, **kwargs: object) -> object:
@@ -99,8 +99,8 @@ def test_encoding_and_planning_never_decode_their_own_output(monkeypatch) -> Non
 
     monkeypatch.setattr(codec, "_decode", refuse)
     assert encode_simulation_attempt(attempt) == canonical_json_bytes(attempt.document)
-    assert encode_simulation_campaign_manifest(manifest) == canonical_json_bytes(manifest.document)
-    assert create_simulation_campaign_plan(manifest).manifest is manifest
+    assert encode_simulation_record_manifest(manifest) == canonical_json_bytes(manifest.document)
+    assert create_simulation_record_plan(manifest).manifest is manifest
 
 
 @pytest.mark.parametrize(
@@ -144,15 +144,15 @@ def test_encoders_refuse_documents_over_their_size_ceiling(value_type, encoder, 
     at_ceiling = value_type({"pad": "x" * (ceiling - overhead)})
     assert len(encoder(at_ceiling)) == ceiling
     over_ceiling = value_type({"pad": "x" * (ceiling - overhead + 1)})
-    with pytest.raises(SimulationCampaignIntegrityError, match="size ceiling"):
+    with pytest.raises(SimulationRecordIntegrityError, match="size ceiling"):
         encoder(over_ceiling)
 
 
 def test_codec_rejects_noncanonical_or_oversized_json() -> None:
     raw = json.dumps(_attempt()).encode()
-    with pytest.raises(SimulationCampaignIntegrityError, match="canonical"):
+    with pytest.raises(SimulationRecordIntegrityError, match="canonical"):
         decode_simulation_attempt(raw)
-    with pytest.raises(SimulationCampaignIntegrityError, match="size ceiling"):
+    with pytest.raises(SimulationRecordIntegrityError, match="size ceiling"):
         decode_simulation_attempt(b" " * (MANIFEST_MAX_BYTES + 1))
 
 
@@ -160,7 +160,7 @@ def test_codec_rejects_noncanonical_or_oversized_json() -> None:
 def test_attempt_missing_field_mutation_is_rejected(field: str) -> None:
     mutated = _attempt()
     del mutated[field]
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(SimulationRecordIntegrityError):
         decode_simulation_attempt(canonical_json_bytes(mutated))
 
 
@@ -168,13 +168,13 @@ def test_attempt_missing_field_mutation_is_rejected(field: str) -> None:
 def test_attempt_unknown_field_mutation_is_rejected(field: str) -> None:
     if field in _attempt():
         return
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(SimulationRecordIntegrityError):
         decode_simulation_attempt(canonical_json_bytes(_attempt() | {field: None}))
 
 
 @given(st.sampled_from(["", "/root", "../escape", "a/../b", "a//b", "C:/run", "a\\b"]))
 def test_campaign_paths_reject_traversal_and_nonportable_forms(path: str) -> None:
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(SimulationRecordIntegrityError):
         validate_relative_path(path)
 
 

@@ -13,13 +13,13 @@ from booley.flows.sim.flow_resume import _manifest_run_groups
 from booley.flows.sim.record.codec import (
     MAX_OBSERVATIONS,
     MAX_WORK_ITEMS,
-    SimulationCampaignIntegrityError,
-    decode_simulation_campaign_manifest,
-    encode_simulation_campaign_manifest,
+    SimulationRecordIntegrityError,
+    decode_simulation_record_manifest,
+    encode_simulation_record_manifest,
 )
 from booley.flows.sim.record.flow_planning import (
-    plan_coarse_simulation_campaign,
-    plan_ordinary_hdl_campaign,
+    plan_coarse_simulation_record,
+    plan_ordinary_hdl_simulation_record,
 )
 from booley.flows.sim.record.planning import compare_manifests
 from booley.flows.sim.record.test_run_binding import work_item_test_runs
@@ -51,7 +51,7 @@ def _hdl_plan(
         run_groups=run_groups,
         commands=tuple(("run",) for _ in run_groups),
     )
-    return plan_ordinary_hdl_campaign(
+    return plan_ordinary_hdl_simulation_record(
         handle=handle,
         inspection=inspection,
         preview=preview,
@@ -75,7 +75,7 @@ def _cocotb_plan(tmp_path: Path, run_groups: tuple[tuple[TestRun, ...], ...]):
         commands=tuple(("run",) for _ in run_groups),
         flow_options={"cocotb_module": "tests"},
     )
-    return plan_coarse_simulation_campaign(
+    return plan_coarse_simulation_record(
         handle=handle,
         inspection=inspection,
         preview=preview,
@@ -128,11 +128,11 @@ def test_hdl_test_runs_that_differ_each_get_their_own_work_item(tmp_path: Path):
 
 def test_work_item_test_runs_round_trip_to_the_same_values(tmp_path: Path):
     plan = _hdl_plan(tmp_path, ((_SOAK,), (_FAULT,)))
-    raw = encode_simulation_campaign_manifest(plan.manifest)
-    manifest = decode_simulation_campaign_manifest(raw)
+    raw = encode_simulation_record_manifest(plan.manifest)
+    manifest = decode_simulation_record_manifest(raw)
     assert _manifest_run_groups(manifest) == ((_SOAK,), (_FAULT,))
     assert work_item_test_runs(manifest.document["work_items"][1]) == (_FAULT,)
-    assert encode_simulation_campaign_manifest(manifest) == raw
+    assert encode_simulation_record_manifest(manifest) == raw
 
 
 def test_unnamed_invocation_records_its_seed(tmp_path: Path):
@@ -160,7 +160,7 @@ def test_planning_refuses_more_test_runs_than_a_campaign_holds(tmp_path: Path, l
 
 
 def test_hdl_work_item_refuses_more_than_one_test_run(tmp_path: Path):
-    with pytest.raises(SimulationCampaignIntegrityError, match="planned groups and Test Runs"):
+    with pytest.raises(SimulationRecordIntegrityError, match="planned groups and Test Runs"):
         _hdl_plan(tmp_path, ((_SOAK, _OTHER_SEED),))
 
 
@@ -212,7 +212,7 @@ def test_interrupted_campaign_resumes_with_byte_identical_test_runs(tmp_path, mo
     assert len(executions) == 2, "resume must reach execution, not a mismatch refusal"
     (expected, current), *_rest = pairs
     assert compare_manifests(expected, current) == ()
-    replanned = json.loads(encode_simulation_campaign_manifest(current))["work_items"]
+    replanned = json.loads(encode_simulation_record_manifest(current))["work_items"]
     assert json.dumps([item["test_runs"] for item in replanned], sort_keys=True) == json.dumps(
         recorded, sort_keys=True
     )
@@ -238,18 +238,18 @@ def _interrupted(root, monkeypatch, fields):
 def _run_campaign(tmp_path: Path, plan):
     """Run *plan* to terminal acceptance facts without any EDA tool."""
     from booley.flows.sim.record import (
-        CampaignPolicy,
-        NewCampaignRunRequest,
-        SimulationCampaign,
+        NewSimulationRecordRunRequest,
+        SimulationRecord,
+        SimulationRecordPolicy,
     )
     from tests.flows.sim.simulation_record_test_support import _admission, _NoEdaExecutor
 
-    return SimulationCampaign(_NoEdaExecutor()).run(
-        NewCampaignRunRequest(
+    return SimulationRecord(_NoEdaExecutor()).run(
+        NewSimulationRecordRunRequest(
             plan=plan,
             project_root=tmp_path,
             report_root=None,
-            policy=CampaignPolicy(),
+            policy=SimulationRecordPolicy(),
             invocation_directory=tmp_path / "reports" / "sim" / "1",
             admission=_admission(),
         )
@@ -309,9 +309,9 @@ def test_an_observation_without_a_test_run_in_its_work_item_is_refused():
     from booley.flows.sim.record.test_run_binding import observation_test_runs
 
     item = {"target": {"selector": "sim"}, "test_runs": (test_run_document(_SOAK),)}
-    with pytest.raises(SimulationCampaignIntegrityError, match="has no Test Run"):
+    with pytest.raises(SimulationRecordIntegrityError, match="has no Test Run"):
         observation_test_runs(item, ({"test": "reset"},))
-    with pytest.raises(SimulationCampaignIntegrityError, match="has no Test Run"):
+    with pytest.raises(SimulationRecordIntegrityError, match="has no Test Run"):
         observation_test_runs(item, ({"test": "count"}, {"test": "count"}))
 
 
@@ -348,9 +348,13 @@ def test_acceptance_keeps_indexing_one_test_run_per_test_by_test(tmp_path: Path)
 
 def _stored_result(tmp_path: Path):
     """Run a Cocotb batch campaign through the real result writer."""
-    from booley.flows.sim.record import CampaignPolicy, NewCampaignRunRequest, SimulationCampaign
+    from booley.flows.sim.record import (
+        NewSimulationRecordRunRequest,
+        SimulationRecord,
+        SimulationRecordPolicy,
+    )
     from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
-    from booley.flows.sim.record.store import CampaignStore
+    from booley.flows.sim.record.store import SimulationRecordStore
     from tests.flows.sim.simulation_record_test_support import _admission, _plan
     from tests.flows.sim.test_simulation_record_characterization import _NoVerdictExecution
 
@@ -361,12 +365,12 @@ def _stored_result(tmp_path: Path):
     )
     invocation = tmp_path / "reports/1"
     invocation.mkdir(parents=True)
-    outcome = SimulationCampaign(executor).run(
-        NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
+    outcome = SimulationRecord(executor).run(
+        NewSimulationRecordRunRequest(
+            plan, tmp_path, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
         )
     )
-    store = CampaignStore(invocation / "targets/sim/record")
+    store = SimulationRecordStore(invocation / "targets/sim/record")
     return outcome, [item.result for item in store.scan().items]
 
 
@@ -415,5 +419,5 @@ def test_result_v3_refusals(tmp_path: Path, alter, message):
 
     document = _result_document(tmp_path)
     alter(document)
-    with pytest.raises(SimulationCampaignIntegrityError, match=message):
+    with pytest.raises(SimulationRecordIntegrityError, match=message):
         decode_simulation_result(canonical_json_bytes(document))

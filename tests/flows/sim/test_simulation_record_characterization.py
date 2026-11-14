@@ -27,13 +27,13 @@ from booley.flows.sim.execution.contract import (
 )
 from booley.flows.sim.record.codec import decode_simulation_result, encode_simulation_result
 from booley.flows.sim.record.coordinator import (
-    CampaignPolicy,
-    NewCampaignRunRequest,
-    SimulationCampaign,
+    NewSimulationRecordRunRequest,
+    SimulationRecord,
+    SimulationRecordPolicy,
 )
-from booley.flows.sim.record.flow_planning import plan_ordinary_hdl_campaign
+from booley.flows.sim.record.flow_planning import plan_ordinary_hdl_simulation_record
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
-from booley.flows.sim.record.store import CampaignStore
+from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.test_runs import build_test_run
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
@@ -245,14 +245,14 @@ def test_adapter_termination_reaches_normalized_campaign_result(tmp_path: Path) 
     )
     invocation = tmp_path / "reports/1"
     invocation.mkdir(parents=True)
-    outcome = SimulationCampaign(executor).run(
-        NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
+    outcome = SimulationRecord(executor).run(
+        NewSimulationRecordRunRequest(
+            plan, tmp_path, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
         )
     )
 
     assert outcome.complete is True
-    store = CampaignStore(invocation / "targets/sim/record")
+    store = SimulationRecordStore(invocation / "targets/sim/record")
     result = store.scan().items[0].result
     assert result is not None
     observation = result.document["observations"][0]
@@ -310,13 +310,13 @@ def _run_campaign_result(tmp_path: Path, plan: Any, execution: Any) -> Any:
     )
     invocation = tmp_path / "reports/1"
     invocation.mkdir(parents=True)
-    outcome = SimulationCampaign(executor).run(
-        NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
+    outcome = SimulationRecord(executor).run(
+        NewSimulationRecordRunRequest(
+            plan, tmp_path, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
         )
     )
     assert outcome.complete
-    result = CampaignStore(invocation / "targets/sim/record").scan().items[0].result
+    result = SimulationRecordStore(invocation / "targets/sim/record").scan().items[0].result
     assert result is not None
     # Publish encodes and scan decodes: the record round-trips by construction.
     assert decode_simulation_result(encode_simulation_result(result)) == result
@@ -343,7 +343,7 @@ def _native_plan(tmp_path: Path) -> Any:
     _write_native_core(tmp_path)
     run_groups = ((build_test_run(None),),)
     preview = replace(preview, groups=((),), run_groups=run_groups, commands=(("run",),))
-    return plan_ordinary_hdl_campaign(
+    return plan_ordinary_hdl_simulation_record(
         handle=handle,
         inspection=inspection,
         preview=preview,
@@ -501,13 +501,13 @@ def test_infrastructure_guard_publishes_terminal_campaign(
     )
     invocation = tmp_path / "reports/1"
     invocation.mkdir(parents=True)
-    outcome = SimulationCampaign(executor).run(
-        NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
+    outcome = SimulationRecord(executor).run(
+        NewSimulationRecordRunRequest(
+            plan, tmp_path, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
         )
     )
     assert outcome.complete
-    result = CampaignStore(invocation / "targets/sim/record").scan().items[0].result
+    result = SimulationRecordStore(invocation / "targets/sim/record").scan().items[0].result
     assert result is not None
     assert decode_simulation_result(encode_simulation_result(result)) == result
     assert result.document["state"] == "aborted"
@@ -549,13 +549,13 @@ def test_infrastructure_without_tests_retains_selected_identities(
     )
     invocation = tmp_path / "reports/1"
     invocation.mkdir(parents=True)
-    outcome = SimulationCampaign(executor).run(
-        NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
+    outcome = SimulationRecord(executor).run(
+        NewSimulationRecordRunRequest(
+            plan, tmp_path, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
         )
     )
     assert outcome.complete
-    result = CampaignStore(invocation / "targets/sim/record").scan().items[0].result
+    result = SimulationRecordStore(invocation / "targets/sim/record").scan().items[0].result
     assert result is not None
     assert result.document["grade"] == "error"
     assert [item["test"] for item in result.document["observations"]] == list(names)
@@ -590,7 +590,7 @@ def test_infrastructure_failure_of_the_unnamed_invocation_is_one_observation_of_
     )
     unnamed = (build_test_run(None, seed=9),)
     preview = replace(preview, groups=((),), run_groups=(unnamed,), commands=(("run",),))
-    plan = plan_ordinary_hdl_campaign(
+    plan = plan_ordinary_hdl_simulation_record(
         handle=handle,
         inspection=inspection,
         preview=preview,
@@ -622,7 +622,7 @@ def test_cleanup_failure_preserves_completed_tests_and_guard(tmp_path, monkeypat
 
     monkeypatch.setattr(Path, "unlink", denied_partial)
     test_infrastructure_guard_publishes_terminal_campaign(tmp_path, "disk_budget", True)
-    store = CampaignStore(tmp_path / "reports/1/targets/sim/record")
+    store = SimulationRecordStore(tmp_path / "reports/1/targets/sim/record")
     result = store.scan().items[0].result
     assert result is not None
     assert any(
@@ -641,13 +641,13 @@ def test_unfiltered_guard_without_discovered_tests_is_scannable(tmp_path) -> Non
     )
     invocation = tmp_path / "reports/1"
     invocation.mkdir(parents=True)
-    outcome = SimulationCampaign(executor).run(
-        NewCampaignRunRequest(
-            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _admission()
+    outcome = SimulationRecord(executor).run(
+        NewSimulationRecordRunRequest(
+            plan, tmp_path, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
         )
     )
     assert outcome.complete
-    result = CampaignStore(invocation / "targets/sim/record").scan().items[0].result
+    result = SimulationRecordStore(invocation / "targets/sim/record").scan().items[0].result
     assert result is not None
     assert result.document["grade"] == "error"
     assert result.document["observations"][0]["test"] is None
@@ -671,7 +671,7 @@ def test_standalone_campaign_final_report_is_run_local(tmp_path, monkeypatch, me
 
 def test_campaign_scan_takes_a_published_infrastructure_verdict_as_published(tmp_path) -> None:
     test_infrastructure_guard_publishes_terminal_campaign(tmp_path, "disk_budget", False)
-    store = CampaignStore(tmp_path / "reports/1/targets/sim/record")
+    store = SimulationRecordStore(tmp_path / "reports/1/targets/sim/record")
     published = store.scan().items[0].result
     assert published is not None
     for reference in published.document["evidence"]:
@@ -736,7 +736,7 @@ def test_backend_timeout_on_campaign_path_preserves_detail_and_adds_hint(
     )
     assert f"{backend_detail} (rc=" in timeout_line
     assert hint in timeout_line
-    campaign = CampaignStore(tmp_path / "reports/sim/1/targets/sim/record").scan()
+    campaign = SimulationRecordStore(tmp_path / "reports/sim/1/targets/sim/record").scan()
     published = campaign.items[0].result
     assert published is not None
     assert published.document["state"] == "timeout"

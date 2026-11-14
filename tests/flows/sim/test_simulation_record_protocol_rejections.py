@@ -9,10 +9,10 @@ import pytest
 
 from booley.flows.sim.record import child_protocol
 from booley.flows.sim.record.codec import (
-    SimulationCampaignIntegrityError,
+    SimulationRecordIntegrityError,
     canonical_json_bytes,
 )
-from booley.flows.sim.record.store import CampaignStore
+from booley.flows.sim.record.store import SimulationRecordStore
 from booley.runtime.execution_records import (
     ExecutionId,
     execution_paths,
@@ -32,7 +32,7 @@ def test_child_records_publish_and_verify_through_the_booley_dir_entry(
     """
     manifest = _two_item_manifest()
     # The Campaign store is plain: only the Project-local child records cross the entry.
-    store = CampaignStore(tmp_path / "record")
+    store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -67,7 +67,7 @@ def test_child_records_publish_and_verify_through_the_booley_dir_entry(
         registry.prepare(execution_id, **fields)
 
     if layout != "entry":
-        with pytest.raises(SimulationCampaignIntegrityError, match="link"):
+        with pytest.raises(SimulationRecordIntegrityError, match="link"):
             cycle()
         return
     cycle()
@@ -77,7 +77,7 @@ def test_child_records_publish_and_verify_through_the_booley_dir_entry(
 def test_publish_rejects_conflicting_existing_record(tmp_path: Path) -> None:
     path = tmp_path / "record.json"
     path.write_bytes(b"old")
-    with pytest.raises(SimulationCampaignIntegrityError, match="disagrees"):
+    with pytest.raises(SimulationRecordIntegrityError, match="disagrees"):
         child_protocol._publish_or_verify(path, b"new")
 
 
@@ -85,7 +85,7 @@ def test_protocol_record_size_limit_is_enforced(tmp_path: Path, monkeypatch) -> 
     path = tmp_path / "record.json"
     path.write_bytes(b"xx")
     monkeypatch.setattr(child_protocol, "_PROTOCOL_RECORD_LIMIT", 1)
-    with pytest.raises(SimulationCampaignIntegrityError, match="size limit"):
+    with pytest.raises(SimulationRecordIntegrityError, match="size limit"):
         child_protocol._publish_or_verify(path, b"xx")
 
 
@@ -113,7 +113,7 @@ def test_mark_terminal_requires_a_recoverable_or_terminal_record(
         lambda *_args, **_kwargs: SimpleNamespace(record=tmp_path / "record"),
     )
     monkeypatch.setattr(child_protocol, "read_json", lambda _path: record)
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(SimulationRecordIntegrityError):
         registry.mark_terminal(_prepared(tmp_path), "failed")
 
 
@@ -134,7 +134,7 @@ def test_cancel_reports_timeout(tmp_path: Path, monkeypatch) -> None:
 def _lane_registry(tmp_path: Path):
     """A real registry over a stored Campaign, plus one prepared (waiting) lane."""
     manifest = _two_item_manifest()
-    store = CampaignStore(tmp_path / "record")
+    store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(manifest)
     project = tmp_path / "project"
     (project / ".booley").mkdir(parents=True)
@@ -181,7 +181,7 @@ def test_recover_lane_fails_closed_when_cancel_fails(tmp_path: Path, monkeypatch
     assert cancelled == []
 
     lane = prepare("e" * 32)
-    with pytest.raises(SimulationCampaignIntegrityError, match="recovery is incomplete"):
+    with pytest.raises(SimulationRecordIntegrityError, match="recovery is incomplete"):
         registry.recover_lane(lane.execution_id)
     assert cancelled == [lane.execution_id]
 
@@ -195,7 +195,7 @@ def test_recover_lane_treats_an_unreadable_record_as_indeterminate(
     paths.record.write_text("{not json", encoding="utf-8")
     monkeypatch.setattr(registry, "cancel", lambda execution_id: False)
 
-    with pytest.raises(SimulationCampaignIntegrityError, match="recovery is incomplete"):
+    with pytest.raises(SimulationRecordIntegrityError, match="recovery is incomplete"):
         registry.recover_lane(lane.execution_id)
 
 
@@ -210,7 +210,7 @@ def test_child_protocol_conflict_read_rejects_links(tmp_path: Path, defect: str)
     else:
         record.hardlink_to(source)
 
-    with pytest.raises(SimulationCampaignIntegrityError, match="link"):
+    with pytest.raises(SimulationRecordIntegrityError, match="link"):
         child_protocol._publish_or_verify(record, raw)
 
     assert source.read_bytes() == raw
