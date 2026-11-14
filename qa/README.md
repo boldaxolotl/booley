@@ -12,7 +12,9 @@ Booley build through a realistic journey on a pinned open-source IP and writes
 down everything that breaks, confuses, or slows it down. The metric is real
 findings per run.
 
-Missions describe where to look, not a checklist to certify. When something
+Missions describe where to look, not a checklist to certify. The picorv32
+mission goes furthest: after a short baseline it is a free hunt guided only by
+the user docs, looking for the bugs the planned missions don't look for. When something
 fails, the operator records it, works around it, and keeps going, so one broken
 step never hides the bugs behind it.
 
@@ -20,9 +22,9 @@ step never hides the bugs behind it.
 
 | Mission | Journey |
 |---|---|
-| [picorv32](missions/picorv32/MISSION.md) | Published demo Project: baseline sim/lint/synth, Vivado, Interactive Mode and waveform diagnosis, Dhrystone and Zbb Goals, proposals, Finish and crash resume, simulation campaign, cleanup |
-| [taxi](missions/taxi/MISSION.md) | Port of the Taxi 10G MAC from a direct clone: setup, baseline, FST and B-Wave, submodule companion Project, mutation testing, two Goals, campaign, cleanup |
-| [uart](missions/uart/MISSION.md) | Clean-room UART from the OpenTitan documentation with an independent evaluator |
+| [picorv32](missions/picorv32/MISSION.md) | Free hunt on the published demo Project: Quick start, baseline and Stealth guard, then anywhere the user docs lead, with optional seeded faults and Goals as bait |
+| [taxi](missions/taxi/MISSION.md) | Port of the Taxi 10G MAC from a direct clone: setup, baseline, FST and B-Wave, submodule companion Project, mutation testing, two Goals, campaign, Vivado, cleanup |
+| [uart](missions/uart/MISSION.md) | Clean-room UART from the OpenTitan documentation with an independent evaluator; also crash resume, simulation grading and Project discovery |
 | [coverage](missions/coverage/MISSION.md) | Native coverage on a fixed fixture Project with known counts: collection, arithmetic, policy, waivers, storage, retention, a coverage Goal, the Coverage Analyst |
 | [mutation](missions/mutation/MISSION.md) | Mutation Flow on a fixture Project with a hand-written list of every Mutant: sites and decoys, determinism, selection, scoring, hangs, bad input, removed surface |
 | [gui](missions/gui/MISSION.md) | Browser Codespace on the picorv32 demo with a candidate image: onboarding, Dashboard under a live Goal, B-Wave scoped views, stop and resume, terminal output, Review Package, themes, docs site, all checked against the CLI |

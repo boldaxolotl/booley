@@ -29,8 +29,8 @@ surfaces. The `booley-qa-run` skill runs this mission; Goal areas also follow th
   and Claude CLI; rerun on another host or client for coverage. Area 2's CRLF cases are
   Windows-only.
 - Budget: 8 h for the primary run: 460 area minutes, including 90 for feature
-  work and 45 for bounded repair, plus 20 contingency. Areas 12 and 16 are
-  optional follow-up work outside this timebox (40 minutes total); log them as
+  work and 45 for bounded repair, plus 20 contingency. Areas 12 and 16–19
+  are optional follow-up work outside this timebox (105 minutes total); log them as
   skipped unless requested. Run primary areas sequentially; Interactive children
   never overlap an active Goal in the same Project.
 
@@ -310,7 +310,49 @@ documented lifecycle: the digest is unchanged, the Project persists, and nothing
 Rerun the smoke test, then remove the owned runtime and Project but keep the image.
 Look for: hidden downloads or rebuilds, a digest that drifts.
 
-### 17. cleanup — Product cleanup (~20 min)
+### 17. goal-resume — Crash resume and explicit abandon (~20 min, optional follow-up)
+Intent: a restarted client recovers the same Goal Record without losing work or inventing
+decisions.
+Try:
+- Enter a disposable Goal from `goals/entry-probe.json`, gather evidence and commit a harmless
+  checkpoint. Create an `add` proposal for a lint Goal on `lint_uart`, save its exact ID and
+  withhold a decision. Kill the child.
+- Restart a child in the same worktree. Its first call is
+  `goal_status(work_dir=..., rules=true)`; it recovers Goals, evidence and the pending proposal,
+  which stays pending until the operator rejects it with a reason. No new record, approval or
+  evidence may be fabricated.
+- Then create the same `add` again and approve it with a reason: the Change Log records it, the
+  spec revision moves, and the new lint Goal stays unmet until a fresh lint run.
+- A quiet or stuck child is never abandoned automatically. Abandon only on an explicit
+  operator instruction, quoted in `goal_finish(abandon=true, instruction_quote=...)`; in a second
+  disposable Goal, use `booley goal abandon` from the Goal worktree instead. Branches and
+  checkpoints survive.
+Look for: a new record substituted for recovery, lost commits, decisions taken from silence.
+
+### 18. sim-protocol — Simulation grades, test protocol, guards (~30 min, optional follow-up)
+Intent: every simulation outcome gets the right verdict, and the guards fire.
+Try (disposable Targets and TBs on a run-owned branch):
+- Pass, Fail, Inconclusive and Error get distinct verdicts; a pass+fail+pass multi-Target run
+  tries all three and keeps the strongest grade.
+- Sentinels: pass → pass, fail → fail, both → fail, none → inconclusive (a Project that
+  configures its own sentinels replaces the built-in `[SIM_RESULT]` markers). A named cycle
+  count parses exactly; a malformed one never satisfies a Goal and never reads as zero.
+- A plusarg or getopt token runs exactly that test; good and bad standalone modules grade
+  differently.
+- Elab-only results persist and survive a later failing run; a run-only argument to elab is
+  rejected. A skipped-by-default test runs only when named.
+- Guards: exceeding the disk budget kills the run and names the largest files; a frozen clock
+  gets the documented verdict. Restore and rerun to fresh passes with no leftover simulator.
+Look for: inconclusive runs graded as pass, stale artifacts, orphaned simulators.
+
+### 19. project-inventory — Project discovery (~15 min, optional follow-up)
+Intent: host inventory imports exactly the real Projects.
+Try: `booley projects discover` on a bounded root holding real outer and nested Projects plus a
+directory symlink imports only the real roots. A moved-aside root stays listed as missing.
+Human and JSON views agree. Forget only the run-owned entries.
+Look for: symlinked roots imported, views that disagree.
+
+### 20. cleanup — Product cleanup (~20 min)
 Exercise Booley's own cleanup: `booley session down`, explicit Goal abandon where needed,
 worktree removal per the Goal-child rules, and `booley projects forget`. Record any owned
 process or container left behind and any unrelated state touched. Keep the evaluator seed,
