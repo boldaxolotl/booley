@@ -562,13 +562,12 @@ def _memory_plan(
     executor: BaselineExecutor,
     job_class: str,
     booley_dir: Path,
-    config: Mapping[str, object],
     work: tuple[Path, str, tuple[Any, ...]],
 ) -> MemoryAdmissionPlan | None:
     """The Memory Reservation a memory-class baseline plans, else ``None``."""
     if job_class != job_slots.CLASS_MEMORY:
         return None
-    return measure_memory_claim(booley_dir, config, executor.job_requests(*work))
+    return measure_memory_claim(booley_dir, executor.job_requests(*work))
 
 
 def _slot_narrator(store: job_slots.SlotStore, job_class: str) -> Callable[[int | None], None]:
@@ -651,7 +650,7 @@ def _background_slot(
     job_class = executor.job_class()
     config = load_job_budget_config(booley_dir=booley_dir)
     store = job_slots.SlotStore(job_slots.slots_dir(booley_dir), parse_caps(config))
-    plan = _memory_plan(executor, job_class, booley_dir, config, work)
+    plan = _memory_plan(executor, job_class, booley_dir, work)
     memory = None
     if plan is not None:
         job_class = job_slots.CLASS_MEMORY

@@ -293,8 +293,11 @@ Setup: copy `fixtures/simulation-campaign/` to `qa-campaign/` in the Project, re
 Try:
 - `runtime-inputs.toml`, tests `alpha` and `beta`: distinct run directories and vectors, owned
   files cleaned after publication, one unchanged shared Simulator Bundle.
-- `literal-cwd.toml`, a `[jobs] memory_budget` that admits two items: attempts on the same literal directory don't overlap,
-  but a separate templated campaign started then does (per-directory lock, not global).
+- `literal-cwd.toml`, with a `[sandbox].memory` large enough for at least two items (restart the
+  Session as `docs/user/SANDBOX.md` says and confirm `budget_mb` in a claim file; restore the
+  setting after the area): attempts on the same literal directory don't overlap, but a separate
+  templated campaign started then does (per-directory lock, not global). This step tests the
+  per-directory lock, not memory queueing, so it asserts the overlap only.
 - `immutable-presim.toml`: the hook sees no `BOOLEY_BUILD_ROOT` and exits 73. Expect an
   attributed setup failure, no pass, and unchanged source, bundle and snapshot hashes.
 - `legacy-presim.toml`: `legacy-per-test` is disclosed, each test gets its own private build,

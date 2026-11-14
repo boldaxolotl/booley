@@ -1,9 +1,11 @@
-"""Guard: nothing refers to the retired heavy Job Slot class, the queue bound, or their keys.
+"""Guard: nothing refers to the retired heavy Job Slot class, the queue bound, the budget override, or their keys.
 
 Memory admission is how EDA Jobs are admitted (ADR 0087). The heavy Job Slot
 class, ``max_heavy``, ``heavy_memory`` and the development switch are gone, and
 so is the queue bound: ``[jobs].queue_max``, ``QueueFullError`` and every queue-full
-path (#4066). Only the code and docs that explain the retirements may still name them.
+path (#4066). The Memory Budget is always computed from ``[sandbox].memory``:
+``[jobs].memory_budget``, ``exceeds_limit`` and the override rule are gone too (#4069).
+Only the code and docs that explain the retirements may still name them.
 """
 
 from __future__ import annotations
@@ -140,3 +142,37 @@ def test_no_queue_bound_wording_outside_the_allowlist() -> None:
             text = "\n\n".join(blocks)
         offenders.extend(f"{relative}: {match.group(0)}" for match in _QUEUE_BOUND.finditer(text))
     assert offenders == [], "queue-bound wording found:\n" + "\n".join(offenders)
+
+
+_BUDGET_OVERRIDE = re.compile(
+    r"memory_budget\s*=\s*[\"'\d]|[\"']memory_budget[\"']|\[jobs\][.\s`]*memory_budget"
+    r"|jobs\.memory_budget|exceeds_limit|override_bytes|BudgetRule\.OVERRIDE"
+)
+_BUDGET_WHOLE_FILES = frozenset(
+    {
+        "src/booley/config/jobs.py",
+        "tests/config/test_jobs.py",
+        "tests/harness/test_doctor.py",
+        "tests/test_retired_heavy_slot_wording.py",
+    }
+)
+
+
+def test_no_memory_budget_override_outside_the_allowlist() -> None:
+    """Nothing sets, offers or documents ``[jobs].memory_budget``; the budget is computed."""
+    offenders: list[str] = []
+    for relative in _tracked_files():
+        if relative in _BUDGET_WHOLE_FILES or relative.startswith(_WHOLE_PREFIXES):
+            continue
+        text = _read_text(relative)
+        if text is None:
+            continue
+        if relative in _RETIRED_PARAGRAPH_FILES:
+            blocks = [
+                b for b in re.split(r"\n\s*\n", text) if not _EXPLAINS_QUEUE_RETIREMENT.search(b)
+            ]
+            text = "\n\n".join(blocks)
+        offenders.extend(
+            f"{relative}: {match.group(0)}" for match in _BUDGET_OVERRIDE.finditer(text)
+        )
+    assert offenders == [], "Memory Budget override wording found:\n" + "\n".join(offenders)
