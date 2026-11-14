@@ -825,3 +825,24 @@ def test_rtl_fileset_files_under_fw_follow_their_category(tmp_path, monkeypatch,
     seen = _snapshot_view(repo, category, ("fw/rom.sv", "fw/rom.vhd"), goal_mode=False)
 
     assert seen == dict.fromkeys(("fw/rom.sv", "fw/rom.vhd"), category == "rtl")
+
+
+@pytest.mark.parametrize("category", ["rtl", "tb"])
+def test_c_source_in_rtl_fileset_follows_sim_harness_rule(tmp_path, monkeypatch, category):
+    """A C source in the RTL fileset is a sim harness input: TB-side, as documented (#4052)."""
+    repo = _repo(tmp_path)
+    monkeypatch.chdir(repo)
+    for name in ("rtl/dut.sv", "tb/tb.sv", "fw/boot.c"):
+        (repo / name).parent.mkdir(exist_ok=True)
+        (repo / name).write_text(f"// {name}\n")
+    (repo / "design.core").write_text(
+        "CAPI=2:\nname: ::fw:0\nfilesets:\n"
+        "  rtl:\n    files: [rtl/dut.sv, {fw/boot.c: {file_type: cSource}}]\n"
+        "  tb:\n    tags: [tb]\n    files: [tb/tb.sv]\n"
+        "targets:\n  sim:\n    default_tool: verilator\n    filesets: [rtl, tb]\n"
+    )
+    _git(["add", "design.core", "rtl/dut.sv", "tb/tb.sv", "fw/boot.c"], repo)
+
+    seen = _snapshot_view(repo, category, ("fw/boot.c",), goal_mode=False)
+
+    assert seen == {"fw/boot.c": category == "tb"}

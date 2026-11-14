@@ -1367,3 +1367,25 @@ def test_flow_runtime_rows_render_unchanged(tmp_path, monkeypatch, capsys):
         assert [request.targets for _entry, request in ran] == [
             ("fpga_board",) if flows == ["fpga"] else ("lint_style",)
         ], name
+
+
+def test_project_write_scope_is_exactly_the_core_derived_dirs(tmp_path):
+    """The Doctor write Scope is the `.core`-derived dirs only (#4052).
+
+    No hardcoded `fw/`, `util/`, or `data/` is added, so a `.core` script under
+    one of those is out-of-Scope.
+    """
+    for source in ("hw/top.sv", "verif/tb.sv"):
+        (tmp_path / source).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / source).write_text("module m; endmodule\n")
+    (tmp_path / "design.core").write_bytes(
+        b"CAPI=2:\n"
+        b"name: ::demo\n"
+        b"filesets:\n"
+        b"  rtl: {files: [hw/top.sv]}\n"
+        b"  tb: {files: [verif/tb.sv], tags: [tb]}\n"
+        b"targets:\n"
+        b"  sim: {filesets: [rtl, tb], toplevel: m}\n"
+    )
+
+    assert doctor._project_write_scope(tmp_path) == ["hw/*", "verif/*"]

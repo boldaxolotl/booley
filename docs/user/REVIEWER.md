@@ -64,9 +64,10 @@ touches none of the files in scope finishes without a review.
 
 Each Reviewer has the other side's files hidden, as your `.core` filesets
 declare them, and any HDL file (`.v`, `.vh`, `.sv`, `.svh`, backups like
-`rom.sv.orig` included) that no fileset declares. Every other project file,
-firmware included, is readable context. A finding in a file outside the
-review's files is kept in the review evidence and never counts as open.
+`rom.sv.orig` included) that no fileset declares, unless the review's scope
+names that file. Every other project file, firmware included, is readable
+context. A finding in a file outside the review's files is kept in the review
+evidence and never counts as open.
 
 ## In Goal Mode
 

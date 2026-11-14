@@ -195,7 +195,7 @@ def _get_prefixes(
 
     rtl_names, tb_names = parsed
     return (
-        source_dir_prefixes(list(rtl_names), work_dir),
+        source_dir_prefixes(rtl_names, work_dir),
         source_dir_prefixes(tb_names, work_dir),
     )
 

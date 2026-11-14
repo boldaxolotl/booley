@@ -246,9 +246,9 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
         "scoped support files. Sim C/C++ harness inputs count as TB for isolation and cannot be "
         "mutation scope. Declared opposite-category sources are refused in either mode; "
         "unregistered scoped sources retain the registration warning and receive only an exact "
-        "per-file category grant. Each Reviewer has the opposite category's sources and undeclared HDL "
-        "files hidden; all other project files, such as firmware, are readable context, and "
-        "findings outside the scope are filtered.",
+        "per-file category grant. Each Reviewer has the opposite category's sources and HDL files "
+        "no .core fileset declares hidden; all other project files, such as firmware, are "
+        "readable context, and findings outside the scope are filtered.",
         "",
         "The result links saved review evidence, including rejected proposals for "
         "inspection. Rejected proposals do not affect Criteria.",

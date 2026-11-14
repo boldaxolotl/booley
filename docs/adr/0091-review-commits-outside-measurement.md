@@ -2,8 +2,8 @@
 
 Status: accepted (2026-11-10; renumbered from 0087 on 2026-11-11, because
 [ADR 0087](0087-admit-jobs-against-a-measured-memory-budget.md) already had the
-number; amended 2026-11-11: reviews are declared in `reviews.toml`, see
-Amendments)
+number; amended 2026-11-11: reviews are declared in `reviews.toml`; amended
+2026-11-14: firmware has no special handling, see Amendments)
 
 Supersedes ADR 0074's Goal-owned review contract once Goal Mode is removed
 (0.5.0). ADR 0074's `--verify` and `--waive` mechanics stay. Decided in the
