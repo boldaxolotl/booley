@@ -374,6 +374,9 @@ def test_doctor_audits_every_auto_allowed_cli(sandbox, monkeypatch, capsys):
     # One credential line per allowed CLI, not only the default's.
     assert any(m.startswith("Claude Code auth:") for m in messages)
     assert any(m.startswith("Codex auth:") for m in messages)
+    # The auth pin audits the Project's own CLI (the default), never the other allowed one.
+    pins = [f.subject for f in findings if f.check_id == "agent.credential-policy"]
+    assert pins == ["claude"]
 
 
 def _auto_spec_report(sandbox, monkeypatch, *, declared_provider):

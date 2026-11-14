@@ -213,16 +213,18 @@ pays:
 ```toml
 [agent]
 default = "claude"
-auth = "subscription"   # "subscription", "api_key", or "auto" (default)
+auth = "subscription"   # "subscription" or "api_key"; "auto" still loads
 ```
 
-- **`auto`**: the Agent CLI decides, and an API key beats a subscription.
+- **`auto`**: the Agent CLI decides, and an API key beats a subscription. This
+  is what a missing `auth` means at run time, and `booley doctor` fails on it.
 - **`subscription`**: Booley removes API keys from the agents' environment so
   the subscription pays.
 - **`api_key`**: the API key pays.
 
 A single value applies to every CLI in `clis`. To bill each CLI differently,
-use a table with one entry per CLI; a CLI you leave out uses `auto`:
+use a table with one entry per CLI; a CLI you leave out runs as `auto`, which
+`booley doctor` fails on:
 
 ```toml
 [agent]
@@ -238,6 +240,10 @@ A table may name only CLIs listed in `clis`.
 `booley doctor` checks that the credential you picked exists, so Booley never
 quietly bills the other one:
 
+- **Any CLI in `clis`** whose `auth` is missing or `auto`: fails, naming the
+  value `booley init` would record (`subscription` with a login, `api_key` with
+  only a key). Set it under `[agent]` or `[agent.auth]`, or re-run `booley init`.
+  Doctor accepts `subscription` with an API key exported.
 - **Default CLI**, with `subscription` or `api_key`: a missing credential fails.
 - **Another CLI in `clis`**: a missing credential warns. If a `[models]` entry
   runs a Specialist on that CLI, it fails whatever `auth` says.

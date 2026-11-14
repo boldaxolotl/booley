@@ -664,11 +664,19 @@ def _detected_auth(cli: str) -> tuple[bool, bool]:
     )
 
 
+def detected_auth_policy(cli: str) -> str:
+    """The policy init records for *cli* without asking.
+
+    ``api_key`` when only an API key is found, else ``subscription`` (including when
+    both credentials or neither are found).
+    """
+    has_subscription, has_key = _detected_auth(cli)
+    return "api_key" if has_key and not has_subscription else "subscription"
+
+
 def _choose_auth(ctx: InitContext, cli: str) -> str | None:
     """The policy to record for *cli* from its credentials; ``None`` when a prompt aborts."""
     has_subscription, has_key = _detected_auth(cli)
-    if has_key and not has_subscription:
-        return "api_key"
     if has_subscription and has_key:
         if ctx.interactive:
             return _prompt_agent_choice(
@@ -678,12 +686,12 @@ def _choose_auth(ctx: InitContext, cli: str) -> str | None:
         hint(
             f'to bill the {cli} API key instead, set {cli} = "api_key" under [agent.auth] in booley.toml'
         )
-    elif not has_subscription:
+    elif not has_subscription and not has_key:
         hint(
             f"{cli}: no credential found; sign in: "
             f"{auth_token.missing_credential_fix(cli, 'subscription')}"
         )
-    return "subscription"
+    return detected_auth_policy(cli)
 
 
 def _recorded_auth(
