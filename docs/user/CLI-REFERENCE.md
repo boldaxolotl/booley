@@ -102,10 +102,9 @@ and any submodule whose working tree differs from the commit's pin, because
 neither is measured. It exits with status 0 when
 every enforced bound is met, 1 when one is unmet, and 2 when a Flow errored,
 when `metrics.toml` declares no table, or when the measurement could not run
-(both unmet and errored: 2). After status 1 or 2 it prints the next step on
-stderr: fix, commit and measure again, or stop and report the error. Without
-`--all`, the first unmet or errored table stops the run and the later tables
-are "not evaluated". `--validate` takes no other option. Ctrl-C cancels the measurement: a run with a finished Flow is
+(both unmet and errored: 2). Without `--all`, the first unmet or errored table
+stops the run and the later tables are "not evaluated". `--validate` takes no
+other option. Ctrl-C cancels the measurement: a run with a finished Flow is
 stored as cancelled, never as measured, and the command ends with status 130.
 
 The Dashboard opens by itself when you attach to the container; see
