@@ -27,8 +27,8 @@ The Booley user guide. The first time, read **Get started** in order.
 <tr><td><a href="specialists/">Specialists</a></td><td>LLM helpers that review code and explain coverage.</td></tr>
 <tr><td><span class="docs__tree" aria-hidden="true">└</span><a href="reviewer/">Reviewer</a></td><td>Single-focus AI review of RTL or testbench code.</td></tr>
 <tr><th scope="rowgroup" rowspan="7">Reference</th><td><a href="config/">Config</a></td><td>Project-wide <code>booley.toml</code> settings.</td></tr>
-<tr><td><a href="tests/">tests.toml</a></td><td>A sim Target's Tests, Test Variants, and seeds.</td></tr>
 <tr><td><a href="targets/">Targets</a></td><td>Describe how your design builds for every Flow.</td></tr>
+<tr><td><a href="tests/">tests.toml</a></td><td>A sim Target's Tests, Test Variants, and seeds.</td></tr>
 <tr><td><a href="sandbox/">Sandbox</a></td><td>Configure the container Booley and its agents run in.</td></tr>
 <tr><td><a href="stealth/">Stealth Mode</a></td><td>Keep Booley out of your Git history.</td></tr>
 <tr><td><a href="cli-reference/">CLI reference</a></td><td>Every command, Flow, and Specialist.</td></tr>

@@ -62,6 +62,7 @@ from booley.goals.waiver_binding import WaiverBinding
 from booley.goals.waiver_policy import (
     WAIVER_POLICY_DETAIL_KEY,
     policy_location,
+    rebased_policy,
     waiver_policy_fingerprint,
 )
 from booley.runtime.booley_dir import crossed_booley_dir_entry, resolve_checkout_booley_dir
@@ -278,7 +279,7 @@ class GoalWaiverService:
     @contextmanager
     def locking(self, binding: WaiverBinding) -> Generator[None]:
         """Global order: Goal record -> shared approval storage -> candidate storage."""
-        approval = Path(binding.approval_root)
+        approval = binding.approval_path()
         lock_path = approval.parent / f".{approval.name}.booley-approval.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a+") as handle:
@@ -294,7 +295,7 @@ class GoalWaiverService:
     ) -> tuple[candidates.WaiverCandidate, ResolvedCoverageCampaign, dict[str, Any]]:
         assert proposal.waiver is not None
         binding = proposal.waiver
-        if binding.policy.to_json() != waiver_policy_fingerprint(self.root):
+        if rebased_policy(binding.policy.to_json()) != waiver_policy_fingerprint(self.root):
             raise ProposalError(
                 "waiver policy changed since proposal creation; create a new proposal"
             )
@@ -313,7 +314,7 @@ class GoalWaiverService:
         if not fresh_observation(proposal.before or proposal.after, row, state, self.root):
             raise ProposalError("selected coverage producer evidence became stale")
         self._validate_candidate(item, resolved, row["detail"])
-        self._refuse_protected(Path(binding.approval_root), self.record)
+        self._refuse_protected(binding.approval_path(), self.record)
         return item, resolved, row["detail"]
 
     def prepare(
@@ -336,7 +337,7 @@ class GoalWaiverService:
         effects = self._promotion_effects(item, stamps, proposal)
         after_bytes = {
             Path(config.directory)
-            / effect.path.relative_to(Path(proposal.waiver.approval_root)): cast(
+            / effect.destination.relative_to(proposal.waiver.approval_path()): cast(
                 bytes, effect.after
             )
             for effect in effects
@@ -366,7 +367,7 @@ class GoalWaiverService:
         self, item: candidates.WaiverCandidate, stamps: ApprovalStamps, proposal: Proposal
     ) -> tuple[FileEffect, ...]:
         assert proposal.waiver is not None
-        root = Path(proposal.waiver.approval_root)
+        root = proposal.waiver.approval_path()
         promotion = build_promotion(item, stamps)
         path = root / waiver_file_path(item.proposal.source)
         before = read_bytes(path)
@@ -395,7 +396,7 @@ class GoalWaiverService:
 
     def validate_effect(self, effect: FileEffect) -> None:
         """Keep protected-input policy at its original pre-publication boundary."""
-        self._refuse_protected(effect.path, self.record)
+        self._refuse_protected(effect.destination, self.record)
 
     def evaluate(self, goal: GoalSpec, detail: Mapping[str, Any]) -> tuple[bool, dict[str, Any]]:
         """Numeric coverage relaxation re-evaluates strict points, never old percentages."""

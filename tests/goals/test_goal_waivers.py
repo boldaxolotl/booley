@@ -781,3 +781,14 @@ def test_candidate_campaign_mismatch_is_ineligible(layout):
     path.write_text(json.dumps(value))
     with pytest.raises(ProposalError, match="not eligible"):
         propose(layout, env, candidate)
+
+
+def test_translated_destination_goes_through_the_image_alias(monkeypatch, tmp_path):
+    from booley.goals import apply_effects
+
+    effect = apply_effects.FileEffect(tmp_path / "x", None, b"a", "label")
+    monkeypatch.setattr(
+        apply_effects, "canonical_project_alias_path", lambda path: tmp_path / "real" / path.name
+    )
+
+    assert effect.destination == tmp_path / "real" / "x"

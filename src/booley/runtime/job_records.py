@@ -44,6 +44,7 @@ from booley.core.boundary import (
 )
 from booley.runtime.display_identity import DisplayScope
 from booley.runtime.filesystem_utils import read_file_bytes, replace_file
+from booley.runtime.mount_history import translate_stored_path
 from booley.runtime.timefmt import parse_timestamp
 
 logger = logging.getLogger(__name__)
@@ -132,6 +133,11 @@ class JobRecord:
         known: dict[str, Any] = {f: d.get(f) for f in cls.__dataclass_fields__}
         if known.get("display_scope") is not None:
             known["display_scope"] = DisplayScope.parse(known["display_scope"])
+        for key in ("work_dir", "report_root"):
+            if isinstance(known.get(key), str):
+                known[key] = translate_stored_path(
+                    known[key], record=f"Job record {known.get('run_id')}"
+                )
         return cls(**{k: v for k, v in known.items() if v is not None})
 
 

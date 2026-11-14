@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, cast
 
 from booley.core.boundary import (
@@ -20,6 +21,7 @@ from booley.core.boundary import (
     require_str_value,
 )
 from booley.goals.proposal_errors import ProposalError
+from booley.runtime.mount_history import translate_stored_path
 
 
 def _object(value: object, where: str, fields: frozenset[str] | None = None) -> dict[str, Any]:
@@ -260,6 +262,14 @@ class WaiverBinding:
             raw["directory"],
             raw["candidate_root"],
             raw["record_id"],
+        )
+
+    def approval_path(self) -> Path:
+        """The approval directory under the current Sandbox mount point."""
+        return Path(
+            translate_stored_path(
+                self.approval_root, record=f"waiver proposal {self.candidate_id}"
+            )
         )
 
     def to_json(self) -> dict[str, Any]:

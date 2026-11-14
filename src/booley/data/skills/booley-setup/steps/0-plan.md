@@ -458,8 +458,8 @@ script lines) as you go.
   `git -C .booley submodule status` too. If either has any, add a
   decision row — but a short one: Goal worktrees get their submodules
   reconstructed from local Git objects at the same repository path, never
-  cloned, so private SSH URLs are not consulted (mechanics in `/booley-docs/TARGETS.md` →
-  "Submodules"). What the plan owes is the precondition and, if the outer repo
+  cloned, so private SSH URLs are not consulted (mechanics in `/booley-docs/CONFIG.md` →
+  "Git submodules"). What the plan owes is the precondition and, if the outer repo
   has heavy submodules nothing builds against, the explicit list:
   - Every selected submodule must be **present, clean, non-shallow, and contain
     the required pinned commit objects** in its owning repository before any
@@ -564,7 +564,7 @@ separate columns (see "How a row resolves"). The standard checklist:
    **Enumerate the full
    Target list here**, not just a name per intent: each Target with its intent,
    toplevel, and test list. The counting rule depends on the TB flavor (row 4);
-   `/booley-docs/TARGETS.md` is authoritative:
+   `/booley-docs/FLOW-SIM.md` (Cocotb Targets) is authoritative:
    - **Classic sentinel SV/UVM TB** — one Target per *intent* (sim / lint /
      asic / fpga). A distinct config (parameter/define set) or a distinct
      toplevel gets its own Target; nothing else does.

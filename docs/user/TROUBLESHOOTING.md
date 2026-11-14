@@ -219,12 +219,14 @@ means the next build rebuilds the layers it removed.
 
 ### Deleted `[jobs]` keys
 
-`booley.toml` sets `max_heavy` or `heavy_memory`. Flow and Specialist runs and
-every command that works on a Project stop with a message that names each key,
-its line and the file, for example `max_heavy (line 12)`; `booley doctor` and
-`booley upgrade` still run. Memory admission replaced both keys. Delete the
-named lines from that file. In a Developer Agent chat that is already open,
-`/booley-heal` removes them for you. Then set `[sandbox].memory` if you want to choose the Memory Budget;
+`booley.toml` sets `max_heavy`, `heavy_memory`, `queue_max` or `memory_budget`. Flow and
+Specialist runs and every command that works on a Project stop with a message
+that names each key, its line, the reason it is refused and the file, for example
+`max_heavy (line 12: memory admission replaced it)`; `booley doctor` and
+`booley upgrade` still run. Delete the named lines from that file. In a
+Developer Agent chat that is already open, `/booley-heal` removes them for you.
+After deleting `max_heavy`, `heavy_memory` or `memory_budget`, set
+`[sandbox].memory` to choose the Memory Budget;
 see [Jobs & concurrency](CONFIG.md#jobs--concurrency-jobs).
 
 ### Job killed out of memory
@@ -622,7 +624,7 @@ To check:
 Doctor skips Cocotb Targets, which take their verdict from cocotb. If the
 warning says the testbench fileset is Python, the Target is missing
 `cocotb_module`; see
-[Cocotb Targets](https://booley.dev/docs/targets/#cocotb-targets-python-testbenches).
+[Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches).
 
 </details>
 
@@ -648,7 +650,7 @@ without `--trace`. A failure or timeout keeps its verdict.
 A Cocotb Target uses no sentinels: its Test Run is inconclusive when cocotb's
 result file is missing or doesn't report that test as passed or failed, and
 its log contains `cocotb sim INCONCLUSIVE (<reason>)`. See
-[Cocotb Targets](https://booley.dev/docs/targets/#cocotb-targets-python-testbenches).
+[Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches).
 
 </details>
 

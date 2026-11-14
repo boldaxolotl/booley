@@ -62,8 +62,6 @@ enabled = false              # synthesis recipe belongs in Target flow_options
 # `booley resources` reports their peak memory.
 
 [jobs]
-# memory_budget = "24g"      # optional; default is [sandbox].memory minus the agent reserve
-
 # Seat Caps are mandatory for a licensed tool such as Vivado.
 # [jobs.seats]
 # vivado = 1                 # license seats Booley may use at once

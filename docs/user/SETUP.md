@@ -28,13 +28,12 @@ host (`/booley-setup new` for a new IP). They differ only in the skill mode:
   restatement of the filelists you already have). See [Ports](#ports) for
   open-source IPs that have gone through this path.
 
-Both paths begin with host-side Project Initialization, then use their own skill mode. For
-what each configuration field *means*, see [CONFIG.md](CONFIG.md) for
-`booley.toml` and `enabled`, [TARGETS.md](TARGETS.md) for `.core` files,
-[`tests.toml`](TESTS.md) for Tests, Test Variants and seeds,
+Both paths begin with host-side Project Initialization, then use their own skill mode.
+[Project files](#project-files) lists the files setup writes and where each is
+documented. See also
 [FLOW-SIM.md](FLOW-SIM.md#passfail-sentinels-and-cycle-counts)
 for sentinels (the log-pattern strings that decide a simulation's pass/fail
-verdict), and [SANDBOX.md](SANDBOX.md#commercial-eda-provisioning) for EDA
+verdict) and [SANDBOX.md](SANDBOX.md#commercial-eda-provisioning) for EDA
 provisioning.
 
 > An agent session can follow this file too. The [context map](../../GLOSSARY-MAP.md)
@@ -350,6 +349,25 @@ constraints). From there, drive development the normal way: see
 [GOAL-MODE.md](GOAL-MODE.md) to set up your first Goal Mode with `/booley-goal` and run it
 with `/booley-goal start`, or start an
 [Interactive Mode](USAGE.md#interactive-mode) session.
+
+## Project files
+
+These files configure a Booley Project. Setup writes `booley.toml`, the
+`.core` files, `tests.toml` and `AGENTS.md`. All but the `.core` files and the
+host `config.toml` live in the Booley Directory, `.booley/` at the top of your
+repository.
+
+| File | What it holds | Reference |
+|---|---|---|
+| `booley.toml` | Project settings: which Flows and Specialists run, Job limits, Agent CLIs and billing, models, and each Flow's options | [CONFIG.md](CONFIG.md) |
+| `*.core` | Targets: which files, top module, parameters and EDA tool each Flow builds with. They can sit anywhere in the repository, or in `.booley/cores/` in [Stealth Mode](STEALTH.md) | [TARGETS.md](TARGETS.md) |
+| `tests.toml` | The Tests of each simulation Target, their Test Variants and seeds | [TESTS.md](TESTS.md) |
+| `AGENTS.md` | Project guidance for Developer Agents | [Step 3](#porting-an-existing-project-plan-then-execute) |
+| `doctor-waivers.toml` | Doctor warnings you accept, each with a reason | [DOCTOR.md](DOCTOR.md#doctor-waivers-doctor-waiverstoml) |
+| `docker/Dockerfile`, `docker/requirements.txt` | The Project's Sandbox Image. `booley init` generates them; edit them to add tools | [SANDBOX.md](SANDBOX.md#custom-sandbox-image) |
+| `hooks/` | Scripts that prepare a new worktree | [CONFIG.md](CONFIG.md#worktree-setup-hooks-booleyhooks) |
+| `mcp_tools/` | The Project's own tools for the Developer Agent | [CONFIG.md](CONFIG.md#custom-mcp-tools) |
+| `~/.config/booley/config.toml` | Host settings shared by every Project on this machine | [SANDBOX.md](SANDBOX.md#host-configuration-configtoml) |
 
 ## See also
 

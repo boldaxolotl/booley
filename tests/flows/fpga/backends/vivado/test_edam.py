@@ -18,6 +18,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[5] / "src"))
 
 from booley.flows import edam as edam_layer
+from booley.flows.edam import EdamFile
 from booley.flows.fpga.backends.vivado import edam as fpga_edam
 from booley.flows.fpga.profiles import VIVADO_PROFILES
 from booley.flows.run_evidence import FlowSourceEvidence
@@ -38,8 +39,7 @@ def _recipe(**overrides) -> ResolvedFpgaRecipe:
         "part": "xc7a35tcpg236-1",
         "top": "dut_top",
         "xdc_files": (),
-        "sv_files": (),
-        "v_files": (),
+        "sources": (),
         "include_dirs": (),
         "defines": (),
         "vlogparams": {},
@@ -274,8 +274,12 @@ class TestBuildFpgaEdam:
         recipe_fields = {
             "top": "dut_top",
             "part": "xcvu9p-flga2104-2-i",
-            "sv_files": (root / "rtl" / "a.sv", root / "rtl" / "b.sv"),
-            "v_files": (root / "rtl" / "legacy.v",),
+            "sources": (
+                EdamFile(root / "rtl" / "a.sv", "systemVerilogSource"),
+                EdamFile(root / "rtl" / "b.sv", "systemVerilogSource"),
+                # Declared SystemVerilog despite the .v name.
+                EdamFile(root / "rtl" / "legacy.v", "systemVerilogSource"),
+            ),
             "include_dirs": (root / "rtl" / "include",),
             "xdc_files": (root / "constr" / "pins.xdc",),
             "defines": ("SYNTH", "WIDTH=32"),
@@ -301,11 +305,18 @@ class TestBuildFpgaEdam:
         assert len(xdc) == 1
         assert xdc[0]["file_type"] == "xdc"
 
-    def test_sources_typed_by_suffix(self, tmp_path: Path):
+    def test_sources_keep_declared_types_and_order(self, tmp_path: Path):
         edam = self._edam(tmp_path)
-        types = {Path(f["name"]).name: f["file_type"] for f in edam["files"]}
-        assert types["a.sv"] == "systemVerilogSource"
-        assert types["legacy.v"] == "verilogSource"
+        sources = [
+            (Path(f["name"]).name, f["file_type"])
+            for f in edam["files"]
+            if not f.get("is_include_file") and f["file_type"] != "xdc"
+        ]
+        assert sources == [
+            ("a.sv", "systemVerilogSource"),
+            ("b.sv", "systemVerilogSource"),
+            ("legacy.v", "systemVerilogSource"),
+        ]
 
     def test_defines_become_params(self, tmp_path: Path):
         edam = self._edam(tmp_path)
@@ -334,7 +345,7 @@ class TestBuildFpgaEdam:
 
     def test_file_outside_workspace_rejected(self, tmp_path: Path):
         with pytest.raises(edam_layer.EdamSecurityError):
-            self._edam(tmp_path, sv_files=(Path("/etc/passwd"),))
+            self._edam(tmp_path, sources=(EdamFile(Path("/etc/passwd"), "verilogSource"),))
 
 
 class TestRunCommand:
@@ -363,7 +374,7 @@ class TestConfigure:
             _recipe(
                 top="dut_top",
                 part="xcvu9p-flga2104-2-i",
-                sv_files=(root / "rtl" / "a.sv",),
+                sources=(EdamFile(root / "rtl" / "a.sv", "systemVerilogSource"),),
                 xdc_files=(root / "constr" / "pins.xdc",),
                 defines=("SYNTH",),
                 vlogparams={"WIDTH": 8, "FLAG": True},

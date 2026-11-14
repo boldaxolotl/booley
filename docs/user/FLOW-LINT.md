@@ -15,7 +15,7 @@ what all Flows share (choosing Targets, options, logs, exit codes), see
 
 1. Check that the Project has a lint Target (`booley targets --for lint` lists
    them). Project Setup normally creates one;
-   [Target authoring](TARGETS.md#target-authoring) shows how to add one.
+   [Lint Targets](#lint-targets) shows how to add one.
 2. Ask the Developer Agent, naming the lint Target or Targets:
 
     > *"Run lint on `lint_soc` and `lint_style` and explain every finding."*
@@ -109,28 +109,84 @@ run's `--scope`, whatever `warnings_as_errors` says. A run with any `--scope`
 entry that matches no linted file ends in `ERROR` and records no passing
 result.
 
-## Waivers and rules
+## Lint Targets
+
+A lint Target sets `flow: lint` and `flow_options.tool` to `verilator` or
+`verible` (`veriblelint` also works). A Target with any other tool doesn't
+show up in `booley targets --for lint`. Name it `lint_<subject>`; see
+[Target naming](TARGETS.md#target-authoring).
 
 Waive a known-acceptable finding in the Target, not in the RTL, so the waiver is
 reviewed and versioned with the rest of the lint setup. Waived findings are not
-reported. [Target authoring](TARGETS.md#target-authoring) lists which EDA
-tools a lint Target can use.
+reported. Each linter takes its waivers, and Verible its style rules, from a
+file the Target includes:
 
-<details markdown>
-<summary>With Verilator</summary>
+### Verilator lint Target
 
-List the waivers in a waiver file that the Target includes; see the
-[Verilator lint Target](TARGETS.md#verilator-lint-target) recipe.
+To waive Verilator warnings, add a `.vlt` control file with `file_type: vlt`
+and include its fileset in the lint Target. The type must be exactly `vlt`:
+an untyped `.vlt` file, or a guessed type such as `verilatorConfig`, is
+silently ignored. Paths are relative to the `.core` file:
 
-</details>
+```yaml
+CAPI=2:
+name: acme:ip:top:1.0
+filesets:
+  rtl:
+    files: [rtl/top.sv]
+    file_type: systemVerilogSource
+  lint_config:
+    files:
+      - lint/waivers.vlt: {file_type: vlt}
+targets:
+  lint_structural:
+    flow: lint
+    flow_options:
+      tool: verilator
+      verilator_options: [-Wall]   # optional: more warnings, unrelated to the waiver
+    filesets: [rtl, lint_config]
+    toplevel: top
+```
 
-<details markdown>
-<summary>With Verible</summary>
+`lint/waivers.vlt` starts with the control-file directive, then lists what to
+waive:
 
-Choose the style rules in a rules file and list waivers in waiver files; see
-the [Verible lint Target](TARGETS.md#verible-lint-target) recipe.
+```text
+`verilator_config
+lint_off -rule WIDTHTRUNC -file "*top.sv"
+```
 
-</details>
+This waives `WIDTHTRUNC` in files ending in `top.sv` (the pattern also matches
+FuseSoC's build-tree copy); every other warning stays on. Keep patterns
+specific, and narrow further with `-lines` (see Verilator's
+[control-file reference](https://verilator.org/guide/latest/control.html)).
+Add `lint_config` to other Verilator Targets only where the same waiver
+should apply.
+
+### Verible lint Target
+
+A style Target selects the RTL plus a rules file and, optionally, waivers:
+
+```yaml
+CAPI=2:
+name: acme:ip:top:1.0
+filesets:
+  rtl:
+    files: [rtl/top.sv]
+    file_type: systemVerilogSource
+  lint_config:
+    files:
+      - lint/rules.cfg: {file_type: veribleLintRules}
+      - lint/waivers.txt: {file_type: veribleLintWaiver}
+targets:
+  lint_style:
+    flow: lint
+    flow_options: {tool: verible}
+    filesets: [rtl, lint_config]
+    toplevel: top
+```
+
+Use at most one rules file; waiver files are optional.
 
 ## Configuration (`[flows.lint]`)
 

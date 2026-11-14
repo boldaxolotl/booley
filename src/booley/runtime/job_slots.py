@@ -165,14 +165,6 @@ LEASE_DURATION_SECONDS = 30.0
 LEASE_RENEW_INTERVAL_SECONDS = 10.0
 
 
-class QueueFullError(RuntimeError):
-    """The class queue is at ``queue_max`` — the submit must be refused.
-
-    This is the only condition that still surfaces as BLOCKED to the agent
-    (ADR 0028 Decision 8); anything under the cap waits in queue instead.
-    """
-
-
 # What a read-only look at one slot entry can tell about its future (``_entry_verdict``).
 _VERDICT_LIVE = "live"  # stays; counts toward admission
 _VERDICT_GONE = "gone"  # a reap removes it with no recovery outcome to wait for
@@ -182,12 +174,11 @@ _VERDICT_ORPHANED = "orphaned"  # as recoverable, and its owner process is gone
 
 @dataclass(frozen=True)
 class AdmissionOutlook:
-    """What an ``interactive`` claim on *job_class* would meet: ``ahead`` entries, a cap, a bound."""
+    """What an ``interactive`` claim on *job_class* would meet: ``ahead`` entries and a cap."""
 
     job_class: str
     ahead: int
     cap: int
-    queue_max: int
 
     @property
     def runs_now(self) -> bool:
@@ -198,16 +189,6 @@ class AdmissionOutlook:
     def position(self) -> int:
         """1-based place in the queue; 0 when the claim runs now."""
         return 0 if self.runs_now else self.ahead - self.cap + 1
-
-    @property
-    def full(self) -> bool:
-        """True when admission refuses the claim."""
-        return self.ahead >= self.cap + self.queue_max
-
-    @property
-    def refusal(self) -> str:
-        """The reason admission gives when the queue is full."""
-        return f"{self.job_class} queue is full ({self.queue_max} waiting)"
 
 
 class ClaimLostError(RuntimeError):
@@ -415,7 +396,7 @@ def memory_wait(
         (held.memory, parse_stamp(held.promoted_at) or parse_stamp(held.created_at))
         for held in holders
     ]
-    _starts, blocked_ahead, _blocked = _memory_queue(running, ahead, claim, now)
+    _starts, blocked_ahead = _memory_queue(running, ahead, claim, now)
     # Holders whose claim cannot be read say nothing about the budget: skip them.
     claimed = [(held, held.memory) for held in holders if held.memory is not None]
     alone = any(held_claim.run_alone for _held, held_claim in claimed)
@@ -547,11 +528,11 @@ def _memory_queue(
     ahead: list[MemoryClaim | None],
     claim: MemoryClaim,
     now: float,
-) -> tuple[bool, int, bool]:
+) -> tuple[bool, int]:
     """Where *claim* stands behind running *holders* and the waiters *ahead*.
 
     Each holder comes with its start epoch (``None`` when unstamped). Returns
-    ``(starts_now, position, blocked)``. The walk starts each claim in order
+    ``(starts_now, position)``. The walk starts each claim in order
     against *claim*'s budget: a run-alone claim starts only when nothing runs,
     any other claim only when nothing run-alone runs and its reservation still
     fits. A claim holding a seat of a licensed tool also needs a free seat
@@ -564,9 +545,8 @@ def _memory_queue(
     finish the front waits for means nothing jumps. ``None`` (an unreadable
     claim) never fits and ends jumping, so an unknown reservation cannot
     overcommit. ``starts_now`` is the promotion rule (no waiter ahead starts
-    first, and the claim starts); ``blocked`` says the claim itself cannot
-    start, and ``position`` counts the blocked claims ahead of it, which is what
-    ``queue_max`` bounds: a claim waiting only for claims that start is not queued.
+    first, and the claim starts); ``position`` counts the blocked claims ahead
+    of it, and is 0 for a claim that fits.
     """
     load = _MemoryLoad(claim.budget_mb)
     for held, started in holders:
@@ -577,7 +557,7 @@ def _memory_queue(
     started_ahead = [load.admit(waiting, now) for waiting in ahead]
     fits = load.admit(claim, now)
     blocked_ahead = started_ahead.count(False)
-    return (fits and not any(started_ahead), 0 if fits else blocked_ahead, not fits)
+    return (fits and not any(started_ahead), 0 if fits else blocked_ahead)
 
 
 @dataclass
@@ -848,15 +828,13 @@ class SlotStore:
         memory: MemoryClaim | None = None,
         queue_reason: str | None = None,
         job: JobLabel | None = None,
-        bounded: bool = True,
     ) -> SlotToken:
-        """Join *job_class* admission or raise when its bounded queue is full.
+        """Join *job_class* admission; the claim waits in queue order until admitted or withdrawn.
 
         *memory* is required for the memory class and refused for the others.
         *queue_reason* names why a requeued Job claims again; it is stored in
         the entry so the caller can read it while the Job waits or runs.
         A claim that opens as zero is refused (only a holder reaches zero).
-        ``bounded=False`` skips the queue bound for an admitted Job's own claim.
         """
         if (memory is not None) != (job_class == CLASS_MEMORY):
             raise ValueError(f"a memory claim goes with the {CLASS_MEMORY} class only")
@@ -868,17 +846,7 @@ class SlotStore:
         cls_dir.mkdir(parents=True, exist_ok=True)
         self.reap(job_class)
 
-        # Refuse before creating: a full queue must not grow further. The
-        # bound counts the live entries that can rank ahead of this claim
-        # (every holder, plus waiters of equal or higher priority), so waiting
-        # background work never makes an interactive claim BLOCKED. An entry
-        # that has not promoted yet still occupies capacity, not queue. The
-        # count can race a concurrent submit; the post-create rank check
-        # catches whatever slips through.
         priority = _ROLE_PRIORITY.get(role, _ROLE_PRIORITY[ROLE_BACKGROUND])
-        if bounded and self._queue_overfull(job_class, priority, memory):
-            raise QueueFullError(self._refusal(job_class))
-
         created = self._now()
         linked_execution = self._linked_execution(execution_id, pid)
         token = self._create_entry(
@@ -896,12 +864,6 @@ class SlotStore:
                 job=job,
             )
         )
-
-        # Post-create backstop: if a racing submit pushed us past the bound,
-        # withdraw our own entry and refuse — the queue must stay bounded.
-        if bounded and self._queue_overfull(job_class, priority, memory, entry=token):
-            self.release(token)
-            raise QueueFullError(self._refusal(job_class))
         return token
 
     def _linked_execution(
@@ -915,43 +877,7 @@ class SlotStore:
             return None
         return self._inherited_execution_verifier(inherited, self.root, pid)
 
-    def _refusal(self, job_class: str) -> str:
-        return f"{job_class} queue is full ({self.caps.queue_max} waiting)"
-
-    def _queue_overfull(
-        self,
-        job_class: str,
-        priority: int,
-        memory: MemoryClaim | None,
-        entry: SlotToken | None = None,
-    ) -> bool:
-        """True when a claim would exceed the queue bound; *entry* is its created waiter.
-
-        Without *entry* this is the pre-create check for a would-be claim of
-        *priority*; with it, the post-create backstop on the real entry.
-        """
-        if memory is not None:
-            list_ahead = (
-                (lambda: self._names_before(entry))
-                if entry
-                else (lambda: self._names_ahead_of(priority))
-            )
-            _starts, position, blocked = self._memory_view(memory, list_ahead)
-            return blocked and position >= self.caps.queue_max
-        if entry is not None:
-            return self._rank(entry) >= self.caps.cap_for(job_class) + self.caps.queue_max
-        return self._outlook_of(job_class, self._live_entry_names(job_class), priority).full
-
     # ---------------------------------------------------------- memory class
-
-    def _names_ahead_of(self, priority: int) -> list[str]:
-        """Memory entries that would rank ahead of a new claim of *priority*, in order."""
-        ahead: list[str] = []
-        for name in sorted(self._live_entry_names(CLASS_MEMORY)):
-            entry = _parse_entry_name(name)
-            if entry is not None and (entry[0] == _HOLDER or entry[1] <= priority):
-                ahead.append(name)
-        return ahead
 
     def _names_before(self, token: SlotToken) -> list[str]:
         """Memory entries that rank before *token*'s own entry, in order."""
@@ -960,7 +886,7 @@ class SlotStore:
 
     def _memory_view(
         self, claim: MemoryClaim, list_ahead: Callable[[], list[str]]
-    ) -> tuple[bool, int, bool]:
+    ) -> tuple[bool, int]:
         """``_memory_queue`` over the entries *list_ahead* names, read fresh from disk.
 
         Reads each entry directly (not through ``snapshot``, which skips
@@ -999,7 +925,7 @@ class SlotStore:
     def _queue_position(self, token: SlotToken) -> int | None:
         """0-based queue position of a waiter, or None when its turn has come."""
         if token.memory is not None:
-            starts_now, position, _blocked = self._memory_view(
+            starts_now, position = self._memory_view(
                 token.memory, lambda: self._names_before(token)
             )
             return None if starts_now else position
@@ -1030,9 +956,7 @@ class SlotStore:
             entry = _parse_entry_name(name)
             if entry is not None and (entry[0] == _HOLDER or entry[1] <= priority):
                 ahead += 1
-        return AdmissionOutlook(
-            job_class, ahead, self.caps.cap_for(job_class), self.caps.queue_max
-        )
+        return AdmissionOutlook(job_class, ahead, self.caps.cap_for(job_class))
 
     def _create_entry(self, request: _WaiterRequest) -> SlotToken:
         """Create a uniquely-named waiter entry; atomic full-content appearance."""
@@ -1333,7 +1257,6 @@ class SlotStore:
         memory: MemoryClaim | None = None,
         queue_reason: str | None = None,
         job: JobLabel | None = None,
-        bounded: bool = True,
     ) -> SlotToken:
         """Submit and wait for a holder, withdrawing on cancellation or failure.
 
@@ -1350,7 +1273,6 @@ class SlotStore:
             memory=memory,
             queue_reason=queue_reason,
             job=job,
-            bounded=bounded,
         )
         if on_submitted is not None:
             on_submitted(token)

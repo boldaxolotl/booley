@@ -55,6 +55,7 @@ from booley.evidence.recipe import (
     recipe_constraints_valid,
     validated_recipe_compatibility,
 )
+from booley.runtime.mount_history import translate_stored_path
 from booley.runtime.timefmt import utc_now_rfc3339
 
 logger = logging.getLogger(__name__)
@@ -409,6 +410,13 @@ class AtomicStateFile:
 _DEFAULT_PERSISTENCE = AtomicStateFile()
 
 
+def _state_work_dir(data: Any) -> Any:
+    value = data.get("work_dir", "")
+    if not isinstance(value, str):
+        return value
+    return translate_stored_path(value, record=f"state file for {data.get('slug', '')!r}")
+
+
 @dataclass
 class DevelopmentState:
     """Criteria-based development state, persisted as JSON.
@@ -559,7 +567,7 @@ class DevelopmentState:
                 data.get("acceptance_transactions", [])
             ),
             authorized_zero_mandatory_basis_id=data.get("authorized_zero_mandatory_basis_id", ""),
-            work_dir=data.get("work_dir", ""),
+            work_dir=_state_work_dir(data),
             last_updated=data.get("last_updated", ""),
         )
 

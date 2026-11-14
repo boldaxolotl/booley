@@ -187,7 +187,7 @@ def _fpga_flow(root: Path) -> FpgaImplFlow:
 def _fpga_dirs(flow: FpgaImplFlow) -> list[Path]:
     """Every folder Vivado resolves a relative include in."""
     recipe = flow._resolve_fpga_recipe("fpga")
-    folders = [*recipe.include_dirs, *(p.parent for p in (*recipe.sv_files, *recipe.v_files))]
+    folders = [*recipe.include_dirs, *(source.path.parent for source in recipe.sources)]
     return [Path(folder) for folder in folders]
 
 

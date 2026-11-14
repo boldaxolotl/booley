@@ -28,7 +28,7 @@ USER_DOC_DIR = ROOT / "docs/user"
 _VARIANTS: dict[str, tuple[str, str | None]] = {
     "In stealth mode": ("STEALTH.md", None),
     "On Windows": ("WINDOWS.md", None),
-    "With a cocotb testbench": ("TARGETS.md", "cocotb-targets-python-testbenches"),
+    "With a cocotb testbench": ("FLOW-SIM.md", "cocotb-targets-python-testbenches"),
     "With host-installed licensed tools": ("SANDBOX.md", "commercial-eda-provisioning"),
 }
 
@@ -192,7 +192,7 @@ def _callout(label: str, body: str, *, indent: str = "") -> str:
 _LINKS = {
     "In stealth mode": "[Stealth Mode](STEALTH.md)",
     "On Windows": "[Windows](WINDOWS.md#every-file-shows-as-modified-inside-the-container)",
-    "With a cocotb testbench": "[Cocotb Targets](TARGETS.md#cocotb-targets-python-testbenches)",
+    "With a cocotb testbench": "[Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches)",
     "With host-installed licensed tools": "[Commercial EDA](SANDBOX.md#commercial-eda-provisioning)",
 }
 
@@ -275,9 +275,9 @@ def test_callout_linking_another_variant_fails() -> None:
 
 
 def test_cocotb_callout_needs_the_cocotb_section_anchor() -> None:
-    body = "[Targets](TARGETS.md#fpga-target)"
+    body = "[Targets](FLOW-FPGA.md#fpga-target)"
     [problem] = callout_problems(_callout("With a cocotb testbench", body), "X.md")
-    assert "must link TARGETS.md#cocotb-targets-python-testbenches" in problem
+    assert "must link FLOW-SIM.md#cocotb-targets-python-testbenches" in problem
 
 
 def test_indented_callout_fails() -> None:

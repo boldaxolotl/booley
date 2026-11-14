@@ -563,3 +563,25 @@ def test_target_less_ignore_query_uses_explicit_checkout(project, tmp_path, monk
     }[selector]
     monkeypatch.setenv(selector, str(value))
     assert ignored_paths(project, [project / "top.sdc"]) == {project / "top.sdc"}
+
+
+def test_review_goal_spec_source_under_former_mount_stays_fresh(
+    project: Path, receipt: dict, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from tests.mount_change_support import simulate_mount_change
+
+    (project / "docs").mkdir()
+    (project / "docs" / "spec.md").write_text("spec\n", encoding="utf-8")
+    goal = GoalSpec(
+        REVIEW_KEY, GoalFamily.REVIEW, None, {"paths": ["rtl.v"], "spec": "docs/spec.md"}, ()
+    )
+    former = simulate_mount_change(monkeypatch, project.resolve(), tmp_path / "former-mount")
+
+    def entry(spec_source: str) -> dict[str, Any]:
+        contract = {"category": "rtl", "scope": ["rtl.v"], "spec_source": spec_source}
+        return _met(REVIEW_KEY, project, goal, review_detail_version=4, contract=contract)
+
+    assert _evaluate(REVIEW_KEY, entry(f"{former}/docs/spec.md"), project, goal).stale is False
+    stale = _evaluate(REVIEW_KEY, entry(f"{former}/docs/other.md"), project, goal)
+    assert stale.stale is True
+    assert "Review Goal specification changed" in stale.reason

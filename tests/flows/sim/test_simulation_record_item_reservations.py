@@ -71,6 +71,7 @@ from tests.flows.sim.simulation_record_test_support import (
 )
 from tests.flows.sim.test_build_parallelism import _inspection
 from tests.flows.test_endpoint_admission import _selection_prepared
+from tests.memory_budget_support import pin_budget
 from tests.oom_priority_support import FakeProc
 
 NAMES = ("alpha", "beta", "gamma")
@@ -213,12 +214,6 @@ class _Scenario:
             with self._gate:
                 self.active -= 1
 
-    def close_queue(self) -> None:
-        """Refuse every claim that would wait: the Flow's own store now has a queue bound of zero."""
-        flow_store = self.admission.slot_store
-        assert flow_store is not None
-        flow_store.caps = replace(flow_store.caps, queue_max=0)
-
     def record(self) -> SimulationRecordStore:
         return SimulationRecordStore(self.tmp_path / "reports" / "000001" / "targets/sim/record")
 
@@ -274,7 +269,7 @@ def _scenario(
     project, state = _parallel_environment(tmp_path, "beta", 0)
     state.barrier = threading.Barrier(1)  # one item at a time: nothing waits for a peer
     booley_dir = project / ".booley"
-    (booley_dir / "booley.toml").write_text('[jobs]\nmemory_budget = "1000m"\n', encoding="utf-8")
+    pin_budget(monkeypatch, 1000)
     # The container's cores, as the CPU budget reads them (affinity bounded by the cgroup quota).
     monkeypatch.setattr("booley.runtime.cpu_budget._affinity_cpu_count", lambda: cores)
     monkeypatch.setattr("booley.runtime.cpu_budget._cgroup_cpu_count", lambda _read_text: None)
@@ -501,7 +496,7 @@ def _private_manifest() -> SimulationRecordManifest:
 
 
 def test_simulation_record_completes_beside_a_queued_foreign_job(tmp_path: Path) -> None:
-    for case in ("alone", "sized", "no_queue_bound", "private", "several"):
+    for case in ("alone", "sized", "private", "several"):
         with pytest.MonkeyPatch.context() as monkeypatch:
             _complete_beside_a_foreign_job(tmp_path, monkeypatch, case)
 
@@ -519,8 +514,6 @@ def _complete_beside_a_foreign_job(
     with _scenario(tmp_path / case, monkeypatch, **options) as scenario:
         scenario.state.disclosures = _disclosures()
         foreign = _ForeignJob(scenario, _alone())
-        if case == "no_queue_bound":
-            scenario.close_queue()
 
         def release_once_an_item_waits() -> None:
             _wait_until(lambda: foreign.started_after is not None)
@@ -925,9 +918,6 @@ def test_waiting_simulation_record_queues_one_item_claim_in_manifest_order(
         history=_sized_history(names, 100.0),
         cores=CORES,
     ) as scenario:
-        store = scenario.admission.slot_store
-        assert store is not None
-        store.caps = replace(store.caps, queue_max=2)
         alone = _ForeignJob(scenario, _alone())
         foreign: list[_ForeignJob] = []
         waiting = lambda: len(scenario.store.snapshot(CLASS_MEMORY)[1])  # noqa: E731
@@ -939,7 +929,7 @@ def test_waiting_simulation_record_queues_one_item_claim_in_manifest_order(
             _wait_until(lambda: waiting() >= 1, _PARALLEL_SYNC_TIMEOUT_S)
             time.sleep(_SETTLE_S)  # a second queued item claim would have shown up by now
             assert waiting() == 1
-            # The queue bound is 2: the other Job's bounded claim must queue, not be refused.
+            # The other Job's claim queues beside the item claim.
             foreign.append(
                 _ForeignJob(scenario, MemoryClaim(budget_mb=BUDGET_MIB, reservation_mb=100.0))
             )

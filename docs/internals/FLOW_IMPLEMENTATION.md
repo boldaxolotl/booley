@@ -438,7 +438,7 @@ into a `synthesis_ok_{target}` Criterion.
 
 The Target's `.core` owns the recipe and timing inputs: frontend, PPA profile,
 flattening, synthesis mode, backend overrides, sources, SDC, and toplevel
-([Synthesis Target](../user/TARGETS.md#synthesis-target)). `[flows.synth]` owns
+([Synthesis Target](../user/FLOW-SYNTH.md#synthesis-target)). `[flows.synth]` owns
 execution and verdict policy (`timeout_ms`, `expected_latches`,
 `expected_comb_loops`, `fail_on_timing_violation`, `timing_report_paths`); see
 [FLOW-SYNTH.md](../user/FLOW-SYNTH.md#configuration-flowssynth). Doctor fails
@@ -598,7 +598,7 @@ when the implementation evidence is complete and timing is met.
 The Target owns the build intent under `flow_options`: device `part`,
 `ppa_profile`, and `out_of_context`, plus its sources, `toplevel`, XDC
 fileset, and typed `vlogdefine` parameters
-([FPGA Target](../user/TARGETS.md#fpga-target)). `[flows.fpga]` owns execution
+([FPGA Target](../user/FLOW-FPGA.md#fpga-target)). `[flows.fpga]` owns execution
 and verdict policy (`timeout_ms`, `expected_latches`, `expected_comb_loops`) ([FLOW-FPGA.md](../user/FLOW-FPGA.md#configuration-flowsfpga)), and
 Doctor fails recipe keys such as `part`, `ppa_profile`, or `out_of_context`
 placed there. Keeping the part on the Target stops one global setting from

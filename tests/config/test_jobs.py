@@ -8,16 +8,6 @@ import pytest
 from booley.config.jobs import parse_caps
 
 
-def test_parse_caps_accepts_memory_budget_without_unknown_key_warning(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    with caplog.at_level(logging.WARNING, logger="booley.config.jobs"):
-        parse_caps({"jobs": {"memory_budget": "24g", "max_light": 2}})
-
-    assert "unknown key" not in caplog.text
-    assert "memory_budget" not in caplog.text
-
-
 def test_parse_caps_accepts_the_seats_table_without_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -106,7 +96,7 @@ def test_retired_jobs_keys_are_named_with_their_lines(tmp_path: Path) -> None:
     quiet = {
         "other-table": "[sandbox]\nmax_heavy = 2\n",
         "multi-line-string": '[jobs]\nnote = """\nmax_heavy = 2\n"""\nmax_light = 1\n',
-        "clean": '[jobs]\nmemory_budget = "8g"\n',
+        "clean": "[jobs]\nmax_light = 2\n",
         "broken": "[jobs\nmax_heavy = 2\n",
     }
     for name, text in quiet.items():
@@ -117,11 +107,66 @@ def test_retired_jobs_keys_are_named_with_their_lines(tmp_path: Path) -> None:
 
     found = (RetiredKey("max_heavy", 12), RetiredKey("heavy_memory", 13))
     message = retired_jobs_keys_message(tmp_path / "booley.toml", found)
-    assert "max_heavy (line 12), heavy_memory (line 13)" in message
+    assert "heavy_memory (line 13: memory admission replaced it)" in message
     assert "booley-heal" in message
+    assert "max_heavy (line 12: memory admission replaced it)" in message
     assert retired_jobs_keys_fix(found[0]) == (
         "delete [jobs].max_heavy (line 12); memory admission replaced it"
     )
+
+
+def test_queue_max_is_retired_with_its_own_reason(tmp_path: Path) -> None:
+    from booley.config.jobs import (
+        RetiredKey,
+        retired_jobs_keys,
+        retired_jobs_keys_fix,
+        retired_jobs_keys_message,
+    )
+
+    path = tmp_path / "booley.toml"
+    path.write_bytes(b"[jobs]\nmax_heavy = 2\nqueue_max = 8\n")
+    found = retired_jobs_keys(path)
+    assert found == (RetiredKey("max_heavy", 2), RetiredKey("queue_max", 3))
+
+    reason = "the Job queue has no limit: a Job waits until it runs or is cancelled"
+    assert retired_jobs_keys_fix(found[1]) == f"delete [jobs].queue_max (line 3); {reason}"
+    message = retired_jobs_keys_message(path, found)
+    assert f"queue_max (line 3: {reason})" in message
+    assert "max_heavy (line 2: memory admission replaced it)" in message
+    assert message.count("Fix: delete these lines") == 1
+
+
+def test_memory_budget_is_retired_with_its_own_fix(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    from booley.config.jobs import (
+        RetiredKey,
+        retired_jobs_keys,
+        retired_jobs_keys_fix,
+        retired_jobs_keys_message,
+    )
+
+    path = tmp_path / "booley.toml"
+    path.write_bytes(b'[jobs]\nmemory_budget = "24g"\n')
+    found = retired_jobs_keys(path)
+    assert found == (RetiredKey("memory_budget", 2),)
+
+    assert retired_jobs_keys_fix(found[0]).endswith("set [sandbox].memory instead")
+    message = retired_jobs_keys_message(path, found)
+    assert "memory_budget (line 2: " in message
+    assert "set [sandbox].memory instead" in message
+    assert "memory admission replaced it" not in message
+    with caplog.at_level(logging.WARNING, logger="booley.config.jobs"):
+        parse_caps({"jobs": {"memory_budget": "24g", "max_light": 2}})
+    assert "unknown key" not in caplog.text  # the retirement refusal reports it
+
+
+def test_parse_caps_reads_only_max_light(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="booley.config.jobs"):
+        caps = parse_caps({"jobs": {"max_light": 2, "queue_max": 8}})
+
+    assert caps.max_light == 2
+    assert "unknown key" not in caplog.text  # the retirement refusal reports queue_max
 
 
 def test_refuse_retired_jobs_keys_reads_the_main_booley_directory(
@@ -136,7 +181,7 @@ def test_refuse_retired_jobs_keys_reads_the_main_booley_directory(
     booley_dir_module.reset_cache()
     (booley_dir / "booley.toml").write_bytes(b"[jobs]\nmax_heavy = 1\n")
 
-    with pytest.raises(ValueError, match=r"max_heavy \(line 2\)"):
+    with pytest.raises(ValueError, match=r"max_heavy \(line 2: "):
         refuse_retired_jobs_keys(tmp_path)
 
     (booley_dir / "booley.toml").write_bytes(b"[jobs]\nmax_light = 1\n")

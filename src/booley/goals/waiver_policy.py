@@ -18,6 +18,7 @@ from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.config_paths import resolve_toml
 from booley.goals.proposals import digest
 from booley.runtime.booley_dir import crossed_booley_dir_entry, resolve_checkout_booley_dir
+from booley.runtime.mount_history import translate_stored_path
 
 WAIVER_POLICY_DETAIL_KEY = "goal_waiver_policy"
 
@@ -31,6 +32,18 @@ def policy_location(work_dir: Path) -> tuple[CoverageWaiverConfig | None, Path]:
         project if config is not None and config.anchor == "project_data_repository" else work_dir
     )
     return config, anchor
+
+
+def rebased_policy(policy: dict[str, Any]) -> dict[str, Any]:
+    """The stored *policy* as a writer under the current mount point would have recorded it."""
+    root = policy.get("root")
+    if not isinstance(root, str):
+        return policy
+    value = {
+        **{key: item for key, item in policy.items() if key != "digest"},
+        "root": translate_stored_path(root, record="Goal waiver policy"),
+    }
+    return {**value, "digest": digest(value)}
 
 
 def waiver_policy_fingerprint(

@@ -8,7 +8,9 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+
+from booley.evidence.review_guides import ReviewGuide, declared_guide_names, guide_digest
 
 _TICKET_FILE = "ticket.md"
 REVIEW_DETAIL_VERSION = 4
@@ -37,6 +39,8 @@ class ReviewInvocation:
     spec_text: str | None = None
     steering: str = ""
     tb_policy_digest: str = ""
+    # Every guide the review runs, so editing one makes the receipt stale.
+    guides: tuple[ReviewGuide, ...] = ()
 
 
 def _digest(value: Any) -> str:
@@ -111,6 +115,16 @@ def build_review_contract_detail(invocation: ReviewInvocation) -> dict[str, Any]
         "spec_digest": _document_digest(spec),
         "tb_policy_digest": invocation.tb_policy_digest,
         "steering_digest": _digest(invocation.steering),
+        "guides": [
+            {
+                "kind": guide.kind,
+                "name": guide.name,
+                "path": guide.path,
+                "digest": guide_digest(guide),
+            }
+            for guide in invocation.guides
+        ],
+        "declared_guides": declared_guide_names(invocation.category, invocation.focus),
     }
     if invocation.spec_text is not None:
         # Inline text has no file: the contract carries it, so --verify and freshness reuse it.
@@ -172,6 +186,38 @@ def _persisted_document_changed(
     return contract.get(f"{name}_digest") != _contract_document_digest(contract, name)
 
 
+def _recorded_guides(contract: Mapping[str, Any]) -> list[tuple[ReviewGuide, str]] | None:
+    """The guides and digests a contract recorded; None when it records none (a released receipt)."""
+    raw = contract.get("guides")
+    if not isinstance(raw, list):
+        return None
+    recorded: list[tuple[ReviewGuide, str]] = []
+    for row in cast("list[object]", raw):
+        if not isinstance(row, Mapping):
+            return None
+        fields = cast("Mapping[str, object]", row)
+        kind, path, digest = fields.get("kind"), fields.get("path"), fields.get("digest")
+        if kind not in ("checklist", "hunt") or not isinstance(path, str):
+            return None
+        recorded.append((ReviewGuide(kind, path), digest if isinstance(digest, str) else ""))
+    return recorded
+
+
+def _guides_changed(contract: Mapping[str, Any]) -> bool:
+    """Whether a guide the review ran changed, or its focus now declares other guides.
+
+    A contract without recorded guides predates guide digests: its guide content is unknown,
+    so it is stale once rather than trusted.
+    """
+    recorded = _recorded_guides(contract)
+    if recorded is None:
+        return True
+    category, focus = contract.get("category"), contract.get("focus")
+    if contract.get("declared_guides") != declared_guide_names(str(category), str(focus)):
+        return True
+    return any(guide_digest(guide) != digest for guide, digest in recorded)
+
+
 def review_receipt_drift(
     detail: Mapping[str, Any],
     work_dir: Path,
@@ -218,7 +264,22 @@ def review_receipt_drift(
         and (contract.get("tb_policy_digest") != tb_policy_digest)
     ):
         changed.append("tb_policy")
+    if _guides_changed(contract):
+        changed.append("guides")
     return changed
+
+
+def _current_guides_identity(contract: Mapping[str, Any]) -> dict[str, Any]:
+    """Current digests of the recorded guides and the focus's declared guide names."""
+    recorded = _recorded_guides(contract)
+    return {
+        "recorded": None
+        if recorded is None
+        else {guide.name: guide_digest(guide) for guide, _ in recorded},
+        "declared": declared_guide_names(
+            str(contract.get("category")), str(contract.get("focus"))
+        ),
+    }
 
 
 def current_review_receipt_identity(
@@ -246,4 +307,5 @@ def current_review_receipt_identity(
         "documents": documents,
         "scope_hashes": _scope_hashes(work_dir, scope),
         "tb_policy_digest": tb_policy_digest,
+        "guides": _current_guides_identity(contract),
     }

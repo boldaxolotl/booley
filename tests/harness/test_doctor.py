@@ -4522,6 +4522,38 @@ class TestRetiredJobsKeys:
         # Doctor did not stop at the config: later checks still ran.
         assert "project guidance file missing" in output
 
+    def test_queue_max_fails_with_its_own_reason(self, tmp_path, monkeypatch, capsys):
+        booley_dir = _write_project(tmp_path)
+        _patch_environment(monkeypatch, tmp_path, booley_dir)
+        toml = booley_dir / "booley.toml"
+        toml.write_bytes(toml.read_bytes() + b"\n[jobs]\nqueue_max = 8\n")
+
+        rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
+
+        output = colors.strip_ansi(capsys.readouterr().out)
+        assert rc != 0
+        assert "booley.toml sets retired [jobs] key queue_max (line 15)" in output
+        assert (
+            "delete [jobs].queue_max (line 15); the Job queue has no limit:"
+            " a Job waits until it runs or is cancelled"
+        ) in output
+        assert "memory admission replaced it" not in output
+
+    def test_memory_budget_fails_with_its_own_fix(self, tmp_path, monkeypatch, capsys):
+        booley_dir = _write_project(tmp_path)
+        _patch_environment(monkeypatch, tmp_path, booley_dir)
+        toml = booley_dir / "booley.toml"
+        toml.write_bytes(toml.read_bytes() + b'\n[jobs]\nmemory_budget = "24g"\n')
+
+        rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
+
+        output = colors.strip_ansi(capsys.readouterr().out)
+        assert rc != 0
+        assert "booley.toml sets retired [jobs] key memory_budget (line 15)" in output
+        assert "delete [jobs].memory_budget (line 15);" in output
+        assert "set [sandbox].memory instead" in output
+        assert "memory admission replaced it" not in output
+
 
 class TestSandboxMemoryCheck:
     """ADR 0087: ``[sandbox].memory`` sizes the Memory Budget; unset falls back to installed memory."""
@@ -4531,6 +4563,7 @@ class TestSandboxMemoryCheck:
         doctor._check_sandbox_memory(_adr28_project(tmp_path), rec.p, rec.w, rec.s)
         assert rec.kinds() == {"warn"}
         assert "the Memory Budget falls back to installed memory" in rec.events[0][1]
+        assert "memory_budget" not in rec.events[0][1]
 
     def test_passes_when_sandbox_memory_is_set(self, tmp_path):
         toml = {"sandbox": {"memory": "16g"}}
