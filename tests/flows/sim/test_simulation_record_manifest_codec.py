@@ -16,21 +16,21 @@ from booley.flows.sim.flow_resume import _unfinished_coverage_work
 from booley.flows.sim.record import serial_execution
 from booley.flows.sim.record.codec import (
     MANIFEST_SCHEMA,
-    SimulationCampaignIntegrityError,
+    SimulationRecordIntegrityError,
     canonical_json_bytes,
-    decode_simulation_campaign_manifest,
-    encode_simulation_campaign_manifest,
+    decode_simulation_record_manifest,
+    encode_simulation_record_manifest,
 )
 from booley.flows.sim.record.coordinator import (
-    CampaignPolicy,
-    CampaignRecoveryStatus,
-    SimulationCampaign,
+    SimulationRecord,
+    SimulationRecordPolicy,
+    SimulationRecordRecoveryStatus,
     WorkExecutionRequest,
     _new_store,
 )
 from booley.flows.sim.record.model import (
-    SimulationCampaignPlan,
-    create_simulation_campaign_plan,
+    SimulationRecordPlan,
+    create_simulation_record_plan,
 )
 from booley.flows.sim.record.planning import (
     compare_manifests,
@@ -43,7 +43,7 @@ from booley.flows.sim.record.resume import (
     validate_resume_manifest,
 )
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
-from booley.flows.sim.record.store import CampaignStore
+from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.test_runs import build_test_run, test_run_document
 from booley.targets.catalog import TargetCatalog
 from tests.fusesoc_test_support import symlinked_booley_dir
@@ -346,14 +346,14 @@ def test_finalize_manifest_accepts_immutable_nested_planning_input() -> None:
 def _linked_campaign_stores(tmp_path: Path, *, topology_revisions=None):
     baseline = _baseline_manifest()
     if topology_revisions is not None:
-        document = json.loads(encode_simulation_campaign_manifest(baseline))
+        document = json.loads(encode_simulation_record_manifest(baseline))
         document.pop("fingerprints")
         _retarget_topology_manifest(document, topology_revisions[1])
         baseline = finalize_manifest(document)
     invocation = tmp_path / "reports" / "000001"
-    baseline_store = CampaignStore(invocation / "targets" / "base-revision" / "record")
+    baseline_store = SimulationRecordStore(invocation / "targets" / "base-revision" / "record")
     baseline_store.publish_manifest(baseline)
-    raw = encode_simulation_campaign_manifest(baseline)
+    raw = encode_simulation_record_manifest(baseline)
     baseline_json = json.loads(raw)
     candidate_document = _manifest()
     candidate_document.pop("fingerprints")
@@ -377,16 +377,16 @@ def _linked_campaign_stores(tmp_path: Path, *, topology_revisions=None):
         }
     ]
     candidate = finalize_manifest(candidate_document)
-    candidate_store = CampaignStore(invocation / "targets" / "sim" / "record")
+    candidate_store = SimulationRecordStore(invocation / "targets" / "sim" / "record")
     candidate_store.publish_manifest(candidate)
     return candidate, candidate_store, baseline, baseline_store
 
 
 def test_manifest_codec_round_trips_exact_bytes() -> None:
     raw = canonical_json_bytes(_manifest())
-    value = decode_simulation_campaign_manifest(raw)
+    value = decode_simulation_record_manifest(raw)
     assert value.canonical_bytes() == raw
-    assert encode_simulation_campaign_manifest(value) == raw
+    assert encode_simulation_record_manifest(value) == raw
 
 
 def test_finalize_manifest_accepts_immutable_mapping_inputs() -> None:
@@ -407,14 +407,14 @@ def test_finalize_manifest_accepts_immutable_mapping_inputs() -> None:
 
 
 def test_campaign_plan_is_derived_only_from_a_validated_manifest() -> None:
-    manifest = decode_simulation_campaign_manifest(canonical_json_bytes(_manifest()))
-    plan = create_simulation_campaign_plan(manifest)
+    manifest = decode_simulation_record_manifest(canonical_json_bytes(_manifest()))
+    plan = create_simulation_record_plan(manifest)
     assert plan.manifest == manifest
     assert plan.work_item_ids == (manifest.document["work_items"][0]["work_item_id"],)  # type: ignore[index]
-    with pytest.raises(TypeError, match="create_simulation_campaign_plan"):
-        SimulationCampaignPlan()
+    with pytest.raises(TypeError, match="create_simulation_record_plan"):
+        SimulationRecordPlan()
     with pytest.raises(TypeError):
-        SimulationCampaignPlan(manifest, ("item:0000:ffffffffffffffff",))  # type: ignore[call-arg]
+        SimulationRecordPlan(manifest, ("item:0000:ffffffffffffffff",))  # type: ignore[call-arg]
 
 
 def test_resume_preview_reports_all_workload_mismatches() -> None:
@@ -448,7 +448,7 @@ def test_resume_preview_reports_all_workload_mismatches() -> None:
 
 
 def test_cycle_baseline_campaign_has_a_noncolliding_store_path(tmp_path: Path) -> None:
-    candidate = decode_simulation_campaign_manifest(canonical_json_bytes(_manifest()))
+    candidate = decode_simulation_record_manifest(canonical_json_bytes(_manifest()))
     baseline_document = _manifest()
     baseline_document.pop("fingerprints")
     baseline_document["target"]["role"] = "cycle_count_baseline"  # type: ignore[index]
@@ -468,14 +468,14 @@ def test_cycle_baseline_campaign_has_a_noncolliding_store_path(tmp_path: Path) -
 
     candidate_store = _new_store(
         SimpleNamespace(
-            plan=create_simulation_campaign_plan(candidate),
+            plan=create_simulation_record_plan(candidate),
             invocation_directory=invocation,
             project_root=tmp_path,
         )
     )
     baseline_store = _new_store(
         SimpleNamespace(
-            plan=create_simulation_campaign_plan(baseline),
+            plan=create_simulation_record_plan(baseline),
             invocation_directory=invocation,
             project_root=tmp_path,
         )
@@ -535,8 +535,8 @@ def test_resume_binds_distinct_candidate_and_baseline_revision_roots(
 def test_resume_rejects_linked_manifest_paths_without_writes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, defect: str
 ) -> None:
-    manifest = decode_simulation_campaign_manifest(canonical_json_bytes(_manifest()))
-    real = CampaignStore(tmp_path / "real/000001/targets/sim/record")
+    manifest = decode_simulation_record_manifest(canonical_json_bytes(_manifest()))
+    real = SimulationRecordStore(tmp_path / "real/000001/targets/sim/record")
     real.publish_manifest(manifest)
     view = tmp_path / "view/000001/targets/sim/record"
     if defect == "ancestor_symlink":
@@ -565,7 +565,7 @@ def test_resume_rejects_linked_manifest_paths_without_writes(
     )
     before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
 
-    with pytest.raises(SimulationCampaignIntegrityError, match=r"regular|link"):
+    with pytest.raises(SimulationRecordIntegrityError, match=r"regular|link"):
         validate_resume_manifest(view / "manifest.json", project_root=tmp_path / "source")
 
     assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")) == before
@@ -581,7 +581,7 @@ def test_resume_reads_through_the_booley_dir_entry(
     project.mkdir()
     external = symlinked_booley_dir(project, root / "external-booley")
     entry = project / ".booley"
-    manifest = decode_simulation_campaign_manifest(canonical_json_bytes(_manifest()))
+    manifest = decode_simulation_record_manifest(canonical_json_bytes(_manifest()))
     # Publish through the physical spelling: only resume itself crosses the entry.
     reports = external / "flow-reports"
     if spelling == "below":
@@ -589,7 +589,7 @@ def test_resume_reads_through_the_booley_dir_entry(
         (root / "real-reports").mkdir()
         reports.symlink_to(root / "real-reports", target_is_directory=True)
         reports = root / "real-reports"
-    published = CampaignStore(reports / "000001/targets/sim/record")
+    published = SimulationRecordStore(reports / "000001/targets/sim/record")
     published.publish_manifest(manifest)
     lexical = entry / "flow-reports" / published.manifest_path.relative_to(reports)
     physical = external / "flow-reports" / published.manifest_path.relative_to(reports)
@@ -608,7 +608,7 @@ def test_resume_reads_through_the_booley_dir_entry(
     )
 
     if spelling == "below":
-        with pytest.raises(SimulationCampaignIntegrityError, match="not a regular file"):
+        with pytest.raises(SimulationRecordIntegrityError, match="not a regular file"):
             validate_resume_manifest(lexical, project_root=project)
         return
     validated = validate_resume_manifest(
@@ -618,8 +618,8 @@ def test_resume_reads_through_the_booley_dir_entry(
     # A copied physical path yields the same lexical origin, and recovery reads through it.
     assert validated.path == lexical
     assert validated.booley_dir == entry
-    status = SimulationCampaign().inspect_resume(validated)
-    assert isinstance(status, CampaignRecoveryStatus)
+    status = SimulationRecord().inspect_resume(validated)
+    assert isinstance(status, SimulationRecordRecoveryStatus)
 
 
 def test_campaign_store_rejects_linked_root_before_lock_write(tmp_path: Path) -> None:
@@ -627,10 +627,10 @@ def test_campaign_store_rejects_linked_root_before_lock_write(tmp_path: Path) ->
     outside.mkdir()
     linked = tmp_path / "linked"
     linked.symlink_to(outside, target_is_directory=True)
-    store = CampaignStore(linked / "record")
+    store = SimulationRecordStore(linked / "record")
 
     with (
-        pytest.raises(SimulationCampaignIntegrityError, match="contains a link"),
+        pytest.raises(SimulationRecordIntegrityError, match="contains a link"),
         store.mutation_lock(),
     ):
         pass
@@ -673,7 +673,7 @@ def _source_equal_revision_drift(tmp_path: Path) -> tuple[Path, str]:
     return root, original
 
 
-def _publish_stale_candidate_manifest(tmp_path: Path, revision: str) -> CampaignStore:
+def _publish_stale_candidate_manifest(tmp_path: Path, revision: str) -> SimulationRecordStore:
     document = _manifest()
     target = dict(document["target"])  # type: ignore[arg-type]
     target["revision"] = revision
@@ -692,7 +692,7 @@ def _publish_stale_candidate_manifest(tmp_path: Path, revision: str) -> Campaign
     document["work_items"] = items
     document.pop("fingerprints")
     manifest = finalize_manifest(document)
-    store = CampaignStore(tmp_path / "000001" / "targets" / "sim" / "record")
+    store = SimulationRecordStore(tmp_path / "000001" / "targets" / "sim" / "record")
     store.publish_manifest(manifest)
     return store
 
@@ -717,15 +717,15 @@ def test_resume_rejects_stale_candidate_revision_with_source_equal(
     flow = SimulateFlow()
     flow._args = SimpleNamespace(resume_from=store.manifest_path, work_dir=root)
 
-    with pytest.raises(SimulationCampaignIntegrityError, match="revision"):
+    with pytest.raises(SimulationRecordIntegrityError, match="revision"):
         flow._prepare_campaign_targets()
 
 
 def test_recovery_retries_a_crash_after_attempt_directory_allocation(
     tmp_path: Path,
 ) -> None:
-    manifest = decode_simulation_campaign_manifest(canonical_json_bytes(_manifest()))
-    store = CampaignStore(tmp_path / "record")
+    manifest = decode_simulation_record_manifest(canonical_json_bytes(_manifest()))
+    store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(manifest)
     work_item_id = manifest.document["work_items"][0]["work_item_id"]  # type: ignore[index]
 
@@ -750,7 +750,7 @@ def test_unfinished_coverage_work_only_applies_to_coverage_aggregates(
     tmp_path: Path, kind: str, state: str
 ) -> None:
     manifest = SimpleNamespace(document={"work_items": [{"kind": kind, "work_item_id": "w1"}]})
-    status = CampaignRecoveryStatus(
+    status = SimulationRecordRecoveryStatus(
         manifest_path=tmp_path / "manifest.json",
         manifest_sha256="0" * 64,
         completed=("w1",) if state == "complete" else (),
@@ -766,8 +766,8 @@ def test_unfinished_coverage_work_only_applies_to_coverage_aggregates(
 def test_hdl_resume_with_interrupted_item_is_not_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    manifest = decode_simulation_campaign_manifest(canonical_json_bytes(_manifest()))
-    store = CampaignStore(tmp_path / "record")
+    manifest = decode_simulation_record_manifest(canonical_json_bytes(_manifest()))
+    store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(manifest)
     work_item_id = manifest.document["work_items"][0]["work_item_id"]  # type: ignore[index]
     store.allocate_attempt_directory(work_item_id, "550e8400-e29b-41d4-a716-446655440001")
@@ -779,9 +779,7 @@ def test_hdl_resume_with_interrupted_item_is_not_refused(
     def forbidden(*_args: object) -> None:
         raise AssertionError("non-coverage resume must not be inspected by the guard")
 
-    monkeypatch.setattr(
-        "booley.flows.sim.flow_resume.SimulationCampaign.inspect_resume", forbidden
-    )
+    monkeypatch.setattr("booley.flows.sim.flow_resume.SimulationRecord.inspect_resume", forbidden)
 
     assert SimulateFlow()._refuse_unfinished_coverage_resume(validated) is None
 
@@ -796,7 +794,7 @@ def test_serial_executor_authenticates_planned_generator_closure(
     request = _generator_request(tmp_path, store, manifest, item, ordinal, attempt_directory)
     if nondeterministic:
         with pytest.raises(
-            SimulationCampaignIntegrityError,
+            SimulationRecordIntegrityError,
             match="generator source closure disagrees",
         ):
             executor.execute(request)
@@ -831,7 +829,7 @@ def _generator_campaign(tmp_path: Path, disclosure):
     document.pop("fingerprints")
     document["planning_disclosures"] = [disclosure]
     manifest = finalize_manifest(document)
-    store = CampaignStore(tmp_path / "record")
+    store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(manifest)
     item = manifest.document["work_items"][0]  # type: ignore[index]
     attempt_id = "550e8400-e29b-41d4-a716-446655440001"
@@ -879,7 +877,7 @@ def _generator_request(tmp_path, store, manifest, item, ordinal, attempt_directo
         attempt_ordinal=ordinal,
         attempt_directory=attempt_directory,
         producer_invocation_id=1,
-        policy=CampaignPolicy(),
+        policy=SimulationRecordPolicy(),
         admission=AdmissionContext(
             "unmanaged", None, None, "interactive", "", None, lambda: False
         ),
@@ -1011,13 +1009,13 @@ def _finalize_diagnostic_document(document):
 
 def _project_diagnostics(old, new):
     from booley.flows.sim.record.planning import (
-        SimulationCampaignWorkloadMismatchError,
+        SimulationRecordWorkloadMismatchError,
         verify_workload,
     )
 
     left, right = _finalize_diagnostic_document(old), _finalize_diagnostic_document(new)
     raw = compare_manifests(left, right)
-    with pytest.raises(SimulationCampaignWorkloadMismatchError) as exc:
+    with pytest.raises(SimulationRecordWorkloadMismatchError) as exc:
         verify_workload(left, right)
     assert exc.value.diagnostic.mismatches == raw
     assert exc.value.diagnostic.detail["mismatches"] == [item.message for item in raw]
@@ -1033,8 +1031,8 @@ def test_manifest_with_recorded_flow_option_defines_still_decodes_and_compares()
     current_doc = _diagnostic_document()
 
     stored = _finalize_diagnostic_document(copy.deepcopy(legacy_doc))
-    encoded = encode_simulation_campaign_manifest(stored)
-    assert encode_simulation_campaign_manifest(decode_simulation_campaign_manifest(encoded)) == (
+    encoded = encode_simulation_record_manifest(stored)
+    assert encode_simulation_record_manifest(decode_simulation_record_manifest(encoded)) == (
         encoded
     )
     assert compare_manifests(stored, stored) == ()
@@ -1383,13 +1381,13 @@ def _prepared_diagnostic_pair():
 )
 def test_prepared_manifest_pair_corpus(case):
     from booley.flows.sim.record.planning import (
-        SimulationCampaignWorkloadMismatchError,
+        SimulationRecordWorkloadMismatchError,
         project_workload_mismatches,
         verify_workload,
     )
 
     left, right = [
-        decode_simulation_campaign_manifest(canonical_json_bytes(case[key]))
+        decode_simulation_record_manifest(canonical_json_bytes(case[key]))
         for key in ("expected", "current")
     ]
     raw = compare_manifests(left, right)
@@ -1406,7 +1404,7 @@ def test_prepared_manifest_pair_corpus(case):
     if case["outcome"] == "accept":
         verify_workload(left, right)
     else:
-        with pytest.raises(SimulationCampaignWorkloadMismatchError) as exc:
+        with pytest.raises(SimulationRecordWorkloadMismatchError) as exc:
             verify_workload(left, right)
         assert exc.value.diagnostic == diagnostic
 
@@ -1466,8 +1464,8 @@ def test_copyto_prepared_digest_diagnostic_uses_declared_source():
 
 def test_image_alias_resume_returns_canonical_manifest(project_alias, monkeypatch):
     alias, root = project_alias
-    manifest = decode_simulation_campaign_manifest(canonical_json_bytes(_manifest()))
-    store = CampaignStore(root / "sim/1/targets/sim/record")
+    manifest = decode_simulation_record_manifest(canonical_json_bytes(_manifest()))
+    store = SimulationRecordStore(root / "sim/1/targets/sim/record")
     store.publish_manifest(manifest)
     target = manifest.document["target"]
     monkeypatch.setattr(
@@ -1487,7 +1485,7 @@ def test_image_alias_resume_returns_canonical_manifest(project_alias, monkeypatc
     )
     assert validated.candidate.path == store.manifest_path
     (root / "linked").symlink_to(root, target_is_directory=True)
-    with pytest.raises(SimulationCampaignIntegrityError, match=r"link|regular"):
+    with pytest.raises(SimulationRecordIntegrityError, match=r"link|regular"):
         validate_resume_manifest(
             alias / "linked" / store.manifest_path.relative_to(root), project_root=root
         )
@@ -1509,7 +1507,7 @@ def test_manifest_decode_trusts_planned_digests_and_links(monkeypatch) -> None:
 
     monkeypatch.setattr(hashlib, "sha256", refuse)
     monkeypatch.setattr(hashlib, "new", refuse)
-    decoded = decode_simulation_campaign_manifest(raw)
+    decoded = decode_simulation_record_manifest(raw)
     assert decoded.document["work_items"][0]["revision"] == "other-revision"
 
 
@@ -1524,8 +1522,8 @@ def test_cycle_prerequisite_refuses_a_baseline_manifest_whose_digest_disagrees(t
     from booley.flows.sim.record.coordinator import _prerequisite_facts
 
     candidate, candidate_store, _baseline, _baseline_store = _linked_campaign_stores(tmp_path)
-    document = json.loads(encode_simulation_campaign_manifest(candidate))
+    document = json.loads(encode_simulation_record_manifest(candidate))
     document.pop("fingerprints")
     document["prerequisites"][0]["manifest"]["sha256"] = "sha256:" + "f" * 64
-    with pytest.raises(SimulationCampaignIntegrityError, match="unauthenticated"):
+    with pytest.raises(SimulationRecordIntegrityError, match="unauthenticated"):
         _prerequisite_facts(candidate_store, finalize_manifest(document))

@@ -19,15 +19,15 @@ from booley.runtime.timefmt import parse_timestamp, rfc3339_from_datetime, utc_n
 
 from .codec import (
     MANIFEST_MAX_BYTES,
-    SimulationCampaignIntegrityError,
+    SimulationRecordIntegrityError,
     canonical_json_bytes,
 )
-from .model import SimulationCampaignDocument
+from .model import SimulationRecordDocument
 from .planning import manifest_digest
 
 if TYPE_CHECKING:
     from .coordinator import WorkExecutionRequest
-    from .model import SimulationAttempt, SimulationCampaignManifest
+    from .model import SimulationAttempt, SimulationRecordManifest
 
 _SCHEMA = "booley.pre-sim-evidence/v2"
 _FIELDS = frozenset(
@@ -71,7 +71,7 @@ class PreSimFiring:
 
 
 @dataclass(frozen=True)
-class PreSimFiringRecord(SimulationCampaignDocument):
+class PreSimFiringRecord(SimulationRecordDocument):
     """Validated firing facts, without storage provenance."""
 
 
@@ -114,7 +114,7 @@ def publish_pre_sim_firing(
     firing = decoder.validate(document, request.work_item, attempt)
     raw = canonical_json_bytes(firing.document)
     if len(raw) > MANIFEST_MAX_BYTES:
-        raise SimulationCampaignIntegrityError("Pre-Sim Commands evidence exceeds byte limit")
+        raise SimulationRecordIntegrityError("Pre-Sim Commands evidence exceeds byte limit")
     key = _firing_key(firing.document)
     if checkpoint is not None:
         checkpoint("before:pre_sim_evidence")
@@ -137,7 +137,7 @@ def publish_pre_sim_firing(
 class PreSimFiringDecoder:
     """Reuse one immutable manifest's authenticated identity across a snapshot read."""
 
-    manifest: SimulationCampaignManifest
+    manifest: SimulationRecordManifest
     manifest_sha256: str = dataclass_field(init=False)
 
     def __post_init__(self) -> None:
@@ -163,7 +163,7 @@ class PreSimFiringDecoder:
         try:
             value = json.loads(raw)
         except (ValueError, TypeError) as exc:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 f"invalid Pre-Sim Commands evidence: {exc}"
             ) from exc
         return self.validate(value, item, attempt).document
@@ -200,7 +200,7 @@ class PreSimFiringDecoder:
             if selected and any(name not in selected for name in names):
                 raise ValueError("Pre-Sim Commands evidence selection is outside workload")
         except (ValueError, TypeError, KeyError) as exc:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 f"invalid Pre-Sim Commands evidence: {exc}"
             ) from exc
         return PreSimFiringRecord(value)

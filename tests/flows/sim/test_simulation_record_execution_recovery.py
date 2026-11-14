@@ -25,14 +25,14 @@ from booley.flows.sim.record import collect_pre_sim_firings, serial_execution
 from booley.flows.sim.record.child_protocol import ChildExecutionRegistry
 from booley.flows.sim.record.codec import (
     RECORD_MAX_BYTES,
-    SimulationCampaignIntegrityError,
+    SimulationRecordIntegrityError,
     canonical_json_bytes,
 )
 from booley.flows.sim.record.coordinator import (
-    CampaignPolicy,
-    NewCampaignRunRequest,
-    ResumeCampaignRunRequest,
-    SimulationCampaign,
+    NewSimulationRecordRunRequest,
+    ResumeSimulationRecordRunRequest,
+    SimulationRecord,
+    SimulationRecordPolicy,
     WorkExecutionRequest,
 )
 from booley.flows.sim.record.coverage_execution import (
@@ -41,7 +41,7 @@ from booley.flows.sim.record.coverage_execution import (
 from booley.flows.sim.record.model import (
     SimulationAttempt,
     SimulationResult,
-    create_simulation_campaign_plan,
+    create_simulation_record_plan,
 )
 from booley.flows.sim.record.planning import finalize_manifest, manifest_digest
 from booley.flows.sim.record.run_directory import (
@@ -50,13 +50,13 @@ from booley.flows.sim.record.run_directory import (
     cleanup_interrupted_run_directory,
 )
 from booley.flows.sim.record.scheduler import (
-    BoundedCampaignScheduler,
+    BoundedSimulationRecordScheduler,
     ScheduledAttempt,
 )
 from booley.flows.sim.record.serial_execution import (
     OrdinaryHdlSerialExecutor,
 )
-from booley.flows.sim.record.store import CampaignStore
+from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.verilator_coverage import SimulationRunResult
 from booley.runtime.execution_records import (
     ExecutionId,
@@ -132,7 +132,7 @@ def test_campaign_policy_carries_build_budget_into_execution_options(
     build_root = tmp_path / "engine-build"
     build_root.mkdir()
     (build_root / "simv").write_bytes(b"image")
-    store = CampaignStore(tmp_path / "record")
+    store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(manifest)
     captured: list[SimulationOptions] = []
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
@@ -153,7 +153,7 @@ def test_campaign_policy_carries_build_budget_into_execution_options(
             item,
             project,
             invocation=1,
-            policy=CampaignPolicy(timeout_seconds=5, build_timeout_seconds=7),
+            policy=SimulationRecordPolicy(timeout_seconds=5, build_timeout_seconds=7),
         )
     )
 
@@ -176,7 +176,7 @@ def test_private_campaign_build_uses_carried_build_budget(
     build_root = tmp_path / "engine-build"
     build_root.mkdir()
     (build_root / "simv").write_bytes(b"image")
-    store = CampaignStore(tmp_path / "record")
+    store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(manifest)
     captured: list[SimulationOptions] = []
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
@@ -197,7 +197,7 @@ def test_private_campaign_build_uses_carried_build_budget(
             manifest.document["work_items"][0],
             project,
             invocation=1,
-            policy=CampaignPolicy(timeout_seconds=5, build_timeout_seconds=7),
+            policy=SimulationRecordPolicy(timeout_seconds=5, build_timeout_seconds=7),
         )
     )
 
@@ -214,7 +214,7 @@ def test_pre_cancelled_campaign_hook_never_compiles_or_runs(tmp_path):
     from tests.flows.sim.test_endpoint_record_lifecycle import _pre_sim_plan
 
     plan, _disclosures = _pre_sim_plan("immutable", ("echo actual-hook",), lambda _document: None)
-    store = CampaignStore(tmp_path / "record")
+    store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(plan.manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -272,12 +272,12 @@ def test_changed_packaged_source_fails_disclosure_equality_before_compile(
     build_root = tmp_path / "engine-build"
     build_root.mkdir()
     (build_root / "simv").write_bytes(b"image")
-    store = CampaignStore(tmp_path / "record")
+    store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(manifest)
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
 
     with pytest.raises(
-        SimulationCampaignIntegrityError,
+        SimulationRecordIntegrityError,
         match="prepared generator source closure disagrees with campaign plan",
     ):
         _executor(build_root, counters, disclosures={"alpha": execution}).execute(
@@ -297,7 +297,7 @@ def test_immutable_hook_compile_surface_mutation_stops_before_snapshot_launch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     manifest = _manifest_for(("alpha",))
-    plan = create_simulation_campaign_plan(manifest)
+    plan = create_simulation_record_plan(manifest)
     project = tmp_path / "project"
     project.mkdir()
     build_root = tmp_path / "engine-build"
@@ -315,16 +315,21 @@ def test_immutable_hook_compile_surface_mutation_stops_before_snapshot_launch(
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
 
-    with pytest.raises(SimulationCampaignIntegrityError, match="compile inputs changed"):
-        SimulationCampaign(_executor(build_root, counters)).run(
-            NewCampaignRunRequest(
-                plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
+    with pytest.raises(SimulationRecordIntegrityError, match="compile inputs changed"):
+        SimulationRecord(_executor(build_root, counters)).run(
+            NewSimulationRecordRunRequest(
+                plan,
+                project,
+                invocation.parent,
+                SimulationRecordPolicy(),
+                invocation,
+                _admission(),
             )
         )
 
     assert counters["compile"] == 1
     assert counters["launch"] == 0
-    store = CampaignStore(invocation / "targets/sim/record")
+    store = SimulationRecordStore(invocation / "targets/sim/record")
     assert len(store.scan().interrupted) == 1
     assert not tuple(store.root.glob("work-items/*/result.json"))
 
@@ -339,7 +344,7 @@ def test_scope_stop_after_real_hook_retains_firing_without_simulator_launch(tmp_
     from tests.flows.sim.test_endpoint_record_lifecycle import _pre_sim_plan
 
     plan, disclosures = _pre_sim_plan("immutable", ("echo actual-hook",), None)
-    store = CampaignStore(tmp_path / "record")
+    store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(plan.manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -433,7 +438,7 @@ def test_request_replacement_reauthenticates_manifest_and_attempt(tmp_path, monk
     records = collect_pre_sim_firings(changed.store.manifest_path)
     assert records[0].document["manifest_sha256"] == changed.pre_sim_decoder.manifest_sha256
     assert records[0].document["producer_invocation_id"] == 2
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(SimulationRecordIntegrityError):
         _publish_request_hook(replace(first, producer_invocation_id=2), "beta", 2)
     assert not (first.attempt_directory / "pre-sim/0002.json").exists()
 
@@ -471,7 +476,7 @@ def test_request_publication_rejects_changed_attempt_after_success(tmp_path, cor
         "ordinal": "invalid ordinal",
         "status": "timed out hook cannot supply an exit code",
     }
-    with pytest.raises(SimulationCampaignIntegrityError, match=expected[corruption]):
+    with pytest.raises(SimulationRecordIntegrityError, match=expected[corruption]):
         _publish_request_hook(request, name, ordinal, status)
     assert published == first_publication
     assert len(published) == 1
@@ -535,7 +540,7 @@ def test_campaign_pre_sim_project_relative_hook_uses_project_root(
     (build / "simv").write_bytes(b"image")
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
     monkeypatch.setattr(serial_execution, "simulation_target_environment", lambda _handle: {})
-    store = CampaignStore(tmp_path / "record")
+    store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(plan.manifest)
     request = _request(
         store, plan.manifest, plan.manifest.document["work_items"][0], project, invocation=1
@@ -582,13 +587,13 @@ def test_store_follows_only_the_booley_dir_entry(tmp_path, linked):
         symlink_or_skip(entry / "flow-reports", outside, target_is_directory=True)
     else:
         (entry / "flow-reports").mkdir()
-    store = CampaignStore(
+    store = SimulationRecordStore(
         entry / "flow-reports" / "sim" / "1" / "targets" / "sim" / "record", booley_dir=entry
     )
     manifest = _manifest_for(("smoke",))
 
     if linked == "below":
-        with pytest.raises(SimulationCampaignIntegrityError, match="contains a link"):
+        with pytest.raises(SimulationRecordIntegrityError, match="contains a link"):
             store.publish_manifest(manifest)
         return
     digest = store.publish_manifest(manifest)
@@ -617,7 +622,7 @@ def test_scan_rejects_complete_result_identity_mutations(tmp_path: Path, case: s
         result["attempt_id"] = str(uuid.uuid4())
     _write(path, result)
     message = "result" if case == "attempt" else "result identity disagrees"
-    with pytest.raises(SimulationCampaignIntegrityError, match=message):
+    with pytest.raises(SimulationRecordIntegrityError, match=message):
         completed.store.scan()
 
 
@@ -651,7 +656,7 @@ def test_stale_run_cleanup_preserves_unmarked_or_mismatched_tree(
     if marker == "mismatched":
         wrong = _run_identity()
         (run.path / ".booley-simulation-attempt.json").write_bytes(canonical_json_bytes(wrong))
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(SimulationRecordIntegrityError):
         cleanup_interrupted_run_directory(run, identity=identity)
     assert payload.read_text(encoding="utf-8") == "mine"
 
@@ -660,7 +665,7 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_the_la
     tmp_path: Path,
 ) -> None:
     manifest = _two_item_manifest()
-    campaign_store = CampaignStore(tmp_path / "record")
+    campaign_store = SimulationRecordStore(tmp_path / "record")
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -714,7 +719,7 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_the_la
         (attempt.directory / "attempt.json").write_bytes(published.canonical_bytes())
 
     errors: list[BaseException] = []
-    scheduler = BoundedCampaignScheduler(
+    scheduler = BoundedSimulationRecordScheduler(
         capacity,
         allocate=allocate,
         prepare_child=prepare,
@@ -834,7 +839,7 @@ def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Pa
     assert "termination" not in never_run
 
     # This injected external adapter has no observed process exit status.
-    store = CampaignStore(tmp_path / "reports/1/targets/sim_0/record")
+    store = SimulationRecordStore(tmp_path / "reports/1/targets/sim_0/record")
     (firing,) = collect_pre_sim_firings(store.manifest_path)
     assert firing.document["status"] == "spawn_error"
     assert firing.document["returncode"] is None
@@ -852,7 +857,7 @@ def test_coverage_rejects_fabricated_hook_with_empty_frozen_commands(tmp_path: P
             )
             return SimulationRunResult("elab_error", "injected adapter evidence", evidence)
 
-    with pytest.raises(SimulationCampaignIntegrityError, match="command count disagrees"):
+    with pytest.raises(SimulationRecordIntegrityError, match="command count disagrees"):
         _run_coverage_campaign(tmp_path, FabricatedHook())
     campaign = tmp_path / "reports/1/targets/sim_0/record"
     assert list(campaign.glob("work-items/*/attempts/*/attempt.json"))
@@ -877,7 +882,7 @@ def test_terminal_authority_defect_matrix_fails_closed(tmp_path: Path, defect: s
     else:
         result.write_bytes(b"x" * (RECORD_MAX_BYTES + 1))
 
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(SimulationRecordIntegrityError):
         completed.store.scan()
 
 
@@ -922,15 +927,15 @@ def test_resume_keeps_run_directories_of_an_unrecoverable_lane(
     monkeypatch.setattr(ChildExecutionRegistry, "cancel", lambda _self, _id: False)
     with (
         AdmissionGate(_CampaignAdmissionEndpoint(case.slots, None)).enter() as admission,
-        pytest.raises(SimulationCampaignIntegrityError, match="recovery is incomplete"),
+        pytest.raises(SimulationRecordIntegrityError, match="recovery is incomplete"),
     ):
         case.campaign.run(
-            ResumeCampaignRunRequest(
+            ResumeSimulationRecordRunRequest(
                 case.validated,
                 case.plan,
                 case.project,
                 case.invocation.parent,
-                CampaignPolicy(),
+                SimulationRecordPolicy(),
                 case.invocation,
                 admission,
             )
@@ -947,14 +952,14 @@ def test_foreign_attempt_result_fails_closed_at_the_read_boundary(tmp_path: Path
 
     project = tmp_path / "project"
     (project / ".booley").mkdir(parents=True)
-    request = NewCampaignRunRequest(
-        plan=create_simulation_campaign_plan(_manifest_for(("smoke",))),
+    request = NewSimulationRecordRunRequest(
+        plan=create_simulation_record_plan(_manifest_for(("smoke",))),
         project_root=project,
         report_root=None,
-        policy=CampaignPolicy(),
+        policy=SimulationRecordPolicy(),
         invocation_directory=tmp_path / "reports" / "sim" / "1",
         admission=_admission(),
     )
 
-    with pytest.raises(SimulationCampaignIntegrityError, match="final published attempt"):
-        SimulationCampaign(_ForeignAttemptExecutor()).run(request)
+    with pytest.raises(SimulationRecordIntegrityError, match="final published attempt"):
+        SimulationRecord(_ForeignAttemptExecutor()).run(request)

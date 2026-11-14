@@ -20,13 +20,13 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from .codec import (
-    SimulationCampaignIntegrityError,
-    UnsupportedSimulationCampaignFormatError,
+    SimulationRecordIntegrityError,
+    UnsupportedSimulationRecordFormatError,
     decode_simulation_result,
     validate_relative_path,
 )
 
-__all__ = ["TestRunFiles", "campaign_test_run_files"]
+__all__ = ["TestRunFiles", "simulation_record_test_run_files"]
 
 #: Evidence kind of a Campaign work item's simulator log. A Campaign's
 #: execution has no artifact root, so it records only the live log, never a
@@ -74,7 +74,7 @@ class _Outcome(Protocol):
     def acceptance_facts(self) -> _Facts: ...
 
 
-def campaign_test_run_files(outcome: _Outcome) -> tuple[TestRunFiles, ...]:
+def simulation_record_test_run_files(outcome: _Outcome) -> tuple[TestRunFiles, ...]:
     """The files of each observation of *outcome*, aligned with ``outcome.observations``.
 
     The Test Runs of one Cocotb batch share its work item, so they share its
@@ -126,8 +126,8 @@ def _work_item_files(invocation: Path, relative: object) -> TestRunFiles:
         KeyError,
         TypeError,
         ValueError,
-        SimulationCampaignIntegrityError,
-        UnsupportedSimulationCampaignFormatError,
+        SimulationRecordIntegrityError,
+        UnsupportedSimulationRecordFormatError,
     ):
         # Includes a result whose fields have the wrong shape: ``SimulationResult``
         # checks canonical JSON, not the types of its members.

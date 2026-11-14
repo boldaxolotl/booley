@@ -16,10 +16,10 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from booley.bwave.sessions import register_trace, session_store
-from booley.flows.sim.record import CampaignOutcome
+from booley.flows.sim.record import SimulationRecordOutcome
 from booley.flows.sim.record.test_run_report import (
-    campaign_test_run_files_by_row,
-    campaign_test_run_rows,
+    simulation_record_test_run_files_by_row,
+    simulation_record_test_run_rows,
 )
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 _PASS_GRADE = "pass"
 
 
-def session_traces(outcomes: Sequence[CampaignOutcome]) -> list[tuple[str, Path]]:
+def session_traces(outcomes: Sequence[SimulationRecordOutcome]) -> list[tuple[str, Path]]:
     """``(Target name, waveform)`` for each Target with a traced Test Run, in run order.
 
     A Target's waveform is its last non-passing traced Test Run's, else its
@@ -36,10 +36,12 @@ def session_traces(outcomes: Sequence[CampaignOutcome]) -> list[tuple[str, Path]
     """
     chosen: list[tuple[str, Path]] = []
     for outcome in outcomes:
-        rows = campaign_test_run_rows(outcome)
+        rows = simulation_record_test_run_rows(outcome)
         traces = [
             (row["grade"], files.trace)
-            for row, files in zip(rows, campaign_test_run_files_by_row(outcome), strict=True)
+            for row, files in zip(
+                rows, simulation_record_test_run_files_by_row(outcome), strict=True
+            )
             if files.trace is not None
         ]
         failing = [trace for grade, trace in traces if grade != _PASS_GRADE]
@@ -48,7 +50,9 @@ def session_traces(outcomes: Sequence[CampaignOutcome]) -> list[tuple[str, Path]
     return chosen
 
 
-def register_trace_sessions(outcomes: Sequence[CampaignOutcome], project_root: Path) -> None:
+def register_trace_sessions(
+    outcomes: Sequence[SimulationRecordOutcome], project_root: Path
+) -> None:
     """Register each traced Target's waveform as session ``<target>`` of *project_root*.
 
     The store is the run's own checkout's, so ``@<target>`` and the default

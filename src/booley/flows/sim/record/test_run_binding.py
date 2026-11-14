@@ -14,7 +14,7 @@ from typing import cast
 
 from booley.flows.test_runs import TestRun, discovered_test_run, test_run_from_document
 
-from .codec import SimulationCampaignIntegrityError
+from .codec import SimulationRecordIntegrityError
 
 __all__ = ["observation_test_runs", "work_item_test_runs"]
 
@@ -51,7 +51,7 @@ def observation_test_runs(
         position = taken.get(test, 0)
         taken[test] = position + 1
         if position >= len(matching):
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 "a result observation has no Test Run in its work item"
             )
         run = matching[position]
@@ -71,4 +71,4 @@ def work_item_test_runs(work_item: Mapping[str, object]) -> tuple[TestRun, ...]:
             for entry in cast(tuple[object, ...], work_item["test_runs"])
         )
     except ValueError as exc:
-        raise SimulationCampaignIntegrityError(f"work item Test Runs are invalid: {exc}") from exc
+        raise SimulationRecordIntegrityError(f"work item Test Runs are invalid: {exc}") from exc

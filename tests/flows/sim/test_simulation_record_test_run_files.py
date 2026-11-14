@@ -271,7 +271,7 @@ def test_paths_name_the_attempt_the_campaign_accepted(
 ):
     """A resumed work item is accepted on its second attempt: the log is that attempt's."""
     from booley.flows.sim.record.codec import canonical_json_bytes
-    from booley.flows.sim.record.test_run_files import campaign_test_run_files
+    from booley.flows.sim.record.test_run_files import simulation_record_test_run_files
 
     _run(tmp_path, monkeypatch, ["bad"], failing=("bad",))
     outcome = _campaign_stand_in(tmp_path)
@@ -287,7 +287,7 @@ def test_paths_name_the_attempt_the_campaign_accepted(
     document["attempt_ordinal"] = 2
     result.write_bytes(canonical_json_bytes(document))
 
-    (files,) = campaign_test_run_files(outcome)
+    (files,) = simulation_record_test_run_files(outcome)
     assert files.log is not None
     assert files.log.parents[1] == accepted
 
@@ -296,7 +296,10 @@ def test_lookup_yields_no_files_for_unreadable_or_missing_records(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     from booley.flows.sim.record.codec import canonical_json_bytes
-    from booley.flows.sim.record.test_run_files import TestRunFiles, campaign_test_run_files
+    from booley.flows.sim.record.test_run_files import (
+        TestRunFiles,
+        simulation_record_test_run_files,
+    )
 
     _run(tmp_path, monkeypatch, ["bad"], failing=("bad",))
     outcome = _campaign_stand_in(tmp_path)
@@ -308,32 +311,35 @@ def test_lookup_yields_no_files_for_unreadable_or_missing_records(
         observations=({"work_item_id": "0099-missing"},),
         acceptance_facts=outcome.acceptance_facts,
     )
-    assert campaign_test_run_files(stranger) == (TestRunFiles(None, None),)
+    assert simulation_record_test_run_files(stranger) == (TestRunFiles(None, None),)
     # No acceptance facts at all.
     bare = SimpleNamespace(manifest_path=outcome.manifest_path, observations=outcome.observations)
-    assert campaign_test_run_files(bare) == (TestRunFiles(None, None),)  # type: ignore[arg-type]
+    assert simulation_record_test_run_files(bare) == (TestRunFiles(None, None),)  # type: ignore[arg-type]
     # A manifest kept outside an invocation names no results.
     stray = SimpleNamespace(
         manifest_path=Path("manifest.json"),
         observations=outcome.observations,
         acceptance_facts=outcome.acceptance_facts,
     )
-    assert campaign_test_run_files(stray) == (TestRunFiles(None, None),)
+    assert simulation_record_test_run_files(stray) == (TestRunFiles(None, None),)
     # A record that is not a result, or has gone.
     result.write_bytes(b"not json")
-    assert campaign_test_run_files(outcome) == (TestRunFiles(None, None),)
+    assert simulation_record_test_run_files(outcome) == (TestRunFiles(None, None),)
     # Canonical JSON whose fields have the wrong shape is no result either.
     result.write_bytes(canonical_json_bytes({"evidence": [{}]}))
-    assert campaign_test_run_files(outcome) == (TestRunFiles(None, None),)
+    assert simulation_record_test_run_files(outcome) == (TestRunFiles(None, None),)
     result.unlink()
-    assert campaign_test_run_files(outcome) == (TestRunFiles(None, None),)
+    assert simulation_record_test_run_files(outcome) == (TestRunFiles(None, None),)
 
 
 def test_a_reference_that_escapes_its_attempt_names_no_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     from booley.flows.sim.record.codec import canonical_json_bytes
-    from booley.flows.sim.record.test_run_files import TestRunFiles, campaign_test_run_files
+    from booley.flows.sim.record.test_run_files import (
+        TestRunFiles,
+        simulation_record_test_run_files,
+    )
 
     _run(tmp_path, monkeypatch, ["bad"], failing=("bad",))
     outcome = _campaign_stand_in(tmp_path)
@@ -347,7 +353,7 @@ def test_a_reference_that_escapes_its_attempt_names_no_file(
     result.write_bytes(canonical_json_bytes(document))
 
     assert (result.parents[2] / "manifest.json").is_file()
-    assert campaign_test_run_files(outcome) == (TestRunFiles(None, None),)
+    assert simulation_record_test_run_files(outcome) == (TestRunFiles(None, None),)
 
 
 def test_path_lines_are_capped(tmp_path: Path):

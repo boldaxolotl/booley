@@ -49,31 +49,31 @@ from .codec import (
     MANIFEST_MAX_BYTES,
     RECORD_MAX_BYTES,
     SUMMARY_MAX_BYTES,
-    SimulationCampaignIntegrityError,
-    UnsupportedSimulationCampaignFormatError,
+    SimulationRecordIntegrityError,
+    UnsupportedSimulationRecordFormatError,
     canonical_json_bytes,
     decode_bundle_build_attempt,
     decode_bundle_build_result,
     decode_simulation_attempt,
-    decode_simulation_campaign_manifest,
+    decode_simulation_record_manifest,
     decode_simulation_result,
     decode_simulator_bundle,
     encode_bundle_build_attempt,
     encode_bundle_build_result,
     encode_simulation_attempt,
-    encode_simulation_campaign_manifest,
+    encode_simulation_record_manifest,
     encode_simulation_result,
     linked_manifest_path,
     raise_if_retired_schema,
-    reads_campaign_records,
+    reads_simulation_record_documents,
     validate_relative_path,
 )
 from .model import (
     BundleBuildAttempt,
     BundleBuildResult,
     SimulationAttempt,
-    SimulationCampaignDocument,
-    SimulationCampaignManifest,
+    SimulationRecordDocument,
+    SimulationRecordManifest,
     SimulationResult,
     SimulatorBundle,
     StrictGrade,
@@ -81,7 +81,7 @@ from .model import (
 from .planning import manifest_digest
 from .pre_sim_evidence import PreSimFiring, PreSimFiringDecoder, _reference
 
-_T = TypeVar("_T", bound=SimulationCampaignDocument)
+_T = TypeVar("_T", bound=SimulationRecordDocument)
 _SUMMARY_SCHEMA = "booley.simulation-record-summary/v1"
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _COMMON_BUILD_FIELDS = (
@@ -103,7 +103,7 @@ class WorkItemRecovery:
 
 
 @dataclass(frozen=True, slots=True)
-class CampaignRecovery:
+class SimulationRecordRecovery:
     """Manifest-ordered recovery classification."""
 
     items: tuple[WorkItemRecovery, ...]
@@ -132,9 +132,9 @@ class SharedBuildRecovery:
     build_execution: Mapping[str, object] | None
 
 
-def _invocation_of(campaign_root: Path) -> Path | None:
+def _invocation_of(simulation_record_root: Path) -> Path | None:
     """The invocation directory holding ``<invocation>/targets/<target>/record``, if laid out so."""
-    parents = campaign_root.parents
+    parents = simulation_record_root.parents
     if len(parents) > 2 and parents[1].name == "targets":
         return parents[2]
     return None
@@ -144,24 +144,26 @@ def _require_safe_parents(path: Path, root: Path, booley_dir: Path | None = None
     try:
         path.absolute().relative_to(root.absolute())
     except ValueError as exc:
-        raise SimulationCampaignIntegrityError(f"campaign path escapes store: {path}") from exc
+        raise SimulationRecordIntegrityError(f"campaign path escapes store: {path}") from exc
     absolute = path.absolute()
     current = Path(absolute.anchor)
     for component in absolute.parts[1:]:
         current /= component
         if is_report_link(current) and not is_booley_dir_entry(current, booley_dir):
-            raise SimulationCampaignIntegrityError(f"campaign path contains a link: {current}")
+            raise SimulationRecordIntegrityError(f"campaign path contains a link: {current}")
 
 
 def _create_immutable(path: Path, raw: bytes) -> None:
     durable_create(path, raw)
 
 
-class CampaignStore:
+class SimulationRecordStore:
     """Append-only authoritative storage rooted at one ``campaign`` directory."""
 
-    def __init__(self, campaign_directory: Path, *, booley_dir: Path | None = None) -> None:
-        self.root = campaign_directory.absolute()
+    def __init__(
+        self, simulation_record_directory: Path, *, booley_dir: Path | None = None
+    ) -> None:
+        self.root = simulation_record_directory.absolute()
         # The one link component the store may cross (#2191); ``None`` is strict.
         self.booley_dir = booley_dir
         self._authenticated_files: set[Path] = set()
@@ -175,7 +177,7 @@ class CampaignStore:
         raw = read_bounded(
             path,
             limit=limit,
-            error=SimulationCampaignIntegrityError,
+            error=SimulationRecordIntegrityError,
             booley_dir=self.booley_dir,
             single_link=True,
         )
@@ -184,7 +186,7 @@ class CampaignStore:
 
     def _identity(self, path: Path) -> tuple[int, str]:
         if is_report_link(path) or not path.is_file():
-            raise SimulationCampaignIntegrityError(f"evidence is not a regular file: {path}")
+            raise SimulationRecordIntegrityError(f"evidence is not a regular file: {path}")
         identity = stream_digest(path)
         self._authenticated_files.add(path.absolute())
         return identity
@@ -194,12 +196,12 @@ class CampaignStore:
         raw = self._read(path, limit=limit)
         try:
             return decode(raw)
-        except UnsupportedSimulationCampaignFormatError as exc:
+        except UnsupportedSimulationRecordFormatError as exc:
             raise self._locate(exc) from None
 
     def _locate(
-        self, refusal: UnsupportedSimulationCampaignFormatError
-    ) -> UnsupportedSimulationCampaignFormatError:
+        self, refusal: UnsupportedSimulationRecordFormatError
+    ) -> UnsupportedSimulationRecordFormatError:
         """The refusal naming this Record's invocation directory, when it has one."""
         invocation = _invocation_of(self.root)
         return refusal if invocation is None else refusal.located(invocation)
@@ -212,26 +214,26 @@ class CampaignStore:
     def summary_path(self) -> Path:
         return self.root / "summary.json"
 
-    def publish_manifest(self, manifest: SimulationCampaignManifest) -> str:
-        raw = encode_simulation_campaign_manifest(manifest)
+    def publish_manifest(self, manifest: SimulationRecordManifest) -> str:
+        raw = encode_simulation_record_manifest(manifest)
         _require_safe_parents(self.manifest_path, self.root, self.booley_dir)
         _create_immutable(self.manifest_path, raw)
         return manifest_digest(manifest)
 
-    def load_manifest(self) -> SimulationCampaignManifest:
+    def load_manifest(self) -> SimulationRecordManifest:
         _require_safe_parents(self.manifest_path, self.root, self.booley_dir)
         return self._decode_located(
-            decode_simulation_campaign_manifest, self.manifest_path, MANIFEST_MAX_BYTES
+            decode_simulation_record_manifest, self.manifest_path, MANIFEST_MAX_BYTES
         )
 
     def load_summary(self) -> Mapping[str, object]:
         """Load the bounded retention fields from the existing summary projection."""
         _require_safe_parents(self.summary_path, self.root, self.booley_dir)
         raw = self._read(self.summary_path, limit=SUMMARY_MAX_BYTES)
-        document = parse_json_object(raw, error=SimulationCampaignIntegrityError)
+        document = parse_json_object(raw, error=SimulationRecordIntegrityError)
         try:
             raise_if_retired_schema(document.get("$schema"))
-        except UnsupportedSimulationCampaignFormatError as exc:
+        except UnsupportedSimulationRecordFormatError as exc:
             raise self._locate(exc) from None
         try:
             schema = require_str_value(document.get("$schema"), field="campaign summary schema")
@@ -243,11 +245,11 @@ class CampaignStore:
                 )
             )
         except BoundaryError as exc:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 "campaign summary retention fields are invalid"
             ) from exc
         if schema != _SUMMARY_SCHEMA or len(set(completed)) != len(completed):
-            raise SimulationCampaignIntegrityError("campaign summary retention fields are invalid")
+            raise SimulationRecordIntegrityError("campaign summary retention fields are invalid")
         return document
 
     def manifest_sha256(self) -> str:
@@ -258,7 +260,7 @@ class CampaignStore:
         """Fail immediately when another scheduler owns this campaign."""
         _require_safe_parents(self.root, self.root, self.booley_dir)
         if not self.root.is_dir():
-            raise SimulationCampaignIntegrityError("Simulation Campaign directory disappeared")
+            raise SimulationRecordIntegrityError("Simulation Campaign directory disappeared")
         path = self.root / ".lock"
         _require_safe_parents(path, self.root, self.booley_dir)
         with path.open("a+", encoding="utf-8") as stream, nonblocking_file_lock(stream):
@@ -270,7 +272,7 @@ class CampaignStore:
         for item in items:
             if item["work_item_id"] == work_item_id:
                 return self._work_item_directory(item)
-        raise SimulationCampaignIntegrityError(f"unknown work item {work_item_id!r}")
+        raise SimulationRecordIntegrityError(f"unknown work item {work_item_id!r}")
 
     def _work_item_directory(self, item: Mapping[str, object]) -> Path:
         work_item_id = cast(str, item["work_item_id"])
@@ -280,7 +282,7 @@ class CampaignStore:
         # Decode does not check the id, and retention globs assume one component:
         # refuse a "/" here, and a backslash (a separator on Windows) below.
         if "/" in name:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 f"work-item directory name {name!r} is not one contained path component"
             )
         validate_relative_path(name)
@@ -292,7 +294,7 @@ class CampaignStore:
         existing = self._attempt_directories(attempts)
         ordinal = len(existing) + 1
         if ordinal > 10_000:
-            raise SimulationCampaignIntegrityError("work-item attempt ceiling exceeded")
+            raise SimulationRecordIntegrityError("work-item attempt ceiling exceeded")
         path = attempts / f"{ordinal:04d}-{attempt_id}"
         path.mkdir(mode=0o700)
         fsync_directory(attempts)
@@ -308,7 +310,7 @@ class CampaignStore:
         existing = self._attempt_directories(attempts)
         ordinal = len(existing) + 1
         if ordinal > 10_000:
-            raise SimulationCampaignIntegrityError("shared build attempt ceiling exceeded")
+            raise SimulationRecordIntegrityError("shared build attempt ceiling exceeded")
         path = attempts / f"{ordinal:04d}-{build_attempt_id}"
         path.mkdir(mode=0o700)
         fsync_directory(attempts)
@@ -325,7 +327,7 @@ class CampaignStore:
     def publish_build_result(self, directory: Path, result: BundleBuildResult) -> Path:
         return self._publish(directory / "build-result.json", result, encode_bundle_build_result)
 
-    @reads_campaign_records
+    @reads_simulation_record_documents
     def recover_shared_build(
         self, build_variant_id: str, producer_invocation_id: int
     ) -> SharedBuildRecovery | None:
@@ -341,7 +343,7 @@ class CampaignStore:
             if candidate is not None:
                 recovered.append(candidate)
         if len(recovered) > 1:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 "multiple settled shared builds exist for one variant/invocation"
             )
         return recovered[0] if recovered else None
@@ -352,7 +354,7 @@ class CampaignStore:
         fingerprints = cast(Mapping[str, str], manifest.document["fingerprints"])
         variants = cast(tuple[Mapping[str, object], ...], manifest.document["build_variants"])
         if not any(item["build_variant_id"] == build_variant_id for item in variants):
-            raise SimulationCampaignIntegrityError("shared build variant is not in manifest")
+            raise SimulationRecordIntegrityError("shared build variant is not in manifest")
         eda = cast(Mapping[str, str], workload["eda"])
         return {
             "simulation_record_id": manifest.document["simulation_record_id"],
@@ -389,9 +391,9 @@ class CampaignStore:
     def _validate_shared_result(self, directory, attempt, result, expected) -> None:
         document = result.document
         if any(document[field] != expected[field] for field in _COMMON_BUILD_FIELDS):
-            raise SimulationCampaignIntegrityError("shared Build Result identity disagrees")
+            raise SimulationRecordIntegrityError("shared Build Result identity disagrees")
         if document["state"] not in {"ready", "design_failure", "infrastructure_error"}:
-            raise SimulationCampaignIntegrityError("shared Build Result state is invalid")
+            raise SimulationRecordIntegrityError("shared Build Result state is invalid")
         reference = cast(Mapping[str, object], document["build_attempt"])
         attempt_id = attempt.document["build_attempt_id"]
         if (
@@ -400,16 +402,14 @@ class CampaignStore:
             or reference["kind"] != "bundle_build_attempt"
             or reference["path"] != "build-attempt.json"
         ):
-            raise SimulationCampaignIntegrityError(
-                "shared Build Result attempt reference disagrees"
-            )
+            raise SimulationRecordIntegrityError("shared Build Result attempt reference disagrees")
         self._authenticate_reference(directory, reference)
 
     def _shared_result_evidence(self, directory, attempt, result, expected):
         document = result.document
         for reference in cast(tuple[Mapping[str, object], ...], document["evidence"]):
             if reference["owner"] != attempt.document["build_attempt_id"]:
-                raise SimulationCampaignIntegrityError("shared build evidence owner disagrees")
+                raise SimulationRecordIntegrityError("shared build evidence owner disagrees")
             self._authenticate_reference(directory, reference)
         if document["state"] == "design_failure":
             return None, None
@@ -425,7 +425,7 @@ class CampaignStore:
             len(raw) != binding["manifest_bytes"]
             or content_digest(raw) != binding["manifest_sha256"]
         ):
-            raise SimulationCampaignIntegrityError("shared Build Result bundle digest disagrees")
+            raise SimulationRecordIntegrityError("shared Build Result bundle digest disagrees")
         bundle = decode_simulator_bundle(raw)
         _validate_shared_bundle(bundle, binding, attempt, expected)
         require_bundle_inventory(bundle)
@@ -449,7 +449,7 @@ class CampaignStore:
         path = directory / "pre-sim" / f"{ordinal:04d}.json"
         _require_safe_parents(path, self.root, self.booley_dir)
         if len(raw) > MANIFEST_MAX_BYTES:
-            raise SimulationCampaignIntegrityError("Pre-Sim Commands evidence exceeds byte limit")
+            raise SimulationRecordIntegrityError("Pre-Sim Commands evidence exceeds byte limit")
         _create_immutable(path, raw)
         if on_published is not None:
             on_published()
@@ -483,15 +483,15 @@ class CampaignStore:
     def _pre_sim_paths(directory: Path) -> list[Path]:
         root = directory / "pre-sim"
         if root.is_symlink() or (root.exists() and not root.is_dir()):
-            raise SimulationCampaignIntegrityError("invalid Pre-Sim Commands evidence directory")
+            raise SimulationRecordIntegrityError("invalid Pre-Sim Commands evidence directory")
         paths = sorted(root.glob("*.json"))
         if len(paths) > 4096:
-            raise SimulationCampaignIntegrityError("too many Pre-Sim Commands firings")
+            raise SimulationRecordIntegrityError("too many Pre-Sim Commands firings")
         return paths
 
     def _reread_prior_attempt(
         self,
-        manifest: SimulationCampaignManifest,
+        manifest: SimulationRecordManifest,
         items: Mapping[str, Mapping[str, object]],
         directory: Path,
         owned: list[PreSimFiring],
@@ -500,12 +500,12 @@ class CampaignStore:
         digest = manifest_digest(manifest)
         item = items.get(owned[0].key[1])
         if any(firing.document["manifest_sha256"] != digest for firing in owned):
-            raise SimulationCampaignIntegrityError("prior hook manifest changed")
+            raise SimulationRecordIntegrityError("prior hook manifest changed")
         if item is None:
-            raise SimulationCampaignIntegrityError("prior hook manifest owner changed")
+            raise SimulationRecordIntegrityError("prior hook manifest owner changed")
         _require_safe_parents(directory, self.root, self.booley_dir)
         if directory.parent != self._work_item_directory(item) / "attempts":
-            raise SimulationCampaignIntegrityError("prior hook attempt owner changed")
+            raise SimulationRecordIntegrityError("prior hook attempt owner changed")
         fresh = {
             candidate.key: candidate
             for candidate in self._attempt_firings(manifest, item, directory, None)
@@ -513,13 +513,13 @@ class CampaignStore:
         for firing in owned:
             match = fresh.get(firing.key)
             if match is None or (match.path, match.reference) != (firing.path, firing.reference):
-                raise SimulationCampaignIntegrityError("prior hook reference changed")
+                raise SimulationRecordIntegrityError("prior hook reference changed")
         return {firing.key: fresh[firing.key] for firing in owned}
 
-    @reads_campaign_records
+    @reads_simulation_record_documents
     def _attempt_firings(
         self,
-        manifest: SimulationCampaignManifest,
+        manifest: SimulationRecordManifest,
         item: Mapping[str, object],
         directory: Path,
         terminal: SimulationResult | None,
@@ -550,7 +550,7 @@ class CampaignStore:
                     terminal is not None,
                 )
                 if firing.document["ordinal"] != ordinal or path.name != f"{ordinal:04d}.json":
-                    raise SimulationCampaignIntegrityError("Pre-Sim Commands ordinal disagrees")
+                    raise SimulationRecordIntegrityError("Pre-Sim Commands ordinal disagrees")
                 firings.append(firing)
         if terminal is not None:
             if [
@@ -558,15 +558,13 @@ class CampaignStore:
                 for reference in terminal.document["evidence"]
                 if reference["kind"] == "pre_sim_commands"
             ] != [firing.reference for firing in firings]:
-                raise SimulationCampaignIntegrityError(
-                    "Pre-Sim Commands result references disagree"
-                )
+                raise SimulationRecordIntegrityError("Pre-Sim Commands result references disagree")
             if firings:
                 _validate_result_attempt_binding(attempt, terminal)
         return tuple(firings)
 
-    def _campaign_firings(
-        self, manifest: SimulationCampaignManifest, recovery: CampaignRecovery
+    def _simulation_record_firings(
+        self, manifest: SimulationRecordManifest, recovery: SimulationRecordRecovery
     ) -> tuple[PreSimFiring, ...]:
         """Authenticate every retained attempt's firings against the scan's terminal results."""
         items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
@@ -584,7 +582,7 @@ class CampaignStore:
         _require_safe_parents(path, root, self.booley_dir)
         size, digest = self._identity(path)
         if size != reference["bytes"] or digest != reference["sha256"]:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 f"result evidence reference does not authenticate {path}"
             )
 
@@ -595,9 +593,9 @@ class CampaignStore:
 
     def scan(
         self,
-        manifest: SimulationCampaignManifest | None = None,
+        manifest: SimulationRecordManifest | None = None,
         manifest_sha256: str | None = None,
-    ) -> CampaignRecovery:
+    ) -> SimulationRecordRecovery:
         """Recover work item state without reading Pre-Sim sidecars.
 
         ``manifest_sha256`` is the authenticated digest of the passed ``manifest``;
@@ -612,7 +610,7 @@ class CampaignStore:
         recovered = tuple(
             self._scan_item(item, manifest_sha256, expected_workload) for item in items
         )
-        return CampaignRecovery(recovered)
+        return SimulationRecordRecovery(recovered)
 
     def _scan_item(
         self,
@@ -639,7 +637,7 @@ class CampaignStore:
                 or document["manifest_sha256"] != manifest_sha256
                 or document["workload_sha256"] != workload_sha256
             ):
-                raise SimulationCampaignIntegrityError(
+                raise SimulationRecordIntegrityError(
                     f"attempt identity disagrees for {work_item_id} ordinal {ordinal}"
                 )
             _require_attempt_directory_name(attempt_directory, attempt)
@@ -674,17 +672,17 @@ class CampaignStore:
             or document["manifest_sha256"] != manifest_sha256
             or document["workload_sha256"] != workload_sha256
         ):
-            raise SimulationCampaignIntegrityError(f"result identity disagrees for {work_item_id}")
+            raise SimulationRecordIntegrityError(f"result identity disagrees for {work_item_id}")
         if not decoded_attempts or decoded_attempts[-1].document["attempt_ordinal"] != len(
             attempts
         ):
-            raise SimulationCampaignIntegrityError("result has no published attempt")
+            raise SimulationRecordIntegrityError("result has no published attempt")
         final_attempt = decoded_attempts[-1].document
         if (
             document["attempt_id"] != final_attempt["attempt_id"]
             or document["attempt_ordinal"] != final_attempt["attempt_ordinal"]
         ):
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 "result does not bind the final published attempt"
             )
         return result
@@ -694,17 +692,17 @@ class CampaignStore:
         if not root.exists():
             return ()
         if is_report_link(root) or not root.is_dir():
-            raise SimulationCampaignIntegrityError(f"invalid attempts directory: {root}")
+            raise SimulationRecordIntegrityError(f"invalid attempts directory: {root}")
         children = sorted(root.iterdir(), key=lambda item: item.name)
         for ordinal, child in enumerate(children, start=1):
             prefix = f"{ordinal:04d}-"
             if not child.name.startswith(prefix) or is_report_link(child) or not child.is_dir():
-                raise SimulationCampaignIntegrityError(f"invalid attempt directory: {child}")
+                raise SimulationRecordIntegrityError(f"invalid attempt directory: {child}")
         return tuple(children)
 
     def regenerate_summary(
         self,
-        manifest: SimulationCampaignManifest | None = None,
+        manifest: SimulationRecordManifest | None = None,
         manifest_sha256: str | None = None,
     ) -> Mapping[str, object]:
         """Regenerate the projection; ``manifest_sha256`` is the digest of the passed manifest."""
@@ -718,7 +716,7 @@ class CampaignStore:
         )
         valid_grades = {grade.value for grade in StrictGrade}
         if not all(isinstance(grade, str) and grade in valid_grades for grade in grades):
-            raise SimulationCampaignIntegrityError("Simulation Result grade is invalid")
+            raise SimulationRecordIntegrityError("Simulation Result grade is invalid")
         aggregate = _aggregate_grade(
             grades, complete=not recovery.pending and not recovery.interrupted
         )
@@ -737,7 +735,7 @@ class CampaignStore:
         }
         raw = canonical_json_bytes(document)
         if len(raw) > MANIFEST_MAX_BYTES:
-            raise SimulationCampaignIntegrityError("summary exceeds size ceiling")
+            raise SimulationRecordIntegrityError("summary exceeds size ceiling")
         _require_safe_parents(self.summary_path, self.root, self.booley_dir)
         atomic_replace_bytes(self.summary_path, raw)
         return json.loads(raw)
@@ -775,29 +773,29 @@ def collect_pre_sim_firings(
     allowed_pops = len(manifest_paths) + _PRE_SIM_DAG_BOUND
     while pending:
         if allowed_pops == 0:
-            raise SimulationCampaignIntegrityError("prerequisite hook evidence exceeds DAG bound")
+            raise SimulationRecordIntegrityError("prerequisite hook evidence exceeds DAG bound")
         allowed_pops -= 1
         path, expected, ancestors = pending.pop()
         refuse_older_manifest_path(path)
         if path.name != "manifest.json" or path.parent.name != RECORD_DIRECTORY:
-            raise SimulationCampaignIntegrityError("expected exact Campaign manifest path")
-        store = CampaignStore(path.parent, booley_dir=booley_dir)
+            raise SimulationRecordIntegrityError("expected exact Campaign manifest path")
+        store = SimulationRecordStore(path.parent, booley_dir=booley_dir)
         manifest = store.load_manifest()
         digest = manifest_digest(manifest)
         if expected is not None and digest != expected:
-            raise SimulationCampaignIntegrityError("prerequisite hook manifest digest disagrees")
-        campaign_id = str(manifest.document["simulation_record_id"])
-        if campaign_id in ancestors:
-            raise SimulationCampaignIntegrityError("cyclic prerequisite hook evidence")
+            raise SimulationRecordIntegrityError("prerequisite hook manifest digest disagrees")
+        simulation_record_id = str(manifest.document["simulation_record_id"])
+        if simulation_record_id in ancestors:
+            raise SimulationRecordIntegrityError("cyclic prerequisite hook evidence")
         if path in visited:
             continue
         visited.add(path)
-        for firing in store._campaign_firings(manifest, store.scan(manifest, digest)):
+        for firing in store._simulation_record_firings(manifest, store.scan(manifest, digest)):
             firings[firing.key] = firing
         for entry in manifest.document["prerequisites"]:
             reference = entry["manifest"]
             edge = (linked_manifest_path(store.root.parents[2], reference), reference["sha256"])
-            chain = ancestors | {campaign_id}
+            chain = ancestors | {simulation_record_id}
             if (*edge, chain) not in queued:
                 queued.add((*edge, chain))
                 pending.append((*edge, chain))
@@ -814,7 +812,7 @@ def _reread_prior(
         attempts.setdefault(firing.path.parent.parent, []).append(firing)
     fresh = {}
     for manifest_path, attempts in by_manifest.items():
-        store = CampaignStore(manifest_path.parent, booley_dir=booley_dir)
+        store = SimulationRecordStore(manifest_path.parent, booley_dir=booley_dir)
         manifest = store.load_manifest()
         items = {item["work_item_id"]: item for item in manifest.document["work_items"]}
         for directory, owned in attempts.items():
@@ -826,7 +824,7 @@ def _require_attempt_directory_name(directory: Path, attempt: SimulationAttempt)
     """Refuse an attempt stored under a directory its own ordinal and id do not name."""
     document = attempt.document
     if directory.name != f"{document['attempt_ordinal']:04d}-{document['attempt_id']}":
-        raise SimulationCampaignIntegrityError("hook attempt directory owner disagrees")
+        raise SimulationRecordIntegrityError("hook attempt directory owner disagrees")
 
 
 def _aggregate_grade(grades: tuple[str, ...], *, complete: bool) -> str:
@@ -842,27 +840,27 @@ def _aggregate_grade(grades: tuple[str, ...], *, complete: bool) -> str:
 def _variant_digest(build_variant_id: str) -> str:
     prefix, separator, digest = build_variant_id.partition(":")
     if prefix != "variant" or separator != ":" or _HEX64.fullmatch(digest) is None:
-        raise SimulationCampaignIntegrityError("invalid shared build variant identity")
+        raise SimulationRecordIntegrityError("invalid shared build variant identity")
     return digest
 
 
 def _validate_shared_attempt(attempt, ordinal: int, expected) -> None:
     document = attempt.document
     if any(document[field] != expected[field] for field in _COMMON_BUILD_FIELDS):
-        raise SimulationCampaignIntegrityError("shared Build Attempt identity disagrees")
+        raise SimulationRecordIntegrityError("shared Build Attempt identity disagrees")
     if (
         document["build_attempt_ordinal"] != ordinal
         or document["sharing"] != "shared_variant"
         or document["owner"] != {"work_item_id": None, "simulation_attempt_id": None}
         or document["tool_provenance"] != expected["tool_provenance"]
     ):
-        raise SimulationCampaignIntegrityError("shared Build Attempt scope disagrees")
+        raise SimulationRecordIntegrityError("shared Build Attempt scope disagrees")
 
 
 def _validate_shared_bundle(bundle, binding, attempt, expected) -> None:
     document = bundle.document
     if any(document[field] != expected[field] for field in _COMMON_BUILD_FIELDS):
-        raise SimulationCampaignIntegrityError("shared Simulator Bundle identity disagrees")
+        raise SimulationRecordIntegrityError("shared Simulator Bundle identity disagrees")
     if (
         binding["sharing"] != "shared_variant"
         or document["build_attempt_id"] != attempt.document["build_attempt_id"]
@@ -872,7 +870,7 @@ def _validate_shared_bundle(bundle, binding, attempt, expected) -> None:
         or document["tool_provenance"] != expected["tool_provenance"]
         or document["artifacts"] != binding["artifacts"]
     ):
-        raise SimulationCampaignIntegrityError("shared Simulator Bundle binding disagrees")
+        raise SimulationRecordIntegrityError("shared Simulator Bundle binding disagrees")
 
 
 def _load_build_execution(
@@ -881,11 +879,11 @@ def _load_build_execution(
     references = cast(tuple[Mapping[str, object], ...], result["evidence"])
     matches = [item for item in references if item["kind"] == "simulation_build_execution"]
     if len(matches) != 1:
-        raise SimulationCampaignIntegrityError("ready shared build lacks exact execution evidence")
+        raise SimulationRecordIntegrityError("ready shared build lacks exact execution evidence")
     document = read_json_object(
         directory / cast(str, matches[0]["path"]),
         limit=RECORD_MAX_BYTES,
-        error=SimulationCampaignIntegrityError,
+        error=SimulationRecordIntegrityError,
         booley_dir=booley_dir,
         single_link=True,
         canonical=True,
@@ -893,7 +891,7 @@ def _load_build_execution(
     if set(document) != {"$schema", "process", "build"} or document["$schema"] != (
         "booley.simulation-build-execution/v1"
     ):
-        raise SimulationCampaignIntegrityError("build execution evidence schema disagrees")
+        raise SimulationRecordIntegrityError("build execution evidence schema disagrees")
     _validate_build_execution_document(document)
     return cast(Mapping[str, object], document)
 
@@ -911,7 +909,7 @@ def _validate_build_execution_document(document: Mapping[str, object]) -> None:
         "peak_rss_mb",
         "oom_kill_delta",
     }:
-        raise SimulationCampaignIntegrityError("build process evidence fields disagree")
+        raise SimulationRecordIntegrityError("build process evidence fields disagree")
     if not isinstance(build, dict) or set(build) != {
         "ran",
         "verdict",
@@ -926,7 +924,7 @@ def _validate_build_execution_document(document: Mapping[str, object]) -> None:
         "reason",
         "cache_decision",
     }:
-        raise SimulationCampaignIntegrityError("normalized build evidence fields disagree")
+        raise SimulationRecordIntegrityError("normalized build evidence fields disagree")
     _validate_process_values(process)
     _validate_build_values(build)
 
@@ -942,9 +940,9 @@ def _validate_process_values(process: Mapping[str, object]) -> None:
         if peak is not None:
             require_finite_number(peak, field="build process peak_rss_mb")
     except BoundaryError as exc:
-        raise SimulationCampaignIntegrityError("build process evidence types disagree") from exc
+        raise SimulationRecordIntegrityError("build process evidence types disagree") from exc
     if not isinstance(process["stdout"], str) or not isinstance(process["stderr"], str):
-        raise SimulationCampaignIntegrityError("build process evidence types disagree")
+        raise SimulationRecordIntegrityError("build process evidence types disagree")
 
 
 def _validate_build_values(build: Mapping[str, object]) -> None:
@@ -957,7 +955,7 @@ def _validate_build_values(build: Mapping[str, object]) -> None:
             if build[field] is not None:
                 require_finite_number(build[field], field=f"normalized build {field}")
     except BoundaryError as exc:
-        raise SimulationCampaignIntegrityError("normalized build measurement is invalid") from exc
+        raise SimulationRecordIntegrityError("normalized build measurement is invalid") from exc
     if (
         not (build["ran"] is True or _is_recorded_reuse_hit(build))
         or build["verdict"] != "pass"
@@ -968,7 +966,7 @@ def _validate_build_values(build: Mapping[str, object]) -> None:
             not isinstance(build[field], str) for field in ("output", "reason", "cache_decision")
         )
     ):
-        raise SimulationCampaignIntegrityError("normalized build evidence is not successful")
+        raise SimulationRecordIntegrityError("normalized build evidence is not successful")
 
 
 def _is_recorded_reuse_hit(build: Mapping[str, object]) -> bool:
@@ -996,9 +994,14 @@ def _validate_result_attempt_binding(attempt: SimulationAttempt, result: Simulat
         "producer_invocation_id",
     )
     if any(left[field] != right[field] for field in fields):
-        raise SimulationCampaignIntegrityError(
+        raise SimulationRecordIntegrityError(
             "Simulation Result identity disagrees with Simulation Attempt"
         )
 
 
-__all__ = ["CampaignRecovery", "CampaignStore", "SharedBuildRecovery", "WorkItemRecovery"]
+__all__ = [
+    "SharedBuildRecovery",
+    "SimulationRecordRecovery",
+    "SimulationRecordStore",
+    "WorkItemRecovery",
+]
