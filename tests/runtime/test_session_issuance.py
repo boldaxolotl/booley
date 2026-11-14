@@ -4109,16 +4109,18 @@ def test_reissue_keeps_former_mount_for_unannotated_records(
     assert record.work_dir == str(source / "worktrees" / "wt")
 
 
-@pytest.mark.parametrize("former", ["/work", "/work/.booley", "/"])
-def test_reissue_refuses_former_mount_overlapping_workspace(issued_preview, former: str) -> None:
+def test_reissue_refuses_former_mount_overlapping_workspace(issued_preview) -> None:
     project, prepared, path, _stamp = issued_preview
-    _with_previous_mount(path, former)
-    before = path.read_bytes()
+    for former in ("/work", "/work/.booley", "/"):
+        _with_previous_mount(path, former)
+        before = path.read_bytes()
 
-    with pytest.raises(runtime_spec.RuntimeSpecError, match=r"devcontainer\.json.*booley init"):
-        runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+        with pytest.raises(
+            runtime_spec.RuntimeSpecError, match=r"devcontainer\.json.*booley init"
+        ):
+            runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
 
-    assert path.read_bytes() == before
+        assert path.read_bytes() == before
 
 
 def test_reissue_fails_before_replacing_spec_when_history_is_unwritable(
