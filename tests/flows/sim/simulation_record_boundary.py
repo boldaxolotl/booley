@@ -50,7 +50,7 @@ from booley.targets.catalog import TargetCatalog
 from tests.flows.sim.launched_work import launched_work
 from tests.target_test_support import write_sim_preview_project
 
-# Canned simulator processes shared by the campaign-path tests.
+# Canned simulator processes shared by the record-path tests.
 PASS_PROCESS = SubprocessResult(
     returncode=0,
     stdout='[SIM_RESULT] PASSED\n[SIM_CYCLES] 2561\n[SIM_SUMMARY] {"passed":true,"sva_errors":0}\n',
@@ -91,7 +91,7 @@ ProcessFactory = Callable[[Launch], SubprocessResult]
 
 @dataclass
 class SimulationRecordSimRun:
-    """Outcome of one campaign-path simulation."""
+    """Outcome of one record-path simulation."""
 
     result: ExecutionResult
     flow: SimulateFlow

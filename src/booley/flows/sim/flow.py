@@ -398,7 +398,7 @@ class SimulateFlow(
         raise RuntimeError("Simulation invocation reservation ceiling exceeded")
 
     def record_flow_owned_acceptance(self, outcome: EndpointOutcome) -> bool:
-        """Record Simulation Record acceptance; no Simulation Record outcomes means not handled."""
+        """Record acceptance of a Simulation Record; no outcomes means not handled."""
         from .acceptance import retain_partial_simulation_record_acceptance
 
         outcomes = self._simulation_record_outcomes

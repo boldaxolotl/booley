@@ -548,8 +548,7 @@ def _simulation_record_thread_names(earlier_threads: set[threading.Thread]) -> s
     return {
         thread.name
         for thread in threading.enumerate()
-        if thread not in earlier_threads
-        and thread.name.startswith(("booley-record-", "booley-record-process-cancellation"))
+        if thread not in earlier_threads and thread.name.startswith("booley-record-")
     }
 
 

@@ -1,7 +1,7 @@
 """The sim card and ``simulation.json`` name each Test Run's log and waveform (issue #2758).
 
 Most tests run a real Simulation Record through the faked process edge of
-``simulation_record_boundary`` (so the evidence files are the ones a Simulation Record records)
+``simulation_record_boundary`` (so the evidence files are the ones the Simulation Record keeps)
 and read the card, ``simulation.json`` and the MCP detail it publishes. The
 card's row budget is checked on rows and files built directly.
 """
