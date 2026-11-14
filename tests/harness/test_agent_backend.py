@@ -1429,7 +1429,9 @@ async def test_nested_codex_sets_cli_home_to_validated_private_copy(tmp_path, mo
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
     _, sessions = await _codex_backend._codex_spawn(
-        ["codex"], AgentCallParams(prompt="x", model="chosen", cwd=tmp_path)
+        ["codex"],
+        AgentCallParams(prompt="x", model="chosen", cwd=tmp_path),
+        "visitor",
     )
     assert captured["env"]["CODEX_HOME"] == str(tmp_path / "private" / ".codex")
     assert sessions == tmp_path / "private" / ".codex" / "sessions"

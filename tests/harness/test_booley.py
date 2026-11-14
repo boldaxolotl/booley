@@ -1830,6 +1830,10 @@ def _assert_auth_status(
     for key in (*auth_token.CREDENTIAL_ENV_KEYS, "BOOLEY_DIR", "RTL_PROJECT_ROOT", "CODEX_HOME"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "SYNTHETIC_CODEX_KEY")
+    if not in_project:
+        # With no Project the policy is ``subscription``: Codex runs on its login, not the key.
+        (home / ".codex").mkdir()
+        (home / ".codex" / "auth.json").write_bytes(b'{"tokens": {"access_token": "SYNTHETIC"}}')
     argv = ["booley", "auth", "--status"]
     if in_project:
         data = project / ".booley"
