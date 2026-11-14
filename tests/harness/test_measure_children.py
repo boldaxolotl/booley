@@ -637,3 +637,95 @@ def test_measure_tables_starts_children_cheapest_tier_first_and_reports_in_table
 
     assert started == ["lint", "sim", "synth"]  # cheapest first
     assert [t.run.identity for t in outcome.tables] == [t.identity for t in tables]
+
+
+@pytest.mark.parametrize("all_tables", [False, True])
+def test_a_child_that_cannot_be_launched_after_another_started_gets_error_verdicts(
+    root_dir: Path, world: FakeWorld, all_tables: bool
+):
+    from booley.harness.checkout_flow import CheckoutFlowError
+    from booley.harness.measure_children import STOPPED_REASON, ChildScheduler
+
+    fleet = make_fleet(root_dir, world, max_light=2, queue_max=4)
+    planned = fleet.plan([table(name) for name in "abc"], light_claim)
+
+    def refuse() -> FakeChild:
+        raise CheckoutFlowError("Flow 'lint' could not be started: disk full")
+
+    fleet.prepared["b"].start = refuse  # type: ignore[method-assign]
+    scheduler = ChildScheduler(planned, fleet.store, all_tables=all_tables)
+
+    assert scheduler.step(cancel=False)  # `a` started; `b` failed to launch
+    fleet.child("a").finish()
+    if all_tables:
+        assert scheduler.step(cancel=False)
+        assert fleet.started == ["a", "c"]  # the failed table is never started again
+        fleet.child("c").finish()
+    assert not scheduler.step(cancel=False)
+    outcome = scheduler.outcome()
+    scheduler.close()
+
+    verdicts = by_target(outcome)
+    assert verdicts["a"] == (Verdict.MET,)
+    assert verdicts["b"] == (Verdict.ERROR,)
+    failed = next(t for t in outcome.tables if t.run.identity.endswith("#b"))
+    assert failed.finished and failed.run.wall_time_s is None and not failed.reports
+    assert [r.detail for r in failed.run.results] == [
+        "Flow 'lint' could not be started: disk full"
+    ]
+    if all_tables:
+        assert outcome.status is RunStatus.COMPLETED
+        assert verdicts["c"] == (Verdict.MET,)
+    else:
+        assert outcome.status is RunStatus.STOPPED
+        assert verdicts["c"] == (Verdict.NOT_EVALUATED,)
+        assert {r.detail for r in outcome.tables[2].run.results} == {STOPPED_REASON}
+        assert fleet.started == ["a"]
+
+
+def test_the_first_child_that_cannot_be_launched_raises(root_dir: Path, world: FakeWorld):
+    from booley.harness.checkout_flow import CheckoutFlowError
+    from booley.harness.measure_children import ChildScheduler
+
+    fleet = make_fleet(root_dir, world, max_light=2, queue_max=4)
+    planned = fleet.plan([table("a"), table("b")], light_claim)
+
+    def refuse() -> FakeChild:
+        raise CheckoutFlowError("Flow 'lint' could not be started: disk full")
+
+    fleet.prepared["a"].start = refuse  # type: ignore[method-assign]
+    scheduler = ChildScheduler(planned, fleet.store, all_tables=False)
+    try:
+        with pytest.raises(CheckoutFlowError, match="disk full"):
+            scheduler.step(cancel=False)
+    finally:
+        scheduler.close()
+    assert fleet.prepared["b"].discarded  # nothing was measured: the rest drop their scratch
+
+
+def test_prepared_children_drop_their_scratch_when_the_slot_store_cannot_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from booley.harness import measure_children
+
+    class Prepared:
+        discarded = False
+
+        def discard(self) -> None:
+            self.discarded = True
+
+    def broken(*_args: object, **_kwargs: object) -> object:
+        raise OSError("slot directory is unusable")
+
+    monkeypatch.setattr(measure_children.job_slots, "SlotStore", broken)
+    prepared = Prepared()
+
+    with pytest.raises(OSError, match="slot directory"):
+        measure_children.run_children(
+            [(empty_table("a", "lint"), prepared)],  # type: ignore[list-item]
+            [empty_table("a", "lint")],
+            main_booley_dir=tmp_path,
+            all_tables=False,
+            cancelled=lambda: False,
+        )
+    assert prepared.discarded

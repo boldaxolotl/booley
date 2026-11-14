@@ -857,10 +857,28 @@ def _add_specialist_subparser(sub) -> None:
 
 
 def _add_measure_subparser(sub) -> None:
-    """Add `booley measure`; until measuring lands it only validates `metrics.toml`."""
+    """Add `booley measure`: measure a commit against `metrics.toml`, or validate the file."""
     parser = sub.add_parser(
-        "measure", help="Check the Target Metrics rules in metrics.toml (measuring comes later)"
+        "measure", help="Measure a commit against the Target Metrics rules in metrics.toml"
     )
+    parser.add_argument(
+        "revision",
+        nargs="?",
+        default="HEAD",
+        metavar="<sha>",
+        help="The commit to measure (default: HEAD); uncommitted work is never measured",
+    )
+    parser.add_argument(
+        "--base",
+        metavar="<sha>",
+        help="Compare with this commit instead of the default Base",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Evaluate every table even after an unmet or error verdict",
+    )
+    parser.add_argument("--json", action="store_true", help="Print the report as JSON")
     parser.add_argument(
         "--validate",
         action="store_true",
@@ -1890,7 +1908,7 @@ def _dispatch_endpoint(args, info: McpToolInfo, project_root: Path, *, flow: boo
 
     A shell run is a Standalone Job: it gets a Job record and a ``job.log`` copy of its output.
     """
-    from booley.harness.standalone_job import StandaloneJob
+    from booley.harness.standalone_job import StandaloneJob, checkout_report_root
 
     try:
         endpoint_cls = _load_mcp_tool_class(info)
@@ -1907,7 +1925,12 @@ def _dispatch_endpoint(args, info: McpToolInfo, project_root: Path, *, flow: boo
     if argv and argv[0] == "--":
         argv = argv[1:]
     # Prepared before the endpoint exists: it reads BOOLEY_RUN_ID as its invocation identity.
-    job = StandaloneJob.prepare(project_root, args.command, info.name, argv)
+    job = StandaloneJob.prepare(
+        project_root,
+        info.name,
+        ["booley", args.command, info.name, *argv],
+        report_root=checkout_report_root(project_root),
+    )
     try:
         endpoint = endpoint_cls()
         if _endpoint_help_candidate(args):
@@ -2047,14 +2070,38 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
     return 0
 
 
+def _measure_commit(args: argparse.Namespace, project_root: Path) -> int:
+    """`booley measure [<sha>]`: measure one commit as a Standalone Job."""
+    from booley.harness.measure_command import MeasureRequest, run_measure
+
+    shown = [args.revision] if args.revision != "HEAD" else []
+    if args.base is not None:
+        shown += ["--base", args.base]
+    shown += ["--all"] * args.all + ["--json"] * args.json
+    request = MeasureRequest(
+        revision=args.revision,
+        base=args.base,
+        all_tables=args.all,
+        as_json=args.json,
+        argv=tuple(shown),
+    )
+    try:
+        return run_measure(project_root, request)
+    except KeyboardInterrupt:
+        # The Job runner recorded the run as cancelled with exit 130.
+        print("interrupted; measurement cancelled", file=sys.stderr)
+        raise _CancelledRun from None
+
+
 def _cmd_measure(args: argparse.Namespace, project_root: Path) -> int:
-    """`booley measure --validate`: read the working tree's metrics.toml; run no Flow."""
+    """`booley measure`: measure a commit, or with `--validate` read metrics.toml; run no Flow."""
     from booley.measurement.metrics_file import MetricsFileError, load_metrics_rules, table_header
 
     if not args.validate:
+        return _measure_commit(args, project_root)
+    if args.revision != "HEAD" or args.base is not None or args.all or args.json:
         print(
-            "ERROR: measurement is not available yet; `booley measure --validate` "
-            "checks metrics.toml",
+            "ERROR: --validate checks the working tree's metrics.toml and takes no other option",
             file=sys.stderr,
         )
         return 2
