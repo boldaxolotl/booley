@@ -222,8 +222,9 @@ class TestProjectRootScoping:
         empty.mkdir()
 
         # Scoped to empty/, which has no .core: the hardcoded .core-era defaults.
-        assert si.get_rtl_source_dirs(empty) == ["rtl", "fw"]
+        assert si.get_rtl_source_dirs(empty) == ["rtl"]
         assert si.get_tb_source_dirs(empty) == ["tb"]
+        assert si.get_rtl_prefixes(empty) == ("rtl/", "rtl\\")
 
     def test_worktree_reads_its_own_tracked_core(self, tmp_path: Path):
         """A git worktree resolves source dirs from its own checked-out ``.core``.

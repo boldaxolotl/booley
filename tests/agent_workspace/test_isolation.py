@@ -8,7 +8,6 @@ from unittest.mock import patch
 import pytest
 
 from booley.agent_workspace.isolation import (
-    CATEGORY_DIRS_DEFAULT,
     get_category_dirs,
     remove_shadow_package,
 )
@@ -62,10 +61,9 @@ def _write_core(
 
 
 class TestCategoryDirs:
-    def test_defaults_without_toml(self, tmp_path):
-        result = get_category_dirs(tmp_path)
-        assert set(result["rtl"]) == set(CATEGORY_DIRS_DEFAULT["rtl"])
-        assert set(result["tb"]) == set(CATEGORY_DIRS_DEFAULT["tb"])
+    def test_defaults_without_core_name_no_project_dirs(self, tmp_path):
+        """Without a ``.core`` only the generic rtl/ and tb/ prefixes remain (#4052)."""
+        assert get_category_dirs(tmp_path) == {"rtl": ("rtl/",), "tb": ("tb/",)}
 
     def test_reads_from_core(self, tmp_path):
         _write_core(tmp_path, rtl_dirs=["rtl", "hw"], tb_dirs=["verif"])
@@ -73,16 +71,21 @@ class TestCategoryDirs:
         assert "hw/" in result["rtl"]
         assert "verif/" in result["tb"]
 
-    def test_merges_with_defaults(self, tmp_path):
-        _write_core(tmp_path, tb_dirs=["verif"])
-        result = get_category_dirs(tmp_path)
-        assert "tb/" in result["tb"]
-        assert "verif/" in result["tb"]
+    def test_core_dirs_are_exact(self, tmp_path):
+        """With a ``.core`` the category dirs are exactly the ``.core``-derived dirs (#4052)."""
+        _write_core(tmp_path, rtl_dirs=["hw"], tb_dirs=["verif"])
+        assert get_category_dirs(tmp_path) == {"rtl": ("hw/",), "tb": ("verif/",)}
 
-    def test_none_work_dir_uses_fallback(self):
-        result = get_category_dirs(None)
-        assert "rtl/" in result["rtl"]
-        assert "tb/" in result["tb"]
+    def test_none_work_dir_uses_cwd_resolved_dirs(self):
+        with (
+            patch("booley.runtime.shared_infra.get_rtl_source_dirs", return_value=["hw"]),
+            patch("booley.runtime.shared_infra.get_tb_source_dirs", return_value=["verif"]),
+        ):
+            assert get_category_dirs(None) == {"rtl": ("hw/",), "tb": ("verif/",)}
+
+    def test_none_work_dir_falls_back_when_cwd_config_is_unavailable(self):
+        with patch("booley.runtime.shared_infra.get_rtl_source_dirs", side_effect=RuntimeError):
+            assert get_category_dirs(None) == {"rtl": ("rtl/",), "tb": ("tb/",)}
 
     def test_flat_repo_files_are_exact_entries(self, tmp_path):
         (tmp_path / "picorv32.v").write_text("module picorv32; endmodule\n")
@@ -175,9 +178,36 @@ def test_strict_inventory_allows_metadata_core_without_filesets(tmp_path):
 @pytest.mark.parametrize("category", ["rtl", "tb"])
 @pytest.mark.parametrize(
     "name",
-    ["unknown.C", "unknown.CPP", "unknown.H", "unknown.HXX", "unknown.HPP.bak", "unknown.C~"],
+    [
+        "unknown.C",
+        "unknown.CPP",
+        "unknown.H",
+        "unknown.HXX",
+        "unknown.HPP.bak",
+        "unknown.C~",
+        "unknown.PY",
+    ],
 )
-def test_unknown_uppercase_sources_and_backups_are_hidden(tmp_path, category, name):
+def test_undeclared_non_hdl_files_stay_visible(tmp_path, category, name):
+    """Undeclared C/C++/Python files are readable context for both Reviewers (#4052)."""
+    from booley.agent_workspace.isolation import WorkspaceSnapshot, hide_opposite_sources
+
+    live, copy = tmp_path / "live", tmp_path / "copy"
+    live.mkdir()
+    copy.mkdir()
+    (live / name).write_text("// unknown source")
+    (copy / name).write_text("// unknown source")
+    hide_opposite_sources(
+        WorkspaceSnapshot(live, copy), category, category_files={"rtl": (), "tb": ()}
+    )
+    assert (copy / name).is_file()
+    assert (live / name).is_file()
+
+
+@pytest.mark.parametrize("category", ["rtl", "tb"])
+@pytest.mark.parametrize("name", ["unknown.SV", "unknown.V~", "unknown.SVH.bak", "unknown.Vh"])
+def test_undeclared_hdl_files_and_backups_are_hidden(tmp_path, category, name):
+    """Undeclared HDL-named files (any case, backups too) stay hidden from both Reviewers."""
     from booley.agent_workspace.isolation import WorkspaceSnapshot, hide_opposite_sources
 
     live, copy = tmp_path / "live", tmp_path / "copy"
