@@ -884,6 +884,12 @@ def _add_measure_subparser(sub) -> None:
         help="Measure again even when the commit is already Measured; "
         "otherwise its stored run is shown",
     )
+    parser.add_argument(
+        "--target",
+        metavar="<name>",
+        help="Measure only this Target's tables; the run is kept with the Job, "
+        "never stored or Measured",
+    )
     parser.add_argument("--json", action="store_true", help="Print the report as JSON")
     parser.add_argument(
         "--validate",
@@ -2085,6 +2091,8 @@ def _measure_commit(args: argparse.Namespace, project_root: Path) -> int:
     shown = [args.revision] if args.revision != "HEAD" else []
     if args.base is not None:
         shown += ["--base", args.base]
+    if args.target is not None:
+        shown += ["--target", args.target]
     shown += ["--all"] * args.all + ["--again"] * args.again + ["--json"] * args.json
     request = MeasureRequest(
         revision=args.revision,
@@ -2093,6 +2101,7 @@ def _measure_commit(args: argparse.Namespace, project_root: Path) -> int:
         again=args.again,
         as_json=args.json,
         argv=tuple(shown),
+        target=args.target,
     )
     try:
         return run_measure(project_root, request)
@@ -2108,7 +2117,14 @@ def _cmd_measure(args: argparse.Namespace, project_root: Path) -> int:
 
     if not args.validate:
         return _measure_commit(args, project_root)
-    if args.revision != "HEAD" or args.base is not None or args.all or args.again or args.json:
+    if (
+        args.revision != "HEAD"
+        or args.base is not None
+        or args.all
+        or args.again
+        or args.json
+        or args.target is not None
+    ):
         print(
             "ERROR: --validate checks the working tree's metrics.toml and takes no other option",
             file=sys.stderr,

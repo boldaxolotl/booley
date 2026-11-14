@@ -551,3 +551,26 @@ def test_wordings_numbers_and_markdown_escaping_of_user_text(tmp_path: Path) -> 
     assert "core synth: table removed (loosened)" in rules
     assert "core synth k: note edited (neutral) — why \\<b\\>" in rules
     assert "→ 80" not in rules
+
+
+def test_a_target_run_is_never_reported_as_measured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _, head = feature_repo(tmp_path)
+    store = MeasurementStore(tmp_path / "job")
+    table = Table("synth", (Entry("cell_count_max", "cell_count", 90, bound=100),))
+    stored = store.write(build_run(key_of(repo, head), "scoped", (table,)), [])
+    project_store = MeasurementStore(repo / ".booley")
+    view = view_of(repo, project_store, stored, head, target="acme:ip:core:1#core")
+
+    markdown = markdown_report(view)
+    monkeypatch.setattr(colors, "COLORS_ENABLED", True)
+    terminal = terminal_report(view)
+
+    assert "Run scoped: not stored" in section(markdown, "Run")
+    assert "`--target` `acme:ip:core:1#core`: only its tables" in section(markdown, "Run")
+    assert "for this tree" not in markdown
+    assert "measured" not in section(markdown, "Run").replace("never makes the commit", "")
+    assert "**1 of 1 enforced met**" in markdown
+    assert colors.green("Run scoped: not stored") not in terminal
+    assert colors.amber("Run scoped: not stored") in terminal
