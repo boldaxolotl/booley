@@ -211,3 +211,24 @@ def test_every_sim_request_starts_with_sim_prepare() -> None:
     # Only coverage post-processes.
     assert [key.phase for key in estimates.phase_keys(coverage)][-1] == "sim_postprocess"
     assert "sim_postprocess" not in {key.phase for key in estimates.phase_keys(ordinary)}
+
+
+def test_specialist_records_never_size_a_flow_job() -> None:
+    specialist = _record("", "specialist:reviewer", memory=5000)
+    specialist["key"]["specialist"] = "reviewer"
+    records = [specialist, _record("t", "sim_run", memory=1000, test_run="a")]
+    estimator = _estimates().ResourceEstimator(records)
+    key = _estimates().HistoryKey
+
+    custom, unrecorded, own = estimator.estimate_keys(
+        [
+            key("", "specialist:reviewer", (), ""),
+            key("u", "other_phase", (), ""),
+            key("t", "sim_run", (), "a"),
+        ]
+    ).phases
+
+    for phase in (custom, unrecorded):
+        assert phase.memory_mb.value is None
+        assert phase.memory_mb.source is _estimates().Source.UNKNOWN
+    assert own.memory_mb.value == 1000 * _estimates().ESTIMATE_MARGIN
