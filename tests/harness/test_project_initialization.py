@@ -10,6 +10,7 @@ import pytest
 from booley.fusesoc.core_projection import PROJECTED_CORE_GLOB
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext, StepResult
+from booley.runtime import auth_token
 from booley.runtime.booley_dir import init_booley_dir_scope, reset_cache
 from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
 from tests.subprocess_budget import run_bounded_child
@@ -40,6 +41,8 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     monkeypatch.setattr(init_cmd.shutil, "which", lambda _name: None)
     for name in HOST_PRIVATE_ENVIRONMENT:
         monkeypatch.setenv(name, str(tmp_path / "absent" / name))
+    for name in (*auth_token.CREDENTIAL_ENV_KEYS, "CODEX_HOME"):
+        monkeypatch.delenv(name, raising=False)
     reset_cache()
     yield root
     assert_docker_cli_unused()
