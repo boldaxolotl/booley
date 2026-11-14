@@ -166,12 +166,15 @@ Seat Caps don't share commercial license seats between Projects. See
 ### Job resource history
 
 Booley measures every Job's peak memory, CPU time, and wall-clock time, and
-keeps the newest 20 runs per Target and Job phase, with no overall cap. A group
+keeps the newest 20 runs per Target and Job phase, with no overall cap. A
+Specialist run is measured too (its agent CLI's processes, not Booley's own)
+and kept 20 per Specialist; a Specialist's runs never set a Flow Job's memory
+reservation. A group
 with no run in the last 90 days is deleted the next time any Job records. Peak
 memory counts the Job's temporary files only when `TMPDIR` is on tmpfs; runs
 recorded before that rule keep their earlier peak. `booley resources` prints the
 run count and the minimum, median, and maximum peak memory and wall-clock time
-for each (`--json` for scripts). Use it to choose `[sandbox].memory` and
+for each, one line per Specialist after the Targets (`--json` for scripts). Use it to choose `[sandbox].memory` and
 `[jobs].memory_budget`. Each Test Variant of a simulation has its own entry
 (`tests=first+slow`; the default Variant keeps the bare Test name), and the
 seeds of one Variant share it. Flow runs that `booley doctor` starts are not

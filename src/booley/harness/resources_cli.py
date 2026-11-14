@@ -14,7 +14,7 @@ from booley.runtime.booley_dir import resolve_common_booley_dir
 def add_subparser(sub: argparse._SubParsersAction) -> None:
     parser = sub.add_parser(
         "resources",
-        help="Show measured peak memory and run time per Target and Job phase",
+        help="Show measured peak memory and run time per Target and Job phase, and per Specialist",
     )
     parser.add_argument("--json", action="store_true", help="Machine-readable statistics")
 

@@ -27,7 +27,7 @@ from typing import Any, TypeVar
 
 from booley.flows.target_test_plan import TargetTestPlan, batch_test_runs
 from booley.flows.test_runs import TestRun
-from booley.runtime.resource_history import HistoryKey, history_key
+from booley.runtime.resource_history import HistoryKey, history_key, specialist_name
 
 #: Headroom over the largest value seen (ADR 0087).
 ESTIMATE_MARGIN = 1.25
@@ -214,7 +214,8 @@ class _Maxima:
         self._project: dict[str, float] = {}
         for record in records:
             raw = record[field]
-            if raw is None:  # unmeasured: says nothing
+            # Unmeasured says nothing; a Specialist's run is no Target's.
+            if raw is None or specialist_name(record) is not None:
                 continue
             value = float(raw)
             key = history_key(record)

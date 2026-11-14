@@ -18,7 +18,7 @@ import re
 import tempfile
 import threading
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MIB = 1024 * 1024
+_SAMPLE_INTERVAL_S = 0.25
 # The OOM killer sends SIGKILL (a shell reports its child's death as 128 + 9).
 _SIGKILL = 9
 _SIGKILL_STATUSES = (-_SIGKILL, 128 + _SIGKILL)
@@ -199,8 +200,11 @@ def _read_proc(pid: int) -> _Proc | None:
         return None
 
 
-def process_tree(root_pid: int) -> dict[int, _Proc] | None:
+def process_tree(root_pid: int, *, include_root: bool = True) -> dict[int, _Proc] | None:
     """Sample *root_pid* and its descendants; ``None`` when ``/proc`` is absent.
+
+    With ``include_root=False`` the root's own process is walked for its
+    children but left out of the result.
 
     The direct child is often ``make`` or ``sh`` while the memory lives in
     tool grandchildren, so the whole tree is summed. Linux exposes the
@@ -224,7 +228,7 @@ def process_tree(root_pid: int) -> dict[int, _Proc] | None:
                     children = (task / "children").read_text(encoding="utf-8")
                     pending.extend(int(token) for token in children.split())
         proc = _read_proc(pid)
-        if proc is not None:
+        if proc is not None and (include_root or pid != root_pid):
             found[pid] = proc
     return found
 
@@ -301,7 +305,7 @@ class Usage:
         self,
         now: float,
         procs: dict[int, _Proc] | None,
-        tmp: int,
+        tmp: int | None,
         growth: int | None,
         tmp_in_memory: bool,
     ):
@@ -313,7 +317,7 @@ class Usage:
         rss = sum(proc.rss_bytes for proc in procs.values())
         # An empty tree (the command already exited) still counts its TMPDIR files
         # when they are tmpfs pages.
-        self.peak_memory = _peak(self.peak_memory, rss + (tmp if tmp_in_memory else 0))
+        self.peak_memory = _peak(self.peak_memory, rss + ((tmp or 0) if tmp_in_memory else 0))
         if procs:
             self.peak_rss = _peak(self.peak_rss, rss)
             self.first_seen = now if self.first_seen is None else self.first_seen
@@ -404,11 +408,23 @@ class JobMeasurement:
 
 
 class JobResourceMonitor:
-    """Sample one local command, with its private ``TMPDIR``, from start to reap."""
+    """Sample one local command, with its private ``TMPDIR``, from start to reap.
 
-    def __init__(self, split: Mapping[str, str] | None = None, *, interval_s: float = 0.25):
-        self.tmp_dir = Path(tempfile.mkdtemp(prefix="booley-job-"))
-        self._tmp_in_memory = tmpdir_in_memory(self.tmp_dir)
+    With ``private_tmp=False`` the monitor makes no temporary directory
+    (``tmp_dir`` is ``None``) and records no temporary-file peak.
+    """
+
+    def __init__(
+        self,
+        split: Mapping[str, str] | None = None,
+        *,
+        interval_s: float = _SAMPLE_INTERVAL_S,
+        private_tmp: bool = True,
+    ):
+        self.tmp_dir: Path | None = (
+            Path(tempfile.mkdtemp(prefix="booley-job-")) if private_tmp else None
+        )
+        self._tmp_in_memory = self.tmp_dir is not None and tmpdir_in_memory(self.tmp_dir)
         self._split = split or {}
         self._interval_s = interval_s
         self._overall = Usage()
@@ -418,15 +434,19 @@ class JobResourceMonitor:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._measurement: JobMeasurement | None = None
         self._pid: int | None = None
+        self._include_root = True
 
     def temp_env(self) -> dict[str, str]:
         """Point the command's temporary files into its private directory."""
+        assert self.tmp_dir is not None, "a monitor without a private TMPDIR has no environment"
         env: dict[str, str] = dict.fromkeys(("TMPDIR", "TMP", "TEMP"), str(self.tmp_dir))
         env[KILL_REPORT_ENV] = str(self.tmp_dir / _KILL_REPORT_NAME)
         return env
 
-    def start(self, pid: int) -> None:
+    def start(self, pid: int, *, descendants_only: bool = False) -> None:
+        """Sample *pid* and its tree; with *descendants_only*, not *pid* itself."""
         self._pid = pid
+        self._include_root = not descendants_only
         self._ticket = _IN_PROCESS.enter()
         self._oom_before = cgroup_oom_kill_count()
         self._cpu_before = _children_cpu_s()
@@ -470,6 +490,8 @@ class JobResourceMonitor:
 
     def _count_descendant_kills(self) -> int:
         """Count the kill reports a launcher wrote; none when unreadable."""
+        if self.tmp_dir is None:
+            return 0
         try:
             text = (self.tmp_dir / _KILL_REPORT_NAME).read_text(encoding="utf-8")
         except OSError:
@@ -478,8 +500,8 @@ class JobResourceMonitor:
 
     def _sample(self) -> None:
         now = time.monotonic()
-        procs = process_tree(self._pid)
-        tmp = directory_bytes(self.tmp_dir)
+        procs = process_tree(self._pid, include_root=self._include_root)
+        tmp = None if self.tmp_dir is None else directory_bytes(self.tmp_dir)
         container = _container_memory_bytes()
         growth = None
         if container is not None and self._container_start is not None:
@@ -560,12 +582,9 @@ def history_records(
         outcome = "oom_kill"
     common = {
         "flow": flow,
-        "finished_at": utc_now_rfc3339(),
         "outcome": "timeout" if result.timed_out else outcome,
         "returncode": result.returncode,
-        "oom_kill_delta": measurement.oom_kill_delta,
-        "solo": measurement.solo,
-        "sample_interval_s": measurement.interval_s,
+        **_run_fields(measurement.interval_s, measurement.oom_kill_delta, measurement.solo),
     }
     rows = [(label.phase, measurement.overall, result.duration_s, measurement.cpu_s)]
     rows += [
@@ -589,17 +608,127 @@ def history_records(
                 "flags": sorted(flags),
                 "test_run": tests,
             },
-            # RSS never seen (the command exited before a sample): memory unknown.
-            "peak_memory_mb": _mb(usage.peak_memory) if usage.peak_rss is not None else None,
-            "peak_rss_mb": _mb(usage.peak_rss),
-            "peak_tmp_mb": _mb(usage.peak_tmp),
-            "cpu_user_s": _seconds(cpu[0]) if cpu else None,
-            "cpu_sys_s": _seconds(cpu[1]) if cpu else None,
-            "wall_s": _seconds(wall),
-            "container_peak_delta_mb": _mb(usage.container_peak) if measurement.solo else None,
+            **_measured_columns(usage, cpu, wall, measurement.solo),
         }
         for phase, usage, wall, cpu in rows
     ]
+
+
+def _run_fields(
+    interval_s: float, oom_kill_delta: int | None, solo: bool | None
+) -> dict[str, Any]:
+    """The fields every record carries about how it was measured."""
+    return {
+        "finished_at": utc_now_rfc3339(),
+        "oom_kill_delta": oom_kill_delta,
+        "solo": solo,
+        "sample_interval_s": interval_s,
+    }
+
+
+def _measured_columns(
+    usage: Usage,
+    cpu: tuple[float, float] | None,
+    wall: float | None,
+    solo: bool | None,
+) -> dict[str, Any]:
+    """The measured columns of one record; a value never measured is ``None``."""
+    return {
+        # RSS never seen (the command exited before a sample): memory unknown.
+        "peak_memory_mb": _mb(usage.peak_memory) if usage.peak_rss is not None else None,
+        "peak_rss_mb": _mb(usage.peak_rss),
+        "peak_tmp_mb": _mb(usage.peak_tmp),
+        "cpu_user_s": _seconds(cpu[0]) if cpu else None,
+        "cpu_sys_s": _seconds(cpu[1]) if cpu else None,
+        "wall_s": _seconds(wall),
+        "container_peak_delta_mb": _mb(usage.container_peak) if solo else None,
+    }
+
+
+@dataclass(frozen=True)
+class AgentCallUsage:
+    """One agent CLI call's window: what was measured (``None`` when nothing) and its duration."""
+
+    measurement: JobMeasurement | None
+    wall_s: float
+
+
+@contextlib.contextmanager
+def measure_agent_call(calls: list[AgentCallUsage]) -> Iterator[None]:
+    """Measure the agent CLI this process starts inside the block; never raise for it.
+
+    Samples the descendants of this process, not the process itself. Appends the
+    window to *calls* when the block ends, also when the block raises; a monitor
+    that cannot start leaves the window with no measured values.
+    """
+    monitor = JobResourceMonitor(private_tmp=False)
+    started = time.monotonic()
+    running = False
+    try:
+        monitor.start(os.getpid(), descendants_only=True)
+        running = True
+    except (OSError, RuntimeError):
+        logger.warning("Specialist resource measurement could not start", exc_info=True)
+    try:
+        yield
+    finally:
+        wall_s = time.monotonic() - started
+        calls.append(AgentCallUsage(monitor.finish() if running else None, wall_s))
+
+
+def _sum_or_none(values: list[float | None]) -> float | None:
+    """The sum, or ``None`` when any value is missing (a partial sum understates)."""
+    return None if None in values else sum(v for v in values if v is not None)
+
+
+def _merged_solo(solos: list[bool | None]) -> bool | None:
+    if False in solos:
+        return False
+    return True if all(solo is True for solo in solos) else None
+
+
+def specialist_record(
+    name: str, calls: list[AgentCallUsage], returncode: int | None
+) -> dict[str, Any]:
+    """One record for a Specialist run, merging its agent call windows.
+
+    Peaks are the largest over the windows; CPU, wall-clock time and the OOM-kill
+    delta are sums, absent when any window lacks the value. *returncode* is
+    ``None`` when the run raised.
+    """
+    measured = [call.measurement for call in calls]
+    merged = Usage()
+    for measurement in measured:
+        if measurement is not None:
+            usage = measurement.overall
+            merged.peak_rss = _peak(merged.peak_rss, usage.peak_rss)
+            merged.peak_memory = _peak(merged.peak_memory, usage.peak_memory)
+            merged.peak_tmp = _peak(merged.peak_tmp, usage.peak_tmp)
+            merged.container_peak = _peak(merged.container_peak, usage.container_peak)
+    cpus = [m.cpu_s if m is not None else None for m in measured]
+    cpu = None
+    if all(c is not None for c in cpus):
+        cpu = (sum(c[0] for c in cpus if c), sum(c[1] for c in cpus if c))
+    oom = _sum_or_none([m.oom_kill_delta if m is not None else None for m in measured])
+    solo = _merged_solo([m.solo if m is not None else None for m in measured])
+    outcome = "error" if returncode is None else "exit_zero" if returncode == 0 else "exit_nonzero"
+    return {
+        "outcome": outcome,
+        "returncode": returncode,
+        **_run_fields(
+            next((m.interval_s for m in measured if m is not None), _SAMPLE_INTERVAL_S),
+            None if oom is None else int(oom),
+            solo,
+        ),
+        "key": {
+            "target": "",
+            "phase": f"specialist:{name}",
+            "flags": [],
+            "test_run": "",
+            "specialist": name,
+        },
+        **_measured_columns(merged, cpu, sum(call.wall_s for call in calls), solo),
+    }
 
 
 def record_command(
@@ -614,6 +743,16 @@ def record_command(
     Flow runs that Doctor starts (self-tests, smoke and deep checks) write
     nothing: they would pollute the Project's real keys.
     """
+    _append_to_history(lambda: history_records(flow, label, flags, measurement, result))
+
+
+def record_specialist(name: str, calls: list[AgentCallUsage], returncode: int | None) -> None:
+    """Append one Specialist run's record to the Project history; never raise."""
+    _append_to_history(lambda: [specialist_record(name, calls, returncode)])
+
+
+def _append_to_history(make_records: Callable[[], list[dict[str, Any]]]) -> None:
+    """Append what *make_records* builds; Doctor runs, an unresolved Project and write errors skip it."""
     if os.environ.get(DOCTOR_RUN_ENV):
         return
     from booley.runtime.booley_dir import resolve_common_booley_dir
@@ -623,6 +762,6 @@ def record_command(
     except (OSError, RuntimeError, ValueError):
         return
     try:
-        append_records(booley_dir, history_records(flow, label, flags, measurement, result))
+        append_records(booley_dir, make_records())
     except (OSError, ValueError) as exc:
         logger.warning("Job resource history not recorded in %s: %s", booley_dir, exc)
