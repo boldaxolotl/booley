@@ -337,7 +337,9 @@ hours) counts as quiet. The Dashboard may drop it from the Sessions list, and
 Doctor warns that the Goal has no recent activity. Quiet never ends or abandons
 a Goal.
 
-## Worktree cleanup (`[worktree]`)
+## Worktrees
+
+### Worktree cleanup (`[worktree]`)
 
 ```toml
 [worktree]
@@ -350,6 +352,23 @@ keeping any that `booley worktree rm` would refuse (default `"7d"`). Every
 from the main checkout's `.booley/booley.toml`; a worktree's own copy is
 ignored. `booley worktree gc --older-than AGE` overrides it. See
 [Cleaning up idle worktrees](CLI-REFERENCE.md#worktrees).
+
+### Worktree setup hooks (`.booley/hooks/`)
+
+Keep Project setup scripts, such as a `.booley/hooks/post-setup.sh` that builds a
+toolchain or fetches vectors, under `.booley/hooks/`. `booley worktree new` runs
+`post-setup` (`.sh`, `.py`, or no suffix) in the new worktree after it fills the
+Git submodules, with `BOOLEY_WORKTREE` set to the worktree. The output is shown
+and logged, and a failure removes the worktree again. Keep generated build
+outputs ignored by Git, and commit deliberate inputs before Goal entry. Hooks
+are frozen as Protected Inputs while a Goal runs.
+
+Goal Mode's baseline runs, which measure the Goal's base commit, also run
+`post-setup` in their fresh checkout of that commit, with `BOOLEY_WORKTREE` set
+to it, so files the hook builds (a firmware image, say) exist at the base too. Make the hook safe to run
+twice and read its inputs from the checkout. If it fails, only the Targets that
+need its output lose their baseline, with the hook's error as the reason. A
+hook that changes a tracked file makes the baseline unavailable.
 
 ## Feedback (`[feedback]`)
 
@@ -383,23 +402,6 @@ A Project can add its own tools for the Developer Agent as Python files in
 `.booley/mcp_tools/`. The agent discovers them and calls them like the built-in
 ones; ask it to write one. To switch one off, prefix its filename with `_`, for
 example `_project_check.py`. How they work: [MCP-TOOLS.md](../internals/MCP-TOOLS.md).
-
-### Worktree setup hooks
-
-Keep Project setup scripts, such as a `.booley/hooks/post-setup.sh` that builds a
-toolchain or fetches vectors, under `.booley/hooks/`. `booley worktree new` runs
-`post-setup` (`.sh`, `.py`, or no suffix) in the new worktree after it fills the
-Git submodules, with `BOOLEY_WORKTREE` set to the worktree. The output is shown
-and logged, and a failure removes the worktree again. Keep generated build
-outputs ignored by Git, and commit deliberate inputs before Goal entry. Hooks
-are frozen as Protected Inputs while a Goal runs.
-
-Goal Mode's baseline runs, which measure the Goal's base commit, also run
-`post-setup` in their fresh checkout of that commit, with `BOOLEY_WORKTREE` set
-to it, so files the hook builds (a firmware image, say) exist at the base too. Make the hook safe to run
-twice and read its inputs from the checkout. If it fails, only the Targets that
-need its output lose their baseline, with the hook's error as the reason. A
-hook that changes a tracked file makes the baseline unavailable.
 
 ## Something wrong here?
 

@@ -354,7 +354,7 @@ If `[sandbox].image` names an image Booley doesn't know, Booley neither builds
 nor updates it: that image is yours to manage.
 
 For per-worktree preparation, such as building firmware, use
-[worktree setup hooks](CONFIG.md#worktree-setup-hooks) instead of the image.
+[worktree setup hooks](CONFIG.md#worktree-setup-hooks-booleyhooks) instead of the image.
 
 ### RISC-V toolchain image (`booley-sandbox-riscv`)
 
