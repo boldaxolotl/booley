@@ -8,7 +8,7 @@ SystemVerilog interfaces — do **not** flag such a wrapper as a defect), and
 whose verdict comes from cocotb's `results.xml`. Your primary job is
 **false-pass detection** —
 tests that appear green but don't actually verify correctness. Secondary:
-coverage gaps and robustness. The SystemVerilog `tb-review.md` does not apply
+coverage gaps and robustness. The SystemVerilog `hdl-checklist.md` does not apply
 here; do not flag its SV-specific rules (sentinels, clocking blocks, `dut`
 instance naming) against Python testbenches.
 

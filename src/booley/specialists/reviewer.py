@@ -21,7 +21,7 @@ from collections.abc import Iterable
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 from uuid import uuid4
 
 from booley.agent_workspace.state_projection import filter_state_file_for_category
@@ -96,6 +96,39 @@ RTL_FOCUS_CATEGORIES = frozenset(
 # ``quality`` is TB-only: the RTL side splits the same ground into ``bugs``
 # (defects) and ``code_style`` (readability), so the word means one thing here.
 TB_FOCUS_CATEGORIES = frozenset({"quality"})
+
+
+@dataclass(frozen=True)
+class ReviewGuide:
+    """One packaged review guide under ``refs/code_review``."""
+
+    # ``checklist``: items to check against the code. ``hunt``: a method for finding defects.
+    kind: Literal["checklist", "hunt"]
+    # File path relative to ``refs/code_review``; the stem is the guide name shown in prompts.
+    path: str
+    # Testbench guides only: load the guide when the review scope has this source language.
+    language: Literal["hdl", "cocotb", "cpp"] | None = None
+
+    @property
+    def name(self) -> str:
+        """The guide's name: its file stem, which ends in its kind."""
+        return Path(self.path).stem
+
+
+# The one declaration of which guides each ``(category, focus)`` review loads, in prompt order.
+REVIEW_GUIDES: dict[tuple[str, str], tuple[ReviewGuide, ...]] = {
+    ("rtl", "bugs"): (ReviewGuide("checklist", "rtl/bugs-checklist.md"),),
+    ("rtl", "protocol"): (ReviewGuide("checklist", "rtl/protocol-cdc-checklist.md"),),
+    ("rtl", "security"): (ReviewGuide("checklist", "rtl/security-checklist.md"),),
+    ("rtl", "optimization"): (ReviewGuide("checklist", "rtl/optimization-checklist.md"),),
+    ("rtl", "code_style"): (ReviewGuide("checklist", "rtl/code_style-checklist.md"),),
+    ("rtl", "spec"): (ReviewGuide("hunt", "rtl/spec-hunt.md"),),
+    ("tb", "quality"): (
+        ReviewGuide("checklist", "testbench/c-cpp-checklist.md", "cpp"),
+        ReviewGuide("checklist", "testbench/hdl-checklist.md", "hdl"),
+        ReviewGuide("checklist", "testbench/cocotb-checklist.md", "cocotb"),
+    ),
+}
 
 # Spec focus category name
 SPEC_FOCUS = "spec"
@@ -243,9 +276,6 @@ def _warn_unregistered_sources(
 def _guide_paths() -> dict[str, str]:
     rd = refs_dir()
     return {
-        "rtl_guide_dir": str(rd / "code_review" / "rtl"),
-        "tb_guide_dir": str(rd / "code_review" / "testbench"),
-        "tb_guide": str(rd / "code_review" / "testbench" / "tb-review.md"),
         "rtl_style_guide": str(rd / "rtl_style_guide.md"),
         "tb_style_guide": str(rd / "tb_style_guide.md"),
     }
@@ -1502,7 +1532,7 @@ anything you cannot substantiate. Make each finding's severity and confidence \
 match the strength of the evidence.
 """,
         ]
-        self._append_review_guides(sections, focus, category, gp)
+        self._append_review_guides(sections, focus, category)
         style_focus = (category == "rtl" and focus == "code_style") or (
             category == "tb" and focus == "quality"
         )
@@ -1516,37 +1546,30 @@ match the strength of the evidence.
         sections: list[str],
         focus: str,
         category: str,
-        guide_paths: dict[str, str],
     ) -> None:
-        """Append the source-kind-specific review checklists."""
-        if category == "rtl":
-            guide_name = "protocol-cdc" if focus == "protocol" else focus
-            paths = [f"{guide_paths['rtl_guide_dir']}/{guide_name}.md"]
-        else:
-            if self._scope_contract is None:
-                self._resolve_scope_contract()
-            contract = self._scope_contract or ReviewScopeContract()
-            if contract.has_cpp:
-                sections.append(
-                    "## C/C++ testbench review\n"
-                    "Review the scoped C/C++ sources and headers for stimulus, checks, "
-                    "pass/fail reporting, simulator lifecycle, memory safety and determinism. "
-                    "Report findings only in explicit scope. HDL guides apply only to HDL files; "
-                    "Python guides apply only to Python files."
-                )
-            names = []
-            if contract.has_hdl:
-                names.append("tb-review.md")
-            if contract.has_cocotb:
-                names.append("cocotb-tb-review.md")
-            paths = [f"{guide_paths['tb_guide_dir']}/{name}" for name in names]
-
-        for guide_path in paths:
-            guide_content = self._read_guide(guide_path)
+        """Append the review guides declared for this focus."""
+        guides_root = refs_dir() / "code_review"
+        for guide in self._review_guides(focus, category):
+            guide_content = self._read_guide(str(guides_root / guide.path))
             if guide_content:
-                sections.append(f"## Review guide — {focus} ({Path(guide_path).stem})\n")
+                sections.append(f"## Review guide — {focus} ({guide.name})\n")
                 sections.append(guide_content)
                 sections.append("")
+
+    def _review_guides(self, focus: str, category: str) -> tuple[ReviewGuide, ...]:
+        """The declared guides for this focus; testbench guides only for languages in scope."""
+        guides = REVIEW_GUIDES.get((category, focus), ())
+        if category != "tb":
+            return guides
+        if self._scope_contract is None:
+            self._resolve_scope_contract()
+        contract = self._scope_contract or ReviewScopeContract()
+        in_scope = {
+            "hdl": contract.has_hdl,
+            "cocotb": contract.has_cocotb,
+            "cpp": contract.has_cpp,
+        }
+        return tuple(g for g in guides if g.language is None or in_scope[g.language])
 
     def _append_style_guides(
         self,
@@ -2177,21 +2200,11 @@ object, even after calling the capability.
 
     def _dry_run_preview(self) -> McpToolResult:
         """Describe the validated review without invoking its agent."""
-        contract = self._scope_contract or ReviewScopeContract()
         focus = next(iter(self._parse_focus()))
-        if self.args.category == "rtl":
-            guides = [focus]
-        else:
-            guides = []
-            if contract.has_hdl:
-                guides.append("hdl-testbench")
-            if contract.has_cocotb:
-                guides.append("cocotb-testbench")
-            if contract.has_cpp:
-                guides.append("c-cpp-testbench")
+        guides = self._review_guides(focus, self.args.category)
         summary = (
             f"reviewer dry-run: {self.args.category}/{focus}; "
-            f"{len(self._parse_scope())} file(s); guides={','.join(guides)}"
+            f"{len(self._parse_scope())} file(s); guides={','.join(g.name for g in guides)}"
         )
         return self._dry_run_result(
             summary=summary,
@@ -2199,7 +2212,7 @@ object, even after calling the capability.
                 "category": self.args.category,
                 "focus": focus,
                 "scope": self._parse_scope(),
-                "guides": guides,
+                "guides": [{"kind": g.kind, "name": g.name} for g in guides],
                 "spec": getattr(self.args, "spec", None) or "",
                 "spec_text": getattr(self.args, "spec_text", None) or "",
                 "steering_count": len(getattr(self.args, "steer", None) or []),
