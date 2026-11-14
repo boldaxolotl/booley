@@ -162,12 +162,12 @@ def run_measure(project_root: Path, request: MeasureRequest) -> int:
         print("ERROR: no Main Booley Directory to store the measurement in", file=sys.stderr)
         return _EXIT_REFUSED
     try:
-        return job.run(lambda: _guarded(project_root, request, job.run_id))
+        return job.run(lambda: _guarded(project_root, request, job))
     finally:
         job.discard()
 
 
-def _guarded(project_root: Path, request: MeasureRequest, run_id: str) -> int:
+def _guarded(project_root: Path, request: MeasureRequest, job: StandaloneJob) -> int:
     """Run the measurement; a refusal or a failure prints its error and exits 2.
 
     The text goes to stderr, which the Job copies into its ``job.log``. A
@@ -175,7 +175,7 @@ def _guarded(project_root: Path, request: MeasureRequest, run_id: str) -> int:
     """
     try:
         with _cancel_signals() as signals:
-            return _measure(project_root, request, run_id, signals)
+            return _measure(project_root, request, job, signals)
     except MeasureRefusedError as refusal:
         print(f"ERROR: {refusal}", file=sys.stderr)
     except Exception as failure:  # noqa: BLE001 — the command boundary: infrastructure failures
@@ -272,7 +272,7 @@ def _preflight(
 
 
 def _measure(
-    project_root: Path, request: MeasureRequest, run_id: str, signals: _CancelSignals
+    project_root: Path, request: MeasureRequest, job: StandaloneJob, signals: _CancelSignals
 ) -> int:
     from booley.core.booley_dir import main_booley_dir_of
 
@@ -284,7 +284,7 @@ def _measure(
         stored = _measured_run(store, keyed.key)
         if stored is not None:
             return _show(project_root, store, stored, commit, request)
-    return _measure_commit(project_root, request, run_id, signals, commit, main)
+    return _measure_commit(project_root, request, job, signals, commit, main)
 
 
 def _measured_run(store: MeasurementStore, key: MeasurementKey) -> StoredRun | None:
@@ -361,12 +361,13 @@ def _drift_text(entry: SubmoduleDrift) -> str:
 def _measure_commit(
     project_root: Path,
     request: MeasureRequest,
-    run_id: str,
+    job: StandaloneJob,
     signals: _CancelSignals,
     commit: str,
     main: Path,
 ) -> int:
     """Export *commit*, run its Flows, store the run and print the report."""
+    run_id = job.run_id
     started_at = datetime.now(UTC)
     started = time.monotonic()
     scratch = Path(tempfile.mkdtemp(prefix="booley-measure-"))
@@ -390,6 +391,7 @@ def _measure_commit(
                 main_booley_dir=main,
                 all_tables=request.all_tables,
                 cancelled=signals.is_set,
+                progress=job.record_progress,
             )
         except CheckoutFlowError as exc:  # the first child could not be launched
             raise MeasureRefusedError(str(exc)) from exc

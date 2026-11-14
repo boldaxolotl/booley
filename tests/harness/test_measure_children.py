@@ -235,6 +235,28 @@ def test_children_all_start_cheapest_tier_first(root_dir: Path, world: FakeWorld
     assert scheduler.outcome().status is RunStatus.COMPLETED
 
 
+def test_scheduler_reports_flows_finished_of_total(root_dir: Path, world: FakeWorld):
+    from booley.harness.measure_children import ChildScheduler
+
+    fleet = make_fleet(root_dir, world, max_light=3)
+    reported: list[tuple[int, int]] = []
+    scheduler = ChildScheduler(
+        fleet.plan([table("a"), table("b")]),
+        fleet.store,
+        all_tables=True,
+        progress=lambda finished, total: reported.append((finished, total)),
+    )
+
+    scheduler.step(cancel=False)
+    scheduler.step(cancel=False)  # nothing ended: no repeat
+    fleet.child("a").finish()
+    scheduler.step(cancel=False)
+    fleet.child("b").finish()
+    assert not scheduler.step(cancel=False)
+
+    assert reported == [(0, 2), (1, 2), (2, 2)]
+
+
 WAITING = "cdefghi"
 
 

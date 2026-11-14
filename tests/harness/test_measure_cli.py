@@ -294,6 +294,32 @@ def test_a_first_child_that_cannot_launch_is_a_refusal(
     assert not (project / ".booley" / "measurements").exists()
 
 
+def test_measure_job_record_carries_flow_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = committed_project(tmp_path, TWO_LINT_TABLES)
+    script_children(monkeypatch, lambda *_: pytest.fail("replaced below"))
+    seen: list[dict[str, int] | None] = []
+
+    def run_children(
+        _prepared: object,
+        tables: Sequence[TableRules],
+        *,
+        progress: Callable[[int, int], None],
+        **_options: object,
+    ) -> ChildrenOutcome:
+        progress(1, len(tables))
+        seen.append(job_record(project).progress)  # the record on disk while the Job runs
+        return outcome_of(tables, [0, 0])
+
+    monkeypatch.setattr(f"{COMMAND}.run_children", run_children)
+
+    assert run_command(monkeypatch, project) == 0
+
+    assert seen == [{"finished": 1, "total": 2}]
+    assert job_record(project).status == "done"
+
+
 def test_json_prints_the_report_view(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

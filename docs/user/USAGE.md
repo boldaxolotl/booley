@@ -242,6 +242,13 @@ The Dashboard has three windows; press `←` or `→` to switch:
   reported: working, waiting for a tool call, or waiting for your input.
   Sessions waiting for your input or a Goal change decision are grouped under
   **NEEDS YOU**, and the tab reads `Sessions N◆` while N sessions need you.
+  When the session's checkout declares a `[target.flow]` table in
+  `metrics.toml`, a second line under the session shows its measurement:
+  `Measured 1a2b3c4` when HEAD is Measured, `last Measured 1a2b3c4 · latest
+  5d6e7f8: 1 unmet, 3 not evaluated` when it is not (the history is searched
+  back to the merge-base with the default branch), or `measuring 2/5 · 14m 00s`
+  while a `booley measure` Job runs there. `Enter` on a line that has a report
+  opens its Markdown Measurement Report in your editor.
 - **Jobs:** Running, Finished (the newest 50), or All Jobs, filterable by
   session.
   A `booley flow` or `booley specialist` run typed in a container terminal

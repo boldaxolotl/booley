@@ -33,6 +33,7 @@ from booley.harness.dashboard.footer import BackTarget, footer_hints
 from booley.harness.dashboard.jobs import TERMINAL_JOB_STATES, JobSnapshot, JobView
 from booley.harness.dashboard.launch import Launcher
 from booley.harness.dashboard.links import linked_text, open_in_editor
+from booley.harness.dashboard.measurement import checkout_of, measuring_text
 from booley.harness.dashboard.model import DashboardSnapshot, GoalDetail, GoalView
 from booley.harness.dashboard.resources import Resources
 from booley.harness.dashboard.review import Occupants
@@ -1234,7 +1235,7 @@ class DashboardApp(App[None]):
         unless its process runs in a routable checkout.
         """
         if not facts.work_dir and facts.default_work_dir:
-            return f"{facts.default_work_dir} (default)", facts.branch
+            return f"{checkout_of(facts)} (default)", facts.branch
         return facts.work_dir, facts.branch or (goal.record.branch if goal and goal.record else "")
 
     def _activity_label(self, key: str) -> str:
@@ -1552,6 +1553,7 @@ class DashboardApp(App[None]):
         elif any(shares_worktree(facts, other.attribution) for other in self.snapshot.sessions):
             notices.append("WARNING shared worktree")
         checkout, branch = self._checkout_label(facts, goal)
+        measurement, report = self._measurement(facts)
         return sessions.SessionFacts(
             key=facts.key,
             handle=self._session_handle(facts.key),
@@ -1568,7 +1570,37 @@ class DashboardApp(App[None]):
                 if self._owned_by(job, facts.key) and job.state == "running"
             ),
             notices=tuple(notices),
+            measurement=measurement,
+            report=report,
         )
+
+    def _measurement(self, facts: Attribution) -> tuple[str, str]:
+        """The line under a session row and the report it opens; ``("", "")`` shows none."""
+        line = self.snapshot.measurements.get(checkout_of(facts))
+        if line is None:
+            return "", ""
+        job = line.measuring
+        if job is not None:
+            progress = job.record.progress
+            return measuring_text(
+                progress, job_elapsed_seconds(job, self.snapshot.observed_at)
+            ), ""
+        return line.text, line.report or ""
+
+    def _selected_report(self) -> str | None:
+        """The report a selected measurement line opens, or None when the cursor is elsewhere."""
+        if self.navigation.view != "overview":
+            return None
+        if self.query_one(DataTable).cursor_row >= len(self.row_keys):
+            return None
+        key = self._selected_key()
+        if not key.startswith(sessions.MEASUREMENT_PREFIX):
+            return None
+        row = self._session_row_of(key.removeprefix(sessions.MEASUREMENT_PREFIX))
+        return (self._measurement(row.attribution)[1] or None) if row else None
+
+    def _session_row_of(self, key: str) -> SessionRow | None:
+        return next((row for row in self.snapshot.sessions if row.attribution.key == key), None)
 
     def _needs_you(self) -> int:
         """Sessions that wait for the human or hold a pending Goal-change proposal."""
@@ -1806,7 +1838,7 @@ class DashboardApp(App[None]):
                 (job for job in self.snapshot.jobs.jobs if json.dumps(job.key) == key[4:]), None
             )
             return (self._job_detail(job), job_paths(job)) if job else (Text(), ())
-        row = next((row for row in self.snapshot.sessions if row.attribution.key == key), None)
+        row = self._session_row_of(key.removeprefix(sessions.MEASUREMENT_PREFIX))
         return (self._session_preview(row), ()) if row else (Text(), ())
 
     def _session_preview(self, row: SessionRow) -> Text:
@@ -1954,7 +1986,8 @@ class DashboardApp(App[None]):
             footer.update(
                 footer_hints(
                     top_bar=isinstance(self.focused, TopBar),
-                    enter_opens=self._enter_target() is not None,
+                    enter_opens=self._enter_target() is not None
+                    or self._selected_report() is not None,
                     jobs_list=self.navigation.view == "jobs",
                     targets_list=self.navigation.view == "targets",
                     nested=len(self.windows[self.window]) > 1
@@ -1988,6 +2021,8 @@ class DashboardApp(App[None]):
             return None  # A header row, such as an empty-state line, opens nothing.
         nav = self.navigation
         target = None
+        if nav.view == "overview" and key.startswith(sessions.MEASUREMENT_PREFIX):
+            return None  # the line opens its report, not a view (`_selected_report`)
         if nav.view == "overview":
             target = (
                 Navigation("job", None, nav.job_filter, key.removeprefix("job:"))
@@ -2016,6 +2051,9 @@ class DashboardApp(App[None]):
         return Navigation("goal", nav.session, selected=key)
 
     def _open_selected(self) -> None:
+        if (report := self._selected_report()) is not None:
+            self.action_open_path(report)
+            return
         target = self._enter_target()
         if target is None:
             return
