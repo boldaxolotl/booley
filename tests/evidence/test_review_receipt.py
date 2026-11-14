@@ -11,6 +11,7 @@ from booley.evidence.review_receipt import (
     ReviewContextError,
     ReviewInvocation,
     build_review_contract_detail,
+    current_review_receipt_identity,
     finalize_review_detail,
     review_invocation_changed,
     review_receipt_drift,
@@ -243,3 +244,68 @@ def test_pre_v4_receipt_uses_legacy_source_fingerprint_path(tmp_path: Path, monk
     (tmp_path / "rtl/uart.sv").write_text("module uart; logic x; endmodule\n", encoding="utf-8")
 
     assert review_receipt_drift(detail, tmp_path) == []
+
+
+def _guide_detail(tmp_path: Path, monkeypatch) -> tuple[dict, Path]:
+    """A receipt recording one guide that lives in a temporary package-data directory."""
+    from booley.specialists.reviewer import REVIEW_GUIDES, ReviewGuide
+
+    package_data = tmp_path / "package-data"
+    guide_file = package_data / "refs/code_review/rtl/bugs-checklist.md"
+    guide_file.parent.mkdir(parents=True)
+    guide_file.write_text("- check resets\n", encoding="utf-8", newline="\n")
+    monkeypatch.setattr("booley.runtime.paths.package_data_dir", lambda: package_data)
+    guide = ReviewGuide("checklist", "rtl/bugs-checklist.md")
+    monkeypatch.setitem(REVIEW_GUIDES, ("rtl", "bugs"), (guide,))
+    (tmp_path / "rtl").mkdir(exist_ok=True)
+    (tmp_path / "rtl/uart.sv").write_text("module uart; endmodule\n", encoding="utf-8")
+    monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
+    contract = build_review_contract_detail(
+        ReviewInvocation(
+            work_dir=tmp_path,
+            category="rtl",
+            focus="bugs",
+            scope=("rtl/uart.sv",),
+            mode="done",
+            guides=(guide,),
+        )
+    )
+    return {"review_detail_version": REVIEW_DETAIL_VERSION, "contract": contract}, guide_file
+
+
+def test_receipt_without_guide_digests_is_stale(tmp_path: Path, monkeypatch) -> None:
+    """A released receipt records no guides, so its guide content is unknown."""
+    detail, _ = _guide_detail(tmp_path, monkeypatch)
+    assert review_receipt_drift(detail, tmp_path) == []
+    del detail["contract"]["guides"]
+    assert review_receipt_drift(detail, tmp_path) == ["guides"]
+
+
+def test_guide_edit_or_deletion_stales_the_receipt(tmp_path: Path, monkeypatch) -> None:
+    detail, guide_file = _guide_detail(tmp_path, monkeypatch)
+    identity = current_review_receipt_identity(detail, tmp_path)
+    guide_file.write_text("- check resets\n- check enables\n", encoding="utf-8", newline="\n")
+    assert review_receipt_drift(detail, tmp_path) == ["guides"]
+    assert current_review_receipt_identity(detail, tmp_path) != identity
+    guide_file.unlink()  # a missing guide digests as empty: deletion is drift too
+    assert review_receipt_drift(detail, tmp_path) == ["guides"]
+
+
+def test_declaring_another_guide_for_the_focus_stales_the_receipt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from booley.specialists.reviewer import REVIEW_GUIDES, ReviewGuide
+
+    detail, _ = _guide_detail(tmp_path, monkeypatch)
+    declared = REVIEW_GUIDES[("rtl", "bugs")]
+    monkeypatch.setitem(
+        REVIEW_GUIDES, ("rtl", "bugs"), (*declared, ReviewGuide("hunt", "rtl/h.md"))
+    )
+    assert review_receipt_drift(detail, tmp_path) == ["guides"]
+
+
+def test_malformed_recorded_guides_are_stale(tmp_path: Path, monkeypatch) -> None:
+    detail, _ = _guide_detail(tmp_path, monkeypatch)
+    for bad in ("text", ["not a row"], [{"kind": "other", "path": "x.md", "digest": ""}]):
+        detail["contract"]["guides"] = bad
+        assert review_receipt_drift(detail, tmp_path) == ["guides"]
