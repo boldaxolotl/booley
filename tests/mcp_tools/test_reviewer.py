@@ -1317,11 +1317,8 @@ class TestGateLogic:
 
 class TestScopeValidation:
     def test_rtl_scope_valid(self):
-        errors = validate_scope_category(["rtl/mod_a.sv"], "rtl")
-        assert errors == []
-
-    def test_rtl_scope_has_no_firmware_special_case(self):
-        """Without a ``.core``, ``fw/`` is no RTL directory (#4052)."""
+        assert validate_scope_category(["rtl/mod_a.sv"], "rtl") == []
+        # Without a ``.core``, ``fw/`` is no RTL directory (#4052).
         errors = validate_scope_category(["fw/main.c"], "rtl")
         assert len(errors) == 1
         assert "doesn't match RTL" in errors[0]
