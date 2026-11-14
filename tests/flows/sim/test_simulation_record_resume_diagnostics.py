@@ -242,11 +242,11 @@ def test_missing_input_distinguishes_source_planning_error_from_suite_comparison
     assert result.exit_code == 2
     if removed == "source":
         assert result.outcome.report_text == (
-            "Simulation Campaign resume preview failed: Project compile input is not a file: "
+            "Simulation Record resume preview failed: Project compile input is not a file: "
             f"{tmp_path / 'rtl/counter.sv'}"
         )
         assert "mismatch_summary" not in result.outcome.detail
-        assert "campaign workload mismatch" not in result.outcome.report_text
+        assert "record workload mismatch" not in result.outcome.report_text
     else:
         assert result.outcome.detail["mismatch_summary"] == ["suite changed: .booley/tests.toml"]
     assert len(executions) == 1
@@ -338,7 +338,9 @@ def test_cli_resume_announces_validated_origin_before_execution(
 
     def before_executor(plan):
         witnessed.append(capsys.readouterr().err)
-        assert witnessed == [_WORK_DIR_NOTICE + f"campaign manifest: {manifest.resolve()}\n"]
+        assert witnessed == [
+            _WORK_DIR_NOTICE + f"Simulation Record manifest: {manifest.resolve()}\n"
+        ]
         assert manifest.is_file()
         if mode == "failure":
             raise RuntimeError("resume executor unavailable")
@@ -363,7 +365,7 @@ def test_cli_resume_announces_validated_origin_before_execution(
     assert result.exit_code == (0 if mode == "success" else 2)
     if mode == "mismatch":
         assert witnessed == []
-        assert "campaign manifest: " not in output.err
+        assert "Simulation Record manifest: " not in output.err
         assert "  manifest: " not in result.outcome.report_text
         assert "source changed: rtl/counter.sv" in result.outcome.report_text
         assert result.outcome.detail["mismatches"]

@@ -1,4 +1,4 @@
-"""Contract tests for Phase 6 Simulation Campaign Public QA assets."""
+"""Contract tests for Phase 6 Simulation Record Public QA assets."""
 
 from __future__ import annotations
 
@@ -581,7 +581,7 @@ def _corrupt_evidence(tmp_path: Path) -> tuple[Path, Path, Path]:
         tmp_path / "rejection.json",
         {
             "exit_code": 2,
-            "diagnostic": "Simulation Campaign integrity error: result digest mismatch",
+            "diagnostic": "Simulation Record integrity error: result digest mismatch",
             "attempts_before": ["0001-attempt"],
             "attempts_after": ["0001-attempt"],
             "attempts_after_restore": ["0001-attempt"],

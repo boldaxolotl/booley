@@ -304,7 +304,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
             plan = self._plans[identity]
         except KeyError as exc:
             raise SimulationRecordIntegrityError(
-                "coverage plan is missing for campaign Target"
+                "coverage plan is missing for record Target"
             ) from exc
         origin_invocation = request.store.root.parents[2]
         nested_plan = replace(
@@ -330,7 +330,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
             plan = self._plans[identity]
         except KeyError as exc:
             raise SimulationRecordIntegrityError(
-                "coverage plan is missing for campaign Target"
+                "coverage plan is missing for record Target"
             ) from exc
         options = simulation_options_from_policy(
             request.policy,

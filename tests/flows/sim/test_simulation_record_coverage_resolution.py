@@ -1,4 +1,4 @@
-"""One Simulation Campaign outcome resolves its coverage reference once."""
+"""One Simulation Record outcome resolves its coverage reference once."""
 
 from __future__ import annotations
 

@@ -72,7 +72,7 @@ class NativeExecution:
 
 
 def run_target(plan, execution, **options):
-    """Run one Target transaction under the attempt-owned root the Campaign executor uses."""
+    """Run one Target transaction under the attempt-owned root the Simulation Record executor uses."""
     return run_coverage_target(
         plan,
         execution,
@@ -730,7 +730,7 @@ def persistence_fault(boundary):
 
 
 def gated_plan(tmp_path):
-    """A coverage-gated Target plan whose Campaign publishes under ``reports/sim/1``."""
+    """A coverage-gated Target plan whose Simulation Record publishes under ``reports/sim/1``."""
     context = project(tmp_path)
     criterion = CoverageCriterion(
         DurableTargetIdentity("acme:demo:counter:1#sim_0"),

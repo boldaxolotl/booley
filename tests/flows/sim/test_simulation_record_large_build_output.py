@@ -1,11 +1,11 @@
-"""A build whose compiler output exceeds the campaign record ceiling still verifies.
+"""A build whose compiler output exceeds the record ceiling still verifies.
 
-Campaign readers load ``evidence/build-execution.json`` under
+Simulation Record readers load ``evidence/build-execution.json`` under
 ``RECORD_MAX_BYTES``. A traced build of a large design can print more than
 that, so the writer keeps only a bounded head and tail of each captured text
 field. The full compiler output stays in each test's ``run.log``.
 
-The end-to-end cases run the real ``booley flow sim`` campaign path with the
+The end-to-end cases run the real ``booley flow sim`` record path with the
 fake Verilator toolchain shared with the build-reuse tests, covering both the
 shared-variant build and the private ``legacy-per-test`` build.
 """

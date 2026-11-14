@@ -193,7 +193,7 @@ def test_simulation_build_and_dry_run_timeout_contract_is_documented() -> None:
 def test_sim_report_fields_stay_documented(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The campaign helper relies on the isolation that tests/flows fixtures give.
+    # The record helper relies on the isolation that tests/flows fixtures give.
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
     monkeypatch.setattr("booley.core.booley_dir._cache", None)

@@ -245,7 +245,7 @@ def _coverage(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
     rows.extend(_more_targets(targets))
     if _mapping(detail.get("records")):
         headline, supplementary = _simulation_records(detail)
-        rows.extend([_row("Campaign simulation", headline), *supplementary])
+        rows.extend([_row("Simulation Record", headline), *supplementary])
     return f"Coverage: {met}/{len(targets)} Targets met", rows
 
 

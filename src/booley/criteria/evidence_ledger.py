@@ -4,7 +4,7 @@ The ledger owns two write paths and the readers both rely on:
 
 * V1 :func:`record_changes` appends one immutable ``record.json`` per
   effective Criterion change, in completion order, under a sequence lock.
-* V2 :func:`record_or_verify_transaction` freezes a Simulation Campaign's
+* V2 :func:`record_or_verify_transaction` freezes a Simulation Record's
   changes as an intent, publishes each change as a sequenced record,
   commits a manifest, and selects the transaction into the live state. Every
   durable step is a named publication checkpoint, and a retry after any of
@@ -1256,7 +1256,7 @@ def record_or_verify_transaction(
     identity: Mapping[str, Any],
     publication_checkpoint: Callable[[str], None] | None = None,
 ) -> AcceptanceTransaction:
-    """Record or verify one intent-frozen Simulation Campaign transaction."""
+    """Record or verify one intent-frozen Simulation Record transaction."""
     root = Path(log_dir)
     checkpoint = publication_checkpoint or _no_checkpoint
     lookup_key, intent = _frozen_intent(
@@ -1294,7 +1294,7 @@ def record_or_verify_transaction(
 class UnselectedTransaction:
     """A transaction with durable intent or records that *state* does not select.
 
-    ``acceptance_facts`` holds the frozen facts of a Simulation Campaign
+    ``acceptance_facts`` holds the frozen facts of a Simulation Record
     transaction (its intent); it is ``None`` for V1 records appended under a
     transaction id whose writer stopped before it selected them.
     """
@@ -1309,7 +1309,7 @@ def unselected_transactions(
 ) -> tuple[UnselectedTransaction, ...]:
     """Every transaction under *log_dir* that *state* does not select, oldest sequence last.
 
-    A Simulation Campaign transaction counts from its frozen intent on,
+    A Simulation Record transaction counts from its frozen intent on,
     whether or not its records and commit were published. V1 records under a
     transaction id count when no intent and no commit names that id. The
     caller serializes with the ledger's writers (it holds their record lock).
@@ -1372,7 +1372,7 @@ def complete_transaction(
 ) -> None:
     """Finish *pending* as its writer would have, and select it into *state*.
 
-    A Simulation Campaign transaction is completed by the recovery its
+    A Simulation Record transaction is completed by the recovery its
     writer runs when it is called again: :func:`record_or_verify_transaction`
     with the frozen intent's facts, which publishes what is missing, commits
     and selects. Appended V1 records only lack their selection.

@@ -5614,9 +5614,9 @@ def _read_selftest_simulation_record(project: ProjectAudit, case: _SelftestCase,
     if require_int(report.get("exit_code"), field="exit_code") != rc:
         raise ValueError("report exit code does not match this invocation")
     records = require_dict(require_dict(report.get("detail")).get("records"))
-    simulation_record = require_dict(records.get(case.target), field="selected campaign")
+    simulation_record = require_dict(records.get(case.target), field="selected Simulation Record")
     if simulation_record.get("complete") is not True:
-        raise ValueError("selected Simulation Campaign is incomplete")
+        raise ValueError("selected Simulation Record is incomplete")
     return simulation_record
 
 

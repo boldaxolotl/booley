@@ -6,7 +6,7 @@ summary and the Simulation projections, ``resumed/sim/2`` the report-only invoca
 ``--resume-from`` leaves behind, and ``cocotb/cocotb-transport.json`` the cocotb transport.
 The last two were captured from the ``v0.4.0`` tag with its own tests: the tag's
 ``tests/flows/sim/test_endpoint_record_lifecycle.py::test_ordinary_cli_manifest_and_card_paths``
-ran a ``cocotb_batch`` Campaign and its ``*/evidence/*cocotb_results.json`` was copied byte
+ran a ``cocotb_batch`` Simulation Record and its ``*/evidence/*cocotb_results.json`` was copied byte
 for byte; the tag's ``tests/flows/sim/test_simulation_record_resume_diagnostics.py::_interrupted_campaign``
 interrupted a run and ``SimulateFlow().execute(SimRequest(resume_from=<manifest>))`` wrote
 ``sim/2``, whose ``report.json`` and ``progress.json`` are committed with the capture's

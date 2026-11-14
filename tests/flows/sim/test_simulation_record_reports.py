@@ -1,4 +1,4 @@
-"""Crash-safe Simulation Campaign compatibility projections."""
+"""Crash-safe Simulation Record compatibility projections."""
 
 import errno
 import json
@@ -368,7 +368,7 @@ def _resume_hook_simulation_record(tmp_path, monkeypatch, interrupted, *, extern
     return original, resumed, counters, invocation
 
 
-@pytest.mark.timeout(120)  # the external resume case runs a second full Campaign
+@pytest.mark.timeout(120)  # the external resume case runs a second full Simulation Record
 @pytest.mark.parametrize("external", [False, True])
 @pytest.mark.parametrize("interrupted", [False, True])
 def test_resume_separates_historical_hooks_from_real_new_firings(
@@ -486,7 +486,7 @@ def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counter
 
 
 def _third_invocation_resume(tmp_path, monkeypatch, *, interrupted=False):
-    """Resume an externally resumed Campaign again from a third invocation."""
+    """Resume an externally resumed Simulation Record again from a third invocation."""
     original, _prior, _counters, _invocation = _resume_hook_simulation_record(
         tmp_path, monkeypatch, False, external=True
     )
@@ -510,7 +510,7 @@ def test_production_resume_corruption_uses_simulation_record_integrity_outcome(
     (original.pre_sim_firings[0].path.parents[3] / "result.json").write_text("{}")
     result = flow.run_prepared_simulation(prepared, _admission())
     assert result.exit_code == 2
-    assert "Simulation Campaign integrity failure:" in result.report_text
+    assert "Simulation Record integrity failure:" in result.report_text
     assert "Pre-Sim Commands evidence integrity failure" not in result.report_text
     assert counters["launch"] == 0
 
@@ -581,7 +581,7 @@ def test_simulation_record_scan_error_retains_independently_authenticated_hook_l
     assert result.criterion_met is False
     assert result.detail["pre_sim_lines"] == [line]
     assert result.report_text.count(line) == 1
-    assert "Simulation Campaign integrity failure" in result.report_text
+    assert "Simulation Record integrity failure" in result.report_text
 
 
 def test_production_postscan_corruption_preserves_authenticated_current_evidence(
@@ -611,7 +611,7 @@ def test_production_postscan_corruption_preserves_authenticated_current_evidence
     assert result.detail["pre_sim_current"] == 1
     assert len(result.detail["pre_sim_lines"]) == 1
     assert result.report_text.count("pre_run_commands") == 1
-    assert "Simulation Campaign integrity failure" in result.report_text
+    assert "Simulation Record integrity failure" in result.report_text
 
 
 def _observed_hook_request(tmp_path, observer):
@@ -757,7 +757,7 @@ def test_published_hook_collection_scans_each_simulation_record_once(tmp_path, m
     )
     assert result.detail["pre_sim_total"] == result.detail["pre_sim_current"] == 2
     assert set(result.detail["pre_sim_roles"]) == {"candidate", "cycle_count_baseline"}
-    assert sorted(scans.values()) == [1, 1], "each Campaign is scanned once"
+    assert sorted(scans.values()) == [1, 1], "each Simulation Record is scanned once"
 
 
 def _published_hook_budget_boundary(flow, candidate, roomy):
@@ -894,7 +894,7 @@ def test_corruption_before_endpoint_keeps_final_integrity_policy(tmp_path, monke
     assert "cycles=17" in evidence["endpoint_text"]
     assert "integrity" not in evidence["endpoint_text"]
     assert result.exit_code == 2 and result.criterion_met is False
-    assert "Simulation Campaign integrity failure:" in result.report_text
+    assert "Simulation Record integrity failure:" in result.report_text
     assert flow._simulation_record_outcomes == ()
     assert flow._pending_criteria_set == ()
     assert result.detail["pre_sim_current"] == 2
@@ -949,7 +949,9 @@ def test_prior_firing_reauthentication_rejects_byte_identical_symlink_attempt(
     copy = tmp_path / "copied-attempt"
     sidecar_bytes = firing.path.read_bytes()
     snapshots = list(directory.rglob("simv"))
-    assert len(snapshots) == 1, "successful campaign must retain one real executable snapshot"
+    assert len(snapshots) == 1, (
+        "successful Simulation Record must retain one real executable snapshot"
+    )
     snapshot = snapshots[0]
     snapshot_relative = snapshot.relative_to(directory)
     snapshot_bytes, snapshot_mode = snapshot.read_bytes(), snapshot.stat().st_mode
@@ -1057,7 +1059,7 @@ def test_projection_rejects_corrupt_record(tmp_path, error):
 
 
 def _two_firing_store(tmp_path):
-    """Run a coverage Campaign whose one attempt holds two failed Pre-Sim firings."""
+    """Run a coverage Simulation Record whose one attempt holds two failed Pre-Sim firings."""
     from booley.flows.sim.execution.contract import PreSimEvidence
     from booley.flows.sim.verilator_coverage import SimulationRunResult
     from tests.flows.sim.simulation_record_test_support import _run_coverage_simulation_record
@@ -1370,7 +1372,7 @@ def test_simulation_record_report_preserves_the_failed_simulator_reason(tmp_path
     )
 
     assert _simulation_record_report_lines((outcome,), report_path=tmp_path / "sim.json")[0] == (
-        "sim_fail: FAIL (Simulation Campaign unavailable)\n"
+        "sim_fail: FAIL (Simulation Record unavailable)\n"
         f"  manifest: {(tmp_path / 'record/manifest.json').resolve()}\n"
         f"  report: {(tmp_path / 'sim.json').resolve()}\n"
         "  intentional simulator failure"

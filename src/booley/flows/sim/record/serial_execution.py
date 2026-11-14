@@ -1,4 +1,4 @@
-"""Production bridge from durable campaign work to one legacy HDL execution.
+"""Production bridge from durable record work to one legacy HDL execution.
 
 This Phase-2 adapter deliberately preserves the existing leaf execution path.
 It adds the manifest-first attempt protocol around one ordinary-HDL work item
@@ -238,7 +238,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         item = request.work_item
         if item["kind"] not in {"ordinary_hdl", "cocotb_batch"}:
             raise SimulationRecordIntegrityError(
-                "HDL campaign executor supports only ordinary or Cocotb work items"
+                "HDL record executor supports only ordinary or Cocotb work items"
             )
         with self._prepared_attempts_gate:
             run_directory = self._prepared_attempts.pop(request.attempt_directory, None)
@@ -260,7 +260,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
     def _execute_shared(
         self, request: WorkExecutionRequest, run_directory: RunDirectory
     ) -> SimulationResult:
-        """Compile one campaign/invocation variant and launch one isolated item."""
+        """Compile one record/invocation variant and launch one isolated item."""
         key = (
             request.store.root,
             cast(str, request.work_item["build_variant_id"]),
@@ -537,7 +537,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         )
         if handle.identity != f"{target['vlnv']}#{target['name']}":
             raise SimulationRecordIntegrityError(
-                "current Target identity disagrees with campaign manifest"
+                "current Target identity disagrees with record manifest"
             )
         selection = cast(Mapping[str, object], request.work_item["selection"])
         names = cast(tuple[str, ...], selection["names"])
@@ -546,7 +546,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             request.policy,
             trace=cast(bool, workload["trace"]),
         )
-        # Build and launch commands name paths relative to the campaign's own
+        # Build and launch commands name paths relative to the record's own
         # checkout (a Cycle Count baseline's is not the invocation's), so they run there.
         execution = (
             self._execution_factory(options)
@@ -713,7 +713,7 @@ def _authenticate_planning_disclosure(request: WorkExecutionRequest, group: obje
         != canonical_json_bytes(disclosures[ordinal])
     ):
         raise SimulationRecordIntegrityError(
-            "prepared generator source closure disagrees with campaign plan"
+            "prepared generator source closure disagrees with record plan"
         )
 
 
@@ -1105,7 +1105,7 @@ def _ready_result_document(
     }
 
 
-# Campaign readers load build-execution evidence under ``RECORD_MAX_BYTES``,
+# Simulation Record readers load build-execution evidence under ``RECORD_MAX_BYTES``,
 # but a compiler can print far more (a traced build of a large design easily
 # exceeds 1 MiB). Each captured text field therefore keeps a fixed head and
 # tail; the full output stays in every test's ``run.log``.

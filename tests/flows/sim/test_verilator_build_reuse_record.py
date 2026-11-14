@@ -1,7 +1,7 @@
 """Verilator build reuse through the real ``booley flow sim`` path.
 
 ``SimulateFlow.execute`` runs every ordinary Simulation as a Simulation
-Campaign: ``OrdinaryHdlSerialExecutor`` drives
+Simulation Record: ``OrdinaryHdlSerialExecutor`` drives
 ``SimulationExecution.ordinary_group`` and ``PreparedOrdinaryGroup.compile``.
 These tests pin build reuse on that path, so a
 second identical ``sim`` call is served by the retained image and its durable
@@ -246,7 +246,7 @@ def test_symlinked_booley_directory_runs_and_reuses_build(
 
     Reports land in the default ``<entry>/flow-reports`` and the second
     identical run still reuses the retained image, so every link-sensitive
-    Simulation place (lock, run log, Campaign store, build reference) is crossed.
+    Simulation place (lock, run log, Simulation Record store, build reference) is crossed.
     """
     entry = flow_project / ".booley"
     external = tmp_path / "external-booley"
@@ -312,7 +312,7 @@ def test_symlinked_booley_directory_accepts_declared_source_below_entry(
     closure = [item["path"] for item in document["build_variants"][0]["source_closure"]]
     assert ".booley/sim/helper.cpp" in closure
     # AC3: no report names the build's private mirror, and the planned sources
-    # keep their Project-relative names (so a resumed Campaign authenticates).
+    # keep their Project-relative names (so a resumed Simulation Record authenticates).
     generated = document["planning_disclosures"][0]["generated_files"]
     assert {item["path"] for item in generated} == {
         "rtl/tb.sv",

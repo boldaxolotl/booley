@@ -31,7 +31,7 @@ SANDBOX_ONLY_PATHS: tuple[str, ...] = (
     "tests/flows/mutation/test_runtime_inputs.py",
     "tests/flows/mutation/test_variant_flow.py",
     "tests/flows/mutation/test_variant_interruptions.py",
-    # Simulation Flow runtime (campaigns, builds, coverage, backends): `booley flow sim` is a
+    # Simulation Flow runtime (records, builds, coverage, backends): `booley flow sim` is a
     # Sandbox command. The host imports flows.sim.flow and its modules only to print endpoint
     # help and never executes the runtime, so tests of that runtime stay Sandbox-only. Tests of
     # what the host does run (help text, argument parsing, config loaders) stay on Windows.
