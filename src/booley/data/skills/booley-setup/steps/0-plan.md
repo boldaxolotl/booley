@@ -458,8 +458,8 @@ script lines) as you go.
   `git -C .booley submodule status` too. If either has any, add a
   decision row — but a short one: Goal worktrees get their submodules
   reconstructed from local Git objects at the same repository path, never
-  cloned, so private SSH URLs are not consulted (mechanics in `/booley-docs/TARGETS.md` →
-  "Submodules"). What the plan owes is the precondition and, if the outer repo
+  cloned, so private SSH URLs are not consulted (mechanics in `/booley-docs/CONFIG.md` →
+  "Git submodules"). What the plan owes is the precondition and, if the outer repo
   has heavy submodules nothing builds against, the explicit list:
   - Every selected submodule must be **present, clean, non-shallow, and contain
     the required pinned commit objects** in its owning repository before any

@@ -169,27 +169,15 @@ yourself. An unmarked Target still runs whenever you or the agent ask for it.
 With an enabled `[flows.fpga]` table, Doctor fails until some Target is marked
 `fpga`; set `enabled = false` there if the Project has no FPGA build yet.
 
-## Flat and vendored repos
+## Vendored and multi-core repos
 
-- **Flat repos** (one `picorv32.v` at the root) need no `rtl/` and `tb/`
-  restructure. A fileset can list root-level files directly
-  (`files: [picorv32.v]`); testbench files go in a fileset tagged
-  `tags: [tb]`, as usual.
 - **Unwanted vendored cores** (say, a bundled SoC's example cores): put an
   empty file named `FUSESOC_IGNORE` in their directory. Booley and FuseSoC skip
   every core under it.
-- **Directory symlinks that loop back** to a containing directory (for
-  example `src/a/lib/self -> ../../..`) would make core discovery scan the same
-  tree over and over, so Doctor fails on them; `booley doctor --verbose` lists
-  every affected path. Put a `FUSESOC_IGNORE` in the directory holding the
-  link. It hides all cores below it, so don't place it where wanted cores
-  live. Commit the marker if you can: an uncommitted one in a subdirectory
-  doesn't reach Goal or baseline worktrees.
 - **Many cores in one repo** (ibex ships 208) need no extra configuration. Many
   cores may each have a Target called `lint` or `sim`; Booley asks you to
   pick only when a bare name is ambiguous, and you then name it as
   `vendor:library:name:version#target`.
-- **Git submodules** work, with one setup step; see [Submodules](#submodules).
 
 <details markdown>
 <summary>In stealth mode</summary>
@@ -197,65 +185,6 @@ With an enabled `[flows.fpga]` table, Doctor fails until some Target is marked
 To leave a vendored repository untouched, set `ignore_native_cores = true` and
 keep your own cores in `.booley/cores/`: Booley then ignores every other
 `.core` file. See [STEALTH.md](STEALTH.md#what-changes).
-
-</details>
-
-### Submodules
-
-Goal Mode and baseline comparisons run in separate git worktrees. Booley
-fills each worktree's submodules from your local copy at the same path, at the
-commit the branch pins, without cloning anything, so private SSH URLs are
-fine. Recursive submodules work the same way.
-
-Run this once on the host:
-
-```bash
-git submodule update --init --recursive
-```
-
-<details markdown>
-<summary>In stealth mode</summary>
-
-`.booley` is its own Git repository, so initialize its submodules too:
-
-```bash
-git -C .booley submodule update --init --recursive
-```
-
-See [Stealth Mode](STEALTH.md).
-
-</details>
-
-Each submodule must be present, clean, and have its full history (not a
-shallow clone) before a Goal or baseline run starts. Otherwise the run stops
-with one of:
-
-- `submodule <path> not found in source Project; initialize it first`
-- `submodule <path> is dirty`
-- `submodule <path> is shallow; fetch its complete history first`
-- `local objects for submodule <path> are incomplete`
-
-The last one means your local copy lacks objects for the commit the branch
-pins; fetch in that submodule. Booley always uses the pinned commit, even when your checkout
-has a newer one.
-
-To copy only some submodules (skip a large docs or board submodule nothing
-builds from), list the ones you want in `booley.toml`:
-
-```toml
-[submodules]
-paths = ["deps/bus_pkg", "deps/axi_verif"]
-```
-
-Without `paths`, every top-level submodule is copied; `paths = []` copies
-none. Unlisted submodules appear as empty directories in the worktree.
-Submodules nested inside a listed one are always copied.
-
-<details markdown>
-<summary>In stealth mode</summary>
-
-The list applies to the RTL repository only: every submodule of the `.booley`
-repository is always copied. See [Stealth Mode](STEALTH.md).
 
 </details>
 
