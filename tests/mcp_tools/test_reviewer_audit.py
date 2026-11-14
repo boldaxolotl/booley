@@ -145,7 +145,9 @@ def test_all_invalid_and_malformed_mirror_persist_on_error(reviewer, monkeypatch
     )
     result = reviewer._run()
     assert result.exit_code == 2
-    assert len(result.detail["rejected"]) == 5 * len(GUIDES)  # 5 rows per guide call
+    assert len(result.detail["rejected"]) == 5 * 2 * len(
+        GUIDES
+    )  # 5 rows per attempt, two attempts per guide call
     assert {row["channel"] for row in result.detail["rejected"]} == {
         "canonical",
         "ReportFindings mirror",
@@ -323,7 +325,9 @@ def test_disagreeing_mirror_keeps_rejections_on_error(reviewer, monkeypatch):
     )
     result = reviewer._run()
     assert result.exit_code == 2
-    assert len(result.detail["rejected"]) == 2 * len(GUIDES)  # 2 rows per guide call
+    assert len(result.detail["rejected"]) == 2 * 2 * len(
+        GUIDES
+    )  # 2 rows per attempt, two attempts per guide call
     output(
         reviewer,
         monkeypatch,
@@ -427,15 +431,16 @@ def test_error_diagnostics_accumulate_within_unchanged_contract(reviewer, monkey
     first = reviewer._run()
     output(reviewer, monkeypatch, {"issues": [False]})
     second = reviewer._run()
-    # Two attempts, each audited once per guide call; history keeps attempt order.
+    # Two reviews, each audited once per attempt (a failed guide call is retried once);
+    # history keeps attempt order.
     rows = second.detail["rejected"]
     assert [row["raw"] for guide_rows in by_guide(rows).values() for row in guide_rows] == [
         None,
-        False,
         None,
         False,
-    ]
-    assert len({row["attempt_id"] for row in rows}) == 2 * len(GUIDES)  # per call
+        False,
+    ] * len(GUIDES)
+    assert len({row["attempt_id"] for row in rows}) == 4 * len(GUIDES)  # per attempt
     assert evidence(first) == first.detail
     path = Path(second.detail["audit_evidence"])
     assert second.detail["artifacts"]["reviewer_evidence"] == str(path)

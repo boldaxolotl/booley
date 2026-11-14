@@ -424,6 +424,8 @@ class _GuideCallRun:
     kept: list[ReviewIssue] | None = None
     observations: list[ReviewIssue] = field(default_factory=list[ReviewIssue])
     lines: list[str] = field(default_factory=list[str])
+    # Evidence rows of this call's earlier failed attempts (the call is retried once).
+    failed_attempts: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
 
     @property
     def name(self) -> str:
@@ -438,7 +440,7 @@ class _GuideCallRun:
     def evidence_row(self) -> dict[str, Any]:
         """This call's entry in the ``guide_calls`` evidence."""
         transcript = self.params.transcript_path
-        return {
+        row: dict[str, Any] = {
             "kind": "+".join(self.kinds),
             "guides": [guide.name for guide in self.guides],
             "attempt_id": self.attempt_id,
@@ -446,6 +448,9 @@ class _GuideCallRun:
             "model": self.model_run.note() if self.model_run is not None else None,
             "status": "ok" if self.kept is not None else "error",
         }
+        if self.failed_attempts:
+            row["failed_attempts"] = list(self.failed_attempts)
+        return row
 
 
 def merge_exact_duplicates(per_call: list[list[ReviewIssue]]) -> list[ReviewIssue]:
@@ -3279,6 +3284,33 @@ Schema enforcement (applied upstream by the harness):
                 )
             )
 
+    def _retry_failed_guide_calls(self, focus: str, runs: list[_GuideCallRun]) -> None:
+        """Run each failed call once more, in place, before the review fails.
+
+        One bad answer (for example a ReportFindings entry the consistency check rejects)
+        costs a second call, not the whole review. A call that fails again stays failed, and
+        the review fails naming it. Only a multi-call review retries: with several calls one
+        failure is likelier, and a single-call review keeps its one attempt.
+        """
+        retries: list[_GuideCallRun] = []
+        for index, run in enumerate(runs):
+            if run.kept is not None:
+                continue
+            retry = _GuideCallRun(
+                guides=run.guides,
+                params=dataclasses.replace(run.params),
+                attempt_id=f"{self._review_run_id or self._invocation_id}-{uuid4().hex}",
+                failed_attempts=[*run.failed_attempts, run.evidence_row()],
+                lines=[*run.lines, f"INFO: {run.name} call failed; retrying it once"],
+            )
+            runs[index] = retry
+            retries.append(retry)
+        if not retries:
+            return
+        self._invoke_guide_calls(retries)
+        for retry in retries:
+            self._interpret_guide_call(retry, focus, tagged=True)
+
     def _collect_guide_calls(
         self, focus: str, runs: list[_GuideCallRun], output_lines: list[str]
     ) -> list[ReviewIssue] | None:
@@ -3286,6 +3318,8 @@ Schema enforcement (applied upstream by the harness):
         tagged = len(runs) > 1
         for run in runs:
             self._interpret_guide_call(run, focus, tagged=tagged)
+        if tagged:
+            self._retry_failed_guide_calls(focus, runs)
         self._audit_guide = ""
         self._guide_call_rows = [run.evidence_row() for run in runs] if tagged else []
         if not tagged:

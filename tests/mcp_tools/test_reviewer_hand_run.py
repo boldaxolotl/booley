@@ -328,7 +328,8 @@ def review_by_guide(
 ) -> tuple[McpToolResult, list[Any]]:
     """Run a bugs review whose agent answers per guide; returns the result and every call.
 
-    An answer is a payload dict, a ready agent result, or an exception to raise.
+    An answer is a payload dict, a ready agent result, or an exception to raise. A list
+    of answers is consumed one per call of that guide, the last one repeating.
     """
     reviewer = reviewer or ReviewerSpecialist()
     reviewer.parse_args(["--work-dir", str(root), *args])
@@ -338,6 +339,8 @@ def review_by_guide(
     def fake_agent(params: Any) -> Any:
         calls.append(params)
         answer = answers[guide_of(params)]
+        if isinstance(answer, list):
+            answer = answer.pop(0) if len(answer) > 1 else answer[0]
         if isinstance(answer, Exception):
             raise answer
         return answer if isinstance(answer, MagicMock) else agent_result(answer)
@@ -542,6 +545,23 @@ def test_findings_record_guide_kinds_and_gating_ignores_them(
     assert _finding_record(ReviewIssue.from_dict(untagged))["finding_id"] == row["finding_id"]
 
 
+def broken_answers() -> dict[str, Any]:
+    """Each way a guide call can fail, as a scripted agent answer."""
+    return {
+        "raises": RuntimeError("boom"),
+        "no_json": MagicMock(output="no JSON here", captured_agent_capability_calls={}),
+        "all_rejected": {"issues": [{"severity": "BOGUS"}]},
+        "mirror_disagrees": agent_result(
+            {"issues": []},
+            {
+                "ReportFindings": [
+                    {"findings": [{"file": "rtl/dut.sv", "line": 3, "summary": "x"}]}
+                ]
+            },
+        ),
+    }
+
+
 def test_any_failing_guide_call_is_a_specialist_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -557,19 +577,7 @@ def test_any_failing_guide_call_is_a_specialist_error(
 def _assert_failing_guide_is_error(
     project: Path, monkeypatch: pytest.MonkeyPatch, failing: str, failure: str, mode: str
 ) -> None:
-    broken: dict[str, Any] = {
-        "raises": RuntimeError("boom"),
-        "no_json": MagicMock(output="no JSON here", captured_agent_capability_calls={}),
-        "all_rejected": {"issues": [{"severity": "BOGUS"}]},
-        "mirror_disagrees": agent_result(
-            {"issues": []},
-            {
-                "ReportFindings": [
-                    {"findings": [{"file": "rtl/dut.sv", "line": 3, "summary": "x"}]}
-                ]
-            },
-        ),
-    }
+    broken = broken_answers()
     healthy = {"issues": [finding("MAJOR", summary="Healthy call finding", line=7)]}
     answers = {guide: (broken[failure] if guide == failing else healthy) for guide in BUGS_GUIDES}
     key = "review_rtl_bugs_done"
@@ -581,9 +589,12 @@ def _assert_failing_guide_is_error(
         project, monkeypatch, [*BASE_ARGS, "--transcript-dir", str(transcripts)], answers
     )
 
-    assert len(calls) == 2  # the healthy call is not cancelled
+    # The healthy call is not cancelled; the failing call is retried once and fails again.
+    assert [guide_of(c) for c in calls].count(failing) == 2
+    assert len(calls) == 3
     assert result.exit_code == 2, result.report_text
     assert f"ERROR: {failing} call failed" in result.report_text
+    assert f"INFO: {failing} call failed; retrying it once" in result.report_text
     other = next(guide for guide in BUGS_GUIDES if guide != failing)
     assert f"ERROR: {other} call failed" not in result.report_text
     assert "issue_list" not in result.detail
@@ -597,11 +608,55 @@ def _assert_failing_guide_is_error(
     assert status == {failing: "error", other: "ok"}
     failing_call = next(c for c in result.detail["guide_calls"] if c["guides"] == [failing])
     assert Path(failing_call["transcript"]).name == f"reviewer-{failing}.jsonl"
+    (first_try,) = failing_call["failed_attempts"]
+    assert first_try["status"] == "error"
+    assert first_try["attempt_id"] != failing_call["attempt_id"]
     state = DevelopmentState.load(project / "state.json")
     assert state.is_met(key) is False
     # A failed discovery leaves nothing to verify.
     verifier, _ = review(project, monkeypatch, ["--verify"], verdicts())
     assert verifier.exit_code == 2
+
+
+@pytest.mark.parametrize("failure", ["raises", "no_json", "all_rejected", "mirror_disagrees"])
+@pytest.mark.parametrize("failing", BUGS_GUIDES)
+def test_failed_guide_call_is_retried_once_and_the_review_succeeds(
+    project: Path, monkeypatch: pytest.MonkeyPatch, failing: str, failure: str
+) -> None:
+    """A first attempt that fails (here the ReportFindings mirror check) is retried once."""
+    healthy_other = finding("MAJOR", summary="Other call finding", line=7)
+    retried = finding("MAJOR", summary="Retried call finding", line=9)
+    other = next(guide for guide in BUGS_GUIDES if guide != failing)
+    result, calls = review_by_guide(
+        project,
+        monkeypatch,
+        BASE_ARGS,
+        {
+            failing: [broken_answers()[failure], {"issues": [retried]}],
+            other: {"issues": [healthy_other]},
+        },
+    )
+
+    assert result.exit_code == 0, result.report_text
+    assert [guide_of(c) for c in calls].count(failing) == 2
+    assert [guide_of(c) for c in calls].count(other) == 1
+    assert f"INFO: {failing} call failed; retrying it once" in result.report_text
+    assert "the review is incomplete" not in result.report_text
+    summaries = {row["summary"] for row in ReviewerSpecialist._open_findings(result.detail)}
+    assert summaries == {"Other call finding", "Retried call finding"}
+    rows = {c["guides"][0]: c for c in result.detail["guide_calls"]}
+    assert {c["status"] for c in rows.values()} == {"ok"}
+    (first_try,) = rows[failing]["failed_attempts"]
+    assert first_try["status"] == "error"
+    assert first_try["attempt_id"] != rows[failing]["attempt_id"]
+    assert "failed_attempts" not in rows[other]
+
+
+def test_single_call_review_is_not_retried(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    result, invoke = review(project, monkeypatch, TB_ARGS, {"issues": [{"severity": "BOGUS"}]})
+    assert result.exit_code == 2, result.report_text
+    assert invoke.call_count == 1
+    assert "retrying" not in result.report_text
 
 
 def test_goal_tb_support_only_scope_still_makes_one_call(
