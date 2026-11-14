@@ -196,22 +196,21 @@ def test_a_0_4_0_cocotb_transport_is_refused_as_older() -> None:
     _assert_refused(str(refused.value), _OLD_TRANSPORT)
 
 
-# --- AC3: retention reports a 0.4.0 sibling or receipt as older -----------------------------
+# --- AC3: retention reports a 0.4.0 receipt as older, ignores a 0.4.0 sibling projection ----
 
 
-def test_retention_reports_a_0_4_0_sibling_projection_as_older(tmp_path: Path) -> None:
+def test_retention_prunes_an_origin_beside_a_0_4_0_sibling_projection(tmp_path: Path) -> None:
     reports_root, _project_data, _store = _retained_invocation(tmp_path)
     sibling = reports_root / "sim" / "2"
     projection = sibling / "targets" / "sim" / "simulation.json"
     projection.parent.mkdir(parents=True)
     _write(projection, _0_4_0_projection("complete"))
-    before = _tree(reports_root / "sim")
+    before = _tree(sibling)
 
-    with pytest.raises(CampaignRetentionError) as pruned:
-        prune_invocation(reports_root, 1)
+    prune_invocation(reports_root, 1)
 
-    _assert_refused(str(pruned.value), _OLD_PROJECTION, sibling)
-    assert _tree(reports_root / "sim") == before
+    assert not (reports_root / "sim" / "1").exists()
+    assert _tree(sibling) == before
 
 
 def test_retention_reports_a_0_4_0_resume_receipt_as_older(reports: Path) -> None:
