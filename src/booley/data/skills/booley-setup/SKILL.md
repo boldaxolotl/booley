@@ -149,11 +149,15 @@ execution.
 Every step appends to one log as it goes:
 
 ```console
-booley feedback add --title "…" --severity blocker|workaround|note \
+booley feedback add --origin setup --title "…" --severity blocker|workaround|note \
   --exposed-by "the exact check that surfaced it" --step 4-doctor \
   --repro "booley doctor" --observed "…" --expected "…"
-booley feedback win --title "a check that passed first try"   # keeps the sample honest
+booley feedback win --origin setup --title "a check that passed first try"   # keeps the sample honest
 ```
+
+Every logging command takes `--origin setup`; it is required, and it keeps these
+entries in `.booley/SETUP-REPORT.md` (later `/booley-feedback` entries go to a
+separate `.booley/FEEDBACK-REPORT.md`).
 
 Two rules, and the second is the one that gets skipped:
 
@@ -164,7 +168,7 @@ Two rules, and the second is the one that gets skipped:
   guesses.
 - **Every sub-agent logs its own findings, into the same log.** A delegated Step 2
   or 4 is where most friction lives, and a sub-agent's context dies when it
-  returns — so its brief must say: *run `booley feedback add` for anything that
+  returns — so its brief must say: *run `booley feedback add --origin setup` for anything that
   surprised you, before you report back.* The log is a file precisely so that a
   finding survives the sub-agent that found it. Do not ask sub-agents to summarize
   findings in their return message and then re-log them yourself; that loses the
@@ -275,7 +279,7 @@ plain-English reason it matters.
    blocks completion and does not change `status`. Parity is the richest source
    of real Booley findings in the whole run — a number that differs from the
    native flow's is about as unambiguous as evidence gets — so log every
-   discrepancy with `booley feedback add`, not just the ones you can explain.
+   discrepancy with `booley feedback add --origin setup`, not just the ones you can explain.
 8. **Step 6 — findings.** Always: `steps/6-findings.md` triages the log, writes
    `.booley/SETUP-REPORT.md`, and creates a redacted export only when the
    user explicitly requests one. Post-gate and non-blocking.

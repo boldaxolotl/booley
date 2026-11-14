@@ -12,12 +12,13 @@ import pytest
 from booley.feedback.findings import Finding, append, read_log
 from booley.feedback.render import (
     BOOLEY_REPORT_NAME,
-    USER_REPORT_NAME,
+    FEEDBACK_REPORT_NAME,
+    SETUP_REPORT_NAME,
     Environment,
     export_booley_report,
     render_booley_report,
     render_user_report,
-    write_user_report,
+    write_user_reports,
 )
 
 
@@ -261,44 +262,78 @@ class TestBooleyReport:
         assert "/" not in "".join(v for k, v in rows.items() if k != "Platform")
 
 
-class TestWriteUserReport:
-    def test_only_the_user_report_lands_in_the_booley_dir(self, project, booley_dir):
+class TestWriteUserReports:
+    def test_only_the_user_reports_land_in_the_booley_dir(self, project, booley_dir):
         _populate(booley_dir)
-        user_path, report = write_user_report(project, booley_dir)
-        assert user_path == booley_dir / USER_REPORT_NAME
+        written, report = write_user_reports(project, booley_dir)
+        assert [w.path for w in written] == [booley_dir / SETUP_REPORT_NAME]
         assert report.has_content
         assert not (booley_dir / BOOLEY_REPORT_NAME).exists()
 
     def test_nothing_is_written_into_the_tracked_tree(self, project, booley_dir):
         """The footprint guardrail, enforced in code rather than in prose."""
         _populate(booley_dir)
-        write_user_report(project, booley_dir)
-        assert not (project / USER_REPORT_NAME).exists()
+        write_user_reports(project, booley_dir)
+        assert not (project / SETUP_REPORT_NAME).exists()
         assert not (project / BOOLEY_REPORT_NAME).exists()
 
     def test_the_user_report_is_written_when_nothing_is_filable(self, project, booley_dir):
         append(Finding(title="my own problem", bucket="project"), booley_dir)
-        user_path, report = write_user_report(project, booley_dir)
-        assert user_path.is_file()
+        written, report = write_user_reports(project, booley_dir)
+        assert written[0].path.is_file()
         assert not report.has_content
         assert not (booley_dir / BOOLEY_REPORT_NAME).exists()
 
-    def test_the_dogfood_override_can_place_the_user_report_at_a_root(self, project, booley_dir):
+    def test_a_log_with_no_entries_writes_no_report(self, project, booley_dir):
+        written, _ = write_user_reports(project, booley_dir)
+        assert written == []
+        assert not (booley_dir / SETUP_REPORT_NAME).exists()
+        assert not (booley_dir / FEEDBACK_REPORT_NAME).exists()
+
+    def test_the_dogfood_override_writes_only_the_setup_report(self, project, booley_dir):
         """`--user-report-path`, the one sanctioned footprint exception."""
-        _populate(booley_dir)
-        target = project / "SETUP-REPORT.md"
-        user_path, _ = write_user_report(project, booley_dir, user_report_path=target)
-        assert user_path == target
-        assert target.is_file()
-        assert not (booley_dir / USER_REPORT_NAME).exists()
+        append(Finding(title="setup entry"), booley_dir)
+        append(Finding(title="bug entry", origin="bug"), booley_dir)
+        target = project / SETUP_REPORT_NAME
+        written, _ = write_user_reports(project, booley_dir, setup_report_path=target)
+        assert [w.path for w in written] == [target]
+        text = target.read_text(encoding="utf-8")
+        assert "setup entry" in text
+        assert "bug entry" not in text
+        assert not (booley_dir / SETUP_REPORT_NAME).exists()
+        assert not (booley_dir / FEEDBACK_REPORT_NAME).exists()
 
     def test_rerendering_is_stable(self, project, booley_dir):
-        """A second setup run rewrites the same canonical report, not a companion."""
+        """A second render finds the same content and leaves the file alone."""
         _populate(booley_dir)
-        first_path, _ = write_user_report(project, booley_dir)
-        first = first_path.read_text(encoding="utf-8")
-        second_path, _ = write_user_report(project, booley_dir)
-        assert second_path.read_text(encoding="utf-8") == first
+        first, _ = write_user_reports(project, booley_dir)
+        before = first[0].path.read_bytes()
+        second, _ = write_user_reports(project, booley_dir)
+        assert [w.changed for w in first] == [True]
+        assert [w.changed for w in second] == [False]
+        assert second[0].path.read_bytes() == before
+
+    def test_a_changed_setup_entry_rewrites_the_setup_report(self, project, booley_dir):
+        append(Finding(title="first setup entry"), booley_dir)
+        write_user_reports(project, booley_dir)
+        append(Finding(title="second setup entry"), booley_dir)
+        written, _ = write_user_reports(project, booley_dir)
+        assert written[0].changed
+        assert "second setup entry" in written[0].path.read_text(encoding="utf-8")
+
+    def test_shortened_notes_that_quoted_the_report_tail_rewrite_it(self, project, booley_dir):
+        """A note quoting a rendered report must not make a stale file look current."""
+        env = Environment(booley_version="1.0", python_version="3.14", platform="Linux x86_64")
+        quoted = "\n".join(f"| {label} | {value} |" for label, value in env.as_rows())
+        append(Finding(title="quoting note", notes=f"see:\n{quoted}\nand more text"), booley_dir)
+        write_user_reports(project, booley_dir, env=env)
+        from booley.feedback.findings import rewrite
+
+        rewrite(lambda entries: setattr(entries[0], "notes", "short"), booley_dir)
+        written, _ = write_user_reports(project, booley_dir, env=env)
+        assert written[0].changed
+        text = written[0].path.read_text(encoding="utf-8")
+        assert "and more text" not in text
 
 
 class TestExplicitExport:

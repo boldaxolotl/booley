@@ -74,9 +74,9 @@ and only once:
 Log whatever comes back **in their words**, one entry per thought:
 
 ```console
-booley feedback say "the doctor output made the config obvious" --sentiment praise
-booley feedback say "the plan grill took longer than the rest of setup" --sentiment gripe
-booley feedback say "I want a dry-run that fakes the EDA tools" --sentiment wish
+booley feedback say "the doctor output made the config obvious" --origin setup --sentiment praise
+booley feedback say "the plan grill took longer than the rest of setup" --origin setup --sentiment gripe
+booley feedback say "I want a dry-run that fakes the EDA tools" --origin setup --sentiment wish
 ```
 
 Rules: no reproduction is asked for, ever. Do not upgrade a complaint into a bug
@@ -91,19 +91,22 @@ redacted export and shares that file themselves.
 booley feedback report --project-name <name>
 ```
 
-Writes `.booley/SETUP-REPORT.md` — the user's copy, unredacted and never
-published. `booley feedback export` creates the separate redacted view only
+Writes `.booley/SETUP-REPORT.md` from the setup entries — the user's copy,
+unredacted and never published. Entries logged later through `/booley-feedback`
+go to `.booley/FEEDBACK-REPORT.md`, and a report whose content did not change is
+left untouched. `booley feedback export` creates the separate redacted view only
 when the user explicitly asks for a sanitized file.
 
 The report stays inside `.booley/`. **Do not** put it in the RTL repo's
 tracked tree; that is the footprint guardrail. The enclosing maintainer dogfood
 flow may explicitly tell this step to pass `--user-report-path SETUP-REPORT.md`
-for its throwaway clone. That writes the root report instead of an inner copy;
+for its throwaway clone. That writes only the setup report, at the root instead
+of an inner copy;
 on a real project, never pass the flag.
 
 After the renderer finishes, follow SKILL.md's **Delivered Flow results** contract:
-add or replace that single section at the actual returned path (the root report
-when the enclosing dogfood flow selected it), keeping existing Feedback content
+add or replace that single section at the end of the report at the actual returned path (the
+root report when the enclosing dogfood flow selected it), keeping existing Feedback content
 intact. The contract owns the evidence rows and the pre-cleanup snapshot. Repeat
 after any setup-owned render; later independent Feedback renders keep their
 existing contract.
@@ -147,7 +150,8 @@ record it with `booley feedback filed F-3 F-7 --url <destination>` so later
 exports do not repeat those Findings.
 
 Later feedback is not this step's job: `/booley-feedback` handles anything that
-turns up after setup is done, using the same log.
+turns up after setup is done, using the same log, and writes
+`.booley/FEEDBACK-REPORT.md`.
 
 **If they want changes to the redaction** — a module name they'd rather keep, a
 term that got missed — add it to `[feedback] redact_extra` (or set

@@ -6,8 +6,9 @@ Three things separate it from a setup run, and each one is load-bearing:
   Booley wants, so it clears a different evidence bar than a crash does.
 - **Nothing is filed twice.** The log outlives the run. Without the already-filed
   stamp, a bug reported in July re-publishes March's setup findings.
-- **The report knows which flow it came from.** File name and framing follow,
-  because a maintainer triages the two differently.
+- **The reports know which flow they came from.** Setup entries and everything
+  else land in separate local reports, because a maintainer triages the two
+  differently.
 """
 
 from __future__ import annotations
@@ -18,11 +19,11 @@ import pytest
 
 from booley.feedback.findings import Finding, append, read_log
 from booley.feedback.render import (
-    BUG_USER_REPORT_NAME,
-    USER_REPORT_NAME,
+    FEEDBACK_REPORT_NAME,
+    SETUP_REPORT_NAME,
     render_booley_report,
     report_origin,
-    write_user_report,
+    write_user_reports,
 )
 
 PUBLIC_FEEDBACK_DOCS = (
@@ -212,22 +213,22 @@ class TestAlreadyFiled:
             ),
             booley_dir,
         )
-        user_path, _ = write_user_report(project, booley_dir)
-        assert "issues/7" in user_path.read_text(encoding="utf-8")
+        write_user_reports(project, booley_dir)
+        assert "issues/7" in (booley_dir / FEEDBACK_REPORT_NAME).read_text(encoding="utf-8")
 
 
 class TestOrigin:
-    def test_a_bug_only_log_gets_the_neutral_report_name(self, project, booley_dir):
+    def test_a_bug_only_log_writes_only_the_feedback_report(self, project, booley_dir):
         append(_bug(), booley_dir)
-        user_path, _ = write_user_report(project, booley_dir)
-        assert user_path.name == BUG_USER_REPORT_NAME
+        written, _ = write_user_reports(project, booley_dir)
+        assert [w.path.name for w in written] == [FEEDBACK_REPORT_NAME]
+        assert not (booley_dir / SETUP_REPORT_NAME).exists()
 
-    def test_one_setup_entry_keeps_the_setup_report_name(self, project, booley_dir):
-        """The file the user already knows about must not be renamed under them."""
+    def test_a_setup_and_a_bug_entry_write_both_reports(self, project, booley_dir):
         append(_bug(origin="setup"), booley_dir)
         append(_bug(origin="bug"), booley_dir)
-        user_path, _ = write_user_report(project, booley_dir)
-        assert user_path.name == USER_REPORT_NAME
+        written, _ = write_user_reports(project, booley_dir)
+        assert [w.path.name for w in written] == [SETUP_REPORT_NAME, FEEDBACK_REPORT_NAME]
 
     def test_an_empty_log_reads_as_setup(self, booley_dir):
         assert report_origin(read_log(booley_dir)) == "setup"
@@ -335,3 +336,28 @@ class TestDocsEvidence:
         finding = Finding(title="a doc is wrong", bucket="docs", observed="it is wrong")
         assert not finding.is_filable()
         assert finding.missing_evidence() == ["component"]
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        "docs/user/CONFIG.md",
+        "src/booley/data/skills/booley-feedback/SKILL.md",
+        "src/booley/data/skills/booley-setup/steps/6-findings.md",
+    ),
+)
+def test_feedback_report_location_has_no_setup_exception(relative_path):
+    root = Path(__file__).parents[2]
+    text = " ".join((root / relative_path).read_text(encoding="utf-8").split())
+    if relative_path == "docs/user/CONFIG.md":
+        section = text.split("## Feedback", 1)[1].split(" ## ", 1)[0]
+        assert "SETUP-REPORT.md" not in section
+        text = section
+
+    if relative_path.endswith("booley-feedback/SKILL.md"):
+        assert "`FEEDBACK-REPORT.md`" in text
+    else:
+        assert "`.booley/FEEDBACK-REPORT.md`" in text
+        assert "/booley-feedback" in text
+    assert "never ran setup" not in text
+    assert "setup-origin log" not in text

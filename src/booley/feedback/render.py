@@ -1,12 +1,14 @@
 """Render the user report and the optional outbound feedback view.
 
-One findings log serves two audiences without creating two reports by default:
+One findings log serves two audiences without creating two outbound reports by
+default:
 
-- ``SETUP-REPORT.md`` / ``FEEDBACK-REPORT.md`` — for the **user**. What their
-  project got, what is not covered, what they should act on. Always written,
-  never leaves the machine, keeps every detail verbatim. Which of the two names
-  it takes follows the log's origin: a setup run owns ``SETUP-REPORT.md``, and a
-  log that only ever held ad-hoc bug reports gets the neutral name.
+- ``SETUP-REPORT.md`` and ``FEEDBACK-REPORT.md`` — for the **user**. What their
+  project got, what is not covered, what they should act on. Never leave the
+  machine, keep every detail verbatim. Entries logged by a setup run go to
+  ``SETUP-REPORT.md``; everything else (bugs, impressions) goes to
+  ``FEEDBACK-REPORT.md``. A report with no entries is not written, and a report
+  whose content did not change is not rewritten.
 - The outbound feedback view is for **Booley's maintainers**. It contains only
   findings that are Booley's fault, actionable, and not already filed, put
   through :mod:`redact`. ``booley feedback export`` explicitly persists it as
@@ -15,13 +17,15 @@ One findings log serves two audiences without creating two reports by default:
 The user report lives in ``<booley_dir>/`` — inside the Booley Directory, never
 in the RTL repo's tracked tree (the setup footprint guardrail). An explicit
 export lands there by default too. The one exception is the maintainer dogfood
-flow, which asks for the user report at a clone's root.
+flow, which asks for the setup report at a clone's root.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import platform
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,9 +40,10 @@ from booley.feedback.findings import (
 )
 from booley.runtime.timefmt import format_human_date, format_human_datetime_safe
 
-USER_REPORT_NAME = "SETUP-REPORT.md"
-#: The user report's name when nothing in the log came from a setup run.
-BUG_USER_REPORT_NAME = "FEEDBACK-REPORT.md"
+#: The local report of entries logged by a setup run.
+SETUP_REPORT_NAME = "SETUP-REPORT.md"
+#: The local report of every entry that did not come from a setup run.
+FEEDBACK_REPORT_NAME = "FEEDBACK-REPORT.md"
 #: Default name used only by the explicit ``booley feedback export`` command.
 BOOLEY_REPORT_NAME = "BOOLEY-FEEDBACK.md"
 
@@ -55,9 +60,9 @@ MAX_ATTACHMENT_CHARS = 8000
 def report_origin(log: FindingsLog) -> str:
     """Which flow this log belongs to — ``"setup"``, ``"bug"`` or ``"impression"``.
 
-    A single setup-origin entry makes the whole log a setup log: the project's
-    local report was born as ``SETUP-REPORT.md`` and renaming it later, when the
-    user files an unrelated bug, would strand the file they already know about.
+    It frames the exported report's text; it does not name a file. A single
+    setup-origin entry makes the whole log a setup log, and an empty log reads
+    as setup.
 
     ``"impression"`` needs every entry to be one. A log holding one bug and one
     "love the waveform viewer" is a bug log with a nice note in it, and framing
@@ -71,9 +76,19 @@ def report_origin(log: FindingsLog) -> str:
     return "bug"
 
 
-def user_report_name(origin: str) -> str:
-    """File name of the local report for *origin*."""
-    return USER_REPORT_NAME if origin == "setup" else BUG_USER_REPORT_NAME
+def _split_by_origin(log: FindingsLog) -> tuple[FindingsLog, FindingsLog]:
+    """Partition *log* into its setup entries and everything else.
+
+    Both halves keep the log path and the corrupt-line count: an unparseable
+    line cannot be attributed to either report, so each one discloses it.
+    """
+
+    def part(entries: list[Finding]) -> FindingsLog:
+        return FindingsLog(path=log.path, entries=entries, corrupt_lines=log.corrupt_lines)
+
+    setup = [e for e in log.entries if e.origin == "setup"]
+    other = [e for e in log.entries if e.origin != "setup"]
+    return part(setup), part(other)
 
 
 @dataclass
@@ -289,7 +304,7 @@ def render_user_report(
     source = (
         "the log setup appended to as it ran"
         if origin == "setup"
-        else "everything logged against Booley on this project"
+        else "the entries logged outside setup runs"
     )
     out = [
         f"# {title}",
@@ -404,12 +419,16 @@ def render_booley_report(
     """
     env = env or collect_environment()
     plan = plan if plan is not None else redact_mod.build_plan(project_root, booley_dir)
-    origin = origin or report_origin(log)
 
     candidates = [
         f for f in log.findings if f.bucket in ("booley", "docs") and not f.filed.strip()
     ]
     filable = _sorted([f for f in candidates if f.is_filable()])
+    # Frame from what is actually exported: a setup-origin note that never
+    # reaches the export must not make a bug export read as a setup run.
+    origin = origin or report_origin(
+        FindingsLog(path=log.path, entries=filable, corrupt_lines=log.corrupt_lines)
+    )
     withheld = _sorted([f for f in candidates if not f.is_filable()])
 
     all_impressions = bool(filable) and all(f.kind == "impression" for f in filable)
@@ -483,39 +502,79 @@ def render_booley_report(
     )
 
 
-def write_user_report(
+_GENERATED_HEADER = re.compile(r"^Generated .+? from ", re.MULTILINE)
+_DIGEST_LINE = "<!-- booley-report-digest: sha256:{} -->"
+
+
+@dataclass(frozen=True)
+class WrittenReport:
+    """One local report and whether this render rewrote it."""
+
+    path: Path
+    changed: bool
+
+
+def _write_if_changed(path: Path, body: str) -> bool:
+    """Write *body* plus its digest line unless the file already carries it.
+
+    The digest covers the body with its generated date blanked, so re-rendering
+    the same content on another day leaves the file alone, and so does text a
+    skill appended after the digest line. A note cannot spoof the digest of the
+    body that contains it.
+    """
+    stable = _GENERATED_HEADER.sub("Generated  from ", body, count=1)
+    line = _DIGEST_LINE.format(hashlib.sha256(stable.encode("utf-8")).hexdigest())
+    if path.is_file() and line in path.read_text(encoding="utf-8").splitlines():
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{body}\n{line}\n", encoding="utf-8")
+    return True
+
+
+def write_user_reports(
     project_root: Path,
     booley_dir: Path,
     *,
     project_name: str = "",
-    user_report_path: Path | None = None,
+    setup_report_path: Path | None = None,
     env: Environment | None = None,
-) -> tuple[Path, BooleyReport]:
-    """Write the one persistent user report and render outbound feedback in memory.
+) -> tuple[list[WrittenReport], BooleyReport]:
+    """Write the persistent local reports and render outbound feedback in memory.
 
-    Returns the user-report path and the transient :class:`BooleyReport` used by
-    the CLI to explain what is filable. No redacted companion file is written.
+    Setup entries go to ``SETUP-REPORT.md``, every other entry to
+    ``FEEDBACK-REPORT.md``. A report with no entries is not written, and one
+    whose content is unchanged is left untouched. Returns the reports the log
+    called for and the transient :class:`BooleyReport` the CLI uses to explain
+    what is filable. No redacted companion file is written.
 
     Args:
-        user_report_path: Override for the user report's location. The dogfood
-            flow points this at a throwaway clone's root; a real project must
-            leave it alone so the report stays out of the tracked tree.
+        setup_report_path: Override for the setup report's location; with it
+            only the setup report is written. The dogfood flow points this at a
+            throwaway clone's root; a real project must leave it alone so the
+            report stays out of the tracked tree.
     """
     log = read_log(booley_dir)
     env = env or collect_environment()
-    origin = report_origin(log)
 
     # Build the redacted report first: a malformed redaction knob raises here,
     # before any file is written, so a refused command leaves no new file behind.
-    report = render_booley_report(log, project_root, booley_dir=booley_dir, env=env, origin=origin)
+    report = render_booley_report(log, project_root, booley_dir=booley_dir, env=env)
 
-    user_path = user_report_path or (booley_dir / user_report_name(origin))
-    user_path.parent.mkdir(parents=True, exist_ok=True)
-    user_path.write_text(
-        render_user_report(log, project_name=project_name, env=env, origin=origin),
-        encoding="utf-8",
-    )
-    return user_path, report
+    setup_log, feedback_log = _split_by_origin(log)
+    targets = [(setup_log, setup_report_path or booley_dir / SETUP_REPORT_NAME, "setup")]
+    if setup_report_path is None:
+        targets.append((feedback_log, booley_dir / FEEDBACK_REPORT_NAME, "bug"))
+    written = [
+        WrittenReport(
+            path,
+            _write_if_changed(
+                path, render_user_report(part, project_name=project_name, env=env, origin=origin)
+            ),
+        )
+        for part, path, origin in targets
+        if part.entries
+    ]
+    return written, report
 
 
 def export_booley_report(report: BooleyReport, output_path: Path) -> Path:

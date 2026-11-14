@@ -373,8 +373,7 @@ hook that changes a tracked file makes the baseline unavailable.
 ## Feedback (`[feedback]`)
 
 `/booley-feedback` records bugs, confusion, and opinions in a local report,
-`.booley/SETUP-REPORT.md` (`FEEDBACK-REPORT.md` on a Project that never ran
-setup). Booley never sends feedback anywhere. When you ask the skill for a copy
+`.booley/FEEDBACK-REPORT.md`. Booley never sends feedback anywhere. When you ask the skill for a copy
 to share, it writes `.booley/BOOLEY-FEEDBACK.md` with your Project's details
 replaced; read it before you send it. How to report: [When Booley itself
 misbehaves](USAGE.md#when-booley-itself-misbehaves).
