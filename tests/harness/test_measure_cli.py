@@ -380,18 +380,14 @@ def test_an_unreadable_metrics_file_is_refused(
     assert "metrics.toml cannot be read: denied" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize(
-    "option", [["abc"], ["--base", "x"], ["--all"], ["--json"], ["--again"], ["--target", "x"]]
-)
 def test_validate_takes_no_other_option(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    option: list[str],
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     write_metrics_project(tmp_path, EXAMPLE_METRICS)
-    assert _measure(monkeypatch, tmp_path, "--validate", *option) == 2
-    assert "takes no other option" in capsys.readouterr().err
+    options = [["abc"], ["--base", "x"], ["--all"], ["--json"], ["--again"], ["--target", "x"]]
+    for option in options:
+        assert _measure(monkeypatch, tmp_path, "--validate", *option) == 2, option
+        assert "takes no other option" in capsys.readouterr().err
 
 
 def test_measure_inside_another_job_gets_its_own_record(
@@ -899,18 +895,23 @@ def test_a_target_without_a_table_exits_two_and_runs_nothing(
     assert (job_record(project).status, job_record(project).exit_code) == ("failed", 2)
 
 
-@pytest.mark.parametrize("name", ["nope", "shared"])
 def test_an_unknown_or_ambiguous_target_is_refused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], name: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     project = committed_project(tmp_path, ONE_LINT_TABLE)
     steps = script_children(monkeypatch, lambda *_: pytest.fail("no child may run"))
 
-    assert run_command(monkeypatch, project, "--target", name) == 2
-
-    assert name in capsys.readouterr().err
+    for name in ("nope", "shared"):
+        assert run_command(monkeypatch, project, "--target", name) == 2, name
+        assert name in capsys.readouterr().err
     assert steps == []
-    assert (job_record(project).status, job_record(project).exit_code) == ("failed", 2)
+    assert {
+        r.exit_code
+        for r in job_records.list_records(
+            standalone_jobs_dir(project / ".booley"), skip_malformed=True
+        )
+        if r.endpoint == "measure"
+    } == {2}
 
 
 def test_a_target_run_measures_only_its_tables(
@@ -932,16 +933,23 @@ def test_a_target_run_measures_only_its_tables(
     assert [t["identity"].split("#")[1] for t in tables] == ["sim_two"]
 
 
-@pytest.mark.parametrize(("warnings", "code"), [(3, 1), (None, 2)], ids=["unmet", "error"])
 def test_a_target_run_exits_like_a_full_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, warnings: int | None, code: int
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = committed_project(tmp_path, TWO_TABLES)
-    script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [warnings]))
+    for warnings, code in ((3, 1), (None, 2)):
+        script_children(monkeypatch, lambda tables, _c, w=warnings: outcome_of(tables, [w]))
 
-    assert run_command(monkeypatch, project, "--target", "sim_core") == code
+        assert run_command(monkeypatch, project, "--target", "sim_core") == code
 
-    assert job_record(project).exit_code == code
+    exits = [
+        r.exit_code
+        for r in job_records.list_records(
+            standalone_jobs_dir(project / ".booley"), skip_malformed=True
+        )
+        if r.endpoint == "measure"
+    ]
+    assert sorted(exits) == [1, 2]
     assert stored_runs(project) == []
 
 
