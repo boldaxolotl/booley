@@ -173,7 +173,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--points", type=int, required=True)
     parser.add_argument("--samples", type=int, default=3)
-    parser.add_argument("--campaign", type=Path)
+    parser.add_argument("--campaign", dest="coverage_record", type=Path)
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--sample-process", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
