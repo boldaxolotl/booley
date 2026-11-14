@@ -358,31 +358,23 @@ def test_dry_run_prints_digest_and_writes_nothing(
     assert "### #3 Change 3" in out
 
 
-@pytest.mark.parametrize("failure", ["listing", "digest", "classifier", "label", "post"])
 def test_failure_opens_no_issue_and_exits_1(
-    failure: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    issues = [_issue(7, "CLOSED", "no marker here")] if failure == "digest" else []
-    gh = FakeGh(
-        prs=[[_pr(3, "2026-11-12T08:00:00Z")]],
-        issues=issues,
-        fail_on={"listing": "pullRequests", "label": "label create", "post": "--method"}.get(
-            failure
-        ),
-    )
-
     def broken(sha: str) -> dict[str, object]:
         raise ClassifierError("git diff failed")
 
-    classifier = broken if failure == "classifier" else _DEFAULT
-    assert _main(gh, monkeypatch, classifier=classifier) == 1
-    err = capsys.readouterr().err
-    assert err.startswith("docs_postreview_digest: ")
-    posts = [args for args, _ in gh.writes if args[0] == "api"]
-    if failure == "post":
-        assert len(posts) == 1
-    else:
-        assert posts == []
+    for failure in ("listing", "digest", "classifier", "label", "post"):
+        issues = [_issue(7, "CLOSED", "no marker here")] if failure == "digest" else []
+        fail_on = {"listing": "pullRequests", "label": "label create", "post": "--method"}
+        gh = FakeGh(
+            prs=[[_pr(3, "2026-11-12T08:00:00Z")]], issues=issues, fail_on=fail_on.get(failure)
+        )
+        classifier = broken if failure == "classifier" else _DEFAULT
+        assert _main(gh, monkeypatch, classifier=classifier) == 1, failure
+        assert capsys.readouterr().err.startswith("docs_postreview_digest: "), failure
+        posts = [args for args, _ in gh.writes if args[0] == "api"]
+        assert len(posts) == (1 if failure == "post" else 0), failure
 
 
 def test_classifier_failure_names_the_pull_request(
