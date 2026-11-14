@@ -86,12 +86,13 @@ booley worktree gc                # remove idle worktrees (default: a week), whe
 `booley measure [<sha>]` measures one commit (`HEAD` by default, never
 uncommitted work) in a clean checkout, one child Flow per `metrics.toml` table,
 stores the Measurement Run and prints the report. A commit that is already
-Measured is not measured again: the command prints its stored run, starts no
-Flow and exits with status 0; `--again` measures it again and stores a second
-run. A commit whose latest run is unmet, errored, stopped or cancelled is
-measured again without `--again`. When it measures `HEAD`, it notes on stderr
-any uncommitted change to a tracked file and any submodule whose working tree
-differs from the commit's pin, because neither is measured. It exits with status 0 when
+Measured (its latest run met every enforced bound) is not measured again: the
+command prints that run, starts no Flow and exits with status 0; `--again`
+measures it again and stores a second run. A commit whose latest run is unmet,
+errored, stopped or cancelled is measured again without `--again`. When it
+measures `HEAD`, it notes on stderr any uncommitted change to a tracked file
+and any submodule whose working tree differs from the commit's pin, because
+neither is measured. It exits with status 0 when
 every enforced bound is met, 1 when one is unmet, and 2 when a Flow errored,
 when `metrics.toml` declares no table, or when the measurement could not run
 (both unmet and errored: 2). Without `--all`, the first unmet or errored table
