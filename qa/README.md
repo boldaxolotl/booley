@@ -27,7 +27,7 @@ step never hides the bugs behind it.
 | [uart](missions/uart/MISSION.md) | Clean-room UART from the OpenTitan documentation with an independent evaluator; also crash resume, simulation grading and Project discovery |
 | [coverage](missions/coverage/MISSION.md) | Native coverage on a fixed fixture Project with known counts: collection, arithmetic, policy, waivers, storage, retention, a coverage Goal, the Coverage Analyst |
 | [mutation](missions/mutation/MISSION.md) | Mutation Flow on a fixture Project with a hand-written list of every Mutant: sites and decoys, determinism, selection, scoring, hangs, bad input, removed surface |
-| [scheduler](missions/scheduler/MISSION.md) | Memory-budget Job scheduling on the Caliptra demo Project plus a memory-hog Custom Flow: estimates, queueing and its reasons, jump-ahead, shrinking reservations, real OOM kills and the single requeue, Simulation Record items, thread counts, Vivado Seat Caps, retired Job Slots keys |
+| [scheduler](missions/scheduler/MISSION.md) | Memory-budget Job scheduling on the Caliptra demo Project plus a memory-hog Custom Flow: estimates, queueing and its reasons, jump-ahead, shrinking reservations, real OOM kills and the single requeue, Simulation Record items, thread counts, Vivado Seat Caps, retired `[jobs]` keys |
 | [gui](missions/gui/MISSION.md) | Browser Codespace on the picorv32 demo with a candidate image: onboarding, Dashboard under a live Goal, B-Wave scoped views, stop and resume, terminal output, Review Package, themes, docs site, all checked against the CLI |
 
 Each mission's primary areas fit an 8-hour budget (`gui`: 4 hours) and run in

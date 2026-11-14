@@ -46,7 +46,7 @@ optional is not covered by a primary run.
 | Out-of-memory requeue | [scheduler/sched-oom](missions/scheduler/MISSION.md) |
 | Seat Caps | [scheduler/sched-seats](missions/scheduler/MISSION.md) |
 | Build thread counts | [scheduler/sched-threads](missions/scheduler/MISSION.md) |
-| Retired Job Slots keys | [scheduler/sched-cutover](missions/scheduler/MISSION.md) |
+| Retired `[jobs]` keys | [scheduler/sched-cutover](missions/scheduler/MISSION.md) |
 | Public capability discovery | [coverage/cov-collect](missions/coverage/MISSION.md), [taxi/interactive](missions/taxi/MISSION.md), [uart/interactive-surface](missions/uart/MISSION.md) |
 | Simulation Flow | [gui/setup](missions/gui/MISSION.md), [picorv32/baseline](missions/picorv32/MISSION.md), [taxi/baseline](missions/taxi/MISSION.md), [taxi/final-regression](missions/taxi/MISSION.md), [taxi/goal-repair](missions/taxi/MISSION.md), [uart/evaluate](missions/uart/MISSION.md), [uart/final-regression](missions/uart/MISSION.md), [uart/sim-protocol](missions/uart/MISSION.md) (optional) |
 | Simulation Campaign | [coverage/cov-retention](missions/coverage/MISSION.md), [scheduler/sched-records](missions/scheduler/MISSION.md), [taxi/campaign](missions/taxi/MISSION.md), [uart/sim-campaign](missions/uart/MISSION.md) |
