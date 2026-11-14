@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib import metadata
 from itertools import zip_longest
 from pathlib import Path, PurePosixPath
@@ -87,7 +87,7 @@ class TargetDesign:
     # The build's include directories in Target order, and the macros its simulator defines
     # itself: the elaboration sees the headers and `ifdef` branches the build sees.
     include_dirs: tuple[str, ...] = ()
-    builtin_defines: Mapping[str, str] = MappingProxyType({})
+    builtin_defines: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
 
 
 def generate_mutants(
