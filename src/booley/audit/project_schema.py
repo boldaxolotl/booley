@@ -392,22 +392,22 @@ def audit_worktree_table(data: Mapping[str, Any]) -> ConfigTableAudit:
         require_dict(data.get("worktree", {}), field="[worktree]")
     except ValueError as exc:
         return failure(f"booley.toml {exc}", "make [worktree] a table")
-    findings: list[Any] = []
+    findings: list[ConfigFinding] = []
     try:
         parse_gc_older_than(data)
     except ValueError as exc:
-        findings.extend(
-            failure(
+        findings.append(
+            fail_finding(
                 f"booley.toml {exc}", 'set [worktree].gc_older_than to an age such as "7d"'
-            ).findings
+            )
         )
     try:
         parse_chat_mode(data)
     except ValueError as exc:
-        findings.extend(
-            failure(
+        findings.append(
+            fail_finding(
                 f"booley.toml {exc}", 'set [worktree].chat to "auto", "always" or "never"'
-            ).findings
+            )
         )
     return ConfigTableAudit(tuple(findings))
 
