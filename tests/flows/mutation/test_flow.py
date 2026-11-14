@@ -29,6 +29,7 @@ from booley.flows.endpoint_events import _display_safe_event, _endpoint_end_even
 from booley.flows.mutation.flow import (
     MutationFlow,
     MutationResult,
+    MutationRunPlan,
     MutationSpec,
     MutationSummary,
     MutationTestRun,
@@ -569,6 +570,7 @@ def _fake_inspection(work_dir) -> SimpleNamespace:
     )
     return SimpleNamespace(
         parameters=dict(_TARGET_PARAMETERS),
+        toplevel="",
         rtl_files=tuple(paths),
         inputs=tuple(
             TargetInput(path, "acme:test:fixture:1", "systemVerilogSource", (), False, {})
@@ -1879,10 +1881,15 @@ def test_identity_is_in_results_and_criterion_detail(tmp_path: Path, monkeypatch
         "seed": 5,
         "count": 2,
         "verilator_version": _VERILATOR_VERSION,  # a Verilator Target records its version
+        "elaboration": "per-file",  # the scope file alone does not elaborate: undeclared names
     }
     criterion = endpoint.state.criteria[result.criterion_key].detail
     manifest = json.loads((tmp_path / result.detail["artifacts"]["manifest"]).read_text("utf-8"))
-    assert result.detail["identity"] == criterion["identity"] == manifest["identity"] == expected
+    identity = dict(result.detail["identity"])
+    reason = identity.pop("elaboration_fallback")
+    assert reason.startswith(f"{_SCOPE}:")
+    assert identity == expected
+    assert criterion["identity"] == manifest["identity"] == result.detail["identity"]
     markdown = _results_markdown(tmp_path, result)
     for line in (
         "- Seed: 5",
@@ -1890,6 +1897,7 @@ def test_identity_is_in_results_and_criterion_detail(tmp_path: Path, monkeypatch
         f"- pyslang version: {expected['pyslang_version']}",
         f"- Verilator version: {_VERILATOR_VERSION}",
         f"`{_SCOPE}`: {digest}",
+        f"- Elaboration: per file ({reason})",
     ):
         assert line in markdown
     # An explicit count is shown as the bare number and adds no auto fields.
@@ -1899,6 +1907,32 @@ def test_identity_is_in_results_and_criterion_detail(tmp_path: Path, monkeypatch
         f"seed 5, count 2, generator {GENERATOR_VERSION}, "
         f"pyslang {expected['pyslang_version']}, {_VERILATOR_VERSION})"
     ) in result.report_text
+    assert (
+        f"[mutation_test] Target elaboration failed, Mutants generated per file: {reason}"
+    ) in result.report_text.splitlines()[1]
+
+
+def test_generation_reports_the_per_file_fallback(tmp_path: Path, monkeypatch) -> None:
+    """A Target that does not elaborate as a whole says so in the progress and the report."""
+    progress: list[str] = []
+    monkeypatch.setattr(MutationFlow, "emit_progress", lambda _self, line: progress.append(line))
+
+    _, result, _ = _campaign(tmp_path, monkeypatch, count=2, min_detected=0)
+
+    reason = result.detail["identity"]["elaboration_fallback"]
+    assert result.detail["identity"]["elaboration"] == "per-file"
+    assert f"Mutant generation: per-file elaboration ({reason})" in progress
+    assert f"- Elaboration: per file ({reason})" in _results_markdown(tmp_path, result)
+
+
+def test_generation_without_an_inspectable_target_falls_back(tmp_path: Path, monkeypatch) -> None:
+    _prepare_scope_files(tmp_path, [_SCOPE])
+    endpoint = _make_endpoint(tmp_path, monkeypatch, scope=_SCOPE, count=2)
+    monkeypatch.setattr(MutationFlow, "_inspect_target", lambda _self: None)
+
+    generated = endpoint._generate(_run_plan(tmp_path))
+
+    assert generated.identity["elaboration_fallback"] == "the Target cannot be inspected"
 
 
 _AUTO_COUNT_LABEL = "auto -> 3 (formula 6, budget cap 3)"
@@ -3061,3 +3095,71 @@ def test_mutant_whose_build_lacks_the_verilator_layout_is_still_simulated(
     assert result.exit_code == EXIT_SUCCESS, result.report_text
     assert fake.runs == [None, 1, 2, 3, 4]  # nothing matches the baseline: all are simulated
     assert result.detail["equivalent_dropped"] == []
+
+
+_ELABORATION_CORE = """CAPI=2:
+name: ::demo:0
+filesets:
+  rtl:
+    files: [rtl/leaf.sv]
+    file_type: systemVerilogSource
+  tb:
+    files: [tb/tb_top.sv]
+    file_type: systemVerilogSource
+    tags: [tb]
+parameters:
+  W: {datatype: int, paramtype: vlogparam, default: 8}
+  NAME: {datatype: str, paramtype: vlogparam, default: hi}
+targets:
+  sim:
+    default_tool: verilator
+    flow: sim
+    flow_options: {tool: verilator}
+    filesets: [rtl, tb]
+    toplevel: tb_top
+    parameters: [W, NAME]
+"""
+
+
+def _run_plan(tmp_path: Path, scope: tuple[str, ...] = (_SCOPE,)) -> MutationRunPlan:
+    """A plan that generates every candidate Mutant of ``scope``."""
+    return MutationRunPlan(
+        scope_files=list(scope),
+        scope_hashes={},
+        work_dir=tmp_path,
+        target="sim",
+        tb_top="tb_top",
+        report_dir=None,
+        min_detected=0,
+        count=1000,
+        auto_mode=False,
+        formula_count=0,
+        source_size_budget=None,
+        seed=1,
+    )
+
+
+def test_generation_elaborates_the_target_with_its_parameters(tmp_path: Path, monkeypatch) -> None:
+    """The testbench's default width is 1; the Target's `vlogparam` makes it 8, which allows `2`."""
+    (tmp_path / "design.core").write_text(_ELABORATION_CORE, encoding="utf-8")
+    for rel, text in {
+        "rtl/leaf.sv": (
+            "module leaf #(parameter W = 1) (input [W-1:0] a, output [W-1:0] c);\n"
+            "  assign c = 1;\nendmodule\n"
+        ),
+        "tb/tb_top.sv": (
+            'module tb_top #(parameter int W = 1, parameter string NAME = "no") ();\n'
+            "  logic [W-1:0] a, c;\n"
+            "  leaf #(.W(W)) u (a, c);\nendmodule\n"
+        ),
+    }.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text, encoding="utf-8")
+    _write_tests_toml(tmp_path, '[sim]\ntests = ["smoke"]\n')
+    endpoint = _make_endpoint(tmp_path, monkeypatch, target="sim", scope="rtl/leaf.sv")
+
+    generated = endpoint._generate(_run_plan(tmp_path, ("rtl/leaf.sv",)))
+
+    assert generated.identity["elaboration"] == "target"
+    assert "elaboration_fallback" not in generated.identity
+    assert ("1", "2") in {(m.original_code, m.mutated_code) for m in generated.ranked}

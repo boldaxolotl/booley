@@ -1630,3 +1630,261 @@ def test_program_instance_and_ampersand_condition_edges(tmp_path: Path) -> None:
     lines = {line for line, _ in _edited_lines(tmp_path, name, selection, "arithmetic-logical")}
     assert 4 not in lines
     assert 7 in lines
+
+
+# #4009: facts from the Target's elaboration, with the per-file rules as the fallback.
+
+_LEAF = (
+    "module leaf #(parameter W = {default}) (input [W-1:0] a, b, output [W-1:0] s, c);\n"
+    "  assign s = a + b;\n"
+    "  assign c = 1;\n"
+    "endmodule\n"
+)
+
+
+def _top_of(widths: tuple[int, ...]) -> str:
+    """A top module that instantiates ``leaf`` once per width in ``widths``."""
+    lines = ["module top();"]
+    for index, width in enumerate(widths):
+        lines += [
+            f"  logic [{width - 1}:0] a{index}, b{index}, s{index}, c{index};",
+            f"  leaf #(.W({width})) u{index} (a{index}, b{index}, s{index}, c{index});",
+        ]
+    return "\n".join([*lines, "endmodule\n"])
+
+
+def _design(
+    *files: str, top: tuple[str, ...] = ("top",), parameters: dict[str, str] | None = None
+) -> Any:
+    """A ``TargetDesign`` of ``files`` in Target order."""
+    design = importlib.import_module(_GENERATOR).TargetDesign
+    return design(top=top, files=files, parameters=parameters or {})
+
+
+def _leaf_selection(
+    tmp_path: Path, widths: tuple[int, ...], *, default: int = 8, design: bool = True
+) -> MutantSelection:
+    """Mutants of ``leaf.sv`` (scope) whose Target instantiates it once per width."""
+    _write(tmp_path, "leaf.sv", _LEAF.format(default=default))
+    _write(tmp_path, "top.sv", _top_of(widths))
+    chosen = _design("top.sv", "leaf.sv") if design else None
+    return generate_mutants(tmp_path, ["leaf.sv"], _ALL, 1, design=chosen)
+
+
+def _leaf_facts(selection: MutantSelection) -> tuple[bool, bool]:
+    """Whether the `+`/`-` swap and the plus-one of `c = 1` are among the Mutants."""
+    swap = any(m.original_code == "+" and m.mutated_code == "-" for m in selection.mutants)
+    plus_one = any(m.original_code == "1" and m.mutated_code == "2" for m in selection.mutants)
+    return swap, plus_one
+
+
+def test_target_elaboration_keeps_width_mutants_valid_in_every_instance(tmp_path: Path) -> None:
+    """A swap is dropped only if equal in every instance; a plus-one must fit the narrowest."""
+    # Instances at W=1 and W=8: the sum differs at 8 bits (swap kept) but `2` does not fit
+    # the 1-bit `c` (plus-one dropped).  The default W=8 alone would keep both.
+    assert _leaf_facts(_leaf_selection(tmp_path, (1, 8))) == (True, False)
+    # Two 1-bit instances: the sum is equal at one bit, so its swap is dropped too.
+    assert _leaf_facts(_leaf_selection(tmp_path, (1, 1))) == (False, False)
+    assert _leaf_facts(_leaf_selection(tmp_path, (8, 8))) == (True, True)
+    assert _leaf_facts(_leaf_selection(tmp_path, (1, 8), design=False)) == (True, True)
+
+
+def test_target_elaboration_uses_the_only_instances_override(tmp_path: Path) -> None:
+    """The only instance's width decides, not the parameter's default."""
+    assert _leaf_facts(_leaf_selection(tmp_path, (8,), default=1)) == (True, True)
+    assert _leaf_facts(_leaf_selection(tmp_path, (1,), default=8)) == (False, False)
+    # Per file, the default decides the plus-one: the opposite of both.  The unit has a
+    # parameter, so its swap is kept whatever the width.
+    assert _leaf_facts(_leaf_selection(tmp_path, (8,), default=1, design=False)) == (True, False)
+    assert _leaf_facts(_leaf_selection(tmp_path, (1,), default=8, design=False)) == (True, True)
+
+
+def test_target_elaboration_uses_the_top_parameters(tmp_path: Path) -> None:
+    """A parameter override of the top module reaches the instances below it."""
+    _write(tmp_path, "leaf.sv", _LEAF.format(default=1))
+    _write(
+        tmp_path,
+        "top.sv",
+        "module top #(parameter int N = 1) ();\n"
+        "  logic [N-1:0] a, b, s, c;\n"
+        "  leaf #(.W(N)) u (a, b, s, c);\n"
+        "endmodule\n",
+    )
+    names = ("top.sv", "leaf.sv")
+    plain = generate_mutants(tmp_path, ["leaf.sv"], _ALL, 1, design=_design(*names))
+    wide = generate_mutants(
+        tmp_path, ["leaf.sv"], _ALL, 1, design=_design(*names, parameters={"N": "8"})
+    )
+
+    assert _leaf_facts(plain) == (False, False)
+    assert _leaf_facts(wide) == (True, True)
+
+
+def test_target_elaboration_keeps_macros_of_earlier_files(tmp_path: Path) -> None:
+    """A macro a Target file defines before the scope file selects the scope file's branch."""
+    _write(tmp_path, "defs.sv", "`define WIDE\n")
+    _write(
+        tmp_path,
+        "leaf.sv",
+        "module leaf (output [7:0] c);\n"
+        "`ifdef WIDE\n  localparam W = 8;\n`else\n  localparam W = 1;\n`endif\n"
+        "  logic [W-1:0] w;\n  assign w = 1;\n  assign c = w;\nendmodule\n",
+    )
+    _write(tmp_path, "top.sv", "module top(); logic [7:0] c; leaf u(c); endmodule\n")
+    design = _design("defs.sv", "leaf.sv", "top.sv")
+
+    elaborated = generate_mutants(tmp_path, ["leaf.sv"], _ALL, 1, design=design)
+
+    assert elaborated.fallback is None
+    assert _leaf_facts(elaborated)[1]
+    assert not _leaf_facts(generate_mutants(tmp_path, ["leaf.sv"], _ALL, 1))[1]
+
+
+def test_target_elaboration_drops_equal_swaps_in_overridable_units(tmp_path: Path) -> None:
+    """An instantiated unit with a parameter or interface port trusts the Target's facts."""
+    unit = "module m #(parameter int W = 4) (input [3:0] x, output [3:0] y, bus_if.mp i);\n"
+    _write(tmp_path, "m.sv", unit + "  assign y = x + 4'd8;\nendmodule\n")
+    _write(
+        tmp_path, "top.sv", "module top(); logic [3:0] x, y; bus_if b(); m u(x, y, b); endmodule\n"
+    )
+    _write(
+        tmp_path, "bus.sv", "interface bus_if; logic clk; modport mp(input clk); endinterface\n"
+    )
+    used = _design("bus.sv", "m.sv", "top.sv")
+    unused = _design("bus.sv", "m.sv", "other.sv", top=("other",))
+    _write(tmp_path, "other.sv", "module other(); endmodule\n")
+
+    def swaps(design: Any) -> int:
+        selection = generate_mutants(tmp_path, ["m.sv"], _ALL, 1, design=design)
+        assert selection.fallback is None
+        return sum(m.original_code == "+" for m in selection.mutants)
+
+    assert swaps(used) == 0  # equal at 4 bits in the only instance
+    assert swaps(unused) == 1  # never instantiated: today's rule keeps it
+    assert _add_subtract_swaps(
+        tmp_path, "alone.sv", unit + "  assign y = x + 4'd8;\nendmodule\n"
+    ) == ["+"]
+
+
+def test_target_elaboration_resolves_types_of_other_files(tmp_path: Path) -> None:
+    """An enum or a signed type declared in another Target file is known to the scope file."""
+    _write(
+        tmp_path,
+        "pkg.sv",
+        "package pkg;\n  typedef enum logic [1:0] {IDLE, BUSY, DONE} state_t;\n"
+        "  typedef logic signed [7:0] sbyte_t;\nendpackage\n",
+    )
+    _write(
+        tmp_path,
+        "use.sv",
+        "module use_pkg(input pkg::sbyte_t s, output pkg::state_t st, output pkg::sbyte_t o);\n"
+        "  assign st = pkg::IDLE;\n  assign o = s >>> 1;\nendmodule\n",
+    )
+    design = _design("pkg.sv", "use.sv", top=("use_pkg",))
+
+    elaborated = generate_mutants(tmp_path, ["use.sv"], _ALL, 1, design=design)
+    alone = generate_mutants(tmp_path, ["use.sv"], _ALL, 1)
+
+    def kinds(selection: MutantSelection) -> set[tuple[str, str]]:
+        return {(m.original_code, m.mutated_code) for m in selection.mutants}
+
+    assert elaborated.fallback is None
+    assert {("IDLE", "BUSY"), ("IDLE", "DONE")} <= kinds(elaborated)  # the enum wraps around
+    assert not {("IDLE", "BUSY"), ("IDLE", "DONE")} & kinds(alone)
+    assert (">>>", ">>") in kinds(elaborated)  # the signed type is known
+    assert (">>>", ">>") not in kinds(alone)
+
+
+@pytest.mark.parametrize(
+    ("cause", "fragment"),
+    [
+        ("unknown-module", "vendor_pll"),
+        ("context-parse-error", "broken.sv"),
+        ("missing-top", "nowhere"),
+        ("missing-context-file", "absent.sv"),
+    ],
+    ids=["unknown-module", "context-parse-error", "missing-top", "missing-context-file"],
+)
+def test_unelaborable_target_falls_back_to_per_file_rules(
+    tmp_path: Path, cause: str, fragment: str
+) -> None:
+    """Whatever stops the Target's elaboration, the per-file Mutants come out, with the reason."""
+    _write(tmp_path, "leaf.sv", _LEAF.format(default=8))
+    _write(tmp_path, "broken.sv", "module broken(;\nendmodule\n")
+    top = {
+        "unknown-module": "module top(); vendor_pll pll(); endmodule\n",
+        "context-parse-error": "module top(); endmodule\n",
+        "missing-top": "module top(); endmodule\n",
+        "missing-context-file": "module top(); endmodule\n",
+    }[cause]
+    _write(tmp_path, "top.sv", top)
+    files = {
+        "context-parse-error": ("broken.sv", "leaf.sv", "top.sv"),
+        "missing-context-file": ("absent.sv", "leaf.sv", "top.sv"),
+    }.get(cause, ("leaf.sv", "top.sv"))
+    design = _design(*files, top=("nowhere",) if cause == "missing-top" else ("top",))
+
+    fallen = generate_mutants(tmp_path, ["leaf.sv"], _ALL, 1, design=design)
+    alone = generate_mutants(tmp_path, ["leaf.sv"], _ALL, 1)
+
+    assert fallen.fallback is not None
+    assert fragment in fallen.fallback
+    assert "\n" not in fallen.fallback
+    assert [m.id for m in fallen.ranked] == [m.id for m in alone.ranked]
+    assert alone.fallback is None
+
+
+def test_unelaborable_target_reports_how_many_more_errors(tmp_path: Path) -> None:
+    _write(tmp_path, "leaf.sv", _LEAF.format(default=8))
+    _write(tmp_path, "top.sv", "module top(); vendor_a a(); vendor_b b(); endmodule\n")
+
+    selection = generate_mutants(
+        tmp_path, ["leaf.sv"], _ALL, 1, design=_design("leaf.sv", "top.sv")
+    )
+
+    assert selection.fallback is not None
+    assert selection.fallback.startswith("top.sv:1: unknown module 'vendor_a'")
+    assert selection.fallback.endswith(" and 1 more")
+
+
+def test_unelaborable_target_still_rejects_a_scope_file_that_does_not_parse(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "leaf.sv", "module leaf(;\nendmodule\n")
+    _write(tmp_path, "top.sv", "module top(); endmodule\n")
+
+    with pytest.raises(_error("SourceParseError")) as raised:
+        generate_mutants(tmp_path, ["leaf.sv"], _ALL, 1, design=_design("leaf.sv", "top.sv"))
+
+    assert [name for name, _ in raised.value.failures] == ["leaf.sv"]
+
+
+def test_target_elaboration_adds_a_scope_file_the_target_does_not_list(tmp_path: Path) -> None:
+    """A scope file outside the Target's file list still gets its Mutants."""
+    _write(tmp_path, "leaf.sv", _LEAF.format(default=8))
+    _write(tmp_path, "top.sv", "module top(); endmodule\n")
+
+    selection = generate_mutants(
+        tmp_path, ["leaf.sv"], _ALL, 1, design=_design("top.sv"), include_dirs=()
+    )
+
+    assert selection.fallback is None
+    assert _leaf_facts(selection) == (True, True)  # `leaf` is a top of its own: defaults
+
+
+def test_target_elaboration_keeps_ids_of_unchanged_candidates(tmp_path: Path) -> None:
+    """Both modes give a candidate both find the same ID; only width-dependent ones differ."""
+    generator = importlib.import_module(_GENERATOR)
+    assert generator.GENERATOR_VERSION == "7"
+    elaborated = _leaf_selection(tmp_path, (1, 8))
+    alone = _leaf_selection(tmp_path, (1, 8), design=False)
+
+    def described(selection: MutantSelection) -> dict[str, tuple[int, str, str]]:
+        return {m.id: (m.line, m.original_code, m.mutated_code) for m in selection.ranked}
+
+    common = described(elaborated).keys() & described(alone).keys()
+    assert common
+    assert {described(elaborated)[i] for i in common} == {described(alone)[i] for i in common}
+    only_alone = {described(alone)[i] for i in described(alone).keys() - common}
+    assert only_alone == {(3, "1", "2")}  # the plus-one that does not fit the 1-bit instance
+    assert described(elaborated).keys() <= described(alone).keys()

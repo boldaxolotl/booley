@@ -271,3 +271,33 @@ Unlike the `+`/`-` swap filter, a unit that another file may elaborate with othe
 parameters is trusted here with its default elaboration. An override that narrows
 the width can give a Mutant that repeats another variant there, or one that fails to
 build and counts as `invalid`. The generator version is 6.
+
+## Amendments (2026-11-14, #4009)
+
+**Facts from the Target's elaboration.** The generator elaborated each scope file
+alone, so a module's parameters were its defaults and another file's modules, types and
+enums were unknown. It now elaborates the whole Target as one compilation unit: every
+HDL file in Target order (the testbench's too, as context that is never mutated), with
+the Target's top modules and `vlogparam` overrides, so a macro one file defines reaches
+the next as in the build. The facts it reads (literal select bounds, signed right
+shifts, enum members, equal `+`/`-` swaps, unsized literal widths) come from that
+elaboration. Aggregation over several instances is unchanged: a swap is dropped only
+when it is equal in every instance, and a plus-one must fit the narrowest instance.
+
+**The parameter and interface guard.** `_overridable` keeps a `+`/`-` swap in a unit
+with a parameter, an interface port or a named-type port because another file might
+elaborate it differently. A unit the Target instantiates now trusts the Target's facts.
+A unit the Target never instantiates (slang does not bind its body) is elaborated
+alone as a top with default parameters, and keeps the guard. This supersedes "The file
+is elaborated alone, so ..." in the generator filter and "Unlike the `+`/`-` swap
+filter, a unit that another file may elaborate ..." in the #3934 amendment.
+
+**Fallback.** A context file that cannot be read, a parser error, any error diagnostic
+of the compilation, or a Target that cannot be inspected makes the Target not
+elaborable as a whole. Each scope file then goes through the per-file rules, and the
+run says why: the identity records `elaboration` as `target`, or `per-file` with
+`elaboration_fallback`, and the report, `mutation-results.md` and the progress line
+name the first error.
+
+The Mutant ID recipe is unchanged, so a candidate both rules find keeps its ID. The
+candidate set changes, so the generator version is 7.
