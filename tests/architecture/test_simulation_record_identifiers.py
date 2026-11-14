@@ -735,6 +735,15 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
             "test_happy_path_publishes_campaign_artifacts",
         }
     ),
+    "tests/flows/mutation/test_memory_claims.py": frozenset(
+        {
+            "_campaign",
+            "test_an_item_that_ran_alone_over_budget_warns_in_the_campaign_result",
+            "test_campaign_processes_rank_as_the_held_claim",
+            "test_queued_claim_is_withdrawn_when_the_campaign_is_cancelled",
+            "test_queued_simulation_claim_is_withdrawn_when_the_campaign_is_cancelled",
+        }
+    ),
     "tests/flows/test_target_campaign.py": frozenset(
         {
             "campaign",

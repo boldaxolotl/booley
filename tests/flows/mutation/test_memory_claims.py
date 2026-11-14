@@ -299,7 +299,7 @@ def _withdraw_queued_claim(
 def test_a_run_outside_admission_claims_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, managed: _Managed
 ) -> None:
-    from booley.flows.mutation.memory_claims import CampaignClaims
+    from booley.flows.mutation.memory_claims import MutationClaims
 
     flow = _make_endpoint(tmp_path, monkeypatch)
     asked: list[str] = []
@@ -319,7 +319,7 @@ def test_a_run_outside_admission_claims_nothing(
     )
     # No admission, an unmanaged one, and a managed one that lends no sizing size nothing.
     unsized = replace(managed.context(), memory_sizing=None)
-    for claims in (CampaignClaims(), CampaignClaims(unmanaged), CampaignClaims(unsized)):
+    for claims in (MutationClaims(), MutationClaims(unmanaged), MutationClaims(unsized)):
         with claims.hold(request, build=True):
             assert managed.store.snapshot(job_slots.CLASS_MEMORY) == ([], [])
     assert asked == []
