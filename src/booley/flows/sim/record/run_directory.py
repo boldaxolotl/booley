@@ -17,6 +17,7 @@ from booley.flows.sim.config import literal_run_cwd_error
 from booley.flows.sim.record_reports import is_report_link, report_link_ancestor
 from booley.runtime.booley_dir import checkout_runtime_dir
 from booley.runtime.file_lock import LockTimeoutError, release_file_lock, wait_for_file_lock
+from booley.runtime.mount_history import MountHistoryError, translate_stored_path
 
 from .codec import SimulationRecordIntegrityError, canonical_json_bytes
 
@@ -194,12 +195,27 @@ def restore_run_directory_from_project_data(
     return _restore_run_directory(document, project_data / ".runtime", booley_dir)
 
 
+def _current_spelling(value: str) -> str:
+    """Rebase *value* from a former Booley Directory mount onto the current one."""
+    try:
+        return translate_stored_path(value, record="Simulation Record attempt run directory")
+    except MountHistoryError as exc:
+        raise SimulationRecordIntegrityError(str(exc)) from exc
+
+
+def stored_run_path(document: Mapping[str, object]) -> Path:
+    """The persisted run directory, rebased from a former Booley Directory mount."""
+    return Path(_current_spelling(str(document["resolved"])))
+
+
 def _restore_run_directory(
     document: Mapping[str, object], runtime: Path, booley_dir: Path | None
 ) -> RunDirectory:
-    path = Path(str(document["resolved"]))
+    stored = str(document["resolved"])
+    path = stored_run_path(document)
     collision_key = os.path.normcase(str(path.resolve(strict=False)))
-    if collision_key != document["collision_key"]:
+    # A rebased path has no stored key of its own: the one stored names the former mount.
+    if str(path) == stored and collision_key != document["collision_key"]:
         raise SimulationRecordIntegrityError(
             "persisted run-directory collision key disagrees with resolved path"
         )
@@ -402,4 +418,5 @@ __all__ = [
     "literal_run_path",
     "require_literal_run_directory",
     "restore_run_directory_from_project_data",
+    "stored_run_path",
 ]

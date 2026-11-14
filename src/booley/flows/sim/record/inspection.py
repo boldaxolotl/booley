@@ -28,6 +28,7 @@ from .codec import (
 from .coordinator import collected_result_facts
 from .model import SimulationRecordManifest, SimulationResult
 from .planning import manifest_digest
+from .run_directory import stored_run_path
 from .store import SimulationRecordRecovery, SimulationRecordStore, collect_pre_sim_firings
 from .test_run_report import observation_test_run_rows
 
@@ -260,7 +261,7 @@ def recover_retained_simulation_record_resources(
 def _has_resources_to_recover(attempt: Mapping[str, object]) -> bool:
     """Whether an interrupted attempt ran on a lane or still has an owned run directory."""
     run = cast(Mapping[str, object], attempt["run_directory"])
-    owned_run = run["owned"] is True and Path(cast(str, run["resolved"])).exists()
+    owned_run = run["owned"] is True and stored_run_path(run).exists()
     return attempt["child_execution_id"] is not None or owned_run
 
 
