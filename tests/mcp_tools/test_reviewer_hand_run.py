@@ -65,15 +65,20 @@ def verdicts(*statuses: str) -> dict[str, Any]:
     }
 
 
+def build_project(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A project with RTL, testbench and firmware files and its own Reviewer state file."""
+    for name in ("rtl/dut.sv", "tb/tb.sv", "fw/start.c"):
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("// authored\n")
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(root / "state.json"))
+    monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
+    return root
+
+
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    for name in ("rtl/dut.sv", "tb/tb.sv", "fw/start.c"):
-        path = tmp_path / name
-        path.parent.mkdir(exist_ok=True)
-        path.write_text("// authored\n")
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(tmp_path / "state.json"))
-    monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
-    return tmp_path
+    return build_project(tmp_path, monkeypatch)
 
 
 def review(
@@ -441,12 +446,17 @@ def test_exact_duplicate_findings_merge_with_highest_severity_and_confidence(
     assert "merged 1 exact duplicate" in result.report_text
 
 
-@pytest.mark.parametrize(
-    "changed",
-    [{"line": 4}, {"kind": "proof_gap"}, {"file": "rtl/other.sv"}],
-    ids=["line", "kind", "file"],
-)
 def test_near_duplicate_findings_stay_separate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A different line, kind or file is never an exact duplicate."""
+    changes = [{"line": 4}, {"kind": "proof_gap"}, {"file": "rtl/other.sv"}]
+    for number, changed in enumerate(changes):
+        project = build_project(tmp_path / f"case{number}", monkeypatch)
+        _assert_near_duplicates_stay_separate(project, monkeypatch, changed)
+
+
+def _assert_near_duplicates_stay_separate(
     project: Path, monkeypatch: pytest.MonkeyPatch, changed: dict[str, Any]
 ) -> None:
     other = {**finding("MAJOR", summary="Same problem, elsewhere"), **changed}
@@ -496,10 +506,19 @@ def test_findings_record_guide_kinds_and_gating_ignores_them(
     assert _finding_record(ReviewIssue.from_dict(untagged))["finding_id"] == row["finding_id"]
 
 
-@pytest.mark.parametrize("mode", ["done", "clean"])
-@pytest.mark.parametrize("failing", BUGS_GUIDES)
-@pytest.mark.parametrize("failure", ["raises", "no_json", "all_rejected", "mirror_disagrees"])
 def test_any_failing_guide_call_is_a_specialist_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Either call failing in any way makes the review an error, in both review modes."""
+    failures = ("raises", "no_json", "all_rejected", "mirror_disagrees")
+    for number, (mode, failing, failure) in enumerate(
+        (m, g, f) for m in ("done", "clean") for g in BUGS_GUIDES for f in failures
+    ):
+        project = build_project(tmp_path / f"case{number}", monkeypatch)
+        _assert_failing_guide_is_error(project, monkeypatch, failing, failure, mode)
+
+
+def _assert_failing_guide_is_error(
     project: Path, monkeypatch: pytest.MonkeyPatch, failing: str, failure: str, mode: str
 ) -> None:
     broken: dict[str, Any] = {
@@ -597,16 +616,21 @@ def test_verify_after_two_guide_review_is_one_call_and_waives_either_guide(
     assert verifier.detail["pending"] == []
 
 
-@pytest.mark.parametrize(
-    ("args", "category", "guide"),
-    [
+def test_single_guide_focus_makes_one_call_as_before(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spec, protocol and testbench quality reviews still make one call and one transcript."""
+    cases = [
         (SPEC_ARGS, "spec", "spec-hunt"),
         ([*BASE_ARGS[:-1], "protocol"], "protocol", "protocol-cdc-checklist"),
         (TB_ARGS, "quality", "hdl-checklist"),
-    ],
-    ids=["spec", "protocol", "tb-quality"],
-)
-def test_single_guide_focus_makes_one_call_as_before(
+    ]
+    for number, (args, category, guide) in enumerate(cases):
+        project = build_project(tmp_path / f"case{number}", monkeypatch)
+        _assert_one_call(project, monkeypatch, args, category, guide)
+
+
+def _assert_one_call(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,
     args: list[str],
@@ -653,19 +677,22 @@ def test_audit_rows_name_their_guide_call(project: Path, monkeypatch: pytest.Mon
     assert (rejected["guide"], rejected["attempt_id"]) == ("bugs-hunt", attempts["bugs-hunt"])
 
 
-@pytest.mark.parametrize("guide", BUGS_GUIDES)
 def test_editing_either_bugs_guide_stales_the_receipt(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path_factory: pytest.TempPathFactory,
-    guide: str,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for number, guide in enumerate(BUGS_GUIDES):
+        project = build_project(tmp_path / f"case{number}", monkeypatch)
+        _assert_guide_edit_stales_receipt(project, monkeypatch, tmp_path / f"data{number}", guide)
+
+
+def _assert_guide_edit_stales_receipt(
+    project: Path, monkeypatch: pytest.MonkeyPatch, package_data: Path, guide: str
 ) -> None:
     import shutil
 
     from booley.runtime.paths import refs_dir
     from booley.specialists.verification_freshness import refresh_verification_freshness
 
-    package_data = tmp_path_factory.mktemp("package-data")
     shutil.copytree(refs_dir() / "code_review", package_data / "refs/code_review")
     monkeypatch.setattr("booley.runtime.paths.package_data_dir", lambda: package_data)
 
