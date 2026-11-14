@@ -32,7 +32,7 @@ async def test_baseline_goal_tools_refuse_retired_jobs_keys(tmp_path, monkeypatc
     )
 
     assert result.is_error
-    assert "heavy_memory (line 2)" in result.value[0].text
+    assert "heavy_memory (line 2: memory admission replaced it)" in result.value[0].text
 
 
 @pytest.mark.asyncio

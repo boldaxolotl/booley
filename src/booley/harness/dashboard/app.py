@@ -118,7 +118,7 @@ HELP = (
     "Run in the top bar starts a built-in Flow or the reviewer Specialist as a Standalone Job:\n"
     "pick the worktree, the Flow or Specialist, then fill in its form; check the equivalent\n"
     "shell command and submit or copy it;\n"
-    "the review also says if the Job runs now or queues (a full queue refuses Submit) and warns\n"
+    "the review also says if the Job runs now or queues and warns\n"
     "about sessions, running Jobs and uncommitted changes in the worktree\n"
     "After Run the Jobs window opens on All sessions with the new Job selected; a Finished\n"
     "filter switches to Running, which keeps the selected Job listed after it finishes\n"
