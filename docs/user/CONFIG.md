@@ -178,9 +178,8 @@ recorded.
 
 ## Agent CLIs (`[agent]`)
 
-Booley runs every agent on an **Agent CLI**: Claude Code (`claude`) or Codex
-(`codex`). That covers the Developer Agent, the Specialists, and Booley's small
-internal steps.
+Booley runs the Developer Agent and the Specialists on an **Agent CLI**:
+Claude Code (`claude`) or Codex (`codex`).
 
 ```toml
 [agent]
@@ -188,9 +187,8 @@ clis = ["claude", "codex"]   # every Agent CLI this Project may use
 default = "claude"           # the one used unless you pick another
 ```
 
-- **`default`** is what `booley chat` opens. It also runs Specialists and
-  internal steps unless a [`[models]`](#model-selection-models) entry needs the
-  other CLI. Without it, the first entry of `clis` is the default.
+- **`default`** is what `booley chat` opens. It also runs Specialists unless a
+  [`[models]`](#model-selection-models) entry needs the other CLI. Without it, the first entry of `clis` is the default.
 - **`clis`**: listing a second CLI lets you open it with
   `booley chat --cli codex`, lets a `[models]` entry run a Specialist on it, and
   gives the Sandbox its login (see
@@ -302,13 +300,12 @@ model that is neither `claude-*` nor `gpt-*`, or a model whose CLI isn't in
 entry. The Developer Agent itself uses your Agent CLI's own model setting, not
 this table.
 
-A Specialist without an entry, and Booley's own small internal steps, use the
-default CLI's built-in model, so most Projects need no `[models]` at all:
+A Specialist without an entry uses the default CLI's built-in model, so most
+Projects need no `[models]` at all:
 
 | Used by | Claude Code | Codex |
 |---|---|---|
 | Specialists | `claude-opus-5-5` | `gpt-6.1-sol` |
-| Booley's internal calls | `claude-sonnet-5-5` | `gpt-6-luna` |
 
 Booley passes the model to the Agent CLI as written and never swaps it: if your
 account can't run it, the Specialist fails and the error names the `[models]`
