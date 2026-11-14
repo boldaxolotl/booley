@@ -1,7 +1,7 @@
 # PicoRV32 Simulation Campaign QA fixture
 
 This runbook gives the QA agent running the picorv32 mission the exact steps
-for its `sim-campaign` area ([MISSION.md](../../MISSION.md), area 12): exact
+for this optional hunt bait ([MISSION.md](../../MISSION.md), `hunt` area): exact
 test selection, manifest authority, interruption and resume, and Goal evidence
 scope on a small Icarus Target. Goal-child rules live in
 [GOAL-CHILD.md](../../../../shared/GOAL-CHILD.md); coverage Simulation
@@ -121,4 +121,4 @@ Keep the evidence and reap owned processes. Then finish or explicitly abandon
 the Goal and remove only the run-owned core and catalog entries, report roots
 and Goal Record. Confirm the pinned upstream checkout is byte-for-byte
 unchanged, the Project catalog no longer lists `sim_campaign`, and every
-`resources.md` row for this area is marked released.
+`resources.md` row for this campaign is marked released.
