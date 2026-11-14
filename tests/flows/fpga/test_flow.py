@@ -27,6 +27,7 @@ from booley.evidence.fields import (
 from booley.evidence.timing import ClockTiming, make_clock_timing
 from booley.flows import run_evidence
 from booley.flows.base import SubprocessResult
+from booley.flows.edam import EdamFile
 from booley.flows.fpga.backends.vivado import cache as fpga_cache
 from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics, _metrics_detail
 from booley.flows.fpga.flow import FpgaImplFlow, _PreparedFpgaCommand, _vlogdefine_args
@@ -111,6 +112,7 @@ def _write_project_config(
     (tmp_path / "rtl" / "include" / "defs.svh").write_text("`define FOO 1\n", encoding="utf-8")
     (tmp_path / "rtl" / "top.sv").write_text("module dut_top; endmodule\n", encoding="utf-8")
     (tmp_path / "rtl" / "legacy.v").write_text("module legacy; endmodule\n", encoding="utf-8")
+    (tmp_path / "rtl" / "modern.v").write_text("module modern; endmodule\n", encoding="utf-8")
 
 
 def _flow(tmp_path: Path, state_file: Path, *extra_args: str) -> FpgaImplFlow:
@@ -481,6 +483,8 @@ def _fake_fpga_resolved(
         ),
         ResolvedFile(name="rtl/top.sv", file_type="systemVerilogSource"),
         ResolvedFile(name="rtl/legacy.v", file_type="verilogSource"),
+        # SystemVerilog in a .v file: the declared type, not the suffix, counts.
+        ResolvedFile(name="rtl/modern.v", file_type="systemVerilogSource"),
         # ADR 0031: XDC travels with the Target as a file_type:xdc fileset (the
         # sole source of truth now that the legacy [flows.fpga].xdc key is
         # gone). TB-tagged constraints would be excluded, like sdc_files.
@@ -604,7 +608,11 @@ def test_dry_run_resolves_sources_from_work_dir(
     result = flow._run()
 
     assert result.exit_code == EXIT_SUCCESS
-    assert result.detail["work_units"][0]["sources"] == ["rtl/top.sv", "rtl/legacy.v"]
+    assert result.detail["work_units"][0]["sources"] == [
+        "rtl/top.sv",
+        "rtl/legacy.v",
+        "rtl/modern.v",
+    ]
 
 
 def test_run_rejects_non_fpga_axis_before_setup(
@@ -1049,16 +1057,18 @@ class TestFpgaResolution:
         # These are absolute workspace Paths (Edalize relativizes them into
         # the .vc later); compare in POSIX form so a Windows host's backslashes
         # don't fail the suffix checks.
-        sv = [p.as_posix() for p in recipe.sv_files]
-        v = [p.as_posix() for p in recipe.v_files]
-        assert any(s.endswith("rtl/top.sv") for s in sv)
-        assert any(s.endswith("rtl/legacy.v") for s in v)
-        # The include header is surfaced as a dir, never a compiled source.
-        assert not any("defs.svh" in s for s in sv + v)
+        # Sources keep Target order and declared types, whatever the suffix;
+        # the include header is surfaced as a dir, never a compiled source.
+        assert [
+            (path.relative_to(tmp_path.resolve()).as_posix(), file_type)
+            for path, file_type in recipe.sources
+        ] == [
+            ("rtl/top.sv", "systemVerilogSource"),
+            ("rtl/legacy.v", "verilogSource"),
+            ("rtl/modern.v", "systemVerilogSource"),
+        ]
         inc = [p.as_posix() for p in recipe.include_dirs]
         assert any(d.endswith("rtl/include") for d in inc)
-        # Sources are absolute (under work_dir = the EDAM workspace_root).
-        assert all(Path(s).is_absolute() for s in sv + v)
         assert "CFG_DEFAULT" in recipe.defines  # vlogdefine, default true
         assert recipe.vlogparams == {"WIDTH": ParameterValue("int", "8")}
         # Part and XDC both come from the Target and reach
@@ -1353,14 +1363,13 @@ class TestTargetRecipeBoundary:
         assert recipe.top == "dut_top"
         # Absolute workspace Paths (Edalize relativizes them downstream);
         # compare in POSIX form so a Windows host's backslashes don't fail.
-        sv = [p.as_posix() for p in recipe.sv_files]
-        v = [p.as_posix() for p in recipe.v_files]
-        assert any(s.endswith("rtl/dut.sv") for s in sv)
-        assert any(s.endswith("rtl/pkg.sv") for s in sv)
-        assert any(s.endswith("rtl/legacy.v") for s in v)
+        sources = [path.as_posix() for path, _ in recipe.sources]
+        assert any(s.endswith("rtl/dut.sv") for s in sources)
+        assert any(s.endswith("rtl/pkg.sv") for s in sources)
+        assert any(s.endswith("rtl/legacy.v") for s in sources)
         # Include header surfaces as a dir, TB file is excluded from sources.
-        assert not any("defs.svh" in s for s in sv + v)
-        assert not any("tb_dut.sv" in s for s in sv + v)
+        assert not any("defs.svh" in s for s in sources)
+        assert not any("tb_dut.sv" in s for s in sources)
         inc = [p.as_posix() for p in recipe.include_dirs]
         assert any(d.endswith("rtl/include") for d in inc)
         # The vlogdefine param reached the EDAM defines.
@@ -1971,8 +1980,7 @@ def test_fake_vivado_generated_command_startup(
         part="xc7a35tcpg236-1",
         top="dut_top",
         xdc_files=(tmp_path / "constraints/timing.xdc",),
-        sv_files=(tmp_path / "rtl/top.sv",),
-        v_files=(),
+        sources=(EdamFile(tmp_path / "rtl/top.sv", "systemVerilogSource"),),
         include_dirs=(),
         defines=(),
         vlogparams={},
