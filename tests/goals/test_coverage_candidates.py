@@ -69,8 +69,7 @@ def test_goal_candidate_record_retains_coverage_record_target_under_bound_record
     assert candidate.binding.target_identity == coverage_record.target.identity
     assert candidate.binding.target_selector == coverage_record.target.selector
     assert (
-        candidate.binding.coverage_record_path
-        == path.relative_to(context.flow_reports_root).as_posix()
+        candidate.binding.campaign_path == path.relative_to(context.flow_reports_root).as_posix()
     )
     assert candidate.binding.manifest_sha256 == loaded.summary.manifest_sha256
     assert (paths.root / "waiver-candidates.json").exists()

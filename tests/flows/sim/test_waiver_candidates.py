@@ -45,10 +45,10 @@ OTHER_POINT = "cp1:eyJwb2ludCI6Mn0"
 
 def _binding(coverage_record: str = "camp-1", point_store: str = SHA_A) -> CoverageRecordBinding:
     return CoverageRecordBinding(
-        coverage_record_id=coverage_record,
+        campaign_id=coverage_record,
         manifest_sha256=SHA_A,
         point_store_sha256=point_store,
-        coverage_record_path=f"sim/1/core/{coverage_record}/coverage.json",
+        campaign_path=f"sim/1/core/{coverage_record}/coverage.json",
         target_identity="vlnv:acme:ip:core:1.0#sim_core",
         target_selector="sim_core",
     )
@@ -237,7 +237,7 @@ _CORRUPTIONS: dict[str, Any] = {
         first_recorded_at="2027-01-01T00:00:00Z"
     ),
     "bad-sha": lambda d: _candidate_entry(d).update(manifest_sha256="sha256:XYZ"),
-    "escaping-path": lambda d: _candidate_entry(d).update(coverage_record_path="../x.json"),
+    "escaping-path": lambda d: _candidate_entry(d).update(campaign_path="../x.json"),
     "moved-id": lambda d: d.update(candidates={"wc-000000000000": _candidate_entry(d)}),
     "rejection-point": lambda d: d["rejections"][0].update(point_id="bad"),
     "candidate-id": lambda d: _candidate_entry(d).update(candidate_id="wc-000000000000"),
@@ -331,7 +331,7 @@ from pathlib import Path
 from booley.flows.sim import waiver_candidates as store
 
 directory, name, rounds, shared = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3]), sys.argv[4]
-binding = store.CampaignBinding(
+binding = store.CoverageRecordBinding(
     "camp-1", "sha256:" + "a" * 64, "sha256:" + "a" * 64,
     "sim/1/core/camp-1/coverage.json", "vlnv:acme:ip:core:1.0#sim_core", "sim_core",
 )
@@ -406,7 +406,7 @@ def test_proposal_ingress_validates_once(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("binding,proposal", [("bad", None), (None, "bad")])
 def test_proposal_ingress_rejects_invalid_reason_and_binding(tmp_path, binding, proposal):
-    binding = replace(_binding(), coverage_record_path="../bad") if binding else _binding()
+    binding = replace(_binding(), campaign_path="../bad") if binding else _binding()
     proposal = replace(_proposal(), reason="bad") if proposal else _proposal()
     with pytest.raises(BoundaryError):
         store.record_proposals(tmp_path, binding, [proposal], invocation_id="inv", now=NOW)

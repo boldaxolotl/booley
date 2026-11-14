@@ -189,7 +189,7 @@ def test_review_proof_carries_binding_stamps_and_labels_unverified_text() -> Non
     proof = render_review_proof(candidate, _STAMPS).decode()
 
     for value in (
-        candidate.binding.coverage_record_id,
+        candidate.binding.campaign_id,
         candidate.binding.manifest_sha256,
         candidate.binding.point_store_sha256,
         candidate.binding.target_identity,
@@ -221,9 +221,7 @@ def test_control_characters_cannot_inject_markdown_into_the_review_proof() -> No
     candidate = _candidate()
     forged = replace(
         candidate,
-        binding=replace(
-            candidate.binding, coverage_record_id="c\n\n## Human approval\n- Approved by: x"
-        ),
+        binding=replace(candidate.binding, campaign_id="c\n\n## Human approval\n- Approved by: x"),
     )
     with pytest.raises(WaiverPromotionError, match="control characters"):
         build_promotion(forged, _STAMPS)

@@ -179,7 +179,7 @@ def _other_source_u1(points: tuple[CoveragePoint, ...]) -> tuple[CoveragePoint, 
     ("changes", "edit_points", "status", "reason"),
     [
         (
-            {"campaign_id": "campaign:other"},
+            {"coverage_record_id": "campaign:other"},
             None,
             "stale",
             "Candidate belongs to a different Coverage Campaign.",

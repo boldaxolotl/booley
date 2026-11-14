@@ -101,7 +101,7 @@ def test_ready_candidates_are_recorded_and_rescue_the_strict_verdict(record_cont
     assert candidate["status"] == "offered" and candidate["needed"] is True
     record = store.load(context.record_dir)
     (stored,) = record.candidates.values()
-    assert stored.binding.coverage_record_path == "sim/12/targets/sim_counter/coverage.json"
+    assert stored.binding.campaign_path == "sim/12/targets/sim_counter/coverage.json"
     assert stored.binding.manifest_sha256 == loaded.summary.manifest_sha256
     assert stored.proposal.justification.startswith("Reset-only branch")
     assert "strict fail · provisional pass" in candidate_summary_line(section)
@@ -268,6 +268,6 @@ def test_image_alias_reports_root_records_canonical_coverage_record(
     assert section["status"] == "recorded", section
     record = store.load(context.record_dir)
     assert (
-        next(iter(record.candidates.values())).binding.coverage_record_path
+        next(iter(record.candidates.values())).binding.campaign_path
         == "sim/12/targets/sim_counter/coverage.json"
     )

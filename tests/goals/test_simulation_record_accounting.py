@@ -150,9 +150,7 @@ def test_failure_of_a_killed_simulation_record_is_sticky_for_the_next_simulation
         *("$schema", "campaign_id", "manifest_sha256", "manifest_path"),
         *("binding", "stamps", "registered_at"),
     }
-    listed = simulation_record_accounting.unsettled_coverage_records(
-        GoalStore(two.control), two.record
-    )
+    listed = simulation_record_accounting.unsettled_campaigns(GoalStore(two.control), two.record)
     assert listed == [
         {
             "state": "open",
@@ -591,7 +589,7 @@ def test_an_unreadable_registration_blocks_until_an_approved_change_quarantines_
     assert {
         "state": "unreadable",
         "file": broken.name,
-    } in simulation_record_accounting.unsettled_coverage_records(store, two.record)
+    } in simulation_record_accounting.unsettled_campaigns(store, two.record)
 
     env = ChangeEnvironment(entry_environment(two))
     arguments = {
@@ -605,7 +603,7 @@ def test_an_unreadable_registration_blocks_until_an_approved_change_quarantines_
     assert not broken.exists() and (directory / "quarantine" / broken.name).is_file()
     two.record = store.load(two.record.id)
     assert _status(two).status == "met"  # judged by its evidence again
-    assert simulation_record_accounting.unsettled_coverage_records(store, two.record) == [
+    assert simulation_record_accounting.unsettled_campaigns(store, two.record) == [
         {"state": "quarantined", "file": broken.name}
     ]
     assert simulation_record_accounting.quarantine_unreadable(store, two.record.id) == ()
