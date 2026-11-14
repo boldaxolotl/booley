@@ -123,11 +123,31 @@ def test_infrastructure_failure_produces_no_metrics(tmp_path: Path) -> None:
                 execution="setup_error",
                 failure_class="infrastructure",
                 functional="not_observed",
+                detail={"reason": "build crashed"},
             ),
         ],
     )
 
-    with pytest.raises(MetricsUnavailableError, match="count"):
+    with pytest.raises(MetricsUnavailableError, match="count") as raised:
+        simulation_flow_metrics(outcome)
+    assert "(build crashed)" in str(raised.value)  # the first errored Test Run's reason
+
+
+def test_cocotb_import_failure_produces_no_metrics_and_names_the_module(
+    tmp_path: Path,
+) -> None:
+    from booley.flows.metric_declarations import MetricsUnavailableError
+    from booley.flows.sim.backends.cocotb_results import IMPORT_FAILURE_PREFIX
+    from booley.flows.sim.metrics import simulation_flow_metrics
+
+    reason = f"{IMPORT_FAILURE_PREFIX} 'tb_top': ModuleNotFoundError: No module named 'pyuvm'"
+    outcome = _simulation_outcome(
+        tmp_path,
+        [_row("silent", functional="inconclusive", detail={"reason": reason})],
+        required=("silent",),
+    )
+
+    with pytest.raises(MetricsUnavailableError, match=r"tb_top.*pyuvm"):
         simulation_flow_metrics(outcome)
 
 
