@@ -753,7 +753,7 @@ def _persist_prepared(
         mount_history.record_former_mount(
             authorized_project_data_source(project),
             previous,
-            prepared.spec["remoteEnv"]["BOOLEY_DIR"],
+            BOOLEY_DIR_TARGET,
             path,
         )
     except mount_history.MountHistoryError as exc:
