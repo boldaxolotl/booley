@@ -561,6 +561,20 @@ def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_host_config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve Booley's host config directory inside each test's tmp_path (#3837).
+
+    ``config_dir()`` otherwise falls back to the real ``~/.config/booley``, and
+    ``booley init`` would scan and recover the developer's real issuance-
+    invalidation journals. Per test, not per session: private-store permission
+    tests need a fresh tree. Tests and fixtures that set ``XDG_CONFIG_HOME``
+    themselves run later and keep their value; tests of the ``Path.home()``
+    fallback delete it.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_host_lifecycle_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep host-global mutation locks local to each test process."""
     from booley.runtime import lifecycle_lock

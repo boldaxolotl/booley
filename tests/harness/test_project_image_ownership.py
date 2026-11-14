@@ -312,15 +312,41 @@ def test_stale_base_requires_bootstrap_and_is_never_repaired(tmp_path, monkeypat
     assert docker.mutations == []
 
 
+def _wire_init_to_image_step(monkeypatch, docker) -> list[lifecycle.Intent]:
+    """Route ``run_init`` straight to its image step; return the recorded bootstrap intents."""
+    from contextlib import nullcontext
+
+    from booley.harness import image_lifecycle as harness
+    from booley.harness import init_cmd
+
+    intents: list[lifecycle.Intent] = []
+    monkeypatch.setattr(
+        init_cmd,
+        "reconcile_bootstrap",
+        lambda intent, **_kw: intents.append(intent) or init_cmd.BootstrapResult(intent, ()),
+    )
+    monkeypatch.setattr(harness, "_docker_adapter", lambda: docker)
+    monkeypatch.setattr(
+        init_cmd, "_resolve_agent_selection", lambda *_args: SimpleNamespace(provider="codex")
+    )
+    monkeypatch.setattr(init_cmd, "_plan_existing_guidance", lambda _ctx: (None, True))
+    monkeypatch.setattr(init_cmd, "init_booley_dir_scope", lambda _root: nullcontext())
+    monkeypatch.setattr(
+        init_cmd,
+        "_run_project_init_steps",
+        lambda ctx, *_args, **_kw: (
+            init_cmd._step_image_lifecycle(ctx),
+            init_cmd._print_summary(ctx),
+        )[-1],
+    )
+    return intents
+
+
 @pytest.mark.parametrize("base_state", ["missing", "stale", "unavailable"])
 @pytest.mark.parametrize("force", [False, True])
 def test_run_init_observes_bootstrap_only_and_fails_base_before_project_mutation(
     tmp_path, monkeypatch, base_state, force
 ):
-    from contextlib import nullcontext
-    from types import SimpleNamespace
-
-    from booley.harness import image_lifecycle as harness
     from booley.harness import init_cmd
     from tests.harness.test_init_bootstrap import _args
 
@@ -341,29 +367,44 @@ def test_run_init_observes_bootstrap_only_and_fails_base_before_project_mutation
                 lifecycle.ImageLifecycleError("Docker unavailable")
             ),
         )
-    intents = []
-    monkeypatch.setattr(
-        init_cmd,
-        "reconcile_bootstrap",
-        lambda intent, **_kw: intents.append(intent) or init_cmd.BootstrapResult(intent, ()),
-    )
-    monkeypatch.setattr(harness, "_docker_adapter", lambda: docker)
-    monkeypatch.setattr(
-        init_cmd, "_resolve_agent_selection", lambda *_args: SimpleNamespace(provider="codex")
-    )
-    monkeypatch.setattr(init_cmd, "_plan_existing_guidance", lambda _ctx: (None, True))
-    monkeypatch.setattr(init_cmd, "init_booley_dir_scope", lambda _root: nullcontext())
-    monkeypatch.setattr(
-        init_cmd,
-        "_run_project_init_steps",
-        lambda ctx, *_args, **_kw: (
-            init_cmd._step_image_lifecycle(ctx),
-            init_cmd._print_summary(ctx),
-        )[-1],
-    )
+    intents = _wire_init_to_image_step(monkeypatch, docker)
     assert init_cmd.run_init(_args(force=force), root) == 2
     assert intents == [lifecycle.Intent.CHECK]
     assert docker.mutations == []
+
+
+def test_init_ignores_a_journal_in_the_real_home_config(tmp_path, monkeypatch):
+    """A journal under the real home config must not be recovered by init (#3837)."""
+    from booley.harness import init_cmd
+    from booley.runtime import issuance_invalidation
+    from tests.harness.test_init_bootstrap import _args
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    other_project = (tmp_path / "other-project").resolve()
+    # Plant where a host with no XDG override keeps its journals.
+    with monkeypatch.context() as inherited:
+        inherited.delenv("XDG_CONFIG_HOME", raising=False)
+        issuance_invalidation.prepare(str(other_project))
+        planted = issuance_invalidation.journal_store().path(str(other_project))
+    assert planted.is_relative_to(home / ".config")
+    assert planted.exists()
+    recovered: list[str] = []
+    monkeypatch.setattr(
+        issuance_invalidation,
+        "recover_project_locked",
+        lambda root: recovered.append(root) or True,
+    )
+
+    root = _project(tmp_path)
+    docker = FakeDocker({})
+    _bootstrap_base(monkeypatch, docker)
+    docker.images.clear()
+    intents = _wire_init_to_image_step(monkeypatch, docker)
+    assert init_cmd.run_init(_args(force=False), root) == 2
+    assert recovered == []
+    assert intents == [lifecycle.Intent.CHECK]
 
 
 def test_generated_file_symlink_is_user_owned(tmp_path):
