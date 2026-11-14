@@ -75,15 +75,15 @@ def test_mutate_refuses_a_nested_manifest_instead_of_the_reference(tmp_path: Pat
 
 
 def _product_reference(owned: Path, mode: str) -> Path:
-    from tests.flows.sim.test_coverage_campaign_reference import _nested_campaign
-    from tests.flows.sim.test_coverage_campaign_reference import _reference as product_reference
+    from tests.flows.sim.test_coverage_record_reference import _nested_coverage_record
+    from tests.flows.sim.test_coverage_record_reference import _reference as product_reference
 
-    from booley.flows.sim.coverage_reference import publish_coverage_campaign_reference
+    from booley.flows.sim.coverage_reference import publish_coverage_record_reference
 
     target = owned / "targets/sim_counter"
-    manifest = _nested_campaign(target)
+    manifest = _nested_coverage_record(target)
     reference = target / "coverage.json"
-    publish_coverage_campaign_reference(reference, product_reference(target, manifest))
+    publish_coverage_record_reference(reference, product_reference(target, manifest))
     (owned / ".qa-coverage-fault-copy").touch()
     return reference
 
@@ -116,11 +116,11 @@ def _product_faults() -> dict[str, set[str]]:
 def test_fault_reaches_product_content_validation(tmp_path: Path, monkeypatch) -> None:
     from tests.conftest import require_symlinks
 
-    from booley.flows.sim import coverage_campaign_store as store
-    from booley.flows.sim.coverage_campaign import CoverageCampaignValidationError
-    from booley.flows.sim.coverage_campaign_store import CoverageCampaignStoreError
+    from booley.flows.sim import coverage_record_store as store
     from booley.flows.sim.coverage_json import MANIFEST_JSON
-    from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
+    from booley.flows.sim.coverage_record import CoverageRecordValidationError
+    from booley.flows.sim.coverage_record_store import CoverageRecordStoreError
+    from booley.flows.sim.coverage_reference import resolve_coverage_record_reference
     from booley.flows.sim.record.codec import UnsupportedSimulationRecordFormatError
 
     # One node, every mode; resource-ceiling is last because it patches the ceiling.
@@ -132,18 +132,18 @@ def test_fault_reaches_product_content_validation(tmp_path: Path, monkeypatch) -
                 continue  # only this mode needs symlinks; keep the others running
         owned = tmp_path / mode
         reference = _product_reference(owned, mode)
-        resolve_coverage_campaign_reference(reference)
+        resolve_coverage_record_reference(reference)
         if mode == "resource-ceiling":
             assert faults.POINT_CEILING_BYTES == store.MAX_UNCOMPRESSED_BYTES
             monkeypatch.setattr(store, "MAX_UNCOMPRESSED_BYTES", 4096)
             monkeypatch.setattr(faults, "POINT_CEILING_BYTES", 4096)
 
-        manifest_before = faults.nested_campaign(reference, owned)[0].read_bytes()
+        manifest_before = faults.nested_coverage_record(reference, owned)[0].read_bytes()
         reference_before = reference.read_bytes()
 
         faults.mutate(reference, owned, mode)
 
-        manifest_after = faults.nested_campaign(reference, owned)[0].read_bytes()
+        manifest_after = faults.nested_coverage_record(reference, owned)[0].read_bytes()
         if mode in faults.POINT_FAULTS:
             # A point fault damages only the point store.
             assert manifest_after == manifest_before
@@ -154,16 +154,16 @@ def test_fault_reaches_product_content_validation(tmp_path: Path, monkeypatch) -
 
         with pytest.raises(
             (
-                CoverageCampaignValidationError,
-                CoverageCampaignStoreError,
+                CoverageRecordValidationError,
+                CoverageRecordStoreError,
                 UnsupportedSimulationRecordFormatError,
             )
         ) as caught:
-            resolve_coverage_campaign_reference(reference)
+            resolve_coverage_record_reference(reference)
         error = caught.value
         if isinstance(error, UnsupportedSimulationRecordFormatError):
             codes = {_OLDER_BOOLEY}
-        elif isinstance(error, CoverageCampaignValidationError):
+        elif isinstance(error, CoverageRecordValidationError):
             codes = {finding.code for finding in error.findings}
         else:
             codes = {error.code}

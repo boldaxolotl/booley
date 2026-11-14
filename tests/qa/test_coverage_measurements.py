@@ -41,7 +41,7 @@ def source_rows(points, rollups):
     ]
 
 
-def half_campaign():
+def half_coverage_record():
     points = []
     for bit in range(4):
         for before in range(2):
@@ -80,7 +80,7 @@ def half_campaign():
 
 
 def test_hand_authored_half_has_eight_directional_points():
-    manifest, points, case = half_campaign()
+    manifest, points, case = half_coverage_record()
     assert oracle.verify_known_answer(manifest, points, case) == {
         "covered": 4,
         "eligible": 8,
@@ -89,7 +89,7 @@ def test_hand_authored_half_has_eight_directional_points():
 
 
 def test_invalid_scoring_accepts_retained_points_with_empty_summaries():
-    manifest, points, _ = half_campaign()
+    manifest, points, _ = half_coverage_record()
     manifest["collection"]["status"] = "collector_error"
     manifest["scoring"] = {"status": "invalid", "reason": "collector_error"}
     manifest["rollups"] = []
@@ -100,7 +100,7 @@ def test_invalid_scoring_accepts_retained_points_with_empty_summaries():
 
 @pytest.mark.parametrize("field", ["rollups", "source_rollups"])
 def test_invalid_scoring_rejects_smuggled_summary(field):
-    manifest, points, _ = half_campaign()
+    manifest, points, _ = half_coverage_record()
     retained = copy.deepcopy(manifest[field])
     manifest["collection"]["status"] = "collector_error"
     manifest["scoring"] = {"status": "invalid", "reason": "collector_error"}
@@ -113,7 +113,7 @@ def test_invalid_scoring_rejects_smuggled_summary(field):
 
 
 def test_same_percentage_with_wrong_denominator_is_rejected():
-    manifest, points, case = half_campaign()
+    manifest, points, case = half_coverage_record()
     points = points[:2] + points[4:6]
     manifest["rollups"][0].update(total_points=4, eligible_points=4, covered_points=2)
     with pytest.raises(ValueError, match="denominator"):
@@ -121,7 +121,7 @@ def test_same_percentage_with_wrong_denominator_is_rejected():
 
 
 def test_same_count_with_wrong_bits_is_rejected():
-    manifest, points, case = half_campaign()
+    manifest, points, case = half_coverage_record()
     for point in points:
         point["hits_by_run"] = {} if point["hits_by_run"] else {"r1": 1}
     with pytest.raises(ValueError, match="hit set"):
@@ -129,7 +129,7 @@ def test_same_count_with_wrong_bits_is_rejected():
 
 
 def test_repetition_does_not_inflate_covered_points():
-    manifest, points, case = half_campaign()
+    manifest, points, case = half_coverage_record()
     case = json.loads((ROOT / "expected.json").read_text())["repeat"]
     manifest["tests"]["runs"][0]["test"] = "repeat"
     for point in points:
@@ -139,7 +139,7 @@ def test_repetition_does_not_inflate_covered_points():
 
 
 def test_exact_threshold_above_half_fails_even_when_display_is_half():
-    manifest, points, case = half_campaign()
+    manifest, points, case = half_coverage_record()
     case["min_pct"] = 50.01
     manifest["evaluation"] = {"status": "fail"}
     oracle.verify_known_answer(manifest, points, case)
@@ -150,14 +150,14 @@ def test_exact_threshold_above_half_fails_even_when_display_is_half():
 
 @pytest.mark.parametrize("bad", [0, -1, True])
 def test_nonpositive_or_boolean_incidence_rejected(bad):
-    _, points, _ = half_campaign()
+    _, points, _ = half_coverage_record()
     points[0]["hits_by_run"]["r1"] = bad
     with pytest.raises(ValueError, match="positive integer"):
         oracle.counts(points)
 
 
 def test_native_disagreement_is_not_hidden_by_matching_rollups(tmp_path):
-    _, points, _ = half_campaign()
+    _, points, _ = half_coverage_record()
     native = tmp_path / "half.dat"
     native.write_text(
         "# SystemC::Coverage-3\n"
@@ -168,7 +168,7 @@ def test_native_disagreement_is_not_hidden_by_matching_rollups(tmp_path):
 
 
 def test_complementary_test_union_is_not_an_average():
-    manifest, points, _ = half_campaign()
+    manifest, points, _ = half_coverage_record()
     case = json.loads((ROOT / "expected.json").read_text())["union"]
     manifest["tests"]["runs"].append({"id": "r2", "test": "upper"})
     for point in points[4:]:
@@ -217,14 +217,14 @@ def test_cover_properties_need_no_source_rollup():
 
 @pytest.mark.parametrize("field", ["rollups", "source_rollups"])
 def test_omitted_rollup_inventory_is_rejected(field):
-    manifest, points, case = half_campaign()
+    manifest, points, case = half_coverage_record()
     manifest[field] = []
     with pytest.raises(ValueError, match="inventory"):
         oracle.verify_known_answer(manifest, points, case)
 
 
 def test_self_consistent_raw_and_normalized_wrong_counts_rejected(tmp_path):
-    manifest, points, case = half_campaign()
+    manifest, points, case = half_coverage_record()
     points[0]["hits_by_run"]["r1"] = 3
     raw = tmp_path / "half.dat"
     raw.write_text("".join(f"C '{p['id']}' {p['hits_by_run'].get('r1', 0)}\n" for p in points))
@@ -235,7 +235,7 @@ def test_self_consistent_raw_and_normalized_wrong_counts_rejected(tmp_path):
 
 @pytest.mark.parametrize("hits", [0, 1])
 def test_native_record_omitted_from_normalized_inventory_is_rejected(tmp_path, hits):
-    _, points, _ = half_campaign()
+    _, points, _ = half_coverage_record()
     raw = tmp_path / "half.dat"
     raw.write_text(
         "".join(f"C '{p['id']}' {p['hits_by_run'].get('r1', 0)}\n" for p in points)
@@ -245,12 +245,12 @@ def test_native_record_omitted_from_normalized_inventory_is_rejected(tmp_path, h
         oracle.verify_native(points, {"r1": raw})
 
 
-def test_oracle_reads_campaign_the_product_publishes(tmp_path):
+def test_oracle_reads_coverage_record_the_product_publishes(tmp_path):
     """The oracle's accepted schema must be the one the product writes."""
-    from tests.flows.sim.test_coverage_campaign_reference import _nested_campaign
+    from tests.flows.sim.test_coverage_record_reference import _nested_coverage_record
 
-    published = _nested_campaign(tmp_path / "target")
-    manifest, points = oracle.read_campaign(published)
+    published = _nested_coverage_record(tmp_path / "target")
+    manifest, points = oracle.read_coverage_record(published)
     document = json.loads(published.read_text())
     assert manifest["coverage_record_id"] == document["coverage_record_id"]
     assert len(points) == document["point_store"]["point_count"]

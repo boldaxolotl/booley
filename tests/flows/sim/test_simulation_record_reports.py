@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from booley.flows.sim import record_reports
-from booley.flows.sim.coverage_campaign import CoverageRollup
+from booley.flows.sim.coverage_record import CoverageRollup
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record import collect_pre_sim_firings
 from booley.flows.sim.record_presentation import (
@@ -219,19 +219,21 @@ def test_cycle_card_preserves_complete_reason_strings(reason, tmp_path, monkeypa
     resolved = []
     monkeypatch.setattr(
         record_presentation,
-        "_resolved_coverage_campaigns",
+        "_resolved_coverage_records",
         lambda _outcomes: (
             resolved.append(True)
             or {"sim": SimpleNamespace(collection={"status": "collector_error"})}
         ),
     )
     monkeypatch.setattr(
-        record_presentation, "_coverage_report_suffix", lambda _campaign: "coverage"
+        record_presentation, "_coverage_report_suffix", lambda _coverage_record: "coverage"
     )
     monkeypatch.setattr(
-        record_presentation, "_waiver_block_hint_lines", lambda _campaign: ["coverage hint"]
+        record_presentation, "_waiver_block_hint_lines", lambda _coverage_record: ["coverage hint"]
     )
-    monkeypatch.setattr(record_presentation, "source_gap_report_lines", lambda _campaign: [])
+    monkeypatch.setattr(
+        record_presentation, "source_gap_report_lines", lambda _coverage_record: []
+    )
 
     one, two = build_test_run("one"), build_test_run("two")
     recorded = _recorded_simulation_record(tmp_path, (one, two))
@@ -260,9 +262,7 @@ def test_authenticated_coverage_resume_keeps_report_counts(tmp_path, monkeypatch
     manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
     execution = NativeExecution()
     if failure:
-        symbol = (
-            "_checkpoint_coverage_campaign" if failure == "retention" else "supersede_progress"
-        )
+        symbol = "_checkpoint_coverage_record" if failure == "retention" else "supersede_progress"
         monkeypatch.setattr(
             "booley.flows.sim.flow_resume." + symbol,
             lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("after completed resume")),
@@ -916,10 +916,10 @@ def test_resume_count_budget_uses_only_actual_current_hook_keys(
     probe = module._simulation_record_report_lines
     calls = []
 
-    def inspect(outcomes, coverage_campaigns, trailing_lines, **kwargs):
+    def inspect(outcomes, coverage_records, trailing_lines, **kwargs):
         assert outcomes[0].manifest_path == original.manifest_path
         calls.append((frozenset(flow._current_published_pre_sim_keys), trailing_lines))
-        return probe(outcomes, coverage_campaigns, trailing_lines, **kwargs)
+        return probe(outcomes, coverage_records, trailing_lines, **kwargs)
 
     monkeypatch.setattr(module, "_simulation_record_report_lines", inspect)
     result = flow.run_prepared_simulation(prepared, _admission())
@@ -1305,9 +1305,9 @@ def test_coverage_report_numbers_are_compact_and_non_scientific(value, expected)
 def test_coverage_report_keeps_nonpassing_status_without_optional_detail(
     collection, evaluation, expected
 ) -> None:
-    campaign = SimpleNamespace(collection=collection, evaluation=evaluation)
+    coverage_record = SimpleNamespace(collection=collection, evaluation=evaluation)
 
-    assert _coverage_report_suffix(campaign) == expected
+    assert _coverage_report_suffix(coverage_record) == expected
 
 
 def test_mcp_simulation_record_details_bound_observations_without_collapsing_axes(
@@ -1494,7 +1494,7 @@ def _coverage_card(
     status: str = "complete",
 ) -> list[str]:
     """Render one coverage Target's card block from a stub Coverage Campaign."""
-    campaign = SimpleNamespace(
+    coverage_record = SimpleNamespace(
         collection={"status": status, "diagnostics": ()},
         evaluation={
             "status": "not_requested",
@@ -1514,7 +1514,10 @@ def _coverage_card(
         observations=(),
     )
     return _simulation_record_report_lines(
-        (outcome,), {"sim_soc": campaign}, trailing_lines=None, report_path=tmp_path / "r.json"
+        (outcome,),
+        {"sim_soc": coverage_record},
+        trailing_lines=None,
+        report_path=tmp_path / "r.json",
     )[0].splitlines()
 
 

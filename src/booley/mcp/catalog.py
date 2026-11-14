@@ -398,7 +398,7 @@ class Exposure:
     nested: frozenset[str] | None = None
     explicit: frozenset[str] | None = None
     debug: bool = False
-    campaign: bool = False
+    coverage_record: bool = False
     project: bool = False
 
     @classmethod
@@ -418,7 +418,7 @@ class Exposure:
             explicit=names("BOOLEY_MCP_TOOLS") if "BOOLEY_MCP_TOOLS" in values else None,
             debug=values.get("BOOLEY_MCP_DEBUG_TOOLS", "").strip().lower()
             not in {"", "0", "false", "no"},
-            campaign=bool(values.get("BOOLEY_COVERAGE_RECORD")),
+            coverage_record=bool(values.get("BOOLEY_COVERAGE_RECORD")),
             project=bool(values.get("BOOLEY_COVERAGE_PROJECT")),
         )
 
@@ -452,7 +452,7 @@ def _interactive_utility_visible(name: str, exposure: Exposure) -> bool:
 
 
 def utilities_visible(exposure: Exposure) -> bool:
-    return not exposure.campaign
+    return not exposure.coverage_record
 
 
 def goals_visible(exposure: Exposure) -> bool:
@@ -463,7 +463,7 @@ def coverage_visible(exposure: Exposure) -> bool:
     return (
         exposure.nested is not None
         and _COVERAGE_EVIDENCE_TOOL_NAME in exposure.nested
-        and exposure.campaign
+        and exposure.coverage_record
         and exposure.project
     )
 

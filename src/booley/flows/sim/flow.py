@@ -140,12 +140,12 @@ from .record_presentation import (
     _append_missing_report_lines,
     _baseline_refusal_line,
     _build_infrastructure_detail,
-    _coverage_campaign_exit_code,
-    _coverage_campaign_lines,
     _coverage_compatibility_targets,
     _coverage_failed_target,
     _coverage_failure_outcome,
     _coverage_preflight_findings_outcome,
+    _coverage_record_exit_code,
+    _coverage_record_lines,
     _coverage_request_selector,
     _coverage_request_target,
     _grade_exit_code,
@@ -153,8 +153,8 @@ from .record_presentation import (
     _pre_sim_integrity_failure,
     _pre_sim_lines,
     _pre_sim_projection,
-    _resolved_coverage_campaigns,
-    _retain_coverage_campaign,
+    _resolved_coverage_records,
+    _retain_coverage_record,
     _simulation_record_build_infrastructure_detail,
     _simulation_record_hook_inputs,
     _simulation_record_preview_entry,
@@ -1351,7 +1351,7 @@ class SimulateFlow(
                 outcome = simulation_record.run(request)
             except SimulationRecordCancellationError as exc:
                 self._capture_cycle_report(outcomes)
-                return self._with_coverage_campaign_lines(
+                return self._with_coverage_record_lines(
                     self._simulation_record_cancelled_outcome(exc), outcomes
                 )
             except (OSError, ValueError, RuntimeError) as exc:
@@ -1360,7 +1360,7 @@ class SimulateFlow(
                 )
             outcomes.append(outcome)
             try:
-                _retain_coverage_campaign(progress, outcome)
+                _retain_coverage_record(progress, outcome)
             except (OSError, ValueError) as exc:
                 return self._coverage_simulation_record_failure(
                     outcomes[:-1], requests, index, request, exc, failed_outcome=outcome
@@ -1382,11 +1382,11 @@ class SimulateFlow(
         return self._simulation_record_endpoint_outcome(outcomes)
 
     @staticmethod
-    def _with_coverage_campaign_lines(
+    def _with_coverage_record_lines(
         result: EndpointOutcome, outcomes: Sequence[SimulationRecordOutcome]
     ) -> EndpointOutcome:
         """Append the finished Targets' ``coverage campaign:`` lines to a stopped run's card."""
-        lines = _coverage_campaign_lines(outcomes)
+        lines = _coverage_record_lines(outcomes)
         if lines:
             result.report_text = "\n".join([result.report_text, *lines])
         return result
@@ -2121,13 +2121,14 @@ class SimulateFlow(
     ) -> EndpointOutcome:
         self._simulation_record_outcomes = tuple(outcomes)
         self._capture_cycle_report(outcomes)
-        coverage_campaigns = _resolved_coverage_campaigns(outcomes)
+        coverage_records = _resolved_coverage_records(outcomes)
         grades = [outcome.aggregate_grade for outcome in outcomes]
-        exit_code = _coverage_campaign_exit_code(outcomes, coverage_campaigns) or max(
+        exit_code = _coverage_record_exit_code(outcomes, coverage_records) or max(
             (_grade_exit_code(grade) for grade in grades), default=EXIT_SUCCESS
         )
         threshold_missed = any(
-            campaign.evaluation["status"] == "fail" for campaign in coverage_campaigns.values()
+            coverage_record.evaluation["status"] == "fail"
+            for coverage_record in coverage_records.values()
         )
         report: dict[str, Any] = {
             "report_path": self._report_destination(),
@@ -2138,7 +2139,7 @@ class SimulateFlow(
         coverage_targets = _coverage_compatibility_targets(
             outcomes,
             invocation,
-            coverage_campaigns,
+            coverage_records,
         )
         detail: dict[str, object] = {"records": simulation_records}
         firings, current_keys = _simulation_record_hook_inputs(outcomes, invocation)
@@ -2149,9 +2150,7 @@ class SimulateFlow(
         budget_lines: list[str] | None = None
         if keys.issubset(firings):
             _, budget_lines = _pre_sim_lines(firings, keys)
-        lines = _simulation_record_report_lines(
-            outcomes, coverage_campaigns, budget_lines, **report
-        )
+        lines = _simulation_record_report_lines(outcomes, coverage_records, budget_lines, **report)
         lines.extend(hook_lines)
         if coverage_targets:
             detail.update(coverage=True, targets=coverage_targets, pending_targets=[])

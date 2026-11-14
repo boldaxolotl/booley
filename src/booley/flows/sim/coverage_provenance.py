@@ -9,13 +9,13 @@ from typing import TYPE_CHECKING, cast
 if TYPE_CHECKING:
     from .coverage_invocation import CoverageTargetPlan
 
-from booley.flows.sim.coverage_json import CAMPAIGN_FINGERPRINT_JSON, content_digest
+from booley.flows.sim.coverage_json import COVERAGE_RECORD_FINGERPRINT_JSON, content_digest
 from booley.targets.domain import TargetInspection
 
 
 def coverage_digest(value: object) -> str:
     """Fingerprint canonical JSON data independently of mapping order."""
-    return content_digest(CAMPAIGN_FINGERPRINT_JSON.encode(value))
+    return content_digest(COVERAGE_RECORD_FINGERPRINT_JSON.encode(value))
 
 
 def coverage_source_closure(inspection: TargetInspection) -> dict[str, list[dict[str, str]]]:

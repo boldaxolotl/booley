@@ -22,7 +22,6 @@ from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
 from booley.criteria.state import CriterionEntry, DevelopmentState
 from booley.flows.sim import waiver_candidates as candidates
-from booley.flows.sim.coverage_campaign import DurableTargetIdentity, encode_coverage_campaign
 from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.coverage_policy import (
     CoverageThreshold,
@@ -34,9 +33,10 @@ from booley.flows.sim.coverage_provisional import (
     criterion_from_evaluation,
     evaluate_provisional_coverage,
 )
+from booley.flows.sim.coverage_record import DurableTargetIdentity, encode_coverage_record
 from booley.flows.sim.coverage_reference import (
-    ResolvedCoverageCampaign,
-    resolve_persisted_coverage_campaign_reference,
+    ResolvedCoverageRecord,
+    resolve_persisted_coverage_record_reference,
 )
 from booley.flows.sim.coverage_waiver_promotion import (
     ApprovalStamps,
@@ -154,11 +154,11 @@ class GoalWaiverService:
             DurableTargetIdentity(item.identity) for item in TargetCatalog.build(self.root).list()
         )
 
-    def _resolved(self, detail: Mapping[str, Any]) -> ResolvedCoverageCampaign:
+    def _resolved(self, detail: Mapping[str, Any]) -> ResolvedCoverageRecord:
         reference = detail.get("coverage_campaign_reference")
         if not isinstance(reference, Mapping):
             raise ProposalError("coverage evidence has no authenticated Campaign reference")
-        return resolve_persisted_coverage_campaign_reference(
+        return resolve_persisted_coverage_record_reference(
             self.paths.runtime_dir / "flow-reports", cast("Mapping[str, Any]", reference)
         )
 
@@ -166,10 +166,10 @@ class GoalWaiverService:
         config, _anchor = policy_location(self.root)
         return load_approved_waiver_set(config, self._roots(), self._targets())
 
-    def _validate_campaign(self, detail: Mapping[str, Any]) -> ResolvedCoverageCampaign:
+    def _validate_coverage_record(self, detail: Mapping[str, Any]) -> ResolvedCoverageRecord:
         resolved = self._resolved(detail)
         if (
-            encode_coverage_campaign(resolved.loaded.campaign)["evaluation"]
+            encode_coverage_record(resolved.loaded.coverage_record)["evaluation"]
             != detail.get("evaluation")
             and "goal_derivation" not in detail
         ):
@@ -189,7 +189,7 @@ class GoalWaiverService:
         if row is None:
             raise ProposalError("waiver proposal requires selected immutable coverage evidence")
         item = self._candidate(candidate_id)
-        resolved = self._validate_campaign(row["detail"])
+        resolved = self._validate_coverage_record(row["detail"])
         goal = next(item.spec for item in record.goals if item.spec.key == goal_key)
         if not fresh_observation(goal, row, state, self.root):
             raise ProposalError("selected coverage producer evidence is stale")
@@ -232,7 +232,7 @@ class GoalWaiverService:
     def _validate_candidate(
         self,
         item: candidates.WaiverCandidate,
-        resolved: ResolvedCoverageCampaign,
+        resolved: ResolvedCoverageRecord,
         detail: Mapping[str, Any],
     ) -> None:
         binding = item.binding
@@ -250,8 +250,8 @@ class GoalWaiverService:
         source = self.root / item.proposal.source
         source_digest = content_digest(source.read_bytes())
         verdict = evaluate_provisional_coverage(
-            resolved.loaded.campaign,
-            criterion_from_evaluation(resolved.loaded.campaign),
+            resolved.loaded.coverage_record,
+            criterion_from_evaluation(resolved.loaded.coverage_record),
             (item.as_provisional(),),
             current_sources={item.proposal.source: source_digest},
         )
@@ -292,7 +292,7 @@ class GoalWaiverService:
 
     def _revalidate(
         self, proposal: Proposal
-    ) -> tuple[candidates.WaiverCandidate, ResolvedCoverageCampaign, dict[str, Any]]:
+    ) -> tuple[candidates.WaiverCandidate, ResolvedCoverageRecord, dict[str, Any]]:
         assert proposal.waiver is not None
         binding = proposal.waiver
         if rebased_policy(binding.policy.to_json()) != waiver_policy_fingerprint(self.root):
@@ -310,7 +310,7 @@ class GoalWaiverService:
             != binding.campaign_reference.to_json()
         ):
             raise ProposalError("selected coverage Campaign changed since proposal creation")
-        resolved = self._validate_campaign(row["detail"])
+        resolved = self._validate_coverage_record(row["detail"])
         if not fresh_observation(proposal.before or proposal.after, row, state, self.root):
             raise ProposalError("selected coverage producer evidence became stale")
         self._validate_candidate(item, resolved, row["detail"])
@@ -357,7 +357,7 @@ class GoalWaiverService:
             raise ProposalError("approved waiver policy changed during promotion preparation")
 
         def evaluate(goal: GoalSpec, detail: Mapping[str, Any]) -> tuple[bool, dict[str, Any]]:
-            resolved = self._validate_campaign(detail)
+            resolved = self._validate_coverage_record(detail)
             result = self._reevaluate(goal, resolved, waivers)
             return self._project(goal, detail, result, policy)
 
@@ -400,7 +400,7 @@ class GoalWaiverService:
 
     def evaluate(self, goal: GoalSpec, detail: Mapping[str, Any]) -> tuple[bool, dict[str, Any]]:
         """Numeric coverage relaxation re-evaluates strict points, never old percentages."""
-        resolved = self._validate_campaign(detail)
+        resolved = self._validate_coverage_record(detail)
         waivers, policy = self._checked_waivers()
         result = self._reevaluate(goal, resolved, waivers)
         return self._project(goal, detail, result, policy)
@@ -415,11 +415,11 @@ class GoalWaiverService:
 
     @staticmethod
     def _reevaluate(
-        goal: GoalSpec, resolved: ResolvedCoverageCampaign, waivers: ApprovedWaiverSet
+        goal: GoalSpec, resolved: ResolvedCoverageRecord, waivers: ApprovedWaiverSet
     ) -> Mapping[str, Any]:
         """Reset previous annotations and apply today's declared Goal semantics."""
-        campaign = resolved.loaded.campaign
-        original = criterion_from_evaluation(campaign)
+        coverage_record = resolved.loaded.coverage_record
+        original = criterion_from_evaluation(coverage_record)
         thresholds = tuple(
             CoverageThreshold(key, Fraction(str(value["min_pct"])))
             for key, value in goal.params["metrics"].items()
@@ -428,7 +428,7 @@ class GoalWaiverService:
         criterion = replace(
             original, thresholds=thresholds, tests=None if tests == "all" else tuple(tests)
         )
-        return evaluation_json(strict_reevaluation(campaign, waivers, criterion=criterion))
+        return evaluation_json(strict_reevaluation(coverage_record, waivers, criterion=criterion))
 
     @staticmethod
     def _project(

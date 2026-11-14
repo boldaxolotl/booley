@@ -22,16 +22,16 @@ from booley.core.boundary import (
 from booley.flows.sim.coverage_json import coverage_mapping_document
 
 from .coverage_analysis_input import CoverageSourceClosure
-from .coverage_campaign import (
-    CoverageCampaign,
+from .coverage_json import FrozenJson, freeze_coverage_mapping
+from .coverage_point_query import coverage_point_matches
+from .coverage_record import (
     CoverageFinding,
     CoveragePoint,
+    CoverageRecord,
     CoverageRollup,
     decode_coverage_point_id,
     encode_coverage_point,
 )
-from .coverage_json import FrozenJson, freeze_coverage_mapping
-from .coverage_point_query import coverage_point_matches
 from .coverage_source_gaps import source_gap_overview, source_gap_paths
 
 #: The largest Campaign one Analyst evidence session indexes.
@@ -184,18 +184,18 @@ class CoverageEvidenceSession:
 
     def __init__(
         self,
-        campaign: CoverageCampaign,
+        coverage_record: CoverageRecord,
         sources: CoverageSourceClosure | None,
         *,
         total_budget_bytes: int = DEFAULT_TOTAL_BUDGET_BYTES,
     ) -> None:
         if total_budget_bytes <= 0:
             raise CoverageEvidenceError("Evidence budget must be positive")
-        if len(campaign.points) > MAX_POINTS:
+        if len(coverage_record.points) > MAX_POINTS:
             raise CoverageEvidenceError("Coverage Point count exceeds session limit")
-        self._campaign = campaign
+        self._coverage_record = coverage_record
         self._sources = sources
-        self._points = tuple(sorted(campaign.points, key=_point_id))
+        self._points = tuple(sorted(coverage_record.points, key=_point_id))
         self._by_id = {point.id: point for point in self._points}
         self._point_counts, self._uncovered_metrics, self._uncovered_sources = _overview_counts(
             self._points
@@ -262,37 +262,40 @@ class CoverageEvidenceSession:
             self._uncovered_sources.items(), key=lambda item: (-item[1], item[0])
         )
         return {
-            "rtl_sources_without_points": source_gap_overview(self._campaign),
-            "coverage_record_id": self._campaign.campaign_id,
+            "rtl_sources_without_points": source_gap_overview(self._coverage_record),
+            "coverage_record_id": self._coverage_record.coverage_record_id,
             "target": {
-                "identity": self._campaign.target.identity,
-                "selector": self._campaign.target.selector,
+                "identity": self._coverage_record.target.identity,
+                "selector": self._coverage_record.target.selector,
             },
-            "collection": coverage_mapping_document(self._campaign.collection),
+            "collection": coverage_mapping_document(self._coverage_record.collection),
             "normalization": {
-                "status": self._campaign.normalization["status"],
+                "status": self._coverage_record.normalization["status"],
                 "unrecognized_record_count": len(
-                    cast(tuple[object, ...], self._campaign.normalization["unrecognized_records"])
+                    cast(
+                        tuple[object, ...],
+                        self._coverage_record.normalization["unrecognized_records"],
+                    )
                 ),
             },
-            "evaluation": coverage_mapping_document(self._campaign.evaluation),
-            "rollups": [_rollup(rollup) for rollup in self._campaign.rollups],
+            "evaluation": coverage_mapping_document(self._coverage_record.evaluation),
+            "rollups": [_rollup(rollup) for rollup in self._coverage_record.rollups],
             "point_counts": dict(sorted(self._point_counts.items())),
             "uncovered_eligible_by_metric": dict(sorted(self._uncovered_metrics.items())),
             "uncovered_eligible_by_source": [
                 {"source": source, "points": count} for source, count in source_groups[:100]
             ],
             "uncovered_source_groups_omitted": max(0, len(source_groups) - 100),
-            "tests": _tests(self._campaign),
-            "findings": [_finding(item) for item in self._campaign.findings[:100]],
-            "findings_omitted": max(0, len(self._campaign.findings) - 100),
+            "tests": _tests(self._coverage_record),
+            "findings": [_finding(item) for item in self._coverage_record.findings[:100]],
+            "findings_omitted": max(0, len(self._coverage_record.findings) - 100),
             "source_access": "verified" if self._sources is not None else "report_only",
         }
 
     def _zero_point_sources(self, request: Mapping[str, object]) -> dict[str, object]:
         _closed(request, {"view", "limit", "cursor"})
         limit = _bounded_int(request.get("limit", 50), "limit", 1, MAX_POINT_LIMIT)
-        all_paths = source_gap_paths(self._campaign)
+        all_paths = source_gap_paths(self._coverage_record)
         offset = _cursor_offset(request, len(all_paths))
         paths = []
         for path in all_paths[offset : offset + limit]:
@@ -587,7 +590,7 @@ def _rollup(value: CoverageRollup) -> dict[str, object]:
     }
 
 
-def _tests(campaign: CoverageCampaign) -> dict[str, object]:
+def _tests(coverage_record: CoverageRecord) -> dict[str, object]:
     runs = [
         {
             "id": run.id,
@@ -596,13 +599,13 @@ def _tests(campaign: CoverageCampaign) -> dict[str, object]:
             "simulation_verdict": run.simulation_verdict,
             "collection": run.collection,
         }
-        for run in campaign.runs[:100]
+        for run in coverage_record.runs[:100]
     ]
     return {
-        "declared_count": len(campaign.declared_tests),
-        "selected_count": len(campaign.selected_tests),
+        "declared_count": len(coverage_record.declared_tests),
+        "selected_count": len(coverage_record.selected_tests),
         "runs": runs,
-        "runs_omitted": max(0, len(campaign.runs) - 100),
+        "runs_omitted": max(0, len(coverage_record.runs) - 100),
     }
 
 

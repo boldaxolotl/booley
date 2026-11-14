@@ -21,8 +21,8 @@ from booley.core.boundary import BoundaryError
 from booley.core.file_lock import acquire_file_lock, release_file_lock
 from booley.flows.sim import waiver_candidates as store
 from booley.flows.sim.waiver_candidates import (
-    CampaignBinding,
     CandidateRecord,
+    CoverageRecordBinding,
     Rejection,
     WaiverCandidateLockError,
     WaiverCandidateRecordError,
@@ -43,12 +43,12 @@ POINT = "cp1:eyJwb2ludCI6MX0"
 OTHER_POINT = "cp1:eyJwb2ludCI6Mn0"
 
 
-def _binding(campaign: str = "camp-1", point_store: str = SHA_A) -> CampaignBinding:
-    return CampaignBinding(
-        campaign_id=campaign,
+def _binding(coverage_record: str = "camp-1", point_store: str = SHA_A) -> CoverageRecordBinding:
+    return CoverageRecordBinding(
+        coverage_record_id=coverage_record,
         manifest_sha256=SHA_A,
         point_store_sha256=point_store,
-        campaign_path=f"sim/1/core/{campaign}/coverage.json",
+        coverage_record_path=f"sim/1/core/{coverage_record}/coverage.json",
         target_identity="vlnv:acme:ip:core:1.0#sim_core",
         target_selector="sim_core",
     )
@@ -114,7 +114,7 @@ def test_first_proposal_creates_the_record_lazily(tmp_path: Path) -> None:
         assert waiver_candidates_path(tmp_path).stat().st_mode & 0o777 == 0o644
 
 
-def test_same_campaign_bumps_count_and_replaces_justification(tmp_path: Path) -> None:
+def test_same_coverage_record_bumps_count_and_replaces_justification(tmp_path: Path) -> None:
     _record(tmp_path)
     _record(tmp_path, _proposal(justification="tied low"), invocation_id="inv-2", now=LATER)
 
@@ -126,7 +126,7 @@ def test_same_campaign_bumps_count_and_replaces_justification(tmp_path: Path) ->
     assert candidate.last_invocation_id == "inv-2"
 
 
-def test_different_campaign_replaces_entry_and_resets_count(tmp_path: Path) -> None:
+def test_different_coverage_record_replaces_entry_and_resets_count(tmp_path: Path) -> None:
     _record(tmp_path)
     _record(tmp_path)
     newer = _binding("camp-2", point_store=SHA_B)
@@ -237,7 +237,7 @@ _CORRUPTIONS: dict[str, Any] = {
         first_recorded_at="2027-01-01T00:00:00Z"
     ),
     "bad-sha": lambda d: _candidate_entry(d).update(manifest_sha256="sha256:XYZ"),
-    "escaping-path": lambda d: _candidate_entry(d).update(campaign_path="../x.json"),
+    "escaping-path": lambda d: _candidate_entry(d).update(coverage_record_path="../x.json"),
     "moved-id": lambda d: d.update(candidates={"wc-000000000000": _candidate_entry(d)}),
     "rejection-point": lambda d: d["rejections"][0].update(point_id="bad"),
     "candidate-id": lambda d: _candidate_entry(d).update(candidate_id="wc-000000000000"),
@@ -406,7 +406,7 @@ def test_proposal_ingress_validates_once(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("binding,proposal", [("bad", None), (None, "bad")])
 def test_proposal_ingress_rejects_invalid_reason_and_binding(tmp_path, binding, proposal):
-    binding = replace(_binding(), campaign_path="../bad") if binding else _binding()
+    binding = replace(_binding(), coverage_record_path="../bad") if binding else _binding()
     proposal = replace(_proposal(), reason="bad") if proposal else _proposal()
     with pytest.raises(BoundaryError):
         store.record_proposals(tmp_path, binding, [proposal], invocation_id="inv", now=NOW)

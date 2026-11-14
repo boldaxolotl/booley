@@ -6,7 +6,7 @@ import shutil
 import pytest
 
 from booley.flows.sim import waiver_candidates as store
-from booley.flows.sim.coverage_analysis_input import read_coverage_campaign
+from booley.flows.sim.coverage_analysis_input import read_coverage_record
 from booley.goals.binding import GoalBindingError
 from booley.goals.flow_execution import GoalFlowExecution
 from booley.goals.paths import record_paths
@@ -42,32 +42,35 @@ def test_goal_context_ignores_ticket_slug_and_environment_roots(goal_mode, monke
     assert context.flow_reports_root == paths.root / ".runtime" / "flow-reports"
 
 
-def test_goal_candidate_record_retains_campaign_target_under_bound_record(goal_mode, tmp_path):
+def test_goal_candidate_record_retains_coverage_record_target_under_bound_record(
+    goal_mode, tmp_path
+):
     _env, paths = environment(goal_mode)
     context = GoalCandidateContext.from_recorder(GoalFlowExecution(bind(goal_mode)))
     fixture = tmp_path / "campaign-fixture"
     original = source_project(fixture)
     shutil.copytree(fixture / "reports", context.flow_reports_root, dirs_exist_ok=True)
     path = context.flow_reports_root / original.relative_to(fixture / "reports")
-    loaded = read_coverage_campaign(path)
-    campaign = _strict_failure(loaded.campaign)
-    sha = str(campaign.source_closure["rtl"][0]["sha256"])
+    loaded = read_coverage_record(path)
+    coverage_record = _strict_failure(loaded.coverage_record)
+    sha = str(coverage_record.source_closure["rtl"][0]["sha256"])
     result = record_goal_candidates(
         context,
-        campaign,
+        coverage_record,
         loaded.summary,
         path,
-        _screened(campaign.points[0].id, sha),
+        _screened(coverage_record.points[0].id, sha),
         invocation_id="analyst",
         now=_NOW,
     )
     assert result["status"] == "recorded"
     record = store.load(context.record_dir)
     (candidate,) = record.candidates.values()
-    assert candidate.binding.target_identity == campaign.target.identity
-    assert candidate.binding.target_selector == campaign.target.selector
+    assert candidate.binding.target_identity == coverage_record.target.identity
+    assert candidate.binding.target_selector == coverage_record.target.selector
     assert (
-        candidate.binding.campaign_path == path.relative_to(context.flow_reports_root).as_posix()
+        candidate.binding.coverage_record_path
+        == path.relative_to(context.flow_reports_root).as_posix()
     )
     assert candidate.binding.manifest_sha256 == loaded.summary.manifest_sha256
     assert (paths.root / "waiver-candidates.json").exists()
@@ -75,10 +78,10 @@ def test_goal_candidate_record_retains_campaign_target_under_bound_record(goal_m
     assert not (goal_mode.main / "wrong-runtime").exists()
     refusal = record_goal_candidates(
         context,
-        campaign,
+        coverage_record,
         loaded.summary,
         original,
-        _screened(campaign.points[0].id, sha),
+        _screened(coverage_record.points[0].id, sha),
         invocation_id="outside",
         now=_NOW,
     )
