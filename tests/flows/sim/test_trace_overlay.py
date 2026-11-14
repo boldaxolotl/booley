@@ -16,13 +16,13 @@ from booley.flows.sim.execution import SimulationExecution, SimulationOptions
 from booley.flows.sim.execution.contract import NamedTests
 from booley.flows.sim.execution.engine import PreparedOrdinaryGroup
 from booley.flows.sim.record.coordinator import (
-    CampaignPolicy,
-    NewCampaignRunRequest,
-    SimulationCampaign,
+    NewSimulationRecordRunRequest,
+    SimulationRecord,
+    SimulationRecordPolicy,
 )
 from booley.flows.sim.record.flow_planning import (
-    plan_coarse_simulation_campaign,
-    plan_ordinary_hdl_campaign,
+    plan_coarse_simulation_record,
+    plan_ordinary_hdl_simulation_record,
 )
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.trace_overlay import (
@@ -111,8 +111,8 @@ def _trace_campaign_plan(handle, execution: SimulationExecution, *, cocotb: bool
         "required_suite_catalog_backed": False,
     }
     if cocotb:
-        return plan_coarse_simulation_campaign(**common, selected_tests=names, kind="cocotb_batch")
-    return plan_ordinary_hdl_campaign(**common, groups=(names,))
+        return plan_coarse_simulation_record(**common, selected_tests=names, kind="cocotb_batch")
+    return plan_ordinary_hdl_simulation_record(**common, groups=(names,))
 
 
 def _stop_after_planning_authentication(_group: PreparedOrdinaryGroup):
@@ -506,12 +506,12 @@ class TestWriteTraceOverlay:
         invocation.mkdir(parents=True)
 
         with pytest.raises(_PlanningDisclosureAuthenticatedError):
-            SimulationCampaign(executor).run(
-                NewCampaignRunRequest(
+            SimulationRecord(executor).run(
+                NewSimulationRecordRunRequest(
                     plan,
                     handle.project_root,
                     invocation.parent,
-                    CampaignPolicy(),
+                    SimulationRecordPolicy(),
                     invocation,
                     _admission(),
                 )

@@ -41,7 +41,7 @@ from booley.flows.sim.coverage_policy import (
     coverage_metrics,
     evaluate_coverage_campaign,
 )
-from booley.flows.sim.record.codec import UnsupportedSimulationCampaignFormatError
+from booley.flows.sim.record.codec import UnsupportedSimulationRecordFormatError
 from tests.flows.sim.coverage_campaign_test_support import decode_document, rewrite_manifest_as_v4
 from tests.flows.sim.test_coverage_campaign import _valid_document
 from tests.runtime.test_sandbox_layout import project_alias
@@ -511,7 +511,7 @@ def test_readers_refuse_every_coverage_campaign_booley_0_4_0_wrote_as_older(
     document["$schema"] = f"booley.coverage-campaign/{version}"
     path.write_text(json.dumps(document), encoding="utf-8")
 
-    with pytest.raises(UnsupportedSimulationCampaignFormatError, match="older Booley"):
+    with pytest.raises(UnsupportedSimulationRecordFormatError, match="older Booley"):
         reader(path, TARGET)
 
 
@@ -665,7 +665,7 @@ def test_a_campaign_written_by_booley_0_3_0_is_refused_as_older(
 ) -> None:
     paths = _publish_campaign_as_written_by_booley_0_3_0(tmp_path)
 
-    with pytest.raises(UnsupportedSimulationCampaignFormatError) as error:
+    with pytest.raises(UnsupportedSimulationRecordFormatError) as error:
         load_coverage_campaign(paths.campaign, TARGET)
 
     # Outside a report layout no invocation directory can be named.

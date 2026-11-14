@@ -123,7 +123,7 @@ def test_alias_traversal_uses_reader_domain_errors(project_alias) -> None:
         resolve_coverage_campaign_reference,
         resolve_persisted_coverage_campaign_reference,
     )
-    from booley.flows.sim.record import SimulationCampaignIntegrityError
+    from booley.flows.sim.record import SimulationRecordIntegrityError
     from booley.flows.sim.record.resume import validate_resume_manifest
     from booley.flows.sim.record_retention import CampaignRetentionError, _invocation
 
@@ -143,7 +143,7 @@ def test_alias_traversal_uses_reader_domain_errors(project_alias) -> None:
         (resolve_coverage_campaign_reference, CoverageCampaignReferenceError),
         (
             lambda selected: validate_resume_manifest(selected, project_root=target),
-            SimulationCampaignIntegrityError,
+            SimulationRecordIntegrityError,
         ),
         (lambda selected: _invocation(selected, 1), CampaignRetentionError),
     ):

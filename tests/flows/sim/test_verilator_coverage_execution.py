@@ -25,22 +25,22 @@ from booley.flows.sim.coverage_overlay import CoverageOverlay
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome
 from booley.flows.sim.execution.contract import PreSimEvidence, SimulationOptions
 from booley.flows.sim.record.coordinator import (
-    CampaignPolicy,
-    NewCampaignRunRequest,
-    SimulationCampaign,
+    NewSimulationRecordRunRequest,
+    SimulationRecord,
+    SimulationRecordPolicy,
 )
 from booley.flows.sim.record.coverage_execution import (
     _coverage_observation,
     _publish_coverage_build_failure,
 )
-from booley.flows.sim.record.model import create_simulation_campaign_plan
+from booley.flows.sim.record.model import create_simulation_record_plan
 from booley.flows.sim.record.planning import finalize_manifest
 from booley.flows.sim.record.serial_execution import (
     BuildScope,
     bundle_build_attempt,
     simulation_attempt,
 )
-from booley.flows.sim.record.store import CampaignStore
+from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.verilator_coverage import (
     PINNED_VERILATOR,
@@ -1116,11 +1116,11 @@ def _coverage_build_failure_request(tmp_path: Path):
     (project / "run").mkdir()
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
-    request = NewCampaignRunRequest(
-        create_simulation_campaign_plan(finalize_manifest(document)),
+    request = NewSimulationRecordRunRequest(
+        create_simulation_record_plan(finalize_manifest(document)),
         project,
         invocation.parent,
-        CampaignPolicy(),
+        SimulationRecordPolicy(),
         invocation,
         _admission(),
     )
@@ -1134,16 +1134,16 @@ def test_coverage_infrastructure_build_failure_publishes_terminal_campaign(
 ) -> None:
     request, invocation = _coverage_build_failure_request(tmp_path)
     # Isolate Simulation build/result durability from nested collector publication.
-    monkeypatch.setattr(SimulationCampaign, "_publish_coverage_reference", lambda *_args: None)
+    monkeypatch.setattr(SimulationRecord, "_publish_coverage_reference", lambda *_args: None)
     monkeypatch.setattr(
         "booley.flows.sim.record.coverage_execution._coverage_evidence", lambda *_args: []
     )
 
-    outcome = SimulationCampaign(_CoverageFailedBuildExecutor()).run(request)
+    outcome = SimulationRecord(_CoverageFailedBuildExecutor()).run(request)
 
     assert outcome.complete is True
     assert outcome.aggregate_grade == "error"
-    store = CampaignStore(invocation / "targets" / "sim" / "record")
+    store = SimulationRecordStore(invocation / "targets" / "sim" / "record")
     recovery = store.scan()
     assert recovery.complete
     assert not recovery.interrupted
@@ -1157,7 +1157,7 @@ def test_coverage_infrastructure_build_failure_publishes_terminal_campaign(
     assert observation["failure_class"] == "infrastructure"
     assert observation["functional"] == "not_observed"
     assert observation["detail"]["code"] == "build_transport"
-    resumed = SimulationCampaign(_CoverageFailedBuildExecutor()).run(request)
+    resumed = SimulationRecord(_CoverageFailedBuildExecutor()).run(request)
     assert resumed.complete
     assert store.scan().items[0].attempt_count == 1
 
@@ -1225,7 +1225,7 @@ def test_coverage_pre_sim_project_relative_hook_uses_project_root(
     run = expand_run_directory(
         configured,
         project_root=tmp_path,
-        campaign_id="campaign",
+        simulation_record_id="campaign",
         target_key="sim",
         work_item_key="alpha",
         attempt_key="attempt",

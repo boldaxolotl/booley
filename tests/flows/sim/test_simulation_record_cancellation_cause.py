@@ -13,15 +13,15 @@ import pytest
 
 from booley.flows import endpoint_admission
 from booley.flows.sim.record import coordinator
-from booley.flows.sim.record.capacity import CampaignCapacityError
+from booley.flows.sim.record.capacity import SimulationRecordCapacityError
 from booley.flows.sim.record.coordinator import (
-    SimulationCampaign,
-    SimulationCampaignCancellationError,
+    SimulationRecord,
+    SimulationRecordCancellationError,
 )
 from booley.flows.sim.record.scheduler import (
-    BoundedCampaignScheduler,
+    BoundedSimulationRecordScheduler,
 )
-from booley.flows.sim.record.store import CampaignStore
+from booley.flows.sim.record.store import SimulationRecordStore
 from booley.runtime.job_slots import (
     SlotStore,
 )
@@ -40,7 +40,7 @@ class _Campaign:
 
     def __init__(self, tmp_path: Path, *, lanes: int) -> None:
         self.manifest = _two_item_manifest()
-        self.store = CampaignStore(tmp_path / "record")
+        self.store = SimulationRecordStore(tmp_path / "record")
         self.store.publish_manifest(self.manifest)
         project = tmp_path / "project"
         (project / ".booley").mkdir(parents=True)
@@ -62,7 +62,7 @@ class _Campaign:
             lanes=lanes,
         )
         self.outer_message: str | None = None
-        self.scheduler: BoundedCampaignScheduler | None = None
+        self.scheduler: BoundedSimulationRecordScheduler | None = None
 
     def run(self, items: int, trigger: Callable[[], None]) -> None:
         """Run *items* work items; the outer lane fires *trigger* and records its message."""
@@ -81,10 +81,10 @@ class _Campaign:
                 time.sleep(0.01)
             try:
                 coordinator.raise_if_cancelled_before_publication()
-            except CampaignCapacityError as exc:
+            except SimulationRecordCapacityError as exc:
                 self.outer_message = str(exc)
 
-        self.scheduler = BoundedCampaignScheduler(
+        self.scheduler = BoundedSimulationRecordScheduler(
             self.capacity,
             allocate=lambda item: _scheduled_attempt(self.store, item),
             execute=execute,
@@ -102,7 +102,7 @@ def test_outer_lane_stop_requested_names_cause(tmp_path: Path) -> None:
 
     def fail_an_item() -> None:
         assert campaign.scheduler is not None
-        campaign.scheduler._fail_campaign(RuntimeError("an item failed"))
+        campaign.scheduler._fail_simulation_record(RuntimeError("an item failed"))
 
     campaign.run(1, trigger=fail_an_item)
 
@@ -178,6 +178,6 @@ def test_cancelled_campaign_stops_before_publication() -> None:
         )
     )
     with pytest.raises(
-        SimulationCampaignCancellationError, match="cancelled: Job Slot token missing"
+        SimulationRecordCancellationError, match="cancelled: Job Slot token missing"
     ):
-        SimulationCampaign._raise_if_cancelled(request)  # type: ignore[arg-type]
+        SimulationRecord._raise_if_cancelled(request)  # type: ignore[arg-type]

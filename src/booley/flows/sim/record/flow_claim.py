@@ -17,7 +17,7 @@ from booley.flows.memory_admission import MemorySizing
 from booley.flows.test_runs import TestRun
 from booley.runtime.job_slots import MemoryClaim, SlotToken
 
-from .model import SimulationCampaignManifest
+from .model import SimulationRecordManifest
 from .test_run_binding import work_item_test_runs
 
 #: Sizes a work item from its Target selector, Test Runs and flags (``None``: runs alone).
@@ -53,7 +53,7 @@ class FlowClaim:
     def expect(
         self,
         store_root: Path,
-        manifest: SimulationCampaignManifest,
+        manifest: SimulationRecordManifest,
         items: Iterable[Mapping[str, object]],
     ) -> None:
         """Replace the shared builds *items* of one Campaign still need."""
@@ -93,7 +93,7 @@ class FlowClaim:
         return self._dropped
 
     def item_claim(
-        self, store_root: Path, manifest: SimulationCampaignManifest, item: Mapping[str, object]
+        self, store_root: Path, manifest: SimulationRecordManifest, item: Mapping[str, object]
     ) -> MemoryClaim | None:
         """The claim *item* takes before it runs; ``None`` while it runs under the Flow's.
 

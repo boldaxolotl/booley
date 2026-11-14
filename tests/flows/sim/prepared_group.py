@@ -17,7 +17,7 @@ from pathlib import Path
 
 from booley.flows.sim.config import resolve_run_cwd
 from booley.flows.sim.execution import SimulationExecution, SimulationTargetOutcome
-from booley.flows.sim.record.codec import SimulationCampaignIntegrityError
+from booley.flows.sim.record.codec import SimulationRecordIntegrityError
 from booley.flows.sim.runtime_inputs import materialize_campaign_runtime_inputs
 from booley.targets.domain import TargetHandle
 
@@ -43,7 +43,7 @@ def _capture_snapshot(
         shutil.copytree(build_root, snapshot, symlinks=True)
         return
     if not artifact_paths:
-        raise SimulationCampaignIntegrityError("successful build has no authenticated image")
+        raise SimulationRecordIntegrityError("successful build has no authenticated image")
     snapshot.mkdir(parents=True, exist_ok=True)
     for source in (*artifact_paths, *(build_root / name for name in runtime_inputs)):
         target = snapshot / source.relative_to(build_root)

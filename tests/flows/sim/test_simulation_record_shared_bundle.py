@@ -23,17 +23,17 @@ from booley.flows.sim.record import serial_execution
 from booley.flows.sim.record.codec import (
     MANIFEST_SCHEMA,
     RESULT_SCHEMA,
-    SimulationCampaignIntegrityError,
+    SimulationRecordIntegrityError,
     canonical_json_bytes,
 )
 from booley.flows.sim.record.coordinator import (
-    CampaignPolicy,
-    NewCampaignRunRequest,
-    ResumeCampaignRunRequest,
-    SimulationCampaign,
+    NewSimulationRecordRunRequest,
+    ResumeSimulationRecordRunRequest,
+    SimulationRecord,
+    SimulationRecordPolicy,
     WorkExecutionRequest,
 )
-from booley.flows.sim.record.model import create_simulation_campaign_plan
+from booley.flows.sim.record.model import create_simulation_record_plan
 from booley.flows.sim.record.planning import finalize_manifest, manifest_digest
 from booley.flows.sim.record.resume import (
     ValidatedManifestNode,
@@ -44,7 +44,7 @@ from booley.flows.sim.record.serial_execution import (
     OrdinaryHdlSerialExecutor,
     capture_private_image,
 )
-from booley.flows.sim.record.store import CampaignStore
+from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.runtime_inputs import (
     RuntimeInputError,
     materialize_campaign_runtime_inputs,
@@ -78,7 +78,7 @@ def test_shareable_variant_compiles_once_and_isolates_attempt_runtime_inputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     manifest = _two_item_manifest()
-    plan = create_simulation_campaign_plan(manifest)  # type: ignore[arg-type]
+    plan = create_simulation_record_plan(manifest)  # type: ignore[arg-type]
     project = tmp_path / "project"
     project.mkdir()
     build_root = tmp_path / "engine-build"
@@ -105,14 +105,14 @@ def test_shareable_variant_compiles_once_and_isolates_attempt_runtime_inputs(
     executor = _shared_executor(build_root, run_log, handle, launches, compile_count, bindings)
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
-    outcome = SimulationCampaign(executor).run(
-        NewCampaignRunRequest(
-            plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
+    outcome = SimulationRecord(executor).run(
+        NewSimulationRecordRunRequest(
+            plan, project, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
         )
     )
     _assert_shared_campaign(outcome, compile_count[0], launches, bindings, invocation)
     assert [item["cycle_count"] for item in outcome.observations] == [1234, 1234]
-    store = CampaignStore(outcome.manifest_path.parent)
+    store = SimulationRecordStore(outcome.manifest_path.parent)
     assert store.load_manifest().document["$schema"] == MANIFEST_SCHEMA
     results = _completed_result_documents(store)
     assert all(result["$schema"] == RESULT_SCHEMA for result in results)
@@ -123,7 +123,7 @@ def test_failed_shared_build_blocks_each_named_work_item_with_its_own_selection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     manifest = _named_manifest(("tail", "quick"))
-    plan = create_simulation_campaign_plan(manifest)  # type: ignore[arg-type]
+    plan = create_simulation_record_plan(manifest)  # type: ignore[arg-type]
     project = tmp_path / "project"
     project.mkdir()
     handle = _handle(project)
@@ -135,13 +135,13 @@ def test_failed_shared_build_blocks_each_named_work_item_with_its_own_selection(
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
 
-    outcome = SimulationCampaign(_failed_shared_executor(tmp_path / "engine-build", counters)).run(
-        NewCampaignRunRequest(
-            plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
+    outcome = SimulationRecord(_failed_shared_executor(tmp_path / "engine-build", counters)).run(
+        NewSimulationRecordRunRequest(
+            plan, project, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
         )
     )
 
-    store = CampaignStore(invocation / "targets/sim/record")
+    store = SimulationRecordStore(invocation / "targets/sim/record")
     results = _completed_result_documents(store)
     assert outcome.complete is True
     assert outcome.aggregate_grade == "fail"
@@ -159,27 +159,27 @@ def test_recovered_failed_shared_build_blocks_each_pending_item_with_its_own_sel
     tmp_path: Path,
 ) -> None:
     manifest = _named_manifest(("tail", "quick", "smoke"))
-    plan = create_simulation_campaign_plan(manifest)  # type: ignore[arg-type]
+    plan = create_simulation_record_plan(manifest)  # type: ignore[arg-type]
     project = tmp_path / "project"
     project.mkdir()
     handle = _handle(project)
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
-    store = CampaignStore(invocation / "targets/sim/record")
+    store = SimulationRecordStore(invocation / "targets/sim/record")
     _, seed_counters, validated = _seed_failed_campaign(
         store, manifest, project, handle, tmp_path / "seed-build"
     )
     resumed_counters = {"compile": 0, "launch": 0}
 
-    outcome = SimulationCampaign(
+    outcome = SimulationRecord(
         _failed_shared_executor(tmp_path / "resumed-build", resumed_counters)
     ).run(
-        ResumeCampaignRunRequest(
+        ResumeSimulationRecordRunRequest(
             validated,
             plan,
             project,
             invocation.parent,
-            CampaignPolicy(),
+            SimulationRecordPolicy(),
             invocation,
             _admission(),
         )
@@ -219,7 +219,7 @@ def test_shared_build_failure_preserves_each_selection_identity(
     expected: list[str],
 ) -> None:
     manifest = _single_item_selection_manifest(kind, names)
-    plan = create_simulation_campaign_plan(manifest)  # type: ignore[arg-type]
+    plan = create_simulation_record_plan(manifest)  # type: ignore[arg-type]
     project = tmp_path / "project"
     project.mkdir()
     (project / "run").mkdir()  # a literal run_cwd must exist before any build (#881)
@@ -232,13 +232,15 @@ def test_shared_build_failure_preserves_each_selection_identity(
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
 
-    SimulationCampaign(_failed_shared_executor(tmp_path / "engine-build", counters)).run(
-        NewCampaignRunRequest(
-            plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
+    SimulationRecord(_failed_shared_executor(tmp_path / "engine-build", counters)).run(
+        NewSimulationRecordRunRequest(
+            plan, project, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
         )
     )
 
-    result = _completed_result_documents(CampaignStore(invocation / "targets/sim/record"))[0]
+    result = _completed_result_documents(SimulationRecordStore(invocation / "targets/sim/record"))[
+        0
+    ]
     assert [item["test"] for item in result["observations"]] == expected
 
 
@@ -270,7 +272,7 @@ def _work_request(store, manifest, item, project, handle) -> WorkExecutionReques
         ordinal,
         directory,
         1,
-        CampaignPolicy(),
+        SimulationRecordPolicy(),
         _admission(),
         project,
         handle,
@@ -285,7 +287,7 @@ def _assert_shared_campaign(outcome, compile_count, launches, bindings, invocati
     assert launches[0][1] != launches[1][1]
     assert [item[2] for item in launches] == [b"pristine", b"pristine"]
     assert all(not item[1].exists() for item in launches)
-    store = CampaignStore(invocation / "targets/sim/record")
+    store = SimulationRecordStore(invocation / "targets/sim/record")
     build_results = tuple(store.root.glob("build-variants/*/attempts/*/build-result.json"))
     assert len(build_results) == 1
     result_documents = [
@@ -437,7 +439,7 @@ def test_shared_recovery_rejects_build_attempt_transplants(tmp_path: Path, case:
     message = {"variant": "variant is not in manifest"}.get(
         case, "Build Attempt scope" if scope else "Build Attempt identity"
     )
-    with pytest.raises(SimulationCampaignIntegrityError, match=message):
+    with pytest.raises(SimulationRecordIntegrityError, match=message):
         completed.store.recover_shared_build(variant, 1)
 
 
@@ -461,7 +463,7 @@ def test_shared_recovery_rejects_build_result_reference_mutations(
         document["bundle"]["artifacts"] = []
     _write(path, document)
     variant = document["build_variant_id"]
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(SimulationRecordIntegrityError):
         completed.store.recover_shared_build(variant, 1)
 
 
@@ -498,7 +500,7 @@ def test_shared_recovery_rejects_bundle_transplants(tmp_path: Path, case: str) -
     variant = _read(completed.build_dir / "build-attempt.json")["build_variant_id"]
     _mutate_bundle(case, completed)
     message = "Bundle identity" if case == "campaign" else "Bundle binding"
-    with pytest.raises(SimulationCampaignIntegrityError, match=message):
+    with pytest.raises(SimulationRecordIntegrityError, match=message):
         completed.store.recover_shared_build(variant, 1)
 
 
@@ -555,7 +557,7 @@ def test_recovered_bundle_preserves_verdict_log_trace_timeout_and_launch_contrac
     tmp_path: Path,
 ) -> None:
     manifest = _compatibility_manifest()
-    store = CampaignStore(tmp_path / "record")
+    store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -564,12 +566,12 @@ def test_recovered_bundle_preserves_verdict_log_trace_timeout_and_launch_contrac
     seen: list[SimulationOptions] = []
     first_request = replace(
         _request(store, manifest, items[0], project, invocation=1),
-        policy=CampaignPolicy(timeout_seconds=7),
+        policy=SimulationRecordPolicy(timeout_seconds=7),
     )
     first = _recording_executor(build_root, seen).execute(first_request)
     second_request = replace(
         _request(store, manifest, items[1], project, invocation=1),
-        policy=CampaignPolicy(timeout_seconds=7),
+        policy=SimulationRecordPolicy(timeout_seconds=7),
     )
     second = _recording_executor(build_root, seen).execute(second_request)
 
@@ -593,7 +595,7 @@ def test_private_image_capture_refuses_an_unsafe_runtime_input_path(
     (source_root / "sim.bin").write_bytes(b"x")
     (source_root / "in.hex").write_bytes(b"y")
     destination = tmp_path / "private"
-    with pytest.raises(SimulationCampaignIntegrityError, match="invalid runtime input path"):
+    with pytest.raises(SimulationRecordIntegrityError, match="invalid runtime input path"):
         capture_private_image(
             (source_root / "sim.bin",),
             source_root,
@@ -631,7 +633,7 @@ def test_shared_build_is_recovered_by_a_fresh_executor_and_scoped_per_invocation
     build_root = tmp_path / "engine-build"
     build_root.mkdir()
     (build_root / "simv").write_bytes(b"image")
-    store = CampaignStore(tmp_path / "record")
+    store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(manifest)
     items = manifest.document["work_items"]
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
@@ -677,7 +679,7 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
     manifest_document.pop("fingerprints")
     manifest_document["planning_disclosures"] = list(disclosures.values())
     manifest = finalize_manifest(manifest_document)
-    plan = create_simulation_campaign_plan(manifest)
+    plan = create_simulation_record_plan(manifest)
     project = tmp_path / "project"
     project.mkdir()
     build_root = tmp_path / "engine-build"
@@ -712,25 +714,25 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
     )
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
-    outcome = SimulationCampaign(_executor(build_root, counters, disclosures=disclosures)).run(
-        NewCampaignRunRequest(
-            plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
+    outcome = SimulationRecord(_executor(build_root, counters, disclosures=disclosures)).run(
+        NewSimulationRecordRunRequest(
+            plan, project, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
         )
     )
     _assert_private_legacy_results(outcome, counters, hooks, invocation)
     if mapped:
-        from booley.flows.sim.record.coordinator import ResumeCampaignRunRequest
+        from booley.flows.sim.record.coordinator import ResumeSimulationRecordRunRequest
         from tests.flows.sim.simulation_record_test_support import _validated_campaign
 
-        store = CampaignStore(invocation / "targets/sim/record")
+        store = SimulationRecordStore(invocation / "targets/sim/record")
         validated = _validated_campaign(store, manifest, project, _handle(project))
-        resumed = SimulationCampaign(_executor(build_root, counters, disclosures=disclosures)).run(
-            ResumeCampaignRunRequest(
+        resumed = SimulationRecord(_executor(build_root, counters, disclosures=disclosures)).run(
+            ResumeSimulationRecordRunRequest(
                 validated,
                 plan,
                 project,
                 invocation.parent,
-                CampaignPolicy(),
+                SimulationRecordPolicy(),
                 invocation,
                 _admission(),
             )
@@ -745,7 +747,7 @@ def _assert_private_legacy_results(outcome, counters, hooks, invocation) -> None
     assert counters["compile"] == 2
     assert counters["durable_reuse"] == 0
     assert hooks == [(("alpha",), True, None), (("beta",), True, None)]
-    store = CampaignStore(invocation / "targets/sim/record")
+    store = SimulationRecordStore(invocation / "targets/sim/record")
     private_results = tuple(
         store.root.glob("work-items/*/attempts/*/private-build/build-result.json")
     )
@@ -764,7 +766,7 @@ def test_snapshot_mutation_fails_closed_for_shared_and_private_bundles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, access: str
 ) -> None:
     manifest = _manifest_for(("alpha",), access=access)
-    plan = create_simulation_campaign_plan(manifest)
+    plan = create_simulation_record_plan(manifest)
     project = tmp_path / "project"
     project.mkdir()
     build_root = tmp_path / "engine-build"
@@ -780,14 +782,19 @@ def test_snapshot_mutation_fails_closed_for_shared_and_private_bundles(
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
 
-    with pytest.raises(SimulationCampaignIntegrityError, match="snapshot changed"):
-        SimulationCampaign(_executor(build_root, counters, mutate_snapshot=True)).run(
-            NewCampaignRunRequest(
-                plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
+    with pytest.raises(SimulationRecordIntegrityError, match="snapshot changed"):
+        SimulationRecord(_executor(build_root, counters, mutate_snapshot=True)).run(
+            NewSimulationRecordRunRequest(
+                plan,
+                project,
+                invocation.parent,
+                SimulationRecordPolicy(),
+                invocation,
+                _admission(),
             )
         )
 
-    store = CampaignStore(invocation / "targets/sim/record")
+    store = SimulationRecordStore(invocation / "targets/sim/record")
     assert counters["launch"] == 1
     assert store.scan().pending == ()
     assert len(store.scan().interrupted) == 1
@@ -801,7 +808,7 @@ def _run_failed_shared_build_campaign(
     from booley.runtime.endpoint_execution import job_attempt, note_job_oom_kill
 
     manifest = _named_manifest(("tail", "quick"))
-    plan = create_simulation_campaign_plan(manifest)  # type: ignore[arg-type]
+    plan = create_simulation_record_plan(manifest)  # type: ignore[arg-type]
     project = tmp_path / "project"
     project.mkdir(parents=True)
     handle = _handle(project)
@@ -822,9 +829,14 @@ def _run_failed_shared_build_campaign(
     )
 
     with job_attempt(stop_on_oom=True, work_item=work_item_attempt):
-        SimulationCampaign(executor).run(
-            NewCampaignRunRequest(
-                plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
+        SimulationRecord(executor).run(
+            NewSimulationRecordRunRequest(
+                plan,
+                project,
+                invocation.parent,
+                SimulationRecordPolicy(),
+                invocation,
+                _admission(),
             )
         )
     return counters

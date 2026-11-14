@@ -22,7 +22,7 @@ from booley.flows.sim.record import codec, serial_execution
 from booley.flows.sim.record.codec import canonical_json_bytes
 from booley.flows.sim.record.model import SimulationResult
 from booley.flows.sim.record.planning import finalize_manifest
-from booley.flows.sim.record.store import CampaignStore
+from booley.flows.sim.record.store import SimulationRecordStore
 from tests.flows.sim.simulation_record_test_support import (
     _executor,
     _failed_shared_outcome,
@@ -55,7 +55,7 @@ def _digest(path: Path) -> str:
 
 def _execute_route(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str
-) -> tuple[CampaignStore, SimulationResult]:
+) -> tuple[SimulationRecordStore, SimulationResult]:
     """Run one work item through the serial executor on *route* with frozen ids and clock."""
     sequence = iter(range(1, 100))
     # ``version=4`` sets the version and variant bits the codec requires.
@@ -80,7 +80,7 @@ def _execute_route(
     build_root = tmp_path / "engine-build"
     build_root.mkdir()
     (build_root / "simv").write_bytes(b"image")
-    store = CampaignStore(tmp_path / "record")
+    store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(manifest)
     item = manifest.document["work_items"][0]
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
@@ -134,4 +134,4 @@ def test_record_builders_decode_no_record_they_built(
     (build_result,) = store.root.rglob("build-result.json")
     assert json.loads(build_result.read_bytes())["state"] == build_state
     # ``finalize_manifest`` decodes the manifest once as planning's validation boundary.
-    assert [name for name in decoded if name != "SimulationCampaignManifest"] == []
+    assert [name for name in decoded if name != "SimulationRecordManifest"] == []

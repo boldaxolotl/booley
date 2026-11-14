@@ -18,8 +18,8 @@ from booley.flows.sim.acceptance import (
 )
 from booley.flows.sim.record import AcceptanceFacts, decode_simulation_projection
 from booley.flows.sim.record.codec import (
-    SimulationCampaignIntegrityError,
-    encode_simulation_campaign_manifest,
+    SimulationRecordIntegrityError,
+    encode_simulation_record_manifest,
 )
 from booley.flows.sim.record.projection import ProjectionTrust
 from booley.flows.sim.record.test_run_report import evidence_test_run_rows
@@ -64,11 +64,11 @@ def test_evidence_rows_refuse_a_manifest_the_facts_do_not_name(tmp_path: Path):
     outcome = _outcome(tmp_path, _RESET)
     (tmp_path / "other").mkdir()
     other = _hdl_plan(tmp_path / "other", ((_SOAK,),))
-    outcome.manifest_path.write_bytes(encode_simulation_campaign_manifest(other.manifest))
-    with pytest.raises(SimulationCampaignIntegrityError, match="not the one its acceptance"):
+    outcome.manifest_path.write_bytes(encode_simulation_record_manifest(other.manifest))
+    with pytest.raises(SimulationRecordIntegrityError, match="not the one its acceptance"):
         evidence_test_run_rows(outcome)
     outcome.manifest_path.unlink()
-    with pytest.raises(SimulationCampaignIntegrityError, match="cannot be read"):
+    with pytest.raises(SimulationRecordIntegrityError, match="cannot be read"):
         evidence_test_run_rows(outcome)
 
 
@@ -151,7 +151,7 @@ def test_criterion_detail_rows_come_from_the_authenticated_manifest(tmp_path: Pa
     outcome = _outcome(tmp_path, _RESET, _COUNT)
     state = _state(tmp_path, outcome)
     outcome.manifest_path.write_bytes(b"{}\n")
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(SimulationRecordIntegrityError):
         SimulationAcceptanceCoordinator._derive_changes(_OutcomeEvidence(outcome), state)
 
 
@@ -290,6 +290,6 @@ def test_evidence_rows_refuse_an_observation_whose_fingerprint_is_not_recorded(t
     ]
     forged = replace(outcome, acceptance_facts=AcceptanceFacts(document))
     with pytest.raises(
-        SimulationCampaignIntegrityError, match="no recorded Test Run with its fingerprint"
+        SimulationRecordIntegrityError, match="no recorded Test Run with its fingerprint"
     ):
         evidence_test_run_rows(forged)

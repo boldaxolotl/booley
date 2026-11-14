@@ -13,8 +13,8 @@ from booley.criteria.evidence_ledger import validated_evidence_records
 from booley.criteria.state import DevelopmentState
 from booley.flows.sim.record.codec import (
     MANIFEST_MAX_BYTES,
-    UnsupportedSimulationCampaignFormatError,
-    decode_simulation_campaign_manifest,
+    UnsupportedSimulationRecordFormatError,
+    decode_simulation_record_manifest,
 )
 from booley.flows.sim.record_layout import refuse_older_manifest_path
 from booley.goals.derivation import selected_observations
@@ -72,8 +72,8 @@ def _producer_manifest(runtime: Path, envelope: dict[str, Any]) -> Mapping[str, 
             continue
         refuse_older_manifest_path(path)
         try:
-            producer = decode_simulation_campaign_manifest(raw).document
-        except UnsupportedSimulationCampaignFormatError as exc:
+            producer = decode_simulation_record_manifest(raw).document
+        except UnsupportedSimulationRecordFormatError as exc:
             # ``<invocation>/targets/<target>/record/manifest.json``
             raise exc.located(path.parents[3]) from None
         if (
