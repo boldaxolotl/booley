@@ -8,7 +8,12 @@ from collections.abc import Callable
 from pathlib import Path
 
 from booley.config import agent, agent_app
-from booley.config.gateway import GATEWAY_AUTH, GatewayConfigError, gateway_settings_from_env
+from booley.config.gateway import (
+    GATEWAY_AUTH,
+    VISITOR_AUTH,
+    GatewayConfigError,
+    gateway_settings_from_env,
+)
 from booley.runtime import atomic_files, auth_token, health, incontainer_setup
 from booley.runtime.booley_dir import resolve_booley_dir, resolve_common_booley_dir
 
@@ -84,13 +89,13 @@ def resolve_auto_choice() -> agent_app.AgentAppChoice:
     Every CLI with a credential is allowed, Claude first (the default), then
     Codex. With no credential: a complete gateway configuration (Codex alone),
     then Claude alone with its login offered. A visitor's own credential always
-    beats the gateway, so ``BOOLEY_PRIMARY_AUTH=gateway`` counts as ``auto``
-    here: the gateway is only the fallback. Reasons name credential sources
+    beats the gateway, so ``BOOLEY_PRIMARY_AUTH=gateway`` counts as the
+    visitor mode here: the gateway is only that mode's fallback. Reasons name credential sources
     (variables and paths), never values.
     """
-    raw_policy = (os.environ.get("BOOLEY_PRIMARY_AUTH") or "").strip().lower() or None
+    raw_policy = agent.env_auth_mode(os.environ.get("BOOLEY_PRIMARY_AUTH"))
     policy = None if raw_policy == GATEWAY_AUTH else raw_policy
-    lookup = policy or "auto"
+    lookup = policy or VISITOR_AUTH
     # Look where registration looks ($HOME), so the published reason names a
     # credential the registered app will really use.
     home = incontainer_setup._agent_home()
@@ -108,7 +113,7 @@ def resolve_auto_choice() -> agent_app.AgentAppChoice:
         if len(clis) > 1:
             reason += f"; {_LABELS[clis[0]]} is the default"
         return agent_app.AgentAppChoice(clis[0], policy, reason, clis)
-    if lookup == "auto":
+    if lookup == VISITOR_AUTH:
         try:
             gateway = gateway_settings_from_env()
         except GatewayConfigError:

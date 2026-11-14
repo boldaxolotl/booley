@@ -467,7 +467,10 @@ def _agent_facts(name: str, asked_ms: int, timeout_ms: int) -> dict[str, Any]:
         problem = get_backend_config().backend_for(cli).health_check()
         if problem:
             facts["refusal"] = problem
-        elif policy == "auto" and auth_token.credential_plan(cli, policy).selected is None:
+        elif (
+            auth_token.defers_to_cli(policy)
+            and auth_token.credential_plan(cli, policy).selected is None
+        ):
             facts["warning"] = auth_token.missing_credential_fix(cli, policy)
     except (OSError, ValueError, RuntimeError) as exc:
         facts["refusal"] = (

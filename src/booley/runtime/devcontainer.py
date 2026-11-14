@@ -303,34 +303,42 @@ def canonical_project_id(project_root: Path) -> str:
     return project_name_id(str(project_root.resolve(strict=True)))
 
 
-def state_volume_name(app: str, project_id: str, policy: str = "auto") -> str | None:
+def state_volume_name(
+    app: str, project_id: str, policy: str = "auto", *, legacy: bool = False
+) -> str | None:
     """Name of the persistent home-state volume for *app* and *project_id*.
 
     Returns ``None`` for apps without a persisted state dir. The single format
-    source so the spec builder and ``booley doctor`` agree on names.
+    source so the spec builder and ``booley doctor`` agree on names. ``auto`` and
+    ``subscription`` share the unsuffixed login volume, so a Project keeps its login
+    when it moves between them; *legacy* selects the ``-subscription`` name a
+    ``subscription`` Sandbox used before they shared it.
     """
     if app not in _APP_STATE_DIR:
         return None
-    return _state_volume_name(app, project_id, policy)
+    return _state_volume_name(app, project_id, policy, legacy=legacy)
 
 
-def _state_volume_name(app: str, project_id: str, policy: str) -> str:
+def _state_volume_name(app: str, project_id: str, policy: str, *, legacy: bool = False) -> str:
     """Format the state-volume name; the caller has checked that *app* persists state."""
-    suffix = "" if policy == "auto" else f"-{policy}"
+    shared = policy == "auto" or (policy == "subscription" and not legacy)
+    suffix = "" if shared else f"-{policy}"
     return f"booley-{app}-state-{project_id}{suffix}"
 
 
 def state_volume_names(project_id: str) -> frozenset[str]:
     """Every state-volume name one Project can own across agent apps and auth policies."""
     return frozenset(
-        name
+        f"{base}{suffix}"
         for app in _APP_STATE_DIR
-        for policy in ("auto", "subscription", "api_key", "gateway")
-        if (name := state_volume_name(app, project_id, policy)) is not None
+        if (base := state_volume_name(app, project_id)) is not None
+        for suffix in ("", "-subscription", "-api_key", "-gateway")
     )
 
 
-def state_volume_mount(app: str, project_id: str, policy: str = "auto") -> str | None:
+def state_volume_mount(
+    app: str, project_id: str, policy: str = "auto", *, legacy: bool = False
+) -> str | None:
     """Return the persistent home-state volume mount for *app*, or ``None``.
 
     Per-project + per-app naming keeps projects isolated: every interactive
@@ -340,7 +348,16 @@ def state_volume_mount(app: str, project_id: str, policy: str = "auto") -> str |
     target = _APP_STATE_DIR.get(app)
     if target is None:
         return None
-    return _volume_mount(_state_volume_name(app, project_id, policy), target)
+    return _volume_mount(_state_volume_name(app, project_id, policy, legacy=legacy), target)
+
+
+def legacy_subscription_clis(mounts: Sequence[str], project_id: str) -> frozenset[str]:
+    """The CLIs whose state volume in *mounts* is this Project's pre-shared ``-subscription`` one."""
+    return frozenset(
+        app
+        for app in _APP_STATE_DIR
+        if state_volume_mount(app, project_id, "subscription", legacy=True) in mounts
+    )
 
 
 def _parse_mount(mount: object) -> dict[str, str]:
@@ -603,7 +620,9 @@ def _planned_seeds(app: str, cli_seeds: Sequence[CliSeeds]) -> list[_Seed]:
     ]
 
 
-def _cli_seed_mounts(seeds: Sequence[_Seed], project_id: str) -> list[str]:
+def _cli_seed_mounts(
+    seeds: Sequence[_Seed], project_id: str, legacy_clis: frozenset[str]
+) -> list[str]:
     """Per CLI, in order: token seed, login seed, Claude config seed, state volume."""
     mounts: list[str] = []
     for seed in seeds:
@@ -632,7 +651,8 @@ def _cli_seed_mounts(seeds: Sequence[_Seed], project_id: str) -> list[str]:
         # Persist the CLI's home-state dir (plans, transcripts, todos) across
         # rebuilds. The creds bind is a sidecar OUTSIDE this dir, so the volume owns
         # the real credentials file and the seeded copy lands on it writably.
-        state_mount = state_volume_mount(seed.app, project_id, seed.policy)
+        legacy = seed.app in legacy_clis and seed.policy == "subscription"
+        state_mount = state_volume_mount(seed.app, project_id, seed.policy, legacy=legacy)
         if state_mount:
             mounts.append(state_mount)
     return mounts
@@ -862,6 +882,7 @@ def build_devcontainer_spec(
     local_timezone: str = "",
     dashboard: bool = False,
     egress: str = "proxy",
+    legacy_subscription_clis: frozenset[str] = frozenset(),
 ) -> dict:
     """Build the ``devcontainer.json`` dict for an Interactive Mode session.
 
@@ -914,6 +935,10 @@ def build_devcontainer_spec(
             ``"unproxied"`` joins :data:`UNPROXIED_NETWORK`, sets no proxy
             environment, and declares ``BOOLEY_EGRESS=unproxied`` in
             ``containerEnv`` so bare ``docker exec`` calls see it too.
+        legacy_subscription_clis: the CLIs whose current spec still mounts the
+            pre-shared ``-subscription`` state volume (see
+            :func:`legacy_subscription_clis`); a CLI listed here and still on
+            ``subscription`` keeps that volume.
 
     The spec uses only Booley's fixed ``initializeCommand``.  It validates the
     host-issued spec and, when licensed EDA is granted, prepares the fixed relay
@@ -930,7 +955,7 @@ def build_devcontainer_spec(
     seeds = _planned_seeds(app, cli_seeds)
 
     mounts = _build_mounts(
-        _cli_seed_mounts(seeds, project_id),
+        _cli_seed_mounts(seeds, project_id, legacy_subscription_clis),
         booley_dir_source,
         host_skills,
         trusted_eda_mounts,

@@ -1887,3 +1887,82 @@ def test_single_cli_sandbox_registers_only_that_cli(
     other = "codex" if app == "claude" else "claude"
     assert not re.search(rf"(?<![-\w]){other}:", err)
     assert "clis:" not in err
+
+
+def test_issued_auto_record_starts_in_the_visitor_mode(first_run, tmp_path, monkeypatch, capsys):
+    from booley.config.agent import sandbox_cli_policy
+
+    _multi_cli_start(
+        first_run, tmp_path, monkeypatch, app="claude", record="claude=auto", primary_auth="auto"
+    )
+    settings = reg.claude_settings_path(first_run.home)
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    # A pinned subscription policy refuses this key; the visitor mode keeps it.
+    settings.write_text(
+        json.dumps({"env": {"ANTHROPIC_API_KEY": "SYNTHETIC_KEY"}}), encoding="utf-8"
+    )
+
+    entry.main()
+
+    err = capsys.readouterr().err
+    assert "refused" not in err
+    assert "claude:written" in err
+    assert sandbox_cli_policy("claude") == "visitor"
+
+
+def test_subscription_refusal_on_shared_volume_names_the_file(
+    first_run, tmp_path, monkeypatch, capsys
+):
+    _multi_cli_start(
+        first_run,
+        tmp_path,
+        monkeypatch,
+        app="codex",
+        record="codex=subscription",
+        primary_auth="subscription",
+    )
+    auth_path = reg.codex_auth_path(first_run.home)
+    auth_path.parent.mkdir(parents=True, exist_ok=True)
+    auth_path.write_text(
+        json.dumps({"OPENAI_API_KEY": "SYNTHETIC_KEY", "tokens": {"access_token": "SYNTHETIC"}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit):
+        entry.main()
+
+    err = capsys.readouterr().err
+    assert "auth.json" in err
+    assert "recreate the Sandbox" not in err
+
+    auth_path.unlink()
+    entry.main()
+
+    err = capsys.readouterr().err
+    assert "refused" not in err
+    assert "codex:current" in err
+
+
+def test_subscription_claude_settings_refusal_names_the_file(
+    first_run, tmp_path, monkeypatch, capsys
+):
+    _multi_cli_start(
+        first_run,
+        tmp_path,
+        monkeypatch,
+        app="claude",
+        record="claude=subscription",
+        primary_auth="subscription",
+    )
+    settings = reg.claude_settings_path(first_run.home)
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(
+        json.dumps({"env": {"ANTHROPIC_API_KEY": "SYNTHETIC_KEY"}}), encoding="utf-8"
+    )
+
+    with pytest.raises(SystemExit):
+        entry.main()
+
+    err = capsys.readouterr().err
+    assert "settings.json" in err
+    assert "recreate the Sandbox" not in err
