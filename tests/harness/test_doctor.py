@@ -43,6 +43,7 @@ from booley.runtime import (
     auth_token,
     doctor_stamp,
     issuance_invalidation,
+    platform_paths,
     project_gitignore,
     runtime_context,
     session_issuance,
@@ -7583,7 +7584,7 @@ def test_goal_history_versioned_hint_preserves_history_and_policy(
         waived = doctor._Reporter.create(waivers)
         doctor._check_goal_history_ignored(root, project, waived.pass_, waived.warn_)
         assert waived.findings[0].severity == "waived"
-        original = doctor.subprocess.run
+        original = platform_paths.run_captured_bounded
 
         def cannot_inspect(args, **kwargs):
             if "check-ignore" in args:
@@ -7592,7 +7593,7 @@ def test_goal_history_versioned_hint_preserves_history_and_policy(
                 return subprocess.CompletedProcess(args, 128, "", "inspection unavailable")
             return original(args, **kwargs)
 
-        monkeypatch.setattr(doctor.subprocess, "run", cannot_inspect)
+        monkeypatch.setattr(platform_paths, "run_captured_bounded", cannot_inspect)
         unreadable = doctor._Reporter.create(doctor.load_doctor_waivers(project))
         doctor._check_goal_history_ignored(root, project, unreadable.pass_, unreadable.warn_)
         assert unreadable.findings[0].severity == "warn"

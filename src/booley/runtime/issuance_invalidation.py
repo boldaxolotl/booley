@@ -9,6 +9,7 @@ from booley.core.boundary import BoundaryError, require_dict, require_str
 from booley.core.private_store import PrivateStore, ProjectStore
 from booley.core.user_paths import config_dir
 from booley.eda.provisioning.licensing import flexnet_docker
+from booley.runtime import interactive_docker
 from booley.runtime.filesystem_utils import unlink_file
 from booley.runtime.private_store import SESSION_STORE_REPAIR
 
@@ -50,7 +51,9 @@ def recover_project_locked(project_root: str) -> bool:
     if _load(project_root) is None:
         return False
     invalidate(project_root)
-    residual = flexnet_docker.cleanup_project_resources_for_identity(project_root)
+    residual = flexnet_docker.cleanup_project_resources_for_identity(
+        project_root, runner=interactive_docker.relay_docker
+    )
     if residual:
         raise InvalidationError(
             "EDA authority changed, but Sandbox cleanup left residual objects: "

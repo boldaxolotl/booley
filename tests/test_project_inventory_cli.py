@@ -229,6 +229,7 @@ def test_purge_accepts_a_forgotten_root_unless_a_grant_holds_it(
         else ()
     )
     monkeypatch.setattr(project_inventory, "_authority_grants", lambda: grants)
+    _write_session_files(str(deleted))
     never = tmp_path / "never-remembered"
     assert _run(_parser().parse_args(["projects", "forget", str(never)])) == 2
     assert "not remembered" in capsys.readouterr().err
@@ -242,6 +243,8 @@ def test_purge_accepts_a_forgotten_root_unless_a_grant_holds_it(
         ]
     assert f"{project_image_name(other)}:latest" in keeper_host.tags
     assert str(other) in [entry.project_root for entry in project_inventory.project_inventory()]
+    # A refused purge withdraws nothing; an accepted one clears the stamp and claim.
+    assert _session_files_remain(str(deleted)) is grant
 
 
 def test_forget_reports_leftover_listing_failure_after_forgetting(
@@ -730,12 +733,13 @@ def test_apply_rechecks_before_deletion(
     assert tag in keeper_host.tags
 
 
-def test_forget_release_requires_reissuance_before_admission(
-    tmp_path: Path,
-    keeper_host: FakeDocker,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+def _issued_project(
+    tmp_path: Path, keeper_host: FakeDocker, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Any, Path, str]:
+    """Remember a Project and issue its real Sandbox stamp against the fake Docker host.
+
+    Returns the Project, the prepared spec, its devcontainer path and the keeper image ID.
+    """
     from booley.runtime import devcontainer as dc
     from booley.runtime import interactive_docker
     from booley.runtime import session_issuance as issuance
@@ -769,15 +773,110 @@ def test_forget_release_requires_reissuance_before_admission(
         "tag_image",
         lambda source, target: keeper_host.tags.update({target: source}),
     )
-    stamp = issuance.issue_prepared(project, prepared, reconcile_dashboard=False)
-    path = dc.devcontainer_path(project)
+    issuance.issue_prepared(project, prepared, reconcile_dashboard=False)
+    return project, prepared, dc.devcontainer_path(project), image
+
+
+def test_forget_release_requires_reissuance_before_admission(
+    tmp_path: Path,
+    keeper_host: FakeDocker,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from booley.runtime import session_issuance as issuance
+
+    project, prepared, path, image = _issued_project(tmp_path, keeper_host, monkeypatch)
     assert _run(_parser().parse_args(["projects", "forget", str(project)])) == 0
     capsys.readouterr()
-    assert issuance.stamp_path(project).exists()
-    with pytest.raises(issuance.RuntimeSpecError, match="keeper is missing"):
+    assert not issuance.stamp_path(project).exists()
+    with pytest.raises(issuance.RuntimeSpecError, match="Sandbox issuance was withdrawn"):
         issuance.validate(project, prepared.spec, path)
     issuance.issue_prepared(project, prepared, reconcile_dashboard=False)
-    assert issuance.validate(project, prepared.spec, path).image_id == stamp.image_id
+    assert issuance.validate(project, prepared.spec, path).image_id == image
+
+
+def test_forget_with_live_session_withdraws_stamp(
+    tmp_path: Path,
+    keeper_host: FakeDocker,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from booley.runtime import project_image, runtime_context, session_runtime
+    from booley.runtime import session_issuance as issuance
+
+    project, _prepared, _path, image = _issued_project(tmp_path, keeper_host, monkeypatch)
+    keeper_host.containers["c" * 64] = keeper_host.tags[keeper_image(project)]
+    assert issuance.stamp_store().locate(str(project)) is not None
+    assert image in keeper_host.containers.values()
+
+    assert _run(_parser().parse_args(["projects", "forget", str(project), "--json"])) == 0
+
+    assert json.loads(capsys.readouterr().out)["keeper"]["status"] == "retained-in-use"
+    assert issuance.stamp_is_absent(project)
+    # The Session now takes the existing withdrawn-stamp path: an editor-owned Sandbox
+    # is told to reseed rather than to rebuild from a stamp that no longer exists.
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(session_runtime, "vscode_session_container", lambda _root: "editor")
+    monkeypatch.setattr(project_image, "project_sandbox_image", lambda _root: "selected")
+    monkeypatch.setattr(project_image, "is_managed_sandbox_image", lambda *_args: True)
+    assert "booley init --seed" in session_runtime.sandbox_remedy(project)
+
+
+def _write_session_files(project_root: str) -> None:
+    """Give a Project root both a Sandbox issuance stamp and an admission claim."""
+    from booley.runtime import session_admission, session_issuance
+
+    document = json.dumps({"project_root": project_root})
+    session_issuance.stamp_store().write(project_root, document)
+    session_admission.claim_store().write(project_root, document)
+
+
+def _session_files_remain(project_root: str) -> bool:
+    from booley.runtime import session_admission, session_issuance
+
+    return (
+        session_issuance.stamp_store().locate(project_root) is not None
+        or session_admission.claim_store().locate(project_root) is not None
+    )
+
+
+def test_forget_withdraws_issuance_stamp_and_admission_claim(
+    tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str]
+) -> None:
+    kept = _remember(tmp_path / "kept")
+    purged = _remember(tmp_path / "purged")
+    bystander = _remember(tmp_path / "bystander")
+    for project in (kept, purged, bystander):
+        _write_session_files(str(project.resolve()))
+
+    for flags in ([str(kept)], ["--purge", str(purged)]):
+        assert _run(_parser().parse_args(["projects", "forget", *flags, "--json"])) == 0
+        capsys.readouterr()
+
+    assert not _session_files_remain(str(kept.resolve()))
+    assert not _session_files_remain(str(purged.resolve()))
+    # Forget withdraws only its own Project's Session authority.
+    assert _session_files_remain(str(bystander.resolve()))
+    remembered = [entry.project_root for entry in project_inventory.project_inventory()]
+    assert remembered == [str(bystander.resolve())]
+
+
+def test_purge_of_a_deleted_root_clears_its_stamp(
+    tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import shutil
+
+    project = _remember(tmp_path)
+    root = str(project.resolve())
+    _write_session_files(root)
+    shutil.rmtree(project)
+
+    flags = ["projects", "forget", "--purge", root, "--json"]
+    assert _run(_parser().parse_args(flags)) == 0
+    capsys.readouterr()
+
+    assert not _session_files_remain(root)
+    assert project_inventory.project_inventory() == ()
 
 
 def test_actual_vscode_down_then_forget_retains_stopped_container(
@@ -836,6 +935,7 @@ def test_forget_incomplete_observation_preserves_inventory(
     from booley.runtime import interactive_docker
 
     project = _remember(tmp_path)
+    _write_session_files(str(project.resolve()))
     tag = keeper_image(project)
     keeper_host.tags[tag] = "not-an-image" if failure == "invalid-image" else "sha256:" + "a" * 64
     if failure == "invalid-container":
@@ -849,6 +949,8 @@ def test_forget_incomplete_observation_preserves_inventory(
     assert _run(_parser().parse_args(["projects", "forget", str(project)])) == 2
     assert capsys.readouterr().err and project_inventory.project_inventory()[0].remembered
     assert tag in keeper_host.tags
+    # A release that did not complete leaves the Project's Session authority alone.
+    assert _session_files_remain(str(project.resolve()))
 
 
 @pytest.mark.parametrize("operation", ["forget", "prune-keepers"])

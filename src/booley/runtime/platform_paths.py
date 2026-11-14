@@ -6,13 +6,17 @@ portable. Keeps the rest of Booley OS-agnostic without over-abstraction.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from collections.abc import Mapping
 from pathlib import Path
+from typing import IO, Any, Literal, cast, overload
 
 from booley.runtime.process_group import (
     capture_process_group,
@@ -180,9 +184,194 @@ def kill_process_tree(proc: subprocess.Popen) -> None:
     terminate_process_group(proc, group, is_windows=IS_WINDOWS)
 
 
-#: Seconds ``run_captured_bounded`` waits for output pipes to close after it
-#: killed the process tree.
+#: Seconds ``run_captured_bounded`` waits for output pipes to close, and for its
+#: stdin feeder thread to finish, after it killed the process tree.
 _KILL_DRAIN_TIMEOUT_S = 5
+
+#: Longest single blocking wait inside ``run_captured_bounded``. CPython before
+#: 3.14 cannot deliver Ctrl-C to a Windows ``communicate`` blocked in one long
+#: thread join, so the wait is sliced to let an interrupt through promptly.
+_INTERRUPT_POLL_S = 0.5
+
+#: A stdin/stdout stream for ``run_captured_bounded``: an open file, a file
+#: descriptor, or ``subprocess.DEVNULL``.
+_Stream = int | IO[Any] | None
+
+
+def _decode(data: bytes | None, errors: str) -> str | None:
+    """Decode captured bytes like ``Popen(text=True)``: UTF-8, universal newlines."""
+    if data is None:
+        return None
+    return data.decode("utf-8", errors).replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _decode_partial(data: bytes | str | None, errors: str) -> str | None:
+    """Decode the partial output of a timed-out child; ``None`` when it cannot be."""
+    if isinstance(data, str) or data is None:
+        return data
+    try:
+        return _decode(data, errors)
+    except UnicodeDecodeError:
+        return None
+
+
+def _feed(write_fd: int, data: bytes) -> None:
+    """Write *data* to the child's stdin pipe and close it (thread body).
+
+    A broken pipe means the child, or the killed tree, is gone: nothing to do.
+    The buffered writer loops until every byte is written.
+    """
+    with contextlib.suppress(OSError), os.fdopen(write_fd, "wb") as sink:
+        sink.write(data)
+
+
+def _spawn(
+    argv: list[str],
+    *,
+    cwd: str | os.PathLike[str] | None,
+    env: Mapping[str, str] | None,
+    input: bytes | None,  # noqa: A002 - mirrors subprocess.run
+    stdin: _Stream,
+    stdout: _Stream,
+) -> tuple[subprocess.Popen[bytes], threading.Thread | None]:
+    """Start *argv* in its own group; return it with the stdin feeder, if any.
+
+    Feeding *input* from a daemon thread, never through ``communicate(input=)``,
+    keeps the timeout effective: CPython on Windows writes ``communicate`` input
+    on the calling thread before it applies the timeout.
+    """
+    feed_read = feed_write = None
+    if input is not None:
+        feed_read, feed_write = os.pipe()
+        stdin = feed_read
+    try:
+        # Binary pipes; the untyped group kwargs defeat Popen's overload choice.
+        proc = cast(
+            "subprocess.Popen[bytes]",
+            subprocess.Popen(
+                argv,
+                stdin=stdin,
+                stdout=subprocess.PIPE if stdout is None else stdout,
+                stderr=subprocess.PIPE,
+                cwd=cwd,
+                env=env,
+                **popen_new_group_kwargs(),
+            ),
+        )
+    except BaseException:
+        if feed_write is not None:
+            os.close(feed_write)
+        raise
+    finally:
+        if feed_read is not None:
+            os.close(feed_read)
+    if feed_write is None or input is None:
+        return proc, None
+    feeder = threading.Thread(
+        target=_feed, args=(feed_write, input), name="bounded-capture-input", daemon=True
+    )
+    feeder.start()
+    return proc, feeder
+
+
+def _communicate_sliced(
+    proc: subprocess.Popen[bytes], timeout: float
+) -> tuple[bytes | None, bytes | None]:
+    """``proc.communicate(timeout=...)`` in short slices so an interrupt is prompt.
+
+    Raises ``subprocess.TimeoutExpired`` once *timeout* seconds have passed.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        try:
+            return proc.communicate(timeout=max(0.0, min(remaining, _INTERRUPT_POLL_S)))
+        except subprocess.TimeoutExpired:
+            if deadline - time.monotonic() <= 0:
+                raise
+
+
+def _close_unowned_pipes(proc: subprocess.Popen[bytes]) -> None:
+    """Close *proc*'s output pipes after an abandoned or interrupted ``communicate``.
+
+    On POSIX ``communicate`` reads on the calling thread, so closing is safe. On
+    Windows ``communicate`` hands each pipe to a daemon reader thread, which
+    closes it at end of file; closing a buffered pipe a live reader is blocked
+    on would block, so only pipes without a live reader are closed here (an
+    interrupt before the readers started leaves both unowned and would leak
+    them).
+    """
+    for name in ("stdout", "stderr"):
+        pipe = getattr(proc, name)
+        reader = getattr(proc, f"{name}_thread", None)
+        if pipe is not None and not (reader is not None and reader.is_alive()):
+            pipe.close()
+
+
+def _run_bounded(
+    argv: list[str],
+    *,
+    timeout: float,
+    cwd: str | os.PathLike[str] | None,
+    env: Mapping[str, str] | None,
+    input: bytes | None,  # noqa: A002 - mirrors subprocess.run
+    stdin: _Stream,
+    stdout: _Stream,
+) -> subprocess.CompletedProcess[bytes]:
+    """Bytes core of :func:`run_captured_bounded`: kill the tree, bound every wait."""
+    proc, feeder = _spawn(argv, cwd=cwd, env=env, input=input, stdin=stdin, stdout=stdout)
+    try:
+        try:
+            out, err = _communicate_sliced(proc, timeout)
+        except subprocess.TimeoutExpired:
+            kill_process_tree(proc)
+            try:
+                out, err = proc.communicate(timeout=_KILL_DRAIN_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                # A descendant escaped the group and still holds a pipe: give up
+                # on its output.
+                out = err = None
+                _close_unowned_pipes(proc)
+            raise subprocess.TimeoutExpired(argv, timeout, output=out, stderr=err) from None
+        except BaseException:
+            kill_process_tree(proc)
+            _close_unowned_pipes(proc)
+            raise
+    finally:
+        if feeder is not None:
+            # Abandoned when an escaped descendant still holds the pipe unread.
+            feeder.join(_KILL_DRAIN_TIMEOUT_S)
+    return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+
+
+@overload
+def run_captured_bounded(
+    argv: list[str],
+    *,
+    timeout: float,
+    cwd: str | os.PathLike[str] | None = None,
+    env: Mapping[str, str] | None = None,
+    errors: str = "replace",
+    input: bytes | None = None,
+    stdin: _Stream = None,
+    stdout: _Stream = None,
+    text: Literal[True] = True,
+) -> subprocess.CompletedProcess[str]: ...
+
+
+@overload
+def run_captured_bounded(
+    argv: list[str],
+    *,
+    timeout: float,
+    cwd: str | os.PathLike[str] | None = None,
+    env: Mapping[str, str] | None = None,
+    errors: str = "replace",
+    input: bytes | None = None,
+    stdin: _Stream = None,
+    stdout: _Stream = None,
+    text: Literal[False],
+) -> subprocess.CompletedProcess[bytes]: ...
 
 
 def run_captured_bounded(
@@ -192,18 +381,33 @@ def run_captured_bounded(
     cwd: str | os.PathLike[str] | None = None,
     env: Mapping[str, str] | None = None,
     errors: str = "replace",
-) -> subprocess.CompletedProcess[str]:
-    """Run *argv* capturing text output; never wait unboundedly on a timeout.
+    input: bytes | None = None,  # noqa: A002 - mirrors subprocess.run
+    stdin: _Stream = None,
+    stdout: _Stream = None,
+    text: bool = True,
+) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
+    """Run *argv* capturing output; never wait unboundedly on a timeout.
 
     Unlike ``subprocess.run(..., timeout=...)``, which kills only the direct
     child and (on Windows) then waits for the output pipes to reach EOF with no
     limit, this starts the child in its own process group, kills the whole tree
     on timeout and abandons pipes a surviving descendant still holds.
     *cwd* and *env* are the child's working directory and complete environment;
-    ``None`` inherits the caller's. Output is decoded as UTF-8 with the *errors*
-    handler (``"replace"`` by default; ``"strict"`` raises ``UnicodeDecodeError``
-    on an undecodable byte). A timeout is always reported as ``TimeoutExpired``,
-    even when the killed child's partial output no longer decodes.
+    ``None`` inherits the caller's.
+
+    Input and output modes:
+
+    - *input*: bytes written to the child's stdin by a daemon thread, so a child
+      that never reads cannot block the timeout. Exclusive with *stdin*.
+    - *stdin*: an open file, descriptor or ``subprocess.DEVNULL`` the child reads;
+      ``None`` inherits the caller's.
+    - *stdout*: an open file or descriptor the child writes to instead of a
+      pipe; ``result.stdout`` is then ``None``. Stderr is always captured.
+    - *text*: ``True`` decodes output as UTF-8 with the *errors* handler
+      (``"replace"`` by default; ``"strict"`` raises ``UnicodeDecodeError`` on an
+      undecodable byte) and translates newlines; ``False`` returns raw bytes. A
+      timeout is always reported as ``TimeoutExpired``, even when the killed
+      child's partial output no longer decodes.
 
     Returns the ``CompletedProcess`` for any exit status (never raises on a
     non-zero exit). Raises ``subprocess.TimeoutExpired`` after *timeout*
@@ -211,38 +415,25 @@ def run_captured_bounded(
 
     Worst case until ``TimeoutExpired`` is raised: about ``timeout + 12`` s on
     POSIX (SIGTERM, 2 s grace, SIGKILL, up to 5 s wait, 5 s drain) and about
-    ``timeout + 32`` s on Windows, where each ``taskkill`` may take 10 s.
+    ``timeout + 32`` s on Windows, where each ``taskkill`` may take 10 s. The
+    *input* thread is joined for at most 5 s more; it is abandoned when an
+    escaped descendant still holds the pipe.
     """
-    proc = subprocess.Popen(
-        argv,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors=errors,
-        cwd=cwd,
-        env=env,
-        **popen_new_group_kwargs(),
-    )
     try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        kill_process_tree(proc)
-        try:
-            stdout, stderr = proc.communicate(timeout=_KILL_DRAIN_TIMEOUT_S)
-        except (subprocess.TimeoutExpired, UnicodeDecodeError):
-            # A descendant escaped the group and still holds a pipe, or the
-            # partial output no longer decodes: give up on its output. On POSIX
-            # communicate() reads on this thread, so the pipes can be closed
-            # here; on Windows daemon reader threads own them (closing a
-            # buffered pipe a reader is blocked on would block).
-            stdout = stderr = None
-            if not IS_WINDOWS:
-                for pipe in (proc.stdout, proc.stderr):
-                    if pipe is not None:
-                        pipe.close()
-        raise subprocess.TimeoutExpired(argv, timeout, output=stdout, stderr=stderr) from None
-    except BaseException:
-        kill_process_tree(proc)
-        raise
-    return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+        result = _run_bounded(
+            argv, timeout=timeout, cwd=cwd, env=env, input=input, stdin=stdin, stdout=stdout
+        )
+    except subprocess.TimeoutExpired as expired:
+        if not text:
+            raise
+        raise subprocess.TimeoutExpired(
+            argv,
+            timeout,
+            output=_decode_partial(expired.output, errors),
+            stderr=_decode_partial(expired.stderr, errors),
+        ) from None
+    if not text:
+        return result
+    return subprocess.CompletedProcess(
+        argv, result.returncode, _decode(result.stdout, errors), _decode(result.stderr, errors)
+    )

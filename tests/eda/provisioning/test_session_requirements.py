@@ -146,11 +146,11 @@ def test_relay_identity_translates_docker_failure(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(
         requirements,
         "resolve_relay_image_id",
-        lambda: (_ for _ in ()).throw(RelayDockerError("daemon unavailable")),
+        lambda **_kwargs: (_ for _ in ()).throw(RelayDockerError("daemon unavailable")),
     )
 
     with pytest.raises(requirements.SessionRequirementsError, match="daemon unavailable"):
-        requirements._relay_image_id()
+        requirements._relay_image_id(lambda *_args: pytest.fail("runner must only be passed on"))
 
 
 def test_missing_runtime_wrapper_is_reported(tmp_path: Path) -> None:

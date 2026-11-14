@@ -60,7 +60,7 @@ def _patch_revoke(
     monkeypatch.setattr(
         flexnet_docker,
         "cleanup_project_resources_for_identity",
-        lambda _root: (events.append("cleanup"), ())[1],
+        lambda _root, **_kwargs: (events.append("cleanup"), ())[1],
     )
 
 

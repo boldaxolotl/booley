@@ -164,6 +164,16 @@ def clear_vscode_claim(project_root: Path) -> bool:
     return True
 
 
+def withdraw_claims(project_root: str) -> None:
+    """Remove an already-canonical Project identity's admission claim, valid or not.
+
+    A forgotten Project's claim is dead whatever it holds, and its directory may
+    be gone, so the stored identity is used as is and the claim is not decoded.
+    """
+    for path in claim_store().paths(project_root):
+        unlink_file(path, missing_ok=True)
+
+
 def has_pending_claim(project_root: Path, *, run: Run = _run) -> bool:
     """Return whether this Project has a validated pending editor start."""
     root = _canonical_root(project_root)

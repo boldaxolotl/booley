@@ -186,7 +186,7 @@ def _communicate_local_process(
                 returncode=-1, stdout=stdout, stderr=stderr, timed_out=True, duration_s=elapsed
             )
         except BaseException:
-            logger.warning("Interrupted; killing the process tree of: %s", " ".join(cmd))
+            logger.info("Interrupted; killing the process tree of: %s", " ".join(cmd))
             kill_process_tree(proc)
             _finish_supervised_process(scope, proc)
             raise

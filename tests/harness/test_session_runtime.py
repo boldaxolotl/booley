@@ -5141,7 +5141,7 @@ def test_remove_refresh_relay_removes_existing_relay_objects(workspace, monkeypa
 
     monkeypatch.setattr(sr, "_relay_objects_exist", lambda candidate: candidate == relay)
     sr.remove_refresh_relay(workspace)
-    remove.assert_called_once_with(relay)
+    remove.assert_called_once_with(relay, runner=sr.idk.relay_docker)
 
 
 def test_require_only_canonical_sandbox(workspace, monkeypatch):

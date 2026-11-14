@@ -126,13 +126,18 @@ def test_job_log_copies_output_and_terminal_is_unchanged(monkeypatch, project, c
     )  # no ANSI styling, both streams in order
 
 
-def test_ctrl_c_records_cancelled_and_reraises(monkeypatch, project):
-    StubEndpoint.outcome = KeyboardInterrupt()
-    with pytest.raises(KeyboardInterrupt):
-        shell_run(monkeypatch, project, "flow")
-    (rec,) = records(project)
-    assert (rec.status, rec.exit_code) == ("cancelled", 130)
-    assert rec.ended_at
+def test_ctrl_c_records_cancelled(monkeypatch, project):
+    """The interrupt still reaches the caller and the Job is recorded ``cancelled`` / 130."""
+    for kind in ("flow", "specialist"):
+        StubEndpoint.outcome = KeyboardInterrupt()
+        with pytest.raises(KeyboardInterrupt):
+            shell_run(monkeypatch, project, kind)
+        assert "BOOLEY_RUN_ID" not in os.environ
+    recs = records(project)
+    assert len(recs) == 2
+    for rec in recs:
+        assert (rec.status, rec.exit_code) == ("cancelled", 130)
+        assert rec.ended_at
 
 
 @pytest.mark.parametrize(
@@ -222,14 +227,27 @@ sys.exit(job.run(block))
 """
 
 
-def run_child_until_signalled(project, tmp_path, signum):
-    """Start a Standalone Job in a child, signal it once it is blocked, and return its exit code."""
+def run_child_until_signalled(project, tmp_path, signum, script=CHILD, extra_args=()):
+    """Start *script* in a child, signal it once it is blocked, and return ``(exit code, stderr)``."""
     marker = tmp_path / "ready"
     env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)}
-    env.pop("BOOLEY_DIR", None)
+    for name in ("BOOLEY_DIR", "PYTHONWARNINGS", "PYTHONDEVMODE"):
+        env.pop(name, None)  # stderr must hold only what Booley itself writes
+    # The real CLI reads per-user config: keep it away from the developer's own home.
+    env["HOME"] = str(tmp_path / "home")
+    env["XDG_CONFIG_HOME"] = str(tmp_path / "xdg")
     child = subprocess.Popen(
-        [sys.executable, "-c", CHILD.format(timeout=CHILD_TIMEOUT_S), str(project), str(marker)],
+        [
+            sys.executable,
+            "-c",
+            script.format(timeout=CHILD_TIMEOUT_S),
+            str(project),
+            str(marker),
+            *extra_args,
+        ],
         env=env,
+        stderr=subprocess.PIPE,
+        text=True,
     )
     try:
         deadline = time.monotonic() + CHILD_TIMEOUT_S
@@ -238,12 +256,59 @@ def run_child_until_signalled(project, tmp_path, signum):
         assert marker.exists(), "child never reached its run"
         child.send_signal(signum)
         # Kept on subprocess.Popen: test drives the process and signals it
-        return child.wait(timeout=CHILD_TIMEOUT_S)
+        _, stderr = child.communicate(timeout=CHILD_TIMEOUT_S)
+        return child.returncode, stderr
     finally:
         if child.poll() is None:
             child.kill()
             child.wait()
 
+
+# The real ``cli.main()`` with discovery stubbed to one blocking endpoint: what a shell user runs.
+CLI_CHILD = """
+import signal, sys, time
+from pathlib import Path
+from unittest import mock
+
+from booley.harness import booley as cli
+from booley.mcp.registry import McpToolInfo
+from booley.runtime import runtime_context
+
+# A background runner may pass SIGINT ignored; a terminal Ctrl-C finds Python's handler.
+signal.signal(signal.SIGINT, signal.default_int_handler)
+signal.signal(signal.SIGHUP, signal.SIG_DFL)
+project, marker, kind = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+
+
+class BlockingEndpoint:
+    name = "stub"
+
+    def main(self, argv):
+        print("err line", file=sys.stderr, flush=True)
+        marker.write_text("ready")
+        time.sleep({timeout})
+        return 0
+
+
+info = McpToolInfo(name="stub", path="stub.py", description="stub", kind=kind)
+parser = cli._build_parser()
+args = cli._normalize_args(parser, parser.parse_args([kind, "stub", "--target", "t1"]))
+patches = [
+    mock.patch.object(runtime_context, "inside_session_runtime", return_value=True),
+    mock.patch.object(runtime_context, "ensure_proxy_env", return_value=False),
+    mock.patch.object(cli, "_parse_cli", return_value=args),
+    mock.patch.object(cli, "find_project_root", return_value=project),
+    mock.patch.object(cli, "_reject_source_project_command", return_value=None),
+    mock.patch.object(cli, "_require_command_project", return_value=None),
+    mock.patch.object(cli, "_host_install_authority_error", return_value=None),
+    mock.patch.object(cli, "_discover_project_mcp_tools", return_value=[info]),
+    mock.patch("booley.mcp.registry.discover_mcp_tools", return_value=[info]),
+    mock.patch.object(cli, "_load_mcp_tool_class", return_value=BlockingEndpoint),
+]
+for patch in patches:
+    patch.start()
+sys.exit(cli.main())
+"""
 
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal delivery")
 
@@ -252,7 +317,8 @@ posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal de
 @pytest.mark.parametrize("name", ["sigterm", "sighup", "sigkill"])
 def test_signal_leaves_terminal_record(project, tmp_path, name):
     signum = getattr(signal, name.upper())
-    assert run_child_until_signalled(project, tmp_path, signum) == -signum  # dies by the signal
+    returncode, _stderr = run_child_until_signalled(project, tmp_path, signum)
+    assert returncode == -signum  # dies by the signal
     (rec,) = records(project)
     if name != "sigkill":
         assert (rec.status, rec.exit_code) == ("cancelled", 128 + signum)
@@ -339,3 +405,55 @@ def test_report_root_is_the_resolved_booley_directory(monkeypatch, tmp_path):
     assert shell_run(monkeypatch, root, "flow") == 0
     (rec,) = job_records.list_records(real / JOBS_ROOT)
     assert rec.report_root == str(real.resolve())
+
+
+@posix_only
+def test_ctrl_c_prints_one_line_and_dies_by_sigint(tmp_path):
+    """Ctrl-C on a shell run: no traceback, one interrupted line, and the process dies by SIGINT.
+
+    Dying by SIGINT (shell ``$?`` 130) rather than ``exit(130)`` keeps a calling shell loop or
+    script stopping, as it does for any interrupted program.
+    """
+    for kind in ("flow", "specialist"):
+        project = tmp_path / kind / "proj"
+        (project / ".booley").mkdir(parents=True)
+        returncode, stderr = run_child_until_signalled(
+            project, tmp_path / kind, signal.SIGINT, script=CLI_CHILD, extra_args=(kind,)
+        )
+        assert returncode == -signal.SIGINT, (kind, stderr)
+        assert "Traceback" not in stderr, stderr
+        assert "KeyboardInterrupt" not in stderr, stderr
+        lines = [line for line in stderr.splitlines() if line and line != "err line"]
+        assert lines == ["interrupted; run cancelled"], stderr
+        (rec,) = records(project)
+        assert (rec.status, rec.exit_code) == ("cancelled", 130)
+
+
+def test_cancelled_run_reaches_main_and_silences_only_the_interrupt_traceback(
+    monkeypatch, project, capsys
+):
+    """``main()`` re-raises a plain interrupt and leaves a hook that drops it but not other errors."""
+    info = McpToolInfo(name="stub", path="stub.py", description="stub", kind="flow")
+    monkeypatch.setattr(sys, "excepthook", sys.__excepthook__)
+    monkeypatch.setattr(cli, "_parse_cli", lambda: command(["flow", "stub"]))
+    monkeypatch.setattr(cli, "find_project_root", lambda: project)
+    monkeypatch.setattr(cli, "_host_install_authority_error", lambda _command: None)
+    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.setattr(cli.runtime_context, "ensure_proxy_env", lambda: False)
+    monkeypatch.setattr(cli, "_discover_project_mcp_tools", lambda _root: [info])
+    monkeypatch.setattr("booley.mcp.registry.discover_mcp_tools", lambda **_kw: [info])
+    monkeypatch.setattr(cli, "_load_mcp_tool_class", lambda _info: StubEndpoint)
+    StubEndpoint.outcome = KeyboardInterrupt()
+
+    with pytest.raises(KeyboardInterrupt) as raised:
+        cli.main()
+    # Exactly the base class: Python 3.11 dies by SIGINT only for that, not a subclass.
+    assert type(raised.value) is KeyboardInterrupt
+
+    capsys.readouterr()
+    hook = sys.excepthook
+    hook(KeyboardInterrupt, KeyboardInterrupt(), None)
+    hook(cli._CancelledRun, cli._CancelledRun(), None)
+    assert capsys.readouterr().err == ""
+    hook(RuntimeError, RuntimeError("boom"), None)
+    assert "RuntimeError: boom" in capsys.readouterr().err

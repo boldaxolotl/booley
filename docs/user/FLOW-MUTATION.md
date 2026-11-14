@@ -38,10 +38,10 @@ refused.
 
 | Option | Effect |
 |---|---|
-| `--scope <file,...>` | RTL files to plant Mutants in. Default: the Target's own RTL, without testbench, vendored, and generated files. |
+| `--scope <file,...>` | RTL files to plant Mutants in; repeat the flag to add more. Default: the Target's own RTL, without testbench, vendored, and generated files. A file you name must be a Verilog or SystemVerilog source of the Target inside the Project: testbench files are refused, while vendored and generated files may be named explicitly. |
 | `--count <N\|auto>` | Number of Mutants (default `10`). `auto` derives it from the size of the scope, capped by the time limit (about one Mutant per 150 seconds, at least 3). |
 | `--seed <N>` | Non-negative integer that selects the Mutants (default `0`). Change it to try a different sample. |
-| `--min-detected <N>` | Detected Mutants needed to pass. Default: 80 % of `--count`, rounded up. |
+| `--min-detected <N>` | Detected Mutants needed to pass. Default: 80 % of `--count`, rounded up; when fewer Mutants run than `--count` (the candidates ran out), 80 % of the Mutants that ran, rounded up, invalid ones included. |
 | `--dry-run` | Validate the Target and scope and print the count, threshold, and seed. Nothing is built or simulated. |
 
 The shared options (`-C/--project`, `--timeout`, `--report-dir`, `--diagnostic`,
@@ -124,16 +124,25 @@ Only design code is mutated. Booley skips:
 - testbench, vendored, and generated files (by default);
 - classes, programs, checkers, covergroups, and every assertion, because a
   mutated assertion fires and would count as a detection;
-- parameter defaults and overrides, widths, delays, attributes, and the parts
-  of a `for` loop that decide how long it runs;
+- parameter defaults and overrides, widths, delays, and attributes;
+- a loop's condition (`for` stop expression, `while`, `do`-`while`) and any
+  assignment inside the loop to a variable that condition reads, from every
+  `relational` and `arithmetic-logical` operator swap, because a swapped
+  condition or counter can keep the loop from ending; other swaps in the loop
+  body, such as an accumulator, are still planted;
+- the initializer and step of a `for` loop;
+- everything inside a `while`, `do`-`while`, `forever`, or procedural `for`
+  loop, body included, for constants, enum members, bit-select moves,
+  concatenation swaps, deletions, and every `arithmetic-logical` mutation
+  except an operator swap (`repeat` and `foreach` loops are not skipped);
 - the arguments of system calls other than `$signed` and `$unsigned`;
 - port connections of gate primitives, `bind` directives, and checker and
   program instances, connections that are a bare name, and every bit-select
   move and deletion in a connection;
 - code a macro or include supplies, and the inactive branch of an `ifdef`
   (Booley applies the build's defines);
-- spots that could make a loop run forever or drive a variable from two
-  places, and `case` labels (moving one can overlap another item).
+- spots that could drive a variable from two places, and `case` labels (moving
+  one can overlap another item).
 
 ## How it chooses which Mutants
 
@@ -149,21 +158,25 @@ Only design code is mutated. Booley skips:
    one kind.
 
 If fewer candidates exist than `--count`, all of them run and the report says
-so. The knobs are `--scope` (where to look), `--count` (how many), and
-`--seed` (which sample); there is no filter by operator. The same RTL, scope,
-count, and seed choose the same Mutants (on a Verilator Target, with the same
-Verilator version).
+so. An unset `--min-detected` then becomes 80 % of the Mutants that ran, rounded
+up (invalid Mutants included), and the tally labels that base as scored. The knobs are `--scope` (where to
+look), `--count` (how many), and `--seed` (which sample); there is no filter by
+operator. The same RTL, scope, count, and seed choose the same Mutants (on a
+Verilator Target, with the same Verilator version).
 
 ## Reading results
 
 The report starts with what reproduces the run, then the tally and the
-verdict:
+verdict. The first line records the pyslang version (the parser that finds
+the candidate Mutants) and, on a Verilator Target, the Verilator version
+(its generated C++ decides which Mutants are equivalent). Example
+(Verilator):
 
 ```text
-[mutation_test] 10 Mutants (seed 0, count 10, generator 4, pyslang 9.0.0, Verilator 5.052 2025-02-01 rev v5.052)
+[mutation_test] 10 Mutants (seed 0, count 10, generator 5, pyslang <version>, Verilator <version>)
 [mutation_test] sim sweep: 10/10 tested              4m
   8 detected (1 timeout), 0 invalid, 2 not detected
-  detected: 8/10 (required: 8/10, default 80% of --count)
+  detected: 8/10 (required: 8, default 80% of --count)
   NOT DETECTED [arithmetic-logical] rtl/alu.sv:42: 'a + b' -> 'a - b'
 …
 RESULT: PASS (8/10 detected)
@@ -171,6 +184,11 @@ RESULT: PASS (8/10 detected)
 
 Survivors are listed with file, line, and the original and mutated code: each
 is a spot your tests do not check.
+
+On a `--count auto` run the header reads
+`count auto -> N (formula F, budget cap C)`, and `mutation-results.md` shows the
+same under Count. F is the count from the scope size, C the cap from the time
+limit, and N the smaller of the two.
 
 | Verdict | Meaning | Exit |
 |---|---|---:|
@@ -184,9 +202,9 @@ the Booley Directory or `--report-dir`
 
 | File | What it holds |
 |---|---|
-| `mutation/<N>/campaign/mutation-results.md` | The Mutants and the outcome of each. |
+| `mutation/<N>/campaign/mutation-results.md` | The Mutants and the outcome of each, and each test run's baseline duration and time limit. |
 | `mutation/<N>/campaign/mutation-specs.md` | Every Mutant: operator, file and line, original and mutated code. |
-| `mutation/<N>/campaign/manifest.json` | The run's identity (seed, count, generator and pyslang versions, the Verilator version on a Verilator Target, scope hashes) and each Mutant's status. |
+| `mutation/<N>/campaign/manifest.json` | The run's identity (seed, count, generator and pyslang versions, the Verilator version on a Verilator Target, scope hashes), each Mutant's status, and each test run's baseline duration and time limit. A `--count auto` run also records how it derived the count. |
 | `mutation/<N>/campaign/variants/` | The mutated source of each Mutant. |
 | `mutation/<N>/campaign/baseline.log`, `mutant-logs/` | The simulator output of the baseline and of each Mutant. |
 

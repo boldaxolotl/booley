@@ -59,6 +59,7 @@ from booley.runtime.image_provenance import (
     resolve_recipe_fingerprint,
 )
 from booley.runtime.paths import docker_data_dir
+from booley.runtime.platform_paths import run_captured_bounded
 from booley.runtime.timefmt import format_duration, utc_now_rfc3339
 
 DOCKER_IMAGE = "booley-sandbox"
@@ -177,7 +178,7 @@ def _image_build_fingerprint(booley_root: Path) -> str | None:
 def _image_label(image: str, label: str) -> str | None:
     """Return *image*'s *label* value, or ``None`` if absent/unavailable."""
     try:
-        result = subprocess.run(
+        result = run_captured_bounded(
             [
                 "docker",
                 "image",
@@ -186,10 +187,7 @@ def _image_label(image: str, label: str) -> str | None:
                 f'{{{{ index .Config.Labels "{label}" }}}}',
                 image,
             ],
-            capture_output=True,
-            text=True,
             timeout=15,
-            check=False,
         )
     except (subprocess.SubprocessError, FileNotFoundError):
         return None
@@ -350,12 +348,9 @@ def _tag_pulled_image(tag: str, image: str) -> bool:
     """Adopt one already-pulled acquisition tag under its managed name."""
 
     try:
-        subprocess.run(
-            ["docker", "tag", tag, image],
-            capture_output=True,
-            timeout=DEFAULT_IMAGE_TAG_TIMEOUT_S,
-            check=True,
-        )
+        run_captured_bounded(
+            ["docker", "tag", tag, image], timeout=DEFAULT_IMAGE_TAG_TIMEOUT_S, text=False
+        ).check_returncode()
     except subprocess.TimeoutExpired:
         warn(
             f"could not tag pulled image {tag} as {image}: "
@@ -818,12 +813,9 @@ def _report_build_cache(prune_hint_gb: float = 10.0) -> None:
     it grows past a threshold so the growth is visible rather than a surprise.
     """
     try:
-        result = subprocess.run(
+        result = run_captured_bounded(
             ["docker", "system", "df", "--format", "{{.Type}}\t{{.Size}}\t{{.Reclaimable}}"],
-            capture_output=True,
-            text=True,
             timeout=15,
-            check=False,
         )
     except (subprocess.SubprocessError, FileNotFoundError):
         return

@@ -18,10 +18,10 @@ from booley.projects.image_keepers import (
     PurgeResult,
 )
 from booley.runtime import interactive_docker as docker
-from booley.runtime import project_resources
+from booley.runtime import project_resources, session_admission
 from booley.runtime.issuance_invalidation import shared_recovery_blocks_command
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
-from booley.runtime.session_issuance import keeper_image_for_identity
+from booley.runtime.session_issuance import invalidate_project, keeper_image_for_identity
 
 logger = logging.getLogger(__name__)
 
@@ -60,14 +60,23 @@ def forget_project(
 
     ``purge`` also accepts an already-forgotten absolute root and then removes
     the root's unused images and state volumes, returning what it removed and kept.
+    Forgetting also withdraws the root's Sandbox issuance stamp and admission
+    claim, so a Session of a forgotten Project must be reissued before it runs.
     """
     outcomes: list[KeeperRelease] = []
+
+    def release_and_withdraw(root: Path) -> None:
+        # Release first: a refused release leaves the stamp, so a retry starts clean.
+        outcomes.append(_release_root(root))
+        invalidate_project(str(root))
+        session_admission.withdraw_claims(str(root))
+
     try:
         with host_lifecycle_lock("projects forget"):
             _require_recovered_host()
             forgotten = inventory.forget_project(
                 project,
-                before_forget=lambda root: outcomes.append(_release_root(root)),
+                before_forget=release_and_withdraw,
                 allow_forgotten=purge,
             )
             if purge:  # purge collects recorded images itself, after releasing tags

@@ -56,6 +56,8 @@ from booley.runtime.lifecycle_lock import LifecycleLockError
 from booley.runtime.paths import cheatsheet_path
 
 if TYPE_CHECKING:
+    from types import TracebackType
+
     # Type-only: keep the MCP tool registry (and endpoint packages it leads to) out
     # of the import path of every `booley` invocation.
     from booley.mcp.registry import McpToolInfo
@@ -1867,6 +1869,22 @@ def _endpoint_help_candidate(args: argparse.Namespace) -> bool:
     )
 
 
+class _CancelledRun(KeyboardInterrupt):
+    """A Ctrl-C the Standalone Job runner already recorded as cancelled and reported."""
+
+
+def _quiet_keyboard_interrupt(
+    previous: Callable[[type[BaseException], BaseException, TracebackType | None], object],
+) -> Callable[[type[BaseException], BaseException, TracebackType | None], None]:
+    """Return an excepthook that drops ``KeyboardInterrupt`` and delegates everything else."""
+
+    def hook(exc_type: type[BaseException], exc: BaseException, tb: TracebackType | None) -> None:
+        if not issubclass(exc_type, KeyboardInterrupt):
+            previous(exc_type, exc, tb)
+
+    return hook
+
+
 def _dispatch_endpoint(args, info: McpToolInfo, project_root: Path, *, flow: bool) -> int:
     """Dispatch a Flow or Specialist through its execution adapter.
 
@@ -1911,7 +1929,12 @@ def _dispatch_endpoint(args, info: McpToolInfo, project_root: Path, *, flow: boo
             runtime_context.ensure_proxy_env()
         if job is None:
             return _invoke_endpoint(endpoint, argv, args)
-        return job.run(lambda: _invoke_endpoint(endpoint, argv, args))
+        try:
+            return job.run(lambda: _invoke_endpoint(endpoint, argv, args))
+        except KeyboardInterrupt:
+            # The Job runner records a started run as cancelled with exit 130 (when it can).
+            print("interrupted; run cancelled", file=sys.stderr)
+            raise _CancelledRun from None
     finally:
         if job is not None:
             job.discard()
@@ -2365,6 +2388,21 @@ def _selected_project_root(
     return _command_project_root(command)
 
 
+def _deleted_session_down_root(command: str, args: argparse.Namespace) -> Path | None:
+    """Return the Project Root a `session down` names when that directory is gone.
+
+    Only an absolute, nonexistent selector qualifies: a relative one is still a typo
+    and keeps the existing-directory error, and an existing path keeps discovery.
+    """
+    selection = getattr(args, "_cli_selection", None)
+    if command != "session" or getattr(args, "session_command", None) != "down":
+        return None
+    if selection is None or not Path(selection.value).is_absolute():
+        return None
+    root = Path(selection.value).resolve()
+    return None if root.exists() else root
+
+
 def _host_session_selection(
     command: str, args: argparse.Namespace, selected: Path | None
 ) -> Path | None:
@@ -2410,6 +2448,11 @@ def _dispatch_main() -> int:
     default_chat = getattr(args, "default_chat", False)
     if default_chat:
         _enforce_runtime_location(command)
+
+    if deleted_root := _deleted_session_down_root(command, args):
+        # A deleted Project has no checkout to discover or guard; INDEPENDENT skips
+        # only those checks, while the host-only and host-install gates still run.
+        return _dispatch_selected(args, command, deleted_root, ProjectBinding.INDEPENDENT)
 
     binding = _command_project_binding(command, args)
     project_root = _selected_project_root(command, args, binding)
@@ -2518,6 +2561,12 @@ def main() -> int:
     ) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
+    except _CancelledRun:
+        # Die by SIGINT like any interrupted program, so a calling shell loop stops
+        # too; only the traceback is dropped. Re-raise the plain class: Python 3.11
+        # exits by SIGINT only for exactly KeyboardInterrupt, not a subclass (exit 1).
+        sys.excepthook = _quiet_keyboard_interrupt(sys.excepthook)
+        raise KeyboardInterrupt from None
 
 
 if __name__ == "__main__":

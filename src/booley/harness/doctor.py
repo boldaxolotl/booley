@@ -147,6 +147,7 @@ from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.docs_links import docs_url
 from booley.runtime.gateway_token import GatewayTokenCommandError, run_token_command
 from booley.runtime.image_provenance import is_local_image_id
+from booley.runtime.platform_paths import run_captured_bounded
 from booley.runtime.project_gitignore import missing_gitignore_patterns
 from booley.runtime.resource_history import DOCTOR_RUN_ENV
 from booley.runtime.session_issuance import SANDBOX_IMAGE_ID_ENV
@@ -941,9 +942,7 @@ def _observe_sandbox_identity(
     )
     try:
         # exec_argv keeps stdin open (-i); never forward the caller's stdin into the probe.
-        result = subprocess.run(
-            argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False, timeout=15
-        )
+        result = run_captured_bounded(argv, timeout=15, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return None, None
     lines = result.stdout.splitlines() if result.returncode == 0 else []
@@ -1499,12 +1498,9 @@ def _image_env_value(docker_exe: str, image: str, key: str) -> str | None:
     missing image, malformed output.
     """
     try:
-        result = subprocess.run(
+        result = run_captured_bounded(
             [docker_exe, "image", "inspect", image, "--format", "{{json .Config.Env}}"],
-            capture_output=True,
-            text=True,
             timeout=10,
-            check=False,
         )
     except (subprocess.SubprocessError, FileNotFoundError):
         return None
@@ -1830,12 +1826,9 @@ def _check_image_bakes_runtime_marker(
         _skip("sandbox image runtime marker check skipped - container runtime unavailable")
         return
     try:
-        result = subprocess.run(
+        result = run_captured_bounded(
             [docker_exe, "image", "inspect", sandbox_image, "--format", "{{json .Config.Env}}"],
-            capture_output=True,
-            text=True,
             timeout=10,
-            check=False,
         )
     except (subprocess.SubprocessError, FileNotFoundError):
         _skip("sandbox image runtime marker check skipped - image inspect failed")
@@ -2171,12 +2164,8 @@ def _image_created_epoch(docker_exe: str, image: str) -> float | None:
     staleness verdict.
     """
     try:
-        result = subprocess.run(
-            [docker_exe, "image", "inspect", "--format", "{{.Created}}", image],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
+        result = run_captured_bounded(
+            [docker_exe, "image", "inspect", "--format", "{{.Created}}", image], timeout=10
         )
     except (subprocess.SubprocessError, FileNotFoundError):
         return None
@@ -2379,13 +2368,7 @@ def _check_container_uid(  # noqa: PLR0911 — ordered precondition ladder; each
     if not sys.platform.startswith("linux") or not hasattr(os, "getuid"):
         return
     try:
-        result = subprocess.run(
-            [docker_exe, "run", "--rm", image, "id", "-u"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
+        result = run_captured_bounded([docker_exe, "run", "--rm", image, "id", "-u"], timeout=30)
     except (subprocess.SubprocessError, FileNotFoundError) as exc:
         _warn(f"could not probe container uid: {exc}")
         return
@@ -2631,13 +2614,7 @@ def _container_command_check(
 
     def _container_check(description: str, cmd: list[str], fix: str = "") -> None:
         try:
-            result = subprocess.run(
-                [docker_exe, "run", "--rm", image, *cmd],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
+            result = run_captured_bounded([docker_exe, "run", "--rm", image, *cmd], timeout=30)
             if result.returncode == 0:
                 _pass(description)
                 if verbose and result.stdout.strip():
@@ -2710,7 +2687,7 @@ def _check_riscv_toolchain(
         docker_exe,
         image,
         flavor,
-        run=subprocess.run,
+        run=run_captured_bounded,
     )
     for finding in findings:
         if finding.severity is eda_environment.EdaFindingSeverity.PASS:
@@ -2892,7 +2869,7 @@ def _check_cli_credentials(
             if required
             else None
         ),
-        missing_fix="" if is_default else _missing_credential_fix(cli, auth_policy),
+        missing_fix="" if is_default else auth_token.missing_credential_fix(cli, auth_policy),
         is_default=is_default,
         missing_fails=runs_specialist and not is_default,
     )
@@ -2928,20 +2905,6 @@ def _check_cli_rotation_risk(
         plan=plan,
         display_overrides=reporter.display_overrides,
     )
-
-
-def _missing_credential_fix(cli: str, policy: str) -> str:
-    """The sign-in that *policy* accepts for *cli* (see ``auth_token.allowed_credential_keys``)."""
-    if cli == auth_token.APP_CLAUDE:
-        if policy == "api_key":
-            return f"export {auth_token.API_KEY_ENV[cli]}"
-        return "run claude and use /login, or on the host: booley auth --cli claude"
-    host_login = f"booley auth --cli {cli}"
-    if policy == "subscription":
-        return "codex login"
-    if policy == "api_key":
-        return f"export {auth_token.API_KEY_ENV[cli]}, or on the host: {host_login}"
-    return f"codex login, or on the host: {host_login}"
 
 
 def _report_agent_app_choice(reporter: _Reporter) -> tuple[bool, AgentAppChoice | None]:
@@ -5574,15 +5537,7 @@ def _execute_selftest(
     returns the completed process for the caller to grade.
     """
     try:
-        result = subprocess.run(
-            cmd,
-            cwd=project.project_root,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            check=False,
-        )
+        result = run_captured_bounded(cmd, timeout=timeout_s, cwd=project.project_root, env=env)
     except subprocess.TimeoutExpired:
         remedy = (
             "raise [flows.sim].build_timeout_ms for credible compiler progress, "
@@ -5889,15 +5844,7 @@ def _run_flow_check_subprocess(
     """Run *cmd* for a Flow check; ``None`` means a FAIL was already recorded."""
     env = _doctor_subprocess_env(project)
     try:
-        return subprocess.run(
-            cmd,
-            cwd=project.project_root,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            check=False,
-        )
+        return run_captured_bounded(cmd, timeout=timeout_s, cwd=project.project_root, env=env)
     except subprocess.TimeoutExpired:
         findings.fail(
             f"{label} timed out after {timeout_s}s",

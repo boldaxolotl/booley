@@ -19,6 +19,13 @@ from booley.fusesoc import selftest_overlay
 from booley.harness import doctor
 from booley.runtime import runtime_context
 from tests.diagnostic_helpers import _require_doctor_warning
+from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
+
+
+@pytest.fixture(autouse=True)
+def _doctor_probes_use_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """This module fakes the doctor probes through ``subprocess.run``."""
+    route_bounded_capture_through_subprocess_run(monkeypatch, doctor)
 
 
 class _Rec:

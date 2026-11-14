@@ -927,15 +927,46 @@ def test_operand_drop_and_not_removal_keep_width(tmp_path: Path) -> None:
         assert _assignment_widths(edited.decode()) == [8, 1, 8], mutant
 
 
-def test_version_2_mutant_ids_are_kept(tmp_path: Path) -> None:
-    """Every Mutant of generator version 2 is still produced, with the same ID.
+# The version 2 IDs that version 5 drops: a swap in a loop condition or in an assignment
+# inside a loop to a variable the loop's condition reads (issue #3925), as `line: swap`.
+_DROPPED_SINCE_V2: dict[str, frozenset[str]] = {
+    "constants.v": frozenset(
+        {
+            "90f7cc258d734631c526",  # 21: `<` (for stop)
+            "d6a5bb473002e76becf7",  # 22: `!=` (while)
+            "90a6c8804246fd791c72",  # 22: `+` (`acc = acc + 1`)
+        }
+    ),
+    "deletion.v": frozenset(
+        {
+            "2e6a5450ec43a8518ad3",  # 27: `<` (for stop)
+            "c96d3d7ff0c7560a8bc0",  # 28: `!=` (while)
+            "ff23b9f2124b3c526128",  # 28: `-` (`i = i - 1`)
+        }
+    ),
+    "conditions.sv": frozenset({"f8a4f8c90bef4e00d944"}),  # 10: `<` (for stop)
+    "constants.sv": frozenset(
+        {
+            "ef0ae09f6612ef8b6255",  # 19: `<` (for stop)
+            "c4aba983818244ddb3be",  # 20: `!=` (do-while)
+            "abe45237fa1a73ccf83a",  # 20: `+` (`z = z + 8'd2`, z read by the do-while)
+        }
+    ),
+    "deletion.sv": frozenset({"3e6426bfd218943b77eb"}),  # 18: `<` (for stop)
+}
+
+
+def test_version_2_mutant_ids_kept_except_loop_control_swaps(tmp_path: Path) -> None:
+    """Every Mutant of generator version 2 is still produced, except loop-control swaps.
 
     ``v2_mutant_ids.txt`` lists, per fixture that existed then, the IDs of version 2.
+    Version 5 drops the swaps in loop conditions and loop-variable updates, listed in
+    ``_DROPPED_SINCE_V2``; every other ID is kept.
     """
     version = importlib.import_module(_GENERATOR).GENERATOR_VERSION
     # Version 3 and version 4 changed the rules after v2_mutant_ids.txt was recorded (version 4
     # drops `+`/`-` swaps that are equal at width; no recorded fixture has one).
-    assert version not in ("2", "3"), "the generator version is still one of v2 or v3"
+    assert version not in ("2", "3", "4"), "the generator version is still one of v2 to v4"
     recorded: dict[str, set[str]] = {}
     for line in (_FIXTURES / "v2_mutant_ids.txt").read_text(encoding="utf-8").splitlines():
         if line and not line.startswith("#"):
@@ -948,11 +979,93 @@ def test_version_2_mutant_ids_are_kept(tmp_path: Path) -> None:
         root = tmp_path / name
         root.mkdir()
         new_ids = {m.id for m in _generate(root, name).mutants}
-        assert old_ids <= new_ids, (name, sorted(old_ids - new_ids))
+        assert old_ids - new_ids == _DROPPED_SINCE_V2.get(name, frozenset()), name
         kept += len(old_ids)
         grown += len(new_ids)
     assert kept == 325  # the IDs recorded at version 2
     assert grown > kept  # some fixtures gain nothing, e.g. relational.v, but the union does
+
+
+def _loop_module(body: str) -> str:
+    """A module whose combinational block holds ``body`` (declarations are shared)."""
+    return (
+        "module lp(input en, input [1:0] m, input [3:0] v0, input [3:0] w, input [3:0] lim,\n"
+        "          input [3:0] x, output reg [3:0] o);\n"
+        "  reg [1:0] j;\n"
+        "  reg [3:0] v;\n"
+        "  always @* begin\n"
+        f"{body}"
+        "  end\n"
+        "endmodule\n"
+    )
+
+
+def test_loop_conditions_get_no_operator_swaps(tmp_path: Path) -> None:
+    """A `for` stop, a `while`, and a `do`-`while` condition keep only the force-false Mutant.
+
+    Swapping `<` in `j < 2'd3` for `<=` with a 2-bit `j` would never end the loop.
+    """
+    source = _loop_module(
+        "    o = 4'd0;\n"
+        "    for (j = 2'd0; j < 2'd3 && en; j = j + 2'd1) o = x;\n"
+        "    while ((v0 & m) != 0) o = x;\n"
+        "    do o = x; while (w + 1 < lim);\n"
+    )
+    name = _write(tmp_path, "lp.v", source)
+    selection = generate_mutants(tmp_path, [name], _ALL, 1)
+
+    swaps = [m for m in selection.mutants if m.operator in ("relational", "arithmetic-logical")]
+    assert [(m.line, m.original_code, m.mutated_code) for m in swaps] == []
+    conditions = sorted(
+        (m.original_code, m.mutated_code) for m in selection.mutants if m.operator == "condition"
+    )
+    assert conditions == [
+        ("(v0 & m) != 0", "1'b0"),
+        ("j < 2'd3 && en", "1'b0"),
+        ("w + 1 < lim", "1'b0"),
+    ]
+
+
+def test_loop_variable_update_keeps_accumulator_swap(tmp_path: Path) -> None:
+    """`v = v - 1` gets no swap in a `while` that reads `v`; `o = o ^ x` in it still does."""
+    source = _loop_module(
+        "    o = 4'd0;\n    v = v0;\n    while (v != 0) begin\n"
+        "      o = o ^ x;\n      v = v - 4'd1;\n    end\n"
+    )
+    name = _write(tmp_path, "lp.v", source)
+    selection = generate_mutants(tmp_path, [name], _ALL, 1)
+
+    swaps = [m for m in selection.mutants if m.operator in ("relational", "arithmetic-logical")]
+    assert [(m.line, m.original_code, m.mutated_code) for m in swaps] == [(9, "^", "&")]
+
+
+def test_compound_and_nonblocking_loop_variable_writes_get_no_swaps(tmp_path: Path) -> None:
+    """`v -= w - 1` and `v <= v - 1` write the loop variable, like `v = v - 1` does."""
+    for name, update in (("compound.v", "v -= w - 4'd1;"), ("nonblocking.v", "v <= v - 4'd1;")):
+        source = _loop_module(
+            f"    while (v != 0) begin\n      o = o ^ x;\n      {update}\n    end\n"
+        )
+        _write(tmp_path, name, source)
+        selection = generate_mutants(tmp_path, [name], _ALL, 1)
+        assert _sites(selection, ("relational", "arithmetic-logical")) == [(7, "^", "&")], name
+
+
+def test_select_index_is_not_a_written_variable(tmp_path: Path) -> None:
+    """`a[v] = a[v] ^ en` writes `a`, not its index `v`, so a `while (v ...)` keeps that swap.
+
+    The `^` is still skipped when the loop condition reads `a` itself.
+    """
+    reads_index = _loop_module(
+        "    while (v != 0) begin\n      o[v] = o[v] ^ en;\n      v = v0;\n    end\n"
+    )
+    reads_target = reads_index.replace("while (v != 0)", "while (o != 0)")
+    for name, source, expected in (
+        ("index.v", reads_index, [(7, "^", "&")]),
+        ("target.v", reads_target, []),
+    ):
+        _write(tmp_path, name, source)
+        selection = generate_mutants(tmp_path, [name], _ALL, 1)
+        assert _sites(selection, ("relational", "arithmetic-logical")) == expected, name
 
 
 def _add_subtract_swaps(tmp_path: Path, name: str, source: str) -> list[str]:
@@ -1307,7 +1420,6 @@ def test_selection_is_round_robin_across_operators(tmp_path: Path) -> None:
         "deletion",
         "arithmetic-logical",
     ]
-    assert selection.shortfall is None
     orders = {
         tuple(m.id for m in generate_mutants(tmp_path, [name], 16, seed).mutants)
         for seed in range(6)
@@ -1315,17 +1427,13 @@ def test_selection_is_round_robin_across_operators(tmp_path: Path) -> None:
     assert len(orders) > 1  # the seed changes which candidates come first
 
 
-def test_fewer_candidates_than_count_returns_all_and_says_so(tmp_path: Path) -> None:
-    _stage(tmp_path, "relational.v")
-    exact = generate_mutants(tmp_path, ["relational.v"], 16, 1)  # 8 relational + 8 deletion
+def test_fewer_candidates_than_count_returns_all(tmp_path: Path) -> None:
+    _stage(tmp_path, "relational.v")  # 8 relational + 8 deletion candidates
     asked = generate_mutants(tmp_path, ["relational.v"], 50, 1)
 
     assert len(asked.mutants) == 16
-    assert (asked.requested, asked.available) == (50, 16)
-    assert asked.shortfall == (
-        "only 16 candidate Mutants exist; returning all of them (50 requested)"
-    )
-    assert exact.shortfall is None
+    assert asked.requested == 50
+    assert len(asked.ranked) == 16
 
 
 # AC6: a parse failure names the file and the diagnostic.

@@ -84,8 +84,12 @@ def session_container_name(workspace: Path) -> str:
 
     Distinct from the VS Code container (Dev Containers derives its own name), so
     `booley session up` never adopts or clobbers a container VS Code is driving.
+
+    The identity resolves non-strictly: it equals `dc.canonical_project_id` for an
+    existing directory, and for a deleted Project it still names the container
+    `session up` created, so `session down` can stop it.
     """
-    return f"booley-session-{dc.canonical_project_id(workspace)}"
+    return f"booley-session-{dc.project_name_id(str(workspace.resolve()))}"
 
 
 # Label the Dev Containers CLI stamps on the container it creates, naming the
@@ -1174,6 +1178,7 @@ def _prepare_unlocked(workspace: Path) -> str:
                 _relay_profile(profile),
                 issuance_labels=issuance_labels,
                 image=issuance.relay_image_id or "",
+                runner=idk.relay_docker,
             )
         else:
             _provision_license_relay(
@@ -2081,6 +2086,7 @@ def _provision_license_relay(
             str(workspace.resolve()),
             image=relay_image_id,
             issuance_labels=labels,
+            runner=idk.relay_docker,
         )
     except RelayDockerError as exc:
         raise SessionError(f"could not start licensed Sandbox: {exc}") from exc
@@ -2103,6 +2109,7 @@ def _connect_and_validate_license_relay(
             _relay_profile(profile),
             issuance_labels=labels,
             image=relay_image_id,
+            runner=idk.relay_docker,
         )
     except RelayDockerError as exc:
         raise SessionError(f"licensed Sandbox topology failed: {exc}") from exc
@@ -2125,6 +2132,7 @@ def _validate_license_relay(
             _relay_profile(profile),
             issuance_labels=labels,
             image=relay_image_id,
+            runner=idk.relay_docker,
         )
     except RelayDockerError as exc:
         raise SessionError(f"licensed Sandbox topology is invalid: {exc}") from exc
@@ -2135,7 +2143,7 @@ def _remove_license_relay(relay) -> None:
     from booley.eda.provisioning.licensing.flexnet_docker import RelayDockerError, remove_relay
 
     try:
-        remove_relay(relay)
+        remove_relay(relay, runner=idk.relay_docker)
     except RelayDockerError as exc:
         raise SessionError(f"could not clean up license relay: {exc}") from exc
 

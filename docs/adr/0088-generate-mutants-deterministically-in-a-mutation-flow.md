@@ -227,3 +227,19 @@ spot, the same single-file limit the select-range facts have; it can drop a
 Mutant that is not equivalent in the full design. Every other Mutant keeps its
 ID. The generator version is 4: the same inputs give the same Mutants only for
 the same version.
+
+## Amendments (2026-11-13, #3925)
+
+Recorded while implementing
+[#3925](https://github.com/boldaxolotl/booley/issues/3925).
+
+The `relational` and `arithmetic-logical` operator swaps skip a loop's
+condition (a `for` stop expression, a `while` or `do`-`while` condition) and any
+assignment inside the loop to a variable that condition reads, because a
+swapped stop condition or loop counter can keep the loop from ending. The rule
+is syntactic: a write through a temporary is not traced. The `condition`
+operator still forces a loop condition to `1'b0`. Eleven Mutant IDs recorded at
+generator version 2 are no longer produced (the swaps of five `for` stop
+expressions, two `while` conditions, one `do`-`while` condition, and three
+loop-variable updates in the fixtures); every other Mutant keeps its ID. The
+generator version is 5.
