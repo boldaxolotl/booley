@@ -185,7 +185,7 @@ def test_explicit_run_cwd_overrides_live_project_configuration(tmp_path: Path) -
     assert run.call_args.kwargs["env"]["BOOLEY_RUN_CWD"] == str(tmp_path / "frozen" / "sim")
 
 
-def test_immutable_campaign_hook_runs_from_project_root_without_build_access(
+def test_immutable_simulation_record_hook_runs_from_project_root_without_build_access(
     tmp_path: Path,
 ) -> None:
     handle = _handle(tmp_path)

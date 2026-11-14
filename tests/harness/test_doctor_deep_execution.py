@@ -119,18 +119,18 @@ def _real_simulation_transport(monkeypatch, flow_project, alias, data, host):
 
 
 def _assert_real_bad_simulation_report(outcome, build_failure):
-    campaign = outcome.detail["records"]["sim"]
-    assert campaign["complete"] is True
-    assert campaign["test_run_total"] == campaign["observation_total"] == 1
-    assert campaign["test_runs"][0]["grade"] == "fail"
-    observation = campaign["observations"][0]
-    assert campaign["test_runs"][0]["test"] == observation["test"] == "first"
+    simulation_record = outcome.detail["records"]["sim"]
+    assert simulation_record["complete"] is True
+    assert simulation_record["test_run_total"] == simulation_record["observation_total"] == 1
+    assert simulation_record["test_runs"][0]["grade"] == "fail"
+    observation = simulation_record["observations"][0]
+    assert simulation_record["test_runs"][0]["test"] == observation["test"] == "first"
     if build_failure:
         assert observation["execution"] == "blocked_by_build"
         assert observation["failure_class"] == "design"
         assert "%Error: BAD source" in observation["detail"]["reason"]
     else:
-        assert campaign["build_stage"] == []
+        assert simulation_record["build_stage"] == []
         assert observation["execution"] == "completed"
         assert observation["functional"] == "fail"
         assert observation["failure_class"] != "infrastructure"

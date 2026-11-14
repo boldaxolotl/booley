@@ -19,7 +19,9 @@ from tests.flows.sim.test_ordinary_record_planning import (
 )
 
 
-def test_campaign_baseline_builds_and_runs_in_the_baseline_checkout(tmp_path, monkeypatch):
+def test_simulation_record_baseline_builds_and_runs_in_the_baseline_checkout(
+    tmp_path, monkeypatch
+):
     from booley.flows.sim.request import SimRequest
 
     candidate, baseline, flow = cycle_baseline_project(tmp_path, monkeypatch)

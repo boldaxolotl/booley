@@ -78,7 +78,9 @@ def test_baseline_that_cannot_apply_the_seed_refuses_instead_of_dropping_it(tmp_
 
 
 def _links(flow, monkeypatch, *requirements):
-    monkeypatch.setattr(flow, "_campaign_baseline_requirements", lambda _targets: requirements)
+    monkeypatch.setattr(
+        flow, "_simulation_record_baseline_requirements", lambda _targets: requirements
+    )
     return flow._baseline_links(["sim"], _MAP)
 
 
@@ -160,7 +162,7 @@ def test_candidates_that_share_a_baseline_each_get_their_own_test_run(tmp_path, 
     monkeypatch.setattr(flow, "_effective_skips", lambda _target: set())
     monkeypatch.setattr(
         flow,
-        "_campaign_baseline_requirements",
+        "_simulation_record_baseline_requirements",
         lambda _targets: (("fast", "ref", "stress"), ("slow", "ref", "stress")),
     )
     names = {"fast": ["stress"], "slow": ["stress"], "ref": ["stress"]}
@@ -222,9 +224,9 @@ def test_a_baseline_that_owns_an_option_of_the_test_run_refuses_it():
     )
 
 
-def test_campaign_planning_runs_no_baseline_for_a_refused_test_run(tmp_path, monkeypatch):
+def test_simulation_record_planning_runs_no_baseline_for_a_refused_test_run(tmp_path, monkeypatch):
     """A baseline that cannot run the Test Run gets no campaign and no prerequisite."""
-    from booley.flows.sim.flow import OrdinaryCampaignPlanning, PlannedTarget
+    from booley.flows.sim.flow import OrdinarySimulationRecordPlanning, PlannedTarget
     from booley.flows.target_test_plan import build_target_test_plan
     from booley.targets.catalog import TargetCatalog
     from tests.flows.sim.test_cycle_observation import _criterion_flow, _pin_baseline
@@ -253,12 +255,12 @@ def test_campaign_planning_runs_no_baseline_for_a_refused_test_run(tmp_path, mon
         assert errors == []
         assert baselines is not None
         assert baselines.targets == ()
-        planning = OrdinaryCampaignPlanning(
+        planning = OrdinarySimulationRecordPlanning(
             (PlannedTarget("sim_core", flow._target_handles["sim_core"], MagicMock()),),
             baselines,
             tests,
         )
-        requests, prerequisites = flow._plan_campaign_baselines(
+        requests, prerequisites = flow._plan_simulation_record_baselines(
             tmp_path / "invocation", None, planning
         )
     finally:
@@ -279,15 +281,15 @@ def test_campaign_planning_runs_no_baseline_for_a_refused_test_run(tmp_path, mon
     ]
 
 
-def test_campaign_criterion_names_why_the_comparison_is_inconclusive(tmp_path: Path):
+def test_simulation_record_criterion_names_why_the_comparison_is_inconclusive(tmp_path: Path):
     from booley.criteria.state import DevelopmentState
     from booley.criteria.templates import cycle_count_criterion_key
     from booley.flows.sim.acceptance import SimulationAcceptanceCoordinator, _OutcomeEvidence
     from booley.flows.test_runs import build_test_run
-    from tests.flows.sim.test_simulation_record_test_runs import _hdl_plan, _run_campaign
+    from tests.flows.sim.test_simulation_record_test_runs import _hdl_plan, _run_simulation_record
 
     run = build_test_run("count", seed=1)
-    outcome = _run_campaign(tmp_path, _hdl_plan(tmp_path, ((run,),)))
+    outcome = _run_simulation_record(tmp_path, _hdl_plan(tmp_path, ((run,),)))
     name, selector = str(outcome.target["name"]), str(outcome.target["selector"])
     key = cycle_count_criterion_key(name, "count")
     params = {

@@ -12,7 +12,7 @@ from booley.criteria.state import CriterionChange, DevelopmentState, StatePersis
 from booley.evidence.acceptance import ResolvedFlowAcceptance
 from booley.flows.frozen_test_runs import FrozenTestRuns
 from booley.flows.request import FlowRequest
-from booley.flows.simulation_record_results import StartedCampaign
+from booley.flows.simulation_record_results import StartedSimulationRecord
 from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.runtime.endpoint_execution import EndpointOutcome
 
@@ -167,28 +167,30 @@ def frozen_test_runs_for(recorder: AcceptanceRecorder) -> FrozenTestRuns | None:
 
 
 @runtime_checkable
-class CampaignRegistry(Protocol):
+class SimulationRecordRegistry(Protocol):
     """Optional recorder capability: learn of each Simulation Campaign before it runs.
 
     A campaign that is cancelled or killed never returns an outcome; a
     recorder that was told of it can still account for the results it left.
     """
 
-    def register_campaign(self, campaign: StartedCampaign) -> None: ...
+    def register_simulation_record(self, simulation_record: StartedSimulationRecord) -> None: ...
 
 
-def wants_campaigns(recorder: object) -> bool:
+def wants_simulation_records(recorder: object) -> bool:
     """Whether *recorder* wants to be told of each Simulation Campaign before it runs."""
-    return isinstance(recorder, CampaignRegistry)
+    return isinstance(recorder, SimulationRecordRegistry)
 
 
-def register_campaign_for(recorder: object, campaign: StartedCampaign) -> None:
+def register_simulation_record_for(
+    recorder: object, simulation_record: StartedSimulationRecord
+) -> None:
     """Tell *recorder* that *campaign* is about to run, if it wants to know.
 
     May raise :class:`AcceptanceRecordingError`.
     """
-    if isinstance(recorder, CampaignRegistry):
-        recorder.register_campaign(campaign)
+    if isinstance(recorder, SimulationRecordRegistry):
+        recorder.register_simulation_record(simulation_record)
 
 
 @runtime_checkable

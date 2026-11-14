@@ -779,7 +779,7 @@ def test_missing_executable_records_no_command_start(tmp_path):
     )
 
 
-def test_campaign_worker_inherits_invocation_observer(tmp_path):
+def test_simulation_record_worker_inherits_invocation_observer(tmp_path):
     from contextlib import nullcontext
     from types import SimpleNamespace
 

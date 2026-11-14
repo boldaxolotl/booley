@@ -41,7 +41,9 @@ def main(argv: list[str] | None = None) -> int:
             raise GoalBindingError("Goal Flow runner requires a supported Flow name")
         name = args.pop(0)
         adapter = GoalFlowExecution(
-            binding, resolvers=GOAL_FRESHNESS_RESOLVERS, campaign_reader=read_unpublished_results
+            binding,
+            resolvers=GOAL_FRESHNESS_RESOLVERS,
+            simulation_record_reader=read_unpublished_results,
         )
         if custom_path is None:
             return _FLOW_TYPES[name]().main(args, adapter=adapter)

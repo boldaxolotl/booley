@@ -79,8 +79,8 @@ def _run_two_lanes(
     ``finish`` runs after the scheduler, while the sink is still installed.
     """
     manifest = _two_item_manifest()
-    campaign_store = SimulationRecordStore(tmp_path / "record")
-    campaign_store.publish_manifest(manifest)
+    simulation_record_store = SimulationRecordStore(tmp_path / "record")
+    simulation_record_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
@@ -90,7 +90,7 @@ def _run_two_lanes(
 
     def allocate(item) -> ScheduledAttempt:
         attempt_id = os.urandom(16).hex()
-        ordinal, directory = campaign_store.allocate_attempt_directory(
+        ordinal, directory = simulation_record_store.allocate_attempt_directory(
             str(item["work_item_id"]), attempt_id
         )
         # A unique collision key lets both lanes run at once.

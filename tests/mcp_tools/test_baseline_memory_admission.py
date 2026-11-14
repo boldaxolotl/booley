@@ -476,14 +476,16 @@ def test_armed_simulation_child_stops_reading_results_after_an_own_oom_kill(tmp_
     from booley.flows.sim import unpublished_results
 
     def execute(_flow, _request, *, adapter):
-        adapter.campaigns.append(SimpleNamespace(manifest_path=tmp_path, manifest_sha256="x"))
+        adapter.simulation_records.append(
+            SimpleNamespace(manifest_path=tmp_path, manifest_sha256="x")
+        )
         return _flow_result(oom_killed=True)
 
-    def aborted_campaign(*_args):
+    def aborted_simulation_record(*_args):
         raise ValueError("the killed Campaign has no complete results")
 
     monkeypatch.setattr(SimulateFlow, "execute", execute)
-    monkeypatch.setattr(unpublished_results, "read_unpublished_results", aborted_campaign)
+    monkeypatch.setattr(unpublished_results, "read_unpublished_results", aborted_simulation_record)
 
     armed = execution.simulate(_simulation_request(tmp_path, armed=True))
 

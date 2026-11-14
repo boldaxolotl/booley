@@ -94,7 +94,7 @@ def test_validator_rejects_duplicate_expected_selection(tmp_path: Path) -> None:
         _validator().validate(manifest, ["quick", "quick"])
 
 
-def _campaign_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
+def _simulation_record_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
     """Write a manifest, summary and v2 projection in the on-disk Target layout."""
     target = tmp_path / "targets" / "sim_campaign"
     manifest = target / "record" / "manifest.json"
@@ -124,7 +124,7 @@ def _campaign_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 
 def test_validator_authenticates_manifest_backlinks(tmp_path: Path) -> None:
-    manifest, summary, projection = _campaign_tree(tmp_path)
+    manifest, summary, projection = _simulation_record_tree(tmp_path)
     digest = "sha256:" + hashlib.sha256(manifest.read_bytes().rstrip(b"\n")).hexdigest()
 
     assert _validator().validate_backlinks(manifest, summary, projection) == {
@@ -139,7 +139,7 @@ def test_validator_authenticates_manifest_backlinks(tmp_path: Path) -> None:
 
 
 def test_validator_rejects_stale_projection_manifest_reference(tmp_path: Path) -> None:
-    manifest, summary, projection = _campaign_tree(tmp_path)
+    manifest, summary, projection = _simulation_record_tree(tmp_path)
     document = json.loads(projection.read_text())
     document["simulation_record_manifest"]["sha256"] = "sha256:" + "0" * 64
     projection.write_text(json.dumps(document) + "\n")
@@ -153,7 +153,7 @@ def test_validator_rejects_stale_projection_manifest_reference(tmp_path: Path) -
 
 
 def test_validator_cli_exposes_every_check(tmp_path: Path) -> None:
-    manifest, summary, projection = _campaign_tree(tmp_path)
+    manifest, summary, projection = _simulation_record_tree(tmp_path)
     script = str(FIXTURE / "validate_campaign.py")
     backlinks = subprocess.run(
         [

@@ -23,7 +23,7 @@ from booley.harness.dashboard.model import project_goal
 from tests.flows.sim.test_coverage_invocation import project
 from tests.flows.sim.test_coverage_transaction import NativeExecution
 from tests.goals import conftest
-from tests.goals.conftest import bind, campaign_facts, entry_environment, git, run_row
+from tests.goals.conftest import bind, entry_environment, git, run_row, simulation_record_facts
 from tests.goals.test_test_run_evidence import _replayed, _state_file, _status
 from tests.goals.test_test_run_goal_changes import _change
 
@@ -241,7 +241,7 @@ def _coverage_run(layout, root, run_id, *tests):
 
 
 @pytest.mark.timeout(120)  # Windows CI needs 3x the observed 30-33s runtime.
-def test_multi_seed_coverage_goal_is_met_only_by_a_campaign_of_exactly_its_frozen_seeds(
+def test_multi_seed_coverage_goal_is_met_only_by_a_simulation_record_of_exactly_its_frozen_seeds(
     layout, monkeypatch
 ):
     goals = [
@@ -309,7 +309,7 @@ def test_an_ordinary_run_never_changes_a_measured_coverage_verdict(layout, monke
     assert set(_shown(after).values()) == {"passed"}  # the measuring campaign's outcomes
 
 
-def test_a_registration_that_is_not_a_simulation_campaign_manifest_cannot_be_read(tmp_path):
+def test_a_registration_that_is_not_a_simulation_record_manifest_cannot_be_read(tmp_path):
     """Only a Simulation Campaign manifest is a readable registration."""
     from booley.flows.sim.record.inspection import SimulationRecordIntegrityError
     from booley.flows.sim.unpublished_results import read_unpublished_results
@@ -350,7 +350,7 @@ def _plain_run(layout, record, route, grade):
             *shadow.set_criterion("coverage_top", False, detail=cov_detail),
         ]
         recorder.record_or_verify_transaction(
-            state, changes, acceptance_facts=campaign_facts(), identity={}
+            state, changes, acceptance_facts=simulation_record_facts(), identity={}
         )
 
 
@@ -412,7 +412,7 @@ def test_an_approved_change_never_turns_a_pending_goal_into_a_failure(layout, mo
         *shadow.set_criterion(later, False, detail={"test_runs": rows[:1]}),
     ]
     recorder.record_or_verify_transaction(
-        state, changes, acceptance_facts=campaign_facts(), identity={}
+        state, changes, acceptance_facts=simulation_record_facts(), identity={}
     )
     assert _replayed(layout, later).ever_failed is False
 

@@ -43,7 +43,7 @@ from booley.flows.sim.record.dependency import (
     read_simulation_record_dependencies,
     register_simulation_record_dependency,
 )
-from booley.flows.sim.record_retention import CampaignRetentionError, prune_invocation
+from booley.flows.sim.record_retention import SimulationRecordRetentionError, prune_invocation
 from booley.runtime import execution_records
 from booley.runtime.execution_records import (
     ExecutionId,
@@ -55,9 +55,9 @@ from booley.runtime.execution_recovery import recover_execution
 from tests.flows.sim import test_simulation_record_lane_pool as lane_pool
 from tests.flows.sim.simulation_record_test_support import _retained_invocation
 from tests.flows.sim.test_simulation_record_dependency import (
-    CAMPAIGN_ID,
+    SIMULATION_RECORD_ID,
     _origin,
-    _two_role_campaigns,
+    _two_role_simulation_records,
 )
 from tests.flows.sim.test_simulation_record_unsupported_formats import (
     _assert_refused,
@@ -98,8 +98,8 @@ def _json(path: Path) -> dict[str, Any]:
 
 def _at_record_layout(invocation: Path) -> None:
     """Rename a 0.4.0 run's directories to the Record layout, so only a schema can refuse it."""
-    for campaign in sorted(invocation.glob("targets/*/campaign")):
-        campaign.rename(campaign.with_name("record"))
+    for simulation_record in sorted(invocation.glob("targets/*/campaign")):
+        simulation_record.rename(simulation_record.with_name("record"))
     for coverage in sorted(invocation.rglob("coverage-campaign")):
         coverage.rename(coverage.with_name("coverage-record"))
 
@@ -166,7 +166,7 @@ def test_a_run_writes_simulation_record_names(tmp_path: Path) -> None:
 def test_prerequisites_and_dependency_receipts_name_the_simulation_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _invocation, candidate, baseline = _two_role_campaigns(tmp_path, monkeypatch)
+    _invocation, candidate, baseline = _two_role_simulation_records(tmp_path, monkeypatch)
     baseline_id = _json(baseline.manifest_path)["simulation_record_id"]
     prerequisites = _json(candidate.manifest_path)["prerequisites"]
     assert prerequisites
@@ -179,7 +179,7 @@ def test_prerequisites_and_dependency_receipts_name_the_simulation_record(
     flow = SimulateFlow()
     flow._reserved_invocation_dir = _invocation
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
-    roles = flow._campaign_endpoint_outcome([candidate, baseline]).detail["pre_sim_roles"]
+    roles = flow._simulation_record_endpoint_outcome([candidate, baseline]).detail["pre_sim_roles"]
     kinds = {ref["kind"] for role in roles.values() for ref in role["manifests"]}
     assert kinds == {"simulation_record_manifest"}
 
@@ -188,7 +188,7 @@ def test_prerequisites_and_dependency_receipts_name_the_simulation_record(
     dependent.mkdir(parents=True)
     register_simulation_record_dependency(
         origin,
-        simulation_record_id=CAMPAIGN_ID,
+        simulation_record_id=SIMULATION_RECORD_ID,
         manifest_sha256=digest,
         dependent_invocation=dependent,
     )
@@ -196,37 +196,40 @@ def test_prerequisites_and_dependency_receipts_name_the_simulation_record(
     (receipt_path,) = origin.parent.glob("dependency-receipts/*.json")
     receipt = _json(receipt_path)
     assert receipt["$schema"] == "booley.simulation-record-dependency/v1"
-    assert receipt["simulation_record_id"] == CAMPAIGN_ID
+    assert receipt["simulation_record_id"] == SIMULATION_RECORD_ID
     assert "campaign_id" not in receipt
     assert "record_id" not in receipt
     (read_back,) = read_simulation_record_dependencies(origin)
-    assert read_back.simulation_record_id == CAMPAIGN_ID
+    assert read_back.simulation_record_id == SIMULATION_RECORD_ID
 
 
-def _prepared_lane(campaign: lane_pool._Campaign, parent: str) -> tuple[ExecutionId, Any]:
+def _prepared_lane(
+    simulation_record: lane_pool._SimulationRecord, parent: str
+) -> tuple[ExecutionId, Any]:
     """Prepare one child lane the way the scheduler does, and return it with its paths."""
     child = ExecutionId(uuid.uuid4().hex)
-    campaign.registry.prepare(
+    simulation_record.registry.prepare(
         child,
-        work_item_id=campaign.items[0]["work_item_id"],
+        work_item_id=simulation_record.items[0]["work_item_id"],
         attempt_id=str(uuid.uuid4()),
         attempt_ordinal=1,
-        attempt_directory=campaign.store.root / "attempt",
+        attempt_directory=simulation_record.store.root / "attempt",
         parent_execution_id=ExecutionId(parent),
     )
-    return child, execution_paths(child, booley_dir=campaign.registry.project_data)
+    return child, execution_paths(child, booley_dir=simulation_record.registry.project_data)
 
 
 def test_a_child_lane_writes_the_record_context_and_terminal_causes(tmp_path: Path) -> None:
-    campaign = lane_pool._Campaign(tmp_path, ("alpha",), lanes=1)
+    simulation_record = lane_pool._SimulationRecord(tmp_path, ("alpha",), lanes=1)
     try:
-        child, paths = _prepared_lane(campaign, "a" * 32)
+        child, paths = _prepared_lane(simulation_record, "a" * 32)
 
         context = read_json(paths.context)
         assert context is not None
         assert context["$schema"] == "booley.supervised-child-context/v2"
         assert (
-            context["simulation_record_id"] == campaign.manifest.document["simulation_record_id"]
+            context["simulation_record_id"]
+            == simulation_record.manifest.document["simulation_record_id"]
         )
         assert "campaign_id" not in context
         assert "record_id" not in context
@@ -234,11 +237,11 @@ def test_a_child_lane_writes_the_record_context_and_terminal_causes(tmp_path: Pa
 
         # A lane's cancellation request names the Record. The terminal cause
         # ``record_error`` is pinned by the parametrized lane-pool test.
-        cancelled, cancelled_paths = _prepared_lane(campaign, "a" * 32)
-        assert campaign.registry.cancel(cancelled)
+        cancelled, cancelled_paths = _prepared_lane(simulation_record, "a" * 32)
+        assert simulation_record.registry.cancel(cancelled)
         assert read_json(cancelled_paths.cancel)["reason"] == "record_cancelled"
     finally:
-        campaign.slots.release(campaign.outer)
+        simulation_record.slots.release(simulation_record.outer)
 
 
 # --- AC2: every 0.4.0 record is refused as older -------------------------------------------
@@ -264,7 +267,7 @@ def test_a_0_4_0_manifest_is_refused_naming_its_invocation(reports: Path) -> Non
         _assert_unsupported_type(refused.value)
         _assert_refused(str(refused.value), _OLD_MANIFEST, invocation)
 
-    with pytest.raises(CampaignRetentionError) as pruned:
+    with pytest.raises(SimulationRecordRetentionError) as pruned:
         prune_invocation(reports, 1)
     _assert_refused(str(pruned.value), _OLD_MANIFEST, invocation)
 
@@ -296,7 +299,7 @@ def test_a_0_4_0_dependency_receipt_is_refused(tmp_path: Path) -> None:
     # Pruning with dependents reads the registry: an older record is not a corrupt one.
     invocation = reports_root / "sim" / "1"
     before = _tree(invocation)
-    with pytest.raises(CampaignRetentionError) as pruned:
+    with pytest.raises(SimulationRecordRetentionError) as pruned:
         prune_invocation(reports_root, 1, include_dependents=True)
     _assert_refused(str(pruned.value), _OLD_RECEIPT, reports_root / "sim/1")
     assert "dependency registry is invalid" not in str(pruned.value)
@@ -373,7 +376,7 @@ def test_old_simulation_record_names_are_not_aliases(tmp_path: Path) -> None:
     dependent.mkdir(parents=True)
     register_simulation_record_dependency(
         origin,
-        simulation_record_id=CAMPAIGN_ID,
+        simulation_record_id=SIMULATION_RECORD_ID,
         manifest_sha256=digest,
         dependent_invocation=dependent,
     )
@@ -383,9 +386,9 @@ def test_old_simulation_record_names_are_not_aliases(tmp_path: Path) -> None:
         read_simulation_record_dependencies(origin)
 
     # A context sidecar is the current one only: schema v1, or v2 with the old key, is not.
-    campaign = lane_pool._Campaign(tmp_path / "lane", ("alpha",), lanes=1)
+    simulation_record = lane_pool._SimulationRecord(tmp_path / "lane", ("alpha",), lanes=1)
     try:
-        child, paths = _prepared_lane(campaign, "a" * 32)
+        child, paths = _prepared_lane(simulation_record, "a" * 32)
         context = _json(paths.context)
         for altered in (
             {**context, "$schema": "booley.supervised-child-context/v1"},
@@ -394,16 +397,16 @@ def test_old_simulation_record_names_are_not_aliases(tmp_path: Path) -> None:
             _rewrite(paths.context, canonical_json_bytes(altered))
             assert not child_context_matches(paths, child)
     finally:
-        campaign.slots.release(campaign.outer)
+        simulation_record.slots.release(simulation_record.outer)
 
 
 def test_a_lane_a_0_4_0_booley_left_is_still_recovered(tmp_path: Path) -> None:
     """Only recovery reads the 0.4.0 sidecar, so its claim is released."""
-    campaign = lane_pool._Campaign(tmp_path, ("alpha",), lanes=1)
-    booley_dir = campaign.registry.project_data
+    simulation_record = lane_pool._SimulationRecord(tmp_path, ("alpha",), lanes=1)
+    booley_dir = simulation_record.registry.project_data
     try:
-        child, paths = _prepared_lane(campaign, "a" * 32)
-        other, other_paths = _prepared_lane(campaign, "a" * 32)
+        child, paths = _prepared_lane(simulation_record, "a" * 32)
+        other, other_paths = _prepared_lane(simulation_record, "a" * 32)
         # The sidecar Booley 0.4.0 wrote: schema v1 and ``campaign_id``.
         older = {
             "$schema": "booley.supervised-child-context/v1",
@@ -411,7 +414,7 @@ def test_a_lane_a_0_4_0_booley_left_is_still_recovered(tmp_path: Path) -> None:
             "parent_execution_id": "a" * 32,
             "campaign_id": str(uuid.uuid4()),
             "manifest_sha256": "sha256:" + "1" * 64,
-            "work_item_id": campaign.items[0]["work_item_id"],
+            "work_item_id": simulation_record.items[0]["work_item_id"],
             "attempt_id": str(uuid.uuid4()),
             "attempt_ordinal": 1,
         }
@@ -427,4 +430,4 @@ def test_a_lane_a_0_4_0_booley_left_is_still_recovered(tmp_path: Path) -> None:
         assert not recover_execution(other, booley_dir=booley_dir)
         assert read_json(other_paths.record)["state"] == "waiting"
     finally:
-        campaign.slots.release(campaign.outer)
+        simulation_record.slots.release(simulation_record.outer)

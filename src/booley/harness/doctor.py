@@ -5561,28 +5561,28 @@ def _selftest_report_path(project: ProjectAudit) -> Path:
     return project.booley_dir / DOCTOR_TMP_DIR / "flow-reports" / "sim.json"
 
 
-def _read_selftest_campaign(project: ProjectAudit, case: _SelftestCase, rc: int) -> dict:
+def _read_selftest_simulation_record(project: ProjectAudit, case: _SelftestCase, rc: int) -> dict:
     report = require_dict(json.loads(_selftest_report_path(project).read_text(encoding="utf-8")))
     if report.get("$schema") != "booley.simulation-report/v3" or report.get("flow") != "sim":
         raise ValueError("report is not a Simulation Flow v3 report")
     if require_int(report.get("exit_code"), field="exit_code") != rc:
         raise ValueError("report exit code does not match this invocation")
     records = require_dict(require_dict(report.get("detail")).get("records"))
-    campaign = require_dict(records.get(case.target), field="selected campaign")
-    if campaign.get("complete") is not True:
+    simulation_record = require_dict(records.get(case.target), field="selected campaign")
+    if simulation_record.get("complete") is not True:
         raise ValueError("selected Simulation Campaign is incomplete")
-    return campaign
+    return simulation_record
 
 
-def _selftest_observation_pairs(campaign: dict) -> list[tuple[dict, dict]]:
-    rows = require_list(campaign.get("test_runs"), field="test_runs")
-    observations = require_list(campaign.get("observations"), field="observations")
+def _selftest_observation_pairs(simulation_record: dict) -> list[tuple[dict, dict]]:
+    rows = require_list(simulation_record.get("test_runs"), field="test_runs")
+    observations = require_list(simulation_record.get("observations"), field="observations")
     if (
-        require_int(campaign.get("test_run_total")) != len(rows)
-        or require_int(campaign.get("observation_total")) != len(observations)
+        require_int(simulation_record.get("test_run_total")) != len(rows)
+        or require_int(simulation_record.get("observation_total")) != len(observations)
         or len(rows) != len(observations)
-        or campaign.get("test_runs_truncated") is not False
-        or campaign.get("observations_truncated") is not False
+        or simulation_record.get("test_runs_truncated") is not False
+        or simulation_record.get("observations_truncated") is not False
     ):
         raise ValueError("Test Run rows and observations are truncated or inconsistent")
     pairs = [
@@ -5609,14 +5609,16 @@ def _selftest_row_selected(row: dict, case: _SelftestCase) -> bool:
     return recorded.test == selected.test and recorded.variant == selected.variant
 
 
-def _sim_selftest_evidence(campaign: dict, case: _SelftestCase) -> tuple[bool, str | None]:
-    pairs = _selftest_observation_pairs(campaign)
+def _sim_selftest_evidence(
+    simulation_record: dict, case: _SelftestCase
+) -> tuple[bool, str | None]:
+    pairs = _selftest_observation_pairs(simulation_record)
     selected = [(row, obs) for row, obs in pairs if _selftest_row_selected(row, case)]
     for _row, obs in selected:
         if obs.get("execution") == "blocked_by_build" and obs.get("failure_class") == "design":
             detail = require_dict(obs.get("detail"))
             return False, require_str(detail, "reason")
-    if require_list(campaign.get("build_stage"), field="build_stage"):
+    if require_list(simulation_record.get("build_stage"), field="build_stage"):
         raise ValueError("report contains failed build-stage evidence")
     for row, obs in selected:
         if (
@@ -5631,8 +5633,8 @@ def _sim_selftest_evidence(campaign: dict, case: _SelftestCase) -> tuple[bool, s
 
 def _grade_sim_bad_selftest(project, case, result, label, _pass, _warn) -> bool:
     try:
-        campaign = _read_selftest_campaign(project, case, result.returncode)
-        accepted, compiler_reason = _sim_selftest_evidence(campaign, case)
+        simulation_record = _read_selftest_simulation_record(project, case, result.returncode)
+        accepted, compiler_reason = _sim_selftest_evidence(simulation_record, case)
     except (OSError, ValueError, BoundaryError) as exc:
         _warning_sink(_warn, "flow.selftest-evidence-unvalidated", subject="sim")(
             f"{label} fail-path unvalidated - {exc}"

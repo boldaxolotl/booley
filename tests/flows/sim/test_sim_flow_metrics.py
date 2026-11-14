@@ -100,7 +100,7 @@ def test_test_run_without_a_cycle_count_gives_no_value(tmp_path: Path) -> None:
     assert values.per_test == {"cycle_count": {"count": 3}}
 
 
-def test_incomplete_campaign_produces_no_metrics(tmp_path: Path) -> None:
+def test_incomplete_simulation_record_produces_no_metrics(tmp_path: Path) -> None:
     from booley.flows.metric_declarations import MetricsUnavailableError
     from booley.flows.sim.metrics import simulation_flow_metrics
 
@@ -210,7 +210,7 @@ def _coverage_outcome(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execution
             target="sim_0", work_dir=tmp_path, coverage=True, report_dir=tmp_path / "reports"
         )
     )
-    (outcome,) = flow._simulation_campaign_outcomes
+    (outcome,) = flow._simulation_record_outcomes
     return outcome
 
 
