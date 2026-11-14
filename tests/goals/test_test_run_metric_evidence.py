@@ -89,7 +89,7 @@ def test_outcomes_only_pass_keeps_a_measured_verdict_and_a_failure_unmeets_it(
 ) -> None:
     _record(cycle, "run-1", [run_row(PINNED)], key=CYCLE_KEY, extra=_cycles(800))
     assert _status(cycle, CYCLE_KEY).status == "met"
-    # A campaign that ran the frozen run without measuring its Cycle Count adds nothing.
+    # A record that ran the frozen run without measuring its Cycle Count adds nothing.
     again = _record(
         cycle, "run-2", [run_row(PINNED)], key=CYCLE_KEY, met=False, extra=OUTCOMES_ONLY
     )

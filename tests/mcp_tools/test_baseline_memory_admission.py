@@ -482,7 +482,7 @@ def test_armed_simulation_child_stops_reading_results_after_an_own_oom_kill(tmp_
         return _flow_result(oom_killed=True)
 
     def aborted_simulation_record(*_args):
-        raise ValueError("the killed Campaign has no complete results")
+        raise ValueError("the killed Simulation Record has no complete results")
 
     monkeypatch.setattr(SimulateFlow, "execute", execute)
     monkeypatch.setattr(unpublished_results, "read_unpublished_results", aborted_simulation_record)
@@ -490,7 +490,7 @@ def test_armed_simulation_child_stops_reading_results_after_an_own_oom_kill(tmp_
     armed = execution.simulate(_simulation_request(tmp_path, armed=True))
 
     assert (armed["oom_killed"], armed["rows"], armed["stamps"]) == (True, [], [])
-    # Unarmed, the child reads as it always did: the unreadable Campaign raises.
+    # Unarmed, the child reads as it always did: the unreadable Simulation Record raises.
     with pytest.raises(ValueError, match="no complete results"):
         execution.simulate(_simulation_request(tmp_path))
 

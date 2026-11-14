@@ -1,4 +1,4 @@
-"""Protect the owned PicoRV32 Simulation Campaign QA fixture and validator."""
+"""Protect the owned PicoRV32 Simulation Record QA fixture and validator."""
 
 from __future__ import annotations
 

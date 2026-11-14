@@ -1,4 +1,4 @@
-"""Origin-owned reverse dependency receipts for Simulation Campaign resumes."""
+"""Origin-owned reverse dependency receipts for Simulation Record resumes."""
 
 import hashlib
 import json
@@ -41,7 +41,7 @@ def _add_observed_cycles(monkeypatch):
 
 
 def _two_role_simulation_records(tmp_path, monkeypatch):
-    """A candidate and a Cycle Count baseline Campaign sharing one invocation."""
+    """A candidate and a Cycle Count baseline Simulation Record sharing one invocation."""
     from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.record.model import create_simulation_record_plan
     from booley.flows.sim.record.store import SimulationRecordStore
@@ -395,7 +395,7 @@ def test_dependency_registration_requires_exact_paths(tmp_path):
 
 
 def _cycle_baseline_manifest(names):
-    """A Cycle Count baseline campaign with one work item per Test in *names*."""
+    """A Cycle Count baseline record with one work item per Test in *names*."""
     from booley.flows.sim.record.codec import canonical_json_bytes
     from booley.flows.sim.record.planning import finalize_manifest
     from tests.flows.sim.simulation_record_test_support import _manifest_for
@@ -418,7 +418,7 @@ def _cycle_baseline_manifest(names):
 
 
 def _candidate_manifest(names, prerequisites):
-    """A candidate campaign over *names* that depends on *prerequisites*."""
+    """A candidate record over *names* that depends on *prerequisites*."""
     from booley.flows.sim.record.codec import canonical_json_bytes
     from booley.flows.sim.record.planning import finalize_manifest
     from tests.flows.sim.simulation_record_test_support import _manifest_for
@@ -470,7 +470,7 @@ def test_relative_cycle_goals_on_two_tests_share_one_baseline_simulation_record(
 ):
     """Two relative Cycle Count Goals of one Target link two work items of one baseline.
 
-    Both prerequisites name the same baseline campaign, which used to be refused
+    Both prerequisites name the same baseline record, which used to be refused
     as a duplicate ("prerequisite identities must be unique") or run as a cycle.
     """
     from booley.flows.sim.flow import SimulateFlow
@@ -544,7 +544,7 @@ def test_resume_authenticates_a_shared_baseline_simulation_record_once(tmp_path,
 
 
 def test_a_simulation_record_that_lists_itself_as_prerequisite_is_a_cycle(tmp_path, monkeypatch):
-    """Sharing a prerequisite campaign is allowed; depending on oneself is not."""
+    """Sharing a prerequisite record is allowed; depending on oneself is not."""
     from booley.flows.sim.record.codec import SimulationRecordIntegrityError
     from tests.flows.sim.simulation_record_test_support import _manifest_for
 
@@ -660,7 +660,7 @@ def test_planning_refuses_a_duplicate_prerequisite_link():
     def links(*runs):
         return [BaselineLink("sim", "base", run.test, run) for run in runs]
 
-    # Two links to different work items of one baseline campaign stay allowed.
+    # Two links to different work items of one baseline record stay allowed.
     prerequisites = {"sim": []}
     _link_baseline_prerequisites(prerequisites, links(alpha, beta), by_run)
     assert prerequisites["sim"] == [document(0), document(1)]

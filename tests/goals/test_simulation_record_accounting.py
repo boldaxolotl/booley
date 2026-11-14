@@ -1,6 +1,6 @@
 """Durable Goal evidence that was never published is accounted for (ADR 0072).
 
-A cancelled or killed Simulation Campaign leaves authenticated results but
+A cancelled or killed Simulation Record leaves authenticated results but
 no outcome; a stopped publication leaves a transaction nothing selects.
 Neither may let a matching failure be dodged, nor lose a seed that passed.
 """
@@ -68,13 +68,13 @@ def two(layout: SimpleNamespace) -> SimpleNamespace:
 
 
 class _SimulationRecord:
-    """A registered campaign whose durable results the test controls."""
+    """A registered record whose durable results the test controls."""
 
     def __init__(self, layout: SimpleNamespace) -> None:
         self.layout = layout
         self.rows: list[dict[str, Any]] = []
         self.error: Exception | None = None
-        #: Every work item has a result: nothing more can come out of the campaign.
+        #: Every work item has a result: nothing more can come out of the record.
         self.complete = False
         self.manifest = layout.control / "reports" / "campaign" / "manifest.json"
         layout.simulation_record_reader = self.read
@@ -91,7 +91,7 @@ class _SimulationRecord:
         )
 
     def start(self, run_id: str, *, candidate: bool = True) -> GoalEvidenceRecorder:
-        """Bind a run and register the campaign as that run starts it."""
+        """Bind a run and register the record as that run starts it."""
         recorder = GoalEvidenceRecorder(
             bind(self.layout, run_id), simulation_record_reader=self.read
         )
@@ -102,7 +102,7 @@ class _SimulationRecord:
         return recorder
 
     def registrations(self) -> list[SimulationRecordRegistration]:
-        """The readable registrations: those of pending campaigns (others may be unreadable)."""
+        """The readable registrations: those of pending records (others may be unreadable)."""
         paths = record_paths(self.layout.control, self.layout.record.id)
         return simulation_record_accounting._stored(paths)[0]
 
@@ -127,22 +127,22 @@ def _entry(layout: SimpleNamespace) -> dict[str, Any]:
     return load_goal_state(store, store.load(layout.record.id)).criteria[SIM_KEY].to_dict()
 
 
-# --- A campaign that never published -----------------------------------------------
+# --- A record that never published -----------------------------------------------
 
 
 def test_failure_of_a_killed_simulation_record_is_sticky_for_the_next_simulation_record(
     two: SimpleNamespace, simulation_record: _SimulationRecord
 ) -> None:
-    """The agent sees ``a@1`` fail, kills the campaign, and passes in a fresh one."""
+    """The agent sees ``a@1`` fail, kills the record, and passes in a fresh one."""
     simulation_record.start("run-1")
-    simulation_record.rows = [run_row(A, "fail")]  # ``b`` never ran: the campaign was killed
+    simulation_record.rows = [run_row(A, "fail")]  # ``b`` never ran: the record was killed
 
     _record(two, "run-2", [run_row(A), run_row(B)])
 
     assert _outcomes(two) == {"a@1": "failed", "b@1": "passed"}
     status = _status(two)
     assert status.status == "unmet" and status.reason.startswith("goal-test-run-failed")
-    # ``b`` never got a result: the campaign stays pending, holding only what it started with.
+    # ``b`` never got a result: the record stays pending, holding only what it started with.
     (path,) = (
         record_paths(two.control, two.record.id).logs_dir / "acceptance/campaigns"
     ).iterdir()
@@ -162,7 +162,7 @@ def test_failure_of_a_killed_simulation_record_is_sticky_for_the_next_simulation
 
 @pytest.mark.timeout(150)
 def test_a_coverage_goal_is_outside_simulation_record_accounting(layout: SimpleNamespace) -> None:
-    """No result a campaign left behind can change a Goal judged by coverage floors alone."""
+    """No result a record left behind can change a Goal judged by coverage floors alone."""
     goals = [
         {"family": "SIM", "target": "top"},
         {"family": "COVERAGE", "target": "top", "tests": "all", "metrics": {"line": 80}},
@@ -201,12 +201,12 @@ def test_a_simulation_record_read_before_it_started_is_read_again_after_it_faile
 ) -> None:
     """register -> status -> run -> fail -> SIGKILL before publication -> next run."""
     simulation_record.start("run-1")
-    # A status read finds the campaign published but not started: no result yet.
+    # A status read finds the record published but not started: no result yet.
     store = GoalStore(two.control)
     select_status(store, two.worktree, simulation_record_reader=simulation_record.read)
     assert len(simulation_record.registrations()) == 1
 
-    # Now the scheduler takes the campaign: while it runs, the Goal cannot be met.
+    # Now the scheduler takes the record: while it runs, the Goal cannot be met.
     simulation_record.error = SimulationRecordBusyError("running")
     _record(two, "run-2", [run_row(A), run_row(B)])
     status = _status(two)
@@ -232,7 +232,7 @@ def test_a_complete_simulation_record_is_settled_and_never_read_again(
     simulation_record.complete = True
     _account(two)
     assert simulation_record.registrations() == []
-    simulation_record.error = AssertionError("a settled campaign was read again")
+    simulation_record.error = AssertionError("a settled record was read again")
     _account(two)
     assert _status(two).reason.startswith("goal-test-run-failed")
 
@@ -249,7 +249,7 @@ def test_seeds_that_passed_before_an_interruption_are_kept(
     assert entry["met"] is False
     assert _outcomes(two) == {"a@1": "passed", "b@1": "missing"}
     assert entry["detail"][ADOPTED_DETAIL_KEY]["campaign_id"] == SIMULATION_RECORD
-    # The other seed passes in a later campaign: the Goal is met across the two.
+    # The other seed passes in a later record: the Goal is met across the two.
     _record(two, "run-2", [run_row(B)])
     assert _status(two).status == "met"
 
@@ -321,7 +321,7 @@ def test_a_simulation_record_that_cannot_be_read_keeps_its_goals_unmet_until_it_
     assert status.status == "unmet"
     assert status.reason.startswith(REASON_UNACCOUNTED)
     assert "cannot be read (result.json is truncated)" in status.reason
-    # A campaign a scheduler still owns is not final either.
+    # A record a scheduler still owns is not final either.
     simulation_record.error = SimulationRecordBusyError("running")
     _account(two)
     assert _status(two).reason.startswith(REASON_UNACCOUNTED)
@@ -344,7 +344,7 @@ def test_an_approved_retarget_is_what_drops_an_unaccounted_simulation_record(
     from tests.goals.conftest import bump_spec
 
     simulation_record.start("run-1")
-    simulation_record.error = ValueError("campaign directory disappeared")
+    simulation_record.error = ValueError("record directory disappeared")
     # No agent action clears it: more evidence, more accounting, another registration.
     _record(two, "run-2", [run_row(A), run_row(B)])
     _account(two)
@@ -385,7 +385,7 @@ def test_a_published_simulation_record_is_settled_and_a_diagnostic_target_regist
     assert simulation_record.registrations() == []
     assert _status(two).status == "met"
 
-    # A Cycle Count baseline campaign is evidence for no Goal: nothing is registered.
+    # A Cycle Count baseline record is evidence for no Goal: nothing is registered.
     simulation_record.start("run-2", candidate=False)
     assert simulation_record.registrations() == []
 
@@ -395,7 +395,7 @@ def test_without_a_reader_a_simulation_record_stays_unaccounted(
 ) -> None:
     simulation_record.start("run-1")
     simulation_record.rows = [run_row(A, "fail")]
-    two.simulation_record_reader = None  # a caller that cannot read Simulation Campaigns
+    two.simulation_record_reader = None  # a caller that cannot read Simulation Records
     _record(two, "run-2", [run_row(A), run_row(B)])
     _account(two)
     assert _status(two).reason.startswith(REASON_UNACCOUNTED)
@@ -434,7 +434,7 @@ def test_observers_read_simulation_record_blockers_without_writing(
 def test_replay_reads_a_pending_idle_simulation_record_only_through_its_reader(
     two: SimpleNamespace, simulation_record: _SimulationRecord
 ) -> None:
-    """An idle, failure-free pending campaign blocks a reader-less replay and no other."""
+    """An idle, failure-free pending record blocks a reader-less replay and no other."""
     from booley.goals.flow_execution import GoalFlowExecution
 
     _record(two, "run-0", [run_row(A), run_row(B)])
@@ -517,7 +517,7 @@ def test_appended_records_that_were_never_selected_are_selected(two: SimpleNames
     assert "e" * 64 in selected
 
 
-# --- Reading durable campaign results -------------------------------------------------
+# --- Reading durable record results -------------------------------------------------
 
 
 def test_durable_results_of_a_real_simulation_record_are_its_authenticated_rows(
@@ -579,7 +579,7 @@ def test_an_unreadable_registration_blocks_until_an_approved_change_quarantines_
 
     status = _status(two)
     assert status.status == "unmet" and status.reason.startswith(REASON_UNACCOUNTED)
-    assert f"campaign registration {broken.name} cannot be read" in status.reason
+    assert f"Simulation Record registration {broken.name} cannot be read" in status.reason
     assert "moved aside when a human approves a Goal change" in status.reason
     # More evidence and more accounting do not clear it.
     _record(two, "run-3", [run_row(A), run_row(B)])
@@ -615,7 +615,7 @@ def test_the_review_package_lists_simulation_records_that_were_never_fully_accou
     assert _unsettled_simulation_record_lines({}) == []
     listed = [{"state": "quarantined", "file": "x.json"}]
     lines = _unsettled_simulation_record_lines({"unsettled_campaigns": listed})
-    assert lines[1] == "Simulation Campaigns not fully accounted for"
+    assert lines[1] == "Simulation Records not fully accounted for"
     assert '"quarantined"' in lines[2]
 
 

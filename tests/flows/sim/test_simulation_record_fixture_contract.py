@@ -1,4 +1,4 @@
-"""Executing campaign fixtures carry the current Test Run identity."""
+"""Executing record fixtures carry the current Test Run identity."""
 
 import json
 

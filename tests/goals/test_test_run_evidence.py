@@ -101,7 +101,7 @@ def _transaction(
     simulation_record: str,
     rows: list[dict[str, Any]],
 ) -> None:
-    """Record or recover one V2 campaign transaction of the simulation Goal."""
+    """Record or recover one V2 record transaction of the simulation Goal."""
     state = DevelopmentState.load(_state_file(layout), recorder.state_persistence())
     shadow = DevelopmentState.from_json_object(state.to_dict())
     changes = shadow.set_criterion(SIM_KEY, True, detail={"test_runs": rows})
@@ -242,7 +242,7 @@ def test_rows_of_another_spec_revision_are_not_folded(two: SimpleNamespace) -> N
 def test_stopped_transaction_is_completed_before_the_next_evidence_is_recorded(
     two: SimpleNamespace,
 ) -> None:
-    """Campaign A freezes a passing intent and stops; B records a failure; A is recovered."""
+    """Simulation Record A freezes a passing intent and stops; B records a failure; A is recovered."""
     passing = [run_row(A), run_row(B)]
     simulation_record = "11111111-1111-4111-8111-111111111111"
     binding = bind(two, "run-a")
@@ -372,7 +372,7 @@ def test_multi_seed_goal_accumulates_per_seed_and_lists_failing_seeds(
     assert frozen.seeds({"top"}, "a", None, 2) is None  # another N is another Goal
 
     _record(seeds, "run-1", [_seed(first), _seed(second, "fail")], key=SEEDS_KEY, met=False)
-    # A seed passes in a second campaign, after the first one ended early.
+    # A seed passes in a second record, after the first one ended early.
     _record(seeds, "run-2", [_seed(third), _seed(second)], key=SEEDS_KEY)
     assert list(_outcomes(seeds, SEEDS_KEY).values()) == ["passed", "failed", "passed"]
     status = _status(seeds, SEEDS_KEY)

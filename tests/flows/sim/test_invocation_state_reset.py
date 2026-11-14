@@ -120,7 +120,7 @@ def test_tool_identity_does_not_leak_between_invocations(tmp_path, monkeypatch):
 
 
 def test_simulation_outcomes_belong_to_simulation_flow(tmp_path, monkeypatch):
-    """Only the Simulation Flow keeps Campaign outcomes; other built-in Flows carry none."""
+    """Only the Simulation Flow keeps Simulation Record outcomes; other built-in Flows carry none."""
     from booley.flows.lint.flow import LintFlow
 
     lint = LintFlow()

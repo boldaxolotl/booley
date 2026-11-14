@@ -2,7 +2,7 @@
 
 The digests below were recorded from the serial executor at base commit
 574e6e524, before shared and private builds were unified behind one record
-builder. They must not change: records are durable campaign evidence.
+builder. They must not change: records are durable record evidence.
 It also checks that no builder decodes the record it just built.
 """
 

@@ -280,7 +280,7 @@ def test_the_old_directory_names_are_not_aliases(reports: Path, tmp_path: Path) 
     assert "is not targets/<Target>/record/manifest.json" in str(linked.value)
 
     # A dependency origin is an exact Record manifest.
-    with pytest.raises(ValueError, match="exact Simulation Campaign manifest"):
+    with pytest.raises(ValueError, match="exact Simulation Record manifest"):
         read_simulation_record_dependencies(older_manifest)
 
     # Readers of a manifest path refuse the old name as an older Booley's record.

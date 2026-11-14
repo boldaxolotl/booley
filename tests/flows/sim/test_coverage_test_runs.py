@@ -321,10 +321,10 @@ def _recorded_runs(manifest: Path) -> list[dict]:
 
 
 def _forbid_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A resumed campaign must never resolve or draw Test Runs again."""
+    """A resumed record must never resolve or draw Test Runs again."""
 
     def refuse(*_args, **_kwargs):
-        raise AssertionError("a resumed campaign resolved its Test Runs again")
+        raise AssertionError("a resumed record resolved its Test Runs again")
 
     monkeypatch.setattr(SimulateFlow, "_resolve_test_runs", refuse)
     monkeypatch.setattr("booley.flows.test_runs.secrets.SystemRandom", refuse)
@@ -387,7 +387,7 @@ def test_interrupted_multi_run_collection_names_its_frozen_test_runs_for_the_new
 def test_resumed_multi_run_coverage_replays_the_frozen_test_runs_byte_identically(
     tmp_path, monkeypatch
 ):
-    """A collected campaign cut during publication resumes from its own manifest."""
+    """A collected record cut during publication resumes from its own manifest."""
     _resumable_project(tmp_path, monkeypatch)
     reports = tmp_path / "reports"
     execution = NativeExecution()

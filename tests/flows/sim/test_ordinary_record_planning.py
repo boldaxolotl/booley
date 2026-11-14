@@ -2,7 +2,7 @@
 
 Planning previews each Target and decides which Cycle Count baseline Test Runs
 the baseline revision can run. A real run and a dry run reuse that result, and a
-planning error leaves no campaign state behind.
+planning error leaves no record state behind.
 """
 
 from __future__ import annotations
@@ -170,7 +170,7 @@ def test_ordinary_run_previews_and_decides_baselines_once(
 
 
 def _assert_dry_run_output(outcome: Any) -> None:
-    """The dry run lists the baseline campaign, then the candidate's, unchanged."""
+    """The dry run lists the baseline record, then the candidate's, unchanged."""
     assert outcome.report_text == "sim_a: 1 pending work item(s)\nsim_a: 1 pending work item(s)"
     assert outcome.detail["mutated"] is False
     entries = outcome.detail["record_preview"]
@@ -202,7 +202,7 @@ def _assert_refused_before_simulation_record_state(
     result: Any,
     expected_text: str,
 ) -> None:
-    """A planning refusal: exit 2 and no reservation, build, progress or campaign manifest."""
+    """A planning refusal: exit 2 and no reservation, build, progress or record manifest."""
     assert result.exit_code == _EXIT_ERROR
     assert result.outcome.report_text == expected_text
     assert "plan" not in result.outcome.detail

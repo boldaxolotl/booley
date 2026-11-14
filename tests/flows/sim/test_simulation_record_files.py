@@ -1,4 +1,4 @@
-"""Shared campaign file, JSON and digest helpers."""
+"""Shared record file, JSON and digest helpers."""
 
 from __future__ import annotations
 

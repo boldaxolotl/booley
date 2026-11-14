@@ -220,7 +220,7 @@ def test_outside_goal_mode_nothing_is_called_diagnostic(tmp_path, monkeypatch):
 def test_a_goal_written_with_the_target_identity_is_not_listed_as_diagnostic(
     tmp_path, monkeypatch
 ):
-    """A campaign keyed by selector matches a Goal that names the Target by its identity."""
+    """A record keyed by selector matches a Goal that names the Target by its identity."""
     by_identity = replace(_SUITE, target="lib:ip:core#sim")
     flow = _goal_flow(tmp_path, monkeypatch, _frozen(by_identity))
     monkeypatch.setattr(flow, "_target_names", lambda target: {target, f"lib:ip:core#{target}"})
@@ -236,7 +236,7 @@ def test_a_goal_written_with_the_target_identity_is_not_listed_as_diagnostic(
 def test_every_published_manifest_is_registered_with_the_goal_run_before_it_runs(
     tmp_path, monkeypatch
 ):
-    """A campaign that never returns an outcome must already be known to its Goals."""
+    """A record that never returns an outcome must already be known to its Goals."""
     from booley.flows.sim import flow as flow_module
     from booley.flows.simulation_record_results import StartedSimulationRecord
 

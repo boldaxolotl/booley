@@ -1,4 +1,4 @@
-"""Campaign store validation of recorded build-execution evidence.
+"""Simulation Record store validation of recorded build-execution evidence.
 
 A successful record either ran the compiler (``ran`` true) or names a reuse
 ``hit``; any other ``ran``-false record, or one whose process facts contradict

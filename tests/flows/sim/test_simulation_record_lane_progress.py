@@ -1,6 +1,6 @@
-"""Terminal progress stays attributed to its own lane when campaign tests run in parallel (#1972).
+"""Terminal progress stays attributed to its own lane when record tests run in parallel (#1972).
 
-Each test drives the real two-lane ``BoundedCampaignScheduler`` with a
+Each test drives the real two-lane ``BoundedSimulationRecordScheduler`` with a
 ``TerminalProgress`` installed. ``threading.Event`` objects order the lanes
 deterministically, and children are real ``python -c`` processes observed
 through the production pipe readers. No EDA tool is needed.

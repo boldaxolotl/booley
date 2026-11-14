@@ -1,4 +1,4 @@
-"""Criteria publication after Simulation Campaign terminal results."""
+"""Criteria publication after Simulation Record terminal results."""
 
 from __future__ import annotations
 
@@ -413,7 +413,7 @@ def test_passing_subset_does_not_change_target_level_simulation_criterion(
             return {}
 
         def record_or_verify_transaction(self, *_args, **_kwargs):
-            raise AssertionError("subset campaign must not publish target-level acceptance")
+            raise AssertionError("subset record must not publish target-level acceptance")
 
     state = DevelopmentState.load(tmp_path / "state.json")
     state.init_criteria({"sim_pass_sim": True}, strict=True)
@@ -660,7 +660,7 @@ def test_relative_cycle_acceptance_fails_closed_on_mismatched_prerequisite_bindi
 
 
 def _flow_with_simulation_record_outcomes(*selectors: str) -> SimulateFlow:
-    """A Simulation Flow holding one stand-in Campaign outcome per selector."""
+    """A Simulation Flow holding one stand-in Simulation Record outcome per selector."""
     flow = SimulateFlow()
     flow._simulation_record_outcomes = tuple(
         SimpleNamespace(target={"selector": selector}) for selector in selectors

@@ -305,7 +305,7 @@ class TestFormatMcpToolResult:
         headline = (
             "sim_custom: simulation PASS · coverage collection COMPLETE · "
             "evaluation FAIL (branch: observed 1/2 points; displayed 50%; minimum 80%) "
-            "(Simulation Campaign campaign-123)"
+            "(Simulation Record campaign-123)"
         )
         report = {"status": "fail", "report_text": headline}
 

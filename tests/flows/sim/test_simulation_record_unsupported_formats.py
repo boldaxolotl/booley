@@ -118,7 +118,7 @@ def _rewrite(path: Path, raw: bytes) -> None:
 
 
 def _as_030_invocation(store, version: str) -> None:
-    """Turn a retained current Campaign into a 0.3.0 one, including its child mirror."""
+    """Turn a retained current Simulation Record into a 0.3.0 one, including its child mirror."""
     _rewrite(store.manifest_path, _as_030_manifest(store.manifest_path.read_bytes(), version))
     mirror = store.root / "child-executions" / "entries"
     mirror.mkdir(parents=True)
@@ -206,7 +206,7 @@ def test_resume_refuses_a_0_3_0_cycle_count_baseline_naming_its_invocation(
 def test_full_prune_cli_refuses_an_unsupported_nested_coverage_campaign_naming_its_directory(
     tmp_path, monkeypatch
 ) -> None:
-    """``--full`` reaches the nested Coverage Campaign before any Simulation Campaign check."""
+    """``--full`` reaches the nested Coverage Campaign before any Simulation Record check."""
     from tests.flows.sim.coverage_campaign_test_support import rewrite_manifest_as_v4
 
     run = coverage_invocation(tmp_path, monkeypatch)

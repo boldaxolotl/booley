@@ -1,4 +1,4 @@
-"""Refusals and success paths of the shared campaign readers."""
+"""Refusals and success paths of the shared record readers."""
 
 from __future__ import annotations
 

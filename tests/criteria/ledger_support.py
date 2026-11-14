@@ -130,7 +130,7 @@ def record_or_verify_transaction(
     identity: Mapping[str, Any],
     publication_checkpoint: Callable[[str], None] | None = None,
 ) -> AcceptanceTransaction:
-    """Record or verify one intent-frozen Simulation Campaign transaction."""
+    """Record or verify one intent-frozen Simulation Record transaction."""
     return evidence_ledger.record_or_verify_transaction(
         log_dir,
         state,

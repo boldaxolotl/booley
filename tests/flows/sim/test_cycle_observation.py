@@ -221,7 +221,7 @@ def test_baseline_planning_reports_a_refused_selection_and_a_refused_checkout(mo
 def test_one_run_shares_one_baseline_checkout_across_consumers(tmp_path, monkeypatch):
     """Every baseline consumer of one ``sim`` run reuses one checkout (#1959).
 
-    Campaign authorization keeps its checkout open until publication ends, so
+    Simulation Record authorization keeps its checkout open until publication ends, so
     planning and execution used to open a second worktree for the same
     revision at the same path, and ``git worktree add`` refused it.
     """

@@ -249,7 +249,7 @@ def _publish_waiting_lane(booley_dir: Path, *, context_execution_id: str | None 
 
 
 def test_recovery_accepts_lane_context_without_child_entry(tmp_path: Path) -> None:
-    """A parallel Campaign lane has a context sidecar and no Project child entry."""
+    """A parallel Simulation Record lane has a context sidecar and no Project child entry."""
     booley_dir = tmp_path / ".booley"
     execution_id, paths = _publish_waiting_lane(booley_dir)
 

@@ -1,4 +1,4 @@
-"""Simulation Campaign manifests record each work item's Test Runs (ADR 0072)."""
+"""Simulation Record manifests record each work item's Test Runs (ADR 0072)."""
 
 from __future__ import annotations
 
@@ -224,7 +224,7 @@ def test_interrupted_simulation_record_resumes_with_byte_identical_test_runs(
 
 
 def _interrupted(root, monkeypatch, fields):
-    """An ordinary campaign of Target ``sim_0`` interrupted in its first work item."""
+    """An ordinary record of Target ``sim_0`` interrupted in its first work item."""
     original = SimRequest
 
     def request(**kwargs):
@@ -351,7 +351,7 @@ def test_acceptance_keeps_indexing_one_test_run_per_test_by_test(tmp_path: Path)
 
 
 def _stored_result(tmp_path: Path):
-    """Run a Cocotb batch campaign through the real result writer."""
+    """Run a Cocotb batch record through the real result writer."""
     from booley.flows.sim.record import (
         NewSimulationRecordRunRequest,
         SimulationRecord,

@@ -49,7 +49,7 @@ def test_finish_requires_every_frozen_test_run_passed(layout: SimpleNamespace) -
     package = json.loads(Path(result["package"]).read_bytes())
     (row,) = package["goals"]
     assert _outcomes(mode) == {"a@1": "passed", "b@1": "passed"}
-    # The campaign that passed a@1 contributed and is disclosed with the package.
+    # The record that passed a@1 contributed and is disclosed with the package.
     assert [item["sequence"] for item in row["original_observations"]] == [1]
     assert "Test Runs: a@1 passed, b@1 passed" in Path(result["summary"]).read_text()
 

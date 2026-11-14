@@ -1,4 +1,4 @@
-"""Simulation Campaign artifact references stay strict while their base may move."""
+"""Simulation Record artifact references stay strict while their base may move."""
 
 import shutil
 

@@ -1,4 +1,4 @@
-"""Protect Phase 4 bounded-parallel Simulation Campaign QA assets."""
+"""Protect Phase 4 bounded-parallel Simulation Record QA assets."""
 
 from __future__ import annotations
 
@@ -76,7 +76,7 @@ def _run_directory(index: int) -> str:
 
 
 def _write_simulation_record(simulation_record: Path) -> None:
-    """Write one completed three-attempt Campaign in the layout Booley publishes."""
+    """Write one completed three-attempt Simulation Record in the layout Booley publishes."""
     _write_json(
         simulation_record / "manifest.json",
         {
@@ -177,7 +177,7 @@ def _result(index: int, identity: dict[str, str], log: bytes) -> dict[str, objec
 
 
 def _write_timeline(timeline: Path) -> None:
-    """Write the operator's measurement of the Campaign written by ``_write_campaign``."""
+    """Write the operator's measurement of the Simulation Record written by ``_write_campaign``."""
     _write_json(
         timeline,
         {

@@ -240,7 +240,7 @@ def _card_path(block: list[str], label: str) -> Path:
 
 
 def _assert_card_names_run_files(report_text: str, tmp_path: Path) -> None:
-    """The ``sim_0`` card lists its metrics and names the existing run report and Campaign."""
+    """The ``sim_0`` card lists its metrics and names the existing run report and Simulation Record."""
     block = _target_block(report_text, "sim_0")
     assert _card_path(block, "report") == (tmp_path / "reports/sim/1/report.json").resolve()
     assert _card_path(block, "report").is_file()
@@ -254,7 +254,7 @@ def _assert_ungated_report(result, tmp_path: Path) -> None:
     simulation_record_id = result.outcome.detail["records"]["sim_0"]["simulation_record_id"]
     expected_headline = (
         "sim_0: simulation PASS · coverage collection COMPLETE · "
-        f"evaluation NOT_REQUESTED (Simulation Campaign {simulation_record_id})"
+        f"evaluation NOT_REQUESTED (Simulation Record {simulation_record_id})"
     )
     assert _target_headline(result.outcome.report_text, "sim_0") == expected_headline
     persisted = json.loads((tmp_path / "reports/sim/1/report.json").read_text())
@@ -326,7 +326,7 @@ def _assert_enclosing_result_is_authenticated(campaign_path, resolved) -> None:
     hostile["evidence"][0]["sha256"] = "sha256:" + "0" * 64
     simulation_result.chmod(0o600)
     simulation_result.write_bytes(canonical_json_bytes(hostile))
-    with pytest.raises(ValueError, match="enclosing Simulation Campaign"):
+    with pytest.raises(ValueError, match="enclosing Simulation Record"):
         read_coverage_campaign(campaign_path)
     simulation_result.write_bytes(result_raw)
     simulation_result.chmod(0o400)
@@ -883,11 +883,10 @@ def test_multi_target_collector_error_preserves_completed_and_later_targets(tmp_
     assert headline == (
         "sim_1: simulation PASS · coverage collection COLLECTOR_ERROR "
         "(COV_RAW_FILE_MISSING) · evaluation NOT_REQUESTED "
-        f"(Simulation Campaign {simulation_record_id})"
+        f"(Simulation Record {simulation_record_id})"
     )
     assert (
-        f"sim_1: PASS (Simulation Campaign {simulation_record_id})"
-        not in result.outcome.report_text
+        f"sim_1: PASS (Simulation Record {simulation_record_id})" not in result.outcome.report_text
     )
 
 
@@ -934,7 +933,7 @@ def test_unmatched_coverage_failure_lists_completed_simulation_records(tmp_path,
     result = sim_flow._unmatched_coverage_failure([finished], {}, RuntimeError("no such Target"))
 
     assert result.report_text.splitlines() == [
-        "Simulation Campaign coverage execution failed: cannot match failed Target to the "
+        "Simulation Record coverage execution failed: cannot match failed Target to the "
         "prepared Coverage plan (no such Target)",
         f"  coverage campaign: {(tmp_path / 'targets/sim_0/coverage.json').resolve()}",
     ]
@@ -1219,7 +1218,7 @@ def test_gated_passing_coverage_headline_reports_evaluation_pass(tmp_path, monke
     simulation_record_id = result.outcome.detail["records"]["sim_custom"]["simulation_record_id"]
     assert _target_headline(result.outcome.report_text, "sim_custom") == (
         "sim_custom: simulation PASS · coverage collection COMPLETE · evaluation PASS "
-        f"(Simulation Campaign {simulation_record_id})"
+        f"(Simulation Record {simulation_record_id})"
     )
 
 
@@ -1243,7 +1242,7 @@ def test_gated_suite_mismatch_headline_attaches_diagnostic_to_evaluation(tmp_pat
     simulation_record_id = result.outcome.detail["records"]["sim_custom"]["simulation_record_id"]
     assert _target_headline(result.outcome.report_text, "sim_custom") == (
         "sim_custom: simulation PASS · coverage collection COMPLETE · evaluation BLOCKED "
-        f"(COV_EVAL_SUITE_MISMATCH) (Simulation Campaign {simulation_record_id})"
+        f"(COV_EVAL_SUITE_MISMATCH) (Simulation Record {simulation_record_id})"
     )
 
 
@@ -1872,7 +1871,7 @@ def test_resume_retains_explicit_configured_skipped_test(tmp_path, monkeypatch):
     )
     assert result.outcome.report_text == (
         "sim_0: simulation PASS · coverage collection COMPLETE · evaluation NOT_REQUESTED "
-        f"(Simulation Campaign {simulation_record['simulation_record_id']})\n"
+        f"(Simulation Record {simulation_record['simulation_record_id']})\n"
         f"  manifest: {manifest.resolve()}\n"
         f"  report: {(tmp_path / 'resumed/sim/1/report.json').resolve()}\n"
         "  coverage: line 100.0%\n"
@@ -2001,7 +2000,7 @@ def test_resume_refusal_preserves_corrupt_result_integrity_error(tmp_path, monke
     )
 
     assert result.exit_code == 2
-    assert result.outcome.report_text.startswith("Simulation Campaign integrity failure:")
+    assert result.outcome.report_text.startswith("Simulation Record integrity failure:")
 
 
 def _crash_coverage_publication(tmp_path, monkeypatch, boundary, *, no_waivers=False):
@@ -3420,7 +3419,7 @@ def test_coverage_summary_failure_acceptance(
 
 
 class _SimulationRecordRegisteringAdapter(_AcceptanceAdapter):
-    """Acceptance adapter that records every campaign it is told to register."""
+    """Acceptance adapter that records every record it is told to register."""
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -3561,5 +3560,5 @@ def test_coverage_dry_run_reports_plan_failure_as_error(tmp_path, monkeypatch):
 
     assert result.exit_code == 2
     assert result.outcome.report_text == (
-        "Simulation Campaign coverage preview failed: plan went stale"
+        "Simulation Record coverage preview failed: plan went stale"
     )

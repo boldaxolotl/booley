@@ -109,7 +109,9 @@ def test_simulation_record_storage_types_do_not_escape_their_exact_owners(
 ) -> None:
     violations = list(production_source.findings(_SIMULATION_RECORD_SCAN))
 
-    assert not violations, "Campaign storage types escaped their owners:\n" + "\n".join(violations)
+    assert not violations, "Simulation Record storage types escaped their owners:\n" + "\n".join(
+        violations
+    )
 
 
 def _simulation_record_storage_scan(module: SourceModule, tree: ast.Module) -> list[str]:

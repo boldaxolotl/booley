@@ -1,4 +1,4 @@
-"""Campaign disclosure planning prepares the Test Runs that launch (ADR 0072).
+"""Simulation Record disclosure planning prepares the Test Runs that launch (ADR 0072).
 
 A Cocotb batch may hold non-default Test Variants that share an environment
 while their Tests' default Variants do not. Planning the disclosure from bare

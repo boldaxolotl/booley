@@ -386,7 +386,7 @@ def _run_execution(
     trace_mode: TraceMode | None = None,
     canned_at: str = "launch",
 ) -> SimulationTargetOutcome:
-    """Run one group on the prepared path, as a campaign does."""
+    """Run one group on the prepared path, as a record does."""
     execution = SimulationExecution(
         invoke=split_invoker(invoke, canned_at=canned_at),
         options=options or SimulationOptions(),
@@ -2062,7 +2062,7 @@ def test_hook_editing_generated_isolated_core_cannot_launch_image(
 
     execution = SimulationExecution(invoke=invoke, options=SimulationOptions(timeout_ms=5000))
     with execution.ordinary_group(handle, ("smoke",)) as group:
-        # A real Pre-Sim Command, run as a campaign's legacy hook runs, edits the generated core.
+        # A real Pre-Sim Command, run as a record's legacy hook runs, edits the generated core.
         evidence = run_pre_sim_commands(
             handle,
             test_names=("smoke",),

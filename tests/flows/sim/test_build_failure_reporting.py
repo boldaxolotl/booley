@@ -1,7 +1,7 @@
 """Build timeout/OOM evidence must reach the agent-visible report (issue #882).
 
-Every consumer of an infrastructure build outcome (campaign Build Result,
-typed campaign error, endpoint report, coverage build) must lead
+Every consumer of an infrastructure build outcome (record Build Result,
+typed record error, endpoint report, coverage build) must lead
 with the actionable reason and a bounded, marker-free output tail.
 """
 

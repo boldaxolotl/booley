@@ -204,7 +204,7 @@ def cli_help() -> dict[str, str]:
     rendered.update(parser_help(bwave_cli._build_parser(), "bwave"))
     rendered["bwave top help"] = bwave_cli._TOP_HELP_TEXT
     rendered["bwave query help"] = bwave_cli._QUERY_HELP_TEXT
-    # The Campaign pruning module constructs its parser inline. Capture it
+    # The Simulation Record pruning module constructs its parser inline. Capture it
     # before parsing, ensuring no command (and no deletion) can execute.
     with (
         patch.object(

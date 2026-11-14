@@ -1,4 +1,4 @@
-"""Contract tests for Phase 5 Simulation Campaign Public QA assets."""
+"""Contract tests for Phase 5 Simulation Record Public QA assets."""
 
 from __future__ import annotations
 
@@ -80,7 +80,7 @@ def _batch_attempt(simulation_record: Path, ordinal: int) -> Path:
 
 
 def _taxi_batch_files(tmp_path: Path) -> tuple[Path, Path]:
-    """Write one resumed Cocotb-batch Campaign and the pre-resume attempt copy."""
+    """Write one resumed Cocotb-batch Simulation Record and the pre-resume attempt copy."""
     simulation_record = tmp_path / "campaign"
     simulation_record.mkdir()
     manifest = _write(
@@ -211,7 +211,7 @@ MCP_KINDS = {
 
 
 def _retain(invocation: Path, key: str, raw: bytes) -> dict[str, object]:
-    """Retain one Campaign artifact below the invocation and return its typed reference."""
+    """Retain one Simulation Record artifact below the invocation and return its typed reference."""
     relative = {
         "manifest": "targets/taxi/record/manifest.json",
         "simulation": "targets/taxi/simulation.json",

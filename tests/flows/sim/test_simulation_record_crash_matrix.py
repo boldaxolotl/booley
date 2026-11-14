@@ -742,7 +742,7 @@ def test_baseline_disclosure_uses_exact_format_without_run_reopening_duplicates(
     assert len(set(paths)) == 2
     assert paths[0].parents[1].name == "sim%40baseline-abc123"
     assert capsys.readouterr().err == "".join(
-        f"campaign manifest: {path.resolve()}\n" for path in paths
+        f"Simulation Record manifest: {path.resolve()}\n" for path in paths
     )
     for request in requests:
         simulation_record._open_simulation_record(request)

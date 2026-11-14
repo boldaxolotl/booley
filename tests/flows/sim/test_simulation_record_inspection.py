@@ -1,4 +1,4 @@
-"""Public inspection and corrupt-record readers of Simulation Campaigns."""
+"""Public inspection and corrupt-record readers of Simulation Records."""
 
 from __future__ import annotations
 

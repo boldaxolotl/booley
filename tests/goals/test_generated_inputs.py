@@ -1,4 +1,4 @@
-"""Real campaign manifests and selected Acceptance Journal proofs classify generated data."""
+"""Real record manifests and selected Acceptance Journal proofs classify generated data."""
 
 import hashlib
 import json
