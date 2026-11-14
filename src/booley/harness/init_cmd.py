@@ -59,7 +59,7 @@ import tomlkit
 from booley import __version__
 from booley.commit_policy import stealth_enabled
 from booley.config import agent_app
-from booley.config.agent import AGENT_CLIS
+from booley.config.agent import AGENT_CLIS, DeclaredAgent, encode_cli_policies, parse_agent_section
 from booley.config.gateway import GATEWAY_AUTH, GatewayConfigError, gateway_forwarded_keys
 from booley.config.host_config import retired_project_policy_message
 from booley.core.booley_dir_pin import BooleyDirPinError, EntryPin
@@ -569,9 +569,11 @@ class AgentSelection:
     """The provider and billing policy that initialization must persist."""
 
     provider: str
+    #: The default Agent CLI's policy; ``auth_record`` below is the value to write.
     auth: str
     write_default: bool = False
-    write_auth: bool = False
+    #: One policy for every CLI, an ``[agent.auth]`` table, or ``None`` to leave it as recorded.
+    auth_record: str | dict[str, str] | None = None
 
 
 def _agent_config_path(project_root: Path, *, seed: bool) -> Path:
@@ -585,20 +587,14 @@ def _agent_config_path(project_root: Path, *, seed: bool) -> Path:
     return booley_dir / "booley.toml"
 
 
-def _read_agent_selection(path: Path) -> tuple[str | None, str | None]:
+def _read_agent_selection(path: Path) -> DeclaredAgent:
     """Read declared selection fields, failing loud on malformed configuration."""
     if not path.is_file():
-        return None, None
+        return DeclaredAgent()
     with path.open("rb") as config_file:
         data = tomllib.load(config_file)
     agent = require_dict(data.get("agent", {}), field="booley.toml [agent]")
-    from booley.config.agent import parse_agent_section
-
-    declared = parse_agent_section(agent)
-    auth = declared.auth
-    if isinstance(auth, dict):  # an [agent.auth] table counts as declared; init never rewrites it
-        auth = auth.get(declared.default or "claude", "auto")
-    return declared.default, auth
+    return parse_agent_section(agent)
 
 
 def _prompt_agent_choice(
@@ -655,14 +651,93 @@ def _resolve_selection_value(
     return default, True
 
 
+def _detected_auth(cli: str) -> tuple[bool, bool]:
+    """Whether *cli* has a subscription login and whether it has an API key, locally.
+
+    Reads local files and the environment only; the credential resolver supplies the
+    precedence (a Claude OAuth token is a subscription, a Codex ``booley auth`` token
+    is an API key).
+    """
+    return (
+        auth_token.login_credential(cli, "subscription") is not None,
+        auth_token.effective_credential(cli, "api_key") is not None,
+    )
+
+
+def _choose_auth(ctx: InitContext, cli: str) -> str | None:
+    """The policy to record for *cli* from its credentials; ``None`` when a prompt aborts."""
+    has_subscription, has_key = _detected_auth(cli)
+    if has_key and not has_subscription:
+        return "api_key"
+    if has_subscription and has_key:
+        if ctx.interactive:
+            return _prompt_agent_choice(
+                f"auth for {cli}", ("subscription", "api_key"), default="subscription"
+            )
+        info(f"{cli}: found a subscription login and an API key; recording subscription")
+        hint(
+            f'to bill the {cli} API key instead, set {cli} = "api_key" under [agent.auth] in booley.toml'
+        )
+    elif not has_subscription:
+        hint(
+            f"{cli}: no credential found; sign in: "
+            f"{auth_token.missing_credential_fix(cli, 'subscription')}"
+        )
+    return "subscription"
+
+
+def _recorded_auth(
+    declared: str | Mapping[str, str] | None, clis: tuple[str, ...]
+) -> dict[str, str]:
+    """The ``{cli: policy}`` entries ``[agent] auth`` records for *clis*."""
+    if isinstance(declared, str):
+        return dict.fromkeys(clis, declared)
+    return {cli: declared[cli] for cli in clis if declared and cli in declared}
+
+
+def _resolve_auth(
+    ctx: InitContext,
+    clis: tuple[str, ...],
+    declared: str | Mapping[str, str] | None,
+    requested: str | None,
+) -> tuple[dict[str, str], str | dict[str, str] | None] | None:
+    """Resolve each CLI's policy and the ``[agent] auth`` value to write, if any.
+
+    A recorded value other than ``auto`` is kept; ``auto`` or a missing entry takes the
+    ``--auth`` flag, else the policy detected from the CLI's credentials. The record is
+    one string when every CLI agrees, else an ``[agent.auth]`` table in ``clis`` order;
+    it is ``None`` when nothing changes. ``None`` overall: a conflict or aborted prompt.
+    """
+    recorded = _recorded_auth(declared, clis)
+    kept = {cli: policy for cli, policy in recorded.items() if policy != "auto"}
+    if requested is not None and any(policy != requested for policy in kept.values()):
+        err(
+            f"--auth={requested} conflicts with booley.toml [agent] "
+            f"auth={declared!r}; edit the project config to change it"
+        )
+        return None
+    policies = dict(kept)
+    for cli in clis:
+        if cli not in policies:
+            chosen = requested or _choose_auth(ctx, cli)
+            if chosen is None:
+                return None
+            policies[cli] = chosen
+    policies = {cli: policies[cli] for cli in clis}
+    if policies == recorded:
+        return policies, None
+    values = set(policies.values())
+    return policies, next(iter(values)) if len(values) == 1 else policies
+
+
 def _resolve_agent_selection(
     ctx: InitContext,
     args: argparse.Namespace,
     config_path: Path,
 ) -> AgentSelection | None:
-    """Resolve flags, config, prompts, and documented agent defaults."""
+    """Resolve flags, config, prompts, detected credentials, and documented defaults."""
     try:
-        provider, auth = _read_agent_selection(config_path)
+        declared = _read_agent_selection(config_path)
     except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         err(f"cannot select an agent from {config_path}: {exc}")
         ctx.record("agent_config", "err", "invalid booley.toml")
@@ -671,7 +746,7 @@ def _resolve_agent_selection(
         ctx,
         name="provider",
         key="default",
-        configured=provider,
+        configured=declared.default,
         requested=getattr(args, "provider", None),
         choices=("claude", "codex"),
         default="claude",
@@ -679,53 +754,73 @@ def _resolve_agent_selection(
     if provider is None:
         ctx.record("agent_config", "err", "agent selection aborted")
         return None
-    auth, write_auth = _resolve_selection_value(
-        ctx,
-        name="auth",
-        key="auth",
-        configured=auth,
-        requested=getattr(args, "auth", None),
-        choices=("auto", "subscription", "api_key"),
-        default="auto",
+    resolved = _resolve_auth(
+        ctx, declared.clis or (provider,), declared.auth, getattr(args, "auth", None)
     )
-    if auth is None:
+    if resolved is None:
         ctx.record("agent_config", "err", "agent selection aborted")
         return None
-    return AgentSelection(provider, auth, write_default, write_auth)
+    policies, record = resolved
+    return AgentSelection(provider, policies.get(provider, "auto"), write_default, record)
 
 
-def _insert_agent_fields(content: str, fields: dict[str, str]) -> str:
+def _insert_agent_fields(content: str, fields: Mapping[str, str | dict[str, str]]) -> str:
     """Record ``fields`` in ``[agent]``, leaving the rest of the file byte-identical.
 
     With an existing ``agent`` table each missing key lands directly after the
     table's last non-blank line: after a multi-line value's closing line and
     after a whole-line comment in the table body, but before the blank lines
     that separate the table from the next header. Without one, an ``[agent]``
-    table is appended at the end of the file.
+    table is appended at the end of the file. A ``dict`` value is an
+    ``[agent.auth]`` table: a recorded table keeps its lines and only has the
+    changed entries set. A recorded string is replaced in place, keeping its
+    comment; a string turned into a table moves to the end of the table.
     """
     document = tomlkit.parse(content)
     if "agent" not in document:
         prefix = "" if not content or content.endswith("\n") else "\n"
         separator = "" if not content else "\n"
-        rendered = "".join(f'{key} = "{value}"\n' for key, value in fields.items())
-        return content + prefix + separator + "[agent]\n" + rendered
+        rendered = "".join(
+            f'{key} = "{value}"\n' for key, value in fields.items() if isinstance(value, str)
+        )
+        tables = "".join(
+            f"\n[agent.{key}]\n"
+            + "".join(f'{cli} = "{policy}"\n' for cli, policy in value.items())
+            for key, value in fields.items()
+            if isinstance(value, dict)
+        )
+        return content + prefix + separator + "[agent]\n" + rendered + tables
     table = document["agent"]
     for key, value in fields.items():
+        current = table.get(key)
+        if isinstance(value, dict) and isinstance(current, dict):
+            for cli, policy in value.items():
+                current[cli] = policy
+            continue
+        if current is not None and not (isinstance(value, str) and isinstance(current, str)):
+            del table[key]
         table[key] = value
     return document.as_string()
+
+
+def _auth_label(selection: AgentSelection) -> str:
+    """The ``provider/auth`` text for results; a per-CLI table lists every CLI's policy."""
+    auth = selection.auth_record
+    return f"{selection.provider}/{encode_cli_policies(auth) if isinstance(auth, dict) else selection.auth}"
 
 
 def _step_agent_config(ctx: InitContext, selection: AgentSelection, path: Path) -> bool:
     """Persist a complete [agent] choice before auth checks and Session seeding."""
     ctx.step_banner("agent provider and authentication policy")
-    fields: dict[str, str] = {}
+    label = _auth_label(selection)
+    fields: dict[str, str | dict[str, str]] = {}
     if selection.write_default:
         fields["default"] = selection.provider
-    if selection.write_auth:
-        fields["auth"] = selection.auth
+    if selection.auth_record is not None:
+        fields["auth"] = selection.auth_record
     if not fields:
-        skip(f"using existing [agent] {selection.provider}/{selection.auth}")
-        ctx.record("agent_config", "skip", f"{selection.provider}/{selection.auth}")
+        skip(f"using existing [agent] {label}")
+        ctx.record("agent_config", "skip", label)
         return True
     if path.is_symlink():
         # Same verdict for a dry run and a real run: a link is never written through.
@@ -733,8 +828,8 @@ def _step_agent_config(ctx: InitContext, selection: AgentSelection, path: Path) 
         ctx.record("agent_config", "err", "symlinked booley.toml")
         return False
     if ctx.check_only or (ctx.preserve_tracked_content and path.is_file()):
-        warn(f"would record [agent] {selection.provider}/{selection.auth} in {path}")
-        ctx.record("agent_config", "warn", f"{selection.provider}/{selection.auth}")
+        warn(f"would record [agent] {label} in {path}")
+        ctx.record("agent_config", "warn", label)
         return True
     if not path.parent.is_dir():
         err(f"cannot persist agent selection: Booley Directory is missing at {path.parent}")
@@ -748,8 +843,8 @@ def _step_agent_config(ctx: InitContext, selection: AgentSelection, path: Path) 
         err(f"cannot persist agent selection: refusing symlinked {path}")
         ctx.record("agent_config", "err", "symlinked booley.toml")
         return False
-    ok(f"recorded [agent] {selection.provider}/{selection.auth} in {path}")
-    ctx.record("agent_config", "ok", f"{selection.provider}/{selection.auth}")
+    ok(f"recorded [agent] {label} in {path}")
+    ctx.record("agent_config", "ok", label)
     return True
 
 
@@ -1057,8 +1152,6 @@ def _select_interactive_app(
 ) -> str:
     """Return the project's declared agent app, never one inferred from the host."""
     if project_root is not None:
-        from booley.config.agent import parse_agent_section
-
         config_path = resolve_toml(
             project_data_source or authorized_project_data_source(project_root)
         )
@@ -2796,23 +2889,30 @@ _SANDBOX_REFUSED_OPTIONS = (
 )
 
 
-def _sandbox_agent_selection(config_path: Path) -> AgentSelection | None:
-    """Pick the Agent CLI selection inside a Sandbox; ``None`` leaves the default unset.
+def _sandbox_agent_selection(ctx: InitContext, config_path: Path) -> AgentSelection | None:
+    """Pick the Agent CLI selection inside a Sandbox; ``None`` leaves ``[agent]`` unset.
 
     A default declared in ``booley.toml`` is kept and never written. Otherwise
     ``BOOLEY_AGENT_APP`` of ``claude`` or ``codex`` is recorded as the default.
     ``auto`` is not resolved here: the registrar publishes its choice per start,
     after ``onCreateCommand``, and pinning one start's choice would defeat ``auto``.
-    A missing ``auth`` is never written; unset already means ``auto``.
+    A missing or ``auto`` ``auth`` is recorded from the credentials this Sandbox holds.
     Raises what :func:`_read_agent_selection` raises for an unreadable ``[agent]``.
     """
-    provider, auth = _read_agent_selection(config_path)
-    if provider is not None:
-        return AgentSelection(provider, auth or "auto")
-    app = (os.environ.get(agent_app.AGENT_APP_ENV) or "").strip()
-    if app in AGENT_CLIS:
-        return AgentSelection(app, auth or "auto", write_default=True)
-    return None
+    declared = _read_agent_selection(config_path)
+    provider = declared.default
+    if provider is None:
+        app = (os.environ.get(agent_app.AGENT_APP_ENV) or "").strip()
+        if app not in AGENT_CLIS:
+            return None
+        provider = app
+    resolved = _resolve_auth(ctx, declared.clis or (provider,), declared.auth, None)
+    if resolved is None:
+        return None
+    policies, record = resolved
+    return AgentSelection(
+        provider, policies.get(provider, "auto"), declared.default is None, record
+    )
 
 
 def _sandbox_init_refusal(args: argparse.Namespace) -> str | None:
@@ -2857,7 +2957,7 @@ def _initialize_sandbox_project(ctx: InitContext) -> int:
     if not _project_config_migration_preflight(ctx, config_path):
         return _print_summary(ctx)
     try:
-        selection = _sandbox_agent_selection(config_path)
+        selection = _sandbox_agent_selection(ctx, config_path)
     except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         err(f"cannot select an agent from {config_path}: {exc}")
         ctx.record("agent_config", "err", "invalid booley.toml")

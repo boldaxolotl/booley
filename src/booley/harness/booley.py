@@ -767,7 +767,7 @@ def _add_init_subparser(sub) -> None:
         "--auth",
         type=_agent_auth_arg,
         metavar="{auto,subscription,api-key}",
-        help="Agent authentication policy to record (default: auto)",
+        help="Agent authentication policy to record (default: detected from your credentials)",
     )
     init_p.add_argument(
         "--repin-booley-dir",
