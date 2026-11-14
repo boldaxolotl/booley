@@ -68,7 +68,7 @@ targets:
     toplevel: dut
   synth_dut:
     flow: generic
-    flow_options: {tool: yosys, arch: xilinx}  # arch is ignored by Booley
+    flow_options: {tool: yosys, arch: xilinx}  # Edalize requires arch; Booley ignores it
     filesets: [rtl]
     toplevel: dut
 ```
@@ -83,9 +83,6 @@ Points worth knowing in that example:
   for the run and removes it afterwards. If a *different* file already sits at
   that path, the run fails rather than overwrite it, and Doctor warns ahead of
   time: rename the `copyto` destination or remove the checked-in copy.
-- **`flow_options.arch`** and other Edalize-only options are ignored by
-  Booley's synth Flow, which picks its own PDK; see
-  [ASIC synthesis](FLOW-SYNTH.md).
 
 ### Fileset file types
 
