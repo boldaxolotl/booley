@@ -692,7 +692,8 @@ def _validate_persisted_policy(app: str, policy: str, home: Path | None) -> None
                 raise ValueError("cannot inspect Claude settings; recreate the Sandbox") from exc
             if not isinstance(data, dict) or data.get("apiKeyHelper"):
                 raise ValueError(
-                    "Claude settings contain ambiguous credential state; recreate the Sandbox"
+                    f"Claude settings contain ambiguous credential state: remove apiKeyHelper "
+                    f"from {settings}, then restart"
                 )
             environment = data.get("env", {})
             if not isinstance(environment, dict):

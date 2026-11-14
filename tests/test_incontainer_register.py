@@ -1985,6 +1985,7 @@ def test_subscription_refuses_a_claude_bearer_kept_in_settings(
         ({"env": {"ANTHROPIC_AUTH_TOKEN": "SYNTHETIC_KEY"}}, "env.ANTHROPIC_AUTH_TOKEN"),
         ({"env": {"ANTHROPIC_API_KEY": "SYNTHETIC_KEY"}}, "env.ANTHROPIC_API_KEY"),
         ({"env": "SYNTHETIC"}, "env is not an object"),
+        ({"apiKeyHelper": "/bin/true"}, "remove apiKeyHelper"),
     ):
         settings.write_text(json.dumps(payload), encoding="utf-8")
 
