@@ -486,7 +486,11 @@ def _build_abc_command(
     abc_script: str | None = None,
     abc_delay_ps: int | None = None,
 ) -> str:
-    """Build the ABC technology mapping command string."""
+    """Build the ABC technology mapping command string.
+
+    A delay target reaches the mapping step of every built-in recipe. A custom
+    ``abc_script`` stays verbatim and uses the target only where it contains ``{D}``.
+    """
     q = _quote_yosys_path
     abc_log = q(out_dir + "/log_abc_" + design_name + ".txt")
     abc_base = f"tee -o {abc_log} abc -liberty {lib_path}"
@@ -495,12 +499,17 @@ def _build_abc_command(
     if abc_delay_ps is not None:
         abc_base += f" -D {abc_delay_ps}"
     pstats = ";print_stats"
+    # Yosys does not inject -D into a user ``-script``; it only substitutes the
+    # literal ``{D}`` placeholder with ``-D <ps>``. The comma is ABC's argument
+    # separator inside a ``+`` script. Without a target the bare ``map`` is kept
+    # so the generated command stays unchanged.
+    map_step = "map,{D}" if abc_delay_ps is not None else "map"
     if abc_script is not None:
         abc = f"{abc_base} -script {abc_script}"
     elif abc_recipe == "fast":
-        abc = f"{abc_base} -script +strash;balance;rewrite;rewrite,-z;refactor;map{pstats}"
+        abc = f"{abc_base} -script +strash;balance;rewrite;rewrite,-z;refactor;{map_step}{pstats}"
     elif abc_recipe == "balanced":
-        abc = f"{abc_base} -script +strash;ifraig;balance;rewrite;rewrite,-z;balance;refactor;balance;rewrite;map{pstats}"
+        abc = f"{abc_base} -script +strash;ifraig;balance;rewrite;rewrite,-z;balance;refactor;balance;rewrite;{map_step}{pstats}"
     elif abc_recipe and abc_recipe.startswith("+"):
         abc = f"{abc_base} -script {abc_recipe}"
     else:

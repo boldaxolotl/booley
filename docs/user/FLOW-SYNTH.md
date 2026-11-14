@@ -165,9 +165,9 @@ second column names.
 | Option | Target table | What it changes | Default |
 |---|---|---|---|
 | `--abc-recipe <default\|balanced\|fast>` | `advanced_settings_yosys` | Logic-optimization script used during mapping. | From the profile |
-| `--abc-script <script>` | `advanced_settings_yosys` | Your own ABC commands in place of a recipe, starting with `+` (for example `+strash;map`). Cannot be combined with `--abc-recipe`. | None |
+| `--abc-script <script>` | `advanced_settings_yosys` | Your own ABC commands in place of a recipe, starting with `+` (for example `+strash;map`). Write `{D}` where the delay target goes, comma-separated (for example `+strash;map,{D}`); without `{D}` the script ignores `--abc-delay-ps`. Cannot be combined with `--abc-recipe`. | None |
 | `--generic-abc-before-mapping` / `--no-generic-abc-before-mapping` | `advanced_settings_yosys` | Adds a generic logic-optimization pass before mapping. | Off |
-| `--abc-delay-ps <ps>` | `advanced_settings_yosys` | Delay target for mapping, in ps. | None |
+| `--abc-delay-ps <ps>` | `advanced_settings_yosys` | Delay target for mapping, in ps. Every profile maps with it; a custom `--abc-script` uses it only where the script contains `{D}`. | None |
 | `--utilization-pct <percent>` | `advanced_settings_openroad` | Share of the floorplan that cells fill. | From the profile |
 | `--placement-density <fraction>` | `advanced_settings_openroad` | Target density for placement. | From the profile |
 | `--repair-setup` / `--no-repair-setup` | `advanced_settings_openroad` | Repairs setup violations after placement. | On |
