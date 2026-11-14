@@ -43,7 +43,6 @@ from booley.harness.dashboard.review import (
     Occupants,
     agent_refusal,
     queue_line,
-    refusal,
     specialist_lines,
     timeout_line,
     warning_lines,
@@ -919,7 +918,7 @@ class RunWizard(ModalScreen[str | None]):
         self._render_review(checked.outlook)
 
     def _render_review(self, outlook: AdmissionOutlook | str | None) -> None:
-        """Show the queue verdict, the timeout and the warnings; a full queue also says why in the error line."""
+        """Show the queue verdict, the timeout and the warnings; a Specialist refusal also fills the error line."""
         checked = self._checked
         assert checked is not None and checked.facts is not None
         occupants = self._occupants(checked.request.worktree)
@@ -929,10 +928,7 @@ class RunWizard(ModalScreen[str | None]):
             lines += specialist_lines(specialist)
         lines += warning_lines(occupants, checked.uncommitted)
         self.query_one("#run-review", Static).update("\n".join(line for line in lines if line))
-        refusal_text = agent_refusal(specialist) if specialist is not None else ""
-        if not refusal_text and isinstance(outlook, AdmissionOutlook) and outlook.full:
-            refusal_text = refusal(outlook)
-        self._show_error(refusal_text)
+        self._show_error(agent_refusal(specialist) if specialist is not None else "")
 
     def _apply_action(self, action: str) -> None:
         assert self._worktree is not None
@@ -946,12 +942,6 @@ class RunWizard(ModalScreen[str | None]):
             refused = agent_refusal(checked.facts.specialist)
             if refused:  # the Agent CLI cannot sign in: nothing to start
                 self._show_error(refused)
-                return
-        if checked is not None and checked.facts is not None and checked.facts.takes_slot:
-            # The queue may have changed since the screen opened: read it again.
-            outlook = self._read_outlook(checked.facts)
-            self._render_review(outlook)
-            if isinstance(outlook, AdmissionOutlook) and outlook.full:
                 return
         try:
             key = self._launcher.submit(self._worktree, self._kind, self._name, self._argv)

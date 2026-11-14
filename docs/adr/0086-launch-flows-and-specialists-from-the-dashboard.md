@@ -138,3 +138,9 @@ command is shown and can be copied. It also shows:
 - Delivery order: Standalone Job records and the worker first; the launcher,
   Targets window, and forms after #2242 and #2243; `job.log` for Developer
   Agent Jobs separately.
+
+## Amendments (2026-11-14)
+
+The review screen no longer refuses a launch for a full queue: the queue has no
+limit. See the 2026-11-14 amendment of
+[ADR 0087](0087-admit-jobs-against-a-measured-memory-budget.md).

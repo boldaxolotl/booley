@@ -76,7 +76,6 @@ step ends.
 |---|---|---|
 | `small-budget` | `[jobs]` `memory_budget = "<size>"`, a size string such as `"12g"` | Fit one Job and not two, or a set number of Record items |
 | `int-budget` | `[jobs]` `memory_budget = 12` | Must fail: the value must be a size string |
-| `queue-zero` | `[jobs]` `queue_max = 0` | A second blocked Job is refused |
 | `retired` | `[jobs]` `max_heavy = 2` and `heavy_memory = "22g"` | Retired keys, refused with a fix hint |
 | `seats` | Remove `[jobs.seats]`; then `vivado = 0`, `vivado = "x"`, `unknown_tool = 1` under `[jobs.seats]`, and `[jobs] seats = 1` | Seat Cap values, good and bad |
 | `sandbox-oom` | `[sandbox]` `memory = "12g"`; restart the Session as `docs/user/SANDBOX.md` says, and set it back to `"28g"` after area 6 | Real OOM kills without squeezing the host |
