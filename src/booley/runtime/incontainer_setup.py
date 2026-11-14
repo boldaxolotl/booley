@@ -695,12 +695,19 @@ def _validate_persisted_policy(app: str, policy: str, home: Path | None) -> None
                     "Claude settings contain ambiguous credential state; recreate the Sandbox"
                 )
             environment = data.get("env", {})
-            if not isinstance(environment, dict) or (
-                policy == "subscription" and environment.get("ANTHROPIC_API_KEY")
-            ):
+            if not isinstance(environment, dict):
                 raise ValueError(
-                    f"Claude settings conflict with subscription policy: remove env.ANTHROPIC_API_KEY "
-                    f"from {settings}, then restart"
+                    f"Claude settings env is not an object: fix {settings}, then restart"
+                )
+            clashing = [
+                key
+                for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+                if policy == "subscription" and environment.get(key)
+            ]
+            if clashing:
+                raise ValueError(
+                    f"Claude settings conflict with subscription policy: remove "
+                    f"env.{' and env.'.join(clashing)} from {settings}, then restart"
                 )
         if policy == "api_key":
             if (base / ".claude" / ".credentials.json").exists():

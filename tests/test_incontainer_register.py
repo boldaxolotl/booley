@@ -1966,3 +1966,31 @@ def test_subscription_claude_settings_refusal_names_the_file(
     err = capsys.readouterr().err
     assert "settings.json" in err
     assert "recreate the Sandbox" not in err
+
+
+def test_subscription_refuses_a_claude_bearer_kept_in_settings(
+    first_run, tmp_path, monkeypatch, capsys
+):
+    _multi_cli_start(
+        first_run,
+        tmp_path,
+        monkeypatch,
+        app="claude",
+        record="claude=subscription",
+        primary_auth="subscription",
+    )
+    settings = reg.claude_settings_path(first_run.home)
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    for payload, expected in (
+        ({"env": {"ANTHROPIC_AUTH_TOKEN": "SYNTHETIC_KEY"}}, "env.ANTHROPIC_AUTH_TOKEN"),
+        ({"env": {"ANTHROPIC_API_KEY": "SYNTHETIC_KEY"}}, "env.ANTHROPIC_API_KEY"),
+        ({"env": "SYNTHETIC"}, "env is not an object"),
+    ):
+        settings.write_text(json.dumps(payload), encoding="utf-8")
+
+        with pytest.raises(SystemExit):
+            entry.main()
+
+        err = capsys.readouterr().err
+        assert expected in err
+        assert "settings.json" in err

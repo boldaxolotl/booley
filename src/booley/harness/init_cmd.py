@@ -63,7 +63,7 @@ from booley.config.agent import AGENT_CLIS
 from booley.config.gateway import GATEWAY_AUTH, GatewayConfigError, gateway_forwarded_keys
 from booley.config.host_config import retired_project_policy_message
 from booley.core.booley_dir_pin import BooleyDirPinError, EntryPin
-from booley.core.boundary import as_dict, as_str, require_dict
+from booley.core.boundary import as_dict, as_str, as_str_list, require_dict
 from booley.core.config_paths import resolve_toml
 from booley.fusesoc.core_projection import (
     PROJECTED_CORE_GLOB,
@@ -1221,7 +1221,7 @@ class _InteractiveSpecSources:
             mask_source=docker_mount_path(_mask_source_dir()) if self.mask_paths else "",
             local_timezone=self.timezone,
             egress=inputs.egress,
-            legacy_subscription_clis=self.legacy_subscription_clis,
+            legacy_clis=self.legacy_subscription_clis,
         )
 
 
@@ -1234,12 +1234,8 @@ def _legacy_subscription_clis(project_root: Path) -> frozenset[str]:
         spec = json.loads(dc.devcontainer_path(project_root).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return frozenset()
-    mounts = spec.get("mounts") if isinstance(spec, dict) else None
-    if not isinstance(mounts, list):
-        return frozenset()
-    return dc.legacy_subscription_clis(
-        [raw for raw in mounts if isinstance(raw, str)], dc.canonical_project_id(project_root)
-    )
+    mounts = as_str_list((as_dict(spec, default={}) or {}).get("mounts"))
+    return dc.legacy_subscription_clis(mounts, dc.canonical_project_id(project_root))
 
 
 def _cli_seeds(plan: auth_token.CredentialPlan) -> dc.CliSeeds:

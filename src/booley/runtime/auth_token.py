@@ -480,8 +480,7 @@ CREDENTIAL_SCHEMA = "1"
 def defers_to_cli(policy: str) -> bool:
     """Whether *policy* leaves the credential choice to the CLI's own precedence.
 
-    ``auto`` is the ``[agent] auth`` spelling and ``visitor`` the Sandbox one;
-    ``auto`` leaves this check with the move to a required ``auth`` value.
+    ``auto`` is the ``[agent] auth`` spelling and ``visitor`` the Sandbox one.
     """
     return policy in {"auto", VISITOR_AUTH}
 

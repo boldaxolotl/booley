@@ -677,11 +677,9 @@ async def _codex_spawn(
     """
     command_token = await _resolve_gateway_command_token() if auth_mode == GATEWAY_AUTH else None
     env = None
-    from .auth_token import credential_plan, defers_to_cli
+    from .auth_token import credential_plan, defers_to_cli, subscription_creds_path
 
     if not defers_to_cli(auth_mode) and os.environ.get("CODEX_HOME"):
-        from .auth_token import subscription_creds_path
-
         env = {**os.environ, "CODEX_HOME": str(subscription_creds_path("codex").parent)}
     if _inside_container() and not params.text_only:
         env = dict(os.environ)

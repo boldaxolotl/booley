@@ -463,7 +463,9 @@ def _agent_facts(name: str, asked_ms: int, timeout_ms: int) -> dict[str, Any]:
         set_agent_settings(settings)
         model, cli = run_choice(settings, name)
         policy = settings.auth_for(cli)
-        facts.update(model=model, cli=cli, policy=policy)
+        # The Dashboard speaks the ``booley.toml`` vocabulary: ``visitor`` shows as ``auto``.
+        shown = "auto" if policy == auth_token.VISITOR_AUTH else policy
+        facts.update(model=model, cli=cli, policy=shown)
         problem = get_backend_config().backend_for(cli).health_check()
         if problem:
             facts["refusal"] = problem

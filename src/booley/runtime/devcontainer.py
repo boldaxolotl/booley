@@ -882,7 +882,7 @@ def build_devcontainer_spec(
     local_timezone: str = "",
     dashboard: bool = False,
     egress: str = "proxy",
-    legacy_subscription_clis: frozenset[str] = frozenset(),
+    legacy_clis: frozenset[str] = frozenset(),
 ) -> dict:
     """Build the ``devcontainer.json`` dict for an Interactive Mode session.
 
@@ -935,7 +935,7 @@ def build_devcontainer_spec(
             ``"unproxied"`` joins :data:`UNPROXIED_NETWORK`, sets no proxy
             environment, and declares ``BOOLEY_EGRESS=unproxied`` in
             ``containerEnv`` so bare ``docker exec`` calls see it too.
-        legacy_subscription_clis: the CLIs whose current spec still mounts the
+        legacy_clis: the CLIs whose current spec still mounts the
             pre-shared ``-subscription`` state volume (see
             :func:`legacy_subscription_clis`); a CLI listed here and still on
             ``subscription`` keeps that volume.
@@ -955,7 +955,7 @@ def build_devcontainer_spec(
     seeds = _planned_seeds(app, cli_seeds)
 
     mounts = _build_mounts(
-        _cli_seed_mounts(seeds, project_id, legacy_subscription_clis),
+        _cli_seed_mounts(seeds, project_id, legacy_clis),
         booley_dir_source,
         host_skills,
         trusted_eda_mounts,
