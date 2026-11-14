@@ -56,7 +56,7 @@ run's `mutation-specs.md`.
 - `decoys`: text a Mutant must never change (`never`: the forbidden
   replacement, or `*` for any change).
 - `outcomes`, `per_file`, `totals`: expected survivors, equivalent, hanging and
-  invalid Mutants, and the exhaustive tally and verdict.
+  Mutants that do not build, and the exhaustive tally and verdict.
 - `auto`, `selection`: `--count auto` sizes and the round-robin operator order.
 - `rule` in a candidate quotes the user doc sentence that makes it a
   candidate. Only the entries marked `code` come from the code.
@@ -92,7 +92,7 @@ Checked on the fixture before the oracle's `outcomes` were written (plain
 hangs and ends in the simulation timeout on both Targets; an edit to `bump`
 fails the build on both Targets (Icarus reports `ERROR`, Verilator under
 `-Werror-USERERROR` reports `FAIL`). The Mutation Flow must still call such a
-Mutant `invalid` on both Targets.
+Mutant dropped and replaced on both Targets.
 
 On `sim_cocotb`, a Verilator Target, the Flow also compares each Mutant's
 generated C++ with the baseline's and replaces an identical one with the next

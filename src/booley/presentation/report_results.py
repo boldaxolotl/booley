@@ -429,7 +429,7 @@ def _mutation(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
     )
     rows = _fields(
         detail,
-        {"not_detected": "Not detected", "invalid": "Invalid", "min_detected": "Minimum detected"},
+        {"not_detected": "Not detected", "min_detected": "Minimum detected"},
     )
     survivors = _sequence(detail.get("survivors"))
     classified = [_mapping(item) for item in _sequence(detail.get("classified"))]

@@ -1,5 +1,5 @@
 // Build-time self check: a constant function verified during elaboration. Any
-// Mutant of `bump` makes `$error` fire, so the build fails and the Mutant is invalid.
+// Mutant of `bump` makes `$error` fire, so the build fails and the Flow drops the Mutant.
 module self_check;
   function automatic logic [3:0] bump(input logic [3:0] x);
     return x + 4'd1;
