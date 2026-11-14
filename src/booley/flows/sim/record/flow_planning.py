@@ -27,9 +27,9 @@ from .codec import (
     MANIFEST_SCHEMA,
     MAX_OBSERVATIONS,
     MAX_WORK_ITEMS,
-    SimulationCampaignIntegrityError,
+    SimulationRecordIntegrityError,
 )
-from .model import SimulationCampaignPlan, create_simulation_campaign_plan
+from .model import SimulationRecordPlan, create_simulation_record_plan
 from .planning import (
     derive_runtime_input_declarations,
     finalize_manifest,
@@ -45,13 +45,13 @@ def _require_ordinary_hdl_inputs(
 ) -> None:
     """Refuse Target facts the ordinary-HDL planner cannot plan from."""
     if inspection.handle != handle or preview.target_identity != handle.identity:
-        raise SimulationCampaignIntegrityError("campaign planning Target facts disagree")
+        raise SimulationRecordIntegrityError("campaign planning Target facts disagree")
     if inspection.flow_options.get("cocotb_module"):
-        raise SimulationCampaignIntegrityError("ordinary HDL planner cannot plan Cocotb")
+        raise SimulationRecordIntegrityError("ordinary HDL planner cannot plan Cocotb")
     if role not in {"candidate", "cycle_count_baseline"}:
-        raise SimulationCampaignIntegrityError("campaign planning role is invalid")
+        raise SimulationRecordIntegrityError("campaign planning role is invalid")
     if not revision:
-        raise SimulationCampaignIntegrityError("campaign revision is required")
+        raise SimulationRecordIntegrityError("campaign revision is required")
 
 
 def _require_baseline_prerequisites(documents: Sequence[Mapping[str, object]]) -> None:
@@ -64,13 +64,13 @@ def _require_baseline_prerequisites(documents: Sequence[Mapping[str, object]]) -
     for document in documents:
         target = cast(Mapping[str, object], document["target"])
         if target.get("role") != "cycle_count_baseline":
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 f"prerequisite Target {target.get('selector')!r} was not planned as a Cycle "
                 "Count baseline (a Cocotb Target cannot be the baseline of an ordinary HDL Target)"
             )
 
 
-def plan_ordinary_hdl_campaign(
+def plan_ordinary_hdl_simulation_record(
     *,
     handle: TargetHandle,
     inspection: TargetInspection,
@@ -85,14 +85,14 @@ def plan_ordinary_hdl_campaign(
     planning_disclosures: Sequence[Mapping[str, object]] = (),
     role: str = "candidate",
     required_suite_catalog_backed: bool | None = None,
-) -> SimulationCampaignPlan:
+) -> SimulationRecordPlan:
     """Build one strict immutable plan from already-resolved Target facts."""
     _require_ordinary_hdl_inputs(handle, inspection, preview, role, revision)
     _require_baseline_prerequisites(prerequisite_documents)
     root = handle.project_root.resolve()
     sources = _source_entries(root, inspection.inputs)
     if len(groups) != len(preview.commands):
-        raise SimulationCampaignIntegrityError("planned groups and commands disagree")
+        raise SimulationRecordIntegrityError("planned groups and commands disagree")
     run_groups = preview.run_groups
     _require_matching_run_groups(groups, run_groups)
     workload, configured_cwd, run_kind, sources = _workload_document(
@@ -115,10 +115,10 @@ def plan_ordinary_hdl_campaign(
         prerequisite_documents,
         work_items,
     )
-    return create_simulation_campaign_plan(manifest)
+    return create_simulation_record_plan(manifest)
 
 
-def plan_coarse_simulation_campaign(
+def plan_coarse_simulation_record(
     *,
     handle: TargetHandle,
     inspection: TargetInspection,
@@ -133,7 +133,7 @@ def plan_coarse_simulation_campaign(
     planning_disclosures: Sequence[Mapping[str, object]] = (),
     required_suite_catalog_backed: bool | None = None,
     no_waivers: bool = False,
-) -> SimulationCampaignPlan:
+) -> SimulationRecordPlan:
     """Plan honest coarse work: Cocotb batches, or one native coverage aggregate.
 
     ``preview.run_groups`` holds each work item's Test Runs: one group per Cocotb
@@ -167,7 +167,7 @@ def plan_coarse_simulation_campaign(
         (),
         work_items,
     )
-    return create_simulation_campaign_plan(manifest)
+    return create_simulation_record_plan(manifest)
 
 
 def _validate_coarse_inputs(
@@ -180,29 +180,29 @@ def _validate_coarse_inputs(
 ) -> None:
     run_groups = preview.run_groups
     if kind not in {"cocotb_batch", "coverage_aggregate"}:
-        raise SimulationCampaignIntegrityError("coarse campaign kind is invalid")
+        raise SimulationRecordIntegrityError("coarse campaign kind is invalid")
     if no_waivers and kind != "coverage_aggregate":
-        raise SimulationCampaignIntegrityError("no_waivers requires a coverage aggregate")
+        raise SimulationRecordIntegrityError("no_waivers requires a coverage aggregate")
     if inspection.handle != handle or preview.target_identity != handle.identity:
-        raise SimulationCampaignIntegrityError("campaign planning Target facts disagree")
+        raise SimulationRecordIntegrityError("campaign planning Target facts disagree")
     is_cocotb = bool(inspection.flow_options.get("cocotb_module"))
     if kind == "cocotb_batch" and not is_cocotb:
-        raise SimulationCampaignIntegrityError("coarse campaign kind disagrees with Target")
+        raise SimulationRecordIntegrityError("coarse campaign kind disagrees with Target")
     names = tuple(selected_tests)
     planned = tuple(_selection_names(group) for group in run_groups)
     if kind == "coverage_aggregate":
         # One aggregate collects every selected Test Run, however many of one Test.
         if len(run_groups) != 1 or planned != (names,) or not names:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 "coverage aggregate requires one group of named Test Runs"
             )
     elif preview.groups != planned or tuple(name for group in planned for name in group) != names:
-        raise SimulationCampaignIntegrityError(
+        raise SimulationRecordIntegrityError(
             "coarse campaign selection disagrees with execution preview"
         )
     run_names = [run.name for group in run_groups for run in group]
     if len(set(run_names)) != len(run_names):
-        raise SimulationCampaignIntegrityError("coarse campaign Test Runs must be unique")
+        raise SimulationRecordIntegrityError("coarse campaign Test Runs must be unique")
 
 
 def _manifest_document(
@@ -242,7 +242,7 @@ def _recipes(
 ) -> tuple[dict[str, object], dict[str, object]]:
     """Build the frozen source and build recipes of a Target workload."""
     if not inspection.toplevel:
-        raise SimulationCampaignIntegrityError(
+        raise SimulationRecordIntegrityError(
             f"Target {handle.identity!r} has an empty toplevel; set toplevel to the "
             "simulation top module in its .core target"
         )
@@ -364,11 +364,11 @@ def _source_entries(root: Path, inputs: Sequence[TargetInput]) -> list[dict[str,
             relative = resolved.relative_to(root).as_posix()
             raw = resolved.read_bytes()
         except ValueError as exc:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 f"Target source escapes Project Root: {item.path}"
             ) from exc
         except OSError as exc:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 f"Target source is unavailable: {item.path}: {exc}"
             ) from exc
         kind = (
@@ -421,7 +421,7 @@ def _required_suite(
             suite_file = own_booley_dir_relative(root) / "tests.toml"
             raw = (root / suite_file).read_bytes()
         except (OSError, BooleyDirOutsideCheckoutError) as exc:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 "registered Required Simulation Suite has no readable tests.toml"
             ) from exc
         relative = suite_file.as_posix()
@@ -439,7 +439,7 @@ def _require_matching_run_groups(
 ) -> None:
     """The Test Runs of each group must be the group's Tests, in order."""
     if tuple(groups) != tuple(_selection_names(runs) for runs in run_groups):
-        raise SimulationCampaignIntegrityError("planned groups and Test Runs disagree")
+        raise SimulationRecordIntegrityError("planned groups and Test Runs disagree")
 
 
 def _selection_names(runs: Sequence[TestRun]) -> tuple[str, ...]:
@@ -447,7 +447,9 @@ def _selection_names(runs: Sequence[TestRun]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(run.test for run in runs if run.test is not None))
 
 
-def _require_campaign_fits(run_groups: Sequence[tuple[TestRun, ...]], selector: str) -> None:
+def _require_simulation_record_fits(
+    run_groups: Sequence[tuple[TestRun, ...]], selector: str
+) -> None:
     """Refuse a plan beyond the campaign ceilings, whichever planner path built it."""
     test_runs = sum(len(group) for group in run_groups)
     if len(run_groups) > MAX_WORK_ITEMS or test_runs > MAX_OBSERVATIONS:
@@ -468,13 +470,13 @@ def _work_items(
     *,
     kind: str,
 ) -> list[dict[str, object]]:
-    _require_campaign_fits(run_groups, str(target["selector"]))
+    _require_simulation_record_fits(run_groups, str(target["selector"]))
     items = []
     collision = _collision_template(configured_cwd)
     for ordinal, runs in enumerate(run_groups):
         names = _selection_names(runs)
         if kind == "ordinary_hdl" and len(runs) != 1:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 "ordinary HDL work item requires exactly one Test Run"
             )
         selection_kind = "named" if names else "default"
@@ -519,4 +521,4 @@ def _collision_template(configured: str) -> str:
     return str(Path(rendered).absolute()) if Path(rendered).is_absolute() else rendered
 
 
-__all__ = ["plan_coarse_simulation_campaign", "plan_ordinary_hdl_campaign"]
+__all__ = ["plan_coarse_simulation_record", "plan_ordinary_hdl_simulation_record"]

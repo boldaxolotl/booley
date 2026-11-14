@@ -16,7 +16,7 @@ from booley.runtime import oom_priority
 from booley.runtime.endpoint_execution import OOM_REQUEUE_REASON, job_attempt
 from booley.runtime.supervised_execution import supervised_execution_scope
 
-from .capacity import CampaignCapacity, ChildPermit, LeaseLostError
+from .capacity import ChildPermit, LeaseLostError, SimulationRecordCapacity
 
 _TURN_POLL_SECONDS = 0.05
 
@@ -42,7 +42,7 @@ def _lane_label(attempt: ScheduledAttempt) -> str:
     return "".join((f"{test}/{short_attempt}" if test else short_attempt).split())
 
 
-class CampaignSchedulingError(RuntimeError):
+class SimulationRecordSchedulingError(RuntimeError):
     """A campaign-fatal worker failure stopped further admission."""
 
 
@@ -84,7 +84,7 @@ class _StartTurn:
         return _TurnHold(self._lock)
 
 
-class BoundedCampaignScheduler:
+class BoundedSimulationRecordScheduler:
     """Run ready items through one borrowed lane and bounded child lanes.
 
     Under memory admission (``capacity.items_admitted``) every lane, the outer
@@ -101,7 +101,7 @@ class BoundedCampaignScheduler:
 
     def __init__(
         self,
-        capacity: CampaignCapacity,
+        capacity: SimulationRecordCapacity,
         *,
         allocate: Callable[[Mapping[str, object]], ScheduledAttempt],
         execute: Callable[[ScheduledAttempt, str | None], bool | None],
@@ -224,7 +224,7 @@ class BoundedCampaignScheduler:
                 self._capacity.cancel_waiters()
                 self._capacity.hold_outer_until(exited)
                 alive = ", ".join(lane.name for lane in lanes if lane.is_alive())
-                raise CampaignSchedulingError(
+                raise SimulationRecordSchedulingError(
                     f"campaign workers exceeded bounded shutdown: {alive}"
                 )
 
@@ -290,7 +290,7 @@ class BoundedCampaignScheduler:
                 ready.put(item)
         except LeaseLostError as exc:
             if self._capacity.shutdown_requested:
-                self._fail_campaign(exc)
+                self._fail_simulation_record(exc)
             else:
                 # Only this item's lease is gone. A child lane's old token may still
                 # be a cancelling holder, so it takes no further item; the others
@@ -298,11 +298,11 @@ class BoundedCampaignScheduler:
                 self._interruptions.put(exc)
             return outer
         except BaseException as exc:  # noqa: BLE001 -- ferry lane failures to owner
-            self._fail_campaign(exc)
+            self._fail_simulation_record(exc)
             return False
         return True
 
-    def _fail_campaign(self, exc: BaseException) -> None:
+    def _fail_simulation_record(self, exc: BaseException) -> None:
         self._errors.put(exc)
         self._capacity.cancel_waiters(_worker_failure_cause(exc))
         self._stop.set()
@@ -374,7 +374,7 @@ class BoundedCampaignScheduler:
             while key in self._active_collisions and not self._stop.is_set():
                 self._collision_condition.wait(timeout=0.05)
             if self._stop.is_set():
-                raise CampaignSchedulingError("campaign shutdown requested")
+                raise SimulationRecordSchedulingError("campaign shutdown requested")
             self._active_collisions.add(key)
         try:
             yield
@@ -388,4 +388,8 @@ def _worker_failure_cause(exc: BaseException) -> str:
     return f"campaign stop requested after a work item failed ({type(exc).__name__})"
 
 
-__all__ = ["BoundedCampaignScheduler", "CampaignSchedulingError", "ScheduledAttempt"]
+__all__ = [
+    "BoundedSimulationRecordScheduler",
+    "ScheduledAttempt",
+    "SimulationRecordSchedulingError",
+]

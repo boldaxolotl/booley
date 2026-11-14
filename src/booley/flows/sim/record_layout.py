@@ -22,9 +22,9 @@ _OLDER_RECORD_DIRECTORY = "campaign"
 
 def _refusal(label: str, where: str, invocation: Path | None) -> Exception:
     """The Part 1 older-Booley refusal, for a layout rather than a schema."""
-    from booley.flows.sim.record.codec import UnsupportedSimulationCampaignFormatError
+    from booley.flows.sim.record.codec import UnsupportedSimulationRecordFormatError
 
-    return UnsupportedSimulationCampaignFormatError(label, where, invocation)
+    return UnsupportedSimulationRecordFormatError(label, where, invocation)
 
 
 def refuse_older_layout(invocation: Path) -> None:

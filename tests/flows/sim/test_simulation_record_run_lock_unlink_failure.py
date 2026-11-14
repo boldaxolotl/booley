@@ -15,7 +15,7 @@ def test_failed_lock_unlink_keeps_body_error_and_releases_lock(
     run = expand_run_directory(
         "work/{test}",
         project_root=tmp_path,
-        campaign_id="c",
+        simulation_record_id="c",
         target_key="sim",
         work_item_key="t",
         attempt_key="a1",

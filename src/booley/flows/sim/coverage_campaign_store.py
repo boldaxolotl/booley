@@ -374,7 +374,7 @@ def _load_manifest(
     """Deep-load one Coverage Record; the codec validates manifest and points once."""
     # Imported here: ``booley.flows.sim.record`` imports the store through its coordinator.
     from booley.flows.sim.record.codec import (
-        UnsupportedSimulationCampaignFormatError,
+        UnsupportedSimulationRecordFormatError,
         raise_if_retired_schema,
     )
 
@@ -394,7 +394,7 @@ def _load_manifest(
         # An older Booley's schema is refused as old, naming the invocation to delete.
         try:
             raise_if_retired_schema(schema)
-        except UnsupportedSimulationCampaignFormatError as exc:
+        except UnsupportedSimulationRecordFormatError as exc:
             invocation = _invocation_of(path)
             raise (exc if invocation is None else exc.located(invocation)) from None
         if schema != CAMPAIGN_SCHEMA:

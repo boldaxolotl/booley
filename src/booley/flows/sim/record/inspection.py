@@ -21,42 +21,42 @@ from booley.flows.simulation_record_results import (
 )
 
 from .codec import (
-    SimulationCampaignIntegrityError,
-    reads_campaign_records,
+    SimulationRecordIntegrityError,
+    reads_simulation_record_documents,
     validate_relative_path,
 )
 from .coordinator import collected_result_facts
-from .model import SimulationCampaignManifest, SimulationResult
+from .model import SimulationRecordManifest, SimulationResult
 from .planning import manifest_digest
-from .store import CampaignRecovery, CampaignStore, collect_pre_sim_firings
+from .store import SimulationRecordRecovery, SimulationRecordStore, collect_pre_sim_firings
 from .test_run_report import observation_test_run_rows
 
 
-class SimulationCampaignWorkItemError(SimulationCampaignIntegrityError):
+class SimulationRecordWorkItemError(SimulationRecordIntegrityError):
     """One exact terminal Campaign work item could not be selected."""
 
 
 @dataclass(frozen=True, slots=True)
-class CampaignWorkItemEvidence:
+class SimulationRecordWorkItemEvidence:
     """Immutable evidence read from one terminal Campaign work item."""
 
     manifest_path: Path
     manifest_sha256: str
-    manifest: SimulationCampaignManifest
+    manifest: SimulationRecordManifest
     work_item_id: str
     work_item: Mapping[str, object]
     result: SimulationResult
 
 
 @dataclass(frozen=True, slots=True)
-class RetainedCampaignStatus:
+class RetainedSimulationRecordStatus:
     """Authenticated recovery and summary status used by retention policy."""
 
     manifest_path: Path
     summary_path: Path
     manifest_sha256: str
-    manifest: SimulationCampaignManifest
-    campaign_id: str
+    manifest: SimulationRecordManifest
+    simulation_record_id: str
     target_selector: str
     target_identity: str
     completed: tuple[str, ...]
@@ -71,33 +71,33 @@ class RetainedCampaignStatus:
 
 def authenticate_work_item(
     manifest_path: Path, work_item_id: str, *, booley_dir: Path | None = None
-) -> CampaignWorkItemEvidence:
+) -> SimulationRecordWorkItemEvidence:
     """Return one exact terminal result from an authenticated complete Campaign scan."""
     store = _store_for_manifest(manifest_path, booley_dir)
     try:
         manifest = store.load_manifest()
         digest = manifest_digest(manifest)
         recovery = store.scan(manifest, digest)
-    except SimulationCampaignIntegrityError:
+    except SimulationRecordIntegrityError:
         raise
     except OSError as exc:
-        raise SimulationCampaignIntegrityError(
+        raise SimulationRecordIntegrityError(
             f"cannot inspect Simulation Campaign storage: {exc}"
         ) from exc
     recovered = tuple(item for item in recovery.items if item.work_item_id == work_item_id)
     if len(recovered) != 1 or recovered[0].result is None:
-        raise SimulationCampaignWorkItemError(
+        raise SimulationRecordWorkItemError(
             f"Campaign has no exact terminal work item {work_item_id!r}"
         )
     manifest_items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
     selected = tuple(item for item in manifest_items if item["work_item_id"] == work_item_id)
     if len(selected) != 1:
-        raise SimulationCampaignWorkItemError(
+        raise SimulationRecordWorkItemError(
             f"Campaign has no exact manifest work item {work_item_id!r}"
         )
     result = recovered[0].result
     assert result is not None
-    return CampaignWorkItemEvidence(
+    return SimulationRecordWorkItemEvidence(
         store.manifest_path,
         digest,
         manifest,
@@ -107,9 +107,9 @@ def authenticate_work_item(
     )
 
 
-def inspect_retained_campaign(
+def inspect_retained_simulation_record(
     manifest_path: Path, *, booley_dir: Path | None = None
-) -> RetainedCampaignStatus:
+) -> RetainedSimulationRecordStatus:
     """Return authenticated recovery plus existing summary consistency, without writes."""
     store = _store_for_manifest(manifest_path, booley_dir)
     try:
@@ -120,16 +120,16 @@ def inspect_retained_campaign(
             summary = None
         else:
             summary = store.load_summary()
-    except SimulationCampaignIntegrityError:
+    except SimulationRecordIntegrityError:
         raise
     except OSError as exc:
-        raise SimulationCampaignIntegrityError(
+        raise SimulationRecordIntegrityError(
             f"cannot inspect Simulation Campaign storage: {exc}"
         ) from exc
     completed = cast(list[str], summary["completed"]) if summary is not None else []
     target = cast(Mapping[str, str], manifest.document["target"])
     retention_files, coverage_directories = _retention_inventory(store, recovery)
-    return RetainedCampaignStatus(
+    return RetainedSimulationRecordStatus(
         store.manifest_path,
         store.summary_path,
         digest,
@@ -149,7 +149,7 @@ def inspect_retained_campaign(
 
 
 def _retention_inventory(
-    store: CampaignStore, recovery: CampaignRecovery
+    store: SimulationRecordStore, recovery: SimulationRecordRecovery
 ) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
     retention_files = set(store.retention_files)
     attempts = {
@@ -185,7 +185,7 @@ def _retention_inventory(
     return tuple(sorted(retention_files)), tuple(sorted(coverage_directories))
 
 
-@reads_campaign_records
+@reads_simulation_record_documents
 def _result_named_files(root: Path, attempt: Path, result: Mapping[str, object]) -> set[Path]:
     """Files a terminal result names, plus the Booley-written build trees it used, unhashed."""
     references = list(cast(tuple[Mapping[str, object], ...], result["evidence"]))
@@ -208,7 +208,7 @@ def _result_named_files(root: Path, attempt: Path, result: Mapping[str, object])
 
 
 @contextmanager
-def retained_campaign_lock(
+def retained_simulation_record_lock(
     manifest_path: Path, *, booley_dir: Path | None = None
 ) -> Iterator[None]:
     """Exclude mutation of one existing authenticated Campaign without recreating it."""
@@ -217,8 +217,8 @@ def retained_campaign_lock(
         yield
 
 
-def authenticate_retained_campaign_inventory(
-    status: RetainedCampaignStatus, *, booley_dir: Path | None = None
+def authenticate_retained_simulation_record_inventory(
+    status: RetainedSimulationRecordStatus, *, booley_dir: Path | None = None
 ) -> tuple[Path, ...]:
     """Authenticate shared-build files owned by one retained Campaign."""
     store = _store_for_manifest(status.manifest_path, booley_dir)
@@ -232,8 +232,11 @@ def authenticate_retained_campaign_inventory(
     return store.retention_files
 
 
-def recover_retained_campaign_resources(
-    status: RetainedCampaignStatus, project_data: Path | None, *, booley_dir: Path | None = None
+def recover_retained_simulation_record_resources(
+    status: RetainedSimulationRecordStatus,
+    project_data: Path | None,
+    *,
+    booley_dir: Path | None = None,
 ) -> None:
     """Recover interrupted lanes and interrupted owned run directories."""
     from .child_protocol import recover_interrupted_attempts
@@ -246,14 +249,14 @@ def recover_retained_campaign_resources(
     }
     if project_data is None:
         if any(_has_resources_to_recover(document) for document in interrupted.values()):
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 "Booley Directory is required to recover retained Campaign resources"
             )
         return
     recover_interrupted_attempts(status.manifest, interrupted, project_data, booley_dir=booley_dir)
 
 
-@reads_campaign_records
+@reads_simulation_record_documents
 def _has_resources_to_recover(attempt: Mapping[str, object]) -> bool:
     """Whether an interrupted attempt ran on a lane or still has an owned run directory."""
     run = cast(Mapping[str, object], attempt["run_directory"])
@@ -261,7 +264,7 @@ def _has_resources_to_recover(attempt: Mapping[str, object]) -> bool:
     return attempt["child_execution_id"] is not None or owned_run
 
 
-def started_campaign(manifest_path: Path) -> StartedCampaign:
+def started_simulation_record(manifest_path: Path) -> StartedCampaign:
     """The identity of the campaign whose manifest was just published at *manifest_path*.
 
     Raises :class:`SimulationCampaignIntegrityError` when the manifest cannot
@@ -270,7 +273,7 @@ def started_campaign(manifest_path: Path) -> StartedCampaign:
     try:
         manifest = _store_for_manifest(manifest_path).load_manifest()
     except OSError as exc:
-        raise SimulationCampaignIntegrityError(
+        raise SimulationRecordIntegrityError(
             f"cannot read Simulation Campaign manifest: {exc}"
         ) from exc
     target = cast(Mapping[str, object], manifest.document["target"])
@@ -312,16 +315,16 @@ def read_durable_results(manifest_path: Path, manifest_sha256: str) -> DurableCa
             f"Simulation Campaign {manifest_path} is running: its results are not final"
         ) from exc
     except OSError as exc:
-        raise SimulationCampaignIntegrityError(
+        raise SimulationRecordIntegrityError(
             f"cannot inspect Simulation Campaign storage: {exc}"
         ) from exc
 
 
-def _durable_results(store: CampaignStore, manifest_sha256: str) -> DurableCampaignResults:
+def _durable_results(store: SimulationRecordStore, manifest_sha256: str) -> DurableCampaignResults:
     manifest = store.load_manifest()
     digest = manifest_digest(manifest)
     if digest != manifest_sha256:
-        raise SimulationCampaignIntegrityError(
+        raise SimulationRecordIntegrityError(
             "Simulation Campaign manifest is not the one that was registered"
         )
     recovery = store.scan(manifest, digest)
@@ -342,26 +345,28 @@ def _durable_results(store: CampaignStore, manifest_sha256: str) -> DurableCampa
     )
 
 
-def _store_for_manifest(manifest_path: Path, booley_dir: Path | None = None) -> CampaignStore:
+def _store_for_manifest(
+    manifest_path: Path, booley_dir: Path | None = None
+) -> SimulationRecordStore:
     canonical = manifest_path.absolute()
     refuse_older_manifest_path(canonical)
     if canonical.name != "manifest.json" or canonical.parent.name != RECORD_DIRECTORY:
-        raise SimulationCampaignIntegrityError(
+        raise SimulationRecordIntegrityError(
             "expected exact Simulation Campaign record/manifest.json path"
         )
-    return CampaignStore(canonical.parent, booley_dir=booley_dir)
+    return SimulationRecordStore(canonical.parent, booley_dir=booley_dir)
 
 
 __all__ = [
-    "CampaignWorkItemEvidence",
-    "RetainedCampaignStatus",
-    "SimulationCampaignWorkItemError",
-    "authenticate_retained_campaign_inventory",
+    "RetainedSimulationRecordStatus",
+    "SimulationRecordWorkItemError",
+    "SimulationRecordWorkItemEvidence",
+    "authenticate_retained_simulation_record_inventory",
     "authenticate_work_item",
     "collect_pre_sim_firings",
-    "inspect_retained_campaign",
+    "inspect_retained_simulation_record",
     "read_durable_results",
-    "recover_retained_campaign_resources",
-    "retained_campaign_lock",
-    "started_campaign",
+    "recover_retained_simulation_record_resources",
+    "retained_simulation_record_lock",
+    "started_simulation_record",
 ]

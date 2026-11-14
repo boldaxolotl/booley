@@ -964,14 +964,14 @@ def _report_campaign_document(handle, inspection, preview, mode, selected):
     from tests.flows.sim.test_simulation_record_flow_planning import _plan
 
     if mode in {"unfiltered", "coverage"}:
-        from booley.flows.sim.record.flow_planning import plan_coarse_simulation_campaign
+        from booley.flows.sim.record.flow_planning import plan_coarse_simulation_record
 
         inspection = replace(
             inspection, flow_options={"cocotb_module": "tests"} if mode == "unfiltered" else {}
         )
         if mode == "coverage":
             preview = replace(preview, groups=(selected,), commands=(("run",),), run_groups=())
-        document = plan_coarse_simulation_campaign(
+        document = plan_coarse_simulation_record(
             handle=handle,
             inspection=inspection,
             preview=preview,
@@ -994,10 +994,10 @@ def _prepared_report_campaign(runtime, mode, resume):
 
     from booley.flows.sim.flow import PreparedSimulationEndpoint
     from booley.flows.sim.record.codec import (
-        decode_simulation_campaign_manifest,
-        encode_simulation_campaign_manifest,
+        decode_simulation_record_manifest,
+        encode_simulation_record_manifest,
     )
-    from booley.flows.sim.record.model import SimulationCampaignManifest
+    from booley.flows.sim.record.model import SimulationRecordManifest
     from booley.flows.sim.record.resume import ValidatedManifestNode, ValidatedResumeManifest
     from booley.targets.catalog import TargetCatalog
     from tests.flows.sim.test_simulation_record_flow_planning import _planning_fixture
@@ -1012,8 +1012,8 @@ def _prepared_report_campaign(runtime, mode, resume):
     if mode in {"default", "unfiltered"}:
         preview = replace(preview, groups=((),), commands=(("run",),), run_groups=())
     document = _report_campaign_document(handle, inspection, preview, mode, selected)
-    manifest = decode_simulation_campaign_manifest(
-        encode_simulation_campaign_manifest(SimulationCampaignManifest(document))
+    manifest = decode_simulation_record_manifest(
+        encode_simulation_record_manifest(SimulationRecordManifest(document))
     )
     # This is a codec-validated production manifest, not a stub with item.test.
     suite = ("reset", "count") if mode != "default" else ()

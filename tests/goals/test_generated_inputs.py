@@ -12,7 +12,7 @@ from booley.criteria.state import DevelopmentState
 from booley.flows.sim.record.codec import (
     MANIFEST_SCHEMA,
     canonical_json_bytes,
-    encode_simulation_campaign_manifest,
+    encode_simulation_record_manifest,
 )
 from booley.flows.sim.record.planning import finalize_manifest, manifest_digest
 from booley.goals.entry import EntryEnvironment
@@ -172,7 +172,7 @@ def classified(
     paths = record_paths(layout.control, layout.record.id)
     path = paths.runtime_dir / "flow-reports/sim/7/targets/top/record/manifest.json"
     path.parent.mkdir(parents=True)
-    raw = encode_simulation_campaign_manifest(manifest)
+    raw = encode_simulation_record_manifest(manifest)
     digest = manifest_digest(manifest)
     path, digest = _write_producer_manifest(
         path, raw, digest, retired_manifest, older_layout_invocation

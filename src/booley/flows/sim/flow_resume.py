@@ -40,29 +40,29 @@ from .execution import (
     SelectedTestRuns,
 )
 from .record import (
-    CampaignOutcome,
-    CampaignRecoveryStatus,
-    ResumeCampaignPreview,
-    ResumeCampaignPreviewRequest,
-    ResumeCampaignRunRequest,
-    SimulationCampaign,
-    SimulationCampaignCancellationError,
-    SimulationCampaignIntegrityError,
-    SimulationCampaignManifest,
-    SimulationCampaignPlan,
+    ResumeSimulationRecordPreview,
+    ResumeSimulationRecordPreviewRequest,
+    ResumeSimulationRecordRunRequest,
+    SimulationRecord,
+    SimulationRecordCancellationError,
+    SimulationRecordIntegrityError,
+    SimulationRecordManifest,
+    SimulationRecordOutcome,
+    SimulationRecordPlan,
+    SimulationRecordRecoveryStatus,
     ValidatedResumeManifest,
 )
-from .record.coordinator import CampaignPublicationError
+from .record.coordinator import SimulationRecordPublicationError
 from .record.coverage_execution import (
     CoverageAggregateExecutor,
     _CoverageAggregateError,
 )
 from .record.flow_planning import (
-    plan_coarse_simulation_campaign,
-    plan_ordinary_hdl_campaign,
+    plan_coarse_simulation_record,
+    plan_ordinary_hdl_simulation_record,
 )
 from .record.planning import (
-    SimulationCampaignWorkloadMismatchError,
+    SimulationRecordWorkloadMismatchError,
     verify_workload,
 )
 from .record.serial_execution import OrdinaryHdlSerialExecutor
@@ -77,19 +77,19 @@ from .record_presentation import (
 from .record_scaffold import _CampaignRun, _CampaignSteps, _group_disclosures
 
 
-def _manifest_no_waivers(manifest: SimulationCampaignManifest) -> bool:
+def _manifest_no_waivers(manifest: SimulationRecordManifest) -> bool:
     """Whether the frozen workload asked for raw coverage; absent (legacy) means waivers apply."""
     workload = cast(Mapping[str, object], manifest.document["workload"])
     return workload.get("no_waivers") is True
 
 
-def _manifest_trace(manifest: SimulationCampaignManifest) -> bool:
+def _manifest_trace(manifest: SimulationRecordManifest) -> bool:
     """Whether the campaign *manifest* froze a traced workload."""
     return cast(bool, cast(Mapping[str, object], manifest.document["workload"])["trace"])
 
 
 def _manifest_run_groups(
-    manifest: SimulationCampaignManifest,
+    manifest: SimulationRecordManifest,
 ) -> tuple[tuple[TestRun, ...], ...]:
     """The Test Runs of each work item, exactly as the manifest froze them."""
     items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
@@ -101,14 +101,14 @@ def _manifest_run_groups(
     )
 
 
-def _is_coverage_manifest(manifest: SimulationCampaignManifest) -> bool:
+def _is_coverage_manifest(manifest: SimulationRecordManifest) -> bool:
     """True when resume dispatches the coverage aggregate executor."""
     items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
     return bool(items) and items[0]["kind"] == "coverage_aggregate"
 
 
 def _unfinished_coverage_work(
-    manifest: SimulationCampaignManifest, status: CampaignRecoveryStatus
+    manifest: SimulationRecordManifest, status: SimulationRecordRecoveryStatus
 ) -> tuple[str, ...]:
     """Coverage work-item ids without a recorded result; empty for other Campaigns."""
     if not _is_coverage_manifest(manifest):
@@ -122,11 +122,11 @@ def _unfinished_coverage_work(
 
 def _fresh_campaign_recovery_detail(
     validated: ValidatedResumeManifest,
-    observed: CampaignRecoveryStatus,
+    observed: SimulationRecordRecoveryStatus,
 ) -> dict[str, object]:
     """Refresh failure presentation without treating the pre-run view as authority."""
     try:
-        status = SimulationCampaign().inspect_resume(validated)
+        status = SimulationRecord().inspect_resume(validated)
     except (OSError, ValueError) as exc:
         detail = _campaign_recovery_detail(observed)
         detail["recovery_refresh_error"] = str(exc)
@@ -135,7 +135,7 @@ def _fresh_campaign_recovery_detail(
 
 
 def _checkpoint_coverage_campaign(
-    progress: CoverageProgress, outcome: CampaignOutcome, evaluation: str
+    progress: CoverageProgress, outcome: SimulationRecordOutcome, evaluation: str
 ) -> None:
     try:
         _retain_coverage_campaign(progress, outcome)
@@ -163,7 +163,7 @@ class CampaignResumeMixin:
         if not _is_coverage_manifest(manifest):
             return None
         try:
-            status = SimulationCampaign().inspect_resume(validated)
+            status = SimulationRecord().inspect_resume(validated)
         except (OSError, ValueError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
@@ -199,7 +199,7 @@ class CampaignResumeMixin:
             detail=_campaign_recovery_detail(status),
         )
 
-    def _frozen_test_run_options(self, manifest: SimulationCampaignManifest, selector: str) -> str:
+    def _frozen_test_run_options(self, manifest: SimulationRecordManifest, selector: str) -> str:
         """``--test`` options that repeat the campaign's Test Runs in a new run.
 
         Empty when every frozen Test Run is still its Test's default at the
@@ -228,7 +228,7 @@ class CampaignResumeMixin:
     ) -> EndpointOutcome | _CampaignRun:
         """Validate one exact durable campaign resume: a refusal, a preview or the run."""
         try:
-            observed = SimulationCampaign().inspect_resume(validated)
+            observed = SimulationRecord().inspect_resume(validated)
         except (OSError, ValueError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
@@ -240,15 +240,15 @@ class CampaignResumeMixin:
         return self._resume_campaign_run(validated, observed)
 
     def _preview_campaign_resume(
-        self, validated: ValidatedResumeManifest, observed: CampaignRecoveryStatus
+        self, validated: ValidatedResumeManifest, observed: SimulationRecordRecoveryStatus
     ) -> EndpointOutcome:
         origin = cast(Mapping[str, object], validated.manifest.document["origin"])
         try:
             current_plan = self._resume_campaign_plan(
                 validated, cast(int, origin["invocation_id"])
             )
-            preview = SimulationCampaign().preview(
-                ResumeCampaignPreviewRequest(
+            preview = SimulationRecord().preview(
+                ResumeSimulationRecordPreviewRequest(
                     validated,
                     current_plan,
                     Path(self.args.work_dir),
@@ -262,7 +262,7 @@ class CampaignResumeMixin:
                 report_text=f"Simulation Campaign resume preview failed: {exc}",
                 detail=_campaign_recovery_detail(observed),
             )
-        assert isinstance(preview, ResumeCampaignPreview)
+        assert isinstance(preview, ResumeSimulationRecordPreview)
         status = _campaign_recovery_detail(preview.recovery)
         status.update(preview.diagnostic.detail)
         status["required_bundle_variants"] = list(preview.required_bundle_variants)
@@ -282,7 +282,7 @@ class CampaignResumeMixin:
         )
 
     def _resume_campaign_run(
-        self, validated: ValidatedResumeManifest, observed: CampaignRecoveryStatus
+        self, validated: ValidatedResumeManifest, observed: SimulationRecordRecoveryStatus
     ) -> _CampaignRun:
         """Describe the exact resume to the shared execution scaffold."""
         assert self.args.report_dir is not None, "prepared Flow requires a report root"
@@ -324,7 +324,7 @@ class CampaignResumeMixin:
         self,
         validated: ValidatedResumeManifest,
         invocation: Path,
-        observed: CampaignRecoveryStatus,
+        observed: SimulationRecordRecoveryStatus,
     ) -> EndpointOutcome | None:
         from .record_reports import campaign_invocation_lock
 
@@ -345,11 +345,13 @@ class CampaignResumeMixin:
                 )
             self._held_resume_origins.add(origin)
         try:
-            from .record.dependency import register_campaign_dependency
+            from .record.dependency import register_simulation_record_dependency
 
-            register_campaign_dependency(
+            register_simulation_record_dependency(
                 validated.path,
-                campaign_id=cast(str, validated.manifest.document["simulation_record_id"]),
+                simulation_record_id=cast(
+                    str, validated.manifest.document["simulation_record_id"]
+                ),
                 manifest_sha256=validated.sha256,
                 dependent_invocation=invocation,
             )
@@ -364,15 +366,15 @@ class CampaignResumeMixin:
     def _campaign_resume_failure(
         self,
         validated: ValidatedResumeManifest,
-        observed: CampaignRecoveryStatus,
+        observed: SimulationRecordRecoveryStatus,
         invocation: Path,
         error: Exception,
     ) -> EndpointOutcome:
         detail = _fresh_campaign_recovery_detail(validated, observed)
-        if isinstance(error, SimulationCampaignCancellationError):
+        if isinstance(error, SimulationRecordCancellationError):
             return self._campaign_cancelled_outcome(error, detail)
         message = str(error)
-        if isinstance(error, SimulationCampaignWorkloadMismatchError):
+        if isinstance(error, SimulationRecordWorkloadMismatchError):
             detail.update(error.diagnostic.detail)
             message = error.diagnostic.report(verbose=self.args.verbose)
         if isinstance(error, SimulationBuildInfrastructureError):
@@ -430,7 +432,7 @@ class CampaignResumeMixin:
     ) -> _CampaignSteps:
         target = cast(Mapping[str, object], validated.manifest.document["target"])
         selector = str(target["selector"])
-        outcomes: list[CampaignOutcome] = []
+        outcomes: list[SimulationRecordOutcome] = []
 
         def run() -> EndpointOutcome:
             self._write_campaign_progress((selector,), outcomes, phase="starting", complete=False)
@@ -453,7 +455,7 @@ class CampaignResumeMixin:
             run,
         )
 
-    def _resumed_endpoint_outcome(self, outcome: CampaignOutcome) -> EndpointOutcome:
+    def _resumed_endpoint_outcome(self, outcome: SimulationRecordOutcome) -> EndpointOutcome:
         result = self._campaign_endpoint_outcome([outcome])
         result.detail.update(_campaign_recovery_detail(outcome.recovery))
         return result
@@ -465,7 +467,7 @@ class CampaignResumeMixin:
         admission: AdmissionContext,
         coverage_plan: CoverageTargetPlan | None,
         manifest_published: Callable[[Path], None],
-    ) -> CampaignOutcome:
+    ) -> SimulationRecordOutcome:
         plan = self._resume_campaign_plan(
             validated, int(invocation.name), coverage_plan=coverage_plan
         )
@@ -473,12 +475,12 @@ class CampaignResumeMixin:
         manifest_published(validated.path)
         executor = self._resume_campaign_executor(coverage_plan)
         try:
-            return SimulationCampaign(
+            return SimulationRecord(
                 executor,
                 publication_checkpoint=self._campaign_publication_checkpoint,
                 work_item_request=self.work_item_job_request,
             ).run(
-                ResumeCampaignRunRequest(
+                ResumeSimulationRecordRunRequest(
                     validated,
                     plan,
                     Path(self.args.work_dir),
@@ -489,7 +491,7 @@ class CampaignResumeMixin:
                     pre_sim_firing_published=self._record_pre_sim_firing,
                 )
             )
-        except CampaignPublicationError as error:
+        except SimulationRecordPublicationError as error:
             if coverage_plan is None:
                 raise
             detail = _coverage_failed_target(
@@ -543,14 +545,14 @@ class CampaignResumeMixin:
         target = cast(Mapping[str, str], manifest.document["target"])
         revision = git_full_sha("HEAD", handle.project_root)
         if revision is None:
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 f"cannot verify resume Target revision at {handle.project_root}"
             )
         if items and items[0]["kind"] in {"coverage_aggregate", "cocotb_batch"}:
             kind = cast(str, items[0]["kind"])
             if kind == "coverage_aggregate" and coverage_plan is None:
                 self._resume_coverage_target_plan(validated)
-            return plan_coarse_simulation_campaign(
+            return plan_coarse_simulation_record(
                 handle=handle,
                 inspection=inspection,
                 preview=preview,
@@ -590,8 +592,8 @@ class CampaignResumeMixin:
         invocation_id,
         manifest,
         disclosures,
-    ) -> SimulationCampaignPlan:
-        return plan_ordinary_hdl_campaign(
+    ) -> SimulationRecordPlan:
+        return plan_ordinary_hdl_simulation_record(
             handle=handle,
             inspection=inspection,
             preview=preview,
@@ -682,7 +684,7 @@ class CampaignResumeMixin:
         prepared = self._resume_coverage_prepared(validated)
         if prepared.plan is None or len(prepared.plan.targets) != 1:
             detail = "; ".join(item.message for item in prepared.findings)
-            raise SimulationCampaignIntegrityError(
+            raise SimulationRecordIntegrityError(
                 f"cannot reconstruct coverage aggregate: {detail}"
             )
         return prepared.plan.targets[0]

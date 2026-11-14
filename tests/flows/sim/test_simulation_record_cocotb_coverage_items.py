@@ -21,24 +21,24 @@ from booley.flows.sim.execution.contract import (
 from booley.flows.sim.record import codec, collect_pre_sim_firings, serial_execution
 from booley.flows.sim.record.codec import (
     MAX_COMMAND_BYTES,
-    SimulationCampaignIntegrityError,
+    SimulationRecordIntegrityError,
     canonical_json_bytes,
     decode_simulation_result,
     encode_simulation_result,
 )
 from booley.flows.sim.record.coordinator import (
-    CampaignPolicy,
-    CampaignPublicationError,
-    NewCampaignRunRequest,
-    ResumeCampaignRunRequest,
-    SimulationCampaign,
+    NewSimulationRecordRunRequest,
+    ResumeSimulationRecordRunRequest,
+    SimulationRecord,
+    SimulationRecordPolicy,
+    SimulationRecordPublicationError,
 )
 from booley.flows.sim.record.coverage_execution import (
     CoverageAggregateExecutor,
     _CoverageAggregateError,
 )
-from booley.flows.sim.record.flow_planning import plan_coarse_simulation_campaign
-from booley.flows.sim.record.model import SimulationResult, create_simulation_campaign_plan
+from booley.flows.sim.record.flow_planning import plan_coarse_simulation_record
+from booley.flows.sim.record.model import SimulationResult, create_simulation_record_plan
 from booley.flows.sim.record.planning import manifest_digest
 from booley.flows.sim.record.resume import (
     ValidatedManifestNode,
@@ -46,7 +46,7 @@ from booley.flows.sim.record.resume import (
     ValidatedTargetBinding,
 )
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
-from booley.flows.sim.record.store import CampaignStore
+from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.verilator_coverage import SimulationRunResult
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle, TargetInspection
@@ -77,7 +77,7 @@ from tests.flows.sim.test_simulation_record_crash_matrix import (
 def test_coverage_plan_labels_its_build_variant_as_coverage(tmp_path: Path) -> None:
     handle, inspection, preview = _facts(tmp_path, cocotb=False)
     preview = replace(preview, groups=(("count", "reset"),), run_groups=())
-    plan = plan_coarse_simulation_campaign(
+    plan = plan_coarse_simulation_record(
         handle=handle,
         inspection=inspection,
         preview=preview,
@@ -110,7 +110,7 @@ def test_no_waivers_is_written_only_when_requested(tmp_path: Path) -> None:
 
 
 def test_no_waivers_plan_rejects_non_coverage_kind(tmp_path: Path) -> None:
-    with pytest.raises(SimulationCampaignIntegrityError, match="no_waivers"):
+    with pytest.raises(SimulationRecordIntegrityError, match="no_waivers"):
         _plan(tmp_path, kind="cocotb_batch", cocotb=True, no_waivers=True)
 
 
@@ -163,7 +163,7 @@ def test_coverage_aggregate_accepts_a_cocotb_target(tmp_path: Path) -> None:
 def test_coarse_planner_rejects_kind_selection_and_target_contradictions(
     tmp_path: Path, kind: str, cocotb: bool, names: tuple[str, ...]
 ) -> None:
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(SimulationRecordIntegrityError):
         _plan(tmp_path, kind=kind, names=names, cocotb=cocotb)
 
 
@@ -191,8 +191,8 @@ def test_coarse_planner_rejects_foreign_inspection(tmp_path: Path) -> None:
         (),
     )
 
-    with pytest.raises(SimulationCampaignIntegrityError, match="Target facts disagree"):
-        plan_coarse_simulation_campaign(
+    with pytest.raises(SimulationRecordIntegrityError, match="Target facts disagree"):
+        plan_coarse_simulation_record(
             handle=handle,
             inspection=inspection,
             preview=preview,
@@ -209,8 +209,8 @@ def test_coarse_planner_rejects_foreign_inspection(tmp_path: Path) -> None:
 def test_coarse_planner_rejects_selection_that_disagrees_with_preview(tmp_path: Path) -> None:
     handle, inspection, preview = _facts(tmp_path, cocotb=True)
 
-    with pytest.raises(SimulationCampaignIntegrityError, match="preview"):
-        plan_coarse_simulation_campaign(
+    with pytest.raises(SimulationRecordIntegrityError, match="preview"):
+        plan_coarse_simulation_record(
             handle=handle,
             inspection=inspection,
             preview=preview,
@@ -270,7 +270,7 @@ def test_coverage_aggregate_executes_authenticated_snapshot_not_original(
     _assert_native_build_scope(store)
 
 
-def _assert_native_build_scope(store: CampaignStore) -> None:
+def _assert_native_build_scope(store: SimulationRecordStore) -> None:
     """Native coverage builds stay private to their work item, with no compiler record."""
     (build_result,) = store.root.rglob("private-build/build-result.json")
     directory = build_result.parent
@@ -298,27 +298,27 @@ def test_coverage_resume_reuses_retained_nested_campaign(tmp_path: Path) -> None
     )
     invocation = tmp_path / "reports/1"
     invocation.mkdir(parents=True)
-    campaign = SimulationCampaign(executor)
+    campaign = SimulationRecord(executor)
     first = campaign.run(
-        NewCampaignRunRequest(
+        NewSimulationRecordRunRequest(
             plan,
             tmp_path,
             invocation.parent,
-            CampaignPolicy(),
+            SimulationRecordPolicy(),
             invocation,
             _admission(),
         )
     )
-    store = CampaignStore(invocation / "targets/sim_0/record")
+    store = SimulationRecordStore(invocation / "targets/sim_0/record")
     validated = _validated_resume(store, plan, target, tmp_path)
 
     resumed = campaign.run(
-        ResumeCampaignRunRequest(
+        ResumeSimulationRecordRunRequest(
             validated,
             plan,
             tmp_path,
             invocation.parent,
-            CampaignPolicy(),
+            SimulationRecordPolicy(),
             invocation,
             _admission(),
         )
@@ -342,13 +342,13 @@ def test_campaign_run_adds_no_recovery_scan_for_failure_facts(
     the Campaign (4); a coverage commit adds one (5).
     """
     calls: list[None] = []
-    original = CampaignStore.scan
+    original = SimulationRecordStore.scan
 
     def counting_scan(*args, **kwargs):
         calls.append(None)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(CampaignStore, "scan", counting_scan)
+    monkeypatch.setattr(SimulationRecordStore, "scan", counting_scan)
     if coverage:
         _run_coverage_campaign(tmp_path, NativeExecution())
     else:
@@ -367,10 +367,10 @@ def test_coverage_campaign_refuses_an_oversized_result_at_publication(
     schema, fields, _limit, reader = codec._DOCUMENT_SPECS[SimulationResult]
     monkeypatch.setitem(codec._DOCUMENT_SPECS, SimulationResult, (schema, fields, 64, reader))
 
-    with pytest.raises(CampaignPublicationError) as caught:
+    with pytest.raises(SimulationRecordPublicationError) as caught:
         _run_coverage_campaign(tmp_path, NativeExecution())
 
-    assert isinstance(caught.value.__cause__, SimulationCampaignIntegrityError)
+    assert isinstance(caught.value.__cause__, SimulationRecordIntegrityError)
     assert "size ceiling" in str(caught.value.__cause__)
     assert not list(tmp_path.rglob("work-items/*/result.json"))
 
@@ -499,7 +499,7 @@ def test_coverage_infrastructure_build_failure_has_terminal_error_result(
     assert outcome.complete
     assert outcome.aggregate_grade == "error"
 
-    store = CampaignStore(tmp_path / "reports/1/targets/sim_0/record")
+    store = SimulationRecordStore(tmp_path / "reports/1/targets/sim_0/record")
     recovery = store.scan()
     assert not recovery.interrupted
     directory = store.work_item_directory(recovery.items[0].work_item_id)
@@ -606,16 +606,16 @@ def _transport(
 
 def _start_crashed_cocotb_campaign(
     plan, root: Path, executor: OrdinaryHdlSerialExecutor
-) -> tuple[Path, CampaignStore]:
+) -> tuple[Path, SimulationRecordStore]:
     invocation = root / "reports" / "1"
     invocation.mkdir(parents=True)
-    request = NewCampaignRunRequest(
-        plan, root, invocation.parent, CampaignPolicy(), invocation, _admission()
+    request = NewSimulationRecordRunRequest(
+        plan, root, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
     )
     crash = _CrashOnce("before:simulation_result")
     with pytest.raises(_InjectedProcessDeath):
-        SimulationCampaign(executor, publication_checkpoint=crash).run(request)
-    return invocation, CampaignStore(invocation / "targets/sim/record")
+        SimulationRecord(executor, publication_checkpoint=crash).run(request)
+    return invocation, SimulationRecordStore(invocation / "targets/sim/record")
 
 
 def test_production_cocotb_batch_retries_whole_batch_after_crash(tmp_path: Path) -> None:
@@ -642,13 +642,13 @@ def test_production_cocotb_batch_retries_whole_batch_after_crash(tmp_path: Path)
         (handle,),
         (ValidatedTargetBinding(node, tmp_path.resolve(), handle),),
     )
-    outcome = SimulationCampaign(executor).run(
-        ResumeCampaignRunRequest(
+    outcome = SimulationRecord(executor).run(
+        ResumeSimulationRecordRunRequest(
             validated,
             plan,
             tmp_path,
             invocation.parent,
-            CampaignPolicy(),
+            SimulationRecordPolicy(),
             invocation,
             _admission(),
         )
@@ -672,7 +672,7 @@ def _run_cocotb(
     names: tuple[str, ...],
     reported: tuple[SimulationTestOutcome, ...],
     raw: bytes | None = None,
-) -> CampaignStore:
+) -> SimulationRecordStore:
     plan = _plan(root, kind="cocotb_batch", names=names, cocotb=True)
     handle = TargetCatalog.build(root).select("sim", for_flow="sim")
     build_root = root / "build"
@@ -685,11 +685,11 @@ def _run_cocotb(
     )
     invocation = root / "reports" / "1"
     invocation.mkdir(parents=True)
-    request = NewCampaignRunRequest(
-        plan, root, invocation.parent, CampaignPolicy(), invocation, _admission()
+    request = NewSimulationRecordRunRequest(
+        plan, root, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
     )
-    SimulationCampaign(executor).run(request)
-    return CampaignStore(invocation / "targets/sim/record")
+    SimulationRecord(executor).run(request)
+    return SimulationRecordStore(invocation / "targets/sim/record")
 
 
 def test_cocotb_result_preserves_exact_ordered_observations(tmp_path: Path) -> None:
@@ -738,7 +738,7 @@ def test_cocotb_campaign_rejects_malformed_results_file(tmp_path: Path, monkeypa
     ):
         root = tmp_path / name
         root.mkdir()
-        with pytest.raises(SimulationCampaignIntegrityError, match=message):
+        with pytest.raises(SimulationRecordIntegrityError, match=message):
             _run_cocotb(root, ("count",), reported, raw=raw)
 
 
@@ -782,7 +782,7 @@ def test_unfiltered_cocotb_shared_build_failure_has_one_unnamed_observation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     manifest = _unfiltered_cocotb_manifest()
-    plan = create_simulation_campaign_plan(manifest)  # type: ignore[arg-type]
+    plan = create_simulation_record_plan(manifest)  # type: ignore[arg-type]
     project = tmp_path / "project"
     project.mkdir()
     (project / "run").mkdir()  # a literal run_cwd must exist before any build (#881)
@@ -795,13 +795,13 @@ def test_unfiltered_cocotb_shared_build_failure_has_one_unnamed_observation(
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
 
-    outcome = SimulationCampaign(_failed_shared_executor(tmp_path / "engine-build", counters)).run(
-        NewCampaignRunRequest(
-            plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
+    outcome = SimulationRecord(_failed_shared_executor(tmp_path / "engine-build", counters)).run(
+        NewSimulationRecordRunRequest(
+            plan, project, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
         )
     )
 
-    store = CampaignStore(invocation / "targets/sim/record")
+    store = SimulationRecordStore(invocation / "targets/sim/record")
     result = _completed_result_documents(store)[0]
     assert outcome.complete is True
     assert outcome.aggregate_grade == "fail"
@@ -839,7 +839,7 @@ def _aggregate_result_bound_fixture(tmp_path, monkeypatch):
 
     names = tuple(f"test{index:04d}" for index in range(4000))
     plan, _ = _maximum_hook_selection_plan(names)
-    store = CampaignStore(tmp_path / "record")
+    store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(plan.manifest)
     request = _request(
         store, plan.manifest, plan.manifest.document["work_items"][0], tmp_path, invocation=1
@@ -877,7 +877,7 @@ def test_maximum_aggregate_result_overflow_keeps_all_authenticated_sidecars(tmp_
     assert len(document["evidence"]) == _AGGREGATE_OVERFLOW_FIRINGS
     assert len(document["observations"]) == 4000
     assert len(raw) > RECORD_MAX_BYTES
-    with pytest.raises(SimulationCampaignIntegrityError, match="byte size ceiling"):
+    with pytest.raises(SimulationRecordIntegrityError, match="byte size ceiling"):
         store.publish_result(request.work_item["work_item_id"], SimulationResult(document))
     assert not (request.attempt_directory.parent.parent / "result.json").exists()
     assert len(collect_pre_sim_firings(store.manifest_path)) == _AGGREGATE_OVERFLOW_FIRINGS

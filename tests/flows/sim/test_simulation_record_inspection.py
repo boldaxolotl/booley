@@ -12,17 +12,17 @@ from typing import cast
 import pytest
 
 from booley.flows.sim.record import (
-    SimulationCampaignWorkItemError,
+    SimulationRecordWorkItemError,
     authenticate_work_item,
     collect_pre_sim_firings,
-    inspect_retained_campaign,
+    inspect_retained_simulation_record,
 )
 from booley.flows.sim.record.codec import (
-    SimulationCampaignIntegrityError,
+    SimulationRecordIntegrityError,
     canonical_json_bytes,
 )
 from booley.flows.sim.record.planning import manifest_digest
-from booley.flows.sim.record.store import CampaignStore
+from booley.flows.sim.record.store import SimulationRecordStore
 from tests.flows.sim.simulation_record_test_support import (
     _completed,
     _executor,
@@ -47,7 +47,7 @@ def test_public_campaign_inspection_returns_typed_evidence_without_writes(
     }
 
     evidence = authenticate_work_item(completed.store.manifest_path, completed.item_id)
-    status = inspect_retained_campaign(completed.store.manifest_path)
+    status = inspect_retained_simulation_record(completed.store.manifest_path)
 
     assert evidence.manifest_path == completed.store.manifest_path
     assert evidence.manifest_sha256 == completed.store.manifest_sha256()
@@ -66,40 +66,40 @@ def test_public_campaign_inspection_returns_typed_evidence_without_writes(
 def test_public_work_item_authentication_rejects_unknown_and_unfinished_items(
     tmp_path: Path,
 ) -> None:
-    store = CampaignStore(tmp_path / "record")
+    store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(_manifest_for(("smoke",)))
     item = cast(tuple[Mapping[str, object], ...], store.load_manifest().document["work_items"])[0]
     work_item_id = cast(str, item["work_item_id"])
 
-    with pytest.raises(SimulationCampaignWorkItemError, match="no exact terminal"):
+    with pytest.raises(SimulationRecordWorkItemError, match="no exact terminal"):
         authenticate_work_item(store.manifest_path, "item:9999:0000000000000000")
-    with pytest.raises(SimulationCampaignWorkItemError, match="no exact terminal"):
+    with pytest.raises(SimulationRecordWorkItemError, match="no exact terminal"):
         authenticate_work_item(store.manifest_path, work_item_id)
 
 
 def test_public_campaign_inspection_distinguishes_recovery_and_summary_status(
     tmp_path: Path,
 ) -> None:
-    store = CampaignStore(tmp_path / "record")
+    store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(_manifest_for(("smoke",)))
     store.regenerate_summary()
-    pending = inspect_retained_campaign(store.manifest_path)
+    pending = inspect_retained_simulation_record(store.manifest_path)
     assert pending.pending and not pending.interrupted
     assert not pending.summary_complete and pending.summary_completed_matches
 
     work_item_id = pending.pending[0]
     store.allocate_attempt_directory(work_item_id, str(uuid.uuid4()))
     store.regenerate_summary()
-    interrupted = inspect_retained_campaign(store.manifest_path)
+    interrupted = inspect_retained_simulation_record(store.manifest_path)
     assert interrupted.interrupted == (work_item_id,)
     assert not interrupted.pending
 
 
 def test_public_campaign_inspection_reports_an_unpublished_summary(tmp_path: Path) -> None:
-    store = CampaignStore(tmp_path / "record")
+    store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(_manifest_for(("smoke",)))
 
-    status = inspect_retained_campaign(store.manifest_path)
+    status = inspect_retained_simulation_record(store.manifest_path)
 
     assert status.pending
     assert not status.summary_present
@@ -116,20 +116,20 @@ def test_public_campaign_inspection_rejects_malformed_summary_but_reports_mismat
     summary["complete"] = False
     completed.store.summary_path.write_bytes(canonical_json_bytes(summary))
 
-    status = inspect_retained_campaign(completed.store.manifest_path)
+    status = inspect_retained_simulation_record(completed.store.manifest_path)
     assert not status.summary_complete
     assert status.summary_completed_matches
 
     summary["complete"] = True
     summary["completed"] = []
     completed.store.summary_path.write_bytes(canonical_json_bytes(summary))
-    status = inspect_retained_campaign(completed.store.manifest_path)
+    status = inspect_retained_simulation_record(completed.store.manifest_path)
     assert status.summary_complete
     assert not status.summary_completed_matches
 
     completed.store.summary_path.write_bytes(canonical_json_bytes([]))
-    with pytest.raises(SimulationCampaignIntegrityError, match="not a JSON object"):
-        inspect_retained_campaign(completed.store.manifest_path)
+    with pytest.raises(SimulationRecordIntegrityError, match="not a JSON object"):
+        inspect_retained_simulation_record(completed.store.manifest_path)
 
 
 def test_public_work_item_authentication_rejects_file_changed_during_read(
@@ -156,13 +156,13 @@ def test_public_work_item_authentication_rejects_file_changed_during_read(
 
     monkeypatch.setattr(os, "read", swap_after_read)
 
-    with pytest.raises(SimulationCampaignIntegrityError, match="changed during read"):
+    with pytest.raises(SimulationRecordIntegrityError, match="changed during read"):
         authenticate_work_item(manifest, completed.item_id)
 
 
 @pytest.mark.parametrize("error", ["truncated", "schema", "missing"])
 def test_summary_reader_rejects_corrupt_record(tmp_path, error):
-    store = CampaignStore(tmp_path / "record")
+    store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(_manifest_for(("smoke",)))
     store.regenerate_summary()
     document = dict(store.load_summary())
@@ -173,7 +173,7 @@ def test_summary_reader_rejects_corrupt_record(tmp_path, error):
     store.summary_path.write_bytes(
         b"{" if error == "truncated" else canonical_json_bytes(document)
     )
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(SimulationRecordIntegrityError):
         store.load_summary()
 
 
@@ -187,7 +187,7 @@ def test_maximum_selection_uses_large_sidecar_and_bounded_report_preview(tmp_pat
 
     manifest, _disclosures = _maximum_hook_selection_manifest(names)
     invocation = tmp_path / "reports/1"
-    store = CampaignStore(invocation / "targets/sim/record")
+    store = SimulationRecordStore(invocation / "targets/sim/record")
     store.publish_manifest(manifest)
     request = _request(store, manifest, manifest.document["work_items"][0], tmp_path, invocation=1)
     _executor(tmp_path / "build", {}).prepare_attempt(request)
@@ -226,7 +226,7 @@ def test_pre_sim_reader_rejects_corrupt_record(tmp_path, error):
         del document["attempt_id"]
     path.chmod(0o600)
     path.write_bytes(b"{" if error == "truncated" else canonical_json_bytes(document))
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(SimulationRecordIntegrityError):
         collect_pre_sim_firings(request.store.manifest_path)
 
 
@@ -235,7 +235,7 @@ def test_pre_sim_inspection_rereads_evidence_and_rejects_later_tampering(tmp_pat
 
     invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
     firing = outcome.pre_sim_firings[0]
-    store = CampaignStore(invocation / "targets/sim/record")
+    store = SimulationRecordStore(invocation / "targets/sim/record")
 
     def inspect():
         assert collect_pre_sim_firings(store.manifest_path) == outcome.pre_sim_firings
@@ -247,7 +247,7 @@ def test_pre_sim_inspection_rereads_evidence_and_rejects_later_tampering(tmp_pat
     inspect()
     assert accesses[firing.path] == 2 * first
     firing.path.write_bytes(firing.path.read_bytes() + b" ")
-    with pytest.raises(SimulationCampaignIntegrityError):
+    with pytest.raises(SimulationRecordIntegrityError):
         inspect()
 
 
@@ -298,8 +298,8 @@ def test_pre_sim_reader_rejects_bad_binding(tmp_path, monkeypatch, defect, value
         else:
             directory = firing.path.parent.parent
             directory.rename(directory.with_name("0001-other-owner"))
-    store = CampaignStore(invocation / "targets/sim/record")
-    with pytest.raises(SimulationCampaignIntegrityError, match=message):
+    store = SimulationRecordStore(invocation / "targets/sim/record")
+    with pytest.raises(SimulationRecordIntegrityError, match=message):
         if defect == "directory-owner":
             store.scan()  # the owner check lives in the scan, not in firing collection
         else:
@@ -311,7 +311,7 @@ def _pre_sim_read_case(tmp_path, monkeypatch, *, interrupted=False):
 
     invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
     firing = outcome.pre_sim_firings[0]
-    store = CampaignStore(invocation / "targets/sim/record")
+    store = SimulationRecordStore(invocation / "targets/sim/record")
     if interrupted:
         (firing.path.parents[3] / "result.json").unlink()
     expected = store.scan()
@@ -340,9 +340,9 @@ def test_collector_reads_each_sidecar_and_result_once(tmp_path, monkeypatch):
 def test_scan_checks_attempts_against_the_callers_digest(tmp_path, monkeypatch):
     store, _firing, expected, *_ = _pre_sim_read_case(tmp_path, monkeypatch)
     manifest = store.load_manifest()
-    with pytest.raises(SimulationCampaignIntegrityError, match="attempt identity disagrees"):
+    with pytest.raises(SimulationRecordIntegrityError, match="attempt identity disagrees"):
         store.scan(manifest, "0" * 64)
-    with pytest.raises(SimulationCampaignIntegrityError, match="attempt identity disagrees"):
+    with pytest.raises(SimulationRecordIntegrityError, match="attempt identity disagrees"):
         store.regenerate_summary(manifest, "0" * 64)
     digest = manifest_digest(manifest)
     assert store.scan(manifest, digest) == expected
@@ -353,7 +353,7 @@ def test_scan_ignores_corrupt_sidecar_that_collection_refuses(tmp_path, monkeypa
     store, firing, expected, *_ = _pre_sim_read_case(tmp_path, monkeypatch)
     firing.path.write_bytes(firing.path.read_bytes() + b" ")
     assert store.scan() == expected
-    with pytest.raises(SimulationCampaignIntegrityError, match="result references disagree"):
+    with pytest.raises(SimulationRecordIntegrityError, match="result references disagree"):
         collect_pre_sim_firings(store.manifest_path)
 
 
@@ -363,7 +363,7 @@ def test_scan_ignores_corrupt_sidecar_that_collection_refuses(tmp_path, monkeypa
     ids=["complete-retained", "interrupted-scan", "interrupted-retained"],
 )
 def test_other_inspections_open_no_pre_sim_sidecar(tmp_path, monkeypatch, entry, interrupted):
-    from booley.flows.sim.record.inspection import inspect_retained_campaign
+    from booley.flows.sim.record.inspection import inspect_retained_simulation_record
 
     store, firing, expected, accesses, decodes, _results = _pre_sim_read_case(
         tmp_path, monkeypatch, interrupted=interrupted
@@ -371,7 +371,7 @@ def test_other_inspections_open_no_pre_sim_sidecar(tmp_path, monkeypatch, entry,
     if entry == "scan":
         assert store.scan() == expected
     else:
-        status = inspect_retained_campaign(store.manifest_path)
+        status = inspect_retained_simulation_record(store.manifest_path)
         assert status.completed == expected.complete
         assert status.interrupted == expected.interrupted
         assert firing.path.absolute() in status.retention_files

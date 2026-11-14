@@ -18,26 +18,26 @@ from booley.flows.sim.execution.contract import (
 )
 from booley.flows.sim.record import collect_pre_sim_firings
 from booley.flows.sim.record.codec import (
-    SimulationCampaignIntegrityError,
+    SimulationRecordIntegrityError,
     canonical_json_bytes,
 )
 from booley.flows.sim.record.coordinator import (
-    CampaignPolicy,
-    NewCampaignRunRequest,
-    ResumeCampaignRunRequest,
-    SimulationCampaign,
+    NewSimulationRecordRunRequest,
+    ResumeSimulationRecordRunRequest,
+    SimulationRecord,
+    SimulationRecordPolicy,
 )
 from booley.flows.sim.record.coverage_execution import (
     CoverageAggregateExecutor,
 )
-from booley.flows.sim.record.model import create_simulation_campaign_plan
+from booley.flows.sim.record.model import create_simulation_record_plan
 from booley.flows.sim.record.planning import finalize_manifest, manifest_digest
 from booley.flows.sim.record.resume import (
     ValidatedManifestNode,
     ValidatedResumeManifest,
 )
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
-from booley.flows.sim.record.store import CampaignStore
+from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.record_reports import write_compatibility_projection
 from tests.criteria import ledger_support as acceptance_ledger
 from tests.criteria.test_evidence_ledger import _campaign_facts, _transaction_state
@@ -215,7 +215,7 @@ def _resume_crashed_campaign(campaign, request, store, manifest, plan, crash_poi
         ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest)), (), ()
     )
     return campaign.run(
-        ResumeCampaignRunRequest(
+        ResumeSimulationRecordRunRequest(
             validated,
             plan,
             request.project_root,
@@ -253,7 +253,7 @@ def test_serial_publication_boundary_resume_matrix(
 ) -> None:
     """Every durable prefix resumes on both build routes; only a committed Result suppresses rerun."""
     manifest = _crash_manifest(shared=route == "shared")
-    plan = create_simulation_campaign_plan(manifest)
+    plan = create_simulation_record_plan(manifest)
     project, build_root, run_log = _crash_environment(tmp_path)
     launches: list[int] = []
     group = _CrashGroup(build_root, run_log, launches)
@@ -267,11 +267,11 @@ def test_serial_publication_boundary_resume_matrix(
         execution_factory=lambda _options: _CrashExecution(group),  # type: ignore[arg-type,return-value]
         publication_checkpoint=crash,
     )
-    campaign = SimulationCampaign(executor, publication_checkpoint=crash)
+    campaign = SimulationRecord(executor, publication_checkpoint=crash)
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
-    policy = CampaignPolicy()
-    new_request = NewCampaignRunRequest(
+    policy = SimulationRecordPolicy()
+    new_request = NewSimulationRecordRunRequest(
         plan=plan,
         project_root=project,
         report_root=invocation.parent,
@@ -282,7 +282,7 @@ def test_serial_publication_boundary_resume_matrix(
 
     with pytest.raises(_InjectedProcessDeath, match=crash_point):
         campaign.run(new_request)
-    store = CampaignStore(invocation / "targets" / "sim" / "record")
+    store = SimulationRecordStore(invocation / "targets" / "sim" / "record")
     outcome = _resume_crashed_campaign(campaign, new_request, store, manifest, plan, crash_point)
     _assert_crash_recovery(outcome, store, crash_point, launches, crash)
     # The route axis must really reach its build: private builds live under the attempt.
@@ -320,7 +320,7 @@ def test_coverage_aggregate_boundary_resume_matrix(tmp_path: Path, crash_point: 
         return native
 
     crash = _CrashOnce(crash_point)
-    campaign = SimulationCampaign(
+    campaign = SimulationRecord(
         CoverageAggregateExecutor(
             plans={target.handle.identity: target},
             execution_factory=fresh_execution,
@@ -329,17 +329,17 @@ def test_coverage_aggregate_boundary_resume_matrix(tmp_path: Path, crash_point: 
     )
     invocation = tmp_path / "reports" / "1"
     invocation.mkdir(parents=True)
-    policy = CampaignPolicy()
+    policy = SimulationRecordPolicy()
 
     with pytest.raises(_InjectedProcessDeath, match=crash_point):
         campaign.run(
-            NewCampaignRunRequest(
+            NewSimulationRecordRunRequest(
                 plan, tmp_path, invocation.parent, policy, invocation, _admission()
             )
         )
-    store = CampaignStore(invocation / "targets/sim_0/record")
+    store = SimulationRecordStore(invocation / "targets/sim_0/record")
     outcome = campaign.run(
-        ResumeCampaignRunRequest(
+        ResumeSimulationRecordRunRequest(
             _validated_resume(store, plan, target, tmp_path),
             plan,
             tmp_path,
@@ -434,9 +434,9 @@ def test_invalid_committed_result_fails_closed_before_executor_entry(
     document = _manifest()
     document.pop("fingerprints")
     manifest = finalize_manifest(document)
-    plan = create_simulation_campaign_plan(manifest)
+    plan = create_simulation_record_plan(manifest)
     invocation = tmp_path / "reports" / "000001"
-    store = CampaignStore(invocation / "targets" / "sim" / "record")
+    store = SimulationRecordStore(invocation / "targets" / "sim" / "record")
     store.publish_manifest(manifest)
     work_item_id = manifest.document["work_items"][0]["work_item_id"]  # type: ignore[index]
     result_path = store.work_item_directory(work_item_id) / "result.json"
@@ -454,18 +454,18 @@ def test_invalid_committed_result_fails_closed_before_executor_entry(
         (),
         (),
     )
-    request = ResumeCampaignRunRequest(
+    request = ResumeSimulationRecordRunRequest(
         validated=validated,
         current_plan=plan,
         project_root=tmp_path,
         report_root=invocation.parent,
-        policy=CampaignPolicy(),
+        policy=SimulationRecordPolicy(),
         invocation_directory=invocation,
         admission=_admission(),
     )
 
-    with pytest.raises(SimulationCampaignIntegrityError):
-        SimulationCampaign(MustNotExecute()).run(request)  # type: ignore[arg-type]
+    with pytest.raises(SimulationRecordIntegrityError):
+        SimulationRecord(MustNotExecute()).run(request)  # type: ignore[arg-type]
 
     assert entered == []
 
@@ -523,7 +523,7 @@ def _failed_build_plan(failure_path):
         document["build_variants"], document["work_items"] = _manifest_work(
             document["target"], workload["source_recipe"], workload["build_recipe"], workload
         )
-    plan = create_simulation_campaign_plan(finalize_manifest(document))
+    plan = create_simulation_record_plan(finalize_manifest(document))
     return plan
 
 
@@ -569,8 +569,8 @@ def _failed_build_case(tmp_path, monkeypatch, failure_path, crash):
     )
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
-    request = NewCampaignRunRequest(
-        plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
+    request = NewSimulationRecordRunRequest(
+        plan, project, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
     )
     return executor, request, invocation
 
@@ -604,9 +604,9 @@ def test_failed_build_result_publication_is_retryable_and_never_accepted(
     executor, request, invocation = _failed_build_case(tmp_path, monkeypatch, failure_path, crash)
 
     with pytest.raises(_InjectedProcessDeath):
-        SimulationCampaign(executor, publication_checkpoint=crash).run(request)
+        SimulationRecord(executor, publication_checkpoint=crash).run(request)
 
-    store = CampaignStore(invocation / "targets" / "sim" / "record")
+    store = SimulationRecordStore(invocation / "targets" / "sim" / "record")
     recovery = store.scan()
     committed = boundary == "after:simulation_result"
     assert bool(recovery.complete) is committed
@@ -616,11 +616,11 @@ def test_failed_build_result_publication_is_retryable_and_never_accepted(
     result = json.loads(result_path.read_text()) if result_path.exists() else None
     assert result is None or result["state"] == expected_state
     if boundary.startswith("before:simulation"):
-        outcome = SimulationCampaign(executor).run(request)
+        outcome = SimulationRecord(executor).run(request)
         assert outcome.acceptance_ready is False
         assert store.scan().items[0].attempt_count == 2
     elif boundary.startswith("after:simulation"):
-        outcome = SimulationCampaign(executor).run(request)
+        outcome = SimulationRecord(executor).run(request)
         assert outcome.acceptance_ready is False
         assert store.scan().items[0].attempt_count == 1
 
@@ -633,14 +633,14 @@ def test_failed_build_partial_terminal_result_fails_closed(
     executor, request, invocation = _failed_build_case(
         tmp_path, monkeypatch, failure_path, checkpoint
     )
-    SimulationCampaign(executor).run(request)
-    store = CampaignStore(invocation / "targets" / "sim" / "record")
+    SimulationRecord(executor).run(request)
+    store = SimulationRecordStore(invocation / "targets" / "sim" / "record")
     recovered = store.scan().items[0]
     result_path = store.work_item_directory(recovered.work_item_id) / "result.json"
     result_path.write_bytes(b'{"partial":')
 
-    with pytest.raises(SimulationCampaignIntegrityError):
-        SimulationCampaign(executor).run(request)
+    with pytest.raises(SimulationRecordIntegrityError):
+        SimulationRecord(executor).run(request)
 
 
 @pytest.mark.parametrize("boundary", ["before:manifest_commit", "after:manifest_commit"])
@@ -648,12 +648,12 @@ def test_manifest_notification_is_committed_before_fault_checkpoint(
     tmp_path: Path, boundary: str
 ) -> None:
     manifest = _crash_manifest()
-    plan = create_simulation_campaign_plan(manifest)
+    plan = create_simulation_record_plan(manifest)
     project, _build, _log = _crash_environment(tmp_path)
     invocation = tmp_path / "reports/000001"
     invocation.mkdir(parents=True)
-    request = NewCampaignRunRequest(
-        plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
+    request = NewSimulationRecordRunRequest(
+        plan, project, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
     )
     published: list[Path] = []
 
@@ -661,7 +661,7 @@ def test_manifest_notification_is_committed_before_fault_checkpoint(
         assert path.is_file()
         published.append(path)
 
-    campaign = SimulationCampaign(
+    campaign = SimulationRecord(
         publication_checkpoint=_CrashOnce(boundary), manifest_published=notify
     )
     with pytest.raises(_InjectedProcessDeath):
@@ -686,14 +686,14 @@ def test_closed_console_does_not_skip_postcommit_checkpoint(
     monkeypatch.setattr("booley.flows.sim.flow.sys.stderr", stream)
     published: list[Path] = []
     manifest = _crash_manifest()
-    plan = create_simulation_campaign_plan(manifest)
+    plan = create_simulation_record_plan(manifest)
     project, _build, _log = _crash_environment(tmp_path)
     invocation = tmp_path / "reports/000001"
     invocation.mkdir(parents=True)
-    request = NewCampaignRunRequest(
-        plan, project, invocation.parent, CampaignPolicy(), invocation, _admission()
+    request = NewSimulationRecordRunRequest(
+        plan, project, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
     )
-    campaign = SimulationCampaign(
+    campaign = SimulationRecord(
         publication_checkpoint=_CrashOnce("after:manifest_commit"),
         manifest_published=flow._manifest_publisher(published),
     )
@@ -713,11 +713,11 @@ def test_baseline_disclosure_uses_exact_format_without_run_reopening_duplicates(
     invocation = tmp_path / "reports/000001"
     invocation.mkdir(parents=True)
     requests = [
-        NewCampaignRunRequest(
-            create_simulation_campaign_plan(item),
+        NewSimulationRecordRunRequest(
+            create_simulation_record_plan(item),
             project,
             invocation.parent,
-            CampaignPolicy(),
+            SimulationRecordPolicy(),
             invocation,
             _admission(),
         )
@@ -726,7 +726,7 @@ def test_baseline_disclosure_uses_exact_format_without_run_reopening_duplicates(
     flow = SimulateFlow()
     flow._console_publication_requested = True
     published: list[Path] = []
-    campaign = SimulationCampaign(manifest_published=flow._manifest_publisher(published))
+    campaign = SimulationRecord(manifest_published=flow._manifest_publisher(published))
     paths = [campaign.publish_new(request) for request in requests]
     # Repeated publication notifications retain one recovery path per invocation.
     for request in requests:
@@ -741,7 +741,7 @@ def test_baseline_disclosure_uses_exact_format_without_run_reopening_duplicates(
         f"campaign manifest: {path.resolve()}\n" for path in paths
     )
     for request in requests:
-        campaign._open_campaign(request)
+        campaign._open_simulation_record(request)
     assert capsys.readouterr().err == ""
     assert published == paths
 
@@ -794,15 +794,15 @@ def _resume_real_hook_crash(tmp_path, invocation, store):
     destination = invocation.parent / "2"
     destination.mkdir()
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
-    resumed = SimulationCampaign(
+    resumed = SimulationRecord(
         _executor(tmp_path / "build", counters, disclosures=_legacy_disclosures())
     ).run(
-        ResumeCampaignRunRequest(
+        ResumeSimulationRecordRunRequest(
             validated,
-            create_simulation_campaign_plan(manifest),
+            create_simulation_record_plan(manifest),
             project,
             invocation.parent,
-            CampaignPolicy(),
+            SimulationRecordPolicy(),
             destination,
             _admission(),
         )
@@ -822,7 +822,7 @@ def test_process_death_at_actual_hook_publication_recovers_immutable_evidence(
         _successful_pre_sim_campaign(tmp_path, monkeypatch, access, checkpoint=crash)
     assert crash.tripped
     invocation = tmp_path / "reports/1"
-    store = CampaignStore(invocation / "targets/sim/record")
+    store = SimulationRecordStore(invocation / "targets/sim/record")
     old = collect_pre_sim_firings(store.manifest_path)
     assert len(old) == int(side == "after")
     assert store.scan().interrupted
@@ -852,7 +852,7 @@ def test_result_commit_and_scan_trust_evidence_changed_after_publication(
     )
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
-    store = CampaignStore(invocation / "targets" / "sim" / "record")
+    store = SimulationRecordStore(invocation / "targets" / "sim" / "record")
 
     def change_published_evidence(boundary: str) -> None:
         # Rewrite a snapshot artifact after authentication at launch.
@@ -866,12 +866,12 @@ def test_result_commit_and_scan_trust_evidence_changed_after_publication(
         execution_factory=lambda _options: _CrashExecution(group),  # type: ignore[arg-type,return-value]
         publication_checkpoint=change_published_evidence,
     )
-    outcome = SimulationCampaign(executor).run(
-        NewCampaignRunRequest(
-            plan=create_simulation_campaign_plan(manifest),
+    outcome = SimulationRecord(executor).run(
+        NewSimulationRecordRunRequest(
+            plan=create_simulation_record_plan(manifest),
             project_root=project,
             report_root=invocation.parent,
-            policy=CampaignPolicy(),
+            policy=SimulationRecordPolicy(),
             invocation_directory=invocation,
             admission=_admission(),
         )

@@ -180,7 +180,7 @@ def test_every_direction_rule_selector_family_finds_a_forbidden_edge(
             "booley.flows.sim.record.store",
         ),
         (
-            "from booley.flows.sim.record.store import CampaignStore\n",
+            "from booley.flows.sim.record.store import SimulationRecordStore\n",
             "booley.flows.sim.record.store",
         ),
         (
@@ -193,7 +193,7 @@ def test_every_direction_rule_selector_family_finds_a_forbidden_edge(
         ),
         (
             "from typing import TYPE_CHECKING\n"
-            "if TYPE_CHECKING:\n    from booley.flows.sim.record.store import CampaignStore\n",
+            "if TYPE_CHECKING:\n    from booley.flows.sim.record.store import SimulationRecordStore\n",
             "booley.flows.sim.record.store",
         ),
         (

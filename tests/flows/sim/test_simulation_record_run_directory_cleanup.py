@@ -38,7 +38,7 @@ def _run(
     run = expand_run_directory(
         template,
         project_root=root,
-        campaign_id=campaign,
+        simulation_record_id=campaign,
         target_key="sim",
         work_item_key=test,
         attempt_key=attempt,
