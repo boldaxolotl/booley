@@ -27,10 +27,10 @@ from booley.runtime import job_slots, resource_history
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.runtime.job_records import _proc_cmdline
 from booley.runtime.oom_priority import COORDINATOR_GAP, tool_adj
-from booley.runtime.shared_infra import load_job_budget_config
 from booley.runtime.timefmt import utc_now_rfc3339
 from tests.flows.mutation.test_flow import _fake_proc, _make_endpoint
 from tests.flows.mutation.test_runtime_inputs import _make_project, _Project
+from tests.memory_budget_support import pin_budget
 from tests.oom_priority_support import FakeProc, inert_oom_proc  # noqa: F401  (fixture)
 
 pytestmark = pytest.mark.skipif(
@@ -70,7 +70,6 @@ class _Managed:
         )
 
     def context(self) -> AdmissionContext:
-        config = load_job_budget_config(booley_dir=self.booley_dir)
         pid = os.getpid()
         light = self.store.acquire(job_slots.CLASS_LIGHT, pid=pid, argv=_proc_cmdline(pid) or [])
         self.held.append(light)
@@ -82,7 +81,7 @@ class _Managed:
             execution_id=None,
             timeout_seconds=None,
             cancellation=self._cancelled,
-            memory_sizing=MemorySizing(self.booley_dir, config),
+            memory_sizing=MemorySizing(self.booley_dir),
         )
 
     def hold_budget(self) -> job_slots.SlotToken:
@@ -95,10 +94,14 @@ class _Managed:
 
 
 @pytest.fixture
-def managed(tmp_path: Path, inert_oom_proc: FakeProc) -> Iterator[_Managed]:  # noqa: F811  (pytest fixture re-declared as a parameter)
+def managed(
+    tmp_path: Path,
+    inert_oom_proc: FakeProc,  # noqa: F811  (pytest fixture re-declared as a parameter)
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[_Managed]:
     booley_dir = tmp_path / "admission"
     booley_dir.mkdir()
-    (booley_dir / "booley.toml").write_text('[jobs]\nmemory_budget = "1000m"\n', encoding="utf-8")
+    pin_budget(monkeypatch, 1000)
     store = job_slots.SlotStore(tmp_path / "slots")
     admission = _Managed(store, booley_dir, lambda: False)
     yield admission

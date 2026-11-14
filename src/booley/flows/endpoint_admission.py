@@ -141,7 +141,7 @@ class AdmissionGate:
         if store is None or (found := _admission_root(endpoint)) is None:
             return _Claim(store, token)
         project = found[0]
-        sizing = MemorySizing(project, load_job_budget_config(booley_dir=project))
+        sizing = MemorySizing(project)
         return _Claim(store, token, sizing=sizing)
 
     @contextmanager
