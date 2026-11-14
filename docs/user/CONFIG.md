@@ -126,7 +126,6 @@ are never interrupted. The defaults:
 memory = "32g"           # the Sandbox's memory limit; the Memory Budget comes from it
 
 [jobs]
-# memory_budget = "24g"  # a fixed Memory Budget in place of the computed one
 max_light = 3            # Specialist Jobs running at once
 
 [jobs.seats]
@@ -137,8 +136,7 @@ The Memory Budget is the Sandbox's memory limit, `[sandbox].memory`, minus a
 reserve: the memory the running agents, the MCP server, and the Dashboard use,
 plus 2 GB. Without `[sandbox].memory` the Sandbox has no limit, so Booley starts
 from the machine's installed memory, which the Sandbox shares with everything
-else; `booley doctor` warns while it is unset. `[jobs].memory_budget` replaces
-the computed budget with a fixed size, and Booley subtracts no reserve from it.
+else; `booley doctor` warns while it is unset.
 
 Booley reserves the largest peak memory it recorded for a Job
 ([resource history](#job-resource-history)), plus 25%. With no record of its
@@ -177,8 +175,7 @@ memory counts the Job's temporary files only when `TMPDIR` is on tmpfs; runs
 recorded before that rule keep their earlier peak. `booley resources` prints the
 run count and the minimum, median, and maximum peak memory and wall-clock time
 for each, with one line per Specialist after the Targets (`--json` for
-scripts). Use it to choose `[sandbox].memory` and
-`[jobs].memory_budget`. Each Test Variant of a simulation has its own entry
+scripts). Use it to choose `[sandbox].memory`. Each Test Variant of a simulation has its own entry
 (`tests=first+slow`; the default Variant keeps the bare Test name), and the
 seeds of one Variant share it. Flow runs that `booley doctor` starts are not
 recorded.

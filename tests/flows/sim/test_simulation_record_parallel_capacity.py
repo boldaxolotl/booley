@@ -87,6 +87,7 @@ from tests.flows.sim.simulation_record_test_support import (
     _two_item_manifest,
     _wait_until,
 )
+from tests.memory_budget_support import pin_budget
 from tests.oom_priority_support import FakeProc
 from tests.sharing_error_support import sharing_error
 
@@ -879,7 +880,7 @@ def test_unsized_memory_admitted_simulation_record_runs_work_items_without_child
         execution_factory=lambda _options: _ParallelExecution(state),  # type: ignore[arg-type,return-value]
     )
     booley_dir = project / ".booley"
-    (booley_dir / "booley.toml").write_text('[jobs]\nmemory_budget = "1000m"\n', encoding="utf-8")
+    pin_budget(monkeypatch, 1000)
     # A fake /proc with no process: ranking never touches the worker's real OOM priority.
     monkeypatch.setattr("booley.runtime.oom_priority.PROC", FakeProc())
     monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", "a" * 32)
