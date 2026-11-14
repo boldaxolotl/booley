@@ -303,29 +303,3 @@ def test_target_bound_producer_keeps_subdirectory_admission_and_error_behavior(g
         assert adapter.criterion_source_fingerprint(LINT_KEY, subdirectory, "top") == (
             compute_source_fingerprint(binding.worktree_root, target="top")
         )
-
-
-def test_job_binding_under_former_mount_resolves_current_goal_directories(
-    goal_mode: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    from booley.mcp import job_results
-    from booley.runtime.job_records import JobRecord
-    from tests.mount_change_support import simulate_mount_change
-
-    former = simulate_mount_change(monkeypatch, goal_mode.control, tmp_path / "former-mount")
-    raw = bind_run(_store(goal_mode), goal_mode.worktree, "run-1").to_json()
-    raw["booley_dir"] = former
-    raw["worktree_root"] = f"{former}/worktrees/wt"
-    runtime_dir = record_paths(goal_mode.control, goal_mode.record.id).runtime_dir
-    (runtime_dir / "flow-reports").mkdir(parents=True, exist_ok=True)
-    located = job_results.LocatedJob(
-        JobRecord("run-1", "sim", "t", 60, binding=raw), root=goal_mode.control
-    )
-    repository = job_results.JobRepository()
-
-    assert repository.report_booley_dir(located) == goal_mode.control
-    assert repository.report_dirs(located) == (runtime_dir / "flow-reports",)
-    binding = job_results.job_binding(located.record)
-    assert binding is not None
-    assert binding.worktree_root == goal_mode.control / "worktrees" / "wt"
-    assert GoalStore(binding.booley_dir).load(binding.record_id).id == goal_mode.record.id

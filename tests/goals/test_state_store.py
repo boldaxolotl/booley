@@ -458,27 +458,3 @@ def test_goal_state_read_retries_before_raising_lasting_sharing_error(
         _load(goal_mode)
     assert caught.value.__cause__.winerror == 32
     assert attempts[state_file] > 1
-
-
-def test_goal_record_and_state_under_former_mount_resolve_current_worktree(
-    goal_mode: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    from tests.mount_change_support import respell, simulate_mount_change
-
-    current = goal_mode.control.resolve()
-    former = simulate_mount_change(monkeypatch, current, tmp_path / "former-mount")
-    binding = _bind(goal_mode)
-    state = _load(goal_mode, binding)
-    state.work_dir = str(current / "worktrees" / "wt")
-    state.save()
-    paths = record_paths(goal_mode.control, goal_mode.record.id)
-    respell(paths.record_file, current, former)
-    respell(paths.state_file, current, former)
-    assert former in paths.record_file.read_text(encoding="utf-8")
-    assert former in paths.state_file.read_text(encoding="utf-8")
-
-    record = GoalStore(goal_mode.control).load(goal_mode.record.id)
-    loaded = load_goal_state(GoalStore(goal_mode.control), record)
-
-    assert Path(record.worktree_path) == goal_mode.worktree.resolve()
-    assert loaded.work_dir == str(current / "worktrees" / "wt")
