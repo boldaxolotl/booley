@@ -528,6 +528,9 @@ that has neither file.
 - It never overwrites a default Agent CLI that `booley.toml` sets. Otherwise
   it fills one from `BOOLEY_AGENT_APP` (`claude` or `codex`); `auto`, `none`,
   or unset leave it unset, with a note.
+- Once a default Agent CLI is set, it records `[agent] auth` from the
+  credentials the Sandbox holds when that value is missing or `auto`
+  (`subscription` when a CLI has both), and keeps an explicit one.
 - `worktree.useRelativePaths` is `true` only when the container's Git is 2.48
   or newer, else `false`. A host Git sharing the bind-mounted checkout must
   then be 2.48+ too.
