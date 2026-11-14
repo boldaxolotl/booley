@@ -456,29 +456,35 @@ def test_failed_resolution_leaves_no_stale_choice(sandbox, monkeypatch, capsys):
     assert "incontainer_register" in message
 
 
-@pytest.mark.parametrize("kind", ["claude-api-key", "gateway"])
-def test_handwritten_auto_policy_selects_the_visitor_mode(sandbox, monkeypatch, capsys, kind):
+def test_handwritten_auto_policy_selects_the_visitor_mode(sandbox, monkeypatch, capsys, tmp_path):
     """``BOOLEY_PRIMARY_AUTH=auto``: the visitor's credential, else the sponsored gateway."""
     from booley.runtime import auth_token
 
     monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "auto")
-    _give(kind, sandbox.home, monkeypatch)
-    app, policy = ("claude", "visitor") if kind == "claude-api-key" else ("codex", "gateway")
+    _give("claude-api-key", sandbox.home, monkeypatch)
 
     status = _start(capsys)
 
-    assert f"app:{app} " in status
-    assert get_agent_settings().auth_for(app) == policy
-    if kind == "claude-api-key":
-        plan = auth_token.credential_plan("claude", policy)
-        assert [key for key, _ in plan.values] == ["ANTHROPIC_API_KEY"]
-        assert "booley_gateway" not in _codex_config(sandbox.home)
-    else:
-        assert 'model_provider = "booley_gateway"' in _codex_config(sandbox.home)
+    assert "app:claude " in status
+    assert get_agent_settings().auth_for("claude") == "visitor"
+    plan = auth_token.credential_plan("claude", "visitor")
+    assert [key for key, _ in plan.values] == ["ANTHROPIC_API_KEY"]
+    assert "booley_gateway" not in _codex_config(sandbox.home)
+
+    # Without a credential the same spec falls back to the gateway.
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    home = _use_home(monkeypatch, tmp_path / "second-home")
+    _give("gateway", home, monkeypatch)
+    set_agent_settings(None)
+
+    status = _start(capsys)
+
+    assert "app:codex " in status
+    assert get_agent_settings().auth_for("codex") == "gateway"
+    assert 'model_provider = "booley_gateway"' in _codex_config(home)
 
 
-@pytest.mark.parametrize("auth", [None, "auto", "gateway", "subscription"])
-def test_gateway_fallback_keys_on_the_visitor_mode(sandbox, monkeypatch, auth):
+def test_gateway_fallback_keys_on_the_visitor_mode(sandbox, monkeypatch):
     """The gateway fallback depends on the visitor mode, not on the ``auto`` config policy."""
     from booley.runtime import auth_token
 
@@ -491,14 +497,15 @@ def test_gateway_fallback_keys_on_the_visitor_mode(sandbox, monkeypatch, auth):
 
     monkeypatch.setattr(auth_token, "login_credential", spy)
     _give("gateway", sandbox.home, monkeypatch)
-    if auth:
-        monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", auth)
 
-    choice = entry.resolve_auto_choice()
-
-    if auth == "subscription":
-        assert (choice.app, choice.policy) == ("claude", "subscription")
-        assert set(lookups) == {"subscription"}
-    else:
-        assert (choice.app, choice.policy) == ("codex", "gateway")
-        assert set(lookups) == {"visitor"}
+    for auth in (None, "auto", "gateway", "subscription"):
+        lookups.clear()
+        if auth:
+            monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", auth)
+        choice = entry.resolve_auto_choice()
+        if auth == "subscription":
+            assert (choice.app, choice.policy) == ("claude", "subscription")
+            assert set(lookups) == {"subscription"}
+        else:
+            assert (choice.app, choice.policy) == ("codex", "gateway"), auth
+            assert set(lookups) == {"visitor"}, auth

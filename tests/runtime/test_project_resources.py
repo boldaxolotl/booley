@@ -12,6 +12,7 @@ from booley.config.sandbox import project_image_name_for_identity
 from booley.core.project_identity import project_label_id, project_name_id
 from booley.projects.image_keepers import Leftover
 from booley.runtime import image_lifecycle, interactive_docker, project_resources
+from booley.runtime.devcontainer import state_volume_mount
 from booley.runtime.session_issuance import keeper_image_for_identity
 
 
@@ -290,3 +291,10 @@ def test_leftovers_lists_legacy_policy_volumes(tmp_path: Path, host: FakeHost) -
         base,
         f"{base}-subscription",
     ]
+    # A subscription Sandbox now owns the unsuffixed volume; the old name is the legacy one.
+    assert state_volume_mount("claude", project_name_id(root), "subscription") == (
+        f"source={base},target=/home/agent/.claude,type=volume"
+    )
+    legacy = state_volume_mount("claude", project_name_id(root), "subscription", legacy=True)
+    assert legacy is not None
+    assert f"source={base}-subscription," in legacy
