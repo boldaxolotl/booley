@@ -22,7 +22,7 @@ from booley.flows.sim.adapter_transport import (
     work_transport_identity,
     write_adapter_result,
 )
-from booley.flows.sim.flow import OrdinaryCampaignPlanning, SimulateFlow
+from booley.flows.sim.flow import OrdinarySimulationRecordPlanning, SimulateFlow
 from booley.flows.sim.record import collect_pre_sim_firings
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult, execute_endpoint
@@ -116,7 +116,7 @@ def _hook_executor(build, disclosures, mutate_snapshot, checkpoint):
     )
 
 
-def _successful_pre_sim_campaign(
+def _successful_pre_sim_record(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     access: str,
@@ -149,13 +149,13 @@ def _successful_pre_sim_campaign(
     )
     invocation = invocation_directory or tmp_path / "reports/1"
     invocation.mkdir(parents=True, exist_ok=True)
-    campaign = SimulationRecord(
+    simulation_record = SimulationRecord(
         _hook_executor(build, disclosures, mutate_snapshot, checkpoint)
-    ).run(_observed_campaign_request(plan, project, invocation, observer))
-    return invocation, campaign
+    ).run(_observed_simulation_record_request(plan, project, invocation, observer))
+    return invocation, simulation_record
 
 
-def _observed_campaign_request(plan, project, invocation, observer):
+def _observed_simulation_record_request(plan, project, invocation, observer):
     from booley.flows.sim.record.coordinator import (
         NewSimulationRecordRunRequest,
         SimulationRecordPolicy,
@@ -214,11 +214,11 @@ def test_successful_pre_sim_firing_reaches_public_reports(
 
     from booley.flows.endpoint_reporting import _publish_console_report, write_report
 
-    invocation, campaign = _successful_pre_sim_campaign(tmp_path, monkeypatch, access)
+    invocation, simulation_record = _successful_pre_sim_record(tmp_path, monkeypatch, access)
     flow = SimulateFlow()
     flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
-    result = flow._campaign_endpoint_outcome([campaign])
+    result = flow._simulation_record_endpoint_outcome([simulation_record])
     endpoint = _public_hook_endpoint(flow, invocation)
     write_report(endpoint, result)
     _publish_console_report(endpoint, result)
@@ -245,17 +245,17 @@ def test_successful_pre_sim_firing_reaches_public_reports(
 def test_failed_hook_reports_real_exit_code_without_changing_adapter_grade(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, access: str
 ) -> None:
-    invocation, campaign = _successful_pre_sim_campaign(
+    invocation, simulation_record = _successful_pre_sim_record(
         tmp_path, monkeypatch, access, commands=("echo failed-out; echo failed-err >&2; exit 7",)
     )
     flow = SimulateFlow()
     flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
-    result = flow._campaign_endpoint_outcome([campaign])
+    result = flow._simulation_record_endpoint_outcome([simulation_record])
     assert result.exit_code == 1
     assert len(result.detail["pre_sim_lines"]) == 1
     assert "rc=7" in result.detail["pre_sim_lines"][0]
-    assert campaign.pre_sim_firings[0].document["stderr_tail"] == "failed-err\n"
+    assert simulation_record.pre_sim_firings[0].document["stderr_tail"] == "failed-err\n"
 
 
 def test_downstream_integrity_failure_retains_authenticated_current_hook(
@@ -266,7 +266,7 @@ def test_downstream_integrity_failure_retains_authenticated_current_hook(
     flow = SimulateFlow()
     flow._current_published_pre_sim_keys = set()
     with pytest.raises(SimulationRecordIntegrityError):
-        _successful_pre_sim_campaign(
+        _successful_pre_sim_record(
             tmp_path,
             monkeypatch,
             "immutable",
@@ -285,13 +285,13 @@ def test_downstream_integrity_failure_retains_authenticated_current_hook(
 def test_endpoint_reauthentication_never_renders_corrupt_hook_as_authoritative(
     tmp_path, monkeypatch
 ):
-    invocation, campaign = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
+    invocation, simulation_record = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
     flow = SimulateFlow()
     flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
-    result = flow._campaign_endpoint_outcome([campaign])
+    result = flow._simulation_record_endpoint_outcome([simulation_record])
     assert result.detail["pre_sim_current"] == 1
-    firing = campaign.pre_sim_firings[0]
+    firing = simulation_record.pre_sim_firings[0]
     firing.path.write_bytes(firing.path.read_bytes() + b" ")
     result = flow._attach_published_pre_sim(result)
     assert result.exit_code == 2 and result.criterion_met is False
@@ -381,7 +381,9 @@ class _Endpoint:
 
 
 @pytest.mark.parametrize("borrows", [True, False])
-def test_prepared_campaign_and_borrowed_admission_are_explicit_values(borrows: bool) -> None:
+def test_prepared_simulation_record_and_borrowed_admission_are_explicit_values(
+    borrows: bool,
+) -> None:
     endpoint = _Endpoint()
     invocation = _recording_invocation(borrows=borrows, events=endpoint.events)
     prepared = PreparedExecution(None, None, False, False, invocation)
@@ -419,29 +421,31 @@ def _request(selector: str) -> SimpleNamespace:
     )
 
 
-def _retained_campaign_outcome(outcomes: list[object]) -> EndpointOutcome:
+def _retained_simulation_record_outcome(outcomes: list[object]) -> EndpointOutcome:
     targets = {f"target-{index}": {"simulation": "pass"} for index, _ in enumerate(outcomes)}
     return EndpointOutcome(detail={"targets": targets}, report_text="campaign verdict")
 
 
-def test_completed_campaign_survives_per_target_progress_failure(
+def test_completed_simulation_record_survives_per_target_progress_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     flow = SimulateFlow()
     outcomes = [object(), object()]
-    campaign = SimpleNamespace(run=lambda _request: outcomes.pop(0))
+    simulation_record = SimpleNamespace(run=lambda _request: outcomes.pop(0))
     progress = SimpleNamespace(
         invocation_dir=tmp_path,
         checkpoint=lambda **_kwargs: (_ for _ in ()).throw(OSError("progress unavailable")),
     )
-    monkeypatch.setattr(flow, "_campaign_endpoint_outcome", _retained_campaign_outcome)
+    monkeypatch.setattr(
+        flow, "_simulation_record_endpoint_outcome", _retained_simulation_record_outcome
+    )
     monkeypatch.setattr(
         "booley.flows.sim.flow._retain_coverage_campaign",
         lambda _progress, _outcome: None,
     )
 
-    result = flow._execute_coverage_campaign_requests(
-        campaign, [_request("first"), _request("second")], progress
+    result = flow._execute_coverage_simulation_record_requests(
+        simulation_record, [_request("first"), _request("second")], progress
     )
 
     assert result.exit_code == 2
@@ -458,16 +462,18 @@ def test_coverage_authentication_failure_returns_structured_failure(
     flow._coverage_prepared = SimpleNamespace(targets=[])
     completed = [object(), object()]
     pending = list(completed)
-    campaign = SimpleNamespace(run=lambda _request: pending.pop(0))
+    simulation_record = SimpleNamespace(run=lambda _request: pending.pop(0))
     progress = SimpleNamespace(invocation_dir=tmp_path, checkpoint=lambda **_kwargs: None)
-    monkeypatch.setattr(flow, "_campaign_endpoint_outcome", _retained_campaign_outcome)
+    monkeypatch.setattr(
+        flow, "_simulation_record_endpoint_outcome", _retained_simulation_record_outcome
+    )
     monkeypatch.setattr(
         "booley.flows.sim.flow._retain_coverage_campaign",
         lambda _progress, _outcome: (_ for _ in ()).throw(ValueError("untrusted campaign")),
     )
 
-    result = flow._execute_coverage_campaign_requests(
-        campaign, [_request("first"), _request("second")], progress
+    result = flow._execute_coverage_simulation_record_requests(
+        simulation_record, [_request("first"), _request("second")], progress
     )
 
     assert result.exit_code == 2
@@ -477,7 +483,7 @@ def test_coverage_authentication_failure_returns_structured_failure(
     assert len(pending) == 1
 
 
-def test_all_campaigns_survive_terminal_progress_failure(
+def test_all_simulation_records_survive_terminal_progress_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     flow = SimulateFlow()
@@ -490,7 +496,7 @@ def test_all_campaigns_survive_terminal_progress_failure(
     )
     returned = [object(), object()]
     pending = list(returned)
-    campaign = SimpleNamespace(run=lambda _request: pending.pop(0))
+    simulation_record = SimpleNamespace(run=lambda _request: pending.pop(0))
     requests = [_request("first"), _request("second")]
 
     progress = SimpleNamespace(invocation_dir=tmp_path, targets=("first", "second"), outcomes=[])
@@ -506,19 +512,21 @@ def test_all_campaigns_survive_terminal_progress_failure(
     monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: tmp_path)
     monkeypatch.setattr(
         flow,
-        "_coverage_campaign_session",
-        lambda _admission, _invocation, _published: (campaign, requests),
+        "_coverage_simulation_record_session",
+        lambda _admission, _invocation, _published: (simulation_record, requests),
     )
     monkeypatch.setattr("booley.flows.sim.flow.CoverageProgress", lambda *_args: progress)
-    monkeypatch.setattr(flow, "_campaign_endpoint_outcome", _retained_campaign_outcome)
+    monkeypatch.setattr(
+        flow, "_simulation_record_endpoint_outcome", _retained_simulation_record_outcome
+    )
     monkeypatch.setattr(
         "booley.flows.sim.flow._retain_coverage_campaign",
         lambda retained, outcome: retained.outcomes.append(outcome),
     )
 
-    result = flow._execute_campaign(
+    result = flow._execute_simulation_record(
         AdmissionContext("unmanaged", None, None, "interactive", "", None, lambda: False),
-        flow._coverage_campaign_run(),
+        flow._coverage_simulation_record_run(),
     )
 
     assert result.exit_code == 2
@@ -532,7 +540,7 @@ def test_all_campaigns_survive_terminal_progress_failure(
 
 
 @pytest.mark.parametrize("termination", ["disk_budget", "sim_time_stall"])
-def test_infrastructure_campaign_reaches_persisted_endpoint_reports(
+def test_infrastructure_simulation_record_reaches_persisted_endpoint_reports(
     tmp_path: Path, termination: str
 ) -> None:
     import json
@@ -562,7 +570,7 @@ def test_infrastructure_campaign_reaches_persisted_endpoint_reports(
     )
     invocation = tmp_path / "reports/1"
     invocation.mkdir(parents=True)
-    campaign = SimulationRecord(executor).run(
+    simulation_record = SimulationRecord(executor).run(
         NewSimulationRecordRunRequest(
             plan,
             tmp_path,
@@ -577,7 +585,7 @@ def test_infrastructure_campaign_reaches_persisted_endpoint_reports(
     flow._args = SimpleNamespace(
         target=["sim"], result_verbosity="brief", report_dir=invocation.parent
     )
-    result = flow._campaign_endpoint_outcome([campaign])
+    result = flow._simulation_record_endpoint_outcome([simulation_record])
     endpoint = SimpleNamespace(
         args=SimpleNamespace(report_dir=invocation.parent, slug=""),
         refresh_report_detail=flow.refresh_report_detail,
@@ -610,7 +618,7 @@ def test_infrastructure_campaign_reaches_persisted_endpoint_reports(
         assert detail["observations"][0]["detail"]["termination"] == termination
 
 
-def _campaign_cli_args(
+def _simulation_record_cli_args(
     *, work_dir, report_dir, target="", coverage=False, resume_from=None, test=()
 ):
     args = ["--work-dir", str(work_dir), "--report-dir", str(report_dir)]
@@ -658,7 +666,7 @@ def test_cli_discloses_committed_manifest_before_executor(
 
     flow = SimulateFlow(coverage_execution=execution)
     result = flow.execute_cli(
-        _campaign_cli_args(
+        _simulation_record_cli_args(
             work_dir=str(tmp_path),
             report_dir=str(tmp_path / "reports with spaces"),
             target=",".join(f"sim_{index}" for index in range(target_count)),
@@ -713,8 +721,8 @@ def test_cli_recovery_paths_survive_failures(
         if boundary == failure:
             raise KeyboardInterrupt()
 
-    monkeypatch.setattr(flow, "_campaign_publication_checkpoint", checkpoint)
-    argv = _campaign_cli_args(
+    monkeypatch.setattr(flow, "_simulation_record_publication_checkpoint", checkpoint)
+    argv = _simulation_record_cli_args(
         work_dir=str(tmp_path), report_dir=str(tmp_path / "reports"), target="sim_0", coverage=True
     )
     if failure in {"before:manifest_commit", "after:manifest_commit", "interrupt"}:
@@ -748,7 +756,7 @@ def _assert_recovery_announcement(capsys, seen, failure):
         assert path.is_file()
 
 
-def test_typed_campaign_execution_is_silent(
+def test_typed_simulation_record_execution_is_silent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     from booley.flows.sim.request import SimRequest
@@ -784,7 +792,7 @@ def test_same_flow_second_failure_does_not_reuse_manifest(
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["half"]\n')
     flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
-    argv = _campaign_cli_args(
+    argv = _simulation_record_cli_args(
         work_dir=str(tmp_path), report_dir=str(tmp_path / "reports"), target="sim_0", coverage=True
     )
     first = flow.execute_cli(argv)
@@ -797,7 +805,7 @@ def test_same_flow_second_failure_does_not_reuse_manifest(
         if boundary == "before:manifest_commit":
             raise OSError("publication failed")
 
-    monkeypatch.setattr(flow, "_campaign_publication_checkpoint", fail)
+    monkeypatch.setattr(flow, "_simulation_record_publication_checkpoint", fail)
     second = flow.execute_cli(argv)
     assert second.exit_code == 2
     assert "manifest:" not in second.outcome.report_text
@@ -839,7 +847,7 @@ def test_ordinary_cli_manifest_and_card_paths(
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True)
     flow = SimulateFlow()
-    monkeypatch.setattr(flow, "_ordinary_campaign_plan", lambda *_args, **_kwargs: plan)
+    monkeypatch.setattr(flow, "_ordinary_simulation_record_plan", lambda *_args, **_kwargs: plan)
     seen: list[Path] = []
 
     execution = _CardExecution(eda_tool="verilator", cocotb=True)
@@ -864,7 +872,7 @@ def test_ordinary_cli_manifest_and_card_paths(
         "booley.flows.sim.flow.OrdinaryHdlSerialExecutor",
         lambda **kwargs: OrdinaryHdlSerialExecutor(**kwargs, execution_factory=factory),
     )
-    argv = _campaign_cli_args(
+    argv = _simulation_record_cli_args(
         work_dir=str(tmp_path),
         report_dir=str(tmp_path / "reports"),
         target="sim",
@@ -895,7 +903,7 @@ def _assert_ordinary_cli_resume(flow, plan, seen, tmp_path, monkeypatch, capsys,
     capsys.readouterr()
     destination = tmp_path / "resumed reports"
     monkeypatch.setattr("booley.flows.sim.record.resume.git_full_sha", lambda *_args: "abc123")
-    monkeypatch.setattr(flow, "_resume_campaign_plan", lambda *_args, **_kwargs: plan)
+    monkeypatch.setattr(flow, "_resume_simulation_record_plan", lambda *_args, **_kwargs: plan)
 
     def resume_executor(_coverage):
         checkpoints = list(destination.glob("sim/[0-9]*/progress.json"))
@@ -910,9 +918,9 @@ def _assert_ordinary_cli_resume(flow, plan, seen, tmp_path, monkeypatch, capsys,
             invoke=lambda *_args, **_kwargs: None, execution_factory=factory
         )
 
-    monkeypatch.setattr(flow, "_resume_campaign_executor", resume_executor)
+    monkeypatch.setattr(flow, "_resume_simulation_record_executor", resume_executor)
     resumed = flow.execute_cli(
-        _campaign_cli_args(
+        _simulation_record_cli_args(
             work_dir=str(tmp_path), report_dir=str(destination), resume_from=str(seen[0])
         )
     )
@@ -972,7 +980,7 @@ def test_cli_manifest_is_flushed_before_execution(
     result = SimulateFlow(coverage_execution=execution).execute_cli(
         [
             "--quiet",
-            *_campaign_cli_args(
+            *_simulation_record_cli_args(
                 work_dir=str(tmp_path),
                 report_dir=str(tmp_path / "reports"),
                 target="sim_0",
@@ -1006,9 +1014,9 @@ def test_partial_publication_discloses_only_committed_target(
         raise AssertionError("work must wait for every manifest")
 
     result = SimulateFlow(
-        coverage_execution=executor, campaign_publication_checkpoint=checkpoint
+        coverage_execution=executor, simulation_record_publication_checkpoint=checkpoint
     ).execute_cli(
-        _campaign_cli_args(
+        _simulation_record_cli_args(
             work_dir=str(tmp_path),
             report_dir=str(tmp_path / "reports"),
             target="sim_0,sim_1",
@@ -1035,12 +1043,12 @@ def test_failure_paths_deduplicate_and_start_without_blank_line(tmp_path: Path) 
     flow._args = SimpleNamespace(report_dir=tmp_path / "reports")
     path = tmp_path / "manifest.json"
     with flow.publication_resources:
-        result = flow._with_campaign_paths(EndpointOutcome(), [path, path])
+        result = flow._with_simulation_record_paths(EndpointOutcome(), [path, path])
     report = (tmp_path / "reports/sim/1/report.json").resolve()
     assert result.report_text == f"  manifest: {path.resolve()}\n  report: {report}"
 
 
-def test_campaign_recording_failure_retains_evaluated_final_report(tmp_path):
+def test_simulation_record_recording_failure_retains_evaluated_final_report(tmp_path):
     from booley.flows.sim.acceptance import (
         AcceptanceContext,
         SimulationAcceptanceCoordinator,
@@ -1079,10 +1087,12 @@ def test_campaign_recording_failure_retains_evaluated_final_report(tmp_path):
 
 
 @pytest.mark.parametrize("conclusive", [True, False])
-def test_standalone_campaign_has_only_current_conclusive_workload_verdict(tmp_path, conclusive):
+def test_standalone_simulation_record_has_only_current_conclusive_workload_verdict(
+    tmp_path, conclusive
+):
     from dataclasses import replace
 
-    from booley.flows.sim.acceptance import _OutcomeEvidence, _record_standalone_campaign
+    from booley.flows.sim.acceptance import _OutcomeEvidence, _record_standalone_simulation_record
     from tests.flows.report_headline import final_report_omits_headline
     from tests.flows.sim.simulation_record_test_support import _observation, _simulation_outcome
     from tests.mcp_tools.test_base import unbound_specialist
@@ -1091,7 +1101,7 @@ def test_standalone_campaign_has_only_current_conclusive_workload_verdict(tmp_pa
     outcome = _simulation_outcome(tmp_path, [_observation("smoke")], required=("smoke",))
     if not conclusive:
         outcome = replace(outcome, complete=False)
-    _record_standalone_campaign(tool, _OutcomeEvidence(outcome))
+    _record_standalone_simulation_record(tool, _OutcomeEvidence(outcome))
     final_report_omits_headline(tool, EndpointOutcome())
     if conclusive:
         assert tool.state.criteria["sim_pass_sim"].met is True
@@ -1102,7 +1112,7 @@ def test_standalone_campaign_has_only_current_conclusive_workload_verdict(tmp_pa
     assert not (tmp_path / "state.json").exists()
 
 
-def _public_cycle_campaign(tmp_path, monkeypatch):
+def _public_cycle_simulation_record(tmp_path, monkeypatch):
     from booley.flows.sim.record.coordinator import (
         NewSimulationRecordRunRequest,
         SimulationRecord,
@@ -1171,7 +1181,7 @@ def _cycle_ticket(tmp_path):
     return path, state, key, recorder
 
 
-def _public_cycle_flow(campaign, monkeypatch):
+def _public_cycle_flow(simulation_record, monkeypatch):
     from contextlib import nullcontext
 
     from booley.flows.endpoint_state import EndpointState
@@ -1180,15 +1190,17 @@ def _public_cycle_flow(campaign, monkeypatch):
     monkeypatch.setattr(flow, "_pre_state_gate", lambda: None)
     monkeypatch.setattr(EndpointState, "_criterion_binding_gate", lambda _self: None)
     from booley.flows.sim.flow import PreparedSimulationEndpoint
-    from booley.flows.sim.record_invocation import SimulationCampaignInvocation
+    from booley.flows.sim.record_invocation import SimulationRecordInvocation
     from tests.flows.invocation_doubles import prepare_as
 
     prepared = PreparedSimulationEndpoint((), None, (), {})
-    prepare_as(monkeypatch, flow, SimulationCampaignInvocation(flow, prepared))
+    prepare_as(monkeypatch, flow, SimulationRecordInvocation(flow, prepared))
     monkeypatch.setattr(flow, "_resolve_display_label", lambda: None)
     monkeypatch.setattr(EndpointState, "admission", lambda *_args, **_kwargs: nullcontext(None))
     monkeypatch.setattr(
-        flow, "run_prepared_simulation", lambda *_args: flow._campaign_endpoint_outcome([campaign])
+        flow,
+        "run_prepared_simulation",
+        lambda *_args: flow._simulation_record_endpoint_outcome([simulation_record]),
     )
     return flow
 
@@ -1223,13 +1235,13 @@ def _cycle_publication_fault(flow, monkeypatch, failure):
     if failure in {"console", "atomic_console"}:
         monkeypatch.setattr(type(flow), "_publish_console_report", fail)
     if failure == "acceptance":
-        monkeypatch.setattr(flow, "record_campaign_acceptance", fail)
+        monkeypatch.setattr(flow, "record_simulation_record_acceptance", fail)
     if failure in {"render", "structured"}:
         # "render" is looked up by the presentation helpers; "structured" by the flow.
         target, name = (
-            (record_presentation, "_campaign_test_run_lines")
+            (record_presentation, "_simulation_record_test_run_lines")
             if failure == "render"
-            else (module, "_campaign_structured_details")
+            else (module, "_simulation_record_structured_details")
         )
         monkeypatch.setattr(target, name, fail)
     return writes
@@ -1255,10 +1267,10 @@ def test_public_cycle_metadata_preserves_durable_accepted_criterion(
 
     from booley.criteria.state import DevelopmentState
 
-    campaign = _public_cycle_campaign(tmp_path, monkeypatch)
+    simulation_record = _public_cycle_simulation_record(tmp_path, monkeypatch)
     path, _state, key, recorder = _cycle_ticket(tmp_path)
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
-    flow = _public_cycle_flow(campaign, monkeypatch)
+    flow = _public_cycle_flow(simulation_record, monkeypatch)
     writes = _cycle_publication_fault(flow, monkeypatch, failure)
     reports = tmp_path / "reports"
     result = flow.execute_cli(
@@ -1292,34 +1304,34 @@ def test_ordinary_partial_failure_keeps_report_counts_separate(tmp_path, monkeyp
     from booley.flows.sim.record.coordinator import SimulationRecordCancellationError
 
     flow = SimulateFlow()
-    campaign = _public_cycle_campaign(tmp_path, monkeypatch)
+    simulation_record = _public_cycle_simulation_record(tmp_path, monkeypatch)
     monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: tmp_path)
-    monkeypatch.setattr(flow, "_write_campaign_progress", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(flow, "_plan_campaign_baselines", lambda *_args: ([], {}))
-    monkeypatch.setattr(flow, "_candidate_campaign_requests", lambda *_args: [])
+    monkeypatch.setattr(flow, "_write_simulation_record_progress", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(flow, "_plan_simulation_record_baselines", lambda *_args: ([], {}))
+    monkeypatch.setattr(flow, "_candidate_simulation_record_requests", lambda *_args: [])
 
     def run(*_args, outcomes, **_kwargs):
-        outcomes.append(campaign)
+        outcomes.append(simulation_record)
         error = SimulationRecordCancellationError if cancelled else RuntimeError
         raise error("second target stopped")
 
-    monkeypatch.setattr(flow, "_publish_and_run_campaign_requests", run)
-    result = flow._execute_campaign(
+    monkeypatch.setattr(flow, "_publish_and_run_simulation_record_requests", run)
+    result = flow._execute_simulation_record(
         AdmissionContext("unmanaged", None, None, "interactive", "", None, lambda: False),
-        flow._ordinary_campaign_run(OrdinaryCampaignPlanning((), None, {})),
+        flow._ordinary_simulation_record_run(OrdinarySimulationRecordPlanning((), None, {})),
     )
     assert result.exit_code != 0
-    assert flow._simulation_campaign_outcomes == ()
+    assert flow._simulation_record_outcomes == ()
     if cancelled:
         assert result.detail == {}
-    _assert_partial_acceptance_policy(flow, result, tmp_path, campaign)
+    _assert_partial_acceptance_policy(flow, result, tmp_path, simulation_record)
 
 
 def test_coverage_cancellation_keeps_completed_report_only_counts(tmp_path, monkeypatch):
     from booley.flows.sim.record.coordinator import SimulationRecordCancellationError
 
     flow = SimulateFlow()
-    outcome = _native_cycle_campaign(tmp_path, monkeypatch)
+    outcome = _native_cycle_simulation_record(tmp_path, monkeypatch)
     responses = iter((outcome,))
 
     def run(_request):
@@ -1330,7 +1342,7 @@ def test_coverage_cancellation_keeps_completed_report_only_counts(tmp_path, monk
 
     monkeypatch.setattr("booley.flows.sim.flow._retain_coverage_campaign", lambda *_args: None)
     progress = SimpleNamespace(checkpoint=lambda: None)
-    result = flow._execute_coverage_campaign_requests(
+    result = flow._execute_coverage_simulation_record_requests(
         SimpleNamespace(run=run), [_request("first"), _request("second")], progress
     )
     assert result.detail == {}
@@ -1338,12 +1350,12 @@ def test_coverage_cancellation_keeps_completed_report_only_counts(tmp_path, monk
     campaign_file = (outcome.manifest_path.parents[1] / "coverage.json").resolve()
     assert campaign_file.is_file()
     assert result.report_text.splitlines()[-1] == f"  coverage campaign: {campaign_file}"
-    assert flow._simulation_campaign_outcomes == ()
+    assert flow._simulation_record_outcomes == ()
     assert all(item["cycle_count"] is None for item in outcome.observations)
     _assert_partial_acceptance_policy(flow, result, tmp_path, outcome)
 
 
-def _native_cycle_campaign(tmp_path, monkeypatch):
+def _native_cycle_simulation_record(tmp_path, monkeypatch):
     from booley.flows.sim.record.coordinator import SimulationRecord
     from booley.flows.sim.request import SimRequest
     from tests.flows.sim.test_coverage_flow import NativeExecution, _prepare_coverage_origin
@@ -1366,7 +1378,7 @@ def _native_cycle_campaign(tmp_path, monkeypatch):
     return returned[0]
 
 
-def _assert_partial_acceptance_policy(flow, result, tmp_path, campaign):
+def _assert_partial_acceptance_policy(flow, result, tmp_path, simulation_record):
     import json
 
     from booley.flows.endpoint_acceptance import record_acceptance
@@ -1398,9 +1410,9 @@ def _assert_partial_acceptance_policy(flow, result, tmp_path, campaign):
         report_path = write_report(context, result)
     report = json.loads(report_path.read_text())
     assert report["cycle_counts"] == {
-        str(campaign.target["selector"]): [
+        str(simulation_record.target["selector"]): [
             {"test": row["test"], "cycle_count": row["cycle_count"]}
-            for row in campaign.observations
+            for row in simulation_record.observations
         ]
     }
 
@@ -1413,7 +1425,7 @@ def test_authenticated_nullable_counts_round_trip(tmp_path, monkeypatch, unnamed
     from tests.flows.sim import simulation_record_test_support as fixtures
 
     if unnamed:
-        campaign = _unnamed_cycle_campaign(tmp_path, monkeypatch)
+        simulation_record = _unnamed_cycle_simulation_record(tmp_path, monkeypatch)
     else:
         original = fixtures._shared_outcome
 
@@ -1424,14 +1436,14 @@ def test_authenticated_nullable_counts_round_trip(tmp_path, monkeypatch, unnamed
             )
 
         monkeypatch.setattr(fixtures, "_shared_outcome", null_outcome)
-        campaign = _public_cycle_campaign(tmp_path, monkeypatch)
+        simulation_record = _public_cycle_simulation_record(tmp_path, monkeypatch)
     flow = SimulateFlow()
     flow._args = SimRequest(target="sim", work_dir=tmp_path, report_dir=tmp_path / "reports")
-    result = flow._campaign_endpoint_outcome([campaign])
+    result = flow._simulation_record_endpoint_outcome([simulation_record])
     _assert_nullable_cycle_report(flow, result, tmp_path, unnamed)
 
 
-def _unnamed_cycle_campaign(tmp_path, monkeypatch):
+def _unnamed_cycle_simulation_record(tmp_path, monkeypatch):
     from booley.flows.sim.record.coordinator import (
         NewSimulationRecordRunRequest,
         SimulationRecord,
@@ -1502,10 +1514,10 @@ def test_coverage_failure_persists_only_returned_outcomes(tmp_path, monkeypatch,
     retain = original_retain._retain_coverage_campaign
     returned = []
 
-    def run(campaign, request):
+    def run(simulation_record, request):
         if failure == "run" and len(returned) == 1:
             raise RuntimeError("second run failed before outcome")
-        outcome = original_run(campaign, request)
+        outcome = original_run(simulation_record, request)
         returned.append(outcome)
         return outcome
 
@@ -1530,7 +1542,7 @@ def test_coverage_failure_persists_only_returned_outcomes(tmp_path, monkeypatch,
 def _assert_coverage_failure_counts(flow, reports, returned):
     import json
 
-    assert flow._simulation_campaign_outcomes == tuple(returned[:1])
+    assert flow._simulation_record_outcomes == tuple(returned[:1])
     report = json.loads((reports / "sim/1/report.json").read_text())
     expected = {
         f"sim_{index}": [{"test": "reset", "cycle_count": None}] for index in range(len(returned))
@@ -1541,10 +1553,10 @@ def _assert_coverage_failure_counts(flow, reports, returned):
 
 
 @pytest.mark.parametrize("access", ["immutable", "legacy-per-test"])
-def test_campaign_executor_uses_frozen_hook_commands_despite_live_config_change(
+def test_simulation_record_executor_uses_frozen_hook_commands_despite_live_config_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, access: str
 ) -> None:
-    _invocation, outcome = _successful_pre_sim_campaign(
+    _invocation, outcome = _successful_pre_sim_record(
         tmp_path,
         monkeypatch,
         access,
@@ -1612,8 +1624,11 @@ def test_public_ordinary_prepared_endpoint_reports_each_shared_build_launch(tmp_
 
     firings = collect_pre_sim_firings(manifest)
     assert len(firings) == 2
-    campaign_root = manifest.parent
-    assert len(list(campaign_root.glob("build-variants/*/attempts/*/build-result.json"))) == 1
+    simulation_record_root = manifest.parent
+    assert (
+        len(list(simulation_record_root.glob("build-variants/*/attempts/*/build-result.json")))
+        == 1
+    )
     assert all(firing.document["stdout_tail"] == "public-hook\n" for firing in firings)
 
 
@@ -1689,7 +1704,7 @@ def test_actual_hook_fires_once_for_two_test_cocotb_batch(tmp_path, monkeypatch)
         )
 
     monkeypatch.setattr(_Group, "launch_snapshot", two_results)
-    invocation, outcome = _successful_pre_sim_campaign(
+    invocation, outcome = _successful_pre_sim_record(
         tmp_path, monkeypatch, "immutable", transform=_cocotb_hook_plan
     )
     assert outcome.aggregate_grade == "pass"
@@ -1737,7 +1752,7 @@ def test_public_ticket_integrity_downgrade_never_commits_or_publishes_true(
 
     project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
     adapter, state_path, log_dir = _public_ticket_hook_adapter(tmp_path, project)
-    project_outcome = flow._campaign_endpoint_outcome
+    project_outcome = flow._simulation_record_endpoint_outcome
 
     def corrupt_after_projection(outcomes):
         result = project_outcome(outcomes)
@@ -1746,7 +1761,7 @@ def test_public_ticket_integrity_downgrade_never_commits_or_publishes_true(
             path.write_text("{}")
         return result
 
-    monkeypatch.setattr(flow, "_campaign_endpoint_outcome", corrupt_after_projection)
+    monkeypatch.setattr(flow, "_simulation_record_endpoint_outcome", corrupt_after_projection)
     result = flow.execute(
         SimRequest(target="sim_a", work_dir=project, report_dir=tmp_path / "reports"),
         adapter=adapter,
@@ -1793,14 +1808,14 @@ def test_ordinary_resume_retains_returned_outcome_when_terminal_write_fails(
             raise OSError("required terminal write unavailable")
 
     monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: tmp_path)
-    monkeypatch.setattr(flow, "_prepare_campaign_resume_dependency", lambda *_args: None)
-    monkeypatch.setattr(flow, "_run_validated_resume_campaign", run_resumed)
-    monkeypatch.setattr(flow, "_campaign_endpoint_outcome", endpoint)
-    monkeypatch.setattr(flow, "_write_campaign_progress", checkpoint)
+    monkeypatch.setattr(flow, "_prepare_simulation_record_resume_dependency", lambda *_args: None)
+    monkeypatch.setattr(flow, "_run_validated_resume_simulation_record", run_resumed)
+    monkeypatch.setattr(flow, "_simulation_record_endpoint_outcome", endpoint)
+    monkeypatch.setattr(flow, "_write_simulation_record_progress", checkpoint)
 
-    result = flow._execute_campaign(
+    result = flow._execute_simulation_record(
         AdmissionContext("unmanaged", None, None, "interactive", "", None, lambda: False),
-        flow._resume_campaign_run(validated, recovery),
+        flow._resume_simulation_record_run(validated, recovery),
     )
 
     assert phases == ["starting", "running", "complete", "aborted"]
@@ -1820,7 +1835,7 @@ _UNADMITTED = {
 
 
 @pytest.mark.parametrize("kind", ["ordinary", "coverage", "resume"])
-def test_campaign_kinds_refuse_without_admission_before_reserving(
+def test_simulation_record_kinds_refuse_without_admission_before_reserving(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
     flow = SimulateFlow()
@@ -1829,22 +1844,24 @@ def test_campaign_kinds_refuse_without_admission_before_reserving(
     recovery = SimpleNamespace(
         manifest_sha256="sha256:x", completed=("a",), interrupted=(), pending=("b",)
     )
-    campaigns = {
-        "ordinary": lambda: flow._ordinary_campaign_run(OrdinaryCampaignPlanning((), None, {})),
-        "coverage": flow._coverage_campaign_run,
-        "resume": lambda: flow._resume_campaign_run(SimpleNamespace(), recovery),
+    simulation_records = {
+        "ordinary": lambda: flow._ordinary_simulation_record_run(
+            OrdinarySimulationRecordPlanning((), None, {})
+        ),
+        "coverage": flow._coverage_simulation_record_run,
+        "resume": lambda: flow._resume_simulation_record_run(SimpleNamespace(), recovery),
     }
     monkeypatch.setattr(
         flow, "reserve_invocation_dir", lambda: pytest.fail("reserved before the admission check")
     )
 
-    result = flow._execute_campaign(None, campaigns[kind]())
+    result = flow._execute_simulation_record(None, simulation_records[kind]())
 
     text, detail = _UNADMITTED[kind]
     assert (result.exit_code, result.report_text, result.detail) == (2, text, detail)
 
 
-def _faulty_campaign(flow, tmp_path, monkeypatch, kind, fault):
+def _faulty_simulation_record(flow, tmp_path, monkeypatch, kind, fault):
     """Build *kind*'s Campaign with its steps stubbed.
 
     The first step publishes one manifest, then raises ``OSError`` for
@@ -1863,7 +1880,7 @@ def _faulty_campaign(flow, tmp_path, monkeypatch, kind, fault):
         if complete and phase == "complete" and fault == "completion":
             raise OSError("terminal progress unavailable")
 
-    monkeypatch.setattr(flow, "_campaign_endpoint_outcome", lambda _outcomes: done)
+    monkeypatch.setattr(flow, "_simulation_record_endpoint_outcome", lambda _outcomes: done)
     if kind == "ordinary":
         publishers = []
         monkeypatch.setattr(
@@ -1875,11 +1892,15 @@ def _faulty_campaign(flow, tmp_path, monkeypatch, kind, fault):
             work(publishers[0])
             return [], {}
 
-        monkeypatch.setattr(flow, "_write_campaign_progress", checkpoint)
-        monkeypatch.setattr(flow, "_plan_campaign_baselines", baselines)
-        monkeypatch.setattr(flow, "_candidate_campaign_requests", lambda *_args: [])
-        monkeypatch.setattr(flow, "_publish_and_run_campaign_requests", lambda *_a, **_k: None)
-        return flow._ordinary_campaign_run(OrdinaryCampaignPlanning((), None, {})), manifest
+        monkeypatch.setattr(flow, "_write_simulation_record_progress", checkpoint)
+        monkeypatch.setattr(flow, "_plan_simulation_record_baselines", baselines)
+        monkeypatch.setattr(flow, "_candidate_simulation_record_requests", lambda *_args: [])
+        monkeypatch.setattr(
+            flow, "_publish_and_run_simulation_record_requests", lambda *_a, **_k: None
+        )
+        return flow._ordinary_simulation_record_run(
+            OrdinarySimulationRecordPlanning((), None, {})
+        ), manifest
     if kind == "coverage":
         progress = SimpleNamespace(targets=("a",), outcomes=[object()], checkpoint=checkpoint)
 
@@ -1891,9 +1912,11 @@ def _faulty_campaign(flow, tmp_path, monkeypatch, kind, fault):
             targets=[SimpleNamespace(handle=SimpleNamespace(selector="a"))]
         )
         monkeypatch.setattr("booley.flows.sim.flow.CoverageProgress", lambda *_args: progress)
-        monkeypatch.setattr(flow, "_coverage_campaign_session", session)
-        monkeypatch.setattr(flow, "_execute_coverage_campaign_requests", lambda *_args: done)
-        return flow._coverage_campaign_run(), manifest
+        monkeypatch.setattr(flow, "_coverage_simulation_record_session", session)
+        monkeypatch.setattr(
+            flow, "_execute_coverage_simulation_record_requests", lambda *_args: done
+        )
+        return flow._coverage_simulation_record_run(), manifest
     plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True)
     validated = SimpleNamespace(manifest=plan.manifest, path=manifest)
     recovery = SimpleNamespace(
@@ -1904,29 +1927,31 @@ def _faulty_campaign(flow, tmp_path, monkeypatch, kind, fault):
         work(args[-1])
         return SimpleNamespace(recovery=recovery)
 
-    monkeypatch.setattr(flow, "_write_campaign_progress", checkpoint)
-    monkeypatch.setattr(flow, "_prepare_campaign_resume_dependency", lambda *_args: None)
-    monkeypatch.setattr(flow, "_run_validated_resume_campaign", resumed)
+    monkeypatch.setattr(flow, "_write_simulation_record_progress", checkpoint)
+    monkeypatch.setattr(flow, "_prepare_simulation_record_resume_dependency", lambda *_args: None)
+    monkeypatch.setattr(flow, "_run_validated_resume_simulation_record", resumed)
     monkeypatch.setattr(
-        "booley.flows.sim.flow_resume._fresh_campaign_recovery_detail",
+        "booley.flows.sim.flow_resume._fresh_simulation_record_recovery_detail",
         lambda *_args: {"pending": []},
     )
-    return flow._resume_campaign_run(validated, recovery), manifest
+    return flow._resume_simulation_record_run(validated, recovery), manifest
 
 
 @pytest.mark.parametrize("kind", ["ordinary", "coverage", "resume"])
 @pytest.mark.parametrize("fault", ["before_result", "completion"])
-def test_campaign_kind_failure_cards_name_published_manifests(
+def test_simulation_record_kind_failure_cards_name_published_manifests(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, fault: str
 ) -> None:
     flow = SimulateFlow()
     flow._args = SimpleNamespace(report_dir=tmp_path, dry_run=False)
     monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: tmp_path)
-    campaign, manifest = _faulty_campaign(flow, tmp_path, monkeypatch, kind, fault)
+    simulation_record, manifest = _faulty_simulation_record(
+        flow, tmp_path, monkeypatch, kind, fault
+    )
 
-    result = flow._execute_campaign(
+    result = flow._execute_simulation_record(
         AdmissionContext("unmanaged", None, None, "interactive", "", None, lambda: False),
-        campaign,
+        simulation_record,
     )
 
     assert result.exit_code == 2
@@ -1992,7 +2017,7 @@ def test_prepared_ordinary_invoker_observes_owned_attempt_before_launch(
 
 
 @pytest.mark.timeout(180)
-def test_prepared_campaign_active_write_failure_preserves_durable_success(
+def test_prepared_simulation_record_active_write_failure_preserves_durable_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2005,11 +2030,11 @@ def test_prepared_campaign_active_write_failure_preserves_durable_success(
         SimRequest(target="sim_a", work_dir=project, report_dir=control_reports)
     )
     assert control.exit_code == 0, control.outcome.report_text
-    control_campaign = control_reports / "sim/1/targets/sim_a/record"
+    control_simulation_record = control_reports / "sim/1/targets/sim_a/record"
     control_records = sorted(
         (
             json.loads(path.read_text())
-            for path in control_campaign.glob("work-items/*/result.json")
+            for path in control_simulation_record.glob("work-items/*/result.json")
         ),
         key=lambda record: record["observations"][0]["test"],
     )
@@ -2029,8 +2054,10 @@ def test_prepared_campaign_active_write_failure_preserves_durable_success(
     assert failures
     assert "observation_error" in result.outcome.detail
     assert "campaign_error" not in result.outcome.detail
-    campaign = reports / "sim/1/targets/sim_a/record"
-    results = [json.loads(path.read_text()) for path in campaign.glob("work-items/*/result.json")]
+    simulation_record = reports / "sim/1/targets/sim_a/record"
+    results = [
+        json.loads(path.read_text()) for path in simulation_record.glob("work-items/*/result.json")
+    ]
     assert len(results) == 2
     assert all(record["grade"] == "pass" for record in results)
     results.sort(key=lambda record: record["observations"][0]["test"])
@@ -2040,7 +2067,7 @@ def test_prepared_campaign_active_write_failure_preserves_durable_success(
         }
     builds = [
         json.loads(path.read_text())
-        for path in campaign.glob("build-variants/*/attempts/*/build-result.json")
+        for path in simulation_record.glob("build-variants/*/attempts/*/build-result.json")
     ]
     assert len(builds) == 1
     assert builds[0]["state"] == "ready"
@@ -2067,14 +2094,16 @@ def test_hook_success_survives_build_failure(tmp_path, monkeypatch):
     failed = replace(failed, tests=(replace(failed.tests[0], name="alpha"),))
     monkeypatch.setattr(_Group, "finish_build_failure", lambda self: failed, raising=False)
     monkeypatch.setattr(_Group, "compile", fail_build)
-    invocation, campaign = _successful_pre_sim_campaign(tmp_path, monkeypatch, "legacy-per-test")
+    invocation, simulation_record = _successful_pre_sim_record(
+        tmp_path, monkeypatch, "legacy-per-test"
+    )
     flow = SimulateFlow()
     flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
-    result = flow._campaign_endpoint_outcome([campaign])
+    result = flow._simulation_record_endpoint_outcome([simulation_record])
     assert result.exit_code == 1
-    assert len(campaign.pre_sim_firings) == 1
-    firing = campaign.pre_sim_firings[0]
+    assert len(simulation_record.pre_sim_firings) == 1
+    firing = simulation_record.pre_sim_firings[0]
     assert firing.document["status"] == "passed" and firing.document["returncode"] == 0
     assert firing.document["stdout_tail"] == "hook-out\n"
     assert firing.document["stderr_tail"] == "hook-err\n"
@@ -2086,7 +2115,7 @@ def test_hook_success_survives_build_failure(tmp_path, monkeypatch):
     assert build["observation"]["detail"]["text"] == "compiler tail"
 
 
-def completed_campaign_report(
+def completed_simulation_record_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, reports: Path | None = None
 ) -> dict[str, Any]:
     """Produce an actual endpoint report with a deterministic fake EDA executable."""
@@ -2101,14 +2130,14 @@ def completed_campaign_report(
     return json.loads((reports / "sim.json").read_bytes())
 
 
-def test_completed_campaign_report_records_tool_and_resources(tmp_path, monkeypatch):
-    report = completed_campaign_report(tmp_path, monkeypatch)
+def test_completed_simulation_record_report_records_tool_and_resources(tmp_path, monkeypatch):
+    report = completed_simulation_record_report(tmp_path, monkeypatch)
     assert report.get("eda_tool") == "icarus"
     assert report.get("resources") == {"cpu_user_s": 3.75, "cpu_sys_s": 0.75, "peak_rss_mb": 256}
 
 
 @pytest.mark.parametrize("mode", ["simulate", "elab_only"])
-def test_campaign_report_records_tools_by_target(tmp_path, monkeypatch, mode):
+def test_simulation_record_report_records_tools_by_target(tmp_path, monkeypatch, mode):
     from booley.flows.sim.request import SimRequest
 
     project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
@@ -2124,7 +2153,7 @@ def test_campaign_report_records_tools_by_target(tmp_path, monkeypatch, mode):
     assert "eda_tool" not in report
 
 
-def test_coverage_campaign_report_records_tool(tmp_path, monkeypatch):
+def test_coverage_simulation_record_report_records_tool(tmp_path, monkeypatch):
     from booley.flows.sim.request import SimRequest
     from tests.flows.sim.test_coverage_flow import NativeExecution, _prepare_coverage_origin
 
@@ -2136,19 +2165,19 @@ def test_coverage_campaign_report_records_tool(tmp_path, monkeypatch):
     assert json.loads((reports / "sim.json").read_bytes()).get("eda_tool") == "verilator"
 
 
-def test_partial_campaign_planning_keeps_known_and_unknown_tools(tmp_path, monkeypatch):
+def test_partial_simulation_record_planning_keeps_known_and_unknown_tools(tmp_path, monkeypatch):
     from booley.flows.sim.request import SimRequest
 
     project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
     (project / ".booley/tests.toml").write_text('[sim_a]\ntests = ["a"]\n[sim_b]\ntests = ["a"]\n')
-    original = flow._ordinary_campaign_plan
+    original = flow._ordinary_simulation_record_plan
 
     def plan(planned, *args, **kwargs):
         if planned.selector == "sim_b":
             raise ValueError("second Target unavailable")
         return original(planned, *args, **kwargs)
 
-    monkeypatch.setattr(flow, "_ordinary_campaign_plan", plan)
+    monkeypatch.setattr(flow, "_ordinary_simulation_record_plan", plan)
     result = flow.execute(
         SimRequest(target="sim_a,sim_b", work_dir=project, report_dir=tmp_path / "reports")
     )
@@ -2162,7 +2191,7 @@ def test_pre_sim_read_rejects_result_reference_without_published_firing(tmp_path
     from booley.flows.sim.record import SimulationRecordIntegrityError
     from booley.flows.sim.record.store import SimulationRecordStore
 
-    invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
+    invocation, outcome = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
     outcome.pre_sim_firings[0].path.unlink()
     store = SimulationRecordStore(invocation / "targets/sim/record")
 
@@ -2195,7 +2224,7 @@ def _spy_simulation_lifecycle(monkeypatch, events, terminal_phases, *, terminal_
     """Append lifecycle step names to *events*, optionally failing the terminal progress write."""
     from booley.flows.endpoint_state import EndpointState
 
-    write_progress = SimulateFlow._write_campaign_progress
+    write_progress = SimulateFlow._write_simulation_record_progress
     hook = SimulateFlow.record_flow_owned_acceptance
     post_run = EndpointState._post_run
     refresh = SimulateFlow.refresh_report_detail
@@ -2221,7 +2250,7 @@ def _spy_simulation_lifecycle(monkeypatch, events, terminal_phases, *, terminal_
         events.append("refresh")
         return refresh(self, result)
 
-    monkeypatch.setattr(SimulateFlow, "_write_campaign_progress", progress)
+    monkeypatch.setattr(SimulateFlow, "_write_simulation_record_progress", progress)
     monkeypatch.setattr(SimulateFlow, "record_flow_owned_acceptance", record)
     monkeypatch.setattr(EndpointState, "_post_run", persist)
     monkeypatch.setattr(SimulateFlow, "refresh_report_detail", refresh_detail)

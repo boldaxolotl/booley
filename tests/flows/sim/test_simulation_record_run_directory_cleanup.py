@@ -32,18 +32,22 @@ def _restore(run: RunDirectory, root: Path) -> RunDirectory:
 
 
 def _run(
-    root: Path, campaign: str, test: str, attempt: str = "a1", template: str = TEMPLATE
+    root: Path, simulation_record: str, test: str, attempt: str = "a1", template: str = TEMPLATE
 ) -> tuple[RunDirectory, dict[str, str]]:
     """Expand one templated run directory and the identity that claims it."""
     run = expand_run_directory(
         template,
         project_root=root,
-        simulation_record_id=campaign,
+        simulation_record_id=simulation_record,
         target_key="sim",
         work_item_key=test,
         attempt_key=attempt,
     )
-    identity = {"simulation_record_id": campaign, "work_item_id": test, "attempt_id": attempt}
+    identity = {
+        "simulation_record_id": simulation_record,
+        "work_item_id": test,
+        "attempt_id": attempt,
+    }
     return run, identity
 
 
@@ -64,10 +68,10 @@ def _lock_names(root: Path) -> list[str]:
     return sorted(path.name for path in locks.iterdir()) if locks.is_dir() else []
 
 
-def test_repeated_templated_campaigns_leave_no_empty_parents(tmp_path: Path) -> None:
-    for campaign in ("c1", "c2", "c3"):
+def test_repeated_templated_simulation_records_leave_no_empty_parents(tmp_path: Path) -> None:
+    for simulation_record in ("c1", "c2", "c3"):
         for test in ("t1", "t2"):
-            run, identity = _run(tmp_path, campaign, test)
+            run, identity = _run(tmp_path, simulation_record, test)
             with claimed_run_directory(run, identity=identity) as directory:
                 assert directory.is_dir()
     assert (tmp_path / "work").is_dir()
@@ -76,8 +80,8 @@ def test_repeated_templated_campaigns_leave_no_empty_parents(tmp_path: Path) -> 
 
 def test_cleanup_keeps_preexisting_parent_and_template_root(tmp_path: Path) -> None:
     (tmp_path / "work/c1").mkdir(parents=True)
-    for campaign in ("c1", "c2"):
-        run, identity = _run(tmp_path, campaign, "t")
+    for simulation_record in ("c1", "c2"):
+        run, identity = _run(tmp_path, simulation_record, "t")
         with claimed_run_directory(run, identity=identity):
             pass
     assert (tmp_path / "work").is_dir()
@@ -180,9 +184,9 @@ def test_resume_cleanup_leaves_unrecorded_parents(tmp_path: Path) -> None:
 
 
 def test_templated_run_locks_do_not_accumulate(tmp_path: Path) -> None:
-    for campaign in ("c1", "c2"):
+    for simulation_record in ("c1", "c2"):
         for test in ("t1", "t2", "t3"):
-            run, identity = _run(tmp_path, campaign, test)
+            run, identity = _run(tmp_path, simulation_record, test)
             with claimed_run_directory(run, identity=identity):
                 pass
     run, identity = _run(tmp_path, "c3", "t1")

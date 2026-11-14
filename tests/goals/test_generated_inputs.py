@@ -25,7 +25,7 @@ from tests.flows.sim.test_simulation_record_manifest_codec import (
     _manifest_components,
     _manifest_work,
 )
-from tests.goals.conftest import LINT_KEY, bind, campaign_facts, enter_goals, git
+from tests.goals.conftest import LINT_KEY, bind, enter_goals, git, simulation_record_facts
 from tests.goals.test_finish import Crash, request
 
 # These multi-step Git/Reviewer cases retain the established Goal lifecycle budget.
@@ -177,7 +177,7 @@ def classified(
     path, digest = _write_producer_manifest(
         path, raw, digest, retired_manifest, older_layout_invocation
     )
-    facts = campaign_facts()
+    facts = simulation_record_facts()
     facts.update(campaign_id=manifest.document["simulation_record_id"], manifest_sha256=digest)
     recorder = GoalEvidenceRecorder(bind(layout))
     state = DevelopmentState.load(paths.state_file, recorder.state_persistence())
@@ -202,7 +202,7 @@ def _real_disclosure(layout):
         return group.planning_disclosure()
 
 
-def test_selected_campaign_generated_build_data_is_materialized_and_frozen(layout):
+def test_selected_simulation_record_generated_build_data_is_materialized_and_frozen(layout):
     source, manifest, transaction = classified(layout)
     call = request(layout)
     result = complete_goal(
@@ -674,7 +674,7 @@ def test_ignored_consumed_project_snapshot_keeps_its_independent_completion_proo
     )
 
 
-def test_accumulated_campaign_keeps_generated_input_authority(layout):
+def test_accumulated_simulation_record_keeps_generated_input_authority(layout):
     from booley.mcp.goal_generated_inputs import generated_inputs
     from tests.goals.conftest import SIM_KEY, passing_sim, run_row
     from tests.goals.test_test_run_evidence import _record

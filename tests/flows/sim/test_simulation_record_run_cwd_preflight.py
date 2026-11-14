@@ -31,7 +31,7 @@ from tests.flows.sim.simulation_record_test_support import (
     _executor,
     _handle,
     _legacy_disclosures,
-    _run_coverage_campaign,
+    _run_coverage_simulation_record,
 )
 from tests.flows.sim.test_coverage_transaction import NativeExecution
 from tests.flows.sim.test_simulation_record_manifest_codec import (
@@ -212,7 +212,7 @@ def test_templated_run_cwd_is_not_preflighted(
     assert harness.counters["compile"] == 1
 
 
-def test_complete_campaign_rerun_does_not_require_literal_run_cwd(
+def test_complete_simulation_record_rerun_does_not_require_literal_run_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     harness = _Harness(tmp_path, monkeypatch, "immutable")
@@ -272,7 +272,7 @@ def test_missing_literal_run_cwd_blocks_baseline_build_across_the_invocation(
     candidate = request(literal_manifest("immutable"), harness.project)
 
     with pytest.raises(SimulationRecordIntegrityError, match=_MISSING):
-        SimulateFlow._publish_and_run_campaign_requests(
+        SimulateFlow._publish_and_run_simulation_record_requests(
             SimulationRecord(harness.executor), [baseline], [candidate]
         )
 
@@ -378,7 +378,7 @@ def test_missing_literal_run_cwd_fails_coverage_before_attempt(
             return SimulationBuildResult(True)
 
     with pytest.raises(SimulationRecordIntegrityError, match=_MISSING):
-        _run_coverage_campaign(tmp_path, CountingNative())
+        _run_coverage_simulation_record(tmp_path, CountingNative())
 
     store = tmp_path / "reports/1/targets/sim_0/record"
     assert builds == []

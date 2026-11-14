@@ -405,7 +405,7 @@ def _detail_stamper(
     )
 
 
-def record_campaign_acceptance(
+def record_simulation_record_acceptance(
     endpoint: EndpointState,
     outcomes: tuple[object, ...],
     *,
@@ -441,7 +441,7 @@ def record_campaign_acceptance(
             raise TypeError("invalid Simulation Campaign outcome")
         evidence = _OutcomeEvidence(item)
         if endpoint.state._file_path is None and not context.diagnostic:
-            _record_standalone_campaign(endpoint, evidence)
+            _record_standalone_simulation_record(endpoint, evidence)
         accepted = reconciler.reconcile(evidence, context)
         acceptances.append(accepted)
         keys.extend(change.key for change in accepted.changes)
@@ -451,12 +451,14 @@ def record_campaign_acceptance(
             "no_criteria",
             "no_applicable_criteria",
         }
-        projection = _campaign_projection(evidence, booley_dir=booley_dir)
+        projection = _simulation_record_projection(evidence, booley_dir=booley_dir)
         origin = item.manifest_path.parents[1] / "simulation.json"
         write_compatibility_projection(origin, projection, acceptance_committed=complete)
 
 
-def _record_standalone_campaign(endpoint: EndpointState, evidence: _OutcomeEvidence) -> None:
+def _record_standalone_simulation_record(
+    endpoint: EndpointState, evidence: _OutcomeEvidence
+) -> None:
     """Record a conclusive candidate workload without creating Ticket state."""
     outcome = evidence.outcome
     if not outcome.complete or outcome.target["role"] != "candidate":
@@ -479,12 +481,12 @@ def _record_standalone_campaign(endpoint: EndpointState, evidence: _OutcomeEvide
     )
 
 
-def _campaign_projection(
+def _simulation_record_projection(
     evidence: _OutcomeEvidence, *, booley_dir: Path | None = None
 ) -> dict[str, object]:
     outcome = evidence.outcome
     facts = outcome.acceptance_facts.document
-    campaign_id = str(facts["campaign_id"])
+    simulation_record_id = str(facts["campaign_id"])
     target_directory = outcome.manifest_path.parents[1]
     test_runs = [
         {
@@ -502,14 +504,14 @@ def _campaign_projection(
         "target_identity": f"{outcome.target['vlnv']}#{outcome.target['name']}",
         "passed": outcome.aggregate_grade == "pass",
         "inconclusive": outcome.aggregate_grade == "inconclusive",
-        "tests": _campaign_test_projections(outcome, test_runs, target_directory),
+        "tests": _simulation_record_test_projections(outcome, test_runs, target_directory),
         "test_runs": test_runs,
-        "simulation_record_id": campaign_id,
+        "simulation_record_id": simulation_record_id,
         "simulation_record_manifest": _artifact_document(
             outcome.manifest_path,
             base=target_directory,
             kind="simulation_record_manifest",
-            owner=campaign_id,
+            owner=simulation_record_id,
             maximum=MANIFEST_MAX_BYTES,
             booley_dir=booley_dir,
         ),
@@ -517,13 +519,13 @@ def _campaign_projection(
     if outcome.coverage_reference is not None:
         projection.update(
             _coverage_projection_fields(
-                evidence, target_directory, campaign_id, booley_dir=booley_dir
+                evidence, target_directory, simulation_record_id, booley_dir=booley_dir
             )
         )
     return projection
 
 
-def _campaign_test_projections(
+def _simulation_record_test_projections(
     outcome: SimulationRecordOutcome, test_runs: list[dict[str, object]], target_directory: Path
 ) -> list[dict[str, object]]:
     """One row per observation, with the Test Run it observed.
@@ -575,7 +577,7 @@ def _observation_error_tail(observation: Mapping[str, object]) -> str:
 def _coverage_projection_fields(
     evidence: _OutcomeEvidence,
     target_directory: Path,
-    campaign_id: str,
+    simulation_record_id: str,
     *,
     booley_dir: Path | None = None,
 ) -> dict[str, object]:
@@ -586,7 +588,7 @@ def _coverage_projection_fields(
             public.path,
             base=target_directory,
             kind="coverage_record_reference",
-            owner=campaign_id,
+            owner=simulation_record_id,
             maximum=MAX_REFERENCE_BYTES,
             booley_dir=booley_dir,
         ),
@@ -1059,15 +1061,15 @@ def _goal_coverage_change(
     return shadow.set_criterion(goal.key, met, detail=projected_detail)
 
 
-def retain_partial_campaign_acceptance(
+def retain_partial_simulation_record_acceptance(
     outcome: EndpointOutcome,
-    campaign_outcomes: tuple[object, ...],
+    simulation_record_outcomes: tuple[object, ...],
     accepted: tuple[object, ...],
 ) -> None:
     """Expose durable per-Target acceptance completed before projection failed."""
     entries: list[dict[str, object]] = []
-    for campaign, disposition in zip(campaign_outcomes, accepted, strict=False):
-        target = getattr(campaign, "target", {})
+    for simulation_record, disposition in zip(simulation_record_outcomes, accepted, strict=False):
+        target = getattr(simulation_record, "target", {})
         selector = target.get("selector", "") if isinstance(target, Mapping) else ""
         entries.append(
             {
@@ -1086,6 +1088,6 @@ __all__ = [
     "AcceptanceContext",
     "AcceptanceOutcome",
     "SimulationAcceptanceCoordinator",
-    "record_campaign_acceptance",
-    "retain_partial_campaign_acceptance",
+    "record_simulation_record_acceptance",
+    "retain_partial_simulation_record_acceptance",
 ]

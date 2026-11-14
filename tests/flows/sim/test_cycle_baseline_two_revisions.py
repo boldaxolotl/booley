@@ -20,7 +20,11 @@ from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import CriteriaTemplate
 from booley.flows.base import SubprocessResult
 from booley.runtime.endpoint_execution import EXIT_SUCCESS
-from tests.flows.sim.simulation_record_boundary import CampaignSimRun, Launch, run_campaign_sim
+from tests.flows.sim.simulation_record_boundary import (
+    Launch,
+    SimulationRecordSimRun,
+    run_simulation_record_sim,
+)
 from tests.flows.sim.test_coverage_flow import _AcceptanceAdapter
 
 _REVISION = "b" * 40
@@ -89,7 +93,7 @@ def _run(
     baseline_tool: str = "verilator",
     criterion_tests: tuple[str, ...] = ("stress",),
     tests: tuple[str, ...] = ("stress",),
-) -> tuple[CampaignSimRun, list[tuple[str, Launch]], Any]:
+) -> tuple[SimulationRecordSimRun, list[tuple[str, Launch]], Any]:
     """Run ``--test stress`` with a relative Cycle Count Criterion per *criterion_tests*.
 
     Returns the run, the launches tagged with their revision, and the saved
@@ -124,7 +128,7 @@ def _run(
         patch("booley.flows.sim.flow.git_full_sha", return_value=_REVISION),
         patch("booley.flows.sim.flow.baseline_worktree", worktree),
     ):
-        run = run_campaign_sim(
+        run = run_simulation_record_sim(
             tmp_path,
             monkeypatch,
             {"lite": ["smoke", "stress"]},

@@ -102,6 +102,8 @@ class StandaloneJob:
         self._record = record
         self._root = standalone_jobs_dir(booley_dir)
         self._finished = False
+        # The caller's ``BOOLEY_RUN_ID`` an own-run Job replaced; ``discard`` puts it back.
+        self._previous_run_id: str | None = None
         # An adopted Job's fds 1 and 2 already are its ``job.log``: nothing to tee.
         self._adopted = adopted
 
@@ -115,17 +117,28 @@ class StandaloneJob:
 
     @classmethod
     def prepare(
-        cls, project_root: Path, kind: str, name: str, argv: list[str]
+        cls,
+        project_root: Path,
+        endpoint: str,
+        argv: list[str],
+        *,
+        report_root: str | None,
+        own_run: bool = False,
     ) -> StandaloneJob | None:
         """Allocate the run id and export it, or ``None`` when this run is not a Standalone Job.
 
-        Not a Standalone Job: an MCP child or Doctor probe (marked by its invocation
-        origin), a run inside another Job's process tree (``BOOLEY_RUN_ID`` is set),
-        or a Project whose common Booley Directory cannot be resolved.
+        *argv* is the full command line shown for the Job and *report_root* where its
+        reports land. Not a Standalone Job: an MCP child or Doctor probe (marked by its
+        invocation origin), a run inside another Job's process tree (``BOOLEY_RUN_ID`` is
+        set), or a Project whose common Booley Directory cannot be resolved. With *own_run*
+        the first two do not count: the Job is its own, and :meth:`discard` restores the
+        caller's ``BOOLEY_RUN_ID``.
         """
         from booley.runtime.booley_dir import resolve_common_booley_dir
 
-        if os.environ.get(INVOCATION_ORIGIN_ENV) == "transport" or os.environ.get(RUN_ID_ENV):
+        inherited = os.environ.get(RUN_ID_ENV)
+        nested = os.environ.get(INVOCATION_ORIGIN_ENV) == "transport" or bool(inherited)
+        if nested and not own_run:
             return None
         try:
             booley_dir = resolve_common_booley_dir(project_root)
@@ -133,22 +146,32 @@ class StandaloneJob:
             return None
         started_at = utc_now_rfc3339()
         record = job_records.JobRecord(
-            run_id=job_records.make_run_id(name, compact_utc_now(), 1),
-            endpoint=name,
+            run_id=job_records.make_run_id(endpoint, compact_utc_now(), 1),
+            endpoint=endpoint,
             started_at=started_at,
             timeout_s=STANDALONE_TIMEOUT_S,
-            argv=["booley", kind, name, *argv],
+            argv=argv,
             pid=os.getpid(),
             run_started_at=started_at,
             work_dir=str(project_root),
-            report_root=checkout_report_root(project_root),
+            report_root=report_root,
         )
         os.environ[RUN_ID_ENV] = record.run_id
-        return cls(booley_dir, record)
+        job = cls(booley_dir, record)
+        job._previous_run_id = inherited if own_run else None
+        return job
+
+    @property
+    def run_id(self) -> str:
+        """The run id of this Job's record."""
+        return self._record.run_id
 
     def discard(self) -> None:
         """Unexport the run id; the caller does this once the run, or its help path, is over."""
-        os.environ.pop(RUN_ID_ENV, None)
+        if self._previous_run_id is None:
+            os.environ.pop(RUN_ID_ENV, None)
+        else:
+            os.environ[RUN_ID_ENV] = self._previous_run_id
 
     def run(self, run: Callable[[], int]) -> int:
         """Run *run* as this Job; its result, exit and exceptions pass through unchanged."""

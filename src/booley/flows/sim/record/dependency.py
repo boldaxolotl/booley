@@ -16,7 +16,7 @@ from booley.core.boundary import (
 )
 from booley.flows.sim.record_files import read_json_object
 from booley.flows.sim.record_layout import RECORD_DIRECTORY
-from booley.flows.sim.record_reports import is_report_link, write_campaign_json
+from booley.flows.sim.record_reports import is_report_link, write_simulation_record_json
 from booley.runtime.booley_dir import crossed_booley_dir_entry
 
 from .codec import MANIFEST_MAX_BYTES, raise_if_retired_schema
@@ -85,7 +85,7 @@ def register_simulation_record_dependency(
         != document
     ):
         raise ValueError("Simulation Campaign dependency receipt disagrees")
-    write_campaign_json(path, document)
+    write_simulation_record_json(path, document)
     return path
 
 

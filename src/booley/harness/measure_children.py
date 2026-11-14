@@ -120,6 +120,7 @@ class _Entry:
     withdrawn: bool = False
     result: CheckoutFlowResult | None = None
     settled: bool = False
+    # Set when the child ended, or when it could not be launched (then ``child`` stays None).
     measurement: TableMeasurement | None = None
 
     @property
@@ -178,7 +179,8 @@ class ChildScheduler:
         return [entry for entry in self._entries if entry.live]
 
     def _has_planned(self) -> bool:
-        return any(entry.child is None for entry in self._entries)
+        """Whether a child is still to start: neither started nor failed to launch."""
+        return any(entry.child is None and entry.measurement is None for entry in self._entries)
 
     def _reap_ended(self) -> None:
         """Settle and evaluate every child that has ended; set ``stopping`` on a failing verdict."""
@@ -255,9 +257,31 @@ class ChildScheduler:
     def _start_planned(self) -> None:
         """Start every planned child: admission, not the scheduler, orders them."""
         for entry in self._entries:
-            if entry.child is None:
+            if entry.child is not None or entry.measurement is not None:
+                continue
+            try:
                 entry.child = entry.prepared.start()
-                entry.started_at = time.monotonic()
+            except CheckoutFlowError as exc:
+                # Before any child started nothing is measured yet: the caller refuses.
+                if not any(other.child is not None for other in self._entries):
+                    raise
+                self._record_launch_failure(entry, exc)
+                if self._stopping:
+                    return
+                continue
+            entry.started_at = time.monotonic()
+
+    def _record_launch_failure(self, entry: _Entry, error: CheckoutFlowError) -> None:
+        """Give a table whose child could not be launched ``error`` verdicts, so earlier
+        children's results are kept; the failing verdict stops the run unless ``all_tables``.
+        """
+        rules = entry.rules
+        results = evaluate_table(rules, FlowFailed(str(error)))
+        run = TableRun(rules.identity, rules.flow, None, None, results)
+        # Not finished: no child ran, so a cancellation after it must still store nothing.
+        entry.measurement = TableMeasurement(run, (), finished=False)
+        if not self._all_tables:
+            self._stopping = True
 
     # -------------------------------------------------------------- cancellation
 
@@ -276,7 +300,8 @@ class ChildScheduler:
 
     def _discard_unstarted(self) -> None:
         for entry in self._entries:
-            if entry.child is None:
+            # A launch failure already discarded its own scratch.
+            if entry.child is None and entry.measurement is None:
                 entry.prepared.discard()
 
     def close(self) -> None:
@@ -408,6 +433,69 @@ def _prepare_all(
     return prepared
 
 
+def prepare_children(
+    tables: Sequence[TableRules],
+    *,
+    checkout: Path,
+    main_booley_dir: Path,
+    report_dir: Path,
+    timeout_s: float | None,
+) -> list[tuple[TableRules, PreparedChild]]:
+    """Preflight every table, cheapest cost tier first; start no child.
+
+    A refusal for any table discards the others' scratch, so a refusal starts none. A
+    ``BaseException`` (a Ctrl-C) ends the running preflight and discards the same way.
+
+    Raises:
+        CheckoutFlowError: a table was refused; it names the table.
+    """
+    return _prepare_all(
+        in_cost_tier_order(tables),
+        checkout=checkout,
+        main_booley_dir=main_booley_dir.resolve(),
+        report_dir=report_dir,
+        timeout_s=timeout_s,
+    )
+
+
+def run_children(
+    prepared: Sequence[tuple[TableRules, PreparedChild]],
+    tables: Sequence[TableRules],
+    *,
+    main_booley_dir: Path,
+    all_tables: bool,
+    cancelled: Callable[[], bool],
+) -> ChildrenOutcome:
+    """Run the *prepared* children within the admission queue and settle every one.
+
+    *cancelled* is polled each pass; a ``BaseException`` (a Ctrl-C) stops and settles every
+    child before it propagates. The outcome lists the tables in *tables* order.
+
+    Raises:
+        CheckoutFlowError: the first child could not be launched.
+    """
+    main = main_booley_dir.resolve()
+    try:
+        store = job_slots.SlotStore(
+            job_slots.project_slots_dir(main),
+            parse_caps(load_job_budget_config(booley_dir=main)),
+        )
+    except BaseException:  # nothing started: leave no scratch behind
+        for _table, child in prepared:
+            child.discard()
+        raise
+    scheduler = ChildScheduler(prepared, store, all_tables=all_tables)
+    try:
+        while scheduler.step(cancel=cancelled()):
+            time.sleep(_POLL_S)
+        outcome = scheduler.outcome()
+    finally:
+        scheduler.close()
+    position = {(table.identity, table.flow): rank for rank, table in enumerate(tables)}
+    ranked = sorted(outcome.tables, key=lambda t: position[(t.run.identity, t.run.flow)])
+    return ChildrenOutcome(outcome.status, tuple(ranked))
+
+
 def measure_tables(
     tables: Sequence[TableRules],
     *,
@@ -421,31 +509,22 @@ def measure_tables(
     """Measure every table in *checkout*, cheapest cost tier first, within the admission queue.
 
     Every table is preflighted before any child starts, so a refusal for any of them starts
-    none. *cancelled* is polled each pass; a ``BaseException`` (a Ctrl-C) stops and settles
-    every child before it propagates. The outcome lists the tables in *tables* order.
+    none (:func:`prepare_children`, then :func:`run_children`).
 
     Raises:
         CheckoutFlowError: a table was refused or could not be started; it names the table.
     """
-    main = main_booley_dir.resolve()
-    prepared = _prepare_all(
-        in_cost_tier_order(tables),
+    prepared = prepare_children(
+        tables,
         checkout=checkout,
-        main_booley_dir=main,
+        main_booley_dir=main_booley_dir,
         report_dir=report_dir,
         timeout_s=timeout_s,
     )
-    store = job_slots.SlotStore(
-        job_slots.project_slots_dir(main),
-        parse_caps(load_job_budget_config(booley_dir=main)),
+    return run_children(
+        prepared,
+        tables,
+        main_booley_dir=main_booley_dir,
+        all_tables=all_tables,
+        cancelled=cancelled,
     )
-    scheduler = ChildScheduler(prepared, store, all_tables=all_tables)
-    try:
-        while scheduler.step(cancel=cancelled()):
-            time.sleep(_POLL_S)
-        outcome = scheduler.outcome()
-    finally:
-        scheduler.close()
-    position = {(table.identity, table.flow): rank for rank, table in enumerate(tables)}
-    ranked = sorted(outcome.tables, key=lambda t: position[(t.run.identity, t.run.flow)])
-    return ChildrenOutcome(outcome.status, tuple(ranked))

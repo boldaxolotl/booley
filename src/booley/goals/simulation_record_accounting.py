@@ -92,11 +92,11 @@ from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 from booley.flows.execution_persistence import EvidenceDiscarded
 from booley.flows.frozen_test_runs import GoalTestRuns
 from booley.flows.simulation_record_results import (
-    CampaignBusyError,
-    CampaignResultsReader,
-    DurableCampaignResults,
+    DurableSimulationRecordResults,
     OlderBooleyRecordError,
-    StartedCampaign,
+    SimulationRecordBusyError,
+    SimulationRecordResultsReader,
+    StartedSimulationRecord,
 )
 from booley.goals.apply_barrier import pending_applies
 from booley.goals.binding import GoalBindingError, GoalRunBinding
@@ -142,14 +142,14 @@ class RegistrationFormatError(ValueError):
 
 
 @dataclass(frozen=True)
-class CampaignRegistration:
+class SimulationRecordRegistration:
     """One pending Simulation Campaign a bound run started.
 
     ``stamps`` holds, per Goal of the campaign's Target, the source
     fingerprint detail of the file contents the campaign started at.
     """
 
-    campaign_id: str
+    simulation_record_id: str
     manifest_sha256: str
     manifest_path: str
     binding: Mapping[str, Any]
@@ -164,7 +164,7 @@ class CampaignRegistration:
         """The stored document."""
         return {
             "$schema": REGISTRATION_SCHEMA,
-            "campaign_id": self.campaign_id,
+            "campaign_id": self.simulation_record_id,
             "manifest_sha256": self.manifest_sha256,
             "manifest_path": self.manifest_path,
             "binding": dict(self.binding),
@@ -173,7 +173,7 @@ class CampaignRegistration:
         }
 
     @classmethod
-    def from_json(cls, raw: object, *, where: str) -> CampaignRegistration:
+    def from_json(cls, raw: object, *, where: str) -> SimulationRecordRegistration:
         """Parse a stored registration, raising :class:`RegistrationFormatError`."""
         try:
             document = require_dict(raw, field=where)
@@ -230,28 +230,30 @@ def _path(paths: GoalRecordPaths, manifest_sha256: str) -> Path:
     return _directory(paths) / f"{name}.json"
 
 
-def _read(path: Path) -> CampaignRegistration:
+def _read(path: Path) -> SimulationRecordRegistration:
     try:
         raw = json.loads(read_file_bytes(path))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RegistrationFormatError(f"campaign registration {path.name}: {exc}") from exc
-    return CampaignRegistration.from_json(raw, where=f"campaign registration {path.name}")
+    return SimulationRecordRegistration.from_json(raw, where=f"campaign registration {path.name}")
 
 
-def _write(paths: GoalRecordPaths, registration: CampaignRegistration) -> None:
+def _write(paths: GoalRecordPaths, registration: SimulationRecordRegistration) -> None:
     path = _path(paths, registration.manifest_sha256)
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_replace_bytes(path, canonical_json(registration.to_json()) + b"\n")
 
 
-def _stored(paths: GoalRecordPaths) -> tuple[list[CampaignRegistration], list[tuple[Path, str]]]:
+def _stored(
+    paths: GoalRecordPaths,
+) -> tuple[list[SimulationRecordRegistration], list[tuple[Path, str]]]:
     """Every stored registration, oldest first, and every file that cannot be decoded.
 
     Each document is decoded on its own: one unreadable file does not hide
     the others.
     """
     directory = _directory(paths)
-    found: list[CampaignRegistration] = []
+    found: list[SimulationRecordRegistration] = []
     unreadable: list[tuple[Path, str]] = []
     for path in sorted(directory.glob("*.json")) if directory.is_dir() else ():
         try:
@@ -286,7 +288,11 @@ def unsettled_campaigns(store: GoalStore, record: GoalRecord) -> list[dict[str, 
     paths = record_paths(store.booley_dir, record.id)
     found, unreadable = _stored(paths)
     listed: list[dict[str, Any]] = [
-        {"state": "open", "campaign_id": item.campaign_id, "manifest_path": item.manifest_path}
+        {
+            "state": "open",
+            "campaign_id": item.simulation_record_id,
+            "manifest_path": item.manifest_path,
+        }
         for item in found
     ]
     listed += [{"state": "unreadable", "file": path.name} for path, _ in unreadable]
@@ -297,7 +303,9 @@ def unsettled_campaigns(store: GoalStore, record: GoalRecord) -> list[dict[str, 
     return listed
 
 
-def _relevant_keys(registration: CampaignRegistration, record: GoalRecord) -> tuple[str, ...]:
+def _relevant_keys(
+    registration: SimulationRecordRegistration, record: GoalRecord
+) -> tuple[str, ...]:
     """The Goals *registration* stamped that still have the revision its run was bound to.
 
     A Goal an approved change gave another revision started its evidence
@@ -328,10 +336,10 @@ def _outcome_goals(record: GoalRecord) -> tuple[RecordedGoal, ...]:
 # ---------------------------------------------------------------------------
 
 
-def register_campaign(
+def register_simulation_record(
     store: GoalStore,
     binding: GoalRunBinding,
-    campaign: StartedCampaign,
+    simulation_record: StartedSimulationRecord,
     stamp: Callable[[RecordedGoal], Mapping[str, Any] | None],
 ) -> None:
     """Register *campaign* as started by *binding*'s run.
@@ -342,13 +350,13 @@ def register_campaign(
     discarded anyway. A baseline campaign, and one whose Target no Goal is
     judged by through its Test Runs' outcomes, is not registered.
     """
-    if not campaign.candidate:
+    if not simulation_record.candidate:
         return
     record = store.load(binding.record_id)
     stamps: dict[str, Mapping[str, Any]] = {}
     for goal in _outcome_goals(record):
         admitted = binding.spec_revision(goal.spec.key) == goal.spec_revision
-        named = goal.spec.target in campaign.target_names
+        named = goal.spec.target in simulation_record.target_names
         if not named or not admitted:
             continue
         stamped = stamp(goal)
@@ -357,10 +365,10 @@ def register_campaign(
     if not stamps:
         return
     paths = record_paths(store.booley_dir, binding.record_id)
-    registration = CampaignRegistration(
-        campaign.campaign_id,
-        campaign.manifest_sha256,
-        campaign.manifest_path.resolve().as_posix(),
+    registration = SimulationRecordRegistration(
+        simulation_record.simulation_record_id,
+        simulation_record.manifest_sha256,
+        simulation_record.manifest_path.resolve().as_posix(),
         binding.to_json(),
         stamps,
         utc_now_rfc3339(),
@@ -388,7 +396,7 @@ def unaccounted_goals(
     record: GoalRecord,
     state: DevelopmentState,
     history: Sequence[dict[str, Any]],
-    reader: CampaignResultsReader | None,
+    reader: SimulationRecordResultsReader | None,
 ) -> dict[str, str]:
     """Why each Goal with durable evidence outside its ledger reads unmet, by Goal key.
 
@@ -424,14 +432,16 @@ def unaccounted_goals(
 
 
 def _pending(
-    registration: CampaignRegistration,
+    registration: SimulationRecordRegistration,
     record: GoalRecord,
     history: Sequence[dict[str, Any]],
-    reader: CampaignResultsReader | None,
+    reader: SimulationRecordResultsReader | None,
 ) -> Unaccounted:
     """The Goals *registration* blocks now, and why: none for an idle, adopted campaign."""
     keys = _relevant_keys(registration, record)
-    what = f"Simulation Campaign {registration.campaign_id} ({registration.manifest_path})"
+    what = (
+        f"Simulation Campaign {registration.simulation_record_id} ({registration.manifest_path})"
+    )
     durable, problem = _results(registration, reader)
     if durable is None:
         return Unaccounted(keys, what, problem)
@@ -449,14 +459,14 @@ def _pending(
 
 
 def _results(
-    registration: CampaignRegistration, reader: CampaignResultsReader | None
-) -> tuple[DurableCampaignResults | None, str]:
+    registration: SimulationRecordRegistration, reader: SimulationRecordResultsReader | None
+) -> tuple[DurableSimulationRecordResults | None, str]:
     """What *reader* returns for *registration*'s campaign, or why it returns nothing."""
     if reader is None:
         return None, "cannot be read by this caller"
     try:
         return reader(Path(registration.manifest_path), registration.manifest_sha256), ""
-    except CampaignBusyError:
+    except SimulationRecordBusyError:
         return None, "is still running"
     except OlderBooleyRecordError as exc:  # intact, only too old: it cannot be resumed
         return None, f"is refused: {exc}"
@@ -531,17 +541,17 @@ class _Accounting:
     store: GoalStore
     record: GoalRecord
     paths: GoalRecordPaths
-    reader: CampaignResultsReader | None
+    reader: SimulationRecordResultsReader | None
 
     def state(self) -> DevelopmentState:
         return DevelopmentState.load(self.paths.state_file, _LockedStateFile(self.record))
 
 
-def account_for_campaigns(
+def account_for_simulation_records(
     store: GoalStore,
     record_id: str,
     *,
-    reader: CampaignResultsReader | None,
+    reader: SimulationRecordResultsReader | None,
     own_run: str = "",
 ) -> None:
     """Bring every durable observation of Goal Record *record_id* into its ledger.
@@ -577,7 +587,7 @@ def account_for_campaigns(
             else:
                 logger.warning(
                     "Simulation Campaign %s of Goal Mode %s is unaccounted: %s",
-                    registration.campaign_id,
+                    registration.simulation_record_id,
                     record_id,
                     problem,
                 )
@@ -607,12 +617,14 @@ def _complete_transactions(run: _Accounting) -> None:
             mark_published(run.store, run.record.id, pending.acceptance_facts)
 
 
-def _run_id(registration: CampaignRegistration) -> str:
+def _run_id(registration: SimulationRecordRegistration) -> str:
     return str(registration.binding.get("invocation_id", ""))
 
 
 def _settle(
-    run: _Accounting, registration: CampaignRegistration, durable: DurableCampaignResults
+    run: _Accounting,
+    registration: SimulationRecordRegistration,
+    durable: DurableSimulationRecordResults,
 ) -> None:
     """Adopt what *durable* holds for *registration*'s Goals; delete it once complete.
 
@@ -629,7 +641,7 @@ def _settle(
         _path(run.paths, registration.manifest_sha256).unlink(missing_ok=True)
 
 
-def _publishable(registration: CampaignRegistration, keys: Sequence[str]) -> bool:
+def _publishable(registration: SimulationRecordRegistration, keys: Sequence[str]) -> bool:
     """Whether the run that started the campaign could still publish for *keys* now."""
     try:
         with PublicationGate(registration.run_binding()).publishing(keys):
@@ -641,8 +653,8 @@ def _publishable(registration: CampaignRegistration, keys: Sequence[str]) -> boo
 def _adopt(
     run: _Accounting,
     state: DevelopmentState,
-    registration: CampaignRegistration,
-    durable: DurableCampaignResults,
+    registration: SimulationRecordRegistration,
+    durable: DurableSimulationRecordResults,
     goal: RecordedGoal,
     *,
     passes: bool,
@@ -671,7 +683,7 @@ def _adopt(
 
 
 def _matching(
-    frozen: GoalTestRuns, durable: DurableCampaignResults, grades: set[str]
+    frozen: GoalTestRuns, durable: DurableSimulationRecordResults, grades: set[str]
 ) -> list[Mapping[str, Any]]:
     """The rows of *durable* that match the *frozen* Test Runs and have one of *grades*."""
     return [row for row in frozen.matching(durable.rows) if row["grade"] in grades]
@@ -680,8 +692,8 @@ def _matching(
 def _adopted(
     record: GoalRecord,
     history: Sequence[dict[str, Any]],
-    registration: CampaignRegistration,
-    durable: DurableCampaignResults,
+    registration: SimulationRecordRegistration,
+    durable: DurableSimulationRecordResults,
 ) -> set[str]:
     """The Goals whose current evidence already holds the adoption of *durable*."""
     marker = _marker(registration, durable)
@@ -692,11 +704,13 @@ def _adopted(
     }
 
 
-def _marker(registration: CampaignRegistration, durable: DurableCampaignResults) -> dict[str, Any]:
+def _marker(
+    registration: SimulationRecordRegistration, durable: DurableSimulationRecordResults
+) -> dict[str, Any]:
     """What identifies one adoption: the campaign and the results it held."""
     results = {"results": [list(pair) for pair in durable.results]}
     return {
-        "campaign_id": registration.campaign_id,
+        "campaign_id": registration.simulation_record_id,
         "manifest_sha256": registration.manifest_sha256,
         "results_sha256": hashlib.sha256(canonical_json(results)).hexdigest(),
     }
@@ -705,7 +719,7 @@ def _marker(registration: CampaignRegistration, durable: DurableCampaignResults)
 def _append(
     run: _Accounting,
     state: DevelopmentState,
-    registration: CampaignRegistration,
+    registration: SimulationRecordRegistration,
     goal: RecordedGoal,
     detail: dict[str, Any],
     history: Sequence[Mapping[str, Any]],

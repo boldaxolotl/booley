@@ -33,7 +33,7 @@ def _workload_keys(
 
 
 @dataclass(frozen=True)
-class SimulationCampaignInvocation(PreparedInvocation):
+class SimulationRecordInvocation(PreparedInvocation):
     """A Simulation run whose Targets were prepared and authorized before admission."""
 
     flow: SimulateFlow
@@ -45,7 +45,7 @@ class SimulationCampaignInvocation(PreparedInvocation):
         return self.flow.run_prepared_simulation(self.prepared, admission)
 
     def job_requests(self) -> tuple[JobRequest, ...] | None:
-        return self.flow.campaign_job_requests(self.prepared)
+        return self.flow.simulation_record_job_requests(self.prepared)
 
     def report_scope(self, endpoint: EndpointState) -> ReportScope:
         workloads, coverage = self.flow.report_candidate_workloads(self.prepared)

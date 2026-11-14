@@ -216,7 +216,7 @@ def test_run_cwd_template_deduplicates_placeholders_in_first_seen_order() -> Non
     assert parse_run_cwd_template("runs/{test}/{attempt}/{test}") == ("test", "attempt")
 
 
-def test_campaign_model_only_freezes_json_shaped_values() -> None:
+def test_simulation_record_model_only_freezes_json_shaped_values() -> None:
     with pytest.raises(TypeError, match="keys"):
         _freeze_json({1: "value"})
     with pytest.raises(TypeError, match="non-JSON"):

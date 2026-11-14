@@ -17,7 +17,7 @@ from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintConfigResult, LintFlow
 from booley.flows.plan import FlowPlan
 from booley.flows.sim.flow import SimulateFlow
-from booley.flows.sim.watchdog_sizing import resolve_sim_campaign_work_units
+from booley.flows.sim.watchdog_sizing import resolve_simulation_record_work_units
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.mcp import server
 from booley.mcp.flow_adapter import flow_schema
@@ -266,14 +266,14 @@ def test_omitted_sim_target_budget_counts_default_suite(project):
         '[chosen]\ntests = ["first", "second", "third"]\nselect = "+test={name}"\n',
         encoding="utf-8",
     )
-    explicit = resolve_sim_campaign_work_units(project, "chosen")
+    explicit = resolve_simulation_record_work_units(project, "chosen")
     assert explicit == 3
-    assert resolve_sim_campaign_work_units(project, "") == explicit, (
+    assert resolve_simulation_record_work_units(project, "") == explicit, (
         "auto-selected suite was under-budgeted"
     )
     assert (
-        resolve_sim_campaign_work_units(project, "", ["first@x4"])
-        == resolve_sim_campaign_work_units(project, "chosen", ["first@x4"])
+        resolve_simulation_record_work_units(project, "", ["first@x4"])
+        == resolve_simulation_record_work_units(project, "chosen", ["first@x4"])
         == 4
     )
 
@@ -306,7 +306,7 @@ def test_omitted_target_with_resume_is_accepted(entry, project, monkeypatch):
         observed.append(selected.target_handles[0].identity)
         return EndpointOutcome(report_text="RESULT: PASS")
 
-    monkeypatch.setattr(SimulateFlow, "_resume_campaign", resume)
+    monkeypatch.setattr(SimulateFlow, "_resume_simulation_record", resume)
     monkeypatch.setattr(
         TargetCatalog, "list", lambda *args, **kwargs: pytest.fail("resume discovered catalog")
     )
@@ -421,7 +421,7 @@ def test_resume_budget_does_not_discover_unrelated_target(project, monkeypatch):
     context = server.resolve_call_context({"work_dir": str(project)})
     estimates = []
     monkeypatch.setattr(
-        "booley.flows.sim.watchdog_sizing.resolve_sim_campaign_work_units",
+        "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
         lambda *args, **kwargs: pytest.fail("resume sized unrelated Target"),
     )
     for count in (0, 1, 2):

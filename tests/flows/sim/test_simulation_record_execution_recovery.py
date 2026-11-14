@@ -90,7 +90,7 @@ from tests.flows.sim.simulation_record_test_support import (
     _publish_request_hook,
     _read,
     _request,
-    _run_coverage_campaign,
+    _run_coverage_simulation_record,
     _run_identity,
     _two_item_manifest,
     _wait_until,
@@ -100,7 +100,7 @@ from tests.flows.sim.test_coverage_transaction import NativeExecution
 from tests.fusesoc_test_support import symlinked_booley_dir
 
 
-def test_campaign_pre_sim_commands_have_an_independent_timeout(
+def test_simulation_record_pre_sim_commands_have_an_independent_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     captured: dict[str, object] = {}
@@ -123,7 +123,7 @@ def test_campaign_pre_sim_commands_have_an_independent_timeout(
     assert captured["timeout_s"] == DEFAULT_TIMEOUT_S
 
 
-def test_campaign_policy_carries_build_budget_into_execution_options(
+def test_simulation_record_policy_carries_build_budget_into_execution_options(
     tmp_path: Path,
 ) -> None:
     manifest = _manifest_for(("alpha",))
@@ -161,7 +161,7 @@ def test_campaign_policy_carries_build_budget_into_execution_options(
     assert counters["compile"] == 1
 
 
-def test_private_campaign_build_uses_carried_build_budget(
+def test_private_simulation_record_build_uses_carried_build_budget(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -205,7 +205,7 @@ def test_private_campaign_build_uses_carried_build_budget(
     assert counters["compile"] == 1
 
 
-def test_pre_cancelled_campaign_hook_never_compiles_or_runs(tmp_path):
+def test_pre_cancelled_simulation_record_hook_never_compiles_or_runs(tmp_path):
     from booley.flows.sim.execution.contract import PreSimScopeStoppedError
     from booley.runtime.supervised_execution import (
         SupervisedExecutionScope,
@@ -486,7 +486,7 @@ def test_request_publication_rejects_changed_attempt_after_success(tmp_path, cor
     ]
 
 
-def _project_relative_hook_campaign(tmp_path: Path, route: str, configured: str):
+def _project_relative_hook_simulation_record(tmp_path: Path, route: str, configured: str):
     from tests.flows.sim.test_endpoint_record_lifecycle import _pre_sim_plan
 
     project = tmp_path / "project"
@@ -531,10 +531,12 @@ def _project_relative_hook_campaign(tmp_path: Path, route: str, configured: str)
 
 @pytest.mark.parametrize("route", ["shared", "legacy-per-test"])
 @pytest.mark.parametrize("configured", ["runs/literal", "runs/{test}/{attempt}"])
-def test_campaign_pre_sim_project_relative_hook_uses_project_root(
+def test_simulation_record_pre_sim_project_relative_hook_uses_project_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str, configured: str
 ) -> None:
-    project, plan, disclosures = _project_relative_hook_campaign(tmp_path, route, configured)
+    project, plan, disclosures = _project_relative_hook_simulation_record(
+        tmp_path, route, configured
+    )
     build = tmp_path / "build"
     build.mkdir()
     (build / "simv").write_bytes(b"image")
@@ -665,8 +667,8 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_the_la
     tmp_path: Path,
 ) -> None:
     manifest = _two_item_manifest()
-    campaign_store = SimulationRecordStore(tmp_path / "record")
-    campaign_store.publish_manifest(manifest)
+    simulation_record_store = SimulationRecordStore(tmp_path / "record")
+    simulation_record_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
@@ -684,7 +686,7 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_the_la
 
     def allocate(item) -> ScheduledAttempt:
         attempt_id = str(uuid.uuid4())
-        ordinal, directory = campaign_store.allocate_attempt_directory(
+        ordinal, directory = simulation_record_store.allocate_attempt_directory(
             str(item["work_item_id"]), attempt_id
         )
         return ScheduledAttempt(item, attempt_id, ordinal, directory, attempt_id)
@@ -730,7 +732,9 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_the_la
     )
     worker.start()
     try:
-        _cancel_child_and_assert(slots, attempts, registry, campaign_store, cancelled, worker)
+        _cancel_child_and_assert(
+            slots, attempts, registry, simulation_record_store, cancelled, worker
+        )
         # Cancelling while the second item waits for its claim legitimately
         # aborts that claim; anything else (e.g. a spurious bounded-shutdown
         # CampaignSchedulingError, #977) is a failure.
@@ -739,7 +743,9 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_the_la
         slots.release(outer)
 
 
-def _cancel_child_and_assert(slots, attempts, registry, campaign_store, cancelled, worker) -> None:
+def _cancel_child_and_assert(
+    slots, attempts, registry, simulation_record_store, cancelled, worker
+) -> None:
     _wait_until(lambda: len(slots.snapshot(CLASS_MEMORY)[1]) == 1)
     assert attempts and attempts[0].is_file()
     # The attempt names its lane execution, which already has a context and a waiting record.
@@ -779,7 +785,7 @@ def test_coverage_aggregate_preserves_pre_sim_failure_observation(tmp_path: Path
         def command(self, request):
             raise AssertionError("merge must not run after a Pre-Sim failure")
 
-    outcome, store = _run_coverage_campaign(
+    outcome, store = _run_coverage_simulation_record(
         tmp_path, PreSimFailure(), pre_sim_commands=("prepare-vectors",)
     )
 
@@ -821,7 +827,7 @@ def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Pa
             raise AssertionError("merge must not run after a Pre-Sim spawn error")
 
     with pytest.raises(_CoverageAggregateError, match="missing-vector-generator") as raised:
-        _run_coverage_campaign(
+        _run_coverage_simulation_record(
             tmp_path, PreSimSpawnError(), pre_sim_commands=("missing-vector-generator",)
         )
 
@@ -858,10 +864,10 @@ def test_coverage_rejects_fabricated_hook_with_empty_frozen_commands(tmp_path: P
             return SimulationRunResult("elab_error", "injected adapter evidence", evidence)
 
     with pytest.raises(SimulationRecordIntegrityError, match="command count disagrees"):
-        _run_coverage_campaign(tmp_path, FabricatedHook())
-    campaign = tmp_path / "reports/1/targets/sim_0/record"
-    assert list(campaign.glob("work-items/*/attempts/*/attempt.json"))
-    assert not list(campaign.glob("work-items/*/attempts/*/pre-sim/*.json"))
+        _run_coverage_simulation_record(tmp_path, FabricatedHook())
+    simulation_record = tmp_path / "reports/1/targets/sim_0/record"
+    assert list(simulation_record.glob("work-items/*/attempts/*/attempt.json"))
+    assert not list(simulation_record.glob("work-items/*/attempts/*/pre-sim/*.json"))
 
 
 @pytest.mark.parametrize("defect", ["replace", "symlink", "hardlink", "resize"])
@@ -892,11 +898,11 @@ def test_resume_keeps_run_directories_of_an_unrecoverable_lane(
     """Resume recovers every lane first: one that cannot be proven terminal keeps all runs."""
     from booley.flows.sim.record.child_protocol import ChildExecutionRegistry
     from tests.flows.sim.simulation_record_test_support import (
-        _CampaignAdmissionEndpoint,
-        _interrupted_campaign,
+        _interrupted_simulation_record,
+        _SimulationRecordAdmissionEndpoint,
     )
 
-    case = _interrupted_campaign(tmp_path, monkeypatch, None)
+    case = _interrupted_simulation_record(tmp_path, monkeypatch, None)
     project_data = case.project / ".booley"
     attempts = {
         item_id: json.loads(
@@ -926,10 +932,10 @@ def test_resume_keeps_run_directories_of_an_unrecoverable_lane(
     case.fault_enabled[0] = False
     monkeypatch.setattr(ChildExecutionRegistry, "cancel", lambda _self, _id: False)
     with (
-        AdmissionGate(_CampaignAdmissionEndpoint(case.slots, None)).enter() as admission,
+        AdmissionGate(_SimulationRecordAdmissionEndpoint(case.slots, None)).enter() as admission,
         pytest.raises(SimulationRecordIntegrityError, match="recovery is incomplete"),
     ):
-        case.campaign.run(
+        case.simulation_record.run(
             ResumeSimulationRecordRunRequest(
                 case.validated,
                 case.plan,

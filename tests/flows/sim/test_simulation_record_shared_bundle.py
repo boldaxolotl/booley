@@ -47,7 +47,7 @@ from booley.flows.sim.record.serial_execution import (
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.runtime_inputs import (
     RuntimeInputError,
-    materialize_campaign_runtime_inputs,
+    materialize_simulation_record_runtime_inputs,
 )
 from tests.flows.sim.simulation_record_test_support import (
     _BAD_DIGEST,
@@ -110,7 +110,7 @@ def test_shareable_variant_compiles_once_and_isolates_attempt_runtime_inputs(
             plan, project, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
         )
     )
-    _assert_shared_campaign(outcome, compile_count[0], launches, bindings, invocation)
+    _assert_shared_simulation_record(outcome, compile_count[0], launches, bindings, invocation)
     assert [item["cycle_count"] for item in outcome.observations] == [1234, 1234]
     store = SimulationRecordStore(outcome.manifest_path.parent)
     assert store.load_manifest().document["$schema"] == MANIFEST_SCHEMA
@@ -166,7 +166,7 @@ def test_recovered_failed_shared_build_blocks_each_pending_item_with_its_own_sel
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
     store = SimulationRecordStore(invocation / "targets/sim/record")
-    _, seed_counters, validated = _seed_failed_campaign(
+    _, seed_counters, validated = _seed_failed_simulation_record(
         store, manifest, project, handle, tmp_path / "seed-build"
     )
     resumed_counters = {"compile": 0, "launch": 0}
@@ -244,7 +244,7 @@ def test_shared_build_failure_preserves_each_selection_identity(
     assert [item["test"] for item in result["observations"]] == expected
 
 
-def _seed_failed_campaign(store, manifest, project, handle, build_root):
+def _seed_failed_simulation_record(store, manifest, project, handle, build_root):
     store.publish_manifest(manifest)
     items = manifest.document["work_items"]
     counters = {"compile": 0, "launch": 0}
@@ -279,7 +279,9 @@ def _work_request(store, manifest, item, project, handle) -> WorkExecutionReques
     )
 
 
-def _assert_shared_campaign(outcome, compile_count, launches, bindings, invocation) -> None:
+def _assert_shared_simulation_record(
+    outcome, compile_count, launches, bindings, invocation
+) -> None:
     assert outcome.complete is True
     assert compile_count == 1
     assert [item[0] for item in launches] == ["alpha", "beta"]
@@ -318,7 +320,7 @@ def test_literal_runtime_input_removes_only_attempt_owned_materialization(
         "destination": "generated/nested/input.bin",
     }
 
-    with materialize_campaign_runtime_inputs(
+    with materialize_simulation_record_runtime_inputs(
         bundle_root=bundle,
         attempt_root=attempt,
         run_cwd=run,
@@ -352,7 +354,7 @@ def test_literal_runtime_input_conflict_preserves_existing_file(tmp_path: Path) 
 
     with (
         pytest.raises(RuntimeInputError, match="conflicts with an existing path"),
-        materialize_campaign_runtime_inputs(
+        materialize_simulation_record_runtime_inputs(
             bundle_root=bundle,
             attempt_root=attempt,
             run_cwd=run,
@@ -722,10 +724,10 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
     _assert_private_legacy_results(outcome, counters, hooks, invocation)
     if mapped:
         from booley.flows.sim.record.coordinator import ResumeSimulationRecordRunRequest
-        from tests.flows.sim.simulation_record_test_support import _validated_campaign
+        from tests.flows.sim.simulation_record_test_support import _validated_simulation_record
 
         store = SimulationRecordStore(invocation / "targets/sim/record")
-        validated = _validated_campaign(store, manifest, project, _handle(project))
+        validated = _validated_simulation_record(store, manifest, project, _handle(project))
         resumed = SimulationRecord(_executor(build_root, counters, disclosures=disclosures)).run(
             ResumeSimulationRecordRunRequest(
                 validated,
@@ -801,7 +803,7 @@ def test_snapshot_mutation_fails_closed_for_shared_and_private_bundles(
     assert not tuple(store.root.glob("work-items/*/result.json"))
 
 
-def _run_failed_shared_build_campaign(
+def _run_failed_shared_build_simulation_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, work_item_attempt: bool
 ) -> dict[str, int]:
     """Run two items sharing a failing build, its compiler OOM-killed inside one attempt."""
@@ -847,11 +849,11 @@ def test_requeued_attempt_rebuilds_the_shared_build_its_kill_failed(
 ) -> None:
     # The build was an OOM-killed work item attempt's own: a failure the item runs again
     # for must not be cached, so each attempt compiles the variant itself.
-    item = _run_failed_shared_build_campaign(
+    item = _run_failed_shared_build_simulation_record(
         tmp_path / "item", monkeypatch, work_item_attempt=True
     )
     # A build killed under the Flow's own attempt is cached as before: it compiles once.
-    flow = _run_failed_shared_build_campaign(
+    flow = _run_failed_shared_build_simulation_record(
         tmp_path / "flow", monkeypatch, work_item_attempt=False
     )
 

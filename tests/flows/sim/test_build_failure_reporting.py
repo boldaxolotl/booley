@@ -19,7 +19,7 @@ import booley.flows.sim.build as build_module
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.build import classify_build_outcome
 from booley.flows.sim.execution import SimulationOptions
-from booley.flows.sim.flow import OrdinaryCampaignPlanning, SimulateFlow
+from booley.flows.sim.flow import OrdinarySimulationRecordPlanning, SimulateFlow
 from booley.flows.sim.record.codec import (
     MAX_DETAIL_BYTES,
     canonical_json_bytes,
@@ -38,7 +38,7 @@ from tests.flows.sim import test_simulation_record_crash_matrix as crash_matrix
 from tests.flows.sim.simulation_record_test_support import (
     _admission,
     _FailedCoverageBuild,
-    _run_coverage_campaign,
+    _run_coverage_simulation_record,
 )
 from tests.flows.sim.test_execution_engine import _handle, _prepared, _run_execution
 from tests.flows.sim.test_verilator_coverage_execution import (
@@ -272,17 +272,17 @@ def _run_shared_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome
 
 
 @pytest.mark.parametrize("path", ["shared", "private"])
-def test_campaign_build_timeout_publishes_terminal_infrastructure_result(
+def test_simulation_record_build_timeout_publishes_terminal_infrastructure_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str
 ) -> None:
     outcome = _engine_timeout_outcome(tmp_path / "engine")
     runner = _run_shared_timeout if path == "shared" else _run_private_timeout
     executor, request, invocation = runner(tmp_path, monkeypatch, outcome)
 
-    campaign = SimulationRecord(executor).run(request)
-    assert campaign.complete is True
-    assert campaign.aggregate_grade == "error"
-    assert campaign.observations[0]["detail"]["reason"].splitlines()[0] == TIMEOUT_REASON
+    simulation_record = SimulationRecord(executor).run(request)
+    assert simulation_record.complete is True
+    assert simulation_record.aggregate_grade == "error"
+    assert simulation_record.observations[0]["detail"]["reason"].splitlines()[0] == TIMEOUT_REASON
     store = SimulationRecordStore(invocation / "targets" / "sim" / "record")
     result = _first_build_result(store)
     assert result["state"] == "infrastructure_error"
@@ -293,7 +293,7 @@ def test_campaign_build_timeout_publishes_terminal_infrastructure_result(
     flow = SimulateFlow()
     flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
-    endpoint = flow._campaign_endpoint_outcome([campaign])
+    endpoint = flow._simulation_record_endpoint_outcome([simulation_record])
     assert endpoint.exit_code == EXIT_ERROR
     assert endpoint.detail["eda_tool_error"] == "build_infrastructure"
     assert endpoint.detail["target"] == "sim"
@@ -305,7 +305,7 @@ def test_campaign_build_timeout_publishes_terminal_infrastructure_result(
     assert TIMEOUT_REASON in endpoint.report_text.splitlines()[0]
 
 
-def test_campaign_endpoint_reports_build_timeout_first(tmp_path: Path) -> None:
+def test_simulation_record_endpoint_reports_build_timeout_first(tmp_path: Path) -> None:
     outcome = _timeout_outcome()
     error = build_module.SimulationBuildInfrastructureError("sim", outcome)
     flow = SimulateFlow()
@@ -313,14 +313,18 @@ def test_campaign_endpoint_reports_build_timeout_first(tmp_path: Path) -> None:
     invocation.mkdir(parents=True)
     with (
         patch.object(SimulateFlow, "reserve_invocation_dir", return_value=invocation),
-        patch.object(SimulateFlow, "_write_campaign_progress"),
-        patch.object(SimulateFlow, "_plan_campaign_baselines", return_value=([], {})),
-        patch.object(SimulateFlow, "_candidate_campaign_requests", return_value=[]),
-        patch.object(SimulateFlow, "_publish_and_run_campaign_requests", side_effect=error),
+        patch.object(SimulateFlow, "_write_simulation_record_progress"),
+        patch.object(SimulateFlow, "_plan_simulation_record_baselines", return_value=([], {})),
+        patch.object(SimulateFlow, "_candidate_simulation_record_requests", return_value=[]),
+        patch.object(
+            SimulateFlow, "_publish_and_run_simulation_record_requests", side_effect=error
+        ),
     ):
-        endpoint = flow._execute_campaign(
+        endpoint = flow._execute_simulation_record(
             _admission(),
-            flow._ordinary_campaign_run(OrdinaryCampaignPlanning((), None, {"sim": []})),
+            flow._ordinary_simulation_record_run(
+                OrdinarySimulationRecordPlanning((), None, {"sim": []})
+            ),
         )
 
     assert endpoint.exit_code == EXIT_ERROR
@@ -390,7 +394,7 @@ def test_coverage_build_timeout_reports_not_run_infrastructure_error(
     assert outcome.detail["collection"] == "infrastructure_error"
 
 
-def test_coverage_campaign_build_failure_message_is_reason(tmp_path: Path) -> None:
+def test_coverage_simulation_record_build_failure_message_is_reason(tmp_path: Path) -> None:
     failing = _FailedCoverageBuild(infrastructure=True)
     failing.build = lambda _request: SimulationBuildResult(  # type: ignore[method-assign]
         False,
@@ -398,9 +402,9 @@ def test_coverage_campaign_build_failure_message_is_reason(tmp_path: Path) -> No
         infrastructure_error=True,
         reason=TIMEOUT_REASON,
     )
-    campaign, _invocation = _run_coverage_campaign(tmp_path, failing)
-    assert campaign.complete is True
-    assert campaign.aggregate_grade == "error"
+    simulation_record, _invocation = _run_coverage_simulation_record(tmp_path, failing)
+    assert simulation_record.complete is True
+    assert simulation_record.aggregate_grade == "error"
 
     store = SimulationRecordStore(tmp_path / "reports/1/targets/sim_0/record")
     observation = _first_build_result(store)["observation"]
@@ -408,14 +412,16 @@ def test_coverage_campaign_build_failure_message_is_reason(tmp_path: Path) -> No
     assert LAST_LINE in observation["detail"]["text"]
 
 
-def test_coverage_campaign_build_timeout_is_not_an_integrity_error(tmp_path: Path) -> None:
+def test_coverage_simulation_record_build_timeout_is_not_an_integrity_error(
+    tmp_path: Path,
+) -> None:
     failing = _FailedCoverageBuild(infrastructure=True)
     failing.build = lambda _request: SimulationBuildResult(  # type: ignore[method-assign]
         False, f"{TIMEOUT_REASON}\ntail", infrastructure_error=True, reason=TIMEOUT_REASON
     )
-    campaign, _invocation = _run_coverage_campaign(tmp_path, failing)
-    assert campaign.complete is True
-    assert campaign.aggregate_grade == "error"
+    simulation_record, _invocation = _run_coverage_simulation_record(tmp_path, failing)
+    assert simulation_record.complete is True
+    assert simulation_record.aggregate_grade == "error"
     store = SimulationRecordStore(tmp_path / "reports/1/targets/sim_0/record")
     assert store.scan().interrupted == ()
 
@@ -425,9 +431,9 @@ def test_reasonless_coverage_infrastructure_keeps_its_message(tmp_path: Path) ->
     failing.build = lambda _request: SimulationBuildResult(  # type: ignore[method-assign]
         False, "coverage Verilator identity mismatch", infrastructure_error=True
     )
-    campaign, _invocation = _run_coverage_campaign(tmp_path, failing)
-    assert campaign.complete is True
-    assert campaign.aggregate_grade == "error"
+    simulation_record, _invocation = _run_coverage_simulation_record(tmp_path, failing)
+    assert simulation_record.complete is True
+    assert simulation_record.aggregate_grade == "error"
 
     store = SimulationRecordStore(tmp_path / "reports/1/targets/sim_0/record")
     message = _first_build_result(store)["observation"]["message"]
@@ -509,9 +515,9 @@ def test_hostile_oom_build_output_publishes_and_decodes(
     )
     executor, request, invocation = _run_shared_timeout(tmp_path, monkeypatch, outcome)
 
-    campaign = SimulationRecord(executor).run(request)
-    assert campaign.complete is True
-    assert campaign.aggregate_grade == "error"
+    simulation_record = SimulationRecord(executor).run(request)
+    assert simulation_record.complete is True
+    assert simulation_record.aggregate_grade == "error"
 
     store = SimulationRecordStore(invocation / "targets" / "sim" / "record")
     result = _first_build_result(store)
@@ -524,11 +530,13 @@ def test_hostile_oom_build_output_publishes_and_decodes(
     assert store.scan().interrupted == ()
 
 
-def test_campaign_resume_failure_reports_build_timeout_first() -> None:
+def test_simulation_record_resume_failure_reports_build_timeout_first() -> None:
     error = build_module.SimulationBuildInfrastructureError("sim", _timeout_outcome())
 
-    with patch("booley.flows.sim.flow_resume._fresh_campaign_recovery_detail", return_value={}):
-        endpoint = SimulateFlow()._campaign_resume_failure(
+    with patch(
+        "booley.flows.sim.flow_resume._fresh_simulation_record_recovery_detail", return_value={}
+    ):
+        endpoint = SimulateFlow()._simulation_record_resume_failure(
             SimpleNamespace(), SimpleNamespace(), Path(), error
         )
 
@@ -597,12 +605,12 @@ def test_large_batch_build_failure_publishes_bounded_terminal_result(
     )
     invocation = tmp_path / "reports/1"
     invocation.mkdir(parents=True)
-    campaign = SimulationRecord(executor).run(
+    simulation_record = SimulationRecord(executor).run(
         NewSimulationRecordRunRequest(
             plan, tmp_path, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
         )
     )
-    assert campaign.complete
+    assert simulation_record.complete
     store = SimulationRecordStore(invocation / "targets/sim/record")
     result = store.scan().items[0].result
     assert result is not None
@@ -612,12 +620,12 @@ def test_large_batch_build_failure_publishes_bounded_terminal_result(
     flow = SimulateFlow()
     flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
-    endpoint = flow._campaign_endpoint_outcome([campaign])
+    endpoint = flow._simulation_record_endpoint_outcome([simulation_record])
     assert endpoint.detail["eda_tool_error"] == "build_infrastructure"
     assert endpoint.detail["build_stage"]["timed_out"] is True
-    assert "compiler failed:" in campaign.observations[0]["detail"]["reason"]
+    assert "compiler failed:" in simulation_record.observations[0]["detail"]["reason"]
     if access == "legacy-per-test":
-        assert "tail sentinel" in campaign.observations[0]["detail"]["reason"]
+        assert "tail sentinel" in simulation_record.observations[0]["detail"]["reason"]
 
 
 def test_escaped_build_metadata_stays_within_canonical_detail_budget(
@@ -641,8 +649,8 @@ def test_escaped_build_metadata_stays_within_canonical_detail_budget(
         ),
     )
     executor, request, invocation = _run_shared_timeout(tmp_path, monkeypatch, outcome)
-    campaign = SimulationRecord(executor).run(request)
-    assert campaign.complete
+    simulation_record = SimulationRecord(executor).run(request)
+    assert simulation_record.complete
     store = SimulationRecordStore(invocation / "targets/sim/record")
     detail = _first_build_result(store)["observation"]["detail"]
     assert len(canonical_json_bytes(detail)) <= MAX_DETAIL_BYTES

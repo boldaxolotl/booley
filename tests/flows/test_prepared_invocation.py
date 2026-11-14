@@ -100,7 +100,7 @@ def _target_selection(runtime: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[A
     )
 
 
-def _campaign(
+def _simulation_record(
     runtime: Path, monkeypatch: pytest.MonkeyPatch, admissions: list[object]
 ) -> tuple[Any, Any]:
     """Simulation whose Campaign preflight is prepared and run through class-level hooks."""
@@ -186,24 +186,24 @@ def test_prepared_invocation_kind_drives_lifecycle(
     kind: str, runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from booley.flows.prepared_invocation import OrdinaryRunInvocation, TargetSelectionInvocation
-    from booley.flows.sim.record_invocation import SimulationCampaignInvocation
+    from booley.flows.sim.record_invocation import SimulationRecordInvocation
 
     expected_type = {
         "ordinary": OrdinaryRunInvocation,
         "target_selection": TargetSelectionInvocation,
-        "campaign": SimulationCampaignInvocation,
+        "campaign": SimulationRecordInvocation,
     }[kind]
     key = PLANNED_KEYS[kind]
     _bind_strict_state(runtime, monkeypatch, key)
     recorded = _install_acceptance_owner(runtime, monkeypatch)
 
-    campaign_admissions: list[object] = []
+    simulation_record_admissions: list[object] = []
     if kind == "ordinary":
         flow, request = _ordinary(runtime)
     elif kind == "target_selection":
         flow, request = _target_selection(runtime, monkeypatch)
     else:
-        flow, request = _campaign(runtime, monkeypatch, campaign_admissions)
+        flow, request = _simulation_record(runtime, monkeypatch, simulation_record_admissions)
     invocations, entered = _spy_lifecycle(monkeypatch)
 
     # A Custom Flow has only the CLI entry; the built-in kinds take their typed request.
@@ -216,8 +216,8 @@ def test_prepared_invocation_kind_drives_lifecycle(
     assert invocation.borrows_admission is (kind == "campaign")
     assert len(entered) == 1
     if kind == "campaign":
-        assert campaign_admissions == entered
-        assert campaign_admissions[0] is not None
+        assert simulation_record_admissions == entered
+        assert simulation_record_admissions[0] is not None
     assert recorded == [key]
     assert (result.outcome.criterion_key, result.outcome.criterion_met) == (key, True)
     assert_paired_headline(runtime / "reports", flow.name, (key, True))

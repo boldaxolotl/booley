@@ -134,8 +134,8 @@ _BAD_EXECUTION = {
 }
 
 
-def _campaign_failure_count(campaign: Mapping[str, object], preview: int) -> int:
-    counts = _mapping(campaign.get("observation_counts"))
+def _simulation_record_failure_count(simulation_record: Mapping[str, object], preview: int) -> int:
+    counts = _mapping(simulation_record.get("observation_counts"))
     # Axes overlap; the largest marginal count is a lower bound, never their sum.
     bad = {
         "functional": ("fail", "inconclusive", "not_observed"),
@@ -151,8 +151,8 @@ def _campaign_failure_count(campaign: Mapping[str, object], preview: int) -> int
     )
 
 
-def _campaign_failures(campaign: Mapping[str, object]) -> list[ResultLine]:
-    observations = [_mapping(item) for item in _sequence(campaign.get("observations"))]
+def _simulation_record_failures(simulation_record: Mapping[str, object]) -> list[ResultLine]:
+    observations = [_mapping(item) for item in _sequence(simulation_record.get("observations"))]
     failures = [
         row
         for row in observations
@@ -171,10 +171,10 @@ def _campaign_failures(campaign: Mapping[str, object]) -> list[ResultLine]:
                 "fail",
             )
         )
-    total = _campaign_failure_count(campaign, len(failures))
+    total = _simulation_record_failure_count(simulation_record, len(failures))
     if total > len(rows):
         rows.append(_row("  Failures", f"at least {total - len(rows)} more failures in report"))
-    if campaign.get("observations_truncated") or total > len(failures):
+    if simulation_record.get("observations_truncated") or total > len(failures):
         rows.append(
             _row("  Observations", "truncated preview; full report has remaining observations")
         )
@@ -186,7 +186,7 @@ def _campaign_failures(campaign: Mapping[str, object]) -> list[ResultLine]:
     return rows
 
 
-def _campaigns(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
+def _simulation_records(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
     targets = _targets(detail.get("records"))
     counts = [_counts(_functional(row)) for _, row in targets]
     known = [count for count in counts if count is not None]
@@ -205,7 +205,7 @@ def _campaigns(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
         )
     rows.extend(_more_targets(targets))
     for name, row in targets[:_ITEM_LIMIT]:
-        for fact in _campaign_failures(row):
+        for fact in _simulation_record_failures(row):
             label = f"  {name} · {fact.label.strip()}" if len(targets) > 1 else fact.label
             rows.append(ResultLine(label, fact.value, fact.semantic))
     grades = [literal(row.get("grade")) for _, row in targets]
@@ -244,7 +244,7 @@ def _coverage(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
         rows.append(_row(f"  {name}", " · ".join(facts), semantic))
     rows.extend(_more_targets(targets))
     if _mapping(detail.get("records")):
-        headline, supplementary = _campaigns(detail)
+        headline, supplementary = _simulation_records(detail)
         rows.extend([_row("Campaign simulation", headline), *supplementary])
     return f"Coverage: {met}/{len(targets)} Targets met", rows
 
@@ -262,7 +262,7 @@ def _simulation(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
     if detail.get("coverage") is True and _targets(detail.get("targets")):
         return _coverage(detail)
     if _mapping(detail.get("records")):
-        return _campaigns(detail)
+        return _simulation_records(detail)
     if literal(detail.get("mode")).replace("_", "-").startswith("elab-only"):
         targets = _targets(detail.get("targets"))
         passed = sum(row.get("passed") is True for _, row in targets)

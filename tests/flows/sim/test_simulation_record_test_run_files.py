@@ -22,7 +22,11 @@ from booley.flows.sim.record.test_run_report import (
     test_run_row,
 )
 from booley.flows.test_runs import DEFAULT_SEED, build_test_run
-from tests.flows.sim.simulation_record_boundary import CampaignSimRun, Launch, run_campaign_sim
+from tests.flows.sim.simulation_record_boundary import (
+    Launch,
+    SimulationRecordSimRun,
+    run_simulation_record_sim,
+)
 
 _LOG = "      log: "
 _WAVEFORM = "      waveform: "
@@ -49,9 +53,9 @@ def _run(
     failing: tuple[str, ...] = (),
     traced: bool = False,
     **kwargs: Any,
-) -> tuple[CampaignSimRun, dict[str, Any]]:
+) -> tuple[SimulationRecordSimRun, dict[str, Any]]:
     """Run Target ``lite`` over *tests*; return the run and its ``simulation.json``."""
-    run = run_campaign_sim(
+    run = run_simulation_record_sim(
         tmp_path,
         monkeypatch,
         {"lite": tests},
@@ -70,7 +74,7 @@ def _target_directory(tmp_path: Path) -> Path:
     return tmp_path / "reports" / "sim" / "1" / "targets" / "lite"
 
 
-def _card(run: CampaignSimRun) -> list[str]:
+def _card(run: SimulationRecordSimRun) -> list[str]:
     """The Test Run block of the card: from ``Test Runs:`` to the end of the report text."""
     lines = run.result.outcome.report_text.splitlines()
     starts = [index for index, line in enumerate(lines) if line.startswith("  Test Runs:")]
@@ -151,13 +155,15 @@ def test_inconclusive_and_error_runs_show_the_same_lines(tmp_path: Path, grade: 
     ]
 
 
-def test_inconclusive_run_of_a_campaign_shows_its_log(
+def test_inconclusive_run_of_a_simulation_record_shows_its_log(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     def silent(launch: Launch) -> SubprocessResult:
         return SubprocessResult(returncode=0, stdout="no sentinel\n", duration_s=0.1)
 
-    run = run_campaign_sim(tmp_path, monkeypatch, {"lite": ["odd"]}, silent, target="lite")
+    run = run_simulation_record_sim(
+        tmp_path, monkeypatch, {"lite": ["odd"]}, silent, target="lite"
+    )
     card = _card(run)
 
     assert card[1] == "    INCONCLUSIVE odd@1"
@@ -248,10 +254,10 @@ def test_rows_carry_null_paths_when_files_are_absent(
     assert run.result.exit_code != 0
 
 
-def _campaign_stand_in(tmp_path: Path) -> SimpleNamespace:
+def _simulation_record_stand_in(tmp_path: Path) -> SimpleNamespace:
     """The outcome of the campaign under *tmp_path*, as the lookup reads it from disk."""
-    campaign = _target_directory(tmp_path) / "record"
-    results = sorted(campaign.glob("work-items/*/result.json"))
+    simulation_record = _target_directory(tmp_path) / "record"
+    results = sorted(simulation_record.glob("work-items/*/result.json"))
     consumed = [
         {
             "work_item_id": json.loads(path.read_text("utf-8"))["work_item_id"],
@@ -260,13 +266,13 @@ def _campaign_stand_in(tmp_path: Path) -> SimpleNamespace:
         for path in results
     ]
     return SimpleNamespace(
-        manifest_path=campaign / "manifest.json",
+        manifest_path=simulation_record / "manifest.json",
         observations=tuple({"work_item_id": item["work_item_id"]} for item in consumed),
         acceptance_facts=SimpleNamespace(document={"consumed_results": consumed}),
     )
 
 
-def test_paths_name_the_attempt_the_campaign_accepted(
+def test_paths_name_the_attempt_the_simulation_record_accepted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """A resumed work item is accepted on its second attempt: the log is that attempt's."""
@@ -274,7 +280,7 @@ def test_paths_name_the_attempt_the_campaign_accepted(
     from booley.flows.sim.record.test_run_files import simulation_record_test_run_files
 
     _run(tmp_path, monkeypatch, ["bad"], failing=("bad",))
-    outcome = _campaign_stand_in(tmp_path)
+    outcome = _simulation_record_stand_in(tmp_path)
     (result,) = (_target_directory(tmp_path) / "record").glob("work-items/*/result.json")
     document = json.loads(result.read_text("utf-8"))
     first = result.parent / "attempts" / f"0001-{document['attempt_id']}"
@@ -302,7 +308,7 @@ def test_lookup_yields_no_files_for_unreadable_or_missing_records(
     )
 
     _run(tmp_path, monkeypatch, ["bad"], failing=("bad",))
-    outcome = _campaign_stand_in(tmp_path)
+    outcome = _simulation_record_stand_in(tmp_path)
     (result,) = (_target_directory(tmp_path) / "record").glob("work-items/*/result.json")
 
     # No consumed result for the observation's work item.
@@ -342,7 +348,7 @@ def test_a_reference_that_escapes_its_attempt_names_no_file(
     )
 
     _run(tmp_path, monkeypatch, ["bad"], failing=("bad",))
-    outcome = _campaign_stand_in(tmp_path)
+    outcome = _simulation_record_stand_in(tmp_path)
     (result,) = (_target_directory(tmp_path) / "record").glob("work-items/*/result.json")
     document = json.loads(result.read_text("utf-8"))
     for reference in document["evidence"]:

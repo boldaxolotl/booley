@@ -154,7 +154,7 @@ def coverage(layout: SimpleNamespace) -> SimpleNamespace:
     return SimpleNamespace(**vars(layout), record=record, key=key)
 
 
-def test_failure_from_an_ordinary_simulation_does_not_block_a_later_coverage_campaign(
+def test_failure_from_an_ordinary_simulation_does_not_block_a_later_coverage_simulation_record(
     coverage: SimpleNamespace,
 ) -> None:
     key = coverage.key
@@ -167,8 +167,8 @@ def test_failure_from_an_ordinary_simulation_does_not_block_a_later_coverage_cam
     assert REASON_FAILED not in status.reason and REASON_INCOMPLETE not in status.reason
     assert _shown(status) == {"stress@5": "failed", "smoke@1": "missing"}
     # The coverage campaign runs exactly the frozen runs and reaches the floors.
-    campaign = [run_row(STRESS), run_row("smoke")]
-    detail = _record(coverage, "run-2", campaign, key=key, met=True)
+    simulation_record = [run_row(STRESS), run_row("smoke")]
+    detail = _record(coverage, "run-2", simulation_record, key=key, met=True)
     # Its ledger holds its own runs' outcomes; the earlier failure is not folded in.
     assert _outcomes(coverage, coverage.key) == {"stress@5": "passed", "smoke@1": "passed"}
     assert _contributors(coverage, key) == []
@@ -176,12 +176,12 @@ def test_failure_from_an_ordinary_simulation_does_not_block_a_later_coverage_cam
     assert _status(coverage, key).status == "stale"  # this bare detail has no coverage stamp
 
 
-def test_coverage_floors_decide_a_campaign_whose_test_runs_failed(
+def test_coverage_floors_decide_a_simulation_record_whose_test_runs_failed(
     coverage: SimpleNamespace,
 ) -> None:
     key = coverage.key
-    campaign = [run_row(STRESS, "fail"), run_row("smoke")]
-    met = _record(coverage, "run-1", campaign, key=key, met=True)
+    simulation_record = [run_row(STRESS, "fail"), run_row("smoke")]
+    met = _record(coverage, "run-1", simulation_record, key=key, met=True)
     assert "goal_contract_violation" not in met
     assert _outcomes(coverage, coverage.key) == {"stress@5": "failed", "smoke@1": "passed"}
     status = _status(coverage, key)
@@ -200,8 +200,8 @@ def test_run_that_does_not_measure_coverage_restates_the_measurement(
     coverage: SimpleNamespace, grade: str
 ) -> None:
     key = coverage.key
-    campaign = [run_row(STRESS), run_row("smoke")]
-    _record(coverage, "run-1", campaign, key=key, met=True, extra={"evaluation": "kept"})
+    simulation_record = [run_row(STRESS), run_row("smoke")]
+    _record(coverage, "run-1", simulation_record, key=key, met=True, extra={"evaluation": "kept"})
     # An ordinary simulation of one frozen run, passing or failing, at the same contents.
     again = _record(
         coverage, "run-2", [run_row(STRESS, grade)], key=key, met=False, extra=OUTCOMES_ONLY
@@ -240,8 +240,8 @@ def test_run_that_does_not_measure_coverage_never_restates_evidence_without_test
 ) -> None:
     """An older Booley's met observation is no measurement: it must not be recorded again."""
     key = coverage.key
-    campaign = [run_row(STRESS), run_row("smoke")]
-    detail = _record(coverage, "run-1", campaign, key=key, met=True)
+    simulation_record = [run_row(STRESS), run_row("smoke")]
+    detail = _record(coverage, "run-1", simulation_record, key=key, met=True)
     # Rewrite the observation and its projection as the previous version stored them.
     old = {
         name: value

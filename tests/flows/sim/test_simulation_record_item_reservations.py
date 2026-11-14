@@ -66,7 +66,7 @@ from tests.flows.sim.simulation_record_test_support import (
     _parallel_environment,
     _ParallelExecution,
     _ParallelGroup,
-    _validated_campaign,
+    _validated_simulation_record,
     _wait_until,
 )
 from tests.flows.sim.test_build_parallelism import _inspection
@@ -230,7 +230,7 @@ class _Scenario:
             self.admission,
         )
 
-    def campaign(self) -> SimulationRecord:
+    def simulation_record(self) -> SimulationRecord:
         executor = OrdinaryHdlSerialExecutor(
             invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
             execution_factory=lambda _options: _ObservedExecution(self.state),  # type: ignore[arg-type,return-value]
@@ -382,7 +382,7 @@ def test_items_after_the_shared_build_hold_their_own_reservations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with _scenario(tmp_path, monkeypatch, history=_history("sim")) as scenario:
-        outcome = scenario.campaign().run(scenario.request(_manifest_for(NAMES)))
+        outcome = scenario.simulation_record().run(scenario.request(_manifest_for(NAMES)))
         (still_held,) = scenario.store.observe(CLASS_MEMORY)[0]
         assert _held(still_held) == 0
         assert scenario.store.observe(CLASS_MEMORY)[1] == []
@@ -399,7 +399,7 @@ def test_items_after_the_shared_build_hold_their_own_reservations(
     assert _own_lanes(scenario) == [False, True, True]
 
 
-def test_resumed_campaign_items_take_their_own_claims_after_the_build(
+def test_resumed_simulation_record_items_take_their_own_claims_after_the_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A resume has no Flow estimate (run-alone); its frozen manifest says what it traces."""
@@ -417,9 +417,11 @@ def test_resumed_campaign_items_take_their_own_claims_after_the_build(
     with _scenario(tmp_path, monkeypatch, flow_requests=None, history=history) as scenario:
         store = scenario.record()
         store.publish_manifest(manifest)
-        validated = _validated_campaign(store, manifest, scenario.project, scenario.state.handle)
+        validated = _validated_simulation_record(
+            store, manifest, scenario.project, scenario.state.handle
+        )
         invocation = scenario.tmp_path / "reports" / "000001"
-        outcome = scenario.campaign().run(
+        outcome = scenario.simulation_record().run(
             ResumeSimulationRecordRunRequest(
                 validated,
                 create_simulation_record_plan(manifest),
@@ -446,7 +448,7 @@ def test_items_without_sim_prepare_history_run_alone(
     """Without a measured FuseSoC setup the unknown-phase rule applies to every item (#3787)."""
     history = [record for record in _history("sim") if record["key"]["phase"] != "sim_prepare"]
     with _scenario(tmp_path, monkeypatch, history=history) as scenario:
-        outcome = scenario.campaign().run(scenario.request(_manifest_for(NAMES)))
+        outcome = scenario.simulation_record().run(scenario.request(_manifest_for(NAMES)))
 
     assert outcome.complete is True
     assert scenario.seen["beta"]["items"] == ["alone"]
@@ -458,7 +460,7 @@ def test_over_budget_item_runs_alone_with_the_job_warning(
 ) -> None:
     history = [*_history("sim"), _record("sim", "sim_run", 900.0, test_run="beta")]
     with _scenario(tmp_path, monkeypatch, history=history) as scenario:
-        scenario.campaign().run(scenario.request(_manifest_for(NAMES)))
+        scenario.simulation_record().run(scenario.request(_manifest_for(NAMES)))
         result = EndpointOutcome(report_text="RESULT: PASS")
         _attach_memory_warning(result, scenario.admission)
 
@@ -492,7 +494,7 @@ def _private_manifest() -> SimulationRecordManifest:
     return finalize_manifest(document)
 
 
-def test_campaign_completes_beside_a_queued_foreign_job(tmp_path: Path) -> None:
+def test_simulation_record_completes_beside_a_queued_foreign_job(tmp_path: Path) -> None:
     for case in ("alone", "sized", "private", "several"):
         with pytest.MonkeyPatch.context() as monkeypatch:
             _complete_beside_a_foreign_job(tmp_path, monkeypatch, case)
@@ -518,15 +520,15 @@ def _complete_beside_a_foreign_job(
             foreign.release()
 
         try:
-            campaign = scenario.campaign()
+            simulation_record = scenario.simulation_record()
             requests = [scenario.request(m, number) for number, m in enumerate(manifests, 1)]
             releaser = threading.Thread(target=release_once_an_item_waits)
             releaser.start()
             with _deadline(scenario):
                 for request in requests:
-                    campaign.publish_new(request)
+                    simulation_record.publish_new(request)
                 for request in requests:
-                    outcome = campaign.run(request)
+                    outcome = simulation_record.run(request)
                     assert outcome.complete is True
             releaser.join(_PARALLEL_SYNC_TIMEOUT_S)
         finally:
@@ -563,7 +565,7 @@ def test_lost_work_item_lease_stops_only_that_item(
 
         scenario.hooks["beta"] = lose_the_lease
         with pytest.raises(LeaseLostError):
-            scenario.campaign().run(scenario.request(_manifest_for(NAMES)))
+            scenario.simulation_record().run(scenario.request(_manifest_for(NAMES)))
         assert scenario.admission.cancellation_cause() is None
 
     # The next item ran and finished; the lost one published no result.
@@ -587,11 +589,11 @@ def test_lost_flow_lease_withdraws_the_item_claim_and_cancels(
 
         killer = threading.Thread(target=lose_the_flow_lease)
         try:
-            campaign = scenario.campaign()
+            simulation_record = scenario.simulation_record()
             killer.start()
             # The item's wait ends as aborted, or as lost when the withdrawal lands first.
             with pytest.raises((ClaimAbortedError, ClaimLostError)):
-                campaign.run(scenario.request(_manifest_for(NAMES)))
+                simulation_record.run(scenario.request(_manifest_for(NAMES)))
             killer.join(_PARALLEL_SYNC_TIMEOUT_S)
             assert waited == [True]
             cause = scenario.admission.cancellation_cause()
@@ -611,7 +613,7 @@ def _flow_claim(scenario: _Scenario):
     return FlowClaim(scenario.admission, scenario.admission.memory_sizing, _sizer)
 
 
-def test_flow_claim_waits_only_for_the_running_campaigns_builds(
+def test_flow_claim_waits_only_for_the_running_simulation_records_builds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     manifest = _manifest_for(NAMES)
@@ -657,21 +659,21 @@ def test_last_shared_build_frees_the_flow_inside_its_own_item(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with _scenario(tmp_path, monkeypatch, history=_history("sim")) as scenario:
-        scenario.campaign().run(scenario.request(_manifest_for(("alpha",))))
+        scenario.simulation_record().run(scenario.request(_manifest_for(("alpha",))))
         (flow,) = scenario.store.observe(CLASS_MEMORY)[0]
         assert _held(flow) == 0
 
 
-def test_a_later_campaign_does_not_keep_the_flow_reservation(
+def test_a_later_simulation_record_does_not_keep_the_flow_reservation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     manifest = _manifest_for(NAMES)
     with _scenario(tmp_path, monkeypatch, history=_history("sim")) as scenario:
-        campaign = scenario.campaign()
+        simulation_record = scenario.simulation_record()
         requests = [scenario.request(manifest, number) for number in (1, 2)]
         for request in requests:
-            campaign.publish_new(request)
-        campaign.run(requests[0])
+            simulation_record.publish_new(request)
+        simulation_record.run(requests[0])
         # The first Campaign's items after its build already held claims of their own.
         assert [seen["flow"] for seen in scenario.seen.values()] == [[250.0], [0], [0]]
         assert [seen["items"] for seen in scenario.seen.values()] == [[], [250.0], [200.0]]
@@ -732,11 +734,11 @@ def _barrier(parties: int) -> threading.Barrier:
     return threading.Barrier(parties, timeout=_PARALLEL_SYNC_TIMEOUT_S)
 
 
-def _campaign_lanes(scenario: _Scenario) -> set[str]:
+def _simulation_record_lanes(scenario: _Scenario) -> set[str]:
     return {name for name in scenario.lanes if name.startswith("booley-campaign-")}
 
 
-def test_twelve_item_campaign_runs_one_lane_per_core(
+def test_twelve_item_simulation_record_runs_one_lane_per_core(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     names = _names(12)
@@ -751,15 +753,15 @@ def test_twelve_item_campaign_runs_one_lane_per_core(
         together = _barrier(CORES)
         for name in names[1 : 1 + CORES]:
             scenario.hooks[name] = _meet(together)
-        outcome = scenario.campaign().run(scenario.request(_manifest_for(names)))
+        outcome = scenario.simulation_record().run(scenario.request(_manifest_for(names)))
 
     assert outcome.complete is True
     assert sorted(scenario.state.completion_order) == list(names)
     assert scenario.peak == CORES
-    assert len(_campaign_lanes(scenario)) <= CORES
+    assert len(_simulation_record_lanes(scenario)) <= CORES
 
 
-def test_campaign_runs_fewer_lanes_when_the_budget_admits_fewer(
+def test_simulation_record_runs_fewer_lanes_when_the_budget_admits_fewer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     names = _names(6)
@@ -773,7 +775,7 @@ def test_campaign_runs_fewer_lanes_when_the_budget_admits_fewer(
         together = _barrier(2)
         for name in names[1:3]:
             scenario.hooks[name] = _meet(together)
-        outcome = scenario.campaign().run(scenario.request(_manifest_for(names)))
+        outcome = scenario.simulation_record().run(scenario.request(_manifest_for(names)))
 
     assert outcome.complete is True
     assert scenario.peak == 2
@@ -794,7 +796,7 @@ def test_parallel_items_each_hold_their_own_reservation(
         together = _barrier(CORES)
         for name in names[1 : 1 + CORES]:
             scenario.hooks[name] = _meet(together)
-        outcome = scenario.campaign().run(scenario.request(_manifest_for(names)))
+        outcome = scenario.simulation_record().run(scenario.request(_manifest_for(names)))
         (still_held,) = scenario.store.observe(CLASS_MEMORY)[0]
         assert _held(still_held) == 0
         assert scenario.store.observe(CLASS_MEMORY)[1] == []
@@ -843,7 +845,7 @@ def test_lost_work_item_lease_stops_only_that_item_while_other_lanes_run(
         scenario.hooks["t01"] = _meet(together)
         scenario.hooks["t02"] = lose_its_own_lease
         with pytest.raises(LeaseLostError):
-            scenario.campaign().run(scenario.request(_manifest_for(names)))
+            scenario.simulation_record().run(scenario.request(_manifest_for(names)))
         assert scenario.admission.cancellation_cause() is None
 
     # Every other item ran and finished; the lost one published no result.
@@ -893,7 +895,7 @@ def test_lost_flow_lease_cancels_running_lanes_and_withdraws_the_queued_claim(
             with pytest.raises(
                 (ClaimAbortedError, ClaimLostError, capacity.SimulationRecordCapacityError)
             ):
-                scenario.campaign().run(scenario.request(_manifest_for(names)))
+                scenario.simulation_record().run(scenario.request(_manifest_for(names)))
         finally:
             killer.join(_PARALLEL_SYNC_TIMEOUT_S)
         cause = scenario.admission.cancellation_cause()
@@ -904,7 +906,7 @@ def test_lost_flow_lease_cancels_running_lanes_and_withdraws_the_queued_claim(
     assert set(scenario.state.completion_order) <= set(names[:3])
 
 
-def test_waiting_campaign_queues_one_item_claim_in_manifest_order(
+def test_waiting_simulation_record_queues_one_item_claim_in_manifest_order(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     names = _names(8)
@@ -940,7 +942,7 @@ def test_waiting_campaign_queues_one_item_claim_in_manifest_order(
         try:
             releaser.start()
             with _deadline(scenario):
-                outcome = scenario.campaign().run(scenario.request(_manifest_for(names)))
+                outcome = scenario.simulation_record().run(scenario.request(_manifest_for(names)))
             releaser.join(_PARALLEL_SYNC_TIMEOUT_S)
         finally:
             alone.finish()
@@ -1000,13 +1002,13 @@ def _kill_item_run_beside_another(scenario: _Scenario, name: str, others: str, t
     return seen
 
 
-def test_oom_killed_item_is_requeued_once_alone_and_the_campaign_completes(
+def test_oom_killed_item_is_requeued_once_alone_and_the_simulation_record_completes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with _scenario(tmp_path, monkeypatch, history=_history("sim"), cores=2) as scenario:
         seen = _kill_item_run_beside_another(scenario, "gamma", "beta", 1)
         with job_attempt(stop_on_oom=True) as flow_attempt, _deadline(scenario):
-            outcome = scenario.campaign().run(scenario.request(_manifest_for(NAMES)))
+            outcome = scenario.simulation_record().run(scenario.request(_manifest_for(NAMES)))
         assert scenario.store.observe(CLASS_MEMORY)[1] == []
 
     assert outcome.complete is True
@@ -1034,7 +1036,7 @@ def test_item_oom_killed_again_while_alone_fails_without_a_third_attempt(
     with _scenario(tmp_path, monkeypatch, history=_history("sim"), cores=2) as scenario:
         _kill_item_run_beside_another(scenario, "gamma", "beta", 2)
         with job_attempt(stop_on_oom=True) as flow_attempt, _deadline(scenario):
-            outcome = scenario.campaign().run(scenario.request(_manifest_for(NAMES)))
+            outcome = scenario.simulation_record().run(scenario.request(_manifest_for(NAMES)))
 
     assert outcome.complete is True
     count, result = _item_attempts(scenario)["gamma"]
@@ -1062,7 +1064,7 @@ def test_oom_kill_under_the_flow_claim_keeps_the_flow_requeue(
         scenario.hooks["beta"] = record("beta")
         scenario.hooks["gamma"] = record("gamma")
         with job_attempt(stop_on_oom=True) as flow_attempt, _deadline(scenario):
-            scenario.campaign().run(scenario.request(_manifest_for(NAMES)))
+            scenario.simulation_record().run(scenario.request(_manifest_for(NAMES)))
 
     attempts = _item_attempts(scenario)
     assert attempts["alpha"][0] == 1  # published, not requeued as an item
@@ -1088,7 +1090,7 @@ def test_only_items_holding_their_own_claim_are_registered_for_oom_ranking(
         for name in NAMES:
             scenario.hooks[name] = record(name)
         with _deadline(scenario):
-            scenario.campaign().run(scenario.request(_manifest_for(NAMES)))
+            scenario.simulation_record().run(scenario.request(_manifest_for(NAMES)))
 
     # The first item runs under the Flow's claim; the others hold one each.
     assert registered == {"alpha": 0, "beta": 1, "gamma": 1}
@@ -1102,7 +1104,7 @@ def test_item_failing_without_an_oom_kill_is_not_requeued(
         job_attempt(stop_on_oom=True) as flow_attempt,
         _deadline(scenario),
     ):
-        outcome = scenario.campaign().run(scenario.request(_manifest_for(NAMES)))
+        outcome = scenario.simulation_record().run(scenario.request(_manifest_for(NAMES)))
 
     assert outcome.complete is True
     attempts = _item_attempts(scenario)
@@ -1161,7 +1163,7 @@ def test_two_items_building_in_parallel_each_get_half_the_cores(
         together = _barrier(2)
         for name in ("t02", "t03"):
             scenario.hooks[name] = _record_then_meet(_jobs_option(scenario, name), together)
-        outcome = scenario.campaign().run(scenario.request(_manifest_for(names)))
+        outcome = scenario.simulation_record().run(scenario.request(_manifest_for(names)))
 
     assert outcome.complete is True
     # Admitted alone, t01 has every core; t02 and t03 each share the cores with one sibling.
@@ -1192,7 +1194,7 @@ def test_lone_item_after_the_flow_drop_gets_every_core(
 
         scenario.hooks["t00"] = release_the_early_holder
         scenario.hooks["t01"] = _jobs_option(scenario, "t01")
-        outcome = scenario.campaign().run(scenario.request(_manifest_for(names)))
+        outcome = scenario.simulation_record().run(scenario.request(_manifest_for(names)))
 
     assert outcome.complete is True
     # Under the Flow's claim the early holder was counted: half the cores.
@@ -1231,7 +1233,7 @@ def test_another_job_counts_the_flow_token_and_the_item_claims(
             assert not thread.is_alive()
 
         scenario.hooks["t01"] = admit_another_job
-        outcome = scenario.campaign().run(scenario.request(_manifest_for(names)))
+        outcome = scenario.simulation_record().run(scenario.request(_manifest_for(names)))
 
     assert outcome.complete is True
     assert scenario.holds_own["t01"]
@@ -1271,7 +1273,7 @@ def test_item_thread_count_stays_fixed_while_holders_change(
 
         scenario.hooks["t00"] = release_the_early_holder
         scenario.hooks["t01"] = watch_the_count
-        outcome = scenario.campaign().run(scenario.request(_manifest_for(names)))
+        outcome = scenario.simulation_record().run(scenario.request(_manifest_for(names)))
 
     assert outcome.complete is True
     # Fixed at the item's admission, alone on 8 cores; the foreign holder never shrinks it.
@@ -1295,7 +1297,7 @@ def test_failed_item_thread_count_releases_the_item_claim(
     ) as scenario:
         monkeypatch.setattr(capacity, "job_threads_at_start", unreadable)
         with pytest.raises(OSError, match="unreadable"):
-            scenario.campaign().run(scenario.request(_manifest_for(names)))
+            scenario.simulation_record().run(scenario.request(_manifest_for(names)))
         holders, waiters = scenario.store.observe(CLASS_MEMORY)
 
     # Only the Flow's own claim remains: the item's claim was released with its lane.
