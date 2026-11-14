@@ -250,7 +250,7 @@ def test_oracle_reads_coverage_record_the_product_publishes(tmp_path):
     from tests.flows.sim.test_coverage_record_reference import _nested_coverage_record
 
     published = _nested_coverage_record(tmp_path / "target")
-    manifest, points = oracle.read_coverage_record(published)
+    manifest, points = oracle.read_campaign(published)
     document = json.loads(published.read_text())
     assert manifest["coverage_record_id"] == document["coverage_record_id"]
     assert len(points) == document["point_store"]["point_count"]

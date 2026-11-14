@@ -138,12 +138,12 @@ def test_fault_reaches_product_content_validation(tmp_path: Path, monkeypatch) -
             monkeypatch.setattr(store, "MAX_UNCOMPRESSED_BYTES", 4096)
             monkeypatch.setattr(faults, "POINT_CEILING_BYTES", 4096)
 
-        manifest_before = faults.nested_coverage_record(reference, owned)[0].read_bytes()
+        manifest_before = faults.nested_campaign(reference, owned)[0].read_bytes()
         reference_before = reference.read_bytes()
 
         faults.mutate(reference, owned, mode)
 
-        manifest_after = faults.nested_coverage_record(reference, owned)[0].read_bytes()
+        manifest_after = faults.nested_campaign(reference, owned)[0].read_bytes()
         if mode in faults.POINT_FAULTS:
             # A point fault damages only the point store.
             assert manifest_after == manifest_before
