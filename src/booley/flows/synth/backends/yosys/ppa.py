@@ -24,7 +24,10 @@ class YosysPpaSettings:
 _YOSYS_PROFILES = {
     "compact": YosysPpaSettings(abc_recipe="default"),
     "balanced": YosysPpaSettings(abc_recipe="balanced"),
-    "max_frequency": YosysPpaSettings(abc_recipe="fast"),
+    # max_frequency maps like balanced: a delay target equal to the clock period
+    # and the shortened ``fast`` script both measured slower after placement
+    # (tests/fixtures/synth_profile_characterization). Its gain is OpenROAD repair.
+    "max_frequency": YosysPpaSettings(abc_recipe="balanced"),
 }
 
 

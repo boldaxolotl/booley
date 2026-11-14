@@ -145,14 +145,18 @@ sets none. If very high-fanout nets dominate timing, set your own with
 A profile states what to optimize for. Set it on the Target as
 `ppa_profile`, or try one for a single run with `--ppa-profile`:
 
-| Profile | Intent | Mapping recipe (`--abc-recipe`) | Placement utilization / density |
-|---|---|---|---|
-| `compact` | Smaller area. | `default` | 40% / 0.65 |
-| `balanced` | Default trade-off. | `balanced` | 50% / 0.80 |
-| `max_frequency` | Higher Fmax. | `fast` | 50% / 0.80 |
+| Profile | Intent | Mapping recipe (`--abc-recipe`) | Placement utilization / density | Setup repair (physical mode) |
+|---|---|---|---|---|
+| `compact` | Smaller area. | `default` | 40% / 0.65 | Gate cloning off, no setup margin, OpenROAD's default share of violating endpoints |
+| `balanced` | Default trade-off. | `balanced` | 50% / 0.80 | Gate cloning off, no setup margin, OpenROAD's default share of violating endpoints |
+| `max_frequency` | Higher Fmax. | `balanced` | 40% / 0.70 | Gate cloning on, 0.2 ns setup margin, all violating endpoints |
 
-`balanced` and `max_frequency` differ only in the mapping recipe. A
-profile states intent, not a guaranteed result; compare runs to see which
+`max_frequency` maps like `balanced` and adds stronger setup repair, which
+runs in physical mode only, so in logical mode it gives the same netlist as
+`balanced`. Set `--abc-delay-ps` yourself to map to a target under any
+profile.
+
+A profile states intent, not a guaranteed result; compare runs to see which
 suits your design. Name the profile on the Target so results stay comparable over
 time. `--ppa-profile` replaces any expert settings on the Target for that run,
 so you see the clean profile.
@@ -164,7 +168,7 @@ second column names.
 
 | Option | Target table | What it changes | Default |
 |---|---|---|---|
-| `--abc-recipe <default\|balanced\|fast>` | `advanced_settings_yosys` | Logic-optimization script used during mapping. | From the profile |
+| `--abc-recipe <default\|balanced\|fast>` | `advanced_settings_yosys` | Logic-optimization script used during mapping. `fast` is a shortened `balanced` script; it does not map for speed. | From the profile |
 | `--abc-script <script>` | `advanced_settings_yosys` | Your own ABC commands in place of a recipe, starting with `+` (for example `+strash;map`). Write `{D}` where the delay target goes, comma-separated (for example `+strash;map,{D}`); without `{D}` the script ignores `--abc-delay-ps`. Cannot be combined with `--abc-recipe`. | None |
 | `--generic-abc-before-mapping` / `--no-generic-abc-before-mapping` | `advanced_settings_yosys` | Adds a generic logic-optimization pass before mapping. | Off |
 | `--abc-delay-ps <ps>` | `advanced_settings_yosys` | Delay target for mapping, in ps. Every profile maps with it; a custom `--abc-script` uses it only where the script contains `{D}`. | None |
@@ -172,14 +176,14 @@ second column names.
 | `--placement-density <fraction>` | `advanced_settings_openroad` | Target density for placement. | From the profile |
 | `--repair-setup` / `--no-repair-setup` | `advanced_settings_openroad` | Repairs setup violations after placement. | On |
 | `--repair-hold` / `--no-repair-hold` | `advanced_settings_openroad` | Repairs hold violations. | Off |
-| `--gate-cloning` / `--no-gate-cloning` | `advanced_settings_openroad` | Lets setup repair duplicate gates. | Off |
-| `--setup-margin-ns <ns>` | `advanced_settings_openroad` | Extra setup slack that repair aims for, in ns. | 0 |
-| `--repair-tns-percent <percent>` | `advanced_settings_openroad` | Share of violating endpoints that setup repair works on. | OpenROAD's default |
+| `--gate-cloning` / `--no-gate-cloning` | `advanced_settings_openroad` | Lets setup repair duplicate gates. | From the profile |
+| `--setup-margin-ns <ns>` | `advanced_settings_openroad` | Extra setup slack that repair aims for, in ns. | From the profile |
+| `--repair-tns-percent <percent>` | `advanced_settings_openroad` | Share of violating endpoints that setup repair works on. | From the profile |
 
 ```yaml
 flow_options:
   ppa_profile: balanced
-  advanced_settings_yosys: {abc_recipe: fast}
+  advanced_settings_yosys: {abc_recipe: default}
   advanced_settings_openroad: {utilization_pct: 60, gate_cloning: true}
 ```
 

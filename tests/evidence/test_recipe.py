@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -153,3 +154,16 @@ def test_comparison_basis_uses_ordered_constraint_content() -> None:
         invalid = {**first, "constraints": [{"core": "::core:0", "sha256": digest}]}
         with pytest.raises(InvalidRecipeSnapshotError, match="valid SHA-256"):
             implementation_comparison_basis(invalid)
+
+
+def _profiled_synth_snapshot(settings: dict[str, Any]) -> dict[str, Any]:
+    snapshot = _synth_snapshot(schema=4)
+    snapshot["ppa_profile_settings"] = settings
+    return snapshot
+
+
+def test_comparison_basis_tracks_profile_settings() -> None:
+    """Paired Targets whose resolved profile settings differ are not comparable."""
+    balanced = _profiled_synth_snapshot({"yosys": {"abc_recipe": "balanced"}})
+    fast = _profiled_synth_snapshot({"yosys": {"abc_recipe": "fast"}})
+    assert implementation_comparison_basis(balanced) != implementation_comparison_basis(fast)

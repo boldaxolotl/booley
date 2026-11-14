@@ -15,7 +15,7 @@ from booley.flows.synth.profiles import validate_ppa_profile
     [
         ("compact", "default", 40.0, 0.65),
         ("balanced", "balanced", 50.0, 0.80),
-        ("max_frequency", "fast", 50.0, 0.80),
+        ("max_frequency", "balanced", 40.0, 0.70),
     ],
 )
 def test_profile_backend_translations(profile, abc, util, density):
