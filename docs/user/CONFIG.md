@@ -33,8 +33,8 @@ here to look up what a setting means and what its default is.
 
 The file sits in the Booley Directory, `.booley/` at the top of your repository.
 `[project].name` is the Project's name. `booley init` shows it in its output,
-and `booley feedback` replaces it with a placeholder in the redacted copy it
-exports.
+and [`/booley-feedback`](#feedback-feedback) replaces it with a placeholder in
+the copy it writes for you to share.
 
 `.booley` can be a symlink to a Booley Directory kept elsewhere, for example in
 a separate repository. Booley follows the link on the host and mounts its
