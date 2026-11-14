@@ -79,14 +79,14 @@ def _selected_tests(manifest: dict[str, object]) -> list[object]:
     return names
 
 
-def validate_cocotb_batch(campaign_path: Path, interrupted_attempt_path: Path) -> None:
+def validate_cocotb_batch(simulation_record_path: Path, interrupted_attempt_path: Path) -> None:
     """Require one interrupted batch attempt followed by one whole-batch retry.
 
     ``campaign_path`` is the Campaign directory after the resume.
     ``interrupted_attempt_path`` is the copy of the first attempt's
     ``attempt.json`` taken after the interruption and before the resume.
     """
-    manifest_raw = (campaign_path / "manifest.json").read_bytes()
+    manifest_raw = (simulation_record_path / "manifest.json").read_bytes()
     manifest = _decode(manifest_raw, "manifest")
     work_item = _batch_work_item(manifest)
     identity = {
@@ -99,7 +99,7 @@ def validate_cocotb_batch(campaign_path: Path, interrupted_attempt_path: Path) -
         isinstance(identity["campaign_id"], str) and isinstance(identity["work_item_id"], str),
         "manifest identity is missing",
     )
-    directory = _work_item_directory(campaign_path, work_item)
+    directory = _work_item_directory(simulation_record_path, work_item)
     first, second = _attempt_pair(directory, identity)
     _need(
         interrupted_attempt_path.read_bytes() == (first / "attempt.json").read_bytes(),
@@ -139,12 +139,12 @@ def _workload_digest(manifest: dict[str, object]) -> object:
     return digest
 
 
-def _work_item_directory(campaign_path: Path, work_item: dict[str, object]) -> Path:
+def _work_item_directory(simulation_record_path: Path, work_item: dict[str, object]) -> Path:
     """Locate the work item where the Campaign layout places it."""
     ordinal = work_item.get("ordinal")
     _need(_is_count(ordinal), "work-item ordinal is invalid")
     suffix = str(work_item["work_item_id"]).rsplit(":", 1)[-1]
-    directory = campaign_path / "work-items" / f"{ordinal + 1:04d}-{suffix}"
+    directory = simulation_record_path / "work-items" / f"{ordinal + 1:04d}-{suffix}"
     _need(directory.is_dir() and not directory.is_symlink(), "work-item directory is missing")
     return directory
 
@@ -230,18 +230,21 @@ def validate_mcp_response(
     _need(f"EXIT_CODE: {exit_code}" in text, "MCP text card exit code differs")
     detail = report.get("detail")
     _need(isinstance(detail, dict), "MCP report detail is missing")
-    campaigns = detail.get("campaigns")
-    _need(isinstance(campaigns, dict) and campaigns, "MCP campaign details are missing")
+    simulation_records = detail.get("campaigns")
+    _need(
+        isinstance(simulation_records, dict) and simulation_records,
+        "MCP campaign details are missing",
+    )
     bases = {
         "report_invocation": report_invocation,
         "reports_root": report_invocation.parent.parent,
         "external_origin_target": external_origin_target,
     }
-    for campaign in campaigns.values():
-        _validate_mcp_campaign(campaign, bases)
+    for simulation_record in simulation_records.values():
+        _validate_mcp_simulation_record(simulation_record, bases)
 
 
-def _validate_mcp_campaign(value: object, bases: dict[str, Path | None]) -> None:
+def _validate_mcp_simulation_record(value: object, bases: dict[str, Path | None]) -> None:
     _need(isinstance(value, dict), "MCP campaign detail is invalid")
     _need(
         value.get("grade") in {"pass", "fail", "error", "inconclusive"},
@@ -254,12 +257,12 @@ def _validate_mcp_campaign(value: object, bases: dict[str, Path | None]) -> None
 
 
 def _read_mcp_artifacts(
-    campaign: dict[str, object], bases: dict[str, Path | None]
+    simulation_record: dict[str, object], bases: dict[str, Path | None]
 ) -> dict[str, bytes]:
     """Authenticate every Campaign artifact reference and return the retained bytes."""
-    owner = campaign.get("campaign_id")
+    owner = simulation_record.get("campaign_id")
     _need(isinstance(owner, str) and owner, "MCP campaign identity is missing")
-    artifacts = campaign.get("artifacts")
+    artifacts = simulation_record.get("artifacts")
     _need(isinstance(artifacts, dict), "MCP campaign artifacts are missing")
     known = _REQUIRED_ARTIFACTS | _OPTIONAL_ARTIFACTS
     _need(set(artifacts) <= set(known), "MCP campaign artifacts are unexpected")
@@ -299,24 +302,30 @@ def _read_artifact(
 
 
 def _validate_mcp_manifest_binding(
-    campaign: dict[str, object], retained: dict[str, bytes]
+    simulation_record: dict[str, object], retained: dict[str, bytes]
 ) -> None:
     """Bind the response to the authenticated manifest's identity and selected tests."""
     manifest = _decode(retained["manifest"], "MCP manifest artifact")
-    campaign_id = campaign["campaign_id"]
-    _need(manifest.get("campaign_id") == campaign_id, "MCP response names a foreign Campaign")
+    simulation_record_id = simulation_record["campaign_id"]
     _need(
-        campaign.get("manifest_sha256") == _manifest_digest(retained["manifest"]),
+        manifest.get("campaign_id") == simulation_record_id,
+        "MCP response names a foreign Campaign",
+    )
+    _need(
+        simulation_record.get("manifest_sha256") == _manifest_digest(retained["manifest"]),
         "MCP manifest digest differs from the retained manifest",
     )
     projection = _decode(retained["simulation"], "MCP simulation artifact")
-    _need(projection.get("campaign_id") == campaign_id, "MCP projection names a foreign Campaign")
+    _need(
+        projection.get("campaign_id") == simulation_record_id,
+        "MCP projection names a foreign Campaign",
+    )
     selected = _selected_tests(manifest)
     _need(
-        campaign["observation_total"] == len(selected),
+        simulation_record["observation_total"] == len(selected),
         "MCP observation total differs from the manifest selection",
     )
-    observed = [item["test"] for item in campaign["observations"]]
+    observed = [item["test"] for item in simulation_record["observations"]]
     _need(
         observed == selected[:_OBSERVATION_PREVIEW_LIMIT],
         "MCP observations differ from the manifest selection",

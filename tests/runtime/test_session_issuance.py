@@ -4065,3 +4065,49 @@ def test_gateway_spec_refusals(issued, monkeypatch, request, case):
     damage(spec, home)
     with pytest.raises(runtime_spec.RuntimeSpecError, match=refusal):
         runtime_spec.preview(project, fixed(spec))
+
+
+_CLAUDE_ONLY = '[agent]\nclis = ["claude"]\n'
+_CLAUDE_SUBSCRIPTION = _CLAUDE_ONLY + '\n[agent.auth]\nclaude = "subscription"\n'
+
+
+def _claude_volume(spec: dict) -> str:
+    return next(raw for raw in spec["mounts"] if "type=volume" in raw)
+
+
+def test_auto_to_subscription_reissue_keeps_the_login_volume(issued, monkeypatch, request):
+    project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_ONLY)
+    auto_spec, path = _issue_spec(project, spec, monkeypatch)
+    auto_volume = _claude_volume(auto_spec)
+
+    project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_SUBSCRIPTION)
+    subscription_spec, path = _issue_spec(project, spec, monkeypatch)
+
+    assert dc.spec_cli_policies(subscription_spec) == {"claude": "subscription"}
+    assert _claude_volume(subscription_spec) == auto_volume
+    runtime_spec.validate(project, subscription_spec, path)
+
+
+def test_reissue_keeps_a_legacy_subscription_volume(issued, monkeypatch, request):
+    project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_SUBSCRIPTION)
+    project_id = dc.canonical_project_id(project)
+    legacy = dc.state_volume_mount("claude", project_id, "subscription", legacy=True)
+    # A spec issued before the volume was shared mounts the ``-subscription`` volume.
+    spec["mounts"][spec["mounts"].index(_claude_volume(spec))] = legacy
+    legacy_spec, path = _issue_spec(project, spec, monkeypatch)
+    runtime_spec.validate(project, legacy_spec, path)
+
+    for _refresh in range(2):  # the kept volume survives every later refresh
+        project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_SUBSCRIPTION)
+        assert _claude_volume(spec) == legacy
+        refreshed, path = _issue_spec(project, spec, monkeypatch)
+        runtime_spec.validate(project, refreshed, path)
+
+    # Moving the CLI off ``subscription`` takes the policy's own volume.
+    project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_ONLY)
+    assert _claude_volume(spec) == dc.state_volume_mount("claude", project_id, "auto")
+
+    foreign = legacy.replace(project_id, "foreign-project-id")
+    spec["mounts"][spec["mounts"].index(_claude_volume(spec))] = foreign
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="canonical Project"):
+        runtime_spec.preview(project, fixed(spec))

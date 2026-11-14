@@ -11,7 +11,7 @@ from typing import Any, Literal
 from booley.core.boundary import as_str
 from booley.criteria.evidence_ledger import AcceptanceLedgerError
 from booley.criteria.state import DevelopmentState
-from booley.flows.simulation_record_results import CampaignResultsReader
+from booley.flows.simulation_record_results import SimulationRecordResultsReader
 from booley.goals import simulation_record_accounting
 from booley.goals.apply_barrier import pending_applies
 from booley.goals.change_policy import conflict
@@ -116,7 +116,7 @@ def build_status(
     work_dir: Path | None = None,
     resolvers: GoalFreshnessResolvers = DEFAULT_RESOLVERS,
     observational: bool = False,
-    campaign_reader: CampaignResultsReader | None = None,
+    simulation_record_reader: SimulationRecordResultsReader | None = None,
 ) -> GoalStatusView:
     """Read one coherent record/state/lifecycle projection without recovering it."""
     with store.record_lock(record.id, existing_only=observational):
@@ -125,7 +125,7 @@ def build_status(
             store.load(record.id),
             work_dir=work_dir,
             resolvers=resolvers,
-            campaign_reader=campaign_reader,
+            simulation_record_reader=simulation_record_reader,
         )
 
 
@@ -136,7 +136,7 @@ def _build_status(
     *,
     work_dir: Path | None,
     resolvers: GoalFreshnessResolvers,
-    campaign_reader: CampaignResultsReader | None,
+    simulation_record_reader: SimulationRecordResultsReader | None,
 ) -> GoalStatusView:
     root = work_dir or Path(record.worktree_path)
     try:
@@ -156,7 +156,7 @@ def _build_status(
         protected[0] if protected else checkout_violation(store, record, root)
     )
     unaccounted = simulation_record_accounting.unaccounted_goals(
-        store, record, state, history, campaign_reader
+        store, record, state, history, simulation_record_reader
     )
     goals = _goal_statuses(record, state, history, store, root, drift, resolvers, unaccounted)
     return GoalStatusView(
@@ -338,7 +338,10 @@ def _revision_violation(
 
 
 def select_status(
-    store: GoalStore, work_dir: Path, *, campaign_reader: CampaignResultsReader | None = None
+    store: GoalStore,
+    work_dir: Path,
+    *,
+    simulation_record_reader: SimulationRecordResultsReader | None = None,
 ) -> GoalStatusSelection:
     """Show this worktree's occupant, otherwise all occupying records; report corruption.
 
@@ -356,14 +359,14 @@ def select_status(
     found = GoalCheckout(work_dir).containing_repository()
     record = store.active_for_worktree(work_dir) if found is not None else None
     if record is not None and found is not None:
-        record = _brought_up_to_date(store, record, found[0], campaign_reader)
+        record = _brought_up_to_date(store, record, found[0], simulation_record_reader)
     records = (record,) if record is not None else scan.records
     views = tuple(
         build_status(
             store,
             rec,
             work_dir=work_dir if rec is record else None,
-            campaign_reader=campaign_reader,
+            simulation_record_reader=simulation_record_reader,
         )
         for rec in records
     )
@@ -387,7 +390,10 @@ def _with_uncommitted(store: GoalStore, view: GoalStatusView, root: Path) -> Goa
 
 
 def _brought_up_to_date(
-    store: GoalStore, record: GoalRecord, root: Path, campaign_reader: CampaignResultsReader | None
+    store: GoalStore,
+    record: GoalRecord,
+    root: Path,
+    simulation_record_reader: SimulationRecordResultsReader | None,
 ) -> GoalRecord:
     """Do what a status read of the worktree's own record may write (ADR 0072).
 
@@ -406,8 +412,8 @@ def _brought_up_to_date(
     except GoalStoreError as exc:
         logger.warning("Test Runs of Goal Mode %s were not resolved now: %s", record.id, exc)
     try:
-        simulation_record_accounting.account_for_campaigns(
-            store, record.id, reader=campaign_reader
+        simulation_record_accounting.account_for_simulation_records(
+            store, record.id, reader=simulation_record_reader
         )
     except (GoalStoreError, AcceptanceLedgerError) as exc:
         logger.warning("evidence of Goal Mode %s was not accounted for now: %s", record.id, exc)
@@ -415,7 +421,10 @@ def _brought_up_to_date(
 
 
 def status_views(
-    store: GoalStore, work_dir: Path, *, campaign_reader: CampaignResultsReader | None = None
+    store: GoalStore,
+    work_dir: Path,
+    *,
+    simulation_record_reader: SimulationRecordResultsReader | None = None,
 ) -> tuple[GoalStatusView, ...]:
     """The status of the worktree's Goal Mode, or of every occupying record.
 
@@ -423,4 +432,4 @@ def status_views(
     which may freeze pending Test Run slots and account for unpublished
     campaign evidence before it reads.
     """
-    return select_status(store, work_dir, campaign_reader=campaign_reader).views
+    return select_status(store, work_dir, simulation_record_reader=simulation_record_reader).views

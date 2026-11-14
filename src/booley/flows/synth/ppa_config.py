@@ -106,6 +106,19 @@ def _add_bool_pair(parser: argparse.ArgumentParser, option: str, description: st
     parser.add_argument(f"--no-{option}", dest=dest, action="store_false")
 
 
+def resolve_ppa_profile(
+    recipe: Mapping[str, Any],
+    args: SynthRequest | argparse.Namespace,
+    *,
+    field_prefix: str = "Target flow_options",
+) -> str:
+    """Return the profile a run uses: per-call ``--ppa-profile``, else the Target's."""
+    return validate_ppa_profile(
+        getattr(args, "ppa_profile", None) or recipe.get("ppa_profile", DEFAULT_PPA_PROFILE),
+        field=f"{field_prefix}.ppa_profile",
+    )
+
+
 def append_ppa_args(
     cmd: list[str],
     recipe: Mapping[str, Any],
@@ -131,14 +144,9 @@ def append_ppa_args(
             f"{field_prefix}.advanced_settings_openroad cannot be set when synth_mode is logical"
         )
 
-    cli_profile = getattr(args, "ppa_profile", None)
-    configured = recipe.get("ppa_profile", DEFAULT_PPA_PROFILE)
-    profile = validate_ppa_profile(
-        cli_profile or configured,
-        field=f"{field_prefix}.ppa_profile",
-    )
+    profile = resolve_ppa_profile(recipe, args, field_prefix=field_prefix)
     cmd.extend(["--ppa-profile", profile])
-    if cli_profile is None:
+    if getattr(args, "ppa_profile", None) is None:
         _append_yosys_config(
             cmd,
             yosys_cfg,

@@ -191,7 +191,7 @@ def test_cocotb_absent_or_malformed_results_are_inconclusive(
 
     assert "cocotb result line is missing or malformed" in sweep.inconclusive
     assert len(results) == 1
-    assert results[0].invalid is True
+    assert results[0].inconclusive_reason
     assert results[0].detected is False
     assert results[0].first_killing_test == ""
 
@@ -233,7 +233,7 @@ def test_sweep_classifies_every_variant_after_inconclusive_result(tmp_path: Path
 
     assert "state is missing" in sweep.inconclusive
     assert len(results) == 2
-    assert results[0].invalid is True
+    assert results[0].inconclusive_reason
     assert results[1].detected is True
     assert results[1].first_killing_test == "corner"
 
@@ -312,20 +312,37 @@ def test_missing_variant_marker_cannot_restage_pristine_build(tmp_path, monkeypa
         endpoint._pinned_build("sim", tmp_path, build_path)
 
 
-def test_unsupported_variant_build_is_invalid_before_suite(tmp_path):
+def test_variant_that_does_not_build_is_dropped_before_suite(tmp_path):
     source = tmp_path / "rtl/dut.sv"
     source.parent.mkdir()
-    source.write_text("assign x = a + b;\n")
-    specs = [MutationSpec(1, "operator", "rtl/dut.sv", 1, "a + b", "a - b")]
+    source.write_text("assign x = a + b;\nassign y = c & d;\n")
+    specs = [
+        MutationSpec(1, "operator", "rtl/dut.sv", 1, "a + b", "a - b", "id-a"),
+        MutationSpec(2, "operator", "rtl/dut.sv", 2, "c & d", "c | d", "id-b"),
+    ]
     variants = MutationVariantPlan.resolve(specs, tmp_path, ["rtl/dut.sv"])
     endpoint = _endpoint(tmp_path)
-    endpoint._run_elab = lambda *_args: _process(
-        1, "unsupported generated/imperative source closure"
-    )
-    endpoint._run_target_test_suite = lambda *_args: pytest.fail("scored invalid build")
-    results = _sweep(endpoint, _plan(tmp_path, "rtl/dut.sv"), specs, variants).results
-    assert results[0].invalid and not results[0].detected
-    assert "unsupported generated/imperative" in results[0].sim_output_snippet
+    builds: list[int] = []
+
+    def elab(_target, _work_dir, _build_path, mutation):
+        builds.append(mutation[1])
+        if len(builds) == 1:
+            return _process(1, "unsupported generated/imperative source closure")
+        return _process(0)
+
+    endpoint._run_elab = elab
+    endpoint._run_target_test_suite = lambda *_args, **_kwargs: [
+        MutationTestRun("suite", process=_process(1), output="FAIL")
+    ]
+    sweep = _sweep(endpoint, _plan(tmp_path, "rtl/dut.sv"), specs, variants)
+
+    # The first candidate does not build; the second takes number 1 and is scored.
+    assert [(spec.index, spec.mutant_id) for spec in sweep.specs] == [(1, specs[1].mutant_id)]
+    assert sweep.invalid_dropped == [specs[0].mutant_id]
+    assert sweep.equivalent_dropped == []
+    assert [result.detected for result in sweep.results] == [True]
+    assert sweep.inconclusive == ""
+    assert builds == [1, 1]  # the replacement reuses the number and build directory
     assert "a + b" in source.read_text()
 
 

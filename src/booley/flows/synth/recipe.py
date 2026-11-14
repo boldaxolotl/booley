@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 from collections.abc import Mapping
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +35,9 @@ from booley.flows.synth.backends.yosys.discovery import resolve_liberty_lenient
 from booley.flows.synth.mode import SYNTH_MODE_CHOICES, SynthMode
 from booley.flows.synth.request import SynthRequest
 
-from .ppa_config import append_ppa_args
+from .backends.openroad.ppa import openroad_profile
+from .backends.yosys.ppa import yosys_profile
+from .ppa_config import append_ppa_args, resolve_ppa_profile
 from .recipe_migrations import retired_option_message
 
 __all__ = [
@@ -152,6 +155,28 @@ def resolve_synth_mode(
     return SynthMode(mode)
 
 
+def _ppa_profile_settings(
+    flow_options: Mapping[str, Any],
+    args: SynthRequest | argparse.Namespace,
+    synth_mode: SynthMode,
+    *,
+    target: str,
+) -> dict[str, Any]:
+    """Return the selected profile's own settings for the recipe identity.
+
+    Explicit overrides are already in ``recipe_args``; these are the profile's
+    defaults, so editing a profile table changes the fingerprint. OpenROAD
+    settings count only when the mode runs OpenROAD.
+    """
+    profile = resolve_ppa_profile(
+        flow_options, args, field_prefix=f"Target {target!r} flow_options"
+    )
+    settings: dict[str, Any] = {"yosys": jsonable(asdict(yosys_profile(profile)))}
+    if synth_mode.runs_openroad:
+        settings["openroad"] = jsonable(asdict(openroad_profile(profile)))
+    return settings
+
+
 def synthesis_recipe_snapshot(
     resolved: Any,
     args: SynthRequest | argparse.Namespace,
@@ -195,6 +220,9 @@ def synthesis_recipe_snapshot(
         "toplevel": resolved.toplevel,
         "parameters": jsonable(resolved.parameters),
         "recipe_args": synthesis_recipe_args(resolved.flow_options, args, target=target),
+        "ppa_profile_settings": _ppa_profile_settings(
+            resolved.flow_options, args, synth_mode, target=target
+        ),
         "constraints": constraints,
         "technology": {
             "liberty": liberty.as_posix(),

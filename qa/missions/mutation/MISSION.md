@@ -1,7 +1,7 @@
 # Mutation Flow on a fixture with known counts
 
 Hunt Mutation Flow bugs end to end: which Mutants the generator plants, how it
-picks them, how it scores them, and how it reports hangs, invalid Mutants,
+picks them, how it scores them, and how it reports hangs, Mutants that do not build,
 rejected input, and removed surface. The areas run on a small fixture Project
 whose every Mutant site is listed by hand, so each mismatch is a finding
 rather than a judgment call. The `booley-qa-run` skill runs this mission;
@@ -60,8 +60,10 @@ Intent: an exhaustive run plants exactly the oracle's candidates.
 Try:
 - `--target sim_icarus --count 41`; compare `mutation-specs.md` with
   `operators` in `expected.json`: per operator, the same file, line, site and
-  replacement, nothing missing, nothing extra. Run `--target sim_cocotb --count 41`
-  once and compare the same way.
+  replacement, nothing missing, nothing extra. The `self_check.sv` candidates do
+  not build and are replaced, so `mutation-specs.md` lists the 41 candidates
+  minus `outcomes.does_not_build` (38; none is left to replace them). Run
+  `--target sim_cocotb --count 41` once and compare the same way.
 - No `decoys` entry is mutated, including the `ifdef` branch, the string, the
   attribute, widths, parameter defaults, and the boundary selects.
 - Every Mutant applies: `campaign/variants/` holds each one; lint each deletion
@@ -74,11 +76,13 @@ Intent: selection follows the documented round-robin and sizing.
 Try:
 - `--count 6` takes one Mutant per operator in `operator_order`; `--count 7`
   adds a second `relational`; `--count 18` and `--count 22` match
-  `picks_per_operator`. Which candidate is seed-dependent and not checked.
+  `picks_per_operator` unless a `rtl/self_check.sv` Mutant is picked: it does not
+  build and is replaced by the next pick, which shifts the operator mix by up to
+  the number in `invalid_dropped`. Which candidate is seed-dependent and not checked.
 - `--count auto --dry-run` at the default timeout and with `--timeout 10m`,
   `1m`, `1h`: compare with the `auto` cases, and check that the dry run
   explains the count it chose.
-- `--count 50`: all 41 run, the shortfall line is `only 41 Mutants could be scored (50 requested)`.
+- `--count 50`: 38 are scored (the 3 that do not build are replaced, and no candidate is left), the shortfall line is `only 38 Mutants could be scored (50 requested)`, and the default threshold is 31.
 Look for: a wrong operator order, an `auto` count off the oracle, a silent
 shortfall.
 
@@ -87,14 +91,17 @@ Intent: the verdict follows detected counts and the threshold rule.
 Try:
 - Exhaustive `sim_icarus` run: the tally equals `totals.exhaustive`,
   survivors are listed as "not detected" with file, line and code, and equal
-  `outcomes.survivors`. The default threshold is `ceil(0.8 x count)`; compare
-  `default_threshold_by_count` for other counts.
+  `outcomes.survivors`. The default threshold is `ceil(0.8 x Mutants scored)`,
+  which is `ceil(0.8 x count)` while the run keeps `--count` Mutants; compare
+  `default_threshold_by_count` for other counts. The exhaustive run scores 38,
+  so its threshold is 31.
 - `--min-detected 33` passes and `--min-detected 34` fails (`totals.boundary`);
   exit codes 0, 1, 2.
 - The equivalent-Mutant note appears only when survivors exist: `--scope
   rtl/counter.sv` shows it, `--scope rtl/alu.sv --count 14` shows none.
 - The criterion detail `mutation_score_<target>` matches the report.
-Look for: a threshold on the wrong base, invalid Mutants counted as detected,
+Look for: a threshold on the wrong base, an `invalid` count or status in the
+report or the result detail, a Mutant that does not build scored,
 the equivalent note on a run without survivors, an exit code off the verdict
 table.
 
@@ -132,8 +139,10 @@ Try:
 - `faults/unelaborated.sv`: baseline does not elaborate, `ERROR`, exit 2.
 - `faults/syntax_error.sv`: the run names the file and the parser diagnostic,
   exit 2.
-- The `self_check.sv` Mutants (`--scope rtl/self_check.sv --count 3`) are
-  `invalid`, unscored, and still counted in `--count`. Do this on both Targets.
+- The `self_check.sv` Mutants (`--scope rtl/self_check.sv --count 3`) do not
+  build, so every one is dropped, and the run ends with `ERROR` (exit 2, no
+  Mutant selected to score) with the 3 IDs in `invalid_dropped`. Do this on both
+  Targets.
 - A run with no agent CLI credentials in the Sandbox works.
 Look for: one inconclusive Mutant (a cocotb run with no result line, a compile
 failure outside the build step) turning a whole run into `ERROR`, a Mutant
@@ -163,6 +172,6 @@ Project and its resources in `resources.md`.
   run is slow, so run it once.
 - cocotb runs the suite in batches, so one bad test can touch its neighbours.
 - Plain `booley flow sim` reports a failed Icarus build as `ERROR` but a failed
-  Verilator build as `FAIL`; the Mutation Flow should call both `invalid`.
+  Verilator build as `FAIL`; the Mutation Flow drops and replaces both.
 - Parallel sub-agents share the host Sandbox cap (`[sandbox] max_sessions`,
   default 4); new Sandbox starts are refused at capacity.

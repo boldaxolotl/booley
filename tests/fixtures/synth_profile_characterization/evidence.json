@@ -1,0 +1,530 @@
+{
+  "schema_version": 1,
+  "captured_on": "2026-11-14",
+  "revisions": {
+    "before": "c682cd91a",
+    "after": "profile tables as committed with this fixture"
+  },
+  "tool": {
+    "yosys": "0.70+ 28ba3cb92",
+    "openroad": "26Q3-2927-gc4d317e4fa",
+    "image": "booley-sandbox:latest",
+    "pdk": "Nangate45 typical_ccs"
+  },
+  "design": {
+    "upstream": "YosysHQ/picorv32",
+    "upstream_commit": "a473fc8fca393771d83b0ffcf0b14db3393339d8",
+    "picorv32_v_sha256": "0836050971b3c6cdd28ac3b1e5719a67fb645161912bef1e472e63995ceb0622",
+    "target": "synth_core",
+    "top": "picorv32",
+    "parameters": {
+      "COMPRESSED_ISA": 1,
+      "ENABLE_MUL": 1,
+      "ENABLE_DIV": 1
+    },
+    "mode": "physical",
+    "clock_period_ns": 0.8,
+    "sdc": "asic_core.sdc",
+    "sdc_sha256": "fbb2ddbde40b179005939ab57511bfe57508c7a760c766b206f1604975b1f040"
+  },
+  "before": {
+    "compact": {
+      "settings": {
+        "yosys": {
+          "abc_recipe": "default",
+          "abc_script": null,
+          "generic_abc_before_mapping": false,
+          "abc_delay_ps": null
+        },
+        "openroad": {
+          "utilization_pct": 40.0,
+          "placement_density": 0.65,
+          "repair_setup": true,
+          "repair_hold": false,
+          "gate_cloning": false,
+          "setup_margin_ns": 0.0,
+          "repair_tns_percent": null
+        }
+      },
+      "area_kge": 28.528,
+      "cells": 12733,
+      "critical_path_ps": 1477.6,
+      "wns_ns": -0.678,
+      "fmax_mhz": 676.8,
+      "runtime_s": 33.5
+    },
+    "balanced": {
+      "settings": {
+        "yosys": {
+          "abc_recipe": "balanced",
+          "abc_script": null,
+          "generic_abc_before_mapping": false,
+          "abc_delay_ps": null
+        },
+        "openroad": {
+          "utilization_pct": 50.0,
+          "placement_density": 0.8,
+          "repair_setup": true,
+          "repair_hold": false,
+          "gate_cloning": false,
+          "setup_margin_ns": 0.0,
+          "repair_tns_percent": null
+        }
+      },
+      "area_kge": 30.02,
+      "cells": 16145,
+      "critical_path_ps": 826.9,
+      "wns_ns": -0.027,
+      "fmax_mhz": 1209.4,
+      "runtime_s": 23.2
+    },
+    "max_frequency": {
+      "settings": {
+        "yosys": {
+          "abc_recipe": "fast",
+          "abc_script": null,
+          "generic_abc_before_mapping": false,
+          "abc_delay_ps": null
+        },
+        "openroad": {
+          "utilization_pct": 50.0,
+          "placement_density": 0.8,
+          "repair_setup": true,
+          "repair_hold": false,
+          "gate_cloning": false,
+          "setup_margin_ns": 0.0,
+          "repair_tns_percent": null
+        }
+      },
+      "area_kge": 29.825,
+      "cells": 15909,
+      "critical_path_ps": 1000.6,
+      "wns_ns": -0.201,
+      "fmax_mhz": 999.4,
+      "runtime_s": 42.5
+    }
+  },
+  "after": {
+    "compact": {
+      "settings": {
+        "yosys": {
+          "abc_recipe": "default",
+          "abc_script": null,
+          "generic_abc_before_mapping": false,
+          "abc_delay_ps": null
+        },
+        "openroad": {
+          "utilization_pct": 40.0,
+          "placement_density": 0.65,
+          "repair_setup": true,
+          "repair_hold": false,
+          "gate_cloning": false,
+          "setup_margin_ns": 0.0,
+          "repair_tns_percent": null
+        }
+      },
+      "area_kge": 28.528,
+      "cells": 12733,
+      "critical_path_ps": 1477.6,
+      "wns_ns": -0.678,
+      "fmax_mhz": 676.8,
+      "runtime_s": 84.1
+    },
+    "balanced": {
+      "settings": {
+        "yosys": {
+          "abc_recipe": "balanced",
+          "abc_script": null,
+          "generic_abc_before_mapping": false,
+          "abc_delay_ps": null
+        },
+        "openroad": {
+          "utilization_pct": 50.0,
+          "placement_density": 0.8,
+          "repair_setup": true,
+          "repair_hold": false,
+          "gate_cloning": false,
+          "setup_margin_ns": 0.0,
+          "repair_tns_percent": null
+        }
+      },
+      "area_kge": 30.02,
+      "cells": 16145,
+      "critical_path_ps": 826.9,
+      "wns_ns": -0.027,
+      "fmax_mhz": 1209.4,
+      "runtime_s": 45.7
+    },
+    "max_frequency": {
+      "settings": {
+        "yosys": {
+          "abc_recipe": "balanced",
+          "abc_script": null,
+          "generic_abc_before_mapping": false,
+          "abc_delay_ps": null
+        },
+        "openroad": {
+          "utilization_pct": 40.0,
+          "placement_density": 0.7,
+          "repair_setup": true,
+          "repair_hold": false,
+          "gate_cloning": true,
+          "setup_margin_ns": 0.2,
+          "repair_tns_percent": 100.0
+        }
+      },
+      "area_kge": 30.301,
+      "cells": 16145,
+      "critical_path_ps": 807.7,
+      "wns_ns": -0.008,
+      "fmax_mhz": 1238.1,
+      "runtime_s": 63.9
+    }
+  },
+  "selected_candidate": "Om",
+  "candidates": [
+    {
+      "id": "Y1",
+      "mapping": "--abc-recipe default",
+      "abc_kind": "default",
+      "delay_target_ps": 800,
+      "openroad": {
+        "utilization_pct": 50.0,
+        "placement_density": 0.8,
+        "gate_cloning": false,
+        "setup_margin_ns": 0.0,
+        "repair_tns_percent": null
+      },
+      "area_kge": 28.732,
+      "cells": 12733,
+      "critical_path_ps": 1465.1,
+      "wns_ns": -0.665,
+      "fmax_mhz": 682.6,
+      "runtime_s": 60.7
+    },
+    {
+      "id": "Y2",
+      "mapping": "--abc-recipe balanced",
+      "abc_kind": "balanced",
+      "delay_target_ps": 800,
+      "openroad": {
+        "utilization_pct": 50.0,
+        "placement_density": 0.8,
+        "gate_cloning": false,
+        "setup_margin_ns": 0.0,
+        "repair_tns_percent": null
+      },
+      "area_kge": 29.955,
+      "cells": 15913,
+      "critical_path_ps": 989.5,
+      "wns_ns": -0.189,
+      "fmax_mhz": 1010.6,
+      "runtime_s": 52.1
+    },
+    {
+      "id": "Y3",
+      "mapping": "raw script &fraig/&dch/&nf,{D}/buffer/upsize/dnsize",
+      "abc_kind": "script",
+      "delay_target_ps": 800,
+      "openroad": {
+        "utilization_pct": 50.0,
+        "placement_density": 0.8,
+        "gate_cloning": false,
+        "setup_margin_ns": 0.0,
+        "repair_tns_percent": null
+      },
+      "area_kge": 28.525,
+      "cells": 13305,
+      "critical_path_ps": 1485.2,
+      "wns_ns": -0.685,
+      "fmax_mhz": 673.3,
+      "runtime_s": 54.6
+    },
+    {
+      "id": "Oa",
+      "mapping": "balanced recipe, no delay target",
+      "abc_kind": "balanced",
+      "delay_target_ps": null,
+      "openroad": {
+        "gate_cloning": true,
+        "repair_tns_percent": 100.0,
+        "setup_margin_ns": 0.05,
+        "utilization_pct": 40.0,
+        "placement_density": 0.7
+      },
+      "area_kge": 30.701,
+      "cells": 16145,
+      "critical_path_ps": 818.2,
+      "wns_ns": -0.018,
+      "fmax_mhz": 1222.2,
+      "runtime_s": 55.2
+    },
+    {
+      "id": "Ob",
+      "mapping": "balanced recipe, delay target = clock period",
+      "abc_kind": "balanced",
+      "delay_target_ps": 800,
+      "openroad": {
+        "gate_cloning": true,
+        "repair_tns_percent": 100.0,
+        "setup_margin_ns": 0.05,
+        "utilization_pct": 40.0,
+        "placement_density": 0.7
+      },
+      "area_kge": 29.971,
+      "cells": 15913,
+      "critical_path_ps": 989.1,
+      "wns_ns": -0.189,
+      "fmax_mhz": 1011.0,
+      "runtime_s": 70.6
+    },
+    {
+      "id": "Oc",
+      "mapping": "balanced recipe, no delay target",
+      "abc_kind": "balanced",
+      "delay_target_ps": null,
+      "openroad": {
+        "utilization_pct": 50.0,
+        "placement_density": 0.8,
+        "gate_cloning": true,
+        "setup_margin_ns": 0.0,
+        "repair_tns_percent": 100.0
+      },
+      "area_kge": 30.051,
+      "cells": 16145,
+      "critical_path_ps": 826.2,
+      "wns_ns": -0.026,
+      "fmax_mhz": 1210.4,
+      "runtime_s": 40.2
+    },
+    {
+      "id": "Y4",
+      "mapping": "raw script dch;map,{D};topo;stime;buffer;upsize;dnsize",
+      "abc_kind": "script",
+      "delay_target_ps": 800,
+      "openroad": {
+        "gate_cloning": true,
+        "repair_tns_percent": 100.0,
+        "setup_margin_ns": 0.05,
+        "utilization_pct": 40.0,
+        "placement_density": 0.7
+      },
+      "area_kge": 29.609,
+      "cells": 15992,
+      "critical_path_ps": 973.2,
+      "wns_ns": -0.173,
+      "fmax_mhz": 1027.5,
+      "runtime_s": 93.2
+    },
+    {
+      "id": "Y5",
+      "mapping": "raw script &st;&dch;&nf,{D};&put;buffer,-c;topo;stime,-c;upsize,-c;dnsize,-c",
+      "abc_kind": "script",
+      "delay_target_ps": 800,
+      "openroad": {
+        "gate_cloning": true,
+        "repair_tns_percent": 100.0,
+        "setup_margin_ns": 0.05,
+        "utilization_pct": 40.0,
+        "placement_density": 0.7
+      },
+      "area_kge": 29.585,
+      "cells": 13163,
+      "critical_path_ps": 872.2,
+      "wns_ns": -0.072,
+      "fmax_mhz": 1146.6,
+      "runtime_s": 95.1
+    },
+    {
+      "id": "Y6",
+      "mapping": "raw script dc2;dch;map,{D};buffer,-p;upsize;dnsize",
+      "abc_kind": "script",
+      "delay_target_ps": 800,
+      "openroad": {
+        "gate_cloning": true,
+        "repair_tns_percent": 100.0,
+        "setup_margin_ns": 0.05,
+        "utilization_pct": 40.0,
+        "placement_density": 0.7
+      },
+      "area_kge": 29.299,
+      "cells": 15813,
+      "critical_path_ps": 1320.3,
+      "wns_ns": -0.52,
+      "fmax_mhz": 757.4,
+      "runtime_s": 77.4
+    },
+    {
+      "id": "Om",
+      "mapping": "balanced recipe, no delay target",
+      "abc_kind": "balanced",
+      "delay_target_ps": null,
+      "openroad": {
+        "gate_cloning": true,
+        "repair_tns_percent": 100.0,
+        "setup_margin_ns": 0.2,
+        "utilization_pct": 40.0,
+        "placement_density": 0.7
+      },
+      "area_kge": 30.301,
+      "cells": 16145,
+      "critical_path_ps": 807.7,
+      "wns_ns": -0.008,
+      "fmax_mhz": 1238.1,
+      "runtime_s": 61.0
+    },
+    {
+      "id": "On",
+      "mapping": "balanced recipe, no delay target",
+      "abc_kind": "balanced",
+      "delay_target_ps": null,
+      "openroad": {
+        "gate_cloning": true,
+        "repair_tns_percent": 100.0,
+        "setup_margin_ns": 0.3,
+        "utilization_pct": 30.0,
+        "placement_density": 0.6
+      },
+      "area_kge": 30.352,
+      "cells": 16145,
+      "critical_path_ps": 844.0,
+      "wns_ns": -0.044,
+      "fmax_mhz": 1184.8,
+      "runtime_s": 62.5
+    },
+    {
+      "id": "Y5m",
+      "mapping": "Y5 script, delay target = clock period",
+      "abc_kind": "script",
+      "delay_target_ps": 800,
+      "openroad": {
+        "gate_cloning": true,
+        "repair_tns_percent": 100.0,
+        "setup_margin_ns": 0.2,
+        "utilization_pct": 40.0,
+        "placement_density": 0.7
+      },
+      "area_kge": 29.489,
+      "cells": 13163,
+      "critical_path_ps": 872.2,
+      "wns_ns": -0.072,
+      "fmax_mhz": 1146.5,
+      "runtime_s": 58.9
+    },
+    {
+      "id": "Y7",
+      "mapping": "raw script &dch;&nf with sizing, no delay target",
+      "abc_kind": "script",
+      "delay_target_ps": null,
+      "openroad": {
+        "gate_cloning": true,
+        "repair_tns_percent": 100.0,
+        "setup_margin_ns": 0.2,
+        "utilization_pct": 40.0,
+        "placement_density": 0.7
+      },
+      "area_kge": 29.489,
+      "cells": 13163,
+      "critical_path_ps": 872.2,
+      "wns_ns": -0.072,
+      "fmax_mhz": 1146.5,
+      "runtime_s": 67.5
+    },
+    {
+      "id": "Y8",
+      "mapping": "raw script &syn2;&if -g;&synch2;&nf,{D};...",
+      "abc_kind": "script",
+      "delay_target_ps": 800,
+      "openroad": {
+        "gate_cloning": true,
+        "repair_tns_percent": 100.0,
+        "setup_margin_ns": 0.2,
+        "utilization_pct": 40.0,
+        "placement_density": 0.7
+      },
+      "area_kge": 30.237,
+      "cells": 13511,
+      "critical_path_ps": 878.9,
+      "wns_ns": -0.079,
+      "fmax_mhz": 1137.8,
+      "runtime_s": 49.2
+    },
+    {
+      "id": "Y9",
+      "mapping": "balanced map,{D} plus sizing",
+      "abc_kind": "script",
+      "delay_target_ps": 800,
+      "openroad": {
+        "gate_cloning": true,
+        "repair_tns_percent": 100.0,
+        "setup_margin_ns": 0.2,
+        "utilization_pct": 40.0,
+        "placement_density": 0.7
+      },
+      "area_kge": 29.789,
+      "cells": 16464,
+      "critical_path_ps": 1117.5,
+      "wns_ns": -0.317,
+      "fmax_mhz": 894.9,
+      "runtime_s": 78.5
+    },
+    {
+      "id": "D500",
+      "mapping": "balanced recipe, delay target 500 ps",
+      "abc_kind": "balanced",
+      "delay_target_ps": 500,
+      "openroad": {
+        "gate_cloning": true,
+        "repair_tns_percent": 100.0,
+        "setup_margin_ns": 0.2,
+        "utilization_pct": 40.0,
+        "placement_density": 0.7
+      },
+      "area_kge": 30.301,
+      "cells": 16145,
+      "critical_path_ps": 807.7,
+      "wns_ns": -0.008,
+      "fmax_mhz": 1238.1,
+      "runtime_s": 59.3
+    },
+    {
+      "id": "D300",
+      "mapping": "balanced recipe, delay target 300 ps",
+      "abc_kind": "balanced",
+      "delay_target_ps": 300,
+      "openroad": {
+        "gate_cloning": true,
+        "repair_tns_percent": 100.0,
+        "setup_margin_ns": 0.2,
+        "utilization_pct": 40.0,
+        "placement_density": 0.7
+      },
+      "area_kge": 30.301,
+      "cells": 16145,
+      "critical_path_ps": 807.7,
+      "wns_ns": -0.008,
+      "fmax_mhz": 1238.1,
+      "runtime_s": 55.2
+    },
+    {
+      "id": "D1200",
+      "mapping": "balanced recipe, delay target 1200 ps",
+      "abc_kind": "balanced",
+      "delay_target_ps": 1200,
+      "openroad": {
+        "gate_cloning": true,
+        "repair_tns_percent": 100.0,
+        "setup_margin_ns": 0.2,
+        "utilization_pct": 40.0,
+        "placement_density": 0.7
+      },
+      "area_kge": 29.847,
+      "cells": 16003,
+      "critical_path_ps": 1231.2,
+      "wns_ns": -0.431,
+      "fmax_mhz": 812.2,
+      "runtime_s": 49.6
+    }
+  ],
+  "no_delay_target_reason": "With the SDC period as ABC delay target (800 ps) no candidate beat balanced (826.9 ps): ABC meets 800 ps in its wire-free model and recovers area up to it, so the placed netlist is slower (989.5 ps for the balanced script, 872.2 ps for the best of seven scripts); a target at or below ABC's minimum delay maps like no target. Only balanced mapping without a target plus stronger OpenROAD repair beats balanced."
+}

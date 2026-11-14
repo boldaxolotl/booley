@@ -48,8 +48,10 @@ FLOW = "checkout_stub"
 
 # The stub Flow's behavior follows ``--target``: ``pass`` runs one real command,
 # ``fail`` returns a failing outcome, ``crash`` raises, ``abort`` exits at once with no
-# report, ``wait`` waits (bounded) for the ``release``
-# marker and ``env`` records what it saw. Its control directory is written into the source.
+# report, ``wait`` (or any target starting with ``wait``) waits (bounded) for the ``release``
+# marker and ``env`` records what it saw. Every run appends its target to ``order`` when it
+# starts, and a target starting with ``metrics`` returns a typed detail. Its control
+# directory is written into the source.
 STUB_FLOW = """
 import json, os, signal, time
 from pathlib import Path
@@ -81,6 +83,8 @@ class CheckoutStub(BooleyFlow):
         (CTL / "seen.json").write_text(json.dumps(seen), encoding="utf-8")
         (CTL / "started").write_text("1", encoding="utf-8")
         target = self.args.target
+        with (CTL / "order").open("a", encoding="utf-8") as order:
+            order.write(target + "\\n")
         if target == "fail":
             return EndpointOutcome(exit_code=1)
         if target == "crash":
@@ -88,7 +92,7 @@ class CheckoutStub(BooleyFlow):
         if target == "abort":
             print("stub aborted", flush=True)
             os._exit(3)  # dies without writing a report or a terminal record
-        if target == "metrics":
+        if target.startswith("metrics"):
             return EndpointOutcome(detail={{"marker": 7}})
         if target == "presim":
             # Pre-Sim Commands of core Target ``probe``, then the run evidence's Git lookup.
@@ -116,7 +120,7 @@ class CheckoutStub(BooleyFlow):
         if target == "stubborn":
             signal.signal(signal.SIGINT, signal.SIG_IGN)  # only a kill ends this Flow
             (CTL / "ignoring").write_text("1", encoding="utf-8")
-        if target in ("wait", "stubborn"):
+        if target.startswith("wait") or target == "stubborn":
             deadline = time.monotonic() + 45
             while not (CTL / "release").exists() and time.monotonic() < deadline:
                 time.sleep(0.02)
@@ -341,6 +345,9 @@ def test_checkout_flow_returns_typed_metrics_of_its_report(
     result = run_checkout_flow(world.request("metrics"))
 
     assert result.metrics == {"top": FlowMetricValues(plain={"cell_count": 7}, per_clock={})}
+    # The Flow's own time after admission, as its report states it.
+    report = json.loads(result.reports[-1].read_text(encoding="utf-8"))
+    assert result.elapsed_s == report["elapsed_s"]
 
 
 @linux_only
@@ -883,7 +890,7 @@ def test_flow_that_ignores_the_stop_is_killed_after_the_grace(
     from booley.harness import checkout_flow
     from booley.harness.checkout_flow import run_checkout_flow
 
-    monkeypatch.setattr(checkout_flow, "_STOP_GRACE_S", 1)
+    monkeypatch.setattr(checkout_flow, "STOP_GRACE_S", 1)
 
     def interrupt_once_ignoring() -> None:
         poll((world.ctl / "ignoring").exists, "the Flow to ignore SIGINT")
@@ -1681,3 +1688,39 @@ def test_the_preflight_of_a_run_without_a_timeout_uses_the_standalone_bound(
     )
 
     assert bounds == [checkout_flow.STANDALONE_TIMEOUT_S]
+
+
+def test_poll_stops_a_child_whose_budget_expired(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness import checkout_flow
+    from booley.harness.checkout_flow import CheckoutFlowChild, CheckoutFlowRequest
+
+    stopped: list[object] = []
+    monkeypatch.setattr(checkout_flow, "_stop", stopped.append)
+
+    class Running:
+        """A process that never ends by itself."""
+
+        def poll(self) -> None:
+            return None
+
+    def child(timeout_s: float | None, age_s: float) -> CheckoutFlowChild:
+        request = CheckoutFlowRequest(tmp_path, tmp_path, tmp_path, "lint", "t", timeout_s)
+        return CheckoutFlowChild(
+            process=Running(),  # type: ignore[arg-type]
+            request=request,
+            run_id="run",
+            record=None,  # type: ignore[arg-type]
+            jobs_root=tmp_path,
+            log_path=tmp_path / "job.log",
+            report_dir=tmp_path,
+            scratch=tmp_path,
+            started_at=time.monotonic() - age_s,
+        )
+
+    young, unbounded, expired = child(100, 1), child(None, 10_000), child(5, 10)
+    assert not young.poll() and not unbounded.poll()
+    assert not (young.timed_out or unbounded.timed_out) and not stopped
+    assert expired.poll() and expired.timed_out
+    assert stopped == [expired.process]

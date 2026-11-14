@@ -65,8 +65,6 @@ BASELINE_KILL_FRACTION = 0.5
 _ENTRY = re.compile(r"^Goal Mode ([A-Za-z0-9-]+) entered in (.+)\.$", re.MULTILINE)
 _EXIT = re.compile(r"EXIT_CODE:\s*(-?\d+)")
 _RUN = re.compile(r"run_id=([^\s)]+)")
-# The Mutation Flow report line: ``N detected (T timeout), Z invalid, W not detected``.
-_ZERO_INVALID = re.compile(r"\b0 invalid\b")
 
 
 class GoalDriverError(RuntimeError):
@@ -266,8 +264,9 @@ async def mutation_smoke(
 
     The deterministic generator (seed 0) yields one fixed Mutant for the first
     RTL file of the Target. The smoke guards that the Mutant builds through the
-    private mirror and is not reported invalid (issue #2776: every variant
-    invalid). ``diagnostic`` keeps the run from recording the Goal's mutation
+    private mirror (issue #2776: every variant failed to build). A Mutant that does
+    not build is dropped, and with ``count`` 1 the run then has nothing to score and
+    exits 2, which fails the smoke. ``diagnostic`` keeps the run from recording the Goal's mutation
     criterion as met.
     """
     target, scope = _smoke_target_and_scope(worktree, goals)
@@ -289,8 +288,6 @@ async def mutation_smoke(
     mirror = mutation_workspace.variant_build_dir(1, runtime_dir) / "core-mirror"
     if not mirror.is_dir():
         raise GoalDriverError(f"mutation smoke never built through the private mirror: {mirror}")
-    if _ZERO_INVALID.search(response) is None:
-        raise GoalDriverError(f"mutation smoke Mutant was reported invalid: {response}")
     return {"status": "pass", "response": response}
 
 

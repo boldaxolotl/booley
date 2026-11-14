@@ -417,8 +417,7 @@ package and interface files of those Targets. A module shared by Targets with
 different simulators is compiled once per simulator, within the same sweep
 timeout, so a mixed-simulator project takes longer. A
 parse error from the Target's own compiler is a design failure (exit `1`) and
-the report names the compiler. Delete `[flows.sim].standalone_frontend` if
-your `booley.toml` sets it: every Flow refuses to run while it is set.
+the report names the compiler.
 
 Both modes skip Pre-Sim Commands, and refuse options that only make sense when
 tests run, such as `--test`, `--trace` and `--no-kill`. A compile error in the
@@ -524,7 +523,7 @@ If a command must write into the build tree, set
 exposed as `BOOLEY_BUILD_ROOT`, which is slower.
 
 For a setup step that runs once per worktree rather than before every test, use
-the [worktree setup hook](CONFIG.md#worktree-setup-hooks) instead.
+the [worktree setup hook](CONFIG.md#worktree-setup-hooks-booleyhooks) instead.
 
 ## Sim working directory (`[flows.sim].run_cwd`)
 

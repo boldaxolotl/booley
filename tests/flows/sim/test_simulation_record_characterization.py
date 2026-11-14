@@ -41,7 +41,7 @@ from booley.mcp.base import EXIT_FAILURE
 from booley.targets.domain import TargetHandle
 from tests.flows.report_headline import final_report_omits_headline
 from tests.flows.sim.launched_work import launched_work
-from tests.flows.sim.simulation_record_boundary import run_campaign_sim
+from tests.flows.sim.simulation_record_boundary import run_simulation_record_sim
 from tests.flows.sim.simulation_record_test_support import _admission, _facts, _plan
 from tests.flows.sim.test_flow import SimulateFlow
 
@@ -236,7 +236,7 @@ class _AdapterAbortExecution(_SessionBoundaryExecution):
         return replace(outcome, artifacts=(*outcome.artifacts, artifact))
 
 
-def test_adapter_termination_reaches_normalized_campaign_result(tmp_path: Path) -> None:
+def test_adapter_termination_reaches_normalized_simulation_record_result(tmp_path: Path) -> None:
     plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True)
     execution = _AdapterAbortExecution(eda_tool="verilator", cocotb=True)
     executor = OrdinaryHdlSerialExecutor(
@@ -302,7 +302,7 @@ class _NativeAdapterExecution(_AdapterAbortExecution):
         return SimulationExecution._completed_group(self, *args, **kwargs)
 
 
-def _run_campaign_result(tmp_path: Path, plan: Any, execution: Any) -> Any:
+def _run_simulation_record_result(tmp_path: Path, plan: Any, execution: Any) -> Any:
     """Run ``plan`` through the ordinary executor and return the scanned result."""
     executor = OrdinaryHdlSerialExecutor(
         invoke=lambda *_args, **_kwargs: None,
@@ -446,7 +446,7 @@ def test_result_state_follows_observations(
     grade: str,
     hint: bool,
 ) -> None:
-    result = _run_campaign_result(tmp_path, make_plan(tmp_path), execution)
+    result = _run_simulation_record_result(tmp_path, make_plan(tmp_path), execution)
     observations = result.document["observations"]
     assert result.document["state"] == state
     assert [item["execution"] for item in observations] == executions
@@ -467,7 +467,7 @@ def test_timeout_next_to_infrastructure_abort_publishes_aborted_error(tmp_path: 
     execution = _cocotb_execution(
         termination="disk_budget", failure_kind="infrastructure", first_timeout=True
     )
-    result = _run_campaign_result(tmp_path, _cocotb_plan(tmp_path), execution)
+    result = _run_simulation_record_result(tmp_path, _cocotb_plan(tmp_path), execution)
     first, second = result.document["observations"]
     assert result.document["state"] == "aborted"
     assert result.document["grade"] == "error"
@@ -486,7 +486,7 @@ def test_timeout_next_to_infrastructure_abort_publishes_aborted_error(tmp_path: 
     "termination", ["disk_budget", "sim_time_stall", "trace_stall", "fatal_init"]
 )
 @pytest.mark.parametrize("first_pass", [False, True, "fail"])
-def test_infrastructure_guard_publishes_terminal_campaign(
+def test_infrastructure_guard_publishes_terminal_simulation_record(
     tmp_path: Path, termination: str, first_pass: bool | str
 ) -> None:
     plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True)
@@ -602,7 +602,7 @@ def test_infrastructure_failure_of_the_unnamed_invocation_is_one_observation_of_
         trace=False,
     )
     execution = _NativeNoVerdictExecution(eda_tool="verilator", cocotb=False)
-    result = _run_campaign_result(tmp_path, plan, execution)
+    result = _run_simulation_record_result(tmp_path, plan, execution)
 
     assert result.document["grade"] == "error"
     (observation,) = result.document["observations"]
@@ -621,7 +621,7 @@ def test_cleanup_failure_preserves_completed_tests_and_guard(tmp_path, monkeypat
         return unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "unlink", denied_partial)
-    test_infrastructure_guard_publishes_terminal_campaign(tmp_path, "disk_budget", True)
+    test_infrastructure_guard_publishes_terminal_simulation_record(tmp_path, "disk_budget", True)
     store = SimulationRecordStore(tmp_path / "reports/1/targets/sim/record")
     result = store.scan().items[0].result
     assert result is not None
@@ -655,12 +655,14 @@ def test_unfiltered_guard_without_discovered_tests_is_scannable(tmp_path) -> Non
 
 
 @pytest.mark.parametrize("met", [True, False])
-def test_standalone_campaign_final_report_is_run_local(tmp_path, monkeypatch, met):
+def test_standalone_simulation_record_final_report_is_run_local(tmp_path, monkeypatch, met):
     monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
     process = SubprocessResult(
         returncode=0, stdout=f"[SIM_RESULT] {'PASSED' if met else 'FAILED'}\n"
     )
-    run = run_campaign_sim(tmp_path, monkeypatch, {"lite": ["smoke"]}, process, target="lite")
+    run = run_simulation_record_sim(
+        tmp_path, monkeypatch, {"lite": ["smoke"]}, process, target="lite"
+    )
     flow = run.flow
     with flow.publication_resources:
         final_report_omits_headline(flow, run.result.outcome)
@@ -669,8 +671,10 @@ def test_standalone_campaign_final_report_is_run_local(tmp_path, monkeypatch, me
     assert flow.state._file_path is None
 
 
-def test_campaign_scan_takes_a_published_infrastructure_verdict_as_published(tmp_path) -> None:
-    test_infrastructure_guard_publishes_terminal_campaign(tmp_path, "disk_budget", False)
+def test_simulation_record_scan_takes_a_published_infrastructure_verdict_as_published(
+    tmp_path,
+) -> None:
+    test_infrastructure_guard_publishes_terminal_simulation_record(tmp_path, "disk_budget", False)
     store = SimulationRecordStore(tmp_path / "reports/1/targets/sim/record")
     published = store.scan().items[0].result
     assert published is not None
@@ -690,7 +694,7 @@ def test_campaign_scan_takes_a_published_infrastructure_verdict_as_published(tmp
         cocotb_results.TIMEOUT_ACTIVE_DETAIL,
     ],
 )
-def test_backend_timeout_on_campaign_path_preserves_detail_and_adds_hint(
+def test_backend_timeout_on_simulation_record_path_preserves_detail_and_adds_hint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend_detail: str
 ) -> None:
     """An adapter-reported timeout fails the run (exit 1) with its detail and the hint.
@@ -736,8 +740,8 @@ def test_backend_timeout_on_campaign_path_preserves_detail_and_adds_hint(
     )
     assert f"{backend_detail} (rc=" in timeout_line
     assert hint in timeout_line
-    campaign = SimulationRecordStore(tmp_path / "reports/sim/1/targets/sim/record").scan()
-    published = campaign.items[0].result
+    simulation_record = SimulationRecordStore(tmp_path / "reports/sim/1/targets/sim/record").scan()
+    published = simulation_record.items[0].result
     assert published is not None
     assert published.document["state"] == "timeout"
     for observation in published.document["observations"]:

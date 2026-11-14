@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from typing import Any, TypeVar
 
 import pytest
-from tests.flows.sim.test_endpoint_record_lifecycle import _native_cycle_campaign
+from tests.flows.sim.test_endpoint_record_lifecycle import _native_cycle_simulation_record
 from tests.target_test_support import make_target_handle
 
 from booley.flows.base import BooleyFlow
@@ -23,7 +23,7 @@ from booley.flows.sim.build import BuildOutcome
 from booley.flows.sim.coverage_campaign import CoverageRollup
 from booley.flows.sim.elab_only import ElabOnlyTargetResult
 from booley.flows.sim.flow import SimulateFlow
-from booley.flows.sim.record_presentation import _campaign_report_lines
+from booley.flows.sim.record_presentation import _simulation_record_report_lines
 from booley.flows.synth.flow import AsicSynthesizeFlow, SynthMetrics
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -155,7 +155,7 @@ def test_flow_reference_uses_the_executable_target_filter() -> None:
     assert "booley targets --for-flow <flow>" not in _reference_text()
 
 
-def test_sim_campaign_resume_granularity_stays_documented() -> None:
+def test_simulation_record_resume_granularity_stays_documented() -> None:
     section = _flow_section("sim")
     assert "One resume continues one Target" in section
     assert "- Only Test Runs without a result run again." in section
@@ -198,7 +198,7 @@ def test_sim_report_fields_stay_documented(
     monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
     monkeypatch.setattr("booley.core.booley_dir._cache", None)
     # A coverage campaign writes the ordinary projection plus the coverage fields.
-    _native_cycle_campaign(tmp_path, monkeypatch)
+    _native_cycle_simulation_record(tmp_path, monkeypatch)
     (path,) = (tmp_path / "reports").glob("sim/*/targets/*/simulation.json")
     projection = _read_json(path)
 
@@ -446,7 +446,7 @@ def test_coverage_card_example_matches_rendered_card(tmp_path: Path) -> None:
         acceptance_facts=SimpleNamespace(document={"campaign_id": "…"}),
     )
 
-    rendered = _campaign_report_lines(
+    rendered = _simulation_record_report_lines(
         (outcome,),
         {"sim_soc": campaign},
         trailing_lines=None,

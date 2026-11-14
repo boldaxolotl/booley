@@ -141,10 +141,10 @@ def _build_harness(kind: str, runtime: Path, monkeypatch: pytest.MonkeyPatch) ->
 
         def prepare() -> None:
             from booley.flows.sim.flow import PreparedSimulationEndpoint
-            from booley.flows.sim.record_invocation import SimulationCampaignInvocation
+            from booley.flows.sim.record_invocation import SimulationRecordInvocation
             from tests.flows.invocation_doubles import prepare_as
 
-            invocation = SimulationCampaignInvocation(
+            invocation = SimulationRecordInvocation(
                 flow, PreparedSimulationEndpoint((), None, (), {})
             )
             prepare_as(monkeypatch, flow, invocation)
@@ -336,11 +336,9 @@ def _prepared(*, dry_run: bool = False, borrowing: bool = False) -> PreparedExec
 def _borrowing_invocation() -> object:
     """A prepared invocation of the borrowing kind, as a Simulation Campaign is."""
     from booley.flows.sim.flow import PreparedSimulationEndpoint
-    from booley.flows.sim.record_invocation import SimulationCampaignInvocation
+    from booley.flows.sim.record_invocation import SimulationRecordInvocation
 
-    return SimulationCampaignInvocation(
-        SimulateFlow(), PreparedSimulationEndpoint((), None, (), {})
-    )
+    return SimulationRecordInvocation(SimulateFlow(), PreparedSimulationEndpoint((), None, (), {}))
 
 
 def test_dry_run_invocation_runs_without_admission(
@@ -563,7 +561,7 @@ def test_target_authorization_precedes_job_admission(
     monkeypatch.setattr(SimulateFlow, "prepare_target_endpoint", lambda _self: None)
     monkeypatch.setattr(
         SimulateFlow,
-        "_prepare_campaign_targets",
+        "_prepare_simulation_record_targets",
         lambda _self: ((stub,), None, ("other",), {}),
     )
     monkeypatch.setattr(SimulateFlow, "_validate_prepared_selection", lambda *_args: None)
@@ -738,7 +736,7 @@ def test_over_budget_job_result_carries_the_memory_warning(
 ) -> None:
     from booley.flows.job_estimates import JobRequest
     from booley.flows.prepared_invocation import TargetSelectionInvocation
-    from booley.flows.sim.record_invocation import SimulationCampaignInvocation
+    from booley.flows.sim.record_invocation import SimulationRecordInvocation
 
     # A 2,000 MiB peak is a 2,500 MiB estimate against the 1,000 MiB budget.
     _seed_history(memory_runtime, ("a", 2000))
@@ -748,7 +746,7 @@ def test_over_budget_job_result_carries_the_memory_warning(
     for kind in ("sim", "synth"):
         with pytest.MonkeyPatch.context() as patch:
             patch.setattr(TargetSelectionInvocation, "job_requests", lambda _self: request)
-            patch.setattr(SimulationCampaignInvocation, "job_requests", lambda _self: request)
+            patch.setattr(SimulationRecordInvocation, "job_requests", lambda _self: request)
             harness = _build_harness(kind, runtime, patch)
             harness.behavior = lambda: EndpointOutcome(report_text="RESULT: PASS")
 
@@ -1285,12 +1283,12 @@ def _requeue_harness(
     """A harness whose Job is sized from the Resource History: 400 MiB, reserving 500 MiB."""
     from booley.flows.job_estimates import JobRequest
     from booley.flows.prepared_invocation import TargetSelectionInvocation
-    from booley.flows.sim.record_invocation import SimulationCampaignInvocation
+    from booley.flows.sim.record_invocation import SimulationRecordInvocation
 
     _seed_history(memory_runtime, ("demo", 400))
     sized = lambda _self: (JobRequest(flow="synth", target="demo"),)  # noqa: E731
     monkeypatch.setattr(TargetSelectionInvocation, "job_requests", sized)
-    monkeypatch.setattr(SimulationCampaignInvocation, "job_requests", sized)
+    monkeypatch.setattr(SimulationRecordInvocation, "job_requests", sized)
     return _build_harness(kind, runtime, monkeypatch)
 
 

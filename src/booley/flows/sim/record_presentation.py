@@ -70,7 +70,7 @@ from .test_run_invocation import (
 )
 
 
-def _campaign_observation_counts(
+def _simulation_record_observation_counts(
     observations: Sequence[Mapping[str, object]],
 ) -> dict[str, dict[str, int]]:
     """Bounded structured summary preserving independent observation axes."""
@@ -210,7 +210,7 @@ def _resolved_coverage_campaigns(
     return campaigns
 
 
-def _campaign_report_lines(
+def _simulation_record_report_lines(
     outcomes: Sequence[SimulationRecordOutcome],
     coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
     trailing_lines: Sequence[str] | None = (),
@@ -220,7 +220,9 @@ def _campaign_report_lines(
 ) -> list[str]:
     if coverage_campaigns is None:
         coverage_campaigns = _resolved_coverage_campaigns(outcomes)
-    blocks = _campaign_report_blocks(outcomes, coverage_campaigns, report_path, default_seeds)
+    blocks = _simulation_record_report_blocks(
+        outcomes, coverage_campaigns, report_path, default_seeds
+    )
     budget = 0
     if trailing_lines is not None:
         stream = min(output_budget.mcp_stdout_budget(), output_budget.mcp_stderr_budget())
@@ -228,14 +230,14 @@ def _campaign_report_lines(
         parts.extend(trailing_lines)
         used = sum(len(line.encode()) + 1 for line in parts) + 1
         budget = min(stream // 4, max(0, stream - used))
-    additions = _campaign_cycle_lines(outcomes, budget)
+    additions = _simulation_record_cycle_lines(outcomes, budget)
     return [
         "\n".join((*prefix, *extra, *suffix))
         for (prefix, suffix), extra in zip(blocks, additions, strict=True)
     ]
 
 
-def _campaign_cycle_lines(
+def _simulation_record_cycle_lines(
     outcomes: Sequence[SimulationRecordOutcome], budget: int
 ) -> list[list[str]]:
     additions: list[list[str]] = [[] for _ in outcomes]
@@ -286,7 +288,7 @@ def _observation_reasons(outcome: SimulationRecordOutcome) -> list[str]:
     return reasons
 
 
-def _campaign_report_blocks(
+def _simulation_record_report_blocks(
     outcomes: Sequence[SimulationRecordOutcome],
     coverage_campaigns: Mapping[str, CoverageCampaign],
     report_path: Path | None,
@@ -296,15 +298,15 @@ def _campaign_report_blocks(
     for outcome in outcomes:
         acceptance = getattr(outcome, "acceptance_facts", None)
         facts = getattr(acceptance, "document", {})
-        campaign_id = facts.get("campaign_id", "unavailable")
+        simulation_record_id = facts.get("campaign_id", "unavailable")
         selector = str(outcome.target["selector"])
         label = outcome.aggregate_grade.upper()
         if getattr(outcome, "coverage_reference", None) is not None:
             campaign = coverage_campaigns[selector]
             label = f"simulation {label} · {_coverage_report_suffix(campaign)}"
-        line = f"{selector}: {label} (Simulation Campaign {campaign_id})"
+        line = f"{selector}: {label} (Simulation Campaign {simulation_record_id})"
         reasons = _observation_reasons(outcome)
-        build_detail = _campaign_build_infrastructure_detail([outcome])
+        build_detail = _simulation_record_build_infrastructure_detail([outcome])
         if build_detail and reasons:
             line += f": {reasons[0].splitlines()[0]}"
         coverage_lines: list[str] = []
@@ -320,7 +322,7 @@ def _campaign_report_blocks(
             *([f"  report: {report_path.resolve()}"] if report_path is not None else []),
             *coverage_lines,
             *(f"  {reason}" for reason in reasons),
-            *_campaign_test_run_lines(
+            *_simulation_record_test_run_lines(
                 selector, outcome, _effective_default_seed(default_seeds, selector)
             ),
         ]
@@ -387,7 +389,7 @@ def _pre_sim_integrity_failure(
     return result
 
 
-def _campaign_hook_inputs(outcomes, invocation):
+def _simulation_record_hook_inputs(outcomes, invocation):
     firings = {f.key: f for outcome in outcomes for f in outcome.pre_sim_firings}
     keys = frozenset(
         key
@@ -516,13 +518,15 @@ def _coverage_preflight_findings_outcome(findings: Sequence[Any]) -> EndpointOut
     )
 
 
-def _campaign_structured_details(
+def _simulation_record_structured_details(
     outcomes: Sequence[SimulationRecordOutcome],
     report_invocation: Path | None = None,
 ) -> dict[str, object]:
     """Expose one canonical artifact map based on the containing report."""
     return {
-        str(outcome.target["selector"]): _campaign_report_detail(outcome, report_invocation)
+        str(outcome.target["selector"]): _simulation_record_report_detail(
+            outcome, report_invocation
+        )
         for outcome in outcomes
     }
 
@@ -536,7 +540,7 @@ def _coverage_request_selector(request: NewSimulationRecordRunRequest) -> str:
     return str(_coverage_request_target(request)["selector"])
 
 
-def _campaign_report_detail(
+def _simulation_record_report_detail(
     outcome: SimulationRecordOutcome, report_invocation: Path | None
 ) -> dict[str, object]:
     acceptance = getattr(outcome, "acceptance_facts", None)
@@ -544,8 +548,8 @@ def _campaign_report_detail(
     owner = str(facts.get("campaign_id", "unavailable"))
     origin = facts.get("origin", {})
     assert isinstance(origin, Mapping)
-    paths = _campaign_artifact_paths(outcome)
-    artifacts = _campaign_report_artifacts(
+    paths = _simulation_record_artifact_paths(outcome)
+    artifacts = _simulation_record_report_artifacts(
         paths,
         report_invocation=report_invocation,
         external_origin_target=outcome.manifest_path.parents[1],
@@ -563,15 +567,15 @@ def _campaign_report_detail(
         "artifacts": artifacts,
         "grade": outcome.aggregate_grade,
         "complete": outcome.complete,
-        "observation_counts": _campaign_observation_counts(outcome.observations),
+        "observation_counts": _simulation_record_observation_counts(outcome.observations),
         # The Target's typed metric values (or why it has none), for a measurement run.
         "metrics": metrics_document(lambda: simulation_flow_metrics(outcome)),
-        **_campaign_observation_preview(
+        **_simulation_record_observation_preview(
             outcome.observations,
             simulation_record_test_run_files(outcome),
             outcome.manifest_path.parents[1],
         ),
-        **_campaign_test_run_detail(outcome),
+        **_simulation_record_test_run_detail(outcome),
     }
     if report_invocation is None:
         detail["resolved_artifacts"] = {
@@ -590,13 +594,17 @@ def _diagnostic_test_runs(
     Both as ``target: test run``. *names* gives every name of a campaign's
     Target (selector and identity): a Goal may be written with either.
     """
-    campaigns = detail.get("records")
-    if not isinstance(campaigns, Mapping):
+    simulation_records = detail.get("records")
+    if not isinstance(simulation_records, Mapping):
         return [], []
     diagnostic: list[str] = []
     failures: list[str] = []
-    for selector, campaign in campaigns.items():
-        rows = campaign.get("test_runs", ()) if isinstance(campaign, Mapping) else ()
+    for selector, simulation_record in simulation_records.items():
+        rows = (
+            simulation_record.get("test_runs", ())
+            if isinstance(simulation_record, Mapping)
+            else ()
+        )
         goals = frozen.of_target(names(str(selector)))
         for row in rows:
             if not isinstance(row, Mapping) or any(
@@ -621,11 +629,17 @@ def _with_frozen_runs_of_a_diagnostic_run(
     when what ran is exactly what a Goal is judged by. The report names each
     Goal as *goal_name* presents its key; ``detail`` keeps the keys.
     """
-    campaigns = result.detail.get("records")
+    simulation_records = result.detail.get("records")
     ran: dict[str, list[str]] = {}
     failed: dict[str, list[str]] = {}
-    for selector, campaign in campaigns.items() if isinstance(campaigns, Mapping) else ():
-        rows = campaign.get("test_runs", ()) if isinstance(campaign, Mapping) else ()
+    for selector, simulation_record in (
+        simulation_records.items() if isinstance(simulation_records, Mapping) else ()
+    ):
+        rows = (
+            simulation_record.get("test_runs", ())
+            if isinstance(simulation_record, Mapping)
+            else ()
+        )
         for goal in frozen.of_target(names(str(selector))):
             for row in goal.matching([row for row in rows if isinstance(row, Mapping)]):
                 ran.setdefault(goal.key, []).append(str(row["name"]))
@@ -669,14 +683,14 @@ def _diagnostic_test_run_notes(
     return notes
 
 
-def _campaign_test_runs(outcome: SimulationRecordOutcome) -> list[dict[str, object]]:
+def _simulation_record_test_runs(outcome: SimulationRecordOutcome) -> list[dict[str, object]]:
     """Per-Test-Run rows of *outcome*; empty for an object that has no manifest."""
     if not isinstance(getattr(outcome, "manifest_path", None), Path):
         return []
     return simulation_record_test_run_rows(outcome)
 
 
-def _campaign_test_run_lines(
+def _simulation_record_test_run_lines(
     selector: str, outcome: SimulationRecordOutcome, default_seed: int | None = DEFAULT_SEED
 ) -> list[str]:
     """Report rows only where they say more than the Target's own line.
@@ -688,9 +702,9 @@ def _campaign_test_run_lines(
     return simulation_record_test_run_lines(selector, outcome, default_seed=default_seed)
 
 
-def _campaign_test_run_detail(outcome: SimulationRecordOutcome) -> dict[str, object]:
+def _simulation_record_test_run_detail(outcome: SimulationRecordOutcome) -> dict[str, object]:
     """The structured rows of every Test Run, bounded like the observations."""
-    rows = _campaign_test_runs(outcome)
+    rows = _simulation_record_test_runs(outcome)
     if not rows:
         return {}
     return {
@@ -700,7 +714,7 @@ def _campaign_test_run_detail(outcome: SimulationRecordOutcome) -> dict[str, obj
     }
 
 
-def _campaign_artifact_paths(
+def _simulation_record_artifact_paths(
     outcome: SimulationRecordOutcome,
 ) -> dict[str, tuple[Path, str, int]]:
     paths = {
@@ -724,7 +738,7 @@ def _campaign_artifact_paths(
     return paths
 
 
-def _campaign_report_artifacts(
+def _simulation_record_report_artifacts(
     paths: Mapping[str, tuple[Path, str, int]],
     *,
     report_invocation: Path | None,
@@ -781,7 +795,9 @@ def _report_artifact_reference(
     return encode_artifact_reference(reference)
 
 
-def _campaign_recovery_detail(status: SimulationRecordRecoveryStatus) -> dict[str, object]:
+def _simulation_record_recovery_detail(
+    status: SimulationRecordRecoveryStatus,
+) -> dict[str, object]:
     """Translate campaign-owned recovery state into the endpoint's flat shape."""
     return {
         "manifest_sha256": status.manifest_sha256,
@@ -801,7 +817,7 @@ def _baseline_refusal_line(refusal: BaselineRefusal) -> str:
     )
 
 
-def _campaign_preview_entry(preview: NewSimulationRecordPreview) -> dict[str, object]:
+def _simulation_record_preview_entry(preview: NewSimulationRecordPreview) -> dict[str, object]:
     """Summarize one new-campaign preview for the dry-run report and detail."""
     return {
         "target": dict(preview.target),
@@ -811,7 +827,7 @@ def _campaign_preview_entry(preview: NewSimulationRecordPreview) -> dict[str, ob
     }
 
 
-def _campaign_preview_outcome(previews: Sequence[dict[str, object]]) -> EndpointOutcome:
+def _simulation_record_preview_outcome(previews: Sequence[dict[str, object]]) -> EndpointOutcome:
     """Build the successful, non-mutating dry-run outcome for *previews*."""
     return EndpointOutcome(
         exit_code=EXIT_SUCCESS,
@@ -824,7 +840,7 @@ def _campaign_preview_outcome(previews: Sequence[dict[str, object]]) -> Endpoint
     )
 
 
-def _campaign_observation_preview(
+def _simulation_record_observation_preview(
     observations: Sequence[Mapping[str, object]],
     files: Sequence[TestRunFiles],
     target_directory: Path,
@@ -855,12 +871,12 @@ def _campaign_observation_preview(
         "observations": preview,
         "observation_total": total,
         "observations_truncated": total > limit,
-        "termination_counts": _campaign_termination_counts(observations),
-        "build_stage": _campaign_build_stages(observations),
+        "termination_counts": _simulation_record_termination_counts(observations),
+        "build_stage": _simulation_record_build_stages(observations),
     }
 
 
-def _campaign_build_infrastructure_detail(
+def _simulation_record_build_infrastructure_detail(
     outcomes: Sequence[SimulationRecordOutcome],
 ) -> dict[str, object]:
     """Preserve the endpoint's first-build diagnostic compatibility interface."""
@@ -879,7 +895,7 @@ def _campaign_build_infrastructure_detail(
     return {}
 
 
-def _campaign_build_stages(observations: Sequence[Mapping[str, object]]) -> list[object]:
+def _simulation_record_build_stages(observations: Sequence[Mapping[str, object]]) -> list[object]:
     """Retain bounded, distinct build diagnostics from the complete observation set."""
     stages: list[object] = []
     for item in observations:
@@ -894,7 +910,7 @@ def _campaign_build_stages(observations: Sequence[Mapping[str, object]]) -> list
     return stages
 
 
-def _campaign_termination_counts(
+def _simulation_record_termination_counts(
     observations: Sequence[Mapping[str, object]],
 ) -> dict[str, int]:
     """Keep every infrastructure termination visible beyond the bounded preview."""
@@ -941,7 +957,7 @@ def _coverage_compatibility_targets(
         campaign = resolved[selector]
         target = {
             "target": selector,
-            "passed": _campaign_passed(outcome),
+            "passed": _simulation_record_passed(outcome),
             "simulation": simulation_status_from_observations(outcome.observations),
             "collection": campaign.collection["status"],
             "evaluation": campaign.evaluation["status"],
@@ -959,7 +975,7 @@ def _coverage_compatibility_targets(
     return targets
 
 
-def _campaign_passed(outcome: SimulationRecordOutcome) -> bool | None:
+def _simulation_record_passed(outcome: SimulationRecordOutcome) -> bool | None:
     status = simulation_status_from_observations(outcome.observations)
     return None if status == "not_run" else outcome.aggregate_grade == "pass"
 
@@ -1068,7 +1084,7 @@ def _unmatched_coverage_failure(
         exit_code=EXIT_ERROR,
         detail={
             "coverage": True,
-            "records": _campaign_structured_details(outcomes),
+            "records": _simulation_record_structured_details(outcomes),
             "targets": dict(targets),
         },
         report_text="\n".join(
@@ -1092,7 +1108,7 @@ def _coverage_failure_outcome(
         exit_code=EXIT_ERROR,
         detail={
             "coverage": True,
-            "records": _campaign_structured_details(outcomes, report_invocation),
+            "records": _simulation_record_structured_details(outcomes, report_invocation),
             "targets": dict(targets),
             "pending_targets": pending,
         },

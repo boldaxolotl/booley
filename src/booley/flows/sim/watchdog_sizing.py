@@ -139,7 +139,7 @@ def _sizing_seed(seed: object) -> SeedRequest:
         return None
 
 
-def resolve_sim_campaign_work_units(
+def resolve_simulation_record_work_units(
     work_dir: Path,
     target_arg: str,
     test_selector: Sequence[str] | str | None = None,

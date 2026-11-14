@@ -594,13 +594,15 @@ def test_bounded_scan_examines_current_work_before_older_interactive_sessions(tm
 
 def test_job_completed_between_refreshes_keeps_recorded_figures(tmp_path, monkeypatch):
     from booley.harness.dashboard.model import DashboardReader
-    from tests.flows.sim.test_endpoint_record_lifecycle import completed_campaign_report
+    from tests.flows.sim.test_endpoint_record_lifecycle import completed_simulation_record_report
 
     root = tmp_path / ".interactive_logs/test/.runtime/jobs"
     reader = DashboardReader(tmp_path, tmp_path)
     assert not reader.read().jobs.jobs
     monkeypatch.setenv("BOOLEY_RUN_ID", "one")
-    report = completed_campaign_report(tmp_path, monkeypatch, reports=root.parent / "flow-reports")
+    report = completed_simulation_record_report(
+        tmp_path, monkeypatch, reports=root.parent / "flow-reports"
+    )
     job_records.write_record(rec(status="done", exit_code=0), root)
     # The exact-run report must win over a foreign last-writer-wins flat copy.
     (root.parent / "flow-reports/sim.json").write_text(

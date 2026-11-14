@@ -617,7 +617,7 @@ def _run_smoke(tmp_path, replies, *, worktree=None, build_mirror=True):
     return result, session.calls, booley_dir
 
 
-_PASS = "  1 detected (0 timeout), 0 invalid, 0 not detected\nEXIT_CODE: 0"
+_PASS = "  1 detected (0 timeout), 0 not detected\nEXIT_CODE: 0"
 
 
 def test_mutation_smoke_runs_one_generated_mutant_and_requires_exit_zero(tmp_path) -> None:
@@ -647,18 +647,6 @@ def test_mutation_smoke_fails_when_variant_does_not_elaborate(tmp_path) -> None:
 def test_mutation_smoke_requires_the_private_mirror_to_have_been_built(tmp_path) -> None:
     with pytest.raises(driver.GoalDriverError, match="private mirror"):
         _run_smoke(tmp_path, [_reply(_PASS)], build_mirror=False)
-
-
-def test_mutation_smoke_fails_when_the_mutant_is_reported_invalid(tmp_path) -> None:
-    invalid = "  0 detected (0 timeout), 1 invalid, 0 not detected\nEXIT_CODE: 0"
-    with pytest.raises(driver.GoalDriverError, match="reported invalid"):
-        _run_smoke(tmp_path, [_reply(invalid)])
-
-
-def test_mutation_smoke_does_not_mistake_10_invalid_for_zero(tmp_path) -> None:
-    invalid = "  0 detected (0 timeout), 10 invalid, 0 not detected\nEXIT_CODE: 0"
-    with pytest.raises(driver.GoalDriverError, match="reported invalid"):
-        _run_smoke(tmp_path, [_reply(invalid)])
 
 
 def test_mutation_smoke_resolves_the_first_rtl_file_of_the_target(tmp_path) -> None:

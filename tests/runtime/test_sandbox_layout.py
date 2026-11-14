@@ -125,7 +125,7 @@ def test_alias_traversal_uses_reader_domain_errors(project_alias) -> None:
     )
     from booley.flows.sim.record import SimulationRecordIntegrityError
     from booley.flows.sim.record.resume import validate_resume_manifest
-    from booley.flows.sim.record_retention import CampaignRetentionError, _invocation
+    from booley.flows.sim.record_retention import SimulationRecordRetentionError, _invocation
 
     alias, target = project_alias
     path = alias / "child/../coverage.json"
@@ -145,7 +145,7 @@ def test_alias_traversal_uses_reader_domain_errors(project_alias) -> None:
             lambda selected: validate_resume_manifest(selected, project_root=target),
             SimulationRecordIntegrityError,
         ),
-        (lambda selected: _invocation(selected, 1), CampaignRetentionError),
+        (lambda selected: _invocation(selected, 1), SimulationRecordRetentionError),
     ):
         with pytest.raises(error, match="traversal") as caught:
             reader(path)

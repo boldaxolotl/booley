@@ -43,10 +43,9 @@ def test_config_reference_lists_specialist_model_keys_exactly() -> None:
 
 
 def test_default_model_table_matches_builtin_defaults() -> None:
-    """The default-model table shows each Agent CLI's built-in models."""
+    """The default-model table shows each Agent CLI's built-in Specialist model."""
     rows = {
         "Specialists": "_DEFAULT_SPECIALIST_MODEL",
-        "Booley's internal calls": "_INTERNAL_MODEL",
     }
     documented: dict[str, dict[str, str]] = {}
     for line in CONFIG_REFERENCE.read_text(encoding="utf-8").splitlines():

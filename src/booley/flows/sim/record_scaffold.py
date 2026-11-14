@@ -23,7 +23,7 @@ from .execution import (
 
 
 @dataclass(frozen=True, slots=True)
-class _CampaignSteps:
+class _SimulationRecordSteps:
     """What one Campaign kind does inside the shared progress lifecycle."""
 
     terminal: Callable[[str], None]  # publishes the terminal progress phase
@@ -32,14 +32,14 @@ class _CampaignSteps:
 
 
 @dataclass(frozen=True, slots=True)
-class _CampaignRun:
+class _SimulationRecordRun:
     """What distinguishes one Campaign kind in the shared execution scaffold."""
 
     refusal: str  # report text when no admission context was borrowed
     refusal_detail: Mapping[str, object]
     progress_operation: str  # completion-error operation when terminal progress fails
     start: Callable[
-        [AdmissionContext, Path, Callable[[Path], None]], _CampaignSteps | EndpointOutcome
+        [AdmissionContext, Path, Callable[[Path], None]], _SimulationRecordSteps | EndpointOutcome
     ]
     failure: Callable[[Exception, Path], EndpointOutcome]  # an error before any result exists
     paths_on_success: bool = False

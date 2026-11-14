@@ -147,7 +147,7 @@ def test_owned_artifact_roots_remove_embedded_source_without_touching_live(snaps
     assert (snapshot.real_root / relative).is_file()
 
 
-def test_historical_campaign_manifest_excludes_embedded_reports(snapshot):
+def test_historical_simulation_record_manifest_excludes_embedded_reports(snapshot):
     import json
 
     root = snapshot.snapshot_root / "arbitrary-old-campaign"

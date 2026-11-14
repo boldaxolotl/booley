@@ -14,14 +14,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from booley.flows.simulation_record_results import DurableCampaignResults
+from booley.flows.simulation_record_results import DurableSimulationRecordResults
 
 from .record import read_durable_results
 
 __all__ = ["read_unpublished_results"]
 
 
-def read_unpublished_results(manifest_path: Path, manifest_sha256: str) -> DurableCampaignResults:
+def read_unpublished_results(
+    manifest_path: Path, manifest_sha256: str
+) -> DurableSimulationRecordResults:
     """The durable results of the Simulation Campaign registered at *manifest_path*.
 
     Raises :class:`~booley.flows.simulation_record_results.CampaignBusyError` while a

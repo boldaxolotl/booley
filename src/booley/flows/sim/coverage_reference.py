@@ -242,7 +242,7 @@ def resolve_persisted_coverage_campaign_reference(
 
 def build_coverage_campaign_reference(
     *,
-    simulation_campaign_id: str,
+    simulation_record_id: str,
     simulation_manifest_sha256: str,
     target_identity: str,
     target_selector: str,
@@ -266,7 +266,7 @@ def build_coverage_campaign_reference(
         freeze_coverage_mapping(
             {
                 "$schema": REFERENCE_SCHEMA,
-                "simulation_record_id": simulation_campaign_id,
+                "simulation_record_id": simulation_record_id,
                 "simulation_manifest_sha256": simulation_manifest_sha256,
                 "target": {"identity": target_identity, "selector": target_selector},
                 "origin_invocation_id": origin_invocation_id,

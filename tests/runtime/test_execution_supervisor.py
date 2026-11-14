@@ -471,3 +471,155 @@ def test_process_set_lists_registered_pids_not_yet_reaped(tmp_path: Path) -> Non
 
     second.returncode = 0  # reaped, not yet unregistered: its PID may be reused
     assert processes.pids() == ()
+
+
+# Forks a middle process that forks a short-lived grandchild and exits, so the
+# grandchild is adopted by the supervisor; then waits for its /proc entry to go.
+_ORPHAN_THEN_WAIT_PREFIX = """
+import os, sys, time
+read_fd, write_fd = os.pipe()
+middle = os.fork()
+if middle == 0:
+    grandchild = os.fork()
+    if grandchild == 0:
+        time.sleep({orphan_lifetime})
+        os._exit(0)
+    os.write(write_fd, str(grandchild).encode())
+    os._exit(0)
+grandchild = int(os.read(read_fd, 32))
+os.waitpid(middle, 0)
+deadline = time.monotonic() + 3
+while os.path.exists(f"/proc/{{grandchild}}"):
+    if time.monotonic() > deadline:
+        sys.exit(9)
+    time.sleep(0.01)
+"""
+
+
+def test_running_command_sees_orphaned_grandchild_reaped(tmp_path: Path) -> None:
+    """An adopted orphan is reaped while the command runs, not only after it ends."""
+    script = _ORPHAN_THEN_WAIT_PREFIX.format(orphan_lifetime=0.2)
+
+    result, payload = _run_command(tmp_path, [sys.executable, "-c", script])
+
+    assert result.returncode == 0
+    assert payload["exit_code"] == 0
+    assert payload["tree_terminal"] is True
+
+
+def test_signal_exit_status_survives_orphan_reaping(tmp_path: Path) -> None:
+    """In-loop reaping of orphans never collects the direct child behind Popen."""
+    script = _ORPHAN_THEN_WAIT_PREFIX.format(orphan_lifetime=0) + (
+        "import signal\nos.kill(os.getpid(), signal.SIGTERM)\n"
+    )
+
+    result, payload = _run_command(tmp_path, [sys.executable, "-c", script])
+
+    assert result.returncode == 143
+    assert payload["exit_code"] == 143
+    assert payload["tree_terminal"] is True
+
+
+def test_orphan_reaping_leaves_uncollected_direct_child(tmp_path: Path) -> None:
+    """The peek stops at an exited-but-uncollected direct child instead of reaping it."""
+    bootstrap = (
+        "import os, subprocess, sys, time\n"
+        "from booley.runtime import execution_supervisor as supervisor\n"
+        "proc = subprocess.Popen([sys.executable, '-c', 'import os; os._exit(3)'])\n"
+        "def state():\n"
+        "    stat = open(f'/proc/{proc.pid}/stat').read()\n"
+        "    return stat.rsplit(')', 1)[1].split()[0]\n"
+        "deadline = time.monotonic() + 5\n"
+        "while state() != 'Z' and time.monotonic() < deadline:\n"
+        "    time.sleep(0.01)\n"
+        "class Racing:\n"
+        "    pid = proc.pid\n"
+        "    returncode = None\n"
+        "    def poll(self):\n"
+        "        return None\n"
+        "supervisor._reap_adopted(Racing())\n"
+        "print(state())\n"
+        "print(os.waitpid(proc.pid, 0)[1] >> 8)\n"
+    )
+
+    result = run_bounded_child(
+        [sys.executable, "-c", bootstrap], env=runtime_env(tmp_path), timeout=15
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["Z", "3"]
+
+
+def test_orphan_exiting_after_direct_child_is_reaped_by_end(tmp_path: Path) -> None:
+    """An orphan that is still a zombie when the direct child is collected is reaped."""
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    execution_id = _unique_execution_id()
+    paths = execution_paths(execution_id, booley_dir=booley_dir)
+    write_attachment_heartbeat(paths, generation=1)
+    grandchild_file = tmp_path / "grandchild.pid"
+    marker = tmp_path / "ordered"
+    # A middle process forks the grandchild and exits, so the supervisor adopts it.
+    command_script = (
+        "import os, time\n"
+        "middle = os.fork()\n"
+        "if middle == 0:\n"
+        "    if os.fork() == 0:\n"
+        f"        open({str(grandchild_file)!r}, 'w').write(str(os.getpid()))\n"
+        "        os._exit(0)\n"
+        "    os._exit(0)\n"
+        "os.waitpid(middle, 0)\n"
+    )
+    bootstrap = (
+        "import os, time\n"
+        "from pathlib import Path\n"
+        "import booley.runtime.execution_supervisor as supervisor\n"
+        f"grandchild_file = Path({str(grandchild_file)!r})\n"
+        f"marker = Path({str(marker)!r})\n"
+        "original = supervisor._wait_until_stop\n"
+        "def zombie(pid):\n"
+        "    try:\n"
+        "        stat = Path(f'/proc/{pid}/stat').read_text()\n"
+        "    except OSError:\n"
+        "        return False\n"
+        "    return stat.rsplit(')', 1)[1].split()[0] == 'Z'\n"
+        "def wait_until_stop(child, *args):\n"
+        "    deadline = time.monotonic() + 5\n"
+        "    while time.monotonic() < deadline:\n"
+        "        if grandchild_file.exists() and grandchild_file.read_text():\n"
+        "            grandchild = int(grandchild_file.read_text())\n"
+        "            adopted = Path(f'/proc/{grandchild}/stat').read_text().rsplit(')', 1)[1].split()[1]\n"
+        "            if zombie(child.pid) and zombie(grandchild) and int(adopted) == os.getpid():\n"
+        "                marker.write_text('ordered')\n"
+        "                break\n"
+        "        time.sleep(0.005)\n"
+        "    return original(child, *args)\n"
+        "supervisor._wait_until_stop = wait_until_stop\n"
+        "raise SystemExit(supervisor.main())\n"
+    )
+    result = run_bounded_child(
+        [
+            sys.executable,
+            "-c",
+            bootstrap,
+            "run",
+            "--execution-id",
+            execution_id,
+            "--grace-seconds",
+            "0.25",
+            "--",
+            sys.executable,
+            "-c",
+            command_script,
+        ],
+        env=runtime_env(booley_dir),
+        timeout=15,
+    )
+
+    payload = read_json(paths.record)
+    assert marker.exists(), "never reached direct child and orphan both zombie"
+    assert result.returncode == 0, result.stderr
+    assert payload["exit_code"] == 0
+    assert payload["state"] == "terminal"
+    assert payload["tree_terminal"] is True
+    assert not Path(f"/proc/{int(grandchild_file.read_text())}").exists()

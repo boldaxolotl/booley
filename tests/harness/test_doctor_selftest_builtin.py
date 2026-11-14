@@ -328,46 +328,46 @@ def test_footprint_note_exists_for_every_selftest_tool():
     assert set(doctor._SELFTEST_FLOWS) <= set(doctor._SELFTEST_FOOTPRINT_NOTE)
 
 
-def _evidence_mutations(report, campaign, observation):
+def _evidence_mutations(report, simulation_record, observation):
     return {
-        "incomplete": (campaign, "complete", False),
+        "incomplete": (simulation_record, "complete", False),
         "wrong-exit": (report, "exit_code", 0),
         "wrong-flow": (report, "flow", "lint"),
         "wrong-schema": (report, "$schema", "booley.simulation-report/v2"),
-        "truncated": (campaign, "observations_truncated", True),
-        "rows-truncated": (campaign, "test_runs_truncated", True),
-        "wrong-count": (campaign, "test_run_total", 2),
-        "wrong-observation-count": (campaign, "observation_total", 2),
-        "bool-count": (campaign, "test_run_total", True),
+        "truncated": (simulation_record, "observations_truncated", True),
+        "rows-truncated": (simulation_record, "test_runs_truncated", True),
+        "wrong-count": (simulation_record, "test_run_total", 2),
+        "wrong-observation-count": (simulation_record, "observation_total", 2),
+        "bool-count": (simulation_record, "test_run_total", True),
         "mismatched-pair": (observation, "test", "other"),
         "timeout": (observation, "execution", "timed_out"),
         "crash": (observation, "execution", "crashed"),
         "infra": (observation, "failure_class", "infrastructure"),
         "inconclusive": (observation, "functional", "inconclusive"),
-        "nonfailing-row": (campaign["test_runs"][0], "grade", "pass"),
-        "build-stage": (campaign, "build_stage", [{"failure_class": "infrastructure"}]),
-        "wrong-variant": (campaign["test_runs"][0], "variant", "other"),
-        "wrong-name": (campaign["test_runs"][0], "name", "other@1"),
+        "nonfailing-row": (simulation_record["test_runs"][0], "grade", "pass"),
+        "build-stage": (simulation_record, "build_stage", [{"failure_class": "infrastructure"}]),
+        "wrong-variant": (simulation_record["test_runs"][0], "variant", "other"),
+        "wrong-name": (simulation_record["test_runs"][0], "name", "other@1"),
         "malformed-detail": (report, "detail", []),
-        "malformed-row": (campaign, "test_runs", [42]),
-        "malformed-observation": (campaign, "observations", [42]),
+        "malformed-row": (simulation_record, "test_runs", [42]),
+        "malformed-observation": (simulation_record, "observations", [42]),
     }
 
 
 def _evidence_case(kind):
     report = _simulation_failure_report()
-    campaign = report["detail"]["records"]["sim_core"]
-    observation = campaign["observations"][0]
-    changes = _evidence_mutations(report, campaign, observation)
+    simulation_record = report["detail"]["records"]["sim_core"]
+    observation = simulation_record["observations"][0]
+    changes = _evidence_mutations(report, simulation_record, observation)
     if kind in changes:
         owner, key, value = changes[kind]
         owner[key] = value
     elif kind == "missing-rows":
-        del campaign["test_runs"]
+        del simulation_record["test_runs"]
     elif kind == "wrong-target":
         report["detail"]["records"]["other"] = report["detail"]["records"].pop("sim_core")
     elif kind == "wrong-test":
-        campaign["test_runs"][0]["test"] = observation["test"] = "other"
+        simulation_record["test_runs"][0]["test"] = observation["test"] = "other"
     elif kind == "build-failed":
         observation.update(
             execution="blocked_by_build",
@@ -376,12 +376,12 @@ def _evidence_case(kind):
             detail={"reason": "%Error: stale ports"},
         )
     elif kind == "unpaired-failures":
-        second_row = dict(campaign["test_runs"][0], grade="pass")
+        second_row = dict(simulation_record["test_runs"][0], grade="pass")
         second_observation = dict(observation)
         observation["functional"] = "pass"
-        campaign["test_runs"].append(second_row)
-        campaign["observations"].append(second_observation)
-        campaign.update(test_run_total=2, observation_total=2)
+        simulation_record["test_runs"].append(second_row)
+        simulation_record["observations"].append(second_observation)
+        simulation_record.update(test_run_total=2, observation_total=2)
     elif kind == "dirty-assertions":
         observation.update(functional="pass", assertions="dirty")
     return report

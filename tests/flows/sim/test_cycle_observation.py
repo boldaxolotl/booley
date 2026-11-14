@@ -52,10 +52,10 @@ def _criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str]:
     return flow, next(iter(state.criteria))
 
 
-def test_relative_cycle_campaign_defaults_omitted_baseline_to_candidate_target() -> None:
+def test_relative_cycle_simulation_record_defaults_omitted_baseline_to_candidate_target() -> None:
     flow, _key = _criterion_flow(relative=True)
 
-    assert flow._campaign_baseline_requirements(["sim_core"]) == (
+    assert flow._simulation_record_baseline_requirements(["sim_core"]) == (
         ("sim_core", "sim_core", "coremark"),
     )
 
@@ -248,10 +248,10 @@ def test_one_run_shares_one_baseline_checkout_across_consumers(tmp_path, monkeyp
     monkeypatch.setattr(flow, "_preview_targets", preview)
     monkeypatch.setattr(flow, "_planned_baseline_request", request)
     with flow.publication_resources:
-        authorized = flow._campaign_authorization_baselines(revision, ["sim_core"])
-        planning = flow._plan_ordinary_campaigns(["sim_core"], tests)
+        authorized = flow._simulation_record_authorization_baselines(revision, ["sim_core"])
+        planning = flow._plan_ordinary_simulation_records(["sim_core"], tests)
         assert isinstance(planning.baselines, PlannedBaselines)
-        requests, _ = flow._plan_campaign_baselines(tmp_path / "inv", None, planning)
+        requests, _ = flow._plan_simulation_record_baselines(tmp_path / "inv", None, planning)
         assert len(requests) == 1
         assert [item.identity for item in authorized] == [handle.identity]
         assert [item.project_root for item in authorized] == roots[:1]

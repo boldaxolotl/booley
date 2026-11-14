@@ -4,9 +4,8 @@ The model gateway is an operator-run service that bills Codex model traffic
 instead of an OpenAI login or API key; the Codespaces demo uses it. This
 guide is for the operator who configures a gateway-backed Sandbox and for
 contributors changing gateway code: the variables, the token contract, and
-what Booley writes into Codex's config. The user-facing summary is
-[Codex through a model gateway](../user/SANDBOX.md#codex-through-a-model-gateway),
-and the decision and its security invariants are in
+what Booley writes into Codex's config. It is an internal feature: user docs
+do not mention it. The decision and its security invariants are in
 [ADR 0080](../adr/0080-route-codex-specialists-through-an-env-selected-gateway.md).
 
 The gateway routes Codex only, never Claude Code. It covers Codex
@@ -38,7 +37,7 @@ There are two ways to select it:
   `BOOLEY_PRIMARY_AUTH=gateway` and the variables below in its environment.
   With `BOOLEY_AGENT_APP=auto`, leave `BOOLEY_PRIMARY_AUTH` unset or `auto`
   instead: the gateway is then used only when the Sandbox has no Claude or
-  Codex login (see
+  Codex credential; a visitor's own credential always beats it (see
   [the agent app](../user/SANDBOX.md#agent-app-in-a-hand-written-spec-booley_agent_app)).
 
 | Variable | Meaning |
@@ -61,6 +60,24 @@ NOTE instead of failing for a gateway they cannot see. This keeps the token
 out of Claude's environment; it is not isolation, because anything in the
 Sandbox that can run the token command can get a token (ADR 0080). A
 hand-written Sandbox keeps its environment as set.
+
+### Running a Booley-issued gateway Sandbox
+
+- Add the gateway host to `[sandbox] egress_allowlist`, or use an Unproxied
+  Sandbox.
+- `BOOLEY_GATEWAY_TOKEN_COMMAND` runs inside the Sandbox, so it must name a
+  command that exists there. Prefer it to a static token: a short-lived token
+  limits what the Claude start-up gap below can expose.
+- The values come from the launching shell, like an API key. A headless
+  `booley session` start refuses, naming the variable, when that shell lacks
+  it, and a changed URL or static token behaves like a changed API key: while
+  a headless gateway Sandbox runs, Doctor fails with "active Sandbox differs
+  from current host issuance". `booley session enter` into a VS Code-opened
+  Sandbox does not carry the values.
+- On the first start with new Claude state (a new Sandbox, a changed Claude
+  policy, or a rebuild when Claude is not listed), a Claude panel opened before
+  the start hook writes the blanks runs with the gateway values once; other
+  starts are covered.
 
 ## Validation
 

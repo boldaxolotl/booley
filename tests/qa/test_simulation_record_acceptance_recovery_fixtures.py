@@ -79,12 +79,12 @@ def _sha256(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
 
 
-def _result(tmp_path: Path, campaign_id: str, manifest_sha256: str) -> Path:
+def _result(tmp_path: Path, simulation_record_id: str, manifest_sha256: str) -> Path:
     return _write(
         tmp_path / "result.json",
         {
             "$schema": "booley.simulation-result/v1",
-            "campaign_id": campaign_id,
+            "campaign_id": simulation_record_id,
             "manifest_sha256": manifest_sha256,
             "state": "completed",
             "attempt_id": "6e8b91ae-93a3-4b3a-8813-e2f09c91bdc5",
@@ -94,12 +94,12 @@ def _result(tmp_path: Path, campaign_id: str, manifest_sha256: str) -> Path:
     )
 
 
-def _facts(campaign_id: str, manifest_sha256: str, result_path: Path) -> dict[str, Any]:
+def _facts(simulation_record_id: str, manifest_sha256: str, result_path: Path) -> dict[str, Any]:
     result = json.loads(result_path.read_text())
     raw = result_path.read_bytes()
     return {
         "$schema": "booley.simulation-acceptance-facts/v1",
-        "campaign_id": campaign_id,
+        "campaign_id": simulation_record_id,
         "manifest_sha256": manifest_sha256,
         "origin": {"execution_id": "2" * 32, "invocation_id": 1},
         "target": {"selector": "sim_toggle", "name": "sim_toggle"},
@@ -149,7 +149,7 @@ def _goal_worktree(tmp_path: Path) -> tuple[Path, Path]:
     return control, worktree
 
 
-def _campaign_specs() -> tuple[GoalSpec, ...]:
+def _simulation_record_specs() -> tuple[GoalSpec, ...]:
     return translate_goals(
         parse_goal_args(
             [
@@ -166,7 +166,7 @@ def _campaign_specs() -> tuple[GoalSpec, ...]:
 
 
 def _goal_state(tmp_path: Path) -> tuple[DevelopmentState, GoalProjection, dict[str, Any]]:
-    specs = _campaign_specs()
+    specs = _simulation_record_specs()
     record_id = "qa-campaign-20260922T010000Z"
     control, worktree = _goal_worktree(tmp_path)
     store = GoalStore(control)
@@ -277,15 +277,15 @@ def _recover_transaction(
 
 
 def _acceptance_evidence(tmp_path: Path, *, coverage_met: bool = True) -> RecoveryEvidence:
-    campaign_id = "c3fa3451-3a73-4a43-936c-9a2c40f88d30"
+    simulation_record_id = "c3fa3451-3a73-4a43-936c-9a2c40f88d30"
     manifest_value = {
         "$schema": MANIFEST_SCHEMA,
-        "simulation_record_id": campaign_id,
+        "simulation_record_id": simulation_record_id,
     }
     manifest = _write(tmp_path / "manifest.json", manifest_value)
     manifest_sha256 = _sha256(_canonical(manifest_value))
-    result = _result(tmp_path, campaign_id, manifest_sha256)
-    facts = _facts(campaign_id, manifest_sha256, result)
+    result = _result(tmp_path, simulation_record_id, manifest_sha256)
+    facts = _facts(simulation_record_id, manifest_sha256, result)
     recovered = _recover_transaction(tmp_path, facts, coverage_met=coverage_met)
     simulation = _write(
         tmp_path / "simulation.json",
@@ -295,7 +295,7 @@ def _acceptance_evidence(tmp_path: Path, *, coverage_met: bool = True) -> Recove
                 "path_base": "origin_target",
                 "path": manifest.name,
                 "kind": "simulation_record_manifest",
-                "owner": campaign_id,
+                "owner": simulation_record_id,
                 "bytes": len(manifest.read_bytes()),
                 "sha256": _sha256(manifest.read_bytes()),
             },

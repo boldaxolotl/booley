@@ -344,7 +344,7 @@ def test_compiler_cache_preparation_keeps_project_clean(versioned_project, monke
     assert_clean(repo)
 
 
-def test_campaign_publications_and_run_lock_keep_project_clean(versioned_project):
+def test_simulation_record_publications_and_run_lock_keep_project_clean(versioned_project):
     from tests.flows.sim.test_simulation_record_manifest_codec import _manifest
 
     from booley.flows.sim.record.codec import (

@@ -295,7 +295,7 @@ def test_standalone_mode_runs_target_elaboration_before_sweep(
     ]
     monkeypatch.setattr(flow, "_elab_only_preflight", lambda: ["sim_dut"])
 
-    def campaign(_targets: list[str]) -> list[ElabOnlyTargetResult]:
+    def simulation_record(_targets: list[str]) -> list[ElabOnlyTargetResult]:
         events.append("target-elaboration")
         return results
 
@@ -304,7 +304,7 @@ def test_standalone_mode_runs_target_elaboration_before_sweep(
         events.append("standalone-sweep")
         return EXIT_SUCCESS, None
 
-    monkeypatch.setattr(flow, "_run_elab_only_campaign", campaign)
+    monkeypatch.setattr(flow, "_run_elab_only_simulation_record", simulation_record)
     monkeypatch.setattr(flow, "_run_optional_standalone", standalone)
     monkeypatch.setattr(
         flow,
@@ -459,7 +459,7 @@ def test_timeout_after_success_record_preserves_build_pass() -> None:
     assert outcome.passed
 
 
-def test_campaign_continues_and_applies_error_fail_pass_precedence(
+def test_simulation_record_continues_and_applies_error_fail_pass_precedence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -602,7 +602,7 @@ def test_elab_only_terminalizes_after_later_target_crash(
         ),
     ],
 )
-def test_campaign_exit_precedence(
+def test_simulation_record_exit_precedence(
     outcomes: list[BuildOutcome],
     expected: int,
 ) -> None:

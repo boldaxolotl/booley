@@ -56,7 +56,7 @@ from booley.flows.sim.record_files import document_digest
 from booley.flows.sim.runtime_inputs import (
     RuntimeInputBinding,
     RuntimeInputError,
-    materialize_campaign_runtime_inputs,
+    materialize_simulation_record_runtime_inputs,
     safe_runtime_relative,
 )
 from booley.flows.test_runs import TestRun
@@ -663,7 +663,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         workload, access, run_directory, started = ready.policy
         declarations = cast(tuple[dict[str, str], ...], workload["runtime_inputs"])
         self._publication_checkpoint("before:runtime_inputs")
-        with materialize_campaign_runtime_inputs(
+        with materialize_simulation_record_runtime_inputs(
             bundle_root=build_directory,
             attempt_root=request.attempt_directory,
             run_cwd=run_cwd,

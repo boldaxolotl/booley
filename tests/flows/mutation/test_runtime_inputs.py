@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 import booley
-from booley.flows.mutation.flow import Baseline, MutationFlow
+from booley.flows.mutation.flow import Baseline, MutationFlow, MutationResult
 from booley.flows.sim.build import PreparedSimulationBuild
 from booley.fusesoc.fusesoc_registry import ResolvedFile
 from tests.flows.mutation.test_flow import (
@@ -151,11 +151,11 @@ def test_verilator_mutant_sees_copyto_input(tmp_path: Path, monkeypatch) -> None
     )
     spec = SimpleNamespace(index=1)
 
-    result, reason = endpoint._run_one_variant(project.plan(), spec, object(), Baseline({}))
+    result = endpoint._run_one_variant(project.plan(), spec, object(), Baseline({}))
 
-    assert not result.invalid, result.sim_output_snippet
+    assert isinstance(result, MutationResult), result
+    assert not result.inconclusive_reason, result.sim_output_snippet
     assert not result.detected, result.sim_output_snippet
-    assert reason == ""
     assert not project.staged.exists()
     assert project.leftovers() == []
 

@@ -23,7 +23,7 @@ from booley.flows.sim.record.bundle import authenticate_executable_snapshot
 from booley.flows.sim.record_layout import COVERAGE_RECORD_DIRECTORY
 from booley.flows.sim.runtime_inputs import (
     RuntimeInputBinding,
-    materialize_campaign_runtime_inputs,
+    materialize_simulation_record_runtime_inputs,
 )
 from booley.flows.sim.verilator_coverage import (
     SimulationBuildRequest,
@@ -396,7 +396,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
         declarations = cast(tuple[dict[str, str], ...], workload["runtime_inputs"])
         self._publication_checkpoint("before:runtime_inputs")
         bindings = stack.enter_context(
-            materialize_campaign_runtime_inputs(
+            materialize_simulation_record_runtime_inputs(
                 bundle_root=captured.directory,
                 attempt_root=request.attempt_directory,
                 run_cwd=run_cwd,

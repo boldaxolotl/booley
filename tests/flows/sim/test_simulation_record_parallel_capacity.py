@@ -114,8 +114,8 @@ def _child_permit(capacity: SimulationRecordCapacity, work_item_id: str = "item"
 
 def _prepared_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     manifest = _two_item_manifest()
-    campaign_store = SimulationRecordStore(tmp_path / "record")
-    campaign_store.publish_manifest(manifest)
+    simulation_record_store = SimulationRecordStore(tmp_path / "record")
+    simulation_record_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
     project_data = project / ".booley"
@@ -123,7 +123,7 @@ def _prepared_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("BOOLEY_DIR", str(project_data))
     item = manifest.document["work_items"][0]
     attempt_id = "550e8400-e29b-41d4-a716-446655440010"
-    ordinal, attempt = campaign_store.allocate_attempt_directory(
+    ordinal, attempt = simulation_record_store.allocate_attempt_directory(
         str(item["work_item_id"]), attempt_id
     )
     child_id = _unique_execution_id()
@@ -435,8 +435,8 @@ def test_child_reacquisition_rejoins_real_slot_fifo_behind_competitor(
 
 def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path) -> None:
     manifest = _two_item_manifest()
-    campaign_store = SimulationRecordStore(tmp_path / "record")
-    campaign_store.publish_manifest(manifest)
+    simulation_record_store = SimulationRecordStore(tmp_path / "record")
+    simulation_record_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
@@ -449,7 +449,7 @@ def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path
 
     def allocate(item) -> ScheduledAttempt:
         attempt_id = os.urandom(16).hex()
-        ordinal, directory = campaign_store.allocate_attempt_directory(
+        ordinal, directory = simulation_record_store.allocate_attempt_directory(
             str(item["work_item_id"]), attempt_id
         )
         return ScheduledAttempt(item, attempt_id, ordinal, directory, "same-run-dir")
@@ -477,8 +477,8 @@ def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path
 
 def test_normal_work_runtime_does_not_consume_shutdown_budget(tmp_path: Path) -> None:
     manifest = _two_item_manifest()
-    campaign_store = SimulationRecordStore(tmp_path / "record")
-    campaign_store.publish_manifest(manifest)
+    simulation_record_store = SimulationRecordStore(tmp_path / "record")
+    simulation_record_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
@@ -489,7 +489,7 @@ def test_normal_work_runtime_does_not_consume_shutdown_budget(tmp_path: Path) ->
 
     def allocate(item) -> ScheduledAttempt:
         attempt_id = os.urandom(16).hex()
-        ordinal, directory = campaign_store.allocate_attempt_directory(
+        ordinal, directory = simulation_record_store.allocate_attempt_directory(
             str(item["work_item_id"]), attempt_id
         )
         return ScheduledAttempt(item, attempt_id, ordinal, directory, attempt_id)
@@ -507,8 +507,8 @@ def test_shutdown_deadline_returns_bounded_but_retains_outer_until_worker_exits(
     tmp_path: Path,
 ) -> None:
     manifest = _two_item_manifest()
-    campaign_store = SimulationRecordStore(tmp_path / "record")
-    campaign_store.publish_manifest(manifest)
+    simulation_record_store = SimulationRecordStore(tmp_path / "record")
+    simulation_record_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
@@ -528,7 +528,7 @@ def test_shutdown_deadline_returns_bounded_but_retains_outer_until_worker_exits(
 
     scheduler = BoundedSimulationRecordScheduler(
         capacity,
-        allocate=lambda item: _scheduled_attempt(campaign_store, item),
+        allocate=lambda item: _scheduled_attempt(simulation_record_store, item),
         execute=execute,
     )
     trigger = threading.Thread(target=lambda: (entered.wait(), cancelled.set()))
@@ -539,7 +539,7 @@ def test_shutdown_deadline_returns_bounded_but_retains_outer_until_worker_exits(
     assert time.monotonic() - started < 0.5
     slots.release(outer)  # endpoint AdmissionGate finally must be deferred
     assert [token.lease_id for token in slots.snapshot(CLASS_MEMORY)[0]] == [outer.lease_id]
-    assert campaign_store.scan().interrupted == (
+    assert simulation_record_store.scan().interrupted == (
         str(manifest.document["work_items"][0]["work_item_id"]),
     )
     release_worker.set()
@@ -560,8 +560,8 @@ def test_shutdown_deadline_does_not_fail_when_every_worker_already_exited(
 ) -> None:
     """Regression for #977: a lane that exits in the final wait is a clean shutdown."""
     manifest = _two_item_manifest()
-    campaign_store = SimulationRecordStore(tmp_path / "record")
-    campaign_store.publish_manifest(manifest)
+    simulation_record_store = SimulationRecordStore(tmp_path / "record")
+    simulation_record_store.publish_manifest(manifest)
     # A zero budget means the shutdown deadline has always passed after the wait.
     capacity = SimpleNamespace(
         managed=False,
@@ -572,7 +572,7 @@ def test_shutdown_deadline_does_not_fail_when_every_worker_already_exited(
     )
     scheduler = BoundedSimulationRecordScheduler(
         capacity,  # type: ignore[arg-type]
-        allocate=lambda item: _scheduled_attempt(campaign_store, item),
+        allocate=lambda item: _scheduled_attempt(simulation_record_store, item),
         execute=lambda *_args: None,
     )
 
@@ -581,7 +581,7 @@ def test_shutdown_deadline_does_not_fail_when_every_worker_already_exited(
 
 @pytest.mark.parametrize("first_finisher", ["beta", "gamma"])
 @pytest.mark.parametrize("schedule_seed", (0, 3))
-def test_managed_campaign_bounds_overlap_keeps_order_and_cleans_child_claims(
+def test_managed_simulation_record_bounds_overlap_keeps_order_and_cleans_child_claims(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     first_finisher: str,
@@ -598,14 +598,14 @@ def test_managed_campaign_bounds_overlap_keeps_order_and_cleans_child_claims(
         invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
         execution_factory=lambda _options: _ParallelExecution(state),  # type: ignore[arg-type,return-value]
     )
-    outcome, slot_store, invocation = _run_parallel_campaign(
+    outcome, slot_store, invocation = _run_parallel_simulation_record(
         tmp_path, manifest, plan, project, executor
     )
     _assert_parallel_outcome(outcome, plan, state, first_finisher)
     _assert_child_claim_integrity(invocation, slot_store, plan, project / ".booley")
 
 
-def _run_parallel_campaign(tmp_path, manifest, plan, project, executor):
+def _run_parallel_simulation_record(tmp_path, manifest, plan, project, executor):
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
     slot_store = SlotStore(tmp_path / "slots")
@@ -667,10 +667,10 @@ def _assert_child_claim_integrity(invocation, slot_store, plan, project_data) ->
 def test_scheduler_preserves_terminal_cause_after_actual_child_lease_loss(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scope_stop: bool | str
 ) -> None:
-    slots, registry, campaign_store, child_ids = _run_lease_loss_scheduler(
+    slots, registry, simulation_record_store, child_ids = _run_lease_loss_scheduler(
         tmp_path, monkeypatch, scope_stop
     )
-    _assert_scheduler_terminal_cause(registry, campaign_store, child_ids, scope_stop)
+    _assert_scheduler_terminal_cause(registry, simulation_record_store, child_ids, scope_stop)
     assert slots.snapshot(CLASS_MEMORY) == ([], [])
 
 
@@ -694,11 +694,11 @@ def test_scheduler_lease_loss_removal_retries_a_windows_sharing_violation(
         real_unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "unlink", sharing_violating_unlink)
-    slots, registry, campaign_store, child_ids = _run_lease_loss_scheduler(
+    slots, registry, simulation_record_store, child_ids = _run_lease_loss_scheduler(
         tmp_path, monkeypatch, False
     )
     assert denials_left == 0
-    _assert_scheduler_terminal_cause(registry, campaign_store, child_ids, False)
+    _assert_scheduler_terminal_cause(registry, simulation_record_store, child_ids, False)
     assert slots.snapshot(CLASS_MEMORY) == ([], [])
 
 
@@ -706,8 +706,8 @@ def _run_lease_loss_scheduler(tmp_path, monkeypatch, scope_stop):
     """Run two lanes whose first one loses its lease; return what the assertions read."""
     monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 0.01)
     manifest = _two_item_manifest()
-    campaign_store = SimulationRecordStore(tmp_path / "record")
-    campaign_store.publish_manifest(manifest)
+    simulation_record_store = SimulationRecordStore(tmp_path / "record")
+    simulation_record_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
@@ -729,7 +729,7 @@ def _run_lease_loss_scheduler(tmp_path, monkeypatch, scope_stop):
     )
     scheduler = BoundedSimulationRecordScheduler(
         capacity,
-        allocate=lambda item: _scheduled_attempt(campaign_store, item),
+        allocate=lambda item: _scheduled_attempt(simulation_record_store, item),
         execute=execute,
     )
     try:
@@ -738,7 +738,7 @@ def _run_lease_loss_scheduler(tmp_path, monkeypatch, scope_stop):
     finally:
         child_finished.set()
         slots.release(outer)
-    return slots, registry, campaign_store, child_ids
+    return slots, registry, simulation_record_store, child_ids
 
 
 def _lease_lost_execute(slots, child_finished, child_ids, scope_stop, tmp_path):
@@ -769,7 +769,7 @@ def _lease_lost_execute(slots, child_finished, child_ids, scope_stop, tmp_path):
     return execute
 
 
-def _assert_scheduler_terminal_cause(registry, campaign_store, child_ids, scope_stop):
+def _assert_scheduler_terminal_cause(registry, simulation_record_store, child_ids, scope_stop):
     assert len(child_ids) == 1
     terminal = read_json(
         execution_paths(ExecutionId(child_ids[0]), booley_dir=registry.project_data).record
@@ -856,7 +856,7 @@ def test_canonical_collision_keys_are_stable_across_threads(tmp_path: Path) -> N
     assert keys == [first.collision_key, first.collision_key]
 
 
-def test_unsized_memory_admitted_campaign_runs_work_items_without_child_lanes(
+def test_unsized_memory_admitted_simulation_record_runs_work_items_without_child_lanes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A Flow admitted by memory whose Campaign sizes no items runs them in series (#3701)."""

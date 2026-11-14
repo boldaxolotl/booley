@@ -25,7 +25,7 @@ from booley.flows.sim.record.codec import (
 )
 from booley.flows.sim.record.resume import validate_resume_manifest
 from booley.flows.sim.record.store import SimulationRecordStore
-from booley.flows.sim.record_retention import CampaignRetentionError, prune_invocation
+from booley.flows.sim.record_retention import SimulationRecordRetentionError, prune_invocation
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.unpublished_results import read_unpublished_results
 from booley.goals.simulation_record_accounting import REASON_UNACCOUNTED
@@ -38,15 +38,17 @@ from tests.flows.sim.simulation_record_test_support import (
     coverage_invocation,
 )
 from tests.flows.sim.test_simulation_record_manifest_codec import (
-    _linked_campaign_stores,
+    _linked_simulation_record_stores,
     _manifest,
 )
-from tests.flows.sim.test_simulation_record_resume_diagnostics import _interrupted_campaign
+from tests.flows.sim.test_simulation_record_resume_diagnostics import (
+    _interrupted_simulation_record,
+)
 from tests.flows.sim.test_simulation_record_retention import _run_retention_cli
 from tests.goals.conftest import SIM_KEY, layout  # noqa: F401  (fixture)
 from tests.goals.test_simulation_record_accounting import (  # noqa: F401  (fixtures)
-    _Campaign,
-    campaign,
+    _SimulationRecord,
+    simulation_record,
     two,
 )
 
@@ -167,7 +169,9 @@ def test_coverage_analysis_refuses_a_0_3_0_projection_naming_its_invocation(
 def test_resume_refuses_a_0_3_0_cycle_count_baseline_naming_its_invocation(
     tmp_path, monkeypatch
 ) -> None:
-    candidate, candidate_store, _baseline, baseline_store = _linked_campaign_stores(tmp_path)
+    candidate, candidate_store, _baseline, baseline_store = _linked_simulation_record_stores(
+        tmp_path
+    )
     _rewrite(
         baseline_store.manifest_path,
         _as_030_manifest(baseline_store.manifest_path.read_bytes(), "v1"),
@@ -292,7 +296,7 @@ def test_a_0_3_0_projection_is_refused_naming_its_invocation(tmp_path) -> None:
     )
     projection_path.write_bytes(canonical_json_bytes(projection))
 
-    with pytest.raises(CampaignRetentionError) as excinfo:
+    with pytest.raises(SimulationRecordRetentionError) as excinfo:
         prune_invocation(reports, 1)
 
     _assert_refused(str(excinfo.value), _PROJECTION_V2, reports / "sim/1")
@@ -300,7 +304,7 @@ def test_a_0_3_0_projection_is_refused_naming_its_invocation(tmp_path) -> None:
 
 def test_resume_ignores_a_leftover_project_child_registry(tmp_path, monkeypatch) -> None:
     """The child-execution registry is no longer read: a malformed entry cannot block resume."""
-    reports, manifest, _executions = _interrupted_campaign(tmp_path, monkeypatch)
+    reports, manifest, _executions = _interrupted_simulation_record(tmp_path, monkeypatch)
     entries = tmp_path / ".booley/.runtime/campaign-child-executions/entries"
     entries.mkdir(parents=True)
     (entries / f"{'1' * 32}.json").write_text("not json", encoding="utf-8")
@@ -320,21 +324,21 @@ def test_resume_ignores_a_leftover_project_child_registry(tmp_path, monkeypatch)
 # broad run does not collect, so this reader is tested here) ---
 
 
-def test_an_older_layout_campaign_reads_as_refused_in_status_and_the_dashboard(
+def test_an_older_layout_simulation_record_reads_as_refused_in_status_and_the_dashboard(
     two: SimpleNamespace,  # noqa: F811 (fixture imported from tests/goals)
-    campaign: _Campaign,  # noqa: F811
+    simulation_record: _SimulationRecord,  # noqa: F811
     tmp_path: Path,
 ) -> None:
     """An older Booley's record is refused as too old, never "cannot be read"."""
     invocation = tmp_path / "reports" / "sim" / "1"
     shutil.copytree(_FIXTURES / "booley_0_4_0" / "complete" / "sim" / "1", invocation)
-    campaign.manifest = invocation / "targets" / "sim" / "campaign" / "manifest.json"
-    campaign.start("run-1")
-    two.campaign_reader = read_unpublished_results
+    simulation_record.manifest = invocation / "targets" / "sim" / "campaign" / "manifest.json"
+    simulation_record.start("run-1")
+    two.simulation_record_reader = read_unpublished_results
 
     store = GoalStore(two.control)
     view = build_status(
-        store, two.record, work_dir=two.worktree, campaign_reader=read_unpublished_results
+        store, two.record, work_dir=two.worktree, simulation_record_reader=read_unpublished_results
     )
     dashboard = project_goal(store, two.record)
 

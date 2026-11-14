@@ -54,7 +54,7 @@ class SimRequest(FlowRequest):
             raise ValueError("coverage must be boolean")
         if not isinstance(self.no_waivers, bool):
             raise ValueError("no_waivers must be boolean")
-        self._normalize_campaign_paths()
+        self._normalize_simulation_record_paths()
         self._normalize_test_selection()
         # Rule order decides which message wins when an input breaks several.
         self._validate_mode_and_resume()
@@ -65,7 +65,7 @@ class SimRequest(FlowRequest):
         if self.result_verbosity not in ("compact", "full"):
             raise ValueError("result_verbosity must be compact or full")
 
-    def _normalize_campaign_paths(self) -> None:
+    def _normalize_simulation_record_paths(self) -> None:
         if self.mode is not None:
             self.mode = SimulationMode(self.mode)
         if self.tests_file is not None:

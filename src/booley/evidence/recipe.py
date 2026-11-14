@@ -60,6 +60,7 @@ def implementation_comparison_basis(snapshot: Mapping[str, Any]) -> dict[str, An
         "vlnv": snapshot.get("vlnv"),
         "toplevel": snapshot.get("toplevel"),
         "recipe_args": jsonable(snapshot.get("recipe_args", [])),
+        "ppa_profile_settings": jsonable(snapshot.get("ppa_profile_settings")),
         "constraints": _constraint_digests(snapshot),
         "technology": jsonable(snapshot.get("technology")),
     }

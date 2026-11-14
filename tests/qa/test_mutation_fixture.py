@@ -99,30 +99,35 @@ def test_oracle_outcomes_name_listed_candidates() -> None:
     keys = {_key(candidate) for _, candidate in pairs}
     outcomes = oracle["outcomes"]
     survivors, equivalent = set(outcomes["survivors"]), set(outcomes["equivalent"])
-    hanging, invalid = set(outcomes["hanging"]), set(outcomes["invalid"])
-    for group in (survivors, equivalent, hanging, invalid):
+    hanging, does_not_build = set(outcomes["hanging"]), set(outcomes["does_not_build"])
+    for group in (survivors, equivalent, hanging, does_not_build):
         assert group <= keys, sorted(group - keys)
     assert equivalent <= survivors
     assert not survivors & hanging
-    assert not survivors & invalid
-    assert not hanging & invalid
+    assert not survivors & does_not_build
+    assert not hanging & does_not_build
     # Per-file tallies and the exhaustive totals follow from the lists above.
     for name, tally in oracle["per_file"].items():
         in_file = {_key(c) for _, c in pairs if c["file"] == name}
         assert tally == {
             "candidates": len(in_file),
             "survivors": len(survivors & in_file),
-            "invalid": len(invalid & in_file),
+            "does_not_build": len(does_not_build & in_file),
             "hanging": len(hanging & in_file),
         }, name
     total = len(keys)
     exhaustive = oracle["totals"]["exhaustive"]
     assert oracle["totals"]["candidates"] == total == exhaustive["command_count"]
     assert exhaustive["not_detected"] == len(survivors)
-    assert exhaustive["invalid"] == len(invalid)
+    assert exhaustive["does_not_build"] == len(does_not_build)
     assert exhaustive["detected_by_timeout"] == len(hanging)
-    assert exhaustive["detected"] == total - len(survivors) - len(invalid)
-    threshold = math.ceil(0.8 * total)  # default: 80 % of --count, rounded up
+    # Candidates that do not build are replaced; none is left to replace them here,
+    # so the run scores the rest and the default threshold follows that number.
+    scored = total - len(does_not_build)
+    assert exhaustive["scored"] == scored
+    assert exhaustive["shortfall"] == f"only {scored} Mutants could be scored ({total} requested)"
+    assert exhaustive["detected"] == scored - len(survivors)
+    threshold = math.ceil(0.8 * scored)  # default: 80 % of the Mutants scored, rounded up
     assert exhaustive["threshold"] == threshold
     assert (exhaustive["verdict"], exhaustive["exit"]) == (
         ("PASS", 0) if exhaustive["detected"] >= threshold else ("FAIL", 1)
@@ -157,8 +162,12 @@ def _assert_selection_and_auto_follow_counts(oracle: dict[str, Any]) -> None:
         chosen = picks(int(count))
         assert per_operator == {name: chosen.count(name) for name in OPERATORS}, count
     shortfall = selection["shortfall"]
-    assert shortfall["run"] == sum(counts.values())
-    assert shortfall["message"].startswith(f"only {shortfall['run']} Mutants could be scored")
+    assert shortfall["candidates"] == sum(counts.values())
+    assert shortfall["run"] == shortfall["candidates"] - len(oracle["outcomes"]["does_not_build"])
+    assert shortfall["message"] == (
+        f"only {shortfall['run']} Mutants could be scored ({shortfall['count']} requested)"
+    )
+    assert f"ceil(0.8 x {shortfall['run']}) = " in shortfall["threshold_by_doc"]
     auto = oracle["auto"]
     formula = max(3, min(25, round(math.sqrt(auto["scope_lines"]))))
     assert auto["size_formula_count"] == formula

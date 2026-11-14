@@ -104,7 +104,7 @@ and on the Dashboard. The full output of the last run is in
   instead of failing a Goal later (skip these calls with
   `--skip-agent-checks`);
 - a short simulation, lint, and ASIC synthesis on each Target marked for Doctor
-  (see [Doctor selection](CONFIG.md#explicit-flow-targets-and-doctor-selection));
+  (see [Marking Targets for Doctor](TARGETS.md#marking-targets-for-doctor));
 - the simulation and lint [self-tests](#self-test-fixtures);
 - FuseSoC resolution of every core.
 

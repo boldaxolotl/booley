@@ -659,6 +659,11 @@ class _WaiterRequest:
     job: JobLabel | None = None
 
 
+def project_slots_dir(booley_dir: Path) -> Path:
+    """The slot store of the Project whose Booley Directory is *booley_dir*, with no override."""
+    return booley_dir / "runtime" / "jobs" / "slots"
+
+
 def slots_dir(booley_dir: Path | None = None) -> Path | None:
     """Root of the shared slot store, or None when no project is resolvable.
 
@@ -675,7 +680,7 @@ def slots_dir(booley_dir: Path | None = None) -> Path | None:
         project = booley_dir if booley_dir is not None else resolve_common_booley_dir()
     except (OSError, ValueError, RuntimeError):
         return None
-    return project / "runtime" / "jobs" / "slots"
+    return project_slots_dir(project)
 
 
 def _default_execution_is_terminal(execution_id: str) -> bool:

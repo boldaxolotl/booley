@@ -36,7 +36,7 @@ from booley.flows.memory_admission import (
     job_threads_at_start,
     measure_memory_claim,
 )
-from booley.flows.simulation_record_results import StartedCampaign
+from booley.flows.simulation_record_results import StartedSimulationRecord
 from booley.flows.target_test_plan import TargetTestPlan
 from booley.flows.test_runs import TestRun, test_run_document
 from booley.fusesoc.fusesoc_registry import prepare_core_library_plan
@@ -870,11 +870,11 @@ class BaselineExecution(StandaloneFlowExecution):
 
     def __init__(self, checkout: Path, target: str) -> None:
         self.checkout, self.target = checkout, target
-        self.campaigns: list[StartedCampaign] = []
+        self.simulation_records: list[StartedSimulationRecord] = []
         self.stamps: list[str] = []
 
-    def register_campaign(self, campaign: StartedCampaign) -> None:
-        self.campaigns.append(campaign)
+    def register_simulation_record(self, simulation_record: StartedSimulationRecord) -> None:
+        self.simulation_records.append(simulation_record)
         self.stamps.append(
             contents_stamp(DEFAULT_RESOLVERS.fingerprint(self.checkout, target=self.target))
         )
@@ -916,8 +916,10 @@ def simulate(request: Mapping[str, Any]) -> dict[str, Any]:
         # The supervisor discards this attempt; reading its aborted Campaigns could only raise.
         return oom_killed_result(SCHEMA)
     rows: list[dict[str, Any]] = []
-    for campaign in adapter.campaigns:
-        durable = read_unpublished_results(campaign.manifest_path, campaign.manifest_sha256)
+    for simulation_record in adapter.simulation_records:
+        durable = read_unpublished_results(
+            simulation_record.manifest_path, simulation_record.manifest_sha256
+        )
         rows.extend(dict(row) for row in durable.rows)
         _exclude_uncompleted(rows)
     return {

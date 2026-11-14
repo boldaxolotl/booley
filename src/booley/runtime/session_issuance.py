@@ -1951,8 +1951,10 @@ def _validate_state_volume(mounts: list[str], record: dict[str, str], project: P
     from booley.runtime import devcontainer as dc
 
     project_id = dc.canonical_project_id(project)
+    legacy = dc.legacy_subscription_clis(mounts, project_id)
     expected = [
-        str(dc.state_volume_mount(cli, project_id, policy)) for cli, policy in record.items()
+        str(dc.state_volume_mount(cli, project_id, policy, legacy=cli in legacy))
+        for cli, policy in record.items()
     ]
     targets = {f"{dc.AGENT_HOME}/.claude", f"{dc.AGENT_HOME}/.codex"}
     # A volume other than an expected one may hold a login copied for a dropped CLI or
