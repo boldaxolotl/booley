@@ -178,26 +178,28 @@ recorded.
 
 ## Agent CLIs (`[agent]`)
 
-Booley runs its agents on an **Agent CLI**: Claude Code (`claude`) or Codex
-(`codex`). `clis` lists the ones your Project may use, and `default` picks the
-one the Developer Agent and Booley's own calls run on:
+Booley runs every agent on an **Agent CLI**: Claude Code (`claude`) or Codex
+(`codex`). That covers the Developer Agent, the Specialists, and Booley's small
+internal steps.
 
 ```toml
 [agent]
-clis = ["claude", "codex"]   # the Agent CLIs this Project may use
-default = "claude"           # must be one of them
+clis = ["claude", "codex"]   # every Agent CLI this Project may use
+default = "claude"           # the one used unless you pick another
 ```
 
-Without `clis`, the Project uses only the default CLI. `clis` also decides
-which logins the Sandbox receives, see
-[Agent CLI logins in the Sandbox](SANDBOX.md#agent-cli-logins-in-the-sandbox).
-Without `default`, the
-first entry of `clis` is the default. `booley init` asks for the default CLI
-(`claude` if you just press Enter), records it as `default`, and keeps your
-answer on re-runs; `booley init --provider codex` sets it without the prompt.
-`provider` is the older name for `default` and still works. Each Specialist runs on the Agent CLI its model needs, so
-list a second CLI only when a [`[models]`](#model-selection-models) entry asks
-for it.
+- **`default`** is what `booley chat` opens. It also runs Specialists and
+  internal steps unless a [`[models]`](#model-selection-models) entry needs the
+  other CLI. Without it, the first entry of `clis` is the default.
+- **`clis`**: listing a second CLI lets you open it with
+  `booley chat --cli codex`, lets a `[models]` entry run a Specialist on it, and
+  gives the Sandbox its login (see
+  [Agent CLI logins in the Sandbox](SANDBOX.md#agent-cli-logins-in-the-sandbox)).
+  Without `clis`, the Project uses only `default`.
+
+`booley init` asks for the default CLI (Enter picks `claude`) and keeps your
+answer on re-runs. `booley init --provider codex` skips the prompt. `provider`
+is the older name for `default` and still works.
 
 ### Pinning what bills (`[agent] auth`)
 
@@ -227,16 +229,15 @@ claude = "subscription"
 codex = "api_key"
 ```
 
-A table may name only CLIs listed in `clis`. Codex also accepts `gateway`,
-which sends its calls through a model gateway set up for your Sandbox; Claude
-Code does not. A Sandbox that Booley issues for you forwards the gateway
-settings from your shell for Codex only; see
-[Codex through a model gateway](SANDBOX.md#codex-through-a-model-gateway).
+A table may name only CLIs listed in `clis`.
 
-With `subscription` or `api_key`, `booley doctor` fails when the default CLI's
-credential is missing instead of quietly billing the other one; for another CLI
-in `clis` it only warns, unless a `[models]` entry runs a Specialist on that CLI:
-then a missing credential fails under any `auth` value. On the command line,
+`booley doctor` checks that the credential you picked exists, so Booley never
+quietly bills the other one:
+
+- **Default CLI**, with `subscription` or `api_key`: a missing credential fails.
+- **Another CLI in `clis`**: a missing credential warns. If a `[models]` entry
+  runs a Specialist on that CLI, it fails whatever `auth` says.
+
 `booley init --auth api-key` (with a hyphen) records `api_key`. Why to pick one:
 [Sign-in and billing](SETUP.md#sign-in-and-billing).
 

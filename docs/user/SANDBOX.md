@@ -144,43 +144,6 @@ Adding a CLI to `clis` hands that CLI's login to the next refreshed Sandbox. The
 agent inside the Sandbox can edit `booley.toml`, so review changes to `[agent]`
 before you refresh.
 
-### Codex through a model gateway
-
-With `codex = "gateway"` under [`[agent.auth]`](CONFIG.md#pinning-what-bills-agent-auth),
-Codex bills through a model gateway your operator runs. For Codex only; Claude
-Code cannot use it. For the gateway variables and token contract, see
-[the gateway guide](../internals/GATEWAY.md).
-
-- Issuing the Sandbox reads `BOOLEY_GATEWAY_URL` and one token source
-  (`BOOLEY_GATEWAY_TOKEN` or `BOOLEY_GATEWAY_TOKEN_COMMAND`) from your shell
-  and forwards them into the Sandbox. Issuing fails naming a missing variable.
-  No Codex login or API key is copied in.
-- Interactive Codex (`codex`, `booley chat --cli codex`) uses the gateway
-  whichever CLI is `default`; Claude keeps its own login.
-- `BOOLEY_GATEWAY_TOKEN_COMMAND` runs inside the Sandbox, so it must name a
-  command that exists there.
-- Add the gateway host to `egress_allowlist` (or use an Unproxied Sandbox).
-- The values come from the launching shell, like an API key. A headless
-  `booley session` start refuses, naming the variable, when that shell lacks it,
-  and a changed URL or static token behaves like a changed API key. "Reopen in
-  Container" in VS Code reads them from VS Code's own environment, so start VS
-  Code from a shell that exports them; without them it refuses to open the
-  Sandbox. `booley session enter` into a VS Code-opened Sandbox does not carry
-  them; into a headless gateway Sandbox from a shell without them, it names the
-  missing variable.
-- `booley doctor` from a shell without them cannot check the spec for drift and
-  warns. While a headless gateway Sandbox runs, it fails with "active Sandbox
-  differs from current host issuance", as for API keys.
-- Booley removes the gateway settings from the environment of Claude sessions
-  and runs it starts. This is not isolation: other processes of the same user,
-  Claude's shell tool included, can read the token from `/proc`. A `booley`
-  command run from Claude's shell cannot reach the gateway, and Doctor run there
-  notes that the gateway is hidden. On the first start with new Claude state (a new
-  Sandbox, a changed Claude policy, or a rebuild when Claude is not listed), a
-  Claude panel opened before the start hook has written the blanks runs with the
-  values once; other starts are covered. Prefer a short-lived token through
-  `BOOLEY_GATEWAY_TOKEN_COMMAND`.
-
 ## Host configuration (`config.toml`)
 
 Settings that apply to every Project on this machine live in
@@ -534,11 +497,7 @@ credentials present, and allows every CLI that has one:
    `booley auth` token, or a Codex login).
 
 With both credentials, both CLIs are registered and Claude is the default; with
-one, only that CLI is. With neither, the fallbacks are unchanged (a visitor's own
-credential always beats the gateway):
-
-3. Codex through a configured model gateway.
-4. Claude, which then asks you to log in.
+one, only that CLI is. With neither, Claude starts and asks you to log in.
 
 The other allowed CLI works as a plain `claude` or `codex` session in the Sandbox
 terminal. `booley chat --cli` and `[models]` pins still follow
