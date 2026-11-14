@@ -92,7 +92,7 @@ def _run_locally(
     return SubprocessResult(returncode=done.returncode, stdout=done.stdout, stderr=done.stderr)
 
 
-def _trace_campaign_plan(handle, execution: SimulationExecution, *, cocotb: bool):
+def _trace_simulation_record_plan(handle, execution: SimulationExecution, *, cocotb: bool):
     names = ("smoke",)
     catalog = TargetCatalog.build(handle.project_root)
     inspection = catalog.inspect(handle)
@@ -468,7 +468,7 @@ class TestWriteTraceOverlay:
         assert not (cores / f"booley_vcd_dump{TRACE_OVERLAY_MARKER}.sv").exists()
 
     @pytest.mark.parametrize("cocotb", [False, True], ids=["ordinary", "cocotb"])
-    def test_native_core_isolation_discloses_packaged_dump_source_for_campaign(
+    def test_native_core_isolation_discloses_packaged_dump_source_for_simulation_record(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -477,7 +477,7 @@ class TestWriteTraceOverlay:
         pytest.importorskip("fusesoc")
         handle = _isolated_icarus_target(tmp_path, self._ICARUS_CORE, cocotb=cocotb)
         execution = SimulationExecution(invoke=_run_locally, options=SimulationOptions(trace=True))
-        plan = _trace_campaign_plan(handle, execution, cocotb=cocotb)
+        plan = _trace_simulation_record_plan(handle, execution, cocotb=cocotb)
         disclosure = plan.manifest.document["planning_disclosures"][0]
 
         raw = packaged_vcd_dump_source().read_bytes()

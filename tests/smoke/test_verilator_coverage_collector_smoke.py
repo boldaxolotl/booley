@@ -335,7 +335,7 @@ def _coverage_campaign_path(reports: Path, detail: Mapping[str, Any]) -> Path:
     "harness,trace",
     [("generated", False), ("generated", True), ("post_reset", False), ("custom", False)],
 )
-def test_real_coverage_flow_publishes_canonical_campaign(
+def test_real_coverage_flow_publishes_canonical_simulation_record(
     tmp_path: Path, harness: str, trace: bool
 ) -> None:
     from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference

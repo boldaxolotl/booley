@@ -18,7 +18,7 @@ from pathlib import Path
 from booley.flows.sim.config import resolve_run_cwd
 from booley.flows.sim.execution import SimulationExecution, SimulationTargetOutcome
 from booley.flows.sim.record.codec import SimulationRecordIntegrityError
-from booley.flows.sim.runtime_inputs import materialize_campaign_runtime_inputs
+from booley.flows.sim.runtime_inputs import materialize_simulation_record_runtime_inputs
 from booley.targets.domain import TargetHandle
 
 
@@ -95,7 +95,7 @@ def run_prepared_group(
     # Mirror the campaign order: Doctor runtime view outside, inputs inside it.
     with (
         group.runtime_view(cwd, uuid.uuid4().hex) as view,
-        materialize_campaign_runtime_inputs(
+        materialize_simulation_record_runtime_inputs(
             bundle_root=snapshot,
             attempt_root=attempt_root,
             run_cwd=Path(view),

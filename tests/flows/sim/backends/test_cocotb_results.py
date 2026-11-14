@@ -346,7 +346,7 @@ class TestResultsLineRoundTrip:
         with pytest.raises(BoundaryError):
             cr.decode_results_payload(payload)
 
-    def test_large_candidate_detail_is_safe_for_campaign_evidence(self):
+    def test_large_candidate_detail_is_safe_for_simulation_record_evidence(self):
         from booley.flows.sim.record.codec import MAX_DETAIL_BYTES
 
         res = cr.CocotbResults(

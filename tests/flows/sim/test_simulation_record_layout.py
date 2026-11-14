@@ -33,15 +33,17 @@ from booley.flows.sim.record.codec import (
 )
 from booley.flows.sim.record.dependency import read_simulation_record_dependencies
 from booley.flows.sim.record.resume import validate_resume_manifest
-from booley.flows.sim.record_reports import write_campaign_json
-from booley.flows.sim.record_retention import CampaignRetentionError, prune_invocation
+from booley.flows.sim.record_reports import write_simulation_record_json
+from booley.flows.sim.record_retention import SimulationRecordRetentionError, prune_invocation
 from booley.flows.sim.request import SimRequest
 from booley.goals.entry import EntryEnvironment
 from booley.goals.finish import finish_goal
 from booley.goals.lifecycle import LifecycleError
 from booley.mcp.goal_completion import completion_environment
 from tests.flows.sim.simulation_record_test_support import coverage_invocation
-from tests.flows.sim.test_simulation_record_resume_diagnostics import _interrupted_campaign
+from tests.flows.sim.test_simulation_record_resume_diagnostics import (
+    _interrupted_simulation_record,
+)
 from tests.flows.sim.test_simulation_record_retention import _run_retention_cli
 from tests.flows.sim.test_simulation_record_unsupported_formats import (
     _assert_refused,
@@ -103,7 +105,7 @@ def test_a_coverage_run_writes_the_record_layout(tmp_path: Path, monkeypatch) ->
 
 
 def test_resume_from_accepts_a_record_manifest(tmp_path: Path, monkeypatch) -> None:
-    reports_root, manifest, _executions = _interrupted_campaign(tmp_path, monkeypatch)
+    reports_root, manifest, _executions = _interrupted_simulation_record(tmp_path, monkeypatch)
     assert manifest.parts[-2:] == ("record", "manifest.json")
 
     def resumed(_executor, _request):
@@ -143,7 +145,7 @@ def test_resume_from_an_older_layout_manifest_is_refused_before_any_work(
         assert _tree(invocation) == before
 
 
-def test_a_campaign_path_naming_no_directory_is_not_called_an_older_record(
+def test_a_simulation_record_path_naming_no_directory_is_not_called_an_older_record(
     tmp_path: Path, reports: Path
 ) -> None:
     """A new run's invocation is never described as an older record, whatever path is typed."""
@@ -190,7 +192,7 @@ def test_dependents_prune_refuses_an_older_layout(reports: Path) -> None:
         shutil.rmtree(reports / "sim", ignore_errors=True)
         invocation = copy_older_invocation("0.4.0", "complete", reports)
         if batch == "batch-retry":
-            write_campaign_json(
+            write_simulation_record_json(
                 invocation / ".prune-batch.json",
                 {
                     "$schema": "booley.simulation-prune-batch/v1",
@@ -201,7 +203,7 @@ def test_dependents_prune_refuses_an_older_layout(reports: Path) -> None:
             )
         before = _tree(invocation)
 
-        with pytest.raises(CampaignRetentionError) as excinfo:
+        with pytest.raises(SimulationRecordRetentionError) as excinfo:
             prune_invocation(reports, 1, include_dependents=True)
 
         _assert_refused(str(excinfo.value), _marker("complete"), invocation)

@@ -217,7 +217,7 @@ def project_goal(store: GoalStore, record: GoalRecord) -> GoalView:
         from booley.flows.sim.unpublished_results import read_unpublished_results
 
         status = build_status(
-            store, current, observational=True, campaign_reader=read_unpublished_results
+            store, current, observational=True, simulation_record_reader=read_unpublished_results
         )
         if not Path(current.worktree_path).is_dir():
             return GoalView(current.id, current, status, diagnostic=status.warning)

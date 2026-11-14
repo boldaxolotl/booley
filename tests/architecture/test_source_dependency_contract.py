@@ -18,7 +18,7 @@ from tests.architecture.import_graph import (
 
 _SOURCE_ROOT = Path(__file__).parents[2] / "src" / "booley"
 
-_CAMPAIGN_STORAGE_TYPES = frozenset(
+_SIMULATION_RECORD_STORAGE_TYPES = frozenset(
     {
         "SimulationRecordStore",
         "SimulationRecordRecovery",
@@ -26,15 +26,15 @@ _CAMPAIGN_STORAGE_TYPES = frozenset(
         "SharedBuildRecovery",
     }
 )
-_CAMPAIGN_STORAGE_OWNERS = frozenset(
+_SIMULATION_RECORD_STORAGE_OWNERS = frozenset(
     {
         "booley.flows.sim.record.store",
         "booley.flows.sim.record.coordinator",
         "booley.flows.sim.record.inspection",
     }
 )
-_CAMPAIGN_PREFIX = "booley.flows.sim.record"
-_CAMPAIGN_SCAN = "campaign-storage-types"
+_SIMULATION_RECORD_PREFIX = "booley.flows.sim.record"
+_SIMULATION_RECORD_SCAN = "campaign-storage-types"
 _TARGET_SCAN = "target-mechanics"
 
 
@@ -43,7 +43,10 @@ def production_source() -> SourceTreeAnalysis:
     """The production tree, parsed once for every whole-source assertion in this module."""
     return analyze_source_tree(
         _SOURCE_ROOT,
-        {_CAMPAIGN_SCAN: _campaign_storage_scan, _TARGET_SCAN: _target_mechanics_scan},
+        {
+            _SIMULATION_RECORD_SCAN: _simulation_record_storage_scan,
+            _TARGET_SCAN: _target_mechanics_scan,
+        },
     )
 
 
@@ -88,7 +91,7 @@ def test_job_and_report_owners_have_no_dependency_path_to_mcp_adapter(
             pending.extend(edges.get(module, set()) - visited)
 
 
-def test_every_campaign_storage_permission_is_a_current_exact_edge(
+def test_every_simulation_record_storage_permission_is_a_current_exact_edge(
     production_source: SourceTreeAnalysis,
 ) -> None:
     dependencies = production_source.dependencies
@@ -101,27 +104,27 @@ def test_every_campaign_storage_permission_is_a_current_exact_edge(
     assert all((item.source, item.target) in edges for item in permissions)
 
 
-def test_campaign_storage_types_do_not_escape_their_exact_owners(
+def test_simulation_record_storage_types_do_not_escape_their_exact_owners(
     production_source: SourceTreeAnalysis,
 ) -> None:
-    violations = list(production_source.findings(_CAMPAIGN_SCAN))
+    violations = list(production_source.findings(_SIMULATION_RECORD_SCAN))
 
     assert not violations, "Campaign storage types escaped their owners:\n" + "\n".join(violations)
 
 
-def _campaign_storage_scan(module: SourceModule, tree: ast.Module) -> list[str]:
-    return _campaign_storage_violations_for_source(tree, module.name, module.is_package)
+def _simulation_record_storage_scan(module: SourceModule, tree: ast.Module) -> list[str]:
+    return _simulation_record_storage_violations_for_source(tree, module.name, module.is_package)
 
 
-def _campaign_storage_violations_for_source(
+def _simulation_record_storage_violations_for_source(
     tree: ast.Module, module: str, is_package: bool
 ) -> list[str]:
-    if module in _CAMPAIGN_STORAGE_OWNERS:
+    if module in _SIMULATION_RECORD_STORAGE_OWNERS:
         return []
-    return _campaign_storage_type_violations(tree, module, is_package)
+    return _simulation_record_storage_type_violations(tree, module, is_package)
 
 
-def _campaign_storage_type_violations(
+def _simulation_record_storage_type_violations(
     tree: ast.Module, module: str, is_package: bool
 ) -> list[str]:
     aliases: dict[str, str] = {"booley": "booley"}
@@ -129,20 +132,23 @@ def _campaign_storage_type_violations(
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name.startswith(_CAMPAIGN_PREFIX):
+                if alias.name.startswith(_SIMULATION_RECORD_PREFIX):
                     bound = alias.asname or alias.name.split(".", maxsplit=1)[0]
                     aliases[bound] = alias.name if alias.asname else bound
         elif isinstance(node, ast.ImportFrom):
             imported_from = _resolved_import_from(module, is_package, node)
-            if imported_from is None or not imported_from.startswith(_CAMPAIGN_PREFIX):
+            if imported_from is None or not imported_from.startswith(_SIMULATION_RECORD_PREFIX):
                 continue
             for alias in node.names:
-                if alias.name in _CAMPAIGN_STORAGE_TYPES or alias.name == "*":
+                if alias.name in _SIMULATION_RECORD_STORAGE_TYPES or alias.name == "*":
                     violations.append(f"{module}:{node.lineno}: {alias.name}")
                 else:
                     aliases[alias.asname or alias.name] = f"{imported_from}.{alias.name}"
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Attribute) or node.attr not in _CAMPAIGN_STORAGE_TYPES:
+        if (
+            not isinstance(node, ast.Attribute)
+            or node.attr not in _SIMULATION_RECORD_STORAGE_TYPES
+        ):
             continue
         dotted = _dotted_name(node)
         root, separator, suffix = dotted.partition(".")
@@ -150,7 +156,7 @@ def _campaign_storage_type_violations(
         if (
             resolved is not None
             and separator
-            and f"{resolved}.{suffix}".startswith(_CAMPAIGN_PREFIX)
+            and f"{resolved}.{suffix}".startswith(_SIMULATION_RECORD_PREFIX)
         ):
             violations.append(f"{module}:{node.lineno}: {node.attr}")
     return violations
@@ -187,22 +193,24 @@ def _resolved_import_from(module: str, is_package: bool, node: ast.ImportFrom) -
         "    from booley.flows.sim.record.coordinator import WorkItemRecovery\n",
     ],
 )
-def test_campaign_storage_type_gate_resolves_static_escape_forms(source: str) -> None:
-    assert _campaign_storage_type_violations(ast.parse(source), "booley.flows.sim.rogue", False)
+def test_simulation_record_storage_type_gate_resolves_static_escape_forms(source: str) -> None:
+    assert _simulation_record_storage_type_violations(
+        ast.parse(source), "booley.flows.sim.rogue", False
+    )
 
 
-def test_campaign_storage_type_gate_resolves_package_relative_imports() -> None:
+def test_simulation_record_storage_type_gate_resolves_package_relative_imports() -> None:
     tree = ast.parse("from .record.coordinator import SimulationRecordStore\n")
 
-    assert _campaign_storage_type_violations(tree, "booley.flows.sim", True)
-    assert not _campaign_storage_type_violations(tree, "booley.flows.sim", False)
+    assert _simulation_record_storage_type_violations(tree, "booley.flows.sim", True)
+    assert not _simulation_record_storage_type_violations(tree, "booley.flows.sim", False)
 
 
-@pytest.mark.parametrize("owner", sorted(_CAMPAIGN_STORAGE_OWNERS))
-def test_campaign_storage_type_gate_allows_exact_owners(owner: str) -> None:
+@pytest.mark.parametrize("owner", sorted(_SIMULATION_RECORD_STORAGE_OWNERS))
+def test_simulation_record_storage_type_gate_allows_exact_owners(owner: str) -> None:
     tree = ast.parse("from booley.flows.sim.record.store import SimulationRecordStore\n")
 
-    violations = _campaign_storage_violations_for_source(tree, owner, False)
+    violations = _simulation_record_storage_violations_for_source(tree, owner, False)
 
     assert violations == []
 

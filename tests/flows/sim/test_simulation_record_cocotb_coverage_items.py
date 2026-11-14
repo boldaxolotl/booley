@@ -54,7 +54,7 @@ from tests.flows.sim.simulation_record_test_support import (
     _admission,
     _build_execution,
     _completed_result_documents,
-    _coverage_campaign_plan,
+    _coverage_simulation_record_plan,
     _executor,
     _facts,
     _failed_shared_executor,
@@ -63,7 +63,7 @@ from tests.flows.sim.simulation_record_test_support import (
     _maximum_hook_selection_plan,
     _plan,
     _request,
-    _run_coverage_campaign,
+    _run_coverage_simulation_record,
     _unfiltered_cocotb_manifest,
     _validated_resume,
 )
@@ -263,7 +263,7 @@ def test_coverage_aggregate_executes_authenticated_snapshot_not_original(
     tmp_path: Path,
 ) -> None:
     native = _ImageCheckingExecution()
-    outcome, store = _run_coverage_campaign(tmp_path, native)
+    outcome, store = _run_coverage_simulation_record(tmp_path, native)
 
     assert outcome.complete is True
     assert native.executed_original is False
@@ -289,8 +289,8 @@ def _assert_native_build_scope(store: SimulationRecordStore) -> None:
     assert result["evidence"] == []
 
 
-def test_coverage_resume_reuses_retained_nested_campaign(tmp_path: Path) -> None:
-    plan, target = _coverage_campaign_plan(tmp_path)
+def test_coverage_resume_reuses_retained_nested_simulation_record(tmp_path: Path) -> None:
+    plan, target = _coverage_simulation_record_plan(tmp_path)
     native = NativeExecution()
     executor = CoverageAggregateExecutor(
         plans={target.handle.identity: target},
@@ -298,8 +298,8 @@ def test_coverage_resume_reuses_retained_nested_campaign(tmp_path: Path) -> None
     )
     invocation = tmp_path / "reports/1"
     invocation.mkdir(parents=True)
-    campaign = SimulationRecord(executor)
-    first = campaign.run(
+    simulation_record = SimulationRecord(executor)
+    first = simulation_record.run(
         NewSimulationRecordRunRequest(
             plan,
             tmp_path,
@@ -312,7 +312,7 @@ def test_coverage_resume_reuses_retained_nested_campaign(tmp_path: Path) -> None
     store = SimulationRecordStore(invocation / "targets/sim_0/record")
     validated = _validated_resume(store, plan, target, tmp_path)
 
-    resumed = campaign.run(
+    resumed = simulation_record.run(
         ResumeSimulationRecordRunRequest(
             validated,
             plan,
@@ -333,7 +333,7 @@ def test_coverage_resume_reuses_retained_nested_campaign(tmp_path: Path) -> None
 @pytest.mark.parametrize(
     ("coverage", "scans"), [(True, 5), (False, 4)], ids=["coverage", "ordinary"]
 )
-def test_campaign_run_adds_no_recovery_scan_for_failure_facts(
+def test_simulation_record_run_adds_no_recovery_scan_for_failure_facts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, coverage: bool, scans: int
 ) -> None:
     """Failure-detail facts reuse the coordinator's scans.
@@ -350,7 +350,7 @@ def test_campaign_run_adds_no_recovery_scan_for_failure_facts(
 
     monkeypatch.setattr(SimulationRecordStore, "scan", counting_scan)
     if coverage:
-        _run_coverage_campaign(tmp_path, NativeExecution())
+        _run_coverage_simulation_record(tmp_path, NativeExecution())
     else:
         _run_cocotb(
             tmp_path,
@@ -361,14 +361,14 @@ def test_campaign_run_adds_no_recovery_scan_for_failure_facts(
     assert len(calls) == scans
 
 
-def test_coverage_campaign_refuses_an_oversized_result_at_publication(
+def test_coverage_simulation_record_refuses_an_oversized_result_at_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     schema, fields, _limit, reader = codec._DOCUMENT_SPECS[SimulationResult]
     monkeypatch.setitem(codec._DOCUMENT_SPECS, SimulationResult, (schema, fields, 64, reader))
 
     with pytest.raises(SimulationRecordPublicationError) as caught:
-        _run_coverage_campaign(tmp_path, NativeExecution())
+        _run_coverage_simulation_record(tmp_path, NativeExecution())
 
     assert isinstance(caught.value.__cause__, SimulationRecordIntegrityError)
     assert "size ceiling" in str(caught.value.__cause__)
@@ -396,7 +396,7 @@ def test_coverage_timeout_before_design_abort_publishes_aborted_fail(tmp_path: P
     Coverage runs one process per Test and continues after a timeout or a
     non-infrastructure abort, so both observations reach one result.
     """
-    outcome, store = _run_coverage_campaign(tmp_path, _TimeoutThenMissingInputExecution())
+    outcome, store = _run_coverage_simulation_record(tmp_path, _TimeoutThenMissingInputExecution())
 
     assert outcome.complete is True
     result = store.scan().items[0].result
@@ -434,7 +434,9 @@ def test_post_commit_failure_reports_incomplete_collection(tmp_path: Path) -> No
             raise OSError("injected post-commit publication failure")
 
     with pytest.raises(_CoverageAggregateError) as raised:
-        _run_coverage_campaign(tmp_path, MissingInput(), publication_checkpoint=fail_after_commit)
+        _run_coverage_simulation_record(
+            tmp_path, MissingInput(), publication_checkpoint=fail_after_commit
+        )
 
     detail = raised.value.detail
     assert detail["collection"] == "incomplete"
@@ -449,7 +451,7 @@ def test_coverage_attempt_stages_runtime_before_binding_and_records_real_build_t
     tmp_path: Path,
 ) -> None:
     native = _RuntimeCheckingExecution()
-    outcome, store = _run_coverage_campaign(tmp_path, native, runtime_input=True)
+    outcome, store = _run_coverage_simulation_record(tmp_path, native, runtime_input=True)
 
     assert outcome.complete is True
     result = store.scan().items[0].result
@@ -465,7 +467,9 @@ def test_coverage_attempt_stages_runtime_before_binding_and_records_real_build_t
 
 
 def test_coverage_design_build_failure_has_exact_blocked_matrix(tmp_path: Path) -> None:
-    outcome, store = _run_coverage_campaign(tmp_path, _FailedCoverageBuild(infrastructure=False))
+    outcome, store = _run_coverage_simulation_record(
+        tmp_path, _FailedCoverageBuild(infrastructure=False)
+    )
 
     assert outcome.complete is True
     result = store.scan().items[0].result
@@ -493,7 +497,7 @@ def test_coverage_design_build_failure_has_exact_blocked_matrix(tmp_path: Path) 
 def test_coverage_infrastructure_build_failure_has_terminal_error_result(
     tmp_path: Path, reason: str
 ) -> None:
-    outcome, _store = _run_coverage_campaign(
+    outcome, _store = _run_coverage_simulation_record(
         tmp_path, _FailedCoverageBuild(infrastructure=True, reason=reason)
     )
     assert outcome.complete
@@ -604,7 +608,7 @@ def _transport(
     }
 
 
-def _start_crashed_cocotb_campaign(
+def _start_crashed_cocotb_simulation_record(
     plan, root: Path, executor: OrdinaryHdlSerialExecutor
 ) -> tuple[Path, SimulationRecordStore]:
     invocation = root / "reports" / "1"
@@ -632,7 +636,7 @@ def test_production_cocotb_batch_retries_whole_batch_after_crash(tmp_path: Path)
         invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
         execution_factory=lambda _options: execution,  # type: ignore[arg-type,return-value]
     )
-    invocation, store = _start_crashed_cocotb_campaign(plan, tmp_path, executor)
+    invocation, store = _start_crashed_cocotb_simulation_record(plan, tmp_path, executor)
     node = ValidatedManifestNode(
         store.manifest_path, plan.manifest, manifest_digest(plan.manifest)
     )
@@ -717,7 +721,9 @@ def test_cocotb_result_preserves_exact_ordered_observations(tmp_path: Path) -> N
     assert observations[0]["detail"] == {"reason": "counter assertion failed"}
 
 
-def test_cocotb_campaign_rejects_malformed_results_file(tmp_path: Path, monkeypatch) -> None:
+def test_cocotb_simulation_record_rejects_malformed_results_file(
+    tmp_path: Path, monkeypatch
+) -> None:
     """A results file the decoder rejects is a campaign integrity error, not a verdict.
 
     The file is the payload itself: the campaign must decode it directly instead of

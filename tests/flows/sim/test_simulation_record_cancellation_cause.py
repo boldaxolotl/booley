@@ -35,7 +35,7 @@ from tests.flows.sim.simulation_record_test_support import (
 )
 
 
-class _Campaign:
+class _SimulationRecord:
     """A scheduler over a real SlotStore whose outer lane records its cancellation message."""
 
     def __init__(self, tmp_path: Path, *, lanes: int) -> None:
@@ -98,79 +98,81 @@ class _Campaign:
 
 
 def test_outer_lane_stop_requested_names_cause(tmp_path: Path) -> None:
-    campaign = _Campaign(tmp_path, lanes=1)
+    simulation_record = _SimulationRecord(tmp_path, lanes=1)
 
     def fail_an_item() -> None:
-        assert campaign.scheduler is not None
-        campaign.scheduler._fail_simulation_record(RuntimeError("an item failed"))
+        assert simulation_record.scheduler is not None
+        simulation_record.scheduler._fail_simulation_record(RuntimeError("an item failed"))
 
-    campaign.run(1, trigger=fail_an_item)
+    simulation_record.run(1, trigger=fail_an_item)
 
-    assert campaign.outer_message is not None
-    assert "execution cancelled before result publication" in campaign.outer_message
-    assert "outer lane" in campaign.outer_message
-    assert "stop requested" in campaign.outer_message
-    assert "RuntimeError" in campaign.outer_message
+    assert simulation_record.outer_message is not None
+    assert "execution cancelled before result publication" in simulation_record.outer_message
+    assert "outer lane" in simulation_record.outer_message
+    assert "stop requested" in simulation_record.outer_message
+    assert "RuntimeError" in simulation_record.outer_message
 
 
 def test_outer_lane_lease_lost_names_slot(tmp_path: Path) -> None:
-    campaign = _Campaign(tmp_path, lanes=1)
-    campaign.run(1, trigger=campaign.outer.lease_health.lost.set)
+    simulation_record = _SimulationRecord(tmp_path, lanes=1)
+    simulation_record.run(1, trigger=simulation_record.outer.lease_health.lost.set)
 
-    assert campaign.outer_message is not None
-    assert "outer lane" in campaign.outer_message
-    assert "lease lost" in campaign.outer_message
-    assert campaign.outer.path.name in campaign.outer_message
+    assert simulation_record.outer_message is not None
+    assert "outer lane" in simulation_record.outer_message
+    assert "lease lost" in simulation_record.outer_message
+    assert simulation_record.outer.path.name in simulation_record.outer_message
 
 
 def test_outer_lane_missing_token_names_slot(tmp_path: Path, monkeypatch) -> None:
-    campaign = _Campaign(tmp_path, lanes=1)
-    path = campaign.outer.path
-    real_absent = campaign.slots.token_absent
+    simulation_record = _SimulationRecord(tmp_path, lanes=1)
+    path = simulation_record.outer.path
+    real_absent = simulation_record.slots.token_absent
     withdrawn = threading.Event()
     # Report the entry gone without unlinking it: Windows may still hold it open.
     monkeypatch.setattr(
-        campaign.slots, "token_absent", lambda token: withdrawn.is_set() or real_absent(token)
+        simulation_record.slots,
+        "token_absent",
+        lambda token: withdrawn.is_set() or real_absent(token),
     )
-    campaign.run(1, trigger=withdrawn.set)
+    simulation_record.run(1, trigger=withdrawn.set)
 
-    assert campaign.outer_message is not None
-    assert "outer lane" in campaign.outer_message
-    assert "token missing" in campaign.outer_message
-    assert path.name in campaign.outer_message
+    assert simulation_record.outer_message is not None
+    assert "outer lane" in simulation_record.outer_message
+    assert "token missing" in simulation_record.outer_message
+    assert path.name in simulation_record.outer_message
     # A really missing file (released by the run) is still absent.
-    assert real_absent(campaign.outer) is True
+    assert real_absent(simulation_record.outer) is True
 
 
 def test_outer_worker_failure_names_its_cause(tmp_path: Path) -> None:
-    campaign = _Campaign(tmp_path, lanes=1)
+    simulation_record = _SimulationRecord(tmp_path, lanes=1)
 
     def boom() -> None:
         raise RuntimeError("outer boom")
 
-    campaign.run(1, trigger=boom)
+    simulation_record.run(1, trigger=boom)
 
-    cause = campaign.capacity.cancellation_cause()
+    cause = simulation_record.capacity.cancellation_cause()
     assert cause == "campaign stop requested after a work item failed (RuntimeError)"
 
 
 def test_child_cancellation_cause_names_a_lost_lease(tmp_path: Path) -> None:
-    campaign = _Campaign(tmp_path, lanes=1)
+    simulation_record = _SimulationRecord(tmp_path, lanes=1)
     lost = threading.Event()
     permit = SimpleNamespace(
         lease_health=SimpleNamespace(lost=lost),
         token=SimpleNamespace(job_class="memory", path=Path("child.json")),
     )
     try:
-        assert campaign.capacity._child_cancellation_cause(permit) is None
+        assert simulation_record.capacity._child_cancellation_cause(permit) is None
         lost.set()
-        cause = campaign.capacity._child_cancellation_cause(permit)
+        cause = simulation_record.capacity._child_cancellation_cause(permit)
         assert cause == "Job Slot lease lost: memory/child.json"
     finally:
-        campaign.slots.release(campaign.outer)
+        simulation_record.slots.release(simulation_record.outer)
 
 
-def test_cancelled_campaign_stops_before_publication() -> None:
+def test_cancelled_simulation_record_stops_before_publication() -> None:
     request = SimpleNamespace(
         admission=SimpleNamespace(
             cancellation=lambda: True,

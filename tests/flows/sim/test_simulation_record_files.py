@@ -16,12 +16,12 @@ class _DomainError(Exception):
     """Stands in for a caller's own domain error type."""
 
 
-def _campaign_files() -> ModuleType:
+def _simulation_record_files() -> ModuleType:
     return importlib.import_module("booley.flows.sim.record_files")
 
 
 def test_document_and_evidence_digests_keep_their_newline_rules() -> None:
-    record_files = _campaign_files()
+    record_files = _simulation_record_files()
     # A document digest drops the canonical trailing newline; an evidence digest keeps
     # every byte it is given.
     assert record_files.document_digest({"a": 1}) == (
@@ -35,7 +35,7 @@ def test_document_and_evidence_digests_keep_their_newline_rules() -> None:
 def test_read_bounded_refuses_a_file_changed_during_the_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    record_files = _campaign_files()
+    record_files = _simulation_record_files()
     swapped = tmp_path / "swapped.json"
     extended = tmp_path / "extended.json"
     swapped.write_bytes(b'{"value":"original"}\n')

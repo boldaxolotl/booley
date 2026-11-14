@@ -35,7 +35,7 @@ from tests.flows.sim.simulation_record_test_support import (
 )
 
 
-def test_public_campaign_inspection_returns_typed_evidence_without_writes(
+def test_public_simulation_record_inspection_returns_typed_evidence_without_writes(
     tmp_path: Path,
 ) -> None:
     completed = _completed(tmp_path)
@@ -77,7 +77,7 @@ def test_public_work_item_authentication_rejects_unknown_and_unfinished_items(
         authenticate_work_item(store.manifest_path, work_item_id)
 
 
-def test_public_campaign_inspection_distinguishes_recovery_and_summary_status(
+def test_public_simulation_record_inspection_distinguishes_recovery_and_summary_status(
     tmp_path: Path,
 ) -> None:
     store = SimulationRecordStore(tmp_path / "record")
@@ -95,7 +95,9 @@ def test_public_campaign_inspection_distinguishes_recovery_and_summary_status(
     assert not interrupted.pending
 
 
-def test_public_campaign_inspection_reports_an_unpublished_summary(tmp_path: Path) -> None:
+def test_public_simulation_record_inspection_reports_an_unpublished_summary(
+    tmp_path: Path,
+) -> None:
     store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(_manifest_for(("smoke",)))
 
@@ -107,7 +109,7 @@ def test_public_campaign_inspection_reports_an_unpublished_summary(tmp_path: Pat
     assert status.summary_completed_matches
 
 
-def test_public_campaign_inspection_rejects_malformed_summary_but_reports_mismatch(
+def test_public_simulation_record_inspection_rejects_malformed_summary_but_reports_mismatch(
     tmp_path: Path,
 ) -> None:
     completed = _completed(tmp_path)
@@ -231,9 +233,9 @@ def test_pre_sim_reader_rejects_corrupt_record(tmp_path, error):
 
 
 def test_pre_sim_inspection_rereads_evidence_and_rejects_later_tampering(tmp_path, monkeypatch):
-    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_campaign
+    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_simulation_record
 
-    invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
+    invocation, outcome = _successful_pre_simulation_record(tmp_path, monkeypatch, "immutable")
     firing = outcome.pre_sim_firings[0]
     store = SimulationRecordStore(invocation / "targets/sim/record")
 
@@ -270,9 +272,9 @@ def test_pre_sim_inspection_rereads_evidence_and_rejects_later_tampering(tmp_pat
     ids=lambda value: None if value is None else str(value)[:32],
 )
 def test_pre_sim_reader_rejects_bad_binding(tmp_path, monkeypatch, defect, value, message):
-    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_campaign
+    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_simulation_record
 
-    invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
+    invocation, outcome = _successful_pre_simulation_record(tmp_path, monkeypatch, "immutable")
     firing = outcome.pre_sim_firings[0]
     result_path = firing.path.parents[3] / "result.json"
     if value is not None:
@@ -307,9 +309,9 @@ def test_pre_sim_reader_rejects_bad_binding(tmp_path, monkeypatch, defect, value
 
 
 def _pre_sim_read_case(tmp_path, monkeypatch, *, interrupted=False):
-    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_campaign
+    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_simulation_record
 
-    invocation, outcome = _successful_pre_sim_campaign(tmp_path, monkeypatch, "immutable")
+    invocation, outcome = _successful_pre_simulation_record(tmp_path, monkeypatch, "immutable")
     firing = outcome.pre_sim_firings[0]
     store = SimulationRecordStore(invocation / "targets/sim/record")
     if interrupted:

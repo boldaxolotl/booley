@@ -40,10 +40,10 @@ from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.record_reports import write_compatibility_projection
 from tests.criteria import ledger_support as acceptance_ledger
-from tests.criteria.test_evidence_ledger import _campaign_facts, _transaction_state
+from tests.criteria.test_evidence_ledger import _simulation_record_facts, _transaction_state
 from tests.flows.sim.simulation_record_test_support import (
     _admission,
-    _coverage_campaign_plan,
+    _coverage_simulation_record_plan,
     _validated_resume,
 )
 from tests.flows.sim.test_coverage_transaction import NativeExecution
@@ -206,15 +206,17 @@ def _crash_environment(tmp_path: Path):
     return project, build_root, run_log
 
 
-def _resume_crashed_campaign(campaign, request, store, manifest, plan, crash_point):
+def _resume_crashed_simulation_record(
+    simulation_record, request, store, manifest, plan, crash_point
+):
     if crash_point == "before:manifest_commit":
         assert not store.manifest_path.exists()
-        return campaign.run(request)
+        return simulation_record.run(request)
     assert store.manifest_path.is_file()
     validated = ValidatedResumeManifest(
         ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest)), (), ()
     )
-    return campaign.run(
+    return simulation_record.run(
         ResumeSimulationRecordRunRequest(
             validated,
             plan,
@@ -267,7 +269,7 @@ def test_serial_publication_boundary_resume_matrix(
         execution_factory=lambda _options: _CrashExecution(group),  # type: ignore[arg-type,return-value]
         publication_checkpoint=crash,
     )
-    campaign = SimulationRecord(executor, publication_checkpoint=crash)
+    simulation_record = SimulationRecord(executor, publication_checkpoint=crash)
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
     policy = SimulationRecordPolicy()
@@ -281,9 +283,11 @@ def test_serial_publication_boundary_resume_matrix(
     )
 
     with pytest.raises(_InjectedProcessDeath, match=crash_point):
-        campaign.run(new_request)
+        simulation_record.run(new_request)
     store = SimulationRecordStore(invocation / "targets" / "sim" / "record")
-    outcome = _resume_crashed_campaign(campaign, new_request, store, manifest, plan, crash_point)
+    outcome = _resume_crashed_simulation_record(
+        simulation_record, new_request, store, manifest, plan, crash_point
+    )
     _assert_crash_recovery(outcome, store, crash_point, launches, crash)
     # The route axis must really reach its build: private builds live under the attempt.
     private_builds = list(store.root.glob("work-items/*/attempts/*/private-build"))
@@ -309,7 +313,7 @@ def test_serial_publication_boundary_resume_matrix(
 )
 def test_coverage_aggregate_boundary_resume_matrix(tmp_path: Path, crash_point: str) -> None:
     """The coverage aggregate's own durable boundaries resume to one terminal Result."""
-    plan, target = _coverage_campaign_plan(tmp_path, runtime_input=True)
+    plan, target = _coverage_simulation_record_plan(tmp_path, runtime_input=True)
 
     def fresh_execution(_plan, _options, _commands, _access) -> NativeExecution:
         # Binding the snapshot rewrites the executable path, so each attempt needs its own.
@@ -320,7 +324,7 @@ def test_coverage_aggregate_boundary_resume_matrix(tmp_path: Path, crash_point: 
         return native
 
     crash = _CrashOnce(crash_point)
-    campaign = SimulationRecord(
+    simulation_record = SimulationRecord(
         CoverageAggregateExecutor(
             plans={target.handle.identity: target},
             execution_factory=fresh_execution,
@@ -332,13 +336,13 @@ def test_coverage_aggregate_boundary_resume_matrix(tmp_path: Path, crash_point: 
     policy = SimulationRecordPolicy()
 
     with pytest.raises(_InjectedProcessDeath, match=crash_point):
-        campaign.run(
+        simulation_record.run(
             NewSimulationRecordRunRequest(
                 plan, tmp_path, invocation.parent, policy, invocation, _admission()
             )
         )
     store = SimulationRecordStore(invocation / "targets/sim_0/record")
-    outcome = campaign.run(
+    outcome = simulation_record.run(
         ResumeSimulationRecordRunRequest(
             _validated_resume(store, plan, target, tmp_path),
             plan,
@@ -378,7 +382,7 @@ def test_acceptance_publication_boundary_retry_is_idempotent(
             log_dir,
             state,
             changes,
-            acceptance_facts=_campaign_facts(),
+            acceptance_facts=_simulation_record_facts(),
             identity=identity,
             publication_checkpoint=crash,
         )
@@ -387,7 +391,7 @@ def test_acceptance_publication_boundary_retry_is_idempotent(
         log_dir,
         state,
         changes,
-        acceptance_facts=_campaign_facts(),
+        acceptance_facts=_simulation_record_facts(),
         identity=identity,
         publication_checkpoint=crash,
     )
@@ -661,14 +665,14 @@ def test_manifest_notification_is_committed_before_fault_checkpoint(
         assert path.is_file()
         published.append(path)
 
-    campaign = SimulationRecord(
+    simulation_record = SimulationRecord(
         publication_checkpoint=_CrashOnce(boundary), manifest_published=notify
     )
     with pytest.raises(_InjectedProcessDeath):
-        campaign.publish_new(request)
+        simulation_record.publish_new(request)
     assert len(published) == (0 if boundary.startswith("before") else 1)
     if published:
-        campaign.publish_new(request)
+        simulation_record.publish_new(request)
         assert published == [published[0], published[0]]
 
 
@@ -693,12 +697,12 @@ def test_closed_console_does_not_skip_postcommit_checkpoint(
     request = NewSimulationRecordRunRequest(
         plan, project, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
     )
-    campaign = SimulationRecord(
+    simulation_record = SimulationRecord(
         publication_checkpoint=_CrashOnce("after:manifest_commit"),
         manifest_published=flow._manifest_publisher(published),
     )
     with pytest.raises(_InjectedProcessDeath):
-        campaign.publish_new(request)
+        simulation_record.publish_new(request)
     assert len(published) == 1 and published[0].is_file()
 
 
@@ -726,14 +730,14 @@ def test_baseline_disclosure_uses_exact_format_without_run_reopening_duplicates(
     flow = SimulateFlow()
     flow._console_publication_requested = True
     published: list[Path] = []
-    campaign = SimulationRecord(manifest_published=flow._manifest_publisher(published))
-    paths = [campaign.publish_new(request) for request in requests]
+    simulation_record = SimulationRecord(manifest_published=flow._manifest_publisher(published))
+    paths = [simulation_record.publish_new(request) for request in requests]
     # Repeated publication notifications retain one recovery path per invocation.
     for request in requests:
-        campaign.publish_new(request)
+        simulation_record.publish_new(request)
     # A new successful publication at the same destination needs no repeated pointer.
     paths[0].unlink()
-    campaign.publish_new(requests[0])
+    simulation_record.publish_new(requests[0])
     assert paths[0].is_file()
     assert len(set(paths)) == 2
     assert paths[0].parents[1].name == "sim%40baseline-abc123"
@@ -741,7 +745,7 @@ def test_baseline_disclosure_uses_exact_format_without_run_reopening_duplicates(
         f"campaign manifest: {path.resolve()}\n" for path in paths
     )
     for request in requests:
-        campaign._open_simulation_record(request)
+        simulation_record._open_simulation_record(request)
     assert capsys.readouterr().err == ""
     assert published == paths
 
@@ -815,11 +819,11 @@ def _resume_real_hook_crash(tmp_path, invocation, store):
 def test_process_death_at_actual_hook_publication_recovers_immutable_evidence(
     tmp_path, monkeypatch, access, side
 ):
-    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_campaign
+    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_simulation_record
 
     crash = _CrashOnce(f"{side}:pre_sim_evidence")
     with pytest.raises(_InjectedProcessDeath):
-        _successful_pre_sim_campaign(tmp_path, monkeypatch, access, checkpoint=crash)
+        _successful_pre_simulation_record(tmp_path, monkeypatch, access, checkpoint=crash)
     assert crash.tripped
     invocation = tmp_path / "reports/1"
     store = SimulationRecordStore(invocation / "targets/sim/record")
