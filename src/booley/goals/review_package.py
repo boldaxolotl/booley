@@ -128,7 +128,7 @@ def _add_baseline_reports(
 
 
 def _unsettled(booley_dir: Path, record: GoalRecord) -> dict[str, Any]:
-    """The Simulation Campaigns the reviewer should see were never fully accounted for.
+    """The Simulation Records the reviewer should see were never fully accounted for.
 
     Open ones, and registrations a human-approved change set aside because
     nobody could read them (ADR 0072). No key at all when there is none.

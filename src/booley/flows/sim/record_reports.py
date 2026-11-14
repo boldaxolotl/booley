@@ -35,7 +35,7 @@ def write_compatibility_projection(
 ) -> None:
     """Atomically publish a ``simulation.json`` acceptance projection.
 
-    Callers publish ``complete=False`` while Campaign evidence is terminal but
+    Callers publish ``complete=False`` while Simulation Record evidence is terminal but
     acceptance is pending, then replace it with ``complete=True`` only after
     the Acceptance Journal transaction and mutable state selection are durable.
     """

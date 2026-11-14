@@ -1,4 +1,4 @@
-"""Prepared invocation carrying one Simulation Campaign's preflight."""
+"""Prepared invocation carrying one Simulation Record's preflight."""
 
 from __future__ import annotations
 

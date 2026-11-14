@@ -31,7 +31,7 @@ def observation_test_runs(
     invocation's own result (named after the Target selector) is that
     invocation's Test Run.
 
-    Raises :class:`SimulationCampaignIntegrityError` when an observation has
+    Raises :class:`SimulationRecordIntegrityError` when an observation has
     no Test Run in its work item.
     """
     runs = cast(tuple[Mapping[str, object], ...], item["test_runs"])

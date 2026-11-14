@@ -1,6 +1,6 @@
 """Typed metrics of the simulation and coverage Flows (issue #3497).
 
-A Simulation Campaign outcome carries one observation per Test Run, and a coverage
+A Simulation Record outcome carries one observation per Test Run, and a coverage
 run also a Coverage Campaign. :func:`simulation_flow_metrics` turns an outcome into
 the typed values the ``sim`` and ``coverage`` declarations below name. Flow-neutral
 types and the emission funnel live in :mod:`booley.flows.metric_declarations`.
@@ -74,7 +74,7 @@ COVERAGE_METRIC_DECLARATIONS = _declarations(CostTier.HIGH, coverage=True)
 
 
 def coverage_campaign_path(outcome: SimulationRecordOutcome) -> Path:
-    """Return the public ``coverage.json`` beside the Target's Campaign directory."""
+    """Return the public ``coverage.json`` beside the Target's Simulation Record directory."""
     return outcome.manifest_path.parents[1] / "coverage.json"
 
 
@@ -133,11 +133,11 @@ def simulation_flow_metrics(outcome: SimulationRecordOutcome) -> FlowMetricValue
     coverage collection did not complete (a failing test is still a value).
 
     Raises :class:`MetricsUnavailableError` when the run produced no verdict for every
-    Test Run: the Campaign did not finish, a Test Run ended in infrastructure error, or
+    Test Run: the Simulation Record did not finish, a Test Run ended in infrastructure error, or
     a cocotb test module could not be imported (the run measured nothing of that test).
     """
     if not outcome.complete:
-        raise MetricsUnavailableError("the simulation campaign did not finish every Test Run")
+        raise MetricsUnavailableError("the Simulation Record did not finish every Test Run")
     grades = [(row, observation_grade(row)) for row in outcome.observations]
     errored = [str(row["test_run"]) for row, grade in grades if grade == "error"]
     if errored:

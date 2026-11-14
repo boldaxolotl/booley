@@ -56,7 +56,7 @@ any threshold and whether it was met, and the Campaign's location.
 A run you start yourself prints a block per Target. Example (Verilator):
 
 ```text
-sim_soc: simulation PASS · coverage collection COMPLETE · evaluation PASS (Simulation Campaign …)
+sim_soc: simulation PASS · coverage collection COMPLETE · evaluation PASS (Simulation Record …)
   manifest: /work/.booley/flow-reports/sim/12/targets/sim_soc/campaign/manifest.json
   report: /work/.booley/flow-reports/sim/12/report.json
   coverage: line 92.3% · branch 81.0% (min 80%, met) · toggle 64.2%

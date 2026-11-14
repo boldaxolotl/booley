@@ -1,4 +1,4 @@
-"""Per-lane execution identity for parallel Campaign lanes."""
+"""Per-lane execution identity for parallel Simulation Record lanes."""
 
 from __future__ import annotations
 

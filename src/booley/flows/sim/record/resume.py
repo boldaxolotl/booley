@@ -1,4 +1,4 @@
-"""Read-only validation of exact Simulation Campaign resume manifests."""
+"""Read-only validation of exact Simulation Record resume manifests."""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ class ValidatedTargetBinding:
 
 @dataclass(frozen=True, slots=True)
 class ValidatedResumeManifest:
-    """Bounded read-only value passed unchanged from authorization to campaign."""
+    """Bounded read-only value passed unchanged from authorization to record."""
 
     candidate: ValidatedManifestNode
     prerequisites: tuple[ValidatedManifestNode, ...]
@@ -179,7 +179,7 @@ def _walk_prerequisites(
                 f"prerequisite manifest reference does not authenticate {linked}"
             )
         if loaded.manifest.document["simulation_record_id"] != entry["simulation_record_id"]:
-            raise SimulationRecordIntegrityError("prerequisite campaign identity disagrees")
+            raise SimulationRecordIntegrityError("prerequisite record identity disagrees")
         if loaded.manifest.document["target"] != entry["target"]:
             raise SimulationRecordIntegrityError("prerequisite Target identity disagrees")
         if walked is not None:

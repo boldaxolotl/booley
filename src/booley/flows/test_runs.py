@@ -283,7 +283,7 @@ def declared_inputs_fingerprint(args: tuple[str, ...], env: Mapping[str, str]) -
 
     Argument order is significant (it is the simulator's argument order);
     environment key order is not. The encoding is the canonical JSON the
-    Simulation Campaign uses (``document_digest``), reproduced here because this
+    Simulation Record uses (``document_digest``), reproduced here because this
     module is pure domain policy and imports no Flow module; a test pins that
     both produce the same digest.
     """

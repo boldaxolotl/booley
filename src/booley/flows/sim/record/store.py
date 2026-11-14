@@ -1,4 +1,4 @@
-"""Crash-safe storage for one durable Simulation Campaign.
+"""Crash-safe storage for one durable Simulation Record.
 
 The store deliberately knows nothing about process execution or Criteria.  It
 owns the small append-only protocol which makes resume deterministic: a
@@ -144,13 +144,13 @@ def _require_safe_parents(path: Path, root: Path, booley_dir: Path | None = None
     try:
         path.absolute().relative_to(root.absolute())
     except ValueError as exc:
-        raise SimulationRecordIntegrityError(f"campaign path escapes store: {path}") from exc
+        raise SimulationRecordIntegrityError(f"record path escapes store: {path}") from exc
     absolute = path.absolute()
     current = Path(absolute.anchor)
     for component in absolute.parts[1:]:
         current /= component
         if is_report_link(current) and not is_booley_dir_entry(current, booley_dir):
-            raise SimulationRecordIntegrityError(f"campaign path contains a link: {current}")
+            raise SimulationRecordIntegrityError(f"record path contains a link: {current}")
 
 
 def _create_immutable(path: Path, raw: bytes) -> None:
@@ -158,7 +158,7 @@ def _create_immutable(path: Path, raw: bytes) -> None:
 
 
 class SimulationRecordStore:
-    """Append-only authoritative storage rooted at one ``campaign`` directory."""
+    """Append-only authoritative storage rooted at one ``record`` directory."""
 
     def __init__(
         self, simulation_record_directory: Path, *, booley_dir: Path | None = None
@@ -236,20 +236,20 @@ class SimulationRecordStore:
         except UnsupportedSimulationRecordFormatError as exc:
             raise self._locate(exc) from None
         try:
-            schema = require_str_value(document.get("$schema"), field="campaign summary schema")
-            require_bool_value(document.get("complete"), field="campaign summary complete")
+            schema = require_str_value(document.get("$schema"), field="record summary schema")
+            require_bool_value(document.get("complete"), field="record summary complete")
             completed = tuple(
-                require_str_value(item, field="campaign summary completed item")
+                require_str_value(item, field="record summary completed item")
                 for item in require_list(
-                    document.get("completed"), field="campaign summary completed"
+                    document.get("completed"), field="record summary completed"
                 )
             )
         except BoundaryError as exc:
             raise SimulationRecordIntegrityError(
-                "campaign summary retention fields are invalid"
+                "record summary retention fields are invalid"
             ) from exc
         if schema != _SUMMARY_SCHEMA or len(set(completed)) != len(completed):
-            raise SimulationRecordIntegrityError("campaign summary retention fields are invalid")
+            raise SimulationRecordIntegrityError("record summary retention fields are invalid")
         return document
 
     def manifest_sha256(self) -> str:
@@ -257,10 +257,10 @@ class SimulationRecordStore:
 
     @contextmanager
     def mutation_lock(self) -> Iterator[None]:
-        """Fail immediately when another scheduler owns this campaign."""
+        """Fail immediately when another scheduler owns this record."""
         _require_safe_parents(self.root, self.root, self.booley_dir)
         if not self.root.is_dir():
-            raise SimulationRecordIntegrityError("Simulation Campaign directory disappeared")
+            raise SimulationRecordIntegrityError("Simulation Record directory disappeared")
         path = self.root / ".lock"
         _require_safe_parents(path, self.root, self.booley_dir)
         with path.open("a+", encoding="utf-8") as stream, nonblocking_file_lock(stream):
@@ -303,7 +303,7 @@ class SimulationRecordStore:
     def allocate_build_attempt_directory(
         self, build_variant_id: str, build_attempt_id: str
     ) -> tuple[int, Path]:
-        """Allocate one append-only campaign-owned shared build attempt."""
+        """Allocate one append-only record-owned shared build attempt."""
         digest = _variant_digest(build_variant_id)
         attempts = self.root / "build-variants" / digest / "attempts"
         durable_directory(attempts)
@@ -620,7 +620,7 @@ class SimulationRecordStore:
     ) -> WorkItemRecovery:
         work_item_id = cast(str, work_item["work_item_id"])
         # ``scan`` already decoded the complete manifest.  Re-loading and
-        # re-validating it once per item makes maximum-size campaigns quadratic.
+        # re-validating it once per item makes maximum-size records quadratic.
         directory = self._work_item_directory(work_item)
         attempts_root = directory / "attempts"
         attempts = self._attempt_directories(attempts_root)
@@ -778,7 +778,7 @@ def collect_pre_sim_firings(
         path, expected, ancestors = pending.pop()
         refuse_older_manifest_path(path)
         if path.name != "manifest.json" or path.parent.name != RECORD_DIRECTORY:
-            raise SimulationRecordIntegrityError("expected exact Campaign manifest path")
+            raise SimulationRecordIntegrityError("expected exact Simulation Record manifest path")
         store = SimulationRecordStore(path.parent, booley_dir=booley_dir)
         manifest = store.load_manifest()
         digest = manifest_digest(manifest)

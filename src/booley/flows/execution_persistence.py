@@ -168,9 +168,9 @@ def frozen_test_runs_for(recorder: AcceptanceRecorder) -> FrozenTestRuns | None:
 
 @runtime_checkable
 class SimulationRecordRegistry(Protocol):
-    """Optional recorder capability: learn of each Simulation Campaign before it runs.
+    """Optional recorder capability: learn of each Simulation Record before it runs.
 
-    A campaign that is cancelled or killed never returns an outcome; a
+    A record that is cancelled or killed never returns an outcome; a
     recorder that was told of it can still account for the results it left.
     """
 
@@ -178,14 +178,14 @@ class SimulationRecordRegistry(Protocol):
 
 
 def wants_simulation_records(recorder: object) -> bool:
-    """Whether *recorder* wants to be told of each Simulation Campaign before it runs."""
+    """Whether *recorder* wants to be told of each Simulation Record before it runs."""
     return isinstance(recorder, SimulationRecordRegistry)
 
 
 def register_simulation_record_for(
     recorder: object, simulation_record: StartedSimulationRecord
 ) -> None:
-    """Tell *recorder* that *campaign* is about to run, if it wants to know.
+    """Tell *recorder* that *record* is about to run, if it wants to know.
 
     May raise :class:`AcceptanceRecordingError`.
     """

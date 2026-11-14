@@ -57,7 +57,7 @@ _LANE_TAIL_INDENT = "    "
 
 @dataclass(eq=False)
 class _Lane:
-    """One concurrently running unit of work (a Simulation Campaign lane).
+    """One concurrently running unit of work (a Simulation Record lane).
 
     Lanes keep their own stage, recent output and unflushed summary lines so
     parallel units never relabel, evict or clear each other's progress.
@@ -410,7 +410,7 @@ class TerminalProgress:
         writer thread (which has no lane context) never credits a lane.
 
         Serial-only: ``endpoint_reporting.emit_progress``/``emit_completion``
-        reach this method, but no Simulation Campaign lane calls them.
+        reach this method, but no Simulation Record lane calls them.
         """
         lane = _LANE.get()
         if lane is not None:
@@ -466,7 +466,7 @@ class TerminalProgress:
         self, path: Path, *, target: str | None = None, temporary: bool = False
     ) -> None:
         """Register a run log. Serial-only: only elaboration-only and standalone
-        paths reach it, never a Simulation Campaign lane."""
+        paths reach it, never a Simulation Record lane."""
         if self.abandoned:
             return
         with self.lock:
@@ -539,7 +539,7 @@ class TerminalProgress:
         self, paths: list[Path], *, target: str | None = None, temporary: bool = False
     ) -> None:
         """Replace the watched stage files. Serial-only: it swaps the whole set,
-        and only synth/FPGA stages call it, never a Simulation Campaign lane."""
+        and only synth/FPGA stages call it, never a Simulation Record lane."""
         if self.abandoned:
             return
         with self.lock:

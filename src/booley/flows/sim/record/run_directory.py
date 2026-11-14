@@ -1,4 +1,4 @@
-"""Resolve, claim, and clean Simulation Campaign run directories."""
+"""Resolve, claim, and clean Simulation Record run directories."""
 
 from __future__ import annotations
 

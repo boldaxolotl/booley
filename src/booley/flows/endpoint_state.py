@@ -417,7 +417,7 @@ class EndpointState(ABC):
 
         Only a Flow Job holding its own Memory Reservation: not a dry run, not a
         child under its parent's claim, not a Specialist or a tool. A Job bound
-        to a Goal is never requeued, so its Goal evidence and Simulation Campaign
+        to a Goal is never requeued, so its Goal evidence and Simulation Record
         registrations come from its only attempt; the exclusion ends when Goal Mode
         is deleted (#3511).
         """

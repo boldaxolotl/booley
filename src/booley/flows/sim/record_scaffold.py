@@ -1,4 +1,4 @@
-"""Pieces shared by fresh and resumed Simulation Campaigns."""
+"""Pieces shared by fresh and resumed Simulation Records."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from .execution import (
 
 @dataclass(frozen=True, slots=True)
 class _SimulationRecordSteps:
-    """What one Campaign kind does inside the shared progress lifecycle."""
+    """What one Simulation Record kind does inside the shared progress lifecycle."""
 
     terminal: Callable[[str], None]  # publishes the terminal progress phase
     run: Callable[[], EndpointOutcome]  # first checkpoint through the endpoint result
@@ -33,7 +33,7 @@ class _SimulationRecordSteps:
 
 @dataclass(frozen=True, slots=True)
 class _SimulationRecordRun:
-    """What distinguishes one Campaign kind in the shared execution scaffold."""
+    """What distinguishes one Simulation Record kind in the shared execution scaffold."""
 
     refusal: str  # report text when no admission context was borrowed
     refusal_detail: Mapping[str, object]

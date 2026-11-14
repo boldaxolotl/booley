@@ -5,50 +5,50 @@ while a matching run failed at the current file contents. A failure is only
 sticky once it is in the Goal's ledger, and two things can keep a durable
 observation out of it:
 
-- a Simulation Campaign that was cancelled or killed after some of its work
-  items finished: their authenticated results are on disk, but the campaign
+- a Simulation Record that was cancelled or killed after some of its work
+  items finished: their authenticated results are on disk, but the record
   never returned an outcome to publish;
 - an acceptance transaction whose records were published but that was never
   selected into the Goal state (its writer stopped in between): the ledger
   shows only selected transactions.
 
-Every Simulation Campaign a bound run starts is therefore **registered**
-before any of its work runs (:func:`register_campaign`): one document per
-campaign manifest under the record's ``logs/acceptance/campaigns/``, holding
+Every Simulation Record a bound run starts is therefore **registered**
+before any of its work runs (:func:`register_simulation_record`): one document per
+record manifest under the record's ``logs/acceptance/campaigns/``, holding
 the run it started under and, per Goal of its Target, the freshness stamp of
-the file contents it started at. :func:`account_for_campaigns` then, under
+the file contents it started at. :func:`account_for_simulation_records` then, under
 the record lock,
 
 1. completes every unselected acceptance transaction with the ledger's own
    recovery (:func:`booley.criteria.evidence_ledger.complete_transaction`);
-2. **adopts** the finished results of every registered campaign that is
-   pending: per Goal one observation with the campaign's matching Test Run
-   rows, stamped with the contents the campaign started at, folded into the
+2. **adopts** the finished results of every registered record that is
+   pending: per Goal one observation with the record's matching Test Run
+   rows, stamped with the contents the record started at, folded into the
    Goal's Test Run ledger like any other observation. Failures are always
    adopted. Passes are adopted only while the publication gate of the run
-   that started the campaign still holds, as a normal publication of that
+   that started the record still holds, as a normal publication of that
    run would require. Work items without a result stay missing.
 
-It runs before a run registers a campaign, before a recorder publishes, when
-status is read and before Finish. Reading a campaign's results is the
+It runs before a run registers a record, before a recorder publishes, when
+status is read and before Finish. Reading a record's results is the
 Simulation Flow's business: the composing entry point supplies the reader
-(:data:`~booley.flows.simulation_record_results.CampaignResultsReader`).
+(:data:`~booley.flows.simulation_record_results.SimulationRecordResultsReader`).
 
-A registration is **pending** until nothing more can come out of its campaign:
+A registration is **pending** until nothing more can come out of its record:
 its acceptance was published, or every one of its work items has a durable
 result that was adopted. Then it is deleted and never read again.
 A pending registration is read again on every pass, so results that appear
-later (the campaign had not started, was still running, or was resumed) are
+later (the record had not started, was still running, or was resumed) are
 adopted then. It makes its Goals unmet
 (:func:`unaccounted_goals`, ``goal-campaign-unaccounted``) only as long as
 its results may still change or cannot be told: a scheduler holds its lock,
 the read fails or has no reader, or a failure it holds is not adopted. An idle,
-readable campaign that ran only in part has its results adopted; its other
+readable record that ran only in part has its results adopted; its other
 runs simply stay missing, and it blocks nothing.
 
 A coverage Goal is judged by its coverage floors alone
 (:func:`~booley.goals.test_run_evidence.outcomes_decide`): no result a
-campaign left behind can change it, so campaigns are neither registered nor
+record left behind can change it, so records are neither registered nor
 adopted for it, and no registration makes it unmet.
 
 A registration that cannot be decoded names every Goal that is judged by its
@@ -58,7 +58,7 @@ to ``quarantine/`` beside the others (:func:`quarantine_unreadable`). The
 review package lists every registration that is open or quarantined
 (:func:`unsettled_campaigns`).
 
-Residual risk. A campaign's work-item files are as writable as the worktree:
+Residual risk. A record's work-item files are as writable as the worktree:
 a result deleted before it is adopted is not an integrity error, its run
 only reads as missing. Protecting those files belongs to
 protected inputs (issue #1111), not to this module.
@@ -67,9 +67,9 @@ Crash safety. Adoption makes two durable writes, in this order:
 
 1. the observation is appended to the ledger (one atomic rename). From here
    the failure is sticky: every later fold reads it;
-2. the registration of a complete campaign is deleted. A stop before
+2. the registration of a complete record is deleted. A stop before
    this makes the next call adopt again: it finds the observation by the
-   campaign and result digests it carries, appends nothing, and repeats
+   record and result digests it carries, appends nothing, and repeats
    step 2.
 """
 
@@ -119,7 +119,7 @@ from booley.runtime.timefmt import parse_timestamp, utc_now_rfc3339
 logger = logging.getLogger(__name__)
 
 REGISTRATION_SCHEMA = "booley.goal-campaign/v1"
-#: Detail key of an adopted observation: the campaign and results it was adopted from.
+#: Detail key of an adopted observation: the record and results it was adopted from.
 ADOPTED_DETAIL_KEY = "adopted_campaign"
 REASON_UNACCOUNTED = "goal-campaign-unaccounted"
 _QUARANTINE = "quarantine"
@@ -138,15 +138,15 @@ _FIELDS = frozenset(
 
 
 class RegistrationFormatError(ValueError):
-    """A stored campaign registration does not have the registration format."""
+    """A stored record registration does not have the registration format."""
 
 
 @dataclass(frozen=True)
 class SimulationRecordRegistration:
-    """One pending Simulation Campaign a bound run started.
+    """One pending Simulation Record a bound run started.
 
-    ``stamps`` holds, per Goal of the campaign's Target, the source
-    fingerprint detail of the file contents the campaign started at.
+    ``stamps`` holds, per Goal of the record's Target, the source
+    fingerprint detail of the file contents the record started at.
     """
 
     simulation_record_id: str
@@ -157,7 +157,7 @@ class SimulationRecordRegistration:
     registered_at: str
 
     def run_binding(self) -> GoalRunBinding:
-        """The run the campaign started under. Raises :class:`GoalBindingError`."""
+        """The run the record started under. Raises :class:`GoalBindingError`."""
         return GoalRunBinding.from_json(self.binding)
 
     def to_json(self) -> dict[str, Any]:
@@ -178,7 +178,7 @@ class SimulationRecordRegistration:
         try:
             document = require_dict(raw, field=where)
             if frozenset(document) != _FIELDS or document["$schema"] != REGISTRATION_SCHEMA:
-                raise RegistrationFormatError(f"{where} is not a campaign registration")
+                raise RegistrationFormatError(f"{where} is not a Simulation Record registration")
             stamps = require_dict(document["stamps"], field=f"{where}.stamps")
             registration = cls(
                 require_str_value(document["campaign_id"], field=f"{where}.campaign_id"),
@@ -234,8 +234,12 @@ def _read(path: Path) -> SimulationRecordRegistration:
     try:
         raw = json.loads(read_file_bytes(path))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RegistrationFormatError(f"campaign registration {path.name}: {exc}") from exc
-    return SimulationRecordRegistration.from_json(raw, where=f"campaign registration {path.name}")
+        raise RegistrationFormatError(
+            f"Simulation Record registration {path.name}: {exc}"
+        ) from exc
+    return SimulationRecordRegistration.from_json(
+        raw, where=f"Simulation Record registration {path.name}"
+    )
 
 
 def _write(paths: GoalRecordPaths, registration: SimulationRecordRegistration) -> None:
@@ -309,7 +313,7 @@ def _relevant_keys(
     """The Goals *registration* stamped that still have the revision its run was bound to.
 
     A Goal an approved change gave another revision started its evidence
-    again: nothing a campaign observed before counts for it either way. Nor
+    again: nothing a record observed before counts for it either way. Nor
     does it for a Goal its Test Runs' outcomes do not decide.
     """
     try:
@@ -342,12 +346,12 @@ def register_simulation_record(
     simulation_record: StartedSimulationRecord,
     stamp: Callable[[RecordedGoal], Mapping[str, Any] | None],
 ) -> None:
-    """Register *campaign* as started by *binding*'s run.
+    """Register *record* as started by *binding*'s run.
 
     The caller holds the record lock through the run's publication gate.
     *stamp* gives the source fingerprint detail of a Goal's dependent file
     contents now, or ``None`` when the run's evidence for that Goal would be
-    discarded anyway. A baseline campaign, and one whose Target no Goal is
+    discarded anyway. A baseline record, and one whose Target no Goal is
     judged by through its Test Runs' outcomes, is not registered.
     """
     if not simulation_record.candidate:
@@ -377,9 +381,9 @@ def register_simulation_record(
 
 
 def mark_published(store: GoalStore, record_id: str, acceptance_facts: Mapping[str, Any]) -> None:
-    """Settle the campaign whose acceptance transaction was just selected.
+    """Settle the record whose acceptance transaction was just selected.
 
-    The transaction consumed every result the campaign held when it returned
+    The transaction consumed every result the record held when it returned
     its outcome. The caller holds the record lock.
     """
     paths = record_paths(store.booley_dir, record_id)
@@ -404,7 +408,7 @@ def unaccounted_goals(
     still change or cannot be told (module docstring), of every acceptance
     transaction the state does not select, and, for a registration that
     cannot be decoded, every Goal that is judged by its Test Runs' outcomes.
-    *history* is the record's evidence; *reader* reads the campaigns.
+    *history* is the record's evidence; *reader* reads the records.
     """
     paths = record_paths(store.booley_dir, record.id)
     everything = tuple(goal.spec.key for goal in record.goals if names_test_runs(goal.spec))
@@ -414,7 +418,7 @@ def unaccounted_goals(
     found += [
         Unaccounted(
             decided,
-            f"campaign registration {path.name}",
+            f"Simulation Record registration {path.name}",
             f"cannot be read ({reason})",
             "It is moved aside when a human approves a Goal change; nothing else clears it",
         )
@@ -437,11 +441,9 @@ def _pending(
     history: Sequence[dict[str, Any]],
     reader: SimulationRecordResultsReader | None,
 ) -> Unaccounted:
-    """The Goals *registration* blocks now, and why: none for an idle, adopted campaign."""
+    """The Goals *registration* blocks now, and why: none for an idle, adopted record."""
     keys = _relevant_keys(registration, record)
-    what = (
-        f"Simulation Campaign {registration.simulation_record_id} ({registration.manifest_path})"
-    )
+    what = f"Simulation Record {registration.simulation_record_id} ({registration.manifest_path})"
     durable, problem = _results(registration, reader)
     if durable is None:
         return Unaccounted(keys, what, problem)
@@ -461,7 +463,7 @@ def _pending(
 def _results(
     registration: SimulationRecordRegistration, reader: SimulationRecordResultsReader | None
 ) -> tuple[DurableSimulationRecordResults | None, str]:
-    """What *reader* returns for *registration*'s campaign, or why it returns nothing."""
+    """What *reader* returns for *registration*'s record, or why it returns nothing."""
     if reader is None:
         return None, "cannot be read by this caller"
     try:
@@ -470,7 +472,7 @@ def _results(
         return None, "is still running"
     except OlderBooleyRecordError as exc:  # intact, only too old: it cannot be resumed
         return None, f"is refused: {exc}"
-    except ValueError as exc:  # the campaign's integrity error
+    except ValueError as exc:  # the record's integrity error
         return None, f"cannot be read ({exc})"
 
 
@@ -557,9 +559,9 @@ def account_for_simulation_records(
     """Bring every durable observation of Goal Record *record_id* into its ledger.
 
     Completes unselected acceptance transactions, then adopts the finished
-    results of every pending campaign (module docstring).
-    *reader* reads a campaign's finished results; without one no campaign is
-    adopted. Campaigns the run *own_run* registered are left to that run's
+    results of every pending record (module docstring).
+    *reader* reads a record's finished results; without one no record is
+    adopted. Simulation Records the run *own_run* registered are left to that run's
     own publication. Nothing happens for a record that is not active or whose
     apply is interrupted. What cannot be read is left as it is, for
     :func:`unaccounted_goals` to name; nothing is raised for it.
@@ -577,7 +579,9 @@ def account_for_simulation_records(
         _complete_transactions(run)
         registrations, unreadable = _stored(paths)
         for path, reason in unreadable:
-            logger.warning("campaign registration %s of Goal Mode %s: %s", path, record_id, reason)
+            logger.warning(
+                "Simulation Record registration %s of Goal Mode %s: %s", path, record_id, reason
+            )
         for registration in registrations:
             if _run_id(registration) == own_run:
                 continue
@@ -586,7 +590,7 @@ def account_for_simulation_records(
                 _settle(run, registration, durable)
             else:
                 logger.warning(
-                    "Simulation Campaign %s of Goal Mode %s is unaccounted: %s",
+                    "Simulation Record %s of Goal Mode %s is unaccounted: %s",
                     registration.simulation_record_id,
                     record_id,
                     problem,
@@ -628,7 +632,7 @@ def _settle(
 ) -> None:
     """Adopt what *durable* holds for *registration*'s Goals; delete it once complete.
 
-    A campaign whose every work item has a result has nothing more to give;
+    A record whose every work item has a result has nothing more to give;
     one that is idle but ran only in part stays pending and is read again.
     """
     keys = _relevant_keys(registration, run.record)
@@ -642,7 +646,7 @@ def _settle(
 
 
 def _publishable(registration: SimulationRecordRegistration, keys: Sequence[str]) -> bool:
-    """Whether the run that started the campaign could still publish for *keys* now."""
+    """Whether the run that started the record could still publish for *keys* now."""
     try:
         with PublicationGate(registration.run_binding()).publishing(keys):
             return True
@@ -662,7 +666,7 @@ def _adopt(
     """Record *goal*'s matching rows of *durable* once.
 
     Without *passes* only failures are adopted: the run that started the
-    campaign could not publish them now.
+    record could not publish them now.
     """
     from booley.goals.recorder import GOAL_SCOPE
 
@@ -707,7 +711,7 @@ def _adopted(
 def _marker(
     registration: SimulationRecordRegistration, durable: DurableSimulationRecordResults
 ) -> dict[str, Any]:
-    """What identifies one adoption: the campaign and the results it held."""
+    """What identifies one adoption: the record and the results it held."""
     results = {"results": [list(pair) for pair in durable.results]}
     return {
         "campaign_id": registration.simulation_record_id,

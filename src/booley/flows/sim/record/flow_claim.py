@@ -1,7 +1,7 @@
-"""The Flow's Memory Reservation across a Campaign, and each work item's own (#3772, ADR 0087).
+"""The Flow's Memory Reservation across a Simulation Record, and each work item's own (#3772, ADR 0087).
 
 The Flow reserves memory for preparation, the shared builds and any item that
-runs before the running Campaign's last build is settled. Then it drops to zero, keeping its claim
+runs before the running Simulation Record's last build is settled. Then it drops to zero, keeping its claim
 for its lease and cancellation, and each later item takes a claim of its own.
 """
 
@@ -28,9 +28,9 @@ _SHARED_BUILD_KINDS = frozenset({"ordinary_hdl", "cocotb_batch"})
 
 
 class FlowClaim:
-    """One Flow's claim and the shared builds (Campaign store, build variant) it waits for.
+    """One Flow's claim and the shared builds (Simulation Record store, build variant) it waits for.
 
-    A build is *expected* once its Campaign is published or about to run, and
+    A build is *expected* once its Simulation Record is published or about to run, and
     *settled* when an item of it has returned (built, reused, recovered or failed).
 
     It takes no lock. ``item_claim`` runs only under the scheduler's start turn,
@@ -56,7 +56,7 @@ class FlowClaim:
         manifest: SimulationRecordManifest,
         items: Iterable[Mapping[str, object]],
     ) -> None:
-        """Replace the shared builds *items* of one Campaign still need."""
+        """Replace the shared builds *items* of one Simulation Record still need."""
         workload = cast(Mapping[str, object], manifest.document["workload"])
         shared = workload["pre_sim_build_access"] == "immutable"
         self._unsettled[store_root] = {
@@ -74,11 +74,11 @@ class FlowClaim:
         self._unsettled.get(store_root, set()).discard(variant)
 
     def release(self, store_root: Path) -> bool:
-        """Drop the Flow's reservation to zero once the Campaign at *store_root* has no unsettled build.
+        """Drop the Flow's reservation to zero once the Simulation Record at *store_root* has no unsettled build.
 
-        Later Campaigns of the invocation do not hold the Flow's reservation:
+        Later Simulation Records of the invocation do not hold the Flow's reservation:
         their own building item reserves its build. True from then on. False
-        while this Campaign has an unsettled build or when the drop is refused
+        while this Simulation Record has an unsettled build or when the drop is refused
         (the Flow's lease is gone): an item then runs under the Flow's claim,
         and the next item tries again.
         """

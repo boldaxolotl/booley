@@ -245,7 +245,7 @@ class ChildScheduler:
     def _observe(self, entry: _Entry) -> None:
         """Note whether a child holds a slot on a requeued final attempt right now.
 
-        Not sticky: a Campaign's work items claim under the Flow's PID as well, and the item
+        Not sticky: a Simulation Record's work items claim under the Flow's PID as well, and the item
         claims after a requeued one are not final, so the flag follows the claim held now.
         """
         if entry.child is None:

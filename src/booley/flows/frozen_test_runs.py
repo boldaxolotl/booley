@@ -8,7 +8,7 @@ those runs as plain values (:class:`FrozenTestRuns`), so the Flow can
   ``--test``, with the current default of every Test not frozen yet;
 - run the frozen seeds of a multi-seed Goal when ``--test test+variant@xN``
   names its Target, Test Variant and N; and
-- decide which Goals a campaign's Test Runs are evidence for: a Test Run
+- decide which Goals a record's Test Runs are evidence for: a Test Run
   matches a Goal only by its resolved name and the fingerprint of its
   declared arguments and environment. Every other Test Run is diagnostic.
 

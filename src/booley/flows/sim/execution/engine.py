@@ -459,7 +459,7 @@ class PreparedOrdinaryGroup:
         self._session.discard_candidate(self._attempt.prepared.work_root)
 
     def planning_disclosure(self) -> dict[str, object]:
-        """Describe this preparation using the campaign planning contract."""
+        """Describe this preparation using the record planning contract."""
         return _planning_disclosure(self.prepared_source_entries())
 
     def compile(self) -> BuildOutcome:
@@ -576,7 +576,7 @@ class PreparedOrdinaryGroup:
         }
 
     def bind_authenticated_bundle(self, evidence: Mapping[str, object]) -> None:
-        """Mark preparation ready to launch a campaign-authenticated bundle.
+        """Mark preparation ready to launch a record-authenticated bundle.
 
         The durable Build Result has already authenticated the compiler outcome,
         so only the test-specific adapter preparation is reconstructed.

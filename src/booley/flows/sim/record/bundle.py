@@ -25,7 +25,7 @@ from .model import ExecutableSnapshot, SimulatorBundle
 
 @dataclass(frozen=True, slots=True)
 class SnapshotAttemptIdentity:
-    """Immutable campaign and attempt identity carried into one snapshot."""
+    """Immutable record and attempt identity carried into one snapshot."""
 
     simulation_record_id: str
     manifest_sha256: str

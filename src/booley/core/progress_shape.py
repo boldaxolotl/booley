@@ -1,6 +1,6 @@
 """Dependency-free shape policy for Flow progress documents.
 
-Shared by Flow publication, Runtime Job observation and Campaign retention so
+Shared by Flow publication, Runtime Job observation and Simulation Record retention so
 none of them imports another layer to agree on what a valid document is.
 """
 

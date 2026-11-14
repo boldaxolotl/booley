@@ -1,4 +1,4 @@
-"""Translate one resolved ordinary-HDL Target into a campaign plan."""
+"""Translate one resolved ordinary-HDL Target into a record plan."""
 
 from __future__ import annotations
 
@@ -45,20 +45,20 @@ def _require_ordinary_hdl_inputs(
 ) -> None:
     """Refuse Target facts the ordinary-HDL planner cannot plan from."""
     if inspection.handle != handle or preview.target_identity != handle.identity:
-        raise SimulationRecordIntegrityError("campaign planning Target facts disagree")
+        raise SimulationRecordIntegrityError("record planning Target facts disagree")
     if inspection.flow_options.get("cocotb_module"):
         raise SimulationRecordIntegrityError("ordinary HDL planner cannot plan Cocotb")
     if role not in {"candidate", "cycle_count_baseline"}:
-        raise SimulationRecordIntegrityError("campaign planning role is invalid")
+        raise SimulationRecordIntegrityError("record planning role is invalid")
     if not revision:
-        raise SimulationRecordIntegrityError("campaign revision is required")
+        raise SimulationRecordIntegrityError("record revision is required")
 
 
 def _require_baseline_prerequisites(documents: Sequence[Mapping[str, object]]) -> None:
     """Refuse a prerequisite whose Target was not planned as a Cycle Count baseline.
 
     The coarse (Cocotb) planner labels its Target ``candidate``, so a Cocotb
-    Target cannot be the baseline of an ordinary HDL Target: its campaign would
+    Target cannot be the baseline of an ordinary HDL Target: its record would
     not be where the prerequisite link points.
     """
     for document in documents:
@@ -180,14 +180,14 @@ def _validate_coarse_inputs(
 ) -> None:
     run_groups = preview.run_groups
     if kind not in {"cocotb_batch", "coverage_aggregate"}:
-        raise SimulationRecordIntegrityError("coarse campaign kind is invalid")
+        raise SimulationRecordIntegrityError("coarse record kind is invalid")
     if no_waivers and kind != "coverage_aggregate":
         raise SimulationRecordIntegrityError("no_waivers requires a coverage aggregate")
     if inspection.handle != handle or preview.target_identity != handle.identity:
-        raise SimulationRecordIntegrityError("campaign planning Target facts disagree")
+        raise SimulationRecordIntegrityError("record planning Target facts disagree")
     is_cocotb = bool(inspection.flow_options.get("cocotb_module"))
     if kind == "cocotb_batch" and not is_cocotb:
-        raise SimulationRecordIntegrityError("coarse campaign kind disagrees with Target")
+        raise SimulationRecordIntegrityError("coarse record kind disagrees with Target")
     names = tuple(selected_tests)
     planned = tuple(_selection_names(group) for group in run_groups)
     if kind == "coverage_aggregate":
@@ -198,11 +198,11 @@ def _validate_coarse_inputs(
             )
     elif preview.groups != planned or tuple(name for group in planned for name in group) != names:
         raise SimulationRecordIntegrityError(
-            "coarse campaign selection disagrees with execution preview"
+            "coarse record selection disagrees with execution preview"
         )
     run_names = [run.name for group in run_groups for run in group]
     if len(set(run_names)) != len(run_names):
-        raise SimulationRecordIntegrityError("coarse campaign Test Runs must be unique")
+        raise SimulationRecordIntegrityError("coarse record Test Runs must be unique")
 
 
 def _manifest_document(
@@ -450,12 +450,12 @@ def _selection_names(runs: Sequence[TestRun]) -> tuple[str, ...]:
 def _require_simulation_record_fits(
     run_groups: Sequence[tuple[TestRun, ...]], selector: str
 ) -> None:
-    """Refuse a plan beyond the campaign ceilings, whichever planner path built it."""
+    """Refuse a plan beyond the record ceilings, whichever planner path built it."""
     test_runs = sum(len(group) for group in run_groups)
     if len(run_groups) > MAX_WORK_ITEMS or test_runs > MAX_OBSERVATIONS:
         raise TestRunLimitError(
             f"Target {selector} plans {len(run_groups)} work items and {test_runs} Test Runs; "
-            f"a campaign holds at most {MAX_WORK_ITEMS} work items and "
+            f"a record holds at most {MAX_WORK_ITEMS} work items and "
             f"{MAX_OBSERVATIONS} Test Runs. Select fewer Tests or seeds, or in Goal Mode "
             "fewer whole-suite Goals freeze runs of this Target"
         )

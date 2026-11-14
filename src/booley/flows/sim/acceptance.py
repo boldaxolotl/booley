@@ -1,4 +1,4 @@
-"""Criteria reconciliation for authenticated Simulation Campaign outcomes."""
+"""Criteria reconciliation for authenticated Simulation Record outcomes."""
 
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class AcceptanceContext:
-    """Execution-owned inputs kept outside the Campaign module."""
+    """Execution-owned inputs kept outside the Simulation Record module."""
 
     ticket_slug: str
     identity: dict[str, Any]
@@ -129,7 +129,7 @@ class _OutcomeEvidence:
 
 
 class SimulationAcceptanceCoordinator:
-    """Derive and transactionally commit Criteria from campaign facts only."""
+    """Derive and transactionally commit Criteria from record facts only."""
 
     def reconcile(
         self,
@@ -163,7 +163,7 @@ class SimulationAcceptanceCoordinator:
             return AcceptanceOutcome(False, None, tuple(changes), "no_recorder")
         if transaction is None:
             raise AcceptanceRecordingError(
-                "campaign Criteria require a durable acceptance transaction store"
+                "Simulation Record Criteria require a durable acceptance transaction store"
             )
         return AcceptanceOutcome(True, transaction_id, tuple(changes), "committed")
 
@@ -178,7 +178,7 @@ class SimulationAcceptanceCoordinator:
         facts = outcome.acceptance_facts.document
         target = facts["target"]
         if not isinstance(target, Mapping):
-            raise TypeError("campaign acceptance Target is not a mapping")
+            raise TypeError("Simulation Record acceptance Target is not a mapping")
         target_name = str(target["name"])
         shadow = deepcopy(state)
         if frozen is not None:
@@ -206,7 +206,7 @@ def _simulation_changes(
     facts = outcome.acceptance_facts.document
     suite = facts["required_suite"]
     if not isinstance(suite, Mapping):
-        raise TypeError("campaign acceptance suite is malformed")
+        raise TypeError("Simulation Record acceptance suite is malformed")
     observations = _candidate_simulation_observations(facts, target)
     selected = {_test_name(name): item for name, item in observations.items()}
     registered = set(cast(tuple[str, ...], suite["names"]))
@@ -300,9 +300,9 @@ def _candidate_simulation_observations(
     """Candidate observations by Test, for Criteria that name Tests.
 
     Outside Goal Mode a Criterion names a Test, so it has one observation to
-    judge only when the campaign ran one Test Run of that Test. A Test the
-    campaign ran as several Test Runs is left out: no Criterion that needs
-    it is judged from this campaign, rather than letting one Test Run stand
+    judge only when the record ran one Test Run of that Test. A Test the
+    record ran as several Test Runs is left out: no Criterion that needs
+    it is judged from this record, rather than letting one Test Run stand
     in for the others. Goals name Test Runs and are judged by
     :func:`_goal_changes` instead.
     """
@@ -411,7 +411,7 @@ def record_simulation_record_acceptance(
     *,
     baseline_refusals: Mapping[tuple[str, str], str] | None = None,
 ) -> None:
-    """Reconcile campaign facts before publishing compatibility projections."""
+    """Reconcile record facts before publishing compatibility projections."""
     work_dir = getattr(endpoint.args, "work_dir", None)
     if endpoint.state._file_path is not None and work_dir is not None:
         endpoint.state.work_dir = str(Path(work_dir).resolve())
@@ -438,7 +438,7 @@ def record_simulation_record_acceptance(
     acceptances = []
     for item in outcomes:
         if not isinstance(item, SimulationRecordOutcome):
-            raise TypeError("invalid Simulation Campaign outcome")
+            raise TypeError("invalid Simulation Record outcome")
         evidence = _OutcomeEvidence(item)
         if endpoint.state._file_path is None and not context.diagnostic:
             _record_standalone_simulation_record(endpoint, evidence)
@@ -567,7 +567,7 @@ def _observation_error_tail(observation: Mapping[str, object]) -> str:
     detail = observation["detail"]
     if not isinstance(detail, Mapping) or not isinstance(detail.get("reason"), str):
         raise SimulationRecordIntegrityError(
-            "Simulation Campaign observation detail must contain a string reason"
+            "Simulation Record observation detail must contain a string reason"
         )
     if _observation_passed(observation):
         return ""
@@ -663,7 +663,7 @@ def _coverage_changes(
 
 
 def _resolve_facts_coverage(outcome: SimulationRecordOutcome) -> _PublicCoverage:
-    """Resolve the campaign's public ``coverage.json`` against its Acceptance Facts."""
+    """Resolve the record's public ``coverage.json`` against its Acceptance Facts."""
     public_path = outcome.manifest_path.parents[1] / "coverage.json"
     facts = outcome.acceptance_facts.document
     bound = facts["coverage_reference"]
@@ -948,20 +948,20 @@ def _goal_changes(
     refusals: Mapping[tuple[str, str], str],
     frozen: FrozenTestRuns,
 ) -> list[CriterionChange]:
-    """The Criterion changes of every Goal this campaign's Test Runs are evidence for.
+    """The Criterion changes of every Goal this record's Test Runs are evidence for.
 
     A Test Run is evidence for a Goal only when its resolved name and its
     declared-inputs fingerprint equal one of the Goal's frozen Test Runs.
-    A Goal none of whose frozen runs this campaign graded gets no change: for
-    that Goal the campaign is diagnostic. Every other Goal gets one change
-    that carries its matching runs, whatever else the campaign ran and
+    A Goal none of whose frozen runs this record graded gets no change: for
+    that Goal the record is diagnostic. Every other Goal gets one change
+    that carries its matching runs, whatever else the record ran and
     whether or not it ran to its end: a matching failure is never left out.
     A Cycle Count or coverage Goal's change also carries the metric when
-    this campaign measured it (:meth:`GoalTestRuns.measured_by`).
+    this record measured it (:meth:`GoalTestRuns.measured_by`).
 
     Whether the Goal is met is decided by its recorder: from every matching
     run recorded so far, or for a coverage Goal from the coverage floors
-    alone. ``met`` here is this campaign's own verdict.
+    alone. ``met`` here is this record's own verdict.
     """
     if target["role"] != "candidate":
         return []
@@ -993,7 +993,7 @@ def _graded(rows: Sequence[Mapping[str, object]]) -> bool:
 def _goal_simulation_detail(
     outcome: SimulationRecordOutcome, matched: list[dict[str, object]]
 ) -> dict[str, object]:
-    """What one campaign observed of a simulation Goal's frozen Test Runs."""
+    """What one record observed of a simulation Goal's frozen Test Runs."""
     facts = outcome.acceptance_facts.document
     names = [str(row["name"]) for row in matched]
     passed = [str(row["name"]) for row in matched if row["grade"] == "pass"]
@@ -1039,10 +1039,10 @@ def _goal_coverage_change(
 ) -> list[CriterionChange]:
     """The one projection of a coverage evaluation onto a Goal's Criterion.
 
-    Judge a coverage Goal from a coverage campaign that ran exactly its frozen
-    Test Runs. Coverage is merged over the campaign's Test Runs, so only such a
-    campaign measured the Goal's coverage; it is never merged across campaigns.
-    Nothing when the campaign collected no coverage.
+    Judge a coverage Goal from a coverage Simulation Record that ran exactly its frozen
+    Test Runs. Coverage is merged over the record's Test Runs, so only such a
+    record measured the Goal's coverage; it is never merged across records.
+    Nothing when the record collected no coverage.
 
     The judged key is the Goal's own, however its Target was written: the Goal
     is already bound to this Target. It is never projected atomically: in Goal

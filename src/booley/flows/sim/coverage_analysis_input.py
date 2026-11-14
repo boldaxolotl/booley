@@ -145,16 +145,16 @@ def _reference_projection(
     resolved: ResolvedCoverageCampaign,
     authenticated: SimulationRecordWorkItemEvidence,
 ) -> None:
-    """Authenticate a Simulation projection through local Simulation Campaign bytes.
+    """Authenticate a Simulation projection through local Simulation Record bytes.
 
     Authority comes from the locally supplied Coverage reference, its enclosing
-    authenticated Simulation Campaign, and the projection's Target/verdict fields.
+    authenticated Simulation Record, and the projection's Target/verdict fields.
     """
     expected_manifest = (public_path.parent / RECORD_DIRECTORY / "manifest.json").absolute()
     document = projection.document
     owner = str(resolved.reference.document["simulation_record_id"])
     if document.get("simulation_record_id") != owner:
-        raise CoverageAnalysisError("Simulation Campaign projection owner disagrees")
+        raise CoverageAnalysisError("Simulation Record projection owner disagrees")
     entry = crossed_booley_dir_entry(public_path)
     manifest_artifact = resolve_artifact_reference(
         document.get("simulation_record_manifest"),
@@ -175,13 +175,13 @@ def _reference_projection(
         booley_dir=entry,
     )
     if manifest_artifact.path != expected_manifest or coverage_artifact.path != public_path:
-        raise CoverageAnalysisError("Simulation Campaign projection pointers disagree")
+        raise CoverageAnalysisError("Simulation Record projection pointers disagree")
     _safe_path(expected_manifest)
     manifest = authenticated.manifest
     reference = resolved.reference.document
     target = manifest.document["target"]
     if not isinstance(target, Mapping):
-        raise CoverageAnalysisError("Simulation Campaign Target is invalid")
+        raise CoverageAnalysisError("Simulation Record Target is invalid")
     if (
         manifest.document["simulation_record_id"] != reference["simulation_record_id"]
         or authenticated.manifest_path != expected_manifest.absolute()
@@ -189,7 +189,7 @@ def _reference_projection(
         or target["selector"] != resolved.loaded.campaign.target.selector
         or f"{target['vlnv']}#{target['name']}" != resolved.loaded.campaign.target.identity
     ):
-        raise CoverageAnalysisError("Simulation Campaign manifest disagrees with reference")
+        raise CoverageAnalysisError("Simulation Record manifest disagrees with reference")
 
 
 def coverage_sources(

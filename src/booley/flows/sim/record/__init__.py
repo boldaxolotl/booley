@@ -1,4 +1,4 @@
-"""Public seam for durable Simulation Campaign execution and resume."""
+"""Public seam for durable Simulation Record execution and resume."""
 
 from .artifact_reference import (
     ArtifactReference,

@@ -1,4 +1,4 @@
-"""Strict canonical JSON codecs for immutable Simulation Campaign values.
+"""Strict canonical JSON codecs for immutable Simulation Record values.
 
 This module is deliberately infrastructure-free. It decodes untrusted
 documents into immutable values. Manifests are checked for shape only: planning proved their content and
@@ -65,7 +65,7 @@ _WINDOWS_DRIVE_RE = re.compile(r"[A-Za-z]:")
 
 
 class SimulationRecordIntegrityError(ValueError):
-    """An authoritative campaign value violates its exact contract."""
+    """An authoritative record value violates its exact contract."""
 
 
 class UnsupportedSimulationRecordFormatError(OlderBooleyRecordError):
@@ -280,7 +280,7 @@ _R = TypeVar("_R")
 
 
 def reads_simulation_record_documents(function: Callable[_P, _R]) -> Callable[_P, _R]:
-    """Report bad nested data in a published record as campaign corruption.
+    """Report bad nested data in a published record as record corruption.
 
     Attempt, build, bundle and result decoders check only the document boundary (#1743, #1744),
     so the code that reads a nested member of a record from disk wraps itself
@@ -297,7 +297,7 @@ def reads_simulation_record_documents(function: Callable[_P, _R]) -> Callable[_P
             raise
         except (AttributeError, KeyError, TypeError, ValueError) as exc:
             raise SimulationRecordIntegrityError(
-                f"published campaign record is malformed: {exc!r}"
+                f"published record is malformed: {exc!r}"
             ) from exc
 
     return guarded
@@ -664,15 +664,15 @@ def encode_executable_snapshot(value: ExecutableSnapshot) -> bytes:
 
 
 def encode_simulation_record_document(value: SimulationRecordDocument) -> bytes:
-    """Canonically encode any Phase-1 campaign document value."""
+    """Canonically encode any Phase-1 record document value."""
     value_type = type(value)
     if value_type not in _DOCUMENT_SPECS:
-        raise SimulationRecordIntegrityError(f"unsupported campaign value {type(value).__name__}")
+        raise SimulationRecordIntegrityError(f"unsupported record value {type(value).__name__}")
     return _encode_checked(value, value_type)
 
 
 def validate_relative_path(path: object) -> str:
-    """Validate a normalized contained portable relative campaign path."""
+    """Validate a normalized contained portable relative record path."""
     try:
         parsed = require_str_value(path, field="path")
     except BoundaryError as exc:

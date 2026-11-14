@@ -1,4 +1,4 @@
-"""Strict reference from a Simulation Campaign to its nested Coverage Campaign."""
+"""Strict reference from a Simulation Record to its nested Coverage Campaign."""
 
 from __future__ import annotations
 
@@ -311,7 +311,7 @@ def authenticate_coverage_campaign_owner(
         ) from exc
     except SimulationRecordIntegrityError as exc:
         raise CoverageCampaignReferenceError(
-            "enclosing Simulation Campaign cannot be authenticated"
+            "enclosing Simulation Record cannot be authenticated"
         ) from exc
     manifest = authenticated.manifest
     target = cast(Mapping[str, str], manifest.document["target"])
@@ -340,7 +340,7 @@ def authenticate_coverage_campaign_owner(
         != [(nested["bytes"], nested["sha256"], Path(cast(str, nested["path"])).parts[5:])]
     ):
         raise CoverageCampaignReferenceError(
-            "enclosing Simulation Campaign disagrees with reference"
+            "enclosing Simulation Record disagrees with reference"
         )
     return authenticated
 

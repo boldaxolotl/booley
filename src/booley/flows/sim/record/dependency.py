@@ -1,4 +1,4 @@
-"""Origin-owned reverse dependency receipts for Simulation Campaign resumes."""
+"""Origin-owned reverse dependency receipts for Simulation Record resumes."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ _FIELDS = {
 
 @dataclass(frozen=True, slots=True)
 class SimulationRecordDependencyReceipt:
-    """One validated reverse edge from an origin Simulation Campaign to a resume."""
+    """One validated reverse edge from an origin Simulation Record to a resume."""
 
     simulation_record_id: str
     manifest_sha256: str
@@ -84,7 +84,7 @@ def register_simulation_record_dependency(
         )
         != document
     ):
-        raise ValueError("Simulation Campaign dependency receipt disagrees")
+        raise ValueError("Simulation Record dependency receipt disagrees")
     write_simulation_record_json(path, document)
     return path
 
@@ -98,10 +98,10 @@ def read_simulation_record_dependencies(
     if not directory.exists():
         return ()
     if is_report_link(directory) or not directory.is_dir():
-        raise ValueError("Simulation Campaign dependency registry is unsafe")
+        raise ValueError("Simulation Record dependency registry is unsafe")
     paths = tuple(sorted(directory.iterdir()))
     if len(paths) > 1_000:
-        raise ValueError("Simulation Campaign dependency registry is too large")
+        raise ValueError("Simulation Record dependency registry is too large")
     booley_dir = crossed_booley_dir_entry(directory)
     receipts = tuple(_decode_receipt(path, manifest, booley_dir) for path in paths)
     return tuple(sorted(receipts, key=lambda item: str(item.dependent_invocation)))
@@ -120,7 +120,7 @@ def _decode_receipt(
     )
     raise_if_retired_schema(document.get("$schema"))
     if set(document) != _FIELDS or document.get("$schema") != DEPENDENCY_SCHEMA:
-        raise ValueError(f"Malformed Simulation Campaign dependency receipt: {path}")
+        raise ValueError(f"Malformed Simulation Record dependency receipt: {path}")
     try:
         simulation_record_id = require_str_value(
             document["simulation_record_id"], field="simulation_record_id"
@@ -130,14 +130,14 @@ def _decode_receipt(
             document["dependent_invocation_id"], field="dependent_invocation_id"
         )
     except BoundaryError as exc:
-        raise ValueError(f"Malformed Simulation Campaign dependency receipt: {path}") from exc
+        raise ValueError(f"Malformed Simulation Record dependency receipt: {path}") from exc
     _require_simulation_record_id(simulation_record_id)
     _manifest_digest(manifest_sha256)
     origin_invocation = _absolute_path(document["origin_invocation"], "origin invocation")
     origin_target = _absolute_path(document["origin_target"], "origin Target")
     dependent = _absolute_path(document["dependent_invocation"], "dependent invocation")
     if dependent_id < 1 or dependent.name != str(dependent_id):
-        raise ValueError(f"Malformed Simulation Campaign dependency receipt: {path}")
+        raise ValueError(f"Malformed Simulation Record dependency receipt: {path}")
     current_target = manifest.parents[1].absolute()
     current_invocation = manifest.parents[3].absolute()
     authoritative = origin_target == current_target and origin_invocation == current_invocation
@@ -146,7 +146,7 @@ def _decode_receipt(
             manifest, limit=MANIFEST_MAX_BYTES, error=ValueError, booley_dir=booley_dir
         )
         if manifest_document.get("simulation_record_id") != simulation_record_id:
-            raise ValueError("Simulation Campaign dependency origin identity disagrees")
+            raise ValueError("Simulation Record dependency origin identity disagrees")
     return SimulationRecordDependencyReceipt(
         simulation_record_id,
         manifest_sha256,
@@ -162,7 +162,7 @@ def _decode_receipt(
 def _regular_manifest(path: Path) -> Path:
     manifest = path.absolute()
     if manifest.name != "manifest.json" or manifest.parent.name != RECORD_DIRECTORY:
-        raise ValueError("Dependency origin must be an exact Simulation Campaign manifest")
+        raise ValueError("Dependency origin must be an exact Simulation Record manifest")
     info = manifest.lstat()
     if is_report_link(manifest) or not stat.S_ISREG(info.st_mode):
         raise ValueError("Dependency origin manifest must be a regular file")
@@ -190,7 +190,7 @@ def _require_simulation_record_id(value: object) -> str:
     try:
         return require_uuid4(value, field="dependency simulation_record_id")
     except BoundaryError as exc:
-        raise ValueError("Dependency Simulation Campaign id is invalid") from exc
+        raise ValueError("Dependency Simulation Record id is invalid") from exc
 
 
 def _manifest_digest(value: object) -> str:

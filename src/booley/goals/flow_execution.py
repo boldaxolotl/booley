@@ -231,7 +231,7 @@ class GoalFlowExecution:
         return flow_test_runs(record, dict(self._binding.spec_revisions))
 
     def register_simulation_record(self, simulation_record: StartedSimulationRecord) -> None:
-        """Register a Simulation Campaign the run is about to start (ADR 0072)."""
+        """Register a Simulation Record the run is about to start (ADR 0072)."""
         self._recorder.register_simulation_record(simulation_record)
 
     def state_persistence(self) -> StatePersistence:
@@ -268,7 +268,7 @@ class GoalFlowExecution:
         acceptance_facts: Mapping[str, Any],
         identity: Mapping[str, Any],
     ) -> AcceptanceTransaction:
-        """Record or recover a Simulation Campaign transaction (V2) as Goal evidence."""
+        """Record or recover a Simulation Record transaction (V2) as Goal evidence."""
         return self._recorder.record_or_verify_transaction(
             state, changes, acceptance_facts=acceptance_facts, identity=identity
         )

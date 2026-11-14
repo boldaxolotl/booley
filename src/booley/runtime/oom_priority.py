@@ -17,7 +17,7 @@ started runs at its coordinator's value (still above the agent) for at most
 that long, and a re-rank after another Job starts or ends converges within one
 interval. Where ``/proc`` is unavailable nothing changes.
 
-A Simulation Campaign work item that holds a Memory Reservation of its own
+A Simulation Record work item that holds a Memory Reservation of its own
 ranks as its own Job: it is newer than its Flow, and its registered processes
 (``work_item_processes``) and their descendants take the level its admission
 order gives, so an out-of-memory kill takes the newest item's simulator first.
@@ -207,7 +207,7 @@ class JobOomRanking:
     def apply(self) -> None:
         """Write the coordinator's, its items' and its descendants' values from the current holders.
 
-        Every claim is one Job, ordered by its admission: a Campaign's work item
+        Every claim is one Job, ordered by its admission: a Simulation Record's work item
         claims share the Flow's PID but each is newer than the Flow and than any
         claim admitted before it. The processes of an item that holds its own
         claim take that claim's level; everything else of the coordinator keeps
