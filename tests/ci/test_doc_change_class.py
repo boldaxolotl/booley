@@ -29,6 +29,7 @@ SEED = {
     "GLOSSARY-MAP.md": "# Map\n",
     "docs/adr/0001-x.md": "# ADR\n",
     "docs/user/USAGE.md": _USAGE,
+    "docs/user/MULTI.md": "# Multi\n\nInstall\nBooley\n------\n",
     "docs/user/OTHER.md": "# Other\n\nSome other page text.\n",
     "website/index.md": "---\ntitle: T\n---\n# Site\n",
     "crates/bwave/docs/public/guide.md": "# Guide\n",
@@ -130,6 +131,10 @@ _PREMERGE_CASES: dict[str, tuple[dict[str, str | None], dict[str, tuple[str, str
         _append("GLOSSARY-MAP.md", "x\n"),
         {"GLOSSARY-MAP.md": ("premerge", "glossary")},
     ),
+    "root-glossary": (
+        {"GLOSSARY.md": "# Glossary\n"},
+        {"GLOSSARY.md": ("premerge", "glossary")},
+    ),
     "adr": (_append("docs/adr/0001-x.md", "x\n"), {"docs/adr/0001-x.md": ("premerge", "adr")}),
     "page-added": (
         {"docs/user/NEW.md": "# New\n"},
@@ -162,6 +167,10 @@ _PREMERGE_CASES: dict[str, tuple[dict[str, str | None], dict[str, tuple[str, str
     "heading-renamed": (
         _edit("docs/user/USAGE.md", "## Install", "## Setup"),
         {"docs/user/USAGE.md": ("premerge", "user-page-headings")},
+    ),
+    "multiline-setext-heading-renamed": (
+        _edit("docs/user/MULTI.md", "Install\n", "Configure\n"),
+        {"docs/user/MULTI.md": ("premerge", "user-page-headings")},
     ),
     "setext-heading-added": (
         _append("docs/user/USAGE.md", "\nExtra\n-----\n"),
@@ -203,12 +212,24 @@ _PREMERGE_CASES: dict[str, tuple[dict[str, str | None], dict[str, tuple[str, str
         ),
         {"docs/user/CLI-REFERENCE.md": ("premerge", "cli-reference-entry")},
     ),
+    "cli-optional-flag": (
+        _edit("docs/user/CLI-REFERENCE.md", "booley chat --model x", "booley chat [--fast] x"),
+        {"docs/user/CLI-REFERENCE.md": ("premerge", "cli-reference-entry")},
+    ),
     "cli-table-command": (
         _edit("docs/user/CLI-REFERENCE.md", "`dashboard`", "`dashboard`, `report`"),
         {"docs/user/CLI-REFERENCE.md": ("premerge", "cli-reference-entry")},
     ),
     "config-new-key": (
         _edit("docs/user/CONFIG.md", '# reviewer = "x"\n', '# reviewer = "x"\nretries = 3\n'),
+        {"docs/user/CONFIG.md": ("premerge", "config-reference-key")},
+    ),
+    "config-quoted-key": (
+        _edit("docs/user/CONFIG.md", '# reviewer = "x"\n', '# reviewer = "x"\n"retries" = 3\n'),
+        {"docs/user/CONFIG.md": ("premerge", "config-reference-key")},
+    ),
+    "config-dotted-key": (
+        _edit("docs/user/CONFIG.md", '# reviewer = "x"\n', '# reviewer = "x"\nlimit.max = 3\n'),
         {"docs/user/CONFIG.md": ("premerge", "config-reference-key")},
     ),
     "config-prose-key": (
@@ -241,6 +262,10 @@ _POSTREVIEW_CASES: dict[str, tuple[dict[str, str | None], dict[str, tuple[str, s
     "config-prose-edit": (
         _edit("docs/user/CONFIG.md", "Pick a model per role.", "Pick one model per role."),
         {"docs/user/CONFIG.md": ("postreview", "default")},
+    ),
+    "changelog-renamed-to-internal-doc": (
+        {"CHANGELOG.md": None, "docs/internals/RELEASE-NOTES.md": SEED["CHANGELOG.md"]},
+        {"docs/internals/RELEASE-NOTES.md": ("postreview", "default")},
     ),
     "changelog-fragment": (
         {"changelog.d/123.md": "Fixed a thing.\n"},

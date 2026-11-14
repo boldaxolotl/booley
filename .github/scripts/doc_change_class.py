@@ -33,7 +33,7 @@ _WORD = re.compile(r"[a-z][a-z0-9_-]*")
 _FLAG = re.compile(r"(?<![\w-])--?[A-Za-z][\w-]*")
 _ATX = re.compile(r"^ {0,3}(#{1,2})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$")
 _TOML_TABLE = re.compile(r"^\s*(\[\[?[^\]]+\]\]?)\s*$")
-_TOML_KEY = re.compile(r"^\s*#?\s*([A-Za-z0-9_-]+)\s*=")
+_TOML_KEY = re.compile(r'^\s*#?\s*("[^"]+"|[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\s*=')
 _CONFIG_SPAN = re.compile(r"^\[\[?[\w.-]+\]\]?(\.[\w-]+)?$")
 
 
@@ -180,22 +180,23 @@ def _blocks(text: str) -> list[tuple[str | None, str]]:
 
 def headings(text: str) -> Counter[tuple[int, str]]:
     found: Counter[tuple[int, str]] = Counter()
-    prose = [line for lang, line in _blocks(text) if lang is None]
-    for n, line in enumerate(prose):
+    paragraph: list[str] = []
+    for lang, line in _blocks(text):
+        if lang is not None:
+            continue
         atx = _ATX.match(line)
+        stripped = line.strip()
         if atx:
             found[len(atx.group(1)), atx.group(2).strip()] += 1
-            continue
-        under = prose[n + 1].strip() if n + 1 < len(prose) else ""
-        text_line = line.strip()
-        if (
-            text_line
-            and "|" not in text_line
-            and text_line[0] not in "#>-*+"
-            and under
-            and set(under) in ({"="}, {"-"})
-        ):
-            found[1 if under[0] == "=" else 2, text_line] += 1
+            paragraph = []
+        elif not stripped:
+            paragraph = []
+        elif paragraph and set(stripped) in ({"="}, {"-"}):
+            if all("|" not in p and p[0] not in "#>-*+" for p in paragraph):
+                found[1 if stripped[0] == "=" else 2, " ".join(paragraph)] += 1
+            paragraph = []
+        else:
+            paragraph.append(stripped)
     return found
 
 
@@ -226,8 +227,7 @@ def _cli_entries(text: str) -> set[str]:
         for token in rest:
             if token == "--" or token.startswith("#"):
                 break
-            if token.startswith("-") and len(token) > 1:
-                entries.add(f"{path} {token.split('=')[0]}")
+            entries.update(f"{path} {flag}" for flag in _FLAG.findall(token))
     return entries
 
 
@@ -246,7 +246,8 @@ def _config_entries(text: str) -> set[str]:
                 table = header.group(1)
                 entries.add(table)
             elif key:
-                entries.add(f"{table}.{key.group(1)}")
+                name = key.group(1).strip('"')
+                entries.add(f"{table}.{name}")
     return entries
 
 
@@ -263,9 +264,10 @@ def _check(check: str, change: Change, base_rev: str, head_rev: str) -> bool:
     return bool(entries(new) - entries(old))
 
 
-def _matches(patterns: tuple[str, ...], change: Change) -> bool:
+def _matches(patterns: tuple[str, ...], change: Change, *, every_path: bool = False) -> bool:
     names = [change.path, *([change.old_path] if change.old_path else [])]
-    return any(fnmatchcase(name, pattern) for name in names for pattern in patterns)
+    hits = [any(fnmatchcase(name, pattern) for pattern in patterns) for name in names]
+    return all(hits) if every_path else any(hits)
 
 
 def classify(rules: Rules, base: str, head: str) -> dict[str, object]:
@@ -277,7 +279,8 @@ def classify(rules: Rules, base: str, head: str) -> dict[str, object]:
         hits = [
             kind
             for kind in rules.kinds
-            if _matches(kind.paths, change) and _check(kind.check, change, merge_base, head)
+            if _matches(kind.paths, change, every_path=kind.cls == "none")
+            and _check(kind.check, change, merge_base, head)
         ]
         cls = max([k.cls for k in hits] or [rules.default_class], key=CLASSES.index)
         rule = next((k.name for k in hits if k.cls == cls), "default")

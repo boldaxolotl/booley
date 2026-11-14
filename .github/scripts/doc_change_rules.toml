@@ -3,6 +3,8 @@
 #
 # Patterns use fnmatch: "*" matches any characters, including "/".
 # The class of a kind is the only thing to edit to move it between classes.
+# A renamed file matches a kind when either path matches, except a kind of class
+# none, which needs both paths to match.
 
 # A path is a doc change when it matches one of these (any *.md file and
 # anything under docs/).
@@ -24,7 +26,7 @@ paths = ["CHANGELOG.md", "*/CHANGELOG.md"]
 name = "glossary"
 class = "premerge"
 check = "changed"
-paths = ["GLOSSARY-MAP.md", "*/GLOSSARY.md"]
+paths = ["GLOSSARY-MAP.md", "GLOSSARY.md", "*/GLOSSARY.md"]
 
 # An ADR records a decision the maintainer owns.
 [[kind]]
