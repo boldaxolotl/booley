@@ -192,6 +192,8 @@ _MUTANT_LOG_MAX_BYTES = 256 * 1024
 
 #: Statuses a shell or the adapter's own handler report for a death by these signals.
 _SIGNAL_EXIT_BASE = 128
+# signal.SIGKILL does not exist on Windows; the number is 9 everywhere it is reported.
+_SIGKILL = 9
 
 
 def _killing_signal(
@@ -213,11 +215,8 @@ def _killing_signal(
         except AdapterTransportError:
             pass
         else:
-            if (
-                result.termination == "completed"
-                and result.simulator_returncode == -signal.SIGKILL
-            ):
-                number = int(signal.SIGKILL)
+            if result.termination == "completed" and result.simulator_returncode == -_SIGKILL:
+                number = _SIGKILL
     _discard_adapter_results(identity)
     if not number:
         return ""
@@ -238,7 +237,7 @@ def _adapter_signal(returncode: int) -> int:
     """The signal an adapter's exit status reports, or 0: killed, or SIGKILL/SIGTERM by shell."""
     if returncode < 0:
         return -returncode
-    for number in (signal.SIGKILL, signal.SIGTERM):
+    for number in (_SIGKILL, int(signal.SIGTERM)):
         if returncode == _SIGNAL_EXIT_BASE + number:
             return int(number)
     return 0
