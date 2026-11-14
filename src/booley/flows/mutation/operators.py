@@ -164,11 +164,19 @@ _SHIFT_OPERATORS = _names("ArithmeticShiftRight LogicalShiftRight")
 _ADD_SUBTRACT_OPERATORS = _names("Add Subtract")
 # Binary operators whose operands are context-determined: both are widened to the wider
 # of the two (and of the assignment target, for the arithmetic and bitwise ones).
-_CONTEXT_OPERATORS = _names(
-    "Add Subtract Multiply Divide Mod BinaryAnd BinaryOr BinaryXor BinaryXnor "
+_VALUE_OPERATORS = _names(
+    "Add Subtract Multiply Divide Mod BinaryAnd BinaryOr BinaryXor BinaryXnor"
+)
+_CONTEXT_OPERATORS = _VALUE_OPERATORS | _names(
     "Equality Inequality CaseEquality CaseInequality WildcardEquality WildcardInequality "
     "LessThan LessThanEqual GreaterThan GreaterThanEqual"
 )
+# Only the left operand of a shift or power is sized by the context; the other is its own.
+_LEFT_SIZED_OPERATORS = _names(
+    "ArithmeticShiftLeft ArithmeticShiftRight LogicalShiftLeft LogicalShiftRight Power"
+)
+_VALUE_UNARY_OPERATORS = _names("Plus Minus BitwiseNot")
+_SIGN_CASTS = frozenset({"$signed", "$unsigned"})
 # Syntax that lets another file elaborate a module differently from this file alone: a
 # parameter that is not `localparam` (overridable by an instance or `defparam`), or an
 # interface or named-type port.
@@ -411,29 +419,54 @@ def _strip_propagated(expression: Any) -> Any:
     return expression
 
 
+def _cap_sized_by_context(
+    inner: Any, widths: dict[int, int], width: int, buffer: Any, pyslang: Any
+) -> Any:
+    """Visitor step: cap the unsized literals ``width`` narrows, not self-determined ones.
+
+    Reached from a narrowing conversion over ``inner``.  The context sizes the operands
+    of arithmetic and bitwise operators, a conditional's branches, the left operand of a
+    shift, and a sign cast's argument.  A selector, a shift amount, a comparison or logical
+    operand and a function argument have their own width: they are left to the visit that
+    reaches them.
+    """
+    _note_literal(widths, inner, width, buffer)
+    kind = inner.kind.name
+    descend: tuple[Any, ...]  # the children the context sizes
+    if kind == "BinaryOp":
+        op = inner.op.name
+        descend = (inner.left, inner.right) if op in _VALUE_OPERATORS else ()
+        descend = (inner.left,) if op in _LEFT_SIZED_OPERATORS else descend
+    elif kind == "UnaryOp":
+        descend = (inner.operand,) if inner.op.name in _VALUE_UNARY_OPERATORS else ()
+    elif kind == "ConditionalOp":
+        descend = (inner.left, inner.right)
+    elif kind in ("ElementSelect", "RangeSelect"):
+        descend = (inner.value,)
+    elif kind == "Call":
+        sized = inner.isSystemCall and inner.subroutineName in _SIGN_CASTS
+        descend = tuple(inner.arguments) if sized else ()
+    else:
+        return None  # a conversion, assignment pattern, or leaf: visit everything below
+    for child in descend:
+        child.visit(lambda node: _cap_sized_by_context(node, widths, width, buffer, pyslang))
+    return pyslang.ast.VisitAction.Skip
+
+
 def _literal_widths(pyslang: Any, root: Any, buffer: Any) -> dict[int, int]:
     """The narrowest width each unsized literal in ``buffer`` is used at, by file offset.
 
     An unsized literal elaborates as a 32-bit ``int`` and widens its context, so the
     expression's own width says nothing.  The narrowest width on the way from the literal
     to where its value is consumed is: its own width; the width of every narrowing
-    conversion above it, implicit or an explicit cast (applied to every unsized literal
-    below it, so a misjudgment only withholds a Mutant); and, for a context-determined
-    binary operator, the width of the other operand.  A literal that is not elaborated (a
+    conversion above it, implicit or an explicit cast, for the operands the context sizes;
+    and, for a context-determined binary operator, the width of the other operand.  A literal that is not elaborated (a
     macro, or a connection to a module defined in another file) has no entry.
     """
     widths: dict[int, int] = {}
-    skip = pyslang.ast.VisitAction.Skip
 
     def narrow(width: int) -> Callable[[Any], Any]:
-        def cap(inner: Any) -> Any:
-            _note_literal(widths, inner, width, buffer)
-            # The outer visit reaches a nested narrowing conversion itself, with its own width.
-            if inner.kind.name == "Conversion" and int(inner.type.bitWidth) <= width:
-                return skip
-            return None
-
-        return cap
+        return lambda inner: _cap_sized_by_context(inner, widths, width, buffer, pyslang)
 
     def record(expression: Any) -> None:
         kind = expression.kind.name
@@ -456,11 +489,11 @@ def _semantic_facts(pyslang: Any, tree: Any, buffer: Any) -> _Facts:
 
     These are the declared bounds of each literal select, the right shifts whose left
     operand is signed in at least one instance (elsewhere ``>>`` and ``>>>`` are the same),
-    each reference to an enum member, and the ``+``/``-`` operators whose swap is equal at
-    the expression's width in every instance, and the narrowest width each unsized literal's
-    value is used at.  Diagnostics, such as modules or packages
-    defined in other files, are ignored: an enum that cannot be resolved has no member
-    symbol, so it yields no reference.  Only locations in ``buffer`` are kept.
+    each reference to an enum member, the ``+``/``-`` operators whose swap is equal at the
+    expression's width in every instance, and the narrowest width each unsized literal's
+    value is used at.  Diagnostics, such as modules or packages defined in other files, are
+    ignored: an enum that cannot be resolved has no member symbol, so it yields no
+    reference.  Only locations in ``buffer`` are kept.
     """
     compilation = pyslang.ast.Compilation()
     compilation.addSyntaxTree(tree)
