@@ -246,6 +246,17 @@ def test_failed_measurement_never_changes_the_specialist_result(
     assert record["wall_s"] is not None
     history.unlink()
 
+    # The monitor cannot finish: the run is still recorded, with nothing measured.
+    with monkeypatch.context() as patched:
+        patched.setattr(
+            job_resources.JobResourceMonitor, "_count_descendant_kills", fail(OSError("gone"))
+        )
+        outcome = env.run(MeasuredSpecialist())
+    assert (outcome.exit_code, outcome.report_text) == (expected.exit_code, expected.report_text)
+    (record,) = env.records()
+    assert record["peak_rss_mb"] is None and record["wall_s"] is not None
+    history.unlink()
+
     # The history cannot be written: a warning, no record.
     with monkeypatch.context() as patched:
         patched.setattr(job_resources, "append_records", fail(OSError("read-only")))
@@ -275,3 +286,39 @@ def test_run_that_raises_is_recorded_and_still_raises(env: _Env) -> None:
         endpoint._measured_run()
 
     assert len(env.records()) == 2
+
+
+def test_a_failed_monitor_start_does_not_leave_later_windows_counted_as_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monitor = job_resources.JobResourceMonitor(private_tmp=False)
+
+    def no_thread() -> None:
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(monitor._thread, "start", no_thread)
+    with pytest.raises(RuntimeError, match="new thread"):
+        monitor.start(os.getpid(), descendants_only=True)
+
+    assert job_resources._IN_PROCESS.enter() is not None  # nothing else is active
+    job_resources._IN_PROCESS.leave(None)
+
+
+def test_a_second_run_of_one_instance_records_only_its_own_calls(env: _Env) -> None:
+    class Refuses(MeasuredSpecialist):
+        refuse = False
+
+        def _validate_interactive_args(self) -> McpToolResult | None:
+            if self.refuse:
+                return McpToolResult(exit_code=EXIT_FAILURE, report_text="refused")
+            return None
+
+    env.respond = lambda _params: AgentResult(structured={"approved": True})
+    endpoint = Refuses()
+    env.run(endpoint)
+    assert len(env.records()) == 1
+
+    endpoint.refuse = True
+    assert endpoint._measured_run().exit_code == EXIT_FAILURE
+
+    assert len(env.records()) == 1  # no agent call, so no stale record

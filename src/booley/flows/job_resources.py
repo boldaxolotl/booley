@@ -448,12 +448,17 @@ class JobResourceMonitor:
         self._pid = pid
         self._include_root = not descendants_only
         self._ticket = _IN_PROCESS.enter()
-        self._oom_before = cgroup_oom_kill_count()
-        self._cpu_before = _children_cpu_s()
-        self._container_start = _container_memory_bytes()
-        self._others_before = _other_jobs_hold_slots()
-        self._sample()
-        self._thread.start()
+        try:
+            self._oom_before = cgroup_oom_kill_count()
+            self._cpu_before = _children_cpu_s()
+            self._container_start = _container_memory_bytes()
+            self._others_before = _other_jobs_hold_slots()
+            self._sample()
+            self._thread.start()
+        except BaseException:
+            # A monitor that never ran must not keep later windows from being alone.
+            _IN_PROCESS.leave(self._ticket)
+            raise
 
     def finish(self) -> JobMeasurement:
         """Stop sampling once the command is reaped; later calls return the same result."""
@@ -659,7 +664,7 @@ def measure_agent_call(calls: list[AgentCallUsage]) -> Iterator[None]:
 
     Samples the descendants of this process, not the process itself. Appends the
     window to *calls* when the block ends, also when the block raises; a monitor
-    that cannot start leaves the window with no measured values.
+    that cannot start or finish leaves the window with no measured values.
     """
     monitor = JobResourceMonitor(private_tmp=False)
     started = time.monotonic()
@@ -673,7 +678,13 @@ def measure_agent_call(calls: list[AgentCallUsage]) -> Iterator[None]:
         yield
     finally:
         wall_s = time.monotonic() - started
-        calls.append(AgentCallUsage(monitor.finish() if running else None, wall_s))
+        measurement = None
+        if running:
+            try:
+                measurement = monitor.finish()
+            except (OSError, RuntimeError, ValueError):
+                logger.warning("Specialist resource measurement could not finish", exc_info=True)
+        calls.append(AgentCallUsage(measurement, wall_s))
 
 
 def _sum_or_none(values: list[float | None]) -> float | None:

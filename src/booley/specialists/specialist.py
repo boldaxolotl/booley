@@ -532,6 +532,7 @@ class Specialist(McpTool):
         A run that made no agent call (a dry run, a refused argument) records
         nothing. A run that raises is recorded as an error and raises again.
         """
+        self._agent_calls.clear()
         try:
             result = self._run()
         except Exception:
