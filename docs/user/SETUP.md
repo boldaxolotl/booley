@@ -140,8 +140,8 @@ one that has only a key (a Claude OAuth token counts as a login, a Codex
 `subscription`); without a terminal it records `subscription` and says so.
 With neither, it records `subscription` and prints how to sign in.
 
-An explicit choice matters because `auto` lets the
-Agent CLI decide, and an exported API key always beats a subscription, so
+Init records a choice instead of `auto` because `auto` lets the Agent CLI
+decide, and an exported API key always beats a subscription, so
 you can end up paying per token without noticing. With an explicit choice,
 `booley doctor` fails when the default Agent CLI's credential is missing instead
 of quietly using another one (for another allowed CLI it only warns, unless a Specialist runs on it). A Project that also runs a Specialist on the other Agent CLI can

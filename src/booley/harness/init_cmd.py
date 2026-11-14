@@ -675,7 +675,9 @@ def _choose_auth(ctx: InitContext, cli: str) -> str | None:
                 f"auth for {cli}", ("subscription", "api_key"), default="subscription"
             )
         info(f"{cli}: found a subscription login and an API key; recording subscription")
-        hint("to bill the API key instead, set [agent] auth to api_key in booley.toml")
+        hint(
+            f'to bill the {cli} API key instead, set {cli} = "api_key" under [agent.auth] in booley.toml'
+        )
     elif not has_subscription:
         hint(
             f"{cli}: no credential found; sign in: "
@@ -771,7 +773,8 @@ def _insert_agent_fields(content: str, fields: Mapping[str, str | dict[str, str]
     that separate the table from the next header. Without one, an ``[agent]``
     table is appended at the end of the file. A ``dict`` value is an
     ``[agent.auth]`` table: a recorded table keeps its lines and only has the
-    changed entries set.
+    changed entries set. A recorded string is replaced in place, keeping its
+    comment; a string turned into a table moves to the end of the table.
     """
     document = tomlkit.parse(content)
     if "agent" not in document:
@@ -794,7 +797,7 @@ def _insert_agent_fields(content: str, fields: Mapping[str, str | dict[str, str]
             for cli, policy in value.items():
                 current[cli] = policy
             continue
-        if current is not None:
+        if current is not None and not (isinstance(value, str) and isinstance(current, str)):
             del table[key]
         table[key] = value
     return document.as_string()

@@ -134,7 +134,7 @@ def test_fresh_init_records_detected_auth(
     output = capsys.readouterr().out
     if state == "both":
         assert f"{cli}: found a subscription login and an API key" in output
-        assert "[agent] auth" in output
+        assert f'{cli} = "api_key" under [agent.auth]' in output
         assert "--auth" not in output
     if state == "neither":
         assert f"{cli}: no credential found" in output
@@ -286,6 +286,20 @@ def test_rerun_keeps_table_comments_and_other_lines(tmp_path: Path, home: Path) 
     _run_init(tmp_path, config)
 
     assert config.read_bytes() == body.replace(b'codex = "auto"', b'codex = "subscription"')
+
+
+def test_rerun_replaces_auto_string_in_place_keeping_its_comment(
+    tmp_path: Path, home: Path
+) -> None:
+    _login(home, "claude")
+    body = b'[agent]\nauth = "auto"  # billing\ndefault = "claude"\n'
+    config = _config(tmp_path, body)
+
+    _run_init(tmp_path, config)
+
+    assert (
+        config.read_bytes() == b'[agent]\nauth = "subscription"  # billing\ndefault = "claude"\n'
+    )
 
 
 def test_rerun_keeps_explicit_auth(
