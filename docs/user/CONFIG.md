@@ -213,11 +213,11 @@ pays:
 ```toml
 [agent]
 default = "claude"
-auth = "subscription"   # "subscription" or "api_key"; "auto" still loads
+auth = "subscription"   # "subscription" or "api_key"
 ```
 
-- **`auto`**: the Agent CLI decides, and an API key beats a subscription. This
-  is what a missing `auth` means at run time, and `booley doctor` fails on it.
+- **`auto`**: the Agent CLI decides, and an API key beats a subscription. A
+  missing `auth` means `auto`, and `booley doctor` fails on it.
 - **`subscription`**: Booley removes API keys from the agents' environment so
   the subscription pays.
 - **`api_key`**: the API key pays.
@@ -243,7 +243,6 @@ quietly bills the other one:
 - **Any CLI in `clis`** whose `auth` is missing or `auto`: fails, naming the
   value `booley init` would record (`subscription` with a login, `api_key` with
   only a key). Set it under `[agent]` or `[agent.auth]`, or re-run `booley init`.
-  Doctor accepts `subscription` with an API key exported.
 - **Default CLI**, with `subscription` or `api_key`: a missing credential fails.
 - **Another CLI in `clis`**: a missing credential warns. If a `[models]` entry
   runs a Specialist on that CLI, it fails whatever `auth` says.
