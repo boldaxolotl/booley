@@ -363,29 +363,6 @@ misbehaves](USAGE.md#when-booley-itself-misbehaves).
 To change what the shared copy hides, use the `[feedback]` table; see
 [Redacted feedback](STEALTH.md#redacted-feedback-feedback).
 
-## Explicit Flow Targets and Doctor selection
-
-A Flow run that doesn't name a Target uses the only eligible one, and fails
-when there are several ([Choosing Targets](FLOW_REFERENCE.md#choosing-targets)).
-Doctor checks only the Targets you mark for it. The mark sits in the `.core`
-file, beside the Target:
-
-```yaml
-targets:
-  lint_core:
-    flow: lint
-    flow_options:
-      tool: verilator
-      booley: {doctor: [lint]}
-```
-
-The allowed names are `sim`, `lint`, `synth`, and `fpga`. Plain `booley doctor`
-dry-runs each marked Target and `booley doctor --deep` runs it. For `fpga`,
-deep Doctor skips the full implementation and prints the command to run it
-yourself. An unmarked Target still runs whenever you or the agent ask for it.
-With an enabled `[flows.fpga]` table, Doctor fails until some Target is marked
-`fpga`; set `enabled = false` there if the Project has no FPGA build yet.
-
 ## Advanced setups
 
 Every Flow builds from a FuseSoC `.core` Target (see [Design
