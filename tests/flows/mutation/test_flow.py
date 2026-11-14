@@ -334,12 +334,16 @@ class TestMutationSummary:
             results=[
                 MutationResult(index=1, detected=True),
                 MutationResult(index=2, detected=False),
-                MutationResult(index=3, detected=False, invalid=True),
+                MutationResult(index=3, detected=False, inconclusive_reason="no observation"),
             ],
         )
         assert s.detected_count == 1
         assert s.not_detected_count == 1
-        assert s.invalid_count == 1
+        assert [row["status"] for row in s.classify()] == [
+            "detected",
+            "not_detected",
+            "inconclusive",
+        ]
 
     def test_classify(self):
         s = MutationSummary(
@@ -1551,40 +1555,169 @@ def test_survivors_are_not_detected_with_one_equivalence_note(tmp_path: Path, mo
     assert "may be equivalent" not in _results_markdown(tmp_path, all_killed)
 
 
-def test_invalid_mutants_are_named_against_the_threshold(tmp_path: Path, monkeypatch) -> None:
-    def three_do_not_build(index: int | None) -> subprocess.CompletedProcess:
-        return _fake_proc(rc=2 if index in (2, 5, 8) else 0, stderr="error: does not elaborate")
+def _failing_builds(*attempts: int) -> Callable[[int | None], subprocess.CompletedProcess]:
+    """A ``build`` callback that fails the listed 1-based Mutant build attempts.
 
-    _, result, _ = _campaign(
-        tmp_path, monkeypatch, count=10, run=_detects_every_mutant, build=three_do_not_build
+    The baseline build is not counted.  A replacement reuses its Mutant number, so the
+    build index alone cannot name an attempt.
+    """
+    seen = 0
+
+    def build(index: int | None) -> subprocess.CompletedProcess:
+        nonlocal seen
+        if index is None:
+            return _fake_proc(rc=0)
+        seen += 1
+        return _fake_proc(rc=2 if seen in attempts else 0, stderr="error: does not elaborate")
+
+    return build
+
+
+def test_replaced_build_failures_leave_a_full_count_that_passes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _prepare_scope_files(tmp_path, [_SCOPE])
+    ranked = _candidates(tmp_path)
+    _, result, fake = _campaign(
+        tmp_path,
+        monkeypatch,
+        count=10,
+        run=_detects_every_mutant,
+        build=_failing_builds(2, 5, 8),
     )
 
-    # ceil(0.8 x 10) = 8 of the 10 Mutants run: the 3 invalid ones use up the margin.
-    assert result.exit_code == EXIT_FAILURE, result.report_text
+    # The 3 candidates that did not build are replaced: all 10 kept Mutants are scored
+    # and the default threshold stays ceil(0.8 x 10) = 8.
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
     assert result.detail["min_detected"] == 8
-    assert (result.detail["detected"], result.detail["invalid"]) == (7, 3)
-    assert "3 invalid Mutants could not be judged" in result.report_text
-    assert "RESULT: FAIL (7/7 detected, need 8)" in result.report_text
-    assert "  detected: 7/7 (required: 8, default 80% of --count)" in result.report_text
-    assert "required: 8/7" not in result.report_text
-    assert "(required: 8)" in _results_markdown(tmp_path, result)
-    assert "3 invalid Mutants could not be judged" in _results_markdown(tmp_path, result)
+    assert (result.detail["detected"], result.detail["total_scored"]) == (10, 10)
+    assert result.detail["invalid_dropped"] == [ranked[i].id for i in (1, 4, 7)]
+    assert "RESULT: PASS (10/10 detected)" in result.report_text
+    assert "3 candidate Mutants did not build and were replaced" in result.report_text
+    assert "invalid" not in result.detail
+    assert "invalid" not in {row["status"] for row in result.detail["classified"]}
+    assert "invalid" not in result.report_text.lower()
+    assert "invalid" not in _results_markdown(tmp_path, result).lower()
+    assert fake.builds == [None, 1, 2, 2, 3, 4, 4, 5, 6, 6, 7, 8, 9, 10]
 
 
-def test_all_invalid_run_names_no_zero_denominator(tmp_path: Path, monkeypatch) -> None:
-    def nothing_builds(index: int | None) -> subprocess.CompletedProcess:
-        # The pristine baseline (no index) builds; every Mutant does not.
-        return _fake_proc(rc=0 if index is None else 2, stderr="error: does not elaborate")
+@pytest.mark.parametrize("eda_tool", ["verilator", "icarus"])
+def test_build_failure_is_replaced_by_the_next_candidate(
+    tmp_path: Path, monkeypatch, eda_tool: str
+) -> None:
+    _prepare_scope_files(tmp_path, [_SCOPE])
+    ranked = _candidates(tmp_path)
 
-    _, result, _ = _campaign(
-        tmp_path, monkeypatch, count=3, run=_detects_every_mutant, build=nothing_builds
+    _, result, fake = _campaign(
+        tmp_path,
+        monkeypatch,
+        count=4,
+        run=_detects_every_mutant,
+        build=_failing_builds(2),
+        simulation={"eda_tool": eda_tool, "verilate": _write_fake_verilation},
     )
 
-    assert result.exit_code == EXIT_FAILURE, result.report_text
-    assert "(required: 3, default 80% of --count)" in result.report_text
-    assert "required: 3/0" not in result.report_text
-    assert "required: 3/0" not in _results_markdown(tmp_path, result)
-    assert "3 invalid Mutants could not be judged" in result.report_text
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    kept = [ranked[i].id for i in (0, 2, 3, 4)]
+    assert [(row["index"], row["id"]) for row in result.detail["classified"]] == list(
+        enumerate(kept, start=1)
+    )
+    assert fake.builds == [None, 1, 2, 2, 3, 4]
+    assert fake.runs == [None, 1, 2, 3, 4]  # the Mutant that did not build never ran
+    assert result.detail["invalid_dropped"] == [ranked[1].id]
+    assert result.detail["equivalent_dropped"] == []
+
+
+@pytest.mark.parametrize("min_detected", [None, 3], ids=["default", "explicit"])
+def test_build_failure_cap_scores_the_kept_mutants(
+    tmp_path: Path, monkeypatch, min_detected: int | None
+) -> None:
+    _prepare_scope_files(tmp_path, [_SCOPE])
+    ranked = _candidates(tmp_path)
+    args: dict[str, Any] = {} if min_detected is None else {"min_detected": min_detected}
+
+    _, result, fake = _campaign(
+        tmp_path,
+        monkeypatch,
+        count=3,
+        run=_detects_every_mutant,
+        build=_failing_builds(1, 3, 4),
+        **args,
+    )
+
+    # Three candidates did not build, which is the cap for count 3: Mutant 1 is all there is.
+    assert fake.builds == [None, 1, 1, 2, 2]
+    assert result.detail["invalid_dropped"] == [ranked[i].id for i in (0, 2, 3)]
+    assert [row["id"] for row in result.detail["classified"]] == [ranked[1].id]
+    assert (result.detail["total_scored"], result.detail["total_valid"]) == (1, 1)
+    shortfall = "only 1 Mutants could be scored (3 requested)"
+    assert result.detail["shortfall"] == shortfall
+    assert f"[mutation_test] {shortfall}" in result.report_text
+    if min_detected is None:
+        assert result.exit_code == EXIT_SUCCESS, result.report_text
+        assert result.detail["min_detected"] == 1
+    else:
+        assert result.exit_code == EXIT_FAILURE, result.report_text
+        assert result.detail["min_detected"] == 3
+        assert "(required: 3, explicit)" in result.report_text
+
+
+def test_run_with_no_buildable_candidate_has_nothing_to_score(tmp_path: Path, monkeypatch) -> None:
+    _prepare_scope_files(tmp_path, [_SCOPE])
+    ranked = _candidates(tmp_path)
+
+    _, result, fake = _campaign(
+        tmp_path,
+        monkeypatch,
+        count=3,
+        run=_detects_every_mutant,
+        build=lambda index: _fake_proc(rc=0 if index is None else 2, stderr="error: no"),
+    )
+
+    assert result.exit_code == EXIT_ERROR, result.report_text
+    assert result.detail["phase"] == "mutant_selection"
+    assert result.report_text.splitlines()[-1] == (
+        "RESULT: ERROR (selection: no candidate Mutant changes what the Target builds)"
+    )
+    assert result.detail["invalid_dropped"] == [ranked[i].id for i in range(3)]
+    assert "3 candidate Mutants did not build and were replaced" in result.report_text
+    assert fake.runs == [None]
+
+
+def test_campaign_without_build_failures_names_no_replacement(tmp_path: Path, monkeypatch) -> None:
+    _, result, _ = _campaign(tmp_path, monkeypatch, count=2, run=_detects_every_mutant)
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    assert "did not build" not in result.report_text
+    assert result.detail["invalid_dropped"] == []
+    assert "invalid" not in result.detail
+    assert "  2 detected (0 timeout), 0 not detected" in result.report_text
+
+
+def test_inconclusive_mutant_after_a_replaced_build_failure_is_an_infrastructure_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _prepare_scope_files(tmp_path, [_SCOPE])
+    ranked = _candidates(tmp_path)
+
+    def run(index: int | None) -> subprocess.CompletedProcess:
+        if index == 1:
+            return _fake_proc(rc=1, stdout=_INFRA_OUT)
+        return _fake_proc(rc=0 if index is None else 1, stdout="[sim] run")
+
+    _, result, _ = _campaign(
+        tmp_path, monkeypatch, count=2, min_detected=0, run=run, build=_failing_builds(1)
+    )
+
+    assert result.exit_code == EXIT_ERROR, result.report_text
+    assert result.detail["phase"] == "variant_infrastructure"
+    assert result.detail["invalid_dropped"] == [ranked[0].id]
+    assert [(row["id"], row["status"]) for row in result.detail["classified"]] == [
+        (ranked[1].id, "inconclusive"),
+        (ranked[2].id, "detected"),
+    ]
+    assert "invalid" not in result.detail
+    assert "1 candidate Mutant did not build and was replaced" in result.report_text
 
 
 def test_generator_shortfall_lowers_the_default_threshold(tmp_path: Path, monkeypatch) -> None:
@@ -2011,7 +2144,7 @@ def test_a_run_without_a_verdict_publishes_a_complete_manifest(
     assert result.report_text.splitlines()[-1].startswith("RESULT: ERROR (sweep: ")
     assert len(result.detail["classified"]) == 2
     manifest = json.loads((tmp_path / result.detail["artifacts"]["manifest"]).read_text("utf-8"))
-    assert [row["status"] for row in manifest["mutants"]] == ["invalid", "detected"]
+    assert [row["status"] for row in manifest["mutants"]] == ["inconclusive", "detected"]
     assert manifest["identity"]["count"] == 2
     assert not {"auto", "formula_count", "budget_capped"} & manifest.keys()
 
@@ -2947,26 +3080,45 @@ def test_icarus_target_simulates_every_mutant_without_comparing(
     assert "verilator_version" not in result.detail["identity"]
 
 
-def test_invalid_verilator_mutant_is_not_replaced(tmp_path: Path, monkeypatch) -> None:
+def test_equivalent_and_build_failure_drops_share_one_replacement_order(
+    tmp_path: Path, monkeypatch
+) -> None:
     _write_scope(tmp_path)
-    first = _candidates(tmp_path)[0]
+    ranked = _candidates(tmp_path)
+    first_dead = next(i for i, mutant in enumerate(ranked) if mutant.line == _DEAD_LINE)
+    # The candidate after the first equivalent drop is the one that does not build:
+    # attempts are 1-based and every candidate is built once.
+    failing = first_dead + 2
+    kept: list[str] = []
+    equivalent: list[str] = []
+    invalid: list[str] = []
+    for attempt, mutant in enumerate(ranked, start=1):
+        if len(kept) == 4:
+            break
+        if attempt == failing:
+            invalid.append(mutant.id)
+        else:
+            (equivalent if mutant.line == _DEAD_LINE else kept).append(mutant.id)
+    assert equivalent and invalid
 
     _, result, fake = _campaign(
         tmp_path,
         monkeypatch,
-        count=1,
+        count=4,
         seed=0,
         min_detected=0,
-        build=lambda index: _fake_proc(rc=0 if index != 1 else 1, stdout="", stderr="syntax"),
+        run=_detects_every_mutant,
+        build=_failing_builds(failing),
         simulation=_VERILATED,
     )
 
     assert result.exit_code == EXIT_SUCCESS, result.report_text
-    assert [(row["id"], row["status"]) for row in result.detail["classified"]] == [
-        (first.id, "invalid")
-    ]
-    assert fake.builds == [None, 1]  # candidates remain, but an invalid Mutant keeps its slot
-    assert result.detail["equivalent_dropped"] == []
+    assert [(row["index"], row["id"]) for row in result.detail["classified"]] == list(
+        enumerate(kept, start=1)
+    )
+    assert result.detail["equivalent_dropped"] == equivalent
+    assert result.detail["invalid_dropped"] == invalid
+    assert fake.runs == [None, 1, 2, 3, 4]
 
 
 def test_verilator_version_separates_run_identities(tmp_path: Path, monkeypatch) -> None:

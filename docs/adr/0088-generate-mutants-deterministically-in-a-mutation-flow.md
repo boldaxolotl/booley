@@ -190,9 +190,9 @@ never drops another one. A build whose layout is not Verilator's (no
   its number and build directory; the kept Mutants are numbered 1 to the count
   without gaps. When the candidates run out, the run scores the Mutants it has
   and reports the shortfall with the same text as a generator shortfall (the
-  report must not mention what was dropped); an unset `--min-detected` follows
+  report must not mention what was dropped; for build failures it states their count, per the 2026-11-14 amendment); an unset `--min-detected` follows
   the number scored.
-- A Mutant that does not build stays `invalid` and is not replaced.
+- A Mutant that does not build stays `invalid` and is not replaced (superseded by the 2026-11-14 amendment, #4031).
 - The report and `mutation-results.md` never list a dropped Mutant. The
   Record's detail lists their IDs, in drop order, under `equivalent_dropped`
   (an empty list when none were dropped or the Target is not simulated with
@@ -270,4 +270,33 @@ Mutant of version 5 keeps its ID and text.
 Unlike the `+`/`-` swap filter, a unit that another file may elaborate with other
 parameters is trusted here with its default elaboration. An override that narrows
 the width can give a Mutant that repeats another variant there, or one that fails to
-build and counts as `invalid`. The generator version is 6.
+build and is replaced by the next candidate (#4031). The generator version is 6.
+
+## Amendments (2026-11-14, #4031)
+
+**Build failures are replaced.** A candidate whose build fails is dropped like an
+equivalent one, on every Target: the next candidate takes its number and build
+directory, so the kept Mutants stay numbered 1..N. Both drop kinds share one pick
+order, and the run walks the candidates until `--count` Mutants are kept or none are
+left. The `invalid` status is gone: a Mutant that is scored always built.
+
+**Cap.** The run stops replacing once `--count` candidates have failed to build,
+so a Target that builds no Mutant cannot walk the whole candidate list. Equivalent
+drops do not count toward the cap. The kept Mutants are then scored and the report
+states the shortfall with the usual text. When none is kept the run ends with the
+no-scorable-Mutants `ERROR`.
+
+**Threshold base.** An unset `--min-detected` is 80 % of the Mutants scored,
+rounded up, which equals 80 % of `--count` whenever the run kept `--count` Mutants.
+An explicit `--min-detected` is never changed.
+
+**Result.** The result detail lists the IDs of the dropped build failures, in drop
+order, in `invalid_dropped`, beside `equivalent_dropped`; it has no `invalid` count.
+`total_valid` equals `total_scored`. The report states how many candidates did not
+build and were replaced, only when that count is not zero. A Mutant whose verdict is
+inconclusive still ends the run with an infrastructure `ERROR`; its `classified`
+status is `inconclusive`.
+
+**Generator version.** Not bumped, so it stays 6. The version names the generator's
+candidate output, which this change leaves as it was; which candidates are scored
+already depended on build results once equivalent Mutants were dropped (#3635).
