@@ -511,13 +511,14 @@ Job report `detail` fields:
 | Field | Type and contents |
 |---|---|
 | `target`, `tests`, `seed` | The Simulation Target, the display names of the tests of its suite, and the seed. |
-| `detected`, `not_detected`, `invalid` | Mutant counts. `detected_timeout` is the subset of `detected` that ran past the baseline-scaled limit. |
-| `min_detected`, `total_requested`, `total_scored`, `total_valid` | The pass threshold, the requested count (the resolved `--count`), the number of Mutants scored (fewer than requested after a `shortfall`; invalid Mutants included), and `detected + not_detected` (invalid Mutants excluded). |
+| `detected`, `not_detected` | Mutant counts. `detected_timeout` is the subset of `detected` that ran past the baseline-scaled limit. |
+| `min_detected`, `total_requested`, `total_scored`, `total_valid` | The pass threshold, the requested count (the resolved `--count`), the number of Mutants scored (fewer than requested after a `shortfall`), and the same number: every kept Mutant built. |
 | `identity` | What reproduces the run: `scope_hashes` (file to digest), `generator_version`, `pyslang_version`, `seed`, `count`, and on a Verilator Target `verilator_version` (the first line of `verilator --version`, `unknown` if it cannot be read). |
-| `classified` | Per Mutant: `index`, `id`, `category`, `file`, `line`, `status` (`detected`, `not_detected`, `invalid`, `untested`), `timed_out`, `sim_output_snippet`, `log`, `first_killing_test`. |
+| `classified` | Per Mutant: `index`, `id`, `category`, `file`, `line`, `status` (`detected`, `not_detected`, `inconclusive`, `untested`; `inconclusive` appears only on a run that ends in an infrastructure `ERROR`), `timed_out`, `sim_output_snippet`, `log`, `first_killing_test`. |
 | `auto`, `formula_count`, `budget_capped`, `source_size_budget` | `--count auto` only: how the count was derived. `budget_capped` is true when fewer Mutants were scored than `formula_count`, whatever the cause (the time-limit cap, a generator shortfall, or dropped equivalents). |
 | `shortfall` | Present when fewer Mutants were scored than requested: the generator found fewer candidates, or dropping equivalent Mutants used them up. |
 | `equivalent_dropped` | IDs, in drop order, of the Mutants not run because their Verilator build equals the baseline's. An empty list when none were or the Target is not simulated with Verilator. The report never lists them. |
+| `invalid_dropped` | IDs, in drop order, of the candidates dropped because their build failed (the next candidate took their number). An empty list when none failed. The report states only their count, and only when it is not zero. |
 | `coverage_gap`, `diagnosis` | Present when the scope is not exercised by the Target's tests. |
 | `variant_files`, `artifacts` | The mutated sources and the campaign file references. |
 
