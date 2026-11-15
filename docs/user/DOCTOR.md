@@ -24,7 +24,8 @@ prepares each Flow without running a simulation, lint, or synthesis.
 
 Run `booley doctor --deep` in the Sandbox when Doctor says deep validation is
 due (see [Deep checks](#deep-checks)). It runs real short simulations, lints,
-and syntheses, and can take minutes or tens of minutes.
+and syntheses and, when the Project uses the FPGA Flow, an FPGA implementation.
+It can take minutes or tens of minutes, and hours with an FPGA implementation.
 
 | Option | Effect |
 |---|---|
@@ -85,13 +86,12 @@ and on the Dashboard. The full output of the last run is in
   model the provider refuses fails Doctor and names the `[models]` entry to
   change, instead of failing a Goal later. `--skip-agent-checks` skips these
   calls;
-- a short simulation, lint, and ASIC synthesis on each Target marked for Doctor
-  (see [Marking Targets for Doctor](TARGETS.md#marking-targets-for-doctor));
+- a short simulation, lint, and ASIC synthesis, and an FPGA implementation when
+  the Project uses the FPGA Flow, on each Target marked for Doctor (see
+  [Marking Targets for Doctor](TARGETS.md#marking-targets-for-doctor)). An FPGA
+  implementation can run up to the FPGA Flow's `timeout_ms`, two hours by
+  default, and a failed or unfinished one keeps deep checks due;
 - the simulation and lint [self-tests](#self-test-fixtures).
-
-FPGA implementation is too slow for these checks. For each FPGA Target, deep
-Doctor prints the command to run it yourself, for example
-`booley flow fpga --target fpga_arty`.
 
 ### When deep checks are due
 

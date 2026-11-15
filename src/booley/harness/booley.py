@@ -657,7 +657,7 @@ def _add_doctor_subparser(sub) -> None:
     doctor_p.add_argument(
         "--deep",
         action="store_true",
-        help="Run real first-config sim/lint/synthesis smoke checks",
+        help="Run real sim/lint/synthesis smoke checks and FPGA implementation",
     )
     doctor_p.add_argument(
         "--skip-agent-checks",
