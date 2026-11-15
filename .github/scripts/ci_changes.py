@@ -319,7 +319,7 @@ def _path_categories(
         return {"renovate"}
     if path.startswith(GOAL_TESTS_PREFIX) and not _is_shared_goal_test(path, shared_goal_modules):
         # CI never runs Goal Mode unit tests (#3329); Ruff in `lint` still checks them.
-        return {"goal_tests"}
+        return {"goal_tests"} | _documentation_categories(path)
     categories = _documentation_categories(path)
     if path in _PACKAGING_FILES:
         categories.add("packaging")

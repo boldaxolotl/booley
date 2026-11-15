@@ -89,6 +89,20 @@ def test_docs_check_runs_the_derived_content_tests() -> None:
     assert evidence[0]["with"]["label"] == "docs-check"
 
 
+def test_docs_check_runs_markdown_line_length_on_pull_requests() -> None:
+    """The line-length step is required: it sits in docs-check, which ci-required needs."""
+    workflow = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["docs-check"]["steps"]
+    runs = [step for step in steps if "markdown_line_length.py" in step.get("run", "")]
+
+    assert len(runs) == 1
+    assert runs[0]["run"] == 'python3 .github/scripts/markdown_line_length.py --base "${BASE_SHA}"'
+    assert runs[0]["env"] == {"BASE_SHA": "${{ needs.changes.outputs.diff_base }}"}
+    assert runs[0]["if"] == "github.event_name == 'pull_request'"
+    assert "continue-on-error" not in runs[0]
+    assert "docs-check" in workflow["jobs"]["ci-required"]["needs"]
+
+
 def test_derivation_fails_when_a_required_content_test_is_missing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
