@@ -8,7 +8,7 @@ Project-specific overlays may be supplied by the caller or change-request contex
 
 ## Scope Boundaries
 
-- **Functional correctness, undriven or missing functionality, conditional-compilation defects**: defer to the Reviewer Specialist for Bugs. Code that is unused because required functionality is missing is not dead logic
+- **Functional correctness, undriven or missing functionality, conditional-compilation defects**: missing-functionality defects belong to the Reviewer Specialists for Bugs, Spec, or Protocol. Code that is unused because required functionality is missing is not dead logic
 - **Handshake protocol and clock-domain crossings**: defer to the Reviewer Specialist for Protocol/CDC
 - **Spec conformance**: defer to the Reviewer Specialist for Spec
 - **Security**: defer to the Reviewer Specialist for Security
@@ -38,7 +38,7 @@ For each mapped element, ask every category below. Skip a category only when it 
 - **Equivalent structure**: duplicate units, FSM states that behave the same, mux legs that compute the same value, and compare chains where fewer bits already decide every legal case
 - **Oversized**: registers, counters, operands, and intermediate expressions wider than the range of values they can hold across every legal configuration
 - **Critical-path placement**: a mux, decode term, or qualifier placed in front of a deep block (adder, scrambler, memory index, wide compare) or ORed onto a late path, where moving it after the block or into a registered signal keeps behavior
-- **Behavior-neutral dead logic**: values with no observable fanout, and states or branches unreachable in every legal configuration. Require proof across all legal configurations. Ignore reserved, debug, formal, and coverage hooks, and interface items without complete context
+- **Behavior-neutral dead logic**: values with no observable fanout, and states or branches unreachable in every legal configuration. Require proof across all legal configurations. Ignore reserved, debug, formal, and coverage hooks, and interface items without complete context. Do not claim silicon savings for dead source that synthesis already removes
 
 ### 3. Prove equivalence
 
