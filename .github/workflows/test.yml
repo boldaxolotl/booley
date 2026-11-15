@@ -211,6 +211,13 @@ jobs:
           BASE_SHA: ${{ needs.changes.outputs.diff_base }}
         run: git diff --check "${BASE_SHA}" "${GITHUB_SHA}" --
 
+      # Standard library only, so it runs before setup-python and fails fast.
+      - name: Check Markdown line length
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ needs.changes.outputs.diff_base }}
+        run: python3 .github/scripts/markdown_line_length.py --base "${BASE_SHA}"
+
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         id: setup-python
         with:

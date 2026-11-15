@@ -59,7 +59,8 @@ until marked ready; Mergify's queue drafts run.
   that install those pins and the Python lane whose tests keep them in step
   with `pyproject.toml`, but no docs, site, or Rust job.
 - README, website, and documentation-only changes run `docs-check`:
-  `git diff --check` plus the content tests that
+  `git diff --check`, on pull requests the Markdown line-length check
+  (`.github/scripts/markdown_line_length.py`), and the content tests that
   `.github/scripts/ci_docs_tests.py` derives from the tests that read those
   files. `README.md` and `docs/user/INSTALL.md` add `package-artifacts` (with
   `build-dist`), which renders the README and runs the install guide's
@@ -75,9 +76,9 @@ Temporary, until Goal Mode is removed
 them by naming the path, for example `pytest tests/goals`. Goal source
 (`src/booley/goals/`) is omitted from coverage, and `docs-check` and
 `flake-stress` never select those modules. A `tests/goals/` change selects only
-`lint`, unless a test outside `tests/goals/` imports that file; then it is an
-ordinary test change. The Goal Mode image smoke
-(`tests/smoke/test_goal_mode_image_smoke.py`) runs only when
+`lint` (a Markdown file there also selects `docs-check`), unless a test outside
+`tests/goals/` imports that file; then it is an ordinary test change. The Goal
+Mode image smoke (`tests/smoke/test_goal_mode_image_smoke.py`) runs only when
 `BOOLEY_GOAL_MODE_SMOKE=1` is set.
 
 ## Main pushes and the nightly run

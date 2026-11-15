@@ -156,7 +156,12 @@ rejected alternatives) goes in its ADR or pull request.
 ### 17. Short
 
 Cut rule blocks down to what the reader acts on and merge thin sections into
-their natural parent. Keep table rows to one line. No signposting ("this is
+their natural parent. Keep table rows to one line. Wrap prose at 80 columns: the
+`markdown.line-length` check fails a pull request that adds or changes a longer
+line, except in fenced code, table rows, headings, YAML front matter and
+generated blocks, on lines that are only a link, URL or link reference
+definition, and where the only text past column 80 is one URL or code span.
+No signposting ("this is
 covered under Notes below") and no sentence that carries nothing.
 
 ## Mechanics

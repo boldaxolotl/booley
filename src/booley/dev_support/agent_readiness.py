@@ -788,6 +788,14 @@ def _verification_commands(
             "lint",
             "before-commit",
         ),
+        # The same launcher is CI's required "Check Markdown line length" step in docs-check.
+        Command(
+            "markdown.line-length",
+            (str(python), "-B", str(root / ".github/scripts/markdown_line_length.py")),
+            str(root),
+            "lint",
+            "before-commit",
+        ),
     )
     if not native_ready:
         return lint
