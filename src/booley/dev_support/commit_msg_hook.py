@@ -11,9 +11,10 @@ how to retry with the same text.
    everything below the scissors line are not part of the message and are not
    checked; a term on a comment-prefixed line that Git keeps (``git commit -m``
    keeps ``#`` lines) is left to the pre-push hook.
-3. Validate the subject convention and body-length cap, which
+3. Validate the ``[stealth] max_body_lines`` body-length cap, which
    ``BOOLEY_SKIP_COMMIT_VALIDATION`` skips. Attribution footers and banned
-   terms are rejected even with that variable set.
+   terms are rejected even with that variable set. Booley enforces no subject
+   format.
 
 Project Initialization packages this module into the Project Git-hook
 bundle used by the RTL repository and its linked worktrees.
@@ -207,7 +208,7 @@ def _print_banned_rejection(
 
 def _check_message(msg_file: Path, raw: str, project_root: Path | None) -> int:
     """Return the hook exit code for one message, printing any rejection."""
-    from validate_commit_msg import convention_errors  # pyright: ignore[reportMissingImports]
+    from validate_commit_msg import body_length_errors  # pyright: ignore[reportMissingImports]
 
     lines = message_lines(raw, _comment_prefixes(project_root))
     subject_index = _subject_index(lines)
@@ -224,11 +225,11 @@ def _check_message(msg_file: Path, raw: str, project_root: Path | None) -> int:
         return 1
 
     matches = banned_matches(lines, subject_index, project_root)
-    skip_convention = bool(os.environ.get("BOOLEY_SKIP_COMMIT_VALIDATION"))
+    skip_body_cap = bool(os.environ.get("BOOLEY_SKIP_COMMIT_VALIDATION"))
     errors: list[str] = []
-    if not skip_convention:
+    if not skip_body_cap:
         text = "\n".join(text for _, text in lines[subject_index or 0 :])
-        errors = convention_errors(text, project_root=project_root)
+        errors = body_length_errors(text, project_root=project_root)
 
     if matches:
         _print_banned_rejection(matches, errors, msg_file, merge=_is_merge(msg_file, project_root))
@@ -238,7 +239,7 @@ def _check_message(msg_file: Path, raw: str, project_root: Path | None) -> int:
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         print(
-            "  (set BOOLEY_SKIP_COMMIT_VALIDATION=1 to skip this convention check "
+            "  (set BOOLEY_SKIP_COMMIT_VALIDATION=1 to skip this body-length check "
             "for one commit; banned terms and attribution footers are still rejected)",
             file=sys.stderr,
         )

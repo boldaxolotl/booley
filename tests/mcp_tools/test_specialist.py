@@ -780,7 +780,7 @@ class TestCommitMsgBannedPhrase:
     still carries one fails with the validation error, never a substitute.
     """
 
-    def _make_endpoint(self, tmp_path: Path, default_msg: str = "feat(rtl): apply changes"):
+    def _make_endpoint(self, tmp_path: Path, default_msg: str = "Apply changes"):
         endpoint = ReviewSpecialist()
         # Bypass argparse for the focused unit test.
         mock_args = MagicMock()
@@ -806,9 +806,8 @@ class TestCommitMsgBannedPhrase:
 
     def test_non_banned_failure_still_raises(self, tmp_path: Path):
         endpoint = self._make_endpoint(tmp_path)
-        # Mock validate_message: auto-format produces a syntactically valid
-        # subject for any input, so the only way to stage a non-banned
-        # failure is to inject one. The error must surface.
+        # Inject a non-banned validation failure (e.g. the body cap). The
+        # error must surface.
         from booley.specialists import specialist as specialist_module
 
         with (
@@ -816,7 +815,7 @@ class TestCommitMsgBannedPhrase:
                 specialist_module,
                 "validate_message",
                 return_value=[
-                    "Subject doesn't match '<type>(<scope>): <summary>'",
+                    "Body is 1 line(s) ([stealth] max_body_lines = 0)",
                 ],
             ),
             pytest.raises(Specialist.GitStatusError) as exc,
@@ -826,9 +825,22 @@ class TestCommitMsgBannedPhrase:
 
     def test_clean_message_passes_through(self, tmp_path: Path):
         endpoint = self._make_endpoint(tmp_path)
-        # No banned phrases, valid conventional commit: kept as written.
+        # No banned phrases: kept as written, conventional form or not.
         ok = endpoint._prepare_commit_message("feat(rtl): add pipeline stage")
         assert ok == "feat(rtl): add pipeline stage"
+
+    @pytest.mark.parametrize(
+        "message",
+        ["Update ALU", "Fix byte alignment in stage 2.", "Add IIR filter\n\nWhy it changed."],
+    )
+    def test_non_conventional_message_is_not_rewritten(self, tmp_path: Path, message: str):
+        """Booley imposes no commit convention: the agent's message is committed verbatim."""
+        endpoint = self._make_endpoint(tmp_path)
+        assert endpoint._prepare_commit_message(message) == message
+
+    def test_missing_message_uses_plain_default(self, tmp_path: Path):
+        endpoint = self._make_endpoint(tmp_path, default_msg=Specialist._default_commit_message)
+        assert endpoint._prepare_commit_message(None) == "Apply Specialist changes"
 
 
 class TestSpecialistGitCommit:
