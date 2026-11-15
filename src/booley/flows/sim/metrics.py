@@ -1,6 +1,6 @@
 """Typed metrics of the simulation and coverage Flows (issue #3497).
 
-A Simulation Campaign outcome carries one observation per Test Run, and a coverage
+A Simulation Record outcome carries one observation per Test Run, and a coverage
 run also a Coverage Campaign. :func:`simulation_flow_metrics` turns an outcome into
 the typed values the ``sim`` and ``coverage`` declarations below name. Flow-neutral
 types and the emission funnel live in :mod:`booley.flows.metric_declarations`.
@@ -27,8 +27,8 @@ from booley.flows.metric_declarations import (
 )
 from booley.flows.sim.backends.cocotb_results import IMPORT_FAILURE_PREFIX
 from booley.flows.sim.coverage_reference import (
-    CoverageCampaignReferenceError,
-    resolve_coverage_campaign_reference,
+    CoverageRecordReferenceError,
+    resolve_coverage_record_reference,
 )
 from booley.flows.sim.record.coordinator import SimulationRecordOutcome
 from booley.flows.sim.record.test_run_report import observation_grade
@@ -73,8 +73,8 @@ SIM_METRIC_DECLARATIONS = _declarations(CostTier.MEDIUM, coverage=False)
 COVERAGE_METRIC_DECLARATIONS = _declarations(CostTier.HIGH, coverage=True)
 
 
-def coverage_campaign_path(outcome: SimulationRecordOutcome) -> Path:
-    """Return the public ``coverage.json`` beside the Target's Campaign directory."""
+def coverage_record_path(outcome: SimulationRecordOutcome) -> Path:
+    """Return the public ``coverage.json`` beside the Target's Simulation Record directory."""
     return outcome.manifest_path.parents[1] / "coverage.json"
 
 
@@ -86,18 +86,18 @@ def _coverage_percents(outcome: SimulationRecordOutcome) -> dict[str, MetricValu
     exact fraction.
     """
     try:
-        campaign = resolve_coverage_campaign_reference(
-            coverage_campaign_path(outcome)
-        ).loaded.campaign
-    except CoverageCampaignReferenceError as error:
+        coverage_record = resolve_coverage_record_reference(
+            coverage_record_path(outcome)
+        ).loaded.coverage_record
+    except CoverageRecordReferenceError as error:
         raise MetricsUnavailableError(
             f"the Coverage Campaign could not be read: {error}"
         ) from error
-    if campaign.collection["status"] != "complete":
+    if coverage_record.collection["status"] != "complete":
         return {}
     return {
         COVERAGE_METRIC_NAMES[rollup.metric]: rollup.covered_points * 100 / rollup.eligible_points
-        for rollup in campaign.rollups
+        for rollup in coverage_record.rollups
         if rollup.metric in COVERAGE_METRIC_NAMES and rollup.eligible_points > 0
     }
 
@@ -133,11 +133,11 @@ def simulation_flow_metrics(outcome: SimulationRecordOutcome) -> FlowMetricValue
     coverage collection did not complete (a failing test is still a value).
 
     Raises :class:`MetricsUnavailableError` when the run produced no verdict for every
-    Test Run: the Campaign did not finish, a Test Run ended in infrastructure error, or
+    Test Run: the Simulation Record did not finish, a Test Run ended in infrastructure error, or
     a cocotb test module could not be imported (the run measured nothing of that test).
     """
     if not outcome.complete:
-        raise MetricsUnavailableError("the simulation campaign did not finish every Test Run")
+        raise MetricsUnavailableError("the Simulation Record did not finish every Test Run")
     grades = [(row, observation_grade(row)) for row in outcome.observations]
     errored = [str(row["test_run"]) for row, grade in grades if grade == "error"]
     if errored:

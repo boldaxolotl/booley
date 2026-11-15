@@ -506,7 +506,8 @@ def test_done_findings_need_no_verify_and_do_not_block_discovery(
         project, monkeypatch, ["--category", "rtl", "--focus", next_focus], payload={"issues": []}
     )
     assert reviewer._run().exit_code == 0
-    invoke.assert_called_once()
+    # rtl/bugs declares two guides (checklist + hunt), one agent call each; security has one.
+    assert invoke.call_count == (2 if next_focus == "bugs" else 1)
 
 
 def test_review_history_is_scoped_to_checkout_under_shared_booley_dir(

@@ -324,7 +324,7 @@ def test_real_custom_main_retains_failed_write_hook_evidence(tmp_path: Path) -> 
     ]
 
 
-def _coverage_campaign_path(reports: Path, detail: Mapping[str, Any]) -> Path:
+def _coverage_record_path(reports: Path, detail: Mapping[str, Any]) -> Path:
     """Locate the public Coverage reference from its typed, invocation-relative artifact."""
     reference = detail["targets"]["sim"]["coverage_record"]
     assert reference["path_base"] == "report_invocation"
@@ -338,7 +338,7 @@ def _coverage_campaign_path(reports: Path, detail: Mapping[str, Any]) -> Path:
 def test_real_coverage_flow_publishes_canonical_simulation_record(
     tmp_path: Path, harness: str, trace: bool
 ) -> None:
-    from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
+    from booley.flows.sim.coverage_reference import resolve_coverage_record_reference
     from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.request import SimRequest
 
@@ -366,14 +366,14 @@ def test_real_coverage_flow_publishes_canonical_simulation_record(
         assert result.outcome.detail["targets"]["sim"]["simulation"] == "inconclusive"
     else:
         assert result.exit_code == 0, result.outcome
-    path = _coverage_campaign_path(tmp_path / "reports", result.outcome.detail)
-    resolved = resolve_coverage_campaign_reference(path)
-    campaign = resolved.loaded.campaign
-    assert campaign.target.identity == "booley:smoke:coverage:1#sim"
-    assert campaign.collection["status"] == "complete"
-    assert campaign.evaluation["status"] == "not_requested"
-    assert campaign.build["trace"] is trace
-    assert campaign.points
+    path = _coverage_record_path(tmp_path / "reports", result.outcome.detail)
+    resolved = resolve_coverage_record_reference(path)
+    coverage_record = resolved.loaded.coverage_record
+    assert coverage_record.target.identity == "booley:smoke:coverage:1#sim"
+    assert coverage_record.collection["status"] == "complete"
+    assert coverage_record.evaluation["status"] == "not_requested"
+    assert coverage_record.build["trace"] is trace
+    assert coverage_record.points
 
 
 def _prepare_cocotb_cache_project(root: Path) -> Path:
@@ -437,17 +437,15 @@ def _assert_python_cache_evidence(root: Path, helper: Path) -> None:
     assert Path(evidence["module"]).name == "test_case.py"
 
 
-def _assert_two_run_coverage_campaign(root: Path, detail: Mapping[str, Any]) -> None:
-    from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
+def _assert_two_run_coverage_record(root: Path, detail: Mapping[str, Any]) -> None:
+    from booley.flows.sim.coverage_reference import resolve_coverage_record_reference
 
-    resolved = resolve_coverage_campaign_reference(
-        _coverage_campaign_path(root / "reports", detail)
-    )
-    campaign = resolved.loaded.campaign
-    assert len(campaign.runs) == 2
-    raw = [artifact for artifact in campaign.artifacts if artifact.kind == "raw_native"]
+    resolved = resolve_coverage_record_reference(_coverage_record_path(root / "reports", detail))
+    coverage_record = resolved.loaded.coverage_record
+    assert len(coverage_record.runs) == 2
+    raw = [artifact for artifact in coverage_record.artifacts if artifact.kind == "raw_native"]
     assert len({artifact.path for artifact in raw}) == 2
-    assert {run.test for run in campaign.runs} == {"another", "check"}
+    assert {run.test for run in coverage_record.runs} == {"another", "check"}
 
 
 @pytest.mark.parametrize("coverage", [False, True])
@@ -467,7 +465,7 @@ def test_real_cocotb_flow_uses_one_process_per_selected_test(
     assert _git_status(root) == baseline
     _assert_python_cache_evidence(root, helper)
     if coverage:
-        _assert_two_run_coverage_campaign(root, result.outcome.detail)
+        _assert_two_run_coverage_record(root, result.outcome.detail)
 
 
 def test_real_flow_preserves_all_four_build_variants(tmp_path: Path) -> None:
@@ -533,7 +531,7 @@ def _add_module_sources(root: Path) -> None:
 
 def test_real_lexical_scan_reports_unused_module_sources(tmp_path):
     from booley.flows.sim.coverage_evidence import CoverageEvidenceSession
-    from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
+    from booley.flows.sim.coverage_reference import resolve_coverage_record_reference
     from booley.flows.sim.coverage_source_gaps import source_gap_paths
     from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.request import SimRequest
@@ -547,12 +545,12 @@ def test_real_lexical_scan_reports_unused_module_sources(tmp_path):
         SimRequest(target="sim", work_dir=tmp_path, coverage=True, report_dir=tmp_path / "reports")
     )
     assert result.exit_code == 0, result.outcome.detail
-    path = _coverage_campaign_path(tmp_path / "reports", result.outcome.detail)
-    campaign = resolve_coverage_campaign_reference(path).loaded.campaign
-    paths = source_gap_paths(campaign)
+    path = _coverage_record_path(tmp_path / "reports", result.outcome.detail)
+    coverage_record = resolve_coverage_record_reference(path).loaded.coverage_record
+    paths = source_gap_paths(coverage_record)
     assert paths == ("rtl/conditional.sv", "rtl/unused.sv")
     assert "RTL sources without coverage points: 2" in result.outcome.report_text
     assert "rtl/unused.sv" in result.outcome.report_text
-    assert CoverageEvidenceSession(campaign, None).query({"view": "zero_point_sources"})[
+    assert CoverageEvidenceSession(coverage_record, None).query({"view": "zero_point_sources"})[
         "paths"
     ] == list(paths)

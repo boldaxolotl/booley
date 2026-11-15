@@ -1,4 +1,4 @@
-"""Serial durable coordinator behind the small Simulation Campaign seam."""
+"""Serial durable coordinator behind the small Simulation Record seam."""
 
 from __future__ import annotations
 
@@ -10,14 +10,14 @@ from pathlib import Path
 from typing import Protocol, cast, overload
 
 from booley.flows.endpoint_admission import AdmissionContext
-from booley.flows.sim.coverage_campaign import CoverageCampaignValidationError
-from booley.flows.sim.coverage_campaign_store import CoverageCampaignStoreError
 from booley.flows.sim.coverage_json import content_digest
+from booley.flows.sim.coverage_record import CoverageRecordValidationError
+from booley.flows.sim.coverage_record_store import CoverageRecordStoreError
 from booley.flows.sim.coverage_reference import (
-    CoverageCampaignReference,
-    build_coverage_campaign_reference,
-    encode_coverage_campaign_reference,
-    publish_coverage_campaign_reference,
+    CoverageRecordReference,
+    build_coverage_record_reference,
+    encode_coverage_record_reference,
+    publish_coverage_record_reference,
 )
 from booley.flows.sim.execution.contract import PreSimScopeStoppedError, SimulationOptions
 from booley.flows.sim.record_layout import COVERAGE_RECORD_DIRECTORY, RECORD_DIRECTORY
@@ -75,9 +75,9 @@ class SimulationRecordPolicy:
 
     def __post_init__(self) -> None:
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
-            raise ValueError("campaign timeout must be positive")
+            raise ValueError("record timeout must be positive")
         if self.build_timeout_seconds is not None and self.build_timeout_seconds <= 0:
-            raise ValueError("campaign build timeout must be positive")
+            raise ValueError("record build timeout must be positive")
         if self.result_verbosity not in {"compact", "full"}:
             raise ValueError("result verbosity must be compact or full")
 
@@ -101,7 +101,7 @@ def simulation_options_from_policy(
 
 
 class SimulationRecordCancellationError(RuntimeError):
-    """The borrowed endpoint admission requested orderly campaign shutdown."""
+    """The borrowed endpoint admission requested orderly record shutdown."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,7 +112,7 @@ class SimulationRecordPublicationFailure:
     target_selector: str
     observations: tuple[Mapping[str, object], ...]
     nested_coverage_record: Path | None = None  # coverage workloads only
-    coverage_reference: CoverageCampaignReference | None = None  # only once published
+    coverage_reference: CoverageRecordReference | None = None  # only once published
 
 
 class SimulationRecordPublicationError(RuntimeError):
@@ -179,7 +179,7 @@ class NewSimulationRecordPreview:
 
 @dataclass(frozen=True, slots=True)
 class SimulationRecordRecoveryStatus:
-    """Caller-facing observation of authenticated durable campaign state."""
+    """Caller-facing observation of authenticated durable record state."""
 
     manifest_path: Path
     manifest_sha256: str
@@ -266,7 +266,7 @@ def _coverage_attempt_directory(
 
 
 class SimulationRecord:
-    """Plan/preview/run one Target's durable serial campaign."""
+    """Plan/preview/run one Target's durable serial record."""
 
     def __init__(
         self,
@@ -331,7 +331,7 @@ class SimulationRecord:
 
     def run(self, request: SimulationRecordRunRequest) -> SimulationRecordOutcome:
         if self._executor is None:
-            raise RuntimeError("SimulationCampaign requires a serial work executor")
+            raise RuntimeError("SimulationRecord requires a serial work executor")
         current_keys: set[tuple[str, str, str, int]] = set()
         observer = request.pre_sim_firing_published
 
@@ -359,7 +359,7 @@ class SimulationRecord:
                 self._publish_manifest(store, request.plan.manifest)
             elif store.load_manifest() != request.plan.manifest:
                 raise SimulationRecordIntegrityError(
-                    "campaign path already contains another manifest"
+                    "record path already contains another manifest"
                 )
             manifest = request.plan.manifest
             authenticated_manifest_sha256 = None
@@ -389,7 +389,7 @@ class SimulationRecord:
         target = cast(Mapping[str, str], manifest.document["target"])
         coverage = cast(Mapping[str, object], manifest.document["workload"])["coverage"] is True
         failure: SimulationRecordPublicationFailure | None = None
-        reference: CoverageCampaignReference | None = None
+        reference: CoverageRecordReference | None = None
         try:
             if coverage:
                 # The one scan that feeds both the reference and any publication failure.
@@ -427,7 +427,7 @@ class SimulationRecord:
     def _raise_if_cancelled(request: SimulationRecordRunRequest) -> None:
         if request.admission.cancellation():
             cause = request.admission.cancellation_cause() or "cancellation requested"
-            raise SimulationRecordCancellationError(f"Simulation Campaign cancelled: {cause}")
+            raise SimulationRecordCancellationError(f"Simulation Record cancelled: {cause}")
 
     def _publish_coverage_reference(
         self,
@@ -436,12 +436,12 @@ class SimulationRecord:
         work_item_id: str,
         result: SimulationResult,
         nested_path: Path,
-    ) -> CoverageCampaignReference:
+    ) -> CoverageRecordReference:
         result_document = result.document
         target = cast(Mapping[str, str], manifest.document["target"])
         origin = cast(Mapping[str, object], manifest.document["origin"])
         try:
-            reference = build_coverage_campaign_reference(
+            reference = build_coverage_record_reference(
                 simulation_record_id=cast(str, manifest.document["simulation_record_id"]),
                 simulation_manifest_sha256=manifest_digest(manifest),
                 target_identity=f"{target['vlnv']}#{target['name']}",
@@ -451,14 +451,14 @@ class SimulationRecord:
                 simulation_work_item_id=work_item_id,
                 simulation_attempt_id=cast(str, result_document["attempt_id"]),
                 origin_target_directory=store.root.parent,
-                coverage_campaign_path=nested_path,
+                coverage_record_path=nested_path,
             )
-        except (CoverageCampaignStoreError, CoverageCampaignValidationError) as exc:
+        except (CoverageRecordStoreError, CoverageRecordValidationError) as exc:
             raise SimulationRecordIntegrityError(
                 "nested Coverage Campaign cannot be authenticated"
             ) from exc
         self._publication_checkpoint("before:coverage_reference")
-        return publish_coverage_campaign_reference(store.root.parent / "coverage.json", reference)
+        return publish_coverage_record_reference(store.root.parent / "coverage.json", reference)
 
     def _expect_builds(
         self,
@@ -490,7 +490,7 @@ class SimulationRecord:
         if store.manifest_path.exists():
             if store.load_manifest() != request.plan.manifest:
                 raise SimulationRecordIntegrityError(
-                    "campaign path already contains another manifest"
+                    "record path already contains another manifest"
                 )
             if self._manifest_published is not None:
                 self._manifest_published(store.manifest_path)
@@ -516,7 +516,7 @@ class SimulationRecord:
     ) -> None:
         """Reject a missing run_cwd anywhere in the prerequisite tree before any build."""
         if not manifest.document["prerequisites"]:
-            return  # _run_pending performs the same check for the sole campaign.
+            return  # _run_pending performs the same check for the sole record.
         recovery = store.scan(manifest, authenticated_sha256)
         self._preflight_incomplete(manifest, recovery, request)
         self._preflight_prerequisites(
@@ -529,7 +529,7 @@ class SimulationRecord:
         recovery: SimulationRecordRecovery,
         request: SimulationRecordRunRequest,
     ) -> None:
-        """Preflight one campaign's run_cwd when it still has work to run."""
+        """Preflight one record's run_cwd when it still has work to run."""
         if all(item.state == "complete" for item in recovery.items):
             return
         binding = (
@@ -550,7 +550,7 @@ class SimulationRecord:
     ) -> None:
         """Walk the prerequisite tree read-only, mirroring ``_run_prerequisites``.
 
-        Each campaign is checked once; ``_run_prerequisites`` rejects cycles.
+        Each record is checked once; ``_run_prerequisites`` rejects cycles.
         """
         invocation = owner_store.root.parents[2]
         for entry in cast(tuple[Mapping[str, object], ...], manifest.document["prerequisites"]):
@@ -570,17 +570,17 @@ class SimulationRecord:
         ancestors: frozenset[str],
         finished: set[str],
     ) -> None:
-        """Run every prerequisite campaign once, then require each linked result.
+        """Run every prerequisite record once, then require each linked result.
 
-        Several entries may link work items of one campaign (one per relative
-        Cycle Count Test), so a campaign is a cycle only when it is its own
-        ancestor; a campaign already *finished* by a sibling is not rerun.
+        Several entries may link work items of one record (one per relative
+        Cycle Count Test), so a record is a cycle only when it is its own
+        ancestor; a record already *finished* by a sibling is not rerun.
         """
         invocation = owner_store.root.parents[2]
         for entry in cast(tuple[Mapping[str, object], ...], manifest.document["prerequisites"]):
             simulation_record_id = cast(str, entry["simulation_record_id"])
             if simulation_record_id in ancestors:
-                raise SimulationRecordIntegrityError("cyclic prerequisite campaign")
+                raise SimulationRecordIntegrityError("cyclic prerequisite record")
             prerequisite_store, prerequisite = _prerequisite_simulation_record(
                 entry, invocation, request
             )
@@ -677,7 +677,7 @@ class SimulationRecord:
         executor = self._executor
         if executor is None or not hasattr(executor, "prepare_attempt"):
             raise SimulationRecordIntegrityError(
-                "campaign executor cannot publish a child attempt before admission"
+                "record executor cannot publish a child attempt before admission"
             )
         executor.prepare_attempt(
             self._work_execution_request(
@@ -818,7 +818,7 @@ def _invocation_number(directory: Path) -> int:
         return int(directory.name)
     except ValueError as exc:
         raise SimulationRecordIntegrityError(
-            "campaign invocation directory must end in a numeric id"
+            "record invocation directory must end in a numeric id"
         ) from exc
 
 
@@ -905,7 +905,7 @@ def _outcome(
     manifest: SimulationRecordManifest,
     summary: Mapping[str, object],
     recovery: SimulationRecordRecovery,
-    coverage_reference: CoverageCampaignReference | None = None,
+    coverage_reference: CoverageRecordReference | None = None,
 ) -> SimulationRecordOutcome:
     facts, observations = _acceptance_facts(store, manifest, recovery, coverage_reference)
     complete = cast(bool, summary["complete"])
@@ -975,7 +975,7 @@ def _acceptance_facts(
     store: SimulationRecordStore,
     manifest: SimulationRecordManifest,
     recovery: SimulationRecordRecovery,
-    coverage_reference: CoverageCampaignReference | None = None,
+    coverage_reference: CoverageRecordReference | None = None,
 ) -> tuple[AcceptanceFacts, tuple[Mapping[str, object], ...]]:
     items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
     by_id = {item["work_item_id"]: item for item in items}
@@ -1007,11 +1007,11 @@ def _acceptance_facts(
 def _coverage_acceptance_reference(
     store: SimulationRecordStore,
     manifest: SimulationRecordManifest,
-    reference: CoverageCampaignReference | None,
+    reference: CoverageRecordReference | None,
 ) -> Mapping[str, object] | None:
     if reference is None:
         return None
-    raw = encode_coverage_campaign_reference(reference)
+    raw = encode_coverage_record_reference(reference)
     path = store.root.parent / "coverage.json"
     invocation = store.root.parents[2]
     return {
@@ -1035,7 +1035,7 @@ def collected_result_facts(
     """The consumed-result and observation facts of every terminal result in *recovery*.
 
     A work item without a result contributes nothing, so the facts of an
-    interrupted campaign are those of the work that finished.
+    interrupted record are those of the work that finished.
     """
     consumed: list[dict[str, object]] = []
     observations: list[dict[str, object]] = []
@@ -1094,7 +1094,7 @@ def result_observations(result: SimulationResult) -> tuple[Mapping[str, object],
 
     The result decoder checks only the document boundary (#1744), so the
     enum values, test name and cycle count that feed acceptance are checked
-    here. A bad value raises the campaign integrity error.
+    here. A bad value raises the record integrity error.
     """
     observations = cast(tuple[Mapping[str, object], ...], result.document["observations"])
     if not isinstance(observations, tuple):
@@ -1143,7 +1143,7 @@ def _observation_facts(
 def _prerequisite_simulation_record(
     entry: Mapping[str, object], invocation: Path, request: SimulationRecordRunRequest
 ) -> tuple[SimulationRecordStore, SimulationRecordManifest]:
-    """Open the campaign one prerequisite *entry* links, authenticated on resume."""
+    """Open the record one prerequisite *entry* links, authenticated on resume."""
     reference = cast(Mapping[str, object], entry["manifest"])
     node = (
         request.validated.prerequisite_for(reference)

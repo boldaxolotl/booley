@@ -169,8 +169,8 @@ DIRECTION_RULES = (
             exact("booley.flows.sim.record.store"),
             exact("booley.flows.sim.record.inspection"),
         ),
-        "Simulation Campaign durable storage is private implementation behind the "
-        "public Campaign interface",
+        "Simulation Record durable storage is private implementation behind the "
+        "public Simulation Record interface",
     ),
     DirectionRule(
         "D29",
@@ -432,21 +432,21 @@ COMPOSITION_PERMISSIONS = (
         "D31",
         "booley.flows.sim.record.coordinator",
         "booley.flows.sim.record.store",
-        "Campaign execution composes durable transaction, recovery, and publication.",
+        "Simulation Record execution composes durable transaction, recovery, and publication.",
     ),
     CompositionPermission(
         "C12",
         "D31",
         "booley.flows.sim.record.inspection",
         "booley.flows.sim.record.store",
-        "Public read capabilities inspect storage through the private Campaign store.",
+        "Public read capabilities inspect storage through the private Simulation Record store.",
     ),
     CompositionPermission(
         "C13",
         "D31",
         "booley.flows.sim.record",
         "booley.flows.sim.record.inspection",
-        "The Campaign package facade publishes the storage-backed read capabilities.",
+        "The Simulation Record package facade publishes the storage-backed read capabilities.",
     ),
     CompositionPermission(
         "C2",

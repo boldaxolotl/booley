@@ -345,9 +345,9 @@ def select_status(
 ) -> GoalStatusSelection:
     """Show this worktree's occupant, otherwise all occupying records; report corruption.
 
-    *campaign_reader* reads the finished results of Simulation Campaigns that
+    *simulation_record_reader* reads the finished results of Simulation Records that
     never published; the entry point supplies the Simulation Flow's. Without
-    it such campaigns stay unaccounted and their Goals read unmet.
+    it such records stay unaccounted and their Goals read unmet.
     """
     from booley.goals.store import GoalRecordCorruptError
 
@@ -400,7 +400,7 @@ def _brought_up_to_date(
     Two things, each under the record lock and each one atomic step at a
     time: pending Test Run slots that can be resolved now are frozen in
     ``record.json``, so status shows what a run would be judged against; and
-    evidence that earlier Simulation Campaigns durably observed but never
+    evidence that earlier Simulation Records durably observed but never
     published is brought into the ledger and the Goal state. Neither adds a
     way for a status read to fail: when one of them cannot be done the slots
     read pending, the evidence unaccounted, and the next read tries again.
@@ -430,6 +430,6 @@ def status_views(
 
     Not a pure read for the worktree's own record: see :func:`select_status`,
     which may freeze pending Test Run slots and account for unpublished
-    campaign evidence before it reads.
+    record evidence before it reads.
     """
     return select_status(store, work_dir, simulation_record_reader=simulation_record_reader).views

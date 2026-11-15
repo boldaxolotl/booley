@@ -38,6 +38,7 @@ from tests.goals.test_sim_baseline_admission import (  # noqa: F401  (fixtures a
     foreign_owner,
     scene,
 )
+from tests.memory_budget_support import pin_budget
 from tests.oom_priority_support import (
     inert_oom_proc,  # noqa: F401  (fixture, used by memory_scene)
     oom_priority,
@@ -59,8 +60,7 @@ def memory_scene(scene, monkeypatch, inert_oom_proc):
 
     # No process is known to the fake /proc, so ranking never touches the worker's real one.
     scene.proc = inert_oom_proc
-    with (scene.control / "booley.toml").open("a", encoding="utf-8") as config:
-        config.write('\n[jobs]\nmemory_budget = "1000m"\n')
+    pin_budget(monkeypatch, 1000)
     records = [
         {
             "key": {"target": "top", "phase": phase, "flags": [], "test_run": test_run},
@@ -482,7 +482,7 @@ def test_armed_simulation_child_stops_reading_results_after_an_own_oom_kill(tmp_
         return _flow_result(oom_killed=True)
 
     def aborted_simulation_record(*_args):
-        raise ValueError("the killed Campaign has no complete results")
+        raise ValueError("the killed Simulation Record has no complete results")
 
     monkeypatch.setattr(SimulateFlow, "execute", execute)
     monkeypatch.setattr(unpublished_results, "read_unpublished_results", aborted_simulation_record)
@@ -490,7 +490,7 @@ def test_armed_simulation_child_stops_reading_results_after_an_own_oom_kill(tmp_
     armed = execution.simulate(_simulation_request(tmp_path, armed=True))
 
     assert (armed["oom_killed"], armed["rows"], armed["stamps"]) == (True, [], [])
-    # Unarmed, the child reads as it always did: the unreadable Campaign raises.
+    # Unarmed, the child reads as it always did: the unreadable Simulation Record raises.
     with pytest.raises(ValueError, match="no complete results"):
         execution.simulate(_simulation_request(tmp_path))
 

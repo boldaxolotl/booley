@@ -1,6 +1,6 @@
 """Resource History keys name each Test Variant; records carry the source size (#3235).
 
-Runs the real ``SimulateFlow`` campaign path against the fake-Verilator Project
+Runs the real ``SimulateFlow`` record path against the fake-Verilator Project
 of the build-reuse tests and reads the history file the Flow wrote.
 """
 

@@ -1,9 +1,9 @@
-"""Each Simulation Campaign work item holds its own Memory Reservation (#3772, ADR 0087).
+"""Each Simulation Record work item holds its own Memory Reservation (#3772, ADR 0087).
 
 The Flow keeps one reservation for its
 shared builds, then drops to zero and each later item takes a claim of its own
 (#3773: one lane per core, the claims decide how many run at once).
-The Campaign, slot store, Flow claim and foreign Jobs are real; only the
+The Simulation Record, slot store, Flow claim and foreign Jobs are real; only the
 simulators are fake.
 """
 
@@ -71,6 +71,7 @@ from tests.flows.sim.simulation_record_test_support import (
 )
 from tests.flows.sim.test_build_parallelism import _inspection
 from tests.flows.test_endpoint_admission import _selection_prepared
+from tests.memory_budget_support import pin_budget
 from tests.oom_priority_support import FakeProc
 
 NAMES = ("alpha", "beta", "gamma")
@@ -92,7 +93,7 @@ def _record(target: str, phase: str, peak: float, *, test_run: str = "", flags=(
 
 
 def _history(*targets: str) -> list[dict]:
-    """The history of a Campaign whose Targets are *targets*."""
+    """The history of a Simulation Record whose Targets are *targets*."""
     return [
         record
         for target in targets
@@ -156,7 +157,7 @@ class _Scenario:
     early_holders: list[job_slots.SlotToken] = field(default_factory=list)
     # Per item: the Verilator ``-j`` option a hook recorded (see ``_jobs_option``).
     jobs_options: dict[str, str] = field(default_factory=dict)
-    # Items running now, the most at once, and the Campaign lane threads that ran items.
+    # Items running now, the most at once, and the Simulation Record lane threads that ran items.
     active: int = 0
     peak: int = 0
     lanes: set[str] = field(default_factory=set)
@@ -260,7 +261,7 @@ def _scenario(
     cores: int = 1,
     held_at_admission: int = 0,
 ) -> Iterator[_Scenario]:
-    """The Flow of a Campaign, admitted under a 1,000 MiB Memory Budget on *cores* cores.
+    """The Flow of a Simulation Record, admitted under a 1,000 MiB Memory Budget on *cores* cores.
 
     *held_at_admission* 50 MiB claims are held (``early_holders``) when the Flow is admitted.
     """
@@ -268,7 +269,7 @@ def _scenario(
     project, state = _parallel_environment(tmp_path, "beta", 0)
     state.barrier = threading.Barrier(1)  # one item at a time: nothing waits for a peer
     booley_dir = project / ".booley"
-    (booley_dir / "booley.toml").write_text('[jobs]\nmemory_budget = "1000m"\n', encoding="utf-8")
+    pin_budget(monkeypatch, 1000)
     # The container's cores, as the CPU budget reads them (affinity bounded by the cgroup quota).
     monkeypatch.setattr("booley.runtime.cpu_budget._affinity_cpu_count", lambda: cores)
     monkeypatch.setattr("booley.runtime.cpu_budget._cgroup_cpu_count", lambda _read_text: None)
@@ -362,7 +363,7 @@ def _alone() -> MemoryClaim:
 
 @contextmanager
 def _deadline(scenario: _Scenario) -> Iterator[None]:
-    """Cancel a Campaign still waiting after the suite's sync bound (it would hang)."""
+    """Cancel a Simulation Record still waiting after the suite's sync bound (it would hang)."""
     expired = threading.Event()
 
     def expire() -> None:
@@ -375,7 +376,7 @@ def _deadline(scenario: _Scenario) -> Iterator[None]:
         yield
     finally:
         timer.cancel()
-        assert not expired.is_set(), "the Campaign waited past its deadline"
+        assert not expired.is_set(), "the Simulation Record waited past its deadline"
 
 
 def test_items_after_the_shared_build_hold_their_own_reservations(
@@ -508,7 +509,7 @@ def _complete_beside_a_foreign_job(
         case, {"history": _history("sim")}
     )
     manifests = [_private_manifest() if case == "private" else _manifest_for(NAMES)]
-    if case == "several":  # a second Campaign, in its own store, with a build of its own
+    if case == "several":  # a second Simulation Record, in its own store, with a build of its own
         manifests.append(manifests[0])
     with _scenario(tmp_path / case, monkeypatch, **options) as scenario:
         scenario.state.disclosures = _disclosures()
@@ -621,12 +622,12 @@ def test_flow_claim_waits_only_for_the_running_simulation_records_builds(
     other = tmp_path / "other-store"
     with _scenario(tmp_path, monkeypatch, history=_history("sim")) as scenario:
         claim = _flow_claim(scenario)
-        # Two Campaigns published, each owing its shared build.
+        # Two Simulation Records published, each owing its shared build.
         claim.expect(tmp_path, manifest, items)
         claim.expect(other, manifest, items)
         assert not claim.release(tmp_path)
         claim.settle(tmp_path, items[0])
-        # The later Campaign's build does not keep the Flow's reservation.
+        # The later Simulation Record's build does not keep the Flow's reservation.
         assert claim.release(tmp_path)
         assert _held(scenario.store.observe(CLASS_MEMORY)[0][0]) == 0
         assert claim.release(other)  # idempotent, once dropped
@@ -674,7 +675,7 @@ def test_a_later_simulation_record_does_not_keep_the_flow_reservation(
         for request in requests:
             simulation_record.publish_new(request)
         simulation_record.run(requests[0])
-        # The first Campaign's items after its build already held claims of their own.
+        # The first Simulation Record's items after its build already held claims of their own.
         assert [seen["flow"] for seen in scenario.seen.values()] == [[250.0], [0], [0]]
         assert [seen["items"] for seen in scenario.seen.values()] == [[], [250.0], [200.0]]
 
@@ -735,7 +736,7 @@ def _barrier(parties: int) -> threading.Barrier:
 
 
 def _simulation_record_lanes(scenario: _Scenario) -> set[str]:
-    return {name for name in scenario.lanes if name.startswith("booley-campaign-")}
+    return {name for name in scenario.lanes if name.startswith("booley-record-")}
 
 
 def test_twelve_item_simulation_record_runs_one_lane_per_core(
@@ -952,7 +953,9 @@ def test_waiting_simulation_record_queues_one_item_claim_in_manifest_order(
     assert released.is_set()
     assert outcome.complete is True
     assert sorted(scenario.state.completion_order) == list(names)
-    assert list(scenario.seen) == list(names)  # items start in manifest order
+    # Admitted lanes start items concurrently, so the order they record is a thread race: the
+    # turn's order is pinned by the one queued item claim above, not by this list.
+    assert sorted(scenario.seen) == list(names)
 
 
 def _item_attempts(scenario: _Scenario) -> dict[str, tuple[int, dict]]:

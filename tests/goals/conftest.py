@@ -293,14 +293,14 @@ SMOKE_RUN = build_test_run("smoke", seed=1)
 
 
 def run_row(run: TestRun | str = SMOKE_RUN, grade: str = "pass") -> dict[str, Any]:
-    """The Test Run row a campaign records for *run* (a name means Test at seed 1)."""
+    """The Test Run row a Simulation Record keeps for *run* (a name means Test at seed 1)."""
     if isinstance(run, str):
         run = build_test_run(run, seed=1)
     return {**test_run_document(run), "grade": grade}
 
 
 def passing_sim(*runs: TestRun | str) -> dict[str, Any]:
-    """Simulation detail of a campaign in which *runs* (default: ``smoke@1``) passed."""
+    """Simulation detail of a Simulation Record in which *runs* (default: ``smoke@1``) passed."""
     rows = [run_row(run) for run in runs or (SMOKE_RUN,)]
     return {"tests_passed": len(rows), "tests_total": len(rows), "test_runs": rows}
 

@@ -1,6 +1,6 @@
-"""What a Simulation Campaign durably observed, as its consumers read it (ADR 0072).
+"""What a Simulation Record durably observed, as its consumers read it (ADR 0072).
 
-A campaign that was cancelled or killed never returns an outcome, yet every
+A record that was cancelled or killed never returns an outcome, yet every
 work item that finished left an authenticated result behind. Goal Mode must
 account for those results, and it may not depend on a concrete Flow: these
 are the flow-neutral values it is handed, and the reader the composing entry
@@ -24,7 +24,7 @@ __all__ = [
 
 
 class SimulationRecordBusyError(RuntimeError):
-    """A scheduler owns the Simulation Campaign: its results are still being written."""
+    """A scheduler owns the Simulation Record: its results are still being written."""
 
 
 class OlderBooleyRecordError(ValueError):
@@ -37,10 +37,10 @@ class OlderBooleyRecordError(ValueError):
 
 @dataclass(frozen=True)
 class StartedSimulationRecord:
-    """A Simulation Campaign whose manifest is published and whose work is about to run.
+    """A Simulation Record whose manifest is published and whose work is about to run.
 
     ``target_names`` are the names its Target goes by (selector and
-    identity); ``candidate`` is false for a Cycle Count baseline campaign.
+    identity); ``candidate`` is false for a Cycle Count baseline record.
     """
 
     manifest_path: Path
@@ -52,13 +52,13 @@ class StartedSimulationRecord:
 
 @dataclass(frozen=True)
 class DurableSimulationRecordResults:
-    """The terminal results one Simulation Campaign holds on disk.
+    """The terminal results one Simulation Record holds on disk.
 
     ``results`` names every work item with a terminal result and that
     result's digest; ``rows`` are the Test Run rows of their observations
-    (``name``, ``fingerprint`` and ``grade`` at least), empty for a campaign
+    (``name``, ``fingerprint`` and ``grade`` at least), empty for a record
     that names no Test Runs. ``complete`` says every work item has a terminal
-    result: nothing more can come out of the campaign.
+    result: nothing more can come out of the record.
     """
 
     manifest_sha256: str
@@ -68,10 +68,10 @@ class DurableSimulationRecordResults:
     complete: bool = False
 
 
-#: Authenticate and return the terminal results of the campaign whose
+#: Authenticate and return the terminal results of the record whose
 #: manifest is at the path and has the given digest. Raises
-#: :class:`CampaignBusyError` while a scheduler owns the campaign,
-#: :class:`OlderBooleyRecordError` when an older Booley wrote the campaign, and
+#: :class:`SimulationRecordBusyError` while a scheduler owns the record,
+#: :class:`OlderBooleyRecordError` when an older Booley wrote the record, and
 #: ``ValueError`` when it is gone, is another one, or any of its results cannot be
 #: authenticated.
 SimulationRecordResultsReader = Callable[[Path, str], DurableSimulationRecordResults]

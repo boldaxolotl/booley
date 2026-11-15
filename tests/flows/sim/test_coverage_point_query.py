@@ -6,12 +6,12 @@ from collections.abc import Iterable
 
 import pytest
 
-from booley.flows.sim.coverage_campaign import (
+from booley.flows.sim.coverage_json import freeze_coverage_mapping
+from booley.flows.sim.coverage_record import (
     CoveragePoint,
     CoveragePointIdentity,
     encode_coverage_point_id,
 )
-from booley.flows.sim.coverage_json import freeze_coverage_mapping
 
 
 def _point(

@@ -316,7 +316,7 @@ def test_bound_done_reviewer_preserves_completion_policy_and_receipt(layout, mon
     from booley.flows.endpoint_report_criteria import freeze
     from booley.flows.prepared_invocation import OrdinaryRunInvocation
     from tests.goals.conftest import enter_goals
-    from tests.goals.test_mcp_routing import _goal_reviewer_endpoint
+    from tests.goals.test_mcp_routing import BUGS_DISCOVERY_CALLS, _goal_reviewer_endpoint
     from tests.goals.test_reviewer_proposals import review_issues
 
     layout.record = enter_goals(
@@ -333,7 +333,7 @@ def test_bound_done_reviewer_preserves_completion_policy_and_receipt(layout, mon
         assert report["criterion_key"] == ("" if replay else "review_rtl_bugs_done")
         # Replay reuses evidence but does not claim a new evaluation.
         assert report["criterion_met"] is (None if replay else True)
-        assert provider.call_count == (0 if replay else 1)
+        assert provider.call_count == (0 if replay else BUGS_DISCOVERY_CALLS)
 
 
 def test_configured_main_store_outvotes_foreign_environment(

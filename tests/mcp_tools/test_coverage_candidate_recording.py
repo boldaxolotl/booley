@@ -12,8 +12,8 @@ import pytest
 
 from booley.core.models import AgentResult
 from booley.flows.sim import waiver_candidates as store
-from booley.flows.sim.coverage_analysis_input import read_coverage_campaign
-from booley.flows.sim.coverage_campaign import CoverageCampaign
+from booley.flows.sim.coverage_analysis_input import read_coverage_record
+from booley.flows.sim.coverage_record import CoverageRecord
 from booley.specialists import coverage_analyst as analyst_module
 from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
 from booley.specialists.coverage_candidate_recording import (
@@ -26,20 +26,22 @@ from tests.mcp_tools.test_coverage_analyst import source_project
 _NOW = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
 
 
-def _strict_failure(campaign: CoverageCampaign) -> CoverageCampaign:
+def _strict_failure(coverage_record: CoverageRecord) -> CoverageRecord:
     """The fixture point uncovered, plus one covered point, under a failing 100% line gate."""
-    point = replace(campaign.points[0], hits_by_run=MappingProxyType({}))
-    covered = replace(campaign.points[0], id=f"{campaign.points[0].id}-covered")
+    point = replace(coverage_record.points[0], hits_by_run=MappingProxyType({}))
+    covered = replace(coverage_record.points[0], id=f"{coverage_record.points[0].id}-covered")
     evaluation = {
         "status": "fail",
         "thresholds": MappingProxyType({"line": 100}),
         "suite": MappingProxyType(
-            {"status": "match", "required": campaign.declared_tests, "selected": ()}
+            {"status": "match", "required": coverage_record.declared_tests, "selected": ()}
         ),
         "metrics": (),
         "diagnostics": (),
     }
-    return replace(campaign, points=(point, covered), evaluation=MappingProxyType(evaluation))
+    return replace(
+        coverage_record, points=(point, covered), evaluation=MappingProxyType(evaluation)
+    )
 
 
 def _screened(point_id: str, source_sha256: str, screening: str = "ready_for_human_review"):
@@ -56,14 +58,21 @@ def _screened(point_id: str, source_sha256: str, screening: str = "ready_for_hum
 
 
 def _record_candidates(
-    context, loaded, campaign, path, sha, *, invocation_id="7", screening="ready_for_human_review"
+    context,
+    loaded,
+    coverage_record,
+    path,
+    sha,
+    *,
+    invocation_id="7",
+    screening="ready_for_human_review",
 ):
     return record_goal_candidates(
         context,
-        campaign,
+        coverage_record,
         loaded.summary,
         path,
-        _screened(campaign.points[0].id, sha, screening),
+        _screened(coverage_record.points[0].id, sha, screening),
         invocation_id=invocation_id,
         now=_NOW,
     )
@@ -72,17 +81,17 @@ def _record_candidates(
 @pytest.fixture
 def record_context(tmp_path: Path):
     path = source_project(tmp_path)
-    loaded = read_coverage_campaign(path)
+    loaded = read_coverage_record(path)
     context = GoalCandidateContext(tmp_path / "reports", tmp_path / "record")
-    campaign = _strict_failure(loaded.campaign)
-    source_sha256 = str(campaign.source_closure["rtl"][0]["sha256"])
-    return context, loaded, campaign, path, source_sha256
+    coverage_record = _strict_failure(loaded.coverage_record)
+    source_sha256 = str(coverage_record.source_closure["rtl"][0]["sha256"])
+    return context, loaded, coverage_record, path, source_sha256
 
 
 def test_ready_candidates_are_recorded_and_rescue_the_strict_verdict(record_context) -> None:
-    context, loaded, campaign, path, sha = record_context
+    context, loaded, coverage_record, path, sha = record_context
 
-    section = _record_candidates(context, loaded, campaign, path, sha)
+    section = _record_candidates(context, loaded, coverage_record, path, sha)
 
     assert section["status"] == "recorded", section
     assert section["recorded"] == 1
@@ -109,38 +118,47 @@ def test_investigate_candidates_are_not_recorded(record_context) -> None:
 
 
 def test_rejected_point_is_filtered_from_later_proposals(record_context) -> None:
-    context, loaded, campaign, path, sha = record_context
-    point_id = campaign.points[0].id
+    context, loaded, coverage_record, path, sha = record_context
+    point_id = coverage_record.points[0].id
     record = store.rejected_record(
         store.CandidateRecord(),
-        [store.Rejection(campaign.target.identity, point_id, sha, "2026-09-30T11:00:00Z", "A.R.")],
+        [
+            store.Rejection(
+                coverage_record.target.identity, point_id, sha, "2026-09-30T11:00:00Z", "A.R."
+            )
+        ],
     )
     context.record_dir.mkdir(parents=True)
     store.waiver_candidates_path(context.record_dir).write_bytes(record.to_bytes())
 
-    section = _record_candidates(context, loaded, campaign, path, sha)
+    section = _record_candidates(context, loaded, coverage_record, path, sha)
 
     assert (section["recorded"], section["filtered_by_rejection"]) == (0, 1)
 
 
-def test_campaign_outside_the_record_flow_reports_is_refused(
+def test_coverage_record_outside_the_record_flow_reports_is_refused(
     record_context, tmp_path: Path
 ) -> None:
-    context, loaded, campaign, path, sha = record_context
+    context, loaded, coverage_record, path, sha = record_context
     elsewhere = replace(context, flow_reports_root=tmp_path / "other")
 
-    section = _record_candidates(elsewhere, loaded, campaign, path, sha)
+    section = _record_candidates(elsewhere, loaded, coverage_record, path, sha)
 
     assert section["status"] == "failed"
     assert "flow-reports" in section["reason"]
     assert "not recorded" in candidate_summary_line(section)
 
 
-def test_legacy_campaign_without_point_store_is_refused(record_context) -> None:
-    context, _loaded, campaign, path, sha = record_context
+def test_legacy_coverage_record_without_point_store_is_refused(record_context) -> None:
+    context, _loaded, coverage_record, path, sha = record_context
 
     section = record_goal_candidates(
-        context, campaign, None, path, _screened(campaign.points[0].id, sha), invocation_id="7"
+        context,
+        coverage_record,
+        None,
+        path,
+        _screened(coverage_record.points[0].id, sha),
+        invocation_id="7",
     )
 
     assert section["status"] == "failed"
@@ -148,12 +166,12 @@ def test_legacy_campaign_without_point_store_is_refused(record_context) -> None:
 
 
 def test_corrupt_candidate_record_is_reported_not_raised(record_context) -> None:
-    context, loaded, campaign, path, sha = record_context
+    context, loaded, coverage_record, path, sha = record_context
     record_path = store.waiver_candidates_path(context.record_dir)
     record_path.parent.mkdir(parents=True)
     record_path.write_text("{not json", encoding="utf-8")
 
-    section = _record_candidates(context, loaded, campaign, path, sha)
+    section = _record_candidates(context, loaded, coverage_record, path, sha)
 
     assert section["status"] == "failed"
     assert record_path.read_text(encoding="utf-8") == "{not json"
@@ -223,30 +241,30 @@ def test_run_outside_goal_mode_records_nothing(tmp_path: Path, monkeypatch) -> N
 def test_goal_record_directory_parameter_keeps_candidates_out_of_ticket_store(
     record_context, tmp_path
 ):
-    context, loaded, campaign, path, sha = record_context
+    context, loaded, coverage_record, path, sha = record_context
     ticket_store = context.record_dir
     goal_dir = tmp_path / "goals" / "evidence-20261007T100000Z"
     context = replace(context, record_dir=goal_dir)
-    section = _record_candidates(context, loaded, campaign, path, sha, invocation_id="1")
+    section = _record_candidates(context, loaded, coverage_record, path, sha, invocation_id="1")
     assert section["status"] == "recorded"
     assert (goal_dir / "waiver-candidates.json").is_file()
     assert not store.load(goal_dir).is_empty
     assert not (ticket_store / "waiver-candidates.json").exists()
 
 
-def test_image_alias_reports_root_records_canonical_campaign(
+def test_image_alias_reports_root_records_canonical_coverage_record(
     record_context, tmp_path, monkeypatch
 ) -> None:
     from tests.conftest import require_symlinks, symlink_or_skip
     from tests.runtime.test_sandbox_layout import configure_project_alias
 
-    context, loaded, campaign, path, sha = record_context
+    context, loaded, coverage_record, path, sha = record_context
     require_symlinks(tmp_path)
     alias = tmp_path / "booley-project"
     symlink_or_skip(alias, tmp_path / "reports", target_is_directory=True)
     configure_project_alias(monkeypatch, alias, tmp_path / "reports")
     context = replace(context, flow_reports_root=alias)
-    section = _record_candidates(context, loaded, campaign, path, sha)
+    section = _record_candidates(context, loaded, coverage_record, path, sha)
     assert section["status"] == "recorded", section
     record = store.load(context.record_dir)
     assert (

@@ -1,4 +1,4 @@
-"""Execution, Pre-Sim Commands, run directories and recovery scans of Simulation Campaigns."""
+"""Execution, Pre-Sim Commands, run directories and recovery scans of Simulation Records."""
 
 from __future__ import annotations
 
@@ -278,7 +278,7 @@ def test_changed_packaged_source_fails_disclosure_equality_before_compile(
 
     with pytest.raises(
         SimulationRecordIntegrityError,
-        match="prepared generator source closure disagrees with campaign plan",
+        match="prepared generator source closure disagrees with record plan",
     ):
         _executor(build_root, counters, disclosures={"alpha": execution}).execute(
             _request(
@@ -577,7 +577,7 @@ def test_simulation_record_pre_sim_project_relative_hook_uses_project_root(
 
 @pytest.mark.parametrize("linked", ["entry", "below"])
 def test_store_follows_only_the_booley_dir_entry(tmp_path, linked):
-    """#2191: a Campaign store crosses the Booley Directory link, never a link below it."""
+    """#2191: a Simulation Record store crosses the Booley Directory link, never a link below it."""
     project = tmp_path / "project"
     project.mkdir()
     entry = project / ".booley"
@@ -737,7 +737,7 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_the_la
         )
         # Cancelling while the second item waits for its claim legitimately
         # aborts that claim; anything else (e.g. a spurious bounded-shutdown
-        # CampaignSchedulingError, #977) is a failure.
+        # SimulationRecordSchedulingError, #977) is a failure.
         assert all(isinstance(e, (ClaimAbortedError, ClaimLostError)) for e in errors), errors
     finally:
         slots.release(outer)

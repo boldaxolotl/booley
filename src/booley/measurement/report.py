@@ -98,7 +98,8 @@ def _tone(document: Mapping[str, Any]) -> _Tone:
     counts = document["view"]["counts"]
     if counts["unmet"] or counts["error"]:
         return "fail"
-    return "warn" if document["view"]["amber"] or not is_measured(document) else "met"
+    stored = document["view"]["target"] is None and is_measured(document)
+    return "warn" if document["view"]["amber"] or not stored else "met"
 
 
 def _verdict_line(document: Mapping[str, Any]) -> _Text:
@@ -147,11 +148,21 @@ def _run_lines(document: Mapping[str, Any]) -> list[_Block]:
     parts.append(f"Booley {toolchain['booley']} ({toolchain['booley_kind']})")
     parts.extend([toolchain["booley_note"]] if toolchain["booley_note"] else [])
     parts.extend(f"{tool} {version}" for tool, version in toolchain["tools"].items())
-    place = f"run {history['position']} of {history['total']} for this tree"
-    if history["earlier"]:
-        place += "; earlier: " + ", ".join(r["outcome"] for r in history["earlier"])
-    lines: list[_Block] = [_Text(f"Toolchain: {'; '.join(parts)}"), _Text(place)]
-    lines.extend(_Text(f"history: {problem}", "warn") for problem in history["problems"])
+    lines: list[_Block] = [_Text(f"Toolchain: {'; '.join(parts)}")]
+    if history is None:
+        target = document["view"]["target"]
+        lines.append(
+            _Text(
+                f"`--target` `{target}`: only its tables; "
+                "not stored, never makes the commit Measured"
+            )
+        )
+    else:
+        place = f"run {history['position']} of {history['total']} for this tree"
+        if history["earlier"]:
+            place += "; earlier: " + ", ".join(r["outcome"] for r in history["earlier"])
+        lines.append(_Text(place))
+        lines.extend(_Text(f"history: {problem}", "warn") for problem in history["problems"])
     if document["status"] == "stopped":
         left = document["view"]["counts"]["not_evaluated"]
         lines.append(_Text(f"stopped early: {left} not evaluated, use `--all`", "warn"))
@@ -166,7 +177,11 @@ def _header(document: Mapping[str, Any]) -> _Section:
     states = [] if document["status"] == "completed" else [document["status"]]
     states.extend(["failing"] if tone == "fail" else [])
     states.extend(view["amber"])
-    states = states or ["measured" if is_measured(document) else "not measured"]
+    if view["target"] is not None:
+        measured = "not stored"
+    else:
+        measured = "measured" if is_measured(document) else "not measured"
+    states = states or [measured]
     blocks: list[_Block] = [
         _Text(f"Run {document['run_id']}: {', '.join(states)}", tone),
         _Text(f"Commit `{commit['sha']}`, tree `{commit['tree']}`"),

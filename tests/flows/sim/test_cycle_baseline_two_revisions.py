@@ -1,6 +1,6 @@
 """Both revisions of a relative Cycle Count run the candidate's Test Run (ADR 0072).
 
-End to end on the Simulation Campaign path with a fake simulator: the baseline
+End to end on the Simulation Record path with a fake simulator: the baseline
 revision declares another default Test Variant and Default Seed than the
 candidate, and must still run exactly what the candidate ran. A baseline
 revision that cannot run that Test Run makes the comparison inconclusive

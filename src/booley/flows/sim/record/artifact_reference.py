@@ -1,4 +1,4 @@
-"""Profile-aware mechanics for Simulation Campaign artifact references."""
+"""Profile-aware mechanics for Simulation Record artifact references."""
 
 from __future__ import annotations
 

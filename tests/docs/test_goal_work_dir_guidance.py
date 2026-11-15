@@ -203,6 +203,6 @@ def test_nested_analyst_prompt_names_match_bound_catalog(monkeypatch, tmp_path):
         "fixture", tmp_path, tmp_path / "coverage.json", tmp_path / "audit.json"
     )
     assert set(params.nested_mcp_tools) == names
-    prompt = _analysis_prompt(SimpleNamespace(model_campaign={}), None, "fixture")
+    prompt = _analysis_prompt(SimpleNamespace(model_coverage_record={}), None, "fixture")
     for text in (prompt, params.system_prompt):
         _assert_guidance_names(text, names, "bound Analyst")
