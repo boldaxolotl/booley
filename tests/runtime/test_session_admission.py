@@ -16,7 +16,13 @@ import pytest
 from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
 
 from booley.runtime import devcontainer as dc
-from booley.runtime import platform_paths, session_admission, session_issuance, session_runtime
+from booley.runtime import (
+    platform_paths,
+    sandbox_apply,
+    session_admission,
+    session_issuance,
+    session_runtime,
+)
 from booley.runtime.session_runtime import session_container_name
 
 
@@ -117,7 +123,7 @@ def test_new_sandbox_at_cap_is_refused_with_live_project_and_age(
     assert "max_sessions=1" in message
     assert f"Project {other}" in message
     assert "started 2h ago" in message
-    assert session_admission._command(["booley", "session", "down", "--project"]) in message
+    assert session_admission.shell_command(["booley", "session", "down", "--project"]) in message
     assert "existing" in message
 
 
@@ -587,12 +593,14 @@ def test_foreign_mismatch_retains_reservation_and_reports_recovery(
     if cap == 2 and running:
         with pytest.raises(session_admission.AdmissionError) as caught:
             session_admission.admit_start(requester, target_name="headless", run=docker)
-        assert session_admission._command(["docker", "rm", "editor-id"]) in str(caught.value)
+        assert session_admission.shell_command(["docker", "rm", "editor-id"]) in str(caught.value)
     else:
         session_admission.admit_start(requester, target_name="headless", run=docker)
-    assert session_admission._command(["docker", "stop", "editor-id"]) in caplog.text
-    assert session_admission._command(["docker", "rm", "editor-id"]) in caplog.text
-    assert session_admission._command(["booley", "session", "down", "--project"]) in caplog.text
+    assert session_admission.shell_command(["docker", "stop", "editor-id"]) in caplog.text
+    assert session_admission.shell_command(["docker", "rm", "editor-id"]) in caplog.text
+    assert (
+        session_admission.shell_command(["booley", "session", "down", "--project"]) in caplog.text
+    )
     assert (session_admission.claim_store().path(str(project))).exists()
 
 
@@ -647,8 +655,8 @@ def test_deleted_root_observed_spelling_is_verified_before_label_acceptance(tmp_
 def test_windows_recovery_commands_quote_powershell_metacharacters(monkeypatch):
     from types import SimpleNamespace
 
-    monkeypatch.setattr(session_admission, "os", SimpleNamespace(name="nt"))
-    assert session_admission._command(
+    monkeypatch.setattr(sandbox_apply, "os", SimpleNamespace(name="nt"))
+    assert session_admission.shell_command(
         ["booley", "session", "down", "--project", "C:\\Projects\\A&B's $work"]
     ) == ("& 'booley' 'session' 'down' '--project' 'C:\\Projects\\A&B''s $work'")
 
@@ -658,9 +666,9 @@ def test_windows_recovery_commands_quote_powershell_metacharacters(monkeypatch):
 def test_capacity_refusal_names_owner_recovery(tmp_path, monkeypatch, vscode, shell):
     from types import SimpleNamespace
 
-    monkeypatch.setattr(
-        session_admission, "os", SimpleNamespace(name=shell, path=session_admission.os.path)
-    )
+    fake_os = SimpleNamespace(name=shell, path=session_admission.os.path)
+    monkeypatch.setattr(session_admission, "os", fake_os)
+    monkeypatch.setattr(sandbox_apply, "os", fake_os)
     item = session_admission.Sandbox(
         "id",
         "sandbox",

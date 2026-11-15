@@ -43,8 +43,8 @@ a separate repository. Booley follows the link on the host and mounts its
 target into the Sandbox separately. `booley init` remembers where the link
 points. If you move the link on purpose, run `booley init --repin-booley-dir`;
 otherwise point it back. Until the two agree, `booley doctor` fails with `project.booley-dir-pin`.
-A running Sandbox keeps using the location it started with until you run
-`booley session refresh`.
+A running Sandbox keeps using the location it started with until you
+[recreate it](SANDBOX.md#applying-sandbox-changes).
 
 ### Additional Protected Inputs: `[project].protected_inputs`
 

@@ -214,7 +214,7 @@ def test_host_doctor_rejects_full_live_runtime_state_drift(tmp_path, monkeypatch
     assert any("state differs from current host issuance" in message for message in rec.fails())
 
 
-def test_host_doctor_names_stop_first_repair_for_running_old_vscode(
+def test_host_doctor_names_rebuild_repair_for_running_old_vscode(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -267,7 +267,12 @@ def test_host_doctor_names_stop_first_repair_for_running_old_vscode(
         failed=rec.f,
     )
 
-    assert any("stop" in fix and "runtime-1" in fix for fix in rec.fix_hints)
+    assert any(
+        fix.startswith("for VS Code Sandbox(s) 'runtime-1', on the host run `booley init`, then ")
+        and "Dev Containers: Rebuild Container" in fix
+        and "stop" not in fix
+        for fix in rec.fix_hints
+    )
     inventory = next(argv for argv in calls if argv[1:3] == ["ps", "-aq"])
     assert inventory[-2:] == ["--format", "{{.Names}}"]
 

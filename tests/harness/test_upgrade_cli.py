@@ -109,7 +109,11 @@ def test_human_status_rendering_covers_actionable_conditions() -> None:
 
     assert "current through 2.0.0" in upgrade_cli.render_status(current)
     assert "version changed from 1.0.0 to 2.0.0" in upgrade_cli.render_status(pending)
-    assert "/booley-heal" in upgrade_cli.render_status(stale)
+    stale_text = upgrade_cli.render_status(stale)
+    assert stale_text.endswith("then invoke /booley-heal.")
+    assert "Recreate the Sandbox first" in stale_text
+    assert "in VS Code, on the host run `booley init`" in stale_text
+    assert "headless, run `booley session refresh` on the host" in stale_text
     assert "corrupt: bad JSON" in upgrade_cli.render_status(corrupt)
 
 
