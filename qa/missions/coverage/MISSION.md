@@ -1,7 +1,7 @@
 # Native coverage on a fixed fixture Project
 
 Hunt native-coverage bugs end to end: collection, exact arithmetic, Goal
-policy, waivers, Campaign storage, retention, a coverage Goal, and the
+policy, waivers, Campaign storage, recovery, a coverage Goal, and the
 Coverage Analyst. The areas don't use a real design: they run on a fixed
 fixture Project whose counts are known by construction, so every mismatch is a
 finding rather than a judgment call. The `booley-qa-run` skill runs this
@@ -50,7 +50,7 @@ it before area 1.
   pick a different waiver point to make something pass; a mismatch is the finding.
 - Every fault works on a run-owned copy or a process-local wrapper/env. Before restoring, save the failed
   output; restoration = remove the injection, restore owned bytes/permissions, rerun the valid public
-  operation as a fresh invocation (publication) or the same exact selection (pruning).
+  operation as a fresh invocation.
 - Simulated-provider results (`../../shared/coverage/faults/provider.py`) test Booley's handling of external input only; they
   never count as a live-model result.
 - Analyst calls: ~3 min each. Provider pipe fixture is Linux-runtime only. Rerun with the other client
@@ -186,21 +186,9 @@ Look for: accepted evidence without a Campaign, lost prior acceptance, a corrupt
 stale lock after interrupt.
 Depends on: baseline.analysis, baseline.policy, baseline.multi.
 
-### 6. cov-retention — Pruning and Simulation Campaign recovery (~40 min)
-Intent: pruning removes exactly what was asked, is retryable, and resume/recovery never duplicates or loses
-evidence.
+### 6. cov-retention — Simulation Campaign recovery (~40 min)
+Intent: resume and recovery never duplicate or lose evidence.
 Try:
-- `python -m booley.flows.sim.record_retention --reports-root <r> --invocation N --native-target <t>`
-  → only that payload gone, normalized evidence byte-identical, pruned Campaign still analyzable; repeat is
-  safe. `--full` → empty `.pruned-N` tombstone, analysis now fails cleanly, next run skips N.
-- Native rejections before deletion (rc2, sentinels unchanged): ambiguous/unknown Target, invalid
-  number, unsafe path, symlink, wrong invocation, unexplained missing native on the first attempt,
-  malformed or invalid points.
-- Full rejections before deletion (rc2, sentinels unchanged): ambiguous/unknown Target, invalid
-  number, unsafe path, symlink, unknown payload/unrecognized content, malformed or invalid points.
-- Interrupt a prune with `../../shared/coverage/faults/filesystem.py --operation unlink` under `native/` (after the pruning sidecar) or `.pruned-N/` →
-  retry same selection completes; prune an active invocation → rc2, lock untouched; reap producer → prune
-  succeeds.
 - Follow `../../shared/coverage/simulation-campaign/RUNBOOK.md`: interrupt `sim_toggle half --coverage`
   mid-collection; resume and `--dry-run` from the Manifest → rc2 before any EDA launch naming a new
   `--coverage` run, attempt inventory unchanged; the fresh run is the control;
@@ -210,7 +198,7 @@ Try:
   `work_dir` (one transaction, no new attempt). CLI Flows bind no Goal evidence.
   Flip one byte in a terminal `result.json` → rc2 before any EDA launch, restore → resume
   without rerun. Cross-check with `../../shared/coverage/simulation-campaign/validate_aggregate.py`.
-Look for: collateral deletion, number reuse, double-committed transactions.
+Look for: number reuse, double-committed transactions.
 Depends on: baseline.retention.
 
 ### 7. cov-goal — TB gap closure and separate waiver decisions (~65 min)
@@ -295,7 +283,7 @@ fixture Project, Goal worktrees and branches in `resources.md`.
   Target name.
 - A schema/setup error never proves a deeper validation; read the error code.
 - Compare response sizes as compact JSON with ASCII escaping (`ensure_ascii=True`), not pretty-printed files.
-- Publication retry = new invocation number; prune retry = same selection. Never delete a lock to get past
+- Publication retry = new invocation number. Never delete a lock to get past
   an active producer.
 - Parallel sub-agents share the host Sandbox cap (`[sandbox] max_sessions`, default 4). New
   Sandbox starts are refused at capacity; live work is not evicted to make room. Before fanning out,

@@ -65,6 +65,7 @@ from .record.coverage_execution import (
     _failure_test,
 )
 from .record.model import simulation_status_from_observations
+from .record_reports import invocation_booley_dir
 from .test_run_invocation import (
     BaselineRefusal,
 )
@@ -782,9 +783,6 @@ def _report_artifact_reference(
         base_name, base = "external_origin_target", external_origin_target
     else:
         return None
-    # Imported here: retention pulls in the whole pruning stack the flow rarely needs.
-    from .record_retention import invocation_booley_dir
-
     reference = build_artifact_reference(
         path,
         base_name=base_name,
