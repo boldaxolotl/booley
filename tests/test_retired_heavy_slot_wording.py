@@ -47,7 +47,6 @@ _WHOLE_PREFIXES = ("docs/adr/",)
 # Docs where only a paragraph that says the keys were retired or replaced may name them.
 _RETIRED_PARAGRAPH_FILES = frozenset(
     {
-        "docs/user/TROUBLESHOOTING.md",
         "docs/GLOSSARY.md",
         "src/booley/data/skills/booley-setup/steps/2-project-config.md",
     }

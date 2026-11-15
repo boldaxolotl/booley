@@ -27,7 +27,7 @@ USER_DOC_DIR = ROOT / "docs/user"
 # Label -> (user doc the callout must link, anchor it must link or None for any).
 _VARIANTS: dict[str, tuple[str, str | None]] = {
     "In stealth mode": ("STEALTH.md", None),
-    "On Windows": ("WINDOWS.md", None),
+    "On Windows": ("FEATURES.md", "windows-support"),
     "With a cocotb testbench": ("FLOW-SIM.md", "cocotb-targets-python-testbenches"),
     "With host-installed licensed tools": ("SANDBOX.md", "commercial-eda-provisioning"),
     "With your own image": ("SANDBOX.md", "custom-sandbox-image"),
@@ -193,7 +193,7 @@ def _callout(label: str, body: str, *, indent: str = "") -> str:
 
 _LINKS = {
     "In stealth mode": "[Stealth Mode](STEALTH.md)",
-    "On Windows": "[Windows](WINDOWS.md#every-file-shows-as-modified-inside-the-container)",
+    "On Windows": "[Windows support](FEATURES.md#windows-support)",
     "With a cocotb testbench": "[Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches)",
     "With host-installed licensed tools": "[Commercial EDA](SANDBOX.md#commercial-eda-provisioning)",
     "With your own image": "[Custom image](SANDBOX.md#custom-sandbox-image)",
@@ -269,13 +269,15 @@ def test_tool_label_outside_the_multi_tool_set_fails() -> None:
 
 def test_callout_without_variant_link_fails() -> None:
     [problem] = callout_problems(_callout("On Windows", "No link here."), "X.md")
-    assert problem == "docs/user/X.md:4: 'On Windows' callout must link WINDOWS.md"
+    assert (
+        problem == "docs/user/X.md:4: 'On Windows' callout must link FEATURES.md#windows-support"
+    )
 
 
 def test_callout_linking_another_variant_fails() -> None:
-    body = "See [Stealth Mode](STEALTH.md) and [site](https://example.com/WINDOWS.md)."
+    body = "See [Stealth Mode](STEALTH.md) and [site](https://example.com/FEATURES.md#windows-support)."
     [problem] = callout_problems(_callout("On Windows", body), "X.md")
-    assert "must link WINDOWS.md" in problem
+    assert "must link FEATURES.md#windows-support" in problem
 
 
 def test_cocotb_callout_needs_the_cocotb_section_anchor() -> None:
