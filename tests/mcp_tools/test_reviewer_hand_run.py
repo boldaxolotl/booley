@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import contextlib
 import json
-from collections.abc import Iterator
+import re
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -253,9 +254,10 @@ def test_unscoped_file_findings_are_filtered_as_source_scope(
     assert result.exit_code == 0, result.report_text
     assert [row["file"] for row in ReviewerSpecialist._open_findings(result.detail)] == [in_scope]
     assert [row["file"] for row in result.detail["issue_list"]] == [in_scope]
-    calls = 2 if category == "bugs" else 1  # a bugs review filters each call's proposals
     assert sorted((row["file"], row["reason"]) for row in result.detail["filtered"]) == sorted(
-        (str(path), "source_scope") for path in unscoped for _ in range(calls)
+        (str(path), "source_scope")
+        for path in unscoped
+        for _ in range(2)  # one per call
     )
     assert "OUT OF SCOPE (firmware" not in result.report_text
 
@@ -309,8 +311,10 @@ def review_by_guide(
     reviewer: ReviewerSpecialist | None = None,
     guides: tuple[str, ...] = BUGS_GUIDES,
     focus: str = "bugs",
+    route: Callable[[Any], str] | None = None,
 ) -> tuple[McpToolResult, list[Any]]:
     """Run a review (bugs unless told otherwise) whose agent answers per guide; returns the result and every call.
+    *route* names a call's key when the guides alone cannot tell the calls apart.
 
     An answer is a payload dict, a ready agent result, or an exception to raise. A list
     of answers is consumed one per call of that guide, the last one repeating.
@@ -322,7 +326,7 @@ def review_by_guide(
 
     def fake_agent(params: Any) -> Any:
         calls.append(params)
-        answer = answers[guide_of(params, guides, focus)]
+        answer = answers[route(params) if route else guide_of(params, guides, focus)]
         if isinstance(answer, list):
             answer = answer.pop(0) if len(answer) > 1 else answer[0]
         if isinstance(answer, Exception):
@@ -702,7 +706,9 @@ def test_failed_guide_call_is_retried_once_and_the_review_succeeds(
 
 
 def test_single_call_review_is_not_retried(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    result, invoke = review(project, monkeypatch, TB_ARGS, {"issues": [{"severity": "BOGUS"}]})
+    result, invoke = review(
+        project, monkeypatch, [*BASE_ARGS[:-1], "code_style"], {"issues": [{"severity": "BOGUS"}]}
+    )
     assert result.exit_code == 2, result.report_text
     assert invoke.call_count == 1
     assert "retrying" not in result.report_text
@@ -833,11 +839,10 @@ def test_verify_after_two_guide_review_is_one_call_and_waives_either_guide(
 def test_single_guide_focus_makes_one_call_as_before(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Spec, code style and testbench quality reviews still make one call and one transcript."""
+    """Spec and code style reviews still make one call and one transcript."""
     cases = [
         (SPEC_ARGS, "spec", "spec-hunt"),
         ([*BASE_ARGS[:-1], "code_style"], "code_style", "code_style-checklist"),
-        (TB_ARGS, "quality", "hdl-checklist"),
     ]
     for number, (args, category, guide) in enumerate(cases):
         project = build_project(tmp_path / f"case{number}", monkeypatch)
@@ -929,6 +934,152 @@ def _assert_guide_edit_stales_receipt(
     entry = state.criteria["review_rtl_bugs_done"]
     assert entry.met is False
     assert entry.detail["stale_review_dimensions"] == ["guides"]
+
+
+# --- TB quality: language checklists and one hunt call (issue #4021) ---
+
+TB_GUIDES = ("c-cpp-checklist", "hdl-checklist", "cocotb-checklist", "tb-hunt")
+TB_LANGUAGE_SCOPES = {
+    "hdl": ("tb/tb.sv", ["hdl-checklist"]),
+    "cocotb": ("tb/test.py", ["cocotb-checklist"]),
+    "cpp": ("tb/main.cpp", ["c-cpp-checklist"]),
+    "all": (
+        "tb/main.cpp,tb/test.py,tb/tb.sv",
+        ["c-cpp-checklist", "hdl-checklist", "cocotb-checklist"],
+    ),
+}
+TB_STYLE_MARKER = "Project style rule 4021"
+
+
+def tb_scope_args(scope: str) -> list[str]:
+    return ["--scope", scope, *TB_ARGS[2:]]
+
+
+def tb_route(params: Any) -> str:
+    """``tb-hunt`` or ``checklist`` for a call; a checklist call may carry several guides."""
+    hunt = "## Review guide — quality (tb-hunt)" in params.system_prompt
+    others = [g for g in TB_GUIDES[:3] if f"({g})" in params.system_prompt]
+    assert bool(others) != hunt, (hunt, others)
+    return "tb-hunt" if hunt else "checklist"
+
+
+def tb_project(root: Path) -> Path:
+    for name in ("tb/test.py", "tb/main.cpp"):
+        (root / name).write_text("// authored\n", encoding="utf-8", newline="\n")
+    overlay = root / ".booley" / "tb_style_guide.md"
+    overlay.parent.mkdir(parents=True, exist_ok=True)
+    overlay.write_text(TB_STYLE_MARKER, encoding="utf-8", newline="\n")
+    return root
+
+
+@pytest.mark.parametrize("language", list(TB_LANGUAGE_SCOPES))
+def test_tb_quality_runs_language_checklists_and_one_hunt_call(
+    project: Path, monkeypatch: pytest.MonkeyPatch, language: str
+) -> None:
+    """The scope's language checklists share one call; a hunt call runs beside it."""
+    scope, checklists = TB_LANGUAGE_SCOPES[language]
+    tb_project(project)
+    result, calls = review_by_guide(
+        project,
+        monkeypatch,
+        tb_scope_args(scope),
+        {
+            "checklist": {
+                "issues": [finding("MAJOR", scope.split(",")[0], "Checklist finding", "quality")]
+            },
+            "tb-hunt": {
+                "issues": [
+                    finding("MAJOR", scope.split(",")[0], "Hunt finding", "quality", line=9)
+                ]
+            },
+        },
+        route=tb_route,
+    )
+    assert result.exit_code == 0, result.report_text
+    by_route = {tb_route(call): call.system_prompt for call in calls}
+    assert sorted(by_route) == ["checklist", "tb-hunt"]
+    headings = re.findall(r"^## Review guide — .*$", by_route["checklist"], flags=re.MULTILINE)
+    assert headings == [f"## Review guide — quality ({name})" for name in checklists]
+    hunt_headings = re.findall(r"^## Review guide — .*$", by_route["tb-hunt"], flags=re.MULTILINE)
+    assert hunt_headings == ["## Review guide — quality (tb-hunt)"]
+    # Style rules stay with the checklist call; the hunt call carries none of them.
+    assert TB_STYLE_MARKER in by_route["checklist"]
+    assert TB_STYLE_MARKER not in by_route["tb-hunt"]
+    assert "Testbench style guide" not in by_route["tb-hunt"]
+    packaged = "Canonical style guide for SystemVerilog" in by_route["checklist"]
+    assert packaged == (language != "cpp")
+    assert "Canonical style guide for SystemVerilog" not in by_route["tb-hunt"]
+    kinds = {row["summary"]: row["guide_kinds"] for row in result.detail["issue_list"]}
+    assert kinds == {"Checklist finding": ["checklist"], "Hunt finding": ["hunt"]}
+    assert [(c["kind"], c["guides"]) for c in result.detail["guide_calls"]] == [
+        ("checklist", checklists),
+        ("hunt", ["tb-hunt"]),
+    ]
+
+
+def test_tb_hunt_call_gets_the_checklist_calls_inputs(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both calls share one user prompt: spec, simulation context and project contract."""
+    (project / ".booley").mkdir()
+    (project / ".booley" / "booley.toml").write_text(
+        "[flows.sim]\n"
+        'pass_sentinels = ["ALL TESTS OK"]\n'
+        'fail_sentinels = ["TESTS BROKEN"]\n'
+        'trace_files = ["waves.vcd"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    result, calls = review_by_guide(
+        project,
+        monkeypatch,
+        [*TB_ARGS, "--spec-text", "Reset drives q low."],
+        {"checklist": {"issues": []}, "tb-hunt": {"issues": []}},
+        route=tb_route,
+    )
+    assert result.exit_code == 0, result.report_text
+    prompts = {tb_route(call): call.prompt for call in calls}
+    assert sorted(prompts) == ["checklist", "tb-hunt"]
+    assert prompts["tb-hunt"] == prompts["checklist"]
+    for heading in ("## Specification", "## Simulation Context", "## Project Simulation Contract"):
+        assert heading in prompts["tb-hunt"]
+    assert "Reset drives q low." in prompts["tb-hunt"]
+    for configured in ("ALL TESTS OK", "TESTS BROKEN", "waves.vcd"):
+        assert configured in prompts["tb-hunt"]
+
+
+def test_tb_hunt_guide_defers_to_the_project_simulation_contract(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hunt guide yields its sentinel and trace defaults to the project's configuration."""
+    (project / ".booley").mkdir()
+    (project / ".booley" / "booley.toml").write_text(
+        '[flows.sim]\npass_sentinels = ["ALL TESTS OK"]\nfail_sentinels = ["TESTS BROKEN"]\n'
+        'trace_files = ["waves.vcd"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    demand = finding("MAJOR", "tb/tb.sv", "Testbench never prints [SIM_RESULT]", "quality")
+    result, calls = review_by_guide(
+        project,
+        monkeypatch,
+        TB_ARGS,
+        {"checklist": {"issues": []}, "tb-hunt": {"issues": [demand]}},
+        route=tb_route,
+    )
+    hunts = [call for call in calls if tb_route(call) == "tb-hunt"]
+    assert len(hunts) == 1, "expected one tb-hunt call"
+    (hunt,) = hunts
+    guide = hunt.system_prompt.split("## Review guide — quality (tb-hunt)")[1]
+    contract = [line for line in guide.splitlines() if "Project Simulation Contract" in line]
+    assert any("configured pass and fail sentinels" in line for line in contract)
+    assert any("replace this guide's defaults" in line for line in contract)
+    assert "never a finding" in guide
+    assert "ALL TESTS OK" in hunt.prompt
+    assert "waves.vcd" in hunt.prompt
+    # What the hunt reports about the contract stays a model judgment: nothing is filtered.
+    assert [row["summary"] for row in result.detail["issue_list"]] == [demand["summary"]]
+    assert result.detail["filtered"] == []
 
 
 def test_optimization_review_runs_checklist_and_hunt_calls(

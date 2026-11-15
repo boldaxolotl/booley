@@ -822,6 +822,23 @@ What goes here:
   reads fixed-name inputs (e.g. `$readmemh("inst.pat")`) from a specific dir,
   and bake the toolchain the commands need into the project image.
 
+### 2d. metrics.toml (row 6a)
+
+`booley init` writes `.booley/metrics.toml` with the default bounds and no
+table. With row 6a `later` or `pre-set`, do not edit it. With `now`, after the
+`.core` files and `tests.toml` are written, run `booley cheat --metrics` and
+copy the `[<target>.sim]` header line, spelled exactly as listed, of every
+Target that has at least one registered Test. The listing writes a selector
+that reaches exactly that Target: the bare name, or the quoted `vlnv#name`
+identity when a bare name (such as a `tests.toml` key shared by several cores)
+is ambiguous. Never derive a header from the `tests.toml` key. Add each header
+as an empty table below the defaults unless the file already declares it (a
+resumed run), and no other table or key. A Target the
+listing marks as unreachable gets no table and one §3 deviation line. Then run
+`booley measure --validate` and expect `N tables`, each with the defaults'
+bound count. If `metrics.toml` is missing, record a deviation and have the
+host re-run `booley init`; do not author the defaults by hand.
+
 ### Presenting the draft
 
 Per the **onboarding voice** (SKILL.md) — assume the reader is new to Booley.
@@ -895,7 +912,7 @@ a review artifact (not a question):
 - A decision log tying each non-obvious value (fileset membership, tags, EDA tool
   choice, toplevel, parameters, test lists) to its `SETUP-PLAN.md` row or to
   this step's evidence — anything tied to neither is a deviation and belongs
-  in the plan's §3.
+  in the plan's §3. List `metrics.toml` with its row 6a tie.
 - A short note that leaving a Flow disabled (`enabled = false`) is expected at this stage and will be wired
   on by the per-Flow setup skills.
 

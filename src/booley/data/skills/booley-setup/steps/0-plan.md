@@ -646,6 +646,22 @@ separate columns (see "How a row resolves"). The standard checklist:
    Targets need different input dirs, the commands stage into the one `run_cwd`,
    they do not each get their own. (The commands themselves run from the **Project Root**, not from `run_cwd`, and nothing auto-creates directories — a staging
    script `mkdir -p`s its own target dir or `cd "$BOOLEY_RUN_CWD"` first.)
+6a. **Metrics — Enable metrics now or later?** A **defaults block** row,
+   default `later` (adoption is optional; never nag). `now` adds exactly one
+   `[<target>.sim]` table for every Target row 6 gives at least one Test, and
+   no other table; `later` changes nothing beyond the defaults `booley init`
+   wrote to `.booley/metrics.toml`. Resolves `evidence-forced: later` when no
+   Target has Tests (nothing to enable). Unattended: `later`,
+   `inferred`/high, no review star (a Developer Agent never adds tables
+   unasked). A Project-authored `metrics.toml` wins, because init never
+   overwrites it: Part A reads the file. When it already holds a
+   `[<target>.<flow>]` table, row 6a resolves `pre-set` and Setup leaves the
+   file alone. When it has no `[defaults.sim]` bound (an empty or hand-written
+   file), an empty `[<target>.sim]` table would be a load error ("no reported
+   metric"), so row 6a resolves `evidence-forced: later` with that reason.
+   Only a file whose `[defaults.sim]` holds a bound and that has no table
+   offers `now`; "the default bound" is then whatever that file's
+   `[defaults.sim]` says. Define Target Metrics from `../GLOSSARY.md` on first use.
 7. **Sandbox image** — base `booley-sandbox`, prebuilt `booley-sandbox-riscv`,
    or a project Dockerfile; driven by the toolchain determinant (firmware
    cross-compilers, `srec_cat`, Python dep pins for cocotb 1.x TBs, …).

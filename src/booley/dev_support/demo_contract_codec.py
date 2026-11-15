@@ -16,8 +16,6 @@ from booley.core.boundary import (
     require_str,
 )
 from booley.dev_support.toolchain_provenance import validate_toolchain_provenance
-from booley.goals.model import GoalArg, GoalArgError, parse_goal_arg
-from booley.goals.translate import GoalTranslationError, translate_goals
 
 __all__ = [
     "DemoContract",
@@ -52,7 +50,7 @@ class DemoContract:
     toolchain_url: str
     toolchain_sha256: str
     required_targets: tuple[str, ...]
-    required_goals: tuple[GoalArg, ...]
+    target_metrics: Mapping[str, Mapping[str, Mapping[str, object]]]
     generated_inputs: tuple[GeneratedInput, ...]
 
 
@@ -106,30 +104,27 @@ def _require_unique_strings(value: Any, *, field: str) -> tuple[str, ...]:
     return tuple(result)
 
 
-def _parse_goals(
+def _parse_target_metrics(
     document: Mapping[str, Any], required_targets: tuple[str, ...]
-) -> tuple[GoalArg, ...]:
-    raw = document.get("required_goal")
-    if not isinstance(raw, list) or not raw:
-        raise BoundaryError("required_goal must be a non-empty array of tables")
-    goals: list[GoalArg] = []
-    seen: set[tuple[str, str]] = set()
-    for index, value in enumerate(raw):
-        goal = parse_goal_arg(value, where=f"required_goal[{index}]")
-        target = getattr(goal, "target", None)
+) -> dict[str, dict[str, dict[str, object]]]:
+    """Check the structure only; ``booley measure`` checks metric and Flow names."""
+    raw = require_dict(document.get("target_metrics"), field="target_metrics")
+    if not raw:
+        raise BoundaryError("target_metrics must be a non-empty table")
+    metrics: dict[str, dict[str, dict[str, object]]] = {}
+    for target, flows in raw.items():
         if target not in required_targets:
-            raise BoundaryError(
-                f"required_goal[{index}].target {target!r} is not in required_targets"
-            )
-        pair = (goal.family, target)
-        if pair in seen:
-            raise BoundaryError(
-                f"required_goal contains duplicate pair {goal.family!r} -> {target!r}"
-            )
-        seen.add(pair)
-        goals.append(goal)
-    translate_goals(goals)
-    return tuple(goals)
+            raise BoundaryError(f"target_metrics.{target} is not in required_targets")
+        flow_tables = require_dict(flows, field=f"target_metrics.{target}")
+        if not flow_tables:
+            raise BoundaryError(f"target_metrics.{target} must be a non-empty table")
+        metrics[target] = {}
+        for flow, table in flow_tables.items():
+            entries = require_dict(table, field=f"target_metrics.{target}.{flow}")
+            if not entries:
+                raise BoundaryError(f"target_metrics.{target}.{flow} must be a non-empty table")
+            metrics[target][flow] = dict(entries)
+    return metrics
 
 
 def _parse_generated_inputs(
@@ -168,8 +163,8 @@ def load_contract(path: Path | str) -> DemoContract:
         raise DemoContractError(f"cannot read demo contract: {exc}") from exc
     try:
         schema = require_int(document.get("schema"), field="schema")
-        if schema != 2:
-            raise BoundaryError("schema must be 2")
+        if schema != 3:
+            raise BoundaryError("schema must be 3")
         upstream_repository = _require_trimmed_str(document, "upstream_repository")
         upstream_ref = _require_trimmed_str(document, "upstream_ref")
         project_repository = _require_trimmed_str(document, "project_repository")
@@ -182,9 +177,9 @@ def load_contract(path: Path | str) -> DemoContract:
             document.get("required_targets"), field="required_targets"
         )
         toolchain_url, toolchain_sha256 = _parse_toolchain_provenance(document)
-        goals = _parse_goals(document, required_targets)
+        target_metrics = _parse_target_metrics(document, required_targets)
         generated_inputs = _parse_generated_inputs(document, required_targets)
-    except (BoundaryError, GoalArgError, GoalTranslationError) as exc:
+    except BoundaryError as exc:
         raise DemoContractError(str(exc)) from exc
 
     return DemoContract(
@@ -196,6 +191,6 @@ def load_contract(path: Path | str) -> DemoContract:
         toolchain_url=toolchain_url,
         toolchain_sha256=toolchain_sha256,
         required_targets=required_targets,
-        required_goals=goals,
+        target_metrics=target_metrics,
         generated_inputs=generated_inputs,
     )
