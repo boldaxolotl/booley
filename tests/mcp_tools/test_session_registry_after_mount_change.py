@@ -25,6 +25,11 @@ from tests.subprocess_budget import run_bounded_child
 SCOPE = "pid:[17]"
 
 
+def _former_demo(former: str) -> str:
+    """The Worktree as the former mount spelled it, with this platform's separators."""
+    return str(Path(former) / "worktrees" / "demo")
+
+
 def _path_attribution(work_dir: str) -> Attribution:
     return Attribution(
         f"worktree:path:{work_dir}", "worktree", work_dir, f"path:{work_dir}", namespace=SCOPE
@@ -52,7 +57,7 @@ def test_former_mount_fallback_row_is_migrated_and_keeps_its_handle(
     # or none of its calls and start time, because its former-spelled row and key were not found.
     booley_dir, former = _mount(tmp_path, monkeypatch, symlink=symlink)
     registry = SessionRegistry(booley_dir, quiet_after=60, proc_root=tmp_path / "proc")
-    old = _path_attribution(f"{former}/worktrees/demo")
+    old = _path_attribution(_former_demo(former))
     registry.upsert(old, "first", "completed", now=100)
     assert HandleStore(booley_dir).load().entries == {old.key: "S1"}
 
@@ -81,15 +86,15 @@ def test_former_mount_rows_read_and_prune_against_the_current_worktree(
     checkout = booley_dir / "worktrees" / "demo"
     run_bounded_child(["git", "init", "-q", str(checkout)], check=True)
     registry = SessionRegistry(booley_dir, quiet_after=60, proc_root=tmp_path / "proc")
-    old = _path_attribution(f"{former}/worktrees/demo")
+    old = _path_attribution(_former_demo(former))
     registry.upsert(old, "tool", "completed", now=100)
     thread = Attribution(
         "codex:one",
         "thread",
-        f"{former}/worktrees/demo",
+        _former_demo(former),
         "repo:demo",
         namespace=SCOPE,
-        default_work_dir=f"{former}/worktrees/demo/sub",
+        default_work_dir=str(Path(former) / "worktrees" / "demo" / "sub"),
     )
     registry.upsert(thread, "tool", "completed", now=100)
     elsewhere = Attribution("codex:else", "thread", str(tmp_path / "elsewhere"), "repo:else")
@@ -116,7 +121,7 @@ def test_job_reservation_reuses_a_former_mount_session_handle(
     # Bug caught: a Job registered after a mount change allocating a second handle for a Session.
     booley_dir, former = _mount(tmp_path, monkeypatch, symlink=False)
     store = HandleStore(booley_dir)
-    store.save(HandleMap({f"worktree:path:{former}/worktrees/demo": "S1"}, next_number=2))
+    store.save(HandleMap({f"worktree:path:{_former_demo(former)}": "S1"}, next_number=2))
     work_dir = booley_dir / "worktrees" / "demo"
     key = f"worktree:path:{work_dir}"
 
@@ -133,7 +138,7 @@ def test_unreadable_mount_history_reports_the_history_file_not_an_absent_row(
     # history that explains it cannot be read.
     booley_dir, former = _mount(tmp_path, monkeypatch, symlink=False)
     registry = SessionRegistry(booley_dir, quiet_after=60, proc_root=tmp_path / "proc")
-    old = _path_attribution(f"{former}/worktrees/demo")
+    old = _path_attribution(_former_demo(former))
     registry.upsert(old, "tool", "completed", now=100)
     before = registry.path(old.key).read_bytes()
     (booley_dir / ".runtime" / "sandbox-mounts.json").write_bytes(b"{")
