@@ -191,6 +191,24 @@ def test_installed_versions_prefers_vscode_registry_after_downgrade(tmp_path):
     assert vaporview.installed_versions(tmp_path) == ["1.5.4"]
 
 
+@pytest.mark.parametrize("layout", ["registry", "directories"])
+def test_installed_versions_reads_the_requested_extension(tmp_path, layout):
+    root = tmp_path / ".vscode-server" / "extensions"
+    _install(root, "1.6.0")
+    live = root / "ms-vscode.live-server-0.4.20"
+    live.mkdir()
+    (live / "package.json").write_text(json.dumps({"version": "0.4.20"}), encoding="utf-8")
+    if layout == "registry":
+        registry = [
+            {"identifier": {"id": "lramseyer.vaporview"}, "version": "1.6.0"},
+            {"identifier": {"id": "Ms-VSCode.Live-Server"}, "version": "0.4.20"},
+        ]
+        (root / "extensions.json").write_text(json.dumps(registry), encoding="utf-8")
+
+    assert vaporview.installed_versions(tmp_path, "ms-vscode.live-server") == ["0.4.20"]
+    assert vaporview.installed_versions(tmp_path) == ["1.6.0"]
+
+
 @pytest.mark.parametrize(
     "registry",
     ["not json", '{"not": "a list"}', '[{"identifier": {"id": "lramseyer.vaporview"}}]'],
