@@ -146,3 +146,23 @@ def record_former_mount(
         atomic_replace_bytes(path, json.dumps(payload, indent=2).encode("utf-8") + b"\n")
     except OSError as exc:
         raise MountHistoryError(f"cannot record the former mount in {path}: {exc}") from exc
+
+
+def recorded_former_mounts(source: Path, spec_file: Path) -> tuple[str, ...]:
+    """The former mounts a host-side reader can know: the history and the issued spec.
+
+    The history lists the mounts earlier issuances replaced. The spec at *spec_file* is
+    the issuance that has not been replaced yet, so its mount is a former one when it
+    differs from the current mount. Order is kept and duplicates dropped. Raises
+    ``MountHistoryError`` when the history or the spec cannot be read.
+    """
+    mounts = _read(source / MOUNT_HISTORY)
+    try:
+        issued = _former_mount_of(spec_file.read_bytes())
+    except FileNotFoundError:
+        issued = None
+    except OSError as exc:
+        raise MountHistoryError(f"cannot read {spec_file}: {exc}") from exc
+    if issued is not None and issued != sandbox_layout.BOOLEY_DIR_TARGET:
+        mounts.append(issued)
+    return tuple(dict.fromkeys(mounts))

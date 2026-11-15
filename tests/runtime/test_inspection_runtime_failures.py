@@ -386,17 +386,15 @@ def _fail_findings(report):
 
 
 def _hide_image_alias(monkeypatch):
-    """Make the image's ``/booley-project`` alias dangle, as in a Codespace."""
+    """Make the image's ``/booley`` alias dangle, as in a Codespace."""
     original = Path.is_dir
-    monkeypatch.setattr(
-        Path, "is_dir", lambda p: False if p == Path("/booley-project") else original(p)
-    )
+    monkeypatch.setattr(Path, "is_dir", lambda p: False if p == Path("/booley") else original(p))
 
 
 def _booley_dir_spelling(project_root: Path, spelling: str) -> str:
     """Build one ``BOOLEY_DIR`` value for the named layout under ``project_root``."""
     if spelling == "fixed-alias":
-        return "/booley-project"
+        return "/booley"
     entry = project_root / ".booley"
     if spelling == "project-directory":
         entry.mkdir()

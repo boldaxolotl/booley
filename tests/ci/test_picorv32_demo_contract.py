@@ -163,7 +163,7 @@ def test_demo_never_runs_on_the_released_riscv_image() -> None:
     # The demo's isolation and project directory are unchanged.
     assert "--network none" in verify["run"]
     assert "-e BOOLEY_DIR=/work/.booley" in verify["run"]
-    assert "dst=/booley-project" not in verify["run"]
+    assert "dst=/booley" not in verify["run"]
     assert ".github/scripts/riscv_candidate.sh build" in build["run"]
     assert steps.index(select) < steps.index(build) < steps.index(verify)
     # A failed build fails the check: nothing may continue past it, and no

@@ -1,8 +1,8 @@
 """Cross-platform guidance-link behavior: the two-venue link target (F-13).
 
-The Booley Directory is bind-mounted at ``/booley-project`` inside the Session
+The Booley Directory is bind-mounted at ``/booley`` inside the Session
 Runtime — outside the workspace. A link relative to *that* reads
-``../booley-project/AGENTS.md``, which on the host resolves to a sibling of the
+``../booley/AGENTS.md``, which on the host resolves to a sibling of the
 repo that does not exist, so a host-side editor or agent reads no guidance.
 
 Unlike ``test_guidance_links.py`` (POSIX-only: it asserts on symlinks), these
@@ -12,6 +12,7 @@ host-side repair has to work.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from booley.harness.setup.guidance_links import (
     ensure_guidance_links,
 )
 from booley.runtime.booley_dir import BOOLEY_DIR_NAME
+from booley.runtime.devcontainer import devcontainer_path
 
 
 def _make_project(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -44,10 +46,10 @@ class TestPortableTarget:
         assert target == project_root / BOOLEY_DIR_NAME / CANON_NAME
 
     def test_container_layout_still_resolves_through_the_workspace_mount(self, tmp_path: Path):
-        """In-container the canon is /booley-project/AGENTS.md, but the same file
+        """In-container the canon is /booley/AGENTS.md, but the same file
         is reachable at <repo>/.booley/AGENTS.md. Name the latter."""
         project_root, _booley_dir, _canon = _make_project(tmp_path)
-        mounted_canon = tmp_path / "booley-project" / CANON_NAME
+        mounted_canon = tmp_path / "booley" / CANON_NAME
         mounted_canon.parent.mkdir()
         mounted_canon.write_text("# AGENTS\n", encoding="utf-8")
 
@@ -63,7 +65,7 @@ class TestPortableTarget:
         canon = project_root / "state" / CANON_NAME
         canon.parent.mkdir()
         canon.write_text("# AGENTS\n", encoding="utf-8")
-        mounted = tmp_path / "booley-project" / CANON_NAME
+        mounted = tmp_path / "booley" / CANON_NAME
         mounted.parent.mkdir()
         mounted.write_text("# AGENTS\n", encoding="utf-8")
 
@@ -107,18 +109,42 @@ class TestEnsureGuidanceLinks:
             if ino:  # st_ino is 0 on some filesystems
                 assert p.stat().st_ino == ino
 
-    def test_repairs_a_dangling_container_style_link(self, tmp_path: Path):
-        """The exact F-13 breakage: a link left pointing at ../booley-project/."""
+    @pytest.mark.parametrize("recorded_in", ["mount-history", "issued-spec"])
+    def test_repairs_a_dangling_link_through_a_recorded_former_mount(
+        self, tmp_path: Path, recorded_in: str
+    ):
+        """The F-13 breakage: a link left pointing through a former Sandbox mount."""
         project_root, booley_dir, _canon = _make_project(tmp_path)
+        if recorded_in == "mount-history":
+            history = booley_dir / ".runtime" / "sandbox-mounts.json"
+            history.parent.mkdir()
+            history.write_text(
+                json.dumps({"schema": 1, "mounts": ["/former-mount"]}), encoding="utf-8"
+            )
+        else:
+            spec = devcontainer_path(project_root)
+            spec.parent.mkdir(parents=True)
+            spec.write_text(
+                json.dumps({"remoteEnv": {"BOOLEY_DIR": "/former-mount"}}), encoding="utf-8"
+            )
         link = project_root / "AGENTS.md"
         try:
-            link.symlink_to(Path("..") / "booley-project" / CANON_NAME)
+            link.symlink_to(Path("..") / "former-mount" / CANON_NAME)
         except OSError:
             pytest.skip("symlink creation not permitted on this host")
 
         assert not link.exists()  # dangling, as seen from the host
         ensure_guidance_links(project_root, booley_dir)
         assert link.read_text(encoding="utf-8") == "# AGENTS\n"
+
+    def test_reports_an_unreadable_mount_history_as_an_os_error(self, tmp_path: Path):
+        project_root, booley_dir, _canon = _make_project(tmp_path)
+        history = booley_dir / ".runtime" / "sandbox-mounts.json"
+        history.parent.mkdir()
+        history.write_text("not json", encoding="utf-8")
+
+        with pytest.raises(OSError, match="malformed mount history"):
+            ensure_guidance_links(project_root, booley_dir)
 
     def test_preserves_an_unrelated_dangling_link(self, tmp_path: Path):
         project_root, booley_dir, _canon = _make_project(tmp_path)

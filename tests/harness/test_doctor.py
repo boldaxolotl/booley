@@ -6015,7 +6015,7 @@ class TestDisplayReportDir:
     """Deep-check FAIL hints must be readable where the user reads them.
 
     Doctor may run inside the Sandbox, where the Booley Directory is the
-    /booley-project bind mount; printing that verbatim sent a host-side user
+    /booley bind mount; printing that verbatim sent a host-side user
     ls-ing a path that only exists in the container (the real files sit at
     <repo>/.booley/tmp/...).
     """

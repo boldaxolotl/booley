@@ -34,7 +34,7 @@ def image_alias(tmp_path, monkeypatch) -> tuple[Path, Path]:
     require_symlinks(tmp_path)
     data = tmp_path / "image-data"
     data.mkdir()
-    alias = tmp_path / "image" / "booley-project"
+    alias = tmp_path / "image" / "booley"
     alias.parent.mkdir()
     symlink_or_skip(alias, data, target_is_directory=True)
     configure_project_alias(monkeypatch, alias, data)

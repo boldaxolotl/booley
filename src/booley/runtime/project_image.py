@@ -38,6 +38,7 @@ from booley.config.sandbox import (
     project_image_name,
     project_sandbox_image,
 )
+from booley.runtime import sandbox_layout
 from booley.runtime.platform_paths import run_captured_bounded
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,10 @@ _PARENT_DIRECTIVE_RE = re.compile(r"^\s*#\s*booley:parent=(?P<image>\S+)\s*$", r
 
 class DockerImageError(RuntimeError):
     """Docker could not authoritatively inspect a Sandbox Image."""
+
+
+class ImageLayoutMissingError(DockerImageError):
+    """A Sandbox Image lacks the root-owned Booley Directory mount point."""
 
 
 def _content_digest(text: str) -> str:
@@ -416,17 +421,23 @@ def _layout_layers(record: dict) -> object:
 
 @lru_cache(maxsize=256)
 def project_data_alias_capable(image_id: str) -> bool:
-    """Probe an immutable final image for its root-owned canonical state alias."""
+    """Probe an immutable final image for its root-owned Booley Directory mount point.
+
+    True for the root-owned canonical alias, False for a root-owned ordinary directory.
+    An image with neither was built for an older Booley (or by hand): it raises
+    ``ImageLayoutMissingError`` rather than guessing a layout.
+    """
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
         return False
+    target = sandbox_layout.BOOLEY_DIR_TARGET
     script = (
-        "import os,stat; p='/booley-project'; "
+        f"import os,stat; p={target!r}; "
         "s=os.lstat(p) if os.path.lexists(p) else None; r=os.stat('/'); "
         "alias=s is not None and stat.S_ISLNK(s.st_mode); "
-        "assert not alias or (s.st_uid == 0 and os.readlink(p) == '/work/.booley' "
+        f"assert not alias or (s.st_uid == 0 and os.readlink(p) == {sandbox_layout.PROJECT_DATA_MOUNT_PATH!r} "
         "and r.st_uid == 0 and not r.st_mode & 0o022); "
-        "assert alias or s is None or stat.S_ISDIR(s.st_mode); "
-        "print('canonical-alias' if alias else 'directory')"
+        "directory=s is not None and stat.S_ISDIR(s.st_mode) and s.st_uid == 0; "
+        "print('canonical-alias' if alias else 'directory' if directory else 'absent')"
     )
     try:
         result = run_captured_bounded(
@@ -448,6 +459,13 @@ def project_data_alias_capable(image_id: str) -> bool:
         raise DockerImageError(
             f"cannot probe Booley Directory layout of {image_id}: {exc}"
         ) from exc
+    if not result.returncode and result.stdout.strip() == "absent":
+        raise ImageLayoutMissingError(
+            f"Sandbox Image {image_id} has no root-owned {target} Booley Directory mount point; "
+            "it was built for an older Booley. `booley init` rebuilds an image Booley manages; "
+            "rebuild or pull an image you manage yourself from the current Booley Sandbox image, "
+            "then run `booley init --seed` on the host"
+        )
     if result.returncode or result.stdout.strip() not in {"canonical-alias", "directory"}:
         raise DockerImageError(
             f"cannot prove Booley Directory layout of {image_id}: {result.stderr.strip()}"
@@ -601,6 +619,7 @@ def _verify_layout_labels(original: dict, actual: dict) -> None:
 
 
 def _probe_layout_directory(image_id: str, *, executable: str = "docker") -> None:
+    target = sandbox_layout.BOOLEY_DIR_TARGET
     try:
         result = run_captured_bounded(
             [
@@ -613,7 +632,7 @@ def _probe_layout_directory(image_id: str, *, executable: str = "docker") -> Non
                 "--user=0:0",
                 image_id,
                 "-c",
-                'test -d /booley-project && ! test -L /booley-project && test "$(stat -c %u /booley-project)" = 0',
+                f'test -d {target} && ! test -L {target} && test "$(stat -c %u {target})" = 0',
             ],
             timeout=30,
         )

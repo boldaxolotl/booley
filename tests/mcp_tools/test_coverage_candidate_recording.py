@@ -260,7 +260,7 @@ def test_image_alias_reports_root_records_canonical_coverage_record(
 
     context, loaded, coverage_record, path, sha = record_context
     require_symlinks(tmp_path)
-    alias = tmp_path / "booley-project"
+    alias = tmp_path / "booley"
     symlink_or_skip(alias, tmp_path / "reports", target_is_directory=True)
     configure_project_alias(monkeypatch, alias, tmp_path / "reports")
     context = replace(context, flow_reports_root=alias)

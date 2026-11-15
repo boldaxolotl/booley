@@ -184,7 +184,7 @@ class TestDockerRunArgv:
 
         mounts = _flag_values(_argv(_spec(), workspace), "--mount")
         assert f"source={docker_mount_path(workspace)},target=/work,type=bind" in mounts
-        assert "source=/c/ws/i2c/.booley,target=/booley-project,type=bind" in mounts
+        assert "source=/c/ws/i2c/.booley,target=/booley,type=bind" in mounts
 
     def test_readonly_credential_mounts_survive_translation(self, workspace: Path):
         spec = _spec(login_source="/c/home/.credentials.json")
@@ -199,7 +199,7 @@ class TestDockerRunArgv:
     def test_remote_env_becomes_e_flags(self, workspace: Path):
         env = _flag_values(_argv(_spec(), workspace), "-e")
         assert "BOOLEY_MCP_MODE=interactive" in env
-        assert "BOOLEY_DIR=/booley-project" in env
+        assert "BOOLEY_DIR=/booley" in env
         assert "BOOLEY_AGENT_APP=claude" in env
         assert "HTTP_PROXY=http://booley-proxy:8080" in env
 
@@ -689,7 +689,7 @@ class TestPrepareLegacyContainer:
             {
                 "Mounts": [
                     {
-                        "Destination": "/booley-project",
+                        "Destination": "/booley",
                         "Source": source,
                         "Type": "bind",
                         "RW": True,
@@ -754,7 +754,7 @@ class TestPrepareLegacyContainer:
                 "Config": {"Labels": {"devcontainer.local_folder": str(workspace)}},
                 "Mounts": [
                     {
-                        "Destination": "/booley-project",
+                        "Destination": "/booley",
                         "Source": str(external),
                         "Type": "bind",
                         "RW": True,
@@ -862,7 +862,7 @@ class TestPrepareLegacyContainer:
         state = json.loads(self._legacy_vscode_state(workspace, "b" * 64))
         state[0]["Mounts"] = [
             {
-                "Destination": "/booley-project",
+                "Destination": "/booley",
                 "Source": str(external),
                 "Type": "bind",
                 "RW": True,
@@ -941,7 +941,7 @@ class TestIssuedRuntimeDriftFix:
         source = str(workspace.resolve() / ".booley")
         mounts = [
             {"Destination": target, "Source": source, "Type": "bind", "RW": True}
-            for target in ("/booley-project", "/work/.booley")
+            for target in ("/booley", "/work/.booley")
         ]
         return {
             "State": {"Running": running},
@@ -1978,7 +1978,7 @@ class TestProjectDataMountPinned:
             {
                 "Mounts": [
                     {
-                        "Destination": "/booley-project",
+                        "Destination": "/booley",
                         "Source": project_source,
                         "Type": "bind",
                         "RW": True,
@@ -2009,9 +2009,7 @@ class TestProjectDataMountPinned:
             "/run/desktop/mnt/host/c/Users/dev/project/.booley",
         )
 
-        assert sr._project_data_mount_root_is_pinned(
-            raw, workspace, pending, layout="legacy", image_id=""
-        )
+        assert sr._project_data_mount_root_is_pinned(raw, workspace, pending, layout="legacy")
 
     def test_native_sources_still_match(self, monkeypatch: pytest.MonkeyPatch):
         from booley.runtime import platform_paths
@@ -2023,9 +2021,7 @@ class TestProjectDataMountPinned:
             "/c/Users/dev/project/.booley",
         )
 
-        assert sr._project_data_mount_root_is_pinned(
-            raw, workspace, pending, layout="legacy", image_id=""
-        )
+        assert sr._project_data_mount_root_is_pinned(raw, workspace, pending, layout="legacy")
 
     def test_mismatched_sources_are_rejected(self, monkeypatch: pytest.MonkeyPatch):
         from booley.runtime import platform_paths
@@ -2037,9 +2033,7 @@ class TestProjectDataMountPinned:
             "/run/desktop/mnt/host/c/Users/dev/other/.booley",
         )
 
-        assert not sr._project_data_mount_root_is_pinned(
-            raw, workspace, pending, layout="legacy", image_id=""
-        )
+        assert not sr._project_data_mount_root_is_pinned(raw, workspace, pending, layout="legacy")
 
     def test_nonwritable_workspace_view_is_rejected(self, monkeypatch: pytest.MonkeyPatch):
         from booley.runtime import platform_paths
@@ -2055,14 +2049,14 @@ class TestProjectDataMountPinned:
         raw[0]["Mounts"][1]["RW"] = False
 
         assert not sr._project_data_mount_root_is_pinned(
-            json.dumps(raw), workspace, pending, layout="legacy", image_id=""
+            json.dumps(raw), workspace, pending, layout="legacy"
         )
 
     def test_malformed_inspect_json_is_rejected(self):
         workspace, pending = self._windows_workspace()
 
         assert not sr._project_data_mount_root_is_pinned(
-            "not-json", workspace, pending, layout="legacy", image_id=""
+            "not-json", workspace, pending, layout="legacy"
         )
         assert sr._decode_container_inspect("not-json") is None
 
@@ -3009,7 +3003,7 @@ class TestRunProjectCommand:
         "https_proxy": dc.PROXY_URL,
         "NO_PROXY": "localhost,127.0.0.1",
         "BOOLEY_MCP_MODE": "interactive",
-        "BOOLEY_DIR": "/booley-project",
+        "BOOLEY_DIR": "/booley",
         "BOOLEY_AGENT_APP": "claude",
     }
 
@@ -3543,7 +3537,7 @@ class TestSessionRefresh:
 @pytest.mark.parametrize(
     "capable,duplicate,expected", [(True, False, True), (True, True, False), (False, False, False)]
 )
-def test_canonical_pin_checks_immutable_image_and_rejects_alias_mask(
+def test_canonical_pin_checks_container_image_and_rejects_alias_mask(
     tmp_path, monkeypatch, capable, duplicate, expected
 ):
     import json
@@ -3557,14 +3551,14 @@ def test_canonical_pin_checks_immutable_image_and_rejects_alias_mask(
     if duplicate:
         mounts.append(
             {
-                "Destination": "/booley-project/secrets",
+                "Destination": "/booley/secrets",
                 "Source": str(source),
                 "Type": "bind",
                 "RW": True,
             }
         )
-    raw = json.dumps([{"Mounts": mounts}])
     image_id = "sha256:" + "a" * 64
+    raw = json.dumps([{"Image": image_id, "Mounts": mounts}])
     inspected = []
     monkeypatch.setattr(
         project_image,
@@ -3572,12 +3566,26 @@ def test_canonical_pin_checks_immutable_image_and_rejects_alias_mask(
         lambda image: inspected.append(image) or capable,
     )
     assert (
-        sr._project_data_mount_root_is_pinned(
-            raw, workspace, source, layout="canonical-alias", image_id=image_id
-        )
+        sr._project_data_mount_root_is_pinned(raw, workspace, source, layout="canonical-alias")
         is expected
     )
     assert inspected == [image_id]
+
+
+def test_canonical_pin_refuses_container_without_image_identity(tmp_path, monkeypatch):
+    import json
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    source = workspace / ".booley"
+    mounts = [{"Destination": "/work/.booley", "Source": str(source), "Type": "bind", "RW": True}]
+    monkeypatch.setattr(
+        sr, "_project_data_alias_capable", lambda _image: pytest.fail("no image to probe")
+    )
+
+    assert not sr._project_data_mount_root_is_pinned(
+        json.dumps([{"Mounts": mounts}]), workspace, source, layout="canonical-alias"
+    )
 
 
 @pytest.mark.parametrize("vscode", [False, True])
@@ -3876,7 +3884,7 @@ def _project_resolution_data(workspace, issuance):
         "workspaceMount": "source=${localWorkspaceFolder},target=/work,type=bind",
         "mounts": [],
         "containerEnv": {"CONTAINER": "yes"},
-        "remoteEnv": {"BOOLEY_DIR": "/booley-project", "CLAUDE_CODE_OAUTH_TOKEN": "secret"},
+        "remoteEnv": {"BOOLEY_DIR": "/booley", "CLAUDE_CODE_OAUTH_TOKEN": "secret"},
         "runArgs": ["--network", "sandbox-network"],
     }
     labels = _vscode_labels(workspace, issuance)
@@ -3999,7 +4007,7 @@ def test_project_sandbox_resolution_reuses_editor_for_up_and_both_enters(
     assert attached.call_args.args[2] == ["/bin/bash", "-l"]
     assert attached.call_args.kwargs == {
         "tty": True,
-        "env": {"BOOLEY_DIR": "/booley-project"},
+        "env": {"BOOLEY_DIR": "/booley"},
         "cwd": None,
     }
     assert sr.validate(workspace) == fixture.issuance.spec_sha256
@@ -4500,7 +4508,7 @@ def test_enter_preserves_container_credentials_without_literal_placeholder_overr
     assert sr.enter(workspace, command, tty=False) == 0
     overrides = [captured[index + 1] for index, value in enumerate(captured) if value == "-e"]
     assert not any(item.split("=", 1)[0] in auth_token.CREDENTIAL_ENV_KEYS for item in overrides)
-    assert "BOOLEY_DIR=/booley-project" in overrides
+    assert "BOOLEY_DIR=/booley" in overrides
     assert fixture.state["Id"] in captured
     assert captured[-len(command or ["/bin/bash", "-l"]) :] == (command or ["/bin/bash", "-l"])
 
@@ -5036,7 +5044,7 @@ def test_enter_gateway_sandbox_never_overrides_container_gateway_values(
     container_id, command_env = sr._select_or_start_project_runtime(workspace)
 
     assert container_id == fixture.state["Id"]
-    assert command_env["BOOLEY_DIR"] == "/booley-project"
+    assert command_env["BOOLEY_DIR"] == "/booley"
     assert not set(command_env) & set(GATEWAY_FORWARDED_ENV)
 
 
@@ -5066,7 +5074,7 @@ def _as_headless_sandbox(workspace: Path, fixture: SimpleNamespace, monkeypatch)
     fixture.spec["remoteEnv"][_CREDENTIAL_KEY] = "${localEnv:" + _CREDENTIAL_KEY + "}"
     fixture.state["Config"]["Env"] = [
         "CONTAINER=yes",
-        "BOOLEY_DIR=/booley-project",
+        "BOOLEY_DIR=/booley",
         f"{_CREDENTIAL_KEY}=container-held-secret",
     ]
     inspect = sr._docker_stdout
@@ -5100,7 +5108,7 @@ def test_verified_headless_container_ignores_calling_shell_env(
     # A drifted non-`localEnv` key or another image is not current.
     fixture.state["Config"]["Env"][1] = "BOOLEY_DIR=/elsewhere"
     assert sr.verified_headless_container(workspace, _refresh_image()) is None
-    fixture.state["Config"]["Env"][1] = "BOOLEY_DIR=/booley-project"
+    fixture.state["Config"]["Env"][1] = "BOOLEY_DIR=/booley"
     assert sr.verified_headless_container(workspace, _refresh_image()) == container_id
     other_image = RefreshImage("sha256:" + "e" * 64, None, None, False)
     assert sr.verified_headless_container(workspace, other_image) is None
@@ -5405,3 +5413,173 @@ def test_run_keeps_its_result_contract():
             [sys.executable, "-c", "import os; print(os.environ['BOOLEY_TEST_3858'])"], env
         )
         assert sr._run(argv, timeout=timeout).stdout.strip() == "seen", timeout
+
+
+# ---------------------------------------------------------------------------
+# Sandboxes and images that predate the /booley mount point (issue #4090)
+# ---------------------------------------------------------------------------
+
+_NEW_IMAGE = "sha256:" + "c" * 64
+_OLD_IMAGE = "sha256:" + "d" * 64
+
+
+def _running_vscode_state(
+    workspace: Path, *, image: str, booley_dir_target: str | None, alias: bool
+) -> str:
+    """A running VS Code container of this Project; *booley_dir_target* is the bound mount."""
+    source = str(workspace.resolve() / ".booley")
+    targets = ["/work/.booley"] if alias else [booley_dir_target, "/work/.booley"]
+    return json.dumps(
+        [
+            {
+                "Id": "e" * 64,
+                "Image": image,
+                "State": {"Running": True},
+                "Config": {"Labels": _vscode_labels(workspace, _test_issuance(workspace))},
+                "Mounts": [
+                    {"Destination": "/work", "Source": str(workspace), "Type": "bind", "RW": True},
+                    *(
+                        {"Destination": target, "Source": source, "Type": "bind", "RW": True}
+                        for target in targets
+                    ),
+                ],
+            }
+        ]
+    )
+
+
+def _stub_layout_probe(monkeypatch: pytest.MonkeyPatch, layouts: dict[str, str]) -> None:
+    """Answer the real Booley Directory layout probe per image from *layouts*."""
+    from booley.runtime import project_image
+
+    project_image.project_data_alias_capable.cache_clear()
+
+    def answer(argv, **_kwargs):
+        image = next(arg for arg in argv if arg.startswith("sha256:"))
+        return subprocess.CompletedProcess(argv, 0, layouts[image] + "\n", "")
+
+    monkeypatch.setattr(project_image, "run_captured_bounded", answer)
+
+
+def _alias_spec(workspace: Path) -> dict:
+    """The spec of a canonical-alias issuance: no mount at the Booley Directory target."""
+    spec = _spec(image=_NEW_IMAGE)
+    spec["mounts"] = [m for m in spec["mounts"] if f"target={dc.BOOLEY_DIR_TARGET}," not in m]
+    spec["mounts"].append(f"source={workspace / '.booley'},target=/work/.booley,type=bind")
+    return spec
+
+
+@pytest.mark.parametrize("image", [_NEW_IMAGE, _OLD_IMAGE], ids=["current", "pre-rename"])
+def test_prepare_refuses_alias_container_from_pre_rename_image(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, image: str
+) -> None:
+    issuance = _test_issuance(workspace)
+    _stub_prepare(monkeypatch, workspace, issuance, lambda _argv: None)
+    _write_spec(workspace, _alias_spec(workspace))
+    _stub_layout_probe(monkeypatch, {_NEW_IMAGE: "canonical-alias", _OLD_IMAGE: "absent"})
+    state = _running_vscode_state(workspace, image=image, booley_dir_target=None, alias=True)
+    monkeypatch.setattr(sr, "_strict_running_interactive_states", lambda: [("editor", state)])
+    monkeypatch.setattr(sr, "_strict_all_interactive_states", lambda *_args: [])
+
+    if image == _NEW_IMAGE:
+        assert sr.prepare(workspace) == "current-spec"
+        return
+    with pytest.raises(sr.SessionError, match=_OUTDATED_LAYOUT_REFUSAL) as caught:
+        sr.prepare(workspace)
+
+    assert "`docker rm editor`" in str(caught.value)
+    assert "`booley init --seed`" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "target", ["/booley", "/former-mount"], ids=["current-target", "former-target"]
+)
+def test_running_vscode_container_mount_follows_current_target(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    issuance = _test_issuance(workspace)
+    _stub_prepare(monkeypatch, workspace, issuance, lambda _argv: None)
+    state = _running_vscode_state(
+        workspace, image=_NEW_IMAGE, booley_dir_target=target, alias=False
+    )
+    monkeypatch.setattr(sr, "_strict_running_interactive_states", lambda: [("editor", state)])
+    monkeypatch.setattr(sr, "_strict_all_interactive_states", lambda *_args: [])
+
+    if target == "/booley":
+        assert sr.prepare(workspace) == "current-spec"
+        return
+    with pytest.raises(sr.SessionError, match=_OUTDATED_LAYOUT_REFUSAL) as caught:
+        sr.prepare(workspace)
+
+    assert "`docker rm editor`" in str(caught.value)
+
+
+def _docker_mounts(spec: dict, workspace: Path, booley_dir_target: str) -> list[dict]:
+    """Docker's view of the spec's mounts, with the Booley Directory bound at *booley_dir_target*."""
+    mounts: list[dict] = []
+    for raw in [spec["workspaceMount"], *spec["mounts"]]:
+        fields = dict(
+            field.split("=", 1)
+            for field in sr.substitute(raw, workspace).split(",")
+            if "=" in field
+        )
+        target = fields["target"]
+        if target in (dc.BOOLEY_DIR_TARGET, "/booley"):
+            target = booley_dir_target
+        mounts.append(
+            {
+                "Destination": target,
+                "Source": fields["source"],
+                "Name": fields["source"],
+                "Type": fields["type"],
+                "RW": "readonly" not in raw,
+            }
+        )
+    return mounts
+
+
+@pytest.mark.parametrize("target", ["/booley", "/former-mount"])
+def test_session_up_refuses_sandbox_with_former_booley_dir(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    spec = build_spec(
+        dc.APP_NONE, image="sha256:test", booley_dir_source=str(workspace / ".booley")
+    )
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda image: image)
+    runtime_spec.pin_image(spec)
+    environment = {**spec["remoteEnv"], **spec["containerEnv"], "BOOLEY_DIR": target}
+    state = {
+        "Image": "sha256:test",
+        "Config": {
+            "Image": "sha256:test",
+            "User": "agent",
+            "WorkingDir": "/work",
+            "Env": [f"{key}={value}" for key, value in environment.items()],
+        },
+        "HostConfig": {"Memory": 0},
+        "NetworkSettings": {
+            "Networks": {n: {} for n in sr._flag_values(spec["runArgs"], "--network")}
+        },
+        "Mounts": _docker_mounts(spec, workspace, target),
+    }
+    monkeypatch.setattr(runtime_spec, "labels", lambda _stamp: ())
+    monkeypatch.setattr(sr, "_session_hardening_matches", lambda *_args: True)
+    monkeypatch.setattr(
+        sr,
+        "_docker_stdout",
+        lambda argv: json.dumps({}) if "--format" in argv else json.dumps([state]),
+    )
+    issuance = SimpleNamespace(image_id="sha256:test")
+
+    matches = sr.container_matches_issuance("test", issuance, spec=spec, workspace=workspace)
+
+    assert matches is (target == "/booley")
+    if matches:
+        return
+    request = SimpleNamespace(name="test", issuance=issuance, spec=spec, profile=None)
+    monkeypatch.setattr(sr.idk, "container_exists", lambda _name: True)
+    monkeypatch.setattr(
+        sr, "sandbox_remedy", lambda *_args, **_kwargs: "run `booley session down`"
+    )
+    with pytest.raises(sr.SessionError, match="does not match the current host issuance"):
+        sr._run_up_transaction(workspace, request, rebuild=False, expected_image_id=None)
