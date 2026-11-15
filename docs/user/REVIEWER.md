@@ -37,6 +37,13 @@ searches report at the same file and line. It uses about twice the model time
 and tokens of one search. A search that fails runs once more; if it fails
 again, the whole review is an error instead of a partial result.
 
+A testbench `quality` review runs two searches the same way: the checklist for
+the testbench language (SystemVerilog, cocotb or C/C++), and a hunt that traces
+how each test decides pass or fail, looking for paths where a test passes
+without checking the DUT. The hunt follows the pass and fail messages and
+trace files your project configures. Expect about twice the model time and
+tokens of the checklist alone.
+
 A review sees only one side of the RTL/testbench split. A testbench review
 never reads the RTL, so it judges the tests against the spec rather than
 against what the RTL happens to do.
@@ -109,7 +116,7 @@ booley specialist reviewer --verify
 | `--fail-on critical\|major\|minor` | Exit 1 when an open finding is at or above that severity. Without it, a completed review exits 0 even with open findings. |
 | `--verify` | Recheck the latest review's open findings. Accepts only `--waive` and `--fail-on`. |
 | `--waive <finding-id> "<reason>"` | With `--verify`: propose a waiver. Repeatable. |
-| `--dry-run` | Preview the call without running the review: lists the checks it would run; a `bugs`, `protocol`, or `optimization` review shows two. |
+| `--dry-run` | Preview the call without running the review: lists the checks it would run; a `bugs`, `protocol`, `optimization` or testbench `quality` review shows two. |
 
 The options every Specialist shares are in [Specialists](SPECIALISTS.md#running-a-specialist).
 [CLI-REFERENCE.md](CLI-REFERENCE.md#reviewer) has the full reference,

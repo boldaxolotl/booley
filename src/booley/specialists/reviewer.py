@@ -1477,7 +1477,7 @@ match the strength of the evidence.
         style_focus = (category == "rtl" and focus == "code_style") or (
             category == "tb" and focus == "quality"
         )
-        if style_focus:
+        if style_focus and (not guides or any(g.kind == "checklist" for g in guides)):
             self._append_style_guides(sections, category, gp)
         sections.append(self._output_instructions(focus, category, diff_scoped=self._diff_scoped))
         return "\n".join(sections)
@@ -1513,7 +1513,12 @@ match the strength of the evidence.
             "cocotb": contract.has_cocotb,
             "cpp": contract.has_cpp,
         }
-        return tuple(g for g in guides if g.language is None or in_scope[g.language])
+        # A language-less guide needs at least one testbench source language in scope.
+        return tuple(
+            g
+            for g in guides
+            if (any(in_scope.values()) if g.language is None else in_scope[g.language])
+        )
 
     def _append_style_guides(
         self,
