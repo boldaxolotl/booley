@@ -179,8 +179,35 @@ class WorktreeCreationError(Exception):
     """The outer worktree script could not create the requested checkout."""
 
 
+class WorktreeMountRepairError(Exception):
+    """A worktree registration naming a former mount point cannot be repaired."""
+
+
 # Failures reported as one ERROR line; anything else is a defect and propagates.
-_REPORTED_FAILURES = (WorktreeCreationError, ProjectPairingError, OSError)
+_REPORTED_FAILURES = (
+    WorktreeCreationError,
+    WorktreeMountRepairError,
+    ProjectPairingError,
+    OSError,
+)
+
+
+def _repair_mount_registrations(project_root: Path) -> None:
+    """Repair registrations naming a former mount before the script's prune can delete them."""
+    from booley.runtime.mount_history import MountHistoryError
+    from booley.runtime.worktree_mount_repair import repair_mount_registrations
+
+    try:
+        result = repair_mount_registrations(project_root)
+    except MountHistoryError as exc:
+        raise WorktreeMountRepairError(
+            f"cannot check worktree registrations after a Sandbox mount point change: {exc}"
+        ) from exc
+    if result.problems:
+        raise WorktreeMountRepairError(
+            "worktree registrations name a former Sandbox mount point and cannot be repaired; "
+            "nothing was created:\n" + "\n".join(p.message() for p in result.problems)
+        )
 
 
 @dataclass(frozen=True)
@@ -321,6 +348,7 @@ def _run_current(name: str, project_root: Path) -> _Created | int:
     source = None
     new_branch: NewBranch | None = None
     try:
+        _repair_mount_registrations(project_root)
         source = project_pairing_source(project_root)
         validate_project_pairing(source, name)
         new_branch = _new_branch_start(project_root, name)

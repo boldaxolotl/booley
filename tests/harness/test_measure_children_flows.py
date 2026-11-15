@@ -7,6 +7,7 @@ The scheduler's decisions against scripted children are covered in ``test_measur
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -131,14 +132,23 @@ def test_cancelled_measurement_leaves_no_child_waiting_or_running(
     world = make_world()
     # The caller's own slot directory must not be the one the scheduler watches.
     monkeypatch.setenv("BOOLEY_SLOTS_DIR", str(tmp_path / "elsewhere"))
-    store = job_slots.SlotStore(job_slots.project_slots_dir(world.main), SlotCaps(max_light=1))
+    store = job_slots.SlotStore(job_slots.project_slots_dir(world.main), SlotCaps())
+    # Other Flows hold all but one of Main's light slots: one child runs, the other queues.
+    holders = [
+        store.acquire(job_slots.CLASS_LIGHT, pid=os.getpid())
+        for _ in range(SlotCaps().max_light - 1)
+    ]
 
     def cancelled() -> bool:
         # One child runs (it records itself once admitted) and the other queues behind it.
         return len(started_targets(world)) == 1 and bool(store.snapshot(job_slots.CLASS_LIGHT)[1])
 
     tables = [stub_table("wait-a"), stub_table("wait-b")]
-    outcome = measure(world, tables, cancelled=cancelled)
+    try:
+        outcome = measure(world, tables, cancelled=cancelled)
+    finally:
+        for holder in holders:
+            store.release(holder)
 
     assert outcome.status is RunStatus.CANCELLED
     assert [t.finished for t in outcome.tables] == [False, False]

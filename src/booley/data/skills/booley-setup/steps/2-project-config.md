@@ -775,8 +775,8 @@ What goes here:
   Target.
 - **Size the Memory Budget.** Booley admits each EDA Job against a Memory
   Budget taken from `[sandbox].memory`, the one container cgroup limit; do not
-  write `[jobs].heavy_memory`, `[jobs].max_heavy` or `[jobs].queue_max`: these keys are removed
-  (memory admission replaced the first two; the Job queue has no limit) and
+  write `[jobs].heavy_memory`, `[jobs].max_heavy`, `[jobs].max_light` or `[jobs].queue_max`: these keys are removed
+  (memory admission replaced the first two and `max_light`; the Job queue has no limit) and
   `booley.toml` refuses them. Step 4 sizes `[sandbox].memory` from the real
   heaviest-target synthesis. For a Project that uses Vivado, write `[jobs.seats] vivado = <seats>`
   from the license; Doctor fails without it.

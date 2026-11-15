@@ -32,6 +32,8 @@ STANDALONE_GROUP = "STANDALONE JOBS"
 GROUP_ORDER = (NEEDS_YOU, WORKING_GROUP, UNKNOWN_GROUP, STANDALONE_GROUP)
 #: Row keys of group header rows start with this; no session or Job key does.
 HEADER_PREFIX = "group:"
+#: Row keys of a measurement line that has a report to open: this plus the session key.
+MEASUREMENT_PREFIX = "measurement:"
 ABSENT = "—"
 ELLIPSIS = "…"
 
@@ -70,6 +72,9 @@ class SessionFacts:
     jobs: tuple[str, ...] = ()
     #: Shared-worktree warning, shared-attribution notice and Goal diagnostic.
     notices: tuple[str, ...] = ()
+    #: The measurement line shown under the row, and the report Enter on it opens.
+    measurement: str = ""
+    report: str = ""
 
 
 @dataclass(frozen=True)
@@ -205,6 +210,13 @@ def _line(widths: dict[int, int], cells: Sequence[str], style: str) -> Text:
     return line
 
 
+def _measurement_key(facts: SessionFacts) -> str:
+    """Selectable only when there is a report to open; otherwise the cursor skips the line."""
+    if facts.report:
+        return MEASUREMENT_PREFIX + facts.key
+    return HEADER_PREFIX + MEASUREMENT_PREFIX + facts.key
+
+
 def build(
     sessions: Sequence[SessionFacts],
     standalone: Sequence[StandaloneJob],
@@ -213,6 +225,7 @@ def build(
 ) -> Overview:
     """Group, order and fit every row for a list ``width`` cells wide."""
     grouped: dict[str, list[tuple[str, tuple[str, ...]]]] = {name: [] for name in GROUP_ORDER}
+    lines_of = {facts.key: facts for facts in sessions if facts.measurement}
     for facts in sorted(sessions, key=order_key):
         grouped[group_of(facts)].append(
             (
@@ -241,4 +254,7 @@ def build(
         for key, cells in grouped[name]:
             keys.append(key)
             lines.append(_line(widths, cells, dim))
+            if key in lines_of:
+                keys.append(_measurement_key(lines_of[key]))
+                lines.append(Text(cut("  " + lines_of[key].measurement, width), style=dim))
     return Overview(_line(widths, LABELS, "bold"), keys, lines)

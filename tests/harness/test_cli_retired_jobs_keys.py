@@ -60,6 +60,19 @@ def test_queue_max_is_refused_with_its_own_reason(
     assert "booley-heal" in err
 
 
+def test_max_light_is_refused_with_its_own_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _project(tmp_path / "proj", b'[project]\nname = "unit"\n\n[jobs]\nmax_light = 2\n')
+
+    assert _run(root, monkeypatch, "targets") == 2
+
+    err = capsys.readouterr().err
+    assert "max_light (line 5: Specialists and the Mutation Flow are admitted by memory)" in err
+    assert "memory admission replaced" not in err
+    assert "booley-heal" in err
+
+
 def test_doctor_and_upgrade_are_not_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

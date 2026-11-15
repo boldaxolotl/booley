@@ -104,6 +104,34 @@ def test_ranking_holds_after_many_jobs_start_and_finish(
         assert min(levels) > proc.values[1] == 0
 
 
+def test_a_mutation_tool_ranks_at_its_own_claims_level_under_a_coordinator(
+    store: job_slots.SlotStore,
+    world: FakeWorld,
+    proc: FakeProc,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("booley.runtime.oom_priority.PROC", proc)
+    # The coordinator's zero companion claim is admitted first, then another Flow.
+    world.alive[101] = ["coordinator"]
+    coordinator = store.acquire(
+        job_slots.CLASS_MEMORY,
+        pid=101,
+        role=job_slots.ROLE_BACKGROUND,
+        memory=job_slots.MemoryClaim(budget_mb=BUDGET_MB, reservation_mb=0.0, companion=True),
+    )
+    proc.add(101, parent=1, value=0)
+    _admit(store, world, proc, 102)
+
+    with oom_priority.job_oom_priority(store, coordinator):
+        assert proc.writes == []  # the coordinator's own tree is not ranked at its level
+        # A mutation build claim in the coordinator's PID, newer than both.
+        build = _item_claim(store, 101)
+        tool = proc.add(2001, parent=101)
+        with oom_priority.job_oom_priority(store, build):
+            assert proc.values[tool] == 1000
+            assert proc.values[101] == 1000 - oom_priority.COORDINATOR_GAP
+
+
 class _ItemProcesses:
     """The registered command PIDs of one running work item."""
 

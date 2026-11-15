@@ -5,7 +5,6 @@ name = "goal-mode-image-smoke"
 provider = "codex"
 
 [jobs]
-max_light = 1
 
 [flows.lint]
 
