@@ -4,7 +4,13 @@ Review SystemVerilog only for timing, area, power, and provably unused or dead R
 
 Report only clear PPA wins with small, justified costs, or dead-code removals that cannot change observable behavior. Each finding needs a timing path, width calculation, liveness diagram, fanout trace, or equivalent proof. For PPA findings, judge synthesized hardware, not RTL spelling: if both forms synthesize to the same circuit, there is no PPA finding. Source that synthesis already removes may still be a MINOR dead-code finding for maintainability, simulation cost, and lint cleanliness, but do not claim silicon savings.
 
-MAJOR means a likely critical-path or Fmax improvement, a large area saving, or substantial dead logic demonstrably retained in hardware. MINOR means a small saving, a possible future improvement, or dead source already pruned by synthesis. Return only the strict JSON schema appended by the reviewer prompt.
+MAJOR means a likely critical-path or Fmax improvement (including a mux, decode
+term, or qualifier in front of or ORed onto a deep or late path that can be
+removed or moved without changing behavior, unless you show the path has
+slack), a large area saving, or substantial dead logic demonstrably retained in
+hardware. MINOR means a small saving, a possible future improvement, or dead
+source already pruned by synthesis. Return only the strict JSON schema appended
+by the reviewer prompt.
 
 ## Patterns
 
