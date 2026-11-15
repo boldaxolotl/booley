@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from fractions import Fraction
-from typing import Any, TypeAlias
+from typing import Any, TypeAlias, cast
 
 from booley.flows.sim.coverage_json import (
     CRITERION_FINGERPRINT_JSON,
@@ -170,7 +170,8 @@ def coverage_metrics(coverage_record: CoverageRecord) -> dict[str, dict[str, obj
     ``met``. Reads only the score's rows: a thresholded metric with no row has an
     empty denominator and cannot meet its floor.
     """
-    stored = coverage_record.evaluation["thresholds"]
+    # The Coverage Record validator admits only an object of finite numbers here.
+    stored = cast(Mapping[str, int | float], coverage_record.evaluation["thresholds"])
     thresholds = tuple(
         coverage_threshold(rollup.metric, stored[rollup.metric])
         for rollup in coverage_record.rollups

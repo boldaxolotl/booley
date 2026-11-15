@@ -286,6 +286,7 @@ def _run_owned_pre_sim(command, cwd, env, timeout, child_kwargs, scope, observer
         if scope is not None:
             scope.processes.unregister(process)
         if observer is not None:
+            assert process.stdout is not None and process.stderr is not None  # spawned with PIPE
             process.stdout.close()
             process.stderr.close()
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)

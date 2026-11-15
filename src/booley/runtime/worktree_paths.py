@@ -16,7 +16,7 @@ from booley.core.booley_dir import (
     resolve_checkout_booley_dir,
 )
 from booley.core.booley_layout import BooleyLayoutError
-from booley.runtime import platform_paths
+from booley.runtime import platform_paths, sandbox_layout
 
 
 class BooleyDirMismatchError(ValueError):
@@ -48,10 +48,10 @@ def relative_worktree_paths(project_root: Path) -> bool:
     except ValueError:
         return False
     if root == Path("/work"):
-        alias = Path("/booley-project")
+        alias = Path(sandbox_layout.BOOLEY_DIR_TARGET)
         return (
             alias.is_symlink()
-            and alias.readlink() == Path("/work/.booley")
+            and alias.readlink() == Path(sandbox_layout.PROJECT_DATA_MOUNT_PATH)
             and alias.lstat().st_uid == 0
             and Path("/").stat().st_uid == 0
             and not Path("/").stat().st_mode & 0o022

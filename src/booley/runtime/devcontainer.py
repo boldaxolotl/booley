@@ -86,7 +86,7 @@ AGENT_HOME = "/home/agent"  # non-root ``agent`` user (see data/docker/Dockerfil
 # the whole workspace binds at /work (so ``.booley/x`` shows up at
 # ``/work/.booley/x``) AND the Booley Directory itself binds again at
 # BOOLEY_DIR_TARGET — masking only the /work view would leave the same bytes
-# readable at ``/booley-project/x``.
+# readable at ``/booley/x``.
 BOOLEY_DIR_BASENAME = ".booley"
 
 # Default mount source for ``.booley``: the co-located common case.
@@ -553,7 +553,7 @@ def _mask_mounts(mask_paths: Sequence[str], mask_source: str) -> list[str]:
       a masked subtree would otherwise scribble into the shared empty dir.
 
     An entry under ``.booley/`` is masked a SECOND time under
-    ``/booley-project/<rest>``: the Booley Directory is bind-mounted twice (the
+    ``/booley/<rest>``: the Booley Directory is bind-mounted twice (the
     workspace mount at /work plus its own mount at BOOLEY_DIR_TARGET), and
     masking only one view leaves the same bytes readable through the other.
 
@@ -923,7 +923,7 @@ def build_devcontainer_spec(
             ``[sandbox] mask_paths`` to HIDE from the Sandbox. Each is
             rendered as a read-only bind of *mask_source* over
             ``/work/<rel>`` — and, for a path under ``.booley/``, a
-            second bind over ``/booley-project/<rest>``, because that tree is
+            second bind over ``/booley/<rest>``, because that tree is
             visible through both mounts (see :func:`_mask_mounts`). Callers
             validate via :func:`mask_paths_error` first. Empty (the default)
             masks nothing and leaves the spec byte-identical to before the

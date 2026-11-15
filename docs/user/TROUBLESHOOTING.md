@@ -267,6 +267,14 @@ Use a sign-in that doesn't rotate: run `booley auth` for Claude, or
 once so it gets the new credential. Billing choices are in
 [Setup](https://booley.dev/docs/setup/#sign-in-and-billing).
 
+### Booley refuses `auth = "auto"`
+
+`booley.toml` sets `auth = "auto"` under `[agent]` or `[agent.auth]`, and
+Booley stops with a message that names it; `booley doctor` and `booley init`
+still run. Run `booley doctor`: it names the value your credentials suggest for
+each CLI. Set that value, or re-run `booley init` to record it. See
+[Pinning what bills](CONFIG.md#pinning-what-bills-agent-auth).
+
 ### Two Developer Agents keep clobbering each other's edits
 
 They share one worktree. Sessions started with `booley chat` get their own

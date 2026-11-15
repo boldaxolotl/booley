@@ -1706,7 +1706,7 @@ def test_booley_dir_ambient_matching_own_directory_is_accepted(
     """A Sandbox's ``BOOLEY_DIR`` is an alias of the checkout's own directory."""
     root = _configured_project(tmp_path, monkeypatch, "state")
     _write(root / "state" / "booley.toml", "[submodules]\npaths = []\n")
-    alias = tmp_path / "booley-project"
+    alias = tmp_path / "booley"
     alias.symlink_to(root / "state", target_is_directory=True)
     monkeypatch.setenv("BOOLEY_DIR", str(alias))
 

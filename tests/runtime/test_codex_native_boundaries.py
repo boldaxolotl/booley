@@ -78,7 +78,7 @@ def test_registry_rejects_redirected_handle_map_ancestors(tmp_path, redirect):
 
 
 def test_hook_follows_symlinked_booley_dir_entry(tmp_path):
-    """The Booley Directory entry may be a link (``/booley-project`` alias, host ``.booley``)."""
+    """The Booley Directory entry may be a link (``/booley`` alias, host ``.booley``)."""
     proc = tmp_path / "proc"
     owner = process(proc, 100, 1, executable="codex")
     (proc / "100" / "cmdline").write_bytes(b"S1\0--no-daemon\0")

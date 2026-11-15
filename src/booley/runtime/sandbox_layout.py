@@ -14,7 +14,7 @@ from pathlib import Path
 # ``.booley`` mounts here; BOOLEY_DIR (containerEnv) points at
 # it so in-container tooling — including the Ticket-Mode Runner and its
 # developer agent (ADR 0028) — resolves project config from one place.
-BOOLEY_DIR_TARGET = "/booley-project"
+BOOLEY_DIR_TARGET = "/booley"
 
 WORK_DIR = "/work"
 PROJECT_DATA_MOUNT_PATH = "/work/.booley"

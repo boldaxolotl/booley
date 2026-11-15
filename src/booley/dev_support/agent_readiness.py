@@ -756,6 +756,14 @@ def _source_check_commands(python: Path, root: Path) -> tuple[Command, ...]:
             "lint",
             "before-commit",
         ),
+        # The same launcher is CI's required "Check Markdown line length" step in docs-check.
+        Command(
+            "markdown.line-length",
+            (str(python), "-B", str(root / ".github/scripts/markdown_line_length.py")),
+            str(root),
+            "lint",
+            "before-commit",
+        ),
         # CI's lint-job function length step, against the newest merge base.
         Command(
             "function-length.check",

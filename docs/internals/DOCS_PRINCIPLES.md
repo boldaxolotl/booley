@@ -15,8 +15,8 @@ Python code, and review checks it the same way: cite the principle number.
 
 - **Part 1, every doc:** any `*.md` file and anything under `docs/`, except
   `CHANGELOG.md` and the fragments under `changelog.d/` that become its text
-  (`changelog.d/README.md` stays in scope). ADRs record a decision as it stood
-  when it was made, so principle 14 does not apply to them. Agent skills also follow
+  (`changelog.d/README.md` stays in scope). ADRs also follow
+  [docs/adr/README.md](../adr/README.md). Agent skills also follow
   `writing-for-agents` conventions where those are stricter.
 - **Part 2, user docs:** `README.md`, `docs/user/`, `website/`, and the bwave
   docs under `crates/bwave/docs/public/`.
@@ -129,8 +129,9 @@ warnings, and say when they apply.
 
 ### 14. Describe current behavior only
 
-Remove statements that stopped being true. History goes in the changelog and
-decision history in ADRs. Words like "no longer", "legacy", "renamed from", or
+Remove statements that stopped being true. History goes in the changelog; an
+ADR states the decision that holds today and why. Words like "no longer",
+"legacy", "renamed from", or
 "since v0.4" fail `tests/docs/test_current_version_docs.py`. History without
 those words counts too: "it sets no delay target" describes the old version
 when only the old version set one, and "re-running init replaces `auto`"
@@ -157,8 +158,13 @@ rejected alternatives) goes in its ADR or pull request.
 ### 17. Short
 
 Cut rule blocks down to what the reader acts on and merge thin sections into
-their natural parent. Keep table rows to one line. No signposting ("this is
-covered under Notes below") and no sentence that carries nothing.
+their natural parent. Keep table rows to one line. Wrap prose at 80 columns: the
+`markdown.line-length` check fails a pull request that adds or changes a longer
+line, except in fenced code, table rows, headings, YAML front matter and
+generated blocks, on lines that are only a link, URL or link reference
+definition, and where the only text past column 80 is one URL or code span. No
+signposting ("this is covered under Notes below") and no sentence that carries
+nothing.
 
 ## Mechanics
 
