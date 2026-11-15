@@ -10,14 +10,14 @@ from pathlib import Path
 from typing import Protocol, cast, overload
 
 from booley.flows.endpoint_admission import AdmissionContext
-from booley.flows.sim.coverage_campaign import CoverageCampaignValidationError
-from booley.flows.sim.coverage_campaign_store import CoverageCampaignStoreError
 from booley.flows.sim.coverage_json import content_digest
+from booley.flows.sim.coverage_record import CoverageRecordValidationError
+from booley.flows.sim.coverage_record_store import CoverageRecordStoreError
 from booley.flows.sim.coverage_reference import (
-    CoverageCampaignReference,
-    build_coverage_campaign_reference,
-    encode_coverage_campaign_reference,
-    publish_coverage_campaign_reference,
+    CoverageRecordReference,
+    build_coverage_record_reference,
+    encode_coverage_record_reference,
+    publish_coverage_record_reference,
 )
 from booley.flows.sim.execution.contract import PreSimScopeStoppedError, SimulationOptions
 from booley.flows.sim.record_layout import COVERAGE_RECORD_DIRECTORY, RECORD_DIRECTORY
@@ -112,7 +112,7 @@ class SimulationRecordPublicationFailure:
     target_selector: str
     observations: tuple[Mapping[str, object], ...]
     nested_coverage_record: Path | None = None  # coverage workloads only
-    coverage_reference: CoverageCampaignReference | None = None  # only once published
+    coverage_reference: CoverageRecordReference | None = None  # only once published
 
 
 class SimulationRecordPublicationError(RuntimeError):
@@ -389,7 +389,7 @@ class SimulationRecord:
         target = cast(Mapping[str, str], manifest.document["target"])
         coverage = cast(Mapping[str, object], manifest.document["workload"])["coverage"] is True
         failure: SimulationRecordPublicationFailure | None = None
-        reference: CoverageCampaignReference | None = None
+        reference: CoverageRecordReference | None = None
         try:
             if coverage:
                 # The one scan that feeds both the reference and any publication failure.
@@ -436,12 +436,12 @@ class SimulationRecord:
         work_item_id: str,
         result: SimulationResult,
         nested_path: Path,
-    ) -> CoverageCampaignReference:
+    ) -> CoverageRecordReference:
         result_document = result.document
         target = cast(Mapping[str, str], manifest.document["target"])
         origin = cast(Mapping[str, object], manifest.document["origin"])
         try:
-            reference = build_coverage_campaign_reference(
+            reference = build_coverage_record_reference(
                 simulation_record_id=cast(str, manifest.document["simulation_record_id"]),
                 simulation_manifest_sha256=manifest_digest(manifest),
                 target_identity=f"{target['vlnv']}#{target['name']}",
@@ -451,14 +451,14 @@ class SimulationRecord:
                 simulation_work_item_id=work_item_id,
                 simulation_attempt_id=cast(str, result_document["attempt_id"]),
                 origin_target_directory=store.root.parent,
-                coverage_campaign_path=nested_path,
+                coverage_record_path=nested_path,
             )
-        except (CoverageCampaignStoreError, CoverageCampaignValidationError) as exc:
+        except (CoverageRecordStoreError, CoverageRecordValidationError) as exc:
             raise SimulationRecordIntegrityError(
                 "nested Coverage Campaign cannot be authenticated"
             ) from exc
         self._publication_checkpoint("before:coverage_reference")
-        return publish_coverage_campaign_reference(store.root.parent / "coverage.json", reference)
+        return publish_coverage_record_reference(store.root.parent / "coverage.json", reference)
 
     def _expect_builds(
         self,
@@ -905,7 +905,7 @@ def _outcome(
     manifest: SimulationRecordManifest,
     summary: Mapping[str, object],
     recovery: SimulationRecordRecovery,
-    coverage_reference: CoverageCampaignReference | None = None,
+    coverage_reference: CoverageRecordReference | None = None,
 ) -> SimulationRecordOutcome:
     facts, observations = _acceptance_facts(store, manifest, recovery, coverage_reference)
     complete = cast(bool, summary["complete"])
@@ -975,7 +975,7 @@ def _acceptance_facts(
     store: SimulationRecordStore,
     manifest: SimulationRecordManifest,
     recovery: SimulationRecordRecovery,
-    coverage_reference: CoverageCampaignReference | None = None,
+    coverage_reference: CoverageRecordReference | None = None,
 ) -> tuple[AcceptanceFacts, tuple[Mapping[str, object], ...]]:
     items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
     by_id = {item["work_item_id"]: item for item in items}
@@ -1007,11 +1007,11 @@ def _acceptance_facts(
 def _coverage_acceptance_reference(
     store: SimulationRecordStore,
     manifest: SimulationRecordManifest,
-    reference: CoverageCampaignReference | None,
+    reference: CoverageRecordReference | None,
 ) -> Mapping[str, object] | None:
     if reference is None:
         return None
-    raw = encode_coverage_campaign_reference(reference)
+    raw = encode_coverage_record_reference(reference)
     path = store.root.parent / "coverage.json"
     invocation = store.root.parents[2]
     return {

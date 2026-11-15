@@ -114,6 +114,6 @@ CRITERION_FINGERPRINT_JSON = CanonicalJsonForm(
     ensure_ascii=True, allow_nan=True, indent=None, trailing_newline=False
 )
 #: A value hashed into a Coverage Campaign fingerprint.
-CAMPAIGN_FINGERPRINT_JSON = CanonicalJsonForm(
+COVERAGE_RECORD_FINGERPRINT_JSON = CanonicalJsonForm(
     ensure_ascii=True, allow_nan=True, indent=None, trailing_newline=False
 )

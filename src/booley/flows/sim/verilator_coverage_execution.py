@@ -46,12 +46,12 @@ from booley.flows.sim.config import (
     resolve_pre_sim_build_access,
     resolve_pre_sim_commands,
 )
-from booley.flows.sim.coverage_campaign import CoverageFinding
 from booley.flows.sim.coverage_overlay import (
     CoverageOverlay,
     coverage_overlay_vlnv,
     write_coverage_overlay,
 )
+from booley.flows.sim.coverage_record import CoverageFinding
 from booley.flows.sim.execution.attempt import (
     AdapterAttemptOutcome,
     AdapterAttemptRequest,
@@ -87,7 +87,7 @@ from booley.fusesoc.fusesoc_registry import (
 from booley.targets.catalog import TargetCatalog, TargetCompileSurface
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
 
-from .coverage_campaign import SimulationVerdict
+from .coverage_record import SimulationVerdict
 from .verilator_coverage import (
     PINNED_VERILATOR,
     CoverageCollectionRequest,

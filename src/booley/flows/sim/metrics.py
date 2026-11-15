@@ -27,8 +27,8 @@ from booley.flows.metric_declarations import (
 )
 from booley.flows.sim.backends.cocotb_results import IMPORT_FAILURE_PREFIX
 from booley.flows.sim.coverage_reference import (
-    CoverageCampaignReferenceError,
-    resolve_coverage_campaign_reference,
+    CoverageRecordReferenceError,
+    resolve_coverage_record_reference,
 )
 from booley.flows.sim.record.coordinator import SimulationRecordOutcome
 from booley.flows.sim.record.test_run_report import observation_grade
@@ -73,7 +73,7 @@ SIM_METRIC_DECLARATIONS = _declarations(CostTier.MEDIUM, coverage=False)
 COVERAGE_METRIC_DECLARATIONS = _declarations(CostTier.HIGH, coverage=True)
 
 
-def coverage_campaign_path(outcome: SimulationRecordOutcome) -> Path:
+def coverage_record_path(outcome: SimulationRecordOutcome) -> Path:
     """Return the public ``coverage.json`` beside the Target's Simulation Record directory."""
     return outcome.manifest_path.parents[1] / "coverage.json"
 
@@ -86,18 +86,18 @@ def _coverage_percents(outcome: SimulationRecordOutcome) -> dict[str, MetricValu
     exact fraction.
     """
     try:
-        campaign = resolve_coverage_campaign_reference(
-            coverage_campaign_path(outcome)
-        ).loaded.campaign
-    except CoverageCampaignReferenceError as error:
+        coverage_record = resolve_coverage_record_reference(
+            coverage_record_path(outcome)
+        ).loaded.coverage_record
+    except CoverageRecordReferenceError as error:
         raise MetricsUnavailableError(
             f"the Coverage Campaign could not be read: {error}"
         ) from error
-    if campaign.collection["status"] != "complete":
+    if coverage_record.collection["status"] != "complete":
         return {}
     return {
         COVERAGE_METRIC_NAMES[rollup.metric]: rollup.covered_points * 100 / rollup.eligible_points
-        for rollup in campaign.rollups
+        for rollup in coverage_record.rollups
         if rollup.metric in COVERAGE_METRIC_NAMES and rollup.eligible_points > 0
     }
 

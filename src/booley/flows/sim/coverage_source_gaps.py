@@ -14,8 +14,8 @@ from pathlib import Path
 from booley.core.hdl import declares_module
 from booley.targets.domain import TargetInspection
 
-from .coverage_campaign import CoverageCampaign, CoverageFinding
 from .coverage_json import FrozenJson
+from .coverage_record import CoverageFinding, CoverageRecord
 
 GAP_CODE = "COV_RTL_SOURCE_WITHOUT_POINTS"
 _POINTER = re.compile(r"^/source_closure/rtl/(0|[1-9][0-9]*)/path$")
@@ -60,12 +60,12 @@ def source_gap_findings(
     )
 
 
-def source_gap_paths(campaign: CoverageCampaign) -> tuple[str, ...]:
+def source_gap_paths(coverage_record: CoverageRecord) -> tuple[str, ...]:
     """Sorted source-closure paths named by published gap findings."""
-    records = campaign.source_closure.get("rtl", ())
+    records = coverage_record.source_closure.get("rtl", ())
     assert isinstance(records, tuple)
     paths = set()
-    for finding in campaign.findings:
+    for finding in coverage_record.findings:
         match = _POINTER.fullmatch(finding.pointer) if finding.code == GAP_CODE else None
         if match and int(match[1]) < len(records):
             record = records[int(match[1])]
@@ -74,8 +74,10 @@ def source_gap_paths(campaign: CoverageCampaign) -> tuple[str, ...]:
     return tuple(sorted(paths))
 
 
-def source_gap_overview(campaign: CoverageCampaign, *, preview: int = 50) -> dict[str, object]:
-    paths = source_gap_paths(campaign)
+def source_gap_overview(
+    coverage_record: CoverageRecord, *, preview: int = 50
+) -> dict[str, object]:
+    paths = source_gap_paths(coverage_record)
     return {
         "total_sources": len(paths),
         "paths": list(paths[:preview]),
@@ -84,8 +86,8 @@ def source_gap_overview(campaign: CoverageCampaign, *, preview: int = 50) -> dic
     }
 
 
-def source_gap_report_lines(campaign: CoverageCampaign) -> list[str]:
-    paths = source_gap_paths(campaign)
+def source_gap_report_lines(coverage_record: CoverageRecord) -> list[str]:
+    paths = source_gap_paths(coverage_record)
     if not paths:
         return []
     lines = [f"RTL sources without coverage points: {len(paths)}"]

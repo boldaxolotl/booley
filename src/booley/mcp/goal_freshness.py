@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from booley.flows.sim.coverage_campaign import DurableTargetIdentity
+from booley.flows.sim.coverage_record import DurableTargetIdentity
 from booley.flows.sim.coverage_waivers import CoverageRepositoryRoots, load_approved_waiver_set
 from booley.goals.freshness import GoalFreshnessResolvers
 from booley.goals.waiver_policy import policy_location

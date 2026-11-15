@@ -440,7 +440,7 @@ def test_completed_simulation_record_survives_per_target_progress_failure(
         flow, "_simulation_record_endpoint_outcome", _retained_simulation_record_outcome
     )
     monkeypatch.setattr(
-        "booley.flows.sim.flow._retain_coverage_campaign",
+        "booley.flows.sim.flow._retain_coverage_record",
         lambda _progress, _outcome: None,
     )
 
@@ -468,7 +468,7 @@ def test_coverage_authentication_failure_returns_structured_failure(
         flow, "_simulation_record_endpoint_outcome", _retained_simulation_record_outcome
     )
     monkeypatch.setattr(
-        "booley.flows.sim.flow._retain_coverage_campaign",
+        "booley.flows.sim.flow._retain_coverage_record",
         lambda _progress, _outcome: (_ for _ in ()).throw(ValueError("untrusted record")),
     )
 
@@ -520,7 +520,7 @@ def test_all_simulation_records_survive_terminal_progress_failure(
         flow, "_simulation_record_endpoint_outcome", _retained_simulation_record_outcome
     )
     monkeypatch.setattr(
-        "booley.flows.sim.flow._retain_coverage_campaign",
+        "booley.flows.sim.flow._retain_coverage_record",
         lambda retained, outcome: retained.outcomes.append(outcome),
     )
 
@@ -1345,16 +1345,16 @@ def test_coverage_cancellation_keeps_completed_report_only_counts(tmp_path, monk
         except StopIteration:
             raise SimulationRecordCancellationError("cancelled") from None
 
-    monkeypatch.setattr("booley.flows.sim.flow._retain_coverage_campaign", lambda *_args: None)
+    monkeypatch.setattr("booley.flows.sim.flow._retain_coverage_record", lambda *_args: None)
     progress = SimpleNamespace(checkpoint=lambda: None)
     result = flow._execute_coverage_simulation_record_requests(
         SimpleNamespace(run=run), [_request("first"), _request("second")], progress
     )
     assert result.detail == {}
     # The finished first Target keeps its public Coverage Campaign on the stopped card.
-    campaign_file = (outcome.manifest_path.parents[1] / "coverage.json").resolve()
-    assert campaign_file.is_file()
-    assert result.report_text.splitlines()[-1] == f"  coverage campaign: {campaign_file}"
+    coverage_record_file = (outcome.manifest_path.parents[1] / "coverage.json").resolve()
+    assert coverage_record_file.is_file()
+    assert result.report_text.splitlines()[-1] == f"  coverage campaign: {coverage_record_file}"
     assert flow._simulation_record_outcomes == ()
     assert all(item["cycle_count"] is None for item in outcome.observations)
     _assert_partial_acceptance_policy(flow, result, tmp_path, outcome)
@@ -1515,8 +1515,8 @@ def test_coverage_failure_persists_only_returned_outcomes(tmp_path, monkeypatch,
         '[sim_0]\ntests=["reset"]\n[sim_1]\ntests=["reset"]\n[sim_2]\ntests=["reset"]\n'
     )
     original_run = SimulationRecord.run
-    original_retain = __import__("booley.flows.sim.flow", fromlist=["_retain_coverage_campaign"])
-    retain = original_retain._retain_coverage_campaign
+    original_retain = __import__("booley.flows.sim.flow", fromlist=["_retain_coverage_record"])
+    retain = original_retain._retain_coverage_record
     returned = []
 
     def run(simulation_record, request):
@@ -1532,7 +1532,7 @@ def test_coverage_failure_persists_only_returned_outcomes(tmp_path, monkeypatch,
         return retain(progress, outcome)
 
     monkeypatch.setattr(SimulationRecord, "run", run)
-    monkeypatch.setattr(original_retain, "_retain_coverage_campaign", retain_or_fail)
+    monkeypatch.setattr(original_retain, "_retain_coverage_record", retain_or_fail)
     flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
     result = flow.execute(
         SimRequest(

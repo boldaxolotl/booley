@@ -71,7 +71,7 @@ from .record_presentation import (
     _coverage_failed_target,
     _coverage_preflight_findings_outcome,
     _CoverageTargetError,
-    _retain_coverage_campaign,
+    _retain_coverage_record,
     _simulation_record_recovery_detail,
 )
 from .record_scaffold import _group_disclosures, _SimulationRecordRun, _SimulationRecordSteps
@@ -134,11 +134,11 @@ def _fresh_simulation_record_recovery_detail(
     return _simulation_record_recovery_detail(status)
 
 
-def _checkpoint_coverage_campaign(
+def _checkpoint_coverage_record(
     progress: CoverageProgress, outcome: SimulationRecordOutcome, evaluation: str
 ) -> None:
     try:
-        _retain_coverage_campaign(progress, outcome)
+        _retain_coverage_record(progress, outcome)
     except (OSError, ValueError) as error:
         detail = _coverage_failed_target(
             str(outcome.target["selector"]), error, evaluation, outcome
@@ -408,7 +408,7 @@ class SimulationRecordResumeMixin:
                 validated, invocation, admission, coverage_plan, manifest_published
             )
             self._capture_cycle_report((outcome,))
-            _checkpoint_coverage_campaign(
+            _checkpoint_coverage_record(
                 progress,
                 outcome,
                 "not_requested" if coverage_plan.criterion is None else "blocked",

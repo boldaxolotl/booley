@@ -139,7 +139,7 @@ def test_simulation_record_criterion_detail_carries_the_rows(
 
 
 def _coverage_run(test_run, verdict: str, **attributes):
-    from booley.flows.sim.coverage_campaign import CoverageRun
+    from booley.flows.sim.coverage_record import CoverageRun
 
     return CoverageRun(
         f"001-{test_run.name}",
