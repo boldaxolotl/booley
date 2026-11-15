@@ -121,8 +121,8 @@ the peak memory it used in earlier runs, or a default when it has none, and
 never more than half the budget. A mutation campaign's coordinating Job reserves
 nothing; its builds and simulations reserve their own memory. Neither a
 Specialist nor a coordinator keeps another Job waiting for it alone. Running
-Jobs are never interrupted. `[jobs].max_light` is retired: `booley.toml` refuses
-it, Doctor reports it, and `booley-heal` removes it. The defaults:
+Jobs are never interrupted. `booley.toml` refuses `[jobs].max_light`; Doctor
+reports it and `booley-heal` removes it. The defaults:
 
 ```toml
 [sandbox]
