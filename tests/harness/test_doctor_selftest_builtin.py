@@ -323,6 +323,31 @@ def test_unvalidated_warning_names_the_sim_footprint_tradeoff(tmp_path, monkeypa
     assert ".booley/selftest/sim/bad-overlay/" in sim_warn
 
 
+@pytest.mark.parametrize(
+    ("flow", "build", "fixture_hint"),
+    [
+        ("sim", _audit, ".booley/selftest/sim/bad-overlay/"),
+        ("lint", _lint_audit, "lint_selftest_bad"),
+    ],
+    ids=["sim", "lint"],
+)
+def test_unvalidated_warning_says_waiver_keeps_deep_due(
+    tmp_path, monkeypatch, flow, build, fixture_hint
+):
+    """A waiver stops the warning counting, but the self-tests still cannot run."""
+    _set_venue(monkeypatch, False)
+    rec = _Rec()
+    project = build(tmp_path, fixture=False)
+
+    doctor._run_selftest_checks(project, _runtime(project, "docker"), rec.p, rec.w, rec.s, rec.f)
+
+    warns = [m for lvl, m in rec.events if lvl == "warn"]
+    warning = next(m for m in warns if m.startswith(f"{flow} fail-path unvalidated"))
+    assert fixture_hint in warning
+    assert "The setup agent authors the known-bad fixture." in warning
+    assert f"deep Doctor stays due until {flow} has its known-bad fixture" in warning
+
+
 def test_footprint_note_exists_for_every_selftest_tool():
     """A Flow added to the self-test registry without a note would silently lose it."""
     assert set(doctor._SELFTEST_FLOWS) <= set(doctor._SELFTEST_FOOTPRINT_NOTE)

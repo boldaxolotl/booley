@@ -5357,7 +5357,10 @@ def _warn_unvalidated_selftest(flow_name: str, _warn: Check) -> None:
     _warning_sink(_warn, "flow.fail-path-unvalidated", subject=flow_name)(
         f"{flow_name} fail-path unvalidated - {requirement} so --deep proves a "
         "known-bad grades as a failure (not a false pass). The setup agent authors "
-        f"the known-bad fixture. {_SELFTEST_FOOTPRINT_NOTE[flow_name]}"
+        f"the known-bad fixture. {_SELFTEST_FOOTPRINT_NOTE[flow_name]} "
+        "A waiver stops this warning counting as a problem but doesn't make deep "
+        f"checks current: deep Doctor stays due until {flow_name} has its known-bad "
+        "fixture, so both its good and bad self-tests run."
     )
 
 
