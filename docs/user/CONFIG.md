@@ -113,20 +113,16 @@ To choose a Specialist's model, see [`[models]`](#model-selection-models).
 
 ## Jobs & concurrency (`[jobs]`)
 
-Every Flow or Specialist run is a **Job**. Simulation, synthesis, FPGA
-implementation, and lint are admitted against a **Memory Budget**: a Job starts
-when its estimated memory fits in what the budget has left, and otherwise waits
-in a queue instead of failing. The queue has no limit: a Job waits until it
-runs or you cancel it. Specialists are light Jobs, limited by the AI
-provider rather than memory, so a count (`max_light`) caps them. Running Jobs
-are never interrupted. The defaults:
+Every Flow or Specialist run is a **Job**. Every Job is admitted against a
+**Memory Budget**: a Job starts when its estimated memory fits in what the
+budget has left, and otherwise waits in a queue instead of failing. The queue
+has no limit: a Job waits until it runs or you cancel it. Specialists and mutation
+campaigns are admitted by memory too, and a Specialist waits when the budget is
+full. Running Jobs are never interrupted. The defaults:
 
 ```toml
 [sandbox]
 memory = "32g"           # the Sandbox's memory limit; the Memory Budget comes from it
-
-[jobs]
-max_light = 3            # Specialist Jobs running at once
 
 [jobs.seats]
 # vivado = 1             # licensed seats Booley may use at once; required for Vivado

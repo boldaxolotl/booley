@@ -251,11 +251,19 @@ class JobOomRanking:
 def job_oom_priority(
     store: job_slots.SlotStore | None, token: object | None
 ) -> AbstractContextManager[None]:
-    """Rank the processes of the Job holding *token*; a no-op for any non-memory claim."""
+    """Rank the processes of the Job holding *token*; a no-op for any non-memory claim.
+
+    A companion claim that reserves nothing (a mutation coordinator) is no-op too:
+    it still counts in every other Job's order, but its builds and simulations
+    rank the campaign's processes under their own claims.
+    """
     if (
         store is None
         or not isinstance(token, job_slots.SlotToken)
         or token.job_class != job_slots.CLASS_MEMORY
+        or (
+            token.memory is not None and token.memory.companion and not token.memory.reservation_mb
+        )
     ):
         return contextlib.nullcontext()
     return JobOomRanking(store, token, PROC)

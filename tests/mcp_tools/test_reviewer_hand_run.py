@@ -287,9 +287,9 @@ def test_fw_scope_follows_scope_contract(project: Path, monkeypatch: pytest.Monk
 BUGS_GUIDES = ("bugs-checklist", "bugs-hunt")
 
 
-def guide_of(params: Any) -> str:
-    """The one bugs guide a call's system prompt carries."""
-    carried = [g for g in BUGS_GUIDES if f"## Review guide — bugs ({g})" in params.system_prompt]
+def guide_of(params: Any, guides: tuple[str, ...] = BUGS_GUIDES, focus: str = "bugs") -> str:
+    """The one guide of the focus that a call's system prompt carries."""
+    carried = [g for g in guides if f"## Review guide — {focus} ({g})" in params.system_prompt]
     assert len(carried) == 1, carried
     return carried[0]
 
@@ -306,8 +306,10 @@ def review_by_guide(
     answers: dict[str, Any],
     *,
     reviewer: ReviewerSpecialist | None = None,
+    guides: tuple[str, ...] = BUGS_GUIDES,
+    focus: str = "bugs",
 ) -> tuple[McpToolResult, list[Any]]:
-    """Run a bugs review whose agent answers per guide; returns the result and every call.
+    """Run a review (bugs unless told otherwise) whose agent answers per guide; returns the result and every call.
 
     An answer is a payload dict, a ready agent result, or an exception to raise. A list
     of answers is consumed one per call of that guide, the last one repeating.
@@ -319,7 +321,7 @@ def review_by_guide(
 
     def fake_agent(params: Any) -> Any:
         calls.append(params)
-        answer = answers[guide_of(params)]
+        answer = answers[guide_of(params, guides, focus)]
         if isinstance(answer, list):
             answer = answer.pop(0) if len(answer) > 1 else answer[0]
         if isinstance(answer, Exception):
@@ -400,6 +402,41 @@ def test_bugs_review_runs_checklist_and_hunt_concurrently(
     assert len({c["attempt_id"] for c in calls}) == 2
     # The first call's session is the one kept.
     assert reviewer._last_session_id == "session-bugs-checklist"
+
+
+def test_protocol_review_runs_checklist_and_hunt_calls(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A protocol review makes a checklist call and a hunt call, each with its own guide."""
+    guides = ("protocol-cdc-checklist", "protocol-cdc-hunt")
+    result, calls = review_by_guide(
+        project,
+        monkeypatch,
+        [*BASE_ARGS[:-1], "protocol"],
+        {
+            "protocol-cdc-checklist": {
+                "issues": [finding("MAJOR", summary="Checklist finding", category="protocol")]
+            },
+            "protocol-cdc-hunt": {
+                "issues": [finding("MAJOR", summary="Hunt finding", line=7, category="protocol")]
+            },
+        },
+        guides=guides,
+        focus="protocol",
+    )
+
+    assert result.exit_code == 0, result.report_text
+    assert len(calls) == 2
+    for call in calls:
+        carried = [g for g in guides if f"({g})" in call.system_prompt]
+        assert len(carried) == 1
+    summaries = {row["summary"]: row for row in result.detail["issue_list"]}
+    assert summaries["Checklist finding"]["guide_kinds"] == ["checklist"]
+    assert summaries["Hunt finding"]["guide_kinds"] == ["hunt"]
+    assert [(c["kind"], c["guides"]) for c in result.detail["guide_calls"]] == [
+        ("checklist", ["protocol-cdc-checklist"]),
+        ("hunt", ["protocol-cdc-hunt"]),
+    ]
 
 
 def test_exact_duplicate_findings_merge_with_highest_severity_and_confidence(
@@ -753,10 +790,10 @@ def test_verify_after_two_guide_review_is_one_call_and_waives_either_guide(
 def test_single_guide_focus_makes_one_call_as_before(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Spec, protocol and testbench quality reviews still make one call and one transcript."""
+    """Spec, security and testbench quality reviews still make one call and one transcript."""
     cases = [
         (SPEC_ARGS, "spec", "spec-hunt"),
-        ([*BASE_ARGS[:-1], "protocol"], "protocol", "protocol-cdc-checklist"),
+        ([*BASE_ARGS[:-1], "security"], "security", "security-checklist"),
         (TB_ARGS, "quality", "hdl-checklist"),
     ]
     for number, (args, category, guide) in enumerate(cases):
