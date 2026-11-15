@@ -5,12 +5,22 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
-from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV, ExecutionId
+import pytest
+
+from booley.core import file_lock
+from booley.runtime import execution_records, execution_recovery
+from booley.runtime.execution_records import (
+    RUNTIME_EXECUTION_ENV,
+    ExecutionId,
+    execution_paths,
+    read_json,
+)
 
 _SRC_ROOT = Path(__file__).parents[1] / "src"
 _WAIT_SECONDS = 5.0
@@ -107,3 +117,77 @@ def start_supervisor_with_detached_descendant(
         text=True,
         env=runtime_env(booley_dir, execution_id),
     )
+
+
+class _RecoveryInterleaving:
+    """Hooks that start recovery between an execution-record read and write."""
+
+    def __init__(self, execution_id: ExecutionId, booley_dir: Path) -> None:
+        self.paths = execution_paths(execution_id, booley_dir=booley_dir)
+        self.main_thread = threading.get_ident()
+        self.settled = threading.Event()
+        self.reads = 0
+        self.replaced: list[object] = []
+        self.failures: list[Exception] = []
+        self.thread = threading.Thread(
+            target=self._recover, args=(execution_id, booley_dir), daemon=True
+        )
+        self.real_read = execution_records.read_file_bytes
+        self.real_replace = execution_records.replace_file
+        self.real_acquire = file_lock.acquire_file_lock
+
+    def _recover(self, execution_id: ExecutionId, booley_dir: Path) -> None:
+        try:
+            execution_recovery._publish_recovered_terminal(execution_id, booley_dir=booley_dir)
+        except Exception as exc:  # noqa: BLE001 - reported to the test thread
+            self.failures.append(exc)
+        finally:
+            self.settled.set()
+
+    def read(self, path: Path, *args: Any, **kwargs: Any) -> bytes:
+        raw = self.real_read(path, *args, **kwargs)
+        if path == self.paths.record and threading.get_ident() == self.main_thread:
+            self.reads += 1
+            if self.reads == 1:
+                self.thread.start()
+                assert self.settled.wait(10), "recovery neither finished nor met the record lock"
+        return raw
+
+    def replace(self, source: Path, destination: Path) -> None:
+        if destination == self.paths.record:
+            current = read_json(self.paths.record)
+            self.replaced.append(current.get("state") if current is not None else None)
+        self.real_replace(source, destination)
+
+    def acquire(self, handle: Any, **kwargs: Any) -> None:
+        try:
+            self.real_acquire(handle, **kwargs)
+        except file_lock.LockContentionError:
+            if threading.get_ident() != self.main_thread:
+                self.settled.set()
+            raise
+
+
+def run_with_recovery_between_read_and_write(
+    monkeypatch: pytest.MonkeyPatch,
+    execution_id: ExecutionId,
+    booley_dir: Path,
+    interrupted: Callable[[], object],
+) -> list[object]:
+    """Run *interrupted* while recovery publishes its terminal record mid-update.
+
+    Recovery starts on another thread right after *interrupted* first reads the
+    execution record, and the call waits until that thread finished or met the
+    record lock. Returns the state of every record that a write replaced, so a
+    caller can assert that no ``terminal`` record was ever replaced.
+    """
+    hooks = _RecoveryInterleaving(execution_id, booley_dir)
+    monkeypatch.setattr(execution_records, "read_file_bytes", hooks.read)
+    monkeypatch.setattr(execution_records, "replace_file", hooks.replace)
+    monkeypatch.setattr(file_lock, "acquire_file_lock", hooks.acquire)
+    interrupted()
+    hooks.thread.join(10)
+    assert not hooks.thread.is_alive()
+    assert hooks.reads >= 1
+    assert hooks.failures == []
+    return hooks.replaced
