@@ -267,6 +267,8 @@ class TestAuthStatusReport:
         from booley.harness import auth_cmd
 
         monkeypatch.setattr(agent_config, "_inside_container", lambda: visitor)
+        if visitor:
+            monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "auto")
         sink: dict[str, list[str]] = {"ok": [], "info": [], "warn": []}
         monkeypatch.setattr(auth_cmd, "banner", lambda *a, **k: None)
         for level, messages in sink.items():
@@ -311,6 +313,7 @@ class TestAuthStatusReport:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
         monkeypatch.setattr(colors, "COLORS_ENABLED", False)
         monkeypatch.setattr(agent_config, "_inside_container", lambda: True)  # visitor mode
+        monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "auto")
 
         auth_cmd._report_status()
 
