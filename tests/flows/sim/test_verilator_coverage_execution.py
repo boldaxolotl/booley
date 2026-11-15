@@ -14,6 +14,7 @@ import pytest
 
 from booley.flows import job_resources
 from booley.flows.base import SubprocessResult
+from booley.flows.sim import verilator_coverage_execution
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
     AdapterTestResult,
@@ -405,7 +406,33 @@ def test_cocotb_coverage_runs_pre_sim_once_per_selected_test_process(
     assert captured["work"].tests == ("full",)
 
 
-def test_snapshot_bound_coverage_uses_authoritative_run_cwd_for_pre_sim(
+def _bind_bundle(execution, tmp_path: Path, run_cwd: Path, verify=None) -> tuple[Path, Path]:
+    """Copy the built image into a bundle directory and bind the execution to it."""
+    source_root, artifacts = execution.authenticated_image()
+    bundle_root = tmp_path / "bundle"
+    bundle_root.mkdir()
+    for artifact in artifacts:
+        destination = bundle_root / artifact.relative_to(source_root)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(artifact, destination)
+    evidence_root = tmp_path / "attempt" / "execution-evidence"
+    evidence_root.mkdir(parents=True)
+    run_cwd.mkdir(parents=True, exist_ok=True)
+    execution.bind_authenticated_attempt(
+        bundle_root, evidence_root, run_cwd, verify or (lambda: None)
+    )
+    return bundle_root, evidence_root
+
+
+def _bundle_entries(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_bundle_bound_coverage_launches_from_the_bundle_and_writes_evidence_outside_it(
     tmp_path: Path, monkeypatch
 ) -> None:
     booley_dir = tmp_path / ".booley"
@@ -414,26 +441,73 @@ def test_snapshot_bound_coverage_uses_authoritative_run_cwd_for_pre_sim(
         '[flows.sim]\npre_run_commands = [\'printf "%s" "$BOOLEY_RUN_CWD" > bound-cwd.txt\']\n',
         encoding="utf-8",
     )
-    execution, target, raw_path, _captured = _execution_fixture(tmp_path, monkeypatch)
+    observed: list[dict[str, object]] = []
+    real_observe = verilator_coverage_execution.observe_stage
+
+    def record_observation(*args, **kwargs):
+        observed.append(kwargs)
+        return real_observe(*args, **kwargs)
+
+    monkeypatch.setattr(verilator_coverage_execution, "observe_stage", record_observation)
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
     assert _build_coverage(execution, target).success
-    source_root, artifacts = execution.authenticated_image()
-    snapshot_root = tmp_path / "snapshot"
-    snapshot_root.mkdir()
-    for artifact in artifacts:
-        destination = snapshot_root / artifact.relative_to(source_root)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(artifact, destination)
     run_cwd = tmp_path / "attempt" / "run"
-    run_cwd.mkdir(parents=True)
-    execution.bind_authenticated_attempt(snapshot_root, run_cwd)
+    bundle_root, evidence_root = _bind_bundle(execution, tmp_path, run_cwd)
+    before = _bundle_entries(bundle_root)
+    observed.clear()
 
     result = execution.run(_run_request(target, raw_path))
 
     assert result.verdict == "pass"
     assert (tmp_path / "bound-cwd.txt").read_text(encoding="utf-8") == str(run_cwd)
+    work = captured["work"]
+    assert (tmp_path / work.build_dir).resolve() == bundle_root.resolve()
+    assert Path(work.work_dir) == evidence_root
+    assert Path(work.adapter_result_path).parent == evidence_root
+    assert _bundle_entries(bundle_root) == before
+    assert list(evidence_root.glob("*.json"))
+    logs = [Path(item["log"].path) for item in observed if item.get("log") is not None]
+    assert logs
+    assert all(log.parent == evidence_root and log.name == "run.log" for log in logs)
+    assert {item["evidence_root"] for item in observed} == {evidence_root}
 
 
-@pytest.mark.parametrize("snapshot_bound", [False, True])
+def _carrier_error() -> type[Exception]:
+    """The record's non-``ValueError`` carrier of an integrity failure through collection."""
+    from booley.flows.sim.record import coverage_execution
+
+    return coverage_execution._RecordIntegrityCarrierError
+
+
+def test_bound_run_verifies_the_bundle_after_pre_sim_and_before_launch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    bundle_holder: list[Path] = []
+    stray = "touch {}"
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    assert _build_coverage(execution, target).success
+
+    def verify() -> None:
+        if (bundle_holder[0] / "stray.so").exists():
+            raise carrier("undeclared bundle entry: stray.so")
+
+    bundle_root, _evidence = _bind_bundle(
+        execution, tmp_path, tmp_path / "attempt" / "run", verify
+    )
+    bundle_holder.append(bundle_root)
+    carrier = _carrier_error()
+    monkeypatch.setattr(
+        "booley.flows.sim.verilator_coverage_execution.resolve_pre_sim_commands",
+        lambda _root: (stray.format(shlex.quote(str(bundle_root / "stray.so"))),),
+    )
+
+    with pytest.raises(carrier, match="undeclared bundle entry"):
+        execution.run(_run_request(target, raw_path))
+
+    assert "run_script" not in captured
+
+
+@pytest.mark.parametrize("bundle_bound", [False, True])
 @pytest.mark.parametrize(
     "mutation",
     [
@@ -452,22 +526,18 @@ def test_snapshot_bound_coverage_uses_authoritative_run_cwd_for_pre_sim(
         "delete",
     ],
 )
-def test_pre_sim_reauthenticates_direct_and_snapshot_bound_images(
-    tmp_path: Path, monkeypatch, snapshot_bound: bool, mutation: str
+def test_pre_sim_reauthenticates_direct_and_bundle_bound_images(
+    tmp_path: Path, monkeypatch, bundle_bound: bool, mutation: str
 ) -> None:
     execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
     assert _build_coverage(execution, target).success
     source_root, artifacts = execution.authenticated_image()
     image = artifacts[0]
-    if snapshot_bound:
-        snapshot_root = tmp_path / "snapshot"
-        destination = snapshot_root / image.relative_to(source_root)
-        destination.parent.mkdir(parents=True)
-        shutil.copy2(image, destination)
-        run_cwd = tmp_path / "attempt" / "run"
-        run_cwd.mkdir(parents=True)
-        execution.bind_authenticated_attempt(snapshot_root, run_cwd)
-        image = destination
+    if bundle_bound:
+        bundle_root, _evidence_root = _bind_bundle(
+            execution, tmp_path, tmp_path / "attempt" / "run"
+        )
+        image = bundle_root / image.relative_to(source_root)
     commands = {
         "chmod": f"chmod -x {shlex.quote(str(image))}",
         "symlink": (
@@ -1150,7 +1220,7 @@ def test_coverage_infrastructure_build_failure_publishes_terminal_simulation_rec
     item = recovery.items[0]
     result = json.loads((store.work_item_directory(item.work_item_id) / "result.json").read_text())
     assert result["state"] == "aborted"
-    assert result["executable_snapshot"] is None
+    assert result["bundle_verification"] is None
     assert result["observations"]
     observation = result["observations"][0]
     assert observation["execution"] == "aborted"
@@ -1233,14 +1303,7 @@ def test_coverage_pre_sim_project_relative_hook_uses_project_root(
     run.mkdir(parents=True)
     execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
     assert _build_coverage(execution, target).success
-    source_root, artifacts = execution.authenticated_image()
-    snapshot = tmp_path / "snapshot"
-    snapshot.mkdir()
-    for artifact in artifacts:
-        destination = snapshot / artifact.relative_to(source_root)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(artifact, destination)
-    execution.bind_authenticated_attempt(snapshot, run)
+    _bind_bundle(execution, tmp_path, run)
     result = execution.run(_run_request(target, raw_path))
     assert result.verdict == "pass"
     assert result.pre_sim is not None and result.pre_sim.status == "passed"

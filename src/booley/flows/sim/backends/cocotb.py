@@ -1128,6 +1128,7 @@ def _run_work(work: PreparedSimulationWork) -> int:
         cocotb_module=work.cocotb_module,
         tests=list(work.tests),
         run_cwd=Path(work.run_cwd) if work.run_cwd else None,
+        work_dir=Path(work.work_dir) if work.work_dir else None,
         vcd=work.trace,
         plusargs=list(work.plusargs),
         timeout=work.timeout_s,

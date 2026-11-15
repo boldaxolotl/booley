@@ -129,8 +129,9 @@ class _GeneratorGroup:
     def bind_authenticated_bundle(self, evidence):
         assert evidence == _build_execution()
 
-    def launch_snapshot(self, snapshot_root, run_cwd):
-        assert snapshot_root.is_dir()
+    def launch_bundle(self, bundle_root, evidence_root, run_cwd):
+        assert bundle_root.is_dir()
+        assert evidence_root.name == "execution-evidence"
         assert run_cwd == self.root / "run"
         test = SimulationTestOutcome("sim", "pass", True, str(self.run_log))
         return SimulationTargetOutcome(

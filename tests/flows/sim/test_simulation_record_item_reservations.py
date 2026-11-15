@@ -116,10 +116,10 @@ class _ObservedGroup(_ParallelGroup):
     def planning_disclosure(self):
         return getattr(self.state, "disclosures", {}).get(self.names[0], {})
 
-    def launch_snapshot(self, snapshot_root: Path, run_cwd: Path):
+    def launch_bundle(self, bundle_root: Path, evidence_root: Path, run_cwd: Path):
         with self.state.running():
             killed = self.state.observe(self.names[0])
-            outcome = super().launch_snapshot(snapshot_root, run_cwd)
+            outcome = super().launch_bundle(bundle_root, evidence_root, run_cwd)
             if not killed:
                 return outcome
             # The OOM killer took the simulator: the adapter reports a crash.

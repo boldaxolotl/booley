@@ -104,7 +104,9 @@ def test_coverage_execution_requires_authenticated_artifacts_and_containment(
 
     execution._artifact_paths = (tmp_path / "outside",)
     with pytest.raises(SimulationBuildSlotError, match="escapes"):
-        execution.bind_authenticated_attempt(tmp_path / "snapshot", tmp_path / "run")
+        execution.bind_authenticated_attempt(
+            tmp_path / "bundle", tmp_path / "evidence", tmp_path / "run", lambda: None
+        )
 
 
 def test_recovery_short_circuits_unsafe_or_live_executions(monkeypatch, tmp_path: Path) -> None:

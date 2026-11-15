@@ -115,6 +115,46 @@ def test_resume_from_accepts_a_record_manifest(tmp_path: Path, monkeypatch) -> N
         )
 
 
+def test_resume_from_a_record_with_an_executable_snapshot_is_refused_before_any_work(
+    tmp_path: Path, monkeypatch
+) -> None:
+    reports_root, manifest, _executions = _interrupted_simulation_record(tmp_path, monkeypatch)
+    (attempt, *_rest) = manifest.parent.glob("work-items/*/attempts/*")
+    snapshot = attempt / "snapshot" / "snapshot.json"
+    snapshot.parent.mkdir()
+    snapshot.write_bytes(
+        (Path(__file__).parents[1] / "fixtures/simulation_record/snapshot.json").read_bytes()
+    )
+    original = reports_root / "sim" / "1"
+    before = _files(original)
+
+    def reached(_executor, _request):
+        raise AssertionError("resume reached execution")
+
+    monkeypatch.setattr("booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor.execute", reached)
+
+    result = SimulateFlow().execute(
+        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports_root)
+    )
+
+    assert result.exit_code == 2
+    assert (
+        "Executable snapshot booley.executable-snapshot/v2 was written by an older Booley"
+        in result.outcome.report_text
+    )
+    # The refusal reads the record only: it neither changes it nor starts a new one.
+    assert _files(original) == before
+    assert not list(reports_root.glob("sim/2/**/manifest.json"))
+
+
+def _files(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
 # --- AC2: --resume-from an older layout is refused before any work ----------------------
 
 

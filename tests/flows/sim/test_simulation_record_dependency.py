@@ -13,7 +13,7 @@ def _add_observed_cycles(monkeypatch):
 
     from tests.flows.sim.simulation_record_test_support import _Group
 
-    original = _Group.launch_snapshot
+    original = _Group.launch_bundle
 
     def with_cycles(group, *args):
         outcome = original(group, *args)
@@ -24,7 +24,7 @@ def _add_observed_cycles(monkeypatch):
             ),
         )
 
-    monkeypatch.setattr(_Group, "launch_snapshot", with_cycles)
+    monkeypatch.setattr(_Group, "launch_bundle", with_cycles)
 
 
 def _two_role_simulation_records(tmp_path, monkeypatch):

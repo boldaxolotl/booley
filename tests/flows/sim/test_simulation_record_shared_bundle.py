@@ -1,9 +1,11 @@
-"""Shared Simulator Bundle reuse, private-build fallback and snapshot authentication."""
+"""Shared Simulator Bundle reuse, private-build fallback and in-place verification."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -551,7 +553,7 @@ def _normalized_result(result: object) -> dict[str, object]:
             (item["kind"], item["bytes"], item["sha256"]) for item in document["evidence"]
         ],
         "build_result": document["build_result"]["sha256"],
-        "snapshot": document["executable_snapshot"]["pre_launch_sha256"],
+        "bundle": document["bundle_verification"]["pre_launch_sha256"],
     }
 
 
@@ -639,14 +641,15 @@ def test_shared_build_is_recovered_by_a_fresh_executor_and_scoped_per_invocation
     store.publish_manifest(manifest)
     items = manifest.document["work_items"]
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
+    launched: list[Path] = []
 
-    first = _executor(build_root, counters).execute(
+    first = _executor(build_root, counters, launched_bundles=launched).execute(
         _request(store, manifest, items[0], project, invocation=1)
     )
-    second = _executor(build_root, counters).execute(
+    second = _executor(build_root, counters, launched_bundles=launched).execute(
         _request(store, manifest, items[1], project, invocation=1)
     )
-    third = _executor(build_root, counters).execute(
+    third = _executor(build_root, counters, launched_bundles=launched).execute(
         _request(store, manifest, items[0], project, invocation=2)
     )
 
@@ -658,6 +661,12 @@ def test_shared_build_is_recovered_by_a_fresh_executor_and_scoped_per_invocation
     assert first.document["build_result"]["sha256"] == second.document["build_result"]["sha256"]
     assert third.document["build_result"]["sha256"] != first.document["build_result"]["sha256"]
     assert len(tuple(store.root.glob("build-variants/*/attempts/*/build-result.json"))) == 2
+    # The recovered bundle is the one launched: second runs the first's, not a rebuild.
+    assert launched[0] == launched[1] != launched[2]
+    for result, bundle in zip((first, second, third), launched, strict=True):
+        assert (bundle / "build-result.json").is_file()
+        assert result.document["build_result"]["path"].endswith("build-result.json")
+        assert result.document["bundle_verification"]["verified_after_exit"] is True
 
 
 @pytest.mark.parametrize("mapped", [False, True])
@@ -689,6 +698,7 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
     (build_root / "simv").write_bytes(b"image")
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
     hooks: list[tuple[tuple[str, ...], bool, Path | None]] = []
+    launched: list[Path] = []
 
     def record_hook(
         _handle: object,
@@ -716,12 +726,14 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
     )
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
-    outcome = SimulationRecord(_executor(build_root, counters, disclosures=disclosures)).run(
+    outcome = SimulationRecord(
+        _executor(build_root, counters, disclosures=disclosures, launched_bundles=launched)
+    ).run(
         NewSimulationRecordRunRequest(
             plan, project, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
         )
     )
-    _assert_private_legacy_results(outcome, counters, hooks, invocation)
+    _assert_private_legacy_results(outcome, counters, hooks, invocation, launched)
     if mapped:
         from booley.flows.sim.record.coordinator import ResumeSimulationRecordRunRequest
         from tests.flows.sim.simulation_record_test_support import _validated_simulation_record
@@ -744,7 +756,7 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
         assert store.load_manifest() == manifest
 
 
-def _assert_private_legacy_results(outcome, counters, hooks, invocation) -> None:
+def _assert_private_legacy_results(outcome, counters, hooks, invocation, launched) -> None:
     assert outcome.complete is True
     assert counters["compile"] == 2
     assert counters["durable_reuse"] == 0
@@ -754,6 +766,8 @@ def _assert_private_legacy_results(outcome, counters, hooks, invocation) -> None
         store.root.glob("work-items/*/attempts/*/private-build/build-result.json")
     )
     assert len(private_results) == 2
+    # Each attempt launches, in place, the private build it made.
+    assert sorted(launched) == sorted(path.parent for path in private_results)
     assert not tuple(store.root.glob("build-variants/*/attempts/*/build-result.json"))
     assert {
         json.loads((store.work_item_directory(item) / "result.json").read_text())["build_result"][
@@ -763,11 +777,22 @@ def _assert_private_legacy_results(outcome, counters, hooks, invocation) -> None
     } == {"private_work_item"}
 
 
-@pytest.mark.parametrize("access", ["immutable", "legacy-per-test"])
-def test_snapshot_mutation_fails_closed_for_shared_and_private_bundles(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, access: str
-) -> None:
-    manifest = _manifest_for(("alpha",), access=access)
+_BUNDLE_KINDS = {
+    "shared": ("immutable", "build-variants/*/attempts/*"),
+    "private": ("legacy-per-test", "work-items/*/attempts/*/private-build"),
+}
+
+
+def _bundle_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    kind: str,
+    names: tuple[str, ...] = ("alpha",),
+    **executor_options: Any,
+) -> tuple[Path, dict[str, int], list[Path], Any]:
+    """Prepare one record run; return its invocation, counters, launches and a run callable."""
+    manifest = _manifest_for(names, access=_BUNDLE_KINDS[kind][0])
     plan = create_simulation_record_plan(manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -775,7 +800,11 @@ def test_snapshot_mutation_fails_closed_for_shared_and_private_bundles(
     build_root.mkdir()
     (build_root / "simv").write_bytes(b"image")
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
-    monkeypatch.setattr(serial_execution, "_run_hook", lambda *_args, **_kwargs: None)
+    launched: list[Path] = []
+    hooks: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        serial_execution, "_run_hook", lambda *args, **kwargs: hooks.append((args, kwargs))
+    )
     monkeypatch.setattr(
         serial_execution.TargetCatalog,
         "build",
@@ -783,9 +812,10 @@ def test_snapshot_mutation_fails_closed_for_shared_and_private_bundles(
     )
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
+    executor = _executor(build_root, counters, launched_bundles=launched, **executor_options)
 
-    with pytest.raises(SimulationRecordIntegrityError, match="snapshot changed"):
-        SimulationRecord(_executor(build_root, counters, mutate_snapshot=True)).run(
+    def run() -> object:
+        return SimulationRecord(executor).run(
             NewSimulationRecordRunRequest(
                 plan,
                 project,
@@ -796,11 +826,169 @@ def test_snapshot_mutation_fails_closed_for_shared_and_private_bundles(
             )
         )
 
+    run.hooks = hooks  # type: ignore[attr-defined]
+    return invocation, counters, launched, run
+
+
+def _bundle_directories(invocation: Path, kind: str) -> list[Path]:
+    store = SimulationRecordStore(invocation / "targets/sim/record")
+    return sorted(store.root.glob(_BUNDLE_KINDS[kind][1]))
+
+
+def test_shared_bundle_stores_the_simulator_once_and_every_attempt_launches_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    invocation, counters, launched, run = _bundle_run(
+        tmp_path, monkeypatch, kind="shared", names=("alpha", "beta", "gamma")
+    )
+
+    assert run().complete is True  # type: ignore[attr-defined]
+
+    store = SimulationRecordStore(invocation / "targets/sim/record")
+    (bundle,) = _bundle_directories(invocation, "shared")
+    assert counters == {"compile": 1, "durable_reuse": 2, "launch": 3}
+    assert launched == [bundle, bundle, bundle]
+    copies = [
+        path for path in store.root.rglob("*") if path.is_file() and path.read_bytes() == b"image"
+    ]
+    assert copies == [bundle / "simv"]
+    assert not tuple(store.root.glob("work-items/*/attempts/*/snapshot"))
+
+
+@pytest.mark.parametrize("mutation", ["changed_artifact", "undeclared_entry"])
+@pytest.mark.parametrize("kind", ["shared", "private"])
+def test_bundle_mutation_during_an_attempt_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, mutation: str
+) -> None:
+    invocation, counters, _launched, run = _bundle_run(
+        tmp_path, monkeypatch, kind=kind, mutate_bundle=mutation
+    )
+    expected = "bundle artifact changed" if mutation == "changed_artifact" else "undeclared bundle"
+
+    with pytest.raises(SimulationRecordIntegrityError, match=expected):
+        run()
+
     store = SimulationRecordStore(invocation / "targets/sim/record")
     assert counters["launch"] == 1
     assert store.scan().pending == ()
     assert len(store.scan().interrupted) == 1
     assert not tuple(store.root.glob("work-items/*/result.json"))
+
+
+@pytest.mark.parametrize("kind", ["shared", "private"])
+def test_bundle_mutation_before_launch_never_launches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    from tests.flows.sim.simulation_record_test_support import mutate_bundle_directory
+
+    invocation, counters, _launched, run = _bundle_run(
+        tmp_path,
+        monkeypatch,
+        kind=kind,
+        checkpoint=lambda boundary: (
+            mutate_bundle_directory(_bundle_directories(invocation, kind)[0], "undeclared_entry")
+            if boundary == "after:runtime_inputs"
+            else None
+        ),
+    )
+
+    with pytest.raises(SimulationRecordIntegrityError, match="undeclared bundle entry"):
+        run()
+
+    store = SimulationRecordStore(invocation / "targets/sim/record")
+    assert counters["launch"] == 0
+    assert not tuple(store.root.glob("work-items/*/result.json"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no POSIX permission bits")
+@pytest.mark.parametrize("kind", ["shared", "private"])
+def test_ready_bundle_files_are_read_only_and_the_simulator_stays_executable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    invocation, _counters, _launched, run = _bundle_run(tmp_path, monkeypatch, kind=kind)
+    assert run().complete is True  # type: ignore[attr-defined]
+
+    (bundle,) = _bundle_directories(invocation, kind)
+    manifest = json.loads((bundle / "evidence/bundle.json").read_text(encoding="utf-8"))
+    artifacts = manifest["artifacts"]
+    assert {artifact["path"] for artifact in artifacts} == {"simv"}
+    for artifact in artifacts:
+        mode = (bundle / artifact["path"]).stat().st_mode
+        assert not mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
+        assert (mode & stat.S_IXUSR != 0) is (artifact["kind"] == "simulator_executable")
+        if os.geteuid() != 0:
+            with pytest.raises(PermissionError):
+                (bundle / artifact["path"]).open("r+b")
+
+
+def test_immutable_pre_sim_never_receives_the_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    invocation, _counters, launched, run = _bundle_run(tmp_path, monkeypatch, kind="shared")
+    assert run().complete is True  # type: ignore[attr-defined]
+
+    (bundle,) = _bundle_directories(invocation, "shared")
+    assert launched == [bundle]
+    ((args, kwargs),) = run.hooks  # type: ignore[attr-defined]
+    assert args[5] is False
+    assert str(bundle) not in repr((args, kwargs))
+
+
+def _ready_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Run one shared record and return its bundle document, build result and directory."""
+    from booley.flows.sim.record.codec import decode_bundle_build_result, decode_simulator_bundle
+
+    invocation, _counters, _launched, run = _bundle_run(tmp_path, monkeypatch, kind="shared")
+    assert run().complete is True  # type: ignore[attr-defined]
+    (directory,) = _bundle_directories(invocation, "shared")
+    bundle = decode_simulator_bundle((directory / "evidence/bundle.json").read_bytes())
+    result = decode_bundle_build_result((directory / "build-result.json").read_bytes())
+    return bundle, result, directory
+
+
+def test_in_place_verification_returns_the_recorded_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.flows.sim.record.bundle import verify_bundle_in_place
+
+    bundle, result, directory = _ready_bundle(tmp_path, monkeypatch)
+
+    assert verify_bundle_in_place(bundle, result, directory) == bundle.document["inventory_sha256"]
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ("manifest", "bundle manifest changed"),
+        ("evidence", "bundle evidence changed"),
+        ("missing", "bundle artifact is unavailable"),
+        ("stray_directory", "undeclared bundle entry"),
+        ("stray_in_evidence", "undeclared bundle entry"),
+        ("stray_link", "undeclared bundle entry"),
+    ],
+)
+def test_in_place_verification_refuses_every_change_to_the_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str, message: str
+) -> None:
+    from booley.flows.sim.record.bundle import verify_bundle_in_place
+    from tests.conftest import require_symlinks, symlink_or_skip
+
+    bundle, result, directory = _ready_bundle(tmp_path, monkeypatch)
+    if change == "stray_link":
+        require_symlinks(tmp_path)
+        symlink_or_skip(directory / "stray", directory / "simv")
+    elif change == "stray_directory":
+        (directory / "stray").mkdir()
+    elif change == "stray_in_evidence":
+        (directory / "evidence" / "stray.json").write_bytes(b"{}")
+    elif change == "missing":
+        (directory / "simv").unlink()
+    else:
+        name = "bundle.json" if change == "manifest" else "build-execution.json"
+        (directory / "evidence" / name).write_bytes(b"changed")
+
+    with pytest.raises(SimulationRecordIntegrityError, match=message):
+        verify_bundle_in_place(bundle, result, directory)
 
 
 def _run_failed_shared_build_simulation_record(

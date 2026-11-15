@@ -56,7 +56,6 @@ _DURABLE_BOUNDARIES = (
     "bundle_evidence",
     "build_result",
     "runtime_inputs",
-    "snapshot_manifest",
     "execution_evidence",
     "simulation_result",
     "summary_replace",
@@ -152,9 +151,10 @@ class _CrashGroup:
     def bind_authenticated_bundle(self, evidence):
         assert evidence == _build_execution()
 
-    def launch_snapshot(self, snapshot_root: Path, run_cwd: Path):
+    def launch_bundle(self, bundle_root: Path, evidence_root: Path, run_cwd: Path):
         self.launches.append(1)
-        assert (snapshot_root / "simv").is_file()
+        assert (bundle_root / "simv").is_file()
+        assert evidence_root.name == "execution-evidence"
         assert (run_cwd / "inputs/input.bin").read_bytes() == b"runtime"
         test = SimulationTestOutcome("sim", "pass", True, str(self.run_log))
         return SimulationTargetOutcome(
@@ -300,7 +300,9 @@ def test_serial_publication_boundary_resume_matrix(
     for path in result_paths:
         result = json.loads(path.read_bytes())
         assert result["$schema"] == RESULT_SCHEMA
+        assert result["bundle_verification"]["verified_after_exit"] is True
         assert all("test_run" in observation for observation in result["observations"])
+    assert not list(store.root.glob("work-items/*/attempts/*/snapshot"))
 
 
 @pytest.mark.parametrize(
@@ -316,7 +318,7 @@ def test_coverage_aggregate_boundary_resume_matrix(tmp_path: Path, crash_point: 
     plan, target = _coverage_simulation_record_plan(tmp_path, runtime_input=True)
 
     def fresh_execution(_plan, _options, _commands, _access) -> NativeExecution:
-        # Binding the snapshot rewrites the executable path, so each attempt needs its own.
+        # Binding the bundle rewrites the executable path, so each attempt needs its own.
         native = NativeExecution()
         runtime = native.build_root / "data/stimulus.bin"
         runtime.parent.mkdir()
@@ -859,9 +861,9 @@ def test_result_commit_and_scan_trust_evidence_changed_after_publication(
     store = SimulationRecordStore(invocation / "targets" / "sim" / "record")
 
     def change_published_evidence(boundary: str) -> None:
-        # Rewrite a snapshot artifact after authentication at launch.
+        # Rewrite a bundle artifact after verification at launch.
         if boundary == "after:execution_evidence":
-            for path in store.root.glob("work-items/*/attempts/*/snapshot/simv"):
+            for path in store.root.glob("build-variants/*/attempts/*/simv"):
                 path.chmod(0o600)
                 path.write_bytes(b"changed image")
 

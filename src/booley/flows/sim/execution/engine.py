@@ -320,8 +320,8 @@ class PreparedOrdinaryGroup:
     Instances are yielded by :meth:`SimulationExecution.ordinary_group`.  The
     caller may inspect ``build_root`` and run a legacy build-aware hook before
     :meth:`compile`.  Compilation must happen while the context is active so
-    the Target build lease protects preparation and authentication.  Snapshot
-    creation and :meth:`launch_snapshot` happen after leaving the context; the
+    the Target build lease protects preparation and authentication.
+    :meth:`launch_bundle` happens after leaving the context; the
     simulator therefore never needs the broad Target lease.
     """
 
@@ -526,7 +526,7 @@ class PreparedOrdinaryGroup:
         """Normalize a failed build without launching a simulator."""
         process, build = self._compiled()
         if build.passed:
-            raise SimulationBuildSlotError("successful build requires a snapshot launch")
+            raise SimulationBuildSlotError("successful build requires a bundle launch")
         executed = AdapterAttemptOutcome(process, None, None)
         early = _adapter_failure_outcome(
             self._handle, self._attempt, executed, build, self._started
@@ -600,25 +600,32 @@ class PreparedOrdinaryGroup:
         self._build_process = recovered_process
         self._build = recovered_build
 
-    def launch_snapshot(self, snapshot_root: Path, run_cwd: Path) -> SimulationTargetOutcome:
-        """Observe one isolated launch until all evidence processing returns."""
+    def launch_bundle(
+        self, bundle_root: Path, evidence_root: Path, run_cwd: Path
+    ) -> SimulationTargetOutcome:
+        """Observe one launch from *bundle_root* until all evidence processing returns.
+
+        Every file the attempt writes goes under *evidence_root*, never into the bundle.
+        """
         with attempt_scope(
             self._handle.selector,
             identity=self._handle.identity,
             tests=self._attempt.test_names,
         ):
-            return self._launch_snapshot(snapshot_root, run_cwd)
+            return self._launch_bundle(bundle_root, evidence_root, run_cwd)
 
-    def _launch_snapshot(self, snapshot_root: Path, run_cwd: Path) -> SimulationTargetOutcome:
-        """Launch only the supplied snapshot and normalize the resulting evidence."""
+    def _launch_bundle(
+        self, bundle_root: Path, evidence_root: Path, run_cwd: Path
+    ) -> SimulationTargetOutcome:
+        """Launch only the supplied bundle and normalize the resulting evidence."""
         if self._lease_active:
             raise SimulationBuildSlotError(
-                "leave ordinary_group before launching its executable snapshot"
+                "leave ordinary_group before launching its simulator bundle"
             )
         build_process, build = self._compiled()
         if not build.passed:
             raise SimulationBuildSlotError("cannot launch a failed Simulation build")
-        attempt = self._snapshot_attempt(snapshot_root, run_cwd)
+        attempt = self._bundle_attempt(bundle_root, evidence_root, run_cwd)
         trace_policy, compatibility_policy = _artifact_policies(self._handle, attempt)
         executed = self._launch(attempt)
         process = replace(
@@ -654,10 +661,11 @@ class PreparedOrdinaryGroup:
             raise SimulationBuildSlotError("ordinary Simulation group is not compiled")
         return self._build_process, self._build
 
-    def _snapshot_attempt(self, snapshot_root: Path, run_cwd: Path) -> _Attempt:
-        if not snapshot_root.is_absolute() or not run_cwd.is_absolute():
-            raise SimulationBuildSlotError("snapshot and run cwd must be absolute paths")
-        evidence_root = snapshot_root.parent / "execution-evidence"
+    def _bundle_attempt(self, bundle_root: Path, evidence_root: Path, run_cwd: Path) -> _Attempt:
+        if not (
+            bundle_root.is_absolute() and evidence_root.is_absolute() and run_cwd.is_absolute()
+        ):
+            raise SimulationBuildSlotError("bundle, evidence and run cwd must be absolute paths")
         evidence_root.mkdir(mode=0o700, exist_ok=True)
         identity = replace(
             self._attempt.identity,
@@ -665,7 +673,7 @@ class PreparedOrdinaryGroup:
         )
         work = replace(
             self._attempt.work,
-            build_dir=str(snapshot_root),
+            build_dir=str(bundle_root),
             run_cwd=str(run_cwd),
             work_dir=str(evidence_root),
             adapter_result_path=str(identity.result_path),
@@ -790,8 +798,8 @@ class SimulationExecution:
 
         The yielded group owns a freshly allocated private generation.  Its
         ``compile()`` method must be called before this context exits.  Exiting
-        releases the Target build lease; only then may ``launch_snapshot()``
-        run a caller-supplied attempt-local copy of the authenticated artifacts.
+        releases the Target build lease; only then may ``launch_bundle()``
+        run the caller-supplied authenticated bundle in place.
         Project Pre-Sim policy intentionally remains with the caller.
         """
         if self._build_session is not None:
@@ -1524,7 +1532,14 @@ def _artifact_policies(
     attempt: _Attempt,
 ) -> tuple[TraceArtifactPolicy | None, CompatibilityArtifactPolicy]:
     trace = _trace_artifact_policy(handle, attempt) if attempt.trace_requested else None
-    compatibility = CompatibilityArtifactPolicy.capture(Path(attempt.work.build_dir))
+    # Cocotb writes its compatibility files to its work directory when a record
+    # attempt separates it from the read-only bundle.
+    watched = (
+        attempt.work.work_dir
+        if attempt.work.adapter == "cocotb" and attempt.work.work_dir
+        else attempt.work.build_dir
+    )
+    compatibility = CompatibilityArtifactPolicy.capture(Path(watched))
     return trace, compatibility
 
 
