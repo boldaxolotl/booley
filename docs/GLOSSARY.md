@@ -125,12 +125,12 @@ A run of a Booley Flow or Specialist, tracked by a Job record and its `run_id` f
 _Avoid_: task, process, async call
 
 **Standalone Job**:
-A Job with no owning session, started by a human from a Sandbox shell or the Booley Dashboard. It is admitted like any other Job of its class (an EDA Job against the Memory Budget), writes `job.log`, and never records, satisfies, or invalidates Goal evidence.
+A Job with no owning session, started by a human from a Sandbox shell or the Booley Dashboard. It is admitted like any other Job (against the Memory Budget), writes `job.log`, and never records, satisfies, or invalidates Goal evidence.
 _Avoid_: human run, dashboard job, manual job
 
-**Job Class**:
-How a Job is admitted. The **memory** class holds EDA Jobs (simulation, synthesis, FPGA implementation, lint, Custom Flows): each reserves its estimated peak memory and runs while the reservations fit the Memory Budget, which is the container's memory limit (`[sandbox].memory`), else the installed memory, minus a reserve for the agents. Specialists and the Mutation Flow's coordinating Job are in the memory class too: a Specialist reserves its measured peak (or a default), the coordinator reserves nothing, and neither keeps another Job waiting for it alone.
-_Avoid_: Job type, Job kind, queue
+**Job admission**:
+How a Job starts. Every Job reserves its estimated peak memory and runs while the reservations fit the Memory Budget, which is the container's memory limit (`[sandbox].memory`), else the installed memory, minus a reserve for the agents. A Specialist reserves its measured peak (or a default), the Mutation Flow's coordinating Job reserves nothing, and neither keeps another Job waiting for it alone.
+_Avoid_: Job class, Job type, Job kind, queue
 
 ### Configuration
 
@@ -303,9 +303,9 @@ _Avoid_: approved commit, signed-off commit, clean review; review session, revie
 
 You will not need these unless you are reading older work records, code, or docs; they are terms that were renamed or removed. Skim now, refer back when you hit one.
 
-- **heavy Job**, **Job slot (for EDA Jobs)**, `max_heavy`, `heavy_memory` → **Job Class** (memory) and the Memory Budget: Retired. EDA Jobs are admitted by their memory reservation, and `booley.toml` refuses the two keys.
+- **heavy Job**, **Job slot (for EDA Jobs)**, `max_heavy`, `heavy_memory` → **Job admission** and the Memory Budget: Retired. EDA Jobs are admitted by their memory reservation, and `booley.toml` refuses the two keys.
 - **`[jobs].memory_budget`** → the Memory Budget computed from `[sandbox].memory`: Retired. It replaced the computed budget without subtracting the reserve; `booley.toml` refuses it.
-- **light Job**, **light slot**, `max_light` → **Job Class** (memory): Retired. Specialists and the Mutation Flow's coordinating Job are admitted by memory, and `booley.toml` refuses `[jobs].max_light`.
+- **light Job**, **light slot**, `max_light` → **Job admission**: Retired. Specialists and the Mutation Flow's coordinating Job are admitted by memory, and `booley.toml` refuses `[jobs].max_light`.
 - **`queue_max`**, **full queue** → **none**: Retired. The queue has no limit: a Job waits until it runs or is cancelled, and `booley.toml` refuses `[jobs].queue_max`.
 - **Ticket Mode** → **Goal Mode**: Retired ticket-driven workflow. `booley run` and `booley board` now print a migration pointer and exit 2.
 - **Harness** → **none**: Retired name for Ticket lifecycle orchestration. Name the Goal Record, evidence machinery, or Sandbox capability concerned. The `booley.harness` package still contains active CLI, Doctor, and setup code.

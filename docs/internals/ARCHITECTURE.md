@@ -134,7 +134,7 @@ container shares one trust domain.
 
 ### Job admission
 
-Every Flow or Specialist run is a Job in the `memory` class. A Job holds a
+Every Flow or Specialist run is a Job. A Job holds a
 reservation, estimated from the Resource History, and runs while the
 reservations fit the Memory Budget (`runtime/memory_budget.py`, computed from
 `[sandbox].memory`). A Specialist and a mutation campaign's coordinating Job
