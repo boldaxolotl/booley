@@ -261,10 +261,9 @@ email = "developer@example.com"
 
 Without it, commits use `Dev <dev@localhost>`. It overrides any gitconfig in the
 Sandbox and leaves your host checkout alone; `git -c`, `--author`, and
-`GIT_AUTHOR_*`/`GIT_COMMITTER_*` still win. After a change, recreate the Sandbox
-(`booley session refresh`). Doctor run in the Sandbox warns when Git would use
-another identity, and names the fix, including for a hand-written devcontainer
-spec such as GitHub Codespaces.
+`GIT_AUTHOR_*`/`GIT_COMMITTER_*` still win. After a change,
+[recreate the Sandbox](SANDBOX.md#after-changing-sandbox-settings). Doctor run
+in the Sandbox warns when Git would use another identity, and names the fix.
 
 ## Model selection (`[models]`)
 
