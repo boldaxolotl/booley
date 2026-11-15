@@ -253,7 +253,7 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
         "The result links saved review evidence, including rejected proposals for "
         "inspection. Rejected proposals do not affect Criteria.",
         "",
-        'Call the `reviewer` Specialist from your Developer Agent session with `category="<category>"` and `focus="<focus>"`.',
+        'Ask your Developer Agent to call the `reviewer` Specialist with `category="<category>"` and `focus="<focus>"`.',
         "",
         "| Category | Focus | What it checks | Sets |",
         "|----------|-------|----------------|------|",
@@ -311,7 +311,7 @@ def _render_coverage_analyst_reference() -> list[str]:
     return [
         "#### `coverage_analyst`",
         "",
-        'Call the `coverage_analyst` Specialist from your Developer Agent session with `record="<exact-coverage.json>"` '
+        'Ask your Developer Agent to call the `coverage_analyst` Specialist with `record="<exact-coverage.json>"` '
         'and optional `instruction="<question>"`. The Analyst explains retained '
         "native evidence and proposes advisory next steps; its model only reads evidence. "
         "It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. "
@@ -335,7 +335,8 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
     lines = [
         "Specialists running in scoped, isolated workspaces:",
         "",
-        "Ask your Developer Agent session to invoke a Specialist by name with the arguments below. "
+        "Ask your Developer Agent session to invoke a Specialist by name with the arguments below "
+        '(written as it passes them, `name="value"`; the CLI spells each as a flag, `--name value`). '
         "Or run `booley specialist <name> [args...]` inside the Sandbox. "
         "`booley specialist` lists visible Specialists; "
         "`booley specialist <name> --help` shows their arguments. "
