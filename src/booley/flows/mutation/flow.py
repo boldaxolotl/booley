@@ -97,6 +97,7 @@ from booley.flows.sim.config import (
     literal_run_cwd_problem,
     resolve_run_cwd,
     resolve_sim_sentinels,
+    resolve_trace_files,
 )
 from booley.flows.sim.execution.composition import prepare_adapter_invocation
 from booley.flows.sim.execution.engine import (
@@ -295,6 +296,7 @@ def _mutant_work(
         adapter=adapter,
         build_dir=pinned.rel,
         run_cwd=resolve_run_cwd(work_dir),
+        trace_files=tuple(resolve_trace_files(work_dir)),
         timeout_s=timeout,
         plusargs=tuple(plusargs),
         runtime_inputs=pinned.runtime_inputs,
