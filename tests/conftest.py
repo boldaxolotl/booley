@@ -31,7 +31,7 @@ pytest_plugins = [
 # Temporary (#3329): a bare ``pytest tests/`` skips the Goal Mode unit tests; the
 # coverage omit for ``src/booley/goals`` (pyproject.toml) and the classifier
 # exemption (.github/scripts/ci_goal_tests.py) go with it. Remove all three when
-# Goal Mode is removed (#3276), or when metrics-driven development fully replaces
+# Goal Mode is removed (#3511), or when metrics-driven development fully replaces
 # it. Naming the path still collects them: ``pytest tests/goals``.
 collect_ignore = ["goals"]
 
@@ -254,6 +254,12 @@ def require_symlinks(tmp_path: Path) -> None:
 
 # Generous per-test ceiling: only true hangs (a wedged subprocess or an
 # unbounded stall loop) exceed it, so it never flakes a healthy test.
+# CI passes --timeout=60 instead; raise one test's budget with
+# ``@pytest.mark.timeout(N)``. On Windows an expired budget kills the whole xdist
+# worker with no traceback, so size N by the rule in ``tests/timeout_headroom.py``
+# (3x the slowest Windows CI duration, from the ``time`` values in the
+# ``junit-windows-*`` and ``full-junit-windows-latest-*`` artifacts). The Windows
+# legs fail a passing test that uses more than 80% of its budget.
 _DEFAULT_TEST_TIMEOUT_S = 120
 _XDIST_WORKER_TEMP: Path | None = None
 

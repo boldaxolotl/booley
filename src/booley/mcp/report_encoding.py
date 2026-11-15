@@ -19,6 +19,8 @@ from booley.runtime.endpoint_execution import OOM_REQUEUE_MARKER
 logger = logging.getLogger(__name__)
 _DEFAULT_MAX_STDOUT_BYTES = 12_000
 _DEFAULT_MAX_STDERR_BYTES = 4_000
+# Over this, `_structured_from_report` returns `reports: []` and `truncated: true`, keeping the
+# verdict and artifact pointers so the agent can still open the durable report.
 _MAX_STRUCTURED_REPORT_BYTES = 64 * 1024
 
 

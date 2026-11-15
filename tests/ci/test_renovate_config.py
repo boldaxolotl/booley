@@ -1206,7 +1206,6 @@ def _historical_paths() -> list[str]:
     named = (
         "CHANGELOG.md",
         "src/booley/data/refs/CHANGELOG.md",
-        "docs/internals/coverage-release-gate.md",
         "qa/shared/coverage/RUNBOOK.md",
         "qa/missions/uart/MISSION.md",
         "qa/missions/uart/evaluator/README.md",
