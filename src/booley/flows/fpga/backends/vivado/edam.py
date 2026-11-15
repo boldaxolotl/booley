@@ -239,7 +239,11 @@ def _post_route_completion_hook(work_root: Path) -> str:
 
 
 def profile_completion_error(text: str, profile: VivadoProfile) -> str:
-    """Require a final-step witness, independently of route or bitstream status."""
+    """Require a final-step witness, independently of route or bitstream status.
+
+    A run without the marker is neither accepted nor cached even when routing
+    succeeded, because its numbers would not come from the profile's final step.
+    """
     if profile.final_step == "route_design":
         return ""
     if POST_ROUTE_COMPLETION_MARKER in {line.strip() for line in text.splitlines()}:

@@ -9,21 +9,9 @@ configuration and parts of this page. Landing a PR follows
 
 ## How updates arrive
 
-Schedules are UTC days; the first Renovate run of the day opens the PR.
-
-| Group | Schedule | Touches | Approval |
-|-------|----------|---------|----------|
-| ci-tooling | Mondays | workflow and action `uses`, CI requirement files, CI tool pins | none |
-| dev-python | Mondays | `pyproject.toml` extras and the CI pins they share | none |
-| sandbox-base | Mondays | base image runtime pins, agent CLIs, Node, editor extensions, Ubuntu | none |
-| website | Mondays | documentation site requirements | none |
-| sidecars | Mondays | sidecar image parents | none |
-| riscv | 1st of the month | RISC-V tooling image pins | none |
-| EDA tools | 1st of the month | one PR per tool (Yosys, Verilator, ...) | none |
-| rust | 1st of the month | bwave crates and the Rust builder image | none |
-| openroad, bwave-vendor, picorv32-demo, ci-python, ci-rust-nightly | any time | manual rows | Dependency Dashboard checkbox |
-| major updates | the group's schedule | any group | Dependency Dashboard checkbox |
-| Cargo lock-file maintenance | 1st of the month | the `Cargo.lock` files under `crates/bwave/` | Dependency Dashboard checkbox |
+The groups, their UTC schedules, and which hold for approval are the
+`packageRules` in `.github/renovate.json`; the first Renovate run of a
+scheduled day opens the PR.
 
 Tick the Dashboard checkbox to let a held update open its PR. Nothing
 automerges: every PR lands through the Mergify queue.
@@ -66,7 +54,7 @@ What a security update cannot do:
    they ran. When no smoke job ran for a change that affects what a session
    runs, build the image locally and run a smoke session. An update must
    keep every behavior the
-   [Sandbox Image contract](../SANDBOX-IMAGE-CONTRACT.md) requires.
+   [Sandbox Image contract](../../../.github/contracts/session-runtime.toml) requires.
 4. Never dispatch `docker-base-publish.yml`, `docker-publish.yml`, or
    `riscv-tooling-publish.yml` on a Renovate branch. They write to the shared
    registry: a `docker-base-publish.yml` dispatch from any branch repoints the

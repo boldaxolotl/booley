@@ -1,4 +1,9 @@
-"""Project-scoped Verilator compiler cache policy and execution preparation."""
+"""Project-scoped Verilator compiler cache policy and execution preparation.
+
+The cache root lives outside every mutable build generation and setup cleanup
+never touches it, so objects survive generation rewrites. Booley's cache
+variables win over the Target's and the ambient environment.
+"""
 
 from __future__ import annotations
 

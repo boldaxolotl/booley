@@ -1,7 +1,7 @@
 """Own the CI side of keeping Goal Mode unit tests out of the CI test lanes.
 
 Temporary, like the ``collect_ignore`` entry in ``tests/conftest.py``: delete this
-module with Goal Mode (#3276). Three CI scripts share it (the change classifier, the
+module with Goal Mode (#3511). Three CI scripts share it (the change classifier, the
 documentation-test derivation and flake-stress), so it imports none of them.
 """
 

@@ -139,7 +139,6 @@ _KEPT_SPELLINGS: dict[str, tuple[str, ...]] = {
     "tests/mcp_tools/test_coverage_evidence.py": ('"campaign:"',),
     # Doc text and QA assets that #2911 renames with the assets.
     "tests/docs/test_flow_reference.py": ("/campaign/manifest.json", "/campaign/work-items/"),
-    "tests/docs/test_goal_work_dir_guidance.py": ("compact Campaign reference",),
 }
 
 
