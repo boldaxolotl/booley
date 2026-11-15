@@ -44,7 +44,7 @@ def test_cheat_metrics_prints_the_listing_in_a_project(
     assert run_cli(monkeypatch, project, "cheat", "--metrics") == 0
 
     out = capsys.readouterr().out
-    assert "\nMetrics\n" in out or out.startswith("Metrics\n")
+    assert "\nMetric-Driven Development\n" in out or out.startswith("Metric-Driven Development\n")
     assert "[sim_core.sim]\ntests_failed_max =  # tests, plain\n" in out
     assert "[synth_core.synth]\n" in out
     assert FALLBACK not in out
@@ -76,7 +76,7 @@ def test_goals_view_has_no_metrics_listing(
 
     out = capsys.readouterr().out
     assert "[sim_core.sim]" not in out
-    assert "\nMetrics\n" not in out
+    assert "\nMetric-Driven Development\n" not in out
 
 
 def test_all_without_metrics_does_not_list(
