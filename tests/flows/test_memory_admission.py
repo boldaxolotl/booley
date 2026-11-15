@@ -584,50 +584,30 @@ def test_specialist_claim_without_history_reserves_the_default() -> None:
         )
 
 
-@pytest.mark.parametrize(
-    ("records", "budget_mib", "claim_budget", "reservation"),
-    [
-        pytest.param([], None, 452.5, 452.5, id="budget-unreadable"),
-        pytest.param(
-            [_specialist_record("reviewer", 4000)],
-            None,
-            452.5,
-            452.5,
-            id="unreadable-ignores-history",
-        ),
-        pytest.param(
-            [_specialist_record("reviewer", 4000)],
-            4000.0,
-            4000.0,
-            452.5,
-            id="estimate-over-budget",
-        ),
-        pytest.param([], 452.5, 452.5, 226.25, id="budget-equal-to-the-default"),
-        pytest.param([], 300.0, 300.0, 150.0, id="budget-below-the-default"),
-        pytest.param(
-            [_specialist_record("reviewer", 200)], 300.0, 300.0, 150.0, id="history-capped"
-        ),
-        pytest.param([], 0.0, 0.0, 0.0, id="budget-zero"),
-    ],
-)
-def test_specialist_and_coordinator_claims_stay_bounded(
-    records: list[dict[str, Any]],
-    budget_mib: float | None,
-    claim_budget: float,
-    reservation: float,
-) -> None:
+def test_specialist_and_coordinator_claims_stay_bounded() -> None:
     admission = _admission()
+    huge = [_specialist_record("reviewer", 4000)]
+    # (records, budget MiB, claim budget, reservation)
+    cases: list[tuple[list[dict[str, Any]], float | None, float, float]] = [
+        ([], None, 452.5, 452.5),  # budget unreadable
+        (huge, None, 452.5, 452.5),  # unreadable budget ignores history
+        (huge, 4000.0, 4000.0, 452.5),  # estimate over budget
+        ([], 452.5, 452.5, 226.25),  # budget equal to the default
+        ([], 300.0, 300.0, 150.0),  # budget below the default
+        ([_specialist_record("reviewer", 200)], 300.0, 300.0, 150.0),  # history capped
+        ([], 0.0, 0.0, 0.0),  # budget zero
+    ]
+    for records, budget_mib, claim_budget, reservation in cases:
+        claim = admission.plan_specialist_claim("reviewer", records, budget_mib).claim
 
-    claim = admission.plan_specialist_claim("reviewer", records, budget_mib).claim
-
-    assert (claim.budget_mb, claim.reservation_mb) == (claim_budget, reservation)
-    assert claim.companion and not claim.run_alone
-    if budget_mib:
-        assert claim.reservation_mb is not None and claim.reservation_mb < budget_mib
-    coordinator = admission.plan_coordinator_claim(budget_mib).claim
-    assert coordinator == job_slots.MemoryClaim(
-        budget_mb=budget_mib or 0.0, reservation_mb=0.0, companion=True
-    )
+        assert (claim.budget_mb, claim.reservation_mb) == (claim_budget, reservation)
+        assert claim.companion and not claim.run_alone
+        if budget_mib:
+            assert claim.reservation_mb is not None and claim.reservation_mb < budget_mib
+        coordinator = admission.plan_coordinator_claim(budget_mib).claim
+        assert coordinator == job_slots.MemoryClaim(
+            budget_mb=budget_mib or 0.0, reservation_mb=0.0, companion=True
+        )
 
 
 def test_measuring_a_specialist_or_coordinator_reads_the_history_and_budget(
