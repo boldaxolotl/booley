@@ -53,6 +53,7 @@ from booley.targets.domain import criterion_matches_target
 
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
+    from booley.flows.sim.flow import SimulateFlow
     from booley.runtime.endpoint_execution import EndpointOutcome
 
 
@@ -395,18 +396,18 @@ def _simulation_detail(
 
 def _detail_stamper(
     endpoint: EndpointState,
-) -> Callable[[CriterionChange, str], dict[str, Any]] | None:
+) -> Callable[[CriterionChange, str], dict[str, Any]]:
     """Stamp a Criterion change's detail with the endpoint's source fingerprint, if it has one."""
-    stamp = getattr(endpoint, "_stamp_source_fingerprint", None)
-    if not callable(stamp):
-        return None
     return lambda change, selector: (
-        stamp(change.key, change.met, change.detail, source_target=selector) or change.detail
+        endpoint._stamp_source_fingerprint(
+            change.key, change.met, change.detail, source_target=selector
+        )
+        or change.detail
     )
 
 
 def record_simulation_record_acceptance(
-    endpoint: EndpointState,
+    endpoint: SimulateFlow,
     outcomes: tuple[object, ...],
     *,
     baseline_refusals: Mapping[tuple[str, str], str] | None = None,
@@ -699,7 +700,9 @@ def _coverage_detail(evidence: _OutcomeEvidence) -> dict[str, object]:
     outcome = evidence.outcome
     coverage = evidence.coverage()
     coverage_record = coverage.resolved.loaded.coverage_record
-    nested = outcome.coverage_reference["coverage_record"]
+    reference = outcome.coverage_reference
+    assert reference is not None  # callers return early without a coverage reference
+    nested = reference["coverage_record"]
     assert isinstance(nested, Mapping)
     report_root = outcome.manifest_path.parents[5]
     relative_public_path = coverage.path.relative_to(report_root).as_posix()
