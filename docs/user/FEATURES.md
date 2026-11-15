@@ -53,7 +53,7 @@ Booley is free and open source under Apache 2.0.
 
 ## Goal Mode
 
-Goal Mode is for changes where "done" has to be proven, not claimed. Before the Developer Agent starts, you agree on what finished means, for example: lint is clean, the FIFO tests pass, a code review finds no bugs, and area grows by no more than 10%. Each of these conditions is a Goal. The Developer Agent keeps working until Booley's own simulation, lint, synthesis, and review runs confirm every Goal on the final code. It can't declare itself done, and it can't quietly drop or weaken a Goal: any change to the Goals needs your approval.
+Goal Mode is for changes where "done" has to be proven, not claimed. Before the Developer Agent starts, you agree on what finished means, for example: lint is clean, the FIFO tests pass, and area grows by no more than 10%. Each of these conditions is a Goal. The Developer Agent keeps working until Booley's own simulation, lint, and synthesis runs confirm every Goal on the final code. It can't declare itself done, and it can't quietly drop or weaken a Goal: any change to the Goals needs your approval.
 
 It is most useful for performance, frequency, and area optimization, where you want the most out of a design while it stays functionally correct, and for building new features and modules, especially work you want to leave running unattended. A Goal survives crashes and context compaction: the Developer Agent picks it up where it left off. For debugging, quick questions, and exploration, just talk to the Developer Agent.
 
@@ -81,9 +81,9 @@ Specialists (the Reviewer and Coverage Analyst) are separate LLM agents that Boo
 
 A Developer Agent could spawn its own subagent, but then it writes the brief, decides what the subagent sees, and reads back a free-form reply. Specialists close those gaps:
 
-- **Booley writes the brief** from expert-written guides. In Goal Mode the Developer Agent can't add its own framing, so it can't steer the verdict.
+- **Booley writes the brief** from expert-written guides.
 - **Each side is judged against the spec, not against the other side.** The RTL and the testbench should be independent readings of the spec. A testbench Reviewer that could read the RTL would check the tests against what the RTL does, not what the spec requires, and miss bugs where both sides share the same misreading. So the testbench Reviewer never sees the RTL, and the RTL Reviewer never sees the testbench.
-- **Results count.** Findings come back in a structured form Booley validates, and in Goal Mode they are evidence that can meet a review Goal.
+- **Results count.** Findings come back in a structured form Booley validates.
 
 ## Waveform-Based Debug
 
@@ -112,7 +112,7 @@ Each review covers one focus, so the Reviewer looks hard at one kind of problem 
 | | `rtl_code_style` | Comments, naming, readability, assertion coverage |
 | Testbench | `tb_quality` | False passes, coverage gaps, testbench code quality |
 
-The early reviews are the equivalent of an engineer's quick look at freshly written code: they catch bugs before they cost time and tokens in simulate-and-fix loops. Findings are graded CRITICAL, MAJOR, or MINOR. A Goal can require a `clean` review, where every finding is fixed (and confirmed by a recheck) or waived with a visible reason, or a `done` review, which only reports. Reviews follow expert-written RTL and testbench guides shipped with Booley, and you can add your project's own style rules. See [Reviewer](REVIEWER.md).
+The early reviews are the equivalent of an engineer's quick look at freshly written code: they catch bugs before they cost time and tokens in simulate-and-fix loops. Findings are graded CRITICAL, MAJOR, or MINOR. Reviews follow expert-written RTL and testbench guides shipped with Booley, and you can add your project's own style rules. See [Reviewer](REVIEWER.md).
 
 ## Mutation Testing
 

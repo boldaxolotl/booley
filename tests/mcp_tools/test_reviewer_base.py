@@ -18,7 +18,6 @@ from booley.mcp.base import McpToolResult
 from booley.specialists.reviewer import ReviewerSpecialist
 from tests.project_runtime_git_support import git
 
-CLEAN_KEY = "review_rtl_bugs_clean"
 DONE_KEY = "review_rtl_bugs_done"
 
 A_SV = "module a(input logic x);\nendmodule\n"
@@ -317,12 +316,9 @@ def test_same_finding_reported_as_introduced_and_pre_existing_stays_open(
     ]
 
 
-def test_pre_existing_findings_do_not_fail_clean_gate(
+def test_pre_existing_findings_do_not_fail_the_review(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    state = DevelopmentState.load(repo.parent / "state.json")
-    state.init_criteria({CLEAN_KEY: True})
-    state.save()
     commit_edit(repo, "a.sv", A_SV + "// feature edit\n", "Feature edit")
 
     result, _, _ = review(
@@ -334,8 +330,8 @@ def test_pre_existing_findings_do_not_fail_clean_gate(
 
     assert result.exit_code == 0
     assert result.criterion_met is True
-    assert result.detail["pending"] == []
-    assert [row["summary"] for row in result.detail["observations"]] == ["Old bug"]
+    assert ReviewerSpecialist._open_findings(result.detail) == []
+    assert [row["summary"] for row in result.detail["issue_list"]] == ["Old bug"]
     assert "PRE-EXISTING (non-blocking; present before this change):" in result.report_text
 
 
@@ -369,27 +365,6 @@ def test_origin_is_ignored_without_base(repo: Path, monkeypatch: pytest.MonkeyPa
     assert "origin" not in invoke.call_args.args[0].system_prompt
     assert "Change under review" not in prompt_of(invoke)
     assert all("origin" not in row for row in result.detail["issue_list"])
-
-
-def test_clean_mode_info_counts_pre_existing_observations_separately(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    state = DevelopmentState.load(repo.parent / "state.json")
-    state.init_criteria({CLEAN_KEY: True})
-    state.save()
-    commit_edit(repo, "a.sv", A_SV + "// feature edit\n", "Feature edit")
-    advisory = {**finding(line=2, summary="Style nit"), "disposition": "advisory"}
-
-    result, _, _ = review(
-        repo,
-        monkeypatch,
-        ["--scope", "rtl/a.sv", "--base", "main"],
-        [advisory, finding(line=1, summary="Old bug", origin="pre_existing")],
-    )
-
-    assert result.exit_code == 0
-    assert "preserved 1 advisory/deferred observation(s)" in result.report_text
-    assert "preserved 1 pre-existing observation(s)" in result.report_text
 
 
 def test_dry_run_with_base_previews_only_changed_files(

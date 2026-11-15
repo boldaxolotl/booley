@@ -11,7 +11,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from booley.criteria.state import DevelopmentState
 from booley.runtime import job_records
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.session_paths import project_job_roots, session_jobs_dir
@@ -82,9 +81,6 @@ def test_reviewer_state_and_evidence_share_main(worktree, monkeypatch, sandbox_l
     state_file = Path(endpoint.args.state_file)
     assert state_file.is_relative_to(main / "reviewer-state")
 
-    state = DevelopmentState.load(state_file)
-    state.init_criteria({"review_rtl_bugs_clean": True})
-    state.save()
     monkeypatch.setattr(
         endpoint,
         "_invoke_agent",
