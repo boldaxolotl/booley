@@ -104,7 +104,7 @@ def _glossary_entry(name: str) -> str:
 
 
 def test_job_glossary_entries_speak_of_the_memory_budget() -> None:
-    for name in ("Job", "Standalone Job", "Job Class"):
+    for name in ("Job", "Standalone Job", "Job admission"):
         entry = _glossary_entry(name)
         assert "Memory Budget" in entry, f"**{name}** does not name the Memory Budget"
         assert "slot" not in entry.replace("light slot", ""), f"**{name}** speaks of slots"

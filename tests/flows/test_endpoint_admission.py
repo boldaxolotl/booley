@@ -369,6 +369,9 @@ class _StubEndpoint:
         # The production policy, so the Specialist guard exercises it rather than a copy.
         return EndpointState._memory_admitted(self)  # type: ignore[arg-type]
 
+    def _memory_admission_plan(self, project: Path | None, requests: Any) -> Any:
+        return EndpointState._memory_admission_plan(self, project, requests)  # type: ignore[arg-type]
+
     def _get_head_sha(self) -> str | None:
         return None
 
@@ -773,29 +776,65 @@ def test_a_memory_admitted_job_lends_work_item_sizing(
         assert context.memory_sizing is None
 
 
-def test_light_admission_lends_work_item_sizing(memory_runtime: Path) -> None:
-    """A light Job's work items (a mutation campaign's builds and simulations) take claims too."""
-    with AdmissionGate(_StubEndpoint("mutation", job_slots.CLASS_LIGHT)).enter() as context:  # type: ignore[arg-type]
+def test_mutation_coordinator_holds_a_zero_companion_claim(memory_runtime: Path) -> None:
+    """The coordinator is memory-class with a zero companion claim; its items still take claims (#3772)."""
+    from booley.flows.mutation.flow import MutationFlow
+
+    with AdmissionGate(MutationFlow()).enter() as context:
         assert context.mode == "managed"
         assert isinstance(context.outer_token, job_slots.SlotToken)
-        assert context.outer_token.job_class == job_slots.CLASS_LIGHT
+        assert context.outer_token.job_class == job_slots.CLASS_MEMORY
+        (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
+        assert holder.memory == job_slots.MemoryClaim(
+            budget_mb=1000.0, reservation_mb=0.0, companion=True
+        )
+        assert not (job_slots.slots_dir(memory_runtime) / job_slots.CLASS_LIGHT).exists()
         assert context.memory_sizing is not None
         assert context.memory_sizing.booley_dir == memory_runtime
         assert context.memory_sizing.warnings == []
 
 
-def test_specialist_keeps_its_light_slot_under_memory_admission(
-    memory_runtime: Path,
-) -> None:
-    endpoint = _StubEndpoint("reviewer", job_slots.CLASS_LIGHT)
+def test_a_companion_coordinator_is_never_requeued_after_oom(memory_runtime: Path) -> None:
+    """A coordinator that came back run-alone would never run beside Specialists."""
+    from booley.flows.mutation.flow import MutationFlow
 
-    with endpoint_admission.admission(endpoint, _prepared()) as borrowed:  # type: ignore[arg-type]
-        assert isinstance(borrowed, AdmissionContext)
-        assert borrowed.mode == "managed"
-        assert borrowed.memory_warning is None
-        assert len(_held(memory_runtime, job_slots.CLASS_LIGHT)) == 1
-        assert not (job_slots.slots_dir(memory_runtime) / job_slots.CLASS_MEMORY).exists()
-    assert endpoint.acquisitions == 1
+    flow = MutationFlow()
+    with AdmissionGate(flow).enter() as context:
+        assert not flow.may_requeue_after_oom(_prepared(), context)
+
+
+def test_specialist_holds_a_companion_memory_reservation(memory_runtime: Path) -> None:
+    from booley.runtime.resource_history import SCHEMA
+    from booley.specialists.reviewer import ReviewerSpecialist
+
+    def record(peak: float, specialist: str) -> dict[str, Any]:
+        return {
+            "key": {
+                "target": "",
+                "phase": f"specialist:{specialist}",
+                "flags": [],
+                "test_run": "",
+                "specialist": specialist,
+            },
+            "peak_memory_mb": peak,
+            "wall_s": 1.0,
+        }
+
+    path = memory_runtime / "runtime" / "resources" / "history.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    records = [record(300, "reviewer"), record(346, "reviewer"), record(900, "other")]
+    path.write_text(json.dumps({"$schema": SCHEMA, "records": records}), encoding="utf-8")
+
+    with AdmissionGate(ReviewerSpecialist()).enter() as context:
+        (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)
+        # 346 MiB x the estimator's 1.25 margin; half the 1,000 MiB budget is not reached.
+        assert holder.memory == job_slots.MemoryClaim(
+            budget_mb=1000.0, reservation_mb=432.5, companion=True
+        )
+        assert context.mode == "managed"
+        assert not (job_slots.slots_dir(memory_runtime) / job_slots.CLASS_LIGHT).exists()
+        assert context.memory_warning is None
+    assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
 
 
 def _memory_store(root: Path, *holders: tuple[int, float, str]) -> job_slots.SlotStore:

@@ -11,6 +11,7 @@ import logging
 import os
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -39,6 +40,8 @@ from booley.flows.execution_persistence import (
     criterion_source_target_for,
     state_persistence_for,
 )
+from booley.flows.job_estimates import JobRequest
+from booley.flows.memory_admission import MemoryAdmissionPlan, measure_memory_claim
 from booley.flows.prepared_invocation import OrdinaryRunInvocation, PreparedInvocation
 from booley.flows.progress_lifecycle import retire_progress_of_requeued_attempt
 from booley.runtime import job_slots
@@ -416,10 +419,10 @@ class EndpointState(ABC):
         """Whether an own OOM kill of this admitted Job's first attempt requeues it (ADR 0087).
 
         Only a Flow Job holding its own Memory Reservation: not a dry run, not a
-        child under its parent's claim, not a Specialist or a tool. A Job bound
-        to a Goal is never requeued, so its Goal evidence and Simulation Record
-        registrations come from its only attempt; the exclusion ends when Goal Mode
-        is deleted (#3511).
+        child under its parent's claim, not a Specialist or a tool. A companion
+        claim is never requeued. A Job bound to a Goal is never requeued either,
+        so its Goal evidence and Simulation Record registrations come from its
+        only attempt; the exclusion ends when Goal Mode is deleted (#3511).
         """
         if self.endpoint_kind != "flow" or not isinstance(
             admission, endpoint_admission.AdmissionContext
@@ -428,6 +431,10 @@ class EndpointState(ABC):
         token = admission.outer_token
         if not isinstance(token, job_slots.SlotToken) or token.job_class != job_slots.CLASS_MEMORY:
             return False
+        if token.memory is not None and token.memory.companion:
+            return (
+                False  # a coordinator that came back run-alone would never run beside Specialists
+            )
         try:
             return not self._acceptance_recorder.acceptance_identity()
         except AcceptanceRecordingError:
@@ -527,9 +534,17 @@ class EndpointState(ABC):
         """Whether this Job is admitted by Memory Reservation (ADR 0087).
 
         Sim, synth and fpga Jobs do; lint and Custom Flows override this.
-        Specialists keep their light count cap.
         """
         return self._resolve_job_class() == job_slots.CLASS_MEMORY
+
+    def _memory_admission_plan(
+        self, project: Path | None, requests: Sequence[JobRequest] | None
+    ) -> MemoryAdmissionPlan:
+        """The claim this memory-admitted Job makes: sized from its requests by default.
+
+        Specialists and the Mutation Flow override it with a companion claim.
+        """
+        return measure_memory_claim(project, requests)
 
     def _acquire_job_slot(self) -> tuple[job_slots.SlotStore | None, object | None]:
         return endpoint_admission._acquire_job_slot(self)
