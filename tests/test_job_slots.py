@@ -634,7 +634,6 @@ class TestSingleProcess:
             assert self._release_threads(token) == []
             assert token.path.exists()
 
-
         messages = [r.getMessage() for r in caplog.records]
         assert any("Could not release slot entry" in m and token.path.name in m for m in messages)
         assert len(sleeps) >= job_slots._RELEASE_RETRY_ATTEMPTS
