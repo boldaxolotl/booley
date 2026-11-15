@@ -247,6 +247,12 @@ def require_symlinks(tmp_path: Path) -> None:
 
 # Generous per-test ceiling: only true hangs (a wedged subprocess or an
 # unbounded stall loop) exceed it, so it never flakes a healthy test.
+# CI passes --timeout=60 instead; raise one test's budget with
+# ``@pytest.mark.timeout(N)``. On Windows an expired budget kills the whole xdist
+# worker with no traceback, so size N by the rule in ``tests/timeout_headroom.py``
+# (3x the slowest Windows CI duration, from the ``time`` values in the
+# ``junit-windows-*`` and ``full-junit-windows-latest-*`` artifacts). The Windows
+# legs fail a passing test that uses more than 80% of its budget.
 _DEFAULT_TEST_TIMEOUT_S = 120
 _XDIST_WORKER_TEMP: Path | None = None
 

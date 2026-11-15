@@ -56,7 +56,11 @@ def read_record_or_none(run_id: str, root: Path | None) -> jobrec.JobRecord | No
 
 
 def _locate_job(run_id: str, *, roots: tuple[Path, ...] | None = None) -> LocatedJob | None:
-    """Find a unique run across roots; refuse even legacy collisions."""
+    """Find a unique run across roots; refuse even legacy collisions.
+
+    A ``run_id`` in more than one root is an error: silently picking one could
+    show or cancel the wrong Job.
+    """
     search_roots: list[Path | None] = list(job_roots() if roots is None else roots)
     if run_id in _KNOWN_JOB_ROOTS and _KNOWN_JOB_ROOTS[run_id] not in search_roots:
         search_roots.insert(0, _KNOWN_JOB_ROOTS[run_id])

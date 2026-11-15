@@ -333,7 +333,8 @@ include = ["src/booley"]
 # Modules that still fail basic mode. The list only shrinks: fix a module to
 # remove its entry and lower EXCLUDE_CEILING in tests/ci/test_pyright_scope.py in
 # the same change; when renaming an excluded module, rename its entry; never add
-# a new module. See docs/internals/CONTRIBUTING.md#development-basics.
+# a new module: new code is checked by default, so fix its errors instead. Keep
+# the list sorted.
 exclude = [
     "src/booley/criteria/actions.py",
     "src/booley/criteria/presentation.py",

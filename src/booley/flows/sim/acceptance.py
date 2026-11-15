@@ -450,6 +450,8 @@ def _record_standalone_simulation_record(
     outcome = evidence.outcome
     if not outcome.complete or outcome.target["role"] != "candidate":
         return
+    # An inconclusive Target skips the Criterion rather than failing it: nothing
+    # was proven either way (the run still exits 1).
     if outcome.aggregate_grade not in {"pass", "fail"}:
         return
     facts = outcome.acceptance_facts.document

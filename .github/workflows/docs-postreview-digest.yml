@@ -1,7 +1,8 @@
 name: Docs post-review digest
 
 # Opens the weekly digest of merged docs-postreview pull requests.
-# See docs/internals/agents/docs-postreview-digest.md.
+# The issue body carries the maintainer steps. A manual run defaults to a dry
+# run that prints the digest and writes nothing.
 on:
   schedule:
     - cron: "0 6 * * 1"

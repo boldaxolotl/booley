@@ -6,9 +6,9 @@ they are; read it before changing the Sandbox, the MCP server, or a
 Booley Flow. Terms such as Booley Flow, Target, Specialist, and Sandbox are
 defined in the [glossary](../GLOSSARY.md). How to use Booley is in
 [USAGE.md](../user/USAGE.md) and [CLI-REFERENCE.md](../user/CLI-REFERENCE.md).
-Which packages may import which, and why, is in the
-[Source Dependency Contract](SOURCE-DEPENDENCY-CONTRACT.md). The history of
-each decision is in the ADRs under `docs/adr/`.
+Which packages may import which is enforced by
+`tests/architecture/booley_contract.py`. The history of each decision is in the
+ADRs under `docs/adr/`.
 
 ## Overview
 
@@ -126,57 +126,21 @@ container shares one trust domain.
 
 ### Job admission
 
-Every Flow or Specialist run is a Job. A Job holds a
-reservation, estimated from the Resource History, and runs while the
-reservations fit the Memory Budget (`runtime/memory_budget.py`, computed from
-`[sandbox].memory`). A Specialist and a mutation campaign's coordinating Job
-make **companion** claims: a Specialist reserves its own history's peak (or a
-default, never more than half the budget), the coordinator reserves nothing.
-A companion claim never keeps another claim waiting on it alone, so a run-alone
-claim starts beside companions, the first other claim starts when only
-companions hold, and a waiting companion blocks nobody.
-Excess work queues without limit, and a running Job is never
-preempted. Queue order comes from the requester role, not the class:
-`interactive` requests sort ahead of `background` ones, so a human waiting at
-the prompt isn't stuck behind unattended work.
+Every Flow or Specialist run is a Job. A Job holds a reservation estimated from
+the Resource History and runs while the reservations fit the Memory Budget;
+excess work queues, and a running Job is never preempted. The rules are in
+`src/booley/runtime/job_slots.py` and
+[ADR 0087](../adr/0087-admit-jobs-against-a-measured-memory-budget.md).
 
-Memory admission follows
-[ADR 0087](../adr/0087-admit-jobs-against-a-measured-memory-budget.md):
-
-- A Job that cannot be sized runs alone, and a Job larger than the budget runs
-  alone rather than never.
-- A waiting Job may start ahead of the front one when it fits now and does not
-  delay the front Job's earliest start. Seat Caps (`[jobs.seats]`) count as a
-  resource in that walk, and a licensed tool with no Seat Cap is refused.
-- A reservation shrinks to the next phase's estimate when a Job's phase ends.
-- A Job killed out of memory is requeued once to run alone; a second kill
-  fails it.
-- A Job's build thread count is its share of the cores, from the claim.
-
-Claims are files under `<runtime>/jobs/slots/` (`runtime/job_slots.py`; see
-[Why plain files](#why-plain-files)). The rule the recovery code protects:
-a claim becomes free only when the processes that used it are provably gone.
+Claims are files under `<runtime>/jobs/slots/` (see
+[Why plain files](#why-plain-files)). The rule the recovery code protects: a
+claim becomes free only when the processes that used it are provably gone.
 Otherwise a Job whose root process died could free its claim while its EDA
-child processes still run, and the next Job would start on top of them.
+child processes still run, and the next Job would start on top of them. This
+spans `runtime/job_slots.py`, `runtime/execution_records.py`,
+`runtime/execution_recovery.py`, and the supervisor.
 
-- Each admitted holder renews a recovery lease, separate from its work
-  timeout. When the owner disappears or the lease expires, recovery marks the
-  lease `cancelling` and cancels the execution. The slot stays occupied until
-  the supervisor has reaped the whole process tree and written a terminal
-  record (`runtime/execution_records.py`).
-- If the supervisor or its record is lost, a later reaper finds the remaining
-  processes by their execution ID and checks each PID's identity before
-  signaling it.
-- A caller without an execution ID is process-owned: recovery checks the
-  owner's PID identity and cancels its current descendants, but cannot find
-  descendants that outlived the owner. Only execution-owned leases give the
-  full guarantee.
-- An unknown slot-file schema or a process state that can't be read keeps the
-  slot occupied rather than freeing it.
-- Execution records are kept seven days unless an active lease still points
-  at one.
-
-A Simulation Record (code: `flows/sim/campaign/`) runs its first test on the
+A Simulation Record (code: `flows/sim/record/`) runs its first test on the
 Simulation Job's own claim. Each further parallel item takes its own child
 memory claim, sized from the item's history, while the reservations fit the
 Memory Budget; the number of parallel items never exceeds the cores. Items
@@ -193,8 +157,8 @@ structured request into an EDA tool invocation and its result into evidence.
 (`booley flow mutation`), not a Specialist: it needs no model. The
 catalog is in
 [CLI-REFERENCE.md](../user/CLI-REFERENCE.md#booley-flows--specialists), the
-build and evidence contracts in [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md)
-and [FLOW_IMPLEMENTATION_SIM.md](FLOW_IMPLEMENTATION_SIM.md), and the MCP extension model in [MCP-TOOLS.md](MCP-TOOLS.md).
+Flow code in `src/booley/flows/`, and the MCP extension model in
+[MCP-TOOLS.md](MCP-TOOLS.md).
 
 A built-in Flow that drives interchangeable EDA tools keeps one adapter per
 tool under `src/booley/flows/<flow>/backends/`: simulation has Cocotb, Icarus,
@@ -277,7 +241,7 @@ VS Code covers three needs in one program:
 
 `booley dashboard` is the Sandbox view and can also start Booley Flows
 ([ADR 0086](../adr/0086-launch-flows-and-specialists-from-the-dashboard.md));
-its layout rules are in [DASHBOARD.md](DASHBOARD.md).
+its design is in [ADR 0068](../adr/0068-booley-dashboard.md).
 
 ### Shared execution and evidence
 
@@ -312,8 +276,6 @@ not a query. FST is indexed and compact, which makes `bwave`'s time-range
 reads, trigger sampling, and data tracing fast enough for an agent to iterate
 on. GTKWave, Surfer, and VaporView all read it, so `bwave gui` needs no export
 step.
-
-How a run reaches that store depends on the Target's trace setup:
 
 - **A Verilator Target that declares `--trace-fst` stays native.** It already
   has a matching C++ harness and trace options; Booley only points the output

@@ -2,6 +2,9 @@
 
 Sandbox startup launches a detached worker. Shared health owns report storage and
 freshness; this adapter owns run serialization, Doctor invocation and progress.
+
+Automatic Doctor is read-only (INSPECT): it never repairs guidance or projections. Repair
+belongs to a manual `booley doctor` run, and a report grants no authority to execute anything.
 """
 
 from __future__ import annotations

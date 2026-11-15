@@ -10,31 +10,19 @@ publishing PR text and the `confidential-content` check are in
 
 Mergify is the only normal merge path into `main`; GitHub's merge button,
 auto-merge, and `gh pr merge` do not queue a PR. `.mergify.yml` holds the
-configuration and `tests/ci/test_mergify_config.py` pins it.
+configuration (its comments explain each setting) and
+`tests/ci/test_mergify_config.py` pins it. Up to four cumulative candidates of
+up to three PRs each validate at once, each on top of `main` and everything
+queued ahead of it. A failed batch is split to isolate the culprit (see
+[React to a failed batch](#react-to-a-failed-batch)); Mergify retries nothing,
+and a validation round may take 90 minutes.
 
-- **Cumulative candidates.** The queue is serial: PRs merge in queue order.
-  Mergify validates up to four candidates at once, and each candidate adds a
-  batch of up to three PRs to the one before it, so up to 12 PRs are in
-  flight. With batches A, B, C, and D, the candidates are A, A+B, A+B+C, and
-  A+B+C+D. Each candidate is tested on top of `main` and everything queued
-  ahead of it, so a passing candidate is exactly what `main` becomes.
-- **Partial batches.** A batch starts after at most 30 seconds of waiting for
-  batchmates, so a lone PR is not held for a full batch.
-- **Candidate PRs.** Mergify validates each candidate through a temporary
-  draft PR from a `mergify/merge-queue/` branch. The `Tests` workflow skips
-  drafts but runs these, and both required checks, `ci-required` and
-  `confidential-content`, must pass on them.
-- **Time bound.** Each validation round may take 90 minutes after the PR
-  reaches its check slot (a cold-cache image build takes about an hour).
-  Mergify retries nothing automatically.
-- **Failed batches.** When a batch fails, Mergify splits it and validates the
-  parts until it isolates the culprit, dequeues only that PR, and merges the
-  rest. See [React to a failed batch](#react-to-a-failed-batch).
-- **Labels.** Mergify posts no status comments, so it does not notify every
-  participant. Read its state from the `Mergify Merge Queue` check and the
-  `queued`, `merge-queue-checking`, and `dequeued` labels.
-- **Who may command.** Only a GitHub identity with write permission can post
-  `@mergifyio queue` or `@mergifyio dequeue`.
+Mergify validates each candidate through a temporary draft PR from a
+`mergify/merge-queue/` branch; `ci-required` and `confidential-content` must
+pass on it. It posts no status comments: read its state from the
+`Mergify Merge Queue` check and the `queued`, `merge-queue-checking`, and
+`dequeued` labels. Only an identity with write permission can post
+`@mergifyio queue` or `@mergifyio dequeue`.
 
 ### Priority
 
@@ -139,9 +127,14 @@ ask the maintainer to decide.
    advisory confidential-content findings; only a maintainer queues it, after
    reviewing the advisory comment and removing the label. Nothing removes the
    label automatically, and Mergify's queue conditions do not check it (see
-   [confidential-content.md](confidential-content.md#provenance-rules)).
-3. A PR that is only behind `main` is ready as it is; see
-   [Tell a stale base from a conflict](#tell-a-stale-base-from-a-conflict).
+   [confidential-vocabulary.md](confidential-vocabulary.md#provenance-rules)).
+3. A PR that is only behind `main` is ready as it is: `main_protection` does
+   not require an up-to-date branch, and Mergify validates the PR on top of
+   `main` and its predecessors. Leave it, so local verification stays tied to
+   its tree. Rebase or merge `main` only for a real conflict or a change the
+   PR depends on, then verify again. If the
+   [live setting](#live-github-settings) is unreadable or requires an
+   up-to-date branch, update the branch first.
 4. Apply a [priority label](#priority) if one fits.
 5. Post `@mergifyio queue` as in
    [Post a queue or dequeue command](#post-a-queue-or-dequeue-command).
@@ -226,7 +219,7 @@ Leave predecessors to their owners.
 | Outcome | Mode | Exit | Next step |
 |---------|------|------|-----------|
 | `ci_passed` | ci | 0 | Every required check passed at the expected head; queue the PR. |
-| `merged` | queue | 0 | Follow [Finish after merge](#finish-after-merge). |
+| `merged` | queue | 0 | Merged. Confirm `mergedAt` is non-null (closed or dequeued is not success), then delete the remote branch, local branch, and worktree as `AGENTS.md` requires. |
 | `check_failed` | both | 1 | Read the failing checks once; in queue mode see [React to a failed batch](#react-to-a-failed-batch). |
 | `required_checks_missing` | ci | 1 | Follow [Recover missing required checks](#recover-missing-required-checks). |
 | `head_changed` | ci | 1 | The PR head is not the expected head; read the PR once and report. |
@@ -240,41 +233,16 @@ Leave predecessors to their owners.
 After any actionable outcome, fetch detailed checks or failure logs once,
 under the recovery rules below.
 
-### How CI mode decides
+### How the watcher decides
 
-- Only required checks reported as `pass` satisfy CI. Pending, skipped, or
-  neutral checks stay unresolved; a cancelled required check counts as
-  failed.
-- The expected head is checked before and after each status read, and
-  results from a different head are ignored. An abbreviated expected head (at
-  least seven hex digits) is expanded on the first read to the PR head it
-  prefixes; a non-matching prefix reports `head_changed`.
-- A required context can register after its workflow starts, so the watcher
-  matches each absent context to its Actions producer by exact head, workflow
-  name, and event. A queued, running, or approval-blocked producer stays
-  pending with no registration deadline. A completed producer that never
-  reported its context is `required_checks_missing` at once. With no matching
-  producer, a registration grace starts (`--producer-registration-grace-seconds`,
-  default five minutes, at most one hour or the CI deadline).
-- Unreadable producer data, empty required rules, or an unknown producer
-  mapping fail closed as `observation_error`. The final summary names missing
-  contexts and links the producer runs it found.
-
-### How queue mode decides
-
-- `mergedAt` is the merge confirmation; a closed PR without it is not a merge.
-- The first comment read sets the baseline of earlier queue and dequeue
-  commands. Any later exact control command is evidence of a competing owner.
-- The watcher reads the `queued`, `merge-queue-checking`, and `dequeued`
-  labels and Mergify's check data. Queue head updates are expected, and an old
-  failed attempt does not end a newer pending or same-head retry.
-- A `dequeued` label beside `queued` or `merge-queue-checking` is left over
-  from the previous attempt of a requeue, not a new dequeue. So is a lone
-  `dequeued` label applied before the newest control comment when that
-  comment is a queue command: the watcher keeps waiting and reports
-  `dequeued` only if the label is still that old one poll (ten minutes)
-  later. A `dequeued` label applied after the queue command is reported at
-  once.
+The decision logic is in `.github/scripts/watch_pr.py` and
+`tests/ci/test_watch_pr.py`. Only required checks reported as `pass` satisfy
+CI; pending, skipped, or neutral checks stay unresolved, and a cancelled
+required check counts as failed. `mergedAt` is the only merge confirmation. A
+`dequeued` label beside `queued` or `merge-queue-checking`, or a lone one
+applied before the newest queue command, is left over from a previous attempt;
+the watcher reports `dequeued` only if the label is still that old one poll
+(ten minutes) later.
 
 ## Recover missing required checks
 
@@ -319,14 +287,8 @@ git push
 ```
 
 Record the new head and its unchanged tree in the owning task, then start one
-watcher for `new_head`:
-
-```bash
-python3 .github/scripts/watch_pr.py \
-  --repo OWNER/REPO --pr <number> --mode ci \
-  --expected-head "${new_head}" --timeout-seconds 7200 \
-  --producer-registration-grace-seconds 300
-```
+CI-mode watcher with `--expected-head "${new_head}"` (the command in
+[Run one watcher](#run-one-watcher)).
 
 If the retry also has no producer, report an incident and stop. Never use
 GitHub's update-branch operation or `workflow_dispatch` instead, and never
@@ -399,31 +361,6 @@ Post each queue or dequeue command as in
 
 Record the cause, with any flake issue link, in a PR comment. Recovery ends
 when the fixed or confirmed-transient head has been queued once.
-
-## Tell a stale base from a conflict
-
-A PR that is only behind `main` is ready to queue: `main_protection` does not
-require an up-to-date branch, and Mergify validates the PR on top of `main`,
-its queue predecessors, and its batchmates. Leave such a branch as it is, so
-the local verification stays tied to its tree. Rebase or merge `main` only
-for a real conflict or for a change the PR depends on, then verify the new
-tree again.
-
-Before relying on this, read the [live setting](#live-github-settings). If
-it is unreadable or requires an up-to-date branch, update the branch before
-queueing.
-
-## Finish after merge
-
-Confirm the merge before cleanup:
-
-```bash
-gh pr view <number> --json state,mergedAt,mergeCommit,url
-```
-
-Only a non-null `mergedAt` is success; closed or dequeued is not. Then delete
-the remote branch, the local branch, and the worktree, as `AGENTS.md`
-requires.
 
 ## Maintainer incident controls
 

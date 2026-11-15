@@ -7,8 +7,7 @@ verified cause with `file:line` evidence, and the discussion. Read this
 before writing a brief (in `triage`, `booley-qa-triage`, `to-tickets`, or a
 pipeline split) and when the pipeline refuses one. It extends the triage
 skill's brief format with Booley's fields, placement, and authority rule.
-Labels are in [triage-labels.md](triage-labels.md); `gh` commands are in
-[issue-tracker.md](issue-tracker.md).
+Labels and `gh` commands are in [issue-tracker.md](issue-tracker.md).
 
 ## Readiness
 
@@ -18,13 +17,9 @@ and post no brief.
 
 ## Write it durable
 
-The issue may wait for weeks while the code moves, so keep the brief
-behavioral:
-
-- Describe behavior, interfaces, commands, types, and config shapes.
-- Say what the system must do, not how to implement it.
-- Leave out file paths and line numbers; they belong in the issue body. The
-  pipeline refuses a split brief that names one.
+The issue may wait for weeks while the code moves, so describe behavior, not
+implementation, and leave out file paths and line numbers; they belong in the
+issue body. The pipeline refuses a split brief that names a path.
 
 ## Fields
 
@@ -36,7 +31,7 @@ Required:
 
 - `**Category:**` `bug`, `enhancement`, or `documentation`. It must equal the
   issue's category label; see
-  [Category labels](triage-labels.md#category-labels) for which one applies.
+  [Category labels](issue-tracker.md#category-labels) for which one applies.
 - `**Summary:**` one line: what must happen.
 - `**Current behavior:**` what happens now. For a bug, the broken behavior.
 - `**Desired behavior:**` what happens after the change, including edge cases
@@ -80,20 +75,12 @@ quote any value that contains spaces.
   Standards reviewer, the planner, and the implementer keep their models.
 - `effort` (required): `low`, `medium`, `high`, or `xhigh`.
 - `rounds`: `1` (default) or `uncapped`. With `uncapped`, every fix starts
-  another review of the whole change, until a round has no open finding rated
-  `medium` or higher on the pipeline's shared severity scale. A `low` or
-  `nit` finding is fixed or declined without another round. A `medium` or
-  higher finding closes only through a fix, or through a written rebuttal the
-  next round's reviewer accepts. A proposed split still gets one round.
+  another review of the whole change until a round has no open finding rated
+  `medium` or higher; the pipeline queues the pull request only then.
 - `park-after`: an integer of at least 2, only with `rounds=uncapped`;
-  default 5. After that many rounds under the current brief without a clean
-  one, the pipeline parks the ticket on a maintainer question. The
-  maintainer's answer may accept the parked head with its findings open.
+  default 5. After that many rounds without a clean one, the pipeline parks
+  the ticket on a maintainer question.
 - `focus`: one quoted line that tells the reviewer what to look for first.
-
-With `rounds=uncapped`, the pipeline queues the pull request only after a
-round with no open `medium` or higher finding on its current head, or after
-the maintainer's answer to a park accepts that exact head.
 
 A malformed field keeps the issue out of the pipeline instead of falling back
 to the default review, because a silent fallback would weaken exactly the
@@ -107,10 +94,7 @@ unbalanced quotes.
 The pipeline checks a pull request that touches the GUI in a browser
 Codespace with the `booley-gui-check` skill, and queues it only after a
 passing check on its current head. Without this field, the pipeline's path
-rules decide: changes to the VS Code extension data, the Dashboard,
-`bwave gui` and VaporView, the in-container runtime, or the published image
-and devcontainer recipes need a check. The Spec reviewer can flag a change
-the rules missed.
+rules decide. The Spec reviewer can flag a change the rules missed.
 
 Add `**GUI:**` only when the rules would get the ticket wrong:
 
@@ -153,14 +137,10 @@ before it becomes `ready-for-agent`:
   blocking](issue-tracker.md#sub-issues-and-blocking)).
 - Draw each sub-issue's acceptance criteria from the parent's. Together, the
   sub-issues cover all of them.
-- Label the parent [`tracker`](triage-labels.md#state-labels). It gets no
+- Label the parent [`tracker`](issue-tracker.md#tracker-and-pipeline-labels). It gets no
   brief.
 
-The pipeline skips an issue that has open sub-issues. When its planner finds
-a `ready-for-agent` issue too large for one PR, the pipeline splits it without
-asking: it files a sub-issue per piece with its brief in an author comment
-and the `ready-for-agent` label, posts a split table on the parent, relabels
-the parent `tracker`, and works the sub-issues in order.
+The pipeline skips an issue that has open sub-issues.
 
 ## Example
 

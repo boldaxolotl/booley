@@ -5,8 +5,8 @@ Usage: docs_postreview_digest.py [--cutoff <RFC 3339 UTC>] [--dry-run]
 
 Lists the ``docs-postreview`` pull requests merged in the window
 (previous digest cut-off, cut-off] with their doc files and matched rules, and
-opens one issue with two checkboxes per pull request. See
-``docs/internals/agents/docs-postreview-digest.md``. Reads ``GH_REPO``
+opens one issue with two checkboxes per pull request. The maintainer steps are
+in the issue body, rendered by ``render``. Reads ``GH_REPO``
 (``owner/name``) or asks ``gh``. Run from a full-history checkout, with
 ``PYTHONPATH=src`` so ``booley.runtime.timefmt`` imports. Exit 1 names a
 failure; a failed run opens no issue. ``--dry-run`` prints and writes nothing.
@@ -263,8 +263,19 @@ def render(
     body = [
         f"<!-- docs-postreview-digest cutoff={cut} -->",
         "Docs of the pull requests below merged without the maintainer's pre-merge "
-        f"sign-off between {since} and {cut}. How to work through them: "
-        "docs/internals/agents/docs-postreview-digest.md",
+        f"sign-off between {since} and {cut}.",
+        "",
+        "## Maintainer steps",
+        "",
+        "1. For each pull request below, read its doc files and tick `reviewed`.",
+        "2. Tick `needed edits` when the docs needed an edit. File a ticket for each "
+        "correction and name the pull request in it.",
+        "3. When the same mistake repeats, amend `docs/internals/DOCS_PRINCIPLES.md`.",
+        "4. Close this issue once every box is settled. Only closed digests feed the "
+        "edit rate, so closing is what counts the week.",
+        "",
+        "Edit only the boxes; the hidden markers must stay. Never delete or unlabel a "
+        "digest: the next run reads the newest labeled one for its cut-off.",
         "",
         "## Edit rate from closed digests",
         "",

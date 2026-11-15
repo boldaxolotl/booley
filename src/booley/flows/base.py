@@ -227,6 +227,17 @@ class FlowMechanics:
 
     Subclasses implement ``_build_command`` and ``_interpret_result``.
     The base handles subprocess execution, timeout, and output capture.
+
+    Every Flow maps its grades onto one exit convention
+    (``booley.core.exit_codes``): 0 clean pass, 1 findings or a design failure,
+    2 the Flow could not reach a verdict (infrastructure, configuration, or
+    publication failure), 130 cancelled. Callers branch on 1 versus 2, so never
+    report an infrastructure problem as a design failure or the reverse.
+
+    Edalize emits the EDA command; Booley never delegates interpretation. A
+    verdict read from a file the run writes must come from this run (see
+    ``_is_stale_artifact``), and the exit code outranks the file: a nonzero exit
+    with no fresh evidence is never a pass.
     """
 
     endpoint_kind = "flow"
@@ -446,7 +457,8 @@ class FlowMechanics:
 
         File-based boundary results are age-gated
         against ``SubprocessResult.dispatched_unix`` so a leftover artifact
-        from an earlier run is never parsed as fresh. A file whose mtime cannot
+        from an earlier run is never parsed as fresh (a build that fails to
+        compile would otherwise leave the previous run's report to read as a pass). A file whose mtime cannot
         be read is treated as stale rather than risk a wrong parse.
         """
         if min_mtime is None:
@@ -484,7 +496,10 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
     """Invocation seam shared only by Booley's five shipped Flows.
 
     The Flow is the single owner of its per-invocation state; every entry point
-    starts an invocation through ``_start_invocation``.
+    starts an invocation through ``_start_invocation``. Built-ins never inherit
+    ``EndpointContext``; only Custom Flows (``BooleyFlow``) do. Whether Goal
+    evidence is recorded depends on the execution adapter, not on the Flow:
+    ``StandaloneFlowExecution`` records none, ``GoalFlowExecution`` does.
     """
 
     request_type: ClassVar[type[FlowRequest]] = FlowRequest

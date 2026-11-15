@@ -56,12 +56,12 @@ simulation, synthesis, linting, and measurement workflows.
 ## Agent skills
 
 - **Confidential vocabulary:** When changing banned terms or their CI
-  configuration, follow `docs/internals/agents/confidential-content.md`.
+  configuration, follow `docs/internals/agents/confidential-vocabulary.md`.
 - **Issue tracker:** GitHub Issues stores issues and specs. See
   `docs/internals/agents/issue-tracker.md`.
 - **Triage labels:** state labels (including `tracker`) and category labels
-  (`bug`, `enhancement`, `documentation`). See
-  `docs/internals/agents/triage-labels.md`.
+  (`bug`, `enhancement`, `documentation`). See the Triage labels section of
+  `docs/internals/agents/issue-tracker.md`.
 - **Agent Briefs:** `ready-for-agent` issues need one. See
   `docs/internals/agents/agent-brief.md`.
 - **Domain docs:** Read `GLOSSARY-MAP.md`, then the glossary for each context the

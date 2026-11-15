@@ -55,7 +55,12 @@ class McpToolPayload:
 
 @dataclass(frozen=True, slots=True)
 class McpDispatchResult:
-    """Application-dispatch result with an explicit MCP error disposition."""
+    """Application-dispatch result with an explicit MCP error disposition.
+
+    ``is_error`` is true for any nonzero Flow exit, so MCP ``isError`` cannot tell
+    exit 1 (the design failed) from exit 2 (no verdict); the grade is in the
+    ``EXIT_CODE:`` line and the structured output.
+    """
 
     value: object
     is_error: bool

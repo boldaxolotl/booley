@@ -43,31 +43,11 @@ CI installs with `-c .github/ci/constraints.txt`, a committed file that pins
 every dependency version. The plain install above always works; to reproduce
 CI's exact versions, add the flag:
 `pip install -e ".[dev]" -c .github/ci/constraints.txt`. After changing
-dependencies in `pyproject.toml`, regenerate the file, or CI fails and prints
-this command:
+dependencies in `pyproject.toml`, regenerate the file:
 
 ```bash
 uv pip compile pyproject.toml --all-extras --universal --python-version 3.11 -o .github/ci/constraints.txt
 ```
-
-### Development environment troubleshooting
-
-Debian and Ubuntu ship `venv` as a separate package. If `python3 -m venv .venv`
-fails with `ensurepip is not available`, install the package for your
-interpreter's minor version, then recreate the environment:
-
-```bash
-python3 --version                       # e.g. Python 3.12.3
-sudo apt install python3.12-venv        # match the version above
-rm -r .venv                             # only the failed local environment
-python3 -m venv .venv
-```
-
-The editable install puts `booley` in `.venv/bin`; activate the environment
-before running contributor commands. If another `booley` runs instead, find it
-with `type -a booley` and remove it. Don't link `.venv/bin/booley` into a
-global bin directory instead: every project would then run whatever branch
-this checkout has checked out.
 
 ### Building a development wheel
 
@@ -112,54 +92,21 @@ purpose, install it in a persistent environment and run
 
 Agents don't use the `.venv` workflow above. They run the read-only Agent
 Readiness Check, `.github/scripts/agent_readiness.py`, at the points
-[`AGENTS.md`](../../AGENTS.md) names. It needs only the standard library, so it
-runs before anything is installed. It never installs Booley; it runs every
-command from one shared tools-only environment against the active worktree's
-source, so parallel worktrees share one set of tools and can't test each
-other's code. Its output lists the verification commands, each tagged with the
-point at which to run it:
+[`AGENTS.md`](../../AGENTS.md) names; its output lists each command and when to
+run it. It never installs Booley and runs every command from one shared
+tools-only environment against the active worktree's source, so parallel
+worktrees can't test each other's code. Rules the output doesn't spell out:
 
-| Command ID | Runs | When |
-|---|---|---|
-| `ruff.agent-gate` | `ruff check src/ tests/` | Before commit |
-| `packaged-copies.check` | `sync_packaged_copies.py --check`: fails when the packaged `CHANGELOG.md` mirror is stale | Before commit |
-| `function-length.check` | `check_function_length.py`: CI's lint-job check that fails when a changed `src/booley/` function is new and over 50 lines, or was over 50 and grew; docstrings and blank lines don't count | Before commit |
-| `pytest.broad` | `pytest tests/` with coverage, up to eight xdist workers | Optional broad verification |
-| `ruff.ci-check`, `ruff.ci-format`, `pyright.ci-check` | CI's lint job: `ruff check .`, `ruff format --check .`, `pyright` | Handoff |
-| `coverage.changed-lines` | CI's 90% changed-line coverage gate, against the newest merge base with `main` | Handoff |
-
-`coverage.changed-lines` reads the coverage report that a passing
-`pytest.broad` run wrote for the same tree, outside the checkout, and refuses
-a missing or stale one. `pytest.broad` pins `--basetemp` to a per-checkout
-directory on disk on POSIX, because `/tmp` is often a small in-memory file
-system that parallel tests can fill. Set `PYTEST_XDIST_AUTO_NUM_WORKERS` to
-use fewer workers on a smaller host, or drop the xdist options to run
-serially.
-
-`develop` uses the `python` test profile by default, which leaves out every
-`native_bwave` test. `--test-profile full` adds them. Native tests always use
-this checkout's debug build, `crates/bwave/target/debug/bwave` (`bwave.exe` on
-Windows), never a release build or an installed binary, so a run tests exactly
-the Rust code in the worktree. Readiness probes that binary with `--version`
-but never builds it; when the binary is missing it reports `blocked`, leaves
-out the test command, and gives the build command
-(`cargo build --locked --manifest-path crates/bwave/Cargo.toml --target-dir crates/bwave/target`;
-install the Rust toolchain first if Cargo is missing). Rebuilding or deleting
-the binary during a test run invalidates the run. Neither profile covers Rust
-tests or `crates/bwave/tests/`.
-
-A `full` run must collect all of `tests/` with no marker, keyword, ignore,
-deselect, last-failed, or stepwise filter, and a skipped native test counts as
-a failure (except FIFO tests on platforms without POSIX FIFOs). Use plain
-`pytest` without `--test-profile` for diagnosing a subset. Readiness output
-contains local paths; don't publish it.
-
-### Maintainer QA skills
-
-The repository's QA skills under `qa/` drive agent bug hunts against a
-candidate build. Maintainers install them with
-`booley bootstrap --with-qa-skills` from a primary source checkout; see
-[QA skills](../../qa/README.md#skills).
+- The default `python` test profile leaves out every `native_bwave` test.
+  `--test-profile full` adds them, and a `full` run must collect all of
+  `tests/` with no marker, keyword, ignore, deselect, last-failed, or stepwise
+  filter. A skipped native test counts as a failure.
+- Native tests always use this checkout's debug build,
+  `crates/bwave/target/debug/bwave`, never a release build or an installed
+  binary. Readiness never builds it; when it is missing, it reports `blocked`
+  and gives the build command. Rebuilding or deleting the binary during a run
+  invalidates the run.
+- Readiness output contains local paths; don't publish it.
 
 ## The #1 priority: port commercial EDA tools
 
@@ -239,8 +186,7 @@ Either way, a commercial EDA tool also needs the provisioning, licensing,
 security, Doctor, and end-to-end validation policy described above; an
 Edalize node is necessary but not enough. See
 [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) for how Vivado is set
-up today and [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) for how the
-built-in Flows run.
+up today; the built-in Flows live in `src/booley/flows/`.
 
 **2. Interpretation: Booley needs the result parsing.**
 
@@ -251,8 +197,7 @@ and is written per EDA tool:
 
 - **Simulators** parse raw output into the structured simulation result. See
   the adapters in [`src/booley/flows/sim/backends/`](../../src/booley/flows/sim/backends/)
-  (`cocotb.py`, `icarus.py`, `verilator.py`) and
-  [Adapter boundary](FLOW_IMPLEMENTATION_SIM.md#adapter-boundary).
+  (`cocotb.py`, `icarus.py`, `verilator.py`).
   A new adapter can start as a sibling module, but users can't select it until
   the full runtime policy and real licensed end-to-end evidence land with it.
 - **Synthesis, timing, and implementation** parse vendor report files into
@@ -305,177 +250,44 @@ made-up output is provisional at best.
 ## Development basics
 
 - **Run the test suite before opening a PR**; a change that breaks tests is
-  yours to fix.
-- **Match the surrounding code**: comment density, naming, and idiom. Design
-  and test rules are in [CODING_PRINCIPLES.md](CODING_PRINCIPLES.md).
+  yours to fix. Design and test rules are in
+  [CODING_PRINCIPLES.md](CODING_PRINCIPLES.md).
 - **One concern per PR.** An EDA-tool port, a refactor, and a doc fix are
   three PRs. Size caps are in
   [coding principle 18](CODING_PRINCIPLES.md#18-pull-requests-stay-small).
-- **Record a user-visible change as a changelog fragment.** Add
-  `changelog.d/<issue number>.md` (or `changelog.d/<lowercase-slug>.md` when
-  there is no issue) holding one or more `- ` bullets, written as they should
-  read under `## Unreleased`. Never edit `CHANGELOG.md` or its packaged mirror
-  for an ordinary change; the release assembles the fragments. The format rules
-  are in [changelog.d/README.md](../../changelog.d/README.md).
-- **Keep the Pyright exclusion list shrinking.** Pyright checks all of
-  `src/booley` except the modules in `[tool.pyright] exclude` in
-  `pyproject.toml`, which still fail basic mode. To remove a module from the
-  list, fix its type errors and lower `EXCLUDE_CEILING` in
-  `tests/ci/test_pyright_scope.py` in the same change; that test fails when
-  the entry count and the ceiling differ. When you rename an excluded module,
-  rename its entry and keep the list sorted. Never add a module: new code is
-  checked by default, so fix its errors instead. The burn-down of the listed
-  modules is tracked in
-  [#3653](https://github.com/boldaxolotl/booley/issues/3653).
-- **Register tests of Sandbox-only code.** Windows CI skips the test modules
-  listed in `tests/sandbox_only.py`, because their code never runs on a
-  Windows host. See [Sandbox-only tests](../../.github/ci/README.md#sandbox-only-tests)
-  for when to add a module and the guard test that checks the list.
-- **Keep slow tests well inside their time budget.** CI gives each test 60
-  seconds unless a `@pytest.mark.timeout(N)` marker says otherwise. On Windows
-  an expired budget kills the whole xdist worker with no traceback, so the
-  Windows legs of the `Tests` workflow warn on a passing test that uses more
-  than 50% of its budget and fail one above 80%. The Windows legs of the
-  weekly full Python matrix fail above 50%, so creeping slowdowns get fixed in one batch instead of
-  failing unrelated pull requests. Both messages name the marker value to use.
-  To size a budget yourself, take three times the test's slowest Windows CI
-  duration and round up to a multiple of 30 seconds. Durations are the `time`
-  values in the `junit-windows-*` and `full-junit-windows-latest-*` artifacts;
-  each test's `timeout_headroom_ratio` property records the share of its
-  budget it used.
-
-### Test assertion safety
-
-An assertion inside `contextlib.suppress` can let a test pass without checking
-anything: an earlier exception in the block skips the assertion, and
-suppressing `AssertionError` or `Exception` swallows the failure itself. Keep
-every contract assertion outside `contextlib.suppress`. CI's lint job enforces
-this; run the same check before submitting test changes:
-
-```sh
-python3 .github/scripts/check_suppressed_assertions.py
-```
-
-It parses every `tests/**/*.py` file without importing it and prints one
-`path:line:column: rule (scope)` line per violation. It also fails on a file
-it can't read or parse (CI runs it on Python 3.13, so tests must parse there)
-and on a bad exemption entry.
-
-| Rule | Flags | Fix |
-|---|---|---|
-| `suppressed-assertion` | An `assert` inside the `with` block, including nested blocks and class bodies | Move it after the block |
-| `suppressed-assertion-call` | A call inside the block named `fail`, `assert<Upper>…` (unittest), or starting with `assert_`, `_assert_`, `check_`, or `_check_`, mock assertions included; `subprocess.check_call`, `subprocess.check_output`, and `check_returncode` don't count | Move it after the block |
-| `broad-suppression` | Suppressing `Exception`, `BaseException`, `AssertionError`, or a `failureException` such as `pytest.fail.Exception`, even with no visible assertion, because any helper called in the block may assert | Suppress only the exception you expect |
-| `unsupported-suppress-use` | `contextlib.suppress(...)` built anywhere but directly in a `with` item, such as in `ExitStack.enter_context` or saved for later | Write `with contextlib.suppress(...)` |
-| `unsupported-suppress-reference` | `suppress` passed through a container, factory, tuple unpacking, walrus, or attribute assignment | Call it directly or through a plain name alias |
-| `unsupported-suppress-arguments` | A keyword argument, or an exception argument the checker can't trace to a name | Pass exception classes by name |
-| `unsupported-contextlib-star-import` | `from contextlib import *` | Import names explicitly |
-
-The checker follows `import contextlib`, renamed and `from` imports, simple
-aliases, several context managers in one `with`, and async code. It tracks
-every name a scope might bind, so reassigning an imported alias can produce a
-finding even where the code is safe.
-
-To test that code raises, require the exception with a specific match and
-assert afterwards:
-
-```python
-with pytest.raises(RuntimeError, match="expected failure"):
-    operation()
-assert observed_result == expected_result
-```
-
-For best-effort cleanup, suppress only the cleanup errors you expect and put
-required assertions after the cleanup block.
-
-The check is lexical, not a proof. It doesn't see assertions inside helpers
-called under a narrow suppression, dynamic imports, reflective lookups, or
-`global`/`nonlocal` rebinding. Related hazards it doesn't check at all: a
-broad `try`/`except` that swallows failures, and assertions placed after the
-raising call inside `pytest.raises`. Review those by hand.
-
-**Exemptions** live in `.github/scripts/suppressed_assertion_exemptions.json`,
-which is empty. One is allowed only where the assertion is itself the test
-input, in a test of how assertions are handled or skipped; a test of the
-checker should feed it source strings instead. Each entry matches exactly one
-current finding of rule `suppressed-assertion`, `suppressed-assertion-call`,
-or `broad-suppression`:
-
-```json
-{
-  "path": "tests/example.py",
-  "line": 12,
-  "column": 9,
-  "scope": "TestHandler.test_assertion_input",
-  "rule": "suppressed-assertion",
-  "purpose": "intentional-assertion-input",
-  "reason": "Describe why this assertion is deliberately test input.",
-  "verification": "Identify the assertion outside suppression that checks the outcome."
-}
-```
-
-A broad suppression around an intentional assertion needs two entries, one
-per finding. Duplicate, stale, or malformed entries fail the check. The
-checker validates only the match and the fields, so the reviewer must confirm
-the reason and that the named outside assertion exists.
-`tests/ci/test_suppressed_assertions.py` holds the checker's regression tests.
+- **Record a user-visible change as a changelog fragment** in `changelog.d/`;
+  never edit `CHANGELOG.md`. The rules are in
+  [changelog.d/README.md](../../changelog.d/README.md).
+- **Pyright exclusions and test timeouts** are documented where they are
+  configured: `[tool.pyright] exclude` in `pyproject.toml`, and the timeout
+  budget in `tests/timeout_headroom.py` and `tests/conftest.py`.
+- **Register tests of Sandbox-only code** in `tests/sandbox_only.py`; see
+  [Sandbox-only tests](../../.github/ci/README.md#sandbox-only-tests).
+- **Keep assertions out of `contextlib.suppress`.** CI runs
+  `.github/scripts/check_suppressed_assertions.py`; its docstring and messages
+  explain each rule.
 
 ## Writing docs
 
 Follow [DOCS_PRINCIPLES.md](DOCS_PRINCIPLES.md) when you write, edit, or
-review a doc.
+review a doc. A PR that changes docs gets the label `docs-premerge` or
+`docs-postreview`; [doc-change-classes.md](agents/doc-change-classes.md) says
+what each means.
 
-A PR that changes docs gets the label `docs-premerge` or `docs-postreview`;
-[doc-change-classes.md](agents/doc-change-classes.md) says what each means.
+Docs the Developer Agent reads in the Sandbox ship inside the package: edit
+only the sources listed in `SHIPPED_DOCS` in `src/booley/runtime/packaged_docs.py`,
+never a rendered copy under `src/booley/data/docs/`. Its module docstring
+explains the render and the link rules.
 
-The Developer Agent in the Sandbox can't read this repository, so a fixed set
-of docs ships inside the package and appears at `/booley-docs/` in the
-Sandbox: `SHIPPED_DOCS` in `src/booley/runtime/packaged_docs.py`, all from
-`docs/user/` plus `docs/internals/FLOW_REPORTS.md`. Edit only those sources. The
-build renders them into `src/booley/data/docs/`, a Git-ignored directory,
-through `write_build_stamp` in `src/booley/runtime/build_stamp.py`. Never edit a
-rendered copy. The render turns links to other shipped docs into sibling links
-and links to unshipped docs (`PLAIN_TEXT_TARGETS`) into plain text marked
-`(host doc, not shipped)`. A link to a doc in neither set fails the build and
-`tests/docs` with the file, the link and the fix. A bare `python -m build` runs
-no stamp step: it packs no docs on a clean checkout and any stale copies an
-earlier build left behind, so build through `build.sh`, `booley init`, or
-`.github/scripts/build_development_wheel.py`.
+## From branch to `main`
 
-`python -m booley.dev_support.reference_docs [--check]` covers only the
-`CHANGELOG.md` mirror at `src/booley/data/refs/CHANGELOG.md`, byte for byte;
-`python3 .github/scripts/sync_packaged_copies.py [--check]` runs it without
-installing Booley. Only release preparation edits `CHANGELOG.md`, so run it
-after such an edit (`release_changelog.py assemble` updates the mirror itself).
-Never edit the mirror by hand. A shipped-doc edit is documentation-only in CI
-and runs the docs-check lane.
-
-## Branch and pull request workflow
-
-Booley uses a mainline workflow with no long-lived integration branch. Start
-each branch from the latest `main`, keep it to one concern, and open its pull
-request into `main`. Once the required checks pass, a maintainer or
-repository agent adds the PR to the Mergify merge queue, which tests and
-merges queued PRs; you don't need write access. A PR labeled
-`confidential-review` waits for a maintainer's review first. Delete your
-branch only after Mergify reports the PR merged.
-
-A pull request from a fork needs no setup, such as allowlisting your commit
-identity. The `confidential-content` check, which scans for terms that must
-not become public, treats findings on commits you authored and on your PR text
-as advisory: they don't fail the check, and a maintainer reviews any flagged
-match.
-
-CI skips draft pull requests: `Tests`, the PicoRV32 demo contract, and the
-site build start when the PR is opened ready or marked ready for review.
-`confidential-content` runs on drafts too. Open a draft while the change is
-still moving to save shared runner time. To test a draft anyway, run the
-`Tests` workflow manually (`workflow_dispatch`) on its branch; a manual run
-selects every job, image builds included.
-
-Merging into `main` doesn't publish a release. A release is a versioned commit
-on `main` tagged `v*`; the tag triggers the package and container publishing
-workflows.
+Branch, pull request, and merge-queue rules are in
+[`AGENTS.md`](../../AGENTS.md) and [merge-queue.md](agents/merge-queue.md). A
+pull request from a fork needs no setup; the `confidential-content` check
+treats findings on commits you authored and on your PR text as advisory (see
+[confidential-content.md](agents/confidential-content.md)). Merging into `main`
+doesn't publish a release: a release is a versioned commit on `main` tagged
+`v*`, and the tag triggers the publishing workflows.
 
 Questions? Open an issue, especially if it starts with "I have a licensed copy
 of…".
