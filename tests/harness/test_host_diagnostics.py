@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 from dataclasses import replace
@@ -164,7 +165,8 @@ def test_host_diagnosis_reports_canonical_installation(monkeypatch):
     assert "executable=/usr/local/bin/booley" in finding.message
 
 
-def test_host_diagnosis_rejects_mismatched_current_installation(monkeypatch):
+def test_host_diagnosis_rejects_mismatched_current_installation(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path))
     identity = _identity()
     actual = replace(identity, revision="def456")
     report = host_diagnostics.Findings()
@@ -178,6 +180,34 @@ def test_host_diagnosis_rejects_mismatched_current_installation(monkeypatch):
     assert "revision abc123 -> def456" in finding.message
     assert identity.distribution_root not in finding.message
     assert "--update" in finding.fix
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell-script stand-ins for booley")
+def test_host_diagnosis_lists_shadowing_path_install(tmp_path, monkeypatch):
+    paths: list[Path] = []
+    for directory, version in (("old", "0.9.0"), ("new", "1.2.3")):
+        (tmp_path / directory).mkdir()
+        script = tmp_path / directory / "booley"
+        script.write_bytes(f"#!/bin/sh\necho 'booley {version} (abc, x)'\n".encode())
+        script.chmod(0o755)
+        paths.append(script.resolve())
+    old, new = paths
+    monkeypatch.setenv("PATH", os.pathsep.join(str(item.parent) for item in paths))
+    identity = replace(_identity(), executable=str(old), version="0.9.0")
+    actual = replace(identity, executable=str(new), version="1.2.3", revision="def456")
+    report = host_diagnostics.Findings()
+    monkeypatch.setattr(host_diagnostics, "load_host_installation", lambda: identity)
+    monkeypatch.setattr(host_diagnostics, "current_host_installation", lambda _source: actual)
+
+    host_diagnostics._inspect_host_installation(report)
+
+    finding = report.report().findings[0]
+    assert finding.severity is Severity.FAIL
+    assert f"{old} (v0.9.0, recorded), {new} (v1.2.3, running)" in finding.message
+    assert finding.fix == (
+        "remove or upgrade the installs listed before the one you want, "
+        "or run `booley bootstrap --update` to record the running one"
+    )
 
 
 def test_host_diagnosis_reports_missing_current_installation(monkeypatch):

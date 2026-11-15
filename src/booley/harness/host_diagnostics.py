@@ -22,10 +22,12 @@ from booley.runtime import (
     session_issuance,
 )
 from booley.runtime.host_install import (
+    SHADOWED_INSTALL_FIX,
     HostInstallationError,
     current_host_installation,
     host_identity_differences,
     load_host_installation,
+    shadowing_installs,
 )
 from booley.runtime.image_lifecycle import Intent
 from booley.runtime.paths import skills_dir
@@ -194,11 +196,15 @@ def _inspect_host_installation(report: Findings) -> None:
         report.fail(str(exc), "booley bootstrap")
         return
     if actual != identity:
-        report.fail(
+        message = (
             "current Booley process does not match the canonical host installation "
-            f"({host_identity_differences(identity, actual)})",
-            "booley bootstrap --update",
+            f"({host_identity_differences(identity, actual)})"
         )
+        listing = shadowing_installs(identity, actual)
+        if listing:
+            report.fail(f"{message}; {listing}", SHADOWED_INSTALL_FIX)
+        else:
+            report.fail(message, "booley bootstrap --update")
         return
     report.pass_(
         "canonical Booley host installation "

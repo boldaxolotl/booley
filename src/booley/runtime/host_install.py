@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from dataclasses import asdict, dataclass
@@ -16,11 +17,17 @@ from booley.core.boundary import BoundaryError, require_dict, require_int, requi
 from booley.core.differences import format_differences
 from booley.core.user_paths import config_dir
 from booley.runtime.build_metadata import current_build_metadata
+from booley.runtime.platform_paths import run_captured_bounded, same_host_path
 
 _SCHEMA_VERSION = 1
 _STATE_FILENAME = "host-installation.json"
 _INSTALLED_PACKAGE_DIRS = {"site-packages", "dist-packages"}
 _EPHEMERAL_PARTS = {".runtime", ".worktrees", "qa-runs"}
+_VERSION_TIMEOUT_S = 5.0
+SHADOWED_INSTALL_FIX = (
+    "remove or upgrade the installs listed before the one you want, "
+    "or run `booley bootstrap --update` to record the running one"
+)
 
 
 class HostInstallationError(RuntimeError):
@@ -189,6 +196,82 @@ def _write_identity(identity: HostInstallationIdentity, path: Path) -> None:
         ) from exc
 
 
+def _path_executables() -> list[Path]:
+    """Resolved `booley` executables on PATH, in order, each file once."""
+    name = "booley.exe" if os.name == "nt" else "booley"
+    found: list[Path] = []
+    for entry in os.get_exec_path():
+        candidate = Path(entry) / name
+        try:
+            if not (candidate.is_file() and os.access(candidate, os.X_OK)):
+                continue
+            resolved = candidate.resolve()
+        except OSError:  # a PATH directory that cannot be searched
+            continue
+        if not any(same_host_path(resolved, kept) for kept in found):
+            found.append(resolved)
+    return found
+
+
+def _executable_version(executable: Path) -> str | None:
+    """Version printed by `executable --version`, or None when unreadable."""
+    try:
+        result = run_captured_bounded(
+            [str(executable), "--version"],
+            timeout=_VERSION_TIMEOUT_S,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    words = result.stdout.split()
+    if result.returncode != 0 or len(words) < 2 or words[0] != "booley":
+        return None
+    return words[1]
+
+
+def _launcher(identity: HostInstallationIdentity) -> Path:
+    """The identity's executable, with the `.exe` Windows launchers drop from argv[0]."""
+    path = Path(identity.executable)
+    with_suffix = path.with_suffix(".exe")
+    if not path.suffix and not path.exists() and with_suffix.exists():
+        return with_suffix
+    return path
+
+
+def shadowing_installs(
+    recorded: HostInstallationIdentity,
+    running: HostInstallationIdentity,
+) -> str | None:
+    """List every `booley` on PATH when two or more exist, else None."""
+    executables = _path_executables()
+    if len(executables) < 2:
+        return None
+    launchers = {"recorded": _launcher(recorded), "running": _launcher(running)}
+    entries: list[str] = []
+    for executable in executables:
+        is_running = same_host_path(executable, launchers["running"])
+        version = running.version if is_running else _executable_version(executable)
+        marks = "".join(
+            f", {label}"
+            for label in ("recorded", "running")
+            if same_host_path(executable, launchers[label])
+        )
+        shown = f"v{version}" if version else "version unknown"
+        entries.append(f"{executable} ({shown}{marks})")
+    return "`booley` executables on PATH, first one runs: " + ", ".join(entries)
+
+
+def _mismatch_message(
+    lead: str,
+    recorded: HostInstallationIdentity,
+    running: HostInstallationIdentity,
+    remedy: str,
+) -> str:
+    listing = shadowing_installs(recorded, running)
+    tail = f"{listing}; {SHADOWED_INSTALL_FIX}" if listing else remedy
+    return f"{lead} ({host_identity_differences(recorded, running)}); {tail}"
+
+
 def register_host_installation(
     package_resource: Path,
     *,
@@ -204,9 +287,12 @@ def register_host_installation(
         current = load_host_installation(destination)
         if current != candidate:
             raise HostInstallationError(
-                "a different canonical host installation is already recorded "
-                f"({host_identity_differences(current, candidate)}); run "
-                "`booley bootstrap --update` after an intentional upgrade"
+                _mismatch_message(
+                    "a different canonical host installation is already recorded",
+                    current,
+                    candidate,
+                    "run `booley bootstrap --update` after an intentional upgrade",
+                )
             )
         return current
     _write_identity(candidate, destination)
@@ -232,10 +318,11 @@ def host_install_error(
     except HostInstallationError as exc:
         return str(exc)
     if actual != expected:
-        return (
-            "this Booley process does not match the canonical host installation "
-            f"({host_identity_differences(expected, actual)}); run the canonical "
-            "host `booley bootstrap --update` if this upgrade is intentional"
+        return _mismatch_message(
+            "this Booley process does not match the canonical host installation",
+            expected,
+            actual,
+            "run the canonical host `booley bootstrap --update` if this upgrade is intentional",
         )
     return None
 
@@ -262,8 +349,11 @@ def inspect_host_installation(package_resource: Path) -> HostInstallationInspect
         )
     if recorded != candidate:
         return HostInstallationInspection(
-            error="this Booley process does not match the canonical host installation "
-            f"({host_identity_differences(recorded, candidate)}); run "
-            "`booley bootstrap --update` if this upgrade is intentional"
+            error=_mismatch_message(
+                "this Booley process does not match the canonical host installation",
+                recorded,
+                candidate,
+                "run `booley bootstrap --update` if this upgrade is intentional",
+            )
         )
     return HostInstallationInspection()
