@@ -299,11 +299,9 @@ class TestRetiredConventionSetting:
         from booley.commit_policy.policy import stealth_policy
         from booley.commit_policy.validation import validate_message
 
-        # Split so a repository grep for the retired name stays clean.
-        retired_key = "enforce_" + "convention"
         (tmp_path / ".booley").mkdir()
         (tmp_path / ".booley" / "booley.toml").write_text(
-            f"[stealth]\nenabled = true\n{retired_key} = true\nmax_body_lines = 2\n"
+            "[stealth]\nenabled = true\nenforce_convention = true\nmax_body_lines = 2\n"
         )
 
         policy = stealth_policy(tmp_path)

@@ -9,9 +9,9 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
-- Booley no longer enforces any commit-message convention. The `[stealth]`
-  setting that required `type(scope): summary` subjects is retired: Booley
-  ignores it, and you can delete it. Specialists commit with the message the
+- Booley no longer enforces any commit-message convention. `[stealth]
+  enforce_convention`, which required `type(scope): summary` subjects, is
+  retired: Booley ignores it, and you can delete it. Specialists commit with the message the
   agent wrote, no longer rewritten into `type(scope): summary` form.
   `BOOLEY_SKIP_COMMIT_VALIDATION=1` now skips only the `max_body_lines` cap.
   Rerun `booley init` in each Stealth Project to install the new hook.
