@@ -56,6 +56,12 @@ USER_DOCS = (
     UserDoc("INSTALL.md", "install", "Install", "Get started"),
     UserDoc("SETUP.md", "setup", "Setup", "Get started"),
     UserDoc("USAGE.md", "usage", "Usage", "Get started"),
+    UserDoc(
+        "METRIC-DRIVEN-DEVELOPMENT.md",
+        "metric-driven-development",
+        "Metric-Driven Development",
+        "Get started",
+    ),
     UserDoc("FLOW_REFERENCE.md", "flow-reference", "Running Flows", "Flows & Specialists"),
     UserDoc("FLOW-SIM.md", "flow-sim", "Simulation", "Flows & Specialists"),
     UserDoc("COVERAGE.md", "coverage", "Coverage", "Flows & Specialists", parent="FLOW-SIM.md"),

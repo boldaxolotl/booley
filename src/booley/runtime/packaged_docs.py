@@ -42,6 +42,7 @@ PACKAGED_DOCS_RELATIVE_DIR = "src/booley/data/docs"
 
 # The one allowlist: repo-relative sources copied into the flat packaged directory.
 SHIPPED_DOCS: tuple[str, ...] = (
+    "docs/user/METRIC-DRIVEN-DEVELOPMENT.md",
     "docs/user/CONFIG.md",
     "docs/user/TARGETS.md",
     "docs/user/TESTS.md",

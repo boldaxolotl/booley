@@ -115,6 +115,9 @@ The Developer Agent can run the same measurement for you. It reports the verdict
 line, the failing rows and the paths of the reports, and cancelling it stops the
 measurement's Flows.
 
+[Metric-Driven Development](METRIC-DRIVEN-DEVELOPMENT.md) explains
+`metrics.toml` and how to read the report.
+
 The Dashboard opens by itself when you attach to the container; see
 [The dashboard](USAGE.md#the-dashboard).
 
