@@ -115,7 +115,7 @@ def _protected_outputs(root, monkeypatch):
     outputs.append(ReportEncoder.text_result(0, report["report_text"] + "\n", "", report))
     outputs.append(ReportEncoder.structured_report(report))
     outputs.extend(_protected_transport())
-    outputs.extend(_protected_simulation_record(root / "campaign", monkeypatch))
+    outputs.extend(_protected_simulation_record(root / "record", monkeypatch))
     outputs.append(_protected_targets(root))
     return json.dumps(outputs, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 

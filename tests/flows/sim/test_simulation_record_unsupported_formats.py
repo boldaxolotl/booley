@@ -206,7 +206,7 @@ def test_resume_refuses_a_0_3_0_cycle_count_baseline_naming_its_invocation(
 def test_full_prune_cli_refuses_an_unsupported_nested_coverage_record_naming_its_directory(
     tmp_path, monkeypatch
 ) -> None:
-    """``--full`` reaches the nested Coverage Campaign before any Simulation Record check."""
+    """``--full`` reaches the nested Coverage Record before any Simulation Record check."""
     from tests.flows.sim.coverage_record_test_support import rewrite_manifest_as_v4
 
     run = coverage_invocation(tmp_path, monkeypatch)
@@ -251,7 +251,7 @@ def test_a_schema_less_projection_cannot_authenticate_a_coverage_record() -> Non
         "complete": True,
     }
 
-    with pytest.raises(ValueError, match="cannot authenticate a Coverage Campaign"):
+    with pytest.raises(ValueError, match="cannot authenticate a Coverage Record"):
         decode_simulation_projection(schema_less, coverage_expected=True)
 
 

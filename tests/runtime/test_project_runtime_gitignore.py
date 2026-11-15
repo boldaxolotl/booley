@@ -358,7 +358,7 @@ def test_simulation_record_publications_and_run_lock_keep_project_clean(versione
     from booley.flows.sim.record.store import SimulationRecordStore
 
     root, data, repo = versioned_project
-    store = SimulationRecordStore(data / ".runtime/campaigns/audit")
+    store = SimulationRecordStore(data / ".runtime/records/audit")
     store.publish_manifest(decode_simulation_record_manifest(canonical_json_bytes(_manifest())))
     assert store.manifest_path.is_file()
     assert_clean(repo)
@@ -366,7 +366,7 @@ def test_simulation_record_publications_and_run_lock_keep_project_clean(versione
     assert store.summary_path.is_file()
     assert_clean(repo)
     run = expand_run_directory(
-        str(data / ".runtime/campaign-runs/{attempt}"),
+        str(data / ".runtime/record-runs/{attempt}"),
         project_root=root,
         simulation_record_id="audit",
         target_key="sim",

@@ -90,7 +90,7 @@ _FLOW_KEY_CONTROLS: dict[str, str] = {
         "Simulation Record with `--resume-from <exact-manifest.json>` (optionally with "
         "`--dry-run`): Cocotb retries the whole batch; a coverage Simulation Record resumes only "
         "after its collection finished (otherwise exit 2: start a new `--coverage` run). "
-        "`--coverage` / `--cov` collects a native Coverage Campaign, "
+        "`--coverage` / `--cov` collects a native Coverage Record, "
         "and `--trace` captures waveforms for the simulation run. Focused Cocotb "
         "output summarizes unselected skips; pass `--result-verbosity full` to print "
         "every XML testcase entry (the complete XML and JSON artifacts are always retained)"
@@ -307,7 +307,7 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
 
 
 def _render_coverage_analyst_reference() -> list[str]:
-    """Render the unified coverage campaign input contract."""
+    """Render the unified Coverage Record input contract."""
     return [
         "#### `coverage_analyst`",
         "",

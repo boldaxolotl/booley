@@ -504,7 +504,7 @@ def test_simulation_record_completes_beside_a_queued_foreign_job(tmp_path: Path)
 def _complete_beside_a_foreign_job(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
-    """A foreign run-alone Job queued ahead of the items runs mid-Campaign; the items wait for it."""
+    """A foreign run-alone Job queued ahead of the items runs mid-run; the items wait for it."""
     options: dict = {"alone": {"flow_requests": None, "history": ()}}.get(
         case, {"history": _history("sim")}
     )

@@ -518,7 +518,7 @@ COVERAGE_RECORD_ENDED = "2024-03-01T10:00:00Z"
 
 
 def write_coverage_record(root: Path, number: int, target: str = "sim_fifo") -> Path:
-    """A finished coverage campaign of Simulation run *number* under *root*'s Booley Directory."""
+    """A finished Coverage Record of Simulation run *number* under *root*'s Booley Directory."""
     directory = root / ".booley" / "flow-reports" / "sim" / str(number) / "targets" / target
     directory.mkdir(parents=True)
     (directory / "coverage.json").write_text("{}\n", encoding="utf-8")
@@ -651,7 +651,7 @@ async def test_reopening_the_picker_keeps_an_older_coverage_record_chosen(
         await goto_row(pilot, wizard, "Coverage Record")
         await pilot.press("enter")
         await settle(app, pilot)
-        await pilot.press("down", "enter")  # the older campaign
+        await pilot.press("down", "enter")  # the older Coverage Record
         chosen = row_value(wizard, "Coverage Record")
         assert chosen.endswith("sim/1/targets/sim_fifo/coverage.json")
         await goto_row(pilot, wizard, "Coverage Record")
@@ -700,7 +700,7 @@ async def test_coverage_picker_says_when_the_jobs_are_unread_or_the_read_crashes
         assert shown(wizard, "#run-hint") == wizard_module.JOBS_NOT_READ
         assert pick_rows(wizard) == ["Type a coverage.json path…"]
         await pilot.press("escape")
-        # A read that crashes lists no campaign instead of waiting forever.
+        # A read that crashes lists no Coverage Record instead of waiting forever.
         wizard._sim_runs = lambda _worktree: (SimRun(checkout, COVERAGE_RECORD_ENDED),)
         monkeypatch.setattr(wizard_module, "finished_coverage_records", lambda *_args: 1 / 0)
         await pilot.press("enter")

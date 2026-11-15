@@ -1351,10 +1351,10 @@ def test_coverage_cancellation_keeps_completed_report_only_counts(tmp_path, monk
         SimpleNamespace(run=run), [_request("first"), _request("second")], progress
     )
     assert result.detail == {}
-    # The finished first Target keeps its public Coverage Campaign on the stopped card.
+    # The finished first Target keeps its public Coverage Record on the stopped card.
     coverage_record_file = (outcome.manifest_path.parents[1] / "coverage.json").resolve()
     assert coverage_record_file.is_file()
-    assert result.report_text.splitlines()[-1] == f"  coverage campaign: {coverage_record_file}"
+    assert result.report_text.splitlines()[-1] == f"  Coverage Record: {coverage_record_file}"
     assert flow._simulation_record_outcomes == ()
     assert all(item["cycle_count"] is None for item in outcome.observations)
     _assert_partial_acceptance_policy(flow, result, tmp_path, outcome)

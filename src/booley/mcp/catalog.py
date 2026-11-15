@@ -328,7 +328,7 @@ def _coverage_evidence_tool_def() -> dict[str, Any]:
     return {
         "name": _COVERAGE_EVIDENCE_TOOL_NAME,
         "description": (
-            "Query bounded, read-only evidence from the validated Coverage Campaign bound to this "
+            "Query bounded, read-only evidence from the validated Coverage Record bound to this "
             "Coverage Analyst. Start with view='overview'; use view='zero_point_sources' to page "
             "through RTL sources with no native records, and view='points' for filtered exact "
             "Coverage Points and view='source' for verified excerpts associated with previously "

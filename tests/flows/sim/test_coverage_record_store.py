@@ -1,4 +1,4 @@
-"""Current Coverage Campaign persistence through its public filesystem seam."""
+"""Current Coverage Record persistence through its public filesystem seam."""
 
 from __future__ import annotations
 
@@ -661,7 +661,7 @@ def test_store_follows_only_the_booley_dir_entry(
 
 
 def _publish_coverage_record_as_written_by_booley_0_3_0(root: Path):
-    """Publish a Campaign, then rewrite its manifest into what Booley 0.3.0 wrote."""
+    """Publish a Coverage Record, then rewrite its manifest into what Booley 0.3.0 wrote."""
     paths = publish_coverage_record(root, _coverage_record())
     manifest = json.loads(paths.coverage_record.read_text(encoding="utf-8"))
     rewrite_manifest_as_v4(manifest)
@@ -709,7 +709,7 @@ def test_a_run_without_its_test_run_identity_is_refused(
 # Pinned on the base commit, before the load recomputed anything, and re-pinned for the
 # Coverage Record names of #3688 (only the schema, point store schema and identity key
 # changed): the sha256 of the manifest Booley then wrote for
-# ``_evaluated_campaign(1, 2, Fraction(50))``, with the zlib-dependent
+# ``_evaluated_coverage_record(1, 2, Fraction(50))``, with the zlib-dependent
 # ``point_store.sha256`` and ``point_store.bytes`` dropped.
 _PRE_CHANGE_MANIFEST_SHA256 = (
     "sha256:5c6f2c0842a7ef78408c3e51c0f823257608eb019235c726a101dcde968886b1"

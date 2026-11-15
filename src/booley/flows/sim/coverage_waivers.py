@@ -97,7 +97,7 @@ class ApprovedWaiverSet:
     waivers: tuple[ApprovedWaiver, ...]
 
     def match(self, coverage_record: CoverageRecord) -> ApprovedWaiverMatch:
-        """Resolve applicable exact matches transactionally for one Campaign."""
+        """Resolve applicable exact matches transactionally for one Coverage Record."""
         return _match_coverage_record(self.waivers, coverage_record)
 
 
@@ -112,9 +112,9 @@ def waivable_point_problem(
 ) -> WaivablePointProblem | None:
     """Why the points sharing one requested id cannot be waived, or None.
 
-    *matches* are the Campaign points with the requested id. *sources* is the
+    *matches* are the Coverage Record points with the requested id. *sources* is the
     accepted RTL sources: one named source for an approval or a Waiver
-    Candidate, the Campaign's whole RTL closure for Coverage Analysis.
+    Candidate, the Coverage Record's whole RTL closure for Coverage Analysis.
     *zero_hits* also rejects a point with observed hits.
     """
     if not matches:

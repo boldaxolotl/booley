@@ -155,7 +155,7 @@ def test_cocotb_import_failure_produces_no_metrics_and_names_the_module(
 
 
 def _coverage_record(metric: str, line: int, hits: int) -> str:
-    """One native Verilator coverage record of *metric* at *line* of ``rtl/counter.sv``."""
+    """One native Verilator counter entry of *metric* at *line* of ``rtl/counter.sv``."""
     identity = (
         f"\x01f\x02rtl/counter.sv\x01l\x02{line}\x01n\x021"
         f"\x01h\x02TOP.counter\x01t\x02{metric}\x01o\x02point{line}"
@@ -268,5 +268,5 @@ def test_unreadable_coverage_record_produces_no_metrics(
     outcome = _coverage_outcome(tmp_path, monkeypatch, _MixedCoverageExecution())
     coverage_record_path(outcome).write_bytes(b"{ not json")
 
-    with pytest.raises(MetricsUnavailableError, match="Coverage Campaign could not be read"):
+    with pytest.raises(MetricsUnavailableError, match="Coverage Record could not be read"):
         simulation_flow_metrics(outcome)

@@ -1,4 +1,4 @@
-"""Strict reference from a Simulation Record to its nested Coverage Campaign."""
+"""Strict reference from a Simulation Record to its nested Coverage Record."""
 
 from __future__ import annotations
 
@@ -41,12 +41,12 @@ _WORK_ITEM_RE = re.compile(r"^item:[0-9]{4}:[0-9a-f]{16}$")
 
 
 class CoverageRecordReferenceError(ValueError):
-    """A Coverage Campaign reference is malformed or cannot be authenticated."""
+    """A Coverage Record reference is malformed or cannot be authenticated."""
 
 
 @dataclass(frozen=True, slots=True)
 class CoverageRecordReference:
-    """Immutable Coverage Campaign reference document.
+    """Immutable Coverage Record reference document.
 
     ``decode_coverage_campaign_reference`` validates bytes;
     ``build_coverage_campaign_reference`` constructs one from values Booley owns.
@@ -57,7 +57,7 @@ class CoverageRecordReference:
 
 @dataclass(frozen=True, slots=True)
 class ResolvedCoverageRecord:
-    """Authenticated nested Coverage Campaign selected by a public reference."""
+    """Authenticated nested Coverage Record selected by a public reference."""
 
     reference: CoverageRecordReference
     reference_path: Path
@@ -73,7 +73,7 @@ def encode_coverage_record_reference(value: CoverageRecordReference) -> bytes:
 def decode_coverage_record_reference(raw: bytes) -> CoverageRecordReference:
     """Decode bounded canonical bytes and reject every schema contradiction."""
     if not raw or len(raw) > MAX_REFERENCE_BYTES:
-        raise CoverageRecordReferenceError("Coverage Campaign reference exceeds size limit")
+        raise CoverageRecordReferenceError("Coverage Record reference exceeds size limit")
     value = parse_json_object(raw, error=CoverageRecordReferenceError, canonical=True)
     # Imported here: ``booley.flows.sim.record`` imports this module through its coordinator.
     from booley.flows.sim.record.codec import raise_if_retired_schema
@@ -101,14 +101,14 @@ def publish_coverage_record_reference(
         decoded = decode_coverage_record_reference(existing)
         if existing != raw:
             raise CoverageRecordReferenceError(
-                "existing Coverage Campaign reference conflicts with this attempt"
+                "existing Coverage Record reference conflicts with this attempt"
             ) from None
         return decoded
     return value
 
 
 def resolve_coverage_record_reference(path: Path) -> ResolvedCoverageRecord:
-    """Load the reference and authenticate only its selected nested campaign."""
+    """Load the reference and authenticate only its selected nested Coverage Record."""
     try:
         absolute = canonical_project_alias_path(path.absolute())
     except ValueError as exc:
@@ -153,9 +153,7 @@ def _resolve_coverage_record_reference_bytes(absolute: Path, raw: bytes) -> Reso
         len(coverage_record_raw) != nested["bytes"]
         or content_digest(coverage_record_raw) != nested["sha256"]
     ):
-        raise CoverageRecordReferenceError(
-            "nested Coverage Campaign bytes disagree with reference"
-        )
+        raise CoverageRecordReferenceError("nested Coverage Record bytes disagree with reference")
     loaded = load_coverage_record_bytes(coverage_record_path, coverage_record_raw)
     coverage_record = loaded.coverage_record
     target = cast(Mapping[str, str], document["target"])
@@ -167,7 +165,7 @@ def _resolve_coverage_record_reference_bytes(absolute: Path, raw: bytes) -> Reso
         or loaded.summary.source_schema != nested["schema"]
     ):
         raise CoverageRecordReferenceError(
-            "nested Coverage Campaign identity disagrees with reference"
+            "nested Coverage Record identity disagrees with reference"
         )
     work_item_id = cast(str, document["simulation_work_item_id"])
     _, ordinal_text, work_digest = work_item_id.split(":")
@@ -183,7 +181,7 @@ def _resolve_coverage_record_reference_bytes(absolute: Path, raw: bytes) -> Reso
         or parts[5:] != (COVERAGE_RECORD_DIRECTORY, "coverage.json")
     ):
         raise CoverageRecordReferenceError(
-            "nested Coverage Campaign path disagrees with Simulation Attempt identity"
+            "nested Coverage Record path disagrees with Simulation Attempt identity"
         )
     return ResolvedCoverageRecord(reference, absolute, coverage_record_path, loaded)
 
@@ -191,7 +189,7 @@ def _resolve_coverage_record_reference_bytes(absolute: Path, raw: bytes) -> Reso
 def resolve_persisted_coverage_record_reference(
     reports_root: Path, value: object
 ) -> ResolvedCoverageRecord:
-    """Authenticate an acceptance-state pointer and its selected nested Campaign."""
+    """Authenticate an acceptance-state pointer and its selected nested Coverage Record."""
     try:
         reports_root = canonical_project_alias_path(reports_root.absolute())
     except ValueError as exc:
@@ -230,13 +228,13 @@ def resolve_persisted_coverage_record_reference(
     )
     if len(raw) != expected_bytes or content_digest(raw) != persisted["sha256"]:
         raise CoverageRecordReferenceError(
-            "persisted Coverage Campaign reference bytes disagree with acceptance state"
+            "persisted Coverage Record reference bytes disagree with acceptance state"
         )
     resolved = _resolve_located(public_path, raw)
     nested = cast(Mapping[str, object], resolved.reference.document["coverage_record"])
     if nested["sha256"] != persisted["nested_campaign_sha256"]:
         raise CoverageRecordReferenceError(
-            "persisted nested Coverage Campaign digest disagrees with public reference"
+            "persisted nested Coverage Record digest disagrees with public reference"
         )
     return resolved
 
@@ -254,7 +252,7 @@ def build_coverage_record_reference(
     origin_target_directory: Path,
     coverage_record_path: Path,
 ) -> CoverageRecordReference:
-    """Construct a reference from an already committed nested Coverage Campaign."""
+    """Construct a reference from an already committed nested Coverage Record."""
     raw = read_bounded(
         coverage_record_path,
         limit=MAX_MANIFEST_BYTES,
@@ -361,7 +359,7 @@ def _validate_reference(value: Mapping[str, object]) -> None:
         "reference",
     )
     if value["$schema"] != REFERENCE_SCHEMA:
-        raise CoverageRecordReferenceError("unsupported Coverage Campaign reference schema")
+        raise CoverageRecordReferenceError("unsupported Coverage Record reference schema")
     _uuid(value["simulation_record_id"], "simulation_record_id")
     _uuid(value["simulation_attempt_id"], "simulation_attempt_id")
     _digest(value["simulation_manifest_sha256"], "simulation_manifest_sha256")
@@ -471,7 +469,7 @@ def _contained_relative(root: Path, relative: str) -> Path:
         if parent == root.parent:
             break
         if parent.is_symlink():
-            raise CoverageRecordReferenceError("Coverage Campaign reference path contains a link")
+            raise CoverageRecordReferenceError("Coverage Record reference path contains a link")
     return path
 
 

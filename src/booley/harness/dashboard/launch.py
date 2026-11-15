@@ -283,7 +283,7 @@ class Launcher:
         """The form of a Flow or a built-in Specialist (``KeyError`` for any other name).
 
         The reviewer's spec path is prefilled from *worktree*'s Goal; the coverage analyst's
-        campaigns are read when its picker opens, so one that finishes meanwhile shows up.
+        Coverage Records are read when its picker opens, so one that finishes meanwhile shows up.
         """
         if kind == "flow":
             return form(name)

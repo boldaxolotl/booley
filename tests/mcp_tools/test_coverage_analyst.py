@@ -1,4 +1,4 @@
-"""Exact-path Coverage Analyst wrapper with real Campaign/source files."""
+"""Exact-path Coverage Analyst wrapper with real Coverage Record/source files."""
 
 import copy
 import json
@@ -59,7 +59,7 @@ def persist_coverage_record(root: Path):
                 "target_identity": document["target"]["identity"],
                 "collection": "complete",
                 "evaluation": "not_requested",
-                "coverage_campaign": "coverage.json",
+                "coverage_record": "coverage.json",
             }
         )
     )
@@ -986,7 +986,7 @@ def test_source_inspection_accepts_inputs_under_a_linked_entry(tmp_path, monkeyp
 
 
 def _rebind_source_digests(path: Path, root: Path) -> None:
-    """Rewrite the Campaign closure for a testbench moved under ``.booley``."""
+    """Rewrite the Coverage Record closure for a testbench moved under ``.booley``."""
     from booley.flows.sim.coverage_json import content_digest
     from booley.flows.sim.coverage_provenance import coverage_digest
 

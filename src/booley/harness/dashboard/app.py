@@ -2152,7 +2152,7 @@ class DashboardApp(App[None]):
     def _finished_sim_runs(self, worktree: Path) -> tuple[SimRun, ...] | None:
         """The finished Simulation Jobs of *worktree* that the last read retained; ``None`` before any read.
 
-        Their invocation directories hold the coverage campaigns the Run wizard offers.
+        Their invocation directories hold the Coverage Records the Run wizard offers.
         No file is read here: this runs on the main thread.
         """
         if self.snapshot.observed_at == 0:

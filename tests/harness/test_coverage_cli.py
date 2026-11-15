@@ -1,4 +1,4 @@
-"""`booley coverage uncovered`: list the uncovered points of one retained coverage record."""
+"""`booley coverage uncovered`: list the uncovered points of one retained Coverage Record."""
 
 from __future__ import annotations
 
@@ -130,7 +130,7 @@ def persist_record(
                 "target_identity": document["target"]["identity"],
                 "collection": status,
                 "evaluation": "not_requested",
-                "coverage_campaign": "coverage.json",
+                "coverage_record": "coverage.json",
             }
         )
     )
@@ -279,7 +279,7 @@ def _nested_attempt_manifest(path: Path) -> Path:
     [
         "missing-file",
         "not-json",
-        "not-a-campaign",
+        "not-a-coverage-record",
         "wrong-file-name",
         "nested-attempt-manifest",
         "point-store-missing",
@@ -295,10 +295,10 @@ def test_unreadable_record_exits_2_naming_the_file(
         argument = path.parent / "absent" / "coverage.json"
     elif defect == "not-json":
         _not_json(path)
-    elif defect == "not-a-campaign":
+    elif defect == "not-a-coverage-record":
         _not_a_coverage_record(path)
     elif defect == "wrong-file-name":
-        argument = path.rename(path.with_name("campaign.json"))
+        argument = path.rename(path.with_name("record.json"))
     elif defect == "nested-attempt-manifest":
         argument = _nested_attempt_manifest(path)
     elif defect == "point-store-missing":
@@ -310,7 +310,7 @@ def test_unreadable_record_exits_2_naming_the_file(
 
     assert code == 2
     assert out == ""
-    assert err.startswith(f"ERROR: cannot read coverage record {argument}: ")
+    assert err.startswith(f"ERROR: cannot read Coverage Record {argument}: ")
     assert _HINT in err.splitlines()[-1]
     assert "Traceback" not in err
 

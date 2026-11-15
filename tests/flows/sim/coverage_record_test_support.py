@@ -1,4 +1,4 @@
-"""Shared helpers for hostile persisted Coverage Campaign fixtures."""
+"""Shared helpers for hostile persisted Coverage Record fixtures."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from booley.flows.sim.coverage_record_store import decode_coverage_record
 
 
 def decode_document(document: dict, target: DurableTargetIdentity) -> CoverageRecord:
-    """Decode a single-document test Campaign through the store's one decode."""
+    """Decode a single-document test Coverage Record through the store's one decode."""
     return decode_coverage_record(document, list(document["points"]), target)
 
 
@@ -30,7 +30,7 @@ def rewrite_manifest_as_v4(manifest: dict) -> None:
 def corrupt_coverage_record_with_duplicate_negative_point(
     coverage_record_path: Path, *, run_id: str = "run:reset"
 ) -> None:
-    """Rewrite one Campaign with duplicate-point and negative-hit defects."""
+    """Rewrite one Coverage Record with duplicate-point and negative-hit defects."""
     manifest = json.loads(coverage_record_path.read_text(encoding="utf-8"))
     points_path = coverage_record_path.parent / manifest["point_store"]["path"]
     records = [json.loads(line) for line in gzip.decompress(points_path.read_bytes()).splitlines()]

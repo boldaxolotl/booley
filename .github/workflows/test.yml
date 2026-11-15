@@ -1484,7 +1484,7 @@ jobs:
               booley-test python /work/tests/docker/verilator_acceptance.py
               --work-dir /validation-tmp
 
-          - name: Run Coverage Campaign release matrix and production collector
+          - name: Run Coverage Record release matrix and production collector
             env:
               VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/coverage-release
             run: >-

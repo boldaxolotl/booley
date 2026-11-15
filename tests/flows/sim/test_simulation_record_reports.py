@@ -1493,7 +1493,7 @@ def _coverage_card(
     *,
     status: str = "complete",
 ) -> list[str]:
-    """Render one coverage Target's card block from a stub Coverage Campaign."""
+    """Render one coverage Target's card block from a stub Coverage Record."""
     coverage_record = SimpleNamespace(
         collection={"status": status, "diagnostics": ()},
         evaluation={
@@ -1529,7 +1529,7 @@ def test_coverage_card_lists_every_collected_metric(tmp_path: Path) -> None:
 
     assert lines[-2:] == [
         "  coverage: line 92.3% · branch 81.0% · toggle 64.2%",
-        f"  coverage campaign: {(tmp_path / 'targets/sim_soc/coverage.json').resolve()}",
+        f"  Coverage Record: {(tmp_path / 'targets/sim_soc/coverage.json').resolve()}",
     ]
 
 
@@ -1580,9 +1580,7 @@ def test_coverage_card_prints_na_without_eligible_points(tmp_path: Path) -> None
 def test_coverage_card_omits_metrics_unless_collection_complete(tmp_path: Path) -> None:
     lines = _coverage_card(tmp_path, [_rollup("line", 1, 2)], status="collector_error")
     assert not any(line.startswith("  coverage: ") for line in lines)
-    assert (
-        f"  coverage campaign: {(tmp_path / 'targets/sim_soc/coverage.json').resolve()}" in lines
-    )
+    assert f"  Coverage Record: {(tmp_path / 'targets/sim_soc/coverage.json').resolve()}" in lines
 
     # A complete collection with no points at all has nothing to list either.
     lines = _coverage_card(tmp_path, [])
