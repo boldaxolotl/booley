@@ -272,6 +272,19 @@ class TargetCatalog:
         self._require_fresh()
         return closure
 
+    def unprovided_dependencies(self, handle: TargetHandle) -> tuple[str, ...]:
+        """Return ``depend:`` entries in the handle's closure that no Project core provides."""
+        self._require_handle(handle)
+        self._require_fresh()
+        # Intentional private adapter seam, as in :meth:`core_closure`.
+        missing = fusesoc_registry._unprovided_dependencies(  # pyright: ignore[reportPrivateUsage]
+            self.project_root,
+            (handle,),
+            documents=self._state.documents,
+        )
+        self._require_fresh()
+        return missing
+
     def compile_inputs(self, handle: TargetHandle) -> TargetCompileSurface:
         """Resolve one immutable Target-scoped compile-input set."""
         self._require_handle(handle)
