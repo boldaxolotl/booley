@@ -13,7 +13,7 @@ import pytest
 from booley.flows.sim.record.codec import MANIFEST_SCHEMA
 
 ROOT = Path(__file__).resolve().parents[2]
-TAXI_VALIDATOR = ROOT / "qa/missions/taxi/fixtures/simulation-campaign/validate_phase5.py"
+TAXI_VALIDATOR = ROOT / "qa/missions/taxi/fixtures/simulation-record/validate_phase5.py"
 # Documents captured unchanged from one Taxi QA run.
 CAPTURED = ROOT / "tests/runtime/fixtures/directory_migration/taxi_simulation_record"
 
@@ -574,7 +574,7 @@ def test_coverage_phase5_validator_requires_resume_refusal(
     tmp_path: Path, mutation: Callable[[dict[str, object]], object], message: str
 ) -> None:
     module = _module(
-        ROOT / "qa/shared/coverage/simulation-campaign/validate_aggregate.py",
+        ROOT / "qa/shared/coverage/simulation-record/validate_aggregate.py",
         "coverage_phase5",
     )
     manifest, attempt, result, rejection = _coverage_refusal_files(tmp_path)
