@@ -289,7 +289,7 @@ def test_coverage_owner_refuses_malformed_result_evidence(
 ) -> None:
     """A result whose evidence lacks a member the owner check reads is a reference error (#1744)."""
     from booley.flows.sim import coverage_reference, record
-    from booley.flows.sim.coverage_reference import CoverageCampaignReferenceError
+    from booley.flows.sim.coverage_reference import CoverageRecordReferenceError
 
     evidence = {"kind": "coverage_record_manifest"}
     authenticated = SimpleNamespace(
@@ -304,5 +304,5 @@ def test_coverage_owner_refuses_malformed_result_evidence(
         ),
         reference_path=tmp_path / "reference.json",
     )
-    with pytest.raises(CoverageCampaignReferenceError, match="evidence is malformed"):
-        coverage_reference.authenticate_coverage_campaign_owner(resolved)  # type: ignore[arg-type]
+    with pytest.raises(CoverageRecordReferenceError, match="evidence is malformed"):
+        coverage_reference.authenticate_coverage_record_owner(resolved)  # type: ignore[arg-type]

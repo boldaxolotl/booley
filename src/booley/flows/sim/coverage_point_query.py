@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
-from .coverage_campaign import CoveragePoint
+from .coverage_record import CoveragePoint
 
 
 def coverage_point_covered(point: CoveragePoint) -> bool:

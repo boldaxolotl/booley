@@ -11,18 +11,6 @@ from booley.flows.sim.coverage_analysis_input import (
     CoverageSourceClosure,
     verified_source_snapshot,
 )
-from booley.flows.sim.coverage_campaign import (
-    DOCUMENT_SCHEMA,
-    CoverageCampaign,
-    CoveragePoint,
-    decode_coverage_point_id,
-    encode_coverage_campaign,
-    encode_coverage_point,
-)
-from booley.flows.sim.coverage_campaign_store import (
-    CAMPAIGN_SCHEMA,
-    CoverageCampaignSummary,
-)
 from booley.flows.sim.coverage_evidence import is_coverage_point_reference
 from booley.flows.sim.coverage_json import (
     SHA256_PREFIX,
@@ -30,6 +18,18 @@ from booley.flows.sim.coverage_json import (
     content_digest,
     coverage_mapping_document,
     freeze_coverage_mapping,
+)
+from booley.flows.sim.coverage_record import (
+    DOCUMENT_SCHEMA,
+    CoveragePoint,
+    CoverageRecord,
+    decode_coverage_point_id,
+    encode_coverage_point,
+    encode_coverage_record,
+)
+from booley.flows.sim.coverage_record_store import (
+    COVERAGE_RECORD_SCHEMA,
+    CoverageRecordSummary,
 )
 from booley.flows.sim.coverage_waivers import waivable_point_problem
 
@@ -56,16 +56,16 @@ class CoverageModelResult:
 @dataclass(frozen=True)
 class _AnalysisEnvelope:
     schema: str
-    model_campaign: Mapping[str, object]
+    model_coverage_record: Mapping[str, object]
     observed_evidence: object
 
 
 def _analysis_envelope(
-    campaign: CoverageCampaign, summary: CoverageCampaignSummary | None
+    coverage_record: CoverageRecord, summary: CoverageRecordSummary | None
 ) -> tuple[_AnalysisEnvelope, dict[str, object]]:
     target: dict[str, object] = {
-        "identity": campaign.target.identity,
-        "selector": campaign.target.selector,
+        "identity": coverage_record.target.identity,
+        "selector": coverage_record.target.selector,
     }
     storage_schema = DOCUMENT_SCHEMA
     point_store = None
@@ -76,15 +76,15 @@ def _analysis_envelope(
         point_store = manifest.get("point_store")
     reference = {
         "coverage_record_reference": {
-            "coverage_record_id": campaign.campaign_id,
+            "coverage_record_id": coverage_record.coverage_record_id,
             "target": target,
-            "point_count": len(campaign.points),
+            "point_count": len(coverage_record.points),
             "storage_schema": storage_schema,
             **({"point_store": point_store} if point_store is not None else {}),
         }
     }
-    if summary is None or summary.source_schema != CAMPAIGN_SCHEMA:
-        observed = encode_coverage_campaign(campaign)
+    if summary is None or summary.source_schema != COVERAGE_RECORD_SCHEMA:
+        observed = encode_coverage_record(coverage_record)
         return _AnalysisEnvelope("booley.coverage-analysis/v3", reference, observed), target
     assert manifest is not None
     assert summary.point_store is not None
@@ -107,37 +107,37 @@ class CoverageAnalyzer:
     def __init__(self, model: Callable[[str], object]) -> None:
         self._model = model
 
-    def analyze_coverage_campaign(
+    def analyze_coverage_record(
         self,
-        campaign: CoverageCampaign,
+        coverage_record: CoverageRecord,
         sources: CoverageSourceClosure | None,
         instruction: str,
         *,
-        summary: CoverageCampaignSummary | None = None,
+        summary: CoverageRecordSummary | None = None,
     ) -> CoverageAnalysisReport:
-        envelope, target = _analysis_envelope(campaign, summary)
-        eligibility, limitations = _eligibility(campaign)
-        sources = verified_source_snapshot(campaign, sources)
+        envelope, target = _analysis_envelope(coverage_record, summary)
+        eligibility, limitations = _eligibility(coverage_record)
+        sources = verified_source_snapshot(coverage_record, sources)
         if sources is None:
             limitations.append(
                 "Sources unavailable, unsafe, or stale; analysis uses normalized report evidence only."
             )
         response, analysis_scope = _model_response(
-            self._model(_analysis_prompt(envelope, sources, instruction)), campaign
+            self._model(_analysis_prompt(envelope, sources, instruction)), coverage_record
         )
-        points = {point.id: point for point in campaign.points}
+        points = {point.id: point for point in coverage_record.points}
         response = _validate_response(response, points)
         response["waiver_candidates"] = _screen_candidates(
-            response["waiver_candidates"], campaign, points, sources
+            response["waiver_candidates"], coverage_record, points, sources
         )
         report = {
             "$schema": envelope.schema,
-            "coverage_record_id": campaign.campaign_id,
+            "coverage_record_id": coverage_record.coverage_record_id,
             "target": target,
             "eligibility": eligibility,
             "source_access": "report_only" if sources is None else "verified",
             "limitations": limitations,
-            "closure_recommendation": _RECOMMENDATIONS[str(campaign.evaluation["status"])],
+            "closure_recommendation": _RECOMMENDATIONS[str(coverage_record.evaluation["status"])],
             "observed_evidence": envelope.observed_evidence,
             **response,
         }
@@ -154,7 +154,7 @@ def _analysis_prompt(
     return json.dumps(
         coverage_mapping_document(
             {
-                **envelope.model_campaign,
+                **envelope.model_coverage_record,
                 "evidence_access": (
                     "Use the coverage_evidence tool for overview, zero_point_sources, points, and verified source "
                     "excerpts. Begin with overview, retrieve only evidence needed for the "
@@ -168,19 +168,19 @@ def _analysis_prompt(
 
 
 def _model_response(
-    model_result: object, campaign: CoverageCampaign
+    model_result: object, coverage_record: CoverageRecord
 ) -> tuple[object, dict[str, object] | None]:
     if not isinstance(model_result, CoverageModelResult):
         return model_result, None
     scope = {
-        "total_points": len(campaign.points),
+        "total_points": len(coverage_record.points),
         "points_retrieved": 0,
         "point_ids": [],
         "queries": [],
         **model_result.analysis_scope,
     }
     response = _normalize_scoped_response(
-        model_result.response, campaign, model_result.point_references, scope
+        model_result.response, coverage_record, model_result.point_references, scope
     )
     return response, scope
 
@@ -194,7 +194,7 @@ class _ReferenceIssue:
 
 def _normalize_scoped_response(
     value: object,
-    campaign: CoverageCampaign,
+    coverage_record: CoverageRecord,
     point_references: Mapping[str, str],
     analysis_scope: Mapping[str, object],
 ) -> dict[str, object]:
@@ -203,7 +203,7 @@ def _normalize_scoped_response(
         raise CoverageAnalysisError(
             "Model must return only hypotheses, recommendations and waiver_candidates"
         )
-    points = {point.id for point in campaign.points}
+    points = {point.id for point in coverage_record.points}
     delivered = set(cast(list[str], analysis_scope.get("point_ids", [])))
     references = _validated_reference_map(point_references, points, delivered)
     issues: list[_ReferenceIssue] = []
@@ -382,30 +382,30 @@ _RECOMMENDATIONS = {
 }
 
 
-def _eligibility(campaign: CoverageCampaign) -> tuple[str, list[str]]:
-    if campaign.collector.native_format.get("compatibility") != "compatible":
+def _eligibility(coverage_record: CoverageRecord) -> tuple[str, list[str]]:
+    if coverage_record.collector.native_format.get("compatibility") != "compatible":
         raise CoverageAnalysisError("Incompatible native evidence cannot be analyzed")
-    if campaign.collection["status"] not in {"complete", "incomplete"}:
-        reason = campaign.collection["status"]
+    if coverage_record.collection["status"] not in {"complete", "incomplete"}:
+        reason = coverage_record.collection["status"]
         raise CoverageAnalysisError(
             f"Campaign scoring is invalid because collection status is {reason!r}; "
             "repair the collector failure and recollect coverage"
         )
-    if campaign.normalization["status"] not in {
+    if coverage_record.normalization["status"] not in {
         "complete",
         "complete_with_unknown_records",
         "partial",
     }:
         raise CoverageAnalysisError("Campaign normalization is not usable")
-    if not campaign.points:
+    if not coverage_record.points:
         raise CoverageAnalysisError("Campaign has no normalized Coverage Points")
     limitations = []
     if (
-        campaign.collection["status"] != "complete"
-        or campaign.normalization["status"] == "partial"
+        coverage_record.collection["status"] != "complete"
+        or coverage_record.normalization["status"] == "partial"
     ):
         limitations.append("Collection is incomplete; gaps may reflect missing evidence.")
-    if campaign.normalization.get("unrecognized_records"):
+    if coverage_record.normalization.get("unrecognized_records"):
         limitations.append("Unknown native records are retained but cannot be interpreted.")
     return ("eligible_with_limits" if limitations else "eligible"), limitations
 
@@ -443,13 +443,13 @@ def _validate_response(value: object, points: Mapping[str, CoveragePoint]) -> di
 
 def _screen_candidates(
     value: object,
-    campaign: CoverageCampaign,
+    coverage_record: CoverageRecord,
     points: Mapping[str, CoveragePoint],
     sources: CoverageSourceClosure | None,
 ) -> list[dict[str, object]]:
     rtl = {
         record["path"]: record["sha256"]
-        for record in cast(tuple[Mapping[str, str], ...], campaign.source_closure["rtl"])
+        for record in cast(tuple[Mapping[str, str], ...], coverage_record.source_closure["rtl"])
     }
     screened = []
     seen = set()
@@ -470,7 +470,7 @@ def _screen_candidates(
         screened.append(
             {
                 **item,
-                "target_identity": campaign.target.identity,
+                "target_identity": coverage_record.target.identity,
                 "point_identity": encode_coverage_point(point)["identity"] if point else None,
                 "source_fingerprint": rtl.get(point.identity.source) if point else None,
                 "screening": screening,

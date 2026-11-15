@@ -5,13 +5,13 @@ from pathlib import Path
 import pytest
 
 from booley.config.project_config import load_test_configuration_field
-from booley.flows.sim.coverage_campaign import DurableTargetIdentity
 from booley.flows.sim.coverage_invocation import (
     CoverageInvocationRequest,
     CoverageProjectContext,
     prepare_coverage_invocation,
 )
 from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
+from booley.flows.sim.coverage_record import DurableTargetIdentity
 from booley.targets.catalog import PreparedTargetSelection
 
 

@@ -150,7 +150,7 @@ def test_coverage_analysis_refuses_a_0_3_0_projection_naming_its_invocation(
 ) -> None:
     from booley.flows.sim.coverage_analysis_input import (
         CoverageAnalysisError,
-        read_coverage_campaign,
+        read_coverage_record,
     )
 
     run = coverage_invocation(tmp_path, monkeypatch)
@@ -161,7 +161,7 @@ def test_coverage_analysis_refuses_a_0_3_0_projection_naming_its_invocation(
     (target / "simulation.json").write_bytes(canonical_json_bytes(projection))
 
     with pytest.raises(CoverageAnalysisError) as excinfo:
-        read_coverage_campaign(target / "coverage.json")
+        read_coverage_record(target / "coverage.json")
 
     _assert_refused(str(excinfo.value), _PROJECTION_V2, reports / "sim/1")
 
@@ -203,17 +203,17 @@ def test_resume_refuses_a_0_3_0_cycle_count_baseline_naming_its_invocation(
     _assert_refused(str(excinfo.value), _MANIFEST + "v1", tmp_path / "reports" / "000001")
 
 
-def test_full_prune_cli_refuses_an_unsupported_nested_coverage_campaign_naming_its_directory(
+def test_full_prune_cli_refuses_an_unsupported_nested_coverage_record_naming_its_directory(
     tmp_path, monkeypatch
 ) -> None:
     """``--full`` reaches the nested Coverage Campaign before any Simulation Record check."""
-    from tests.flows.sim.coverage_campaign_test_support import rewrite_manifest_as_v4
+    from tests.flows.sim.coverage_record_test_support import rewrite_manifest_as_v4
 
     run = coverage_invocation(tmp_path, monkeypatch)
-    nested = json.loads(run.campaign_path.read_bytes())
+    nested = json.loads(run.coverage_record_path.read_bytes())
     rewrite_manifest_as_v4(nested)
     raw = canonical_json_bytes(nested)
-    _rewrite(run.campaign_path, raw)
+    _rewrite(run.coverage_record_path, raw)
     reference = json.loads(run.public.read_bytes())
     reference["coverage_record"].update(bytes=len(raw), sha256=content_digest(raw))
     _rewrite(run.public, canonical_json_bytes(reference))
@@ -224,7 +224,7 @@ def test_full_prune_cli_refuses_an_unsupported_nested_coverage_campaign_naming_i
     _assert_refused(result.stderr, "booley.coverage-campaign/v4", run.reports / "sim" / "1")
     assert "COV_SCHEMA_VERSION_UNSUPPORTED" not in result.stderr
     assert "Traceback" not in result.stderr
-    assert run.campaign_path.is_file()
+    assert run.coverage_record_path.is_file()
 
 
 def test_the_refusal_names_an_older_booley_and_what_to_do(reports: Path) -> None:
@@ -241,7 +241,7 @@ def test_the_refusal_names_an_older_booley_and_what_to_do(reports: Path) -> None
     )
 
 
-def test_a_schema_less_projection_cannot_authenticate_a_coverage_campaign() -> None:
+def test_a_schema_less_projection_cannot_authenticate_a_coverage_record() -> None:
     from booley.flows.sim.record.projection import decode_simulation_projection
 
     schema_less = {

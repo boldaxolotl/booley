@@ -14,25 +14,25 @@ from typing import Literal, cast
 import pytest
 
 from booley.flows.sim import coverage_waiver_files
-from booley.flows.sim.coverage_campaign import (
+from booley.flows.sim.coverage_policy import (
+    CoverageCriterion,
+    CoverageThreshold,
+    evaluate_coverage_record,
+    evaluation_json,
+    strict_reevaluation,
+)
+from booley.flows.sim.coverage_record import (
     NO_DECLARED_INPUTS_FINGERPRINT,
-    CoverageCampaign,
     CoverageCapability,
     CoverageCollector,
     CoveragePoint,
     CoveragePointIdentity,
+    CoverageRecord,
     CoverageRollup,
     CoverageRun,
     CoverageTarget,
     DurableTargetIdentity,
     encode_coverage_point_id,
-)
-from booley.flows.sim.coverage_policy import (
-    CoverageCriterion,
-    CoverageThreshold,
-    evaluate_coverage_campaign,
-    evaluation_json,
-    strict_reevaluation,
 )
 from booley.flows.sim.coverage_waivers import (
     CoverageRepositoryRoots,
@@ -264,10 +264,10 @@ def _run() -> CoverageRun:
     )
 
 
-def _campaign() -> CoverageCampaign:
+def _coverage_record() -> CoverageRecord:
     points = (_point(_POINT_ID, 0, covered=False), _point("covered-point", 1, covered=True))
-    return CoverageCampaign(
-        campaign_id="campaign:sim_counter:12",
+    return CoverageRecord(
+        coverage_record_id="campaign:sim_counter:12",
         invocation=MappingProxyType({"id": 12}),
         target=CoverageTarget(identity=str(_TARGET), selector="sim_counter"),
         collector=_collector(),
@@ -608,7 +608,7 @@ def test_valid_unreachable_proof_is_authenticated_and_retained(tmp_path: Path) -
         "reference": "proofs/counter.sby#cover_17",
         "sha256": "sha256:69ad078dd3a1c4e5796b11fbbf4e8faca01fe6cf98ff5501698b322da1d13bd3",
     }
-    evaluated = evaluate_coverage_campaign(_campaign(), _criterion(), approved)
+    evaluated = evaluate_coverage_record(_coverage_record(), _criterion(), approved)
     assert evaluated.evaluation["status"] == "pass"
     assert evaluated.points[0].disposition["kind"] == "waived"
     assert evaluated.points[0].disposition["reason"] == "unreachable"
@@ -640,7 +640,7 @@ def test_unreachable_review_proof_is_accepted_and_unknown_kinds_are_not(
         return
     approved = load_approved_waiver_set(config, roots, known_targets=(_TARGET,))
     assert approved.waivers[0].provenance["proof"]["kind"] == "review"
-    evaluated = evaluate_coverage_campaign(_campaign(), _criterion(), approved)
+    evaluated = evaluate_coverage_record(_coverage_record(), _criterion(), approved)
     assert evaluated.evaluation["status"] == "pass"
 
 
@@ -887,7 +887,7 @@ def test_one_stale_match_blocks_evaluation_and_applies_no_valid_sibling(tmp_path
         known_targets=(_TARGET,),
     )
 
-    evaluated = evaluate_coverage_campaign(_campaign(), _criterion(), approved)
+    evaluated = evaluate_coverage_record(_coverage_record(), _criterion(), approved)
 
     assert evaluated.evaluation["status"] == "blocked"
     assert [item["code"] for item in evaluated.evaluation["diagnostics"]] == [
@@ -909,7 +909,7 @@ def test_exact_match_applies_approval_provenance_and_passes_policy(tmp_path: Pat
         known_targets=(_TARGET,),
     )
 
-    evaluated = evaluate_coverage_campaign(_campaign(), _criterion(), approved)
+    evaluated = evaluate_coverage_record(_coverage_record(), _criterion(), approved)
 
     assert evaluated.evaluation["status"] == "pass"
     assert evaluated.points[0].disposition == {
@@ -937,12 +937,12 @@ def test_complete_normalization_with_unknown_records_still_matches(tmp_path: Pat
         roots,
         known_targets=(_TARGET,),
     )
-    campaign = replace(
-        _campaign(),
+    coverage_record = replace(
+        _coverage_record(),
         normalization=MappingProxyType({"status": "complete_with_unknown_records"}),
     )
 
-    evaluated = evaluate_coverage_campaign(campaign, _criterion(), approved)
+    evaluated = evaluate_coverage_record(coverage_record, _criterion(), approved)
 
     assert evaluated.evaluation["status"] == "pass"
     assert evaluated.points[0].disposition["kind"] == "waived"
@@ -978,29 +978,29 @@ def test_ambiguous_or_ineligible_match_blocks_without_applying(
         roots,
         known_targets=(_TARGET,),
     )
-    campaign = _campaign()
-    first = campaign.points[0]
+    coverage_record = _coverage_record()
+    first = coverage_record.points[0]
     if case == "stale":
-        campaign = replace(
-            campaign, points=(replace(first, id="renamed-point"), campaign.points[1])
+        coverage_record = replace(
+            coverage_record, points=(replace(first, id="renamed-point"), coverage_record.points[1])
         )
     elif case == "ambiguous":
-        campaign = replace(campaign, points=(first, *campaign.points))
+        coverage_record = replace(coverage_record, points=(first, *coverage_record.points))
     elif case == "source_mismatch":
         identity = replace(first.identity, location=MappingProxyType({"source": "rtl/other.sv"}))
-        campaign = replace(
-            campaign, points=(replace(first, identity=identity), campaign.points[1])
+        coverage_record = replace(
+            coverage_record, points=(replace(first, identity=identity), coverage_record.points[1])
         )
     else:
-        campaign = replace(
-            campaign,
+        coverage_record = replace(
+            coverage_record,
             points=(
                 replace(first, disposition=MappingProxyType({"kind": "unscored"})),
-                campaign.points[1],
+                coverage_record.points[1],
             ),
         )
 
-    evaluated = evaluate_coverage_campaign(campaign, _criterion(), approved)
+    evaluated = evaluate_coverage_record(coverage_record, _criterion(), approved)
 
     assert evaluated.evaluation["status"] == "blocked"
     assert evaluated.evaluation["diagnostics"][0] == {
@@ -1019,8 +1019,8 @@ def test_strict_reevaluation(tmp_path: Path, already_waived: bool) -> None:
     empty = load_approved_waiver_set(config, roots, (_TARGET,))
     _write_valid_approval(roots)
     approved = load_approved_waiver_set(config, roots, (_TARGET,))
-    persisted = evaluate_coverage_campaign(
-        _campaign(), _criterion(), approved if already_waived else empty
+    persisted = evaluate_coverage_record(
+        _coverage_record(), _criterion(), approved if already_waived else empty
     )
     assert persisted.evaluation["status"] == ("pass" if already_waived else "fail")
     evaluated = strict_reevaluation(persisted, approved, criterion=_criterion())
@@ -1044,7 +1044,7 @@ def test_known_other_target_approval_is_valid_but_inapplicable(tmp_path: Path) -
         known_targets=(_TARGET, other),
     )
 
-    evaluated = evaluate_coverage_campaign(_campaign(), _criterion(), approved)
+    evaluated = evaluate_coverage_record(_coverage_record(), _criterion(), approved)
 
     assert evaluated.evaluation["status"] == "fail"
     assert evaluated.evaluation["diagnostics"] == ()
