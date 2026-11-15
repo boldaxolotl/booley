@@ -145,7 +145,7 @@ def decide_baseline_runs(
     asked once per Target, and only for a link that has a Test Run. A link the
     baseline cannot run is refused with its reason. So is a link whose Test
     Run has the name of another Test Run already accepted for the same
-    baseline Target but other declared inputs: one campaign cannot hold two
+    baseline Target but other declared inputs: one record cannot hold two
     Test Runs of one name.
     """
     accepted: list[BaselineLink] = []

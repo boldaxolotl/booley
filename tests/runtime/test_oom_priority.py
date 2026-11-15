@@ -115,7 +115,7 @@ class _ItemProcesses:
 
 
 def _item_claim(store: job_slots.SlotStore, flow_pid: int) -> job_slots.SlotToken:
-    """A Campaign work item's claim: under the Flow's PID, after everything admitted so far."""
+    """A Simulation Record work item's claim: under the Flow's PID, after everything admitted so far."""
     return store.acquire(
         job_slots.CLASS_MEMORY, pid=flow_pid, role=job_slots.ROLE_BACKGROUND, memory=CLAIM
     )

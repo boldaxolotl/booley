@@ -707,7 +707,7 @@ def test_requeued_claim_reports_its_queue_reason(root, world):
 def test_reason_of_a_later_holder_entry_of_one_pid_is_reported(root, world):
     store = make_store(root, world)
     spawn(world, 101)
-    # A Campaign's work-item claims share one PID; only the later one is a requeue.
+    # A Simulation Record's work-item claims share one PID; only the later one is a requeue.
     first = store.submit(job_slots.CLASS_MEMORY, pid=101, memory=claim(100), role=ROLE_INTERACTIVE)
     second = store.submit(
         job_slots.CLASS_MEMORY,

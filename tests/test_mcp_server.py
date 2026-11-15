@@ -2155,7 +2155,7 @@ def _assert_live_checkpoint(structured, checkpoint):
 
 
 def test_registered_poll_observes_blocked_simulation_record(tmp_path, monkeypatch):
-    """A campaign launch blocked in the simulator shows as one live, running target."""
+    """A record launch blocked in the simulator shows as one live, running target."""
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
 

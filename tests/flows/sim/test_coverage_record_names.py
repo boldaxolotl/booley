@@ -18,19 +18,19 @@ from typing import Any
 
 import pytest
 
-from booley.flows.sim.coverage_analysis_input import CoverageAnalysisError, read_coverage_campaign
-from booley.flows.sim.coverage_campaign import DurableTargetIdentity
-from booley.flows.sim.coverage_campaign_store import (
-    CoverageCampaignStoreError,
-    load_coverage_campaign,
-    load_coverage_campaign_bytes,
-)
+from booley.flows.sim.coverage_analysis_input import CoverageAnalysisError, read_coverage_record
 from booley.flows.sim.coverage_json import content_digest
+from booley.flows.sim.coverage_record import DurableTargetIdentity
+from booley.flows.sim.coverage_record_store import (
+    CoverageRecordStoreError,
+    load_coverage_record,
+    load_coverage_record_bytes,
+)
 from booley.flows.sim.coverage_reference import (
-    CoverageCampaignReferenceError,
-    authenticate_coverage_campaign_owner,
-    decode_coverage_campaign_reference,
-    resolve_coverage_campaign_reference,
+    CoverageRecordReferenceError,
+    authenticate_coverage_record_owner,
+    decode_coverage_record_reference,
+    resolve_coverage_record_reference,
 )
 from booley.flows.sim.record.codec import canonical_json_bytes
 from booley.flows.sim.record_retention import (
@@ -41,10 +41,10 @@ from booley.flows.sim.record_retention import (
 from booley.harness import booley as cli
 from booley.specialists.coverage_analysis import CoverageAnalysisError as AnalystError
 from booley.specialists.coverage_analysis import CoverageAnalyzer
-from tests.flows.sim.coverage_campaign_test_support import decode_document
+from tests.flows.sim.coverage_record_test_support import decode_document
 from tests.flows.sim.simulation_record_test_support import CoverageInvocation, coverage_invocation
-from tests.flows.sim.test_coverage_campaign import _valid_document
-from tests.flows.sim.test_coverage_campaign_store import TARGET, _evaluated_campaign
+from tests.flows.sim.test_coverage_record import _valid_document
+from tests.flows.sim.test_coverage_record_store import TARGET, _evaluated_coverage_record
 from tests.flows.sim.test_simulation_record_unsupported_formats import (
     _assert_refused,
     _assert_unsupported_type,
@@ -118,8 +118,8 @@ def _install_0_4_0_record(run: CoverageInvocation) -> None:
     manifest, points = _0_4_0_record()
     reference = _current_reference(run)
     reference["coverage_record"].update(bytes=len(manifest), sha256=content_digest(manifest))
-    _rewrite(run.campaign_path, manifest)
-    _rewrite(run.campaign_path.with_name("coverage-points.jsonl.gz"), points)
+    _rewrite(run.coverage_record_path, manifest)
+    _rewrite(run.coverage_record_path.with_name("coverage-points.jsonl.gz"), points)
     _rewrite(run.public, canonical_json_bytes(reference))
 
 
@@ -127,13 +127,15 @@ def _run_analysis(summary_from: Path | None = None) -> dict[str, Any]:
     """The analysis report of the Coverage Record at *summary_from*, or of an in-memory one."""
     if summary_from is None:
         document = _valid_document()
-        campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
+        coverage_record = decode_document(
+            document, DurableTargetIdentity(document["target"]["identity"])
+        )
         summary = None
     else:
-        loaded = load_coverage_campaign(summary_from, TARGET)
-        campaign, summary = loaded.campaign, loaded.summary
+        loaded = load_coverage_record(summary_from, TARGET)
+        coverage_record, summary = loaded.coverage_record, loaded.summary
     analyzer = CoverageAnalyzer(lambda _prompt: _NO_FACTS)
-    return analyzer.analyze_coverage_campaign(campaign, None, "", summary=summary).to_dict()
+    return analyzer.analyze_coverage_record(coverage_record, None, "", summary=summary).to_dict()
 
 
 # --- AC1: the names a run writes -----------------------------------------------------------
@@ -147,7 +149,7 @@ def test_a_coverage_run_writes_coverage_record_names(
 
     reference = _current_reference(run)
     assert reference["simulation_record_id"] == simulation_record_id
-    record = _json(run.campaign_path)
+    record = _json(run.coverage_record_path)
     assert reference["coverage_record"]["coverage_record_id"] == record["coverage_record_id"]
     assert reference["coverage_record"]["schema"] == _RECORD
     for old in ("simulation_campaign_id", "coverage_campaign"):
@@ -157,7 +159,7 @@ def test_a_coverage_run_writes_coverage_record_names(
     assert record["$schema"] == _RECORD
     assert record["point_store"]["$schema"] == _POINTS
     assert "campaign_id" not in record
-    with gzip.open(run.campaign_path.with_name("coverage-points.jsonl.gz")) as stream:
+    with gzip.open(run.coverage_record_path.with_name("coverage-points.jsonl.gz")) as stream:
         header = json.loads(stream.readline())
     assert header == {
         "$schema": _POINTS,
@@ -177,19 +179,19 @@ def test_a_coverage_run_writes_coverage_record_names(
     assert availability["$schema"] == "booley.coverage-availability/v2"
     assert availability["coverage_record_id"] == record["coverage_record_id"]
     assert availability["coverage_record_sha256"] == content_digest(
-        run.campaign_path.read_bytes()
+        run.coverage_record_path.read_bytes()
     ).removeprefix("sha256:")
     assert "campaign_id" not in availability
     assert "campaign_sha256" not in availability
 
 
 def test_the_coverage_analysis_report_names_the_coverage_record(tmp_path: Path) -> None:
-    from booley.flows.sim.coverage_campaign_store import publish_coverage_campaign
+    from booley.flows.sim.coverage_record_store import publish_coverage_record
 
     # A stored Coverage Record: the report carries its manifest and point store digest.
-    paths = publish_coverage_campaign(tmp_path, _evaluated_campaign(1, 2, 50))
-    stored = _run_analysis(paths.campaign)
-    manifest = _json(paths.campaign)
+    paths = publish_coverage_record(tmp_path, _evaluated_coverage_record(1, 2, 50))
+    stored = _run_analysis(paths.coverage_record)
+    manifest = _json(paths.coverage_record)
     assert stored["$schema"] == "booley.coverage-analysis/v4", stored["$schema"]
     assert stored["coverage_record_id"] == manifest["coverage_record_id"]
     assert stored["observed_evidence"]["coverage_record_manifest"]["$schema"] == _RECORD
@@ -206,13 +208,15 @@ def test_the_coverage_analysis_report_names_the_coverage_record(tmp_path: Path) 
     # The model is given the same names.
     prompts: list[str] = []
     document = _valid_document()
-    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
+    coverage_record = decode_document(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
 
     def model(prompt: str) -> dict[str, list[object]]:
         prompts.append(prompt)
         return _NO_FACTS
 
-    CoverageAnalyzer(model).analyze_coverage_campaign(campaign, None, "")
+    CoverageAnalyzer(model).analyze_coverage_record(coverage_record, None, "")
     assert '"coverage_record_reference"' in prompts[0]
     assert '"coverage_record_id"' in prompts[0]
     assert '"campaign_reference"' not in prompts[0]
@@ -227,7 +231,9 @@ def test_an_unknown_cp1_reference_is_reported_as_not_in_the_record() -> None:
         "p7ImJhc2ljX2Jsb2NrIjowfX0"
     )
     document = _valid_document()
-    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
+    coverage_record = decode_document(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
     response = {
         "hypotheses": [{"point_ids": [foreign_id], "explanation": "foreign"}],
         "recommendations": [],
@@ -235,7 +241,9 @@ def test_an_unknown_cp1_reference_is_reported_as_not_in_the_record() -> None:
     }
 
     with pytest.raises(AnalystError) as captured:
-        CoverageAnalyzer(lambda _prompt: response).analyze_coverage_campaign(campaign, None, "")
+        CoverageAnalyzer(lambda _prompt: response).analyze_coverage_record(
+            coverage_record, None, ""
+        )
 
     message = str(captured.value)
     assert "/hypotheses/0/point_ids/0: cp1_not_in_record" in message
@@ -264,14 +272,14 @@ def test_a_0_4_0_coverage_record_is_refused_naming_its_invocation(reports: Path)
     (storage / "coverage-points.jsonl.gz").write_bytes(points)
 
     with pytest.raises(ValueError) as refused:
-        load_coverage_campaign(storage / "coverage.json")
+        load_coverage_record(storage / "coverage.json")
 
     _assert_unsupported_type(refused.value)
     _assert_refused(str(refused.value), _OLD_RECORD, invocation)
 
     # The same bytes at a path whose layout names no invocation are still refused as old.
     with pytest.raises(ValueError) as unlocated:
-        load_coverage_campaign_bytes(storage.parent / "coverage.json", manifest)
+        load_coverage_record_bytes(storage.parent / "coverage.json", manifest)
     _assert_unsupported_type(unlocated.value)
     _assert_refused(str(unlocated.value), _OLD_RECORD)
     assert "delete its Simulation invocation directory" in str(unlocated.value)
@@ -284,7 +292,7 @@ def test_a_0_4_0_coverage_record_reference_is_refused_naming_its_invocation(
 
     # The decoder sees bytes only, so it cannot name a directory.
     with pytest.raises(ValueError) as decoded:
-        decode_coverage_campaign_reference(raw)
+        decode_coverage_record_reference(raw)
     _assert_unsupported_type(decoded.value)
     _assert_refused(str(decoded.value), _OLD_REFERENCE)
 
@@ -293,7 +301,7 @@ def test_a_0_4_0_coverage_record_reference_is_refused_naming_its_invocation(
     public.parent.mkdir(parents=True)
     public.write_bytes(raw)
     with pytest.raises(ValueError) as resolved:
-        resolve_coverage_campaign_reference(public)
+        resolve_coverage_record_reference(public)
     _assert_unsupported_type(resolved.value)
     _assert_refused(str(resolved.value), _OLD_REFERENCE, reports / "sim" / "1")
 
@@ -309,7 +317,7 @@ def test_coverage_analysis_reports_a_0_4_0_reference_as_older(
     _rewrite(run.public, _0_4_0_reference())
 
     with pytest.raises(CoverageAnalysisError) as analysed:
-        read_coverage_campaign(run.public)
+        read_coverage_record(run.public)
 
     _assert_refused(str(analysed.value), _OLD_REFERENCE, run.reports / "sim" / "1")
     assert "fully pruned" not in str(analysed.value)
@@ -322,7 +330,7 @@ def test_coverage_analysis_reports_a_0_4_0_coverage_record_as_older(
     _install_0_4_0_record(run)
 
     with pytest.raises(CoverageAnalysisError) as analysed:
-        read_coverage_campaign(run.public)
+        read_coverage_record(run.public)
 
     _assert_refused(str(analysed.value), _OLD_RECORD, run.reports / "sim" / "1")
     assert "fully pruned" not in str(analysed.value)
@@ -382,7 +390,7 @@ def test_retention_reports_a_0_4_0_coverage_record_as_older(
 
 def _record_alias_refusals(run: CoverageInvocation) -> list[str]:
     """Refusals of a Coverage Record that keeps an old key or point store schema."""
-    record_path = run.campaign_path
+    record_path = run.coverage_record_path
     points_path = record_path.with_name("coverage-points.jsonl.gz")
     record = _json(record_path)
     assert record["$schema"] == _RECORD
@@ -391,15 +399,15 @@ def _record_alias_refusals(run: CoverageInvocation) -> list[str]:
     # The old identity key under the current schema is not an exact Coverage Record.
     aliased = {k: v for k, v in record.items() if k != "coverage_record_id"}
     aliased["campaign_id"] = record["coverage_record_id"]
-    with pytest.raises(CoverageCampaignStoreError) as keyed:
-        load_coverage_campaign_bytes(record_path, canonical_json_bytes(aliased))
+    with pytest.raises(CoverageRecordStoreError) as keyed:
+        load_coverage_record_bytes(record_path, canonical_json_bytes(aliased))
     refusals.append(str(keyed.value))
 
     # The old point store schema in the manifest.
     stale_store = json.loads(json.dumps(record))
     stale_store["point_store"]["$schema"] = "booley.coverage-points/v1"
-    with pytest.raises(CoverageCampaignStoreError) as stale:
-        load_coverage_campaign_bytes(record_path, canonical_json_bytes(stale_store))
+    with pytest.raises(CoverageRecordStoreError) as stale:
+        load_coverage_record_bytes(record_path, canonical_json_bytes(stale_store))
     refusals.append(str(stale.value))
 
     # The old identity key in the point store header.
@@ -414,8 +422,8 @@ def _record_alias_refusals(run: CoverageInvocation) -> list[str]:
     points_path.write_bytes(
         gzip.compress(canonical_json_bytes(old_header) + b"".join(lines[1:]), mtime=0)
     )
-    with pytest.raises(CoverageCampaignStoreError) as header:
-        load_coverage_campaign_bytes(record_path, record_path.read_bytes())
+    with pytest.raises(CoverageRecordStoreError) as header:
+        load_coverage_record_bytes(record_path, record_path.read_bytes())
     refusals.append(str(header.value))
     points_path.write_bytes(genuine_points)
 
@@ -428,8 +436,8 @@ def _record_alias_refusals(run: CoverageInvocation) -> list[str]:
     points_path.write_bytes(
         gzip.compress(canonical_json_bytes(old_schema_header) + b"".join(lines[1:]), mtime=0)
     )
-    with pytest.raises(CoverageCampaignStoreError) as old_schema:
-        load_coverage_campaign_bytes(record_path, record_path.read_bytes())
+    with pytest.raises(CoverageRecordStoreError) as old_schema:
+        load_coverage_record_bytes(record_path, record_path.read_bytes())
     refusals.append(str(old_schema.value))
     points_path.write_bytes(genuine_points)
     return refusals
@@ -446,16 +454,16 @@ def _reference_alias_refusals(reference: dict[str, Any]) -> list[str]:
         value = json.loads(json.dumps(reference))
         holder = value["coverage_record"] if nested else value
         holder[rename[1]] = holder.pop(rename[0])
-        with pytest.raises(CoverageCampaignReferenceError, match="exact fields") as exact:
-            decode_coverage_campaign_reference(canonical_json_bytes(value))
+        with pytest.raises(CoverageRecordReferenceError, match="exact fields") as exact:
+            decode_coverage_record_reference(canonical_json_bytes(value))
         refusals.append(str(exact.value))
     return refusals
 
 
 def _evidence_kind_refusal(run: CoverageInvocation, monkeypatch: pytest.MonkeyPatch) -> str:
     """The refusal when the enclosing result names the nested record by the old evidence kind."""
-    resolved = resolve_coverage_campaign_reference(run.public)
-    genuine = authenticate_coverage_campaign_owner(resolved)
+    resolved = resolve_coverage_record_reference(run.public)
+    genuine = authenticate_coverage_record_owner(resolved)
     evidence = genuine.result.document["evidence"]
     assert any(item["kind"] == "coverage_record_manifest" for item in evidence)
     forged = types.SimpleNamespace(
@@ -474,8 +482,8 @@ def _evidence_kind_refusal(run: CoverageInvocation, monkeypatch: pytest.MonkeyPa
         ),
     )
     monkeypatch.setattr("booley.flows.sim.record.authenticate_work_item", lambda *_a, **_k: forged)
-    with pytest.raises(CoverageCampaignReferenceError, match="disagrees with reference") as kind:
-        authenticate_coverage_campaign_owner(resolved)
+    with pytest.raises(CoverageRecordReferenceError, match="disagrees with reference") as kind:
+        authenticate_coverage_record_owner(resolved)
     return str(kind.value)
 
 
@@ -484,7 +492,7 @@ def test_old_coverage_record_names_are_not_aliases(
 ) -> None:
     run = coverage_invocation(tmp_path, monkeypatch)
     reference = _current_reference(run)
-    record = _json(run.campaign_path)
+    record = _json(run.coverage_record_path)
     refusals = [
         *_record_alias_refusals(run),
         *_reference_alias_refusals(reference),
@@ -500,13 +508,13 @@ def test_old_coverage_record_names_are_not_aliases(
         _OLD_RECORD,
     ):
         with pytest.raises(ValueError) as older:
-            load_coverage_campaign_bytes(
-                run.campaign_path, canonical_json_bytes({**record, "$schema": schema})
+            load_coverage_record_bytes(
+                run.coverage_record_path, canonical_json_bytes({**record, "$schema": schema})
             )
         _assert_unsupported_type(older.value)
         _assert_refused(str(older.value), schema)
     with pytest.raises(ValueError) as older_reference:
-        decode_coverage_campaign_reference(
+        decode_coverage_record_reference(
             canonical_json_bytes({**reference, "$schema": _OLD_REFERENCE})
         )
     _assert_unsupported_type(older_reference.value)

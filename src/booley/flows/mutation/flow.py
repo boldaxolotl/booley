@@ -29,6 +29,7 @@ import logging
 import math
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -43,7 +44,9 @@ from booley.core.boundary import BoundaryError, as_int
 from booley.flows import artifacts as _artifacts
 from booley.flows.base import BuiltinFlow, SubprocessResult
 from booley.flows.cli_help import CliHelp, SurfaceHelp
+from booley.flows.eda_failures import new_attempt_token
 from booley.flows.flow_config import tb_top_for_target
+from booley.flows.job_estimates import JobRequest, sim_job_request
 from booley.flows.mutation import workspace
 from booley.flows.mutation.build_sources import (
     materialize_build_mutation,
@@ -58,6 +61,7 @@ from booley.flows.mutation.generator import (
     generate_mutants,
     parser_version,
 )
+from booley.flows.mutation.memory_claims import CampaignClaims, MutationInvocation
 from booley.flows.mutation.operators import (
     MutantGeneratorError,
     SourceParseError,
@@ -66,7 +70,15 @@ from booley.flows.mutation.request import MutationRequest
 from booley.flows.mutation.score import default_min_detected
 from booley.flows.mutation.snippet import detection_snippet, tail, tail_snippet
 from booley.flows.mutation.variants import MutationVariantError, MutationVariantPlan
+from booley.flows.prepared_invocation import PreparedInvocation
 from booley.flows.sim.adapter_contract import AdapterKind, PreparedSimulationWork
+from booley.flows.sim.adapter_transport import (
+    AdapterTransportError,
+    AdapterTransportIdentity,
+    partial_result_identity,
+    read_adapter_result,
+    work_transport_identity,
+)
 from booley.flows.sim.backends.cocotb_results import (
     STATE_OK,
     TIMEOUT_ACTIVE_DETAIL,
@@ -176,6 +188,59 @@ _MUTANT_HARD_KILL_MARGIN_S = 5
 #: tail — the full transcript of a run that has already been graded is not
 #: worth unbounded disk (cf. the 20 GB trace.fst incident).
 _MUTANT_LOG_MAX_BYTES = 256 * 1024
+
+
+#: Statuses a shell or the adapter's own handler report for a death by these signals.
+_SIGNAL_EXIT_BASE = 128
+# signal.SIGKILL does not exist on Windows; the number is 9 everywhere it is reported.
+_SIGKILL = 9
+
+
+def _killing_signal(
+    proc: subprocess.CompletedProcess, identity: AdapterTransportIdentity | None
+) -> str:
+    """The signal that killed a run from outside Booley, as its name; ``""`` for none.
+
+    The adapter's own death by a signal counts, and so does its simulator's SIGKILL (the
+    out-of-memory killer's mark) when the adapter's authenticated result says the run
+    ended ``completed``, whatever verdict the adapter printed: a deadline, guard or
+    timeout kill is Booley's own verdict, and a simulator that aborts itself (SIGABRT
+    from ``$fatal``) is a detection. An unreadable result is no evidence. The result
+    files are removed once read.
+    """
+    number = _adapter_signal(proc.returncode)
+    if not number and identity is not None:
+        try:
+            result = read_adapter_result(identity)
+        except AdapterTransportError:
+            pass
+        else:
+            if result.termination == "completed" and result.simulator_returncode == -_SIGKILL:
+                number = _SIGKILL
+    _discard_adapter_results(identity)
+    if not number:
+        return ""
+    try:
+        return signal.Signals(number).name
+    except ValueError:
+        return str(number)
+
+
+def _discard_adapter_results(identity: AdapterTransportIdentity | None) -> None:
+    """Remove the adapter's result files, which are not kept once a run is read."""
+    if identity is not None:
+        identity.result_path.unlink(missing_ok=True)
+        partial_result_identity(identity).result_path.unlink(missing_ok=True)
+
+
+def _adapter_signal(returncode: int) -> int:
+    """The signal an adapter's exit status reports, or 0: killed, or SIGKILL/SIGTERM by shell."""
+    if returncode < 0:
+        return -returncode
+    for number in (_SIGKILL, int(signal.SIGTERM)):
+        if returncode == _SIGNAL_EXIT_BASE + number:
+            return int(number)
+    return 0
 
 
 def _infra_failure_reason(proc: subprocess.CompletedProcess) -> str:
@@ -313,6 +378,9 @@ class MutationTestRun:
     requires_cocotb_results: bool = False
     #: Wall-clock seconds the test took; the baseline's scale the Mutant limits.
     duration_s: float = 0.0
+    #: The signal that killed the run when nobody in Booley sent it (the out-of-memory
+    #: killer's SIGKILL); such a run says nothing about the Mutant. ``""`` for none.
+    killed_by: str = ""
 
 
 @dataclass(frozen=True)
@@ -798,6 +866,8 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     satisfies: ClassVar[list[str]] = ["mutation_score"]
     #: Set by ``_apply_campaign_defaults``: no ``--scope`` and no criterion scope was given.
     _scope_defaulted: bool = False
+    #: What admits each build and simulation; unmanaged (no claims) outside a managed run.
+    _claims: CampaignClaims = CampaignClaims()
 
     # ------------------------------------------------------------------
     # Command-backed Flow hooks — _run() drives the campaign directly.
@@ -1070,6 +1140,26 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         else:
             self.emit_progress(f"target: {count} Mutants")
         return count, source_size_budget, formula_count, auto_mode
+
+    def prepare_endpoint_invocation(self) -> PreparedInvocation | EndpointOutcome:
+        """The campaign run, which borrows its admission so each tool run claims memory."""
+        return MutationInvocation(self)
+
+    def run_with_claims(self, claims: CampaignClaims) -> EndpointOutcome:
+        """Run the campaign with *claims* admitting each build and simulation."""
+        self._claims = claims
+        try:
+            return self._run()
+        except (job_slots.ClaimAbortedError, job_slots.ClaimLostError) as exc:
+            return _error_outcome(
+                "cancelled",
+                str(exc),
+                report_text=(
+                    "mutation campaign cancelled while a build or simulation waited for memory"
+                ),
+            )
+        finally:
+            self._claims = CampaignClaims()
 
     def _run(self) -> EndpointOutcome:
         if campaign_error := self._apply_campaign_defaults():
@@ -1612,7 +1702,29 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         build_path: Path,
         mutation: tuple[MutationVariantPlan, int] | None = None,
     ) -> subprocess.CompletedProcess:
-        """Build pristine source or one replacement in private exported copies."""
+        """Build pristine source or one replacement in private exported copies.
+
+        The build holds a Memory Reservation sized from the Target's history.
+        """
+        with self._claims.hold(lambda: self._build_job_request(target, work_dir), build=True):
+            return self._build_elab(target, work_dir, build_path, mutation)
+
+    @staticmethod
+    def _build_job_request(target: str, work_dir: Path) -> JobRequest | None:
+        """What one build runs (FuseSoC setup and ``make``); ``None`` when the Target is unknown."""
+        try:
+            handle = TargetCatalog.build(work_dir).select(target, for_flow="sim")
+        except (fusesoc_registry.FuseSocError, OSError, ValueError):
+            return None
+        return JobRequest("sim", handle.selector, test_runs=())
+
+    def _build_elab(
+        self,
+        target: str,
+        work_dir: Path,
+        build_path: Path,
+        mutation: tuple[MutationVariantPlan, int] | None,
+    ) -> subprocess.CompletedProcess:
         try:
             _handle, prepared = self._resolve_elab_target(target, work_dir, build_path, mutation)
         except (
@@ -1927,8 +2039,8 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         timeout: int = 300,
         test_name: str | None = None,
         cocotb_tests: tuple[str, ...] = (),
-    ) -> tuple[list[str], TestRunLaunch]:
-        """The pinned adapter command of one mutant and its launch inputs.
+    ) -> tuple[list[str], TestRunLaunch, AdapterTransportIdentity | None]:
+        """The pinned adapter command of one mutant, its launch inputs and result identity.
 
         The command carries a prepared work document of the fields a mutant
         launch has always passed. Declared ``copyto`` inputs are part of it, so
@@ -1939,8 +2051,14 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         marker lands in the captured output for the sweep's hang detection.
         One Cocotb invocation runs one batch: Tests that share an environment
         and a seed (ADR 0072); ``tests.toml`` ``select`` plusarg templates do
-        not apply to Cocotb Targets (ADR 0034 decision 2).
+        not apply to Cocotb Targets (ADR 0034 decision 2). The adapter publishes its
+        authenticated result under *build_path*; its identity is the third item.
         """
+        transport = {
+            "attempt_token": (token := new_attempt_token()),
+            "adapter_result_path": str((build_path / f"adapter-{token}.json").resolve()),
+            "target_identity": self._target_identity(target),
+        }
         cocotb = self.cocotb_target(target, work_dir)
         if cocotb is not None:
             launch, plusargs = self._default_test_run_launch(
@@ -1953,8 +2071,10 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 tests=cocotb_tests,
                 cocotb_seed=launch.seed,
                 sim_time_grace_s=DEFAULT_SIM_TIME_GRACE_S,
+                **transport,
             )
-            return prepare_adapter_invocation(work, python=sys.executable), launch
+            command = prepare_adapter_invocation(work, python=sys.executable)
+            return command, launch, work_transport_identity(work)
         eda_tool = self._classic_eda_tool(target, work_dir, build_path)
         names = (test_name,) if test_name is not None else ()
         launch, plusargs = self._default_test_run_launch(target, work_dir, eda_tool, names)
@@ -1965,8 +2085,10 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             top=tb_top if eda_tool == "verilator" else "",
             pass_sentinels=tuple(pass_sentinels),
             fail_sentinels=tuple(fail_sentinels),
+            **transport,
         )
-        return prepare_adapter_invocation(work, python=sys.executable), launch
+        command = prepare_adapter_invocation(work, python=sys.executable)
+        return command, launch, work_transport_identity(work)
 
     def _run_sim_pinned(
         self,
@@ -1978,8 +2100,10 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         timeout: int = 300,
         test_name: str | None = None,
         cocotb_tests: tuple[str, ...] = (),
-    ) -> subprocess.CompletedProcess:
-        """Run the simulation image built in *build_path*.
+    ) -> tuple[subprocess.CompletedProcess, str]:
+        """Run the simulation image built in *build_path*; the name of its killing signal too.
+
+        The name is ``""`` unless something outside Booley killed the run with a signal.
 
         The Target's declared ``copyto`` inputs are exposed in ``run_cwd`` for
         the run and removed afterwards, as the Simulation Flow does. *timeout*
@@ -1987,7 +2111,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         ``_MUTANT_HARD_KILL_MARGIN_S`` later.
         """
         pinned = self._pinned_build(target, work_dir, build_path)
-        cmd, launch = self._pinned_sim_command(
+        cmd, launch, identity = self._pinned_sim_command(
             target,
             work_dir,
             build_path,
@@ -2003,25 +2127,30 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         with materialize_runtime_inputs(
             work_dir / pinned.rel, work_dir / resolve_run_cwd(work_dir), pinned.runtime_inputs
         ):
-            return subprocess.run(
-                cmd,
-                cwd=work_dir,
-                env=relocate_python_artifacts(
-                    {
-                        **os.environ,
-                        **launch_environment(
-                            _target_environment(work_dir, self._target_identity(target)),
-                            launch.environment,
-                        ),
-                    },
-                    python_artifact_root(os.environ, build_path / "python-artifacts"),
-                    pytest_scope=f"mutation-run:{build_path.resolve()}",
-                ),
-                capture_output=True,
-                text=True,
-                timeout=timeout + _MUTANT_HARD_KILL_MARGIN_S,
-                check=False,
-            )
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    cwd=work_dir,
+                    env=relocate_python_artifacts(
+                        {
+                            **os.environ,
+                            **launch_environment(
+                                _target_environment(work_dir, self._target_identity(target)),
+                                launch.environment,
+                            ),
+                        },
+                        python_artifact_root(os.environ, build_path / "python-artifacts"),
+                        pytest_scope=f"mutation-run:{build_path.resolve()}",
+                    ),
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout + _MUTANT_HARD_KILL_MARGIN_S,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                _discard_adapter_results(identity)
+                raise
+        return proc, _killing_signal(proc, identity)
 
     def _run_target_test_suite(
         self,
@@ -2043,7 +2172,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
 
         def _launch(unit: CampaignUnit) -> MutationTestRun:
             try:
-                proc = self._run_sim_pinned(
+                proc, killed_by = self._run_sim_pinned(
                     target,
                     work_dir,
                     build_path,
@@ -2057,6 +2186,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                     process=proc,
                     output=(proc.stdout or "") + (proc.stderr or ""),
                     requires_cocotb_results=batched,
+                    killed_by=killed_by,
                 )
             except subprocess.TimeoutExpired as exc:
                 return MutationTestRun(
@@ -2079,12 +2209,33 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 )
 
         def _run_unit(unit: CampaignUnit) -> MutationTestRun:
-            started = _monotonic()
-            run = _launch(unit)
-            run.duration_s = _monotonic() - started
-            return run
+            def request() -> JobRequest | None:
+                return self._unit_job_request(target, work_dir, build_path, unit, batched)
+
+            # The wait for memory comes first, so it never counts in a duration or time limit.
+            with self._claims.hold(request, build=False):
+                started = _monotonic()
+                run = _launch(unit)
+                run.duration_s = _monotonic() - started
+                return run
 
         return list(campaign.execute(_run_unit, batched=batched, batches=batches).values)
+
+    def _unit_job_request(
+        self, target: str, work_dir: Path, build_path: Path, unit: CampaignUnit, batched: bool
+    ) -> JobRequest | None:
+        """What one campaign unit simulates, to size its claim; ``None`` when unknown."""
+        try:
+            adapter = "cocotb" if batched else self._classic_eda_tool(target, work_dir, build_path)
+            plan, _parameters = self._default_test_plan(target, work_dir, adapter)
+            names = (
+                unit.selected_tests
+                if batched
+                else (() if unit.test_name is None else (unit.test_name,))
+            )
+            return sim_job_request(plan, plan.default_runs_for(names))
+        except (UnsupportedSimTargetError, OSError, ValueError):
+            return None
 
     @staticmethod
     def _suite_output(runs: list[MutationTestRun]) -> str:
@@ -2162,8 +2313,9 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             return VariantSuiteVerdict(
                 inconclusive_reason=prefix + "runner produced no process result"
             )
-        if infra := _infra_failure_reason(run.process):
-            return VariantSuiteVerdict(inconclusive_reason=prefix + infra)
+        killed = f"killed by signal {run.killed_by}" if run.killed_by else ""
+        if reason := killed or _infra_failure_reason(run.process):
+            return VariantSuiteVerdict(inconclusive_reason=prefix + reason)
         return None
 
     @staticmethod

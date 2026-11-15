@@ -1,6 +1,6 @@
 """SimulateFlow Cocotb Target tests (ADR 0034 — G3, G4, B2, B3, B4, G6).
 
-Host-runnable: the Cocotb Target is simulated through the real campaign path
+Host-runnable: the Cocotb Target is simulated through the real record path
 (``SimulateFlow.execute``) with only the process edge faked
 (``simulation_record_boundary``). The fake process prints canned run-half output
 ([COCOTB_RESULTS] + [SIM_SUMMARY] lines built with the real formatters) and the
@@ -79,7 +79,7 @@ def _cocotb_output(
 ) -> str:
     """Canned run-half stdout: sim noise + [COCOTB_RESULTS] + [SIM_SUMMARY].
 
-    *sva_errors* rides the [SIM_SUMMARY] line; the campaign adapter ignores it
+    *sva_errors* rides the [SIM_SUMMARY] line; the record adapter ignores it
     and recounts SVA error lines over the run output itself.
     """
     results = cr.CocotbResults(
@@ -110,7 +110,7 @@ def _run_cocotb(
     skip: dict[str, list[str]] | None = None,
     **request: Any,
 ) -> SimulationRecordSimRun:
-    """Run the Cocotb Target ``ccfg`` through the campaign with *stdout* as the run-half output."""
+    """Run the Cocotb Target ``ccfg`` through the record with *stdout* as the run-half output."""
     process = SubprocessResult(returncode=returncode, stdout=stdout, duration_s=2.0)
     return run_simulation_record_sim(
         tmp_path,
@@ -449,7 +449,7 @@ def test_cocotb_build_failure_blocks_every_test(
 ) -> None:
     """When the BUILD half breaks, not one selected test runs.
 
-    The campaign records every selected test as blocked by the build and rides
+    The record records every selected test as blocked by the build and rides
     the compile error on each (taxi: an icarus Target whose SV interface ports
     don't parse in iverilog gave 14 phantom FAILs). Nothing is launched, so the
     build failure can never read as a pass (ADR 0034 dec 6).

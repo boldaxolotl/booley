@@ -31,7 +31,7 @@ def test_child_records_publish_and_verify_through_the_booley_dir_entry(
     configured entry: it must stay refused.
     """
     manifest = _two_item_manifest()
-    # The Campaign store is plain: only the Project-local child records cross the entry.
+    # The Simulation Record store is plain: only the Project-local child records cross the entry.
     store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(manifest)
     project = tmp_path / "project"
@@ -132,7 +132,7 @@ def test_cancel_reports_timeout(tmp_path: Path, monkeypatch) -> None:
 
 
 def _lane_registry(tmp_path: Path):
-    """A real registry over a stored Campaign, plus one prepared (waiting) lane."""
+    """A real registry over a stored Simulation Record, plus one prepared (waiting) lane."""
     manifest = _two_item_manifest()
     store = SimulationRecordStore(tmp_path / "record")
     store.publish_manifest(manifest)

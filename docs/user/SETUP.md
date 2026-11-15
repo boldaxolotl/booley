@@ -103,7 +103,7 @@ booley init --provider codex --auth subscription
 
 The choice is recorded in the `[agent]` table of `.booley/booley.toml`, as
 `default` and `auth`. The flag spells the policy `api-key`; the file spells it
-`api_key`. Re-running init keeps an explicit value and replaces `auto`; to
+`api_key`. Re-running init keeps an explicit value; to
 change it later, edit that table (see [CONFIG.md](CONFIG.md)).
 
 `booley init` is safe to re-run. It never overwrites a hand-edited
@@ -139,13 +139,17 @@ one that has only a key (a Claude OAuth token counts as a login, a Codex
 `subscription`); without a terminal it records `subscription` and says so.
 With neither, it records `subscription` and prints how to sign in.
 
-Init records a choice instead of `auto` because `auto` lets the Agent CLI
-decide, and an exported API key always beats a subscription, so
-you can end up paying per token without noticing. With an explicit choice,
+Init records a choice because, left to itself, the Agent CLI lets an exported
+API key beat a subscription, so you can end up paying per token without
+noticing. With an explicit choice,
 `booley doctor` fails when the default Agent CLI's credential is missing instead
 of quietly using another one (for another allowed CLI it only warns, unless a Specialist runs on it). A Project that also runs a Specialist on the other Agent CLI can
 bill each CLI differently. All values are in
 [CONFIG.md](CONFIG.md#pinning-what-bills-agent-auth).
+
+`booley doctor` fails for each listed CLI whose `auth` is missing or `"auto"`,
+naming the value init would record. Set it in `booley.toml`, or re-run
+`booley init` to record it for you.
 
 To see which login Booley is using, run `booley auth --status` on the host.
 

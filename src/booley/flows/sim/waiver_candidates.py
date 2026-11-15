@@ -170,7 +170,7 @@ def _canonical_now(now: datetime) -> str:
 
 
 @dataclass(frozen=True)
-class CampaignBinding:
+class CoverageRecordBinding:
     """The persisted Campaign one batch of proposals was screened against (R4).
 
     ``campaign_path`` is relative to the runtime ``flow-reports`` root.
@@ -204,7 +204,7 @@ class WaiverProposal:
 class WaiverCandidate:
     """One recorded Waiver Candidate: a proposal bound to its Campaign."""
 
-    binding: CampaignBinding
+    binding: CoverageRecordBinding
     proposal: WaiverProposal
     proposal_count: int
     first_recorded_at: str
@@ -225,7 +225,7 @@ class WaiverCandidate:
         """Project the binding used by both recording and review evaluation."""
         return ProvisionalCandidate(
             candidate_id=self.candidate_id,
-            campaign_id=self.binding.campaign_id,
+            coverage_record_id=self.binding.campaign_id,
             target_identity=self.binding.target_identity,
             point_id=self.proposal.point_id,
             source=self.proposal.source,
@@ -314,7 +314,7 @@ class RecordOutcome:
     candidate_ids: tuple[str, ...] = ()
 
 
-def _validate_binding(value: CampaignBinding) -> None:
+def _validate_binding(value: CoverageRecordBinding) -> None:
     _text(value.campaign_id, "campaign_id")
     require_sha256_digest(value.manifest_sha256, field="'manifest_sha256'")
     require_sha256_digest(value.point_store_sha256, field="'point_store_sha256'")
@@ -354,7 +354,7 @@ def _parse_candidate(stored_id: str, value: Any) -> WaiverCandidate:
     document = require_dict(value, field=f"candidate {stored_id!r}")
     _exact_fields(document, _CANDIDATE_FIELDS, f"candidate {stored_id!r}")
     candidate = WaiverCandidate(
-        binding=CampaignBinding(**{name: document[name] for name in _BINDING_FIELDS}),
+        binding=CoverageRecordBinding(**{name: document[name] for name in _BINDING_FIELDS}),
         proposal=_validate_proposal(
             WaiverProposal(
                 point_id=document["point_id"],
@@ -500,7 +500,7 @@ def _accumulate(
 
 def record_proposals(
     directory: Path,
-    binding: CampaignBinding,
+    binding: CoverageRecordBinding,
     proposals: Iterable[WaiverProposal],
     *,
     invocation_id: str,

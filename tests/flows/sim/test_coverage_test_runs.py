@@ -15,12 +15,12 @@ from pathlib import Path
 import pytest
 
 from booley.criteria.state import DevelopmentState
-from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
 from booley.flows.sim.coverage_invocation import (
     CoverageInvocationRequest,
     prepare_coverage_invocation,
 )
 from booley.flows.sim.coverage_json import coverage_mapping_document
+from booley.flows.sim.coverage_record_store import load_coverage_record
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import (
@@ -116,7 +116,7 @@ def test_two_variants_and_a_seed_count_are_one_process_each(tmp_path, monkeypatc
     ]
     assert all(_WINDOWS_SAFE_NAME.match(request.raw_path.name) for request in execution.runs)
 
-    document = json.loads(outcome.campaign_path.read_text())
+    document = json.loads(outcome.coverage_record_path.read_text())
     assert document["$schema"] == "booley.coverage-record/v1"
     assert document["tests"]["selected"] == ["reset", "wrap"]
     assert [(run["test"], run["test_run"]) for run in document["tests"]["runs"]] == [
@@ -130,8 +130,8 @@ def test_two_variants_and_a_seed_count_are_one_process_each(tmp_path, monkeypatc
         run.fingerprint for run in plan.test_runs
     ]
     # The merged result is the union: every run contributes its own hits.
-    campaign = load_coverage_campaign(outcome.campaign_path).campaign
-    assert dict(campaign.points[0].hits_by_run) == {
+    coverage_record = load_coverage_record(outcome.coverage_record_path).coverage_record
+    assert dict(coverage_record.points[0].hits_by_run) == {
         f"run:{index:03d}:{name}": 2 for index, name in enumerate(names, start=1)
     }
     rows = coverage_mapping_document(outcome.detail)["tests"]
@@ -321,10 +321,10 @@ def _recorded_runs(manifest: Path) -> list[dict]:
 
 
 def _forbid_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A resumed campaign must never resolve or draw Test Runs again."""
+    """A resumed record must never resolve or draw Test Runs again."""
 
     def refuse(*_args, **_kwargs):
-        raise AssertionError("a resumed campaign resolved its Test Runs again")
+        raise AssertionError("a resumed record resolved its Test Runs again")
 
     monkeypatch.setattr(SimulateFlow, "_resolve_test_runs", refuse)
     monkeypatch.setattr("booley.flows.test_runs.secrets.SystemRandom", refuse)
@@ -387,7 +387,7 @@ def test_interrupted_multi_run_collection_names_its_frozen_test_runs_for_the_new
 def test_resumed_multi_run_coverage_replays_the_frozen_test_runs_byte_identically(
     tmp_path, monkeypatch
 ):
-    """A collected campaign cut during publication resumes from its own manifest."""
+    """A collected record cut during publication resumes from its own manifest."""
     _resumable_project(tmp_path, monkeypatch)
     reports = tmp_path / "reports"
     execution = NativeExecution()

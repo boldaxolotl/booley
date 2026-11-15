@@ -1,6 +1,6 @@
-"""Per-Test-Run rows of one Simulation Campaign, for reports (ADR 0072).
+"""Per-Test-Run rows of one Simulation Record, for reports (ADR 0072).
 
-A campaign's acceptance facts name the Test Run of every observation, and its
+A record's acceptance facts name the Test Run of every observation, and its
 manifest records what each Test Run is: Test Variant, seed, declared
 arguments and environment. This module joins the two into one row per Test
 Run and renders the report lines, including the command that reruns a failed
@@ -77,10 +77,10 @@ TEST_RUN_GRADES = {
 
 
 def test_run_grade(*, passed: bool, infrastructure: bool, inconclusive: bool) -> str:
-    """One word for how a Test Run ended: the Simulation Campaign's grade table.
+    """One word for how a Test Run ended: the Simulation Record's grade table.
 
     A run that did not pass because of infrastructure is an ``error`` even
-    when its verdict is also inconclusive. Campaign observations, direct
+    when its verdict is also inconclusive. Simulation Record observations, direct
     results and coverage runs are all graded here.
     """
     if passed:
@@ -101,7 +101,7 @@ test_run_row.__test__ = False  # type: ignore[attr-defined]
 
 
 def observation_grade(observation: Mapping[str, object]) -> str:
-    """Grade a campaign observation."""
+    """Grade a record observation."""
     return test_run_grade(
         passed=(
             observation["execution"] == "completed"
@@ -186,14 +186,14 @@ def simulation_record_test_run_rows(outcome: _Outcome) -> list[dict[str, object]
     """One row per observed Test Run: what it is, and how it ended.
 
     Each row holds the recorded ``name``, ``test``, ``variant``, ``seed``,
-    ``args``, ``env`` and ``fingerprint`` plus ``grade``. A campaign whose
+    ``args``, ``env`` and ``fingerprint`` plus ``grade``. A record whose
     manifest cannot be read has no rows.
     """
     return [row for row, _ in _observed_rows(outcome)]
 
 
 def simulation_record_test_run_files_by_row(outcome: _EvidenceOutcome) -> tuple[TestRunFiles, ...]:
-    """The evidence files of each row of :func:`campaign_test_run_rows`, in its order."""
+    """The evidence files of each row of :func:`simulation_record_test_run_rows`, in its order."""
     files = simulation_record_test_run_files(outcome)
     return tuple(files[index] for _, index in _observed_rows(outcome))
 
@@ -235,7 +235,7 @@ class _Facts(Protocol):
 
 
 def evidence_test_run_rows(outcome: _EvidenceOutcome) -> list[dict[str, object]]:
-    """The rows of :func:`campaign_test_run_rows`, authenticated for evidence.
+    """The rows of :func:`simulation_record_test_run_rows`, authenticated for evidence.
 
     A record that later matches Goal evidence on a Test Run's ``name`` and
     ``fingerprint`` must not take them from a file that merely sits where the
@@ -243,8 +243,8 @@ def evidence_test_run_rows(outcome: _EvidenceOutcome) -> list[dict[str, object]]
     facts name by digest, and every row must carry the fingerprint its
     observation recorded.
 
-    Raises :class:`SimulationCampaignIntegrityError` when the manifest is
-    missing or is not the campaign's, or when an observation has no recorded
+    Raises :class:`SimulationRecordIntegrityError` when the manifest is
+    missing or is not the record's, or when an observation has no recorded
     Test Run with its fingerprint.
     """
     facts = outcome.acceptance_facts.document
@@ -253,11 +253,11 @@ def evidence_test_run_rows(outcome: _EvidenceOutcome) -> list[dict[str, object]]
         manifest = decode_simulation_record_manifest(outcome.manifest_path.read_bytes())
     except OSError as exc:
         raise SimulationRecordIntegrityError(
-            f"Simulation Campaign manifest cannot be read for its Test Runs: {exc}"
+            f"Simulation Record manifest cannot be read for its Test Runs: {exc}"
         ) from exc
     if manifest_digest(manifest) != facts["manifest_sha256"]:
         raise SimulationRecordIntegrityError(
-            "Simulation Campaign manifest is not the one its acceptance facts name"
+            "Simulation Record manifest is not the one its acceptance facts name"
         )
     return observation_test_run_rows(manifest, observations)
 
@@ -267,7 +267,7 @@ def observation_test_run_rows(
 ) -> list[dict[str, object]]:
     """One row per observation fact, from the Test Runs the authenticated *manifest* records.
 
-    Raises :class:`SimulationCampaignIntegrityError` when an observation has no
+    Raises :class:`SimulationRecordIntegrityError` when an observation has no
     recorded Test Run with the fingerprint it bound.
     """
     recorded = _manifest_test_runs(manifest)
@@ -277,7 +277,7 @@ def observation_test_run_rows(
         if run is None or run.fingerprint != observation["test_run_fingerprint"]:
             raise SimulationRecordIntegrityError(
                 f"observation of Test Run {observation['test_run']!r} has no recorded "
-                "Test Run with its fingerprint in the Simulation Campaign manifest"
+                "Test Run with its fingerprint in the Simulation Record manifest"
             )
         row = test_run_row(run, observation_grade(observation))
         if row["grade"] == "fail":

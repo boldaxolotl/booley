@@ -13,10 +13,10 @@ from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import PreparedTargetSelection, TargetCatalog
 from booley.targets.domain import FuseSocError, TargetHandle, immutable_mapping
 
-from .coverage_campaign import CoverageFinding, DurableTargetIdentity
 from .coverage_json import FrozenJson, freeze_coverage_mapping
 from .coverage_policy import CoverageCriterion
 from .coverage_provenance import coverage_digest, coverage_source_closure
+from .coverage_record import CoverageFinding, DurableTargetIdentity
 from .coverage_source_gaps import rtl_module_candidates
 from .coverage_waivers import CoverageRepositoryRoots, CoverageWaiverConfig
 from .verilator_coverage import CoverageCollectionRequest, coverage_request_finding

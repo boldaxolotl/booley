@@ -1,6 +1,6 @@
-"""A Simulation Campaign baseline builds and runs in the baseline checkout.
+"""A Simulation Record baseline builds and runs in the baseline checkout.
 
-The prepared (campaign) ``sim`` path plans a Cycle Count baseline from a
+The prepared (record) ``sim`` path plans a Cycle Count baseline from a
 checkout of the baseline revision. Its build and launch commands use paths
 relative to that checkout, so they must also run there, not in the candidate
 checkout the invocation was started from.
@@ -50,7 +50,7 @@ def test_simulation_record_baseline_builds_and_runs_in_the_baseline_checkout(
 
 
 def _observed_cycles(targets: Path) -> dict[str, list[tuple[str, int]]]:
-    """Each campaign's observed (Test, cycles), read from its published results."""
+    """Each record's observed (Test, cycles), read from its published results."""
     observed: dict[str, list[tuple[str, int]]] = {}
     for result in sorted(targets.glob("*/record/work-items/*/result.json")):
         document = json.loads(result.read_text())

@@ -6,26 +6,26 @@ from types import MappingProxyType
 
 import pytest
 
-from booley.flows.sim.coverage_campaign import (
-    NO_DECLARED_INPUTS_FINGERPRINT,
-    CoverageCampaign,
-    CoverageCapability,
-    CoverageCollector,
-    CoveragePoint,
-    CoveragePointIdentity,
-    CoverageRollup,
-    CoverageRun,
-    CoverageTarget,
-    DurableTargetIdentity,
-)
 from booley.flows.sim.coverage_policy import (
     ApprovedWaiver,
     ApprovedWaiverSet,
     CoverageCriterion,
     CoverageThreshold,
-    evaluate_coverage_campaign,
+    evaluate_coverage_record,
 )
-from tests.flows.sim.coverage_campaign_test_support import decode_document
+from booley.flows.sim.coverage_record import (
+    NO_DECLARED_INPUTS_FINGERPRINT,
+    CoverageCapability,
+    CoverageCollector,
+    CoveragePoint,
+    CoveragePointIdentity,
+    CoverageRecord,
+    CoverageRollup,
+    CoverageRun,
+    CoverageTarget,
+    DurableTargetIdentity,
+)
+from tests.flows.sim.coverage_record_test_support import decode_document
 
 _TARGET = DurableTargetIdentity("acme:demo:counter:1.0#sim_counter")
 
@@ -45,10 +45,10 @@ def _point(point_id: str, hits: int, *, metric: str = "line") -> CoveragePoint:
     )
 
 
-def _campaign(*, simulation_verdict: str = "pass") -> CoverageCampaign:
+def _coverage_record(*, simulation_verdict: str = "pass") -> CoverageRecord:
     points = (_point("point-0", 1), _point("point-1", 0))
-    return CoverageCampaign(
-        campaign_id="campaign:sim_counter:12",
+    return CoverageRecord(
+        coverage_record_id="campaign:sim_counter:12",
         invocation=MappingProxyType({"id": 12}),
         target=CoverageTarget(identity=str(_TARGET), selector="sim_counter"),
         collector=CoverageCollector(
@@ -123,8 +123,8 @@ def _empty_waivers() -> ApprovedWaiverSet:
     )
 
 
-def _two_metric_campaign() -> CoverageCampaign:
-    campaign = _campaign()
+def _two_metric_coverage_record() -> CoverageRecord:
+    coverage_record = _coverage_record()
     branch_points = (
         _point("branch-0", 1, metric="branch"),
         _point("branch-1", 0, metric="branch"),
@@ -144,19 +144,19 @@ def _two_metric_campaign() -> CoverageCampaign:
         percent=50.0,
     )
     return replace(
-        campaign,
+        coverage_record,
         collector=replace(
-            campaign.collector,
-            capabilities=(*campaign.collector.capabilities, branch_capability),
+            coverage_record.collector,
+            capabilities=(*coverage_record.collector.capabilities, branch_capability),
         ),
-        points=(*campaign.points, *branch_points),
-        rollups=(*campaign.rollups, branch_rollup),
+        points=(*coverage_record.points, *branch_points),
+        rollups=(*coverage_record.rollups, branch_rollup),
     )
 
 
 def test_exact_threshold_pass_preserves_failed_simulation_truth() -> None:
-    evaluated = evaluate_coverage_campaign(
-        _campaign(simulation_verdict="fail"),
+    evaluated = evaluate_coverage_record(
+        _coverage_record(simulation_verdict="fail"),
         _criterion(),
         _empty_waivers(),
     )
@@ -182,8 +182,8 @@ def test_exact_threshold_pass_preserves_failed_simulation_truth() -> None:
 
 
 def test_threshold_miss_uses_exact_rational_not_display_percentage() -> None:
-    evaluated = evaluate_coverage_campaign(
-        _campaign(),
+    evaluated = evaluate_coverage_record(
+        _coverage_record(),
         _criterion(Fraction(500001, 10000)),
         _empty_waivers(),
     )
@@ -221,7 +221,7 @@ def test_criterion_without_unique_v1_metrics_is_rejected_at_construction(
 def test_scorer_never_passes_an_empty_threshold_set() -> None:
     from booley.flows.sim.coverage_policy import score_thresholds
 
-    assert score_thresholds(_campaign().rollups, ()).status == "fail"
+    assert score_thresholds(_coverage_record().rollups, ()).status == "fail"
 
 
 def test_target_mismatch_blocks_with_stable_diagnostic() -> None:
@@ -231,7 +231,7 @@ def test_target_mismatch_blocks_with_stable_diagnostic() -> None:
         tests=None,
     )
 
-    evaluated = evaluate_coverage_campaign(_campaign(), criterion, _empty_waivers())
+    evaluated = evaluate_coverage_record(_coverage_record(), criterion, _empty_waivers())
 
     assert evaluated.evaluation["status"] == "blocked"
     assert [item["code"] for item in evaluated.evaluation["diagnostics"]] == [
@@ -246,7 +246,7 @@ def test_exact_suite_mismatch_blocks_with_stable_diagnostic() -> None:
         tests=("reset",),
     )
 
-    evaluated = evaluate_coverage_campaign(_campaign(), criterion, _empty_waivers())
+    evaluated = evaluate_coverage_record(_coverage_record(), criterion, _empty_waivers())
 
     assert evaluated.evaluation["status"] == "blocked"
     assert evaluated.evaluation["suite"]["status"] == "mismatch"
@@ -256,13 +256,13 @@ def test_exact_suite_mismatch_blocks_with_stable_diagnostic() -> None:
 
 
 def test_incomplete_collection_blocks_instead_of_failing_thresholds() -> None:
-    campaign = replace(
-        _campaign(),
+    coverage_record = replace(
+        _coverage_record(),
         collection=MappingProxyType({"status": "incomplete"}),
         rollups=(),
     )
 
-    evaluated = evaluate_coverage_campaign(campaign, _criterion(), _empty_waivers())
+    evaluated = evaluate_coverage_record(coverage_record, _criterion(), _empty_waivers())
 
     assert evaluated.evaluation["status"] == "blocked"
     assert [item["code"] for item in evaluated.evaluation["diagnostics"]] == [
@@ -272,12 +272,12 @@ def test_incomplete_collection_blocks_instead_of_failing_thresholds() -> None:
 
 
 def test_incompatible_normalization_blocks_with_stable_diagnostic() -> None:
-    campaign = replace(
-        _campaign(),
+    coverage_record = replace(
+        _coverage_record(),
         normalization=MappingProxyType({"status": "incompatible"}),
     )
 
-    evaluated = evaluate_coverage_campaign(campaign, _criterion(), _empty_waivers())
+    evaluated = evaluate_coverage_record(coverage_record, _criterion(), _empty_waivers())
 
     assert evaluated.evaluation["status"] == "blocked"
     assert [item["code"] for item in evaluated.evaluation["diagnostics"]] == [
@@ -286,17 +286,17 @@ def test_incompatible_normalization_blocks_with_stable_diagnostic() -> None:
 
 
 def test_required_reported_only_metric_blocks_as_unavailable() -> None:
-    campaign = _campaign()
+    coverage_record = _coverage_record()
     capability = replace(
-        campaign.collector.capabilities[0],
+        coverage_record.collector.capabilities[0],
         attributes=MappingProxyType({"collection": "supported", "scoring": "reported_only"}),
     )
-    campaign = replace(
-        campaign,
-        collector=replace(campaign.collector, capabilities=(capability,)),
+    coverage_record = replace(
+        coverage_record,
+        collector=replace(coverage_record.collector, capabilities=(capability,)),
     )
 
-    evaluated = evaluate_coverage_campaign(campaign, _criterion(), _empty_waivers())
+    evaluated = evaluate_coverage_record(coverage_record, _criterion(), _empty_waivers())
 
     assert evaluated.evaluation["status"] == "blocked"
     assert [item["code"] for item in evaluated.evaluation["diagnostics"]] == [
@@ -325,7 +325,7 @@ def test_waiving_every_point_blocks_zero_eligible_denominator() -> None:
         ),
     )
 
-    evaluated = evaluate_coverage_campaign(_campaign(), _criterion(), waivers)
+    evaluated = evaluate_coverage_record(_coverage_record(), _criterion(), waivers)
 
     assert evaluated.evaluation["status"] == "blocked"
     assert [point.disposition["kind"] for point in evaluated.points] == ["waived", "waived"]
@@ -345,10 +345,10 @@ def test_waiving_every_point_blocks_zero_eligible_denominator() -> None:
     ]
 
 
-def test_ungated_campaign_is_not_requested_and_preserves_observations() -> None:
-    campaign = _campaign(simulation_verdict="fail")
+def test_ungated_coverage_record_is_not_requested_and_preserves_observations() -> None:
+    coverage_record = _coverage_record(simulation_verdict="fail")
 
-    evaluated = evaluate_coverage_campaign(campaign, None, _empty_waivers())
+    evaluated = evaluate_coverage_record(coverage_record, None, _empty_waivers())
 
     assert evaluated.evaluation == {
         "status": "not_requested",
@@ -358,7 +358,7 @@ def test_ungated_campaign_is_not_requested_and_preserves_observations() -> None:
         "metrics": (),
         "diagnostics": (),
     }
-    assert evaluated.points == campaign.points
+    assert evaluated.points == coverage_record.points
     assert evaluated.runs[0].simulation_verdict == "fail"
 
 
@@ -375,10 +375,10 @@ def _approval(point_id: str, *, target: DurableTargetIdentity = _TARGET) -> Appr
     )
 
 
-def test_ungated_campaign_applies_matched_waivers() -> None:
+def test_ungated_coverage_record_applies_matched_waivers() -> None:
     waivers = replace(_empty_waivers(), waivers=(_approval("point-1"),))
 
-    evaluated = evaluate_coverage_campaign(_campaign(), None, waivers)
+    evaluated = evaluate_coverage_record(_coverage_record(), None, waivers)
 
     assert evaluated.evaluation["status"] == "not_requested"
     assert evaluated.evaluation["diagnostics"] == ()
@@ -395,10 +395,10 @@ def test_ungated_campaign_applies_matched_waivers() -> None:
     assert evaluated.rollups[0].waived_points == 1
 
 
-def test_ungated_campaign_blocks_on_unmatched_waiver() -> None:
+def test_ungated_coverage_record_blocks_on_unmatched_waiver() -> None:
     waivers = replace(_empty_waivers(), waivers=(_approval("point-9"),))
 
-    evaluated = evaluate_coverage_campaign(_campaign(), None, waivers)
+    evaluated = evaluate_coverage_record(_coverage_record(), None, waivers)
 
     assert evaluated.evaluation["status"] == "blocked"
     assert [item["code"] for item in evaluated.evaluation["diagnostics"]] == [
@@ -410,10 +410,12 @@ def test_ungated_campaign_blocks_on_unmatched_waiver() -> None:
 
 def test_ungated_partial_normalization_leaves_waivers_unmatched() -> None:
     """The matcher skips approvals on partial point sets; ungated runs inherit that."""
-    campaign = replace(_campaign(), normalization=MappingProxyType({"status": "partial"}))
+    coverage_record = replace(
+        _coverage_record(), normalization=MappingProxyType({"status": "partial"})
+    )
     waivers = replace(_empty_waivers(), waivers=(_approval("point-1"),))
 
-    evaluated = evaluate_coverage_campaign(campaign, None, waivers)
+    evaluated = evaluate_coverage_record(coverage_record, None, waivers)
 
     assert evaluated.evaluation["status"] == "not_requested"
     assert evaluated.evaluation["diagnostics"] == ()
@@ -421,19 +423,19 @@ def test_ungated_partial_normalization_leaves_waivers_unmatched() -> None:
 
 
 def test_blocked_diagnostics_are_aggregated_in_stable_order() -> None:
-    campaign = _campaign()
+    coverage_record = _coverage_record()
     capability = replace(
-        campaign.collector.capabilities[0],
+        coverage_record.collector.capabilities[0],
         attributes=MappingProxyType({"collection": "supported", "scoring": "reported_only"}),
     )
-    campaign = replace(
-        campaign,
-        collector=replace(campaign.collector, capabilities=(capability,)),
+    coverage_record = replace(
+        coverage_record,
+        collector=replace(coverage_record.collector, capabilities=(capability,)),
         collection=MappingProxyType({"status": "incomplete"}),
         normalization=MappingProxyType({"status": "incompatible"}),
     )
 
-    evaluated = evaluate_coverage_campaign(campaign, _criterion(), _empty_waivers())
+    evaluated = evaluate_coverage_record(coverage_record, _criterion(), _empty_waivers())
 
     assert [item["code"] for item in evaluated.evaluation["diagnostics"]] == [
         "COV_EVAL_COLLECTION_INCOMPLETE",
@@ -442,9 +444,9 @@ def test_blocked_diagnostics_are_aggregated_in_stable_order() -> None:
     ]
 
 
-def test_blocked_gated_campaign_still_resolves_approved_dispositions() -> None:
-    campaign = replace(
-        _campaign(),
+def test_blocked_gated_coverage_record_still_resolves_approved_dispositions() -> None:
+    coverage_record = replace(
+        _coverage_record(),
         collection=MappingProxyType({"status": "incomplete"}),
     )
     waiver = ApprovedWaiver(
@@ -459,7 +461,7 @@ def test_blocked_gated_campaign_still_resolves_approved_dispositions() -> None:
     )
     waivers = replace(_empty_waivers(), waivers=(waiver,))
 
-    evaluated = evaluate_coverage_campaign(campaign, _criterion(), waivers)
+    evaluated = evaluate_coverage_record(coverage_record, _criterion(), waivers)
 
     assert evaluated.evaluation["status"] == "blocked"
     assert evaluated.points[1].disposition["kind"] == "waived"
@@ -475,13 +477,13 @@ def test_gated_evaluation_records_approved_waiver_set_digest(
     collection_status: str,
     expected_status: str,
 ) -> None:
-    campaign = replace(
-        _campaign(),
+    coverage_record = replace(
+        _coverage_record(),
         collection=MappingProxyType({"status": collection_status}),
     )
     waivers = replace(_empty_waivers(), digest="sha256:reviewed-waivers")
 
-    evaluated = evaluate_coverage_campaign(campaign, _criterion(), waivers)
+    evaluated = evaluate_coverage_record(coverage_record, _criterion(), waivers)
 
     assert evaluated.evaluation["status"] == expected_status
     assert evaluated.evaluation["approved_waiver_set_digest"] == waivers.digest
@@ -497,7 +499,9 @@ def test_metrics_use_fixed_order_and_logical_and() -> None:
         tests=None,
     )
 
-    evaluated = evaluate_coverage_campaign(_two_metric_campaign(), criterion, _empty_waivers())
+    evaluated = evaluate_coverage_record(
+        _two_metric_coverage_record(), criterion, _empty_waivers()
+    )
 
     assert evaluated.evaluation["status"] == "fail"
     assert [item["metric"] for item in evaluated.evaluation["metrics"]] == [
@@ -528,8 +532,10 @@ def test_fingerprint_ignores_metric_authoring_order_and_numeric_spelling() -> No
         tests=("smoke",),
     )
 
-    first_result = evaluate_coverage_campaign(_two_metric_campaign(), first, _empty_waivers())
-    second_result = evaluate_coverage_campaign(_two_metric_campaign(), second, _empty_waivers())
+    first_result = evaluate_coverage_record(_two_metric_coverage_record(), first, _empty_waivers())
+    second_result = evaluate_coverage_record(
+        _two_metric_coverage_record(), second, _empty_waivers()
+    )
 
     assert (
         first_result.evaluation["criterion_fingerprint"]
@@ -537,19 +543,19 @@ def test_fingerprint_ignores_metric_authoring_order_and_numeric_spelling() -> No
     )
 
 
-def test_fingerprint_is_independent_of_campaign_storage_version(tmp_path) -> None:
-    from booley.flows.sim.coverage_campaign_store import (
-        load_coverage_campaign,
-        publish_coverage_campaign,
+def test_fingerprint_is_independent_of_coverage_record_storage_version(tmp_path) -> None:
+    from booley.flows.sim.coverage_record_store import (
+        load_coverage_record,
+        publish_coverage_record,
     )
-    from tests.flows.sim.test_coverage_campaign import _valid_document
+    from tests.flows.sim.test_coverage_record import _valid_document
 
     document = _valid_document()
     document["collector"]["capabilities"][0].update(collection="supported", scoring="scored_v1")
-    campaign = decode_document(document, _TARGET)
-    evaluated = evaluate_coverage_campaign(campaign, _criterion(), _empty_waivers())
-    paths = publish_coverage_campaign(tmp_path, evaluated)
-    loaded = load_coverage_campaign(paths.campaign, _TARGET).campaign
+    coverage_record = decode_document(document, _TARGET)
+    evaluated = evaluate_coverage_record(coverage_record, _criterion(), _empty_waivers())
+    paths = publish_coverage_record(tmp_path, evaluated)
+    loaded = load_coverage_record(paths.coverage_record, _TARGET).coverage_record
 
     assert (
         loaded.evaluation["criterion_fingerprint"] == evaluated.evaluation["criterion_fingerprint"]
