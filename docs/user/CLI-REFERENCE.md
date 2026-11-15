@@ -47,10 +47,6 @@ Host Bootstrap is described in [INSTALL.md](INSTALL.md#host-bootstrap);
 `init` and its options in [SETUP.md](SETUP.md); logins and billing in
 [Sign-in and billing](SETUP.md#sign-in-and-billing).
 
-`booley init` also runs inside a hand-written Sandbox such as a Codespace, where it does Project
-Initialization only; a Booley-issued Sandbox refuses it. See
-[Project setup in a hand-written spec](SANDBOX.md#project-setup-in-a-hand-written-spec-booley-init).
-
 ### Work in the Sandbox · container
 
 ```bash
