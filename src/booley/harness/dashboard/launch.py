@@ -28,7 +28,6 @@ if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
     from booley.harness.dashboard.run_form import RunForm
     from booley.harness.dashboard.specialist_form import SpecialistForm
-    from booley.runtime.job_slots import AdmissionOutlook
 
 # The child parses and builds a request only; a minute covers a cold import on a slow host.
 CHECK_TIMEOUT_S = 60
@@ -282,7 +281,7 @@ class Launcher:
     def form(self, kind: str, name: str, worktree: Path) -> RunForm | SpecialistForm:
         """The form of a Flow or a built-in Specialist (``KeyError`` for any other name).
 
-        The coverage analyst's campaigns are read when its picker opens, so one that finishes meanwhile shows up.
+        The coverage analyst's Coverage Records are read when its picker opens, so one that finishes meanwhile shows up.
         """
         if kind == "flow":
             return form(name)
@@ -302,17 +301,6 @@ class Launcher:
 
     def check(self, worktree: Path, kind: str, name: str, argv: tuple[str, ...]) -> CheckResult:
         return check(worktree, kind, name, argv)
-
-    def outlook(self, job_class: str) -> AdmissionOutlook:
-        """What an interactive claim on *job_class* would meet; changes nothing. ``OSError`` if unreadable."""
-        from booley.config.jobs import parse_caps
-        from booley.runtime.job_slots import SlotStore, slots_dir
-        from booley.runtime.shared_infra import load_job_budget_config
-
-        root = slots_dir(self._booley_dir)
-        assert root is not None  # a Booley Directory was given, so the store is resolvable
-        caps = parse_caps(load_job_budget_config(booley_dir=self._booley_dir))
-        return SlotStore(root, caps).outlook(job_class)
 
     def uncommitted(self, worktree: Path) -> int:
         """Uncommitted changes in *worktree*, counted as ``booley worktree list`` counts them.

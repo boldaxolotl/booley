@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from booley.config.jobs import SeatCapError, parse_caps, required_seats
+from booley.config.jobs import SeatCapError, required_seats
 from booley.core.boundary import as_float
 from booley.flows.endpoint_events import (
     _endpoint_progress_event,
@@ -62,8 +62,8 @@ class AdmissionContext:
     ``memory_warning`` is the warning that Job's result carries (it ran alone
     because its estimate exceeded the Memory Budget, or the budget was
     unavailable). ``memory_sizing`` lets a Job give each Simulation Record work item
-    its own claim, and is set for every managed admission (a light Job's work
-    items, such as a mutation campaign's builds and simulations, take claims too).
+    its own claim, and is set for every managed admission (a Job's work items,
+    such as a mutation campaign's builds and simulations, take claims too).
     """
 
     mode: str
@@ -100,7 +100,7 @@ class _Claim:
     ``plan`` sized a memory-admitted Job's claim; ``threads`` is the Job's
     share of the cores, fixed when its Memory Reservation is admitted. Only a
     memory-admitted Job has either. ``sizing`` is what it lends its work items:
-    every managed claim, a light slot included, has it.
+    every managed claim has it.
     """
 
     store: job_slots.SlotStore | None
@@ -128,20 +128,15 @@ class AdmissionGate:
         self._entered = False
 
     def _claim(self) -> _Claim:
-        """Claim the Job's admission: a Memory Reservation, else a light slot.
+        """Claim the Job's admission: a Memory Reservation, or nothing for an unclassed endpoint.
 
         Sim, synth, fpga, lint, Custom Flow, Specialist and Mutation Flow Jobs are
-        memory-admitted; the claim carries the plan that sized it (``None`` for a slot).
+        memory-admitted; the claim carries the plan that sized it.
         """
         endpoint = self._endpoint
         if endpoint._memory_admitted():
             return _acquire_memory_reservation(endpoint, self._prepared, requeued=self._requeued)
-        store, token = endpoint._acquire_job_slot()
-        if store is None or (found := _admission_root(endpoint)) is None:
-            return _Claim(store, token)
-        project = found[0]
-        sizing = MemorySizing(project)
-        return _Claim(store, token, sizing=sizing)
+        return _Claim(None, None)
 
     @contextmanager
     def enter(self) -> Iterator[AdmissionContext]:
@@ -324,8 +319,8 @@ def _admission_root(endpoint: EndpointState) -> tuple[Path | None, Path] | None:
     """The Main Booley Directory and slot store root, or ``None`` when nothing is claimed.
 
     Nothing is claimed when the parent process already holds this run's slot
-    (``INHERITED_SLOT_ENV``; claiming again would double-count it and deadlock
-    at a cap of 1) or no runtime is configured.
+    (``INHERITED_SLOT_ENV``; claiming again would double-count it and wait
+    behind its own parent) or no runtime is configured.
     """
     inherited = os.environ.get(job_slots.INHERITED_SLOT_ENV)
     if inherited:
@@ -373,23 +368,6 @@ def _narrate_line(endpoint: EndpointState, line: str) -> None:
     )
 
 
-def _queue_narrator(
-    endpoint: EndpointState,
-    store: job_slots.SlotStore,
-    job_class: str,
-    waiting_for: str,
-) -> Callable[[int], None]:
-    """Narrate a queued slot claim, naming who holds the slot."""
-
-    def narrate(position: int) -> None:
-        held_by = store.describe_holders(job_class)
-        _narrate_line(
-            endpoint, f"waiting for {waiting_for} (position {position + 1}); held by {held_by}"
-        )
-
-    return narrate
-
-
 def _memory_narrator(
     endpoint: EndpointState, store: job_slots.SlotStore, pid: int
 ) -> Callable[[int], None]:
@@ -405,47 +383,14 @@ def _memory_narrator(
     return narrate
 
 
-def _acquire_job_slot(endpoint: EndpointState) -> tuple[job_slots.SlotStore | None, object | None]:
-    """Claim this run's admission slot, waiting in queue order if needed.
-
-    Returns ``(store, token)`` to release in main()'s finally, or
-    ``(None, None)`` when no admission applies: the endpoint is unclassed, the
-    parent process already holds this run's slot, or no runtime is configured
-    (bare invocations outside a project keep working unguarded).
-    """
-    job_class = endpoint._resolve_job_class()
-    if job_class is None:
-        return (None, None)  # unclassed: skip even the store lookup
-    found = _admission_root(endpoint)
-    if found is None:
-        return (None, None)
-    project, root = found
-    # Caps must come from the SAME project the slot store belongs to: the Main
-    # Booley Directory (Common Booley State), never work_dir or a linked
-    # worktree's diverged booley.toml.
-    caps = parse_caps(load_job_budget_config(booley_dir=project))
-    # Claim identity is this live process: record the argv exactly as
-    # /proc reports it so the ghost guards can match it later.
-    pid = os.getpid()
-    store = job_slots.SlotStore(root, caps)
-    token = store.acquire(
-        job_class,
-        pid=pid,
-        argv=_proc_cmdline(pid) or [],
-        role=job_slots.ROLE_INTERACTIVE,
-        timeout_s=_holder_deadline_seconds(),
-        on_queued=_queue_narrator(endpoint, store, job_class, f"{job_class} slot"),
-    )
-    return (store, token)
-
-
 def _acquire_memory_reservation(
     endpoint: EndpointState, prepared: PreparedExecution | None, *, requeued: bool = False
 ) -> _Claim:
     """Claim this memory-admitted Job's Memory Reservation, waiting in queue order if needed.
 
     Returns the claim with the Job's thread count; an empty claim when nothing
-    is claimed, as for :func:`_acquire_job_slot`. That check comes before any
+    is claimed (the parent process already holds this run's slot, or no runtime is
+    configured: bare invocations outside a project keep working unguarded). That check comes before any
     sizing, so a child under its parent's claim does no estimate work.
 
     A *requeued* Job (its first attempt was OOM-killed) claims the whole
@@ -459,7 +404,7 @@ def _acquire_memory_reservation(
     # Refused before any sizing or store entry: a Job that runs a licensed tool
     # without a Seat Cap never queues (SeatCapError is mapped by _enter_admission).
     seats = required_seats(endpoint._licensed_tools(), config)
-    store = job_slots.SlotStore(root, parse_caps(config))
+    store = job_slots.SlotStore(root)
     requests = None if prepared is None else prepared.invocation.job_requests()
     plan = endpoint._memory_admission_plan(project, requests)
     if requeued:

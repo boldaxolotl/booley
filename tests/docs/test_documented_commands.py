@@ -180,7 +180,7 @@ def test_documented_command_paths_are_registered_and_allowed() -> None:
         ("booley shell -- echo hello", "hidden subcommand shell"),
         ("booley session prepare", "hidden subcommand session prepare"),
         ("booley board prepare-review", "unknown subcommand board"),
-        ("booley flow coverage_analyst --campaign coverage.json", "unknown Flow coverage_analyst"),
+        ("booley flow coverage_analyst --record coverage.json", "unknown Flow coverage_analyst"),
     ],
 )
 def test_invalid_documented_commands_fail(command: str, error: str) -> None:

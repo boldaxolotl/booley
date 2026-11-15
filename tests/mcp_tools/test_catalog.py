@@ -22,7 +22,7 @@ MODES = (
     {
         "BOOLEY_NESTED_AGENT": "1",
         "BOOLEY_NESTED_MCP_TOOLS": "coverage_evidence",
-        "BOOLEY_COVERAGE_RECORD": "campaign",
+        "BOOLEY_COVERAGE_RECORD": "record",
         "BOOLEY_COVERAGE_PROJECT": "/project",
     },
 )

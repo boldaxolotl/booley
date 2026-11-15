@@ -18,7 +18,7 @@ def _configured_project(tmp_path: Path, stealth: str) -> Path:
     ("message", "error_fragment"),
     [
         ("fix(core): clean summary\n", None),
-        ("bad message\n", "doesn't match"),
+        ("Update ALU\n", None),
         ("fix(core): clean\n\nfirst\nsecond\n", "Body is 2 line(s)"),
         ("fix(core): codex mention\n", "Banned phrase"),
         ("Merge branch 'feature'\n", None),
@@ -32,7 +32,7 @@ def test_validation_uses_real_project_policy(
 ) -> None:
     root = _configured_project(
         tmp_path,
-        "enabled = true\nenforce_convention = true\nmax_body_lines = 1\n",
+        "enabled = true\nmax_body_lines = 1\n",
     )
 
     errors = validate_message(message, project_root=root)
@@ -46,7 +46,7 @@ def test_validation_uses_real_project_policy(
 def test_source_checkout_exemption_overrides_config() -> None:
     source_root = Path(__file__).resolve().parents[2]
 
-    assert policy.stealth_policy(source_root) == StealthPolicy(False, (), None, False, ())
+    assert policy.stealth_policy(source_root) == StealthPolicy(False, (), None, ())
 
 
 def test_default_validation_preserves_ordinary_engineering_prose(tmp_path: Path) -> None:
@@ -65,3 +65,31 @@ def test_identifier_message_validation_uses_both_tiers(tmp_path):
     )
     assert validate_message("fix: booley_config BooleyRunner myquokkafile\n", project_root=root)
     assert validate_message("fix: reagent precursor\n", project_root=root) == []
+
+
+def test_bundle_import_falls_back_to_flat_commit_policy_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inside the hook bundle the installed package is absent; the flat module is used."""
+    import importlib.util
+    import sys
+    import types
+
+    from booley.commit_policy import validation
+
+    flat = types.ModuleType("booley_commit_policy")
+    flat.__dict__.update(
+        find_banned=lambda text, project_root=None: [],
+        max_body_lines=lambda project_root=None: 1,
+        stealth_enabled=lambda project_root=None: True,
+    )
+    monkeypatch.setitem(sys.modules, "booley.commit_policy.policy", None)
+    monkeypatch.setitem(sys.modules, "booley_commit_policy", flat)
+    spec = importlib.util.spec_from_file_location("bundled_validation", validation.__file__)
+    assert spec is not None and spec.loader is not None
+    bundled = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bundled)
+
+    # The flat module's cap of one body line is what the bundled copy enforces.
+    assert bundled.body_length_errors("Update ALU\n\none\ntwo\n")
+    assert bundled.body_length_errors("Update ALU\n\none\n") == []

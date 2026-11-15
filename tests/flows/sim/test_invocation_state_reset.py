@@ -166,7 +166,7 @@ def test_requeued_attempt_keeps_drawn_seeds_and_drops_simulation_record_outcomes
     flow = _flow(tmp_path, monkeypatch, "--seed", "random", "--test", "stress")
     drawn = flow._resolve_test_runs("sim", _MAP)
     # Stand-ins for what the killed attempt left behind.
-    flow._simulation_record_outcomes = ("campaign-outcome",)
+    flow._simulation_record_outcomes = ("record-outcome",)
     flow._simulation_acceptance_outcomes = ("acceptance-outcome",)
     flow._current_published_pre_sim_keys = {"pre-sim-key"}
     flow.cycle_report_json = '{"cycle": 1}'

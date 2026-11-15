@@ -18,7 +18,7 @@ POLL_MCP_TOOL_NAME = "booley_poll"
 
 _POLL_MCP_TOOL_DESCRIPTION = (
     "Wait for long-running endpoints (sim / fpga / synth / reviewer / mutation / "
-    "coverage_analyst) that were started in the background. When such an endpoint takes "
+    "coverage_analyst / measure) that were started in the background. When such an endpoint takes "
     "longer than the inline wait, its call returns a 'run_id' instead of the result. With "
     "several Jobs running, call with no run_id: it returns the full result of the first of "
     "your Jobs to finish (or one that finished but whose result you have not read), lists "
@@ -327,7 +327,7 @@ def _coverage_evidence_tool_def() -> dict[str, Any]:
     return {
         "name": _COVERAGE_EVIDENCE_TOOL_NAME,
         "description": (
-            "Query bounded, read-only evidence from the validated Coverage Campaign bound to this "
+            "Query bounded, read-only evidence from the validated Coverage Record bound to this "
             "Coverage Analyst. Start with view='overview'; use view='zero_point_sources' to page "
             "through RTL sources with no native records, and view='points' for filtered exact "
             "Coverage Points and view='source' for verified excerpts associated with previously "
@@ -440,6 +440,19 @@ def status_visible(exposure: Exposure) -> bool:
     return _interactive_utility_visible(_STATUS_MCP_TOOL_NAME, exposure)
 
 
+def measure_visible(exposure: Exposure) -> bool:
+    """The Developer Agent's interactive server, or one naming ``booley_measure``."""
+    from booley.mcp.measure_tool import MEASURE_TOOL_NAME
+
+    return _interactive_utility_visible(MEASURE_TOOL_NAME, exposure)
+
+
+def _measure_mcp_tool_def() -> dict[str, Any]:
+    from booley.mcp.measure_tool import measure_tool_def
+
+    return measure_tool_def()
+
+
 def report_visible(exposure: Exposure) -> bool:
     return _interactive_utility_visible(_REPORT_MCP_TOOL_NAME, exposure)
 
@@ -492,6 +505,7 @@ def visible_definitions(
     for visible, builder in (
         (status_visible(exposure), _status_mcp_tool_def),
         (report_visible(exposure), _report_mcp_tool_def),
+        (measure_visible(exposure), _measure_mcp_tool_def),
         (utilities_visible(exposure), _poll_mcp_tool_def),
         (utilities_visible(exposure), _cancel_mcp_tool_def),
         (utilities_visible(exposure), _targets_mcp_tool_def),

@@ -1,9 +1,9 @@
-"""Immutable, validated Coverage Campaign document model.
+"""Immutable, validated Coverage Record document model.
 
 The codec is deliberately independent of filesystems, simulation orchestration,
 policy evaluation, and Verilator's native coverage format.  Its input is an
 already-read manifest mapping with its point rows and its output is one immutable
-per-Target campaign.
+per-Target Coverage Record.
 """
 
 from __future__ import annotations
@@ -79,7 +79,7 @@ _TOP_LEVEL_FIELDS = (
 
 @dataclass(frozen=True)
 class CoverageTarget:
-    """Durable identity and display selector for the Campaign's one Target."""
+    """Durable identity and display selector for the Coverage Record's one Target."""
 
     identity: str
     selector: str
@@ -87,7 +87,7 @@ class CoverageTarget:
 
 @dataclass(frozen=True)
 class CoverageCapability:
-    """Collector support fact for one native coverage record class."""
+    """Collector support fact for one native counter entry type."""
 
     record_class: str
     status: CoverageCapabilityStatus
@@ -185,7 +185,7 @@ def _format_validation_finding(finding: CoverageFinding) -> str:
 
 
 def _format_validation_error(findings: tuple[CoverageFinding, ...]) -> str:
-    summary = f"coverage campaign is invalid ({len(findings)} findings)"
+    summary = f"Coverage Record is invalid ({len(findings)} findings)"
     displayed = findings[:_VALIDATION_DISPLAY_FINDINGS]
     if not displayed:
         return summary
@@ -198,7 +198,7 @@ def _format_validation_error(findings: tuple[CoverageFinding, ...]) -> str:
 
 
 class CoverageRecordValidationError(ValueError):
-    """All stable findings produced while decoding one invalid Campaign."""
+    """All stable findings produced while decoding one invalid Coverage Record."""
 
     def __init__(self, findings: tuple[CoverageFinding, ...]) -> None:
         self.findings = findings
@@ -254,7 +254,7 @@ class CoverageSourceRollup:
 
 @dataclass(frozen=True)
 class CoverageRecord:
-    """One indivisible normalized coverage record for one Target invocation."""
+    """One indivisible normalized Coverage Record for one Target invocation."""
 
     coverage_record_id: str
     invocation: Mapping[str, FrozenJson]
@@ -1157,7 +1157,7 @@ def _validate_collection(document: Mapping[str, object]) -> list[CoverageFinding
         _error(
             "COV_COLLECTION_STATUS_INVALID",
             "/collection/status",
-            "Collection status is not a supported Campaign state.",
+            "Collection status is not a supported Coverage Record state.",
         )
     ]
 
@@ -1236,7 +1236,7 @@ def _identity_semantic_findings(
         _error(
             "COV_TARGET_MISMATCH",
             "/target/identity",
-            "Campaign belongs to a different Target.",
+            "Coverage Record belongs to a different Target.",
         )
     ]
 
@@ -1321,7 +1321,7 @@ def _decode_run(document: Mapping[str, object]) -> CoverageRun:
 def _decode_run_identity(document: Mapping[str, object]) -> dict[str, object]:
     """A run's Test Run name, Test Variant, seed and fingerprint, exactly as recorded.
 
-    The Campaign validator has already checked the recorded identity; nothing
+    The Coverage Record validator has already checked the recorded identity; nothing
     is coerced here.
     """
     variant, seed = document["variant"], document["seed"]
@@ -1456,9 +1456,9 @@ def _decode_manifest(
     points: list[dict[str, object]],
     expected_target: DurableTargetIdentity,
 ) -> CoverageRecord:
-    """Validate a manifest and its point rows once, then decode them to a Campaign.
+    """Validate a manifest and its point rows once, then decode them to a Coverage Record.
 
-    Consumes *points*. Stored rollups are ignored: the Campaign's are derived.
+    Consumes *points*. Stored rollups are ignored: the Coverage Record's are derived.
     """
     structural_findings = _structural_findings(manifest, points)
     semantic_findings = _semantic_findings(manifest, points, expected_target, structural_findings)
@@ -1544,7 +1544,7 @@ def _encode_rollup(rollup: CoverageRollup) -> dict[str, object]:
 
 
 def encode_coverage_record(coverage_record: CoverageRecord) -> dict[str, object]:
-    """Encode *campaign* as a fresh canonical V1 JSON object."""
+    """Encode *coverage_record* as a fresh canonical V1 JSON object."""
     return {
         "$schema": DOCUMENT_SCHEMA,
         "coverage_record_id": coverage_record.coverage_record_id,
@@ -1617,11 +1617,11 @@ def derive_coverage_rollups(points: Iterable[CoveragePoint]) -> tuple[CoverageRo
 def apply_point_dispositions(
     coverage_record: CoverageRecord, dispositions: Mapping[str, Mapping[str, object]]
 ) -> CoverageRecord:
-    """Return *campaign* with the named points' dispositions and the rollups they imply.
+    """Return *coverage_record* with the named points' dispositions and the rollups they imply.
 
     *dispositions* maps Coverage Point id to its new disposition; other points
     are unchanged. Rollups exist only for complete, compatible collection, so a
-    Campaign with none keeps none and a Campaign with rollups gets exactly the
+    Coverage Record with none keeps none and a Coverage Record with rollups gets exactly the
     derivation of its new points. Rows are always canonical: one per metric with
     points, with the canonical semantics text.
     """

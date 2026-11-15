@@ -188,3 +188,22 @@ def test_cheat_metrics_prints_the_section_then_the_listing(
     positions.append(out.index("[sim_core.sim]"))
     assert positions == sorted(positions)
     assert len(set(positions)) == len(positions)
+
+
+def test_the_measure_tool_description_states_every_measuring_rule() -> None:
+    """The MCP tool, the cheatsheet and the exit 1 and exit 2 output carry one text (#4134)."""
+    rules = _rules()
+    try:
+        tool = importlib.import_module("booley.mcp.measure_tool")
+    except ModuleNotFoundError:
+        pytest.fail("booley.mcp.measure_tool does not exist")
+
+    description = tool.measure_tool_def()["description"]
+
+    _, marker, listed = description.partition("Rules:\n")
+    assert marker, "the description has no 'Rules:' list"
+    bullets = [_squash(line[2:]) for line in listed.splitlines() if line.startswith("- ")]
+    assert bullets == [_squash(rule) for rule in rules.MEASURING_RULES]
+    # The two rules the command prints after exit 1 and exit 2 are in that list.
+    assert _squash(rules.exit_rule(1)) in bullets
+    assert _squash(rules.exit_rule(2)) in bullets

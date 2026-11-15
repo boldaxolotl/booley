@@ -1,4 +1,4 @@
-"""One Target's ordered collection, evaluation and durable Campaign publication."""
+"""One Target's ordered collection, evaluation and durable Coverage Record publication."""
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -140,7 +140,7 @@ def run_coverage_target(
     embedded_root: Path,
     publication_checkpoint: Callable[[str], None] | None = None,
 ) -> CoverageTargetOutcome:
-    """Collect, evaluate and publish one Target's Campaign under the attempt-owned root."""
+    """Collect, evaluate and publish one Target's Coverage Record under the attempt-owned root."""
     assert plan.invocation_dir is not None and plan.collection_request is not None
     return _execute_coverage_transaction(
         plan, execution, embedded_root, publication_checkpoint=publication_checkpoint
@@ -210,10 +210,10 @@ def _publish(
 ) -> CoverageTargetOutcome:
     coverage_record_path = root / "coverage.json"
     checkpoint = publication_checkpoint or (lambda _boundary: None)
-    checkpoint("before:coverage_campaign")
+    checkpoint("before:coverage_record")
     publish_coverage_record(root, coverage_record)
     coverage_record_published()
-    checkpoint("after:coverage_campaign")
+    checkpoint("after:coverage_record")
     observed = _has_completed_run(result)
     passed = all(run.simulation_verdict == "pass" for run in result.runs) if observed else None
     detail = _simulation_projection(plan, coverage_record, result, passed)
@@ -230,7 +230,7 @@ def _publish(
 
 
 def _evaluate(plan: CoverageTargetPlan, coverage_record: CoverageRecord) -> CoverageRecord:
-    """Evaluate the Campaign; approved waivers load in every run unless ``--no-waivers``."""
+    """Evaluate the Coverage Record; approved waivers load in every run unless ``--no-waivers``."""
     assert plan.roots is not None
     try:
         waivers = load_approved_waiver_set(plan.waiver_config, plan.roots, plan.known_targets)

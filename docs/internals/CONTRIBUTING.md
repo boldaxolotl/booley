@@ -123,6 +123,7 @@ point at which to run it:
 |---|---|---|
 | `ruff.agent-gate` | `ruff check src/ tests/` | Before commit |
 | `packaged-copies.check` | `sync_packaged_copies.py --check`: fails when the packaged `CHANGELOG.md` mirror is stale | Before commit |
+| `function-length.check` | `check_function_length.py`: CI's lint-job check that fails when a changed `src/booley/` function is new and over 50 lines, or was over 50 and grew; docstrings and blank lines don't count | Before commit |
 | `pytest.broad` | `pytest tests/` with coverage, up to eight xdist workers | Optional broad verification |
 | `ruff.ci-check`, `ruff.ci-format`, `pyright.ci-check` | CI's lint job: `ruff check .`, `ruff format --check .`, `pyright` | Handoff |
 | `coverage.changed-lines` | CI's 90% changed-line coverage gate, against the newest merge base with `main` | Handoff |

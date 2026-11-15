@@ -62,7 +62,7 @@
       "coverage": {
         "type": "boolean",
         "default": false,
-        "description": "Collect a native Verilator Coverage Campaign for each selected Target"
+        "description": "Collect a native Verilator Coverage Record for each selected Target"
       },
       "no_waivers": {
         "type": "boolean",

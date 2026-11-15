@@ -18,7 +18,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.config.jobs import SlotCaps
 from booley.harness.dashboard.jobs import JobReader
 from booley.harness.standalone_job import (
     standalone_jobs_dir,
@@ -66,10 +65,7 @@ from booley.runtime.endpoint_execution import EndpointOutcome
 class StubFlow(BooleyFlow):
     name = "stub_flow"
     description = "Detached worker fixture"
-    JOB_CLASS = "light"
-
-    def _memory_admitted(self):
-        return False  # counted light slot: the test queues behind a plain slot holder
+    JOB_CLASS = "memory"  # admitted by Memory Reservation, so a run-alone holder blocks it
     target_required = False
 
     def _add_args(self, parser):
@@ -151,7 +147,7 @@ while marker and not Path(marker).exists() and time.monotonic() < deadline:
 
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """A Project whose Booley Directory has one Flow, one Specialist and one light slot."""
+    """A Project whose Booley Directory has one Flow, one Specialist and one memory slot."""
     for name in ("BOOLEY_DIR", "BOOLEY_SLOTS_DIR", *SESSION_ENV):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("_BOOLEY_CLI_INVOCATION_ORIGIN", raising=False)
@@ -499,12 +495,16 @@ def test_worker_without_a_record_reports_it(
 @linux_only
 def test_worker_job_queues_in_the_shell_slot_store(project: Path, ctl: Path) -> None:
     slots_root = booley_dir_of(project) / "runtime" / "jobs" / "slots"
-    store = job_slots.SlotStore(slots_root, SlotCaps())
-    # Shell runs hold every light slot under the default cap (the stub Flow is light-class).
+    store = job_slots.SlotStore(slots_root)
+    # A Shell run holds the memory class alone.
     argv = _proc_cmdline(os.getpid()) or []
     holders = [
-        store.acquire(job_slots.CLASS_LIGHT, pid=os.getpid(), argv=argv)
-        for _ in range(SlotCaps().max_light)
+        store.acquire(
+            job_slots.CLASS_MEMORY,
+            pid=os.getpid(),
+            argv=argv,
+            memory=job_slots.MemoryClaim(budget_mb=1024, run_alone=True),
+        )
     ]
     try:
         (ctl / "release").write_text("1", encoding="utf-8")

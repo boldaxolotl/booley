@@ -115,9 +115,8 @@ def test_duplicate_target_fails_before_start_event_or_admission(
         lambda *_args: pytest.fail("published start event for invalid Target selection"),
     )
     monkeypatch.setattr(
-        EndpointState,
-        "_acquire_job_slot",
-        lambda _self: pytest.fail("acquired a slot for invalid Target selection"),
+        "booley.flows.endpoint_admission._acquire_memory_reservation",
+        lambda *_args, **_kwargs: pytest.fail("acquired a slot for invalid Target selection"),
     )
 
     result = flow.execute_cli(
@@ -513,9 +512,8 @@ def test_builtin_dry_run_skips_admission_and_normal_persistence(
     flow = _DryLifecycleFlow()
 
     with (
-        mock.patch.object(
-            EndpointState,
-            "_acquire_job_slot",
+        mock.patch(
+            "booley.flows.endpoint_admission._acquire_memory_reservation",
             side_effect=AssertionError("dry-run acquired a slot"),
         ),
         mock.patch.object(
@@ -602,9 +600,8 @@ def test_failed_builtin_dry_run_keeps_json_stdout_and_reason_stderr(
     )
 
     with (
-        mock.patch.object(
-            EndpointState,
-            "_acquire_job_slot",
+        mock.patch(
+            "booley.flows.endpoint_admission._acquire_memory_reservation",
             side_effect=AssertionError("dry-run acquired a slot"),
         ),
         mock.patch.object(

@@ -209,7 +209,7 @@ def test_malformed_specialist_facts_are_no_facts():
         "refusal": "",
         "warning": "",
     }
-    base = {"job_class": "light", "dry_run": False}
+    base = {"job_class": "memory", "dry_run": False}
 
     def parsed(specialist: object) -> object:
         return launch._parse_facts(json.dumps({**base, "specialist": specialist}))

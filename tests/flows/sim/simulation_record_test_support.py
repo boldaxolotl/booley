@@ -19,7 +19,8 @@ from typing import Any, cast
 
 import pytest
 
-from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows import endpoint_admission
+from booley.flows.endpoint_admission import AdmissionContext, _Claim
 from booley.flows.sim.build_session import TargetCompileSurface
 from booley.flows.sim.coverage_invocation import (
     CoverageInvocationRequest,
@@ -80,7 +81,6 @@ from booley.runtime.execution_records import (
     ExecutionId,
 )
 from booley.runtime.job_slots import (
-    CLASS_LIGHT,
     CLASS_MEMORY,
     MemoryClaim,
     SlotStore,
@@ -162,7 +162,7 @@ def _recorded_simulation_record(
     """
     from tests.flows.sim.test_simulation_record_test_runs import _hdl_plan
 
-    directory = Path(tempfile.mkdtemp(prefix="recorded-campaign-", dir=root))
+    directory = Path(tempfile.mkdtemp(prefix="recorded-record-", dir=root))
     manifest = _hdl_plan(directory, tuple((run,) for run in runs), required).manifest
     manifest_path = directory / "manifest.json"
     manifest_path.write_bytes(encode_simulation_record_manifest(manifest))
@@ -1250,15 +1250,20 @@ class _SimulationRecordAdmissionEndpoint:
         self._runtime_execution_id = runtime_execution_id
 
     def _memory_admitted(self) -> bool:
-        return False
+        return True
 
-    def _acquire_job_slot(self):
+    def _claim_slot(self) -> _Claim:
+        """Hold one small Memory Reservation in this stub's store, carrying the run's identity."""
         execution_id = (
             ExecutionId(self._runtime_execution_id) if self._runtime_execution_id else None
         )
-        return self._slots, self._slots.acquire(
-            CLASS_LIGHT, pid=os.getpid(), execution_id=execution_id
+        token = self._slots.acquire(
+            CLASS_MEMORY,
+            pid=os.getpid(),
+            execution_id=execution_id,
+            memory=MemoryClaim(budget_mb=_BUDGET_MIB, reservation_mb=1.0),
         )
+        return _Claim(self._slots, token)
 
 
 def _validated_simulation_record(store, manifest, project, handle) -> ValidatedResumeManifest:
@@ -1286,6 +1291,12 @@ def _interrupted_simulation_record(tmp_path, monkeypatch, runtime_execution_id):
     invocation = tmp_path / "reports/000001"
     invocation.mkdir(parents=True)
     slots = SlotStore(tmp_path / "slots")
+    # The stub endpoint claims into the case's own store, not the project's.
+    monkeypatch.setattr(
+        endpoint_admission,
+        "_acquire_memory_reservation",
+        lambda endpoint, _prepared, requeued=False: endpoint._claim_slot(),
+    )
     _set_runtime_execution_id(monkeypatch, runtime_execution_id)
     monkeypatch.setenv("BOOLEY_RUN_ID", _SimulationRecordAdmissionEndpoint._invocation_id)
     fault_enabled, original_mark = [True], ChildExecutionRegistry.mark_terminal
@@ -1803,8 +1814,8 @@ def _retained_invocation(
                 "passed": True,
                 "inconclusive": False,
                 "tests": [],
-                "campaign_manifest": str(store.manifest_path),
-                "campaign_summary": str(store.summary_path),
+                "record_manifest": str(store.manifest_path),
+                "record_summary": str(store.summary_path),
             }
         )
     )
@@ -1895,7 +1906,7 @@ class CoverageInvocation:
 
     @property
     def coverage_record_path(self) -> Path:
-        """The Coverage Campaign the reference selects, in its nested directory."""
+        """The Coverage Record the reference selects, in its nested directory."""
         return self.storage / "coverage.json"
 
     @property

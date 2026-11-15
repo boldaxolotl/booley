@@ -5,8 +5,8 @@ human parser (``run_form``): a row per option, changed in a choice list or
 a text editor stage, or for the Target and test fields a picker over the worktree's
 Targets and the chosen Target's Test Runs, plus one extra-arguments row. A Specialist's form
 (``reviewer``, ``coverage_analyst``) is written by hand (``specialist_form``) and has no
-extra-arguments row; the coverage analyst's campaign field opens a picker over the worktree's
-finished coverage campaigns. It dismisses with the new
+extra-arguments row; the coverage analyst's Coverage Record field opens a picker over the worktree's
+finished Coverage Records. It dismisses with the new
 Job's row key once submitted, or ``None`` when the human backs out of the first
 stage.
 """
@@ -75,7 +75,6 @@ from booley.harness.dashboard.targets import (
     first_line,
 )
 from booley.harness.worktree_list import WorktreeListError
-from booley.runtime.job_slots import CLASS_MEMORY, AdmissionOutlook
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +83,7 @@ CHECK_GROUP = "run-check"
 FORM_GROUP = "run-form"
 TARGETS_GROUP = "run-targets"
 TESTS_GROUP = "run-tests"
-COVERAGE_RECORDS_GROUP = "run-campaigns"
+COVERAGE_RECORDS_GROUP = "run-coverage-records"
 SPECIALISTS_GROUP = "run-specialists"
 LOADING_SPECIALISTS = "Loading Specialists…"
 LOADING_TARGETS, LOADING_RUNS = "Loading Targets…", "Loading Test Runs…"
@@ -111,7 +110,7 @@ _STAGES: dict[str, str] = {
     "form": "↑↓ move · ⏎ change · esc back",
     "choice": "↑↓ move · ⏎ keep · esc cancel",
     "target": "↑↓ move · ⏎ choose · esc back",
-    "campaign": "↑↓ move · ⏎ choose · esc back",
+    "coverage_record": "↑↓ move · ⏎ choose · esc back",
     "tests": "↑↓ move · ⏎ toggle · esc back",
     "edit": "type the value · ⏎ keep · esc cancel",
     "review": "↑↓ choose · ⏎ apply · esc back",
@@ -122,13 +121,13 @@ _PARENT = {
     "form": "flow",
     "choice": "form",
     "target": "form",
-    "campaign": "form",
+    "coverage_record": "form",
     "tests": "form",
     "edit": "form",
     "review": "form",
 }
 # The stages that change one form row; their title names the row.
-_ROW_STAGES = ("choice", "edit", "target", "campaign", "tests")
+_ROW_STAGES = ("choice", "edit", "target", "coverage_record", "tests")
 # Which widgets each stage shows; the last one takes the keyboard.
 _SHOWN: dict[str, tuple[str, ...]] = {
     "worktree": ("#run-worktrees",),
@@ -136,7 +135,7 @@ _SHOWN: dict[str, tuple[str, ...]] = {
     "form": ("#run-note", "#run-form"),
     "choice": ("#run-hint", "#run-choices"),
     "target": ("#run-hint", "#run-picks"),
-    "campaign": ("#run-hint", "#run-picks"),
+    "coverage_record": ("#run-hint", "#run-picks"),
     "tests": ("#run-hint", "#run-picks"),
     "edit": ("#run-hint", "#run-edit"),
     "review": ("#run-command", "#run-review", "#run-actions"),
@@ -169,14 +168,12 @@ class _Request:
 class _Checked:
     """A finished check: the shell's rejection, or the run's facts with the reads made for review.
 
-    ``outlook`` is ``None`` when the run takes no slot and a string when the queue cannot be
-    read; ``uncommitted`` is a string when the changes cannot be counted.
+    ``uncommitted`` is a string when the changes cannot be counted.
     """
 
     request: _Request
     error: str
     facts: RunFacts | None = None
-    outlook: AdmissionOutlook | str | None = None
     uncommitted: int | str = 0
 
 
@@ -242,7 +239,7 @@ class RunWizard(ModalScreen[str | None]):
         # The worktree's Targets and the chosen Target's Test Runs; None while being read.
         self._listing: TargetListing | None = None
         self._runs: RunChoices | None = None
-        # The campaign picker's read: the Jobs may not be read yet, then the campaigns, None while listing.
+        # The Coverage Record picker's read: the Jobs may not be read yet, then the Coverage Records, None while listing.
         self._jobs_read = False
         self._coverage_records: tuple[CoverageRecordChoice, ...] | None = None
         self._coverage_records_worker: Worker[tuple[CoverageRecordChoice, ...]] | None = None
@@ -318,7 +315,7 @@ class RunWizard(ModalScreen[str | None]):
             self.query_one(widget_id, Widget).display = widget_id in _SHOWN[stage]
         if stage == "form":
             self._show_form()
-        elif stage in ("target", "tests", "campaign"):
+        elif stage in ("target", "tests", "coverage_record"):
             self._fill_picks(None)
         self.query_one("#run-title", Static).update(self._title())
         self.query_one("#run-error", Static).update("")
@@ -569,7 +566,7 @@ class RunWizard(ModalScreen[str | None]):
                     self._show_error(PRESET_TARGET)
             elif field.kind == "tests":
                 self._open_tests()
-            elif field.kind == "campaign":
+            elif field.kind == "coverage_record":
                 self._open_coverage_records()
             else:
                 self._choose(field, value)
@@ -621,9 +618,9 @@ class RunWizard(ModalScreen[str | None]):
         self._show_stage("tests")
 
     def _open_coverage_records(self) -> None:
-        """Open the campaign picker, reading the worktree's finished campaigns afresh in a worker.
+        """Open the Coverage Record picker, reading the worktree's finished Coverage Records afresh in a worker.
 
-        The Jobs come from the Dashboard's last read (``sim_runs``); a campaign that finished
+        The Jobs come from the Dashboard's last read (``sim_runs``); a Coverage Record that finished
         while the wizard was open therefore shows up the next time the picker opens.
         """
         assert self._form_for is not None
@@ -640,33 +637,33 @@ class RunWizard(ModalScreen[str | None]):
                 group=COVERAGE_RECORDS_GROUP,
                 exit_on_error=False,
             )
-        self._show_stage("campaign")
+        self._show_stage("coverage_record")
 
     def _coverage_records_read(self, event: Worker.StateChanged) -> None:
-        """Show the campaigns of the read the picker waits for; a crashed read lists none."""
+        """Show the Coverage Records of the read the picker waits for; a crashed read lists none."""
         if event.worker is not self._coverage_records_worker:
             return  # a read of a picker the human has since reopened
         if event.state is WorkerState.SUCCESS:
             assert isinstance(event.worker.result, tuple)
             self._coverage_records = event.worker.result
         elif event.state is WorkerState.ERROR:
-            logger.error("Run wizard campaigns read failed", exc_info=event.worker.error)
+            logger.error("Run wizard Coverage Records read failed", exc_info=event.worker.error)
             self._coverage_records = ()
         else:
             return
         event.stop()
-        if self._stage == "campaign":
-            # None: highlight the current campaign, else the newest (the loading row is gone).
+        if self._stage == "coverage_record":
+            # None: highlight the current Coverage Record, else the newest (the loading row is gone).
             self._fill_picks(None)
 
     def _picker(self, field: Field) -> tuple[str, list[tuple[str, str]]]:
         """The hint and the (row text, value) rows of the open picker for *field*."""
-        if field.kind == "campaign":
+        if field.kind == "coverage_record":
             return self._coverage_record_picker(field)
         return self._target_picker(field) if field.kind == "target" else self._tests_picker(field)
 
     def _coverage_record_picker(self, field: Field) -> tuple[str, list[tuple[str, str]]]:
-        """The campaigns newest first, then the row that types a path (always there)."""
+        """The Coverage Records newest first, then the row that types a path (always there)."""
         manual = [(TYPE_COVERAGE_RECORD, TYPE_COVERAGE_RECORD)]
         if not self._jobs_read:
             return JOBS_NOT_READ, manual
@@ -721,7 +718,7 @@ class RunWizard(ModalScreen[str | None]):
         """Enter in a picker: a Target is chosen and closes it; a Test Run toggles in place."""
         field = self._fields()[self._changing]
         value = self._pick_values[index]
-        if field.kind == "campaign" and value == TYPE_COVERAGE_RECORD:
+        if field.kind == "coverage_record" and value == TYPE_COVERAGE_RECORD:
             self._edit(self._values.get(field.dest, ""), field.hint)
             return
         if field.kind == "tests":
@@ -812,7 +809,7 @@ class RunWizard(ModalScreen[str | None]):
     def _check(self, request: _Request) -> _Checked:
         """The argument check, then (when it passes) the reads the review screen shows.
 
-        Runs in a worker thread: it spawns a child and reads the slot store and Git.
+        Runs in a worker thread: it spawns a child and reads Git.
         """
         result: CheckResult = self._launcher.check(
             request.worktree, request.kind, request.name, request.argv
@@ -823,19 +820,7 @@ class RunWizard(ModalScreen[str | None]):
             uncommitted: int | str = self._launcher.uncommitted(request.worktree)
         except (WorktreeListError, BooleyLayoutError) as exc:
             uncommitted = str(exc)
-        return _Checked(request, "", result.facts, self._read_outlook(result.facts), uncommitted)
-
-    def _read_outlook(self, facts: RunFacts) -> AdmissionOutlook | str | None:
-        """The queue a run would meet; ``None`` when it takes no counted slot, a reason when unreadable.
-
-        A memory-admitted Job has no count-based outlook: its fit depends on its estimate.
-        """
-        if not facts.takes_slot or facts.job_class in (None, CLASS_MEMORY):
-            return None
-        try:
-            return self._launcher.outlook(facts.job_class)
-        except OSError as exc:
-            return str(exc) or type(exc).__name__
+        return _Checked(request, "", result.facts, uncommitted)
 
     def _form_built(self, event: Worker.StateChanged) -> None:
         """Apply a finished build for the form now wanted; a crash shows as the note."""
@@ -917,14 +902,14 @@ class RunWizard(ModalScreen[str | None]):
                 checked.request.worktree, checked.request.kind, checked.request.name, self._argv
             )
         )
-        self._render_review(checked.outlook)
+        self._render_review()
 
-    def _render_review(self, outlook: AdmissionOutlook | str | None) -> None:
+    def _render_review(self) -> None:
         """Show the queue verdict, the timeout and the warnings; a Specialist refusal also fills the error line."""
         checked = self._checked
         assert checked is not None and checked.facts is not None
         occupants = self._occupants(checked.request.worktree)
-        lines = [queue_line(checked.facts, outlook), timeout_line(checked.facts)]
+        lines = [queue_line(checked.facts), timeout_line(checked.facts)]
         specialist = checked.facts.specialist
         if specialist is not None:
             lines += specialist_lines(specialist)

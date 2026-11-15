@@ -117,7 +117,7 @@ class SimArguments(BuiltinArguments):
             "--coverage",
             "--cov",
             action="store_true",
-            help="Collect a native Verilator Coverage Campaign for each selected Target",
+            help="Collect a native Verilator Coverage Record for each selected Target",
         )
         parser.add_argument(
             "--no-waivers",

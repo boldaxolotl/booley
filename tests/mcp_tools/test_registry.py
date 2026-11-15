@@ -555,7 +555,7 @@ def test_interactive_catalog_offers_no_goal_tool(monkeypatch):
             catalog.Exposure.from_mapping(os.environ), builtins
         )
     }
-    assert len(names) == 6
+    assert len(names) == 7
     assert not {name for name in names if name.startswith("goal_")}
 
 

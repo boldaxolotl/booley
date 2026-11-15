@@ -537,9 +537,6 @@ class EndpointState(ABC):
         """
         return measure_memory_claim(project, requests)
 
-    def _acquire_job_slot(self) -> tuple[job_slots.SlotStore | None, object | None]:
-        return endpoint_admission._acquire_job_slot(self)
-
     def _resolve_display_config(self) -> str | None:
         return endpoint_reporting._resolve_display_config(self)
 

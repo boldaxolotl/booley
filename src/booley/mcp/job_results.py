@@ -16,6 +16,7 @@ from typing import Any
 
 from booley.flows.progress_lifecycle import read_progress_for_run
 from booley.mcp.call_context import CallContext, container_jobs_root, project_booley_dir
+from booley.measurement.mcp_job import MEASURE_ENDPOINT, read_progress, read_result
 from booley.runtime import job_records as jobrec
 from booley.runtime import job_slots
 from booley.runtime.filesystem_utils import is_transient_read_error, read_file_bytes
@@ -209,7 +210,7 @@ def _job_report(
     # last-writer-wins flat copy.  In particular, an old legacy flat report
     # must not hide this run's durable progress checkpoint after a worker dies.
     report = repository.report_for_run(rec.endpoint, rec.run_id)
-    if report is None:
+    if report is None and rec.endpoint != MEASURE_ENDPOINT:  # its progress is no report
         report = repository.progress_for_run(rec.endpoint, rec.run_id)
     if report is not None:
         return report, True
@@ -424,7 +425,16 @@ class JobRepository:
     ) -> dict[str, Any] | None:
         return _latest_report(endpoint, report_dirs=self.report_dirs(located, context=context))
 
+    def _measure_dir(self, run_id: str) -> Path | None:
+        """Where a ``measure`` Job keeps its progress and result: beside its ``job.log``."""
+        located = self.locate(run_id)
+        return None if located is None or located.root is None else located.root / run_id
+
     def report_for_run(self, endpoint: str, run_id: str) -> dict[str, Any] | None:
+        if endpoint == MEASURE_ENDPOINT:
+            job_dir = self._measure_dir(run_id)
+            result = None if job_dir is None else read_result(job_dir)
+            return result if result is not None and result.get("run_id") == run_id else None
         return _report_for_run_id(
             endpoint, run_id, report_dirs=self.report_dirs(self.locate(run_id))
         )
@@ -438,6 +448,9 @@ class JobRepository:
         return project_booley_dir()
 
     def progress_for_run(self, endpoint: str, run_id: str) -> dict[str, Any] | None:
+        if endpoint == MEASURE_ENDPOINT:
+            job_dir = self._measure_dir(run_id)
+            return None if job_dir is None else read_progress(job_dir)
         located = self.locate(run_id)
         return _progress_for_run_id(
             endpoint,

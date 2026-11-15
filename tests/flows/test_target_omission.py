@@ -13,6 +13,7 @@ from jsonschema import Draft202012Validator
 
 from booley.flows.builtin_cli import build_cli_parser, execute_cli
 from booley.flows.cli_selection import CliInvocation
+from booley.flows.endpoint_admission import _Claim
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintConfigResult, LintFlow
 from booley.flows.plan import FlowPlan
@@ -201,15 +202,15 @@ def test_omitted_target_selects_and_announces_only_eligible(entry, name, project
     ids=[f"{entry}-{name}-{label}" for entry, name in CASES for label in ("zero", "many")],
 )
 def test_omitted_target_rejects_cardinality(entry, name, count, project, executed, monkeypatch):
-    from booley.flows.endpoint_state import EndpointState
-
     admitted, started = [], []
 
-    def acquire_slot(self):
+    def acquire_slot(*_args, **_kwargs):
         admitted.append(True)
-        return None, None
+        return _Claim(None, None)
 
-    monkeypatch.setattr(EndpointState, "_acquire_job_slot", acquire_slot)
+    monkeypatch.setattr(
+        "booley.flows.endpoint_admission._acquire_memory_reservation", acquire_slot
+    )
     monkeypatch.setattr(
         "booley.flows.endpoint_session._write_display_event", lambda *args: started.append(args)
     )
@@ -384,7 +385,8 @@ def test_selection_notice_survives_preparation_failure(
             lambda self: EndpointOutcome(exit_code=2, report_text="coverage refused"),
         )
     monkeypatch.setattr(
-        EndpointState, "_acquire_job_slot", lambda self: pytest.fail("admitted refusal")
+        "booley.flows.endpoint_admission._acquire_memory_reservation",
+        lambda *_a, **_k: pytest.fail("admitted refusal"),
     )
     notice = "sim: --target omitted; selected Target chosen."
     flow = SimulateFlow()

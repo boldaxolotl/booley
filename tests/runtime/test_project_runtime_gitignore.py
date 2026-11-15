@@ -39,7 +39,7 @@ RUNTIME_PATHS = (
     ".managed/.project-git-hooks.pyz.interrupted.tmp",
     "runtime/doctor_stamp.json",
     "runtime/sessions/thread.json",
-    "runtime/jobs/slots/light/token.json",
+    "runtime/jobs/slots/memory/token.json",
     ".interactive_logs/session.log",
     "tickets/board/ticket.md",
     "tickets/state/state.json",
@@ -341,7 +341,7 @@ def test_simulation_record_publications_and_run_lock_keep_project_clean(versione
     from booley.flows.sim.record.store import SimulationRecordStore
 
     root, data, repo = versioned_project
-    store = SimulationRecordStore(data / ".runtime/campaigns/audit")
+    store = SimulationRecordStore(data / ".runtime/records/audit")
     store.publish_manifest(decode_simulation_record_manifest(canonical_json_bytes(_manifest())))
     assert store.manifest_path.is_file()
     assert_clean(repo)
@@ -349,7 +349,7 @@ def test_simulation_record_publications_and_run_lock_keep_project_clean(versione
     assert store.summary_path.is_file()
     assert_clean(repo)
     run = expand_run_directory(
-        str(data / ".runtime/campaign-runs/{attempt}"),
+        str(data / ".runtime/record-runs/{attempt}"),
         project_root=root,
         simulation_record_id="audit",
         target_key="sim",
@@ -376,11 +376,13 @@ def test_upgrade_publication_keeps_project_clean(versioned_project):
 
 
 def test_job_slot_publication_keeps_project_clean(versioned_project):
-    from booley.runtime.job_slots import SlotStore
+    from booley.runtime.job_slots import CLASS_MEMORY, MemoryClaim, SlotStore
 
     _root, data, repo = versioned_project
     store = SlotStore(data / "runtime/jobs/slots", now=lambda: 100.0)
-    token = store.submit("light", pid=1, argv=["fixture"])
+    token = store.submit(
+        CLASS_MEMORY, pid=1, argv=["fixture"], memory=MemoryClaim(budget_mb=1024, run_alone=True)
+    )
     try:
         assert token.path.is_file()
         assert_clean(repo)

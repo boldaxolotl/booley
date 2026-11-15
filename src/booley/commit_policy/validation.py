@@ -2,36 +2,24 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 try:
     from booley.commit_policy.policy import (
-        enforce_convention,
-        max_body_lines,
-        stealth_enabled,
+        find_banned as _find_banned,
     )
     from booley.commit_policy.policy import (
-        find_banned as _find_banned,
+        max_body_lines,
+        stealth_enabled,
     )
 except ImportError:
     from booley_commit_policy import (  # pyright: ignore[reportMissingImports]
-        enforce_convention,
+        find_banned as _find_banned,
+    )
+    from booley_commit_policy import (  # pyright: ignore[reportMissingImports]
         max_body_lines,
         stealth_enabled,
     )
-    from booley_commit_policy import (  # pyright: ignore[reportMissingImports]
-        find_banned as _find_banned,
-    )
-
-MAX_SUMMARY_LEN = 72
-ALLOWED_TYPES = ("feat", "fix", "refactor", "test", "review", "wip", "docs", "chore")
-SUBJECT_RE = re.compile(
-    r"^(?P<prefix>(?:" + "|".join(ALLOWED_TYPES) + r")"
-    r"(?:\([a-zA-Z0-9_-]+\))?"
-    r": )"
-    r"(?P<summary>.+)$"
-)
 
 
 def _body_content_lines(msg: str) -> list[str]:
@@ -45,29 +33,13 @@ def _body_content_lines(msg: str) -> list[str]:
     ]
 
 
-def convention_errors(msg: str, *, project_root: Path | None = None) -> list[str]:
-    """Return the subject-convention and body-length errors for *msg*.
+def body_length_errors(msg: str, *, project_root: Path | None = None) -> list[str]:
+    """Return the ``[stealth] max_body_lines`` error for *msg*, if any.
 
-    Banned terms are not reported here; :func:`validate_message` adds them.
+    Booley enforces no subject format. Banned terms are not reported here;
+    :func:`validate_message` adds them.
     """
     errors: list[str] = []
-    subject = msg.split("\n", 1)[0]
-    is_merge = subject.startswith("Merge ") or subject.startswith("merge(")
-
-    if enforce_convention(project_root) and not is_merge:
-        match = SUBJECT_RE.match(subject)
-        if not match:
-            errors.append(
-                f"Subject doesn't match '<type>(<scope>): <summary>' "
-                f"(allowed types: {', '.join(ALLOWED_TYPES)}): '{subject}'"
-            )
-        else:
-            summary = match.group("summary")
-            if len(summary) > MAX_SUMMARY_LEN:
-                errors.append(
-                    f"Summary is {len(summary)} chars (max {MAX_SUMMARY_LEN}): '{summary}'"
-                )
-
     cap = max_body_lines(project_root)
     if cap is not None:
         body = _body_content_lines(msg)
@@ -81,7 +53,7 @@ def convention_errors(msg: str, *, project_root: Path | None = None) -> list[str
 
 def validate_message(msg: str, *, project_root: Path | None = None) -> list[str]:
     """Validate a commit message and return every policy error."""
-    errors = convention_errors(msg, project_root=project_root)
+    errors = body_length_errors(msg, project_root=project_root)
     if stealth_enabled(project_root):
         errors.extend(
             f"Banned phrase in commit message: '{phrase}'"

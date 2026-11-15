@@ -200,14 +200,16 @@ def test_command_locations_enforce_the_audited_boundary(
 
 def test_sandbox_init_is_documented_for_hand_written_specs() -> None:
     """Spec authors are told to run `booley init` from `onCreateCommand`."""
-    guide = (Path(__file__).parents[2] / "docs/user/SANDBOX.md").read_text(encoding="utf-8")
-    heading = "### Project setup in a hand-written spec (`booley init`)"
+    guide = (Path(__file__).parents[2] / "docs/internals/HAND-WRITTEN-SPECS.md").read_text(
+        encoding="utf-8"
+    )
+    heading = "## Project setup in a hand-written spec (`booley init`)"
     assert heading in guide
     start = guide.index(heading)
     section = guide[start : guide.find("\n#", start + len(heading))]
     assert "`booley init`" in section
     assert "onCreateCommand" in section
-    assert "## Hand-written devcontainer specs" in guide[:start]
+    assert "# Hand-written devcontainer specs" in guide[:start]
 
 
 def test_init_help_says_it_runs_in_a_hand_written_sandbox() -> None:

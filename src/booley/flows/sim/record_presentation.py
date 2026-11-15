@@ -170,9 +170,9 @@ def _coverage_metrics_line(coverage_record: CoverageRecord) -> str | None:
 
 
 def _coverage_record_lines(outcomes: Sequence[SimulationRecordOutcome]) -> list[str]:
-    """One ``coverage campaign:`` line per finished coverage outcome."""
+    """One ``Coverage Record:`` line per finished coverage outcome."""
     return [
-        f"  coverage campaign: {coverage_record_path(outcome).resolve()}"
+        f"  Coverage Record: {coverage_record_path(outcome).resolve()}"
         for outcome in outcomes
         if getattr(outcome, "coverage_reference", None) is not None
     ]
@@ -941,7 +941,7 @@ def _publication_failure_detail(
         try:
             coverage_record = load_coverage_record(failure.nested_coverage_record).coverage_record
         except (OSError, ValueError):
-            pass  # No committed nested Campaign: keep infrastructure_error and the prepared policy.
+            pass  # No committed nested Coverage Record: keep infrastructure_error and the prepared policy.
         else:
             detail.update(
                 collection=_endpoint_collection(coverage_record.collection["status"]),

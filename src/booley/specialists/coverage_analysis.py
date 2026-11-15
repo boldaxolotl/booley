@@ -1,4 +1,4 @@
-"""Advisory interpretation of immutable native Coverage Campaign evidence."""
+"""Advisory interpretation of immutable native Coverage Record evidence."""
 
 import json
 from collections.abc import Callable, Mapping
@@ -388,7 +388,7 @@ def _eligibility(coverage_record: CoverageRecord) -> tuple[str, list[str]]:
     if coverage_record.collection["status"] not in {"complete", "incomplete"}:
         reason = coverage_record.collection["status"]
         raise CoverageAnalysisError(
-            f"Campaign scoring is invalid because collection status is {reason!r}; "
+            f"Coverage Record scoring is invalid because collection status is {reason!r}; "
             "repair the collector failure and recollect coverage"
         )
     if coverage_record.normalization["status"] not in {
@@ -396,9 +396,9 @@ def _eligibility(coverage_record: CoverageRecord) -> tuple[str, list[str]]:
         "complete_with_unknown_records",
         "partial",
     }:
-        raise CoverageAnalysisError("Campaign normalization is not usable")
+        raise CoverageAnalysisError("Coverage Record normalization is not usable")
     if not coverage_record.points:
-        raise CoverageAnalysisError("Campaign has no normalized Coverage Points")
+        raise CoverageAnalysisError("Coverage Record has no normalized Coverage Points")
     limitations = []
     if (
         coverage_record.collection["status"] != "complete"

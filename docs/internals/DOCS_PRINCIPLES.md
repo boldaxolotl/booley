@@ -20,6 +20,8 @@ Python code, and review checks it the same way: cite the principle number.
   `writing-for-agents` conventions where those are stricter.
 - **Part 2, user docs:** `README.md`, `docs/user/`, `website/`, and the bwave
   docs under `crates/bwave/docs/public/`.
+- **The cheatsheet:** `src/booley/data/cheatsheet.md`, printed by
+  `booley cheat`, follows Part 1 and principle 33.
 
 In Part 1, "the reader" is whoever the doc is for: the user in a user doc, a
 contributor or agent in an internal doc.
@@ -188,6 +190,7 @@ Dashboard, a report) instead. The user asks the agent: write "ask the agent
 to create a worktree named `zbb`" instead of a CLI command, except in docs
 about CLI commands themselves. Leave out commands nobody runs by hand and
 things a human can't do anyway ("you never call the MCP tools yourself").
+The cheatsheet is the exception: the agent reads it too (principle 33).
 
 ### 21. Describe outcomes, not internals
 
@@ -253,7 +256,8 @@ Commit `AGENTS.md` in the Booley Directory's own repository instead:
 ```
 
 - Use one fixed label per variant: `In stealth mode`, `With a cocotb
-  testbench`, `On Windows`, `With host-installed licensed tools`.
+  testbench`, `On Windows`, `With host-installed licensed tools`, `With your own
+  image`, and `With the RISC-V image`.
 - Say only what differs, and link the variant's own page (`STEALTH.md`,
   `WINDOWS.md`, ...) for the full story. Keep the callout at block level, not
   inside a list item, and leave blank lines around its Markdown body.
@@ -324,3 +328,25 @@ and use relative repository links. For a page under `website/`, build it
 locally (`pip install -r website/requirements.txt`, then `mkdocs serve -f
 website/mkdocs.yml`) and give the maintainer the URL to review the rendered
 page.
+
+## The Cheatsheet
+
+### 33. Write the cheatsheet for the user and the agent
+
+You read `booley cheat` at a terminal, and the Developer Agent reads it to
+look up commands, Goal syntax, and the rules it works by. Every entry must
+make sense to both readers:
+
+- **"You" is the person.** Name the agent by role, "the Developer Agent",
+  for what it does or must not do. Never write to "the agent" and never write
+  about "the user" in the third person. Then "only you approve" can't be read
+  by the agent as permission for itself.
+- **Every command works as written** for a person typing it and for the agent
+  reading it. Give the CLI form beside a tool-call argument
+  (`verify=true`, CLI: `--verify`).
+- **Gloss agent-only terms once** in the section that uses them: say that a
+  `goal_*` name is a Developer Agent tool, not a command, and what `MCP` and
+  `work_dir` mean.
+
+Bad: "Measure only when the user asks for a Measured Commit." Good: "The
+Developer Agent measures only when you ask for a Measured Commit."

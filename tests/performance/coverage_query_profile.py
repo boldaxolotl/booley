@@ -62,7 +62,7 @@ def _worker(coverage_record_path: Path, point_count: int) -> dict[str, object]:
     reference = loaded.summary.point_store
     assert reference is not None
     return {
-        "campaign_id": loaded.coverage_record.coverage_record_id,
+        "coverage_record_id": loaded.coverage_record.coverage_record_id,
         "points": point_count,
         "python": platform.python_version(),
         "platform": platform.platform(),
@@ -102,7 +102,7 @@ def _sample(coverage_record_path: Path, point_count: int) -> dict[str, object]:
         "--worker",
         "--points",
         str(point_count),
-        "--campaign",
+        "--record",
         str(coverage_record_path),
     ]
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -155,7 +155,7 @@ def _controller(point_count: int, samples: int) -> None:
                     "--sample-process",
                     "--points",
                     str(point_count),
-                    "--campaign",
+                    "--record",
                     str(coverage_record_path),
                 ],
                 check=False,
@@ -173,7 +173,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--points", type=int, required=True)
     parser.add_argument("--samples", type=int, default=3)
-    parser.add_argument("--campaign", dest="coverage_record", type=Path)
+    parser.add_argument("--record", dest="coverage_record", type=Path)
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--sample-process", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -181,12 +181,12 @@ def main() -> None:
         parser.error("points and samples must be positive")
     if args.worker:
         if args.coverage_record is None:
-            parser.error("--campaign is required with --worker")
+            parser.error("--record is required with --worker")
         print(json.dumps(_worker(args.coverage_record, args.points), sort_keys=True))
         return
     if args.sample_process:
         if args.coverage_record is None:
-            parser.error("--campaign is required with --sample-process")
+            parser.error("--record is required with --sample-process")
         print(json.dumps(_sample(args.coverage_record, args.points), sort_keys=True))
         return
     _controller(args.points, args.samples)

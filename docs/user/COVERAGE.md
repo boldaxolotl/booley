@@ -58,7 +58,7 @@ sim_soc: simulation PASS · coverage collection COMPLETE · evaluation PASS (Sim
   manifest: /work/.booley/flow-reports/sim/12/targets/sim_soc/campaign/manifest.json
   report: /work/.booley/flow-reports/sim/12/report.json
   coverage: line 92.3% · branch 81.0% (min 80%, met) · toggle 64.2%
-  coverage campaign: /work/.booley/flow-reports/sim/12/targets/sim_soc/coverage.json
+  Coverage Record: /work/.booley/flow-reports/sim/12/targets/sim_soc/coverage.json
 ```
 
 The first line has three verdicts:
@@ -86,7 +86,7 @@ The other lines:
   Percentages are cut off, not rounded, to one decimal (or to the
   decimals of the minimum, if it has more), so `100.0%` always means every
   point is covered and a `met` metric never prints below its minimum.
-- **`coverage campaign`** is the Target's Coverage Campaign file, described
+- **`Coverage Record`** is the Target's `coverage.json`, described
   below. It is printed whatever the collection status, and also for the
   Targets that finished before a run failed or was cancelled.
 
@@ -156,7 +156,7 @@ Target decides the exit code.
 
 `booley coverage uncovered` lists every point no test hit. It works in a host
 terminal and in the Sandbox, and only reads the file you give it. Pass the
-`coverage campaign:` path the run printed:
+`Coverage Record:` path the run printed:
 
 ```bash
 # In the Sandbox

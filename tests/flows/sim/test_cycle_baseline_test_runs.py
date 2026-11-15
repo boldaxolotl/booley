@@ -352,8 +352,8 @@ def _baseline_fact(
     return {
         "role": "cycle_count_baseline",
         "target": target,
-        "manifest": {"owner": "campaign"},
-        "campaign_id": "campaign",
+        "manifest": {"owner": "record"},
+        "campaign_id": "record",
         "result": {},
         "work_item_id": "item",
         "cycle_observation": cycle,

@@ -159,8 +159,8 @@ def test_interactive_discovery_replaces_done_findings(tmp_path, monkeypatch):
     rtl = tmp_path / "rtl" / "uart.sv"
     rtl.parent.mkdir()
     rtl.write_text("module uart; endmodule\n")
-    state_file = _state(tmp_path, monkeypatch, "review_rtl_security_done")
-    corrective = _issue("security", "rtl/uart.sv", "Reset behavior violates the Ticket contract")
+    state_file = _state(tmp_path, monkeypatch, "review_rtl_code_style_done")
+    corrective = _issue("code_style", "rtl/uart.sv", "Reset behavior violates the Ticket contract")
 
     with (
         patch("booley.specialists.specialist.isolated_agent_workspace", _passthrough_workspace),
@@ -177,13 +177,13 @@ def test_interactive_discovery_replaces_done_findings(tmp_path, monkeypatch):
             "--category",
             "rtl",
             "--focus",
-            "security",
+            "code_style",
         ]
         first = _run_review(argv)
         rtl.write_text("module uart; wire changed; endmodule\n")
         second = _run_review(argv)
 
-    detail = DevelopmentState.load(state_file).criteria["review_rtl_security_done"].detail
+    detail = DevelopmentState.load(state_file).criteria["review_rtl_code_style_done"].detail
     assert agent.call_count == 2
     assert first.criterion_met is True
     assert second.criterion_met is True
@@ -235,9 +235,9 @@ def test_explicit_verify_preserves_advisory_observations(tmp_path, monkeypatch):
     rtl = tmp_path / "rtl" / "uart.sv"
     rtl.parent.mkdir()
     rtl.write_text("module uart; endmodule\n")
-    state_file = _state(tmp_path, monkeypatch, "review_rtl_security_done")
-    corrective = _issue("security", "rtl/uart.sv", "Reset behavior violates the Ticket")
-    advisory = _issue("security", "rtl/uart.sv", "Consider a clearer local signal name")
+    state_file = _state(tmp_path, monkeypatch, "review_rtl_code_style_done")
+    corrective = _issue("code_style", "rtl/uart.sv", "Reset behavior violates the Ticket")
+    advisory = _issue("code_style", "rtl/uart.sv", "Consider a clearer local signal name")
     advisory["severity"] = "MINOR"
     advisory["disposition"] = "advisory"
     verify_fixed = MagicMock(
@@ -270,13 +270,13 @@ def test_explicit_verify_preserves_advisory_observations(tmp_path, monkeypatch):
             "--category",
             "rtl",
             "--focus",
-            "security",
+            "code_style",
         ]
         first = _run_review(argv)
         rtl.write_text("module uart; wire fixed; endmodule\n")
         second = _run_review(["--work-dir", str(tmp_path), "--verify"])
 
-    detail = DevelopmentState.load(state_file).criteria["review_rtl_security_done"].detail
+    detail = DevelopmentState.load(state_file).criteria["review_rtl_code_style_done"].detail
     assert agent.call_count == 2
     assert first.detail["review_outcome"] == "corrective"
     assert second.detail["pending"] == []
@@ -294,7 +294,7 @@ def test_source_edit_has_one_freshness_verdict(tmp_path, monkeypatch):
     state_file = _state(
         tmp_path,
         monkeypatch,
-        "review_rtl_security_done",
+        "review_rtl_code_style_done",
         "_report_submitted",
     )
     common = [
@@ -305,7 +305,7 @@ def test_source_edit_has_one_freshness_verdict(tmp_path, monkeypatch):
         "--category",
         "rtl",
         "--focus",
-        "security",
+        "code_style",
     ]
 
     with (
@@ -323,4 +323,4 @@ def test_source_edit_has_one_freshness_verdict(tmp_path, monkeypatch):
     assert agent.call_count == 2
     assert second.criterion_met is True
     assert "current source" not in second.report_text
-    assert not DevelopmentState.load(state_file).criteria["review_rtl_security_done"].stale
+    assert not DevelopmentState.load(state_file).criteria["review_rtl_code_style_done"].stale

@@ -923,7 +923,9 @@ def _add_session_subparser(sub) -> None:
         help="Optional command, e.g. `booley session enter -- booley doctor`",
     )
     session_sub.add_parser("down", help="Stop and remove the Sandbox", parents=[root_opt])
-    session_sub.add_parser("status", help="Print running/stopped/absent")
+    session_sub.add_parser(
+        "status", help="Print running/stopped/absent, or a pending start/recovery"
+    )
     session_sub.add_parser(
         "validate",
         help="Validate the host-issued Sandbox specification",

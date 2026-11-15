@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import errno
 import json
 import os
@@ -312,7 +313,7 @@ async def test_adopted_cancel_keeps_completion_that_wins_race(context, monkeypat
     job_records.write_record(rec, context.jobs_root)
     jobs = JobLifecycle()
 
-    async def finish_before_termination(_pid):
+    async def finish_before_termination(_pid, _grace=None):
         assert job_records.read_record(run_id, context.jobs_root).status == "running"
         write_report(context, run_id, {"exit_code": 0, "passed": True})
 
@@ -383,7 +384,7 @@ async def test_adopted_cancel_keeps_a_terminal_record_written_by_its_owner(
         _finish_record(context, run_id)
         return False
 
-    async def owner_finishes_during_termination(_pid):
+    async def owner_finishes_during_termination(_pid, _grace=None):
         _finish_record(context, run_id)
 
     if owner_state == "dead":
@@ -403,7 +404,7 @@ async def test_adopted_cancel_still_cancels_an_owner_that_fails_on_sigterm(conte
     job_records.write_record(rec, context.jobs_root)
     jobs = JobLifecycle()
 
-    async def owner_records_failure_on_sigterm(_pid):
+    async def owner_records_failure_on_sigterm(_pid, _grace=None):
         failed = job_records.read_record(run_id, context.jobs_root)
         assert failed is not None
         failed.status, failed.exit_code, failed.ended_at = "failed", 2, utc_now_rfc3339()
@@ -602,15 +603,16 @@ async def test_child_requeued_needs_a_claim_with_a_reason(context):
         status=job_records.STATUS_RUNNING,
     )
     assert jobs._child_requeued(mine) is False  # no claim at all
-    plain = store.acquire(job_slots.CLASS_LIGHT, pid=os.getpid(), timeout_s=60)
+    plain = store.acquire(job_slots.CLASS_MEMORY, pid=os.getpid(), timeout_s=60, memory=_RUN_ALONE)
     try:
         assert jobs._child_requeued(mine) is False  # a first claim has no reason
     finally:
         store.release(plain)
     reasoned = store.acquire(
-        job_slots.CLASS_LIGHT,
+        job_slots.CLASS_MEMORY,
         pid=os.getpid(),
         timeout_s=60,
+        memory=_RUN_ALONE,
         queue_reason="requeued after out-of-memory",
     )
     try:
@@ -736,7 +738,9 @@ def test_restart_preserves_existing_submit_deadline_for_unstamped_queued_child(c
         "queued-legacy", "lint", "2000-01-01T00:00:00Z", 5, pid=os.getpid()
     )
     store = job_slots.SlotStore(job_slots.slots_dir())
-    token = store.submit("light", pid=os.getpid())  # Unpromoted, live waiter.
+    token = store.submit(
+        job_slots.CLASS_MEMORY, pid=os.getpid(), memory=_RUN_ALONE
+    )  # Unpromoted, live waiter.
     job_records.write_record(rec, context.jobs_root)
     try:
         JobLifecycle().reconcile_orphaned()
@@ -1081,3 +1085,78 @@ async def test_job_log_write_failure_mid_run_keeps_job_and_reports_once(context,
     assert result.exit_code == 0 and result.stdout == "first\nsecond\n"
     assert result.stderr.count("job.log unavailable") == 1
     assert log_bytes(context, run_id) == b"first\n"
+
+
+@pytest.mark.asyncio
+async def test_an_adopted_measure_job_is_cancelled_with_the_measure_stop_grace(
+    context, monkeypatch
+):
+    """After a server restart, only a ``measure`` Job gets the longer stop grace (#4134)."""
+    jobs = JobLifecycle()
+    graces: list[float] = []
+
+    async def remember(_pid, grace):
+        graces.append(grace)
+
+    monkeypatch.setattr(jobs, "_cancel_process", remember)
+    for endpoint in ("measure", "sim"):
+        rec = job_records.JobRecord(
+            f"{endpoint}-adopted", endpoint, utc_now_rfc3339(), 5, pid=os.getpid()
+        )
+        job_records.write_record(rec, context.jobs_root)
+
+        assert await jobs.cancel(rec.run_id) == "running"
+
+    assert graces == [
+        endpoint_process.MEASURE_STOP_GRACE_SECONDS,
+        endpoint_process.CANCEL_GRACE_SECONDS,
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups and SIGTERM are POSIX")
+async def test_a_timed_out_measure_job_is_terminated_before_it_is_killed(tmp_path):
+    """A timeout SIGTERMs first, so a child in its own process group is stopped, not orphaned."""
+    pid_file = tmp_path / "grandchild.pid"
+    script = textwrap.dedent(f"""
+        import signal, subprocess, sys, time
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
+        )
+        open({str(pid_file)!r}, "w").write(str(child.pid))
+
+        def stop(*_):  # what ``booley measure`` does: stop the children, then exit
+            child.kill()
+            child.wait()
+            sys.exit(0)
+
+        signal.signal(signal.SIGTERM, stop)
+        time.sleep(60)
+    """)
+    try:
+        _, _, stderr, timed_out = await endpoint_process._run_subprocess(
+            [sys.executable, "-c", script], timeout=4, stop_grace=10.0
+        )
+        grandchild = int(pid_file.read_text(encoding="utf-8"))
+
+        assert timed_out and "timed out after 4s" in stderr
+        assert not is_pid_alive(grandchild)
+    finally:
+        if pid_file.exists():
+            with contextlib.suppress(OSError):
+                os.kill(int(pid_file.read_text(encoding="utf-8")), 9)
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_before_the_process_publishes_its_pid_stops_the_job(context):
+    activity = Activity()
+    jobs = JobLifecycle(activity)
+    run_id = jobs.submit("lint", gated_command(context), JOB_TIMEOUT, context=context)
+    try:
+        assert job_records.read_record(run_id, context.jobs_root).pid is None
+        assert await jobs.cancel(run_id) == "running"
+        rec = job_records.read_record(run_id, context.jobs_root)
+        assert rec.status == "cancelled" and rec.exit_code == 130
+        assert activity.starts == activity.ends == 1
+    finally:
+        await stop_jobs(jobs)

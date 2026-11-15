@@ -155,29 +155,6 @@ def test_dashboard_and_chat_handles_use_main(worktree, monkeypatch):
     assert reserved == [main]
 
 
-def test_admission_caps_come_from_the_slot_store_project(worktree, monkeypatch):
-    from booley.flows import endpoint_admission
-    from booley.runtime import job_slots
-
-    main, tree = worktree
-    (main / "booley.toml").write_text("[jobs]\nmax_light = 3\n", encoding="utf-8")
-    (tree / ".booley/booley.toml").write_text("[jobs]\nmax_light = 7\n", encoding="utf-8")
-    claimed: list[tuple[Path, int]] = []
-
-    class SpyStore:
-        def __init__(self, root: Path, caps: job_slots.SlotCaps) -> None:
-            claimed.append((root, caps.max_light))
-
-        def acquire(self, *_args, **_kwargs) -> str:
-            return "token"
-
-    monkeypatch.setattr(job_slots, "SlotStore", SpyStore)
-    endpoint = SimpleNamespace(name="sim", _resolve_job_class=lambda: "light")
-    monkeypatch.delenv(job_slots.INHERITED_SLOT_ENV, raising=False)
-    endpoint_admission._acquire_job_slot(endpoint)
-    assert claimed == [(main / "runtime" / "jobs" / "slots", 3)]
-
-
 def test_doctor_reads_session_state_from_main(worktree, monkeypatch):
     from booley.harness import doctor
 

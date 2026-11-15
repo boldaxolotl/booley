@@ -92,9 +92,8 @@ def _env_path(name: str) -> Path | None:
 
 def resolve_call_context(arguments: Mapping[str, Any]) -> CallContext:
     """Resolve the facts one tool call with *arguments* runs under."""
-    explicit = _explicit_work_dir(arguments)
     return CallContext(
-        explicit_work_dir=explicit,
+        explicit_work_dir=_explicit_work_dir(arguments),
         jobs_root=container_jobs_root(),
         state_path=_env_path("BOOLEY_STATE_FILE"),
         logs_dir=_env_path("BOOLEY_LOGS_DIR"),

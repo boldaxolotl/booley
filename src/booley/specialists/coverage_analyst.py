@@ -1,4 +1,4 @@
-"""Coverage Analyst for one exact, persisted native Campaign.
+"""Coverage Analyst for one exact, persisted native Coverage Record.
 
 The model only reads evidence. Deterministic code screens its Waiver
 Candidates (ADR 0066); nothing is recorded.
@@ -72,10 +72,12 @@ class CoverageAnalystSpecialist(Specialist):
     """Explain normalized evidence; record screened candidates, never approve them."""
 
     name: str = "coverage_analyst"
-    description: str = "Explain one exact coverage.json Campaign and propose advisory next steps"
+    description: str = (
+        "Explain one exact coverage.json Coverage Record and propose advisory next steps"
+    )
     cli_help: ClassVar[CliHelp | None] = CliHelp(
         summary=(
-            "Explain the results of one Coverage Campaign: which coverage holes remain "
+            "Explain the results of one Coverage Record: which coverage holes remain "
             "and what to try next. Use it after `booley flow sim --coverage` leaves "
             "coverage short of where you want it. The suggestions are advisory and "
             "your RTL and testbench sources are not changed."
@@ -182,7 +184,7 @@ class CoverageAnalystSpecialist(Specialist):
             needs_skills=False,
             text_only=True,
             system_prompt=(
-                "Explain gaps using only the active Coverage Campaign through the "
+                "Explain gaps using only the active Coverage Record through the "
                 "coverage_evidence tool. Begin with its overview view. Page through "
                 "zero_point_sources to retrieve all RTL paths with no native records. "
                 "Zero points differs from zero hits; investigate instrumentation and build "
@@ -318,14 +320,14 @@ class CoverageAnalystSpecialist(Specialist):
         )
 
     def _build_prompt(self) -> str:
-        raise NotImplementedError("Coverage analysis uses the validated Campaign seam")
+        raise NotImplementedError("Coverage analysis uses the validated Coverage Record seam")
 
     def _interpret_output(self, output: str, structured: dict | None) -> McpToolResult:
         raise NotImplementedError("Coverage analysis validates output in its deep module")
 
 
 def coverage_analyst(coverage_record: Path, instruction: str = "") -> CoverageAnalysisReport:
-    """Analyze an exact canonical Campaign using the configured Specialist role."""
+    """Analyze an exact canonical Coverage Record using the configured Specialist role."""
     from booley.flows.cli_selection import CliInvocation
 
     specialist = CoverageAnalystSpecialist()
@@ -342,7 +344,7 @@ def analyze_coverage_record(
     """Default composition of the three-argument analysis seam."""
     invocation_id = str(coverage_record.invocation["id"])
     if not invocation_id.isdecimal():
-        raise CoverageAnalysisError("Campaign invocation id must be numeric")
+        raise CoverageAnalysisError("Coverage Record invocation id must be numeric")
     with owned_tempdir("booley-coverage-record-") as directory:
         root = Path(directory)
         invocation_dir = root / "reports" / "sim" / invocation_id

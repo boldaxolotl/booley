@@ -430,7 +430,7 @@ def test_post_commit_failure_reports_incomplete_collection(tmp_path: Path) -> No
             raise AssertionError("merge must not run after a design abort")
 
     def fail_after_commit(boundary: str) -> None:
-        if boundary == "after:coverage_campaign":
+        if boundary == "after:coverage_record":
             raise OSError("injected post-commit publication failure")
 
     with pytest.raises(_CoverageAggregateError) as raised:

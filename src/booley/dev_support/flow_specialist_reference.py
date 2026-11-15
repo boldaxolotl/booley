@@ -84,11 +84,12 @@ _FLOW_KEY_CONTROLS: dict[str, str] = {
         "`test[+variant]@xN` for N drawn seeds, and `--seed <N>|random` sets or draws the "
         "seed of every selected Test Run; "
         "there is no CLI `--skip`, and configured skips apply only to unfiltered selection. "
-        "MCP passes the same suite as a `test` array. Resume one exact durable "
+        "A Developer Agent's MCP tool call passes the same suite as a `test` array. "
+        "Resume one exact durable "
         "Simulation Record with `--resume-from <exact-manifest.json>` (optionally with "
         "`--dry-run`): Cocotb retries the whole batch; a coverage Simulation Record resumes only "
         "after its collection finished (otherwise exit 2: start a new `--coverage` run). "
-        "`--coverage` / `--cov` collects a native Coverage Campaign, "
+        "`--coverage` / `--cov` collects a native Coverage Record, "
         "and `--trace` captures waveforms for the simulation run. Focused Cocotb "
         "output summarizes unselected skips; pass `--result-verbosity full` to print "
         "every XML testcase entry (the complete XML and JSON artifacts are always retained)"
@@ -204,8 +205,8 @@ def render_flow_reference(
                 "",
                 "Common controls: repeat `--target` or use comma-separated values; "
                 "`--target a --target b,c` preserves the order `a`, `b`, `c`, and "
-                "duplicate resolved Targets are rejected. MCP keeps one "
-                "comma-separated `target` string. "
+                "duplicate resolved Targets are rejected. A Developer Agent's MCP tool call "
+                "takes one comma-separated `target` string instead. "
                 "`--dry-run` returns a normalized plan without executing EDA; "
                 "`booley flow <name> --help` shows the full contract.",
                 "",
@@ -285,7 +286,7 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
 
 
 def _render_coverage_analyst_reference() -> list[str]:
-    """Render the unified coverage campaign input contract."""
+    """Render the unified Coverage Record input contract."""
     return [
         "#### `coverage_analyst`",
         "",
