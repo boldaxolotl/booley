@@ -256,7 +256,7 @@ These rules apply to you whether you type the commands or a Developer Agent runs
 
 `metrics.toml` holds one `[<target>.<flow>]` table per Target and Flow. A `<metric>_max` or `<metric>_min` key is an enforced bound, `track` lists metrics that are only reported, and `off` removes a bound that `[defaults.<flow>]` would add. `[defaults.<flow>]` adds bounds to every table of that Flow.
 
-The listing `booley cheat --metrics` prints below is `metrics.toml` text: save the blocks you keep as `.booley/metrics.toml`, give each bound you keep a number, delete the rest, and check the file with `booley measure --validate`.
+The listing `booley cheat --metrics` prints below is `metrics.toml` text: add the blocks you keep to `.booley/metrics.toml`, give each bound you keep a number, delete the rest, and check the file with `booley measure --validate`.
 
 <!-- BEGIN GENERATED: metrics -->
 Run `booley cheat --metrics` in a Project to list its Targets' metrics.
