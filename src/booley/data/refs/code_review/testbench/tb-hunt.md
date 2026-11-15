@@ -35,15 +35,13 @@ For each test, write down for yourself how it decides pass or fail:
 
 ### 2. Enumerate false-pass scenarios
 
-For each verdict path, build scenarios from these categories. Skip one only when it cannot apply:
+Build scenarios by asking, for each verdict path from step 1, what a faulty DUT could do that leaves the verdict unchanged. Work from the path, not from a list of known patterns: the checklist already names those, and you look for what it does not.
 
-- A check that never executes: a loop with zero iterations, a condition that is never true, a compare gated by a flag that is never set, a task or function never called, a coroutine never awaited
-- A pass reached on a path that skips the checks: early finish or return, a timeout that ends in pass, an exception or failure that is caught and dropped
-- A comparison that passes on X or Z, or on a value taken from the DUT itself
-- An expected value derived from the same assumption as the stimulus, so a wrong DUT and a wrong model agree
-- An error counter incremented but never used by the verdict, a fail sentinel that cannot print, or a pass sentinel printed unconditionally
-- Sampling the DUT before its outputs settle, or on the wrong edge, so a stale value is compared
-- A check that compares a signal with itself or with a constant that makes it always true
+- **Fault by fault**: take each behavior the spec requires of the DUT, picture the DUT violating exactly that behavior, and follow the TB to the first check that should notice. If no check on that path can fail, the scenario is a false pass.
+- **Reachability**: for each check on the path, ask what must be true for it to execute. A check whose guard, loop bound, call or await depends on the DUT's own behavior can be skipped by the very fault it should catch. Include a coroutine created and never awaited, a task never called, and a flag that only the faulty path leaves unset.
+- **Where the verdict is decided**: ask what ends the test before its last check, and what the verdict reads at that moment. A path that finishes, returns, times out or swallows an error before the checks run has no vote.
+- **What a compare can see**: ask which DUT values make the compare true without being correct: unresolved values, a value read back from the DUT itself, a constant, or a signal compared with itself. Ask when the compare samples: before the outputs settle or on the wrong edge, it reads a stale value.
+- **Independence**: ask where the stimulus and the expected value each come from. If both rest on one assumption, a DUT and a model that share a mistake agree.
 
 ### 3. Trace each scenario
 
