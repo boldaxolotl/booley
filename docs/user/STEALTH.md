@@ -27,17 +27,12 @@ all.
 Stealth is off unless `booley.toml` says `enabled = true`; a missing key means
 off. To turn it off again, set `enabled = false` or delete the key. Turning
 Stealth off stops the hooks at once, but `.booley/` stays hidden and
-stays its own repository. Booley doesn't undo that; `booley init` warns about
-the hidden files instead. The one exception is a new IP: an open
-`/booley-setup new` run removes a still-empty inner repository and the
+stays its own repository. Booley doesn't undo that, because `.booley/` now holds
+its own Git history, and only you can choose whether to merge, keep, or discard
+it. `booley init` warns about the hidden files instead. The one exception is a
+new IP: an open `/booley-setup new` run removes a still-empty inner repository and the
 `/.booley` exclusion, and refuses (changing nothing) if the inner repository
 already has commits.
-
-Before this release a missing key meant on, so an older Project may have a
-hidden `.booley/` and no `enabled` key. That Project is now out of Stealth:
-commit messages and pushes aren't checked. `booley init` and
-Doctor warn `stealth.enabled-unset`; add `enabled = true` to keep Stealth, or
-`enabled = false` to confirm it's off.
 
 ## What changes
 
