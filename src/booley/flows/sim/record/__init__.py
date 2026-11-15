@@ -46,16 +46,11 @@ from .coordinator import (
 )
 from .facts import AcceptanceFacts
 from .inspection import (
-    RetainedSimulationRecordStatus,
     SimulationRecordWorkItemError,
     SimulationRecordWorkItemEvidence,
-    authenticate_retained_simulation_record_inventory,
     authenticate_work_item,
     collect_pre_sim_firings,
-    inspect_retained_simulation_record,
     read_durable_results,
-    recover_retained_simulation_record_resources,
-    retained_simulation_record_lock,
     started_simulation_record,
 )
 from .model import (
@@ -93,7 +88,6 @@ __all__ = [
     "ResumeSimulationRecordPreview",
     "ResumeSimulationRecordPreviewRequest",
     "ResumeSimulationRecordRunRequest",
-    "RetainedSimulationRecordStatus",
     "SimulationAttempt",
     "SimulationProjection",
     "SimulationRecord",
@@ -113,7 +107,6 @@ __all__ = [
     "SimulatorBundle",
     "UnsupportedSimulationRecordFormatError",
     "ValidatedResumeManifest",
-    "authenticate_retained_simulation_record_inventory",
     "authenticate_work_item",
     "build_artifact_reference",
     "collect_pre_sim_firings",
@@ -135,12 +128,9 @@ __all__ = [
     "encode_simulation_record_manifest",
     "encode_simulation_result",
     "encode_simulator_bundle",
-    "inspect_retained_simulation_record",
     "read_durable_results",
-    "recover_retained_simulation_record_resources",
     "resolve_artifact_reference",
     "resolve_report_artifact_reference",
-    "retained_simulation_record_lock",
     "started_simulation_record",
     "validate_resume_manifest",
 ]

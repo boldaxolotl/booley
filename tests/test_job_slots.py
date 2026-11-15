@@ -127,6 +127,8 @@ _HALF = job_slots.MemoryClaim(budget_mb=2, reservation_mb=1)
 
 
 def make_store(root: Path, world: FakeWorld) -> SlotStore:
+    """A simulated process. Its lease gates name the real test process: a test that
+    holds a lease gate while another store looks at it spawns ``os.getpid()``."""
     return SlotStore(
         root,
         is_pid_alive=world.is_pid_alive,
@@ -170,6 +172,14 @@ def make_execution_store(
 
 def spawn(world: FakeWorld, pid: int, argv: list[str] | None = None):
     world.alive[pid] = argv
+
+
+def advance_renewing(world: FakeWorld, store: SlotStore, holder, seconds: int) -> None:
+    """Advance the clock by *seconds*, renewing *holder*'s lease at the production interval."""
+    step = int(job_slots.LEASE_RENEW_INTERVAL_SECONDS)
+    for _ in range(seconds // step):
+        world.clock += step
+        assert store.renew(holder)
 
 
 def active_execution_record(supervisor: ProcessIdentity) -> dict:
@@ -232,22 +242,22 @@ class TestSingleProcess:
         assert store.snapshot(CLASS_MEMORY)[0][0].lease_generation == 1
 
     def test_renew_retries_transient_lease_gate_permission_error(self, root, world, monkeypatch):
-        # Windows denies mkdir while the previous gate's rmdir is pending (#2024).
+        # Windows denies a new gate while the previous gate's delete is pending (#2024).
         spawn(world, 100)
         store = make_store(root, world)
         token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
         assert store.refresh(token).state == HOLDING
-        original_mkdir = Path.mkdir
+        original_link = os.link
         denials = 0
 
-        def flaky_mkdir(path, *args, **kwargs):
+        def flaky_link(source, target, *args, **kwargs):
             nonlocal denials
-            if path.name.endswith(".lease.lock") and denials < 2:
+            if Path(target).name.endswith(".lease.lock") and denials < 2:
                 denials += 1
                 raise PermissionError("delete pending")
-            return original_mkdir(path, *args, **kwargs)
+            return original_link(source, target, *args, **kwargs)
 
-        monkeypatch.setattr(Path, "mkdir", flaky_mkdir)
+        monkeypatch.setattr(os, "link", flaky_link)
 
         assert store.renew(token) is True
         assert denials == 2
@@ -725,10 +735,10 @@ class TestSingleProcess:
 
         def flaky_unlink(path, *args, **kwargs):
             nonlocal attempts
-            if path == tok.path and attempts < 2:
+            if path == tok.path:
                 attempts += 1
-                raise PermissionError("file is temporarily in use")
-            attempts += 1
+                if attempts < 3:
+                    raise PermissionError("file is temporarily in use")
             return original_unlink(path, *args, **kwargs)
 
         monkeypatch.setattr(Path, "unlink", flaky_unlink)
@@ -1211,6 +1221,7 @@ class TestGhostReaping:
         assert holder.lease_state == job_slots.LEASE_CANCELLING
         assert cancellations == [execution_id]
         assert store.renew(token) is False
+        assert token.lease_health.lost.is_set()
         store.release(token)
         assert token.path.exists()
 
@@ -1914,15 +1925,13 @@ class TestPromotionDeadline:
 
         # Queue far past the waiter's own budget + slack: waiters have no
         # deadline, and the wait must not pre-charge the future holder.
-        world.clock += 1_000
-        store.renew(holder)
+        advance_renewing(world, store, holder, 1_000)
         assert store.reap(CLASS_MEMORY) == []
         store.release(holder)
         assert store.refresh(waiter).state == HOLDING
 
         # Freshly promoted: inside its (promotion-anchored) budget.
-        world.clock += 100
-        store.renew(waiter)
+        advance_renewing(world, store, waiter, 100)
         assert store.reap(CLASS_MEMORY) == []
         assert waiter.path.exists()
 
@@ -2099,3 +2108,267 @@ def test_unreadable_execution_record_is_not_proven_terminal(monkeypatch) -> None
         job_slots, "execution_paths", lambda _id: SimpleNamespace(record=Path("r"))
     )
     assert job_slots._default_execution_is_terminal("a" * 32) is False
+
+
+# A gate a dead process left behind: a bare PID, as gates were written before
+# they named their owner's identity. The PID is above the kernel limit.
+_DEAD_GATE_PID = 4_194_305
+
+
+class _SecondActor:
+    """Runs a second process's gate attempt while the first one is paused, and holds what it took."""
+
+    def __init__(self, enter_gate) -> None:
+        self._enter_gate = enter_gate
+        self._settled = threading.Event()
+        self._release = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.acquired: bool | None = None
+
+    def run_once(self) -> None:
+        """Start the actor on first call and wait until it took the gate or gave up."""
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(target=self._attempt)
+        self._thread.start()
+        assert self._settled.wait(10), "second actor never settled"
+
+    def _attempt(self) -> None:
+        with self._enter_gate() as acquired:
+            self.acquired = acquired
+            self._settled.set()
+            self._release.wait(10)
+
+    def finish(self) -> None:
+        self._release.set()
+        if self._thread is not None:
+            self._thread.join(10)
+            assert not self._thread.is_alive()
+
+
+def _pause(monkeypatch, gate: Path, actor: _SecondActor, method: str) -> None:
+    """Run *actor* when this thread first calls ``Path.<method>`` on *gate*.
+
+    ``read`` stands for both ``read_text`` and ``read_bytes``. A read pauses
+    after it returns (the breaker has judged), a removal before it runs.
+    """
+    paused_thread = threading.current_thread()
+    names = ("read_text", "read_bytes") if method == "read" else (method,)
+    removes = method in ("unlink", "rmdir")
+
+    for name in names:
+        original = getattr(Path, name)
+
+        def paused(path, *args, _original=original, **kwargs):
+            here = path == gate and threading.current_thread() is paused_thread
+            if here and removes:
+                actor.run_once()
+            result = _original(path, *args, **kwargs)
+            if here and not removes:
+                actor.run_once()
+            return result
+
+        monkeypatch.setattr(Path, name, paused)
+
+
+class TestStaleGateBreaking:
+    """Two processes that find the same stale gate: at most one of them holds it."""
+
+    @pytest.mark.parametrize("pause", ["read", "unlink"], ids=["judging", "removing"])
+    def test_one_breaker_holds_a_stale_promotion_gate(self, root, world, monkeypatch, pause):
+        spawn(world, 100)
+        spawn(world, 200)
+        second = make_store(root, world)
+        second_token = second.submit(CLASS_MEMORY, memory=_ALONE, pid=200)
+        gate = root / CLASS_MEMORY / ".promotion.lock"
+        gate.write_text(f"{_DEAD_GATE_PID}\n", encoding="utf-8")
+        world.clock = gate.stat().st_mtime + job_slots._UNREADABLE_REAP_AGE_SECONDS + 1
+        actor = _SecondActor(lambda: second._promotion_gate(second_token))
+        first = make_store(root, world)
+        first_token = first.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+        _pause(monkeypatch, gate, actor, pause)
+        try:
+            with first._promotion_gate(first_token) as first_acquired:
+                assert actor.acquired is not None, "the second actor never ran"
+                assert [first_acquired, actor.acquired].count(True) == 1
+        finally:
+            actor.finish()
+
+    @pytest.mark.parametrize("pause", ["stat", "rmdir"], ids=["judging", "removing"])
+    def test_one_breaker_holds_a_stale_lease_gate(self, root, world, monkeypatch, pause):
+        spawn(world, 100)
+        spawn(world, os.getpid())  # the process both gate breakers run in
+        holder_store = make_store(root, world)
+        holder = holder_store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+        assert holder_store.refresh(holder).state == HOLDING
+        gate = holder.path.parent / f".{holder.lease_id}.lease.lock"
+        gate.mkdir()  # a lease gate as a dead process left it before gates named their owner
+        world.clock = gate.stat().st_mtime + job_slots._UNREADABLE_REAP_AGE_SECONDS + 1
+        second = make_store(root, world)
+        actor = _SecondActor(lambda: second._lease_gate(holder))
+        first = make_store(root, world)
+        _pause(monkeypatch, gate, actor, pause)
+        try:
+            with first._lease_gate(holder) as first_acquired:
+                assert actor.acquired is not None, "the second actor never ran"
+                assert [first_acquired, actor.acquired].count(True) == 1
+        finally:
+            actor.finish()
+
+    def test_unreadable_live_promotion_gate_is_not_broken(self, root, world, monkeypatch):
+        spawn(world, 100)
+        spawn(world, 200)
+        holder = make_store(root, world)
+        holder_token = holder.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+        breaker = make_store(root, world)
+        breaker_token = breaker.submit(CLASS_MEMORY, memory=_ALONE, pid=200)
+        gate = root / CLASS_MEMORY / ".promotion.lock"
+        originals = {name: getattr(Path, name) for name in ("read_text", "read_bytes")}
+
+        def scanner(name):
+            def scanned(path, *args, **kwargs):
+                if path == gate:
+                    raise windows_sharing_error()  # a scanner holds the gate file
+                return originals[name](path, *args, **kwargs)
+
+            return scanned
+
+        with holder._promotion_gate(holder_token) as held:
+            assert held
+            world.clock = gate.stat().st_mtime + job_slots._UNREADABLE_REAP_AGE_SECONDS + 1
+            for name in originals:
+                monkeypatch.setattr(Path, name, scanner(name))
+            with breaker._promotion_gate(breaker_token) as acquired:
+                assert not acquired
+
+    def test_unusable_break_lock_is_reported_once(self, root, world, caplog):
+        spawn(world, 100)
+        store = make_store(root, world)
+        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+        gate = root / CLASS_MEMORY / ".promotion.lock"
+        gate.write_text(f"{_DEAD_GATE_PID}\n", encoding="utf-8")
+        world.clock = gate.stat().st_mtime + job_slots._UNREADABLE_REAP_AGE_SECONDS + 1
+        (root / CLASS_MEMORY / ".gate-break.lock").mkdir()  # cannot be opened as a file
+
+        with caplog.at_level(logging.WARNING, logger="booley.runtime.job_slots"):
+            for _attempt in range(2):
+                with store._promotion_gate(token) as acquired:
+                    assert not acquired
+        assert gate.exists()
+        assert caplog.text.count("Cannot take the gate break lock") == 1
+
+    @pytest.mark.parametrize("content", [b"\xff\xfe junk\n", b"not json\n"], ids=["bytes", "text"])
+    def test_junk_promotion_gate_is_broken_once_old(self, root, world, content):
+        spawn(world, 100)
+        store = make_store(root, world)
+        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+        gate = root / CLASS_MEMORY / ".promotion.lock"
+        gate.write_bytes(content)
+        with store._promotion_gate(token) as acquired:
+            assert not acquired  # not yet old: its writer may still be mid-write
+        world.clock = gate.stat().st_mtime + job_slots._UNREADABLE_REAP_AGE_SECONDS + 1
+        with store._promotion_gate(token) as acquired:
+            assert acquired
+
+    def test_gate_owner_is_recaptured_after_a_fork(self, root, world, monkeypatch):
+        spawn(world, os.getpid())
+        spawn(world, os.getpid() + 1)
+        store = make_store(root, world)
+        first = store._gate_owner()
+        assert first.identity is not None
+        assert store._gate_owner() is first  # cached while pid and identity hold
+        monkeypatch.setattr(os, "getpid", lambda: first.pid + 1)
+        assert store._gate_owner().pid == first.pid + 1
+
+    def test_gate_owner_retries_a_failed_identity_capture(self, root, world):
+        store = make_store(root, world)
+        assert store._gate_owner().identity is None  # this process is not in the fake world
+        spawn(world, os.getpid())
+        assert store._gate_owner().identity is not None
+
+    def test_recycled_pid_promotion_gate_is_broken(self, root, world):
+        spawn(world, 100)
+        spawn(world, 200)
+        dead = make_store(root, world)
+        dead_token = dead.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+        live = make_store(root, world)
+        live_token = live.submit(CLASS_MEMORY, memory=_ALONE, pid=200)
+        with dead._promotion_gate(dead_token) as held:
+            assert held
+            gate = root / CLASS_MEMORY / ".promotion.lock"
+            world.alive[100] = ["another", "process"]  # PID 100 is live again, as a new process
+            world.clock = gate.stat().st_mtime + job_slots._UNREADABLE_REAP_AGE_SECONDS + 1
+            with live._promotion_gate(live_token) as acquired:
+                assert acquired
+
+
+class TestLeaseRenewal:
+    @pytest.mark.parametrize(
+        ("elapsed", "lost"), [(10, False), (job_slots.LEASE_DURATION_SECONDS + 1, True)]
+    )
+    def test_missed_lease_gate_is_lost_only_after_expiry(self, root, world, elapsed, lost):
+        spawn(world, 100)
+        spawn(world, os.getpid())  # the process the other gate holder runs in
+        store = make_store(root, world)
+        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+        assert store.refresh(token).state == HOLDING
+        world.clock += elapsed
+        with make_store(root, world)._lease_gate(token) as held:
+            assert held
+            assert store.renew(token) is False  # not extended this time
+        assert token.lease_health.lost.is_set() is lost
+        assert store.renew(token) is not lost
+        assert token.lease_generation == (0 if lost else 1)
+
+    def test_dead_reapers_lease_gate_does_not_cost_the_holder_its_lease(self, root, world):
+        spawn(world, 100)
+        spawn(world, 300)
+        store = make_store(root, world)
+        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+        assert store.refresh(token).state == HOLDING
+        reaper = make_store(root, world)
+        reaper._capture_identity = lambda _pid: world.capture_identity(300)
+        with reaper._lease_gate(token) as held:
+            assert held
+            del world.alive[300]  # the reaper dies holding the gate; no time passes
+
+            assert store.renew(token) is True
+        assert not token.lease_health.lost.is_set()
+
+    def test_holder_resuming_after_expiry_reports_the_lease_lost(self, root, world):
+        spawn(world, 100)
+        store = make_store(root, world)
+        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+        assert store.refresh(token).state == HOLDING
+        world.clock += job_slots.LEASE_DURATION_SECONDS + 1  # stalled; no reaper ran yet
+
+        assert store.renew(token) is False
+        assert token.lease_health.lost.is_set()
+        assert store.snapshot(CLASS_MEMORY) == ([], [])  # the next reap recovers it
+
+    def test_renewal_thread_outlives_a_missed_lease_gate(self, root, monkeypatch):
+        monkeypatch.setattr(job_slots, "LEASE_RENEW_INTERVAL_SECONDS", 0.02)
+        store = SlotStore(root)
+        missed = threading.Event()
+        real_renew = store.renew
+
+        def observed_renew(token):
+            renewed = real_renew(token)
+            if not renewed:
+                missed.set()
+            return renewed
+
+        monkeypatch.setattr(store, "renew", observed_renew)
+        token = store.acquire(CLASS_MEMORY, memory=_ALONE, pid=os.getpid(), poll_interval=0.01)
+        try:
+            with SlotStore(root)._lease_gate(token) as held:
+                assert held
+                assert missed.wait(10)
+                generation = token.lease_generation
+            deadline = time.monotonic() + 10
+            while token.lease_generation == generation and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert token.lease_generation > generation
+            assert not token.lease_health.lost.is_set()
+        finally:
+            store.release(token)
