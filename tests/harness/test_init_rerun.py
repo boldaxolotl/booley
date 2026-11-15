@@ -914,8 +914,8 @@ class TestWindowsProjectDataLineEndings:
         self._assert_safe_and_linked(repo, hardlink=force_hardlink_fallback)
 
 
-@pytest.mark.parametrize("stale_sessions", [[], ["booley-session-old"]])
-def test_image_convergence_reports_live_sandbox_drift(repo, monkeypatch, capsys, stale_sessions):
+@pytest.mark.parametrize("stale", ["none", "headless", "vscode"])
+def test_image_convergence_reports_live_sandbox_drift(repo, monkeypatch, capsys, stale):
     image = pi.project_image_name(repo)
     changed = LifecycleResult(
         selected_reference=image,
@@ -923,17 +923,29 @@ def test_image_convergence_reports_live_sandbox_drift(repo, monkeypatch, capsys,
         status=ImageLifecycleStatus.CHANGED,
         changed_images=(image,),
     )
+    name = {
+        "none": None,
+        "headless": sr.session_container_name(repo),
+        "vscode": "vsc-editor",
+    }[stale]
+    stale_sessions = [name] if name else []
     monkeypatch.setattr(init_cmd.image_lifecycle, "reconcile_planned", lambda *a, **k: changed)
     monkeypatch.setattr(sr, "sessions_on_stale_image", lambda root, selected: stale_sessions)
 
     assert init_cmd._step_image_lifecycle(InitContext(project_root=repo)) is changed
 
-    output = capsys.readouterr().out
-    if stale_sessions:
-        assert "booley-session-old" in output
-        assert "booley session down && booley session up" in output
+    output = " ".join(capsys.readouterr().out.split())
+    assert "session down" not in output
+    if stale == "headless":
+        assert f"'{name}'" in output
+        assert "To restart it on the image just built, run `booley session refresh`" in output
+    elif stale == "vscode":
+        assert (
+            "To restart it on the image just built, use Dev Containers: Rebuild Container."
+            in output
+        )
     else:
-        assert "booley session down" not in output
+        assert "keeps serving it" not in output
 
 
 def test_init_does_not_scaffold_board_or_ticket_guidance(repo):

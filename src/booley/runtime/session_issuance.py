@@ -1355,12 +1355,12 @@ def _validate_credential_policy(
         raise RuntimeSpecError(
             f"Sandbox Agent CLI {app} is not in the Project's Agent CLIs "
             f"({_format_cli_record(found.policies)}; without [agent] clis only [agent] "
-            "default is allowed); run `booley session refresh` and recreate the Sandbox"
+            "default is allowed)"
         )
     if list(record.items()) != list(expected.items()):
         raise RuntimeSpecError(
             f"Sandbox Agent CLIs {_format_cli_record(record)} differ from [agent] clis "
-            f"{_format_cli_record(expected)}; refresh and recreate the Sandbox"
+            f"{_format_cli_record(expected)}"
         )
     remote = spec.get("remoteEnv", {})
     primary = record[app] if app in record else found.policies[found.default]
@@ -1368,9 +1368,7 @@ def _validate_credential_policy(
         remote.get("BOOLEY_PRIMARY_AUTH") != primary
         or remote.get("BOOLEY_CREDENTIAL_SCHEMA") != auth_token.CREDENTIAL_SCHEMA
     ):
-        raise RuntimeSpecError(
-            "Sandbox credential policy/schema has drifted; refresh and recreate the Sandbox"
-        )
+        raise RuntimeSpecError("Sandbox credential policy/schema has drifted")
     _validate_credential_seed_sources(spec, record)
     _validate_seed_targets(spec, record)
 

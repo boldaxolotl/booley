@@ -476,7 +476,7 @@ def test_protocol_failure_logs_fixed_message_and_one_remedy(
     )
     assert "Sandbox execution protocol is unavailable or incompatible; " in caplog.text
     if has_root:
-        remedy.assert_called_once_with(tmp_path, runtime_only=True)
+        remedy.assert_called_once_with(tmp_path)
         assert "run the selected remedy" in caplog.text
     else:
         remedy.assert_not_called()

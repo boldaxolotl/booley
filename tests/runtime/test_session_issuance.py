@@ -48,6 +48,7 @@ from booley.runtime import interactive_docker as idk
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.platform_paths import docker_mount_path
+from booley.runtime.sandbox_apply import Attachment
 
 # Issuance fixtures replace PATH with a synthetic launcher directory.
 _HOST_PATH = os.environ.get("PATH", os.defpath)
@@ -827,7 +828,7 @@ def test_doctor_names_repair_for_rejected_pre_030_issuance(
 ) -> None:
     """Doctor FAILs a rejected pre-0.3.0 issuance and names the repair that applies."""
     project, _spec, _path, _stamp = issued
-    monkeypatch.setattr(session_runtime, "vscode_session_container", lambda _root: None)
+    monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _root: Attachment.HEADLESS)
     damage(project)
     request = inspection.RuntimeInspectionRequest(project, "sha256:" + "a" * 64, None)
     failures = [
@@ -879,7 +880,7 @@ def _revoke_issued_project(project: Path, monkeypatch: pytest.MonkeyPatch) -> Mo
     )
     cleanup = Mock(return_value=())
     monkeypatch.setattr(flexnet_docker, "cleanup_project_resources_for_identity", cleanup)
-    monkeypatch.setattr(session_runtime, "vscode_session_container", lambda _root: None)
+    monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _root: None)
     docker = Mock(side_effect=AssertionError("Docker must not run after withdrawn issuance"))
     monkeypatch.setattr("booley.runtime.interactive_docker._run_docker", docker)
     monkeypatch.setattr(session_runtime, "_run", docker)
@@ -3125,7 +3126,9 @@ def test_policy_change_requires_refresh_even_when_shell_exports_change(issued, m
         monkeypatch.setenv(key, "SYNTHETIC")
     runtime_spec.validate(project, spec, path)
     (project / ".booley" / "booley.toml").write_text('[agent]\nauth="api_key"\n')
-    with pytest.raises(runtime_spec.RuntimeSpecError, match=r"credential policy/schema.*refresh"):
+    with pytest.raises(
+        runtime_spec.RuntimeSpecError, match=r"credential policy/schema has drifted$"
+    ):
         runtime_spec.validate(project, spec, path)
 
 
@@ -3936,9 +3939,28 @@ def test_default_change_without_clis_requires_refresh(issued, monkeypatch, reque
     _set_toml(project, request, '[agent]\ndefault = "codex"\n')
     with pytest.raises(
         runtime_spec.RuntimeSpecError,
-        match=r"without \[agent\] clis only \[agent\] default.*booley session refresh",
+        match=r"without \[agent\] clis only \[agent\] default is allowed\)$",
     ):
         runtime_spec.validate(project, issued_spec, path)
+
+
+def test_vscode_prepare_agent_cli_refusal_names_vscode_steps(issued, monkeypatch, request):
+    project, spec, _ = _multi_cli_project(
+        issued, monkeypatch, request, '[agent]\ndefault = "claude"\n'
+    )
+    issued_spec, path = _issue_spec(project, spec, monkeypatch)
+    runtime_spec.validate(project, issued_spec, path)
+    _set_toml(project, request, '[agent]\ndefault = "codex"\n')
+    monkeypatch.setattr(session_runtime, "_refuse_outdated_vscode_containers", lambda *_: None)
+
+    with pytest.raises(session_runtime.SessionError) as caught:
+        session_runtime._refuse_then_validate(project, issued_spec)
+
+    message = str(caught.value)
+    assert message.endswith(
+        "on the host run `booley init`, then use Dev Containers: Rebuild Container"
+    )
+    assert "session refresh" not in message
 
 
 def test_cli_set_change_requires_refresh(issued, monkeypatch, request):
@@ -3948,7 +3970,9 @@ def test_cli_set_change_requires_refresh(issued, monkeypatch, request):
     issued_spec, path = _issue_spec(project, spec, monkeypatch)
     runtime_spec.validate(project, issued_spec, path)
     _set_toml(project, request, _CLAUDE_AND_CODEX)
-    with pytest.raises(runtime_spec.RuntimeSpecError, match=r"Agent CLIs.*differ.*refresh"):
+    with pytest.raises(
+        runtime_spec.RuntimeSpecError, match=r"Agent CLIs.*differ from \[agent\] clis.*"
+    ):
         runtime_spec.validate(project, issued_spec, path)
 
 
