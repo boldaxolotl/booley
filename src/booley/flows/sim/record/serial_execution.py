@@ -1333,8 +1333,7 @@ def _blocked_shared_result(
         )
         if failure.failure_class == FailureClass.INFRASTRUCTURE:
             observation["functional"] = observation["assertions"] = "not_observed"
-            # A failed build result's observation carries the build detail object; its keys are
-            # open-ended, so the detail mapping stays `Any`.
+            # The persisted build detail object has open-ended keys, so `Any` is the honest type.
             observation["detail"] = _compact_build_detail(
                 cast(Mapping[str, Any], failure.result.document["observation"])["detail"],
                 1 if index == 0 else len(identities),
