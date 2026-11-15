@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import re
 import subprocess
 import sys
 from collections import defaultdict
@@ -40,12 +41,15 @@ def function_lengths(source: str) -> list[tuple[str, int]]:
     parent.
     """
     found: list[tuple[str, int]] = []
+    # Python's physical line breaks, not str.splitlines(): that also splits at U+2028,
+    # form feeds and the like, which shifts every later AST line number.
+    lines = re.split(r"\r\n|\r|\n", source)
 
     def visit(node: ast.AST, prefix: str) -> None:
         for child in ast.iter_child_nodes(node):
-            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
+            if isinstance(child, _Function):
                 name = prefix + child.name
-                found.append((name, _counted_lines(child, source)))
+                found.append((name, _counted_lines(child, lines)))
                 visit(child, name + ".<locals>.")
             elif isinstance(child, ast.ClassDef):
                 visit(child, prefix + child.name + ".")
@@ -56,8 +60,7 @@ def function_lengths(source: str) -> list[tuple[str, int]]:
     return found
 
 
-def _counted_lines(node: _Function, source: str) -> int:
-    lines = source.splitlines()
+def _counted_lines(node: _Function, lines: list[str]) -> int:
     span = set(range(node.lineno, (node.end_lineno or node.lineno) + 1))
     first = node.body[0]
     if (

@@ -96,6 +96,9 @@ def test_docstring_and_blank_lines_do_not_count() -> None:
     assert _gate().function_lengths(source) == [("f", 50)]
     assert _gate().violations("a.py", source, None) == []
     assert _gate().violations("a.py", source + "    x = 1\n", None) != []
+    # U+2028 inside a comment is not a Python line break: all 51 lines count.
+    separator = "def f():\n    # \u2028\n" + "    x = 1\n" * 49
+    assert _gate().function_lengths(separator) == [("f", 51)]
 
 
 def test_nested_function_counts_alone_and_in_parent(repo: Path) -> None:

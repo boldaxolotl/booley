@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -19,5 +18,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     raise SystemExit(main())
