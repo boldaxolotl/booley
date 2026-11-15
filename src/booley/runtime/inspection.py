@@ -551,7 +551,7 @@ def _check_runtime_booley_version(
 def _accepted_booley_dir(value: str, project_root: Path) -> bool:
     """Return whether ``value`` is an accepted in-Sandbox ``BOOLEY_DIR`` spelling (ADR 0073).
 
-    Accepted spellings are the image alias ``/booley-project`` and the ``.booley``
+    Accepted spellings are the image alias ``/booley`` and the ``.booley``
     entry directly under the inspected Project Root, either one resolving to an
     existing directory. The entry may be a symlink; its parent must be the same
     location as the Project Root, so aliased Project Root spellings are tolerated. Paths alone

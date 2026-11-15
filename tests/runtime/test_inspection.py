@@ -235,7 +235,7 @@ def test_host_doctor_names_stop_first_repair_for_running_old_vscode(
     # Current, pinned Booley Directory mounts: the editor is stale, not outdated.
     state["Mounts"] += [
         {"Destination": target, "Source": str(booley_dir), "Type": "bind", "RW": True}
-        for target in ("/booley-project", "/work/.booley")
+        for target in ("/booley", "/work/.booley")
     ]
     spec_path = tmp_path / ".devcontainer" / "devcontainer.json"
     spec_path.parent.mkdir()
@@ -278,7 +278,7 @@ def test_host_doctor_accepts_vscode_managed_runtime_state(tmp_path, monkeypatch)
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
     issuance, spec, labels, state = _issued_runtime_state(tmp_path)
-    spec["remoteEnv"] = {"BOOLEY_DIR": "/booley-project"}
+    spec["remoteEnv"] = {"BOOLEY_DIR": "/booley"}
     labels["devcontainer.local_folder"] = str(tmp_path)
     state["Config"]["Labels"] = labels
     state["Mounts"].extend(
