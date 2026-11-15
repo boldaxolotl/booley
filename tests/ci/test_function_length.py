@@ -59,24 +59,36 @@ def _run(repo: Path) -> tuple[int, str, str]:
     return result.returncode, result.stdout, result.stderr
 
 
-@pytest.mark.parametrize(
-    ("name", "lines", "code"),
-    [("mod.py", 51, 1), ("mod.py", 50, 0), ("café.py", 51, 1)],
-    ids=["51-fails", "50-passes", "51-non-ascii-path-fails"],
-)
-def test_new_function_over_limit_fails(repo: Path, name: str, lines: int, code: int) -> None:
-    _commit(repo, {f"src/booley/{name}": _body("f", lines)})
-    assert _run(repo)[0] == code
+def _exit_codes(repo: Path, cases: dict[str, tuple[dict[str, str], int]]) -> None:
+    """Commit each case's files on a fresh branch tip and check the exit code."""
+    start = _git(repo, "rev-parse", "HEAD")
+    for case, (files, expected) in cases.items():
+        _commit(repo, files)
+        code = _run(repo)[0]
+        _git(repo, "reset", "-q", "--hard", start)
+        assert code == expected, case
 
 
-@pytest.mark.parametrize(
-    ("lines", "code"),
-    [(61, 1), (60, 0), (55, 0)],
-    ids=["grown-fails", "unchanged-passes", "shrunk-passes"],
-)
-def test_oversize_base_function_may_not_grow(repo: Path, lines: int, code: int) -> None:
-    _commit(repo, {"src/booley/old.py": _body("f", lines) + "y = 2\n"})
-    assert _run(repo)[0] == code
+def test_new_function_over_limit_fails(repo: Path) -> None:
+    _exit_codes(
+        repo,
+        {
+            "51 lines fails": ({"src/booley/mod.py": _body("f", 51)}, 1),
+            "50 lines passes": ({"src/booley/mod.py": _body("f", 50)}, 0),
+            "51 lines in a non-ASCII path fails": ({"src/booley/caf\u00e9.py": _body("f", 51)}, 1),
+        },
+    )
+
+
+def test_oversize_base_function_may_not_grow(repo: Path) -> None:
+    _exit_codes(
+        repo,
+        {
+            "grown to 61 fails": ({"src/booley/old.py": _body("f", 61) + "y = 2\n"}, 1),
+            "unchanged at 60 passes": ({"src/booley/old.py": _body("f", 60) + "y = 2\n"}, 0),
+            "shrunk to 55 passes": ({"src/booley/old.py": _body("f", 55) + "y = 2\n"}, 0),
+        },
+    )
 
 
 def test_docstring_and_blank_lines_do_not_count() -> None:
