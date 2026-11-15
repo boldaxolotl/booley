@@ -34,7 +34,7 @@ from booley.targets.parameter_integrity import (
 from .. import edam as edam_layer
 from ..base import SubprocessResult
 from ..simulator_family import matching_eda_tool
-from .build_parallelism import LaneKind, verilator_backend_arguments
+from .build_parallelism import LaneKind, authored_make_tokens, verilator_backend_arguments
 from .build_reuse import capture_core_closure
 from .compiler_cache import (
     CompilerCacheConfigurationError,
@@ -42,6 +42,7 @@ from .compiler_cache import (
     compose_environment,
     execution_environment,
     resolve_policy,
+    warn_make_option_overrides,
 )
 from .config import DEFAULT_SIM_BUILD_TIMEOUT_MS
 
@@ -223,7 +224,7 @@ def _prepare_simulation_build(
     build_environment = dict(environment or {})
     if eda_tool == "verilator":
         cache_policy, build_environment = _verilator_cache_environment(
-            root, build_environment, Path(resolved.build_root)
+            root, build_environment, Path(resolved.build_root), inspection
         )
         core_closure = capture_core_closure(resolved.edam_path, root, generation=work_root)
     _stage_doctor_overlay(root, resolved.build_root)
@@ -252,9 +253,16 @@ def _verilator_cache_environment(
     root: Path,
     environment: Mapping[str, str],
     build_root: Path,
+    inspection: TargetInspection,
 ) -> tuple[CompilerCachePolicy, dict[str, str]]:
-    """Resolve the compiler-cache policy and its managed build environment."""
+    """Resolve the compiler-cache policy and its managed build environment.
+
+    Also warns about ``make_options`` that override it.
+    """
     policy = resolve_policy(root, os.environ)
+    warn_make_option_overrides(
+        inspection.handle.selector, authored_make_tokens(inspection), cache_active=policy.active
+    )
     return policy, compose_environment(
         policy, environment, ambient=os.environ, build_root=build_root
     )
