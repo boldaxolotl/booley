@@ -326,7 +326,7 @@ class TestCodexBackend:
         assert "not found" in result
 
     def test_health_check_ok(self):
-        backend = CodexBackend()
+        backend = CodexBackend(auth_mode="visitor")
         with patch("booley.runtime._codex_backend.shutil.which", return_value="/usr/bin/codex"):
             result = backend.health_check()
         assert result is None
@@ -660,7 +660,7 @@ class TestCallAgent:
 
         cfg = BackendConfig(
             settings=AgentSettings(),
-            active_backend=ClaudeSDKBackend(),
+            active_backend=ClaudeSDKBackend(auth_mode="visitor"),
         )
         set_backend_config(cfg)
         yield

@@ -198,12 +198,14 @@ class TestEffectiveCredential:
         return creds
 
     def test_nothing_at_all_resolves_to_none(self, isolated_home):
-        assert auth_token.effective_credential(auth_token.APP_CLAUDE) is None
+        assert (
+            auth_token.effective_credential(auth_token.APP_CLAUDE, auth_token.VISITOR_AUTH) is None
+        )
 
     def test_login_file_alone_is_subscription_and_not_rotation_free(self, isolated_home):
         self._write_claude_login(isolated_home)
 
-        eff = auth_token.effective_credential(auth_token.APP_CLAUDE)
+        eff = auth_token.effective_credential(auth_token.APP_CLAUDE, auth_token.VISITOR_AUTH)
 
         assert eff.mode == auth_token.MODE_SUBSCRIPTION
         assert not eff.rotation_free
@@ -214,7 +216,7 @@ class TestEffectiveCredential:
         self._write_claude_login(isolated_home)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
 
-        eff = auth_token.effective_credential(auth_token.APP_CLAUDE)
+        eff = auth_token.effective_credential(auth_token.APP_CLAUDE, auth_token.VISITOR_AUTH)
 
         assert eff.mode == auth_token.MODE_API_KEY
         assert eff.rotation_free
@@ -225,7 +227,7 @@ class TestEffectiveCredential:
         auth_token.store_token(_TOKEN)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
 
-        eff = auth_token.effective_credential(auth_token.APP_CLAUDE)
+        eff = auth_token.effective_credential(auth_token.APP_CLAUDE, auth_token.VISITOR_AUTH)
 
         assert eff.mode == auth_token.MODE_API_KEY
         assert any("stored" in loser for loser in eff.overridden)
@@ -234,7 +236,7 @@ class TestEffectiveCredential:
         self._write_claude_login(isolated_home)
         auth_token.store_token(_TOKEN)
 
-        eff = auth_token.effective_credential(auth_token.APP_CLAUDE)
+        eff = auth_token.effective_credential(auth_token.APP_CLAUDE, auth_token.VISITOR_AUTH)
 
         assert eff.mode == auth_token.MODE_OAUTH_TOKEN
         assert eff.rotation_free
@@ -244,7 +246,7 @@ class TestEffectiveCredential:
         # For Codex the API key IS the rotation-free credential — one ladder rung.
         auth_token.store_token(_API_KEY, auth_token.APP_CODEX)
 
-        eff = auth_token.effective_credential(auth_token.APP_CODEX)
+        eff = auth_token.effective_credential(auth_token.APP_CODEX, auth_token.VISITOR_AUTH)
 
         assert eff.mode == auth_token.MODE_API_KEY
         assert eff.rotation_free
@@ -259,9 +261,14 @@ class TestAuthStatusReport:
     refreshing one": doubly wrong (the key is what runs, and keys never refresh)."""
 
     @staticmethod
-    def _run(monkeypatch):
+    def _run(monkeypatch, *, visitor=False):
+        """Run the status report; *visitor* is a hand-written Sandbox with no policy record."""
+        from booley.config import agent as agent_config
         from booley.harness import auth_cmd
 
+        monkeypatch.setattr(agent_config, "_inside_container", lambda: visitor)
+        if visitor:
+            monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "auto")
         sink: dict[str, list[str]] = {"ok": [], "info": [], "warn": []}
         monkeypatch.setattr(auth_cmd, "banner", lambda *a, **k: None)
         for level, messages in sink.items():
@@ -272,15 +279,23 @@ class TestAuthStatusReport:
     def test_api_key_alone_is_reported_as_what_runs(self, isolated_home, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
 
-        _rc, sink = self._run(monkeypatch)
+        _rc, sink = self._run(monkeypatch, visitor=True)
 
         assert any("claude" in m and "ANTHROPIC_API_KEY" in m for m in sink["ok"])
         assert not any("claude" in m for m in sink["warn"])
 
+    def test_subscription_default_ignores_an_exported_api_key(self, isolated_home, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
+
+        rc, sink = self._run(monkeypatch)
+
+        assert rc == 1  # nothing bills the subscription: no login, and the key is scrubbed
+        assert not any("ANTHROPIC_API_KEY" in m for m in sink["ok"])
+
     def test_subscription_only_still_warns_about_rotation(self, isolated_home, monkeypatch):
         creds = isolated_home / ".claude" / ".credentials.json"
         creds.parent.mkdir(parents=True)
-        creds.write_text("{}", encoding="utf-8")
+        creds.write_text('{"claudeAiOauth": {"accessToken": "SYNTHETIC"}}', encoding="utf-8")
 
         rc, sink = self._run(monkeypatch)
 
@@ -288,6 +303,7 @@ class TestAuthStatusReport:
         assert any("claude" in m and "refreshing" in m for m in sink["warn"])
 
     def test_overridden_source_is_a_hint_under_its_line(self, isolated_home, monkeypatch, capsys):
+        from booley.config import agent as agent_config
         from booley.harness import auth_cmd
         from booley.presentation import colors
 
@@ -296,6 +312,8 @@ class TestAuthStatusReport:
         creds.write_text("{}", encoding="utf-8")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
         monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+        monkeypatch.setattr(agent_config, "_inside_container", lambda: True)  # visitor mode
+        monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "auto")
 
         auth_cmd._report_status()
 
@@ -353,19 +371,34 @@ class TestRotationRiskVenue:
     @pytest.mark.parametrize(
         ("app", "policy", "in_sandbox", "seed_app", "expected"),
         [
-            pytest.param("claude", "auto", True, None, "sandbox-note", id="unseeded-claude"),
-            pytest.param("codex", "auto", True, None, "sandbox-note", id="unseeded-codex"),
-            pytest.param("codex", "auto", True, "claude", "sandbox-note", id="other-app-seed"),
+            pytest.param(
+                "claude", auth_token.VISITOR_AUTH, True, None, "sandbox-note", id="unseeded-claude"
+            ),
+            pytest.param(
+                "codex", auth_token.VISITOR_AUTH, True, None, "sandbox-note", id="unseeded-codex"
+            ),
+            pytest.param(
+                "codex",
+                auth_token.VISITOR_AUTH,
+                True,
+                "claude",
+                "sandbox-note",
+                id="other-app-seed",
+            ),
             pytest.param(
                 "claude", "subscription", True, None, "sandbox-note", id="unseeded-subscription"
             ),
-            pytest.param("claude", "auto", True, "claude", "warn", id="seeded-claude"),
+            pytest.param(
+                "claude", auth_token.VISITOR_AUTH, True, "claude", "warn", id="seeded-claude"
+            ),
             pytest.param(
                 "claude", "subscription", True, "claude", "accepted-note", id="seeded-subscription"
             ),
-            pytest.param("codex", "auto", True, "codex", "warn", id="seeded-codex"),
-            pytest.param("claude", "auto", False, None, "warn", id="host-claude"),
-            pytest.param("codex", "auto", False, None, "warn", id="host-codex"),
+            pytest.param(
+                "codex", auth_token.VISITOR_AUTH, True, "codex", "warn", id="seeded-codex"
+            ),
+            pytest.param("claude", auth_token.VISITOR_AUTH, False, None, "warn", id="host-claude"),
+            pytest.param("codex", auth_token.VISITOR_AUTH, False, None, "warn", id="host-codex"),
         ],
     )
     def test_rotation_risk_by_venue_and_seed(
@@ -436,6 +469,7 @@ class TestDoctorCheck:
             sink["pass"].append,
             lambda msg, fix=None: sink["warn"].append(msg),
             sink["skip"].append,
+            auth_token.VISITOR_AUTH,
         )
         return sink
 
@@ -990,16 +1024,16 @@ def test_codex_auth_link_replaces_legacy_copy_atomically(tmp_path, monkeypatch):
     with monkeypatch.context() as patched:
         patched.setattr(Path, "replace", interrupted_replace)
         with pytest.raises(OSError, match="interrupted"):
-            auth_token.link_codex_auth(source, destination)
+            auth_token.link_codex_auth(source, destination, auth_token.VISITOR_AUTH)
     # An interrupted relink keeps the previous entry and leaves no stray link.
     assert destination.read_bytes() == previous
     assert sorted(path.name for path in tmp_path.iterdir()) == ["auth.json", "source.json"]
 
-    auth_token.link_codex_auth(source, destination)
+    auth_token.link_codex_auth(source, destination, auth_token.VISITOR_AUTH)
     assert destination.is_symlink()
     assert destination.resolve() == source.resolve()
     # A second call with the link in place changes nothing.
-    auth_token.link_codex_auth(source, destination)
+    auth_token.link_codex_auth(source, destination, auth_token.VISITOR_AUTH)
     assert sorted(path.name for path in tmp_path.iterdir()) == ["auth.json", "source.json"]
 
 
@@ -1380,7 +1414,7 @@ class TestAuthStorageAdmission:
         assert _auth_stdin(monkeypatch, None) == 0
         output = capsys.readouterr().out
         assert "session up" in output and "init --seed" in output
-        assert "claude" in output and "auto/subscription" in output
+        assert "claude" in output and "auth=subscription" in output
 
     @pytest.mark.parametrize("present", [False, True])
     def test_clear_outside_project(self, home, present):

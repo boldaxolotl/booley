@@ -755,7 +755,7 @@ def apply_stored_credential(app: str, home: Path | None = None) -> str:
     from booley.config.agent import sandbox_cli_policy
     from booley.config.gateway import GATEWAY_AUTH
 
-    policy = sandbox_cli_policy(app) or "auto"
+    policy = sandbox_cli_policy(app) or auth_token.VISITOR_AUTH
     if policy == GATEWAY_AUTH:  # already inside the container by definition
         # The gateway login is the provider written by _apply_codex_gateway;
         # there is no auth.json. Leave any Booley-managed credential copies
@@ -810,7 +810,7 @@ def _claude_credential_present(home: Path | None) -> bool:
     """Whether Claude would find a login credential, by the registrar's own inputs."""
     from booley.config.agent import sandbox_cli_policy
 
-    policy = sandbox_cli_policy(auth_token.APP_CLAUDE) or "auto"
+    policy = sandbox_cli_policy(auth_token.APP_CLAUDE) or auth_token.VISITOR_AUTH
     credential = auth_token.effective_credential(
         auth_token.APP_CLAUDE, policy, home=home or _agent_home()
     )

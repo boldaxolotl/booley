@@ -166,7 +166,7 @@ async def test_claude_text_only_model_receives_no_tools_mcp_or_project_settings(
 
     options, query = _capturing_successful_query()
     monkeypatch.setattr(_claude_backend, "query", query)
-    await ClaudeSDKBackend().call(
+    await ClaudeSDKBackend(auth_mode="visitor").call(
         AgentCallParams(prompt="Explain", model="sonnet", cwd=tmp_path, text_only=True)
     )
     assert options[0].tools == []

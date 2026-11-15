@@ -22,10 +22,14 @@ from pathlib import Path, PurePosixPath
 
 from booley.config.agent import (
     AGENT_CLIS_ENV,
+    DEFAULT_AUTH,
     SANDBOX_IMAGE,
     decode_cli_policies,
     encode_cli_policies,
+    env_auth_mode,
+    wire_auth,
 )
+from booley.config.gateway import VISITOR_AUTH
 from booley.core.project_identity import project_name_id
 from booley.runtime import auth_token
 from booley.runtime import vaporview as _vaporview
@@ -304,15 +308,14 @@ def canonical_project_id(project_root: Path) -> str:
 
 
 def state_volume_name(
-    app: str, project_id: str, policy: str = "auto", *, legacy: bool = False
+    app: str, project_id: str, policy: str = DEFAULT_AUTH, *, legacy: bool = False
 ) -> str | None:
     """Name of the persistent home-state volume for *app* and *project_id*.
 
     Returns ``None`` for apps without a persisted state dir. The single format
-    source so the spec builder and ``booley doctor`` agree on names. ``auto`` and
-    ``subscription`` share the unsuffixed login volume, so a Project keeps its login
-    when it moves between them; *legacy* selects the ``-subscription`` name a
-    ``subscription`` Sandbox used before they shared it.
+    source so the spec builder and ``booley doctor`` agree on names. ``subscription`` (and
+    the env-only ``visitor`` of a hand-written spec) uses the unsuffixed login volume;
+    *legacy* selects the ``-subscription`` name a ``subscription`` Sandbox used before.
     """
     if app not in _APP_STATE_DIR:
         return None
@@ -321,7 +324,7 @@ def state_volume_name(
 
 def _state_volume_name(app: str, project_id: str, policy: str, *, legacy: bool = False) -> str:
     """Format the state-volume name; the caller has checked that *app* persists state."""
-    shared = policy == "auto" or (policy == "subscription" and not legacy)
+    shared = policy == VISITOR_AUTH or (policy == "subscription" and not legacy)
     suffix = "" if shared else f"-{policy}"
     return f"booley-{app}-state-{project_id}{suffix}"
 
@@ -337,7 +340,7 @@ def state_volume_names(project_id: str) -> frozenset[str]:
 
 
 def state_volume_mount(
-    app: str, project_id: str, policy: str = "auto", *, legacy: bool = False
+    app: str, project_id: str, policy: str = DEFAULT_AUTH, *, legacy: bool = False
 ) -> str | None:
     """Return the persistent home-state volume mount for *app*, or ``None``.
 
@@ -391,8 +394,9 @@ def spec_cli_policies(spec: dict) -> dict[str, str]:
     """The Agent CLIs *spec* allows, each with its recorded auth policy.
 
     Reads ``remoteEnv.BOOLEY_AGENT_CLIS``. A spec issued before that record existed
-    allows its single ``BOOLEY_AGENT_APP`` under ``BOOLEY_PRIMARY_AUTH``; ``none`` and
-    ``auto`` allow no CLI. Raises ``ValueError`` when the record is malformed.
+    allows its single ``BOOLEY_AGENT_APP`` under ``BOOLEY_PRIMARY_AUTH`` (``auto`` reads
+    as the env-only ``visitor``); ``none`` allows no CLI. Raises ``ValueError`` when the
+    record is malformed or records the retired ``auto`` policy.
     """
     remote = spec.get("remoteEnv")
     remote = remote if isinstance(remote, dict) else {}
@@ -401,7 +405,8 @@ def spec_cli_policies(spec: dict) -> dict[str, str]:
         return decode_cli_policies(raw)
     app = spec_agent_app(spec)
     if app in _APP_STATE_DIR:
-        return {app: str(remote.get("BOOLEY_PRIMARY_AUTH") or "auto")}
+        hand_off = env_auth_mode(str(remote.get("BOOLEY_PRIMARY_AUTH") or ""))
+        return {app: hand_off or VISITOR_AUTH}
     return {}
 
 
@@ -435,7 +440,7 @@ def sandbox_visible_expectation(spec: dict) -> dict:
     ]
     app = spec_agent_app(spec) or APP_NONE
     if not plans:
-        plans = [auth_token.CredentialPlan(app, "auto", None, frozenset(), ())]
+        plans = [auth_token.CredentialPlan(app, DEFAULT_AUTH, None, frozenset(), ())]
     customizations = spec.get("customizations")
     vscode = customizations.get("vscode") if isinstance(customizations, dict) else None
     settings = vscode.get("settings") if isinstance(vscode, dict) else None
@@ -851,7 +856,9 @@ def _git_environment(project_source: str | None, fixed: dict[str, str] | None) -
 
 def _policy_remote_environment(remote: dict[str, str], app: str, seeds: Sequence[_Seed]) -> None:
     """Record the default CLI's policy, the allowed CLI set, and the forwarded keys."""
-    remote["BOOLEY_PRIMARY_AUTH"] = next(seed.policy for seed in seeds if seed.app == app)
+    remote["BOOLEY_PRIMARY_AUTH"] = wire_auth(
+        next(seed.policy for seed in seeds if seed.app == app)
+    )
     remote["BOOLEY_CREDENTIAL_SCHEMA"] = auth_token.CREDENTIAL_SCHEMA
     clis = {seed.app: seed.policy for seed in seeds if seed.app in _APP_STATE_DIR}
     if app in clis:

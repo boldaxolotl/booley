@@ -1537,7 +1537,12 @@ class TestPromptConstruction:
             ("rtl", "bugs", "rtl/a.sv", ["bugs-checklist", "bugs-hunt"]),
             ("rtl", "protocol", "rtl/a.sv", ["protocol-cdc-checklist", "protocol-cdc-hunt"]),
             ("rtl", "security", "rtl/a.sv", ["security-checklist", "security-hunt"]),
-            ("rtl", "optimization", "rtl/a.sv", ["optimization-checklist"]),
+            (
+                "rtl",
+                "optimization",
+                "rtl/a.sv",
+                ["optimization-checklist", "optimization-hunt"],
+            ),
             ("rtl", "code_style", "rtl/a.sv", ["code_style-checklist"]),
             ("rtl", "spec", "rtl/a.sv", ["spec-hunt"]),
             ("tb", "quality", "tb/t.sv", ["hdl-checklist"]),
@@ -1606,6 +1611,52 @@ class TestPromptConstruction:
             "Secret flow",
         ):
             assert f"**{category}**" in system, category
+
+    def test_optimization_hunt_guide_names_scenario_categories_and_scope_boundaries(
+        self, tmp_path: Path
+    ):
+        from booley.specialists.reviewer import REVIEW_GUIDES
+
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(
+            [
+                "--work-dir",
+                str(tmp_path),
+                "--scope",
+                "rtl/a.sv",
+                "--category",
+                "rtl",
+                "--focus",
+                "optimization",
+            ]
+        )
+        hunt = tuple(g for g in REVIEW_GUIDES[("rtl", "optimization")] if g.kind == "hunt")
+        system = endpoint._build_system_prompt("optimization", hunt)
+
+        assert "## Review guide \u2014 optimization (optimization-hunt)" in system
+        assert "## Scope Boundaries" in system
+        for category in (
+            "Redundant storage",
+            "Redundant terms",
+            "Register reuse",
+            "Equivalent structure",
+            "Oversized",
+            "Critical-path placement",
+            "Behavior-neutral dead logic",
+        ):
+            assert f"**{category}**" in system
+        assert "MAJOR** -- A likely critical-path or Fmax improvement" in system
+        assert "MINOR** -- A small saving" in system
+        assert "must not add material delay to a critical path" in system
+        assert "reserved, debug, formal, and coverage hooks" in system
+        assert "Track each wide register's lifetime" in system
+        assert "## Patterns" not in system
+        checklist = tuple(
+            g for g in REVIEW_GUIDES[("rtl", "optimization")] if g.kind == "checklist"
+        )
+        assert "share the same storage" not in endpoint._build_system_prompt(
+            "optimization", checklist
+        )
 
     def test_rtl_optimization_prompt_checks_for_runtime_constant_work(self, state_file: Path):
         endpoint = ReviewerSpecialist()
@@ -2346,7 +2397,7 @@ def test_provider_failure_keeps_reviewer_outcome_and_persists_traceback(
             "--category",
             "rtl",
             "--focus",
-            "optimization",
+            "code_style",
             "--work-dir",
             str(tmp_path),
             "--report-dir",
@@ -4281,6 +4332,13 @@ def test_dry_run_lists_guides_with_kind(tmp_path):
             [
                 {"kind": "checklist", "name": "security-checklist"},
                 {"kind": "hunt", "name": "security-hunt"},
+            ],
+        ),
+        (
+            "optimization",
+            [
+                {"kind": "checklist", "name": "optimization-checklist"},
+                {"kind": "hunt", "name": "optimization-hunt"},
             ],
         ),
         ("spec", [{"kind": "hunt", "name": "spec-hunt"}]),

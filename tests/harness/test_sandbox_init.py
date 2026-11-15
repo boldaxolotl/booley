@@ -288,7 +288,7 @@ def test_sandbox_init_reports_tracked_tasks_json(
         ["--repin-booley-dir"],
         ["--scaffold", "uart"],
         ["--provider", "claude"],
-        ["--auth", "auto"],
+        ["--auth", "subscription"],
     ],
 )
 def test_sandbox_init_refuses_host_only_options(

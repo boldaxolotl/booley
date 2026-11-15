@@ -1414,11 +1414,7 @@ def _validate_credential_seed_sources(spec: dict[str, Any], record: dict[str, st
         # Spec sources use Docker's bind format (``/c/...`` on Windows): map back to a host path.
         source = host_path_from_docker_mount(fields.get("source", "")) or Path()
         cli = login_targets.get(fields.get("target", ""))
-        if (
-            cli
-            and record[cli] != "auto"
-            and not auth_token.subscription_available(cli, record[cli], source)
-        ):
+        if cli and not auth_token.subscription_available(cli, record[cli], source):
             raise RuntimeSpecError(
                 "Sandbox login seed is not a recognized subscription credential"
             )

@@ -126,6 +126,14 @@ def test_init_parser_accepts_explicit_agent_selection():
     assert args.auth == "api_key"
 
 
+def test_init_auth_flag_refuses_auto(capsys):
+    with pytest.raises(SystemExit) as exc:
+        tlr._build_parser().parse_args(["init", "--provider", "codex", "--auth", "auto"])
+
+    assert exc.value.code == 2
+    assert "choose subscription or api-key" in capsys.readouterr().err
+
+
 def test_init_scaffold_stealth_flag():
     parser = tlr._build_parser()
 
@@ -1822,6 +1830,10 @@ def _assert_auth_status(
     for key in (*auth_token.CREDENTIAL_ENV_KEYS, "BOOLEY_DIR", "RTL_PROJECT_ROOT", "CODEX_HOME"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "SYNTHETIC_CODEX_KEY")
+    if not in_project:
+        # With no Project the policy is ``subscription``: Codex runs on its login, not the key.
+        (home / ".codex").mkdir()
+        (home / ".codex" / "auth.json").write_bytes(b'{"tokens": {"access_token": "SYNTHETIC"}}')
     argv = ["booley", "auth", "--status"]
     if in_project:
         data = project / ".booley"
