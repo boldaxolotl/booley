@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,8 +66,9 @@ class UnfinishedIndex:
             self._pending[root] = prior
             return prior.unfinished(root)
         records: dict[str, RecordStamp] = {}
-        complete = True
-        for path in root.glob("*.json"):
+        names, complete = _json_names(root)
+        for name in names:
+            path = root / name
             try:
                 recorded = path.lstat()
                 stamp = (recorded.st_ino, recorded.st_mtime_ns)
@@ -81,3 +83,15 @@ class UnfinishedIndex:
         entry = _Entry(key if complete and quiet else None, records)
         self._pending[root] = entry
         return entry.unfinished(root)
+
+
+def _json_names(root: Path) -> tuple[list[str], bool]:
+    """The ``*.json`` names in *root* and whether the listing succeeded.
+
+    ``Path.glob`` hides a failing ``scandir``, which would cache an empty root for good.
+    """
+    try:
+        with os.scandir(root) as entries:
+            return [e.name for e in entries if e.name.endswith(".json") and e.name[0] != "."], True
+    except OSError:
+        return [], False

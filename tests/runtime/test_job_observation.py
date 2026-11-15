@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 from tests.runtime.test_job_artifacts import progress, spy
 
 from booley.runtime import job_records, job_slots
-from booley.runtime.job_observation import JobObserver, _artifacts, _observer
+from booley.runtime.job_observation import JobObserver, _artifacts, _observer, _unfinished
 from booley.runtime.pid import ProcessIdentity, ProcessObservation, ProcessState
 
 
@@ -545,8 +546,6 @@ def test_history_cuts_never_drop_unfinished_records(tmp_path, monkeypatch):
 
 
 def _age(root: Path) -> None:
-    import os
-
     os.utime(root, (1_000, 1_000))
 
 
@@ -592,13 +591,13 @@ def test_recently_changed_root_is_relisted(tmp_path, monkeypatch):
     _age(root)
     stamp = root.stat().st_mtime_ns
     listed = []
-    glob = Path.glob
+    scandir = os.scandir
 
-    def spy(path, pattern):
-        listed.append(path)
-        return glob(path, pattern)
+    def spy(path):
+        listed.append(Path(path))
+        return scandir(path)
 
-    monkeypatch.setattr(Path, "glob", spy)
+    monkeypatch.setattr(_unfinished.os, "scandir", spy)
     observer = JobObserver(tmp_path)
     monkeypatch.setattr(_observer, "time_ns", lambda: stamp + 1_000_000_000)
     observer.read((), unfinished_roots=(root,))
@@ -608,3 +607,24 @@ def test_recently_changed_root_is_relisted(tmp_path, monkeypatch):
     observer.read((), unfinished_roots=(root,))
     observer.read((), unfinished_roots=(root,))
     assert listed.count(root) == 3
+
+
+def test_failed_directory_listing_is_retried_not_cached_as_empty(tmp_path, monkeypatch):
+    root = tmp_path / "old/jobs"
+    job_records.write_record(_running("first"), root)
+    _age(root)
+    scandir = os.scandir
+    failing = [True]
+
+    def flaky(path):
+        if failing:
+            failing.clear()
+            raise OSError("too many open files")
+        return scandir(path)
+
+    monkeypatch.setattr(_unfinished.os, "scandir", flaky)
+    observer = JobObserver(tmp_path)
+    assert observer.read((), unfinished_roots=(root,)).jobs == ()
+    assert [job.record.run_id for job in observer.read((), unfinished_roots=(root,)).jobs] == [
+        "first"
+    ]
