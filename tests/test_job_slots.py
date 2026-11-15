@@ -2032,11 +2032,20 @@ class TestStaleGateBreaking:
             assert acquired
 
     def test_gate_owner_is_recaptured_after_a_fork(self, root, world, monkeypatch):
+        spawn(world, os.getpid())
+        spawn(world, os.getpid() + 1)
         store = make_store(root, world)
         first = store._gate_owner()
-        assert store._gate_owner().pid == first.pid
+        assert first.identity is not None
+        assert store._gate_owner() is first  # cached while pid and identity hold
         monkeypatch.setattr(os, "getpid", lambda: first.pid + 1)
         assert store._gate_owner().pid == first.pid + 1
+
+    def test_gate_owner_retries_a_failed_identity_capture(self, root, world):
+        store = make_store(root, world)
+        assert store._gate_owner().identity is None  # this process is not in the fake world
+        spawn(world, os.getpid())
+        assert store._gate_owner().identity is not None
 
     def test_recycled_pid_promotion_gate_is_broken(self, root, world):
         spawn(world, 100)

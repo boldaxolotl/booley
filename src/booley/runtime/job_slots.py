@@ -1303,14 +1303,16 @@ class SlotStore:
         Refuses after recovery claimed the lease or once it expired, and then sets
         ``lease_health.lost``. A lease gate held elsewhere refuses without
         setting it: the lease still holds until it expires, so the renewal
-        thread keeps retrying until then (about three missed intervals at
-        the current lease and interval lengths).
+        thread keeps retrying until then (two consecutive missed attempts are
+        survived at the current lease and interval lengths; the third finds the
+        lease expired).
         """
         with self._lease_gate(token) as acquired:
             if not acquired:
                 # Another process holds the gate (a reaper, or this holder's own
-                # release or shrink): the lease is untouched, so the next renewal
-                # retries. It is lost only once it has expired.
+                # release or shrink), or the gate could not be created at all: the
+                # lease is untouched, so the next renewal retries. It is lost
+                # only once it has expired, whichever the cause.
                 if self._lease_expired(token):
                     token.lease_health.lost.set()
                 return False
@@ -1442,9 +1444,10 @@ class SlotStore:
         """Publish *gate* with *owner* already written; False when another gate holds the name.
 
         Windows denies the link while a released gate's delete is still
-        pending; that gate is busy too, not an error. A crash between the write
-        and the unlink leaves an orphaned tmp: accepted, like an entry tmp,
-        because ``observe`` ignores it and it is one small file.
+        pending; that gate is busy too, not an error. A crash, or on Windows a
+        scanner holding the tmp, between the write and the unlink leaves an
+        orphaned tmp: accepted, like an entry tmp, because ``observe`` ignores
+        it and it is one small file.
         """
         tmp = gate.with_name(f".{gate.name}.{uuid.uuid4().hex}.tmp")
         try:
