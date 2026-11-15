@@ -1,8 +1,8 @@
-"""Memory admission of sim, synth, fpga, lint and Custom Flow Jobs, Specialists and the Mutation Flow (ADR 0087).
+"""Memory admission of Flow Jobs, Specialists and the Mutation Flow (ADR 0087).
 
-Such a Job is admitted in the ``memory`` Job Class: it holds a Memory Reservation estimated from the Resource History
-and runs beside other Jobs while the reservations fit the Memory Budget. A Job
-that cannot be sized runs alone. A Job is never refused, except one that uses a
+Such a Job is admitted in the ``memory`` Job Class: it holds a Memory Reservation
+estimated from the Resource History and runs beside other Jobs while the
+reservations fit the Memory Budget. A Job that cannot be sized runs alone. A Job is never refused, except one that uses a
 licensed tool with no Seat Cap (``[jobs.seats]``).
 
 Every number here is in MiB, the unit of the Resource History's ``peak_memory_mb``.

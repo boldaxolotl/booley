@@ -105,7 +105,7 @@ __all__ = ["MemoryClaim", "SlotCaps", "parse_caps"]
 logger = logging.getLogger(__name__)
 
 # Job classes (ADR 0028 Decision 5), resolved by workload type.
-CLASS_LIGHT = "light"  # no production user; removed in the next part (#4116)
+CLASS_LIGHT = "light"  # no production user
 CLASS_MEMORY = "memory"  # admitted by Memory Reservation against a budget (ADR 0087)
 JOB_CLASSES = (CLASS_LIGHT, CLASS_MEMORY)
 # Class directories older versions wrote; nothing admits into them, but a live
@@ -518,7 +518,9 @@ class _MemoryLoad:
             return False
         if not claim.companion and self.running == 0:
             return True  # only companions hold: the first other claim starts
-        return self.used_mb + (claim.reservation_mb or 0.0) <= self.budget_mb
+        # A companion claim fits under its own budget: a waiting one is judged as its owner is.
+        budget_mb = claim.budget_mb if claim.companion else self.budget_mb
+        return self.used_mb + (claim.reservation_mb or 0.0) <= budget_mb
 
     def _earliest_start(self, front: MemoryClaim, now: float) -> float | None:
         """When *front* can start under its own budget, from the running claims' finishes.

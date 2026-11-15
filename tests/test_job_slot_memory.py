@@ -914,6 +914,16 @@ def test_a_waiting_specialist_does_not_block_the_claims_behind_it(root, world):
     assert store.refresh(waiting).state == HOLDING
 
 
+def test_a_waiting_specialist_judged_by_its_own_budget_does_not_block_a_sized_claim(root, world):
+    store = make_store(root, world)
+    holder = join(store, world, 101, companion(SPECIALIST_MB, budget_mb=SPECIALIST_MB))
+    waiting = join(store, world, 102, companion(SPECIALIST_MB, budget_mb=SPECIALIST_MB))
+    behind = join(store, world, 103, claim(100))
+    assert store.refresh(holder).state == HOLDING
+    assert store.refresh(waiting).state == QUEUED
+    assert store.refresh(behind).state == HOLDING
+
+
 def test_specialists_filling_the_budget_let_the_first_other_claim_start(root, world):
     store = make_store(root, world)
     for pid in (101, 102):

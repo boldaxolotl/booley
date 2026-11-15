@@ -419,10 +419,10 @@ class EndpointState(ABC):
         """Whether an own OOM kill of this admitted Job's first attempt requeues it (ADR 0087).
 
         Only a Flow Job holding its own Memory Reservation: not a dry run, not a
-        child under its parent's claim, not a Specialist or a tool. A Job bound
-        to a Goal is never requeued, and neither is a companion claim, so its Goal evidence and Simulation Record
-        registrations come from its only attempt; the exclusion ends when Goal Mode
-        is deleted (#3511).
+        child under its parent's claim, not a Specialist or a tool. A companion
+        claim is never requeued. A Job bound to a Goal is never requeued either,
+        so its Goal evidence and Simulation Record registrations come from its
+        only attempt; the exclusion ends when Goal Mode is deleted (#3511).
         """
         if self.endpoint_kind != "flow" or not isinstance(
             admission, endpoint_admission.AdmissionContext

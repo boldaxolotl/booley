@@ -116,13 +116,9 @@ To choose a Specialist's model, see [`[models]`](#model-selection-models).
 Every Flow or Specialist run is a **Job**. Every Job is admitted against a
 **Memory Budget**: a Job starts when its estimated memory fits in what the
 budget has left, and otherwise waits in a queue instead of failing. The queue
-has no limit: a Job waits until it runs or you cancel it. A Specialist reserves
-the peak memory it used in earlier runs, or a default when it has none, and
-never more than half the budget. A mutation campaign's coordinating Job reserves
-nothing; its builds and simulations reserve their own memory. Neither a
-Specialist nor a coordinator keeps another Job waiting for it alone. Running
-Jobs are never interrupted. `booley.toml` refuses `[jobs].max_light`; Doctor
-reports it and `booley-heal` removes it. The defaults:
+has no limit: a Job waits until it runs or you cancel it. Specialists and mutation
+campaigns are admitted by memory too, and a Specialist waits when the budget is
+full. Running Jobs are never interrupted. The defaults:
 
 ```toml
 [sandbox]
