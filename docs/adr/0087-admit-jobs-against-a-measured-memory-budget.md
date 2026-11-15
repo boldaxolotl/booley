@@ -37,7 +37,10 @@ read-only, and delegating it would loosen the hardening.
   so a long queue costs little, and a cap would refuse work already admitted
   (requeues, measurement children).
 - Memory is the only budget. CPU is recorded, not admitted; tool thread
-  counts come from the container's cores and the running Jobs.
+  counts come from the container's cores and the running Jobs. Verilator
+  builds and OpenROAD take the Job's share; Yosys and Vivado use their own
+  defaults (a Yosys thread count changes the netlist's byte order, which
+  would defeat OpenROAD reuse).
 - The Memory Budget is always computed from the container's memory limit
   (`[sandbox].memory`, else the host memory the container sees) minus a
   reserve for the agent, the MCP server and the Dashboard. Doctor warns when

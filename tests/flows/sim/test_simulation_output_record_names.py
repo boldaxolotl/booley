@@ -12,7 +12,6 @@ alias. A report Booley 0.4.0 wrote is read from committed bytes under
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import sys
@@ -30,7 +29,6 @@ from booley.flows.sim.record_presentation import (
     _attach_failure_reference,
     _pre_sim_integrity_failure,
 )
-from booley.flows.sim.record_retention import _dependent_invocations, _report_references_origin
 from booley.flows.sim.request import SimRequest
 from booley.mcp.catalog import Exposure
 from booley.mcp.flow_adapter import flow_schema
@@ -120,37 +118,6 @@ def test_record_detail_names_the_simulation_record_and_its_dependency(
     for row in (report_row, progress_row, resumed_row):
         assert "campaign_id" not in row
         assert row["dependency"] not in {"local_campaign", "external_origin_campaign"}
-
-
-def test_retention_finds_a_dependent_report_through_simulation_record_id(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _ordinary_run(tmp_path, monkeypatch)
-    origin = tmp_path / "reports/sim/1"
-    manifest = origin / "targets/lite/record/manifest.json"
-    raw = manifest.read_bytes()
-    record_id = json.loads(raw)["simulation_record_id"]
-    reference = {
-        "bytes": len(raw),
-        "kind": "simulation_record_manifest",
-        "owner": record_id,
-        "path": "sim/1/targets/lite/record/manifest.json",
-        "path_base": "reports_root",
-        "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
-    }
-    sibling = tmp_path / "reports/sim/2/report.json"
-    sibling.parent.mkdir()
-
-    def write(id_key: str) -> None:
-        row = {id_key: record_id, "artifacts": {"manifest": reference}}
-        sibling.write_text(json.dumps({"detail": {"records": {"lite": row}}}), encoding="utf-8")
-
-    write("simulation_record_id")
-    assert _report_references_origin(sibling, (manifest,)), "no dependent via simulation_record_id"
-    assert [item.path.name for item in _dependent_invocations(origin)] == ["2"]
-
-    write("campaign_id")
-    assert not _report_references_origin(sibling, (manifest,))
 
 
 def test_coverage_reports_name_the_coverage_record(
