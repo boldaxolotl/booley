@@ -1,4 +1,4 @@
-"""Bounded model-facing evidence views over one validated Coverage Campaign."""
+"""Bounded model-facing evidence views over one validated Coverage Record."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ from .coverage_record import (
 )
 from .coverage_source_gaps import source_gap_overview, source_gap_paths
 
-#: The largest Campaign one Analyst evidence session indexes.
+#: The largest Coverage Record one Analyst evidence session indexes.
 MAX_POINTS = 1_000_000
 MAX_RESPONSE_BYTES = 64 * 1024
 DEFAULT_TOTAL_BUDGET_BYTES = 384 * 1024
@@ -55,7 +55,7 @@ class CoverageEvidenceAudit:
 
 
 class CoverageEvidenceError(ValueError):
-    """A query cannot be answered safely from the active Campaign."""
+    """A query cannot be answered safely from the active Coverage Record."""
 
 
 def is_coverage_point_reference(value: object) -> bool:
@@ -180,7 +180,7 @@ def _audit_queries(value: object) -> tuple[list[dict[str, object]], set[str]]:
 
 
 class CoverageEvidenceSession:
-    """Filter, page and audit evidence without exposing Campaign storage."""
+    """Filter, page and audit evidence without exposing Coverage Record storage."""
 
     def __init__(
         self,
@@ -237,7 +237,7 @@ class CoverageEvidenceSession:
         return self._deliver(view, request, result)
 
     def analysis_scope(self) -> dict[str, object]:
-        """Describe exactly how much Campaign evidence was delivered."""
+        """Describe exactly how much Coverage Record evidence was delivered."""
         point_ids = sorted(
             {
                 point_id

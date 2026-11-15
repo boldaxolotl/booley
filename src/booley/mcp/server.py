@@ -1826,7 +1826,7 @@ def _baseline_required(criterion_prefix: str, state_path: Path | None) -> bool:
 
 
 def _dispatch_coverage_evidence(arguments: dict[str, Any]) -> McpToolContent:
-    """Serve one bounded query from the Campaign-scoped evidence module."""
+    """Serve one bounded query from the Coverage Record-scoped evidence module."""
     from booley.mcp.coverage_evidence import query_active_coverage_evidence
 
     try:

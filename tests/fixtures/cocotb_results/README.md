@@ -65,4 +65,4 @@ Booley reconciles the selected raw `skipped` case to **INCONCLUSIVE**.
 This corpus protects only result-document compatibility associated with
 `5a5239fb` and focused diagnostics associated with `6ee1e78a`. It makes no claim
 about VPI/environment/runtime behavior, console-based timeout recovery, trace
-artifacts, or Coverage Campaign (#213).
+artifacts, or Coverage Record (#213).

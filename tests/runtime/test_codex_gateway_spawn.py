@@ -231,11 +231,11 @@ def _coverage_params(tmp_path):
     project = tmp_path / "project"
     project.mkdir()
     analyst = CoverageAnalystSpecialist()
-    analyst.parse_args(["--project", str(project), "--record", str(tmp_path / "campaign.json")])
+    analyst.parse_args(["--project", str(project), "--record", str(tmp_path / "record.json")])
     analysis_dir = tmp_path / "analysis"
     analysis_dir.mkdir()
     params = analyst._coverage_agent_params(
-        "p", analysis_dir, tmp_path / "campaign.json", analysis_dir / "evidence-audit.json"
+        "p", analysis_dir, tmp_path / "record.json", analysis_dir / "evidence-audit.json"
     )
     params.transcript_path = tmp_path / "transcripts" / "run.jsonl"
     return params

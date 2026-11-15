@@ -7,14 +7,14 @@ or rejects each candidate at review; rejections are remembered so later
 proposals for the same Target, Coverage Point, and source SHA-256 are dropped.
 
 Accumulation: candidates are keyed by ``(target_identity, point_id)``. A new
-proposal with the same Campaign binding and source SHA-256 bumps the entry's
+proposal with the same Coverage Record binding and source SHA-256 bumps the entry's
 ``proposal_count`` and replaces its reason, justification, evidence, and proof
 reference. A proposal from any other binding replaces the entry and restarts
 the count at 1; the old one could no longer be promoted anyway.
 
 The record sits in the Sandbox, so it is checked rather than trusted (ADR 0066
 "Trust boundary"): this module only guarantees a well-formed record, and
-approval re-derives every candidate from the Campaign evidence.
+approval re-derives every candidate from the Coverage Record evidence.
 
 Failure semantics follow ADR 0065 state records:
 
@@ -171,7 +171,7 @@ def _canonical_now(now: datetime) -> str:
 
 @dataclass(frozen=True)
 class CoverageRecordBinding:
-    """The persisted Campaign one batch of proposals was screened against (R4).
+    """The persisted Coverage Record one batch of proposals was screened against (R4).
 
     ``campaign_path`` is relative to the runtime ``flow-reports`` root.
     """
@@ -202,7 +202,7 @@ class WaiverProposal:
 
 @dataclass(frozen=True)
 class WaiverCandidate:
-    """One recorded Waiver Candidate: a proposal bound to its Campaign."""
+    """One recorded Waiver Candidate: a proposal bound to its Coverage Record."""
 
     binding: CoverageRecordBinding
     proposal: WaiverProposal

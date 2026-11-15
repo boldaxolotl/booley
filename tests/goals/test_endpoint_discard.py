@@ -150,7 +150,7 @@ def test_in_flight_change_and_revert_is_not_caught(endpoint_env: SimpleNamespace
 class _SimulationRecordProbe(McpTool):
     """Records Flow-owned V2 acceptance through the declared hook, as Simulation does."""
 
-    name = "goal_campaign_probe"
+    name = "goal_record_probe"
     description = "Synthetic Simulation Record endpoint"
     config_aware = False
 

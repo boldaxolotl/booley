@@ -130,7 +130,7 @@ endmodule
             sources=(CoverageSource(str(source), "rtl/counter.sv", "rtl"),),
         ),
         selected_tests=(SelectedCoverageRun("generated_main"),),
-        artifact_root=tmp_path / "campaign",
+        artifact_root=tmp_path / "record",
     )
 
     result = collect(request, _RealVerilatorExecution(source, tmp_path / "build"))
@@ -263,7 +263,7 @@ def _collect_target(root: Path, test: str):
     return collect_target_coverage(
         handle,
         selected_tests=(test,),
-        artifact_root=root / "campaign",
+        artifact_root=root / "record",
         invoke=_invoke,
         options=SimulationOptions(timeout_ms=30_000),
     )
@@ -304,7 +304,7 @@ def test_real_custom_main_collects_through_packaged_window_hooks(tmp_path: Path)
 
 def test_real_custom_main_retains_failed_write_hook_evidence(tmp_path: Path) -> None:
     _write_custom_target(tmp_path)
-    raw_destination = tmp_path / "campaign/native/raw/001-custom@1.dat"
+    raw_destination = tmp_path / "record/native/raw/001-custom@1.dat"
     raw_destination.mkdir(parents=True)
 
     result = _collect_target(tmp_path, "custom")
@@ -317,7 +317,7 @@ def test_real_custom_main_retains_failed_write_hook_evidence(tmp_path: Path) -> 
     hook = next(
         artifact for artifact in result.artifacts if artifact.kind == "coverage_hook_evidence"
     )
-    document = json.loads((tmp_path / "campaign" / hook.path).read_text(encoding="utf-8"))
+    document = json.loads((tmp_path / "record" / hook.path).read_text(encoding="utf-8"))
     assert document["events"] == [
         {"hook": "start", "sequence": 1, "success": True},
         {"hook": "write", "sequence": 2, "success": False},
@@ -360,7 +360,7 @@ def test_real_coverage_flow_publishes_canonical_simulation_record(
     )
     if trace and harness == "generated":
         # The auto-main fixture builds no waveform writer, so the requested
-        # trace is honestly inconclusive (#884); the Coverage Campaign still
+        # trace is honestly inconclusive (#884); the Coverage Record still
         # publishes complete evidence below.
         assert result.exit_code == 1, result.outcome
         assert result.outcome.detail["targets"]["sim"]["simulation"] == "inconclusive"

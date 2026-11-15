@@ -74,7 +74,7 @@ def _candidate(**proposal: object) -> WaiverCandidate:
         "campaign:sim_counter:12",
         "sha256:" + "1" * 64,
         "sha256:" + "2" * 64,
-        "campaign.json",
+        "record.json",
         str(_TARGET),
         "sim_counter",
     )

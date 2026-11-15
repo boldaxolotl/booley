@@ -162,7 +162,7 @@ def _recorded_simulation_record(
     """
     from tests.flows.sim.test_simulation_record_test_runs import _hdl_plan
 
-    directory = Path(tempfile.mkdtemp(prefix="recorded-campaign-", dir=root))
+    directory = Path(tempfile.mkdtemp(prefix="recorded-record-", dir=root))
     manifest = _hdl_plan(directory, tuple((run,) for run in runs), required).manifest
     manifest_path = directory / "manifest.json"
     manifest_path.write_bytes(encode_simulation_record_manifest(manifest))
@@ -1814,8 +1814,8 @@ def _retained_invocation(
                 "passed": True,
                 "inconclusive": False,
                 "tests": [],
-                "campaign_manifest": str(store.manifest_path),
-                "campaign_summary": str(store.summary_path),
+                "record_manifest": str(store.manifest_path),
+                "record_summary": str(store.summary_path),
             }
         )
     )
@@ -1906,7 +1906,7 @@ class CoverageInvocation:
 
     @property
     def coverage_record_path(self) -> Path:
-        """The Coverage Campaign the reference selects, in its nested directory."""
+        """The Coverage Record the reference selects, in its nested directory."""
         return self.storage / "coverage.json"
 
     @property

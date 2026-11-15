@@ -10,4 +10,4 @@ including the old producer's absolute paths beneath `/tmp/booley-1304-baseline`.
 Do not regenerate them using the new binding codec. The recorded digests are
 independent compatibility oracles. Recovery tests relocate the complete snapshot
 and rebind its authority to the relocated bytes; they never need the capture
-checkout or the original Campaign files.
+checkout or the original Coverage Record files.

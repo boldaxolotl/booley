@@ -2165,7 +2165,7 @@ def test_registered_poll_observes_blocked_simulation_record(tmp_path, monkeypatc
     from booley.runtime.timefmt import utc_now_rfc3339
     from tests.flows.sim.simulation_record_boundary import PASS_PROCESS, run_simulation_record_sim
 
-    run_id = "gated-campaign-sim"
+    run_id = "gated-record-sim"
     monkeypatch.setenv("BOOLEY_RUN_ID", run_id)
     entered, release = Event(), Event()
 

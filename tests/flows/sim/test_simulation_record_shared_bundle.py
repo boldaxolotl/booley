@@ -392,7 +392,7 @@ def _refresh_reference(reference: dict[str, Any], path: Path) -> None:
 def _mutate_build_attempt(case: str, completed: _Completed) -> None:
     path = completed.build_dir / "build-attempt.json"
     document = _read(path)
-    if case == "campaign":
+    if case == "record":
         document["simulation_record_id"] = str(uuid.uuid4())
     elif case in {"manifest", "workload"}:
         document[f"{case}_sha256"] = _BAD_DIGEST
@@ -419,7 +419,7 @@ def _mutate_build_attempt(case: str, completed: _Completed) -> None:
 @pytest.mark.parametrize(
     "case",
     [
-        "campaign",
+        "record",
         "manifest",
         "workload",
         "variant",
@@ -447,7 +447,7 @@ def test_shared_recovery_rejects_build_attempt_transplants(tmp_path: Path, case:
 
 @pytest.mark.parametrize(
     "case",
-    ["campaign", "owner", "digest", "artifact_remove"],
+    ["record", "owner", "digest", "artifact_remove"],
 )
 def test_shared_recovery_rejects_build_result_reference_mutations(
     tmp_path: Path, case: str
@@ -455,7 +455,7 @@ def test_shared_recovery_rejects_build_result_reference_mutations(
     completed = _completed(tmp_path)
     path = completed.build_dir / "build-result.json"
     document = _read(path)
-    if case == "campaign":
+    if case == "record":
         document["simulation_record_id"] = str(uuid.uuid4())
     elif case == "owner":
         document["build_attempt"]["owner"] = str(uuid.uuid4())
@@ -472,7 +472,7 @@ def test_shared_recovery_rejects_build_result_reference_mutations(
 def _mutate_bundle(case: str, completed: _Completed) -> None:
     bundle_path = completed.build_dir / "evidence/bundle.json"
     bundle = _read(bundle_path)
-    if case == "campaign":
+    if case == "record":
         bundle["simulation_record_id"] = str(uuid.uuid4())
     elif case == "attempt":
         bundle["build_attempt_id"] = str(uuid.uuid4())
@@ -495,13 +495,13 @@ def _mutate_bundle(case: str, completed: _Completed) -> None:
 
 @pytest.mark.parametrize(
     "case",
-    ["campaign", "attempt", "owner", "tool_provenance", "artifact_remove"],
+    ["record", "attempt", "owner", "tool_provenance", "artifact_remove"],
 )
 def test_shared_recovery_rejects_bundle_transplants(tmp_path: Path, case: str) -> None:
     completed = _completed(tmp_path)
     variant = _read(completed.build_dir / "build-attempt.json")["build_variant_id"]
     _mutate_bundle(case, completed)
-    message = "Bundle identity" if case == "campaign" else "Bundle binding"
+    message = "Bundle identity" if case == "record" else "Bundle binding"
     with pytest.raises(SimulationRecordIntegrityError, match=message):
         completed.store.recover_shared_build(variant, 1)
 

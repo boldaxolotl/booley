@@ -67,7 +67,7 @@ def test_bound_flow_records_both_verdicts(layout, monkeypatch, simulation, cover
     assert {run.outcome for run in status.test_runs.runs} == {
         "passed" if simulation == "pass" else "failed"
     }
-    # (This substituted campaign records no waiver policy, so met evidence reads stale.)
+    # (This substituted Coverage Record records no waiver policy, so met evidence reads stale.)
     assert (status.status == "unmet") is (coverage == "fail"), status
     assert "goal-test-run-" not in status.reason
     assert result.exit_code == (0 if simulation == "pass" else 1), result.outcome
@@ -128,7 +128,7 @@ def _know_targets_by_identity(monkeypatch):
     )
 
 
-# One row per case: the Goal's metrics, a factory of what the campaign measured (each run
+# One row per case: the Goal's metrics, a factory of what the Coverage Record measured (each run
 # needs a fresh one), the Tests it ran, and the Goal's verdict, evaluation status and
 # suite status.
 def _hit_once():
@@ -256,8 +256,8 @@ def test_multi_seed_coverage_goal_is_met_only_by_a_simulation_record_of_exactly_
     assert state.criteria["coverage_top"].met is False
     assert state.criteria["coverage_top"].detail == {}
     assert "match no Goal" in result.outcome.report_text
-    # One frozen seed alone is not the Goal's campaign either: coverage is not merged
-    # across campaigns. Its outcome is recorded for the Goal, its coverage is not.
+    # One frozen seed alone is not the Goal's Coverage Record either: coverage is not merged
+    # across Coverage Records. Its outcome is recorded for the Goal, its coverage is not.
     _result, state = _coverage_run(layout, root, "one-seed", frozen[0])
     entry = state.criteria["coverage_top"]
     assert entry.met is False and "evaluation" not in entry.detail
@@ -279,18 +279,18 @@ def test_multi_seed_coverage_goal_is_met_only_by_a_simulation_record_of_exactly_
 
 @pytest.mark.parametrize("grade", ["pass", "fail"])
 def test_an_ordinary_run_never_changes_a_measured_coverage_verdict(layout, monkeypatch, grade):
-    """After the campaign measured the Goal, a frozen run's outcome elsewhere decides nothing."""
+    """After the Coverage Record measured the Goal, a frozen run's outcome elsewhere decides nothing."""
     from tests.goals.test_test_run_evidence import _record, _shown
 
     goals = [{"family": "COVERAGE", "target": "top", "tests": "all", "metrics": {"line": 100}}]
     root, record = _enter(layout, monkeypatch, goals)
     mode = SimpleNamespace(**vars(layout), record=record)
     frozen = record.test_run_resolutions["coverage_top"].test_runs
-    result, state = _coverage_run(layout, root, "campaign")
+    result, state = _coverage_run(layout, root, "coverage_record")
     assert result.exit_code == 0, result.outcome
     measured = state.criteria["coverage_top"].detail
     before = _status(mode, "coverage_top")
-    # (This substituted campaign records no waiver policy, so met evidence reads stale.)
+    # (This substituted Coverage Record records no waiver policy, so met evidence reads stale.)
     assert before.status != "unmet" and "goal-test-run-" not in before.reason
 
     # An ordinary simulation at the same file contents runs one frozen Test Run.
@@ -306,7 +306,7 @@ def test_an_ordinary_run_never_changes_a_measured_coverage_verdict(layout, monke
     after = _status(mode, "coverage_top")
     assert (after.status, after.reason) == (before.status, before.reason)
     assert DevelopmentState.load(_state_file(mode)).criteria["coverage_top"].met is True
-    assert set(_shown(after).values()) == {"passed"}  # the measuring campaign's outcomes
+    assert set(_shown(after).values()) == {"passed"}  # the measuring Coverage Record's outcomes
 
 
 def test_a_registration_that_is_not_a_simulation_record_manifest_cannot_be_read(tmp_path):

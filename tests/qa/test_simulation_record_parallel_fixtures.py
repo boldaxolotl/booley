@@ -177,7 +177,7 @@ def _result(index: int, identity: dict[str, str], log: bytes) -> dict[str, objec
 
 
 def _write_timeline(timeline: Path) -> None:
-    """Write the operator's measurement of the Simulation Record written by ``_write_campaign``."""
+    """Write the operator's measurement of the Simulation Record written by ``_write_simulation_record``."""
     _write_json(
         timeline,
         {

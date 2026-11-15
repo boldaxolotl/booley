@@ -1,4 +1,4 @@
-"""Bounded model-facing views over one fully validated Coverage Campaign."""
+"""Bounded model-facing views over one fully validated Coverage Record."""
 
 import json
 from dataclasses import replace
@@ -608,7 +608,7 @@ def test_malformed_source_gap_pointers_are_skipped():
 
 
 def _mixed_coverage_record():
-    """A Campaign with eligible, waived, unscored, hit and never-hit points over two sources."""
+    """A Coverage Record with eligible, waived, unscored, hit and never-hit points over two sources."""
     from tests.flows.sim.test_coverage_point_query import _point
 
     coverage_record = _coverage_record_with_waiver()
