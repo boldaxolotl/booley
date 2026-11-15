@@ -490,11 +490,17 @@ class JobLifecycle:
         if rec is None:
             return None
 
-        if jobrec.derive_status(rec, self._is_alive) != jobrec.STATUS_RUNNING:
+        task = self._tasks.get(run_id)
+        supervised = task is not None and not task.done()
+        if not supervised and jobrec.derive_status(rec, self._is_alive) != jobrec.STATUS_RUNNING:
             return "already_finished"
 
+        if supervised:
+            # A Job cancelled before its process published a PID is still running:
+            # let the supervising task start so its cancellation is recorded.
+            await asyncio.sleep(0)
+            rec = self._read_run(run_id) or rec
         was_queued = self._cancel_waiter(rec)
-        task = self._tasks.get(run_id)
         if task is not None:
             await self._cancel_tracked_task(run_id, task)
         else:

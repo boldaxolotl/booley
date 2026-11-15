@@ -1159,3 +1159,18 @@ async def test_a_timed_out_measure_job_is_terminated_before_it_is_killed(tmp_pat
         if pid_file.exists():
             with contextlib.suppress(OSError):
                 os.kill(int(pid_file.read_text(encoding="utf-8")), 9)
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_before_the_process_publishes_its_pid_stops_the_job(context):
+    activity = Activity()
+    jobs = JobLifecycle(activity)
+    run_id = jobs.submit("lint", gated_command(context), JOB_TIMEOUT, context=context)
+    try:
+        assert job_records.read_record(run_id, context.jobs_root).pid is None
+        assert await jobs.cancel(run_id) == "running"
+        rec = job_records.read_record(run_id, context.jobs_root)
+        assert rec.status == "cancelled" and rec.exit_code == 130
+        assert activity.starts == activity.ends == 1
+    finally:
+        await stop_jobs(jobs)
