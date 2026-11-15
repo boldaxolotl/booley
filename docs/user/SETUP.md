@@ -291,7 +291,8 @@ and cleanup. The skill stops for your approval only once, after Step 0.
 - **4 · Doctor.** `booley doctor` is Booley's built-in health check: it audits
   your config, `.core` Targets, toolchain, and sandbox and reports on each
   check, with a fix hint for each failure. `--deep` goes further and
-  runs live sim/lint/synthesis smoke tests against the real EDA tools. Fix every
+  runs live sim/lint/synthesis smoke tests and FPGA implementations against the
+  real EDA tools. Fix every
   `FAIL`, then run `--deep` and fix those too. Setup is done when both pass.
 - **5 · Parity · optional.** Cross-check Booley against the native build system
   when the approved plan selects one.
