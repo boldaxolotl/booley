@@ -31,9 +31,14 @@ def _owner():
     return importlib.import_module("booley.runtime.core_resolution")
 
 
-def _write_core(root: Path, name: str, targets: tuple[str, ...]) -> None:
+def _write_core(
+    root: Path, name: str, targets: tuple[str, ...], depend: tuple[str, ...] = ()
+) -> None:
     """Write ``<name>.core`` declaring each Target as a Verilator sim Target."""
-    body = "".join(f"  {t}: {{flow: sim, flow_options: {{tool: verilator}}}}\n" for t in targets)
+    extra = f", depend: [{', '.join(repr(d) for d in depend)}]" if depend else ""
+    body = "".join(
+        f"  {t}: {{flow: sim, flow_options: {{tool: verilator}}{extra}}}\n" for t in targets
+    )
     (root / f"{name}.core").write_bytes(
         _CORE.format(name=name, targets=body).encode("utf-8").replace(b"\r\n", b"\n")
     )
@@ -134,7 +139,7 @@ def test_failing_target_fails_with_an_always_shown_excerpt(tmp_path, monkeypatch
         (
             Severity.FAIL,
             ".core Target 'sim_bad' fails to resolve",
-            "fix the .core / depends graph",
+            "fix unit.core (declares Target 'sim_bad') or its depends graph",
         ),
         (Severity.PASS, ".core Target 'sim_ok' resolves", ""),
     ]
@@ -144,6 +149,56 @@ def test_failing_target_fails_with_an_always_shown_excerpt(tmp_path, monkeypatch
         (1, "    last line", False),
     ]
     assert result.completed == ("sim_bad", "sim_ok")
+
+
+_FUSESOC_EXCERPT = "ERROR: Could not find core\nvendor_lib_name == 1.0-0"
+
+
+def _failing_with(err: str):
+    def verdicts(argv, payload):
+        out = [{"selector": p["selector"], "ok": False, "err": err} for p in payload]
+        return subprocess.CompletedProcess(argv, 0, "[[CORE_RESOLVE_JSON]]" + json.dumps(out), "")
+
+    return verdicts
+
+
+def _excerpt(result):
+    return [d.message for d in result.report.details]
+
+
+def test_unprovided_dependency_fails_with_hint_naming_it(tmp_path, monkeypatch):
+    """A Target depending on a core no Project core provides names it and both fixes."""
+    _write_core(tmp_path, "unit", ("sim",), depend=(">=::vlog_tb_utils:1.1",))
+    hint = (
+        "no Project .core provides '>=::vlog_tb_utils:1.1': the Sandbox has no FuseSoC "
+        "libraries and cannot fetch them; copy it into the repository as a .core, or drop "
+        "the depend: (check first whether the testbench guards its use with an `ifdef` "
+        "or defines the module itself)"
+    )
+    err = f"{_FUSESOC_EXCERPT}\n{hint}"
+
+    result = _inspect(tmp_path, ("sim",), _Sandbox(monkeypatch, _failing_with(err)))
+
+    assert _rows(result) == [(Severity.FAIL, ".core Target 'sim' fails to resolve", hint)]
+    assert _excerpt(result) == [
+        "    ERROR: Could not find core",
+        "    vendor_lib_name == 1.0-0",
+    ]
+
+
+def test_transitive_unprovided_dependency_is_named(tmp_path, monkeypatch):
+    """Only the dependency no Project core provides is named, through a Project core."""
+    _write_core(tmp_path, "unit", ("sim",), depend=("::mid:0",))
+    (tmp_path / "mid.core").write_bytes(
+        b"CAPI=2:\nname: ::mid:0\nfilesets:\n  rtl:\n    depend: ['::wiredelay:0']\n"
+    )
+
+    result = _inspect(tmp_path, ("sim",), _Sandbox(monkeypatch, _failing_with(_FUSESOC_EXCERPT)))
+
+    [(severity, _message, fix)] = _rows(result)
+    assert severity == Severity.FAIL
+    assert fix.startswith("no Project .core provides '::wiredelay:0': the Sandbox has no")
+    assert "::mid:0" not in fix
 
 
 def test_unselectable_target_fails_before_dispatch(tmp_path, monkeypatch):

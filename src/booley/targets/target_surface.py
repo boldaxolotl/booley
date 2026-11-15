@@ -235,6 +235,18 @@ def surface_payload(surface: TargetSurface, project_root: Path | str) -> Surface
     }
 
 
+def _resolved_error(
+    catalog: TargetCatalog, handle: TargetHandle, exc: fusesoc_registry.FuseSocError
+) -> str:
+    """First line of a resolution failure, plus the hint the first line would drop."""
+    message = str(exc).strip()
+    first_line = message.splitlines()[0] if message else type(exc).__name__
+    missing = catalog.unprovided_dependencies(handle)
+    if missing:
+        return f"{first_line} {fusesoc_registry.unprovided_dependency_hint(missing)}"
+    return first_line
+
+
 def detail_payload(
     project_root: Path | str,
     token: str,
@@ -287,8 +299,7 @@ def detail_payload(
             runner=runner,
         )
     except fusesoc_registry.FuseSocError as exc:
-        message = str(exc).strip()
-        payload["resolved_error"] = message.splitlines()[0] if message else type(exc).__name__
+        payload["resolved_error"] = _resolved_error(catalog, handle, exc)
     else:
         payload["resolved"] = {
             "toplevel": resolved.toplevel,

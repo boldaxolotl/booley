@@ -743,6 +743,29 @@ class TestDryRun:
         assert "bad.core" in error
         assert "filesetz" in error
 
+    def test_dry_run_names_unprovided_dependency(self, tmp_path: Path) -> None:
+        """A lint Target depending on a core no Project core provides names it."""
+        (tmp_path / "top.core").write_bytes(
+            b"CAPI=2:\nname: acme:ip:top:0\nfilesets:\n  rtl:\n"
+            b"    depend: ['>=::vlog_tb_utils:1.1']\n"
+            b"targets:\n  lite:\n    flow: lint\n    flow_options: {tool: verilator}\n"
+            b"    filesets: [rtl]\n"
+        )
+        handle = TargetCatalog.build(tmp_path).select("lite")
+        flow = LintFlow()
+        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+
+        plan = flow._plan_lint((handle,))
+
+        assert len(plan.aggregate_errors) == 1
+        assert plan.aggregate_errors[0].endswith(
+            "\n"
+            "no Project .core provides '>=::vlog_tb_utils:1.1': the Sandbox has no FuseSoC libraries "
+            "and cannot fetch them; copy it into the repository as a .core, or drop the depend: "
+            "(check first whether the testbench guards its use with an `ifdef` or defines the module "
+            "itself)"
+        )
+
     def test_plan_rejects_error_command(self, tmp_path: Path, monkeypatch) -> None:
         target = _target_handle("broken", project_root=tmp_path)
         target.core_file.write_text("CAPI=2:\nname: ::broken:0\n", encoding="utf-8")
