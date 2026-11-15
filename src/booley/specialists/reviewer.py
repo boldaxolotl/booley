@@ -1235,7 +1235,13 @@ class ReviewerSpecialist(Specialist):
         return None
 
     def _workspace_isolation_category(self) -> str | None:
-        """Hide opposite-category sources only inside the private snapshot."""
+        """Hide opposite-category sources only inside the private snapshot.
+
+        Source isolation is not configurable: a Reviewer never sees the sources
+        its ``.core`` filesets declare for the opposite category, nor HDL files
+        no fileset declares. The Coverage Analyst has no category and reads both,
+        because its task is to cross-check RTL against the testbench.
+        """
         if self._args is None:
             return None
         return self.args.category
@@ -1882,6 +1888,8 @@ object, even after calling the capability.
             **detail.get("artifacts", {}),
             "reviewer_evidence": str(path),
         }
+        # Written atomically before any passing Criterion is recorded, so no
+        # Criterion can point at evidence that does not exist.
         atomic_write_json(path, {"exit_code": exit_code, "detail": detail})
         self._review_evidence_written = True
         return path
@@ -3071,7 +3079,14 @@ Schema enforcement (applied upstream by the harness):
         issues: list[ReviewIssue],
         output_lines: list[str],
     ) -> list[ReviewIssue]:
-        """Enforce explicit source membership and honor agent dispositions."""
+        """Enforce explicit source membership and honor agent dispositions.
+
+        A finding outside the source scope, including one in a firmware or other
+        readable context file, moves to the audit as filtered (reason
+        ``source_scope``); Booley never filters findings by their wording.
+        Changing what this filters requires bumping
+        ``booley.evidence.review_receipt.FILTERING_SEMANTICS_REVISION``.
+        """
         kept: list[ReviewIssue] = []
         dropped = 0
         for ordinal, issue in enumerate(issues, 1):

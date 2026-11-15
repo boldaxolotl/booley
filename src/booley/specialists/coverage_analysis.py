@@ -222,6 +222,8 @@ def _normalize_scoped_response(
 def _validated_reference_map(
     references: Mapping[str, str], points: set[str], delivered: set[str]
 ) -> dict[str, str]:
+    # A point_ref is usable only after its exact point was delivered within the
+    # evidence budgets: the model must never invent or guess a point ID.
     valid = {}
     for point_ref, point_id in references.items():
         if (

@@ -47,7 +47,14 @@ def set_criterion(
     detail: dict[str, Any] | None = None,
     source_target: str | None = None,
 ) -> None:
-    """Set a criterion and persist state. No-op when state has no file."""
+    """Set a criterion and persist state. No-op when state has no file.
+
+    Acceptance is recorded at two points and both must stay: here, per call
+    (immutable evidence first, then mutable state, then the update event), so a
+    long run shows progress and a crash keeps what was already proven; and at
+    completion (``record_acceptance``). Do not defer all Criteria writes to
+    completion.
+    """
     if getattr(endpoint.args, "diagnostic", False):
         logger.info("Diagnostic run: not recording criterion %s", key)
         return
@@ -428,7 +435,15 @@ def record_acceptance(
     prepared: PreparedExecution,
     outcome: EndpointOutcome,
 ) -> None:
-    """Record immutable Ticket evidence before state/report persistence."""
+    """Record immutable Ticket evidence before state/report persistence.
+
+    A failure here becomes exit 2 with ``detail.completion_error`` and skips
+    final state persistence; per-Target acceptance already committed stays in
+    ``detail.acceptance``. That differs from a failure appending acceptance
+    inside the run, which does not save and surfaces as an error outcome. A dry
+    run (``non_persisting_dry_run``) records nothing, skips admission, EDA
+    execution, and ``_post_run`` persistence, and writes only ``flow_plan.json``.
+    """
     if prepared.non_persisting_dry_run:
         endpoint._pending_criteria_set = ()
         return

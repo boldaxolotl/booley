@@ -3,8 +3,7 @@
 How agents read and write this repository's issues and specs, which live as
 GitHub issues. Skills that "publish to the issue tracker" or "fetch the
 ticket" (`triage`, `to-spec`, `to-tickets`, `wayfinder`, the issue pipeline)
-read it for the commands. Label names are in
-[triage-labels.md](triage-labels.md); the brief a `ready-for-agent` issue
+read it for the commands and labels. The brief a `ready-for-agent` issue
 needs is in [agent-brief.md](agent-brief.md).
 
 ## Commands
@@ -12,23 +11,17 @@ needs is in [agent-brief.md](agent-brief.md).
 Run `gh` inside the clone or a worktree: it takes the repository from the
 `origin` remote, and `gh api` fills `{owner}` and `{repo}` the same way.
 
-- **Read:** `gh issue view <n> --comments`, or
-  `gh issue view <n> --json title,body,labels,assignees,comments` for fields.
 - **List:** `gh issue list --state open --label <label> --limit 200`. Without
   `--limit`, `gh` returns 30 issues.
 - **Create:** `gh issue create --title "$(cat <title-file>)" --body-file <body-file> --label <label>`
 - **Comment:** `gh issue comment <n> --body-file <file>`
-- **Labels:** `gh issue edit <n> --add-label <label> --remove-label <label>`
-- **Close:** post the closing comment with `gh issue comment`, then
-  `gh issue close <n> --reason completed` (or `--reason "not planned"`).
 
 Draft every title, body, and comment in a local file and scan it with
 `python3 .github/scripts/confidential_content_guard.py --repo . pr-text --file <draft>`
 before submitting that same file, as `AGENTS.md` requires. That is why the
-commands read files instead of taking `--body "..."`.
-
-"Publish to the issue tracker" means create a GitHub issue. "Fetch the
-relevant ticket" means `gh issue view <n> --comments`.
+commands read files instead of taking `--body "..."`. Close with a scanned
+closing comment, then `gh issue close <n> --reason completed` (or
+`--reason "not planned"`).
 
 ## Pull requests
 
@@ -86,37 +79,55 @@ body laid out as the `wayfinder` skill specifies.
 
 ## Agent claims
 
-The issue pipeline, and any agent that works an issue unattended, claims it
-before starting so concurrent runs on other hosts see each other. Post this
-exact comment (drafted and scanned as above), then assign the issue to the
-authenticated login:
+The issue pipeline claims an issue with `op claim` and `op release-claim`.
+An agent that works an issue unattended by hand follows the same protocol:
+post the comment ``Claimed by agent `<agent-id>`.`` (drafted and scanned as
+above), then assign the issue to the authenticated login. The earliest claim
+not released wins, ordered by `createdAt`, then comment ID. Read every page
+of comments and the assignees before assigning and again before each later
+state-changing command; these reads detect a conflict but are not a lock.
 
-```text
-Claimed by agent `<agent-id>`.
-```
+Release only after every command the run started has stopped and none of its
+PRs is queued: post ``Released claim <claim-comment-id> by agent `<agent-id>`:
+<reason>.``, then remove the run's own assignment. GitHub authenticates the
+login, not the agent ID, so a release counts only when the releasing run can
+match it to its own recorded command, or the maintainer authorizes it.
+Elapsed time never releases a claim. To recover an abandoned claim, the
+maintainer confirms the claiming run has stopped and authorizes the takeover.
 
-The earliest claim that has not been released wins, ordered by `createdAt`,
-then comment ID. Read every page of comments and the assignees before
-assigning and again before each later state-changing command. Stop when a
-claim or assignee appears that the last read did not show. These reads detect
-a conflict; they are not a lock, so two hosts can still race.
+## Triage labels
 
-Release a claim only after every command the claiming run started has
-stopped and no PR of that run is still queued. Post a release comment that
-names the claim comment ID, the run, and the reason, then remove the run's own
-assignment:
+State labels equal the triage skill's role names: `needs-triage`,
+`needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`, plus
+`tracker`.
 
-```text
-Released claim <claim-comment-id> by agent `<agent-id>`: <reason>.
-```
+### Tracker and pipeline labels
 
-GitHub authenticates the login, not the agent ID written in a comment, and
-all agents may post under one login. A release therefore counts only when the
-releasing run can match it to its own recorded command and the comment ID
-GitHub returned, or when the maintainer authorizes the release. Elapsed time
-never releases a claim.
+`tracker` marks a parent whose work was split into sub-issues
+([One PR per issue](agent-brief.md#one-pr-per-issue)). Whoever files the
+sub-issues puts it on the parent in place of its state label: triage after its
+own split, or the issue pipeline after its planner splits a `ready-for-agent`
+issue. Sweeps for issues that need attention then skip the parent. A tracker
+has no Agent Brief and is never `ready-for-agent`. Close it when its last
+sub-issue closes.
 
-The pipeline also skips an issue that has an assignee or an open PR, even
-after its claim is released. To recover an abandoned claim, the maintainer
-confirms that the claiming run and its processes have stopped, then
-authorizes the takeover.
+The issue pipeline never admits an issue labeled `needs-triage`,
+`needs-info`, or any `wayfinder:` label. While a ticket waits on a maintainer
+question, labeling the issue `needs-triage`, `ready-for-human`, or `wontfix`
+takes it back: the pipeline stops the ticket.
+
+### Category labels
+
+`bug`, `enhancement`, and `documentation`. `documentation` is a third
+category beyond the triage skill's two. A `documentation` change edits only
+`*.md` files and files under `docs/`, and may rerun an existing generator; the
+pipeline refuses a `documentation` branch that changes any other file. Text
+generated from code, text a guard test keeps in sync with code, and a
+requested guard test all need code changes, so they are `bug` or
+`enhancement`.
+
+A code change that also updates docs is `bug` or `enhancement` and may carry
+`documentation` as well. When an issue has several category labels, the
+pipeline uses the strongest: `bug`, then `enhancement`, then `documentation`.
+The category decides which models work the ticket: `documentation` tickets
+get Claude only and never a GUI check.

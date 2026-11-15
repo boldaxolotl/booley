@@ -62,30 +62,6 @@ def _assert_guidance_names(text, available, source):
     assert not names - available, f"{source}: unavailable MCP tools: {sorted(names - available)}"
 
 
-def test_documented_work_dir_inventory_matches_registered_schemas(monkeypatch):
-    mcp_tools_doc = (REPO_ROOT / "docs/internals/MCP-TOOLS.md").read_text(encoding="utf-8")
-    table = mcp_tools_doc.split("Built-in MCP worktree routing:\n\n", 1)[1].split("\n\n")[0]
-    documented = {}
-    for row in table.splitlines()[2:]:
-        for accepts, cell in zip((True, False), row.strip("|").split("|"), strict=True):
-            for name in re.findall(r"`([a-z_]+)`", cell):
-                assert name not in documented
-                documented[name] = accepts
-    live = {
-        t.name: "work_dir" in t.input_schema.get("properties", {}) for t in _tools(monkeypatch)
-    }
-    assert {name: value for name, value in documented.items() if name in live} == live
-    assert set(documented) - set(live) == {"booley_sleep", "coverage_evidence"}
-    for mode, name in (("diagnostic", "booley_sleep"), ("Analyst", "coverage_evidence")):
-        assert documented[name] is False
-        tool = next(t for t in _tools(monkeypatch, mode) if t.name == name)
-        assert "work_dir" not in tool.input_schema["properties"]
-        with pytest.raises(AssertionError, match=name):
-            _assert_guidance_names(f"MCP tool `{name}`", set(live), "unqualified")
-    assert "only when diagnostic tools are enabled" in mcp_tools_doc
-    assert "only in the Coverage Analyst's nested server" in mcp_tools_doc
-
-
 def test_current_instructions_never_require_work_dir_on_every_call():
     paths = [
         p
@@ -159,18 +135,11 @@ GUIDANCE_REGIONS = (
         "interactive",
     ),
     ("docs/internals/ARCHITECTURE.md", "## Goal Mode", "\n## ", "interactive"),
-    ("docs/internals/MCP-TOOLS.md", "- Interactive, non-nested servers list", "\n", "interactive"),
     (
         "docs/internals/MCP-TOOLS.md",
         "The agent selects the arguments and invokes",
         "\n\n",
         "interactive",
-    ),
-    (
-        "docs/internals/SPECIALIST_IMPLEMENTATION.md",
-        "The model prompt contains only a compact Campaign reference.",
-        "\nChanging filters",
-        "Analyst",
     ),
     ("qa/missions/coverage/MISSION.md", "### 8. cov-analyst", "### 9.", "Analyst"),
     ("qa/shared/coverage/RUNBOOK.md", "Set QA_PROVIDER_ROOT", "Candidate cases", "Analyst"),

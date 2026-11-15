@@ -1,4 +1,15 @@
-"""Goal-local authored-input policy for Target-consumed ignored build data."""
+"""Goal-local authored-input policy for Target-consumed ignored build data.
+
+A Goal without a bound Target is checked against authored sources only:
+generated build artifacts (Git-ignored files a Target consumes other than HDL,
+``.core`` files, and declared programs) are left out of its fingerprints and of
+the committed-input check at Finish, so regenerating one does not stale the Goal
+unless the Reviewer's scope names it. HDL, ``.core`` files, declared programs,
+symlinks, paths outside the repository, and files in a nested Git repository are
+never left out, so a regenerated ignored file cannot hide authored logic. A Goal
+bound to a Target still needs a Simulation producer for each uncommitted
+generated input.
+"""
 
 from __future__ import annotations
 

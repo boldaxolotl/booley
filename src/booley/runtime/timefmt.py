@@ -1,4 +1,10 @@
-"""Canonical machine timestamps and human-visible dates for Booley."""
+"""Canonical machine timestamps and human-visible dates for Booley.
+
+``format_clock``, ``format_duration``, and ``format_age`` serve Dashboard and CLI
+display only. Report and document text, JSON, MCP diagnostics, redirected progress
+records, and UTC diagnostic log prefixes keep their own representations, and a
+printed report excerpt stays an exact copy of the stored report.
+"""
 
 from __future__ import annotations
 

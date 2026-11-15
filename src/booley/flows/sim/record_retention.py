@@ -3,6 +3,11 @@
 Native removal writes a ``pruning`` availability sidecar before deleting ``native/``,
 so an interrupted cleanup is explicit and retryable.
 Full removal leaves an empty numbered tombstone to prevent invocation-id reuse.
+
+Retention acts on one exact, named invocation and Target. It never picks a
+"latest" Record or applies age or size rules, because deleting evidence must be
+a deliberate act. Both operations are safe to retry with the same selection;
+never remove journals, locks, quarantines, or ``.pruned-N`` directories by hand.
 """
 
 import json
