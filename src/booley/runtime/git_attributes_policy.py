@@ -1,4 +1,4 @@
-"""The managed line-ending rule earlier Booley versions wrote, read by Goal Finish."""
+"""The managed line-ending rule earlier Booley versions wrote, kept so existing files are recognized."""
 
 import re
 from collections.abc import Iterator

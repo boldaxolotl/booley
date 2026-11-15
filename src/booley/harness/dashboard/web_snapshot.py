@@ -78,7 +78,7 @@ def _read_jobs(reader: JobReader, worktree: Path, now: float) -> tuple[JobView, 
         extra = (resolve_checkout_booley_dir(worktree).resolve(),)
     except (OSError, ValueError, RuntimeError):
         extra = ()
-    return reader.read_on_disk(now=now, artifact_roots=extra).jobs
+    return reader.read(now=now, artifact_roots=extra).jobs
 
 
 def _worktree_jobs(worktree: Path, jobs: Sequence[JobView]) -> list[JobView]:

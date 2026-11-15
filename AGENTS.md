@@ -2,7 +2,7 @@
 
 Booley is an agentic development environment (ADE) for RTL design and verification,
 written in Python: engineers direct sandboxed Developer Agents through
-simulation, synthesis, linting, and Goal workflows.
+simulation, synthesis, linting, and measurement workflows.
 
 ## Repository Rules
 

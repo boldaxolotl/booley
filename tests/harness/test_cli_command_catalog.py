@@ -83,7 +83,7 @@ def test_help_groups_public_commands_by_location(plain) -> None:
     assert len(columns) == 1, "descriptions start at one shared column"
     assert "{" not in help_text and "positional arguments" not in help_text
     assert max(map(len, help_text.splitlines())) <= 100, "a pipe wraps at the cap"
-    for hidden in ("feedback", "cleanup", "upgrade", "session", "goal", "shell"):
+    for hidden in ("feedback", "cleanup", "upgrade", "session", "shell"):
         assert not re.search(rf"^  {hidden}\s", help_text, re.M)
 
 
@@ -143,7 +143,7 @@ def test_cli_reference_has_the_same_public_inventory() -> None:
     ]
 
 
-@pytest.mark.parametrize("command", ["feedback", "cleanup", "upgrade", "session", "goal", "shell"])
+@pytest.mark.parametrize("command", ["feedback", "cleanup", "upgrade", "session", "shell"])
 def test_skill_commands_are_hidden_but_remain_registered(command: str) -> None:
     parser = cli._build_parser()
     sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
@@ -159,7 +159,6 @@ COMMAND_LOCATION_TABLE = [
     ("specialist", "Sandbox"),
     ("measure", "Sandbox"),
     ("worktree", "Sandbox"),
-    ("goal", "Sandbox"),
     ("cheat", "either"),
     ("coverage", "either"),
     ("doctor", "either"),

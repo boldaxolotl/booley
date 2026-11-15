@@ -440,6 +440,8 @@ def test_diagnostic_help_is_truthful_only_on_human_surface():
 
     human = " ".join(build_parser(LintFlow(), human=True).format_help().split())
     transport = build_parser(LintFlow()).format_help()
-    assert "CLI runs never record Goal evidence" in human
-    assert "Run without satisfying Goals" in transport
-    assert "CLI runs never" not in transport
+    assert "Run diagnostically: records no evidence. Default: off." in human
+    assert "Use for a Flow/Target combination outside the Project's Criteria." in " ".join(
+        transport.split()
+    )
+    assert "Use for a Flow/Target combination" not in human

@@ -451,7 +451,6 @@ class TestFullInitRerun:
         user_owned = [
             pdir / "booley.toml",
             pdir / "tests.toml",
-            pdir / "goalsets" / "feature.md",
             pdir / "FUSESOC_IGNORE",
         ]
         for f in user_owned:
@@ -651,37 +650,6 @@ class TestProjectGitignoreBackfill:
         assert ignored("tickets/state/alpha.json")
         assert ignored("tickets/waiver-candidates/alpha.json")
         assert not ignored("tickets/history/alpha.md")
-
-    def test_goal_records_are_ignored_and_goal_history_is_tracked(self, tmp_path: Path):
-        # ADR 0067: Goal Record directories and Goal locks are local working
-        # state; the committed Goal summaries under goals/history/ are not.
-        run_bounded_child(["git", "init", "-q", str(tmp_path)], check=True)
-        init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
-
-        def ignored(path: str) -> bool:
-            result = run_bounded_child(
-                ["git", "-c", "core.excludesFile=/dev/null", "check-ignore", "-q", path],
-                cwd=tmp_path,
-            )
-            return result.returncode == 0
-
-        assert ignored("goals/fix-uart-20261006T101500Z/record.json")
-        assert ignored("goals/fix-uart-20261006T101500Z/.runtime/jobs/x.json")
-        assert ignored("goals/locks/worktree-abc.lock")
-        assert not ignored("goals/history/fix-uart-20261006T101500Z.md")
-
-    def test_backfill_puts_goal_history_reinclude_after_its_override(self, tmp_path: Path):
-        # A re-include written before the pattern it overrides does nothing, so
-        # an old file holding only the re-include gets both lines appended.
-        gitignore = tmp_path / ".gitignore"
-        gitignore.write_text("!goals/history/\n", encoding="utf-8")
-
-        init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
-
-        lines = gitignore.read_text(encoding="utf-8").splitlines()
-        last_override = max(i for i, line in enumerate(lines) if line == "goals/*/")
-        last_reinclude = max(i for i, line in enumerate(lines) if line == "!goals/history/")
-        assert last_reinclude > last_override
 
     def test_anchored_spelling_is_not_duplicated(self, tmp_path: Path):
         gitignore = tmp_path / ".gitignore"
@@ -954,12 +922,6 @@ def test_init_does_not_scaffold_board_or_ticket_guidance(repo):
     assert not (project / "tickets").exists()
     assert not (project / "ticket_creation.md").exists()
     assert not (project / "ticket_defaults.md").exists()
-    assert {p.name for p in (project / "goalsets").iterdir()} == {
-        "feature.md",
-        "bugfix.md",
-        "refactor.md",
-        "verification.md",
-    }
 
 
 @pytest.mark.parametrize("stale", [False, True])
@@ -1811,13 +1773,21 @@ def test_core_projection_step_excludes_relocated_booley_dir_in_stealth(tmp_path,
     reset_cache()
 
 
+@pytest.mark.timeout(120)
+def test_fresh_init_creates_no_goalsets(repo, capsys):
+    """Init seeds no Goalsets: Goal Mode is removed."""
+    assert _run_full_init(repo) == 0
+    out = capsys.readouterr().out
+    assert not list(repo.rglob("goalsets"))
+    assert "Goalsets" not in out
+
+
 EXPECTED_FRESH_INIT = (
     [
         "Host Bootstrap",
         "Booley Directory",
         "agent provider and authentication policy",
         "stealth core projections",
-        "Goalsets",
         "Sandbox Image lifecycle",
         "project Git-hook bundle",
         "worktree prune guard",
@@ -1832,7 +1802,6 @@ EXPECTED_FRESH_INIT = (
         ("booley_dir", "current"),
         ("agent_config", "ok"),
         ("core_projections", "ok"),
-        ("goalsets", "ok"),
         ("auth", "skip"),
         ("docker_image", "current"),
         ("git_hooks", "skip"),
@@ -1853,7 +1822,6 @@ EXPECTED_RERUN_INIT = (
         "Booley Directory",
         "agent provider and authentication policy",
         "stealth core projections",
-        "Goalsets",
         "Sandbox Image lifecycle",
         "project Git-hook bundle",
         "worktree prune guard",
@@ -1868,7 +1836,6 @@ EXPECTED_RERUN_INIT = (
         ("booley_dir", "current"),
         ("agent_config", "skip"),
         ("core_projections", "ok"),
-        ("goalsets", "current"),
         ("auth", "skip"),
         ("docker_image", "current"),
         ("git_hooks", "skip"),

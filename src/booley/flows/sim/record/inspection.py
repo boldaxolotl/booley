@@ -15,7 +15,6 @@ from booley.flows.sim.record_layout import (
 from booley.flows.simulation_record_results import (
     DurableSimulationRecordResults,
     SimulationRecordBusyError,
-    StartedSimulationRecord,
 )
 
 from .codec import (
@@ -79,28 +78,6 @@ def authenticate_work_item(
         work_item_id,
         selected[0],
         result,
-    )
-
-
-def started_simulation_record(manifest_path: Path) -> StartedSimulationRecord:
-    """The identity of the record whose manifest was just published at *manifest_path*.
-
-    Raises :class:`SimulationRecordIntegrityError` when the manifest cannot
-    be read or is not a record manifest.
-    """
-    try:
-        manifest = _store_for_manifest(manifest_path).load_manifest()
-    except OSError as exc:
-        raise SimulationRecordIntegrityError(
-            f"cannot read Simulation Record manifest: {exc}"
-        ) from exc
-    target = cast(Mapping[str, object], manifest.document["target"])
-    return StartedSimulationRecord(
-        manifest_path,
-        str(manifest.document["simulation_record_id"]),
-        manifest_digest(manifest),
-        (str(target["selector"]), f"{target['vlnv']}#{target['name']}"),
-        target["role"] == "candidate",
     )
 
 
@@ -183,5 +160,4 @@ __all__ = [
     "authenticate_work_item",
     "collect_pre_sim_firings",
     "read_durable_results",
-    "started_simulation_record",
 ]

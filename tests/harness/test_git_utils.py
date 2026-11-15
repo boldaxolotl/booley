@@ -458,7 +458,7 @@ def test_git_helpers_resolve_intended_linked_worktree_with_foreign_selectors(
     tmp_path, monkeypatch
 ):
     from booley.runtime.git import _git_dir_for_worktree
-    from tests.goals.test_attribute_projection import hostile
+    from tests.git_support import hostile
 
     main = _init_repo(tmp_path / "main")
     linked = _make_worktree(main, tmp_path / "linked")
@@ -479,7 +479,7 @@ def test_git_helpers_resolve_intended_linked_worktree_with_foreign_selectors(
 
 def test_git_run_stale_lock_retry_keeps_intended_repository(tmp_path, monkeypatch):
     from booley.runtime import git as git_module
-    from tests.goals.test_attribute_projection import hostile
+    from tests.git_support import hostile
 
     main = _init_repo(tmp_path / "main")
     linked = _make_worktree(main, tmp_path / "linked")

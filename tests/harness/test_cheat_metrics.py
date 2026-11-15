@@ -48,7 +48,7 @@ def test_cheat_metrics_prints_the_listing_in_a_project(
     assert "[sim_core.sim]\ntests_failed_max =  # tests, plain\n" in out
     assert "[synth_core.synth]\n" in out
     assert FALLBACK not in out
-    assert "Goal Mode" not in out  # only the requested section
+    assert "\nBooley Flows\n" not in out  # only the requested section
 
 
 def test_printed_listing_with_numbers_passes_measure_validate(
@@ -65,18 +65,6 @@ def test_printed_listing_with_numbers_passes_measure_validate(
 
     out = capsys.readouterr().out
     assert f"metrics.toml is valid: {len(headers)} tables" in out
-
-
-def test_goals_view_has_no_metrics_listing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    project = write_listing_project(tmp_path)
-
-    assert run_cli(monkeypatch, project, "cheat", "--goals") == 0
-
-    out = capsys.readouterr().out
-    assert "[sim_core.sim]" not in out
-    assert "\nMetric-Driven Development\n" not in out
 
 
 def test_all_without_metrics_does_not_list(

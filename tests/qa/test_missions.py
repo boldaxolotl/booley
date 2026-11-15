@@ -8,8 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from booley.goals.model import GoalArg, parse_goal_args
-from booley.goals.translate import translate_goals
 from booley.runtime.paths import skills_dir
 from booley.runtime.qa_skill_selection import QA_SKILL_NAMES
 
@@ -113,56 +111,6 @@ def test_qa_run_uses_the_canonical_host_install():
         "Record the choice in `log.md`",
     ):
         assert required in compact
-
-
-JSON_BLOCK = re.compile(r"```json\n(.*?)\n```", re.DOTALL)
-GOAL_FIXTURES = sorted(QA_ROOT.glob("missions/*/goals/*.md")) + sorted(
-    QA_ROOT.glob("shared/*/goals/*.md")
-)
-AD_HOC_FIXTURES = sorted(QA_ROOT.glob("missions/*/goals/*.json")) + sorted(
-    QA_ROOT.glob("shared/*/goals/*.json")
-)
-
-
-def _goal_args(text: str) -> tuple[GoalArg, ...]:
-    raw = json.loads(text.replace("<target>", "qa_target").replace("<spec>", "docs/spec.md"))
-    return parse_goal_args(raw)
-
-
-@pytest.mark.parametrize("fixture", GOAL_FIXTURES, ids=lambda p: str(p.relative_to(QA_ROOT)))
-def test_goalsets_parse_and_translate(fixture: Path) -> None:
-    markdown = fixture.read_text(encoding="utf-8")
-    assert markdown.startswith(f"# Goalset: {fixture.stem}\n")
-    assert "## Goals" in markdown
-    blocks = JSON_BLOCK.findall(markdown)
-    assert len(blocks) == 1
-    args = _goal_args(blocks[0])
-    translated = translate_goals(args)
-    assert translated.goals
-    assert all(arg.origin == fixture.stem for arg in args)
-    assert all(goal.origins == (fixture.stem,) for goal in translated.goals)
-
-
-@pytest.mark.parametrize("fixture", AD_HOC_FIXTURES, ids=lambda p: str(p.relative_to(QA_ROOT)))
-def test_ad_hoc_goals_parse_and_translate(fixture: Path) -> None:
-    translated = translate_goals(_goal_args(fixture.read_text(encoding="utf-8")))
-    assert translated.goals
-    assert all(goal.origins == ("ad-hoc",) for goal in translated.goals)
-
-
-@pytest.mark.parametrize(
-    "fixture",
-    [*GOAL_FIXTURES, *AD_HOC_FIXTURES],
-    ids=lambda p: str(p.relative_to(QA_ROOT)),
-)
-def test_mutation_scopes_name_source_files(fixture: Path) -> None:
-    text = fixture.read_text(encoding="utf-8")
-    payload = JSON_BLOCK.findall(text)[0] if fixture.suffix == ".md" else text
-    for goal in translate_goals(_goal_args(payload)).goals:
-        if goal.family.value == "mutation":
-            for entry in goal.params["scope"]:
-                assert not entry.endswith(("/", "\\")), entry
-                assert Path(entry).suffix in {".v", ".sv", ".vhd", ".vhdl"}, entry
 
 
 def test_uart_review_contract_contains_frozen_spec_text() -> None:

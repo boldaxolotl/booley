@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,8 +11,6 @@ import pytest
 from textual.widgets import DataTable, Static
 
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
-from booley.criteria.presentation import CriterionPresentation
-from booley.goals.model import GoalFamily, GoalSpec
 from booley.harness import upgrade_review
 from booley.harness.dashboard import app as dashboard_app
 from booley.harness.dashboard import footer, model
@@ -38,52 +36,21 @@ def _generous_first_read_budget(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_terminal_naming_failure_keeps_selectable_evidence_and_artifacts(tmp_path):
-    artifact = str(tmp_path / "evidence.txt")
-    diagnostic = "Goal unavailable (unsupported record)"
-    detail = model.GoalDetail(
-        "opaque_key_sentinel",
-        "passing",
-        CriterionPresentation(diagnostic, "", "", "", ""),
-        {"recorded_at": STAMP, "detail": {"warnings": 0}},
-        artifacts=(artifact,),
-    )
-    record = SimpleNamespace(
-        worktree=SimpleNamespace(key="wt0"),
-        state=SimpleNamespace(value="finished"),
-        session_key="codex:00",
-        branch="goal/fixture",
-    )
-    goal = model.GoalView(
-        "fixture",
-        record=record,
-        goals=(detail,),
-        diagnostic=diagnostic,
-        terminal_summary="Completed work remains visible.",
-    )
-    current = replace(snapshot(1), goals=(goal,))
-    opened = []
-    app = DashboardApp(lambda: current, lambda path: opened.append(path) or "")
+async def test_dashboard_has_no_goal_or_proposal_views():
+    """There is no Goal or proposal view; Sessions, Jobs and Targets stay."""
+    assert frozenset({"job", "help", "target"}) == dashboard_app.DEDICATED_VIEWS
+    assert not hasattr(model, "GoalView")
+    assert "goals" not in {field.name for field in fields(model.DashboardSnapshot)}
+    assert dashboard_app.WINDOW_ORDER == ("sessions", "jobs", "targets")
+    current = snapshot(1)
+    app = DashboardApp(lambda: current)
     app.snapshot = current
     app.navigation = Navigation("session", "codex:00")
-    async with app.run_test(size=(max(90, len(artifact) + 10), 40)) as pilot:
+    async with app.run_test(size=(90, 30)) as pilot:
         app.render_snapshot()
-        assert "opaque_key_sentinel" in app.row_keys
-        assert diagnostic in str(app.query_one("#orientation", Static).render())
-        table = app.query_one(DataTable)
-        table.move_cursor(row=0, column=0, animate=False)
-        table.focus()
         await pilot.pause()
-        await pilot.press("enter")
-        # Let the goal view lay out before clicking into it; a slow Windows
-        # runner otherwise clicks the pre-layout widget and opens nothing.
-        await pilot.pause()
-        assert app.navigation.view == "goal"
-        text = str(app.query_one("#detail", Static).render())
-        assert diagnostic in text and "warnings" in text
-        assert "opaque_key_sentinel" not in text
-        await pilot.click("#detail", offset=(3, text.split("\n").index(artifact)))
-        assert opened == [artifact]
+        assert not any(key.startswith(("goal", "proposal")) for key in app.row_keys)
+        assert app.row_keys
 
 
 def snapshot(count=12):
@@ -131,7 +98,7 @@ async def choose_in_bar(app, pilot, label):
     """Reach the top bar, arrow to the item whose label starts with `label`, apply it.
 
     Focus stays on the bar afterwards, unless the choice opens a full-width scroll view
-    (Help, a Goal, Job or proposal detail), which takes the keyboard; otherwise callers
+    (Help, a Job or Target detail), which takes the keyboard; otherwise callers
     press `down` to return to the list.
     """
     if not isinstance(app.focused, TopBar):
@@ -210,9 +177,8 @@ def test_disconnected_session_without_cached_row_still_has_its_handle():
     app = DashboardApp(lambda: current)
     app.snapshot = current
     app.navigation = Navigation("session", "codex:gone")
-    orientation, goal = app._session()
+    orientation = app._session()
     assert "S17" in orientation and "disconnected" in orientation
-    assert goal is None
 
 
 def test_session_header_shows_the_title_connected_and_disconnected():
@@ -223,16 +189,16 @@ def test_session_header_shows_the_title_connected_and_disconnected():
     app = DashboardApp(lambda: current)
     app.snapshot = current
     app.navigation = Navigation("session", "codex:00")
-    live, _goal = app._session_header()
+    live = app._session_header()
     assert live.plain.startswith("S1 \u00b7 uart-fix ")
     app.navigation = Navigation("session", "codex:gone")
-    gone, _goal = app._session_header()
+    gone = app._session_header()
     assert gone.plain.startswith("S17 \u00b7 data path ")
     assert "disconnected" in gone.plain
     # An unnamed session (no title entry) falls back to its handle.
     app.navigation = Navigation("session", "codex:00")
     app.snapshot = replace(current, session_titles={})
-    unnamed, _goal = app._session_header()
+    unnamed = app._session_header()
     assert unnamed.plain.startswith("S1 ")
     assert "uart-fix" not in unnamed.plain
 
@@ -260,32 +226,15 @@ def test_disconnected_session_detail_keeps_its_last_seen_calls():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("with_goal_view", "expected_keys"),
-    [
-        (False, ["group:no-booley-activity"]),
-        (True, ["group:spacer", "group:booley-activity", "group:no-booley-activity"]),
-    ],
-    ids=["interactive", "goal-without-goals"],
-)
-async def test_session_without_activity_shows_empty_state(with_goal_view, expected_keys):
+async def test_session_without_activity_shows_empty_state():
     """#2880: no activity rows still say so, and Enter on that line opens nothing."""
+    expected_keys = ["group:no-booley-activity"]
     current = snapshot(1)
     current = replace(
         current,
         sessions=(replace(current.sessions[0], calls=()),),
         jobs=JobSnapshot(()),
     )
-    if with_goal_view:
-        goal = model.GoalView(
-            "fixture",
-            record=SimpleNamespace(
-                worktree=SimpleNamespace(key="wt0"),
-                state=SimpleNamespace(value="active"),
-                branch="goal/fixture",
-            ),
-        )
-        current = replace(current, goals=(goal,))
     app = DashboardApp(lambda: current)
     app.snapshot = current
     app.navigation = Navigation("session", "codex:00")
@@ -431,48 +380,8 @@ async def test_session_arrows_help_back_and_quit():
 @pytest.mark.asyncio
 async def test_pilot_sessions_beyond_nine_scope_back_help_and_disconnect(monkeypatch):
     current = snapshot()
-    proposal = SimpleNamespace(
-        proposal=SimpleNamespace(
-            id="change",
-            before=None,
-            after=GoalSpec("lint_clean_top", GoalFamily.LINT, "top", {}, ("ad-hoc",)),
-            to_json=lambda: {
-                "id": "change",
-                "kind": "relax",
-                "before": None,
-                "after": {},
-                "rationale": "[/untrusted]",
-            },
-        ),
-        state="pending",
-        decision=None,
-        closed_by_abandonment=False,
-    )
-    goal = model.GoalView(
-        "fixture",
-        record=SimpleNamespace(
-            worktree=SimpleNamespace(key="wt0"),
-            state=SimpleNamespace(value="active"),
-            branch="goal/fixture",
-        ),
-        status=SimpleNamespace(
-            met=1, goals=(1, 2, 3, 4), pending_proposals=1, proposals=(proposal,)
-        ),
-        goals=tuple(
-            model.GoalDetail(
-                str(index),
-                state,
-                CriterionPresentation(
-                    "Lint top", "Target top", "must pass", "", "Target top · must pass"
-                ),
-                {"recorded_at": STAMP, "detail": {"findings": 1}},
-            )
-            for index, state in enumerate(("failing", "needs recheck", "not yet run", "passing"))
-        ),
-    )
     current = replace(
         current,
-        goals=(goal,),
         sessions=(
             replace(current.sessions[0], calls=(RecentCall(STAMP, "[/untrusted]", "completed"),)),
             *current.sessions[1:],
@@ -496,7 +405,7 @@ async def test_pilot_sessions_beyond_nine_scope_back_help_and_disconnect(monkeyp
         assert isinstance(app.query_one(DataTable).get_cell_at(Coordinate(0, 0)), Text)
         await open_session(app, pilot, "codex:00")
         assert (app.navigation.view, app.navigation.session) == ("session", "codex:00")
-        await _inspect_goals_and_proposal(app, pilot)
+        await _inspect_session_job(app, pilot)
         await _inspect_jobs_window_and_help(app, pilot)
         # Left shows Sessions with the session detail still open; Esc steps back.
         await pilot.press("left", "escape")
@@ -529,23 +438,19 @@ async def _inspect_jobs_window_and_help(app, pilot):
     assert app.navigation.view == "jobs"
 
 
-async def _inspect_goals_and_proposal(app, pilot):
-    assert app.row_keys[:4] == ["0", "1", "2", "3"]
+async def _inspect_session_job(app, pilot):
+    assert app.row_keys[0].startswith("job:")
+    selected = app.row_keys[0]
     await pilot.press("enter")
-    assert app.navigation.view == "goal"
-    assert "must pass" in str(app.query_one("#detail", Static).render())
+    assert app.navigation.view == "job"
     await pilot.press("escape")
-    app.query_one(DataTable).move_cursor(row=4, animate=False)
-    await pilot.press("enter")
-    assert app.navigation.view == "proposal"
-    assert "Approval remains in chat" in str(app.query_one("#detail", Static).render())
-    await pilot.press("escape")
+    assert app.navigation.view == "session"
     await pilot.resize_terminal(180, 30)
     await pilot.pause()
-    assert app._selected_key() == "proposal:change"
+    assert app._selected_key() == selected
     await pilot.resize_terminal(90, 30)
     await pilot.pause()
-    assert app._selected_key() == "proposal:change"
+    assert app._selected_key() == selected
 
 
 @pytest.mark.asyncio
@@ -674,9 +579,9 @@ def test_reported_activity_is_shown_per_session_and_unknown_is_never_guessed():
     assert "waiting 10m 00s" in by_key["codex:01"]
     assert by_key["codex:02"].rstrip().endswith("unknown")
     app.navigation = Navigation("session", "codex:00")
-    assert "\nWaiting for tool call (mcp__booley__Sim) · 10m 00s" in app._session()[0]
+    assert "\nWaiting for tool call (mcp__booley__Sim) · 10m 00s" in app._session()
     app.navigation = Navigation("session", "codex:02")
-    assert "\nActivity unknown" in app._session()[0]
+    assert "\nActivity unknown" in app._session()
 
 
 def test_unknown_activity_without_client_signals():
@@ -805,25 +710,15 @@ def test_read_status_projects_unobserved_running_version_without_writing(
 def test_thread_without_process_proof_is_last_seen_and_own_fallback_is_not_other():
     row = SessionRow(Attribution("codex:one", "thread", "/work", "wt"), STAMP, STAMP)
     fallback = SessionRow(Attribution("worktree:wt", "worktree", "/work", "wt"), STAMP, STAMP)
-    goal = model.GoalView(
-        "fixture",
-        record=SimpleNamespace(
-            worktree=SimpleNamespace(key="wt"),
-            state=SimpleNamespace(value="active"),
-            branch="goal/fixture",
-        ),
-    )
     app = DashboardApp(lambda: None)
-    app.snapshot = model.DashboardSnapshot(
-        sessions=(row, fallback), goals=(goal,), observed_at=1791453900
-    )
+    app.snapshot = model.DashboardSnapshot(sessions=(row, fallback), observed_at=1791453900)
     app.navigation = Navigation("session", "codex:one")
-    orientation, _ = app._session()
+    orientation = app._session()
     assert "connected" not in orientation
     assert "last seen" in orientation
     assert "WARNING" not in orientation
     facts = app._session_facts(row)
-    assert facts.branch == "goal/fixture"
+    assert facts.branch == ""
     assert facts.notices == ()
 
 
@@ -842,18 +737,9 @@ def test_session_without_work_dir_shows_its_default_checkout_and_branch():
         STAMP,
     )
     unknown = SessionRow(Attribution("pid:three", "process", "", ""), STAMP, STAMP)
-    # A Goal's branch belongs to the Goal worktree, never to the default checkout.
-    goal = model.GoalView(
-        "fixture",
-        record=SimpleNamespace(
-            worktree=SimpleNamespace(key=""),
-            state=SimpleNamespace(value="active"),
-            branch="goal/fixture",
-        ),
-    )
     app = DashboardApp(lambda: None)
     app.snapshot = model.DashboardSnapshot(
-        sessions=(bare, pinned, unknown), goals=(goal,), observed_at=1791453900
+        sessions=(bare, pinned, unknown), observed_at=1791453900
     )
     facts = app._session_facts(bare)
     assert (facts.work_dir, facts.branch) == ("/work (default)", "booley")
@@ -863,14 +749,13 @@ def test_session_without_work_dir_shows_its_default_checkout_and_branch():
     # Rows from servers that predate default_work_dir show no default checkout.
     assert "(default)" not in app._session_facts(unknown).work_dir
     app.navigation = Navigation("session", "pid:one")
-    orientation, _ = app._session()
+    orientation = app._session()
     assert " · /work (default) · booley · " in orientation
 
     # A detached default checkout has no branch to show.
     app.snapshot = replace(
         app.snapshot,
         sessions=(SessionRow(replace(bare.attribution, branch=""), STAMP, STAMP),),
-        goals=(),
     )
     detached = app._session_facts(app.snapshot.sessions[0])
     assert (detached.work_dir, detached.branch) == ("/work (default)", "")
@@ -894,7 +779,7 @@ def test_process_keyed_session_detail_shows_readable_identity():
         observed_at=1791454200,
     )
     app.navigation = Navigation("session", PROCESS_KEY)
-    orientation, _ = app._session()
+    orientation = app._session()
     assert f"Session key: {PROCESS_KEY_LABEL}" in orientation
     assert "pid:pid:" not in orientation
     # The raw key, not the label, still selects the reported activity.
@@ -1085,11 +970,11 @@ async def test_time_display_pilot_snapshots(monkeypatch):
     app = DashboardApp(lambda: current)
     app.snapshot = current
     app.navigation = Navigation("session", "codex:00")
-    orientation, _ = app._session()
+    orientation = app._session()
     assert "Started 10m ago" in orientation
     assert "· 10m ago" in orientation
     assert "working · 10m 00s" in orientation.lower()
-    assert "14:00:00" in str(app._session_activity(None, app._session_row()[0]))
+    assert "14:00:00" in str(app._session_activity(app._session_row()[0]))
     for size in ((140, 40), (80, 25)):
         await _capture_time_pilot(monkeypatch, current, completed, orientation, size)
 
@@ -1105,7 +990,7 @@ def test_session_activity_shows_one_row_per_call_with_outcome_time(monkeypatch):
     app.navigation = Navigation("session", "codex:00")
     rows = [
         str(row)
-        for key, row in app._session_activity(None, app._session_row()[0])
+        for key, row in app._session_activity(app._session_row()[0])
         if key.startswith("call:")
     ]
     assert len(rows) == 2
@@ -1114,7 +999,7 @@ def test_session_activity_shows_one_row_per_call_with_outcome_time(monkeypatch):
 
 
 def _check_time_edge_fields(current, completed):
-    from booley.harness.dashboard.app import _evidence_detail, job_detail
+    from booley.harness.dashboard.app import job_detail
 
     invalid = replace(
         completed, record=replace(completed.record, started_at="bad", ended_at="bad")
@@ -1124,14 +1009,7 @@ def _check_time_edge_fields(current, completed):
     future_app = DashboardApp(lambda: current)
     future_app.snapshot = replace(current, sessions=(future,))
     future_app.navigation = Navigation("session", "codex:00")
-    assert "· just now" in future_app._session()[0]
-    evidence = model.GoalDetail(
-        "clock",
-        "passing",
-        CriterionPresentation("Lint top", "", "", "", ""),
-        {"recorded_at": STAMP},
-    )
-    assert "Last check: 14:00:00" in _evidence_detail(evidence, now=current.observed_at)
+    assert "· just now" in future_app._session()
 
 
 async def _capture_time_pilot(monkeypatch, current, completed, orientation, size):
@@ -1167,7 +1045,7 @@ async def _capture_time_pilot(monkeypatch, current, completed, orientation, size
 
 
 def test_absent_time_fields_keep_unavailable_markers():
-    from booley.harness.dashboard.app import _evidence_detail, _job_cells, _job_summary, job_detail
+    from booley.harness.dashboard.app import _job_cells, _job_summary, job_detail
 
     current = snapshot(1)
     missing = replace(current.jobs.jobs[0], state="completed", report=None)
@@ -1178,14 +1056,6 @@ def test_absent_time_fields_keep_unavailable_markers():
         "absent time marker changed"
     )
     assert "elapsed unavailable" in job_detail(missing, now=current.observed_at)
-    evidence = model.GoalDetail(
-        "clock", "passing", CriterionPresentation("Lint top", "", "", "", ""), {}
-    )
-    assert "Last check: unavailable" in _evidence_detail(evidence, now=current.observed_at), (
-        "absent time marker changed"
-    )
-    invalid = replace(evidence, evidence={"recorded_at": "bad"})
-    assert "Last check: unknown" in _evidence_detail(invalid, now=current.observed_at)
 
 
 def _header_health(monkeypatch, tmp_path, fail=2, warn=1, due=None, missing=False, upgrade=False):
@@ -1383,41 +1253,14 @@ async def _check_pilot_doctor_line(
         assert painted[start - 1][1].color.get_truecolor() != attention.color.get_truecolor()
 
 
-def test_goal_statuses_use_shared_semantic_styles():
-    from rich.style import Style
-
+def test_job_statuses_use_shared_semantic_styles():
     from booley.harness.dashboard import app as app_module
-    from booley.presentation import colors
 
-    expected = {
-        "passing": "green",
-        "failing": "bold red",
-        "needs recheck": f"color({colors.PALETTE_ORANGE})",
-        "not yet run": "dim",
-        "checking": f"color({colors.PALETTE_DODGER_BLUE})",
-    }
-    for state, style in expected.items():
-        if state == "checking":
-            continue
-        goal = model.GoalDetail(
-            "fixture",
-            state,
-            CriterionPresentation("Label [path]", "", "", "", "detail"),
-            checking=True,
-        )
-        text = app_module._goal_text(goal)
-        assert text.plain == f"checking · {state} · Label [path] · detail"
-        assert _style_at(text) == Style.parse(expected["checking"])
-        assert _style_at(text, len("checking · ")) == Style.parse(style)
-        assert _style_at(text, text.plain.index("Label")) == Style.parse(expected["checking"])
-    # Job and Goal state words that mean the same thing must share one style.
+    # Job state words that mean the same thing must share one style.
     styles = app_module.SEMANTIC_STYLE
     for aliases in (
-        ("pass", "met", "passing"),
-        ("fail", "failing"),
-        ("running", "checking"),
-        ("attention", "needs recheck"),
-        ("unknown", "not run", "not yet run", "unavailable", "ok"),
+        ("pass", "met"),
+        ("unknown", "not run", "unavailable", "ok"),
     ):
         assert len({styles[alias] for alias in aliases}) == 1, aliases
 

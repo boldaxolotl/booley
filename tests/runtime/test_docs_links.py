@@ -11,7 +11,7 @@ import pytest
 from tests.docs.test_links import _markdown_anchors
 
 from booley.runtime.docs_links import CONTRIBUTOR_DOCS, SITE_DOCS, USER_DOCS, docs_url
-from booley.runtime.packaged_docs import SHIPPED_DOCS
+from booley.runtime.packaged_docs import PLAIN_TEXT_TARGETS, SHIPPED_DOCS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = REPO_ROOT / "src/booley"
@@ -63,6 +63,29 @@ def _exempt_ids(tree: ast.AST) -> set[int]:
             if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
                 ids.add(id(body[0].value))
     return ids
+
+
+def test_goal_mode_guide_is_gone_and_unlinked() -> None:
+    """The Goal Mode page and every registration or link that pointed at it are gone."""
+    assert not (USER_DOCS_DIR / "GOAL-MODE.md").exists()
+    assert "GOAL-MODE.md" not in {doc.file for doc in USER_DOCS}
+    assert "goal-mode" not in {doc.slug for doc in USER_DOCS}
+    assert not any("GOAL-MODE.md" in target for target in SHIPPED_DOCS)
+    assert not any("GOAL-MODE.md" in target for target in PLAIN_TEXT_TARGETS)
+    landing = REPO_ROOT / "website/docs/docs/index.md"
+    roots = (SOURCE_ROOT, USER_DOCS_DIR, REPO_ROOT / "docs/internals")
+    linked = [
+        str(path.relative_to(REPO_ROOT))
+        for root in roots
+        for path in sorted([*root.rglob("*.md"), *root.rglob("*.py")])
+        if "validation" not in path.parts
+        and (
+            "GOAL-MODE.md" in path.read_text(encoding="utf-8")
+            or "goal-mode/" in path.read_text(encoding="utf-8")
+        )
+    ]
+    assert linked == []
+    assert "goal-mode/" not in landing.read_text(encoding="utf-8")
 
 
 def test_user_docs_table_matches_docs_user() -> None:

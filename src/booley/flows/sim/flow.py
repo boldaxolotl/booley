@@ -32,8 +32,6 @@ from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.execution_persistence import (
     EvidenceDiscarded,
     FlowExecutionAdapter,
-    register_simulation_record_for,
-    wants_simulation_records,
 )
 from booley.flows.job_estimates import JobRequest, sim_job_request
 from booley.flows.prepared_invocation import PreparedInvocation
@@ -121,7 +119,6 @@ from .record import (
     SimulationRecordPolicy,
     ValidatedResumeManifest,
     encode_simulation_record_manifest,
-    started_simulation_record,
     validate_resume_manifest,
 )
 from .record.coverage_execution import (
@@ -308,7 +305,7 @@ class SimulateFlow(
         """Start this invocation's Test Run decisions afresh.
 
         Resolved Test Runs (drawn seeds included), baseline
-        runs and the Goals' frozen Test Runs belong to one request. A reused Flow
+        runs belong to one request. A reused Flow
         object must resolve the next request itself, never reuse these. The
         Flow's other per-request state restarts here too, so no invocation reads
         what an earlier one prepared.
@@ -670,12 +667,9 @@ class SimulateFlow(
             )
         )
         if prepared.resume is not None:
-            result = self._with_diagnostic_test_run_note(result)
             return self._attach_published_pre_sim(result, prepared.resume.path)
         result.detail["mode"] = self._mode.value
-        return self._attach_published_pre_sim(
-            self._with_baseline_refusal_note(self._with_diagnostic_test_run_note(result))
-        )
+        return self._attach_published_pre_sim(self._with_baseline_refusal_note(result))
 
     def _record_pre_sim_firing(self, key: tuple[str, str, str, int]) -> None:
         """Record only authenticated firings durably published by this execution."""
@@ -1152,7 +1146,7 @@ class SimulateFlow(
             else self._validate_mode_args() or self._run_elab_only()
         )
         result.detail["mode"] = self._mode.value
-        return self._with_baseline_refusal_note(self._with_diagnostic_test_run_note(result))
+        return self._with_baseline_refusal_note(result)
 
     def _pre_state_gate(self) -> EndpointOutcome | None:
         return super()._pre_state_gate()
@@ -1578,12 +1572,6 @@ class SimulateFlow(
             if path in published:
                 return
             published.append(path)
-            adapter = self.execution_adapter
-            diagnostic = getattr(self._args, "diagnostic", False)
-            if wants_simulation_records(adapter) and diagnostic is not True:
-                # Before any of its work runs: a record that never returns an
-                # outcome still leaves results its Goals must account for.
-                register_simulation_record_for(adapter, started_simulation_record(path))
             if self._console_publication_requested:
                 with suppress(OSError, ValueError):
                     print(

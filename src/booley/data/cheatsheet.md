@@ -14,7 +14,7 @@ the default Agent CLI (`booley chat --cli <name>` picks another allowed one).
 | Command | Purpose |
 |---------|---------|
 | `booley chat` | Explicit spelling of the Sandbox default `booley` command |
-| `booley dashboard` | Show sessions, Goals, and Jobs |
+| `booley dashboard` | Show sessions, Jobs, and Targets |
 | `booley flow` | List or directly run deterministic Booley Flows |
 | `booley measure` | Measure a commit against `metrics.toml`; `--validate` checks the file |
 | `booley specialist` | List or directly run visible Specialists |
@@ -45,200 +45,14 @@ requires the Sandbox.
 | `booley eda` | Manage host commercial-EDA installations, grants, and licenses |
 | `booley projects` | List remembered Project paths and their Grants |
 
-The [Skills](#skills) are guided workflows you start in a Developer Agent chat, such as Goal Mode, feedback,
+The [Skills](#skills) are guided workflows you start in a Developer Agent chat,
+such as feedback,
 version review, Project Setup cleanup, and Sandbox lifecycle management.
 
 For Host Bootstrap, `--check-only` reports pending work without writing and
 `--force` refreshes Booley-managed resources while preserving caches and
 user-owned files. Force does not overwrite configuration or disable Docker's
 layer cache.
-
-### Goal Mode
-
-Type `/booley-goal <request>` in a Developer Agent chat to set up the Goals,
-clear the chat, then type `/booley-goal start` to do the work. One session
-owns a clean linked worktree and Goal Branch; every Goal is mandatory and
-judged by Flow or Specialist evidence at the current code.
-
-The `goal_*` names are MCP tools: you type `/booley-goal` and the Developer Agent calls them.
-
-| Step/tool | Purpose |
-|-----------|---------|
-| `goal_enter` | Translate Goalsets into concrete Goals and create a Goal Branch |
-| `goal_status` | Inspect evidence and freshness; `rules=true` restores working rules |
-| `goal_propose_change` | Add, relax, retarget, or propose a coverage waiver; only you approve |
-| `goal_finish` | All Goals met at clean committed HEAD plus Session Summary → Review Package |
-| `goal_finish(abandon=true)` | Only on your explicit instruction; preserve branch and worktree |
-| `booley goal status` | Inspect local records |
-| `booley dashboard` | Sessions, Goals, and Jobs inside the Sandbox |
-
-The Developer Agent passes the absolute worktree root as `work_dir` to Booley Flows, Specialists,
-Goal tools, `booley_targets`, and `booley_report`. While a Goal Record
-occupies the Project, calls without it are refused (only `booley_targets` may
-omit it), and Project-defined endpoints must declare `work_dir` to run.
-`booley_status`, `booley_poll`, `booley_cancel`, and `bwave` accept no `work_dir`.
-With several Jobs running, it calls `booley_poll` with no `run_id` and handles whichever of its Jobs finishes first, passing a `run_id` only to wait for one specific Job; it never waits with `sleep` loops or log tails.
-Records are never edited by hand: a saved proposal or Finish is resumed by its ID. Protected Input changes block
-Finish until reverted. Open `done` review findings remain visible; Finish does not merge.
-Project-owned Goalsets, including `default.md`, live in `goalsets/` in the
-Main Booley Directory (`BOOLEY_DIR` in the Sandbox); a
-Worktree Booley Directory inside `work_dir` is not used. `default.md` applies
-unless you explicitly skip it with a reason. Initialization seeds four
-create-only Goalsets and preserves edits.
-
-#### Test Runs
-
-A Test Run is one Test Variant simulated with one seed, written
-`test[+variant][@seed]`. Test Variants and the seed mechanism are declared per
-Target in `tests.toml`.
-
-| Form | Meaning |
-|------|---------|
-| `--test stress` | Default Test Variant at the Target's Default Seed (`1` unless `default_seed` is set) |
-| `--test stress+soak` | Test Variant `soak` at the Default Seed |
-| `--test stress+soak@42` | That Test Variant with seed 42 |
-| `--test stress@x20` | 20 Test Runs with different drawn seeds (N is 1 to 1000) |
-| `--seed 42` / `--seed random` | One seed for every selected Test Run / a drawn seed per Test Run; not with `@seed` or `@xN` |
-
-A request may run at most 1000 Test Runs of one Target. An unseeded Target
-refuses every seed: an HDL-testbench Target on Icarus without a `seed`
-template.
-Simulation Goals take the same selector in `test`, Cycle Count Goals in `test`
-without `@xN`, and coverage Goals in `tests`. Goal Mode freezes the Test Runs
-at entry, `@xN` seeds included; a simulation Goal is met when every frozen
-Test Run has passed, and a failure stays until the code changes. A coverage
-Goal is decided by its floors alone, whether or not its Test Runs passed.
-`goal_status` lists the frozen Test Runs with a rerun command per failure. A
-`--diagnostic` run records no Test Run outcome, frozen or not.
-
-#### Goal catalog
-
-<!-- BEGIN GENERATED: criteria -->
-| Goal | Requirement | Evidence producer |
-|------|-------------|-------------------|
-| `LINT:{target}` | The Target's linter passes with no unwaived findings | `lint` |
-| `SIM:{target}` | RTL simulation passes all tests | `sim` |
-| `ELAB:{target}` | RTL/TB compiles and elaborates cleanly (no simulation) | `sim` (`mode="elab-only"`) |
-| `SYNTH:{target}` | ASIC synthesis completes within area/timing budgets | `synth` |
-| `FPGA:{target}` | FPGA implementation completes within resource/timing budgets | `fpga` |
-| `CYCLE_COUNT:{target}` | A named test passes and its observed Cycle Count meets every declared threshold | `sim` |
-| `COVERAGE:{target}` | Native Coverage Record policy for one Simulation Target | `sim` (`coverage=true`) |
-| `MUTATION:{target}` | Mutation testing achieves minimum kill rate | `mutation` |
-| `REVIEW:rtl_spec` | RTL review: spec compliance (RTL matches the Goal/spec, no more, no less) | `reviewer` (`category="rtl"`, `focus="spec"`) |
-| `REVIEW:rtl_bugs` | RTL review: bug patterns, synthesis hazards, and ifdef/config consistency (the RTL as hardware, not against the spec) | `reviewer` (`category="rtl"`, `focus="bugs"`) |
-| `REVIEW:rtl_protocol` | RTL review: bus/protocol compliance and clock-domain crossings (CDC) | `reviewer` (`category="rtl"`, `focus="protocol"`) |
-| `REVIEW:rtl_security` | RTL review: hardware attack resistance to fault injection, simple power/timing analysis, and secret exposure (post-sim) | `reviewer` (`category="rtl"`, `focus="security"`) |
-| `REVIEW:rtl_optimization` | RTL review: unused/dead code and missed power/performance/area wins, strict improvements only (post-sim) | `reviewer` (`category="rtl"`, `focus="optimization"`) |
-| `REVIEW:rtl_code_style` | RTL review: comments, naming, readability, and assertion coverage (post-sim) | `reviewer` (`category="rtl"`, `focus="code_style"`) |
-| `REVIEW:tb_quality` | Source-scoped TB review: false-pass detection, coverage gaps, and TB code quality | `reviewer` (`category="tb"`, `focus="quality"`) |
-
-`{target}` is the bare Target name when unique, or its qualified selector otherwise. Details (thresholds, tests, baseline,
-review verdict and spec) follow the name in parentheses. Review Goals require
-`clean` or `done`; the name is identical for both requirements.
-Each Review Goal also names exactly one scope: `target` (that Target's RTL or TB
-files plus dependencies) or `paths` (files relative to the Goal worktree). Examples:
-`{"family":"REVIEW","review":"rtl_bugs","verdict":"clean","target":"top"}`,
-`{"family":"REVIEW","review":"tb_quality","verdict":"done","paths":["tb/top_tb.sv"]}`.
-
-Goal argument `family` uses the uppercase capability before the colon.
-Internal evidence keys and Project-defined evidence bindings are not Goal names.
-<!-- END GENERATED: criteria -->
-
-#### Threshold parameters
-
-<!-- BEGIN GENERATED: criteria-params -->
-`synth` and `fpga` Goals name each Target directly and accept metric thresholds. Four flavours apply per metric: two absolute, two relative to the Goal base commit:
-
-| Flavour param suffix | Baseline? | Meaning |
-|----------------------|:---------:|---------|
-| `_max` | no | metric must stay **≤** the given value |
-| `_min` | no | metric must stay **≥** the given value |
-| `_increase_at_most` | yes | metric may grow **at most N%** above baseline |
-| `_reduce_at_least` | yes | metric must shrink **at least N%** below baseline |
-
-Percentage threshold values must include the `%` suffix (for example, `"cell_count_reduce_at_least": "8%"` inside `thresholds`).
-
-For a relative threshold on a new Target, set `baseline` to an existing Target. The baseline Target defaults to the candidate name and must exist at the Goal base commit. Booley runs it on base code and the candidate on current code. Missing or mismatched baseline evidence fails the check.
-
-Goal argument examples:
-
-```json
-{"family": "SYNTH", "target": "asic_small", "baseline": "asic_base",
- "thresholds": {"cell_count_reduce_at_least": "8%"}}
-```
-
-```json
-{"family": "FPGA", "target": "fpga_top", "thresholds": {"lut_count_max": 5000}}
-```
-
-**`SYNTH:{target}` (ASIC)**
-
-| Metric | _max | _min | _increase_at_most | _reduce_at_least |
-|--------|:---:|:---:|:---:|:---:|
-| `area` | — | — | ✓ | ✓ |
-| `area_kge` | ✓ | — | — | — |
-| `area_um2` | ✓ | — | — | — |
-| `cell_count` | ✓ | — | ✓ | ✓ |
-| `critical_path_ps` | ✓ | — | ✓ | ✓ |
-| `fmax_mhz` | — | ✓ | ✓ | ✓ |
-| `wire_count` | ✓ | — | ✓ | ✓ |
-
-> Absolute area caps pick a unit (`area_um2` / `area_kge`); the unit-agnostic `area` row carries the baseline-relative bounds only.
-
-> Mutually exclusive: `area_um2_max` ⊕ `area_kge_max`.
-
-> Mutually exclusive: `critical_path_ps_max` ⊕ `fmax_mhz_min`.
-
-**`FPGA:{target}` (FPGA)**
-
-| Metric | _max | _min | _increase_at_most | _reduce_at_least |
-|--------|:---:|:---:|:---:|:---:|
-| `bram_count` | ✓ | — | ✓ | ✓ |
-| `critical_path_ps` | ✓ | — | ✓ | ✓ |
-| `dsp_count` | ✓ | — | ✓ | ✓ |
-| `ff_count` | ✓ | — | ✓ | ✓ |
-| `fmax_mhz` | — | ✓ | — | — |
-| `lut_count` | ✓ | — | ✓ | ✓ |
-
-> Mutually exclusive: `critical_path_ps_max` ⊕ `fmax_mhz_min`.
-
-**`CYCLE_COUNT` of one Test Run**
-
-`CYCLE_COUNT:{target}` Goals name the Target with `target` and one Test Run with `test` (`test`, `test+variant`, or either with `@seed`); put bounds in `thresholds`. All thresholds for that Test Run must pass. Relative forms compare the same Test Run of the same Target at the Goal base commit.
-
-```json
-{"family": "CYCLE_COUNT", "target": "sim_smoke", "test": "smoke",
- "thresholds": {"cycle_count_max": 1000, "cycle_count_reduce_at_least": "8%"}}
-```
-
-| Parameter | Baseline? | Unit | Passing relation |
-|-----------|:---------:|------|------------------|
-| `cycle_count_max` | no | cycles | current ≤ threshold |
-| `cycle_count_min` | no | cycles | current ≥ threshold |
-| `cycle_count_increase_at_least` | yes | percent | signed change ≥ +N% |
-| `cycle_count_increase_at_most` | yes | percent | signed change ≤ +N% |
-| `cycle_count_reduce_at_least` | yes | percent | signed change ≤ -N% |
-| `cycle_count_reduce_at_most` | yes | percent | signed change ≥ -N% |
-| `cycle_count_increase_at_least_cycles` | yes | cycles | current - baseline ≥ N |
-| `cycle_count_increase_at_most_cycles` | yes | cycles | current - baseline ≤ N |
-| `cycle_count_reduce_at_least_cycles` | yes | cycles | baseline - current ≥ N |
-| `cycle_count_reduce_at_most_cycles` | yes | cycles | baseline - current ≤ N |
-
-A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when that exact test passes. Missing, malformed, duplicate, unnamed, failed, or inconclusive evidence fails closed. Without a `CYCLE_COUNT:{target}` Goal, existing Cycle Count records remain observational.
-
-Relative comparisons report an **observed Cycle Count change**. When declared workload inputs differ, review reports disclose the changes and do not attribute the result to RTL alone.
-<!-- END GENERATED: criteria-params -->
-
-**Per-clock timing thresholds.** The timing metrics
-(`critical_path_ps`, `fmax_mhz`, `wns_ns`, `whs_ns`, `period_ns`) are reported
-per clock and their thresholds may be flat or clock-scoped (area/cell/LUT/FF/
-BRAM/DSP/utilization are not clock-scopable):
-
-- Flat `fmax_mhz_min: 400` → **every** clock's Fmax ≥ 400 (gates the worst clock).
-- Clock-scoped `clk_i.fmax_mhz_min: 400` → only clock `clk_i`.
-
-`critical_path_ps_max` ⊕ `fmax_mhz_min` is mutually exclusive **per clock**.
-Example: `{"family": "SYNTH", "target": "synth_core", "thresholds": {"clk_i.fmax_mhz_min": 400, "clk_2x.critical_path_ps_max": 5000}}`.
 
 ### Metric-Driven Development
 
@@ -267,13 +81,13 @@ Run `booley cheat --metrics` in a Project to list its Targets' metrics.
 <!-- BEGIN GENERATED: flows -->
 Deterministic end-to-end orchestration; no LLM:
 
-| Booley Flow | Purpose | Sets |
-|--------|---------|------|
-| `sim` | Run RTL simulation for one or more Targets | `ELAB:{target}`, `SIM:{target}`, `CYCLE_COUNT:{target}`, `COVERAGE:{target}` |
-| `lint` | Run lint for one or more Targets | `LINT:{target}` |
-| `synth` | Run ASIC synthesis for one or more Targets with optional baseline comparison | `SYNTH:{target}` |
-| `fpga` | Run FPGA implementation for one or more Targets with optional baseline comparison | `FPGA:{target}` |
-| `mutation` | Deterministic mutation testing: seeded Mutants from fixed Mutation Operators, each built and tested in isolation | `MUTATION:{target}` |
+| Booley Flow | Purpose |
+|--------|---------|
+| `sim` | Run RTL simulation for one or more Targets |
+| `lint` | Run lint for one or more Targets |
+| `synth` | Run ASIC synthesis for one or more Targets with optional baseline comparison |
+| `fpga` | Run FPGA implementation for one or more Targets with optional baseline comparison |
+| `mutation` | Deterministic mutation testing: seeded Mutants from fixed Mutation Operators, each built and tested in isolation |
 
 Common controls: repeat `--target` or use comma-separated values; `--target a --target b,c` preserves the order `a`, `b`, `c`, and duplicate resolved Targets are rejected. A Developer Agent's MCP tool call takes one comma-separated `target` string instead. `--dry-run` returns a normalized plan without executing EDA; `booley flow <name> --help` shows the full contract.
 
@@ -283,8 +97,31 @@ Key Flow-specific controls:
 - `lint`: `--scope <file,...>` filters reported findings to selected files
 - `synth`: `--baseline <ref>` compares metrics against a git revision; physical Targets must own an SDC fileset that creates a clock
 - `fpga`: `--baseline <ref>` compares metrics against a git revision; `--ppa-profile compact|balanced|max_frequency` selects portable optimization intent; `--no-cache` forces a fresh implementation
-- `mutation`: `--target` names exactly one Simulation Target whose complete suite judges each Mutant; `--scope <rtl-file,...>` chooses mutation sites (default: the Target's own RTL, minus testbench, vendored, and generated files); `--count N|auto` sets the Mutant count (default 10; `auto` scales 3-25 from source size and the time budget) and `--min-detected K` the pass threshold (default ceil(0.8 x count), of the Mutants scored when fewer run); `--seed <N>` (default 0) picks another reproducible Mutant set; `--dry-run` previews the count without running a simulator. A Mutant that fails to build is dropped and the next candidate takes its place; a timed-out Mutant counts as `detected (timeout)`. A `MUTATION:{target}` Goal sets the same campaign with `total: N`, `min_detected: K`, or `auto: true` (default: 10 Mutants, 8 detected)
+- `mutation`: `--target` names exactly one Simulation Target whose complete suite judges each Mutant; `--scope <rtl-file,...>` chooses mutation sites (default: the Target's own RTL, minus testbench, vendored, and generated files); `--count N|auto` sets the Mutant count (default 10; `auto` scales 3-25 from source size and the time budget) and `--min-detected K` the pass threshold (default ceil(0.8 x count), of the Mutants scored when fewer run); `--seed <N>` (default 0) picks another reproducible Mutant set; `--dry-run` previews the count without running a simulator. A Mutant that fails to build is dropped and the next candidate takes its place; a timed-out Mutant counts as `detected (timeout)`; the default is 10 Mutants with 8 detected
 <!-- END GENERATED: flows -->
+
+With several Jobs running, the Developer Agent calls `booley_poll` with no
+`run_id` and handles whichever of its Jobs finishes first, passing a `run_id`
+only to wait for one specific Job; it never waits with `sleep` loops or log
+tails.
+
+#### Test Runs
+
+A Test Run is one Test Variant simulated with one seed, written
+`test[+variant][@seed]`. Test Variants and the seed mechanism are declared per
+Target in `tests.toml`.
+
+| Form | Meaning |
+|------|---------|
+| `--test stress` | Default Test Variant at the Target's Default Seed (`1` unless `default_seed` is set) |
+| `--test stress+soak` | Test Variant `soak` at the Default Seed |
+| `--test stress+soak@42` | That Test Variant with seed 42 |
+| `--test stress@x20` | 20 Test Runs with different drawn seeds (N is 1 to 1000) |
+| `--seed 42` / `--seed random` | One seed for every selected Test Run / a drawn seed per Test Run; not with `@seed` or `@xN` |
+
+A request may run at most 1000 Test Runs of one Target. An unseeded Target
+refuses every seed: an HDL-testbench Target on Icarus without a `seed`
+template.
 
 ### Specialists
 
@@ -293,16 +130,16 @@ Specialists running in scoped, isolated workspaces:
 
 Ask your Developer Agent session to invoke a Specialist by name with the arguments below (written as it passes them, `name="value"`; the CLI spells each as a flag, `--name value`). Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--max-turns` and `--timeout` are CLI-only controls.
 
-For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. Common options are `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Model-call minimum budgets apply; seconds-only providers round up. CLI Flow and Specialist runs never record Goal evidence; only the Developer Agent's Goal Mode tool calls, which pass `work_dir`, do. A CLI run is also a Standalone Job: it shows in the Dashboard and copies its output to `.interactive_logs/standalone/<run_id>/job.log` in the Project's common Booley Directory (the main checkout's `.booley` from a linked worktree).
+For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. Common options are `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Model-call minimum budgets apply; seconds-only providers round up. A CLI run is a Standalone Job: it shows in the Dashboard and copies its output to `.interactive_logs/standalone/<run_id>/job.log` in the Project's common Booley Directory (the main checkout's `.booley` from a linked worktree).
 
-| Specialist | Purpose | Sets | Modifies code |
-|------------|---------|------|:-------------:|
-| `coverage_analyst` | Explain one exact coverage.json Coverage Record and propose advisory next steps | — | — |
-| `reviewer` | Single-focus code review: reports issues by severity | `REVIEW:rtl_spec`, `REVIEW:rtl_bugs`, `REVIEW:rtl_protocol`, `REVIEW:tb_quality`, `REVIEW:rtl_security`, `REVIEW:rtl_optimization`, `REVIEW:rtl_code_style` | — |
+| Specialist | Purpose | Modifies code |
+|------------|---------|:-------------:|
+| `coverage_analyst` | Explain one exact coverage.json Coverage Record and propose advisory next steps | — |
+| `reviewer` | Single-focus code review: reports issues by severity | — |
 
 #### `coverage_analyst`
 
-Ask your Developer Agent to call the `coverage_analyst` Specialist with `record="<exact-coverage.json>"` and optional `instruction="<question>"`. The Analyst explains retained native evidence and proposes advisory next steps; its model only reads evidence. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. In Goal Mode, screened Waiver Candidates support a proposed Goal change, which needs your approval. Finish requires every Goal met; advisory reports do not mark strict coverage met. Verified Target sources are optional; stale sources give report-only analysis.
+Ask your Developer Agent to call the `coverage_analyst` Specialist with `record="<exact-coverage.json>"` and optional `instruction="<question>"`. The Analyst explains retained native evidence and proposes advisory next steps; its model only reads evidence. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. Screened Waiver Candidates are advisory and need human approval; advisory reports do not mark strict coverage met. Verified Target sources are optional; stale sources give report-only analysis.
 
 #### `reviewer`
 
@@ -365,7 +202,6 @@ the design sources they describe.
 |------|-------------|---------|
 | `booley.toml` | Project, Flow, provider, Sandbox, and Job policy | All Flows and Specialists |
 | `tests.toml` | Per-Target Tests, Test Variants, seeds, skips, environment | `sim`, `mutation` |
-| `goalsets/*.md` | Project-owned Goal bundles and optional default | `/booley-goal` |
 | `doctor-waivers.toml` | Reviewed warning waivers and expiry | No endpoint; `doctor` only |
 | `AGENTS.md` | Project instructions, ownership, and gotchas | Developer Agent and Specialists |
 | `rtl_style_guide.md` | Project RTL style overrides | `reviewer` RTL code-style focus |
@@ -389,26 +225,15 @@ do not need these files.
 | Skill | Use it when | Result |
 |-------|-------------|--------|
 | `/booley-setup` | Set up an initialized Project; start on the host | `SETUP-PLAN.md`; configured Project; Doctor audit |
-| `/booley-goal` | Work needs mandatory evidence-backed Goals | Goals, evidence, and review |
 | `/booley-heal` | Doctor or Flow health has drifted | Repair safe findings; verify Doctor |
 | `/booley-feedback` | Report bugs, friction, praise, or ideas | Redact evidence; export for manual sharing |
 
-### Artifacts
-
-`<GOAL>` means `<booley_dir>/goals/<goal-id>/`, the local Goal Record.
-
-| Artifact | Path | Use |
-|----------|------|-----|
-| Goal state and base | `<GOAL>/record.json` | Worktree, branch, Goals, and lifecycle |
-| Session Summary | `<GOAL>/SUMMARY.md` | What changed, evidence used, uncertainties |
-| Review Package | `<GOAL>/review-package.json` | Diff, final evidence, Change Log, and review findings |
-| Approved Goal changes | `<GOAL>/changes.jsonl` | Human decisions and reasons |
-| Evidence logs | `<GOAL>/logs/` | Flow/Specialist evidence and retained reports |
-| Summary on the Goal Branch | `.booley/goals/history/<goal-id>.md` | Committed outside Stealth when Git-trackable and owned by the RTL repository; Paired Checkout summaries stay local |
-
 ### Sandbox & Docker
 
-The `booley-sandbox` image contains Booley's EDA toolchain, Developer Agent clients, and development dependencies. It backs the per-folder Sandbox (devcontainer) where all Booley work, Interactive Mode and Goal Mode alike, executes; a project image selected by `[sandbox].image` can extend it.
+The `booley-sandbox` image contains Booley's EDA toolchain, Developer Agent
+clients, and development dependencies. It backs the per-folder Sandbox
+(devcontainer) where all Booley work executes; a project image selected by
+`[sandbox].image` can extend it.
 
 | Command | What it does |
 |---------|-------------|
@@ -428,8 +253,8 @@ To extend the image, create `.booley/docker/Dockerfile` with `FROM booley-sandbo
 Inside the Sandbox, `booley` / `booley chat` is a convenience alias for the selected Developer Agent command:
 it starts the native CLI as a child process and exits with its status. Arguments after `booley chat` and its own options (`--cli`, `-C`) are passed to it unchanged, for example `booley chat --resume <id>` (Claude) or `booley chat resume --last` (Codex); `booley chat -- --help` forwards `--help`.
 
-**`booley chat`, `booley goal`, and `booley dashboard` run in the Sandbox.**
+**`booley chat` and `booley dashboard` run in the Sandbox.**
 Bare `booley` prints help on the host and starts the configured Developer Agent in the
-Sandbox. For parallel Goal work, use one linked worktree per session. The
+Sandbox. For parallel work, use one linked worktree per session. The
 Dashboard automatic opening defaults on; set `[sandbox].dashboard=false` to opt out.
 `booley session` runs on the host. `booley init` runs on the host or in a hand-written Sandbox (Project Initialization only); a Booley-issued Sandbox refuses it. Doctor works on either side.

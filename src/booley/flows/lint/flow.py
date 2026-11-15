@@ -1136,7 +1136,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=(
-                    "lint: --target is required outside Goal-bound MCP calls. "
+                    "lint: --target is required. "
                     "Pass --target <name>; available Targets are the .core "
                     "lint Targets in .booley/."
                 ),

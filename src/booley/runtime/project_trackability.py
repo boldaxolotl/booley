@@ -9,7 +9,7 @@ from pathlib import Path
 
 from booley.commit_policy import stealth_choice_unset
 from booley.runtime import platform_paths, runtime_context
-from booley.runtime.booley_dir import own_booley_dir_repo_path, resolve_checkout_booley_dir
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.git import stealth_exclude_names
 from booley.runtime.git_attributes_policy import has_managed_attributes
 from booley.runtime.git_environment import inherited_git_environment
@@ -26,14 +26,12 @@ _OPTIONAL = (
     "configs.toml",
 )
 _INPUT_TREES = (
-    "goalsets",
     "cores",
     "selftest",
     "hooks",
     "generators",
     "mcp_tools",
     "docker",
-    "goals/history",
     "tickets/history",
 )
 
@@ -62,24 +60,6 @@ STEALTH_UNSET_FIX = (
     "keep Stealth Mode: add `[stealth] enabled = true` to booley.toml and rerun booley init; "
     "or record it off with `enabled = false`"
 )
-
-
-def history_probe(root: Path) -> str | None:
-    """The RTL-relative Goal-history probe path, or ``None`` when RTL cannot publish it.
-
-    Git never looks beyond a symlink, so a symlinked Booley Directory entry is probed
-    at its physical target. A target outside the RTL checkout has no RTL path: the
-    owning checkout (or its absence) is reported by Project trackability instead.
-    """
-    relative = own_booley_dir_repo_path(root)
-    entry = root / relative
-    if not entry.is_symlink():
-        return f"{relative}/goals/history/doctor-probe.md"
-    try:
-        physical = entry.resolve() / "goals/history/doctor-probe.md"
-        return physical.relative_to(root.resolve()).as_posix()
-    except (OSError, ValueError):
-        return None
 
 
 @dataclass(frozen=True)
@@ -292,7 +272,6 @@ def _groups(
     selected: Path,
     matches: tuple[IgnoreMatch, ...],
     embedded: bool,
-    probe: str | None,
 ) -> list[IgnoredInputs]:
     if not matches:
         return []
@@ -305,14 +284,7 @@ def _groups(
         path = owner / match.path
         family = ""
         if embedded:
-            family = next(
-                (
-                    name
-                    for name in ("goals/history", "tickets/history")
-                    if path.is_relative_to(selected / name)
-                ),
-                "goals/history" if match.path == probe else "",
-            )
+            family = "tickets/history" if path.is_relative_to(selected / "tickets/history") else ""
         key = (match.source, match.line, match.pattern, family)
         grouped.setdefault(key, []).append(match.path)
     return [
@@ -393,9 +365,6 @@ def inspect_project_trackability(
         for owner in tuple(owners):
             paths.extend(_managed_attributes(owner, errors))
         embedded = primary == rtl_owner
-        probe = history_probe(root)
-        if embedded and probe is not None:
-            paths.append(root / probe)
         batches: dict[Path, list[str]] = {owner: [] for owner in sorted(owners)}
         for path in sorted(set(paths)):
             owner = max((o for o in owners if path.is_relative_to(o)), key=lambda o: len(o.parts))
@@ -407,7 +376,7 @@ def inspect_project_trackability(
                 if owner not in {primary, rtl_owner}:
                     role += f" ({owner.relative_to(selected).as_posix()})"
                 ignored.extend(
-                    _groups(owner, role, selected, matches, embedded and owner == primary, probe)
+                    _groups(owner, role, selected, matches, embedded and owner == primary)
                 )
             except OSError as exc:
                 errors.append(str(exc))

@@ -21,7 +21,7 @@ import pytest
 
 from booley.harness.worktree_rm import WorktreeRemovalBlockedError, WorktreeRemovalError
 from booley.runtime.worktree_usage import last_used
-from tests.goals.conftest import git
+from tests.git_support import git
 from tests.harness.test_worktree_rm import _add, _commit, _pin_namespace, _versioned
 
 pytestmark = [

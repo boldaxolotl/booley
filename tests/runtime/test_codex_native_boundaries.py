@@ -29,11 +29,11 @@ def test_native_tabs_and_helpers_own_one_handle_but_nested_clients_do_not(tmp_pa
     registry = SessionRegistry(tmp_path, proc_root=proc)
     for peer in (main, backend):
         facts = Attribution("codex:main", "thread", "", "", process=peer, namespace=SCOPE)
-        assert publish(registry, facts, "goal_status", NOW).key == activity.process_session_key(
+        assert publish(registry, facts, "flow_lint", NOW).key == activity.process_session_key(
             owner
         )
     nested_facts = Attribution("codex:nested", "thread", "", "", process=nested, namespace=SCOPE)
-    assert publish(registry, nested_facts, "goal_status", NOW) == nested_facts
+    assert publish(registry, nested_facts, "flow_lint", NOW) == nested_facts
     assert len(registry.snapshot().rows) == 2
     assert HandleStore(tmp_path).load().labels()["codex:main"] == "S1"
     assert HandleStore(tmp_path).load().labels()["codex:nested"] == "S2"

@@ -3,7 +3,7 @@
 Both :mod:`asic_synthesize` and :mod:`fpga_impl` accept ``--baseline <git ref>``:
 re-run the Flow at a past commit and compare QoR metrics. This module creates
 a throwaway ``git worktree`` at the baseline ref and preserves the caller's
-working tree in Interactive and Goal Mode. The worktree lives under
+working tree in Interactive Mode. The worktree lives under
 ``<project>/.booley/`` — git-ignored (never pollutes ``git status``) and
 inside the Sandbox workspace. It is force-removed on context exit,
 even if the body raises.
@@ -24,15 +24,12 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
 
 from booley.core.booley_dir_links import lexical_booley_path
-from booley.core.boundary import as_dict, as_str
 from booley.evidence.acceptance import PairedBaselineMode, PairedProjectBaseline
-from booley.evidence.fields import BASELINE_REF_PARAM
 from booley.flows.terminal_progress import announce_unit
 from booley.fusesoc.fusesoc_registry import prepare_core_library_plan
 from booley.runtime.booley_dir import (
@@ -50,7 +47,6 @@ from booley.runtime.submodule_materialization import (
     materialize_project_submodules,
 )
 from booley.runtime.worktree_paths import worktree_creation_config, worktree_state_dir
-from booley.targets.domain import TargetHandle
 
 logger = logging.getLogger(__name__)
 
@@ -81,49 +77,6 @@ def git_full_sha(ref: str, cwd: Path) -> str | None:
     """Resolve *ref* to a full commit SHA, returning None on invalid input."""
     result = _git(cwd, "rev-parse", "--verify", f"{ref}^{{commit}}", timeout=30)
     return result.stdout.strip() if result.returncode == 0 else None
-
-
-def resolve_ticket_baseline(
-    criteria: Mapping[str, Any],
-    criterion_prefix: str,
-    targets: Sequence[TargetHandle],
-    requested: str | None,
-    project_root: Path,
-    flow_name: str,
-) -> tuple[str | None, str | None, str | None]:
-    """Resolve and enforce one immutable Criterion baseline across selected Targets."""
-    matched_params: list[dict[Any, Any]] = []
-    for target in targets:
-        names = {
-            f"{criterion_prefix}{target.selector}",
-            f"{criterion_prefix}{target.identity}",
-            f"{criterion_prefix}{target.name}",
-        }
-        matches = []
-        for key, entry in criteria.items():
-            params = as_dict(getattr(entry, "params", None)) or {}
-            belongs_to_family = key.startswith(criterion_prefix)
-            if key in names or (belongs_to_family and params.get("target") == target.identity):
-                matches.append(params)
-        matched_params.extend(matches)
-    refs = {ref for params in matched_params if (ref := as_str(params.get(BASELINE_REF_PARAM)))}
-    if not refs:
-        return requested, None, None
-    if len(refs) != 1:
-        return requested, None, f"{flow_name}: selected criteria carry conflicting baseline refs"
-    expected = next(iter(refs))
-    selected = requested or expected
-    actual_sha = git_full_sha(selected, project_root)
-    expected_sha = git_full_sha(expected, project_root)
-    if actual_sha is None or expected_sha is None:
-        return selected, None, f"{flow_name}: pinned baseline ref cannot be resolved to a commit"
-    if actual_sha != expected_sha:
-        error = (
-            f"{flow_name}: baseline-relative criteria require the pinned "
-            f"base_sha {expected_sha}; got {actual_sha}"
-        )
-        return selected, None, error
-    return selected, actual_sha, None
 
 
 @contextmanager

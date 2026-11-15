@@ -21,7 +21,7 @@ from jsonschema.exceptions import SchemaError, ValidationError
 from jsonschema.protocols import Validator
 from jsonschema.validators import validator_for
 
-from booley.core.boundary import BoundaryError, as_dict, require_dict
+from booley.core.boundary import BoundaryError, require_dict
 from booley.mcp.session_registry import Attribution
 
 logger = logging.getLogger(__name__)
@@ -51,7 +51,6 @@ class McpToolPayload:
     content: tuple[McpTextBlock, ...]
     structured_content: dict[str, Any] | None = None
     is_error: bool = False
-    goal_aware: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +64,6 @@ class McpDispatchResult:
 
     value: object
     is_error: bool
-    goal_aware: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,8 +75,6 @@ class McpRequestContext:
     resume_state: str | None = None
     input_responses: Mapping[str, Any] | None = None
     attribution: Attribution | None = None
-    other_session_keys: tuple[str, ...] = ()
-    presentation_warning: str = ""
     # Checkout of the calling agent's own process, resolved at the SDK boundary (see
     # peer_checkout); never read from arguments. ``None`` means the server cwd.
     checkout: Path | None = None
@@ -100,7 +96,6 @@ class McpInputRequired:
     response_key: str
     message: str
     form_schema: dict[str, Any]
-    goal_aware: bool = False
 
 
 class UnknownMcpToolError(ValueError):
@@ -279,37 +274,14 @@ def _format_validation_error(error: ValidationError) -> str:
     path = "$"
     for part in error.absolute_path:
         path += f"[{part}]" if isinstance(part, int) else f".{part}"
-    if error.validator == "oneOf":
-        # Goal schemas expose public capabilities only. jsonschema's oneOf message
-        # echoes the rejected object, including internal family names and nested values.
-        capabilities = _goal_capabilities(error.validator_value)
-        if capabilities:
-            return (
-                f"Invalid Goal arguments at {path}: use a supported uppercase capability "
-                f"({', '.join(capabilities)}) and its declared fields"
-            )
     return f"Invalid tool arguments at {path}: {error.message}"
-
-
-def _goal_capabilities(alternatives: Iterable[object]) -> list[str]:
-    """Recognize family schemas without assuming every JSON Schema is an object."""
-    capabilities = []
-    for variant in alternatives:
-        schema = as_dict(variant) or {}
-        properties = as_dict(schema.get("properties")) or {}
-        family = as_dict(properties.get("family")) or {}
-        token = family.get("const")
-        if not isinstance(token, str):
-            return []
-        capabilities.append(token)
-    return capabilities
 
 
 def _normalize_payload(result: object) -> McpToolPayload:
     """Normalize the server's historical list/tuple results at the application seam."""
-    is_error, goal_aware = False, False
+    is_error = False
     if isinstance(result, McpDispatchResult):
-        is_error, goal_aware = result.is_error, result.goal_aware
+        is_error = result.is_error
         result = result.value
     structured: dict[str, Any] | None = None
     blocks = result
@@ -329,5 +301,4 @@ def _normalize_payload(result: object) -> McpToolPayload:
         content=tuple(normalized),
         structured_content=structured,
         is_error=is_error,
-        goal_aware=goal_aware,
     )

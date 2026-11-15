@@ -1,7 +1,7 @@
 """Internal durable Job and report lookup over the existing runtime owners.
 
 Records and slots remain authoritative. This module locates retained roots,
-validates Goal bindings, and decides which reports can vouch for a Job outcome.
+and decides which reports can vouch for a Job outcome.
 """
 
 from __future__ import annotations
@@ -15,9 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.flows.progress_lifecycle import read_progress_for_run
-from booley.goals.binding import GoalBindingError, GoalRunBinding
-from booley.goals.paths import record_paths
-from booley.mcp.call_context import CallContext, container_jobs_root, project_goal_store
+from booley.mcp.call_context import CallContext, container_jobs_root, project_booley_dir
 from booley.measurement.mcp_job import MEASURE_ENDPOINT, read_progress, read_result
 from booley.runtime import job_records as jobrec
 from booley.runtime import job_slots
@@ -38,21 +36,9 @@ class LocatedJob:
 
 
 def job_roots(*, container_root: Callable[[], Path | None] | None = None) -> tuple[Path, ...]:
-    """Container jobs and every retained Goal Record, including terminal ones."""
-    roots = [(container_root or container_jobs_root)()]
-    store = project_goal_store()
-    if store is None:
-        return tuple(root for root in roots if root is not None)
-    from booley.goals.sim_baseline_store import BASELINE_FAMILIES, baseline_jobs_dir
-
-    for family in BASELINE_FAMILIES:
-        baseline = baseline_jobs_dir(store.booley_dir, family)
-        if baseline.is_dir():
-            roots.append(baseline)
-    roots.extend(
-        record_paths(store.booley_dir, rec.id).jobs_dir for rec in store.list_records().records
-    )
-    return tuple(dict.fromkeys(root for root in roots if root is not None))
+    """The container-wide Job root, the only place Jobs are recorded."""
+    root = (container_root or container_jobs_root)()
+    return () if root is None else (root,)
 
 
 def read_record_or_none(run_id: str, root: Path | None) -> jobrec.JobRecord | None:
@@ -73,10 +59,7 @@ def _locate_job(run_id: str, *, roots: tuple[Path, ...] | None = None) -> Locate
     """Find a unique run across roots; refuse even legacy collisions.
 
     A ``run_id`` in more than one root is an error: silently picking one could
-    show or cancel the wrong Job. A Goal-bound Job's report and checkpoint lookups
-    use the Goal Record its binding names (``JobRepository.report_booley_dir``),
-    never the server's current Goal selection, so a finished Job never attaches
-    itself to a Goal Mode entered later in the same worktree.
+    show or cancel the wrong Job.
     """
     search_roots: list[Path | None] = list(job_roots() if roots is None else roots)
     if run_id in _KNOWN_JOB_ROOTS and _KNOWN_JOB_ROOTS[run_id] not in search_roots:
@@ -88,19 +71,7 @@ def _locate_job(run_id: str, *, roots: tuple[Path, ...] | None = None) -> Locate
     ]
     if len(found) > 1:
         raise jobrec.JobRecordError(f"Ambiguous run_id {run_id!r}: present in multiple job roots")
-    if found:
-        job_binding(found[0].record)
     return found[0] if found else None
-
-
-def job_binding(rec: jobrec.JobRecord) -> GoalRunBinding | None:
-    """Interpret a persisted Goal binding at the MCP composition boundary."""
-    if rec.binding is None:
-        return None
-    try:
-        return GoalRunBinding.from_json(rec.binding)
-    except GoalBindingError as exc:
-        raise jobrec.JobRecordError(f"Malformed Goal binding for Job {rec.run_id}: {exc}") from exc
 
 
 def _job_record(run_id: str) -> jobrec.JobRecord | None:
@@ -281,11 +252,7 @@ def _endpoint_report_dirs(
     located: LocatedJob | None = None, *, context: CallContext | None = None
 ) -> tuple[Path, ...]:
     """Return existing Flow and MCP endpoint report directories."""
-    if located is not None and located.record.binding is not None:
-        binding = job_binding(located.record)
-        assert binding is not None
-        runtime_dir = record_paths(binding.booley_dir, binding.record_id).runtime_dir
-    elif context is not None and context.runtime_dir is not None:
+    if context is not None and context.runtime_dir is not None:
         runtime_dir = context.runtime_dir
     elif located is not None and located.root is not None:
         runtime_dir = located.root.parent
@@ -406,7 +373,6 @@ def _find_attachable_job(
     name: str,
     cmd: list[str],
     *,
-    context: CallContext | None = None,
     roots: tuple[Path, ...] | None = None,
 ) -> str | None:
     """run_id of a live (running or queued) job matching endpoint + argv, or None.
@@ -424,11 +390,6 @@ def _find_attachable_job(
         for root in (job_roots() if roots is None else roots)
         for rec in jobrec.list_records(root=root)
     ):
-        wanted_binding = (
-            None if context is None or context.binding is None else context.binding.to_json()
-        )
-        if _attach_binding_key(rec.binding) != _attach_binding_key(wanted_binding):
-            continue
         if rec.endpoint != name or _strip_transcript_dir(rec.argv) != wanted:
             continue
         if rec.status != jobrec.STATUS_RUNNING:
@@ -439,25 +400,6 @@ def _find_attachable_job(
         if newest is None or rec.started_at > newest.started_at:
             newest = rec
     return newest.run_id if newest is not None else None
-
-
-def _attach_binding_key(binding: dict[str, Any] | None) -> dict[str, Any] | None:
-    """The binding facts two calls must share to be the same work.
-
-    ``invocation_id`` and ``record_revision`` are dropped: calls that differ only in
-    those are one Job. A finished Job is never attached to; a repeat call runs again.
-    """
-    if binding is None:
-        return None
-    try:
-        validated = GoalRunBinding.from_json(binding).to_json()
-    except GoalBindingError as exc:
-        raise jobrec.JobRecordError(f"Malformed Goal Job binding: {exc}") from exc
-    return {
-        key: value
-        for key, value in validated.items()
-        if key not in {"invocation_id", "record_revision"}
-    }
 
 
 class JobRepository:
@@ -501,19 +443,13 @@ class JobRepository:
             endpoint, run_id, report_dirs=self.report_dirs(self.locate(run_id))
         )
 
-    def report_booley_dir(self, located: LocatedJob | None) -> Path | None:
+    def report_booley_dir(self) -> Path | None:
         """The Booley Directory entry the Job's report roots live under, if any.
 
-        A Goal-bound Job's own directory, otherwise the session's. Jobs located
-        under another root fall into the session branch, so a linked entry there
-        stays refused (fail closed), as it was before the entry was followed.
+        Always the session's Booley Directory, so a linked entry stays refused
+        (fail closed), as it was before the entry was followed.
         """
-        if located is not None and located.record.binding is not None:
-            binding = job_binding(located.record)
-            assert binding is not None
-            return binding.booley_dir
-        store = project_goal_store()
-        return None if store is None else store.booley_dir
+        return project_booley_dir()
 
     def progress_for_run(self, endpoint: str, run_id: str) -> dict[str, Any] | None:
         if endpoint == MEASURE_ENDPOINT:
@@ -524,7 +460,7 @@ class JobRepository:
             endpoint,
             run_id,
             report_dirs=self.report_dirs(located),
-            booley_dir=self.report_booley_dir(located),
+            booley_dir=self.report_booley_dir(),
         )
 
     def report(self, rec: jobrec.JobRecord | None) -> tuple[dict[str, Any] | None, bool]:
@@ -536,7 +472,5 @@ class JobRepository:
     def progress(self, run_id: str) -> dict[str, Any] | None:
         return _running_progress(run_id, repository=self)
 
-    def find_attachable(
-        self, name: str, cmd: list[str], *, context: CallContext | None = None
-    ) -> str | None:
-        return _find_attachable_job(name, cmd, context=context, roots=self.roots())
+    def find_attachable(self, name: str, cmd: list[str]) -> str | None:
+        return _find_attachable_job(name, cmd, roots=self.roots())

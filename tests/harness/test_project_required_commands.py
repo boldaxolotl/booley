@@ -320,12 +320,10 @@ def test_bare_sandbox_preserves_project_guards(source, tmp_path, monkeypatch, ca
 
 @pytest.mark.parametrize(
     ("command", "inside"),
-    [("goal", True), ("cheat", False), ("cheat", True), ("doctor", False), ("doctor", True)],
+    [("cheat", False), ("cheat", True), ("doctor", False), ("doctor", True)],
 )
 def test_canonical_replacements_dispatch(command, inside, cli_project, monkeypatch):
-    monkeypatch.setattr(
-        sys, "argv", ["booley", command, *(["status"] if command == "goal" else [])]
-    )
+    monkeypatch.setattr(sys, "argv", ["booley", command])
     monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: inside)
     calls = []
     monkeypatch.setitem(
@@ -336,11 +334,9 @@ def test_canonical_replacements_dispatch(command, inside, cli_project, monkeypat
     assert calls == [(command, expected_root)]
 
 
-@pytest.mark.parametrize("command", ["chat", "goal", "dashboard"])
+@pytest.mark.parametrize("command", ["chat", "dashboard"])
 def test_explicit_sandbox_commands_still_refuse_host(command, cli_project, monkeypatch, capsys):
-    monkeypatch.setattr(
-        sys, "argv", ["booley", command, *(["status"] if command == "goal" else [])]
-    )
+    monkeypatch.setattr(sys, "argv", ["booley", command])
     monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: False)
     monkeypatch.setitem(cli._EARLY_COMMANDS, command, _unexpected_runtime_work)
     with pytest.raises(SystemExit) as error:

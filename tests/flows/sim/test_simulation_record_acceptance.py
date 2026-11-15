@@ -694,7 +694,7 @@ def test_simulation_hook_propagates_discarded_evidence(monkeypatch) -> None:
     flow._pending_criteria_set = ("sim",)
 
     def discard(_outcomes: tuple[object, ...]) -> None:
-        raise EvidenceDiscarded("Goal Mode abandoned")
+        raise EvidenceDiscarded("evidence abandoned")
 
     monkeypatch.setattr(flow, "record_simulation_record_acceptance", discard)
     calls = _spy_hook(monkeypatch, flow)
@@ -703,7 +703,7 @@ def test_simulation_hook_propagates_discarded_evidence(monkeypatch) -> None:
     _record_final(flow, outcome)
 
     assert calls == ["hook"]
-    assert flow.evidence_discarded == "Goal Mode abandoned"
+    assert flow.evidence_discarded == "evidence abandoned"
     assert flow._pending_criteria_set == ()
     assert "acceptance" not in outcome.detail
 

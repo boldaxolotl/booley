@@ -15,7 +15,6 @@ from typing import Any
 
 from starlette.requests import Request
 
-from booley.config.goals import quiet_after
 from booley.mcp.peer_checkout import CallerCheckout
 from booley.mcp.session_peer import observed_peer
 from booley.mcp.session_registry import (
@@ -64,8 +63,8 @@ class SessionObserver:
     Responses wait only for the advisory budget. Colliding callers retain their
     own observation/outcome handles; reads and idle maintenance have independent
     bounded workers. No registry operation supplies routing or lifecycle authority.
-    A read-only observer (``writes=False``) still resolves attribution and the
-    shared-worktree warning but never writes or prunes registry rows.
+    A read-only observer (``writes=False``) still resolves attribution but never
+    writes or prunes registry rows.
     """
 
     def __init__(
@@ -259,36 +258,6 @@ class SessionObserver:
         except (TimeoutError, OSError, ValueError, RuntimeError):
             return observation.resolved or facts
 
-    async def shared(self, facts: Attribution | None) -> tuple[tuple[str, ...], str]:
-        """Bounded shared-worktree warning; fallback explicitly cannot distinguish sessions."""
-        observation = None if facts is None else self._handles.get(id(facts))
-        if observation is not None:
-            facts = observation.resolved or await self._wait(observation.done) or facts
-        if facts is None or facts.kind == "worktree" or not facts.worktree_key:
-            return (), "WARNING: shared-worktree session attribution is unavailable"
-        snapshot = await self._bounded(
-            lambda: self._registry().visible_snapshot(now=self.now(), scope=namespace()),
-            reading=True,
-        )
-        if snapshot is None or snapshot.unavailable:
-            if snapshot is not None and any(
-                "registry partially unavailable" in item for item in snapshot.diagnostics
-            ):
-                return (), "WARNING: shared-worktree session registry partially unavailable"
-            return (), "WARNING: shared-worktree session registry is unavailable"
-        keys = tuple(
-            row.attribution.key
-            for row in snapshot.rows
-            if row.attribution.worktree_key == facts.worktree_key
-            and row.attribution.kind != "worktree"
-        )
-        warning = (
-            "WARNING: another session shares this Goal worktree"
-            if any(key != facts.key for key in keys)
-            else ""
-        )
-        return keys, warning
-
     async def record(self, facts: Attribution | None, tool: str, outcome: str) -> None:
         """Carry the outcome on its request handle, never an unresolved fallback row."""
         if facts is None or not self.writes:
@@ -307,8 +276,7 @@ class SessionObserver:
             )
 
     def _registry(self) -> SessionRegistry:
-        project = resolve_common_booley_dir()
-        return SessionRegistry(project, quiet_after=quiet_after(project))
+        return SessionRegistry(resolve_common_booley_dir())
 
     async def maintain(self) -> None:
         """Prune during MCP silence; owned by the server lifespan, never Dashboard reads."""

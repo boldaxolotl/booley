@@ -14,7 +14,7 @@ field controls FuseSoC resolution inputs, not the implementation backend.
 ``--baseline <ref>`` re-implements the design at a past commit in a throwaway
 ``git worktree`` (see :mod:`booley.flows.baseline_worktree`) rather than checking the ref
 out in place, so it never disturbs the caller's tree and works in Interactive
-and Goal Mode (ADR 0012).
+Mode (ADR 0012).
 """
 
 from __future__ import annotations
@@ -97,7 +97,6 @@ from ..baseline_worktree import (
     baseline_worktree,
     git_full_sha,
     git_short_sha,
-    resolve_ticket_baseline,
 )
 from ..implementation_comparison import (
     ImplementationComparisonError,
@@ -368,7 +367,6 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         return current_results
 
     def _prepare_target_pairs(self, handles: tuple[TargetHandle, ...]) -> EndpointOutcome | None:
-        baseline_error = self._apply_ticket_baseline(handles)
         comparison_error: str | None = None
         try:
             self._target_pairs = target_pair_plans_for_handles(
@@ -381,26 +379,9 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             self._target_execution_refs = candidate_execution_refs(handles, self._target_pairs)
         except ImplementationComparisonError as exc:
             comparison_error = f"fpga: {exc}"
-        if baseline_error is not None or comparison_error is not None:
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=baseline_error or comparison_error or "fpga comparison error",
-            )
+        if comparison_error is not None:
+            return EndpointOutcome(exit_code=EXIT_ERROR, report_text=comparison_error)
         return None
-
-    def _apply_ticket_baseline(self, targets: tuple[TargetHandle, ...]) -> str | None:
-        """Default relative Criteria to their immutable baseline SHA."""
-        baseline, full_sha, error = resolve_ticket_baseline(
-            self.state.criteria,
-            "fpga_impl_ok_",
-            targets,
-            self.args.baseline,
-            Path(self.args.work_dir),
-            "fpga",
-        )
-        self.args.baseline = baseline
-        self._baseline_full_sha = full_sha
-        return error
 
     def _fpga_work_unit(
         self,

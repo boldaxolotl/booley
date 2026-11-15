@@ -6,7 +6,6 @@ from unittest.mock import Mock
 import pytest
 
 from booley.evidence.fields import BASELINE_TARGET_PARAM
-from booley.flows.baseline_worktree import resolve_ticket_baseline
 from booley.flows.implementation_comparison import (
     ImplementationComparisonError,
     TargetExecutionRef,
@@ -281,83 +280,6 @@ def test_current_schema_finds_authored_criterion_and_keeps_sealed_selector(
     resolve_target_execution_ref(candidate, plan.candidate, build_root=tmp_path / "build")
     assert resolve.call_args.args == (candidate,)
     assert resolve.call_args.kwargs["build_root"] == tmp_path / "build"
-
-
-def test_authored_criterion_metadata_supplies_ticket_baseline_ref(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _basis_project(tmp_path, schema=5)
-    candidate = select_target(tmp_path, "synth_after", for_flow="synth")
-    criteria = {
-        "synthesis_ok_authored-spelling": SimpleNamespace(
-            params={
-                "target": candidate.identity,
-                "_target_selector": "acme:lib:toy:1.0#synth_after",
-                "_baseline_ref": "sealed-base",
-            }
-        )
-    }
-    monkeypatch.setattr(
-        "booley.flows.baseline_worktree.git_full_sha",
-        lambda _ref, _root: "a" * 40,
-    )
-
-    baseline, full_sha, error = resolve_ticket_baseline(
-        criteria,
-        "synthesis_ok_",
-        (candidate,),
-        None,
-        tmp_path,
-        "synth",
-    )
-
-    assert (baseline, full_sha, error) == ("sealed-base", "a" * 40, None)
-
-
-def test_unresolvable_pinned_baseline_ref_is_reported(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _basis_project(tmp_path, schema=5)
-    candidate = select_target(tmp_path, "synth_after", for_flow="synth")
-    criteria = {
-        "synthesis_ok_area": SimpleNamespace(
-            params={"target": candidate.identity, "_baseline_ref": "sealed-base"}
-        )
-    }
-    monkeypatch.setattr("booley.flows.baseline_worktree.git_full_sha", lambda _ref, _root: None)
-
-    assert resolve_ticket_baseline(
-        criteria, "synthesis_ok_", (candidate,), None, tmp_path, "synth"
-    ) == ("sealed-base", None, "synth: pinned baseline ref cannot be resolved to a commit")
-
-
-def test_multiple_synth_parameters_can_share_one_target(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _basis_project(tmp_path, schema=5)
-    candidate = select_target(tmp_path, "synth_after", for_flow="synth")
-    criteria = {
-        f"synthesis_ok_{parameter}": SimpleNamespace(
-            params={"target": candidate.identity, "_baseline_ref": baseline}
-        )
-        for parameter, baseline in (("area", "sealed-base"), ("frequency", "sealed-base"))
-    }
-    monkeypatch.setattr(
-        "booley.flows.baseline_worktree.git_full_sha",
-        lambda _ref, _root: "a" * 40,
-    )
-
-    assert resolve_ticket_baseline(
-        criteria, "synthesis_ok_", (candidate,), None, tmp_path, "synth"
-    ) == ("sealed-base", "a" * 40, None)
-
-    criteria["synthesis_ok_frequency"].params["_baseline_ref"] = "other-base"
-    assert resolve_ticket_baseline(
-        criteria, "synthesis_ok_", (candidate,), None, tmp_path, "synth"
-    ) == (None, None, "synth: selected criteria carry conflicting baseline refs")
 
 
 def _basis_with_binding(

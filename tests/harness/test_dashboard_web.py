@@ -17,7 +17,7 @@ from booley.runtime import job_records, job_slots
 from booley.runtime.memory_budget import resolve_memory_budget
 from booley.runtime.pid import ProcessIdentity
 from tests.conftest import symlink_or_skip
-from tests.goals.conftest import git
+from tests.git_support import git
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 
