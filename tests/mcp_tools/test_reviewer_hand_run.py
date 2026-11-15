@@ -24,6 +24,7 @@ from booley.mcp.base import McpToolResult
 from booley.specialists.reviewer import ReviewerSpecialist
 
 BASE_ARGS = ["--scope", "rtl/dut.sv", "--category", "rtl", "--focus", "bugs"]
+SECURITY_ARGS = ["--scope", "rtl/dut.sv", "--category", "rtl", "--focus", "security"]
 SPEC_ARGS = ["--scope", "rtl/dut.sv", "--category", "rtl", "--focus", "spec"]
 TB_ARGS = ["--scope", "tb/tb.sv", "--category", "tb", "--focus", "quality"]
 
@@ -443,6 +444,48 @@ def test_protocol_review_runs_checklist_and_hunt_calls(
     ]
 
 
+def test_security_review_runs_checklist_and_hunt_calls(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A security review makes one call per guide, each prompt carrying only its own guide."""
+    guides = ("security-checklist", "security-hunt")
+    prompts: dict[str, str] = {}
+    answers = {
+        "security-checklist": {
+            "issues": [finding("MAJOR", summary="Key stays after wipe", category="security")]
+        },
+        "security-hunt": {
+            "issues": [finding("MINOR", summary="Debug read-back", category="security", line=7)]
+        },
+    }
+
+    def fake_agent(params: Any) -> Any:
+        carried = [
+            g for g in guides if f"## Review guide — security ({g})" in params.system_prompt
+        ]
+        assert len(carried) == 1, carried
+        prompts[carried[0]] = params.system_prompt
+        return agent_result(answers[carried[0]])
+
+    reviewer = ReviewerSpecialist()
+    reviewer.parse_args(["--work-dir", str(project), *SECURITY_ARGS])
+    reviewer.read_state()
+    monkeypatch.setattr(reviewer, "_invoke_agent", fake_agent)
+    result = reviewer._run()
+
+    assert result.exit_code == 0, result.report_text
+    assert set(prompts) == set(guides)
+    summaries = {row["summary"]: row for row in result.detail["issue_list"]}
+    assert set(summaries) == {"Key stays after wipe", "Debug read-back"}
+    assert summaries["Key stays after wipe"]["guide_kinds"] == ["checklist"]
+    assert summaries["Debug read-back"]["guide_kinds"] == ["hunt"]
+    calls = result.detail["guide_calls"]
+    assert [(c["kind"], c["guides"], c["status"]) for c in calls] == [
+        ("checklist", ["security-checklist"], "ok"),
+        ("hunt", ["security-hunt"], "ok"),
+    ]
+
+
 def test_exact_duplicate_findings_merge_with_highest_severity_and_confidence(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -664,7 +707,7 @@ def test_failed_guide_call_is_retried_once_and_the_review_succeeds(
 
 def test_single_call_review_is_not_retried(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     result, invoke = review(
-        project, monkeypatch, [*BASE_ARGS[:-1], "security"], {"issues": [{"severity": "BOGUS"}]}
+        project, monkeypatch, [*BASE_ARGS[:-1], "code_style"], {"issues": [{"severity": "BOGUS"}]}
     )
     assert result.exit_code == 2, result.report_text
     assert invoke.call_count == 1
@@ -796,10 +839,10 @@ def test_verify_after_two_guide_review_is_one_call_and_waives_either_guide(
 def test_single_guide_focus_makes_one_call_as_before(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Spec and security reviews still make one call and one transcript."""
+    """Spec and code style reviews still make one call and one transcript."""
     cases = [
         (SPEC_ARGS, "spec", "spec-hunt"),
-        ([*BASE_ARGS[:-1], "security"], "security", "security-checklist"),
+        ([*BASE_ARGS[:-1], "code_style"], "code_style", "code_style-checklist"),
     ]
     for number, (args, category, guide) in enumerate(cases):
         project = build_project(tmp_path / f"case{number}", monkeypatch)
