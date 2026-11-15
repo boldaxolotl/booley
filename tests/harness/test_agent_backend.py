@@ -117,7 +117,7 @@ class TestClaudeSdkLaunchContract:
         captured_options, fake_query = _capturing_successful_query()
         monkeypatch.setattr(cb, "query", fake_query)
 
-        result = await ClaudeSDKBackend().call(
+        result = await ClaudeSDKBackend(auth_mode="visitor").call(
             AgentCallParams(prompt="p", model="sonnet", cwd=tmp_path)
         )
 
@@ -219,7 +219,8 @@ class TestLoadBackendConfig:
         assert isinstance(cfg.active_backend, CodexBackend)
         assert cfg.settings.default_cli == "codex"
 
-    def test_models_pin_on_second_cli(self, tmp_path):
+    def test_models_pin_on_second_cli(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("booley.config.agent._inside_container", lambda: False)
         """A [models] pin on a listed non-default CLI selects that CLI for the Specialist."""
         toml_dir = tmp_path / ".booley"
         toml_dir.mkdir(parents=True)
@@ -240,7 +241,10 @@ class TestLoadBackendConfig:
         assert settings.default_cli == "claude"
         assert settings.cli_for_specialist("reviewer") == "codex"
         assert settings.model_for_specialist("reviewer") == "gpt-6-luna"
-        assert (settings.auth_for("claude"), settings.auth_for("codex")) == ("auto", "api_key")
+        assert (settings.auth_for("claude"), settings.auth_for("codex")) == (
+            "subscription",
+            "api_key",
+        )
 
     def test_claude_provider_opt_in(self, tmp_path):
         """[agent] provider = 'claude' flips the active backend to Claude."""
@@ -329,7 +333,8 @@ class TestLoadBackendConfig:
         cfg = get_backend_config()
         assert cfg.settings.auth_for("claude") == "subscription"
 
-    def test_retired_primary_auth_alias_is_ignored(self, tmp_path):
+    def test_retired_primary_auth_alias_is_ignored(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("booley.config.agent._inside_container", lambda: False)
         toml_dir = tmp_path / ".booley"
         toml_dir.mkdir(parents=True)
         (toml_dir / "pipeline.toml").write_text(
@@ -340,7 +345,7 @@ class TestLoadBackendConfig:
         )
         load_backend_config(tmp_path)
         cfg = get_backend_config()
-        assert cfg.settings.auth_for("claude") == "auto"
+        assert cfg.settings.auth_for("claude") == "subscription"
 
     def test_provider_handoff_preserves_project_auth(self, tmp_path, monkeypatch):
         (tmp_path / "booley.toml").write_text(
@@ -700,7 +705,7 @@ async def test_claude_model_refusal_is_terminal_and_actionable(tmp_path, monkeyp
     monkeypatch.setattr(cb.anyio, "sleep", sleep)
 
     with pytest.raises((AgentProviderError, ResultError)) as raised:
-        await ClaudeSDKBackend().call(
+        await ClaudeSDKBackend(auth_mode="visitor").call(
             AgentCallParams(prompt="work", model=_REFUSED_CLAUDE_MODEL, cwd=tmp_path)
         )
 
@@ -1019,7 +1024,7 @@ class TestIdleStreamTimeout:
         # Total elapsed (~0.48s) far exceeds the timeout (0.3s), but every
         # inter-event gap (0.06s) is well under it. A fixed wall-clock timeout
         # would kill this; the idle/heartbeat timeout must not.
-        backend = ClaudeSDKBackend()
+        backend = ClaudeSDKBackend(auth_mode="visitor")
         sentinels = [object() for _ in range(8)]
         # Completing the whole stream without raising TimeoutError is the check.
         self._run_stream(
@@ -1032,7 +1037,7 @@ class TestIdleStreamTimeout:
 
     def test_genuine_stall_times_out(self):
         # No event for longer than the idle window -> TimeoutError.
-        backend = ClaudeSDKBackend()
+        backend = ClaudeSDKBackend(auth_mode="visitor")
         with pytest.raises(TimeoutError):
             self._run_stream(
                 backend,
@@ -1056,7 +1061,7 @@ class TestCallOnceTimeoutResultSalvage:
 
         from booley.runtime import _claude_backend as cb
 
-        backend = ClaudeSDKBackend()
+        backend = ClaudeSDKBackend(auth_mode="visitor")
         counters = cb._UsageCounters()
         counters.final_text = "partial findings so far"
 
@@ -1086,7 +1091,7 @@ class TestCallOnceTimeoutResultSalvage:
 
         from booley.runtime import _claude_backend as cb
 
-        backend = ClaudeSDKBackend()
+        backend = ClaudeSDKBackend(auth_mode="visitor")
         counters = cb._UsageCounters()
 
         async def _fake_process(self, prompt, options, timeout_seconds, c, tf, oe, st, **_kwargs):
@@ -1424,7 +1429,9 @@ async def test_nested_codex_sets_cli_home_to_validated_private_copy(tmp_path, mo
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
     _, sessions = await _codex_backend._codex_spawn(
-        ["codex"], AgentCallParams(prompt="x", model="chosen", cwd=tmp_path)
+        ["codex"],
+        AgentCallParams(prompt="x", model="chosen", cwd=tmp_path),
+        "visitor",
     )
     assert captured["env"]["CODEX_HOME"] == str(tmp_path / "private" / ".codex")
     assert sessions == tmp_path / "private" / ".codex" / "sessions"

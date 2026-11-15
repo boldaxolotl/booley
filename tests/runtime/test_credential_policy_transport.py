@@ -91,18 +91,7 @@ def _issued_transport_spec(root, image, app, policy, monkeypatch):
         )
     )
     if app == "claude":
-        (Path.home() / ".claude.json").write_text(
-            json.dumps(
-                {
-                    "hasCompletedOnboarding": True,
-                    **(
-                        {"customApiKeyResponses": {"rejected": ["SYNTHETIC_API_KEY"]}}
-                        if policy == "auto"
-                        else {}
-                    ),
-                }
-            )
-        )
+        (Path.home() / ".claude.json").write_text(json.dumps({"hasCompletedOnboarding": True}))
     sources = init_cmd._interactive_spec_sources(
         InitContext(project_root=project), init_cmd._NANGATE_PDK_NOT_REQUESTED, app, image
     )
@@ -133,8 +122,6 @@ def _exec(name, *command):
 @pytest.mark.parametrize(
     "route, policy, app",
     [
-        pytest.param("headless", "auto", "claude", id="headless-auto-claude"),
-        pytest.param("headless", "auto", "codex", id="headless-auto-codex"),
         pytest.param("headless", "subscription", "claude", id="headless-subscription-claude"),
         pytest.param(
             "headless",
@@ -145,8 +132,6 @@ def _exec(name, *command):
         ),
         pytest.param("headless", "api_key", "claude", id="headless-api_key-claude"),
         pytest.param("headless", "api_key", "codex", id="headless-api_key-codex"),
-        pytest.param("editor-contract", "auto", "claude", id="editor-contract-auto-claude"),
-        pytest.param("editor-contract", "auto", "codex", id="editor-contract-auto-codex"),
         pytest.param(
             "editor-contract", "subscription", "claude", id="editor-contract-subscription-claude"
         ),

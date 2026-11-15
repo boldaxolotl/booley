@@ -63,6 +63,8 @@ def _environment(home: Path, executable: Path) -> dict[str, str]:
             "PATH": f"{executable.parent}{os.pathsep}{home / 'bin'}{os.pathsep}{env['PATH']}",
             "PYTHONUSERBASE": str(home / ".local"),
             "XDG_CONFIG_HOME": str(home / ".config"),
+            # Placeholder for the pinned Codex credential; no request is ever made with it.
+            "OPENAI_API_KEY": "sk-release-validation-placeholder",
         }
     )
     return env
@@ -170,10 +172,10 @@ def validate(
                 "--no-asic",
                 "--provider",
                 "codex",
-                # The runner has no agent credential. A pinned policy without its
-                # credential is a Doctor failure by design, so keep the default.
+                # A pinned policy without its credential is a Doctor failure by design, and
+                # the runner has no login, so pin the API key that _environment provides.
                 "--auth",
-                "auto",
+                "api-key",
                 "--skip-credentials",
             ],
             project=project,

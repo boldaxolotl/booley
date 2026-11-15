@@ -139,7 +139,7 @@ def prepare(
     run(["git", "init", "-q", str(project)])
     dashboard_tasks.reconcile(project, data)
     observer_vsix(project / "observer.vsix", reload_window=reload_window)
-    plan = auth_token.CredentialPlan(devcontainer.APP_NONE, "auto", None, frozenset(), ())
+    plan = auth_token.CredentialPlan(devcontainer.APP_NONE, "subscription", None, frozenset(), ())
     customization = devcontainer.build_devcontainer_spec(
         cli_seeds=[devcontainer.CliSeeds(plan)], dashboard=True
     )["customizations"]

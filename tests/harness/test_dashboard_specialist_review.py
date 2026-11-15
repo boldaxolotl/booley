@@ -81,7 +81,7 @@ def test_review_shows_the_first_usable_fallback_entry(checkout, empty_home, monk
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     write_config(
         checkout,
-        '[agent]\nclis = ["claude", "codex"]\n\n'
+        '[agent]\nclis = ["claude", "codex"]\nauth = "api_key"\n\n'
         '[models]\nreviewer = ["gpt-6-luna", "claude-sonnet-5-5"]\n',
     )
     facts = check_facts(checkout)  # Codex has no login here, so its entry is skipped
@@ -108,7 +108,7 @@ async def test_a_failed_auth_check_refuses_the_launch_and_shows_the_fix(
         wizard = await review_reviewer(app, pilot)
         expected = (
             "Refused: [agent] auth = 'api_key' but ANTHROPIC_API_KEY is not set — export it,"
-            " or switch auth to 'subscription' or 'auto'. Copy command still works."
+            " or switch auth to 'subscription'. Copy command still works."
         )
         assert shown(wizard, "#run-error") == expected
         await pilot.press("enter")  # Submit
@@ -119,30 +119,32 @@ async def test_a_failed_auth_check_refuses_the_launch_and_shows_the_fix(
         assert copied == [shown(wizard, "#run-command")]
 
 
-@pytest.mark.asyncio
-async def test_auto_without_a_credential_warns_with_the_fix_and_still_submits(
-    checkout, spawned, empty_home
-):
-    write_config(checkout, "")  # The check refuses a checkout without a Booley Directory
-    app = make_app(checkout, real_launcher(checkout / ".booley"))
-    async with app.run_test(size=(120, 40)) as pilot:
-        wizard = await review_reviewer(app, pilot)
-        warnings = [
-            line
-            for line in shown(wizard, "#run-review").splitlines()
-            if line.startswith("Warning")
-        ]
-        assert len(warnings) == 1, (
-            f"expected one sign-in warning, got {warnings}; review:"
-            f" {shown(wizard, '#run-review')!r}; error: {shown(wizard, '#run-error')!r}"
-        )
-        (warning,) = warnings
-        assert warning.endswith(f"To sign in: {SIGN_IN}")
-        assert "no claude credential found under auth = 'auto'" in warning
-        assert shown(wizard, "#run-error") == ""
-        await pilot.press("enter")  # Submit
-        await pilot.pause()
-        assert len(spawned) == 1
+def test_visitor_without_a_credential_warns_with_the_fix():
+    facts = launch.SpecialistFacts(
+        model="claude-sonnet-5-5",
+        cli="claude",
+        policy="auto",
+        timeout_ms=5,
+        asked_ms=5,
+        warning=SIGN_IN,
+    )
+
+    warnings = [line for line in lines_of(facts) if line.startswith("Warning")]
+
+    assert warnings == [
+        "Warning: no claude credential found in this Sandbox; a proxy token or cloud provider"
+        f" may still work. To sign in: {SIGN_IN}"
+    ]
+
+
+def test_a_host_without_a_credential_refuses_instead_of_warning(checkout, empty_home):
+    write_config(checkout, "")  # a missing auth bills the subscription, which has no login here
+
+    facts = check_facts(checkout)
+
+    assert facts.policy == "subscription"
+    assert facts.warning == ""
+    assert "no subscription credential found" in facts.refusal
 
 
 def test_timeout_line_shows_the_timeout_the_run_uses_including_a_raised_minimum(
@@ -201,7 +203,7 @@ def test_malformed_specialist_facts_are_no_facts():
     good = {
         "model": "m",
         "cli": "claude",
-        "policy": "auto",
+        "policy": "subscription",
         "timeout_ms": 5,
         "asked_ms": 5,
         "refusal": "",

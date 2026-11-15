@@ -344,15 +344,6 @@ def test_auth_flag_sets_the_value_without_detection(
     assert agent["auth"] == "api_key"
 
 
-def test_auth_auto_flag_still_records_auto(tmp_path: Path, home: Path) -> None:
-    config = _config(tmp_path, b'[agent]\ndefault = "claude"\nauth = "auto"\n')
-
-    _, agent = _run_init(tmp_path, config, auth="auto")
-
-    assert agent["auth"] == "auto"
-    assert config.read_bytes() == b'[agent]\ndefault = "claude"\nauth = "auto"\n'
-
-
 def test_auth_flag_conflicting_with_a_recorded_value_is_refused(
     tmp_path: Path, home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

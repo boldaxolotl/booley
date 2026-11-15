@@ -349,7 +349,7 @@ def docker_run_argv(
 
     argv = DockerRunArgv(["docker", "run", "-d", "--name", name], dict(os.environ))
     remote = spec.get("remoteEnv") or {}
-    policy = remote.get("BOOLEY_PRIMARY_AUTH", "auto")
+    policy = remote.get("BOOLEY_PRIMARY_AUTH")
     _require_forwarded_gateway(spec)
 
     for mount in [spec.get("workspaceMount"), *(spec.get("mounts") or [])]:

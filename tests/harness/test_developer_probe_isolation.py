@@ -23,6 +23,7 @@ def sandbox(tmp_path, monkeypatch):
     """A container-like process with a Project root, a private HOME and no Codex models cache."""
     for name in ("BOOLEY_PRIMARY_AUTH", "BOOLEY_PRIMARY_PROVIDER", "BOOLEY_AGENT_APP"):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "auto")  # a hand-written spec: the visitor mode
     home = tmp_path / "home"
     (home / ".codex").mkdir(parents=True)
     (home / ".codex" / "auth.json").write_text('{"tokens": {}}', encoding="utf-8")

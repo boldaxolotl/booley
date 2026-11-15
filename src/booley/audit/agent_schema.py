@@ -49,8 +49,9 @@ def audit_agent_table(data: Mapping[str, Any]) -> ConfigTableAudit:
     except BackendConfigError as exc:
         return failure(
             str(exc),
-            'set [agent] clis/default to "claude" or "codex"; auth to "auto", '
-            '"subscription", "api_key" (or "gateway" for Codex), alone or per CLI in [agent.auth]',
+            'set [agent] clis/default to "claude" or "codex"; auth to "subscription", '
+            '"api_key" (or "gateway" for Codex), alone or per CLI in [agent.auth], '
+            "or re-run booley init",
         )
     if declared.default is None and declared.auth is None:
         return ConfigTableAudit()

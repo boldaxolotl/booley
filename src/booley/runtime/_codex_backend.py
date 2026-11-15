@@ -219,7 +219,7 @@ class CodexBackend:
     itself (subscription login via `codex login`).
     """
 
-    def __init__(self, auth_mode: str = "auto") -> None:
+    def __init__(self, auth_mode: str = "subscription") -> None:
         # The resolved [agent] auth policy. Under "subscription" the spawn env
         # is scrubbed of OPENAI_API_KEY (Codex then authenticates via its
         # auth.json login); under "api_key" the health check fails loud when no
@@ -520,7 +520,7 @@ def _populate_private_codex_home(
     codex_dir: Path,
     booley_env: dict[str, str],
     enabled_mcp_tools: list[str] | None = None,
-    auth_mode: str = "auto",
+    auth_mode: str = "subscription",
 ) -> None:
     """Regenerate one destination config and link the existing native credential."""
     from .mcp_config import generate_codex_config
@@ -549,7 +549,7 @@ def _ensure_nested_codex_home(
     parent_label: str,
     allowed_mcp_tools: list[str] | None,
     extra_env: dict[str, str] | None = None,
-    auth_mode: str = "auto",
+    auth_mode: str = "subscription",
 ) -> str:
     """Create a cached private home exposing only the nested agent's MCP allowlist.
 
@@ -667,7 +667,7 @@ async def _resolve_gateway_command_token() -> str | None:
 async def _codex_spawn(
     cmd: list[str],
     params: AgentCallParams,
-    auth_mode: str = "auto",
+    auth_mode: str = "subscription",
 ) -> tuple[asyncio.subprocess.Process, Path]:
     """Spawn the codex subprocess with piped I/O.
 
@@ -736,7 +736,7 @@ async def _codex_run_subprocess(
     *,
     full_prompt: str,
     on_event: Any,
-    auth_mode: str = "auto",
+    auth_mode: str = "subscription",
     on_start: Callable[[], None] | None = None,
 ) -> tuple[str, str, int]:
     """Spawn codex exec, stream I/O, return (stdout, stderr, returncode)."""

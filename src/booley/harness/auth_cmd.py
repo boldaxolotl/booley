@@ -100,9 +100,9 @@ def _host_policy(policy: str, *, handoff: bool) -> str:
     """The policy to report when no gateway hand-off applies, with a note per mapping.
 
     ``gateway`` has no credential of its own (``_MODE_DESC`` has no entry for it), so a
-    declared one reads as ``auto``, as Doctor does outside a Sandbox.
+    declared one reads as ``subscription``, as Doctor does outside a Sandbox.
     """
-    from booley.config.agent import env_auth_handoff
+    from booley.config.agent import DEFAULT_AUTH, env_auth_handoff
 
     if env_auth_handoff() == GATEWAY_AUTH and not handoff:
         note(
@@ -110,8 +110,8 @@ def _host_policy(policy: str, *, handoff: bool) -> str:
             "showing the booley.toml policy"
         )
     if policy == GATEWAY_AUTH:
-        note("auth policy 'gateway' applies inside a Sandbox only; showing 'auto'")
-        return "auto"
+        note("auth policy 'gateway' applies inside a Sandbox only; showing 'subscription'")
+        return DEFAULT_AUTH
     return policy
 
 
@@ -121,12 +121,13 @@ def _report_status(app: str | None = None, project_root: Path | None = None) -> 
     from booley.config.agent import (
         _inside_container,
         gateway_handoff_active,
+        missing_auth_policy,
         project_credential_policy,
     )
     from booley.core.booley_dir import resolve_authoritative_booley_dir
 
     banner("Agent auth status")
-    policy = "auto"
+    policy = missing_auth_policy()
     # Under BOOLEY_AGENT_APP=auto the registrar's choice names the app; it also
     # refuses (AgentAppError) outside a Sandbox.
     app = app or agent_app.resolved_app(None)
@@ -134,7 +135,7 @@ def _report_status(app: str | None = None, project_root: Path | None = None) -> 
         provider, policy = project_credential_policy(project_root, cli=app)
         app = app or provider
     # A declared gateway policy is honored inside any Sandbox (hand-written specs
-    # included), as the runtime and Doctor do; only outside one does it read as `auto`.
+    # included), as the runtime and Doctor do; only outside one does it read as `subscription`.
     handoff = gateway_handoff_active() or (policy == GATEWAY_AUTH and _inside_container())
     if handoff and _gateway_covers(app):
         return _report_gateway_status(app)
@@ -151,7 +152,7 @@ def _report_status(app: str | None = None, project_root: Path | None = None) -> 
             warn(
                 f"{selected}: no credential found under auth = '{policy}' — agents cannot authenticate"
             )
-            if policy == "auto":
+            if auth_token.defers_to_cli(policy):
                 hint(f"run the app's login, export an API key, or booley auth --cli {selected}")
             continue
         usable += 1
@@ -161,7 +162,7 @@ def _report_status(app: str | None = None, project_root: Path | None = None) -> 
         else:
             warn(line)
             hint("a host-side login can revoke a running container's copy mid-run")
-            if policy == "auto":
+            if auth_token.defers_to_cli(policy):
                 hint(f"booley auth --cli {selected}")
         for loser in effective.overridden:
             hint(f"{loser} is present but not used; the line above wins")
@@ -320,8 +321,8 @@ def _store_and_reseed(
     ok(f"stored {credential.label} at {path} (mode 0600)")
     info("kept outside every repo; Sandboxes receive it only through a read-only mount")
     if project_root is None:
-        policies = "auto/api_key" if credential.app == APP_CODEX else "auto/subscription"
-        info(f"{credential.app} Projects with auth={policies} use this stored credential.")
+        policy = "api_key" if credential.app == APP_CODEX else "subscription"
+        info(f"{credential.app} Projects with auth={policy} use this stored credential.")
     if _reseed_spec(project_root):
         return path
     err(

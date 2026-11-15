@@ -206,8 +206,8 @@ Try: `booley auth --clear` on a disposable store, then `booley auth --status` re
 credential found and exits 1. Store a disposable credential with `--token-stdin`, and for Codex
 also through the prompt (for Claude, plain `booley auth` mints a real token through
 `claude setup-token`, so skip it). Status shows provider and auth class, never the secret.
-Record `subscription`, `api-key` and `auto` in turn (`booley init --auth`); the reported class
-must follow the documented precedence. Restore the credential: auth is ready and borrowed
+Record `subscription` and `api-key` in turn (`booley init --auth`); the reported class
+must follow the documented precedence. `booley init --auth auto` must be refused. Restore the credential: auth is ready and borrowed
 credentials are unchanged. Search the Project, logs and `evidence/` for credential material.
 Look for: secrets echoed in errors or logs, precedence that differs from the docs.
 

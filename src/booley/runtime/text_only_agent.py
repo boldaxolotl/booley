@@ -55,7 +55,7 @@ def prepare_codex_text_only(
     params: AgentCallParams,
     environment: Mapping[str, str],
     *,
-    auth_mode: str = "auto",
+    auth_mode: str = "subscription",
 ) -> tuple[list[str], dict[str, str]]:
     """Build an isolated invocation config; a model absent from the cache gets a generated entry."""
     original = Path(
