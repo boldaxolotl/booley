@@ -80,7 +80,7 @@ def discard_staged_files(root: Path) -> None:
     flight. A Simulation Record's manifest publication is excluded only because
     nothing can lock a record before its manifest exists.
     """
-    for path in root.rglob(f"*{STAGED_SUFFIX}"):
+    for path in root.rglob(f".*{STAGED_SUFFIX}"):
         if path.is_file() and not path.is_symlink():
             path.unlink(missing_ok=True)
 

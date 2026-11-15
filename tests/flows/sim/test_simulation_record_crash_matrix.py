@@ -791,10 +791,25 @@ def test_pre_sim_evidence_killed_mid_write_resumes(
     )
 
 
+_JOURNAL_STAGING_LEFTOVER = pytest.mark.xfail(
+    strict=True,
+    reason="#4280: the staged file a kill leaves makes the retry refuse the transactions directory",
+)
+
+
 @_needs_fork
-def test_acceptance_intent_killed_mid_write_retries_idempotently(tmp_path: Path) -> None:
-    """Guard: the Acceptance Journal already stages its intent, so a kill mid-write is retryable."""
-    boundary = "acceptance_intent"
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "acceptance_intent",
+        pytest.param("acceptance_record", marks=_JOURNAL_STAGING_LEFTOVER),
+        pytest.param("acceptance_commit", marks=_JOURNAL_STAGING_LEFTOVER),
+    ],
+)
+def test_acceptance_journal_killed_mid_write_retries_idempotently(
+    tmp_path: Path, boundary: str
+) -> None:
+    """Guard: the Acceptance Journal stages each write, so a kill mid-write leaves nothing trusted."""
     log_dir, state, changes = _transaction_state(tmp_path)
     identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
     side_file = tmp_path / "side.txt"
