@@ -37,7 +37,7 @@ class ReviewScopeContract:
 
     @property
     def simulation_sources(self) -> tuple[str, ...]:
-        """Sorted scoped HDL, cocotb, and C/C++ files; Goal support files are omitted."""
+        """Sorted scoped HDL, cocotb, and C/C++ files; support files are omitted."""
         cpp = {
             path
             for path in self.support_files
@@ -96,7 +96,7 @@ def resolve_review_scope(
                 if category == "tb"
                 else ""
             )
-            + "; see CLI-REFERENCE.md (host doc, not shipped). Goal Mode also accepts explicitly scoped support files."
+            + "; see CLI-REFERENCE.md (host doc, not shipped)."
         )
     return ReviewScopeContract(
         frozenset(cocotb), frozenset(hdl), frozenset(support | set(unsupported))

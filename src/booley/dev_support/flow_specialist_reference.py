@@ -234,17 +234,13 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
         "#### `reviewer`",
         "",
         "Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and "
-        "`MINOR` findings. In Interactive Mode, review the selected files using your "
-        "specification or steering. In Goal Mode, `done` reports findings without "
-        "requiring fixes; the review package includes open findings. `clean` requires "
-        "every finding to be fixed "
-        "or waived with a justification.",
+        "`MINOR` findings. It reviews the selected files using your specification or "
+        "steering.",
         "",
         "Interactive source review accepts Verilog/SystemVerilog (.v, .vh, .sv, .svh), plus "
         "Python (.py) and explicitly scoped C/C++ testbench sources and headers (.c, .cc, .cpp, "
-        ".cxx, .h, .hh, .hpp, .hxx) for category=tb. Goal Mode also accepts other explicitly "
-        "scoped support files. Sim C/C++ harness inputs count as TB for isolation and cannot be "
-        "mutation scope. Declared opposite-category sources are refused in either mode; "
+        ".cxx, .h, .hh, .hpp, .hxx) for category=tb. Sim C/C++ harness inputs count as TB for "
+        "isolation and cannot be mutation scope. Declared opposite-category sources are refused; "
         "unregistered scoped sources retain the registration warning and receive only an exact "
         "per-file category grant. Each Reviewer has the opposite category's sources and HDL files "
         "no .core fileset declares hidden; all other project files, such as firmware, are "
@@ -255,8 +251,8 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
         "",
         'Ask your Developer Agent to call the `reviewer` Specialist with `category="<category>"` and `focus="<focus>"`.',
         "",
-        "| Category | Focus | What it checks | Sets |",
-        "|----------|-------|----------------|------|",
+        "| Category | Focus | What it checks |",
+        "|----------|-------|----------------|",
     ]
     for criterion, description in _REVIEW_FOCUS_DESCRIPTIONS.items():
         invocation = commands.get(criterion)
@@ -265,13 +261,11 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
         parts = invocation.split()
         category = parts[parts.index("--category") + 1]
         focus = parts[parts.index("--focus") + 1]
-        lines.append(
-            f"| `{category}` | `{focus}` | {description} | `{evidence_goal_name(criterion) or 'Goal unavailable'}` |"
-        )
+        lines.append(f"| `{category}` | `{focus}` | {description} |")
     lines.extend(
         [
             "",
-            '**Interactive Mode:** also pass `scope="<file,...>"`. Add `spec="<path>"` '
+            'Also pass `scope="<file,...>"`. Add `spec="<path>"` '
             '(required for the `spec` focus) or `spec_text="<text>"` (CLI: `--spec-text`; '
             'not with `spec`), or `steer=["<context>"]` for context. A completed review exits 0; '
             'pass `fail_on="critical|major|minor"` (CLI: `--fail-on`) to exit 1 when an open '
@@ -280,27 +274,21 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
             "",
             '**Changes only:** add `base="<commit>"` (CLI: `--base <commit>`) to review only '
             "the `scope` files changed since the merge-base of that commit and HEAD, "
-            "uncommitted changes included; Goal Mode refuses it. Unchanged `scope` files that "
+            "uncommitted changes included. Unchanged `scope` files that "
             "use them are context, the diff and commit messages are given to the Reviewer, and "
             "no change in scope exits 0 without a review. Pass every file of the category as "
             "the `scope` to give the Reviewer the files that use the changed ones. Findings "
             "already present before the change are listed separately as pre-existing and are "
             "never open or verified.",
             "",
-            "**Goal Mode:** the Review Goal fixes scope, spec and verdict, so `scope`, `spec`, "
-            "`spec_text`, `fail_on` and "
-            "`steer` are refused. Declare each Review Goal with exactly one `target` or "
-            "`paths` (see `booley cheat --goals`).",
-            "",
-            "**Verify fixes (both modes):** after fixing findings, call `reviewer` with "
+            "**Verify fixes:** after fixing findings, call `reviewer` with "
             "`verify=true` (CLI: `--verify`). It rechecks only the latest review's open "
             "findings and finds nothing new; none remaining open is a pass. To argue a "
             'finding away, add `waive=[["<finding-id>", "<justification>"]]` (CLI: '
             '`--waive <finding-id> "<justification>"`, repeatable); the Reviewer accepts '
-            "or rejects each. Outside Goal Mode `fail_on` (CLI: `--fail-on`) is the one other "
-            "argument accepted with verify, and counts the findings still open. After repeated "
-            "failed verifies, Goal Mode stops and asks you to change or abandon the Goal; "
-            "Interactive Mode refuses further verifies.",
+            "or rejects each. `fail_on` (CLI: `--fail-on`) is the one other "
+            "argument accepted with verify, and counts the findings still open. After two "
+            "verifies, run a fresh review.",
         ]
     )
     return lines
