@@ -25,13 +25,14 @@ code and never edits it. For a pass/fail verdict from an EDA tool, use a
 The `bugs` review also flags some problems that [Lint](FLOW-LINT.md) and
 synthesis already report, such as latches and width mismatches.
 
-A `bugs` review runs two searches side by side: one checks the code against a
-list of known bug patterns, the other hunts for defects by tracing scenarios
-such as reset, back-to-back operations, and full or empty states. It reports
-the findings of both and merges findings the two searches report at the same
-file and line. It uses about twice the model time and tokens of one search. A
-search that fails runs once more; if it fails again, the whole review is an
-error instead of a partial result.
+A `bugs` or `optimization` review runs two searches side by side: one checks
+the code against a list of known patterns, the other hunts. The `bugs` hunt
+traces scenarios such as reset, back-to-back operations, and full or empty
+states for defects; the `optimization` hunt looks for redundant, oversized, or
+critical-path logic. It reports the findings of both and merges findings the
+two searches report at the same file and line. It uses about twice the model
+time and tokens of one search. A search that fails runs once more; if it fails
+again, the whole review is an error instead of a partial result.
 
 A review sees only one side of the RTL/testbench split. A testbench review
 never reads the RTL, so it judges the tests against the spec rather than
@@ -113,7 +114,7 @@ booley specialist reviewer --verify
 | `--fail-on critical\|major\|minor` | Exit 1 when an open finding is at or above that severity. Without it, a completed review exits 0 even with open findings. |
 | `--verify` | Recheck the latest review's open findings. Accepts only `--waive` and `--fail-on`. |
 | `--waive <finding-id> "<reason>"` | With `--verify`: propose a waiver. Repeatable. |
-| `--dry-run` | Preview the call without running the review: lists the checks it would run; a `bugs` review shows two. |
+| `--dry-run` | Preview the call without running the review: lists the checks it would run; `bugs` and `optimization` reviews show two. |
 
 The options every Specialist shares are in [Specialists](SPECIALISTS.md#running-a-specialist).
 [CLI-REFERENCE.md](CLI-REFERENCE.md#reviewer) has the full reference,
