@@ -43,7 +43,8 @@ simulation, synthesis, linting, and measurement workflows.
   and its GitHub branch.
 - Read `docs/internals/CODING_PRINCIPLES.md` before writing Python code.
 - Read `docs/internals/DOCS_PRINCIPLES.md` before writing, editing, or
-  reviewing docs; Part 2 adds the rules for user-facing docs.
+  reviewing docs. For a user doc or the cheatsheet, also read
+  `docs/internals/USER_DOCS_PRINCIPLES.md`; its Scope lists those files.
 - Ruff findings are repository work: during Python work, fix every finding
   reported for `src/` or `tests/`, including pre-existing or unrelated
   findings. Before committing, run the complete Ruff command reported by
