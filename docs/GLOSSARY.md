@@ -8,7 +8,10 @@ behavior and configuration belong in the user and internal docs. The
 [context map](../GLOSSARY-MAP.md) points to the vocabularies that one context
 owns, such as B-Wave.
 
-Booley is an **agentic development environment (ADE)** for RTL design and verification: the working environment where an engineer directs and supervises Developer Agents doing RTL work, whether hands-on or unattended. **Interactive Mode** runs in an isolated **Sandbox** with Booley Flows and Specialists.
+Booley is an **agentic development environment (ADE)** for RTL design and
+verification: the working environment where an engineer directs and supervises
+Developer Agents doing RTL work, whether hands-on or unattended. **Interactive
+Mode** runs in an isolated **Sandbox** with Booley Flows and Specialists.
 _Avoid_ (for the product itself): IDE, agentic RTL IDE, framework, system, library, platform, toolkit, package, harness
 
 The glossary also records words to _avoid_. Booley's concepts collide with
@@ -42,10 +45,14 @@ _Avoid_: Project Initialization, onboarding, porting
 
 ### Execution
 
-How and where Booley work runs. The **Sandbox** is the execution environment; **Interactive Mode** is the execution mode; the remaining entries are the machinery inside.
+How and where Booley work runs. The **Sandbox** is the execution environment;
+**Interactive Mode** is the execution mode; the remaining entries are the
+machinery inside.
 
 **Developer Agent**:
-The agent of an agent session (Claude Code or Codex) in a **Sandbox**. It authors code and chooses which **Booley Flows** and **Specialists** to use. It works in **Interactive Mode** with a human steering.
+The agent of an agent session (Claude Code or Codex) in a **Sandbox**. It
+authors code and chooses which **Booley Flows** and **Specialists** to use. It
+works in **Interactive Mode** with a human steering.
 _Avoid_: coding agent, host agent, main agent, outer agent
 
 **Agent CLI**:
@@ -79,7 +86,10 @@ using the Developer Agent's CLI in a Sandbox terminal. Commits are accepted by
 _Avoid_: MCP Mode, Standalone Mode, Tab Mode, Booley Interactive
 
 **Protected Input**:
-A file that decides how evidence is produced and is therefore a protected input: Project configuration, `booley.toml`, hooks, generators, Project MCP tool code under `mcp_tools`, and files the Project lists in `[project].protected_inputs`. A Measurement reports edits to them as protected-set changes.
+A file that decides how evidence is produced and is therefore a protected input:
+Project configuration, `booley.toml`, hooks, generators, Project MCP tool code
+under `mcp_tools`, and files the Project lists in `[project].protected_inputs`.
+A Measurement reports edits to them as protected-set changes.
 _Avoid_: frozen file, locked config, Scope
 
 **Session**:
@@ -143,7 +153,12 @@ A codebase on which Project Initialization has run, with a **Booley Directory** 
 _Avoid_: repo, workspace
 
 **Booley Directory**:
-Where Booley keeps everything for a **Project**: configuration, evidence, logs, and worktrees; by default `.booley/` at the **Project Root**. **Common Booley State**, what all checkouts share, lives only in the **Main Booley Directory**; **Checkout Booley State** belongs to one checkout (its versioned configuration, build trees and reports). A linked worktree's **Worktree Booley Directory** holds only the latter.
+Where Booley keeps everything for a **Project**: configuration, evidence, logs,
+and worktrees; by default `.booley/` at the **Project Root**. **Common Booley
+State**, what all checkouts share, lives only in the **Main Booley Directory**;
+**Checkout Booley State** belongs to one checkout (its versioned configuration,
+build trees and reports). A linked worktree's **Worktree Booley Directory**
+holds only the latter.
 _Avoid_: Project directory, Project dir, Project data, state dir; global state, worktree state (for Common or Checkout Booley State)
 
 **Project Root**:
@@ -151,7 +166,9 @@ The top directory of a **Project**'s codebase checkout, and the default home of 
 _Avoid_: Project directory, Project checkout, repo root
 
 **Main Booley Directory**:
-The **Booley Directory** of the main checkout. It holds the Common Booley State and the main checkout's Checkout Booley State, and so owns the **Project**'s lifecycle files.
+The **Booley Directory** of the main checkout. It holds the Common Booley State
+and the main checkout's Checkout Booley State, and so owns the **Project**'s
+lifecycle files.
 _Avoid_: control Project, control Project directory, session Project
 
 **Paired Checkout**:
@@ -369,8 +386,13 @@ _Avoid_: approved commit, signed-off commit, clean review; review session, revie
 
 You will not need these unless you are reading older work records, code, or docs; they are terms that were renamed or removed. Skim now, refer back when you hit one.
 
-- **Harness** → **none**: Retired name for Ticket lifecycle orchestration. Name the evidence machinery, or Sandbox capability concerned. The `booley.harness` package still contains active CLI, Doctor, and setup code.
-- **Result Cache** and **`booley ci`** → **Measurement Run**: the Result Cache was never finished, and [ADR 0092](adr/0092-measure-commits-against-target-metrics.md) measures commits instead.
+- **Harness** → **none**: Retired name for Ticket lifecycle orchestration. Name
+  the evidence machinery, or Sandbox capability concerned. The `booley.harness`
+  package still contains active CLI, Doctor, and setup code.
+- **Result Cache** and **`booley ci`** → **Measurement Run**: the Result Cache
+  was never finished, and [ADR
+  0092](adr/0092-measure-commits-against-target-metrics.md) measures commits
+  instead.
 - **TB Coder** → **none**: the Developer Agent writes testbenches itself.
 
 - **"tool"**: Overloaded across Booley, agent clients, MCP, and EDA. Never use the bare word in Booley prose or identifiers: say **Booley Flow** for deterministic orchestration, **EDA tool** for the external program a Flow drives, and **MCP tool** only for the protocol-level invocation mechanism.

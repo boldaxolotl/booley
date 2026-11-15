@@ -719,7 +719,8 @@ What goes here:
 - **Additional Protected Inputs — write only what the human agreed to.**
   `[project].protected_inputs` lists the tracked recipe file a hook or generator
   invokes and the stimulus sources that recipe consumes. A Measurement reports
-  edits to them as protected-set changes. Write the entries that plan row 6 records. A candidate you find
+  edits to them as protected-set changes. Write the entries that plan row 6
+  records. A candidate you find
   only now is a decision-level deviation: propose it, explain the reporting, and
   get approval before adding it. Before writing, confirm that every entry
   matches tracked files and that no build output lands inside a pattern; prefer
@@ -920,6 +921,7 @@ approved config is on disk.
 
 ## Project configuration notes
 
-Do not put `[developer]` or `[jobs].max_tickets` in the Project configuration; Doctor treats
+Do not put `[developer]` or `[jobs].max_tickets` in the Project configuration;
+Doctor treats
 them as ignored settings with delete fixes. Document `[sandbox].dashboard=false`
 when the human opts out of the default Dashboard attachment task.

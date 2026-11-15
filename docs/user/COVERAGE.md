@@ -69,7 +69,8 @@ The first line has three verdicts:
   `INCOMPATIBLE` followed by a diagnostic code in brackets. Anything but
   `COMPLETE` means the numbers can't be trusted.
 - **evaluation**: whether the thresholds were met. `NOT_REQUESTED` means
-  there were none to check, which is the normal case. `FAIL` names the first metric that
+  there were none to check, which is the normal case. `FAIL` names the first
+  metric that
   missed, for example `evaluation FAIL (branch: observed 1/2 points;
   displayed 50%; minimum 80%)`. `BLOCKED` gives a code, such as an invalid
   [waiver](#coverage-waivers).
@@ -114,7 +115,8 @@ of its files.
 ```
 
 `percent` is rounded to two decimals here, so `77.19` is printed as `77.1%` on
-the terminal for a metric without a finer minimum. `threshold` and `met` are filled in when a
+the terminal for a metric without a finer minimum. `threshold` and `met` are
+filled in when a
 threshold is set for that metric. A metric the design has no points for, such as
 `cover_property` in a design without `cover property` statements, is left out.
 
@@ -210,7 +212,8 @@ Each waiver is an **approval file** in your [waiver directory](#waiver-directory
 naming the person who approved it, so the agent can't raise coverage by
 waiving what it failed to test.
 
-Every coverage run applies the approved waivers: waived points are reported as `waived` and left out of the
+Every coverage run applies the approved waivers: waived points are reported as
+`waived` and left out of the
 percentages. If an approval file is invalid, or does not match the current RTL
 (for example the source changed), that Target's evaluation is blocked and the
 run exits `2`. Fix or remove the approval, or rerun with `--no-waivers`. If one

@@ -383,7 +383,8 @@ as you would a built-in:
 - *"Run `drc_check` on the `variant_a` Target with the signoff rule set."*
 - *"Ask `protocol_reviewer` to check `rtl/axi_slave.sv`."*
 
-The agent selects the arguments and invokes the MCP tool, and the verdict comes back to the session.
+The agent selects the arguments and invokes the MCP tool, and the verdict comes
+back to the session.
 
 To take the agent out of the loop while you debug arguments or result
 handling, run the endpoint from a Sandbox terminal
@@ -402,7 +403,8 @@ Specialists) unless you pass `--report-dir`, and return the usual exit codes.
 ### Where its output goes
 
 An Interactive Mode MCP server writes its logs under
-`.interactive_logs/<session-id>/` in the Main Booley Directory. Use the paths the result returns rather than
+`.interactive_logs/<session-id>/` in the Main Booley Directory. Use the paths
+the result returns rather than
 guessing.
 
 If a custom endpoint does not appear, check its syntax and literal metadata,

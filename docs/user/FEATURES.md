@@ -2,7 +2,9 @@
 
 Booley's core move is giving Developer Agents **one consistent interface to the EDA tools** through Booley Flows, the same for Claude Code and Codex and the same across the EDA tools each Flow supports, and wrapping the result in an agentic development environment (ADE): one VS Code window where you direct and supervise those agents. That makes Developer Agents more capable, but it also gives the engineer a faster, lower-friction RTL workflow. Every feature below builds on that foundation; the reasoning behind the load-bearing choices is in [ARCHITECTURE.md](../internals/ARCHITECTURE.md).
 
-New to Booley's vocabulary (Developer Agent, Specialist, Sandbox, Booley Flow, Target)? The [context map](../../GLOSSARY-MAP.md) points to each canonical glossary and its rejected synonyms.
+New to Booley's vocabulary (Developer Agent, Specialist, Sandbox, Booley Flow,
+Target)? The [context map](../../GLOSSARY-MAP.md) points to each canonical
+glossary and its rejected synonyms.
 
 - [Same Flows Across Developer Agents and EDA Tools](#same-flows-across-developer-agents-and-eda-tools)
 - [An Agentic Development Environment](#an-agentic-development-environment)
@@ -29,7 +31,11 @@ A Booley Flow (`sim`, `lint`, `synth`, `fpga`, `mutation`) looks the same no mat
 
 - **Claude Code or Codex.** Booley exposes its Flows as MCP tools, which both Claude Code and Codex call natively. Switch Developer Agents and the Flows, Targets, and results stay the same ([details](#llm-backend-selection)).
 - **Same call and result format, whichever EDA tool.** `sim` takes the same call and reports its verdict in the same normalized format whether the Target uses Verilator or Icarus; `lint` does the same for Verilator and Verible. The verdict itself comes from the tool the Target names, so two tools can still disagree on the same design. Open-source tools ship in the Sandbox Image, and Vivado comes from a licensed install on a Linux x86-64 host ([SANDBOX.md](SANDBOX.md#commercial-eda-provisioning)); the Developer Agent drives it the same way.
-- **Clear results instead of raw logs.** Every Flow returns a definite verdict, keeping failures, timeouts, inconclusive runs, and setup errors distinct, along with structured lint findings or synthesis metrics. Logs, waveforms, and reports land in predictable places. The Developer Agent acts on a clear result instead of guessing from noisy EDA output.
+- **Clear results instead of raw logs.** Every Flow returns a definite verdict,
+  keeping failures, timeouts, inconclusive runs, and setup errors distinct,
+  along with structured lint findings or synthesis metrics. Logs, waveforms, and
+  reports land in predictable places. The Developer Agent acts on a clear result
+  instead of guessing from noisy EDA output.
 
 The [supported EDA tools matrix](SUPPORTED-EDA-TOOLS.md) lists which EDA tools each Flow supports.
 
@@ -40,11 +46,21 @@ An IDE is built around a person editing code. An ADE is built around a person di
 Booley is not only infrastructure for the Developer Agent. It is workflow infrastructure for the hardware engineer: Developer Agent sessions, editor, EDA tools, waveforms, run status, and review evidence share a single VS Code window.
 
 - **Hands-on.** Work through conversation: ask for an edit, run Booley Flows, debug a failure, open a scoped waveform view (`bwave gui`, see [Waveform-Based Debug](#waveform-based-debug)). You can still read and edit RTL yourself between agent turns.
-- **Parallel.** Leave sessions running in container terminals alongside, each on its own branch and worktree ([Parallel Sessions](#parallel-sessions)). The Booley Dashboard shows every session and Job; you step in when an agent needs a decision.
+- **Parallel.** Leave sessions running in container terminals alongside, each on
+  its own branch and worktree ([Parallel Sessions](#parallel-sessions)). The
+  Booley Dashboard shows every session and Job; you step in when an agent needs
+  a decision.
 
-Either way, Booley removes the manual transitions among editor, build commands, logs, waveform viewer, and review artifacts. Less time spent on that plumbing means faster iterations and more opportunities to verify, refine, and optimize the design.
+Either way, Booley removes the manual transitions among editor, build commands,
+logs, waveform viewer, and review artifacts. Less time spent on that plumbing
+means faster iterations and more opportunities to verify, refine, and optimize
+the design.
 
-Today the shell is stock VS Code: agent sessions run in its terminals and the Booley Dashboard in its panel. Native agent-supervision UI (evidence status, Flow dashboards, one-click review) is on the [roadmap](../internals/ROADMAP.md#native-ade-surface), and the long-term direction is Booley as a **standalone ADE**.
+Today the shell is stock VS Code: agent sessions run in its terminals and the
+Booley Dashboard in its panel. Native agent-supervision UI (evidence status,
+Flow dashboards, one-click review) is on the
+[roadmap](../internals/ROADMAP.md#native-ade-surface), and the long-term
+direction is Booley as a **standalone ADE**.
 
 ## Open Source
 
@@ -151,6 +167,9 @@ Stealth Mode keeps your AI-assisted workflow out of your repository and its hist
 
 ## Code Coverage
 
-Add `--coverage` to a `sim` run and Booley collects code coverage (line, branch, expression, toggle, and cover properties) across all the tests of a Target, merged into one result. Only RTL counts toward the percentages; testbench code is reported but not scored.
+Add `--coverage` to a `sim` run and Booley collects code coverage (line, branch,
+expression, toggle, and cover properties) across all the tests of a Target,
+merged into one result. Only RTL counts toward the percentages; testbench code
+is reported but not scored.
 
 When coverage falls short, the Coverage Analyst Specialist explains where the gaps are, suggests tests to close them, and proposes waivers for points that can't or shouldn't be covered, such as unreachable code. Only you can approve a waiver, and an approved waiver counts only after a fresh coverage run. Coverage needs Verilator; Icarus Targets aren't supported. See [COVERAGE.md](COVERAGE.md).

@@ -45,7 +45,8 @@ requires the Sandbox.
 | `booley eda` | Manage host commercial-EDA installations, grants, and licenses |
 | `booley projects` | List remembered Project paths and their Grants |
 
-The [Skills](#skills) are guided workflows you start in a Developer Agent chat, such as feedback,
+The [Skills](#skills) are guided workflows you start in a Developer Agent chat,
+such as feedback,
 version review, Project Setup cleanup, and Sandbox lifecycle management.
 
 For Host Bootstrap, `--check-only` reports pending work without writing and
@@ -99,7 +100,10 @@ Key Flow-specific controls:
 - `mutation`: `--target` names exactly one Simulation Target whose complete suite judges each Mutant; `--scope <rtl-file,...>` chooses mutation sites (default: the Target's own RTL, minus testbench, vendored, and generated files); `--count N|auto` sets the Mutant count (default 10; `auto` scales 3-25 from source size and the time budget) and `--min-detected K` the pass threshold (default ceil(0.8 x count), of the Mutants scored when fewer run); `--seed <N>` (default 0) picks another reproducible Mutant set; `--dry-run` previews the count without running a simulator. A Mutant that fails to build is dropped and the next candidate takes its place; a timed-out Mutant counts as `detected (timeout)`; the default is 10 Mutants with 8 detected
 <!-- END GENERATED: flows -->
 
-With several Jobs running, the Developer Agent calls `booley_poll` with no `run_id` and handles whichever of its Jobs finishes first, passing a `run_id` only to wait for one specific Job; it never waits with `sleep` loops or log tails.
+With several Jobs running, the Developer Agent calls `booley_poll` with no
+`run_id` and handles whichever of its Jobs finishes first, passing a `run_id`
+only to wait for one specific Job; it never waits with `sleep` loops or log
+tails.
 
 #### Test Runs
 
@@ -226,7 +230,10 @@ do not need these files.
 
 ### Sandbox & Docker
 
-The `booley-sandbox` image contains Booley's EDA toolchain, Developer Agent clients, and development dependencies. It backs the per-folder Sandbox (devcontainer) where all Booley work executes; a project image selected by `[sandbox].image` can extend it.
+The `booley-sandbox` image contains Booley's EDA toolchain, Developer Agent
+clients, and development dependencies. It backs the per-folder Sandbox
+(devcontainer) where all Booley work executes; a project image selected by
+`[sandbox].image` can extend it.
 
 | Command | What it does |
 |---------|-------------|

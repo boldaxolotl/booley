@@ -45,7 +45,8 @@ pass/fail results from cocotb's result file instead of log-line sentinels.
 ## Sandbox
 A Sandbox is the isolated environment where Booley runs commands, edits files,
 and invokes EDA tools for your project. It is usually a Docker container with
-your EDA tools, and contains the separate worktrees used for Developer Agent work.
+your EDA tools, and contains the separate worktrees used for Developer Agent
+work.
 
 ## Doctor
 Doctor is Booley's health-check command for the build setup and execution
@@ -101,7 +102,8 @@ belong in your own cores rather than edits to that upstream code.
 
 ## Booley Directory
 Aliases: `.booley/`
-The Booley Directory holds Booley's configuration, evidence, logs, and worktrees for your Project. It sits at the Project Root
+The Booley Directory holds Booley's configuration, evidence, logs, and worktrees
+for your Project. It sits at the Project Root
 by default and is named `.booley/`; Stealth keeps it out of the RTL repository's
 tracked files, while open setup commits its durable configuration.
 

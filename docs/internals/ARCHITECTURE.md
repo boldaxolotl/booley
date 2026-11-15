@@ -117,7 +117,8 @@ Cloud coding agents (Codex cloud, Devin) and research harnesses (SWE-agent,
 OpenHands) start a fresh sandbox per task. Booley uses one container per opened
 project folder instead. The Dev Containers extension attaches one container per
 VS Code window; a container per chat tab would need session-to-container
-plumbing the extension lacks. Every session shares one MCP server, one EDA stack, and one configuration,
+plumbing the extension lacks. Every session shares one MCP server, one EDA
+stack, and one configuration,
 so an unattended session is just a tab left running.
 
 The cost: every session draws on one container's memory and CPU, which makes
@@ -170,7 +171,8 @@ installation and licensing policy.
 ### Why FuseSoC
 
 Booley owns the build: the layer that turns a design into the exact command
-for each EDA tool. That ownership makes trusted results possible: Booley can only trust a result it produced
+for each EDA tool. That ownership makes trusted results possible: Booley can
+only trust a result it produced
 from an invocation it controlled. Booley, not the agent's prompt, decides how a
 Flow runs.
 
@@ -221,7 +223,9 @@ Interactive Mode is the hands-on workflow and the way into the Sandbox.
 folder in the container connects VS Code to the Sandbox. On every container
 start, `postStartCommand` starts a loopback MCP server inside the container,
 so a reopened session reconnects on its own. Through it the Developer Agent
-reaches Flows, read-only Specialists, B-Wave, and runtime status. `BOOLEY_MCP_TOOLS` and nested allowlists control which MCP tools are listed. See [SETUP.md](../user/SETUP.md) for the lifecycle and
+reaches Flows, read-only Specialists, B-Wave, and runtime status.
+`BOOLEY_MCP_TOOLS` and nested allowlists control which MCP tools are listed. See
+[SETUP.md](../user/SETUP.md) for the lifecycle and
 [USAGE.md](../user/USAGE.md#interactive-mode) for daily use.
 
 ### Why VS Code
@@ -312,7 +316,8 @@ take care to get right. That trade fits Booley's scale: one human per Project.
 ## Common and Checkout Booley State
 
 A Project's Booley Directory splits into two kinds of state. Common Booley
-State, which every checkout shares (Session and Job coordination, Project-wide records and evidence, shared caches), lives only in the
+State, which every checkout shares (Session and Job coordination, Project-wide
+records and evidence, shared caches), lives only in the
 main checkout's Booley Directory, and a command run in any worktree reaches it
 there. Checkout Booley State belongs to one checkout: configuration versioned
 with its code (`booley.toml`, `cores/`, hooks) and the build trees
@@ -357,7 +362,8 @@ detect or prevent it. The fix is tracked in
 [#1529](https://github.com/boldaxolotl/booley/issues/1529); see the
 [current precautions](../user/SANDBOX.md#known-sandbox-escape-through-shared-git-metadata).
 
-Protected Input checks guard the configuration that produces evidence. Git keeps committed changes for review and
+Protected Input checks guard the configuration that produces evidence. Git keeps
+committed changes for review and
 recovery, but the writable Git metadata stays subject to the escape hatch
 above.
 

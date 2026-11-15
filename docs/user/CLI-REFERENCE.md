@@ -262,7 +262,8 @@ booley worktree rm <name> [--force]
 ```
 
 It moves the worktree's evidence aside, removes the worktree, and keeps its
-branch (`booley/<name>`, or `wt/<name>` in Stealth Mode), so commits made in the worktree
+branch (`booley/<name>`, or `wt/<name>` in Stealth Mode), so commits made in the
+worktree
 stay reachable. A worktree on a detached HEAD, which has no branch, is reported
 as `detached HEAD was <commit>`; save that commit on a branch if you need it.
 

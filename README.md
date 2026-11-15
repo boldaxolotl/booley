@@ -13,7 +13,9 @@ Booley is an agentic development environment (ADE) for hardware: you direct Clau
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="https://booley.dev/docs/assets/booley-screenshot-light.png">
-  <img alt="Booley in VS Code with two Developer Agent sessions, the Booley Dashboard, and waveform inspection" src="https://booley.dev/docs/assets/booley-screenshot.png">
+  <img alt="Booley in VS Code with two Developer Agent sessions, the Booley
+  Dashboard, and waveform inspection"
+  src="https://booley.dev/docs/assets/booley-screenshot.png">
 </picture>
 
 ## What it does

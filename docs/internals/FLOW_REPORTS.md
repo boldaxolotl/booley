@@ -17,7 +17,8 @@ Booley picks the report root in this order:
 
 1. `--report-dir`, if given.
 2. `$BOOLEY_RUNTIME_DIR/flow-reports`, when that variable is set. Every MCP
-   endpoint subprocess sets it: an Interactive Mode call uses the server's session runtime
+   endpoint subprocess sets it: an Interactive Mode call uses the server's
+   session runtime
    (`.interactive_logs/<session>/.runtime` in the Booley Directory).
 3. Otherwise, `flow-reports/` in the Booley Directory of the checkout.
 
@@ -178,7 +179,8 @@ attempt, and the enclosing Simulation Record together.
 In `report.json`, `detail.targets[<target>]` keeps each Target's results and a
 `coverage_record` reference to the Target-level `coverage.json`.
 `coverage_metrics` maps each native metric to `{percent, threshold, met}`. A
-threshold miss on a run that executed cleanly still exits `0`; with one evaluated
+threshold miss on a run that executed cleanly still exits `0`; with one
+evaluated
 Criterion, `criterion_met` is `false`.
 
 ## `lint`

@@ -49,7 +49,8 @@ A running Sandbox keeps using the location it started with until you run
 ### Additional Protected Inputs: `[project].protected_inputs`
 
 Booley's own configuration and `.booley/hooks/` are always protected. List your
-own files here when they also shape the result, such as a Makefile a hook runs, firmware sources, or
+own files here when they also shape the result, such as a Makefile a hook runs,
+firmware sources, or
 reference vectors. Booley can't find them from your scripts, so list each one:
 
 ```toml

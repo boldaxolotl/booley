@@ -632,7 +632,8 @@ separate columns (see "How a row resolves"). The standard checklist:
    they need goes into the sandbox image (row 7). When a hook or generator
    invokes a recipe (for example `make <target>`), propose the tracked recipe
    file and its stimulus sources as additional Protected Inputs: tell the human
-   that a Measurement reports their edits, check that no build output lands inside a
+   that a Measurement reports their edits, check that no build output lands
+   inside a
    proposed pattern, and record their agreement in this row. Step 2 writes
    `[project].protected_inputs` only from that agreement; see `/booley-docs/CONFIG.md` →
    "Additional Protected Inputs". Two shape constraints to plan against, both
@@ -859,7 +860,8 @@ surfaced that the standard list doesn't name: generator steps, **git
 submodules** (a row whenever either participating repository's
 `git submodule status` is non-empty: the host-side
 initialized/clean/full-history precondition, and `[submodules].paths` if only
-some outer gitlinks should reach linked worktrees), **scope exclusions** (a VHDL twin, a subsystem nobody
+some outer gitlinks should reach linked worktrees), **scope exclusions** (a VHDL
+twin, a subsystem nobody
 targets — say what is excluded and why, never leave it implied), multi-clock
 timing intent, environment modules, a TB stdout tee, unusual directory layouts.
 The checklist is the floor, not the ceiling.
