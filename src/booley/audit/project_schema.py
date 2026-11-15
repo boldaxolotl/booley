@@ -448,16 +448,21 @@ def audit_retired_jobs_keys(path: Path) -> ConfigTableAudit:
 
 def audit_retired_goals_section(path: Path) -> ConfigTableAudit:
     """One FAIL when the ``booley.toml`` at *path* still has a ``[goals]`` section (Goal Mode is gone)."""
-    from booley.config.retired import goals_section_fix, goals_section_spans
+    from booley.config.retired import (
+        goals_section_fix,
+        goals_section_location,
+        goals_section_spans,
+        has_goals_section,
+    )
 
     spans = goals_section_spans(path)
-    if not spans:
+    if not has_goals_section(path):
         return ConfigTableAudit()
     return ConfigTableAudit(
         (
             ConfigFinding(
                 ConfigFindingSeverity.FAIL,
-                f"booley.toml has a [goals] section (line {spans[0][0]}); Goal Mode was removed",
+                f"booley.toml has a [goals] section{goals_section_location(spans)}; Goal Mode was removed",
                 goals_section_fix(path, spans),
                 check_id="config.retired-goals",
             ),

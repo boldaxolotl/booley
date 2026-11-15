@@ -5,6 +5,8 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+import pytest
+
 TABLES = (
     b'[project]\nname = "unit"\n'
     b"\n"
@@ -60,3 +62,58 @@ def test_a_missing_or_goalless_file_has_no_spans(tmp_path: Path) -> None:
     assert goals_section_spans(path) == ()
     path.write_bytes(b"[goals\n")
     assert goals_section_spans(path) == ()
+
+
+COMMENT_QUOTES = b'[goals]\nquiet_after = 60 # """\n\n[sandbox]\nmemory = "16g"\n'
+ESCAPED = b'["go\\u0061ls"]\nquiet_after = 60\n\n[sandbox]\nmemory = "16g"\n'
+
+
+def test_a_triple_quote_in_a_comment_neither_hides_nor_widens_the_section(tmp_path: Path) -> None:
+    from booley.config.retired import goals_section_spans, opens_multiline_string
+
+    path = tmp_path / "booley.toml"
+    path.write_bytes(COMMENT_QUOTES)
+    spans = goals_section_spans(path)
+    assert spans == ((1, 2),)
+    assert _after_deleting(spans, COMMENT_QUOTES) == {"sandbox": {"memory": "16g"}}
+    path.write_bytes(b'# """\n' + COMMENT_QUOTES)
+    assert goals_section_spans(path) == ((2, 3),)
+    assert opens_multiline_string('a = """x""" # """') is None
+    assert opens_multiline_string("a = 'it''s' # c") is None
+    assert opens_multiline_string('a = "x') is None
+    assert opens_multiline_string("a = '''x") == "'''"
+
+
+def test_an_escaped_goals_table_name_is_still_refused(tmp_path: Path) -> None:
+    from booley.config.retired import (
+        goals_section_fix,
+        goals_section_location,
+        goals_section_spans,
+        has_goals_section,
+    )
+
+    path = tmp_path / "booley.toml"
+    path.write_bytes(ESCAPED)
+    spans = goals_section_spans(path)
+    assert spans == ()
+    assert has_goals_section(path)
+    assert goals_section_location(spans) == ""
+    assert goals_section_fix(path, spans).startswith("delete the [goals] tables from ")
+    assert not has_goals_section(tmp_path / "absent.toml")
+
+
+def test_the_refusal_names_an_escaped_section_without_a_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.config import retired
+
+    path = tmp_path / "booley.toml"
+    path.write_bytes(ESCAPED)
+    monkeypatch.setattr(retired, "resolve_common_booley_dir", lambda _root: tmp_path)
+    monkeypatch.setattr(retired, "resolve_toml", lambda _dir: path)
+
+    with pytest.raises(retired.RetiredConfigError) as caught:
+        retired.refuse_retired_config(tmp_path)
+
+    assert str(caught.value).startswith("booley.toml has a [goals] section;")
+    assert "booley-heal" in str(caught.value)

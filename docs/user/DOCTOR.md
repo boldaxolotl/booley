@@ -84,12 +84,10 @@ To fix a specific message yourself, look it up in
 
 ### Goal Mode leftovers
 
-Goal Mode is not part of Booley. Doctor reports what an earlier version left behind:
-
 | Check ID | Level | Meaning and fix |
 |---|---|---|
-| `config.retired-goals` | `✗` | `booley.toml` still has a `[goals]` section. Delete the `[goals]` tables (Doctor names the lines and the file); `/booley-heal` does it. |
-| `goals.leftover` | `!` | A `goals/` or `goalsets/` directory from an earlier version is still there. Booley does not read or delete it; delete it once you do not need its records. |
+| `config.retired-goals` | `✗` | `booley.toml` has a `[goals]` section; see [Troubleshooting](TROUBLESHOOTING.md#a-goals-section-in-booleytoml). |
+| `goals.leftover` | `!` | A `goals/` or `goalsets/` directory is still there. Booley does not read or delete it; delete it once you do not need its records. |
 
 ## Automatic checks
 

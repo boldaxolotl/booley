@@ -349,7 +349,6 @@ exclude = [
     "src/booley/flows/endpoint_report_criteria.py",
     "src/booley/flows/job_resources.py",
     "src/booley/flows/mutation/flow.py",
-    "src/booley/flows/review_scope.py",
     "src/booley/flows/sim/acceptance.py",
     "src/booley/flows/sim/adapter_transport.py",
     "src/booley/flows/sim/backends/cocotb.py",
@@ -389,7 +388,6 @@ exclude = [
     "src/booley/mcp/schema_extractor.py",
     "src/booley/mcp/server.py",
     "src/booley/mcp/session_registry.py",
-    "src/booley/mcp/sim_baseline_execution.py",
 ]
 strict = [
     # External-input coercion and the Booley Directory trust boundary.

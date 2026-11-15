@@ -30,11 +30,29 @@ def normalized_name(raw: str) -> str:
 
 
 def opens_multiline_string(line: str) -> str | None:
-    """The delimiter of a multi-line string this line opens and leaves open, if any."""
-    _, _, value = line.partition("=")
-    for delimiter in ('"""', "'''"):
-        if delimiter in value and value.count(delimiter) % 2 == 1:
-            return delimiter
+    """The delimiter of a multi-line string this line opens and leaves open, if any.
+
+    Quotes and ``#`` comments are read in order, so a delimiter inside a comment or
+    inside another string opens nothing.
+    """
+    value = line.partition("=")[2]
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char == "#":
+            return None
+        if char in "\"'":
+            delimiter = char * 3
+            if value.startswith(delimiter, index):
+                close = value.find(delimiter, index + 3)
+                if close == -1:
+                    return delimiter
+                index = close + 3
+                continue
+            match = _STRING.match(value, index)
+            index = match.end() if match else len(value)
+            continue
+        index += 1
     return None
 
 
@@ -91,6 +109,14 @@ class _GoalsScanner:
             self.spans[-1][1] = number
 
 
+def has_goals_section(path: Path) -> bool:
+    """Whether the ``booley.toml`` at *path* parses and has a ``goals`` key (however it is spelled)."""
+    try:
+        return "goals" in tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return False
+
+
 def goals_section_spans(path: Path) -> tuple[tuple[int, int], ...]:
     """The ``(first, last)`` 1-based lines of each Goal-owned block of the ``booley.toml`` at *path*.
 
@@ -124,9 +150,20 @@ def _lines(spans: tuple[tuple[int, int], ...]) -> str:
     return f"line {named}" if len(spans) == 1 and spans[0][0] == spans[0][1] else f"lines {named}"
 
 
+def goals_section_action(path: Path, spans: tuple[tuple[int, int], ...]) -> str:
+    """The edit that repairs a ``[goals]`` section: delete exactly the reported spans, nothing else."""
+    where = f" ({_lines(spans)})" if spans else ""
+    return f"delete the [goals] tables{where} from {path}"
+
+
+def goals_section_location(spans: tuple[tuple[int, int], ...]) -> str:
+    """``" (line N)"`` for the first reported span, empty when no line could be recovered."""
+    return f" (line {spans[0][0]})" if spans else ""
+
+
 def goals_section_fix(path: Path, spans: tuple[tuple[int, int], ...]) -> str:
-    """The repair for a ``[goals]`` section: delete exactly the reported spans, nothing else."""
-    return f"delete the [goals] tables ({_lines(spans)}) from {path}; Goal Mode was removed"
+    """The repair for a ``[goals]`` section, with the reason."""
+    return f"{goals_section_action(path, spans)}; Goal Mode was removed"
 
 
 def refuse_retired_config(project_root: Path | None) -> None:
@@ -143,12 +180,12 @@ def refuse_retired_config(project_root: Path | None) -> None:
         return
     found = retired_jobs_keys(path)
     spans = goals_section_spans(path)
-    if found and not spans:
+    if found and not has_goals_section(path):
         raise RetiredConfigError(retired_jobs_keys_message(path, found))
-    if spans:
+    if has_goals_section(path):
         message = (
-            f"booley.toml has a [goals] section (line {spans[0][0]}); Goal Mode was removed. "
-            f"Fix: {goals_section_fix(path, spans).partition('; ')[0]} "
+            f"booley.toml has a [goals] section{goals_section_location(spans)}; Goal Mode was removed. "
+            f"Fix: {goals_section_action(path, spans)} "
             "(or run booley-heal to remove it)."
         )
         if found:

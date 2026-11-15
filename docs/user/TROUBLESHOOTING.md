@@ -219,13 +219,10 @@ means the next build rebuilds the layers it removed.
 
 ### A `[goals]` section in `booley.toml`
 
-Goal Mode is not part of Booley, so `booley.toml` may not have a `[goals]`
-section. Flow and Specialist runs and every command that works on a Project
-stop with a message that names the section, its lines, and the file; `booley
-doctor` and `booley upgrade` still run, and Doctor fails. Delete the `[goals]`
-tables the message names. In a Developer Agent chat that is already open, `/booley-heal` removes them for you.
-`booley measure` still measures an older commit whose own `booley.toml` has the
-section.
+`booley.toml` may not have a `[goals]` section. Flow and Specialist runs and
+every command that works on a Project stop with a message that names the
+section, its lines, and the file, and Doctor fails. Delete the `[goals]` tables
+the message names, or ask the Developer Agent to run `/booley-heal`.
 
 ### Deleted `[jobs]` keys
 

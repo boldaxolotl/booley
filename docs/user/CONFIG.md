@@ -300,14 +300,6 @@ so does **Booley: Open Dashboard** (it needs a trusted Sandbox window with one
 Git folder). If it doesn't open when it should, see [Dashboard
 troubleshooting](TROUBLESHOOTING.md#the-dashboard-does-not-open-on-sandbox-attach).
 
-### A `[goals]` section is refused
-
-Goal Mode is not part of Booley, so `booley.toml` may not have a `[goals]`
-section. While it does, every Project command refuses and names the section and
-its lines, and `booley doctor` fails. Delete the `[goals]` tables;
-`booley-heal` does it for you. `booley measure` still measures an older commit
-whose own `booley.toml` has the section.
-
 ## Worktrees
 
 ### Worktree settings (`[worktree]`)

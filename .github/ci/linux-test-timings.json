@@ -228,7 +228,6 @@
     "tests/harness/test_cheatsheet.py::TestCheatCommand::test_commands_include_configured_agent_chat": 2.219,
     "tests/harness/test_cheatsheet.py::TestCheatCommand::test_commands_lists_every_public_top_level_command": 2.212,
     "tests/harness/test_cheatsheet.py::TestCheatCommand::test_compact_tables_fit_120_columns[commands]": 2.457,
-    "tests/harness/test_cheatsheet.py::TestCheatCommand::test_compact_tables_fit_120_columns[goals]": 2.512,
     "tests/harness/test_cheatsheet.py::TestCheatCommand::test_compact_tables_fit_120_columns[project]": 1.982,
     "tests/harness/test_cheatsheet.py::TestCheatCommand::test_compact_tables_fit_120_columns[skills]": 2.188,
     "tests/harness/test_cheatsheet.py::TestCheatCommand::test_criteria_flag_narrows_output": 2.173,

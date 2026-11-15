@@ -280,7 +280,7 @@ You will not need these unless you are reading older work records, code, or docs
 - **Console** → **Booley Dashboard** for the live view; **none** for the old single-Ticket display: The Dashboard shows sessions, Jobs, and health across the Sandbox.
 - **Simulation Campaign** → **Simulation Record** ([ADR 0090](adr/0090-rename-simulation-and-coverage-campaigns-to-records.md)); that entry says where "campaign" remains.
 - **Coverage Campaign** → [**Coverage Record**](../src/booley/flows/sim/GLOSSARY.md), on the same terms.
-- **Result Cache** and **`booley ci`** → **Measurement Run**: the Result Cache was never finished, and [ADR 0092](adr/0092-measure-commits-against-target-metrics.md) measures commits instead. Its key-part helpers under `booley.result_cache` were removed with Goals.
+- **Result Cache** and **`booley ci`** → **Measurement Run**: the Result Cache was never finished, and [ADR 0092](adr/0092-measure-commits-against-target-metrics.md) measures commits instead.
 - **Escalation** → **none**: the Developer Agent asks the human in chat ([ADR 0067](adr/0067-replace-ticket-mode-with-goal-mode.md)).
 - **TB Coder** → **none**: the Developer Agent writes testbenches itself.
 

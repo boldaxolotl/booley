@@ -278,12 +278,9 @@ it. Keep 1 and 2 apart: 1 says the design failed the check, 2 says the check
 itself could not run, and only 1 may count against the design.
 
 Call `self.set_criterion(key, met)` for each Criterion the run evaluates.
-For a Flow or Specialist, Booley derives `criterion_key` and `criterion_met`
-from those calls, so do not set them yourself: exactly one
-mapped and evaluated Criterion gives its key and verdict; none, several, or
-several selected Targets give an empty key and `None`. Otherwise a call gets an empty key and `None`,
-and its report omits both fields, so report readers must treat them as
-optional. A direct `McpTool` endpoint reports the fields it sets, with
+For a Flow or Specialist, Booley leaves `criterion_key` empty and
+`criterion_met` `None` and its report omits both fields, so do not set them
+yourself and report readers must treat them as optional. A direct `McpTool` endpoint reports the fields it sets, with
 `criterion_met` defaulting to `False`.
 
 The `Specialist` base fills the token and cost fields, and the base class adds
