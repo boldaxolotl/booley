@@ -40,7 +40,7 @@ optional is not covered by a primary run.
 | Interactive Mode | [gui/dashboard-live](missions/gui/MISSION.md), [taxi/bwave](missions/taxi/MISSION.md), [taxi/interactive](missions/taxi/MISSION.md), [uart/interactive-surface](missions/uart/MISSION.md), [uart/setup-interactive](missions/uart/MISSION.md) |
 | MCP job control | [taxi/bwave](missions/taxi/MISSION.md), [taxi/interactive](missions/taxi/MISSION.md) |
 | Mode-specific MCP surface | [uart/interactive-surface](missions/uart/MISSION.md) |
-| Job admission control | [scheduler/sched-admission](missions/scheduler/MISSION.md), [scheduler/sched-fullchip](missions/scheduler/MISSION.md) (optional), [scheduler/sched-jump](missions/scheduler/MISSION.md), [scheduler/sched-records](missions/scheduler/MISSION.md), [taxi/campaign](missions/taxi/MISSION.md), [taxi/interactive](missions/taxi/MISSION.md) |
+| Job admission control | [scheduler/sched-admission](missions/scheduler/MISSION.md), [scheduler/sched-fullchip](missions/scheduler/MISSION.md) (optional), [scheduler/sched-jump](missions/scheduler/MISSION.md), [scheduler/sched-records](missions/scheduler/MISSION.md), [taxi/sim-record](missions/taxi/MISSION.md), [taxi/interactive](missions/taxi/MISSION.md) |
 | Job resource history | [scheduler/sched-history](missions/scheduler/MISSION.md) |
 | Memory reservation shrinking | [scheduler/sched-shrink](missions/scheduler/MISSION.md) |
 | Out-of-memory requeue | [scheduler/sched-oom](missions/scheduler/MISSION.md) |
@@ -49,7 +49,7 @@ optional is not covered by a primary run.
 | Retired `[jobs]` keys | [scheduler/sched-cutover](missions/scheduler/MISSION.md) |
 | Public capability discovery | [coverage/cov-collect](missions/coverage/MISSION.md), [taxi/interactive](missions/taxi/MISSION.md), [uart/interactive-surface](missions/uart/MISSION.md) |
 | Simulation Flow | [gui/setup](missions/gui/MISSION.md), [picorv32/baseline](missions/picorv32/MISSION.md), [taxi/baseline](missions/taxi/MISSION.md), [taxi/final-regression](missions/taxi/MISSION.md), [taxi/goal-repair](missions/taxi/MISSION.md), [uart/evaluate](missions/uart/MISSION.md), [uart/final-regression](missions/uart/MISSION.md), [uart/sim-protocol](missions/uart/MISSION.md) (optional) |
-| Simulation Campaign | [coverage/cov-retention](missions/coverage/MISSION.md), [scheduler/sched-records](missions/scheduler/MISSION.md), [taxi/campaign](missions/taxi/MISSION.md), [uart/sim-campaign](missions/uart/MISSION.md) |
+| Simulation Record | [coverage/cov-retention](missions/coverage/MISSION.md), [scheduler/sched-records](missions/scheduler/MISSION.md), [taxi/sim-record](missions/taxi/MISSION.md), [uart/sim-record](missions/uart/MISSION.md) |
 | Lint Flow | [picorv32/baseline](missions/picorv32/MISSION.md), [taxi/final-regression](missions/taxi/MISSION.md), [taxi/goal-repair](missions/taxi/MISSION.md), [taxi/lint-synth](missions/taxi/MISSION.md), [uart/final-regression](missions/uart/MISSION.md), [uart/goal-feature](missions/uart/MISSION.md), [uart/setup-interactive](missions/uart/MISSION.md) |
 | Synthesis Flow | [picorv32/baseline](missions/picorv32/MISSION.md), [scheduler/sched-shrink](missions/scheduler/MISSION.md), [taxi/cleanup](missions/taxi/MISSION.md), [taxi/final-regression](missions/taxi/MISSION.md), [taxi/goal-repair](missions/taxi/MISSION.md), [taxi/lint-synth](missions/taxi/MISSION.md), [uart/final-regression](missions/uart/MISSION.md), [uart/goal-feature](missions/uart/MISSION.md), [uart/setup-interactive](missions/uart/MISSION.md) |
 | FPGA Flow | [taxi/vivado-fpga](missions/taxi/MISSION.md) (optional) |
@@ -87,9 +87,9 @@ optional is not covered by a primary run.
 | Findings Log | [uart/interactive-surface](missions/uart/MISSION.md) |
 | Feedback reporting | [uart/interactive-surface](missions/uart/MISSION.md) |
 | Documentation usability | [gui/docs-site](missions/gui/MISSION.md), [gui/setup](missions/gui/MISSION.md), [picorv32/baseline](missions/picorv32/MISSION.md), [picorv32/hunt](missions/picorv32/MISSION.md), [taxi/cleanup](missions/taxi/MISSION.md), [taxi/final-regression](missions/taxi/MISSION.md), [taxi/goal-observability](missions/taxi/MISSION.md), [taxi/goal-repair](missions/taxi/MISSION.md), [taxi/interactive](missions/taxi/MISSION.md), [taxi/setup](missions/taxi/MISSION.md), [uart/evaluate](missions/uart/MISSION.md), [uart/goal-feature](missions/uart/MISSION.md), [uart/interactive-surface](missions/uart/MISSION.md) |
-| Verilator simulation integration | [coverage/cov-collect](missions/coverage/MISSION.md), [taxi/baseline](missions/taxi/MISSION.md), [taxi/campaign](missions/taxi/MISSION.md) |
+| Verilator simulation integration | [coverage/cov-collect](missions/coverage/MISSION.md), [taxi/baseline](missions/taxi/MISSION.md), [taxi/sim-record](missions/taxi/MISSION.md) |
 | Verilator lint integration | [picorv32/baseline](missions/picorv32/MISSION.md), [taxi/lint-synth](missions/taxi/MISSION.md), [uart/setup-interactive](missions/uart/MISSION.md) |
-| Icarus simulation integration | [uart/sim-campaign](missions/uart/MISSION.md) |
+| Icarus simulation integration | [uart/sim-record](missions/uart/MISSION.md) |
 | Verible lint integration | [taxi/lint-synth](missions/taxi/MISSION.md), [uart/setup-interactive](missions/uart/MISSION.md) |
 | Yosys logical synthesis integration | [taxi/lint-synth](missions/taxi/MISSION.md) |
 | Slang integration | [taxi/lint-synth](missions/taxi/MISSION.md) |
@@ -105,7 +105,7 @@ optional is not covered by a primary run.
 | Native simulation coverage | [coverage/cov-collect](missions/coverage/MISSION.md), [coverage/cov-numeric](missions/coverage/MISSION.md) |
 | Coverage Goals and policy | [coverage/cov-goal](missions/coverage/MISSION.md), [coverage/cov-policy](missions/coverage/MISSION.md) |
 | Approved coverage waivers | [coverage/cov-waivers](missions/coverage/MISSION.md) |
-| Coverage Campaign storage | [coverage/cov-numeric](missions/coverage/MISSION.md), [coverage/cov-retention](missions/coverage/MISSION.md), [coverage/cov-storage](missions/coverage/MISSION.md) |
-| Coverage Campaign retention | [coverage/cov-retention](missions/coverage/MISSION.md) |
+| Coverage Record storage | [coverage/cov-numeric](missions/coverage/MISSION.md), [coverage/cov-retention](missions/coverage/MISSION.md), [coverage/cov-storage](missions/coverage/MISSION.md) |
+| Coverage Record retention | [coverage/cov-retention](missions/coverage/MISSION.md) |
 | Coverage Analyst | [coverage/cov-analyst](missions/coverage/MISSION.md) |
 | Coverage Analyst evidence boundary | [coverage/cov-analyst](missions/coverage/MISSION.md) |

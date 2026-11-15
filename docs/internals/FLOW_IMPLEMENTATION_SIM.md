@@ -7,16 +7,9 @@ analysis. It is for contributors and agents changing `booley.flows.sim`. What
 all built-in Flows share (FuseSoC resolution, evidence contracts, the
 invocation lifecycle, Goal baselines) is in
 [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md); report files and the
-Simulation Campaign layout are in [FLOW_REPORTS.md](FLOW_REPORTS.md#sim); how
+Simulation Record layout are in [FLOW_REPORTS.md](FLOW_REPORTS.md#sim); how
 to run a simulation is in [FLOW-SIM.md](../user/FLOW-SIM.md) and
 [COVERAGE.md](../user/COVERAGE.md).
-
-Code, persisted formats, and messages still say "Simulation Campaign" and
-"Coverage Campaign" for what the glossaries call a
-[Simulation Record](../GLOSSARY.md#simulation-evidence) and a
-[Coverage Record](../../src/booley/flows/sim/GLOSSARY.md)
-([ADR 0090](../adr/0090-rename-simulation-and-coverage-campaigns-to-records.md));
-this page uses the code's names.
 
 ## What a run produces
 
@@ -40,8 +33,8 @@ and `--resume-from` resolve against those entries rather than becoming raw
 command fragments.
 
 `SimulateFlow` (`flows/sim/flow.py`) keeps Target and test selection, Cycle
-Count baselines, Criteria, report rendering, and exit codes. The Simulation
-Campaign (`flows/sim/campaign/`) owns the immutable workload plan, Simulator
+Count baselines, Criteria, report rendering, and exit codes. The [Simulation
+Record](../GLOSSARY.md#simulation-evidence) (`flows/sim/record/`) owns the immutable workload plan, Simulator
 Bundles, scheduling, per-work-item durability, and resume
 ([ADR 0064](../adr/0064-make-simulation-campaign-the-resume-authority.md)).
 The manifest and terminal work-item results are the authority; the summary
@@ -106,7 +99,7 @@ firmware, joins the Flow.
 - `immutable` (default): after the build, with the Simulator Bundle path
   withheld. Booley checks that the hook did not change the build inputs, which
   is what allows one build to be shared across tests. A hook that cannot start
-  or that changes build inputs is a Simulation Campaign integrity error (exit
+  or that changes build inputs is a Simulation Record integrity error (exit
   2).
 - `legacy-per-test`: before a private per-test build, with
   `BOOLEY_BUILD_ROOT` set. Native coverage refuses this mode.
@@ -172,12 +165,12 @@ changes; they mean the change cannot be credited to the RTL alone.
 
 ## Logs and traces
 
-`simulation.json`, `report.json`, and the Campaign layout are in
+`simulation.json`, `report.json`, and the Simulation Record layout are in
 [FLOW_REPORTS.md](FLOW_REPORTS.md#sim). Each test's simulator output is kept
-as live-log evidence in its Campaign work item: each launched attempt's
+as live-log evidence in its Simulation Record work item: each launched attempt's
 `execution-evidence/` directory, beside its snapshot, holds `run.log`
 (tail-truncated to 10 MB), the adapter result JSON, and Cocotb's
-`results.xml`. `booley.flows.sim.campaign.test_run_files` is the one lookup
+`results.xml`. `booley.flows.sim.record.test_run_files` is the one lookup
 from a Test Run to its accepted attempt's log and trace, used by both the
 projection and the verdict card. A grouped run keeps each test's copy before
 starting the next test, including failed, timed-out, and inconclusive ones. A
@@ -202,7 +195,7 @@ environment. Active builds also set `CCACHE_BASEDIR` and a
 `-fdebug-prefix-map` for the generated build directory, so `-g` objects hit
 the cache across build generations.
 
-Ordinary, campaign, coverage, Cocotb, and elaboration-only builds use this
+Ordinary, coverage, Cocotb, and elaboration-only builds use this
 interface; Mutation Flow builds, which run Make directly, use
 `simulation_build_environment`. Icarus builds do not resolve a cache policy.
 The policy takes the environment as an argument (build preparation passes
@@ -265,9 +258,9 @@ rejection is exit 1. When the per-Target builds passed and the only problems
 are fallback-probe parse errors, the result is "ungraded" (exit 2) and the
 standalone Criterion keeps its previous state.
 
-## Coverage Campaign orchestration
+## Coverage Record orchestration
 
-A Coverage Campaign is native Verilator coverage collected by one Simulation
+A [Coverage Record](../../src/booley/flows/sim/GLOSSARY.md) is native Verilator coverage collected by one Simulation
 invocation for one Target. Collection is off unless the caller asks:
 `SimRequest.coverage=True`, the CLI `--coverage` (alias `--cov`), or the MCP
 boolean `coverage`. A Coverage Criterion never turns collection on: a
@@ -286,9 +279,9 @@ run whose suite differs, including by configured skips, is a suite mismatch
 at evaluation. Targets run sorted, one at a time.
 
 `run_coverage_target` (`flows/sim/coverage_transaction.py`) collects through
-`SimulationExecutionPort`, assembles and validates the Campaign, loads the
+`SimulationExecutionPort`, assembles and validates the Coverage Record, loads the
 Approved Waiver Set unless `--no-waivers` is given, evaluates, publishes the
-Campaign under the attempt's own directory, and returns the outcome. Source
+Coverage Record under the attempt's own directory, and returns the outcome. Source
 or Target drift during the run is rejected. Exit codes, first match wins:
 
 | Exit | When |
@@ -315,7 +308,7 @@ Goal Record's `waiver-candidates.json` (`flows/sim/waiver_candidates.py`),
 with strict and provisional verdicts. A Provisional Coverage Verdict only
 informs the human and cannot meet a Goal. The Developer Agent proposes a
 waiver through `goal_propose_change`; human approval revalidates the
-candidate, Campaign, source, and policy identities, updates the Approved
+candidate, Coverage Record, source, and policy identities, updates the Approved
 Waiver Set, recomputes strict coverage, and records the change in the Goal
 Change Log. A waiver-policy change made outside that path invalidates older
 coverage evidence instead of counting as Goal approval
@@ -324,11 +317,11 @@ coverage evidence instead of counting as Goal approval
 ### Persistence and recovery
 
 The file layout is in
-[FLOW_REPORTS.md](FLOW_REPORTS.md#coverage-campaign-files). The rules that keep
+[FLOW_REPORTS.md](FLOW_REPORTS.md#coverage-record-files). The rules that keep
 it trustworthy:
 
-- **The nested manifest is the commit marker.** `publish_coverage_campaign`
-  (`flows/sim/coverage_campaign_store.py`) writes the point store first, then
+- **The nested manifest is the commit marker.** `publish_coverage_record`
+  (`flows/sim/coverage_record_store.py`) writes the point store first, then
   the nested `coverage.json` manifest, and removes the point store if the
   manifest never lands. Neither file is ever replaced, so a reader that finds
   a manifest finds a complete pair.
@@ -342,9 +335,9 @@ it trustworthy:
   summary must never outvote the points it summarizes
   ([ADR 0062](../adr/0062-split-coverage-campaign-summary-from-point-storage.md)).
   Contract failures carry stable `COV_*` error codes.
-- **Criteria come only from Campaign acceptance.** Simulation Campaign
+- **Criteria come only from Simulation Record acceptance.** Simulation Record
   acceptance (`flows/sim/acceptance.py`) records Coverage Criterion evidence
-  after the Campaign is published. Coverage observations go to
+  after the Coverage Record is published. Coverage observations go to
   transaction-named ledger directories, and the transaction ID is saved in
   `acceptance_transactions` in the same atomic state save as the updated
   Criteria. Readers ignore observations from transactions the saved state
@@ -353,11 +346,11 @@ it trustworthy:
 - **What a late failure keeps.** Before the nested manifest is published, a
   persistence error keeps any observed simulation verdict but reports
   collection as `infrastructure_error` and blocks a requested evaluation.
-  After it is published, later failures (Simulation Campaign, reference,
+  After it is published, later failures (Simulation Record, reference,
   summary, acceptance, report, or progress publication) keep the committed
   collection and evaluation results and the simulation verdict; they never
   turn a committed evaluation into `blocked`. The one exception: if the
-  nested Campaign cannot be loaded back, the detail reports
+  nested Coverage Record cannot be loaded back, the detail reports
   `infrastructure_error` and the prepared evaluation. If keeping a completed
   outcome fails while resolving its public reference, the result keeps the
   simulation verdict and tests but reports `collection: infrastructure_error`
@@ -366,7 +359,7 @@ it trustworthy:
   and no stage runs after a publication failure except an error checkpoint.
 - **Terminal progress follows publication.** If the normal terminal
   `progress.json` write fails, the Flow retries once as `phase: aborted` and
-  returns 2 even when the retry succeeds; the committed Campaign stays valid.
+  returns 2 even when the retry succeeds; the committed Coverage Record stays valid.
   `phase: complete` is reserved for a successful progress write, so a
   per-Target progress failure ends as `aborted` even when every Target
   finished. A failed terminal write never replaces the result already built
@@ -397,32 +390,32 @@ invocation; the command line is in
 [FLOW_REPORTS.md](FLOW_REPORTS.md#coverage-retention). It takes the report
 root explicitly (callers get Booley Directory roots from
 `booley.runtime.booley_dir.resolve_booley_dir()`) and never picks a "latest"
-Campaign or applies age or size rules: deleting evidence must be a deliberate
+Simulation Record or applies age or size rules: deleting evidence must be a deliberate
 act on a named invocation.
 
 - `prune_native_payload(reports_root, invocation, target)` needs an exact
   invocation number and one exact manifest Target selector. It validates the
-  Campaign pair, Simulation identities, and link safety before changing
+  Simulation Record and Coverage Record pair, Simulation identities, and link safety before changing
   anything; symlinks, unsafe paths, ambiguous or unknown Targets, a wrong
   invocation, and a recorded native payload already missing on the first try
   are errors. It writes `availability.json`
-  (`booley.coverage-availability/v1`: Campaign ID, manifest and point-store
+  (`booley.coverage-availability/v2`: Coverage Record ID, manifest and point-store
   digests, native artifact IDs, paths, and digests) in the nested Coverage
-  Campaign directory with status `pruning`, deletes `native/` (unrecorded
+  Record directory with status `pruning`, deletes `native/` (unrecorded
   files included), then sets the status to `pruned`. A retry trusts the
   existing sidecar and finishes the removal. The manifest, point store,
-  Simulation files, and hook evidence never change, so the Campaign stays
+  Simulation files, and hook evidence never change, so the Coverage Record stays
   analyzable.
 - `prune_invocation(reports_root, invocation, *, project_data=None,
   include_dependents=False)` validates every Target and checks every file
-  against the authenticated invocation, Campaign, and artifact inventory,
+  against the authenticated invocation, Simulation Record, and artifact inventory,
   then renames the invocation to `.pruned-N` and empties it. Unknown files are
   named and refused before any change. A terminal attempt owns its records,
   the files its result names, and its `private-build/`, `snapshot/`, and used
   shared-build trees; the unknown-file check inside it covers its records and
   `evidence/`, `runtime-inputs/`, and `pre-sim/`, not the build trees.
   Changed or missing native payloads are accepted, since everything goes.
-  Pending or interrupted Campaigns, missing summaries, and missing projections
+  Pending or interrupted Simulation Records, missing summaries, and missing projections
   count as abandoned, not invalid. A reservation abandoned before
   `progress.json` is removable when its directory is empty and its lock file
   is intact. The empty `.pruned-N` directory reserves the number for good.
@@ -440,12 +433,12 @@ inferred only when the report root is exactly
 `<booley-directory>/.runtime/flow-reports`; any other root needs
 `--project-data <booley-directory>` for `--full` in that case.
 
-Full pruning holds the producer lock and every Campaign mutation lock through
+Full pruning holds the producer lock and every Simulation Record mutation lock through
 a second inventory pass, recovery, journal publication, and the rename.
 Producer-lock contention means the invocation is still being produced;
 mutation-lock contention means a resume is running. Retention never removes
-or rewrites either lock, and a Campaign lock never recreates a renamed
-Campaign root. Selection, locking, validation, and filesystem failures exit 2.
+or rewrites either lock, and a Simulation Record lock never recreates a renamed
+Simulation Record root. Selection, locking, validation, and filesystem failures exit 2.
 Both operations are safe to retry with the same selection; never remove
 journals, quarantines, invocation locks, or `.pruned-N` directories by hand.
 

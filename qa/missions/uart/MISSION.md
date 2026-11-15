@@ -287,22 +287,22 @@ Try:
 - Seed a fault mid-Flow and resume using only the documented recovery.
 Look for: docs, help and MCP disagreeing; lost feedback entries; incomplete redaction.
 
-### 15. sim-campaign — Simulation Campaign attempt contract (~20 min)
-Setup: copy `fixtures/simulation-campaign/` to `qa-campaign/` in the Project, register its
-`campaign.core`, and merge its `tests.toml`. Use one TOML fragment per campaign.
+### 15. sim-record — Simulation Record attempt contract (~20 min)
+Setup: copy `fixtures/simulation-record/` to `qa-campaign/` in the Project, register its
+`campaign.core`, and merge its `tests.toml`. Use one TOML fragment per Simulation Record.
 Try:
 - `runtime-inputs.toml`, tests `alpha` and `beta`: distinct run directories and vectors, owned
   files cleaned after publication, one unchanged shared Simulator Bundle.
 - `literal-cwd.toml`, with a `[sandbox].memory` large enough for at least two items (restart the
   Session as `docs/user/SANDBOX.md` says and confirm `budget_mb` in a claim file; restore the
   setting after the area): attempts on the same literal directory don't overlap, but a separate
-  templated campaign started then does (per-directory lock, not global). This step tests the
+  templated Simulation Record started then does (per-directory lock, not global). This step tests the
   per-directory lock, not memory queueing, so it asserts the overlap only.
 - `immutable-presim.toml`: the hook sees no `BOOLEY_BUILD_ROOT` and exits 73. Expect an
   attributed setup failure, no pass, and unchanged source, bundle and snapshot hashes.
 - `legacy-presim.toml`: `legacy-per-test` is disclosed, each test gets its own private build,
   and nothing claims a shared bundle.
-- Optionally cross-check with `fixtures/simulation-campaign/validate_campaign.py`.
+- Optionally cross-check with `fixtures/simulation-record/validate_campaign.py`.
 Look for: global serialization, a leaked build root, a failed hook reported as a pass.
 
 ### 16. external-image — Externally supplied image (~15 min, optional follow-up)
@@ -376,7 +376,7 @@ external image, pre-existing containers) with their starting state.
 - Host policy is daemon-wide; without a dedicated daemon, cap and egress cases disrupt others.
 - `session`, `goal`, `feedback` and `upgrade` work but are hidden from top-level
   `booley --help`; their absence there is not a discovery finding.
-- The Simulation Campaign fixture is SystemVerilog under Icarus, so its core sets `flow: sim` with
+- The Simulation Record fixture is SystemVerilog under Icarus, so its core sets `flow: sim` with
   `flow_options.iverilog_options: [-g2012]`. Without it the build fails on `string`.
 - The QA host's canonical install is `pip install --user --break-system-packages`, which is not a
   documented user route. Verify the documented pipx/uv route in an isolated HOME, and don't

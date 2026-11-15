@@ -1,7 +1,7 @@
-# Coverage aggregate Simulation Campaign fixture
+# Coverage aggregate Simulation Record fixture
 
 This runbook gives the QA agent running the coverage mission the exact steps
-for three Simulation Campaign recovery cases in area 6, `cov-retention`
+for three Simulation Record recovery cases in area 6, `cov-retention`
 ([MISSION.md](../../../missions/coverage/MISSION.md)): refusing to resume an
 unfinished coverage collection, recovering a failed Goal acceptance write, and
 rejecting a corrupt terminal Result. Fixture setup, the `boundary.so` fault
@@ -11,10 +11,6 @@ runbook](../RUNBOOK.md); Goal-child rules live in
 cross-checks over saved evidence; only a real run against the candidate tests
 the product.
 
-Code, messages and files still say "Simulation Campaign" and "Coverage
-Campaign" (the [Simulation Record](../../../../docs/GLOSSARY.md) rename has not
-landed), so this runbook does too.
-
 ## Paths
 
 `<asset>` is `qa/shared/coverage/` in the Booley checkout under test. A
@@ -22,20 +18,20 @@ coverage run writes, under `<reports>/sim/<N>/targets/sim_toggle/`:
 
 | Path | What it is |
 |---|---|
-| `campaign/manifest.json` | The Simulation Campaign Manifest; the `--resume-from` input |
-| `campaign/work-items/<item>/result.json` | The work item's terminal Result; absent while unfinished |
-| `campaign/work-items/<item>/attempts/<attempt>/attempt.json` | One Simulation Attempt |
-| `campaign/work-items/<item>/attempts/<attempt>/coverage-campaign/` | That attempt's nested Coverage Campaign |
+| `record/manifest.json` | The Simulation Record Manifest; the `--resume-from` input |
+| `record/work-items/<item>/result.json` | The work item's terminal Result; absent while unfinished |
+| `record/work-items/<item>/attempts/<attempt>/attempt.json` | One Simulation Attempt |
+| `record/work-items/<item>/attempts/<attempt>/coverage-record/` | That attempt's nested Coverage Record |
 | `simulation.json` | The Target's compatibility projection |
 
-A coverage Simulation Campaign has exactly one work item, of kind
+A coverage Simulation Record has exactly one work item, of kind
 `coverage_aggregate`.
 
 The validators are Python functions, not CLIs. Call them like this, with the
 arguments listed in each case below:
 
 ```bash
-PYTHONPATH=<asset>/simulation-campaign python3 -c \
+PYTHONPATH=<asset>/simulation-record python3 -c \
   'import sys, validate_aggregate as v; from pathlib import Path; v.validate(*map(Path, sys.argv[1:]))' \
   <args...>
 ```
@@ -46,7 +42,7 @@ PYTHONPATH=<asset>/simulation-campaign python3 -c \
    `booley flow sim --target sim_toggle --test half --coverage --report-dir <owned>`.
 2. After native collection has started but before the aggregate Result
    commits, terminate and reap only the owned producer process group.
-3. Save the interrupted Simulation Attempt, its nested Coverage Campaign
+3. Save the interrupted Simulation Attempt, its nested Coverage Record
    directory, the native database identity, the merge inputs, the process
    timeline and the terminal state. Do not edit or delete the interrupted
    records.
@@ -64,8 +60,8 @@ PYTHONPATH=<asset>/simulation-campaign python3 -c \
    interrupted_result_json, rejection_record)` on saved copies;
    `interrupted_result_json` is the path where the work item's `result.json`
    would be, and it must not exist.
-7. Run the shared numeric evaluator over the nested Coverage Campaign that
-   the control's Result selects (paths per the shared runbook's "Campaign
+7. Run the shared numeric evaluator over the nested Coverage Record that
+   the control's Result selects (paths per the shared runbook's "Coverage Record
    paths"); its storage and integrity checks must pass:
 
    ```bash
@@ -109,7 +105,7 @@ That is why this case wraps the server.
    exist yet. Confirm the server answers before the child calls it.
 4. Have the child collect through MCP `sim(work_dir=..., coverage=true)` with
    the complete suite; CLI Flows bind no Goal evidence. The gate lets earlier
-   state writes pass. The Campaign publishes every terminal Result, then the
+   state writes pass. The Simulation Record publishes every terminal Result, then the
    gate fails the state replacement whose temporary JSON adds a new acceptance
    transaction.
 5. After the failed call, send SIGTERM to the faulted server process only, not
@@ -159,7 +155,7 @@ That is why this case wraps the server.
 ## Resources and cleanup
 
 Before the first mutation, list in `resources.md` every run-owned report root,
-nested Coverage Campaign, Goal Record, evidence ledger directory, fault control
+nested Coverage Record, Goal Record, evidence ledger directory, fault control
 directory, corrupt copy, process group and fixture registration. Recovery
 always saves the observed failure first, restores only owned bytes or paths,
 then runs the valid control in the same run, whether or not the negative case

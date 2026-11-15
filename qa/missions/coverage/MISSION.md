@@ -1,7 +1,7 @@
 # Native coverage on a fixed fixture Project
 
 Hunt native-coverage bugs end to end: collection, exact arithmetic, Goal
-policy, waivers, Campaign storage, retention, a coverage Goal, and the
+policy, waivers, Coverage Record storage, retention, a coverage Goal, and the
 Coverage Analyst. The areas don't use a real design: they run on a fixed
 fixture Project whose counts are known by construction, so every mismatch is a
 finding rather than a judgment call. The `booley-qa-run` skill runs this
@@ -16,7 +16,7 @@ it before area 1.
 - Tools/host needs: pinned Verilator (`VERILATOR_VERSION` and `VERILATOR_REF` in
   `src/booley/data/docker/Dockerfile.base`) in the issued Sandbox, Yosys with
   SAT/induction, gcc, Python, Docker; ~8 GiB RAM and ~20 GiB free disk for the
-  large `sim_scale` Campaign; a Codex or Claude client for the Analyst.
+  large `sim_scale` Coverage Record; a Codex or Claude client for the Analyst.
 - Budget: 8 h total: 405 area minutes plus 75 contingency. Areas run in
   priority order; log areas not reached as skipped. Run areas sequentially;
   Interactive children never overlap an active Goal in the same Project.
@@ -29,16 +29,16 @@ it before area 1.
   initialization's config. Commit fixture and initialized Project files, including seeded Goalsets and
   managed `.gitignore`, before creating a Goal worktree.
 - Native builds run only in the Sandbox. `sim_scale` (4,096 instances) wants ~8 GiB RAM and ~20 GiB
-  free disk; if absent, log it and skip only the large-Campaign items.
+  free disk; if absent, log it and skip only the large-record items.
 - Build the syscall fault library into a run-owned dir and inject it only into the one command under test
   (never `/etc/ld.so.preload`, never a shared shell):
   `gcc -shared -fPIC -O2 -Wall -Wextra -o <owned>/boundary.so ../../shared/coverage/faults/boundary.c -ldl`
 - Sanity-check the independent oracle first: `python3 ../../shared/coverage/evaluator/controls.py <mode>`
   for `positive`, `hit-count`, `source-grouping`, `digest`, `rational-verdict` (positive accepts, each
   negative rejects). A broken oracle is a `qa-bug`; judge numbers by hand from `expected.json`.
-- Campaign paths: the Flow's `targets/<t>/coverage.json` is a reference, not the Campaign. The Analyst takes
-  it as-is; `measurements.py` and `approvals.py` take the nested Campaign manifest it points to, and run ids are
-  `run:NNN:<test>`. Resolve both with RUNBOOK.md "Campaign paths".
+- Coverage Record paths: the Flow's `targets/<t>/coverage.json` is a reference, not the Coverage Record. The Analyst takes
+  it as-is; `measurements.py` and `approvals.py` take the nested Coverage Record manifest it points to, and run ids are
+  `run:NNN:<test>`. Resolve both with RUNBOOK.md "Coverage Record paths".
 - Coverage Analyst CLI:
   `booley specialist coverage_analyst --record <t>/coverage.json [--instruction <q>] [--report-dir <owned>]`.
 - Produce the named baselines each area needs fresh, from the RUNBOOK.md table (e.g. `baseline.native` =
@@ -61,14 +61,14 @@ it before area 1.
 ## Areas
 
 ### 1. cov-collect — Collection entry points, harnesses and suite selection (~45 min)
-Intent: `--coverage` must produce one complete, correctly attributed native Campaign per selected Target/test,
+Intent: `--coverage` must produce one complete, correctly attributed native Coverage Record per selected Target/test,
 and reject unsupported combos atomically.
 Try:
 - Read `booley flow sim --help` and the MCP `sim` schema: `--coverage` and alias `--cov`, default false;
-  `coverage_analyst` needs an exact Campaign path.
+  `coverage_analyst` needs an exact Coverage Record path.
 - `--coverage` vs `--cov` on `sim_generated` (equivalent, fresh invocation numbers); MCP `sim` with
   `coverage: true`, then with string `"true"` (schema rejection before simulation); omit collection while a
-  coverage Goal exists → plain sim, no Campaign, no coverage acceptance.
+  coverage Goal exists → plain sim, no Coverage Record, no coverage acceptance.
 - Harness kinds: `sim_generated` (two selected tests), `sim_custom` (C++ main), `sim_hdl` (tagged HDL TB),
   `sim_cocotb` (one process/database per test, verdicts from XML). Reverse the Target/test order → stable
   order, no cross-Target merge.
@@ -91,9 +91,9 @@ cocotb batch verdicts reused as coverage truth.
 Intent: numbers must match `expected.json` exactly; windows and hooks must be enforced; broken native input
 must never become points.
 Try:
-- For each `expected.json` case run its Target/tests with `--coverage`, then check the nested Campaign manifest
-  (one `--native` per run, ids and paths per RUNBOOK.md "Campaign paths"):
-  `python3 ../../shared/coverage/evaluator/measurements.py <nested>/coverage.json --expected ../../shared/coverage/expected.json --case <case> --native run:001:<test>@1=<campaign-dir>/native/raw/001-<test>@1.dat`
+- For each `expected.json` case run its Target/tests with `--coverage`, then check the nested Coverage Record manifest
+  (one `--native` per run, ids and paths per RUNBOOK.md "Coverage Record paths"):
+  `python3 ../../shared/coverage/evaluator/measurements.py <nested>/coverage.json --expected ../../shared/coverage/expected.json --case <case> --native run:001:<test>@1=<record-dir>/native/raw/001-<test>@1.dat`
   Cases: zero 0/8,
   quarter 2/8, half 4/8, rise (one direction) 4/8, full 8/8, repeat 4/8 with higher hit counts, union 4+4 →
   8/8, overlap → 4/8, properties4 half 2/4 and full 4/4, properties16 half 2/16 (12.5%), threshold 50 pass
@@ -151,11 +151,11 @@ Intent: only exact, pre-approved, Target-bound waivers apply; any bad entry bloc
 Try:
 - Run `yosys -s ../../shared/coverage/proof/parity.ys` from the Project Root (must prove induction), copy
   the log to `<approved-dir>/proof/parity.log`, then bind (repeat with `excluded` on the `sim_properties4`
-  half Campaign):
+  half Coverage Record):
   `python3 ../../shared/coverage/faults/approvals.py unreachable <nested>/coverage.json --project <p> --directory <approved-dir> --inputs ../../shared/coverage/approval-inputs.json`
   Gated `sim_waiver` `[run]` toggle @1 → two bit-zero points waived with provenance.
 - Anchors `rtl_repository` and `project_data_repository` (use a separately initialized Booley Directory repo);
-  approval digest change → new set digest, old Campaign unchanged; approval for one Target never leaks to
+  approval digest change → new set digest, old Coverage Record unchanged; approval for one Target never leaks to
   another.
 - In separate copies, keep one valid approval and break the other: invalid anchor, absolute or `../`
   directory, symlink, bad schema, duplicate table, zeroed source/proof digest, point from another source,
@@ -165,8 +165,8 @@ Try:
 Look for: partial application, symlink/path escapes, hardcoded Booley Directory path.
 Depends on: baseline.waiver.
 
-### 5. cov-storage — Campaign layout, integrity and publication faults (~45 min)
-Intent: the stored Campaign must be complete, lossless, and never half-published.
+### 5. cov-storage — Coverage Record layout, integrity and publication faults (~45 min)
+Intent: the stored Coverage Record must be complete, lossless, and never half-published.
 Try:
 - Two-Target invocation: report, progress, per-Target `coverage.json`, point store, `simulation.json`,
   native/hook files at documented paths; repeat with an explicit report root containing spaces. Decompress
@@ -181,17 +181,17 @@ Try:
   …/simulation.json` and terminal `progress.json`; shared
   abort across three Targets; `--gate interrupt` then reap the producer → no complete claim, lock released;
   fresh run gets a new number, no resume.
-- Rerun and re-analyze while keeping an old Campaign → old bytes identical, no `latest` alias.
-Look for: accepted evidence without a Campaign, lost prior acceptance, a corrupt copy reaching the model,
+- Rerun and re-analyze while keeping an old Coverage Record → old bytes identical, no `latest` alias.
+Look for: accepted evidence without a Coverage Record, lost prior acceptance, a corrupt copy reaching the model,
 stale lock after interrupt.
 Depends on: baseline.analysis, baseline.policy, baseline.multi.
 
-### 6. cov-retention — Pruning and Simulation Campaign recovery (~40 min)
+### 6. cov-retention — Pruning and Simulation Record recovery (~40 min)
 Intent: pruning removes exactly what was asked, is retryable, and resume/recovery never duplicates or loses
 evidence.
 Try:
 - `python -m booley.flows.sim.record_retention --reports-root <r> --invocation N --native-target <t>`
-  → only that payload gone, normalized evidence byte-identical, pruned Campaign still analyzable; repeat is
+  → only that payload gone, normalized evidence byte-identical, pruned Coverage Record still analyzable; repeat is
   safe. `--full` → empty `.pruned-N` tombstone, analysis now fails cleanly, next run skips N.
 - Native rejections before deletion (rc2, sentinels unchanged): ambiguous/unknown Target, invalid
   number, unsafe path, symlink, wrong invocation, unexplained missing native on the first attempt,
@@ -201,7 +201,7 @@ Try:
 - Interrupt a prune with `../../shared/coverage/faults/filesystem.py --operation unlink` under `native/` (after the pruning sidecar) or `.pruned-N/` →
   retry same selection completes; prune an active invocation → rc2, lock untouched; reap producer → prune
   succeeds.
-- Follow `../../shared/coverage/simulation-campaign/RUNBOOK.md`: interrupt `sim_toggle half --coverage`
+- Follow `../../shared/coverage/simulation-record/RUNBOOK.md`: interrupt `sim_toggle half --coverage`
   mid-collection; resume and `--dry-run` from the Manifest → rc2 before any EDA launch naming a new
   `--coverage` run, attempt inventory unchanged; the fresh run is the control;
   fail the Goal state rename with `faults/filesystem.py --operation rename`
@@ -209,7 +209,7 @@ Try:
   remove the injection and resume through the child's MCP `sim` with absolute
   `work_dir` (one transaction, no new attempt). CLI Flows bind no Goal evidence.
   Flip one byte in a terminal `result.json` → rc2 before any EDA launch, restore → resume
-  without rerun. Cross-check with `../../shared/coverage/simulation-campaign/validate_aggregate.py`.
+  without rerun. Cross-check with `../../shared/coverage/simulation-record/validate_aggregate.py`.
 Look for: collateral deletion, number reuse, double-committed transactions.
 Depends on: baseline.retention.
 
@@ -224,10 +224,10 @@ Try:
   outside Protected Inputs, and commit all setup. Create a clean linked worktree.
 - Send a Codex child `$booley-goal` plus that Goalset. Collect via MCP with
   `work_dir`: sim passes but `cover_property` misses 100; `goal_status` remains
-  unmet and Finish refuses. Ask the Analyst about the exact Campaign. A plain
+  unmet and Finish refuses. Ask the Analyst about the exact Coverage Record. A plain
   sim produces no coverage evidence.
 - Child adds decoder choice 2 in TB only, leaving RTL/core/registry/policy intact.
-  Recollect to 100 and inspect exact Campaign/Simulation pointers. Save passing
+  Recollect to 100 and inspect exact Coverage Record/Simulation pointers. Save passing
   evidence, edit a relevant TB comment in the active worktree, require stale
   evidence, recollect and commit. Finish and inspect the clean TB-only diff/package;
   the operator integrates the printed branches using the shared rules.
@@ -245,7 +245,7 @@ Try:
   commit and recollect: only now is the floor met. Preserve Change Log
   provenance for both decisions.
 - Rejection probe, in its own disposable Goal record: create a proposal for one
-  bit-zero point and reject it with a reason. Re-screen the next Campaign: the
+  bit-zero point and reject it with a reason. Re-screen the next Coverage Record: the
   rejected point is filtered by rejection, and a new proposal for it is refused
   in this record. That is the designed durable rejection, not a defect. Abandon
   the record.
@@ -257,10 +257,10 @@ Look for: stale evidence honored, Analyst self-approval, candidates treated as
 strict evidence, protected config edits during active work or uncommitted approvals.
 
 ### 8. cov-analyst — Coverage Analyst and its evidence boundary (~50 min)
-Intent: the Analyst binds one exact Campaign, sees only `coverage_evidence`, never mutates state, and its
+Intent: the Analyst binds one exact Coverage Record, sees only `coverage_evidence`, never mutates state, and its
 outputs are validated.
 Try:
-- CLI and MCP on fresh Campaigns; ask the gap question from RUNBOOK.md. Verdict classes: pass
+- CLI and MCP on fresh Coverage Records; ask the gap question from RUNBOOK.md. Verdict classes: pass
   `coverage_ready`, fail `coverage_not_ready`, blocked `coverage_evidence_blocked`, ungated
   `ungated_no_recommendation`, sim-fail still reports. Ask it to simulate/read waveforms/approve waivers →
   refused, state hashes unchanged. Stealth Project → report-only. Stray `coverage_waivers.json` → ignored.
@@ -273,13 +273,13 @@ Try:
 - Isolation: Codex/Claude sessions expose only `coverage_evidence`, empty cwd, no Project skills; missing
   Codex model metadata fails early, refresh fixes; interrupted Claude Analyst leaves no nested server.
 - Via `../../shared/coverage/faults/provider.py` shim: queries (overview, metric, source, covered/uncovered, dispositions, pages
-  of 2, changed filter, exact reference, scope on `sim_scale`); rejects (cross-Campaign, bad cursor,
+  of 2, changed filter, exact reference, scope on `sim_scale`); rejects (another Coverage Record, bad cursor,
   cursor+new filter, undelivered ref, limit 100000, 64 KiB response, total budget); candidates
   (excluded/unreachable → `not_approved`; missing proof/evidence, observed hit, report-only → investigate;
   TB, unscored, waived, duplicate, bad reason, `point:999999999` → forbidden); model faults (malformed JSON,
   missing fields, incomplete, invented ref, context exhausted) → failed report, state unchanged. Restore the
   real executable and do one real call.
-Look for: fabricated pages, cross-Campaign reads, oversized payloads, empty-success reports, surviving MCP
+Look for: fabricated pages, reads across Coverage Records, oversized payloads, empty-success reports, surviving MCP
 servers.
 Depends on: baseline.analysis, baseline.scale, area 4 for waived points.
 

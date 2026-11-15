@@ -2,7 +2,7 @@
 
 This is the file reference for what the built-in `sim`, `lint`, `synth`,
 `fpga`, and `mutation` Flows write to disk: where reports go, which JSON fields they hold, and
-how simulation Campaigns are laid out. Read it when you change what a Flow
+how Simulation Records are laid out. Read it when you change what a Flow
 writes or write code that reads it. How the Flows produce these files, and
 their verdict and exit-code rules, are in the implementation docs below. User
 docs show only the few files a user opens; keep them consistent with this page.
@@ -12,18 +12,13 @@ docs show only the few files a user opens; keep them consistent with this page.
 | [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and the per-Flow pages ([FLOW-SIM.md](../user/FLOW-SIM.md), [FLOW-LINT.md](../user/FLOW-LINT.md), [FLOW-SYNTH.md](../user/FLOW-SYNTH.md), [FLOW-FPGA.md](../user/FLOW-FPGA.md), [FLOW-MUTATION.md](../user/FLOW-MUTATION.md)) | How to run each Flow and read its verdict |
 | **This document** | Report files, JSON fields, and on-disk layout |
 | [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) | How the Flows produce these files: planning, verdict rules, recovery |
-| [FLOW_IMPLEMENTATION_SIM.md](FLOW_IMPLEMENTATION_SIM.md) | The same for `sim`: Campaigns, coverage collection, retention |
+| [FLOW_IMPLEMENTATION_SIM.md](FLOW_IMPLEMENTATION_SIM.md) | The same for `sim`: Simulation Records, coverage collection, retention |
 | [MCP-TOOLS.md](MCP-TOOLS.md#built-in-flow-calls) | How the same results reach an agent over MCP |
 
 The reports are evidence: Goals, Criteria, resume, and the Coverage Analyst all
 read them later, often in another process. So every run gets its own numbered
 directory, files point at each other by relative path plus size and SHA-256,
 and a reader can tell a stale or swapped file from the one the run wrote.
-
-File names, fields, and this page say Simulation Campaign and Coverage
-Campaign. The glossary (`docs/GLOSSARY.md`) calls them Simulation Record and
-Coverage Record; [#2711](https://github.com/boldaxolotl/booley/issues/2711)
-moves the code and formats to those names.
 
 ## Where reports go
 
@@ -42,7 +37,7 @@ writes these files:
 | Flow | Files |
 |---|---|
 | all four | `<flow>/<N>/report.json`, the [invocation report](#invocation-report), and `<flow>.json`, a copy of the newest one |
-| `sim` | `sim/<N>/progress.json`, the per-Target [Campaign layout](#simulation-campaign-layout) under `sim/<N>/targets/`, and `sim/.invocation-<N>.lock` |
+| `sim` | `sim/<N>/progress.json`, the per-Target [Simulation Record layout](#simulation-record-layout) under `sim/<N>/targets/`, and `sim/.invocation-<N>.lock` |
 | `lint` | `lint/<N>/lint_report.json` and `lint_report.json`, a copy of the newest one |
 | `synth`, `fpga` | `<flow>/<N>/progress.json`, `<flow>/<N>/targets/<slug>.json`, and `<flow>_<slug>.json`, the per-Target report |
 
@@ -76,7 +71,7 @@ same report, with `mcp_tool` in place of `flow`.
 `resources` is a process-lifetime snapshot: CPU adds the endpoint process and
 the children it waited for, and `peak_rss_mb` is the largest single process,
 not a sum over the process tree. Repeated calls inside one process include
-earlier work, and a resumed Campaign counts only the resuming process. When the
+earlier work, and a resumed Simulation Record counts only the resuming process. When the
 platform cannot measure, the field is missing; treat that as unknown, never as
 zero.
 
@@ -126,11 +121,11 @@ For `sim`, only the Elaboration Check prints this plan: its units expose their
 build budget as `timeout_ms` and recipe `build_timeout_ms`, because the Target
 build is their only subprocess. Standalone units keep the standalone-sweep
 `timeout_ms` and have no build field. An ordinary or coverage dry run prints
-its Campaign preview instead.
+its Simulation Record preview instead.
 
 ## `sim`
 
-### Simulation Campaign layout
+### Simulation Record layout
 
 Every `sim` run uses one layout, whatever the testbench (HDL or cocotb) and
 whether it collects coverage. Each Target gets its own directory, named by its
@@ -142,18 +137,18 @@ component):
   report.json
   progress.json
   targets/<target>/
-    campaign/
+    record/
       manifest.json                    what this run will execute (fixed at start)
       summary.json                     where it stands now
       build-variants/.../              simulator builds and their results
       work-items/.../                  one directory per test or batch, with its attempts
     simulation.json                    the Target's results
-    coverage.json                      coverage runs only: the Coverage Campaign reference
+    coverage.json                      coverage runs only: the Coverage Record reference
 ```
 
 Each work item holds `result.json` (its terminal result) and one directory per
 attempt under `attempts/`. An attempt holds `attempt.json`, `evidence/` (the
-copies the Campaign keeps, such as `0001-run.log` and the trace, which
+copies the Simulation Record keeps, such as `0001-run.log` and the trace, which
 `simulation.json` and the verdict card point at), `execution-evidence/` (the
 live `run.log`, tail-truncated to 10 MB, the adapter result, and cocotb's
 `results.xml`), `snapshot/`, `private-build/`, `runtime-inputs/`, and
@@ -161,16 +156,16 @@ live `run.log`, tail-truncated to 10 MB, the adapter result, and cocotb's
 
 Three cases add to this layout:
 
-- **Coverage** nests a Coverage Campaign inside one attempt (see
-  [Coverage Campaign files](#coverage-campaign-files)).
+- **Coverage** nests a Coverage Record inside one attempt (see
+  [Coverage Record files](#coverage-record-files)).
 - **Resume** takes a new run number for its own `report.json` and
-  `progress.json`, but writes results into the original run's `campaign/`
-  directory, so one Campaign stays in one place.
+  `progress.json`, but writes results into the original run's `record/`
+  directory, so one Simulation Record stays in one place.
 - **A Cycle Count baseline** gets its own Target directory beside the
   candidate's, for the selector `<target>@baseline-<first 12 characters of the
   baseline revision>`.
 
-Campaign files reference each other by size and SHA-256, in two forms. Durable
+Simulation Record files reference each other by size and SHA-256, in two forms. Durable
 records (`summary.json`, work-item results) carry the canonical manifest
 digest: the SHA-256 of `manifest.json` without its trailing newline. Typed
 artifact references, such as `simulation.json`'s `simulation_record_manifest`, carry the
@@ -181,8 +176,8 @@ before it runs anything, and refuses when the suite or sources changed.
 ### Report schemas and references
 
 - `simulation.json`: `booley.simulation-projection/v4`.
-- Target-level `coverage.json`: `booley.coverage-campaign-reference/v1`.
-- Nested Coverage Campaign `coverage.json`: `booley.coverage-campaign/v5`.
+- Target-level `coverage.json`: `booley.coverage-record-reference/v1`.
+- Nested Coverage Record `coverage.json`: `booley.coverage-record/v1`.
 - Existing files are never migrated to a newer schema.
 
 In `report.json`, `detail.records.<selector>` summarizes each Target. Its
@@ -195,7 +190,7 @@ stores a relative `path` and names its base in `path_base`:
 
 - `report_invocation`: this run's directory;
 - `reports_root`: the report root, when a resumed run points at the original
-  run's Campaign;
+  run's Simulation Record;
 - `external_origin_target`: an original run under a different report root; the
   caller supplies that Target directory;
 - `origin_target`: the Target directory (used inside `simulation.json` and
@@ -228,7 +223,7 @@ unaffected.
 | `complete` | `true` once the results are also recorded against the Target's Criteria (or it has none); `false` means the run stopped in between. |
 | `tests[]` | One entry per test (see below). |
 | `test_runs[]` | One row per Test Run: `name`, `test`, `variant`, `seed`, `args`, `env`, `fingerprint`, and `grade` (`pass`, `fail`, `error`, or `inconclusive`). `test` is null for the unnamed test; `variant` and `seed` are null when the run has none. |
-| `simulation_record_id`, `simulation_record_manifest` | The Campaign and a reference to its `manifest.json`: `path_base`, `path`, `bytes`, `sha256`, `kind`, and `owner` (the Campaign ID). |
+| `simulation_record_id`, `simulation_record_manifest` | The Simulation Record and a reference to its `manifest.json`: `path_base`, `path`, `bytes`, `sha256`, `kind`, and `owner` (the Simulation Record ID). |
 | `coverage_record`, `collection`, `evaluation` | Coverage runs only: a reference of the same shape to the Target's `coverage.json`, and the collection and evaluation statuses. |
 
 Each `tests[]` entry has `name` (`default` for the unnamed test), `passed`,
@@ -238,7 +233,7 @@ nullable `cycles`, `sva_errors`, `timed_out`, `execution`, `failure_kind`, and
 Run's files: `log` (the simulator log) and `trace` (the waveform of a `--trace`
 run). Both are POSIX paths relative to the directory holding this
 `simulation.json`, so a copied run keeps them valid, or `null` when the file
-does not exist. They come from the attempt the Campaign accepted for that Test
+does not exist. They come from the attempt the Simulation Record accepted for that Test
 Run; the Test Runs of one cocotb batch share files. `test_runs[]` rows carry no
 paths, because rerun matching reads those rows.
 
@@ -264,36 +259,36 @@ with `+` (`iverilog+verilator` for a mixed sweep). `probes` groups the
 compiler's default). Each `failures` and `unparsed` entry also carries
 `frontend`, `dialect_flags`, and `fallback`.
 
-### Coverage Campaign files
+### Coverage Record files
 
-A coverage run adds a reference at Target level and the Coverage Campaign
+A coverage run adds a reference at Target level and the Coverage Record
 inside the attempt it measured:
 
 ```text
 <report-root>/sim/<N>/targets/<target>/
-  coverage.json               booley.coverage-campaign-reference/v1
+  coverage.json               booley.coverage-record-reference/v1
   simulation.json             the completed Target results
-  campaign/work-items/<item>/attempts/<attempt>/coverage-campaign/
-    coverage.json             the Coverage Campaign manifest
+  record/work-items/<item>/attempts/<attempt>/coverage-record/
+    coverage.json             the Coverage Record manifest
     coverage-points.jsonl.gz  every coverage point and which Test Runs hit it
     native/raw/               one Verilator database per Test Run
     native/merged/            the merged database
     hooks/                    hook evidence, when collected
 ```
 
-The reference's `coverage_campaign` object has `path`, `path_base`, `schema`,
-`campaign_id`, `bytes`, and `sha256`. Its `path_base: origin_target` resolves
+The reference's `coverage_record` object has `path`, `path_base`, `schema`,
+`coverage_record_id`, `bytes`, and `sha256`. Its `path_base: origin_target` resolves
 `path` against the Target directory to the nested manifest; size, digest, and
 identities authenticate it. Native paths inside the manifest resolve from the
-**Coverage Campaign directory**, not the Target directory.
+**Coverage Record directory**, not the Target directory.
 
 Give the Coverage Analyst the numbered Target-level `coverage.json`: it
-resolves the reference and checks the enclosing Simulation Campaign and the
+resolves the reference and checks the enclosing Simulation Record and the
 completed `simulation.json`, so the nested path alone is not a valid input.
-Booley code reads a Campaign through `booley.flows.sim.coverage_campaign_store`,
+Booley code reads a Coverage Record through `booley.flows.sim.coverage_record_store`,
 which takes the resolved manifest (not the reference) and checks the point
 store's size and digest; never open the point store directly. Keep the
-reference, the attempt, and the enclosing Simulation Campaign together.
+reference, the attempt, and the enclosing Simulation Record together.
 
 The manifest holds fingerprints, capabilities, the evaluation against any
 Coverage Criterion, and rollups per metric (`rollups`) and per source file
@@ -325,7 +320,7 @@ advisories](FLOW_IMPLEMENTATION_SIM.md#rtl-source-advisories)).
 #### Point store
 
 `coverage-points.jsonl.gz` is gzipped JSON Lines. The first line is a header,
-`{"$schema": "booley.coverage-points/v1", "campaign_id": …, "target_identity": …}`;
+`{"$schema": "booley.coverage-points/v2", "coverage_record_id": …, "target_identity": …}`;
 every other line is one coverage point:
 
 ```json
@@ -359,9 +354,9 @@ every other line is one coverage point:
 
 `detail.targets[<target>]` keeps each Target's `passed`, `simulation`,
 `collection`, and `evaluation` results, even when another Target decided the
-exit code, and `coverage_campaign`, a reference to the Target-level
+exit code, and `coverage_record`, a reference to the Target-level
 `coverage.json` once it was written. `coverage_metrics` maps each native metric
-to `{percent, threshold, met}`, from the same Coverage Campaign as
+to `{percent, threshold, met}`, from the same Coverage Record as
 `coverage.json`:
 
 - `met` compares that metric with its floor, whatever the aggregate Criterion
@@ -369,7 +364,7 @@ to `{percent, threshold, met}`, from the same Coverage Campaign as
 - With no floor, `threshold` and `met` are null.
 - With no eligible points, `percent` is null and a configured floor gets
   `met: false`.
-- An unscored Campaign gives an empty map.
+- An unscored Coverage Record gives an empty map.
 
 A threshold miss on a run that executed cleanly still exits `0`; for a
 Goal-bound run with one evaluated Criterion, `criterion_met` is `false`.
@@ -388,10 +383,10 @@ python -m booley.flows.sim.record_retention --reports-root <root> --invocation <
 ```
 
 - **`--native-target`** removes the `native/` directory (raw and merged
-  Verilator databases) of the Coverage Campaign that the Target's
+  Verilator databases) of the Coverage Record that the Target's
   `coverage.json` references. The manifest and point store stay, so the
-  Campaign can still be analyzed; `availability.json` (schema
-  `booley.coverage-availability/v1`) in that directory records the pruning.
+  Coverage Record can still be analyzed; `availability.json` (schema
+  `booley.coverage-availability/v2`) in that directory records the pruning.
 - **`--full`** removes the whole run and leaves an empty `.pruned-<N>` marker
   so the number is never reused. It refuses while later resumed runs depend on
   this one, unless `--include-dependents` is given, and refuses any file the

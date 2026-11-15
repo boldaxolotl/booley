@@ -12,7 +12,7 @@ its per-Flow pages instead.
 | Document | Covers |
 |---|---|
 | [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md), [FLOW-SIM.md](../user/FLOW-SIM.md), [FLOW-LINT.md](../user/FLOW-LINT.md), [FLOW-SYNTH.md](../user/FLOW-SYNTH.md), [FLOW-FPGA.md](../user/FLOW-FPGA.md) | Running each Flow, its options, `[flows.*]` keys, and verdicts |
-| [FLOW_REPORTS.md](FLOW_REPORTS.md) | Report locations, JSON fields, and Simulation Campaign file layout |
+| [FLOW_REPORTS.md](FLOW_REPORTS.md) | Report locations, JSON fields, and Simulation Record file layout |
 | [MCP-TOOLS.md](MCP-TOOLS.md) | The MCP surface, Custom Flows, and Specialists |
 | [SPECIALIST_IMPLEMENTATION.md](SPECIALIST_IMPLEMENTATION.md) | Reviewer and Coverage Analyst internals |
 | [JOB_RECORDS.md](JOB_RECORDS.md) | How a Flow run is tracked as a Job |
@@ -229,7 +229,7 @@ are validated before the first real command runs, so a bad later Target fails
 the call before any EDA time is spent. `synth` and `fpga` execute their
 planned recipes for candidate and baseline units; Lint's plan shows a command
 template and the real run resolves through `fusesoc run --setup`. Ordinary and
-coverage Simulation runs print a Simulation Campaign preview instead. `mutation`
+coverage Simulation runs print a Simulation Record preview instead. `mutation`
 also inherits `BuiltinFlow` but keeps its own dry-run summary instead of a
 `FlowPlan`.
 

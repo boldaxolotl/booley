@@ -568,9 +568,9 @@ can be met while one of its Test Runs failed.
 | `goal-test-run-missing` | A Test Run's Target, Test or Variant is gone or skipped. | Restore it, or approve a `retarget` the agent proposes. For a skipped Test, unskip it or approve dropping it. |
 | `goal-test-run-changed` | A Test Run's arguments or environment changed in `tests.toml`. | Restore them, or approve a `retarget`. |
 | `goal-test-run-metric-missing` | The last run didn't measure the Goal's Cycle Count or coverage. | Ask the agent to run exactly the Goal's Test Runs (with coverage, for a coverage Goal). |
-| `goal-campaign-unaccounted` | A Simulation Campaign for the Goal is still running, holds an unadopted failure, or can't be read. | Wait for it or resume it, then read status again. |
+| `goal-campaign-unaccounted` | A Simulation Record for the Goal is still running, holds an unadopted failure, or can't be read. | Wait for it or resume it, then read status again. |
 
-Don't edit or delete the Simulation Campaign records under the Goal Record's
+Don't edit or delete the Simulation Record files under the Goal Record's
 `logs/acceptance/campaigns/`. Booley moves an unreadable one aside when you
 approve a Goal change.
 
@@ -825,24 +825,24 @@ booley projects forget /exact/deleted/project
 
 ## Coverage
 
-### Coverage Campaign diagnostics
+### Coverage Record diagnostics
 
-Where Campaign files live and how to delete finished runs:
+Where Simulation Record files live and how to delete finished runs:
 [Coverage results](https://booley.dev/docs/coverage/#reading-results)
 and [Cleaning up reports](https://booley.dev/docs/flow-reference/#cleaning-up-reports).
 
 | Message | Fix |
 |---|---|
 | `invocation N is still being produced` | A run is still writing it. Retry when it finishes. |
-| `Simulation Campaign is being resumed` | A resume is running. Retry when it finishes. |
-| `collection has no recorded result` | Coverage collection never finished, so the Campaign can't resume. Start the new run the message prints. |
+| `Simulation Record is being resumed` | A resume is running. Retry when it finishes. |
+| `collection has no recorded result` | Coverage collection never finished, so the Simulation Record can't resume. Start the new run the message prints. |
 | `Coverage evidence budget exhausted` | Narrow the instruction you gave the Coverage Analyst, or use a model with a larger context. |
 
 Never delete a lock file to get past a message, and keep any empty
 `.pruned-N` folders: they reserve used run numbers.
 
 The Coverage Analyst gives report-only analysis, without Waiver Candidates,
-when the Target's sources changed since the Campaign ran. The Campaign's
+when the Target's sources changed since the Coverage Record was made. Its
 measured result stays the same.
 
 <details markdown>
@@ -858,26 +858,26 @@ and hooks go in the Target's `flow_options.booley.coverage`. When evaluation is
 `blocked`, read its findings; one invalid waiver for a Target stops all that
 Target's waivers from applying.
 
-### A Simulation Campaign will not resume
+### A Simulation Record will not resume
 
-Pass the exact `campaign/manifest.json` path the run printed, not a Target name
+Pass the exact `record/manifest.json` path the run printed, not a Target name
 or another file. Preview first; it changes nothing:
 
 ```bash
-booley flow sim --resume-from /exact/path/to/campaign/manifest.json --dry-run
+booley flow sim --resume-from /exact/path/to/record/manifest.json --dry-run
 ```
 
-- **Integrity failure:** Campaign files were changed. Restore them exactly from
-  that same Campaign, or start a new one; never edit hashes or copy files from
+- **Integrity failure:** Simulation Record files were changed. Restore them exactly from
+  that same Simulation Record, or start a new one; never edit hashes or copy files from
   another run.
 - **Sources, `tests.toml`, Pre-Sim Commands or the Target changed:** start a new
-  Campaign.
+  Simulation Record.
 - **Unsupported manifest version:** start a new run with the current Booley.
 - **`refusing to clean unowned run directory`:** move your own files out of the
   Target's run directory, then retry.
 
 Never delete Booley's job or execution records to force progress; they protect
-running EDA processes. To get rid of an abandoned Campaign, delete its run
+running EDA processes. To get rid of an abandoned Simulation Record, delete its run
 folder once no run is active
 ([Cleaning up reports](https://booley.dev/docs/flow-reference/#cleaning-up-reports)).
 

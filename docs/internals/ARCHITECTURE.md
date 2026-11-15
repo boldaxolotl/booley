@@ -184,7 +184,7 @@ child processes still run, and the next Job would start on top of them.
 - Execution records are kept seven days unless an active lease still points
   at one.
 
-A Simulation Record (code: `flows/sim/campaign/`) runs its first test on the
+A Simulation Record (code: `flows/sim/record/`) runs its first test on the
 Simulation Job's own claim. Each further parallel item takes its own child
 memory claim, sized from the item's history, while the reservations fit the
 Memory Budget; the number of parallel items never exceeds the cores. Items

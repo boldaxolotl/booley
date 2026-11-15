@@ -87,29 +87,29 @@ reasons are in
 
 ### Inputs and output
 
-`coverage_analyst` takes a required `campaign`, the exact canonical
-`coverage.json` path of one Coverage Campaign, and an optional
-`instruction`. For a Campaign stored as `booley.coverage-campaign/v5` it
-returns a `booley.coverage-analysis/v2` report that cites the Campaign
-manifest and the recorded point-store digest as observed evidence; an older
-Campaign gets `booley.coverage-analysis/v1` with the full encoded Campaign.
+`coverage_analyst` takes a required `coverage_record`, the exact canonical
+`coverage.json` path of one Coverage Record, and an optional
+`instruction`. For a Coverage Record stored as `booley.coverage-record/v1` it
+returns a `booley.coverage-analysis/v4` report that cites the Coverage Record
+manifest and the recorded point-store digest as observed evidence; otherwise
+it returns `booley.coverage-analysis/v3` with the full encoded Coverage Record.
 The report holds the observed evidence, the model's hypotheses and
 recommendations, explicit limitations, source-access status, screened
 Waiver Candidates, and the exact evidence it was allowed to retrieve.
 
 The Analyst is advisory: it never marks a Goal met or changes Goal evidence.
 Invalid input, or model output that is malformed or incomplete, is an
-execution error. A valid report succeeds even when its Campaign records a
+execution error. A valid report succeeds even when its Coverage Record records a
 simulation failure or a coverage miss, because reporting that miss is its
 job.
 
 Before calling the model, the wrapper checks the canonical invocation and
 Target identity, the complete manifest and point-store pair (schema, format,
 size ceiling, every point), and a matching completed Simulation projection.
-`analyze_coverage_campaign(campaign, sources, instruction)` is the analysis
+`analyze_coverage_record(coverage_record, sources, instruction)` is the analysis
 itself; `CoverageAnalyzer` takes the model call as a constructor argument, so
 tests replace only that external boundary.
-`coverage_analyst(campaign: Path, instruction="")` is the default public
+`coverage_analyst(coverage_record: Path, instruction="")` is the default public
 composition. Sources reach the model as an immutable, fingerprint-verified
 snapshot, never through file tools.
 
@@ -145,7 +145,7 @@ An `unreachable` candidate needs no model proof reference; approval writes a
 
 ### Evidence access
 
-The model prompt contains only a compact Campaign reference. One isolated read-only
+The model prompt contains only a compact Coverage Record reference. One isolated read-only
 `coverage_evidence` tool exposes `overview`, filtered and cursor-paged `points`,
 verified `source` excerpts, and cursor-paged `zero_point_sources` (sorted paths,
 `limit` 1–100, optional `cursor`). The latter returns sources with no native
@@ -154,10 +154,10 @@ available in report-only mode, charges normal evidence byte budgets, and records
 returned source counts with empty point IDs. Overview and its minimal fallback
 keep the total source count and a pagination hint. These findings are advisory;
 they do not prove a source is dead or uninstantiated. Model-facing point records
-use short `point_ref` values (`point:N`) instead of the Campaign's long opaque IDs.
+use short `point_ref` values (`point:N`) instead of the Coverage Record's long opaque IDs.
 A `point_ref` becomes usable only after its exact point was delivered within the
 response and cumulative byte budgets; later `points` or `source` queries may pass
-delivered values as `point_refs`. The host resolves them back to exact Campaign
+delivered values as `point_refs`. The host resolves them back to exact Coverage Record
 IDs before it publishes the report. Point records include their eligible,
 unscored, or waived disposition and Approved Waiver provenance. The host
 deep-loads the complete manifest and point store before paging or resolving
@@ -168,7 +168,7 @@ match set for consecutive pages.
 Changing filters replaces that cache; only returned page records are encoded.
 
 Short references and delivered-only resolution keep the model from inventing
-or guessing point IDs, and the byte budgets keep a large Campaign from
+or guessing point IDs, and the byte budgets keep a large Coverage Record from
 flooding its context.
 
 ### Capability isolation

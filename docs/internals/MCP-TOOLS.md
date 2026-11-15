@@ -720,20 +720,20 @@ strings:
 Each entry is a Test name or a Test Run selector such as `reset+fast` or
 `reset@7` (see [TESTS.md](../user/TESTS.md)). The CLI's `--tests-file` has no
 MCP property; send the selectors directly. Coverage selections use sorted
-test-name order for Campaign identity and run numbering, whatever the array
+test-name order for Simulation Record identity and run numbering, whatever the array
 order. Plain selections keep array order, and an omitted `test` runs the
 configured suite minus skipped Tests. HDL tests run in that order; cocotb
 decides the function order within its filtered batch. `resume_from` names one
 manifest and conflicts with `target`, `test`, `seed`, explicit `mode`,
 `coverage`, `trace`, and `no_waivers`.
 
-Structured campaign output reports `grade`, `complete`, aggregate
+Structured Simulation Record output reports `grade`, `complete`, aggregate
 `observation_counts`, and a maximum-32 `observations` preview. Every preview
 entry keeps nullable `test`, `execution`, nullable `failure_class` (`design` or
 `infrastructure`), `functional`, `assertions`, `assertion_count`, nullable
 `cycle_count`, bounded `detail`, and `log` and `trace` (the Test Run's
 simulator log and waveform as POSIX paths relative to the directory of the
-campaign's `artifacts.simulation` reference, `null` when the file does not
+Simulation Record's `artifacts.simulation` reference, `null` when the file does not
 exist). `observation_total` and `observations_truncated` say whether the
 preview is complete. The full `report.json.cycle_counts` mapping (see
 [FLOW_REPORTS.md](FLOW_REPORTS.md)) is dropped from inline output before the
@@ -762,6 +762,6 @@ by itself. Every selected Target passes coverage preflight before any report
 is allocated, and one Target whose simulator cannot collect coverage (anything
 but Verilator) rejects the whole request. Structured Target results keep
 simulation, collection, and evaluation separate and point to the exact
-canonical reports. The Coverage Analyst takes the returned Campaign path in a
+canonical reports. The Coverage Analyst takes the returned Coverage Record path in a
 separate call. The ordered persistence and Criterion-evidence steps are in
-[Coverage Campaign orchestration](FLOW_IMPLEMENTATION_SIM.md#coverage-campaign-orchestration).
+[Coverage Record orchestration](FLOW_IMPLEMENTATION_SIM.md#coverage-record-orchestration).

@@ -171,7 +171,7 @@ D42.
 | D27 | Prefix `booley.targets` | Prefixes `booley.flows`, `booley.runtime` | Target inspection uses shared build identity, not Flow execution or Runtime. |
 | D28 | Prefix `booley.fusesoc` | Prefix `booley.runtime` | FuseSoC provenance checks use pure Scope matching, not Runtime or Git execution. |
 | D29 | Prefix `booley.bwave` | Prefix `booley.flows` | B-Wave owns reusable waveform code without Flow execution or simulation evidence policy. |
-| D31 | Prefix `booley` | Exact `booley.flows.sim.campaign.store`, `booley.flows.sim.campaign.inspection` | Simulation Record storage is private behind the public `booley.flows.sim.campaign` package. Exceptions: C10, C12, C13. |
+| D31 | Prefix `booley` | Exact `booley.flows.sim.record.store`, `booley.flows.sim.record.inspection` | Simulation Record storage is private behind the public `booley.flows.sim.record` package. Exceptions: C10, C12, C13. |
 | D32 | Prefix `booley.runtime` | Prefix `booley.dev_support` | Packaged execution uses commit policy through its shared owner; development commands don't own Runtime behavior. |
 | D33 | Prefix `booley.feedback` | Prefix `booley.harness` | Feedback renders reports from resolved environment observations without command code. |
 | D34 | Prefix `booley.commit_policy` | Prefixes `booley.runtime`, `booley.harness`, `booley.dev_support` | Shared commit policy stays independent of execution and of script adapters. |
@@ -244,11 +244,11 @@ rule blocks an import, put the shared piece in the owner named here.
   owns attempt freshness, stall policy, manifests, publication, and the
   decision that a store is a Trace Artifact.
 - **Simulation Record storage (D31).** Callers use the public
-  `booley.flows.sim.campaign` package: `authenticate_work_item()` and
-  `inspect_retained_campaign()` return immutable results and hide store
+  `booley.flows.sim.record` package: `authenticate_work_item()` and
+  `inspect_retained_simulation_record()` return immutable results and hide store
   layout, recovery, and storage errors. Only the coordinator and the
   inspection module touch the store. A separate AST check keeps
-  `CampaignStore`, `CampaignRecovery`, `WorkItemRecovery`, and
+  `SimulationRecordStore`, `SimulationRecordRecovery`, `WorkItemRecovery`, and
   `SharedBuildRecovery` inside the store, coordinator, and inspection modules,
   and every D31 permission must match a live import.
 - **Commit policy and Feedback (D32-D34).** `booley.commit_policy` is the one
@@ -268,9 +268,9 @@ that has to join two sides. It gives the source no wider exemption.
 | Permission | Rule | Exact edge | Reason |
 | --- | --- | --- | --- |
 | C2 | D4 | `booley.mcp.server -> booley.specialists.specialist` | The MCP server classifies and composes Specialist endpoints. |
-| C10 | D31 | `booley.flows.sim.campaign.coordinator -> booley.flows.sim.campaign.store` | Record execution composes durable transaction, recovery, and publication. |
-| C12 | D31 | `booley.flows.sim.campaign.inspection -> booley.flows.sim.campaign.store` | The public read capabilities inspect storage through the private store. |
-| C13 | D31 | `booley.flows.sim.campaign -> booley.flows.sim.campaign.inspection` | The package facade publishes the storage-backed read capabilities. |
+| C10 | D31 | `booley.flows.sim.record.coordinator -> booley.flows.sim.record.store` | Record execution composes durable transaction, recovery, and publication. |
+| C12 | D31 | `booley.flows.sim.record.inspection -> booley.flows.sim.record.store` | The public read capabilities inspect storage through the private store. |
+| C13 | D31 | `booley.flows.sim.record -> booley.flows.sim.record.inspection` | The package facade publishes the storage-backed read capabilities. |
 
 ## Dynamic imports
 
