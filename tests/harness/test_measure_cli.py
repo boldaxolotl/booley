@@ -305,10 +305,10 @@ def test_measure_job_record_carries_flow_progress(
         _prepared: object,
         tables: Sequence[TableRules],
         *,
-        progress: Callable[[int, int], None],
+        progress: Callable[[int, int, tuple[str, ...]], None],
         **_options: object,
     ) -> ChildrenOutcome:
-        progress(1, len(tables))
+        progress(1, len(tables), ("sim_two.lint",))
         seen.append(job_record(project).progress)  # the record on disk while the Job runs
         return outcome_of(tables, [0, 0])
 

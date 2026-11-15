@@ -87,5 +87,11 @@ class McpMeasureJob:
     def publish_result(self, exit_code: int, summary: str) -> None:
         """Record the outcome before the process exits, for a server that lost it."""
         self._write(
-            RESULT_NAME, {"run_id": self.run_id, "exit_code": exit_code, "summary": summary}
+            RESULT_NAME,
+            {
+                "run_id": self.run_id,
+                "endpoint": MEASURE_ENDPOINT,
+                "exit_code": exit_code,
+                "summary": summary,
+            },
         )

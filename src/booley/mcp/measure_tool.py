@@ -100,12 +100,17 @@ def result_text(exit_code: int, stdout: str, stderr: str, report: dict[str, Any]
     """The final result: the exit status, the whole summary, then the notes and exit rule.
 
     The summary is the bounded text the process published; it sits outside the truncated
-    stdout section. A measurement that published none (a refusal, ``validate``) renders as
-    any other tool result.
+    stdout section. Any other result, such as a refusal or ``validate`` that published none,
+    renders as any other tool result.
     """
     summary = None if report is None else report.get("summary")
-    if not isinstance(summary, str) or report is None or report.get("exit_code") != exit_code:
-        return _format_mcp_tool_result(exit_code, stdout, stderr, None)
+    if (
+        report is None
+        or report.get("endpoint") != MEASURE_ENDPOINT
+        or not isinstance(summary, str)
+        or report.get("exit_code") != exit_code
+    ):
+        return _format_mcp_tool_result(exit_code, stdout, stderr, report)
     head, _, notes = _format_mcp_tool_result(exit_code, "", stderr, None).partition("\n")
     return "\n".join([head, summary, *([notes] if notes else [])])
 

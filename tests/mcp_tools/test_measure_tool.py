@@ -288,10 +288,13 @@ def test_a_refusal_or_a_validation_renders_as_any_tool_result(
     tool = measure_tool()
 
     refused = tool.result_text(2, "", "ERROR: no\nExit 2: stop and report the error.", None)
-    stale = tool.result_text(1, "out", "", {"exit_code": 0, "summary": "SUMMARY"})
+    stale = tool.result_text(
+        1, "out", "", {"endpoint": "measure", "exit_code": 0, "summary": "SUMMARY"}
+    )
 
     assert refused.startswith("EXIT_CODE: 2\n") and "ERROR: no" in refused
-    assert "SUMMARY" not in stale and "out" in stale  # another run's summary is never shown
+    # A summary of another exit status is not laid out as this result's own.
+    assert stale.splitlines()[1] != "SUMMARY" and "out" in stale
 
 
 def test_a_progress_file_that_is_missing_or_torn_reads_as_no_progress(tmp_path: Path) -> None:

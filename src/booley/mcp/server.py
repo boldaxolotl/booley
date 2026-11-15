@@ -1104,13 +1104,13 @@ class _JobManager(JobLifecycle):
     def result_text(self, run_id: str) -> str:
         """Render a finished job's result exactly like the synchronous path."""
         result = self.terminal_result(run_id)
-        return self._result_card(run_id, result)
+        return self._result_card(result)
 
-    def _result_card(self, run_id: str, result: JobResult) -> str:
+    @staticmethod
+    def _result_card(result: JobResult) -> str:
         """The result text: a ``measure`` Job's own summary layout, else the generic card."""
-        rec = self._read_run(run_id)
-        if rec is not None and rec.endpoint == measure_tool.MEASURE_ENDPOINT:
-            report = result.report if result.report_fresh else None
+        report = result.report if result.report_fresh else None
+        if report is not None and report.get("endpoint") == measure_tool.MEASURE_ENDPOINT:
             return measure_tool.result_text(result.exit_code, result.stdout, result.stderr, report)
         return _format_mcp_tool_result(
             result.exit_code, result.stdout, result.stderr, result.report
@@ -1126,7 +1126,7 @@ class _JobManager(JobLifecycle):
         """
         result = result or self.terminal_result(run_id)
         exit_code, report, report_fresh = result.exit_code, result.report, result.report_fresh
-        content = [TextContent(type="text", text=self._result_card(run_id, result))]
+        content = [TextContent(type="text", text=self._result_card(result))]
         rendered = _with_structured_report(content, report if report_fresh else None)
         rec = self._read_run(run_id)
         binding = None if rec is None else job_results.job_binding(rec)
