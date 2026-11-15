@@ -34,7 +34,7 @@ def _sim_config(work_dir: Path | str | None) -> Mapping[str, Any]:
     """Return the configured Simulation Flow section, or an empty mapping."""
     from booley.runtime.shared_infra import _load_rtl_config
 
-    config = _load_rtl_config(work_dir)
+    config = _load_rtl_config(None if work_dir is None else Path(work_dir))
     if not config:
         return {}
     flows = config.get("flows", {})

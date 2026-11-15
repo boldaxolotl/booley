@@ -144,17 +144,17 @@ class RunLogProgress:
         if self._last_line_at - self._last_flush < RUN_LOG_PROGRESS_INTERVAL_S:
             return
         self._last_flush = self._last_line_at
-        self._write(lines)
+        self._write(self._work_dir, lines)
 
     def final_flush(self, lines: deque[str]) -> None:
         """Persist the final live tail before the completed log replaces it."""
         if self._work_dir is not None:
-            self._write(lines)
+            self._write(self._work_dir, lines)
 
-    def _write(self, lines: deque[str]) -> None:
+    def _write(self, work_dir: Path, lines: deque[str]) -> None:
         with contextlib.suppress(OSError):
             write_run_log_progress(
-                self._work_dir,
+                work_dir,
                 "".join(lines),
                 elapsed_s=time.monotonic() - self._started,
                 line_count=len(lines),

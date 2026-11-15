@@ -185,14 +185,16 @@ def attempt_scope(
     operation: str = "simulation",
 ) -> Iterator[None]:
     parent = _scope.get()
-    nested = (
-        parent is not None
+    nested_parent = (
+        parent
+        if parent is not None
         and parent.target == target
         and (not attempt_id or attempt_id == parent.attempt_id)
+        else None
     )
     scope = AttemptScope(
         target,
-        parent.key if nested else uuid.uuid4().hex,
+        nested_parent.key if nested_parent is not None else uuid.uuid4().hex,
         identity,
         tests,
         attempt_id or (parent.attempt_id if parent else ""),

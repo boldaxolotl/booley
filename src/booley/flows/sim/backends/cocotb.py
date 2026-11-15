@@ -62,6 +62,7 @@ from booley.core.boundary import BoundaryError
 from booley.flows.run_log import write_run_log
 from booley.flows.sim.adapter_contract import PreparedSimulationWork, run_adapter_entry
 from booley.flows.sim.adapter_transport import (
+    AdapterFailureKind,
     AdapterResult,
     AdapterTestResult,
     AdapterTraceResult,
@@ -111,7 +112,7 @@ def _publish_adapter_result(
     passed: bool,
     *,
     results: CocotbResults | None,
-    failure_kind: str = "",
+    failure_kind: AdapterFailureKind = "",
     detail: str = "",
     trace: AdapterTraceResult | None = None,
     termination: RunTermination | None = None,
@@ -142,7 +143,7 @@ def _cocotb_adapter_result(
     output: str,
     results: CocotbResults | None,
     passed: bool,
-    failure_kind: str,
+    failure_kind: AdapterFailureKind,
     detail: str,
     trace: AdapterTraceResult | None,
     termination: RunTermination,
@@ -254,9 +255,10 @@ def _apply_trace_evidence(
     *,
     preserve_failure: bool,
 ) -> tuple[tuple[AdapterTestResult, ...], str, bool]:
-    trace_failed = trace is not None and trace.status == "incident"
-    if not trace_failed or preserve_failure:
-        return tests, detail, trace_failed
+    if trace is None or trace.status != "incident":
+        return tests, detail, False
+    if preserve_failure:
+        return tests, detail, True
     normalized = tuple(
         replace(test, verdict="inconclusive", detail=trace.detail)
         if test.verdict == "pass"
@@ -271,7 +273,7 @@ def _cocotb_failure_kind(
     functional_failed: bool,
     trace_failed: bool,
     inconclusive: bool,
-) -> str:
+) -> AdapterFailureKind:
     if timed_out:
         return "timeout"
     if functional_failed:
@@ -414,6 +416,10 @@ class CocotbSeedError(RuntimeError):
     """A seeded Cocotb run cannot tell which seed variable the installed cocotb reads."""
 
 
+# The pre-2.1 environment contract applies when the version probe fails.
+_FALLBACK_COCOTB_VERSION: tuple[int, int] = (2, 0)
+
+
 def _probe_cocotb_version() -> tuple[int, int] | None:
     """The installed cocotb ``(major, minor)``, or ``None`` when the probe fails."""
     try:
@@ -433,7 +439,7 @@ def _cocotb_version() -> tuple[int, int]:
     probe is required before emitting ``GPI_USERS`` because older
     ``cocotb-config`` versions do not provide ``--pygpi-entry-point``.
     """
-    return _probe_cocotb_version() or (2, 0)
+    return _probe_cocotb_version() or _FALLBACK_COCOTB_VERSION
 
 
 #: cocotb's seed variable by major version: 2.x reads ``COCOTB_RANDOM_SEED``
@@ -496,7 +502,7 @@ def _build_cocotb_env(
     """
     libpython, python_bin = _cocotb_config([["--libpython"], ["--python-bin"]])
     probed_version = _probe_cocotb_version()
-    cocotb_version = probed_version or (2, 0)
+    cocotb_version = probed_version or _FALLBACK_COCOTB_VERSION
     env = os.environ.copy()
     if seed is not None:
         env.pop(COCOTB_SEED_VARIABLE, None)

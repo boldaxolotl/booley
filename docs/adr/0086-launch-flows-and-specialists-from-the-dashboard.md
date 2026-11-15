@@ -1,7 +1,9 @@
 # Launch Booley Flows and Specialists from the Dashboard
 
 Status: accepted (2026-10-28; the `mutation_tester` Specialist, its scope
-entry and form, is superseded by [ADR 0088](0088-generate-mutants-deterministically-in-a-mutation-flow.md))
+entry and form, is superseded by [ADR 0088](0088-generate-mutants-deterministically-in-a-mutation-flow.md);
+the worktree choice and Targets window are superseded by
+[ADR 0093](0093-show-jobs-per-worktree-in-the-t3-code-preview-panel.md))
 
 Job slot wording below is superseded by [ADR 0087](0087-admit-jobs-against-a-measured-memory-budget.md): EDA Jobs are admitted by memory reservation.
 
