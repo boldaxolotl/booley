@@ -449,7 +449,8 @@ in the host `config.toml`, and a Sandbox still runs in the other mode. Doctor
 warns with `host.sandbox-egress-mismatch`. Recreate that Sandbox
 [as for a settings change](https://booley.dev/docs/sandbox/#after-changing-sandbox-settings).
 To keep one Sandbox in the other mode on purpose, waive
-`host.sandbox-egress-mismatch` with `subject` set to its Project root; see [Doctor waivers](https://booley.dev/docs/doctor/#doctor-waivers-doctor-waiverstoml).
+`host.sandbox-egress-mismatch` with `subject` set to its Project root; see
+[Doctor waivers](https://booley.dev/docs/doctor/#doctor-waivers-doctor-waiverstoml).
 
 ### Doctor reports a Session store file named for another Project Root
 
