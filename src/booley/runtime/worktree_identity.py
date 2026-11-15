@@ -1,6 +1,6 @@
 """Worktree identity: a Git worktree named the same from every path spelling (ADR 0067 D3).
 
-MCP session attribution and Goal Mode both key off it. It depends only on Git's
+MCP session attribution keys off it. It depends only on Git's
 own directories and one UUID file Booley stores in the common directory.
 """
 

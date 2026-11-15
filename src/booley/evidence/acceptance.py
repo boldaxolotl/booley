@@ -66,7 +66,7 @@ class PairedBaselineMode(Enum):
 
     STANDALONE = "standalone"
     ABSENT = "absent"
-    # The paired revision recorded when a Goal Mode was entered (ADR 0067).
+    # The paired revision recorded when a baseline was pinned (ADR 0067).
     ENTRY_PINNED = "entry-pinned"
 
 
@@ -87,7 +87,7 @@ class PairedProjectBaseline:
 
     @classmethod
     def entry_pinned(cls, sha: str) -> PairedProjectBaseline:
-        """The Paired Checkout revision recorded at Goal entry; never falls back."""
+        """The Paired Checkout revision recorded when the baseline was pinned; never falls back."""
         if not sha:
             raise ValueError("entry-pinned Paired Checkout baseline requires a commit")
         return cls(PairedBaselineMode.ENTRY_PINNED, sha)

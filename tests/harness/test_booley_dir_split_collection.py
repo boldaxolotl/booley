@@ -13,11 +13,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # A root-level argument between Harness arguments makes pytest build a second
 # Harness package node without ``tests/harness/conftest.py`` fixtures (#1798).
 _SPLIT_PREFIX = (
-    "tests/harness/test_goal_cli_surface.py::test_goal_surface_matches_catalogs",
+    "tests/harness/test_cli_command_catalog.py::test_command_locations_enforce_the_audited_boundary",
     "tests/test_booley_directory_errors.py",
 )
 _BOOLEY_DIR_DEPENDENTS = (
-    "tests/harness/test_goal_cli_surface.py::test_goal_abandon_refuses_without_occupying_record",
+    "tests/harness/test_cheatsheet.py::TestCheatCommand::test_commands_are_grouped_by_execution_location",
     "tests/harness/test_image_lifecycle.py::test_incremental_adapter_prepare_and_policy_helpers",
     "tests/harness/test_session_runtime.py::"
     "test_enter_preserves_container_credentials_without_literal_placeholder_overrides",

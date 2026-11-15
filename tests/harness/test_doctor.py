@@ -9,7 +9,6 @@ import json
 import os
 import re
 import shutil
-import stat
 import subprocess
 import sys
 import tomllib
@@ -43,7 +42,6 @@ from booley.runtime import (
     auth_token,
     doctor_stamp,
     issuance_invalidation,
-    platform_paths,
     project_gitignore,
     runtime_context,
     session_issuance,
@@ -830,37 +828,6 @@ def test_project_gitignore_names_each_missing_pattern(tmp_path: Path) -> None:
     ):
         assert pattern in findings[0].message
     assert findings[0].fix == "booley init"
-
-
-def test_project_gitignore_names_goal_patterns(tmp_path: Path) -> None:
-    kept = [
-        p
-        for p in project_gitignore.PROJECT_GITIGNORE_PATTERNS
-        if not p.lstrip("!").startswith("goals/")
-    ]
-    (tmp_path / ".gitignore").write_text("".join(f"{p}\n" for p in kept), encoding="utf-8")
-
-    findings = _gitignore_probe(tmp_path)
-
-    assert [f.severity for f in findings] == ["warn"]
-    assert "goals/*/" in findings[0].message
-    assert "!goals/history/" in findings[0].message
-
-
-def test_project_gitignore_warns_when_goal_history_reinclude_precedes_its_override(
-    tmp_path: Path,
-) -> None:
-    # Git applies the last matching line, so a re-include written before
-    # ``goals/*/`` leaves Goal summaries ignored.
-    patterns = list(project_gitignore.PROJECT_GITIGNORE_PATTERNS)
-    patterns.remove("!goals/history/")
-    patterns.insert(0, "!goals/history/")
-    (tmp_path / ".gitignore").write_text("".join(f"{p}\n" for p in patterns), encoding="utf-8")
-
-    findings = _gitignore_probe(tmp_path)
-
-    assert [f.severity for f in findings] == ["warn"]
-    assert "!goals/history/" in findings[0].message
 
 
 def test_project_gitignore_accepts_anchored_spelling_of_nested_pattern(tmp_path: Path) -> None:
@@ -4925,7 +4892,6 @@ class TestAdvisoryMcpTools:
             "_check_ticket_leftovers",
             "_check_handle_map_size",
             "_check_project_gitignore",
-            "_check_goal_history_ignored",
             "_check_project_trackability",
             "_check_git_state",
             "_check_repo_footprint",
@@ -7528,38 +7494,6 @@ def test_doctor_renders_synthesis_target_migration(
     assert replacement in output
 
 
-@pytest.mark.parametrize("ignored", [False, True])
-def test_goal_history_exclusion_diagnostic_preserves_explicit_git_policy(tmp_path, ignored):
-    root = tmp_path / "repo"
-    root.mkdir()
-    _history_git(root, "init", "-q", "-b", "main")
-    project = root / ".booley"
-    project.mkdir()
-    (project / "booley.toml").write_text("[stealth]\nenabled = false\n")
-    exclude = root / ".git/info/exclude"
-    exclude.write_text(".booley/\n" if ignored else "")
-    before = exclude.read_bytes()
-    reporter = doctor._Reporter.create()
-    doctor._check_goal_history_ignored(root, project, reporter.pass_, reporter.warn_)
-    findings = reporter.findings or []
-    if ignored:
-        assert [(finding.severity, finding.check_id) for finding in findings] == [
-            ("warn", "goals.history-ignored")
-        ]
-        assert findings[0].subject is None
-        assert findings[0].message == (
-            "Goal Session Summary path .booley/goals/history/doctor-probe.md is "
-            "gitignored; summaries remain local. Exclusion: .git/info/exclude:1:"
-            ".booley/\t.booley/goals/history/doctor-probe.md"
-        )
-        assert findings[0].fix == (
-            "edit the reported exclusion when publication is wanted, then rerun booley doctor"
-        )
-    else:
-        assert [finding.severity for finding in findings] == ["pass"]
-    assert exclude.read_bytes() == before
-
-
 def test_nonstealth_doctor_reports_selectively_ignored_config(tmp_path, monkeypatch):
     _history_git(tmp_path, "init", "-q")
     project = tmp_path / ".booley"
@@ -7588,40 +7522,6 @@ def test_nonstealth_doctor_reports_selectively_ignored_config(tmp_path, monkeypa
     assert all(f.check_id != "goals.history-ignored" for f in warnings)
     assert any("edit the reported" in f.fix for f in warnings)
     assert excludes.read_text() == "# local policy\n.booley/booley.toml\n"
-
-
-def test_goal_history_negation_is_not_ignored(tmp_path):
-    _history_git(tmp_path, "init", "-q")
-    project = tmp_path / ".booley"
-    project.mkdir()
-    (project / "booley.toml").write_text("[stealth]\nenabled = false\n")
-    (tmp_path / ".gitignore").write_text(
-        "/.booley/goals/history/doctor-probe.md\n!/.booley/goals/history/doctor-probe.md\n"
-    )
-    reporter = doctor._Reporter.create()
-    doctor._check_goal_history_ignored(tmp_path, project, reporter.pass_, reporter.warn_)
-    assert not any(f.severity == "warn" for f in reporter.findings or []), (
-        "Goal history negation must not produce an ignored warning"
-    )
-
-
-def test_goal_history_exclusion_uses_rtl_checkout_with_external_control(tmp_path):
-    root = tmp_path / "rtl"
-    root.mkdir()
-    _history_git(root, "init", "-q", "-b", "main")
-    control = tmp_path / "control"
-    control.mkdir()
-    (control / "booley.toml").write_text("[stealth]\nenabled = false\n")
-    exclude = root / ".git/info/exclude"
-    exclude.write_text(".booley/\n")
-    before = exclude.read_bytes()
-    reporter = doctor._Reporter.create()
-    doctor._check_goal_history_ignored(root, control, reporter.pass_, reporter.warn_)
-    findings = reporter.findings or []
-    assert findings[0].check_id == "goals.history-ignored"
-    assert ".git/info/exclude:1:.booley/" in findings[0].message
-    assert not (root / ".booley").exists()
-    assert exclude.read_bytes() == before
 
 
 @pytest.mark.parametrize(
@@ -7674,154 +7574,6 @@ def test_unanchored_evidence_workarounds_receive_canonical_init_repair(tmp_path)
     assert [f.severity for f in _gitignore_probe(tmp_path)] == ["pass"]
 
 
-def _versioned_history_layout(tmp_path, *, linked, ignored):
-    from tests.goals.conftest import git
-
-    root = tmp_path / "rtl"
-    root.mkdir()
-    git(root, "init", "-q", "-b", "main")
-    empty = tmp_path / "empty-excludes"
-    empty.write_bytes(b"")
-    git(root, "config", "core.excludesFile", str(empty))
-    owner = tmp_path / "owner" if linked else root / ".booley"
-    owner.mkdir()
-    git(owner, "init", "-q", "-b", "main")
-    (owner / "booley.toml").write_bytes(b"[stealth]\nenabled = false\n")
-    git(owner, "add", "-A")
-    git(owner, "commit", "-qm", "independent history")
-    project = root / ".booley"
-    if linked:
-        git(owner, "worktree", "add", "-q", "--detach", str(project))
-    exclude = root / ".git/info/exclude"
-    exclude.write_bytes(b".booley/\n" if ignored else b"")
-    return root, project, exclude
-
-
-@pytest.mark.parametrize("linked", [False, True])
-@pytest.mark.parametrize(
-    "hidden", [None, "booley.toml", "goals/history/a.md", "tickets/history/a.md"]
-)
-def test_independent_history_waiver_does_not_hide_owner_inputs(
-    tmp_path, monkeypatch, linked, hidden
-):
-    root, project, _ = _versioned_history_layout(tmp_path, linked=linked, ignored=True)
-    (project / "doctor-waivers.toml").write_text(
-        'version = 1\n[[waiver]]\ncheck = "goals.history-ignored"\n'
-        'subject = "independent-booley-history"\n'
-        'reason = "Preserve independent history."\npermanent = true\n'
-    )
-    if hidden:
-        path = project / hidden
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if not path.exists():
-            path.write_text("summary")
-        (project / ".gitignore").write_text(hidden + "\n")
-    for name in (
-        "_check_ticket_leftovers",
-        "_check_project_gitignore",
-        "_check_git_state",
-        "_check_repo_footprint",
-        "_check_custom_endpoints_and_criteria",
-        "_check_agent_backend_health",
-    ):
-        monkeypatch.setattr(doctor, name, lambda *args, **kwargs: None)
-    reporter = doctor._Reporter.create(doctor.load_doctor_waivers(project))
-    doctor._run_project_checks(doctor.ProjectAudit(root, project, {}, {}, None), reporter)
-    findings = reporter.findings or []
-    assert any(
-        f.severity == "waived" and f.subject == "independent-booley-history" for f in findings
-    )
-    warnings = [f for f in findings if f.severity == "warn"]
-    assert len(warnings) == (1 if hidden else 0)
-    if hidden:
-        assert warnings[0].check_id == "project.inputs-ignored"
-        assert hidden in warnings[0].message
-
-
-@pytest.mark.parametrize("linked", [False, True])
-@pytest.mark.parametrize("ignored", [False, True])
-@pytest.mark.parametrize("inspection", ["exception", "returncode"])
-def test_goal_history_versioned_hint_preserves_history_and_policy(
-    tmp_path, linked, ignored, monkeypatch, inspection
-):
-    from tests.goals.conftest import git
-
-    root, project, exclude = _versioned_history_layout(tmp_path, linked=linked, ignored=ignored)
-    before = exclude.read_bytes()
-    head = git(project, "rev-parse", "HEAD")
-    reporter = doctor._Reporter.create()
-    doctor._check_goal_history_ignored(root, project, reporter.pass_, reporter.warn_)
-    finding = reporter.findings[0]
-    if ignored:
-        assert finding.check_id == "goals.history-ignored"
-        assert finding.subject == "independent-booley-history"
-        assert "Independently versioned" in finding.message
-        assert "retain the outer exclusion" in finding.fix
-        assert finding.fix.index("history into the RTL repository first") < finding.fix.index(
-            "remove the exclusion"
-        )
-        (project / "doctor-waivers.toml").write_text(
-            'version = 1\n[[waiver]]\ncheck = "goals.history-ignored"\n'
-            'subject = "independent-booley-history"\n'
-            'reason = "Preserve independent history and local summaries."\npermanent = true\n'
-        )
-        git(project, "add", "doctor-waivers.toml")
-        git(project, "commit", "-qm", "Accepted independent history policy")
-        assert git(project, "status", "--porcelain=v1") == ""
-        waivers = doctor.load_doctor_waivers(project)
-        waived = doctor._Reporter.create(waivers)
-        doctor._check_goal_history_ignored(root, project, waived.pass_, waived.warn_)
-        assert waived.findings[0].severity == "waived"
-        original = platform_paths.run_captured_bounded
-
-        def cannot_inspect(args, **kwargs):
-            if "check-ignore" in args:
-                if inspection == "exception":
-                    raise OSError("inspection unavailable")
-                return subprocess.CompletedProcess(args, 128, "", "inspection unavailable")
-            return original(args, **kwargs)
-
-        monkeypatch.setattr(platform_paths, "run_captured_bounded", cannot_inspect)
-        unreadable = doctor._Reporter.create(doctor.load_doctor_waivers(project))
-        doctor._check_goal_history_ignored(root, project, unreadable.pass_, unreadable.warn_)
-        assert unreadable.findings[0].severity == "warn"
-        assert unreadable.findings[0].subject is None
-    else:
-        assert finding.severity == "pass"
-        expected = (
-            "Goal summaries remain local; Paired Checkout preserves independent Booley history"
-            if linked
-            else "Goal history is eligible for commits"
-        )
-        assert finding.message == expected
-        assert git(project, "rev-parse", "HEAD") == head
-    assert exclude.read_bytes() == before
-
-
-@pytest.mark.parametrize("ignored", [False, True])
-def test_goal_history_broken_pair_is_active_and_preserves_exclusion(tmp_path, ignored):
-    root, project, exclude = _versioned_history_layout(tmp_path, linked=True, ignored=ignored)
-    before = exclude.read_bytes()
-    (project / "doctor-waivers.toml").write_text(
-        'version = 1\n[[waiver]]\ncheck = "goals.history-ignored"\n'
-        'subject = "independent-booley-history"\n'
-        'reason = "Preserve independent history and local summaries."\npermanent = true\n'
-    )
-    waivers = doctor.load_doctor_waivers(project)
-    marker = project / ".git"
-    # Replace Git's owned pointer: Windows hidden attributes can block truncation.
-    marker.chmod(marker.stat().st_mode | stat.S_IWRITE)
-    marker.unlink()
-    marker.write_bytes(b"gitdir: /nonexistent-paired-metadata\n")
-    reporter = doctor._Reporter.create(waivers)
-    doctor._check_goal_history_ignored(root, project, reporter.pass_, reporter.warn_)
-    finding = reporter.findings[0]
-    assert finding.severity == "warn"
-    assert finding.check_id == "goals.history-layout-unreadable"
-    assert "repair" in finding.fix and "remove" not in finding.fix
-    assert exclude.read_bytes() == before
-
-
 def test_booley_written_rules_stay_untouched_and_unreported(tmp_path):
     from booley.harness.setup.line_endings import LineEndingMode, reconcile_project_line_endings
 
@@ -7845,29 +7597,6 @@ def test_booley_written_rules_stay_untouched_and_unreported(tmp_path):
             assert written.read_bytes() == rule
             assert len(_findings(report, Severity.PASS)) == 1
             assert not _findings(report, Severity.WARN) and not _findings(report, Severity.FAIL)
-
-
-@pytest.mark.parametrize("ignored", [False, True])
-def test_goal_history_corrupt_standalone_is_active_and_preserves_history(tmp_path, ignored):
-    root, project, exclude = _versioned_history_layout(tmp_path, linked=False, ignored=ignored)
-    before = exclude.read_bytes()
-    metadata = project / ".git"
-    head = (metadata / "HEAD").read_bytes()
-    (metadata / "HEAD").rename(metadata / "HEAD.preserved")
-    (project / "doctor-waivers.toml").write_text(
-        'version = 1\n[[waiver]]\ncheck = "goals.history-ignored"\n'
-        'subject = "independent-booley-history"\n'
-        'reason = "Preserve independent history and local summaries."\npermanent = true\n'
-    )
-    reporter = doctor._Reporter.create(doctor.load_doctor_waivers(project))
-    doctor._check_goal_history_ignored(root, project, reporter.pass_, reporter.warn_)
-    finding = reporter.findings[0]
-    assert finding.severity == "warn"
-    assert finding.check_id == "goals.history-layout-unreadable"
-    assert "repair" in finding.fix and "remove" not in finding.fix
-    assert exclude.read_bytes() == before
-    assert (metadata / "HEAD.preserved").read_bytes() == head
-    assert (metadata / "objects").is_dir()
 
 
 def test_missing_pinned_credential_fails_even_without_cli(tmp_path, monkeypatch):
@@ -8447,7 +8176,6 @@ class TestDoctorCommonStateFromWorktree:
         )
         for name in (
             "_check_project_gitignore",
-            "_check_goal_history_ignored",
             "_check_project_trackability",
             "_check_git_state",
             "_check_repo_footprint",
@@ -8485,27 +8213,6 @@ def _relocated_project(tmp_path: Path, *, stealth: bool = False) -> tuple[Path, 
     (project / "booley.toml").write_bytes(f"[stealth]\nenabled = {flag}\n".encode())
     reset_cache()
     return root, project
-
-
-def test_goal_history_exclusion_reported_for_relocated_booley_dir(tmp_path):
-    root, project = _relocated_project(tmp_path)
-    (root / ".git/info/exclude").write_bytes(b"/tools/booley/goals/history/\n")
-    reporter = doctor._Reporter.create()
-
-    doctor._check_goal_history_ignored(root, project, reporter.pass_, reporter.warn_)
-
-    findings = reporter.findings or []
-    assert [(f.severity, f.check_id) for f in findings] == [("warn", "goals.history-ignored")]
-    assert "tools/booley/goals/history/doctor-probe.md" in findings[0].message
-
-
-def test_goal_history_versioned_hint_for_relocated_booley_dir(tmp_path):
-    root, project = _relocated_project(tmp_path)
-    _history_git(project, "init", "-q", "-b", "main")
-
-    layout, _hint = doctor._goal_history_layout_advice(root)
-
-    assert "Independently versioned" in layout
 
 
 def test_stealth_exclude_check_requires_relocated_entry(tmp_path):

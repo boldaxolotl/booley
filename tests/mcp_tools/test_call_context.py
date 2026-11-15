@@ -391,7 +391,6 @@ def test_ordinary_call_and_job_roots_work_without_a_project(bare_env, monkeypatc
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     reset_cache()
     context = resolve_call_context({"work_dir": str(bare_env)})
-    assert context.binding is None
     assert context.work_dir == bare_env
     assert mcp_server.job_roots() == ()
 
@@ -404,5 +403,4 @@ def test_ordinary_call_uses_non_git_work_dir_with_project(bare_env, monkeypatch)
     monkeypatch.setenv("BOOLEY_DIR", str(project))
     reset_cache()
     context = resolve_call_context({"work_dir": str(bare_env)})
-    assert context.binding is None
     assert dict(context.subprocess_env_overrides) == {}

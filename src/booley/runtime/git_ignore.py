@@ -1,4 +1,4 @@
-"""Git ignore query adapter, independent of Goal artifact eligibility policy."""
+"""Git ignore query adapter, independent of artifact eligibility policy."""
 
 from __future__ import annotations
 

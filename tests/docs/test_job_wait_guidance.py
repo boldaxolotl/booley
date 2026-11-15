@@ -11,7 +11,6 @@ from booley.mcp import server as mcp
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PACKAGED_GUIDANCE = (
     "src/booley/data/cheatsheet.md",
-    "src/booley/data/skills/booley-goal/SKILL.md",
     "src/booley/data/skills/booley-setup/SKILL.md",
     "src/booley/data/skills/booley-heal/SKILL.md",
     "docs/user/FLOW_REFERENCE.md",

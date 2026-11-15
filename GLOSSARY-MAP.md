@@ -9,8 +9,7 @@ the work at hand.
 
 | Context | Canonical glossary | Owns |
 |---|---|---|
-| Shared Booley | [docs/GLOSSARY.md](docs/GLOSSARY.md) | Product lifecycle, execution modes, Sandbox, Jobs, Goals and Goal Changes, Projects, Booley Directory and Project Root, Stealth, Targets, Booley Flows and Specialists, EDA provisioning, simulation evidence, Metric-Driven Development, and presentation |
-| Goal Mode | [src/booley/goals/GLOSSARY.md](src/booley/goals/GLOSSARY.md) | Worktree Identity, Run Binding, and Frozen Test Runs inside one Goal Record; retires with Goal Mode in 0.5.0 |
+| Shared Booley | [docs/GLOSSARY.md](docs/GLOSSARY.md) | Product lifecycle, execution modes, Sandbox, Jobs, Projects, Booley Directory and Project Root, Stealth, Targets, Booley Flows and Specialists, EDA provisioning, simulation evidence, Metric-Driven Development, and presentation |
 | B-Wave | [crates/bwave/GLOSSARY.md](crates/bwave/GLOSSARY.md) | Agent-facing waveform queries, virtual signals, markers, and human waveform viewing |
 | Simulation Coverage | [src/booley/flows/sim/GLOSSARY.md](src/booley/flows/sim/GLOSSARY.md) | Coverage Records, measurement points, evaluation policy, waivers, and analysis |
 | Feedback | [src/booley/feedback/GLOSSARY.md](src/booley/feedback/GLOSSARY.md) | Findings, their kinds, and their durable log |
@@ -18,15 +17,11 @@ the work at hand.
 
 ## Relationships
 
-- **Goal Mode → Shared Booley**: a Goal is judged by Booley Flow and Specialist
-  evidence on shared Targets; the Goal Record holds that evidence.
 - **Shared Booley → B-Wave**: a traced Simulation Flow produces a shared
   Trace Artifact, which B-Wave queries or opens in a Waveform Viewer.
 - **Simulation Coverage → Shared Booley**: a Coverage Record measures one
   shared Target through one Simulation Flow invocation; a Simulation Record may
   contain a Coverage Record.
-- **Simulation Coverage → Goal Mode**: a Coverage Criterion supplies the
-  evaluation policy for a coverage Goal; its evidence is stored in the Goal Record.
 - **Shared Booley and Public QA → Feedback**: product use records observations; Public
   QA triage files confirmed product and documentation problems as issues.
 - **Public QA → all product contexts**: QA missions hunt for bugs across the

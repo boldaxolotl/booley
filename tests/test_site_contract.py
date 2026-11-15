@@ -13,9 +13,6 @@ import importlib.util
 import re
 from pathlib import Path
 
-from booley.goals.model import parse_goal_args
-from booley.goals.presentation import goal_presentation
-from booley.goals.translate import translate_goals
 from booley.runtime.docs_links import SITE_URL
 from tests.docs.test_links import _destination_failure, _repository_path
 
@@ -58,23 +55,6 @@ def test_features_match_the_readme_word_for_word():
 
     assert site_features
     assert readme_features == site_features
-
-
-def test_inline_goal_examples_match_the_real_goal_presentation():
-    """The advertised examples must match validated Goals' public notation."""
-    examples = [
-        {
-            "family": "SYNTH",
-            "target": "synth_fifo",
-            "thresholds": {"area_increase_at_most": "10%"},
-        },
-        {"family": "COVERAGE", "target": "sim_fifo", "tests": "all", "metrics": {"line": 90}},
-    ]
-    translation = translate_goals(parse_goal_args(examples))
-    assert translation.warnings == ()
-    features = _site_section("features")
-    for goal in translation.goals:
-        assert f"<code>{goal_presentation(goal).text}</code>" in features
 
 
 def test_quick_start_commands_match_the_install_guide_block():
@@ -271,7 +251,7 @@ def test_docs_landing_table_lists_every_user_doc_in_sidebar_order():
 
     landing = (WEBSITE / "docs/docs/index.md").read_text(encoding="utf-8")
     body = landing.split("<tbody>", 1)[1].split("</tbody>", 1)[0]
-    rows = re.findall(r"<tr>(.*?)</tr>", body)
+    rows = re.findall(r"<tr>(.*?)</tr>", body, re.DOTALL)
     sections: list[tuple[str, int]] = []
     pages = []
     for row in rows:

@@ -84,7 +84,7 @@ class PublicationOwnership:
         )
         if result.returncode != 0:
             raise FileCommitError(
-                "publication needs the managed goals/*/ transient ignore policy; commit the Project ignore policy before finish"
+                "publication needs the managed transient ignore policy; commit the Project ignore policy before finish"
             )
         if create:
             parent.mkdir(parents=True, exist_ok=True)

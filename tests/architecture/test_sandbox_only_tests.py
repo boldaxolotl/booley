@@ -74,13 +74,10 @@ def test_guard_reports_host_module_whose_tests_are_all_sandbox_only() -> None:
     assert problems == {"pkg.a": (("tests/x/test_a.py",), ("pkg.main", "pkg.a"))}
 
 
-# Modules the brief names: the Goal store, Goalset loading, setup's cleanup selection, and the
-# Flow modules Doctor imports.
+# Modules the brief names: setup's cleanup selection and the Flow modules Doctor imports.
 @pytest.mark.parametrize(
     "module",
     [
-        "booley.goals.store",
-        "booley.goals.goalsets",
         "booley.flows.cli_arguments",
         "booley.flows.execution",
         "booley.flows.sim.config",
@@ -146,9 +143,9 @@ def test_endpoint_help_roots_are_derived() -> None:
 
     assert pre_venue_commands(tree) == {"flow", "specialist"}
     # Endpoint help for those commands runs before the venue guard, so their handlers are host
-    # code, while the Goal and Dashboard handlers stay Sandbox-only.
+    # code, while the Dashboard handler stays Sandbox-only.
     assert {"_cmd_flow", "_cmd_specialist", "_load_mcp_tool_class"} <= reach.harness_functions
-    assert not {"_cmd_goal", "_cmd_dashboard"} & reach.harness_functions
+    assert not {"_cmd_dashboard"} & reach.harness_functions
     endpoints = endpoint_modules()
     assert endpoints
     assert endpoints <= reach.paths.keys() and HARNESS_MODULE in reach.paths

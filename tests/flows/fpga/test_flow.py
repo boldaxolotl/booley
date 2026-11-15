@@ -261,31 +261,36 @@ def test_fpga_label_carries_target_source_bytes(tmp_path: Path, state_file: Path
     assert expected_bytes > 0
 
 
-def test_relative_ticket_criterion_auto_applies_pinned_baseline(
-    tmp_path: Path,
-    state_file: Path,
+def test_criteria_baseline_pin_does_not_override_the_baseline_flag(
+    tmp_path: Path, state_file: Path
 ) -> None:
-    flow = _flow(tmp_path, state_file)
+    """A Criterion's pinned baseline never replaces ``--baseline``."""
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
-    (tmp_path / "rtl.v").write_text("module rtl; endmodule\n", encoding="utf-8")
-    subprocess.run(["git", "add", "rtl.v"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
-    base_sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=tmp_path,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+    shas = []
+    for text in ("one", "two"):
+        (tmp_path / "rtl.v").write_text(f"module {text}; endmodule\n", encoding="utf-8")
+        subprocess.run(["git", "add", "rtl.v"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-qm", text], cwd=tmp_path, check=True)
+        shas.append(
+            subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=tmp_path,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        )
+    pinned, requested = shas
+    flow = _flow(tmp_path, state_file, "--baseline", requested)
     flow.state.init_criteria(
         {"fpga_impl_ok_default": True},
-        criterion_params={"fpga_impl_ok_default": {BASELINE_REF_PARAM: base_sha}},
+        criterion_params={"fpga_impl_ok_default": {BASELINE_REF_PARAM: pinned}},
     )
 
-    assert flow._apply_ticket_baseline((_layer_target_handle(tmp_path, "default"),)) is None
-    assert flow.args.baseline == base_sha
+    assert flow._prepare_target_pairs((_layer_target_handle(tmp_path, "default"),)) is None
+    assert flow.args.baseline == requested
 
 
 def test_paired_baseline_runs_baseline_target_and_keys_candidate(

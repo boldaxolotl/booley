@@ -18,7 +18,7 @@ from booley.harness import worktree_cmd
 from booley.runtime.handles import reserve_session_handle
 from booley.runtime.pid import ProcessIdentity, capture_process_identity
 from booley.runtime.session_activity import process_session_key
-from tests.goals.conftest import git
+from tests.git_support import git
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 
@@ -138,10 +138,6 @@ def _busy(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (nested / "handoffs").mkdir()
     (nested / "handoffs" / "h.md").write_bytes(b"handoff\n")
     _session(root, path)
-    from booley.goals.store import GoalStore
-    from tests.goals.test_store import _enter
-
-    _enter(GoalStore(root / ".booley"), path, "fix-20261006T101500Z")
     return path
 
 
@@ -157,7 +153,6 @@ def test_rm_refuses_and_names_every_reason(
     for reason in (
         "refusing to remove worktree s3",
         "live Session",
-        "active Goal Record fix-20261006T101500Z",
         "uncommitted change(s) in the worktree",
         "uncommitted change(s) in its Paired Checkout",
         "commit(s) on booley/s3 not in main",
@@ -186,18 +181,6 @@ def test_force_removes_despite_every_reason(
     (kept,) = _evidence_dirs(repo, "s3")
     assert (kept / "handoffs" / "h.md").read_bytes() == b"handoff\n"
     assert "booley/s3" in _branches(repo) and "booley-worktree/s3" in _branches(repo / ".booley")
-
-
-def test_rm_refuses_unmerged_commits_on_a_goal_branch(
-    repo: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    path = _add(repo, "g")
-    git(path, "switch", "-q", "-c", "booley/goal-fix-20261006T101500Z")
-    _commit(path, "goal.txt")
-
-    assert _rm(repo, "g") == 1
-
-    assert "1 commit(s) on booley/goal-fix-20261006T101500Z not in main" in capsys.readouterr().err
 
 
 def _hold_handle(root: Path, identity: ProcessIdentity) -> str:
@@ -240,23 +223,6 @@ def test_rm_ignores_a_handle_whose_holder_has_exited(
 
     assert "Removed worktree s1." in capsys.readouterr().out
     assert not path.exists()
-
-
-def test_rm_refuses_when_goal_state_is_unreadable(
-    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    from booley.goals.store import GoalStore, GoalStoreError
-
-    def fail(self: GoalStore, worktree: Path) -> None:
-        raise GoalStoreError("two Goal Records claim this worktree")
-
-    monkeypatch.setattr(GoalStore, "active_for_worktree", fail)
-    _add(repo, "w")
-
-    assert _rm(repo, "w") == 1
-
-    err = capsys.readouterr().err
-    assert "Goal Mode state is unreadable: two Goal Records claim this worktree" in err
 
 
 def test_rm_counts_a_session_in_the_paired_checkout(

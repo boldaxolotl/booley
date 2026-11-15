@@ -34,9 +34,6 @@ _KEPT_TREES: dict[str, str] = {
     # Goal-side names left to #3045.
     "src/booley/flows/source_fingerprint.py": "the Goal 'campaign' freshness category",
     "tests/flows/test_source_fingerprint_campaign.py": "the Goal 'campaign' freshness category",
-    "src/booley/goals/simulation_record_accounting.py": "Goal campaign registration (#3045)",
-    "tests/goals/test_simulation_record_accounting.py": "Goal campaign registration (#3045)",
-    "tests/goals/test_freshness.py": "the Goal 'campaign' freshness category",
     "tests/golden/": "Goal-side and persisted spellings in captured goldens",
     # Old on-disk records and the #2909 refusal.
     "src/booley/flows/sim/record/codec.py": "retired schema labels (#2909)",
@@ -81,7 +78,6 @@ _PERSISTED: tuple[str, ...] = (
 _KEPT_SPELLINGS: dict[str, tuple[str, ...]] = {
     # Mutation Tester campaign: its snapshot roots, workspace directory and Flow prose.
     "src/booley/agent_workspace/isolation.py": ("_campaign_roots",),
-    "src/booley/dev_support/flow_specialist_reference.py": ("sets the same campaign",),
     "src/booley/flows/endpoint_admission.py": ("mutation campaign's",),
     "tests/agent_workspace/test_snapshot_sources.py": ("arbitrary-old-campaign",),
     "tests/dev_support/test_flow_specialist_reference.py": (
@@ -103,17 +99,12 @@ _KEPT_SPELLINGS: dict[str, tuple[str, ...]] = {
     "src/booley/flows/target_test_suite.py": ("vacuous campaign",),
     "tests/architecture/booley_contract.py": ("target_campaign",),
     "tests/architecture/test_booley_contract.py": ("target_campaign",),
-    "tests/goals/test_model.py": ("_TARGET_CAMPAIGN_PARAM_REGISTRY",),
     # Goal-side names left to #3045: the 'campaign' freshness category and its fingerprint.
     "src/booley/criteria/categories.py": ('"campaign"',),
     "src/booley/criteria/state.py": ("campaign resets",),
-    "src/booley/goals/generated_artifacts.py": ("campaign_fingerprint", '"campaign"'),
-    "src/booley/goals/recorder.py": ('"campaign"',),
-    "src/booley/goals/review_package.py": ('"campaign"',),
     # Old 0.3.0/0.4.0 names Booley refuses or reads: placeholder, report fields, directories.
     "src/booley/flows/sim/config.py": ('field == "campaign"', "{campaign}"),
     "src/booley/presentation/report_results.py": ('"campaigns"', "detail.campaigns"),
-    "tests/goals/test_generated_inputs.py": ("targets/sim/campaign/manifest.json",),
     "tests/harness/test_doctor_selftest_builtin.py": ('["campaigns"]',),
     "tests/runtime/test_execution_records.py": ("campaign-child-executions",),
     "tests/runtime/test_execution_recovery.py": ("campaign-child-executions",),
@@ -129,7 +120,6 @@ _KEPT_SPELLINGS: dict[str, tuple[str, ...]] = {
     "tests/flows/sim/test_coverage_policy.py": ("campaign:sim_counter",),
     "tests/flows/sim/test_coverage_provisional.py": ("campaign:sim_counter", "campaign:other"),
     "tests/flows/sim/test_coverage_record.py": ("campaign:sim_counter",),
-    "tests/flows/sim/test_coverage_waiver_promotion.py": ("campaign:sim_counter",),
     "tests/flows/sim/test_coverage_waivers.py": ("campaign:sim_counter",),
     "tests/mcp_tools/test_coverage_evidence.py": ('"campaign:"',),
 }

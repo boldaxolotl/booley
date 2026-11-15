@@ -1,8 +1,8 @@
 """Where an execution session keeps its runtime files and durable Job records.
 
 A session's human-facing log root holds a ``.runtime/`` directory for
-machine-owned state, and Job records live in ``<runtime root>/jobs``. Interactive
-and Goal Mode all share that layout; they differ only in
+machine-owned state, and Job records live in ``<runtime root>/jobs``. Every execution
+mode shares that layout; they differ only in
 which root they pass. :func:`session_jobs_dir` with no argument reads the root
 the execution caller configured in this process's environment, and with an
 explicit *root* it names that root's Job records directly, so a caller that
@@ -56,7 +56,6 @@ def project_job_roots(booley_dir: Path) -> tuple[Path, ...]:
     """Every directory that may hold a Project's Job records, across all layouts."""
     roots = {booley_dir / ".runtime/jobs"}
     for pattern in (
-        "goals/*/.runtime/jobs",
         "logs/*/.runtime/jobs",
         "logs/.runtime/jobs",
         f"{INTERACTIVE_LOGS_DIR_NAME}/*/.runtime/jobs",

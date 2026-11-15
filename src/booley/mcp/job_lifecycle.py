@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from booley.flows.progress_lifecycle import repair_progress_after_reap
-from booley.goals.paths import record_paths
 from booley.mcp.call_context import CallContext
 from booley.mcp.endpoint_process import (
     _cancel_adopted_process_group,
@@ -35,7 +34,6 @@ from booley.mcp.job_results import (
     _KNOWN_JOB_ROOTS,
     JobRepository,
     LocatedJob,
-    job_binding,
     read_record_or_none,
 )
 from booley.runtime import job_records as jobrec
@@ -145,10 +143,7 @@ class JobLifecycle:
         return None if located is None else located.root
 
     def _write_root(self, rec: jobrec.JobRecord) -> Path | None:
-        """Use the admitted binding for every Goal write, including completion."""
-        binding = job_binding(rec)
-        if binding is not None:
-            return record_paths(binding.booley_dir, binding.record_id).jobs_dir
+        """Root for every write of *rec*, completion included."""
         return self._record_root(rec.run_id)
 
     def _read_run(self, run_id: str) -> jobrec.JobRecord | None:
@@ -180,19 +175,12 @@ class JobLifecycle:
 
     @staticmethod
     def _stamp_context(rec: jobrec.JobRecord, context: CallContext) -> None:
-        rec.work_dir = (
-            str(context.work_dir)
-            if context.binding
-            else (str(context.explicit_work_dir) if context.explicit_work_dir else None)
-        )
+        rec.work_dir = str(context.explicit_work_dir) if context.explicit_work_dir else None
         rec.session_key = context.session_key
-        rec.binding = None if context.binding is None else context.binding.to_json()
         from booley.runtime.booley_dir import resolve_common_booley_dir
 
         try:
-            project = (
-                context.binding.booley_dir if context.binding else resolve_common_booley_dir()
-            )
+            project = resolve_common_booley_dir()
             register_job(project, rec.run_id, rec.endpoint, rec.session_key, work_dir=rec.work_dir)
         except (OSError, ValueError, RuntimeError) as exc:
             logger.warning("Job handle Project unavailable for %s: %s", rec.run_id, exc)
@@ -238,7 +226,7 @@ class JobLifecycle:
             self._repository.report_dirs(located),
             rec.endpoint,
             rec.run_id,
-            booley_dir=self._repository.report_booley_dir(located),
+            booley_dir=self._repository.report_booley_dir(),
         )
 
     def _record_terminal(
@@ -295,7 +283,7 @@ class JobLifecycle:
         claim, not this server's decision. The record lives under the call
         context's jobs root and names *owner*, the agent that started it.
         """
-        run_id = context.binding.invocation_id if context.binding else self._next_run_id(name)
+        run_id = self._next_run_id(name)
         rec = self._new_record(run_id, name, cmd, timeout)
         rec.owner = owner
         self._submitted[run_id] = rec
@@ -320,12 +308,7 @@ class JobLifecycle:
         context: CallContext,
     ) -> tuple[int, str, str, bool]:
         """Run an inline endpoint while publishing bounded status state."""
-        rec = self._new_record(
-            context.binding.invocation_id if context.binding else uuid.uuid4().hex,
-            name,
-            cmd,
-            timeout,
-        )
+        rec = self._new_record(uuid.uuid4().hex, name, cmd, timeout)
         self._stamp_context(rec, context)
         self._job_roots[rec.run_id] = context.jobs_root
         _KNOWN_JOB_ROOTS[rec.run_id] = context.jobs_root
@@ -587,7 +570,7 @@ class JobLifecycle:
 
         *attach* False always submits: the caller's argv does not pin what the work measures.
         """
-        attached = self._repository.find_attachable(name, cmd, context=context) if attach else None
+        attached = self._repository.find_attachable(name, cmd) if attach else None
         run_id = (
             attached
             if attached is not None

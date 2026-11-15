@@ -1,4 +1,4 @@
-"""Immutable observations independent of Goal history and Target presentation."""
+"""Immutable observations independent of Target presentation."""
 
 from __future__ import annotations
 

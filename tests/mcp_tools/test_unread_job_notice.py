@@ -20,7 +20,7 @@ except ImportError:
     pytest.skip("mcp package not installed", allow_module_level=True)
 
 from booley.core.booley_dir import reset_cache
-from booley.mcp.application import McpDispatchResult, McpInputRequired
+from booley.mcp.application import McpInputRequired
 from booley.mcp.session_registry import Attribution
 from booley.runtime import job_records as jobrec
 from booley.runtime.session_paths import session_jobs_dir
@@ -37,10 +37,7 @@ EARLIER = "2026-01-01T00:00:00Z"
 
 
 class Observer:
-    """Session observer: thread attribution from ``_meta.threadId`` and a canned warning."""
-
-    def __init__(self, warning: str = "") -> None:
-        self.warning = warning
+    """Session observer: thread attribution from ``_meta.threadId``."""
 
     async def attribution(
         self, arguments, metadata, client_name, *, request=None, tool="request", caller=None
@@ -52,9 +49,6 @@ class Observer:
 
     async def resolved(self, facts):
         return facts
-
-    async def shared(self, _facts):
-        return (), self.warning
 
 
 @pytest.fixture(autouse=True)
@@ -173,7 +167,6 @@ RESPONSE_KINDS: list[tuple[str, dict[str, Any], bool | None]] = [
     ("booley_cancel", {"run_id": "no-such-run"}, None),
     ("booley_poll", {"run_id": "foreign-running", "wait_seconds": 0}, None),
     ("booley_poll", {"wait_seconds": "x"}, True),
-    ("goal_status", {}, None),
 ]
 
 
@@ -203,30 +196,6 @@ async def test_notice_on_every_response_kind(monkeypatch):
         if is_error is not None:
             assert result.is_error is is_error
         assert result.structured_content == baseline.structured_content, name
-
-
-@pytest.mark.asyncio
-async def test_notice_follows_goal_worktree_warning(monkeypatch):
-    async def dispatch(*_args, **_kwargs):
-        return McpDispatchResult(
-            ([TextContent(type="text", text="Goal result")], {"facts": "kept"}),
-            False,
-            goal_aware=True,
-        )
-
-    monkeypatch.setattr(server, "_dispatch_application_tool", dispatch)
-    _write("mine-job")
-    params = CallToolRequestParams(name="booley_targets", _meta={"threadId": "t1"})
-
-    result = await server._call_application_tool(
-        _application(), params, None, Observer("WARNING: another session shares this worktree")
-    )
-
-    assert isinstance(result, CallToolResult)
-    assert _texts(result)[:2] == ["Goal result", "WARNING: another session shares this worktree"]
-    assert _texts(result)[-1].startswith(f"{NOTICE} mine-job")
-    assert len(result.content) == 3
-    assert result.structured_content == {"facts": "kept"}
 
 
 @pytest.mark.asyncio
@@ -386,7 +355,7 @@ async def test_first_read_time_recorded_and_latency_visible():
 
 @pytest.mark.asyncio
 async def test_form_request_is_returned_unchanged():
-    """A Goal form is shown to the human, not a tool result: the hook never sees it."""
+    """A form is shown to the human, not a tool result: the hook never sees it."""
     _write("mine-job")
 
     async def form(*_args):
@@ -396,14 +365,14 @@ async def test_form_request_is_returned_unchanged():
         raise AssertionError("the response hook ran on a form request")
 
     application = server.McpApplication(
-        [{"name": "goal_propose_change", "schema": {"type": "object"}}],
+        [{"name": "probe", "schema": {"type": "object"}}],
         dispatch=form,
         request_dispatch=form,
         canonicalize=lambda value: value,
         on_discovery_error=lambda _: None,
         finalize=forbidden,
     )
-    params = CallToolRequestParams(name="goal_propose_change", _meta={"threadId": "t1"})
+    params = CallToolRequestParams(name="probe", _meta={"threadId": "t1"})
 
     result = await server._call_application_tool(application, params, None, Observer())
 

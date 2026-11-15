@@ -1,7 +1,7 @@
 """Ask Git each repository fact once per read-only computation.
 
-Goal Mode reads the same HEAD-independent facts over and over while it digests
-one set of inputs or projects one status: where a checkout's Git directory is,
+A computation can read the same HEAD-independent facts over and over while it digests
+one set of inputs: where a checkout's Git directory is,
 which toplevel contains a path, which object format a repository uses. Inside
 :func:`repository_facts` those answers are remembered, so the second identical
 question costs no process launch.
@@ -9,7 +9,7 @@ question costs no process launch.
 Scope contract
 ==============
 
-A scope wraps **one read-only computation** and nothing else. Goal Mode
+A scope wraps **one read-only computation** and nothing else. A caller
 re-reads repository facts on purpose after side effects (a freeze, a Git
 write, a rollback) to catch a substituted checkout, so a scope never spans such
 a step and a re-check opens its own scope or none. Outside a scope, and on any

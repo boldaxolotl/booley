@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import re
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 from booley.core.booley_dir import resolve_checkout_booley_dir
-from booley.core.boundary import as_dict
+from booley.core.boundary import as_dict, require_bool, require_dict
 
 SANDBOX_IMAGE = "booley-sandbox"
 
@@ -53,3 +55,10 @@ def _selected_from_config(
     if logical in {SANDBOX_IMAGE, "booley-sandbox-riscv", project_image_name(project_root)}:
         return project_image_name(project_root)
     return logical
+
+
+def parse_dashboard(data: Mapping[str, Any]) -> bool:
+    """The single strict parser for the Dashboard attachment preference."""
+    return require_bool(
+        require_dict(data.get("sandbox", {}), field="[sandbox]"), "dashboard", default=True
+    )

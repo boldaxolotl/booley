@@ -65,6 +65,13 @@ to.
 
 To fix a problem yourself, follow the `→` hint under it.
 
+### Goal Mode leftovers
+
+| Check ID | Level | Meaning and fix |
+|---|---|---|
+| `config.retired-goals` | `✗` | `booley.toml` has a `[goals]` section. Delete its tables, or ask the Developer Agent to run `/booley-heal`. |
+| `goals.leftover` | `!` | A `goals/` or `goalsets/` directory is still there. Booley does not read or delete it; delete it once you do not need its records. |
+
 ## Automatic checks
 
 Booley runs plain Doctor in the background when the Sandbox starts, if the
@@ -83,7 +90,7 @@ and on the Dashboard. The full output of the last run is in
 - one short, paid call on your default Agent CLI and one on each model a
   Specialist runs on, which proves the credentials work in this Sandbox. A
   model the provider refuses fails Doctor and names the `[models]` entry to
-  change, instead of failing a Goal later. `--skip-agent-checks` skips these
+  change, instead of failing a run later. `--skip-agent-checks` skips these
   calls;
 - a short simulation, lint, and ASIC synthesis on each Target marked for Doctor
   (see [Marking Targets for Doctor](TARGETS.md#marking-targets-for-doctor));

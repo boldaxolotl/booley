@@ -1,6 +1,6 @@
 """Inspect whether Git inside a Sandbox commits with the ``[agent.git]`` identity.
 
-Interactive Mode and Goal Mode supply the identity as command-scope Git
+Interactive Mode supplies the identity as command-scope Git
 settings (``GIT_CONFIG_COUNT`` and friends). A hand-written devcontainer spec,
 such as one for GitHub Codespaces, can omit them, leaving Git to fall back to a
 copied host gitconfig or no identity at all. Rather than re-deriving Git's

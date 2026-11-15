@@ -576,7 +576,7 @@ def test_actual_reviewer_evidence_keeps_versioned_project_clean(
     data = root / ".booley"
     data.mkdir()
     (data / "booley.toml").write_text('[project]\nname = "fixture"\n')
-    state_path = data / "goals" / "audit" / "state.json"
+    state_path = data / "reviewer-state" / "audit" / "state.json"
     monkeypatch.setenv("BOOLEY_DIR", str(data))
     reviewer.state._file_path = state_path
     reviewer.args.state_file = state_path

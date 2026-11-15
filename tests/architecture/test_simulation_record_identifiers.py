@@ -140,19 +140,6 @@ _COVERAGE_RECORD_NAMES: dict[str, frozenset[str]] = {
             "rebind_reference:campaign",
         }
     ),
-    "src/booley/flows/sim/waiver_candidates.py": frozenset(
-        {
-            "campaign_id",
-            "campaign_path",
-        }
-    ),
-    "src/booley/goals/waiver_binding.py": frozenset(
-        {
-            "campaign_id",
-            "campaign_path",
-            "campaign_reference",
-        }
-    ),
 }
 
 # Mutation Tester and Target campaign names, which keep their name.
@@ -253,7 +240,7 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
     ),
 }
 
-# Goal-side names left to #3045 (the freshness category and unsettled campaigns).
+# Campaign names left to #3045 (the source-fingerprint campaign category).
 _GOAL_NAMES: dict[str, frozenset[str]] = {
     "src/booley/flows/source_fingerprint.py": frozenset(
         {
@@ -263,11 +250,6 @@ _GOAL_NAMES: dict[str, frozenset[str]] = {
             "campaign_fingerprint",
         }
     ),
-    "src/booley/goals/simulation_record_accounting.py": frozenset(
-        {
-            "unsettled_campaigns",
-        }
-    ),
     "tests/flows/test_source_fingerprint_campaign.py": frozenset(
         {
             "campaign",
@@ -275,11 +257,6 @@ _GOAL_NAMES: dict[str, frozenset[str]] = {
             "test_campaign_fingerprint_tracks_tests_and_selected_core",
             "test_campaign_fingerprint_tracks_transitive_core_changes",
             "test_campaign_fingerprint_uses_resolved_booley_dir",
-        }
-    ),
-    "tests/goals/test_freshness.py": frozenset(
-        {
-            "test_target_less_tb_and_consumed_campaign_are_filtered",
         }
     ),
 }

@@ -28,7 +28,7 @@ _DOCTOR_MIGRATION = (
     "tickets",
     "tickets.leftover-board",
     "tickets.leftover-guidance",
-    "move any Ticket you still need into a Goalset or archive it, then delete ",
+    "archive any Ticket you still need, then delete ",
     "leftover Ticket Board data in ",
     "could not inspect leftover Ticket Board data in ",
     "leftover Ticket guidance in ",

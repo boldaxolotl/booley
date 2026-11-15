@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -23,9 +23,7 @@ from booley.flows.execution_persistence import (
     AcceptanceRecorder,
     AcceptanceRecordingError,
     NoAcceptanceRecorder,
-    frozen_test_runs_for,
 )
-from booley.flows.frozen_test_runs import FrozenTestRuns, GoalTestRuns
 from booley.flows.sim.coverage_json import content_digest, coverage_mapping_document
 from booley.flows.sim.coverage_projection import project_coverage_criterion
 from booley.flows.sim.coverage_reference import (
@@ -73,8 +71,6 @@ class AcceptanceContext:
     baseline_refusals: Mapping[tuple[str, str], str] = field(default_factory=dict)
     observer: Callable[[list[CriterionChange]], None] | None = None
     detail_stamper: Callable[[CriterionChange, str], dict[str, Any]] | None = None
-    #: The Test Runs the run's Goals are frozen to; ``None`` outside Goal Mode.
-    frozen: FrozenTestRuns | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,7 +97,7 @@ class _OutcomeEvidence:
     """The authenticated evidence of one outcome, read on first use.
 
     Test Run rows and the public Coverage Record reference are each
-    resolved at most once, however many Criteria or Goals read them.
+    resolved at most once, however many Criteria read them.
     """
 
     def __init__(self, outcome: SimulationRecordOutcome) -> None:
@@ -140,9 +136,7 @@ class SimulationAcceptanceCoordinator:
         outcome = evidence.outcome
         if context.diagnostic or context.state._file_path is None:
             return AcceptanceOutcome(False, None, (), "no_criteria")
-        changes = self._derive_changes(
-            evidence, context.state, context.baseline_refusals, context.frozen
-        )
+        changes = self._derive_changes(evidence, context.state, context.baseline_refusals)
         if context.detail_stamper is not None:
             selector = str(outcome.target["selector"])
             changes = [
@@ -173,7 +167,6 @@ class SimulationAcceptanceCoordinator:
         evidence: _OutcomeEvidence,
         state: DevelopmentState,
         baseline_refusals: Mapping[tuple[str, str], str] | None = None,
-        frozen: FrozenTestRuns | None = None,
     ) -> list[CriterionChange]:
         outcome = evidence.outcome
         facts = outcome.acceptance_facts.document
@@ -182,10 +175,6 @@ class SimulationAcceptanceCoordinator:
             raise TypeError("Simulation Record acceptance Target is not a mapping")
         target_name = str(target["name"])
         shadow = deepcopy(state)
-        if frozen is not None:
-            return _goal_changes(
-                outcome, shadow, target, evidence, baseline_refusals or {}, frozen
-            )
         changes = _cycle_changes(outcome, shadow, target, evidence, baseline_refusals or {})
         changes.extend(_coverage_changes(shadow, target, evidence))
         changes.extend(_simulation_changes(outcome, shadow, target, target_name, evidence))
@@ -300,12 +289,11 @@ def _candidate_simulation_observations(
 ) -> dict[object, Mapping[str, object]]:
     """Candidate observations by Test, for Criteria that name Tests.
 
-    Outside Goal Mode a Criterion names a Test, so it has one observation to
+    A Criterion names a Test, so it has one observation to
     judge only when the record ran one Test Run of that Test. A Test the
     record ran as several Test Runs is left out: no Criterion that needs
     it is judged from this record, rather than letting one Test Run stand
-    in for the others. Goals name Test Runs and are judged by
-    :func:`_goal_changes` instead.
+    in for the others.
     """
     indexed: dict[object, Mapping[str, object]] = {}
     several: set[object] = set()
@@ -432,7 +420,6 @@ def record_simulation_record_acceptance(
         baseline_refusals=dict(baseline_refusals or {}),
         observer=endpoint.record_report_criteria,
         detail_stamper=_detail_stamper(endpoint),
-        frozen=None if endpoint.state._file_path is None else frozen_test_runs_for(recorder),
     )
     reconciler = SimulationAcceptanceCoordinator()
     keys: list[str] = []
@@ -891,8 +878,8 @@ def _names_baseline_target(params: Mapping[str, object], target: Mapping[str, ob
     """Whether *target* is the baseline Target a Cycle Count Criterion compares against.
 
     An explicit baseline Target names its selector. Otherwise the baseline is
-    the Criterion's own Target, which a Goal names only in ``target`` (as a
-    selector or an identity) and a Criterion may also pin by selector.
+    the Criterion's own Target, which a Criterion may name in ``target`` (as a
+    selector or an identity) or pin by selector.
     """
     if BASELINE_TARGET_PARAM in params:
         return target.get("selector") == params[BASELINE_TARGET_PARAM]
@@ -938,132 +925,6 @@ def _cycle_detail(
         "baseline_observation": baseline_state,
         "evaluation": {"cycles": current, "checks": checks},
     }
-
-
-# ---------------------------------------------------------------------------
-# Goals: Criteria judged by frozen Test Runs (ADR 0072)
-# ---------------------------------------------------------------------------
-
-
-def _goal_changes(
-    outcome: SimulationRecordOutcome,
-    shadow: DevelopmentState,
-    target: Mapping[str, object],
-    evidence: _OutcomeEvidence,
-    refusals: Mapping[tuple[str, str], str],
-    frozen: FrozenTestRuns,
-) -> list[CriterionChange]:
-    """The Criterion changes of every Goal this record's Test Runs are evidence for.
-
-    A Test Run is evidence for a Goal only when its resolved name and its
-    declared-inputs fingerprint equal one of the Goal's frozen Test Runs.
-    A Goal none of whose frozen runs this record graded gets no change: for
-    that Goal the record is diagnostic. Every other Goal gets one change
-    that carries its matching runs, whatever else the record ran and
-    whether or not it ran to its end: a matching failure is never left out.
-    A Cycle Count or coverage Goal's change also carries the metric when
-    this record measured it (:meth:`GoalTestRuns.measured_by`).
-
-    Whether the Goal is met is decided by its recorder: from every matching
-    run recorded so far, or for a coverage Goal from the coverage floors
-    alone. ``met`` here is this record's own verdict.
-    """
-    if target["role"] != "candidate":
-        return []
-    names = {f"{target['vlnv']}#{target['name']}", str(target["selector"])}
-    cycle = _CycleFacts.of(outcome, target, refusals)
-    ran = evidence.all()
-    changes: list[CriterionChange] = []
-    for goal in frozen.of_target(names):
-        matched = goal.matching(ran)
-        if goal.key not in shadow.criteria or not _graded(matched):
-            continue
-        measured: list[CriterionChange] = []
-        if goal.kind == "cycle_count" and goal.measured_by(ran):
-            measured = _goal_cycle_change(outcome, shadow, goal, matched, cycle, evidence)
-        elif goal.kind == "coverage" and goal.measured_by(ran) and outcome.complete:
-            measured = _goal_coverage_change(outcome, shadow, goal, evidence)
-        if not measured:
-            detail = {**_goal_simulation_detail(outcome, matched), **goal.outcomes_detail(matched)}
-            measured = shadow.set_criterion(goal.key, goal.own_verdict(matched), detail=detail)
-        changes.extend(measured)
-    return changes
-
-
-def _graded(rows: Sequence[Mapping[str, object]]) -> bool:
-    """Whether any of *rows* observed its Test Run pass or fail."""
-    return any(row["grade"] in {"pass", "fail"} for row in rows)
-
-
-def _goal_simulation_detail(
-    outcome: SimulationRecordOutcome, matched: list[dict[str, object]]
-) -> dict[str, object]:
-    """What one record observed of a simulation Goal's frozen Test Runs."""
-    facts = outcome.acceptance_facts.document
-    names = [str(row["name"]) for row in matched]
-    passed = [str(row["name"]) for row in matched if row["grade"] == "pass"]
-    return {
-        "campaign_id": facts["campaign_id"],
-        "manifest_sha256": facts["manifest_sha256"],
-        "acceptance_facts_sha256": outcome.acceptance_facts.sha256,
-        "aggregate_grade": outcome.aggregate_grade,
-        "tests_passed": len(passed),
-        "tests_total": len(names),
-        "selected_tests": names,
-        "passed_tests": passed,
-        "failed_tests": [name for name in names if name not in passed],
-        "skipped_tests": [],
-        "test_runs": matched,
-    }
-
-
-def _goal_cycle_change(
-    outcome: SimulationRecordOutcome,
-    shadow: DevelopmentState,
-    goal: GoalTestRuns,
-    matched: list[dict[str, object]],
-    cycle: _CycleFacts,
-    evidence: _OutcomeEvidence,
-) -> list[CriterionChange]:
-    """Judge a Cycle Count Goal from the observation of its one frozen Test Run.
-
-    Nothing when that observation, or its baseline one, cannot be judged.
-    """
-    observations = _candidate_observations(outcome.acceptance_facts.document, outcome.target)
-    current = observations.get(str(matched[0]["name"]))
-    if current is None:
-        return []
-    return _cycle_change(shadow, goal.key, current, cycle, evidence)
-
-
-def _goal_coverage_change(
-    outcome: SimulationRecordOutcome,
-    shadow: DevelopmentState,
-    goal: GoalTestRuns,
-    evidence: _OutcomeEvidence,
-) -> list[CriterionChange]:
-    """The one projection of a coverage evaluation onto a Goal's Criterion.
-
-    Judge a coverage Goal from a coverage Simulation Record that ran exactly its frozen
-    Test Runs. Coverage is merged over the record's Test Runs, so only such a
-    record measured the Goal's coverage; it is never merged across records.
-    Nothing when the record collected no coverage.
-
-    The judged key is the Goal's own, however its Target was written: the Goal
-    is already bound to this Target. It is never projected atomically: in Goal
-    Mode it is its Target's only Coverage Criterion, so the evaluation's status
-    is its verdict for one metric or several. Only this Goal's Criterion changes.
-    """
-    if outcome.coverage_reference is None:
-        return []
-    detail = _coverage_detail(evidence)
-    met, projected_detail = project_coverage_criterion(
-        shadow.criteria[goal.key],
-        evidence.coverage().resolved.loaded.coverage_record.evaluation,
-        detail,
-        atomic=False,
-    )
-    return shadow.set_criterion(goal.key, met, detail=projected_detail)
 
 
 def retain_partial_simulation_record_acceptance(
