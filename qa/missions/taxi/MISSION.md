@@ -4,7 +4,8 @@ Port pinned upstream Taxi to Booley from a direct clone, then evolve `taxi_eth_m
 verification Goal (exact PFC/FCS/underrun/statistics tests, mutation campaign) and a bugfix
 Goal for a seeded PFC fault the upstream tests miss. Also covers Setup with a derived Cocotb
 image, Targets, Doctor, lint, logical/physical synthesis, Interactive Mode, B-Wave, a submodule
-companion, Goal operations and Simulation Records. Taxi's interfaces, recursive symlink, big
+companion, Goal operations and Simulation Records. Taxi's interfaces, recursive
+symlink, big
 Python stack and five clocks surface stale caches, skipped tests and dropped clocks.
 The operator runs it through [`booley-qa-run`](../../booley-qa-run/SKILL.md), which owns the run
 directory, findings format, and cleanup bookkeeping; this file says where to look.
@@ -276,8 +277,10 @@ accepted.
 ### 12. sim-record — Simulation Records (~25 min)
 Intent: one shared build, memory-admitted parallel attempts, isolated attempts, resumable batches.
 Try:
-- Copy `fixtures/simulation-record/` in, register `campaign.core`, merge `tests.toml` into the
-  test catalog. `first` + `second` in one Simulation Record → exactly one ready `shared_variant` bundle for
+- Copy `fixtures/simulation-record/` in, register `campaign.core`, merge
+  `tests.toml` into the
+  test catalog. `first` + `second` in one Simulation Record → exactly one ready
+  `shared_variant` bundle for
   both attempts, bytes unchanged (cross-check `validate_bundle.py`).
 - Run each slow item once first: an item with no Resource History runs alone. Apply
   `parallel.toml`, and set a `[sandbox].memory` whose Memory Budget fits several of the items but
@@ -291,7 +294,8 @@ Try:
   defines.
 - Kill the owned producer mid Taxi Cocotb multi-test batch and copy the interrupted attempt's
   `attempt.json`; resume from the manifest → one new attempt rerunning the whole batch
-  (cross-check `validate_phase5.py` with the Simulation Record directory and that copy). The same ordered
+  (cross-check `validate_phase5.py` with the Simulation Record directory and
+  that copy). The same ordered
   `test` array over MCP → authenticated artifact references, ≤32 observations, exact truncation
   metadata, same exit code; keep the MCP run's report invocation directory and pass it to
   `validate_phase5.py`.

@@ -93,7 +93,8 @@ Target/test/policy values in machine-readable form; the mission calls a row
 | `sim-fail` | Seal `sim_custom` tests `[fail]`, `cover_property` 66; collect `fail`: a completed failing simulation with valid native coverage. |
 
 Large-record cases compile and collect `sim_scale` locally in the current
-run; no cached Coverage Record substitutes. The workload is fixed and needs about
+run; no cached Coverage Record substitutes. The workload is fixed and needs
+about
 8 GiB of runtime memory and 20 GiB of disposable disk. Without that headroom,
 skip the large-record cases; never shrink the workload.
 
@@ -137,7 +138,8 @@ python3 <asset>/evaluator/measurements.py <nested>/coverage.json \
 The oracle requires the exact symbolic point population, per-test hit sets,
 exact transition and sample counts, positive native incidence, the
 numerator/denominator, and the reported overall percentage. Its
-`--native RUN_ID=PATH` inputs must cover every Coverage Record run, and every point
+`--native RUN_ID=PATH` inputs must cover every Coverage Record run, and every
+point
 identity must also appear in the actual raw native records. Its inputs contain
 only the pinned, supported native record classes, and it requires equal raw and
 normalized native-key inventories on every run: an unknown class or an extra
@@ -380,11 +382,14 @@ Pre-sim drift cases use the per-test pre-sim command to append a harmless
 comment to exactly `rtl/coverage_dut.sv` or `coverage.core` after planning;
 capture the bytes before and restore them. The include-source analysis case
 uses the declared include file `rtl/constants.svh` with a comment-only change
-made after a pristine Coverage Record is saved; it must be in the recorded closure
+made after a pristine Coverage Record is saved; it must be in the recorded
+closure
 before collection.
 
-Coverage Record faults use a fresh nested Coverage Record; use `baseline.native` for point
-mutations, since the Coverage Record must contain points. Copy an entire completed
+Coverage Record faults use a fresh nested Coverage Record; use `baseline.native`
+for point
+mutations, since the Coverage Record must contain points. Copy an entire
+completed
 numbered invocation into a new owned reports root, keeping the
 `sim/N/targets/<target>/coverage.json` layout. Create
 `.qa-coverage-fault-copy` at that new root, then run:
@@ -397,7 +402,8 @@ Modes: `missing-points`, `truncated-gzip`, `trailing-data`,
 `duplicate-point`, `invalid-final-record`, `resource-ceiling`, `v1`, `v2`,
 `v3`, `v4`, `symlink` and `wrong-evaluation` (the last needs a blocked or
 not-requested evaluation). The script follows the copied reference to the
-nested Coverage Record, damages it; manifest faults then rewrite the nested manifest and the Target
+nested Coverage Record, damages it; manifest faults then rewrite the nested
+manifest and the Target
 reference (new bytes and sha256) in Booley's own JSON format. Point faults
 leave the manifest and the Target reference byte-identical. The
 original Coverage Record is never touched. It refuses symlinked or
@@ -411,7 +417,8 @@ Analyst path faults use the exact invalid form in their name: missing-argument
 omits `--record`; target-name passes `sim_hdl`; latest passes the literal
 `latest`; point-store and waveform pass the actual owned gzip and VCD paths;
 legacy-flat-report passes a real run-owned JSON file named
-`coverage_report.json` that is not a Coverage Record reference. Wrong-Target and wrong-invocation cases move the valid
+`coverage_report.json` that is not a Coverage Record reference. Wrong-Target and
+wrong-invocation cases move the valid
 pair under a different encoded Target or number without rewriting its
 identity. Simulation faults remove its projection, set completion to
 incomplete, or swap in another Target's projection. Source-mode cases change
@@ -424,10 +431,12 @@ The simulated-provider cases are deterministic **external input** tests; their
 reports never stand in for a real-model result, and protocol drift in the
 provider fixture is a fixture bug, never a live-model pass. Live closure, advice and
 source modes use the configured provider directly: save its real transcript
-and confirm the Coverage Record, Project, Goals and waiver bytes are unchanged. The
+and confirm the Coverage Record, Project, Goals and waiver bytes are unchanged.
+The
 model instruction for a gap is:
 
-> Begin with overview of this exact Coverage Record. Retrieve uncovered eligible points
+> Begin with overview of this exact Coverage Record. Retrieve uncovered eligible
+> points
 > for rtl/coverage_dut.sv and verified excerpts for decoder choice 2. Separate
 > immutable observations from hypotheses. Recommend a concrete missing test using
 > only delivered references. State retrieval limitations. Do not run simulation,
@@ -483,12 +492,16 @@ Query cases use overview, `metric=branch`, `source=rtl/coverage_dut.sv`,
 `covered` true and false, and disposition `eligible`, `waived` and `unscored`
 explicitly. Pagination uses limit 2, then follows the actual `next_cursor`.
 Changed-filter uses toggle then line; cursor-filter reuses a toggle cursor
-with line. Undelivered requests use `point:999999999`. Requests across Coverage Records
-set `QA_FOREIGN_CAMPAIGN` to the actual `native` baseline Coverage Record and send
+with line. Undelivered requests use `point:999999999`. Requests across Coverage
+Records
+set `QA_FOREIGN_CAMPAIGN` to the actual `native` baseline Coverage Record and
+send
 its path as a prohibited extra selector while the Analyst is bound to the
-`analysis` baseline; record the rejection and confirm the bound Coverage Record is
+`analysis` baseline; record the rejection and confirm the bound Coverage Record
+is
 unchanged. Budget exhaustion issues repeated 100-point pages of the `scale`
-Coverage Record, at most 256 calls; stop only at the real evidence error and keep the
+Coverage Record, at most 256 calls; stop only at the real evidence error and
+keep the
 actual terminal audit. Query-size validation and response-byte limits are
 separate cases: request limit 100000 for the invalid-limit rejection, and
 legal 100-point pages with long retained identities for the response-byte

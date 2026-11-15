@@ -12,7 +12,9 @@ removes in 0.5.0.
 ## Language
 
 **Coverage Record**:
-One durable native RTL coverage record for exactly one Target in one Simulation Flow invocation; a [Simulation Record](../../../../docs/GLOSSARY.md) may contain a Coverage Record.
+One durable native RTL coverage record for exactly one Target in one Simulation
+Flow invocation; a [Simulation Record](../../../../docs/GLOSSARY.md) may contain
+a Coverage Record.
 _Avoid_: Coverage Campaign, coverage collection, latest coverage, waveform score
 
 **Coverage Point**:

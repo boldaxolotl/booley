@@ -123,7 +123,8 @@ threshold for that metric. A metric the design has no points for, such as
 
 **`sim/<N>/targets/<target>/coverage.json`** is the Coverage Record. Pass
 its path to [`booley coverage uncovered`](#finding-uncovered-points) to list
-the uncovered points, or to the [Coverage Analyst](#analyzing-a-coverage-record) to
+the uncovered points, or to the [Coverage Analyst](#analyzing-a-coverage-record)
+to
 find out what is uncovered and why.
 
 ### How the numbers are counted
@@ -202,12 +203,14 @@ than splitting on them.
   per-file count, pipe the list:
   `booley coverage uncovered <coverage.json> | awk -F: 'NF > 1 {print $1}' | sort | uniq -c | sort -rn`.
 
-Ask the agent, which runs the [Coverage Analyst](#analyzing-a-coverage-record), to
+Ask the agent, which runs the [Coverage Analyst](#analyzing-a-coverage-record),
+to
 explain why points are uncovered.
 
 ## Coverage Goals
 
-Outside Goal Mode, a coverage run just collects and stores the Coverage Record; there
+Outside Goal Mode, a coverage run just collects and stores the Coverage Record;
+there
 are no thresholds to pass. In [Goal Mode](GOAL-MODE.md), a coverage Goal sets
 minimum percentages for one Target, for example "line coverage of sim_counter
 at least 90% and branch at least 80% over the whole suite":

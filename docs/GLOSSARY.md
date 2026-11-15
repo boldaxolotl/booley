@@ -240,7 +240,12 @@ One **Test Variant** simulated with one seed, written `test+variant@seed`: `test
 _Avoid_: run (bare), iteration, seed run, QA Run; random seed (for the Default Seed)
 
 **Simulation Record**:
-The durable, resumable record of the exact simulation workload one Simulation Flow invocation runs on one **Target**, with the strict aggregate outcome of all selected work; an explicit resume continues it later. It may contain a [**Coverage Record**](../src/booley/flows/sim/GLOSSARY.md). Goal-side names keep "campaign" ([ADR 0090](adr/0090-rename-simulation-and-coverage-campaigns-to-records.md)).
+The durable, resumable record of the exact simulation workload one Simulation
+Flow invocation runs on one **Target**, with the strict aggregate outcome of all
+selected work; an explicit resume continues it later. It may contain a
+[**Coverage Record**](../src/booley/flows/sim/GLOSSARY.md). Goal-side names keep
+"campaign" ([ADR
+0090](adr/0090-rename-simulation-and-coverage-campaigns-to-records.md)).
 _Avoid_: Simulation Campaign, campaign, regression run, test batch
 
 **Simulator Bundle**:

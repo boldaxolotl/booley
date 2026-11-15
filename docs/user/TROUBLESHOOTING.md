@@ -867,8 +867,10 @@ or another file. Preview first; it changes nothing:
 booley flow sim --resume-from /exact/path/to/record/manifest.json --dry-run
 ```
 
-- **Integrity failure:** Simulation Record files were changed. Restore them exactly from
-  that same Simulation Record, or start a new one; never edit hashes or copy files from
+- **Integrity failure:** Simulation Record files were changed. Restore them
+  exactly from
+  that same Simulation Record, or start a new one; never edit hashes or copy
+  files from
   another run.
 - **Sources, `tests.toml`, Pre-Sim Commands or the Target changed:** start a new
   Simulation Record.
@@ -877,7 +879,8 @@ booley flow sim --resume-from /exact/path/to/record/manifest.json --dry-run
   Target's run directory, then retry.
 
 Never delete Booley's job or execution records to force progress; they protect
-running EDA processes. To get rid of an abandoned Simulation Record, delete its run
+running EDA processes. To get rid of an abandoned Simulation Record, delete its
+run
 folder once no run is active
 ([Cleaning up reports](https://booley.dev/docs/flow-reference/#cleaning-up-reports)).
 

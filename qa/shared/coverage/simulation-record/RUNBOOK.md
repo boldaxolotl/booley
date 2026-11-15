@@ -105,7 +105,8 @@ That is why this case wraps the server.
    exist yet. Confirm the server answers before the child calls it.
 4. Have the child collect through MCP `sim(work_dir=..., coverage=true)` with
    the complete suite; CLI Flows bind no Goal evidence. The gate lets earlier
-   state writes pass. The Simulation Record publishes every terminal Result, then the
+   state writes pass. The Simulation Record publishes every terminal Result,
+   then the
    gate fails the state replacement whose temporary JSON adds a new acceptance
    transaction.
 5. After the failed call, send SIGTERM to the faulted server process only, not

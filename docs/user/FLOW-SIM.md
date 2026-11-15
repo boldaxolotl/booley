@@ -168,7 +168,8 @@ How it differs from an SV Target:
 ## Reading results
 
 The run ends with a block per Target: its verdict (`PASS`, `FAIL`, `ERROR` or
-`INCONCLUSIVE`, see below), the paths to its Simulation Record manifest and the report,
+`INCONCLUSIVE`, see below), the paths to its Simulation Record manifest and the
+report,
 and for a failure the end of the simulator output. The Test Runs are listed
 when there is more to say than "everything passed at the Default Seed" (a
 failure, another seed or Variant, a Test that ran more than once, or a
@@ -488,7 +489,8 @@ For a long run, such as a multi-hour regression, resuming saves re-running the
 tests that already finished. For a short run, just start it again.
 
 Every run records its plan and results in a Simulation Record, one per
-Target. The CLI prints each Simulation Record's `manifest.json` path before it starts,
+Target. The CLI prints each Simulation Record's `manifest.json` path before it
+starts,
 and the verdict card repeats it. Ask the agent to resume the run, or:
 
 ```bash
@@ -509,7 +511,8 @@ booley flow sim --resume-from <manifest.json>
 - A test with a recorded result is finished, even if it failed. Resume never
   re-runs failures; start a new run for that.
 - Resume refuses when the Target's sources, Tests or simulation settings have
-  changed since the original run. Don't edit Simulation Record files by hand: resume
+  changed since the original run. Don't edit Simulation Record files by hand:
+  resume
   checks that they are intact.
 
 <details markdown>
