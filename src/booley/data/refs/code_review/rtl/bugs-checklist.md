@@ -45,8 +45,19 @@ Confidence:
 - **FSM defects**: Unreachable states, deadlock paths (state with no exit transition under any input combination), missing `default` in state case, stuck handshakes. Verify the FSM reset value matches the intended initial state encoding -- especially with explicit (non-default) encoding (e.g., IDLE encoded as `3'b001` but reset goes to `3'b000`)
 - **Off-by-one errors**: Counter bounds, bit-range indexing (`[WIDTH-1:0]` vs `[WIDTH:0]`), loop iteration counts, address boundary checks
 - **Reset correctness**: Flops that should reset but don't, wrong reset value, reset polarity mismatch, async reset not properly synchronized on release
-- **Width mismatches**: Implicit truncation on assignment, unintended sign extension, comparison between different-width operands, unsized literals in width-sensitive expressions, mixed signed/unsigned in arithmetic (`>>>`, cast placement)
+- **Width mismatches**: Implicit truncation on assignment, unintended sign
+  extension, comparison between different-width operands, unsized literals in
+  width-sensitive expressions, mixed signed/unsigned in arithmetic (`>>>`, cast
+  placement), and a signal whose width follows a configuration parameter reused
+  for a field of fixed architectural width (it truncates at small parameter
+  values)
 - **Arithmetic overflow**: Verify intermediate results have sufficient width before reduction (N-bit + N-bit needs N+1 bits; N-bit * N-bit needs 2N bits). For multi-lane or dual-coefficient operations, verify adequate guard bits between lanes to prevent carry/borrow propagation across lane boundaries
+- **Next-versus-current confusion**: A register, counter, or accumulator updated
+  from the combinational next-state value instead of its registered value (a
+  doubled or skipped step), or the reverse
+- **Partial address decode**: A decode that omits an address bit which sibling
+  decodes in the same address range compare, so a neighbouring address aliases
+  onto the register
 - **Race conditions**: Read-before-write in the same cycle, combinational loop (output feeds back to input with no register), multiple procedural drivers on the same signal
 - **Undriven / partially driven signals**: Signals declared but never assigned, signals assigned in some `if`/`case` branches but not all (missing `else`, incomplete case coverage)
 - **Operator misuse**: Logical vs bitwise confusion (`||` vs `|`, `&&` vs `&`, `!` vs `~`), reduction operator where bitwise was intended, operator precedence traps (e.g., `&a == b` parsed as `&(a == b)`)

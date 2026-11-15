@@ -134,10 +134,8 @@ evidence machinery and is followed by a large dead-code removal.
 
 ## Amendments (2026-10-06)
 
-Recorded after the Phase 0 spikes
-([elicitation](../internals/validation/0067-goal-mode-elicitation.md),
-[session identity](../internals/validation/0067-goal-mode-session-identity.md),
-[Project directory](../internals/validation/0067-goal-mode-project-dir.md)).
+Recorded after the Phase 0 spikes (elicitation, session identity, Project
+directory).
 
 - **Changing Goals, elicitation.** Both supported clients speak the
   2026-07-28 wire and declare form elicitation. The proposal tool returns

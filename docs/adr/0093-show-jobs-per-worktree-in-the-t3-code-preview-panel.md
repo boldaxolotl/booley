@@ -68,7 +68,7 @@ worktree.
 ## Consequences
 
 - Codex B-Tool calls still target `/work` unless routed (ADR 0068,
-  2026-11-08 amendment). Until Codex calls route into T3 Code worktrees, a
+  Sessions). Until Codex calls route into T3 Code worktrees, a
   Codex thread's Jobs appear in no Dashboard.
 - Job records need the starting thread's name, which today's session keys do
   not carry.

@@ -271,7 +271,7 @@ def recover_interrupted_attempts(
     """Make every interrupted lane terminal, then remove the attempts' owned run directories.
 
     ``attempts`` maps each interrupted work item to its latest attempt document.
-    Resume and full retention prune share this. Lanes are all recovered before any
+    Resume uses this. Lanes are all recovered before any
     run directory goes: a lane that cannot be proven terminal raises and leaves every
     run directory in place, since a live lane may still use one.
     """

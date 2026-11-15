@@ -38,7 +38,7 @@ def transport_image():
     # Kept on subprocess.run: feeds the Dockerfile on stdin.
     built = subprocess.run(
         ["docker", "build", "--network", "none", "--pull=false", "-t", image, "-"],
-        input="FROM booley-sandbox:latest\nUSER root\nRUN ln -sfn /work/.booley /booley-project\n",
+        input="FROM booley-sandbox:latest\nUSER root\nRUN ln -sfn /work/.booley /booley\n",
         capture_output=True,
         text=True,
         timeout=SUBPROCESS_TIMEOUT_S,

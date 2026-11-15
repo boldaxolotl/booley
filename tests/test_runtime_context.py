@@ -275,9 +275,9 @@ def _use_mountinfo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *mount_point
 
 ISSUED_MOUNT_CASES = (
     (("/", "/work", "/work/.devcontainer"), "ISSUED_SANDBOX"),
-    (("/", "/booley-project"), "ISSUED_SANDBOX"),
+    (("/", "/booley"), "ISSUED_SANDBOX"),
     (("/", "/work/.booley"), "ISSUED_SANDBOX"),
-    (("/", "/booley-project/masked"), "ISSUED_SANDBOX"),
+    (("/", "/booley/masked"), "ISSUED_SANDBOX"),
     (("/", "/work/.devcontainer/sub dir"), "ISSUED_SANDBOX"),
     (("/", "/work", "/workspaces/repo", "/work/.booleyx"), "HAND_WRITTEN_SANDBOX"),
     ((), "HAND_WRITTEN_SANDBOX"),

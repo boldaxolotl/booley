@@ -22,7 +22,7 @@ from .codec import (
     SimulationRecordIntegrityError,
     canonical_json_bytes,
 )
-from .model import SimulationRecordDocument
+from .model import FrozenJson, SimulationRecordDocument, frozen_pre_sim_commands
 from .planning import manifest_digest
 
 if TYPE_CHECKING:
@@ -144,7 +144,7 @@ class PreSimFiringDecoder:
         object.__setattr__(self, "manifest_sha256", manifest_digest(self.manifest))
 
     def owner(
-        self, item: Mapping[str, object], attempt_id: str, invocation: int
+        self, item: Mapping[str, object], attempt_id: object, invocation: object
     ) -> dict[str, object]:
         return {
             "simulation_record_id": self.manifest.document["simulation_record_id"],
@@ -173,11 +173,13 @@ class PreSimFiringDecoder:
     ) -> PreSimFiringRecord:
         """Shared validation for constructed facts and persisted JSON."""
         try:
-            _validate_fields(value)
+            value = _validate_fields(value)
+            # The manifest decoder proved the fingerprints member is an object.
+            fingerprints = cast(Mapping[str, object], self.manifest.document["fingerprints"])
             binding = {
                 "simulation_record_id": self.manifest.document["simulation_record_id"],
                 "manifest_sha256": self.manifest_sha256,
-                "workload_sha256": self.manifest.document["fingerprints"]["workload_sha256"],
+                "workload_sha256": fingerprints["workload_sha256"],
                 "work_item_id": item["work_item_id"],
                 "build_variant_id": item["build_variant_id"],
             }
@@ -188,11 +190,14 @@ class PreSimFiringDecoder:
             )
             if any(value[key] != expected_value for key, expected_value in expected.items()):
                 raise ValueError("Pre-Sim Commands evidence owner disagrees")
-            commands = self.manifest.document["workload"]["source_recipe"]["pre_sim_commands"]
+            commands = frozen_pre_sim_commands(self.manifest)
             if value["command_count"] != len(commands) or not commands:
                 raise ValueError("Pre-Sim Commands evidence command count disagrees")
-            selected = item["selection"]["names"]
-            names = value["test_names"]
+            # The codec's _read_manifest proves every work item's selection names are strings.
+            selection = cast(Mapping[str, tuple[str, ...]], item["selection"])
+            selected = selection["names"]
+            # _validate_names proved test_names is a list of unique entries.
+            names = cast(list[object], value["test_names"])
             if item["kind"] != "coverage_aggregate" and tuple(names) != tuple(selected):
                 raise ValueError("Pre-Sim Commands evidence selection disagrees")
             if item["kind"] != "coverage_aggregate" and value["ordinal"] != 1:
@@ -203,10 +208,11 @@ class PreSimFiringDecoder:
             raise SimulationRecordIntegrityError(
                 f"invalid Pre-Sim Commands evidence: {exc}"
             ) from exc
-        return PreSimFiringRecord(value)
+        # _freeze_json checks the values when the document is constructed.
+        return PreSimFiringRecord(cast(Mapping[str, FrozenJson], value))
 
 
-def _validate_fields(value: object) -> None:
+def _validate_fields(value: object) -> dict[str, object]:
     if not isinstance(value, dict) or set(value) != _FIELDS or value["$schema"] != _SCHEMA:
         raise ValueError("Pre-Sim Commands evidence fields/schema disagree")
     for field, maximum in (("ordinal", 4096), ("command_count", 10000)):
@@ -233,6 +239,8 @@ def _validate_fields(value: object) -> None:
         if len(text.encode("utf-8")) > TAIL_MAX_BYTES:
             raise ValueError(f"over-budget {field}")
     _validate_names(value["test_names"])
+    # The isinstance check above proved a dict; its keys are the string _FIELDS.
+    return cast(dict[str, object], value)
 
 
 def _validate_names(names: object) -> None:

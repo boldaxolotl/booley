@@ -41,6 +41,8 @@ def test_doctor_warns_without_changing_legacy_stash(tmp_path, monkeypatch):
         assert warning.check_id == "workspace.legacy-source-stash"
         assert str(manifest) in warning
         assert "Recovery is manual" in guidance
+        assert "chmod u+rwx" in guidance
+        assert "never overwrite" in guidance
         assert manifest.read_text() == content
         assert stat.S_IMODE(stash.stat().st_mode) == locked_mode
         assert not (project / "source.sv").exists()

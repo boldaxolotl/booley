@@ -126,6 +126,14 @@ class SimulationRecordManifest(SimulationRecordDocument):
     pass
 
 
+def frozen_pre_sim_commands(manifest: SimulationRecordManifest) -> tuple[str, ...]:
+    """The Pre-Sim Commands the manifest froze, in execution order."""
+    workload = cast(Mapping[str, object], manifest.document["workload"])
+    recipe = cast(Mapping[str, object], workload["source_recipe"])
+    # Planning writes pre_sim_commands as a list of strings; _freeze_json makes it a tuple.
+    return tuple(cast(tuple[str, ...], recipe["pre_sim_commands"]))
+
+
 @dataclass(frozen=True)
 class SimulationAttempt(SimulationRecordDocument):
     pass

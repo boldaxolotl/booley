@@ -158,8 +158,8 @@ def prepare(
         "workspaceFolder": "/work",
         "remoteUser": "agent",
         "updateRemoteUserUID": False,
-        "mounts": [f"source={data},target=/booley-project,type=bind"],
-        "remoteEnv": {"BOOLEY_DIR": "/booley-project", "BOOLEY_MCP_MODE": "interactive"},
+        "mounts": [f"source={data},target=/booley,type=bind"],
+        "remoteEnv": {"BOOLEY_DIR": "/booley", "BOOLEY_MCP_MODE": "interactive"},
         "customizations": customization,
         "shutdownAction": "stopContainer",
     }

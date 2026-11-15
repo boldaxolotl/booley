@@ -262,6 +262,10 @@ class SimulationExecutionPort(Protocol):
 
     def command(self, request: SimulationCommandRequest) -> SimulationCommandResult: ...
 
+
+class AuthenticatedSimulationExecutionPort(SimulationExecutionPort, Protocol):
+    """A Simulation execution seam that also binds one authenticated build image."""
+
     def authenticated_image(self) -> tuple[Path, tuple[Path, ...]]:
         """Return the exact authorized simulator image used by subsequent runs."""
         ...
