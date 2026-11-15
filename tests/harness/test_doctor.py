@@ -8887,7 +8887,9 @@ def _run_fpga_deep(
     fpga_answer,
 ):
     """Run deep checks with a faked FPGA Flow; return the run's evidence."""
-    booley_dir = _write_project(tmp_path)
+    booley_dir = tmp_path / ".booley"
+    if not booley_dir.exists():
+        _write_project(tmp_path)
     _patch_environment(monkeypatch, tmp_path, booley_dir)
     base_run = doctor.subprocess.run
     fpga_commands: list[list[str]] = []
@@ -8943,62 +8945,56 @@ def test_deep_fpga_runs_each_marked_target_like_synth(tmp_path, monkeypatch, cap
     assert tracker.missing == ()
 
 
-@pytest.mark.parametrize(
-    "answer",
-    [
-        lambda cmd: subprocess.CompletedProcess(cmd, 1, "RESULT: FAIL", ""),
-        lambda cmd: subprocess.CompletedProcess(cmd, 2, "RESULT: ERROR", ""),
-        lambda cmd: (_ for _ in ()).throw(subprocess.TimeoutExpired(cmd, 1)),
-    ],
-    ids=["exit-1", "exit-2", "timeout"],
-)
-def test_deep_fpga_failure_or_timeout_keeps_deep_checks_due(tmp_path, monkeypatch, answer):
+def test_deep_fpga_failure_or_timeout_keeps_deep_checks_due(tmp_path, monkeypatch):
     """A failed or unfinished FPGA run never makes deep checks current."""
     project = _fpga_doctor_project(tmp_path, marked=True, fpga_table={})
 
-    _events, _skips, tracker, fpga_commands, reporter = _run_fpga_deep(
-        project, tmp_path, monkeypatch, answer
+    def timeout(cmd):
+        raise subprocess.TimeoutExpired(cmd, 1)
+
+    answers = (
+        lambda cmd: subprocess.CompletedProcess(cmd, 1, "RESULT: FAIL", ""),
+        lambda cmd: subprocess.CompletedProcess(cmd, 2, "RESULT: ERROR", ""),
+        timeout,
     )
+    for answer in answers:
+        _events, _skips, tracker, fpga_commands, reporter = _run_fpga_deep(
+            project, tmp_path, monkeypatch, answer
+        )
 
-    assert len(fpga_commands) == 1
-    record = doctor_deep.DeepAttemptSummary(tracker.missing, (), "image").attempt(
-        version=__version__, clean=reporter.result(0).clean
-    )
-    assert record.outcome != doctor_deep.DeepOutcome.SUCCESS
-    status = doctor_deep.evaluate_deep_status(record, version=__version__, image_id="image")
-    assert status.current is False
+        assert len(fpga_commands) == 1
+        record = doctor_deep.DeepAttemptSummary(tracker.missing, (), "image").attempt(
+            version=__version__, clean=reporter.result(0).clean
+        )
+        assert record.outcome != doctor_deep.DeepOutcome.SUCCESS
+        status = doctor_deep.evaluate_deep_status(record, version=__version__, image_id="image")
+        assert status.current is False
 
 
-@pytest.mark.parametrize(
-    ("fpga_table", "marked", "expected_skips"),
-    [
+def test_deep_fpga_check_absent_when_flow_disabled_or_not_applicable(tmp_path, monkeypatch):
+    """No FPGA deep check, and no FPGA requirement, when the Flow is off or unused."""
+    cases = (
         (
             {"enabled": False},
             True,
             [*_FPGA_DEEP_DISABLED_SKIPS, "fpga deep check skipped - disabled"],
         ),
         (None, False, _FPGA_DEEP_DISABLED_SKIPS),
-    ],
-    ids=["disabled", "not-applicable"],
-)
-def test_deep_fpga_check_absent_when_flow_disabled_or_not_applicable(
-    tmp_path, monkeypatch, fpga_table, marked, expected_skips
-):
-    """No FPGA deep check, and no FPGA requirement, when the Flow is off or unused."""
-    project = _fpga_doctor_project(tmp_path, marked=marked, fpga_table=fpga_table)
-
-    _events, skips, tracker, fpga_commands, reporter = _run_fpga_deep(
-        project,
-        tmp_path,
-        monkeypatch,
-        lambda cmd: subprocess.CompletedProcess(cmd, 0, "RESULT: PASS", ""),
     )
+    for fpga_table, marked, expected_skips in cases:
+        project = _fpga_doctor_project(tmp_path, marked=marked, fpga_table=fpga_table)
 
-    assert fpga_commands == []
-    assert skips == expected_skips
-    assert not any(identifier.startswith("fpga.") for identifier in tracker.missing)
-    assert tracker.missing == ()
-    assert reporter.result(0).clean
+        _events, skips, tracker, fpga_commands, reporter = _run_fpga_deep(
+            project,
+            tmp_path,
+            monkeypatch,
+            lambda cmd: subprocess.CompletedProcess(cmd, 0, "RESULT: PASS", ""),
+        )
+
+        assert fpga_commands == []
+        assert skips == expected_skips
+        assert tracker.missing == ()
+        assert reporter.result(0).clean
 
 
 _SEAT_FPGA_TABLE = {"flows": {"fpga": {"enabled": True}}}
