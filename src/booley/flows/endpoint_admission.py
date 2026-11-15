@@ -62,8 +62,9 @@ class AdmissionContext:
     each work item by its own claim, once ``memory_sizing`` is set.
     ``memory_warning`` is the warning that Job's result carries (it ran alone
     because its estimate exceeded the Memory Budget, or the budget was
-    unavailable). ``memory_sizing`` lets its Simulation Record give each work item its
-    own claim, and is set only then.
+    unavailable). ``memory_sizing`` lets a Job give each Simulation Record work item
+    its own claim, and is set for every managed admission (a light Job's work
+    items, such as a mutation campaign's builds and simulations, take claims too).
     """
 
     mode: str
@@ -99,7 +100,8 @@ class _Claim:
 
     ``plan`` sized a memory-admitted Job's claim; ``threads`` is the Job's
     share of the cores, fixed when its Memory Reservation is admitted. Only a
-    memory-admitted Job has either. ``sizing`` is what it lends its work items.
+    memory-admitted Job has either. ``sizing`` is what it lends its work items:
+    every managed claim, a light slot included, has it.
     """
 
     store: job_slots.SlotStore | None
@@ -136,7 +138,11 @@ class AdmissionGate:
         if endpoint._memory_admitted():
             return _acquire_memory_reservation(endpoint, self._prepared, requeued=self._requeued)
         store, token = endpoint._acquire_job_slot()
-        return _Claim(store, token)
+        if store is None or (found := _admission_root(endpoint)) is None:
+            return _Claim(store, token)
+        project = found[0]
+        sizing = MemorySizing(project)
+        return _Claim(store, token, sizing=sizing)
 
     @contextmanager
     def enter(self) -> Iterator[AdmissionContext]:

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.flows.sim.coverage_policy import evaluate_coverage_campaign
+from booley.flows.sim.coverage_policy import evaluate_coverage_record
 from booley.flows.sim.coverage_waiver_promotion import (
     ApprovalStamps,
     WaiverPromotionError,
@@ -24,13 +24,17 @@ from booley.flows.sim.coverage_waivers import (
     CoverageWaiverConfig,
     load_approved_waiver_set,
 )
-from booley.flows.sim.waiver_candidates import CampaignBinding, WaiverCandidate, WaiverProposal
+from booley.flows.sim.waiver_candidates import (
+    CoverageRecordBinding,
+    WaiverCandidate,
+    WaiverProposal,
+)
 from tests.flows.sim.test_coverage_waivers import (
     _OTHER_POINT_ID,
     _POINT_ID,
     _SOURCE_SHA256,
     _TARGET,
-    _campaign,
+    _coverage_record,
     _criterion,
     _roots,
     _write_valid_approval,
@@ -66,7 +70,7 @@ def _candidate(**proposal: object) -> WaiverCandidate:
         "evidence_refs": ("rtl/counter.sv:10", "sim/12/sim_counter/coverage.json"),
     }
     fields.update(proposal)
-    binding = CampaignBinding(
+    binding = CoverageRecordBinding(
         "campaign:sim_counter:12",
         "sha256:" + "1" * 64,
         "sha256:" + "2" * 64,
@@ -105,7 +109,7 @@ def _write_promotion(
 
 
 @pytest.mark.parametrize("reason", ["unreachable", "excluded"])
-def test_promoted_files_load_cleanly_and_waive_the_campaign_point(
+def test_promoted_files_load_cleanly_and_waive_the_coverage_record_point(
     tmp_path: Path, reason: str
 ) -> None:
     roots = _roots(tmp_path)
@@ -139,7 +143,7 @@ def test_promoted_files_load_cleanly_and_waive_the_campaign_point(
         assert b"[approval.proof]" not in rendered
         assert "proof" not in record
         assert "proof" not in waiver.provenance
-    evaluated = evaluate_coverage_campaign(_campaign(), _criterion(), approved)
+    evaluated = evaluate_coverage_record(_coverage_record(), _criterion(), approved)
     assert evaluated.evaluation["status"] == "pass"
     assert evaluated.points[0].disposition["waiver_id"] == candidate.candidate_id
 

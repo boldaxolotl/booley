@@ -1894,7 +1894,7 @@ class CoverageInvocation:
         return self.target / "coverage.json"
 
     @property
-    def campaign_path(self) -> Path:
+    def coverage_record_path(self) -> Path:
         """The Coverage Campaign the reference selects, in its nested directory."""
         return self.storage / "coverage.json"
 
@@ -1909,7 +1909,7 @@ def coverage_invocation(tmp_path, monkeypatch, *, prepare=None) -> CoverageInvoc
 
     ``prepare(tmp_path)`` writes the project; the default is the two-test counter project.
     """
-    from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
+    from booley.flows.sim.coverage_reference import resolve_coverage_record_reference
     from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.request import SimRequest
     from tests.flows.sim.test_coverage_invocation import project
@@ -1927,5 +1927,7 @@ def coverage_invocation(tmp_path, monkeypatch, *, prepare=None) -> CoverageInvoc
     request = SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports)
     assert flow.execute(request).exit_code == 0
     target = reports / "sim/1/targets/sim_0"
-    storage = resolve_coverage_campaign_reference(target / "coverage.json").campaign_path.parent
+    storage = resolve_coverage_record_reference(
+        target / "coverage.json"
+    ).coverage_record_path.parent
     return CoverageInvocation(reports, target, storage)

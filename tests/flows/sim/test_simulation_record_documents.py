@@ -22,7 +22,7 @@ from typing import Any
 
 import pytest
 
-from booley.flows.sim.coverage_analysis_input import CoverageAnalysisError, read_coverage_campaign
+from booley.flows.sim.coverage_analysis_input import CoverageAnalysisError, read_coverage_record
 from booley.flows.sim.execution.contract import SimulationTestOutcome
 from booley.flows.sim.record import inspect_retained_simulation_record
 from booley.flows.sim.record.codec import (
@@ -180,7 +180,7 @@ def test_a_0_4_0_projection_is_refused_naming_its_invocation(
     run = coverage_invocation(tmp_path / "coverage", monkeypatch)
     _write(run.target / "simulation.json", _0_4_0_projection("coverage"))
     with pytest.raises(CoverageAnalysisError) as analysed:
-        read_coverage_campaign(run.target / "coverage.json")
+        read_coverage_record(run.target / "coverage.json")
     _assert_refused(str(analysed.value), _OLD_PROJECTION, run.reports / "sim" / "1")
 
 
@@ -255,7 +255,7 @@ def test_old_projection_keys_and_kinds_are_not_aliases(
         altered[key]["kind"] = old_kind
         _write(path, altered)
         with pytest.raises(CoverageAnalysisError) as analysed:
-            read_coverage_campaign(run.target / "coverage.json")
+            read_coverage_record(run.target / "coverage.json")
         refusals.append(str(analysed.value))
 
     # (d) Retention treats the old manifest kind in a current projection as a disagreement.

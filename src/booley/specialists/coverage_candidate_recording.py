@@ -19,15 +19,15 @@ from pathlib import Path
 from booley.core.boundary import BoundaryError
 from booley.flows.execution_persistence import AcceptanceRecorder, CandidateStoreProvider
 from booley.flows.sim import waiver_candidates as store
-from booley.flows.sim.coverage_campaign import CoverageCampaign
-from booley.flows.sim.coverage_campaign_store import (
-    CAMPAIGN_SCHEMA,
-    CoverageCampaignSummary,
-)
 from booley.flows.sim.coverage_provisional import (
     ProvisionalCoverageError,
     criterion_from_evaluation,
     evaluate_provisional_coverage,
+)
+from booley.flows.sim.coverage_record import CoverageRecord
+from booley.flows.sim.coverage_record_store import (
+    COVERAGE_RECORD_SCHEMA,
+    CoverageRecordSummary,
 )
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 
@@ -48,37 +48,37 @@ class GoalCandidateContext:
 
 
 def _binding(
-    campaign: CoverageCampaign,
-    summary: CoverageCampaignSummary | None,
-    campaign_path: Path,
+    coverage_record: CoverageRecord,
+    summary: CoverageRecordSummary | None,
+    coverage_record_path: Path,
     flow_reports_root: Path,
-) -> store.CampaignBinding:
-    if summary is None or summary.source_schema != CAMPAIGN_SCHEMA:
+) -> store.CoverageRecordBinding:
+    if summary is None or summary.source_schema != COVERAGE_RECORD_SCHEMA:
         raise ValueError("only point-store Campaigns (storage v5) can bind Waiver Candidates")
     assert summary.point_store is not None  # a stored Coverage Record always carries a point store
     try:
-        relative = canonical_project_alias_path(campaign_path.absolute()).relative_to(
+        relative = canonical_project_alias_path(coverage_record_path.absolute()).relative_to(
             canonical_project_alias_path(flow_reports_root.absolute())
         )
     except ValueError as exc:
         raise ValueError(
             "Campaign is not under this Goal Record's flow-reports directory"
         ) from exc
-    return store.CampaignBinding(
-        campaign_id=campaign.campaign_id,
+    return store.CoverageRecordBinding(
+        campaign_id=coverage_record.coverage_record_id,
         manifest_sha256=summary.manifest_sha256,
         point_store_sha256=summary.point_store.sha256,
         campaign_path=relative.as_posix(),
-        target_identity=campaign.target.identity,
-        target_selector=campaign.target.selector,
+        target_identity=coverage_record.target.identity,
+        target_selector=coverage_record.target.selector,
     )
 
 
 def _proposals(
-    screened: Sequence[Mapping[str, object]], campaign: CoverageCampaign
+    screened: Sequence[Mapping[str, object]], coverage_record: CoverageRecord
 ) -> list[store.WaiverProposal]:
     """Turn the ready-for-review screen results into store proposals."""
-    points = {point.id: point for point in campaign.points}
+    points = {point.id: point for point in coverage_record.points}
     proposals: list[store.WaiverProposal] = []
     for item in screened:
         if item.get("screening") != "ready_for_human_review":
@@ -98,17 +98,19 @@ def _proposals(
 
 
 def _provisional_block(
-    campaign: CoverageCampaign, binding: store.CampaignBinding, record: store.CandidateRecord
+    coverage_record: CoverageRecord,
+    binding: store.CoverageRecordBinding,
+    record: store.CandidateRecord,
 ) -> dict[str, object]:
     """Strict and provisional verdicts over every candidate recorded for this Campaign."""
     candidates = [
         item.as_provisional() for item in record.candidates.values() if item.binding == binding
     ]
-    strict = str(campaign.evaluation.get("status"))
+    strict = str(coverage_record.evaluation.get("status"))
     if strict not in {"pass", "fail"}:
         return {"strict": strict, "provisional": strict, "candidates": []}
     verdict = evaluate_provisional_coverage(
-        campaign, criterion_from_evaluation(campaign), candidates
+        coverage_record, criterion_from_evaluation(coverage_record), candidates
     )
     return {
         "strict": verdict.strict_status,
@@ -127,9 +129,9 @@ def _provisional_block(
 
 def record_goal_candidates(
     context: GoalCandidateContext,
-    campaign: CoverageCampaign,
-    summary: CoverageCampaignSummary | None,
-    campaign_path: Path,
+    coverage_record: CoverageRecord,
+    summary: CoverageRecordSummary | None,
+    coverage_record_path: Path,
     screened: Sequence[Mapping[str, object]],
     *,
     invocation_id: str,
@@ -137,16 +139,18 @@ def record_goal_candidates(
 ) -> dict[str, object]:
     """Record screened candidates and return the report's candidate section."""
     try:
-        binding = _binding(campaign, summary, campaign_path, context.flow_reports_root)
+        binding = _binding(
+            coverage_record, summary, coverage_record_path, context.flow_reports_root
+        )
         outcome = store.record_proposals(
             context.record_dir,
             binding,
-            _proposals(screened, campaign),
+            _proposals(screened, coverage_record),
             invocation_id=invocation_id,
             now=now or datetime.now(UTC),
         )
         record = store.load(context.record_dir)
-        verdicts = _provisional_block(campaign, binding, record)
+        verdicts = _provisional_block(coverage_record, binding, record)
     except (
         OSError,
         ValueError,

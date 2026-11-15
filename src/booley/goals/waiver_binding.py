@@ -182,7 +182,7 @@ class WaiverCandidateSnapshot:
 _CANDIDATE_FIELDS = frozenset(WaiverCandidateSnapshot.__dataclass_fields__)
 
 
-def _campaign_reference(value: object) -> None:
+def _coverage_record_reference(value: object) -> None:
     where = "waiver.campaign_reference"
     raw = _object(
         value, where, frozenset({"path_base", "path", "bytes", "sha256", "nested_campaign_sha256"})
@@ -236,7 +236,7 @@ class WaiverBinding:
                 name == "target_surface" and value is None
             ):
                 raise ProposalError(f"waiver.{name} must be an immutable JSON snapshot")
-        _campaign_reference(self.campaign_reference.to_json())
+        _coverage_record_reference(self.campaign_reference.to_json())
         _policy(self.policy.to_json())
         for name, value in self.to_json().items():
             if name not in {"candidate", "campaign_reference", "target_surface", "policy"}:

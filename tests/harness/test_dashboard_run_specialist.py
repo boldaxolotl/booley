@@ -516,10 +516,10 @@ async def test_review_refuses_an_empty_focus_scope_or_spec_path(checkout):
 
 # --- coverage_analyst (#2305) ------------------------------------------------
 
-CAMPAIGN_ENDED = "2024-03-01T10:00:00Z"
+COVERAGE_RECORD_ENDED = "2024-03-01T10:00:00Z"
 
 
-def write_campaign(root: Path, number: int, target: str = "sim_fifo") -> Path:
+def write_coverage_record(root: Path, number: int, target: str = "sim_fifo") -> Path:
     """A finished coverage campaign of Simulation run *number* under *root*'s Booley Directory."""
     directory = root / ".booley" / "flow-reports" / "sim" / str(number) / "targets" / target
     directory.mkdir(parents=True)
@@ -535,11 +535,11 @@ def sim_job(run_id: str, work_dir: Path, *, endpoint="sim", state="completed", r
     record = job_records.JobRecord(
         run_id,
         endpoint,
-        CAMPAIGN_ENDED,
+        COVERAGE_RECORD_ENDED,
         60,
         status="running" if state == "running" else "done",
         work_dir=str(work_dir),
-        ended_at=CAMPAIGN_ENDED if state != "running" else None,
+        ended_at=COVERAGE_RECORD_ENDED if state != "running" else None,
     )
     report_path = work_dir / ".booley" / "flow-reports" / "sim" / run_id / "report.json"
     return JobView(Path("/jobs"), record, state, report_path=report_path if report else None)
@@ -565,10 +565,12 @@ async def test_sim_runs_are_the_finished_simulation_jobs_of_the_worktree(checkou
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         runs = app._finished_sim_runs(checkout)
-    assert runs == (SimRun(checkout / ".booley" / "flow-reports" / "sim" / "4", CAMPAIGN_ENDED),)
+    assert runs == (
+        SimRun(checkout / ".booley" / "flow-reports" / "sim" / "4", COVERAGE_RECORD_ENDED),
+    )
 
 
-async def type_campaign(app, pilot, wizard, old: str, new: str) -> None:
+async def type_coverage_record(app, pilot, wizard, old: str, new: str) -> None:
     """Reopen the Coverage Record picker, take its manual row and replace *old* with *new*."""
     await goto_row(pilot, wizard, "Coverage Record")
     await pilot.press("enter")
@@ -582,7 +584,7 @@ async def type_campaign(app, pilot, wizard, old: str, new: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_coverage_analyst_launches_a_picked_or_typed_campaign(
+async def test_coverage_analyst_launches_a_picked_or_typed_coverage_record(
     checkout, spawned, tmp_path, empty_home, monkeypatch
 ):
     from booley.harness.dashboard.specialist_form import SimRun
@@ -590,9 +592,9 @@ async def test_coverage_analyst_launches_a_picked_or_typed_campaign(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     write_config(checkout, '[agent]\nauth = "api_key"\n')
     booley_dir = tmp_path / "booley"
-    invocation = write_campaign(checkout, 1)
+    invocation = write_coverage_record(checkout, 1)
     app = make_app(checkout, real_launcher(booley_dir))
-    app._finished_sim_runs = lambda _worktree: (SimRun(invocation, CAMPAIGN_ENDED),)  # type: ignore[method-assign]
+    app._finished_sim_runs = lambda _worktree: (SimRun(invocation, COVERAGE_RECORD_ENDED),)  # type: ignore[method-assign]
     picked = ".booley/flow-reports/sim/1/targets/sim_fifo/coverage.json"
     async with app.run_test(size=(120, 40)) as pilot:
         wizard = await to_reviewer(app, pilot, "coverage_analyst")
@@ -614,7 +616,7 @@ async def test_coverage_analyst_launches_a_picked_or_typed_campaign(
             f"cd {shlex.quote(str(checkout))} && booley specialist coverage_analyst --record {picked}"
         )
         await pilot.press("escape")
-        await type_campaign(app, pilot, wizard, picked, "other/coverage.json")
+        await type_coverage_record(app, pilot, wizard, picked, "other/coverage.json")
         await review_command(app, pilot, wizard)
         assert shown(wizard, "#run-command").endswith("--record other/coverage.json")
         await pilot.press("enter")  # Submit
@@ -636,13 +638,15 @@ async def test_coverage_analyst_launches_a_picked_or_typed_campaign(
 
 
 @pytest.mark.asyncio
-async def test_reopening_the_picker_keeps_an_older_campaign_chosen(checkout, tmp_path, empty_home):
+async def test_reopening_the_picker_keeps_an_older_coverage_record_chosen(
+    checkout, tmp_path, empty_home
+):
     from booley.harness.dashboard.specialist_form import SimRun
 
     write_config(checkout, "")
-    older = write_campaign(checkout, 1)
-    newer = write_campaign(checkout, 2)
-    runs = (SimRun(newer, "2024-03-02T10:00:00Z"), SimRun(older, CAMPAIGN_ENDED))
+    older = write_coverage_record(checkout, 1)
+    newer = write_coverage_record(checkout, 2)
+    runs = (SimRun(newer, "2024-03-02T10:00:00Z"), SimRun(older, COVERAGE_RECORD_ENDED))
     app = make_app(checkout, real_launcher(tmp_path / "booley"))
     app._finished_sim_runs = lambda _worktree: runs  # type: ignore[method-assign]
     async with app.run_test(size=(120, 40)) as pilot:
@@ -662,8 +666,10 @@ async def test_reopening_the_picker_keeps_an_older_campaign_chosen(checkout, tmp
 
 
 @pytest.mark.asyncio
-async def test_coverage_analyst_without_campaigns_explains_how_to_make_one(checkout, empty_home):
-    from booley.harness.dashboard.specialist_form import NO_CAMPAIGNS
+async def test_coverage_analyst_without_coverage_records_explains_how_to_make_one(
+    checkout, empty_home
+):
+    from booley.harness.dashboard.specialist_form import NO_COVERAGE_RECORDS
 
     write_config(checkout, "")
     app = make_app(checkout, real_launcher(checkout / ".booley"))
@@ -675,7 +681,7 @@ async def test_coverage_analyst_without_campaigns_explains_how_to_make_one(check
         await goto_row(pilot, wizard, "Coverage Record")
         await pilot.press("enter")
         await settle(app, pilot)
-        assert shown(wizard, "#run-hint") == NO_CAMPAIGNS
+        assert shown(wizard, "#run-hint") == NO_COVERAGE_RECORDS
         assert pick_rows(wizard) == ["Type a coverage.json path…"]
 
 
@@ -698,8 +704,8 @@ async def test_coverage_picker_says_when_the_jobs_are_unread_or_the_read_crashes
         assert pick_rows(wizard) == ["Type a coverage.json path…"]
         await pilot.press("escape")
         # A read that crashes lists no campaign instead of waiting forever.
-        wizard._sim_runs = lambda _worktree: (SimRun(checkout, CAMPAIGN_ENDED),)
-        monkeypatch.setattr(wizard_module, "finished_campaigns", lambda *_args: 1 / 0)
+        wizard._sim_runs = lambda _worktree: (SimRun(checkout, COVERAGE_RECORD_ENDED),)
+        monkeypatch.setattr(wizard_module, "finished_coverage_records", lambda *_args: 1 / 0)
         await pilot.press("enter")
         await settle(app, pilot)
         assert "No finished Coverage Record" in shown(wizard, "#run-hint")

@@ -30,10 +30,10 @@ from booley.flows.sim.coverage_json import content_digest, coverage_mapping_docu
 from booley.flows.sim.coverage_projection import project_coverage_criterion
 from booley.flows.sim.coverage_reference import (
     MAX_REFERENCE_BYTES,
-    ResolvedCoverageCampaign,
-    authenticate_coverage_campaign_owner,
-    encode_coverage_campaign_reference,
-    resolve_coverage_campaign_reference,
+    ResolvedCoverageRecord,
+    authenticate_coverage_record_owner,
+    encode_coverage_record_reference,
+    resolve_coverage_record_reference,
 )
 from booley.flows.sim.record import (
     SIMULATION_PROJECTION_SCHEMA,
@@ -91,7 +91,7 @@ class _PublicCoverage:
     """One outcome's public ``coverage.json``: authenticated, with its canonical bytes' digest."""
 
     path: Path
-    resolved: ResolvedCoverageCampaign
+    resolved: ResolvedCoverageRecord
     size: int
     sha256: str
 
@@ -582,7 +582,7 @@ def _coverage_projection_fields(
     booley_dir: Path | None = None,
 ) -> dict[str, object]:
     public = evidence.coverage()
-    coverage = public.resolved.loaded.campaign
+    coverage = public.resolved.loaded.coverage_record
     return {
         "coverage_record": _artifact_document(
             public.path,
@@ -643,7 +643,7 @@ def _coverage_changes(
     if not keys:
         return []
     detail = _coverage_detail(evidence)
-    evaluation = coverage.resolved.loaded.campaign.evaluation
+    evaluation = coverage.resolved.loaded.coverage_record.evaluation
     changes: list[CriterionChange] = []
     for key in keys:
         met, projected_detail = project_coverage_criterion(
@@ -673,8 +673,8 @@ def _resolve_facts_coverage(outcome: SimulationRecordOutcome) -> _PublicCoverage
     evidence = bound["reference"]
     if not isinstance(document, Mapping) or not isinstance(evidence, Mapping):
         raise AcceptanceRecordingError("coverage acceptance reference is malformed")
-    resolved = resolve_coverage_campaign_reference(public_path)
-    raw = encode_coverage_campaign_reference(resolved.reference)
+    resolved = resolve_coverage_record_reference(public_path)
+    raw = encode_coverage_record_reference(resolved.reference)
     digest = content_digest(raw)
     invocation = outcome.manifest_path.parents[3]
     expected_path = public_path.relative_to(invocation).as_posix()
@@ -689,14 +689,14 @@ def _resolve_facts_coverage(outcome: SimulationRecordOutcome) -> _PublicCoverage
         raise AcceptanceRecordingError(
             "public Coverage Campaign reference disagrees with Acceptance Facts"
         )
-    authenticate_coverage_campaign_owner(resolved)
+    authenticate_coverage_record_owner(resolved)
     return _PublicCoverage(public_path, resolved, len(raw), digest)
 
 
 def _coverage_detail(evidence: _OutcomeEvidence) -> dict[str, object]:
     outcome = evidence.outcome
     coverage = evidence.coverage()
-    campaign = coverage.resolved.loaded.campaign
+    coverage_record = coverage.resolved.loaded.coverage_record
     nested = outcome.coverage_reference["coverage_record"]
     assert isinstance(nested, Mapping)
     report_root = outcome.manifest_path.parents[5]
@@ -709,8 +709,8 @@ def _coverage_detail(evidence: _OutcomeEvidence) -> dict[str, object]:
             "sha256": coverage.sha256,
             "nested_campaign_sha256": nested["sha256"],
         },
-        "evaluation": coverage_mapping_document(campaign.evaluation),
-        "criterion_fingerprint": campaign.evaluation.get("criterion_fingerprint"),
+        "evaluation": coverage_mapping_document(coverage_record.evaluation),
+        "criterion_fingerprint": coverage_record.evaluation.get("criterion_fingerprint"),
         "test_runs": evidence.of(outcome.observations),
     }
 
@@ -1054,7 +1054,7 @@ def _goal_coverage_change(
     detail = _coverage_detail(evidence)
     met, projected_detail = project_coverage_criterion(
         shadow.criteria[goal.key],
-        evidence.coverage().resolved.loaded.campaign.evaluation,
+        evidence.coverage().resolved.loaded.coverage_record.evaluation,
         detail,
         atomic=False,
     )
