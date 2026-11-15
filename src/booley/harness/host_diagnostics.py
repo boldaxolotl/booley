@@ -242,7 +242,7 @@ def _add_bootstrap(result: bootstrap.BootstrapResult, report: Findings) -> None:
     for finding in result.findings:
         message = f"Host Bootstrap {finding.resource}: {finding.detail}"
         if finding.state is bootstrap.BootstrapState.ERROR:
-            report.fail(message, "booley bootstrap")
+            report.fail(message, finding.doctor_fix or "booley bootstrap")
         elif finding.state is bootstrap.BootstrapState.PENDING:
             report.warn(
                 f"{message} — run booley bootstrap",
