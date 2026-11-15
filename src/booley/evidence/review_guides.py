@@ -47,6 +47,7 @@ REVIEW_GUIDES: dict[tuple[str, str], tuple[ReviewGuide, ...]] = {
         ReviewGuide("checklist", "testbench/c-cpp-checklist.md", "cpp"),
         ReviewGuide("checklist", "testbench/hdl-checklist.md", "hdl"),
         ReviewGuide("checklist", "testbench/cocotb-checklist.md", "cocotb"),
+        ReviewGuide("hunt", "testbench/tb-hunt.md"),
     ),
 }
 
