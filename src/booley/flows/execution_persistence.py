@@ -58,13 +58,6 @@ class ReviewInputs:
 
 
 @runtime_checkable
-class ReviewGoalInputs(Protocol):
-    """Optional Goal-owned contract supplied by the admitted execution adapter."""
-
-    def review_goal_inputs(self, key: str) -> ReviewInputs: ...
-
-
-@runtime_checkable
 class GoalPresentationProvider(Protocol):
     """Optional presentation pinned by the execution owner, independent of Goals."""
 
