@@ -139,7 +139,7 @@ Keep the file in the Booley Directory instead, for example
 `.booley/sim-requirements.txt`, but not `.booley/docker/requirements.txt`:
 Booley generates that one. A fresh clone won't have the file, so `booley init`
 there builds without your pins. See
-[what survives a fresh clone](STEALTH.md#what-survives-a-fresh-clone).
+[Stealth Mode: What changes](STEALTH.md#what-changes).
 
 </details>
 

@@ -156,7 +156,7 @@ licensed-tool limits.
 
 ## Stealth Mode
 
-Stealth Mode keeps your AI-assisted workflow out of your repository and its history. Booley's configuration, and any FuseSoC cores it writes for your design, live in a `.booley/` folder that Git ignores, so your RTL repo gains no Booley files. A commit-message hook keeps AI attribution lines and words you ban out of commit messages, such as tool or internal project names, and can enforce your commit conventions. Setup asks whether you want it. See [STEALTH.md](STEALTH.md).
+Stealth Mode keeps your AI-assisted workflow out of your repository and its history. Booley's configuration, and any FuseSoC cores it writes for your design, live in a `.booley/` folder that Git ignores, so your RTL repo gains no Booley files. A commit-message hook keeps AI attribution lines and words you ban out of commit messages, such as tool or internal project names. Setup asks whether you want it. See [STEALTH.md](STEALTH.md).
 
 ## Code Coverage
 

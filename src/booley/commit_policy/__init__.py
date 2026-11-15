@@ -5,7 +5,6 @@ from booley.commit_policy.policy import (
     StealthPolicy,
     allowed_authors,
     banned_phrases,
-    enforce_convention,
     find_banned,
     has_banned_content,
     identity_allowed,
@@ -16,23 +15,16 @@ from booley.commit_policy.policy import (
     stealth_policy,
 )
 from booley.commit_policy.validation import (
-    ALLOWED_TYPES,
-    MAX_SUMMARY_LEN,
-    SUBJECT_RE,
-    convention_errors,
+    body_length_errors,
     validate_message,
 )
 
 __all__ = [
-    "ALLOWED_TYPES",
     "BANNED_PHRASES",
-    "MAX_SUMMARY_LEN",
-    "SUBJECT_RE",
     "StealthPolicy",
     "allowed_authors",
     "banned_phrases",
-    "convention_errors",
-    "enforce_convention",
+    "body_length_errors",
     "find_banned",
     "has_banned_content",
     "identity_allowed",
