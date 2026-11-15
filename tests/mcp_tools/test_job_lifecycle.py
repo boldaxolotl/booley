@@ -619,15 +619,16 @@ async def test_child_requeued_needs_a_claim_with_a_reason(context):
         status=job_records.STATUS_RUNNING,
     )
     assert jobs._child_requeued(mine) is False  # no claim at all
-    plain = store.acquire(job_slots.CLASS_LIGHT, pid=os.getpid(), timeout_s=60)
+    plain = store.acquire(job_slots.CLASS_MEMORY, pid=os.getpid(), timeout_s=60, memory=_RUN_ALONE)
     try:
         assert jobs._child_requeued(mine) is False  # a first claim has no reason
     finally:
         store.release(plain)
     reasoned = store.acquire(
-        job_slots.CLASS_LIGHT,
+        job_slots.CLASS_MEMORY,
         pid=os.getpid(),
         timeout_s=60,
+        memory=_RUN_ALONE,
         queue_reason="requeued after out-of-memory",
     )
     try:
@@ -753,7 +754,9 @@ def test_restart_preserves_existing_submit_deadline_for_unstamped_queued_child(c
         "queued-legacy", "lint", "2000-01-01T00:00:00Z", 5, pid=os.getpid()
     )
     store = job_slots.SlotStore(job_slots.slots_dir())
-    token = store.submit("light", pid=os.getpid())  # Unpromoted, live waiter.
+    token = store.submit(
+        job_slots.CLASS_MEMORY, pid=os.getpid(), memory=_RUN_ALONE
+    )  # Unpromoted, live waiter.
     job_records.write_record(rec, context.jobs_root)
     try:
         JobLifecycle().reconcile_orphaned()

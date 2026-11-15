@@ -32,7 +32,6 @@ from booley.flows.frozen_test_runs import current_declaration
 from booley.flows.job_estimates import JobRequest, sim_job_request
 from booley.flows.memory_admission import (
     JOB_THREADS_ENV,
-    MemoryAdmissionPlan,
     job_threads_at_start,
     measure_memory_claim,
 )
@@ -64,7 +63,6 @@ from booley.mcp.baseline_preparation import HOOK_PROOF, file_digest, run_post_se
 from booley.mcp.synth_baseline_execution import (
     classify_synth,
     measure_synth,
-    synth_job_class,
     synth_job_requests,
 )
 from booley.runtime import job_slots, oom_priority
@@ -99,8 +97,6 @@ class BaselineExecutor:
     ]
     #: Runs inside the watchdog child; returns ``{"rows", "stamps", "reason", ...}``.
     measure: Callable[[Mapping[str, Any]], dict[str, Any]]
-    #: The Job Class of the Flow that ``measure`` runs; the supervisor claims it.
-    job_class: Callable[[], str]
     #: ``(checkout, target, units)`` -> what ``measure`` runs, for its Memory
     #: Reservation (``None`` when that is not known).
     job_requests: Callable[
@@ -558,41 +554,18 @@ def _measurement(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     return next(({"measurement": row["measurement"]} for row in rows if "measurement" in row), {})
 
 
-def _memory_plan(
-    executor: BaselineExecutor,
-    job_class: str,
-    booley_dir: Path,
-    work: tuple[Path, str, tuple[Any, ...]],
-) -> MemoryAdmissionPlan | None:
-    """The Memory Reservation a memory-class baseline plans, else ``None``."""
-    if job_class != job_slots.CLASS_MEMORY:
-        return None
-    return measure_memory_claim(booley_dir, executor.job_requests(*work))
+def _slot_narrator(store: job_slots.SlotStore) -> Callable[[int | None], None]:
+    """Narrate a waiting baseline on stderr: its need, the free memory and the largest holders."""
 
-
-def _slot_narrator(store: job_slots.SlotStore, job_class: str) -> Callable[[int | None], None]:
-    """Narrate a waiting baseline on stderr, naming who holds its Job Class.
-
-    A memory-class wait names the need, the free memory and the largest holders.
-    """
-
-    def narrate(position: int | None) -> None:
-        if job_class == job_slots.CLASS_MEMORY:
-            wait = store.memory_wait(os.getpid())
-            if wait is not None:  # None: promoted since the tick
-                print(
-                    f"[slot] baseline waiting for memory (position {wait.position}): "
-                    f"{wait.describe()}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-            return
-        line = f"baseline waiting for {job_class} slot (position {(position or 0) + 1})"
-        print(
-            f"[slot] {line}; held by {store.describe_holders(job_class)}",
-            file=sys.stderr,
-            flush=True,
-        )
+    def narrate(_position: int | None) -> None:
+        wait = store.memory_wait(os.getpid())
+        if wait is not None:  # None: promoted since the tick
+            print(
+                f"[slot] baseline waiting for memory (position {wait.position}): "
+                f"{wait.describe()}",
+                file=sys.stderr,
+                flush=True,
+            )
 
     return narrate
 
@@ -624,39 +597,31 @@ def _background_slot(
     work: tuple[Path, str, tuple[Any, ...]],
     *,
     requeued: bool = False,
-) -> Iterator[tuple[job_slots.SlotToken, int | None]]:
-    """Hold one background-priority claim of the Flow's Job Class while measuring.
+) -> Iterator[tuple[job_slots.SlotToken, int]]:
+    """Hold one background-priority Memory Reservation while measuring.
 
     The supervisor, the process recorded on the Job, owns the claim so Job
     status shows the wait, spending the Job's own remaining budget: a starved
-    baseline ends unavailable, not as a live Job readers report failed. A memory-class Job holds
-    a background Memory Reservation (sized from *work*, the ``(checkout,
-    target, units)`` it measures). Yields the claim and
-    the Job's thread count (``None`` without a Memory Reservation).
+    baseline ends unavailable, not as a live Job readers report failed. The
+    reservation is sized from *work*, the ``(checkout, target, units)`` it
+    measures. Yields the claim and the Job's thread count.
 
     A *requeued* attempt (after an OOM kill) claims the whole Memory Budget to
     run alone and carries the requeue reason. Its wait never spends the Job's
     budget (a 24 h limit applies instead), and the budget restarts when it is
     granted.
     """
-    from booley.config.jobs import parse_caps
     from booley.mcp.sim_baseline_jobs import BASELINE_TIMEOUT_S
     from booley.runtime.job_records import _proc_cmdline
-    from booley.runtime.shared_infra import load_job_budget_config
 
     booley_dir = Path(owner["booley_dir"])
     family_name = family_for_schema(owner["schema"]).name
     executor = EXECUTORS[family_name]
-    job_class = executor.job_class()
-    config = load_job_budget_config(booley_dir=booley_dir)
-    store = job_slots.SlotStore(job_slots.slots_dir(booley_dir), parse_caps(config))
-    plan = _memory_plan(executor, job_class, booley_dir, work)
-    memory = None
-    if plan is not None:
-        job_class = job_slots.CLASS_MEMORY
-        memory = (plan.alone() if requeued else plan).claim
+    store = job_slots.SlotStore(job_slots.slots_dir(booley_dir))
+    plan = measure_memory_claim(booley_dir, executor.job_requests(*work))
+    memory = (plan.alone() if requeued else plan).claim
     deadline = time.monotonic() + (QUEUE_WAIT_LIMIT_S if requeued else _remaining_seconds(output))
-    narrate = _slot_narrator(store, job_class)
+    narrate = _slot_narrator(store)
     pid = os.getpid()
 
     def on_queued(position: int | None) -> None:
@@ -668,7 +633,7 @@ def _background_slot(
 
     try:
         token = store.acquire(
-            job_class,
+            job_slots.CLASS_MEMORY,
             pid=pid,
             argv=_proc_cmdline(pid) or [],
             role=job_slots.ROLE_BACKGROUND,
@@ -679,9 +644,7 @@ def _background_slot(
             should_abort=lambda: time.monotonic() >= deadline,
             memory=memory,
             queue_reason=OOM_REQUEUE_REASON if requeued else None,
-            job=None
-            if memory is None
-            else job_slots.JobLabel(owner["job_id"], family_name, work[1]),
+            job=job_slots.JobLabel(owner["job_id"], family_name, work[1]),
         )
     except job_slots.ClaimAbortedError as exc:
         if requeued:
@@ -690,12 +653,12 @@ def _background_slot(
                 "to run alone"
             ) from exc
         raise TimeoutError(
-            f"baseline Job exceeded its total execution budget while waiting for a {job_class} slot"
+            "baseline Job exceeded its total execution budget while waiting for a memory slot"
         ) from exc
     try:
         if requeued:
             _restart_budget(owner)
-        threads = None if memory is None else job_threads_at_start(store, available_cpu_count())
+        threads = job_threads_at_start(store, available_cpu_count())
         with oom_priority.job_oom_priority(store, token):
             yield token, threads
     finally:
@@ -745,7 +708,7 @@ def _run_child_attempt(
         token,
         threads,
     ):
-        armed = not requeued and token.job_class == job_slots.CLASS_MEMORY
+        armed = not requeued
         write_document(
             document,
             {
@@ -758,10 +721,9 @@ def _run_child_attempt(
             | ({"armed": True} if armed else {}),
         )
         environment = detached_environment() | {
-            job_slots.INHERITED_SLOT_ENV: f"{token.job_class}/{token.path.name}"
+            job_slots.INHERITED_SLOT_ENV: f"{token.job_class}/{token.path.name}",
+            JOB_THREADS_ENV: str(threads),
         }
-        if threads is not None:
-            environment[JOB_THREADS_ENV] = str(threads)
         process = subprocess.Popen(command, env=environment, **new_group_kwargs())
         group = capture_process_group(process)
         identity = capture_process_identity(process.pid)
@@ -997,25 +959,16 @@ def _measure_sim(request: Mapping[str, Any]) -> dict[str, Any]:
     return simulate(request)
 
 
-def _sim_job_class() -> str:
-    """The Simulation Flow's own Job Class declaration."""
-    from booley.flows.sim.flow import SimulateFlow
-
-    return SimulateFlow()._resolve_job_class()
-
-
 #: Executor half of each registered family, keyed by ``BaselineFamily.name``.
 EXECUTORS: dict[str, BaselineExecutor] = {
     "sim": BaselineExecutor(
         classify=classify_sim_runs,
         measure=_measure_sim,
-        job_class=_sim_job_class,
         job_requests=sim_job_requests,
     ),
     "synth": BaselineExecutor(
         classify=classify_synth,
         measure=measure_synth,
-        job_class=synth_job_class,
         job_requests=synth_job_requests,
     ),
 }

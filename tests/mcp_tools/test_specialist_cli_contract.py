@@ -14,7 +14,6 @@ from booley.mcp.application import McpApplication
 from booley.mcp.base import McpToolResult
 from booley.mcp.flow_adapter import flow_schema
 from booley.mcp.registry import McpToolInfo
-from booley.runtime import job_slots
 from booley.specialists.specialist import Specialist
 
 
@@ -323,13 +322,6 @@ def test_real_public_and_module_execution_preserve_reports(
     payloads = [json.loads(path.read_text()) for path in reports]
     assert all(payload["exit_code"] == verdict for payload in payloads)
     assert all(payload["detail"] == {"duration": 9} for payload in payloads)
-
-
-@pytest.mark.parametrize(
-    "argv", [["booley", "specialist", "reviewer"], ["python", "-m", "booley.specialists.reviewer"]]
-)
-def test_specialist_admission_labels(argv):
-    assert job_slots._argv_label(argv) == "reviewer"
 
 
 def test_endpoint_help_is_allowed_on_host(tmp_path, capsys):

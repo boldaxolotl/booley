@@ -1,24 +1,8 @@
-"""``[jobs]`` cap parsing."""
+"""``[jobs]`` Seat Cap and retired-key parsing."""
 
-import logging
 from pathlib import Path
 
 import pytest
-
-from booley.config.jobs import parse_caps
-
-
-def test_parse_caps_accepts_the_seats_table_without_warning(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    from booley.config.jobs import parse_seat_caps
-
-    data = {"jobs": {"seats": {"vivado": 2}, "max_light": 2}}
-    with caplog.at_level(logging.WARNING, logger="booley.config.jobs"):
-        parse_caps(data)
-
-    assert "unknown key" not in caplog.text
-    assert parse_seat_caps(data) == {"vivado": 2}
 
 
 def test_malformed_seat_caps_are_config_errors_naming_the_key() -> None:
@@ -53,7 +37,7 @@ def test_absent_or_unreadable_jobs_table_has_no_seat_caps() -> None:
 
     assert parse_seat_caps({}) == {}
     assert parse_seat_caps({"jobs": {"max_light": 2}}) == {}
-    # parse_caps already warns about a non-table [jobs]; the seats parser stays quiet.
+    # A non-table [jobs] has no seats.
     assert parse_seat_caps({"jobs": "many"}) == {}
 
 
@@ -136,9 +120,7 @@ def test_queue_max_is_retired_with_its_own_reason(tmp_path: Path) -> None:
     assert message.count("Fix: delete these lines") == 1
 
 
-def test_memory_budget_is_retired_with_its_own_fix(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_memory_budget_is_retired_with_its_own_fix(tmp_path: Path) -> None:
     from booley.config.jobs import (
         RetiredKey,
         retired_jobs_keys,
@@ -156,17 +138,6 @@ def test_memory_budget_is_retired_with_its_own_fix(
     assert "memory_budget (line 2: " in message
     assert "set [sandbox].memory instead" in message
     assert "memory admission replaced it" not in message
-    with caplog.at_level(logging.WARNING, logger="booley.config.jobs"):
-        parse_caps({"jobs": {"memory_budget": "24g", "max_light": 2}})
-    assert "unknown key" not in caplog.text  # the retirement refusal reports it
-
-
-def test_parse_caps_reads_only_max_light(caplog: pytest.LogCaptureFixture) -> None:
-    with caplog.at_level(logging.WARNING, logger="booley.config.jobs"):
-        caps = parse_caps({"jobs": {"max_light": 2, "queue_max": 8}})
-
-    assert caps.max_light == 2
-    assert "unknown key" not in caplog.text  # the retirement refusal reports queue_max
 
 
 def test_refuse_retired_jobs_keys_reads_the_main_booley_directory(

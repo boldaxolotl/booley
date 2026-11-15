@@ -8,12 +8,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from booley.runtime.job_slots import CLASS_MEMORY
 from booley.runtime.timefmt import format_duration
 
 if TYPE_CHECKING:
     from booley.harness.dashboard.launch import RunFacts, SpecialistFacts
-    from booley.runtime.job_slots import AdmissionOutlook
 
 
 @dataclass(frozen=True)
@@ -29,25 +27,11 @@ def _plural(count: int, noun: str) -> str:
     return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
 
-def queue_line(facts: RunFacts, outlook: AdmissionOutlook | str | None) -> str:
-    """Whether the Job runs now or queues; a string *outlook* is why the queue cannot be read.
-
-    ``None`` is only valid when *facts* take no slot or the Job is admitted by
-    memory: its fit depends on an estimate the preview does not have.
-    """
+def queue_line(facts: RunFacts) -> str:
+    """Whether the Job runs now or is admitted by memory, whose fit depends on an estimate the preview lacks."""
     if not facts.takes_slot:
         return "Runs now (takes no Job slot)"
-    if facts.job_class == CLASS_MEMORY:
-        return "Admitted by memory: waits while its estimate does not fit the Memory Budget"
-    assert outlook is not None  # a run that takes a slot always has a reading or a reason
-    if isinstance(outlook, str):
-        return f"Cannot check the queue: {outlook}"
-    if outlook.runs_now:
-        return "Runs now"
-    return (
-        f"Queues behind {_plural(outlook.ahead, 'Job')} (position {outlook.position})"
-        f" for a {outlook.job_class} slot"
-    )
+    return "Admitted by memory: waits while its estimate does not fit the Memory Budget"
 
 
 def timeout_line(facts: RunFacts) -> str:
