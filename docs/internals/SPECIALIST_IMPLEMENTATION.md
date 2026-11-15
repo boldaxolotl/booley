@@ -16,8 +16,7 @@ Code: `booley/specialists/reviewer.py`, with receipts and dispositions in
 `booley/evidence/review_receipt.py` and `review_dispositions.py`.
 
 Each finding is anchored to the supplied specification, steering text, or
-concrete code behavior. The shared Reviewer
-prompt owns the disposition and output instructions, and the category guides
+concrete code behavior. The shared Reviewer prompt owns the disposition and output instructions, and the category guides
 hold only review checklists, so every category reports in the same shape.
 
 ### Validation and dispositions

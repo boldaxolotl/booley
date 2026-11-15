@@ -83,7 +83,6 @@ A Developer Agent could spawn its own subagent, but then it writes the brief, de
 
 - **Booley writes the brief** from expert-written guides.
 - **Each side is judged against the spec, not against the other side.** The RTL and the testbench should be independent readings of the spec. A testbench Reviewer that could read the RTL would check the tests against what the RTL does, not what the spec requires, and miss bugs where both sides share the same misreading. So the testbench Reviewer never sees the RTL, and the RTL Reviewer never sees the testbench.
-- **Results count.** Findings come back in a structured form Booley validates.
 
 ## Waveform-Based Debug
 

@@ -2,8 +2,7 @@
 
 Runs LLM-powered code review on RTL or testbench files, reports issues by
 severity (CRITICAL, MAJOR, MINOR).  Each invocation covers exactly ONE focus
-category. An idempotency guard prevents re-running the same review focus while
-its persisted source fingerprint remains current.
+category.
 
 Exit codes: 0 = review completed, 1 = an open finding at or above ``--fail-on``,
 2 = Specialist error.
