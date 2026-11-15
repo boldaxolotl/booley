@@ -8,9 +8,7 @@ from typing import Any, cast
 
 import pytest
 
-from booley.flows.sim import record_retention
 from booley.flows.sim.record import coverage_execution
-from booley.flows.sim.record_retention import SimulationRecordRetentionError
 from booley.goals.proposals import ProposalError
 from booley.mcp import coverage_evidence, goal_waivers
 from booley.mcp.coverage_evidence import CoverageEvidenceError
@@ -49,30 +47,6 @@ def test_coverage_execution_refuses_an_invalid_test_item() -> None:
         match="Coverage Record test evidence is invalid",
     ):
         coverage_execution._coverage_test_outcome({"name": "t", "verdict": "bogus"})
-
-
-def test_native_target_pruning_refuses_a_workload_without_coverage(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    target = tmp_path / "target"
-    manifest = target / record_retention.RECORD_DIRECTORY / "manifest.json"
-    manifest.parent.mkdir(parents=True)
-    manifest.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(record_retention, "_empty_abandoned_reservation", lambda _root: False)
-    monkeypatch.setattr(
-        record_retention, "_read_object", lambda _path: {"flow": "sim", "targets": ["t"]}
-    )
-    monkeypatch.setattr(record_retention, "target_report_directory", lambda _root, _s: target)
-    status = _any(manifest=_any(document={"workload": {"coverage": False}}))
-    monkeypatch.setattr(
-        record_retention,
-        "_inspect_simulation_record",
-        lambda _target, _record: _any(status=status, abandoned=False),
-    )
-    with pytest.raises(
-        SimulationRecordRetentionError, match="--native-target has no native Coverage Record"
-    ):
-        record_retention._validate_native_pruning_eligibility(tmp_path, "t")
 
 
 def test_coverage_evidence_refuses_a_disagreeing_source_snapshot(

@@ -1,6 +1,5 @@
 import json
 import os
-import re
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -10,6 +9,7 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.evidence.acceptance import ResolvedFlowAcceptance
+from booley.flows.sim.coverage_progress import CoverageProgress
 from booley.flows.sim.coverage_record_store import load_coverage_record
 from booley.flows.sim.coverage_reference import (
     REFERENCE_SCHEMA,
@@ -26,6 +26,7 @@ from booley.flows.sim.record_presentation import _coverage_request_selector
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SimulationRunResult
 from booley.mcp.flow_adapter import flow_schema
+from booley.runtime.filesystem_utils import safe_rmtree
 from tests.criteria.ledger_support import FixtureRecorder
 from tests.flows.sim.test_coverage_invocation import project
 from tests.flows.sim.test_coverage_transaction import NativeExecution
@@ -355,7 +356,6 @@ def _assert_projection_tamper_rejected(coverage_record_path: Path) -> None:
 
 def test_flow_produces_numbered_target_reports_with_public_coverage_input(tmp_path, monkeypatch):
     from booley.flows.sim.coverage_analysis_input import read_coverage_record
-    from booley.flows.sim.record_retention import prune_native_payload
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
@@ -396,14 +396,8 @@ def test_flow_produces_numbered_target_reports_with_public_coverage_input(tmp_pa
         "functional": {"pass": 2},
         "assertions": {"clean": 2},
     }
-    reference = coverage_record_path.read_bytes()
     assert read_coverage_record(coverage_record_path).coverage_record.coverage_record_id
     _assert_enclosing_result_is_authenticated(coverage_record_path, resolved)
-    prune_native_payload(tmp_path / "reports", 1, "sim_0")
-    assert coverage_record_path.read_bytes() == reference
-    assert not (resolved.coverage_record_path.parent / "native").exists()
-    assert (resolved.coverage_record_path.parent / "availability.json").is_file()
-    assert read_coverage_record(coverage_record_path).coverage_record.coverage_record_id
     _assert_projection_tamper_rejected(coverage_record_path)
     assert not (tmp_path / "reports/sim_sim_0.json").exists()
     assert flow_schema(flow)["properties"]["coverage"]["type"] == "boolean"
@@ -789,11 +783,8 @@ def test_unreadable_unrelated_directory_does_not_block_coverage(
     assert result.outcome.detail["targets"]["sim_0"]["collection"] == "complete"
 
 
-def test_copied_complete_invocation_remains_analyzable_and_independently_prunable(
-    tmp_path, monkeypatch
-):
+def test_copied_complete_invocation_remains_analyzable_and_independent(tmp_path, monkeypatch):
     from booley.flows.sim.coverage_analysis_input import read_coverage_record
-    from booley.flows.sim.record_retention import prune_invocation
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
@@ -826,11 +817,10 @@ def test_copied_complete_invocation_remains_analyzable_and_independently_prunabl
         assert read_coverage_record(copied_coverage).coverage_record.coverage_record_id
     finally:
         hidden_original.rename(original)
-    prune_invocation(copied_reports, 1)
+    safe_rmtree(copied_reports)
 
     original_coverage = original / "targets/sim_0/coverage.json"
     assert read_coverage_record(original_coverage).coverage_record.coverage_record_id
-    prune_invocation(reports, 1)
 
 
 def test_multi_target_collector_error_preserves_completed_and_later_targets(tmp_path, monkeypatch):
@@ -1404,8 +1394,11 @@ def _interrupt_coverage_publication(tmp_path, monkeypatch, *, selected=None, ski
     return reports, request, runs
 
 
-def test_interrupted_and_pruned_invocations_are_never_reused(tmp_path, monkeypatch):
-    from booley.flows.sim.record_retention import prune_invocation
+def test_resume_continues_its_origin_and_writes_no_dependency_receipt(tmp_path, monkeypatch):
+    from booley.flows.sim.record.artifact_reference import (
+        resolve_report_artifact_reference,
+    )
+    from booley.flows.sim.record.codec import MANIFEST_MAX_BYTES
 
     reports, request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     original_path = next(
@@ -1444,363 +1437,47 @@ def test_interrupted_and_pruned_invocations_are_never_reused(tmp_path, monkeypat
     assert resume_simulation_record["artifacts"]["manifest"]["path"] == (
         "sim/1/targets/sim_0/record/manifest.json"
     )
-    prune_invocation(resumed_reports, 2)
+    assert not (manifest.parent / "dependency-receipts").exists()
+    resolved = resolve_report_artifact_reference(
+        resumed_reports / "sim/2/report.json",
+        resume_simulation_record["artifacts"]["manifest"],
+        expected_kind="simulation_record_manifest",
+        expected_owner=resume_simulation_record["simulation_record_id"],
+        maximum=MANIFEST_MAX_BYTES,
+    )
+    assert resolved.path == manifest
     result = SimulateFlow(
         coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
     ).execute(request)
     assert result.exit_code == 0
     assert (reports / "sim/3/targets/sim_0/coverage.json").is_file()
-    prune_invocation(reports, 1)
 
 
-def test_full_pruning_refuses_resume_dependent_unless_explicitly_included(tmp_path, monkeypatch):
-    from booley.flows.sim import record_retention
-    from booley.flows.sim.record.artifact_reference import (
-        resolve_report_artifact_reference,
-    )
-    from booley.flows.sim.record.codec import MANIFEST_MAX_BYTES
-    from booley.flows.sim.record_retention import (
-        SimulationRecordRetentionError,
-        prune_invocation,
-    )
-
-    reports, request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
-    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
-    result = SimulateFlow(
-        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
-    ).execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports))
-    assert result.exit_code == 0
-
-    # The resumed invocation is a dependent of the origin through its receipt.
-    (dependent,) = record_retention._dependent_invocations(reports / "sim/1")
-    assert dependent.path == (reports / "sim/2").absolute()
-    assert dependent.receipt is not None
-    assert dependent.receipt.authoritative
-    assert dependent.receipt.dependent_invocation == dependent.path
-    assert dependent.authenticated is True
-
-    with pytest.raises(SimulationRecordRetentionError, match=re.escape(str(reports / "sim/2"))):
-        prune_invocation(reports, 1)
-
-    assert manifest.is_file()
-    assert (reports / "sim/2/report.json").is_file()
-    survivor = SimulateFlow(
-        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
-    ).execute(request)
-    assert survivor.exit_code == 0
-    survivor_report = reports / "sim/3/report.json"
-    prune_invocation(reports, 1, include_dependents=True)
-    assert list((reports / "sim/.pruned-1").iterdir()) == []
-    assert list((reports / "sim/.pruned-2").iterdir()) == []
-    report = json.loads(survivor_report.read_text())
-    simulation_record = report["detail"]["records"]["sim_0"]
-    for reference in simulation_record["artifacts"].values():
-        resolved = resolve_report_artifact_reference(
-            survivor_report,
-            reference,
-            expected_kind=reference["kind"],
-            expected_owner=reference["owner"],
-            maximum=MANIFEST_MAX_BYTES,
-        )
-        assert resolved.path.is_file()
-    prune_invocation(reports, 1, include_dependents=True)
-    assert not (reports / "sim/1").exists()
-
-
-@pytest.mark.parametrize("legacy", [False, True])
-def test_dependent_pruning_retries_after_dependent_cleanup_interruption(
-    tmp_path, monkeypatch, legacy
-):
-    from booley.flows.sim.record_retention import prune_invocation
-
+def test_resume_leaves_an_old_dependency_receipt_untouched(tmp_path, monkeypatch):
     reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
-    result = SimulateFlow(
-        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
-    ).execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports))
-    assert result.exit_code == 0
-    if legacy:
-        receipts = manifest.parent / "dependency-receipts"
-        for receipt in receipts.iterdir():
-            receipt.unlink()
-        receipts.rmdir()
-
-    original = Path.unlink
-    failed_root = reports / "sim/.pruned-2"
-    with monkeypatch.context() as patch:
-
-        def interrupt(path, *args, **kwargs):
-            if path.is_relative_to(failed_root):
-                raise OSError("dependent cleanup interrupted")
-            return original(path, *args, **kwargs)
-
-        patch.setattr(Path, "unlink", interrupt)
-        with pytest.raises(OSError, match="dependent cleanup interrupted"):
-            prune_invocation(reports, 1, include_dependents=True)
-
-    assert (reports / "sim/1/.prune-batch.json").is_file()
-    assert (failed_root / ".prune.json").is_file()
-    prune_invocation(reports, 1, include_dependents=True)
-    assert list((reports / "sim/.pruned-1").iterdir()) == []
-    assert list((reports / "sim/.pruned-2").iterdir()) == []
-
-
-def test_dependent_pruning_retries_after_origin_cleanup_interruption(tmp_path, monkeypatch):
-    from booley.flows.sim.record_retention import prune_invocation
-
-    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
-    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
-    result = SimulateFlow(
-        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
-    ).execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports))
-    assert result.exit_code == 0
-
-    original = Path.unlink
-    failed_root = reports / "sim/.pruned-1"
-    with monkeypatch.context() as patch:
-
-        def interrupt(path, *args, **kwargs):
-            if path.is_relative_to(failed_root):
-                raise OSError("origin cleanup interrupted")
-            return original(path, *args, **kwargs)
-
-        patch.setattr(Path, "unlink", interrupt)
-        with pytest.raises(OSError, match="origin cleanup interrupted"):
-            prune_invocation(reports, 1, include_dependents=True)
-
-    assert (failed_root / ".prune-batch.json").is_file()
-    prune_invocation(reports, 1, include_dependents=True)
-    assert list((reports / "sim/.pruned-1").iterdir()) == []
-    assert list((reports / "sim/.pruned-2").iterdir()) == []
-
-
-def test_dependent_pruning_preflights_all_members_before_mutation(tmp_path, monkeypatch):
-    from booley.flows.sim import record_retention
-    from booley.flows.sim.record_retention import (
-        SimulationRecordRetentionError,
-        prune_invocation,
-    )
-
-    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
-    origin = reports / "sim/1"
-    manifest = origin / "targets/sim_0/record/manifest.json"
-    result = SimulateFlow(
-        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
-    ).execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports))
-    assert result.exit_code == 0
-    original = record_retention._preflight_simulation_record_resources
-
-    def reject_origin(root, project_data):
-        if root == origin:
-            raise SimulationRecordRetentionError("injected origin preflight failure")
-        return original(root, project_data)
-
-    monkeypatch.setattr(record_retention, "_preflight_simulation_record_resources", reject_origin)
-    with pytest.raises(SimulationRecordRetentionError, match="injected origin preflight failure"):
-        prune_invocation(reports, 1, include_dependents=True)
-
-    assert origin.is_dir()
-    assert (reports / "sim/2").is_dir()
-    assert not (reports / "sim/.pruned-1").exists()
-    assert not (reports / "sim/.pruned-2").exists()
-    assert not (origin / ".prune-batch.json").exists()
-
-
-def test_dependent_pruning_refuses_locked_member_before_mutation(tmp_path, monkeypatch):
-    from booley.flows.sim.record_reports import simulation_record_invocation_lock
-    from booley.flows.sim.record_retention import (
-        SimulationRecordRetentionError,
-        prune_invocation,
-    )
-
-    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
-    origin = reports / "sim/1"
-    manifest = origin / "targets/sim_0/record/manifest.json"
-    result = SimulateFlow(
-        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
-    ).execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports))
-    assert result.exit_code == 0
-    dependent = reports / "sim/2"
-
-    with (
-        simulation_record_invocation_lock(dependent),
-        pytest.raises(
-            SimulationRecordRetentionError, match="invocation 2 is still being produced"
-        ),
-    ):
-        prune_invocation(reports, 1, include_dependents=True)
-
-    assert origin.is_dir()
-    assert dependent.is_dir()
-    assert not (reports / "sim/.pruned-1").exists()
-    assert not (reports / "sim/.pruned-2").exists()
-
-
-def test_dependent_pruning_removes_multiple_dependents(tmp_path, monkeypatch):
-    from booley.flows.sim.record_retention import prune_invocation
-
-    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
-    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
-    for _expected in (2, 3):
-        result = SimulateFlow(
-            coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
-        ).execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports))
-        assert result.exit_code == 0
-
-    prune_invocation(reports, 1, include_dependents=True)
-
-    assert list((reports / "sim/.pruned-1").iterdir()) == []
-    assert list((reports / "sim/.pruned-2").iterdir()) == []
-    assert list((reports / "sim/.pruned-3").iterdir()) == []
-
-
-def test_cross_root_resume_dependency_is_registered_and_pruned(tmp_path, monkeypatch):
-    from booley.flows.sim.record_retention import (
-        SimulationRecordRetentionError,
-        prune_invocation,
-    )
-
-    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
-    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
-    resumed = tmp_path / "resumed"
-    result = SimulateFlow(
-        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
-    ).execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=resumed))
-    assert result.exit_code == 0
-
-    with pytest.raises(SimulationRecordRetentionError, match=re.escape(str(resumed / "sim/1"))):
-        prune_invocation(reports, 1)
-
-    prune_invocation(reports, 1, include_dependents=True)
-    assert list((reports / "sim/.pruned-1").iterdir()) == []
-    assert list((resumed / "sim/.pruned-1").iterdir()) == []
-
-
-def test_native_pruning_preserves_live_resume_dependency(tmp_path, monkeypatch):
-    from booley.flows.sim.coverage_analysis_input import read_coverage_record
-    from booley.flows.sim.record_retention import (
-        SimulationRecordRetentionError,
-        prune_invocation,
-        prune_native_payload,
-    )
-
-    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
-    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
-    result = SimulateFlow(
-        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
-    ).execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports))
-    assert result.exit_code == 0
-
-    prune_native_payload(reports, 1, "sim_0")
-
-    assert read_coverage_record(
-        reports / "sim/1/targets/sim_0/coverage.json"
-    ).coverage_record.coverage_record_id
-    assert (reports / "sim/2/report.json").is_file()
-    with pytest.raises(SimulationRecordRetentionError, match=re.escape(str(reports / "sim/2"))):
-        prune_invocation(reports, 1)
-
-
-def test_cross_root_dependent_pruning_rejects_forged_report_reference(tmp_path, monkeypatch):
-    from booley.flows.sim.record_retention import (
-        SimulationRecordRetentionError,
-        prune_invocation,
-    )
-
-    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
-    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
-    resumed = tmp_path / "resumed"
-    result = SimulateFlow(
-        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
-    ).execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=resumed))
-    assert result.exit_code == 0
-    report_path = resumed / "sim/1/report.json"
-    report = json.loads(report_path.read_text())
-    reference = report["detail"]["records"]["sim_0"]["artifacts"]["manifest"]
-    reference.pop("bytes")
-    report_path.write_text(json.dumps(report), encoding="utf-8")
-
-    with pytest.raises(SimulationRecordRetentionError, match="does not authenticate"):
-        prune_invocation(reports, 1, include_dependents=True)
-
-    assert manifest.is_file()
-    assert report_path.is_file()
-
-
-def test_cross_root_dependent_pruning_rejects_matching_forged_digests(tmp_path, monkeypatch):
-    from booley.flows.sim.record_retention import (
-        SimulationRecordRetentionError,
-        prune_invocation,
-    )
-
-    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
-    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
-    resumed = tmp_path / "resumed"
-    result = SimulateFlow(
-        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
-    ).execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=resumed))
-    assert result.exit_code == 0
-    forged_digest = "sha256:" + "0" * 64
-    receipt = next((manifest.parent / "dependency-receipts").iterdir())
-    receipt_document = json.loads(receipt.read_text())
-    receipt_document["manifest_sha256"] = forged_digest
-    receipt.write_text(json.dumps(receipt_document), encoding="utf-8")
-    report_path = resumed / "sim/1/report.json"
-    report = json.loads(report_path.read_text())
-    reference = report["detail"]["records"]["sim_0"]["artifacts"]["manifest"]
-    reference["sha256"] = forged_digest
-    report_path.write_text(json.dumps(report), encoding="utf-8")
-
-    with pytest.raises(SimulationRecordRetentionError, match="does not authenticate"):
-        prune_invocation(reports, 1, include_dependents=True)
-
-    assert manifest.is_file()
-    assert report_path.is_file()
-
-
-def test_same_root_legacy_resume_without_receipt_is_still_detected(tmp_path, monkeypatch):
-    from booley.flows.sim.record_retention import (
-        SimulationRecordRetentionError,
-        prune_invocation,
-    )
-
-    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
-    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
-    result = SimulateFlow(
-        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
-    ).execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports))
-    assert result.exit_code == 0
     receipts = manifest.parent / "dependency-receipts"
-    for receipt in receipts.iterdir():
-        receipt.unlink()
-    receipts.rmdir()
-
-    with pytest.raises(SimulationRecordRetentionError, match=re.escape(str(reports / "sim/2"))):
-        prune_invocation(reports, 1)
-
-    prune_invocation(reports, 1, include_dependents=True)
-    assert list((reports / "sim/.pruned-1").iterdir()) == []
-    assert list((reports / "sim/.pruned-2").iterdir()) == []
-
-
-def test_resume_reports_dependency_registration_failure(tmp_path, monkeypatch):
-    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
-    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
-
-    def fail_registration(*_args, **_kwargs):
-        raise ValueError("injected dependency failure")
-
-    monkeypatch.setattr(
-        "booley.flows.sim.record.dependency.register_simulation_record_dependency",
-        fail_registration,
-    )
-    result = SimulateFlow(coverage_execution=lambda *_args: NativeExecution()).execute(
-        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
-    )
-
-    assert result.exit_code == 2
-    assert "resume dependency failed" in result.outcome.report_text
-    assert "injected dependency failure" in result.outcome.report_text
+    receipts.mkdir()
+    old = receipts / f"{'0' * 64}.json"
+    old_bytes = json.dumps(
+        {
+            "$schema": "booley.simulation-record-dependency/v1",
+            "simulation_record_id": "00000000-0000-4000-8000-000000000000",
+            "manifest_sha256": "0" * 64,
+            "origin_invocation": str(reports / "sim/1"),
+            "origin_target": str(reports / "sim/1/targets/sim_0"),
+            "dependent_invocation": str(reports / "sim/9"),
+            "dependent_invocation_id": 9,
+        }
+    ).encode()
+    old.write_bytes(old_bytes)
+    result = SimulateFlow(
+        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
+    ).execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports))
+    assert result.exit_code == 0
+    assert (reports / "sim/2/report.json").is_file()
+    assert list(receipts.iterdir()) == [old]
+    assert old.read_bytes() == old_bytes
 
 
 def test_resume_reports_busy_origin_lock(tmp_path, monkeypatch):
@@ -1822,22 +1499,16 @@ def test_requeued_resume_attempt_keeps_the_origin_lock_it_already_holds(tmp_path
     """The OOM requeue resumes the same origin again: this process must not refuse its own lock."""
     from types import SimpleNamespace
 
-    monkeypatch.setattr(
-        "booley.flows.sim.record.dependency.register_simulation_record_dependency",
-        lambda *_args, **_kwargs: tmp_path,
-    )
     origin = tmp_path / "sim/1"
     validated = SimpleNamespace(
         path=origin / "targets/sim_0/record/manifest.json",
         booley_dir=None,
-        manifest=SimpleNamespace(document={"simulation_record_id": "coverage_record"}),
-        sha256="0" * 64,
     )
     flow = SimulateFlow()
     origin.mkdir(parents=True)
 
-    first = flow._prepare_simulation_record_resume_dependency(validated, tmp_path / "sim/2", None)
-    second = flow._prepare_simulation_record_resume_dependency(validated, tmp_path / "sim/3", None)
+    first = flow._lock_simulation_record_resume_origin(validated, None)
+    second = flow._lock_simulation_record_resume_origin(validated, None)
 
     assert (first, second) == (None, None)
     flow.publication_resources.close()
@@ -2316,7 +1987,8 @@ def test_retention_failure_preserves_in_memory_simulation_record_truth(tmp_path,
 def test_coverage_lock_covers_final_flow_report_publication(tmp_path, monkeypatch):
     from pathlib import Path
 
-    from booley.flows.sim.record_retention import SimulationRecordRetentionError, prune_invocation
+    from booley.flows.sim.record_reports import simulation_record_invocation_lock
+    from booley.runtime.file_lock import LockContentionError
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
@@ -2328,8 +2000,11 @@ def test_coverage_lock_covers_final_flow_report_publication(tmp_path, monkeypatc
 
     def check_lock(path, destination):
         if destination.name == "report.json":
-            with pytest.raises(SimulationRecordRetentionError, match="still being produced"):
-                prune_invocation(tmp_path / "reports", 1)
+            with (
+                pytest.raises(LockContentionError),
+                simulation_record_invocation_lock(tmp_path / "reports/sim/1"),
+            ):
+                raise AssertionError("the producer lock must be held")
             checked.append(True)
         return replace(path, destination)
 
@@ -2343,68 +2018,6 @@ def test_coverage_lock_covers_final_flow_report_publication(tmp_path, monkeypatc
     )
     assert result.exit_code == 0
     assert checked == [True]
-    prune_invocation(tmp_path / "reports", 1)
-
-
-def test_full_pruning_rejects_extra_nested_coverage_payload(tmp_path, monkeypatch):
-    from booley.flows.sim.record_retention import SimulationRecordRetentionError, prune_invocation
-
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    project(tmp_path)
-    data = tmp_path / ".booley"
-    data.mkdir()
-    (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
-    reports = tmp_path / "reports"
-    result = SimulateFlow(
-        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
-    ).execute(SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports))
-    assert result.exit_code == 0
-    native = next(
-        (reports / "sim/1/targets/sim_0/record").glob(
-            "work-items/*/attempts/*/coverage-record/native/raw"
-        )
-    )
-    stray = native / "999-extra.dat"
-    stray.write_text("do not delete", encoding="utf-8")
-
-    with pytest.raises(SimulationRecordRetentionError, match=r"999-extra\.dat"):
-        prune_invocation(reports, 1)
-
-    assert stray.read_text(encoding="utf-8") == "do not delete"
-    assert (reports / "sim/1").is_dir()
-
-
-def test_pruning_during_allocation_does_not_reuse_simulation_record_number(tmp_path, monkeypatch):
-    from pathlib import Path
-
-    from booley.flows.sim.record_retention import prune_invocation
-    from tests.flows.sim.simulation_record_test_support import coverage_invocation
-
-    coverage_invocation(tmp_path, monkeypatch)
-    sim = tmp_path / "reports/sim"
-    original = Path.iterdir
-    triggered = False
-
-    def interleaved(directory):
-        nonlocal triggered
-        entries = list(original(directory))
-        if directory == sim and not triggered:
-            triggered = True
-            prune_invocation(tmp_path / "reports", 1)
-        return iter(entries)
-
-    monkeypatch.setattr(Path, "iterdir", interleaved)
-    result = SimulateFlow(
-        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
-    ).execute(
-        SimRequest(
-            target="sim_0", work_dir=tmp_path, coverage=True, report_dir=tmp_path / "reports"
-        )
-    )
-    assert result.exit_code == 0
-    assert (sim / "2/targets/sim_0/coverage.json").is_file()
-    assert not (sim / "1").exists()
-    assert (sim / ".pruned-1").is_dir()
 
 
 def test_interactive_collection_then_exact_coverage_record_analysis(tmp_path, monkeypatch):
@@ -2945,9 +2558,7 @@ def test_public_publication_resumable_coverage_mismatch_diagnostics(
         for path in manifest.parent.rglob("*")
         if path.is_file()
     }
-    assert {
-        key: value for key, value in after.items() if not key.startswith("dependency-receipts/")
-    } == before
+    assert after == before
     if dry_run:
         assert {
             path.relative_to(reports).as_posix(): path.read_bytes()
@@ -3570,3 +3181,19 @@ def test_coverage_dry_run_reports_plan_failure_as_error(tmp_path, monkeypatch):
     assert result.outcome.report_text == (
         "Simulation Record coverage preview failed: plan went stale"
     )
+
+
+def test_coverage_progress_stamps_run_identity_and_timestamp(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOOLEY_RUN_ID", "sim-run-1")
+    invocation = tmp_path / "reports/sim/1"
+    CoverageProgress(invocation, ("sim_0",)).checkpoint()
+    progress = json.loads((invocation / "progress.json").read_text())
+    assert progress["run_id"] == "sim-run-1"
+    assert progress["timestamp"].endswith("Z")
+
+
+def test_coverage_progress_rejects_inconsistent_terminal_phase(tmp_path):
+    progress = CoverageProgress(tmp_path / "reports/sim/1", ("sim_0",))
+
+    with pytest.raises(ValueError, match="complete and phase disagree"):
+        progress.checkpoint(phase="complete")

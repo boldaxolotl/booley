@@ -2,7 +2,7 @@
 
 How the built-in Simulation Flow (`sim`) runs a Target's tests and turns the
 result into evidence: the adapter boundary, verdicts, Cycle Count Goals, the
-compiler cache, the Elaboration Check, and coverage collection, retention, and
+compiler cache, the Elaboration Check, and coverage collection and
 analysis. It is for contributors and agents changing `booley.flows.sim`. What
 all built-in Flows share (FuseSoC resolution, evidence contracts, the
 invocation lifecycle, Goal baselines) is in
@@ -375,8 +375,8 @@ it trustworthy:
 ### Locks and resume
 
 Simulation takes `.invocation-N.lock` beside `sim/N` before publishing the
-invocation and holds it while producing. Pruning takes the same lock without
-waiting, so an active invocation cannot be removed. Process exit releases the
+invocation and holds it while producing. A resume takes the origin's lock the
+same way, so it cannot run while the origin is still produced. Process exit releases the
 lock; `progress.json` is never lock or resume authority. Every new invocation
 takes a fresh number, and the Target transaction rejects native state left by
 an earlier start.
@@ -390,73 +390,13 @@ one already `superseded` keeps its first `superseded_by`. Missing, malformed,
 or concurrently changed origin progress only skips the supersession mark,
 because the manifest, not progress, decides recovery.
 
-### Exact report retention
-
-`booley.flows.sim.record_retention` removes the evidence of one exact
-invocation; the command line is in
-[FLOW_REPORTS.md](FLOW_REPORTS.md#coverage-retention). It takes the report
-root explicitly (callers get Booley Directory roots from
-`booley.runtime.booley_dir.resolve_booley_dir()`) and never picks a "latest"
-Campaign or applies age or size rules: deleting evidence must be a deliberate
-act on a named invocation.
-
-- `prune_native_payload(reports_root, invocation, target)` needs an exact
-  invocation number and one exact manifest Target selector. It validates the
-  Campaign pair, Simulation identities, and link safety before changing
-  anything; symlinks, unsafe paths, ambiguous or unknown Targets, a wrong
-  invocation, and a recorded native payload already missing on the first try
-  are errors. It writes `availability.json`
-  (`booley.coverage-availability/v1`: Campaign ID, manifest and point-store
-  digests, native artifact IDs, paths, and digests) in the nested Coverage
-  Campaign directory with status `pruning`, deletes `native/` (unrecorded
-  files included), then sets the status to `pruned`. A retry trusts the
-  existing sidecar and finishes the removal. The manifest, point store,
-  Simulation files, and hook evidence never change, so the Campaign stays
-  analyzable.
-- `prune_invocation(reports_root, invocation, *, project_data=None,
-  include_dependents=False)` validates every Target and checks every file
-  against the authenticated invocation, Campaign, and artifact inventory,
-  then renames the invocation to `.pruned-N` and empties it. Unknown files are
-  named and refused before any change. A terminal attempt owns its records,
-  the files its result names, and its `private-build/`, `snapshot/`, and used
-  shared-build trees; the unknown-file check inside it covers its records and
-  `evidence/`, `runtime-inputs/`, and `pre-sim/`, not the build trees.
-  Changed or missing native payloads are accepted, since everything goes.
-  Pending or interrupted Campaigns, missing summaries, and missing projections
-  count as abandoned, not invalid. A reservation abandoned before
-  `progress.json` is removable when its directory is empty and its lock file
-  is intact. The empty `.pruned-N` directory reserves the number for good.
-  With `include_dependents`, authenticated resume dependents are removed
-  first, journaled in `.prune-batch.json`.
-- An interrupted full prune is finished when `.pruned-N` holds its
-  `.prune.json` journal; without the journal it is refused.
-
-Before removing an interrupted attempt's run directory, resume and full
-pruning cancel that lane's execution and fail closed unless its process tree
-has ended. Full pruning also removes owned templated run directories after a
-marker check; literal run directories are untouched. That recovery needs the
-Booley Directory only when such a resource survives. The Booley Directory is
-inferred only when the report root is exactly
-`<booley-directory>/.runtime/flow-reports`; any other root needs
-`--project-data <booley-directory>` for `--full` in that case.
-
-Full pruning holds the producer lock and every Campaign mutation lock through
-a second inventory pass, recovery, journal publication, and the rename.
-Producer-lock contention means the invocation is still being produced;
-mutation-lock contention means a resume is running. Retention never removes
-or rewrites either lock, and a Campaign lock never recreates a renamed
-Campaign root. Selection, locking, validation, and filesystem failures exit 2.
-Both operations are safe to retry with the same selection; never remove
-journals, quarantines, invocation locks, or `.pruned-N` directories by hand.
-
 ### Coverage Analyst input
 
 The Coverage Analyst takes the exact Target-level `coverage.json`, deep-loads
 its point store, rejects collector-error or incompatible collection before
 calling the model, and checks the matching completed `simulation.json`. It is
 a separate advisory call: it never runs Simulation or records Criterion
-evidence. Native pruning leaves its input usable; full pruning removes it. Its
-output and evidence budget are in
+evidence. Its output and evidence budget are in
 [SPECIALIST_IMPLEMENTATION.md](SPECIALIST_IMPLEMENTATION.md#coverage-analyst) and
 [ADR 0063](../adr/0063-bind-coverage-analysis-to-budgeted-evidence.md); the
 release checks are in [coverage-release-gate.md](coverage-release-gate.md).

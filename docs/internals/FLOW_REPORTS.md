@@ -12,7 +12,7 @@ docs show only the few files a user opens; keep them consistent with this page.
 | [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and the per-Flow pages ([FLOW-SIM.md](../user/FLOW-SIM.md), [FLOW-LINT.md](../user/FLOW-LINT.md), [FLOW-SYNTH.md](../user/FLOW-SYNTH.md), [FLOW-FPGA.md](../user/FLOW-FPGA.md), [FLOW-MUTATION.md](../user/FLOW-MUTATION.md)) | How to run each Flow and read its verdict |
 | **This document** | Report files, JSON fields, and on-disk layout |
 | [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) | How the Flows produce these files: planning, verdict rules, recovery |
-| [FLOW_IMPLEMENTATION_SIM.md](FLOW_IMPLEMENTATION_SIM.md) | The same for `sim`: Campaigns, coverage collection, retention |
+| [FLOW_IMPLEMENTATION_SIM.md](FLOW_IMPLEMENTATION_SIM.md) | The same for `sim`: Campaigns and coverage collection |
 | [MCP-TOOLS.md](MCP-TOOLS.md#built-in-flow-calls) | How the same results reach an agent over MCP |
 
 The reports are evidence: Goals, Criteria, resume, and the Coverage Analyst all
@@ -376,30 +376,10 @@ Goal-bound run with one evaluated Criterion, `criterion_met` is `false`.
 
 ### Coverage retention
 
-Nothing runs this cleanup on its own. User docs tell people to delete finished
-run folders directly ([Cleaning up reports](../user/FLOW_REFERENCE.md#cleaning-up-reports));
-`python -m booley.flows.sim.record_retention` is the guarded version, for
-tooling and for a run that others depend on. It removes the evidence of one
-exact run:
-
-```bash
-python -m booley.flows.sim.record_retention --reports-root <root> --invocation <N> --native-target <target>
-python -m booley.flows.sim.record_retention --reports-root <root> --invocation <N> --full
-```
-
-- **`--native-target`** removes the `native/` directory (raw and merged
-  Verilator databases) of the Coverage Campaign that the Target's
-  `coverage.json` references. The manifest and point store stay, so the
-  Campaign can still be analyzed; `availability.json` (schema
-  `booley.coverage-availability/v1`) in that directory records the pruning.
-- **`--full`** removes the whole run and leaves an empty `.pruned-<N>` marker
-  so the number is never reused. It refuses while later resumed runs depend on
-  this one, unless `--include-dependents` is given, and refuses any file the
-  run did not produce.
-
-Both refuse a run that is still active and are safe to retry with the same
-arguments. `--project-data`, the selection rules, and the recovery algorithm
-are in [FLOW_IMPLEMENTATION_SIM.md](FLOW_IMPLEMENTATION_SIM.md#exact-report-retention).
+Nothing deletes coverage runs automatically. Users delete finished run folders
+directly ([Cleaning up reports](../user/FLOW_REFERENCE.md#cleaning-up-reports)). An
+empty `.pruned-<N>` directory in `sim/` keeps its number reserved, so a new
+invocation is numbered above it.
 
 ## `lint`
 

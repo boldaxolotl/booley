@@ -374,7 +374,6 @@ exclude = [
     "src/booley/flows/sim/record/serial_execution.py",
     "src/booley/flows/sim/record/store.py",
     "src/booley/flows/sim/record_invocation.py",
-    "src/booley/flows/sim/record_retention.py",
     "src/booley/harness/booley.py",
     "src/booley/harness/bootstrap.py",
     "src/booley/harness/dashboard/app.py",
