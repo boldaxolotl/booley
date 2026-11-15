@@ -79,8 +79,7 @@ renewing a license, it hands to you with exact instructions. It asks before it
 waives a warning, and it doesn't change your RTL or testbench unless you ask it
 to.
 
-To fix a specific message yourself, look it up in
-[Troubleshooting](TROUBLESHOOTING.md).
+To fix a problem yourself, follow the `→` hint under it.
 
 ## Automatic checks
 

@@ -35,7 +35,6 @@ The Booley user guide. The first time, read **Get started** in order.
 <tr><td><a href="supported-eda-tools/">Supported EDA tools</a></td><td>Which tools each Flow drives, and where they come from.</td></tr>
 <tr><th scope="rowgroup" rowspan="3">Help</th><td><a href="doctor/">Doctor</a></td><td>Check that Booley's setup and tools work.</td></tr>
 <tr><td><a href="troubleshooting/">Troubleshooting</a></td><td>Symptoms, causes, and fixes.</td></tr>
-<tr><td><a href="windows/">Windows</a></td><td>Windows-only first-run traps.</td></tr>
 <tr><th scope="rowgroup" rowspan="1">Internals</th><td><a href="architecture/">Architecture</a></td><td>How Booley's parts fit together.</td></tr>
 </tbody>
 </table>

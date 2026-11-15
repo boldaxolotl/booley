@@ -275,8 +275,8 @@ test, and so does a nonzero simulator exit code.
 
 </details>
 
-If every Test Run comes back inconclusive, see
-[Every simulation test comes back INCONCLUSIVE](TROUBLESHOOTING.md#every-simulation-test-comes-back-inconclusive).
+If every Test Run comes back inconclusive, the testbench prints no
+[sentinel](#passfail-sentinels-and-cycle-counts) that Booley looks for.
 
 **Goals.** In [Goal Mode](GOAL-MODE.md), a `sim` run that the agent makes in
 the Goal's worktree records evidence for `SIM`, `ELAB`, `CYCLE_COUNT` and
@@ -653,8 +653,7 @@ CCACHE_DIR=/booley-project/.runtime/compiler-cache/ccache ccache --clear
 ```
 
 If ccache isn't available, the build prints a warning and compiles without it.
-Booley's ccache settings override your shell and the Target's `env`; see
-[ccache settings are ignored or rebuilds miss the cache](TROUBLESHOOTING.md#ccache-settings-are-ignored-or-rebuilds-miss-the-cache).
+Booley's ccache settings override your shell and the Target's `env`.
 
 ## Configuration (`[flows.sim]`)
 
@@ -710,7 +709,6 @@ time is still zero that many seconds after cocotb starts, which usually means
 the cocotb version doesn't match the simulator; see
 [Python dependencies](SANDBOX.md#python-dependencies-sandboxpip_requirements).
 Raise it if your testbench spends minutes in Python setup before the first
-clock edge. For the stop's message and fix, see
-[Simulation stalls at time zero](TROUBLESHOOTING.md#simulation-stalls-at-time-zero-without-results).
+clock edge.
 
 </details>
