@@ -15,6 +15,7 @@ from booley.flows.sim.record.codec import (
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.runtime.execution_records import (
     ExecutionId,
+    atomic_write_json,
     execution_paths,
 )
 from tests.flows.sim.simulation_record_test_support import _two_item_manifest
@@ -103,16 +104,12 @@ def _prepared(tmp_path: Path) -> child_protocol.PreparedChild:
 
 
 @pytest.mark.parametrize("record", [None, {"state": "running", "tree_terminal": False}])
-def test_mark_terminal_requires_a_recoverable_or_terminal_record(
-    tmp_path: Path, monkeypatch, record
-) -> None:
+def test_mark_terminal_requires_a_recoverable_or_terminal_record(tmp_path: Path, record) -> None:
     registry = _registry(tmp_path)
-    monkeypatch.setattr(
-        child_protocol,
-        "execution_paths",
-        lambda *_args, **_kwargs: SimpleNamespace(record=tmp_path / "record"),
-    )
-    monkeypatch.setattr(child_protocol, "read_json", lambda _path: record)
+    paths = execution_paths(ExecutionId("e" * 32), booley_dir=tmp_path)
+    paths.root.mkdir(parents=True)
+    if record is not None:
+        atomic_write_json(paths.record, record)
     with pytest.raises(SimulationRecordIntegrityError):
         registry.mark_terminal(_prepared(tmp_path), "failed")
 

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import cast
 
 from booley.core.booley_dir_links import lexical_booley_path
+from booley.flows.artifact_durability import discard_published_staging
 from booley.flows.baseline_worktree import git_full_sha
 from booley.flows.sim.record_files import read_bounded
 from booley.flows.sim.record_layout import RECORD_DIRECTORY, refuse_older_manifest_path
@@ -197,6 +198,7 @@ def _origin_invocation(path: Path) -> Path:
 
 
 def _load_node(path: Path, booley_dir: Path | None) -> ValidatedManifestNode:
+    discard_published_staging(path)
     raw = read_bounded(
         path,
         limit=MANIFEST_MAX_BYTES,

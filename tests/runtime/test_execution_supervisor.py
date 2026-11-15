@@ -37,6 +37,7 @@ from booley.runtime.execution_records import (
     request_cancellation,
     write_attachment_heartbeat,
 )
+from booley.runtime.process_group import new_group_kwargs
 from booley.runtime.supervised_execution import SupervisedProcessSet
 
 
@@ -623,3 +624,31 @@ def test_orphan_exiting_after_direct_child_is_reaped_by_end(tmp_path: Path) -> N
     assert payload["state"] == "terminal"
     assert payload["tree_terminal"] is True
     assert not Path(f"/proc/{int(grandchild_file.read_text())}").exists()
+
+
+def test_register_on_a_terminal_record_keeps_it_and_kills_the_process(tmp_path: Path) -> None:
+    execution_id = ExecutionId(uuid.uuid4().hex)
+    paths = execution_paths(execution_id, booley_dir=tmp_path)
+    terminal = {
+        "schema_version": 1,
+        "state": "terminal",
+        "runtime_identity": None,
+        "supervisor": None,
+        "leader": None,
+        "exit_code": 125,
+        "tree_terminal": True,
+        "terminal_cause": "orphan_recovered",
+        "updated_at": "2026-01-01T00:00:00Z",
+    }
+    atomic_write_json(paths.record, terminal)
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"], **new_group_kwargs()
+    )
+    try:
+        SupervisedProcessSet(execution_id, tmp_path, lambda: False).register(child)
+
+        assert read_json(paths.record) == terminal
+        assert child.wait(timeout=10) != 0
+    finally:
+        child.kill()
+        child.wait()
