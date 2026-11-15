@@ -94,7 +94,9 @@ class AttachController {
                 : `Dashboard auto-open skipped: remote '${remote}' is not a Sandbox remote.` };
         }
         if (!vscode.workspace.isTrusted) {
-            return { notify: true, reason: explicit
+            // Trusting changes nothing while the attach protocol is off, so say nothing then.
+            const protocolOn = vscode.workspace.getConfiguration().get(PROTOCOL) === 1;
+            return { notify: protocolOn, reason: explicit
                 ? 'Booley: Open Dashboard needs a trusted window; trust this workspace first.'
                 : 'Dashboard auto-open waits for workspace trust; this window is untrusted.' };
         }

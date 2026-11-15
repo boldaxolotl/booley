@@ -267,7 +267,7 @@ test('a different skip reason after trust is granted gets its own notice', async
 
 test('quiet and Output-only auto-open skips show no notification', async () => {
     for (const options of [{ remote: undefined }, { remote: null }, { remote: 'ssh-remote' },
-        { protocol: 0 }, { enabled: false }]) {
+        { protocol: 0 }, { trusted: false, protocol: 0 }, { enabled: false }]) {
         const f = fixture(options);
         await tick();
         assert.equal(f.messages.length, 0, JSON.stringify(options));
