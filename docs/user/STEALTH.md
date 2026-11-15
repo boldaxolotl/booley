@@ -36,24 +36,21 @@ already has commits.
 
 ## What changes
 
-- **Booley's files stay untracked.** `.booley/` goes into `.git/info/exclude`,
-  your clone's private ignore list. The `.devcontainer/` and `.claude/` folders
-  and the root `AGENTS.md` and `CLAUDE.md` links are excluded with or without
-  Stealth.
-- **Cores Booley writes live in `.booley/cores/`.** Your own `.core` files stay
-  untouched. Booley places ignored copies named `.booley-projected-*.core` at
-  the repository root so FuseSoC can find them, and refreshes them before each
-  Flow. Edit the file under `.booley/cores/`, not the copy.
-- **Commit messages are checked**, see [Commit messages](#commit-messages).
-- **Pushes are checked**, see [Push checks](#push-checks).
-- **Goal Mode summaries stay local** instead of being committed on the Goal
-  Branch ([GOAL-MODE.md](GOAL-MODE.md)).
-- **Worktrees get a Paired Checkout** of `.booley/`: a checkout of its
-  repository's last commit on its own branch, so commit Booley changes there
-  before you create a worktree
-  ([CLI-REFERENCE.md](CLI-REFERENCE.md#worktrees)).
-- **Worktree branches are `wt/<name>`**, not `booley/<name>`, so the product
-  name does not reach a branch you push.
+| | Stealth off | Stealth on |
+|---|---|---|
+| `.booley/` | An ordinary folder you commit with your RTL | Hidden in `.git/info/exclude`, your clone's private ignore list, and kept in its own Git repository |
+| Cores Booley writes | At the repository root, tracked | In `.booley/cores/`, with ignored `.booley-projected-*.core` copies at the root for FuseSoC |
+| Commit messages | Not checked | Checked, see [Commit messages](#commit-messages) |
+| Pushes | Not checked | Checked, see [Push checks](#push-checks) |
+| Goal Mode Session Summaries | Committed on the Goal Branch | Kept local ([GOAL-MODE.md](GOAL-MODE.md)) |
+| `.booley/` in a worktree | A Snapshot copy | A Paired Checkout of its last commit ([CLI-REFERENCE.md](CLI-REFERENCE.md#worktrees)) |
+| Worktree branch names | `booley/<name>` | `wt/<name>`, so the product name stays out of branches you push |
+
+`.devcontainer/`, `.claude/`, and the root `AGENTS.md` and `CLAUDE.md` links are
+excluded either way. With Stealth on, edit cores under `.booley/cores/`, not
+the root copies; Booley refreshes those before each Flow. A Paired Checkout
+takes only committed files, so commit Booley changes in `.booley/` before you
+create a worktree.
 
 If your repository ships `.core` files that are broken, obsolete, or that you
 don't want Booley to see, add `ignore_native_cores = true`. Booley then reads
