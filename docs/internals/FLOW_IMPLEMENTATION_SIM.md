@@ -376,8 +376,10 @@ it trustworthy:
 
 Simulation takes `.invocation-N.lock` beside `sim/N` before publishing the
 invocation and holds it while producing. A resume takes the origin's lock the
-same way, so it cannot run while the origin is still produced. Process exit releases the
-lock; `progress.json` is never lock or resume authority. Every new invocation
+same way, so it cannot run while the origin is still produced. Before a resume
+removes an interrupted attempt's run directory, it cancels that lane and fails
+closed unless the lane's process tree has ended. Process exit releases the lock;
+`progress.json` is never lock or resume authority. Every new invocation
 takes a fresh number, and the Target transaction rejects native state left by
 an earlier start.
 

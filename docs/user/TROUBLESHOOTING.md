@@ -836,8 +836,7 @@ and [Cleaning up reports](https://booley.dev/docs/flow-reference/#cleaning-up-re
 | `collection has no recorded result` | Coverage collection never finished, so the Campaign can't resume. Start the new run the message prints. |
 | `Coverage evidence budget exhausted` | Narrow the instruction you gave the Coverage Analyst, or use a model with a larger context. |
 
-Never delete a lock file to get past a message, and keep any empty
-`.pruned-N` folders: they reserve used run numbers.
+Keep any empty `.pruned-N` folders: they reserve used run numbers.
 
 The Coverage Analyst gives report-only analysis, without Waiver Candidates,
 when the Target's sources changed since the Campaign ran. The Campaign's

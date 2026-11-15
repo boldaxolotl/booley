@@ -75,7 +75,7 @@ _RUNTIME_OWNER_DIRS = frozenset({INTERACTIVE_LOGS_DIR_NAME, GOALS_DIR_NAME})
 def invocation_booley_dir(root: Path) -> Path | None:
     """Return the Booley Directory entry an invocation root lives under, if it is one.
 
-    *root* is ``<reports_root>/sim/<N>`` (or a sibling such as its quarantine). The
+    *root* is ``<reports_root>/sim/<N>``. The
     reports root is ``<entry>/flow-reports``, ``<entry>/.runtime/flow-reports``, deep
     Doctor's ``<entry>/tmp/doctor/flow-reports``, or a per-run runtime root
     ``<entry>/<owner>/<id>/.runtime/flow-reports`` (see :data:`_RUNTIME_OWNER_DIRS`);

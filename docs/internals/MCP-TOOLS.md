@@ -12,7 +12,7 @@ Neighboring docs own the rest:
 |---|---|
 | [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and the per-Flow pages | Running built-in Booley Flows and reading their results |
 | [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) | How the built-in `sim`, `lint`, `synth`, `fpga`, and `mutation` Flows build commands, run, and produce evidence |
-| [FLOW_IMPLEMENTATION_SIM.md](FLOW_IMPLEMENTATION_SIM.md) | Simulation Flow internals: adapter seam, verdicts, Elaboration Check, coverage persistence and retention |
+| [FLOW_IMPLEMENTATION_SIM.md](FLOW_IMPLEMENTATION_SIM.md) | Simulation Flow internals: adapter seam, verdicts, Elaboration Check, coverage persistence |
 | [JOB_RECORDS.md](JOB_RECORDS.md) | How Jobs are recorded, owned, and found again |
 | [FLOW_REPORTS.md](FLOW_REPORTS.md) | Report locations and JSON schemas of the built-in Flows |
 | [SPECIALIST_IMPLEMENTATION.md](SPECIALIST_IMPLEMENTATION.md) | Evidence contracts of the built-in Reviewer and Coverage Analyst |
