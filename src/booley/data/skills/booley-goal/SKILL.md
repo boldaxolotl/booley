@@ -142,8 +142,8 @@ Default Seed.
   start again. When a diagnostic Test Run fails on a real bug, tell the human
   and offer to propose it as a Goal.
 
-For an unmet reason you do not recognize, read `/booley-docs/TROUBLESHOOTING.md` →
-"A Goal that names Test Runs stays unmet".
+For an unmet reason you do not recognize, read its text in `goal_status`: it
+says what clears it.
 
 ## Work and evidence
 

@@ -94,14 +94,6 @@ class TestBannedTermRejection:
         assert "banned_words" in err and "banned_substrings" in err
         assert "-v -e -F" in err
 
-    def test_docs_quote_the_real_rejection_output(self, tmp_path: Path):
-        """Troubleshooting shows the lines a user pastes into a search; keep them current."""
-        _, err, _ = _run_hook(tmp_path, "fix(core): llm\n")
-        docs = Path(__file__).resolve().parents[2] / "docs" / "user"
-        text = (docs / "TROUBLESHOOTING.md").read_text(encoding="utf-8")
-        for line in (err.splitlines()[0], err.splitlines()[2]):
-            assert line in text, f"TROUBLESHOOTING.md no longer quotes: {line}"
-
     def test_one_entry_per_term_per_line(self, tmp_path: Path):
         _, err, _ = _run_hook(tmp_path, "fix(core): llm llm LLM\n")
         assert err.count("'llm'") == 1

@@ -14,7 +14,6 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from tests.shipped_docs_support import rendered_docs_outside_user_docs, rendered_shipped_docs
@@ -23,7 +22,6 @@ from booley.bwave import cli as bwave_cli
 from booley.flows.base import BuiltinFlow
 from booley.flows.builtin_cli import build_parser
 from booley.flows.endpoint_cli import human_endpoint_parser
-from booley.flows.sim import record_retention
 from booley.harness.booley import _build_parser, _load_mcp_tool_class
 from booley.mcp.registry import discover_mcp_tools
 
@@ -62,16 +60,6 @@ ALLOWLIST = (
         "A supported literal value selecting per-test build access.",
         1,
     ),
-)
-
-# These are current diagnostic/schema literals, not historical narrative.
-ALLOWLIST += tuple(
-    ExceptionRule(path, "`workspace.legacy-source-stash`", "Current Doctor warning ID.", 1)
-    for path in ("docs/user/TROUBLESHOOTING.md",)
-)
-ALLOWLIST += tuple(
-    ExceptionRule(path, "including `.retired` records", "Supported recovery-record suffix.", 1)
-    for path in ("docs/user/TROUBLESHOOTING.md",)
 )
 
 
@@ -204,19 +192,6 @@ def cli_help() -> dict[str, str]:
     rendered.update(parser_help(bwave_cli._build_parser(), "bwave"))
     rendered["bwave top help"] = bwave_cli._TOP_HELP_TEXT
     rendered["bwave query help"] = bwave_cli._QUERY_HELP_TEXT
-    # The Simulation Record pruning module constructs its parser inline. Capture it
-    # before parsing, ensuring no command (and no deletion) can execute.
-    with (
-        patch.object(
-            argparse.ArgumentParser,
-            "parse_args",
-            autospec=True,
-            side_effect=RuntimeError("capture"),
-        ) as parse,
-        pytest.raises(RuntimeError, match="capture"),
-    ):
-        record_retention.main()
-    rendered.update(parser_help(parse.call_args.args[0], "record-retention"))
     return rendered
 
 

@@ -31,6 +31,9 @@ For each asset and each control, build scenarios from these categories. Skip a c
 - **Debug, test, and scan access**: a debug or test mode that exposes a secret or bypasses a security control
 - **Reset and power**: reset asserted mid-operation, a partial reset of only some registers, and state that survives a reset or wipe although it must not
 - **Error, alert, and escalation paths**: an error that is not escalated, an escalation that does not gate the operation, and an unsafe state left behind after an error
+- **Validity gates**: a key, seed, or other protected value used by a transition
+  or datapath that does not test its valid or fault flag, while the same flag is
+  tested elsewhere
 - **Fault injection**: a single-bit flip of a check, FSM state, counter, or multi-bit encoded signal, and encoded signals that are combined wrongly
 - **Secret flow**: a secret reaching an output, status, or read-back path; a secret not cleared on completion or wipe; timing that depends on a secret
 

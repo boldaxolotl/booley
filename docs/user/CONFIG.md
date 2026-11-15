@@ -141,14 +141,13 @@ measured makes the Job run alone. A simulation campaign runs independent tests
 in parallel while their reservations fit.
 
 If the kernel kills a Job for running out of memory, Booley runs it again once,
-alone. A second kill fails the Job. See
-[Job killed out of memory](TROUBLESHOOTING.md#job-killed-out-of-memory).
+alone. A second kill fails the Job.
 
 Limits apply to one Project.
 
 `[jobs.seats]` caps the licensed seats of a commercial tool, such as `vivado`.
 Every licensed tool a Project uses needs one: without it Doctor fails and the
-Flow is refused. See [Missing Seat Cap](TROUBLESHOOTING.md#missing-seat-cap).
+Flow is refused.
 
 <details markdown>
 <summary>With host-installed licensed tools</summary>
@@ -313,8 +312,7 @@ quiet_after = 7200   # seconds, 60 to 604800
 With `dashboard = false` the [Dashboard](USAGE.md#the-dashboard) does not
 open on its own; `booley dashboard` in a container terminal still opens it, and
 so does **Booley: Open Dashboard** (it needs a trusted Sandbox window with one
-Git folder). If it doesn't open when it should, see [Dashboard
-troubleshooting](TROUBLESHOOTING.md#the-dashboard-does-not-open-on-sandbox-attach).
+Git folder).
 
 A Goal session that makes no Booley call for `quiet_after` seconds (default two
 hours) counts as quiet. The Dashboard may drop it from the Sessions list, and
