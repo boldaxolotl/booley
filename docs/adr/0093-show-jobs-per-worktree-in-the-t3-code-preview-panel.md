@@ -31,8 +31,8 @@ worktree.
 ## Decision
 
 - **One Dashboard per worktree.** The Dashboard shows only Jobs whose
-  `work_dir` is its worktree. There is no Sandbox-wide view: Jobs in the main
-  checkout or in a deleted worktree appear in no worktree's Dashboard.
+  `work_dir` is its worktree. The main checkout counts as a worktree. There
+  is no Sandbox-wide view: Jobs of a deleted worktree appear in no Dashboard.
 - **A web page in the preview panel.** One server in the Sandbox serves
   every worktree's Dashboard; the worktree is a URL parameter
   (`?worktree=<path>`). A `t3.json` script opens it. Headless Chrome ships in
