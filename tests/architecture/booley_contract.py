@@ -1,4 +1,75 @@
-"""The executable form of Booley's approved source dependency contract."""
+"""The executable form of Booley's approved source dependency contract.
+
+The contract keeps low-level packages reusable and keeps composition in a few entry points
+(the MCP server and the `booley` commands), so a change to an agent-facing surface cannot ripple
+down into Sandbox, Config, or Flow code. The rules below list forbidden directions only. An
+import that no rule covers is unclassified: neither endorsed nor forbidden, and its presence
+never earns it a permission. When this file and any prose disagree, this file is right.
+
+The analyzer (`import_graph.py`) counts every import in `src/booley`, including deferred imports
+inside functions and `if TYPE_CHECKING:` blocks. It cannot see run-time imports (`importlib`,
+generated hook bundles), so those need their own test.
+
+Where shared code lives. Most rules exist because code both sides need was moved below them. When
+a rule blocks an import, put the shared piece in the owner named here, not behind a permission.
+
+- Runtime below Flows, Goals, and commands (D5, D6, D36, D37, D41): Runtime takes explicit inputs
+  so Sandbox and Job mechanics work under any caller. Flow progress shape lives in
+  `booley.core.progress_shape`. Job observation (`runtime.job_observation`) is read-only and reads
+  the roots its caller passes; `harness.dashboard.jobs.JobReader` picks those roots and adds Goal
+  and Target meaning. `runtime.project_repositories` owns repository discovery and bounded Git
+  inspection. The MCP Job owners (`mcp.job_lifecycle`, `mcp.job_results`, `mcp.endpoint_process`,
+  `mcp.report_encoding`) never reach `mcp.server`, so Job behavior does not depend on the MCP SDK.
+- Config, EDA, and Runtime (D18-D20, D23-D25): Config parses declarative values and builds nothing.
+  EDA owns installation, License Profile registration, Project Grants, and host validation.
+  Runtime builds the agent backend from `AgentSettings` and owns Sandbox Issuance. Both use the
+  neutral `core.private_store`, `core.file_lock`, `core.resources`, and `core.user_paths`, which
+  D25 keeps free of caller policy. `eda.config`, `runtime.file_lock`, and
+  `runtime.paths.package_data_dir` only re-export; new code imports the owner.
+- Targets and FuseSoC (D12, D13, D27, D28): `core.build_paths.work_root_for` owns the Edalize
+  build directory name and `core.scope_matching` owns pure Scope matching, so neither package
+  needs Runtime or Flows. Runtime keeps glob expansion and Git staging. These two packages are the
+  one approved cyclic group.
+- Flows (D8-D11, D16, D38): `booley.evidence` holds the values that cross from an evidence
+  producer into Criteria, so both depend downward. Source scanning and fingerprints stay in Flows
+  (`flows.source_fingerprint`).
+- Goal Mode (D35, D38): `flows.execution_persistence` defines the recording interface
+  (`AcceptanceRecorder`); `goals.flow_execution` and `mcp.unbound_recorder` supply adapters.
+  `mcp.call_context` and `mcp.goal_flow_runner` bind a call to its Goal Record and pick the
+  concrete Flow, so Flows never import Goals and Goals never import a concrete Flow.
+- Doctor (D26): each diagnostic owner takes a request and returns a complete report, so Doctor,
+  MCP, and the Dashboard read the same observations. See the comment at the D26 rule for how to
+  add an owner.
+- B-Wave (D29): B-Wave owns FST inspection, VCD-to-FST conversion, store discovery, cache paths,
+  and its half of FIFO streaming. The Simulation Flow owns attempt freshness, stall policy,
+  manifests, publication, and the decision that a store is a Trace Artifact.
+- Simulation Record storage (D31): callers use the public `booley.flows.sim.record` package
+  (`authenticate_work_item()`, `inspect_retained_simulation_record()`), which returns immutable
+  results and hides store layout, recovery, and storage errors. Only the coordinator and the
+  inspection module touch the store; an AST check keeps `SimulationRecordStore`,
+  `SimulationRecordRecovery`, `WorkItemRecovery`, and `SharedBuildRecovery` inside them.
+- Commit policy and Feedback (D32-D34): `booley.commit_policy` is the one commit-policy
+  implementation, Project Git hooks included; `booley.dev_support` keeps only command and hook
+  adapters. Feedback renders reports from an `Environment` value the commands build, so it never
+  imports them.
+- Presentation (D40): terminal colors, tables, and the heartbeat sit below every owner.
+
+Changing the contract. Change this file in the same change, and attach the output of
+`python3 tests/architecture/compare_report.py --before-ref <base> --after-ref <head> --repo-root .`
+to a PR that moves a boundary.
+
+- Add a rule: add a `DirectionRule` with the next free number and a reason, and a seed edge in
+  `test_every_direction_rule_selector_family_finds_a_forbidden_edge`. Fix existing imports the
+  rule catches first.
+- Allow one edge: prefer moving the shared piece below both packages. Only a composition root
+  that really must join them gets a `CompositionPermission` naming source, target, and rule.
+- Accept an existing violation for now: add a `LegacyWaiver` with the exact edge and the issue
+  that removes it; remove it with the fix.
+- Cycles: when a change splits the approved group, shrink `APPROVED_LEGACY_SCCS` in the same
+  change. Never approve a new cycle across packages; fix the imports.
+- Importing `booley.goals` or `booley.criteria` from a new module: add the module and its reason
+  to `_ALLOWED` in `test_goal_mode_boundaries.py`.
+"""
 
 from __future__ import annotations
 
@@ -236,6 +307,29 @@ DIRECTION_RULES = (
         ),
         "Shared private storage, locking, and package resources do not own caller policy",
     ),
+    # Adding a Doctor diagnostic owner (or moving a check out of `harness.doctor`):
+    # - The owner takes a typed, frozen request and returns a `DiagnosticReport` built with
+    #   `audit.diagnostic_results.Findings`; every WARN carries a `check_id` (plus `subject` and
+    #   `dedupe` where the check had them). It accepts no Doctor reporting callbacks (a Sandbox
+    #   command builder in the request is not one), takes raw inputs, and decides ownership and
+    #   severity itself. It never repairs and never issues a Runtime.
+    # - List its module below, and in the D26 test list in
+    #   `test_source_dependency_contract.py`: add it there first and watch it fail. The tests
+    #   import a new owner through a helper (`importlib.import_module`) so the file collects
+    #   before the owner exists. Single-fact helpers (`audit.host_environment`,
+    #   `runtime.interactive_docker`, `audit.output_excerpt`) and the value module
+    #   `audit.diagnostic_results` stay outside D26.
+    # - Doctor builds the request, calls the owner, and renders each report with
+    #   `_Reporter.diagnostics` at the check's position. A moved check keeps its message, fix
+    #   text, severity, check ID, waiver behavior, order, and exit code. An owner exposes one
+    #   operation per position at which its checks render.
+    # - Tests assert on the returned report and patch no private Doctor name. If an orchestrator
+    #   in `tests/harness/test_doctor_probe_inventory.py` called the replaced check, change the
+    #   inventory to name the owner call.
+    # - Rewriting a moved check's reporting calls into `Findings`, text unchanged, is a
+    #   mechanical move under principle 18 of CODING_PRINCIPLES.md; the PR body states moved and
+    #   new line counts. Sibling moves edit this same list and the inventory, so land them one
+    #   at a time, ordered by a `Blocked by` edge.
     DirectionRule(
         "D26",
         (
