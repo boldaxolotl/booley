@@ -48,7 +48,8 @@ environment.
 - **A token may come from a command instead.** Set exactly one of the token
   and the token command; both or neither fails. The command prints the current
   token and must be safe to run repeatedly and concurrently. Its stderr is
-  shown on failure, its stdout never. Whoever can run the command in the Sandbox can mint a token.
+  shown on failure, its stdout never. Whoever can run the command in the Sandbox
+  can mint a token.
 - **Specialists: the spawning Booley process runs the command.** It caches the
   result in memory for a few minutes and hands it to the Codex child as the
   static token, removing the command variable. A helper process could neither

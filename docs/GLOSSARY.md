@@ -29,7 +29,11 @@ Idempotent, Project-independent preparation of the host environment and the curr
 _Avoid_: Project bootstrap, machine setup, installation
 
 **Project Initialization**:
-Idempotent, location-neutral reconciliation of one codebase's Project files (Booley Directory, Git integration, guidance links, core projections, Dashboard task), making it a **Project** without interpreting its design and without Docker, host credentials or **Sandbox Issuance** ([ADR 0085](adr/0085-run-project-initialization-anywhere.md)).
+Idempotent, location-neutral reconciliation of one codebase's Project files
+(Booley Directory, Git integration, guidance links, core projections, Dashboard
+task), making it a **Project** without interpreting its design and without
+Docker, host credentials or **Sandbox Issuance** ([ADR
+0085](adr/0085-run-project-initialization-anywhere.md)).
 _Avoid_: Project bootstrap, Project enrollment, Project Setup
 
 **Project Setup**:
@@ -45,15 +49,23 @@ The agent of an agent session (Claude Code or Codex) in a **Sandbox**. It author
 _Avoid_: coding agent, host agent, main agent, outer agent, the agent session in Goal Mode
 
 **Agent CLI**:
-The coding-agent program an agent runs on: Claude Code (`claude`) or Codex (`codex`). A Project lists the Agent CLIs it may use and names a default; each **Specialist** runs on the Agent CLI its model implies.
+The coding-agent program an agent runs on: Claude Code (`claude`) or Codex
+(`codex`). A Project lists the Agent CLIs it may use and names a default; each
+**Specialist** runs on the Agent CLI its model implies.
 _Avoid_: agent app, provider (in user-facing text)
 
 **Sandbox**:
-The isolated environment, one per opened project folder, where all Booley work executes: file access, shell, git, EDA subprocesses, MCP servers, logs, and secrets. Its **Sandbox Policy** is the shared isolation rule set for mounts, credentials, memory, process limits, capabilities, and egress. Docker by default.
+The isolated environment, one per opened project folder, where all Booley work
+executes: file access, shell, git, EDA subprocesses, MCP servers, logs, and
+secrets. Its **Sandbox Policy** is the shared isolation rule set for mounts,
+credentials, memory, process limits, capabilities, and egress. Docker by
+default.
 _Avoid_: Session Runtime, Session Container, Docker Session, MCP sandbox; per-Flow network policy (for Sandbox Policy)
 
 **Sandbox Image**:
-The reusable immutable filesystem and installed-program artifact from which **Sandboxes** are created: a Booley-owned, Project-derived, or external image. A mutable tag is only a locator, not the image's identity.
+The reusable immutable filesystem and installed-program artifact from which
+**Sandboxes** are created: a Booley-owned, Project-derived, or external image. A
+mutable tag is only a locator, not the image's identity.
 _Avoid_: Runtime Image, Session Image, sandbox tag, container, Dockerfile
 
 **Sandbox Issuance**:
@@ -61,7 +73,9 @@ The host-owned act of sealing and vouching for one exact Sandbox specification, 
 _Avoid_: Session Runtime Issuance, EDA runtime spec, provisioning issuance
 
 **Interactive Mode**:
-Execution mode in which a human steers the Developer Agent inside a Sandbox, using the Developer Agent's CLI in a Sandbox terminal. Work outside Goal Mode has no persistent Goal tracking.
+Execution mode in which a human steers the Developer Agent inside a Sandbox,
+using the Developer Agent's CLI in a Sandbox terminal. Work outside Goal Mode
+has no persistent Goal tracking.
 _Avoid_: MCP Mode, Standalone Mode, Tab Mode, Booley Interactive
 
 **Goal Mode**:
@@ -101,35 +115,57 @@ The structured result Finish produces for a Goal Mode: diff summary against the 
 _Avoid_: triage package, run report, acceptance report
 
 **Session**:
-In the Session Registry, one agent client thread or process that calls Booley from a worktree, falling back to the worktree itself when the client cannot be told apart. It feeds the Dashboard and the shared-worktree warning, and never selects a Goal Record.
+In the Session Registry, one agent client thread or process that calls Booley
+from a worktree, falling back to the worktree itself when the client cannot be
+told apart. It feeds the Dashboard and the shared-worktree warning, and never
+selects a Goal Record.
 _Avoid_: connection, tab, MCP session, Sandbox session
 
 **Sandbox Attachment**:
-The connection method by which a human-facing app or autonomous driver uses a Sandbox, such as VS Code Dev Containers or `booley session` terminal attachment.
+The connection method by which a human-facing app or autonomous driver uses a
+Sandbox, such as VS Code Dev Containers or `booley session` terminal attachment.
 _Avoid_: Runtime Attachment, remote, tunnel, app bridge
 
 **Doctor**:
-The diagnostic command for Booley's build and execution machinery in a **Project**'s environment, including integration with Project build configuration. Correctly executed and interpreted design failures are compatible with healthy machinery; see the [Doctor reference](user/DOCTOR.md).
+The diagnostic command for Booley's build and execution machinery in a
+**Project**'s environment, including integration with Project build
+configuration. Correctly executed and interpreted design failures are compatible
+with healthy machinery; see the [Doctor reference](user/DOCTOR.md).
 _Avoid_: design verification, Ticket Preflight, acceptance gate
 
 **Unproxied Sandbox**:
-A **Sandbox** that explicitly opts out of Booley's egress proxy, so agents and tools reach the network the platform provides, such as a Codespace. It is never inferred; Doctor keeps it visible as the waivable WARN `sandbox.unproxied` ([ADR 0077](adr/0077-declare-unproxied-sandboxes-explicitly.md)).
+A **Sandbox** that explicitly opts out of Booley's egress proxy, so agents and
+tools reach the network the platform provides, such as a Codespace. It is never
+inferred; Doctor keeps it visible as the waivable WARN `sandbox.unproxied` ([ADR
+0077](adr/0077-declare-unproxied-sandboxes-explicitly.md)).
 _Avoid_: no proxy, open egress, direct egress
 
 **EDA Provisioning**:
-The policy selecting whether one EDA kind is image-provisioned or host-provisioned for a **Sandbox**: where installation files originate, never where EDA processes execute. An **Image-Provisioned Sandbox EDA Tool**, the default, is installed in the Sandbox Image; a **Host-Provisioned Sandbox EDA Tool** has files supplied by the host.
+The policy selecting whether one EDA kind is image-provisioned or
+host-provisioned for a **Sandbox**: where installation files originate, never
+where EDA processes execute. An **Image-Provisioned Sandbox EDA Tool**, the
+default, is installed in the Sandbox Image; a **Host-Provisioned Sandbox EDA
+Tool** has files supplied by the host.
 _Avoid_: execution location, EDA backend; host execution, host EDA flow, trusted tool, bare tool (for a provisioned tool)
 
 **Job**:
-A run of a Booley Flow or Specialist, tracked by a Job record and its `run_id` from submission to a terminal result. A Developer Agent's Job follows a submit → poll contract; one waiting for admission against the Memory Budget shows QUEUED and can be cancelled by `run_id`.
+A run of a Booley Flow or Specialist, tracked by a Job record and its `run_id`
+from submission to a terminal result. A Developer Agent's Job follows a submit →
+poll contract; one waiting for admission against the Memory Budget shows QUEUED
+and can be cancelled by `run_id`.
 _Avoid_: task, process, async call
 
 **Standalone Job**:
-A Job with no owning session, started by a human from a Sandbox shell or the Booley Dashboard. It is admitted against the Memory Budget like any other Job and never records, satisfies, or invalidates Goal evidence.
+A Job with no owning session, started by a human from a Sandbox shell or the
+Booley Dashboard. It is admitted against the Memory Budget like any other Job
+and never records, satisfies, or invalidates Goal evidence.
 _Avoid_: human run, dashboard job, manual job
 
 **Job admission**:
-How a Job starts: it reserves its estimated peak memory and runs while the reservations fit the Memory Budget, the Sandbox's memory limit less a reserve for the agents ([ADR 0087](adr/0087-admit-jobs-against-a-measured-memory-budget.md)).
+How a Job starts: it reserves its estimated peak memory and runs while the
+reservations fit the Memory Budget, the Sandbox's memory limit less a reserve
+for the agents ([ADR
+0087](adr/0087-admit-jobs-against-a-measured-memory-budget.md)).
 _Avoid_: Job class, Job type, Job kind, queue
 
 ### Configuration
@@ -165,40 +201,67 @@ A **Booley Directory** that is its own Git repository, separate from the RTL rep
 _Avoid_: Project repository, versioned Project
 
 **Stealth**:
-The Project mode, Stealth Mode in user docs, set by `[stealth] enabled = true`, that keeps Booley out of the RTL repository and its history. It is off unless enabled.
+The Project mode, Stealth Mode in user docs, set by `[stealth] enabled = true`,
+that keeps Booley out of the RTL repository and its history. It is off unless
+enabled.
 
 **Project Inventory**:
 The host-owned catalog of canonical Project paths and their **Project Grants**, including Projects whose **Booley Directory** is missing or uninitialized.
 _Avoid_: Project registry, workspace list, filesystem scan
 
 **License Profile**:
-A host-owned record of one approved commercial-license topology: its fixed server identity, literal upstream address, and license-manager ports. A **Project Grant** authorizes it for one Project Root and EDA kind; Project configuration never selects one. A Sandbox reaches it via a **FlexNet License Relay**, a fixed-destination raw-TCP gateway, by its **FlexNet SERVER Host Identifier**.
+A host-owned record of one approved commercial-license topology: its fixed
+server identity, literal upstream address, and license-manager ports. A
+**Project Grant** authorizes it for one Project Root and EDA kind; Project
+configuration never selects one. A Sandbox reaches it via a **FlexNet License
+Relay**, a fixed-destination raw-TCP gateway, by its **FlexNet SERVER Host
+Identifier**.
 _Avoid_: project license config, license server setting; license proxy, server hostname (for the relay)
 
 **Project Grant**:
-Host-owned authorization for one exact canonical Project path and EDA kind to use an **EDA Installation Registration**, the host's record of one approved host-provisioned installation; a **License Profile**; or both. A moved or copied Project is a different path and needs its own grant.
+Host-owned authorization for one exact canonical Project path and EDA kind to
+use an **EDA Installation Registration**, the host's record of one approved
+host-provisioned installation; a **License Profile**; or both. A moved or copied
+Project is a different path and needs its own grant.
 _Avoid_: workspace allowlist, project enrollment, inherited repository access; tool enrollment, mount registration (for a registration)
 
 **Target**:
-A named FuseSoC `.core` build target, the single source of truth for one design-description: filesets, typed parameters with their values, defines, and top module. Booley's tests (`tests.toml`) and Criteria bind to a Target, and a Booley Flow selects it by name ([naming](user/TARGETS.md#target-authoring), [selection](user/FLOW_REFERENCE.md#choosing-targets)).
+A named FuseSoC `.core` build target, the single source of truth for one
+design-description: filesets, typed parameters with their values, defines, and
+top module. Booley's tests (`tests.toml`) and Criteria bind to a Target, and a
+Booley Flow selects it by name ([naming](user/TARGETS.md#target-authoring),
+[selection](user/FLOW_REFERENCE.md#choosing-targets)).
 _Avoid_: Design Configuration, build config, profile, named config
 
 **Cocotb Target**:
-A sim **Target** whose testbench is a cocotb Python module, declared in the Target's flow options rather than authored as HDL. Its **Tests** are cocotb test functions registered in `tests.toml`, and its verdicts come from cocotb's `results.xml`, not from a **Simulation Sentinel**.
+A sim **Target** whose testbench is a cocotb Python module, declared in the
+Target's flow options rather than authored as HDL. Its **Tests** are cocotb test
+functions registered in `tests.toml`, and its verdicts come from cocotb's
+`results.xml`, not from a **Simulation Sentinel**.
 _Avoid_: python testbench config, cocotb core, cocotb suite
 
 **Pre-Sim Commands**:
-Project-declared shell commands that Booley executes inside the **Sandbox** immediately before each simulator process, for non-RTL per-test build steps that FuseSoC cannot express. They run once per Test Run, or once per batch for a **Cocotb Target**.
+Project-declared shell commands that Booley executes inside the **Sandbox**
+immediately before each simulator process, for non-RTL per-test build steps that
+FuseSoC cannot express. They run once per Test Run, or once per batch for a
+**Cocotb Target**.
 _Avoid_: Pre-Run Commands, pre-test hook, prebuild adapter, test fixture script
 
 ### Flows, EDA tools, and MCP tools
 
 **Booley Flow**:
-Deterministic end-to-end orchestration: `lint`, `sim` (Simulation), `synth` (ASIC Synthesis), or `fpga` (FPGA Implementation), invoked through MCP or the CLI inside the **Sandbox**. Every Booley Flow builds its command for a resolved **Target** through Booley's FuseSoC/Edalize path, executes it inside the Sandbox, and interprets the result into evidence.
+Deterministic end-to-end orchestration: `lint`, `sim` (Simulation), `synth`
+(ASIC Synthesis), or `fpga` (FPGA Implementation), invoked through MCP or the
+CLI inside the **Sandbox**. Every Booley Flow builds its command for a resolved
+**Target** through Booley's FuseSoC/Edalize path, executes it inside the
+Sandbox, and interprets the result into evidence.
 _Avoid_: B-Tool, mechanical tool, utility, command
 
 **EDA tool**:
-Concrete external program driven by a Flow, such as Verilator, Icarus, Verible, Yosys, or Vivado. A Target's EDA-selection field normally selects the program; the FPGA Flow always drives Vivado. The Booley Flow, not the EDA tool, owns orchestration, evidence normalization, and artifacts.
+Concrete external program driven by a Flow, such as Verilator, Icarus, Verible,
+Yosys, or Vivado. A Target's EDA-selection field normally selects the program;
+the FPGA Flow always drives Vivado. The Booley Flow, not the EDA tool, owns
+orchestration, evidence normalization, and artifacts.
 _Avoid_: bare tool, Booley Flow, backend
 
 **MCP tool**:
@@ -206,23 +269,41 @@ Protocol-level mechanism used to invoke a Flow or Specialist. MCP tools are impl
 _Avoid_: bare tool, Booley Flow (when referring specifically to the protocol endpoint)
 
 **Elaboration Check**:
-A fast Simulation Flow mode that compiles, elaborates, and links a simulation Target without running its tests. It can satisfy an `elab` Goal, not a `sim` Goal, which requires test execution.
+A fast Simulation Flow mode that compiles, elaborates, and links a simulation
+Target without running its tests. It can satisfy an `elab` Goal, not a `sim`
+Goal, which requires test execution.
 _Avoid_: syntax check, compile-only, Elaboration Flow, simulation substitute
 
 **Specialist**:
-An optional capability the **Developer Agent** invokes for one task, with fresh context and no history: the Reviewer and the [Coverage Analyst](../src/booley/flows/sim/GLOSSARY.md) ([list](user/CLI-REFERENCE.md#booley-flows--specialists)). Under **Specialist Source Isolation**, one that judges one side of the RTL/testbench divide cannot see the other side's sources.
+An optional capability the **Developer Agent** invokes for one task, with fresh
+context and no history: the Reviewer and the [Coverage
+Analyst](../src/booley/flows/sim/GLOSSARY.md)
+([list](user/CLI-REFERENCE.md#booley-flows--specialists)). Under **Specialist
+Source Isolation**, one that judges one side of the RTL/testbench divide cannot
+see the other side's sources.
 _Avoid_: agentic MCP tool, agent, worker; optional blindness, reviewer independence (for Specialist Source Isolation)
 
 **Custom Flow**:
-A project-authored Booley Flow that does not ship with Booley, implemented under `.booley/mcp_tools/` and discovered and invoked like the built-in Flows. It adds a new Flow alongside the built-ins (for example, a DRC check); it does not replace the EDA tool an existing Flow drives.
+A project-authored Booley Flow that does not ship with Booley, implemented under
+`.booley/mcp_tools/` and discovered and invoked like the built-in Flows. It adds
+a new Flow alongside the built-ins (for example, a DRC check); it does not
+replace the EDA tool an existing Flow drives.
 _Avoid_: Custom Tool, plugin, user tool, project tool
 
 **Mutation Flow**:
-The Booley Flow `booley flow mutation` that measures how well a Target's tests catch injected RTL bugs: it injects **Mutants** made by fixed Mutation Operators, runs the tests against each, and reports how many are detected. It runs no model, so equal sources and settings give equal Mutants ([ADR 0088](adr/0088-generate-mutants-deterministically-in-a-mutation-flow.md)).
+The Booley Flow `booley flow mutation` that measures how well a Target's tests
+catch injected RTL bugs: it injects **Mutants** made by fixed Mutation
+Operators, runs the tests against each, and reports how many are detected. It
+runs no model, so equal sources and settings give equal Mutants ([ADR
+0088](adr/0088-generate-mutants-deterministically-in-a-mutation-flow.md)).
 _Avoid_: mutation agent, LLM mutation, fault injection
 
 **Mutant**:
-One seeded source change with a stable ID, made by a **Mutation Operator**, one rule of Booley's fixed table (such as swapping a relational operator) that Projects cannot change, and judged detected or not detected by the Target's tests. Its ID comes from the change and its enclosing design unit, so it survives edits elsewhere.
+One seeded source change with a stable ID, made by a **Mutation Operator**, one
+rule of Booley's fixed table (such as swapping a relational operator) that
+Projects cannot change, and judged detected or not detected by the Target's
+tests. Its ID comes from the change and its enclosing design unit, so it
+survives edits elsewhere.
 _Avoid_: mutation (for one change), variant, fault; mutator, mutation rule (for an operator)
 
 ### Simulation evidence
@@ -232,15 +313,25 @@ A named stimulus scenario that a sim **Target**'s testbench implements and that 
 _Avoid_: test case, testcase, bench test, sequence
 
 **Test Variant**:
-A named, fixed set of run-time arguments and environment for one **Test**, declared in `tests.toml` and written `test+variant`. A Test with Variants has exactly one default Variant, which is what the bare Test name means.
+A named, fixed set of run-time arguments and environment for one **Test**,
+declared in `tests.toml` and written `test+variant`. A Test with Variants has
+exactly one default Variant, which is what the bare Test name means.
 _Avoid_: test config, preset, profile, flavor, plusarg override, build variant
 
 **Test Run**:
-One **Test Variant** simulated with one seed, written `test+variant@seed`. With no seed named it uses the **Default Seed**, a Booley-wide constant a Target may override; only a Test Run that exactly matches a Goal's resolved form counts toward that Goal.
+One **Test Variant** simulated with one seed, written `test+variant@seed`. With
+no seed named it uses the **Default Seed**, a Booley-wide constant a Target may
+override; only a Test Run that exactly matches a Goal's resolved form counts
+toward that Goal.
 _Avoid_: run (bare), iteration, seed run, QA Run; random seed (for the Default Seed)
 
 **Simulation Record**:
-The durable, resumable record of the exact simulation workload one Simulation Flow invocation runs on one **Target**, with the strict aggregate outcome of all selected work. It may contain a [**Coverage Record**](../src/booley/flows/sim/GLOSSARY.md); Goal-side evidence names still say "campaign" ([ADR 0090](adr/0090-rename-simulation-and-coverage-campaigns-to-records.md)).
+The durable, resumable record of the exact simulation workload one Simulation
+Flow invocation runs on one **Target**, with the strict aggregate outcome of all
+selected work. It may contain a [**Coverage
+Record**](../src/booley/flows/sim/GLOSSARY.md); Goal-side evidence names still
+say "campaign" ([ADR
+0090](adr/0090-rename-simulation-and-coverage-campaigns-to-records.md)).
 _Avoid_: Simulation Campaign, campaign, regression run, test batch
 
 **Simulator Bundle**:
@@ -248,17 +339,24 @@ An authenticated simulator executable and its supporting build outputs, built fo
 _Avoid_: binary cache, global build cache, simulator image
 
 **Trace Artifact**:
-Fresh waveform evidence produced by a traced simulation and proven queryable by [B-Wave](../crates/bwave/GLOSSARY.md). It is an FST store; VCD is an input or intermediate, not successful trace evidence.
+Fresh waveform evidence produced by a traced simulation and proven queryable by
+[B-Wave](../crates/bwave/GLOSSARY.md). It is an FST store; VCD is an input or
+intermediate, not successful trace evidence.
 _Avoid_: sim output, log, no-sim
 
 **Simulation Sentinel**:
-A configured output string that Booley scans to determine the verdict of an HDL-testbench simulation. Fail sentinels take priority over pass sentinels; when none is found after a clean run, the result is inconclusive.
+A configured output string that Booley scans to determine the verdict of an
+HDL-testbench simulation. Fail sentinels take priority over pass sentinels; when
+none is found after a clean run, the result is inconclusive.
 _Avoid_: regex, marker, exit-code-only verdict
 
 ### Presentation
 
 **Booley Dashboard**:
-The terminal view, one per Sandbox, of agent sessions, Goals, Booley Flow Jobs, Targets, and health signals, from which a human can also launch Booley Flows as Standalone Jobs. Its **Session activity** is what a session's agent client last reported, never inferred from Booley calls or Jobs.
+The terminal view, one per Sandbox, of agent sessions, Goals, Booley Flow Jobs,
+Targets, and health signals, from which a human can also launch Booley Flows as
+Standalone Jobs. Its **Session activity** is what a session's agent client last
+reported, never inferred from Booley calls or Jobs.
 _Avoid_: control room, console, monitor; session status, session state (for Session activity)
 
 ## Execution and evidence
@@ -269,7 +367,12 @@ _Avoid_: check, gate, acceptance test
 
 ### Metric-Driven Development and reviews
 
-How a commit is accepted once Goal Mode is removed: [ADR 0092](adr/0092-measure-commits-against-target-metrics.md) measures commits against metrics their Targets declare, and [ADR 0091](adr/0091-review-commits-outside-measurement.md) reviews commits outside that measurement. `booley measure` checks `metrics.toml` and measures and stores runs; Review Runs are not built yet.
+How a commit is accepted once Goal Mode is removed: [ADR
+0092](adr/0092-measure-commits-against-target-metrics.md) measures commits
+against metrics their Targets declare, and [ADR
+0091](adr/0091-review-commits-outside-measurement.md) reviews commits outside
+that measurement. `booley measure` checks `metrics.toml` and measures and stores
+runs; Review Runs are not built yet.
 
 **Metric-Driven Development**:
 Accepting work by measuring a commit against the **Target Metrics** its Project declares, in place of approving a list of criteria for each task. Adoption is optional: a Project that declares no metrics is unaffected.
@@ -280,7 +383,10 @@ The metrics a Target declares for its Booley Flows in `metrics.toml`. Each is **
 _Avoid_: Criteria, Goals, thresholds, KPIs
 
 **Measured Commit**:
-A commit whose tree's latest full **Measurement Run**, one stored `booley measure` run over every Target that declares metrics, met every enforced Target Metric with no error. Locally it is advisory; a run in CI is the trusted one. Its **Measurement Report** gives each metric's value, bound and verdict.
+A commit whose tree's latest full **Measurement Run**, one stored `booley
+measure` run over every Target that declares metrics, met every enforced Target
+Metric with no error. Locally it is advisory; a run in CI is the trusted one.
+Its **Measurement Report** gives each metric's value, bound and verdict.
 _Avoid_: signed-off commit, passing commit, green commit; Sign-off run, Sign-off Report (for its run and report)
 
 **Base**:

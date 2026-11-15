@@ -131,7 +131,8 @@ warnings, and say when they apply.
 ### 14. Describe current behavior only
 
 Remove statements that stopped being true. History goes in the changelog; an
-ADR states the decision that holds today and why. Words like "no longer", "legacy", "renamed from", or
+ADR states the decision that holds today and why. Words like "no longer",
+"legacy", "renamed from", or
 "since v0.4" fail `tests/docs/test_current_version_docs.py`. History without
 those words counts too: "it sets no delay target" describes the old version
 when only the old version set one, and "re-running init replaces `auto`"

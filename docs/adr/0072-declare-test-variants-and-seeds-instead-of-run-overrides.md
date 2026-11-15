@@ -52,7 +52,8 @@ rules below together with Goal Mode. Test Variants, seeds and Test Runs stay.
   cocotb's seed variable); others, and self-seeding testbenches, use a `seed`
   argument template. A
   Target with neither has unseeded Test Runs: no `@seed`, no recorded seed,
-  and any seed is refused. `tests.toml` has no seed lists. Xcelium's native option
+  and any seed is refused. `tests.toml` has no seed lists. Xcelium's native
+  option
   waits for an Xcelium launch path.
 - `--seed random` picks a concrete seed before the Simulation Record manifest
   is published and makes it part of the work item's identity, so resume
