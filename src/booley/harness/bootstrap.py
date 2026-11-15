@@ -627,17 +627,21 @@ def _skill_reconciliation_finding(
 def _skill_error_finding(
     detail: str, reconciliations: tuple[HostSkillReconciliation, ...]
 ) -> BootstrapFinding:
-    """Make conflict texts, which name their entry and fix, Doctor's hint."""
-    conflicts = "; ".join(
-        event.detail
-        for item in reconciliations
-        for event in item.report.events
-        if event.outcome == "conflict"
-    )
-    if not conflicts:
+    """Make conflict texts, which name their entry and fix, Doctor's hint.
+
+    Any other failure in the same run keeps the generic hints.
+    """
+    reports = tuple(item.report for item in reconciliations)
+    failed = [event for report in reports for event in report.events if event.failed]
+    others = any(report.diagnostics or report.fatal for report in reports)
+    if others or any(event.outcome != "conflict" for event in failed):
         return BootstrapFinding("skills", BootstrapState.ERROR, detail)
     return BootstrapFinding(
-        "skills", BootstrapState.ERROR, detail, remedy="", doctor_fix=conflicts
+        "skills",
+        BootstrapState.ERROR,
+        detail,
+        remedy="",
+        doctor_fix="; ".join(event.detail for event in failed),
     )
 
 

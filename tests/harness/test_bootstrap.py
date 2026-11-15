@@ -1373,6 +1373,25 @@ def test_skill_reconciliation_reports_missing_pending_changed_and_errors(
     assert finding.state is bootstrap.BootstrapState.ERROR
     assert finding.detail == f"{target}: broken; diagnostic; fatal"
     assert finding.doctor_fix is None
+    assert finding.remedy is None
+
+    conflict = SimpleNamespace(
+        changed=False, failed=True, detail="`x` is not Booley's", name="x", outcome="conflict"
+    )
+    for report in (
+        SimpleNamespace(events=(conflict, failed_event), diagnostics=(), fatal=None),
+        SimpleNamespace(events=(conflict,), diagnostics=("diagnostic",), fatal=None),
+    ):
+        monkeypatch.setattr(
+            bootstrap,
+            "reconcile_host_skills",
+            lambda *_args, report=report, **_kwargs: (
+                SimpleNamespace(target=target, report=report),
+            ),
+        )
+        mixed = bootstrap._reconcile_skills(Intent.ENSURE)
+        assert mixed.doctor_fix is None
+        assert mixed.remedy is None
 
 
 def test_nangate_reconciliation_covers_current_check_fetch_and_failure(

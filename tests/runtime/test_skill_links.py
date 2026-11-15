@@ -258,7 +258,10 @@ def test_foreign_takeover_is_preserved_and_relinquishes_ownership(tmp_path: Path
     report = reconcile_skill_links(target, packaged)
 
     assert _outcomes(report) == {"booley-setup": "conflict"}
-    assert report.events[0].detail == skill_links._not_booleys(link)
+    assert report.events[0].detail == (
+        f"`{link}` is not Booley's: rename it if it is your own skill, "
+        "delete it if it is a dangling link, then rerun `booley bootstrap`"
+    )
     assert link.resolve(strict=True) == foreign.resolve()
     manifest = json.loads((target / MANIFEST_FILENAME).read_text(encoding="utf-8"))
     assert manifest["links"] == {}
