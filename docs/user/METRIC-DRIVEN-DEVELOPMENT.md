@@ -1,10 +1,11 @@
 # Metric-Driven Development
 
 Metric-Driven Development is how Booley accepts work: it measures a commit
-against the Target Metrics your Project declares, and the work is done when
-that commit is Measured. Use it to decide whether a finished piece of work is
-acceptable. Do not use it while you iterate; there, plain `booley flow` runs
-are the loop, and each one is faster and shows more.
+against the Target Metrics your Project declares, and the work is accepted
+when that commit is Measured and the report header is green. Use it to decide
+whether a finished piece of work is acceptable. Do not use it while you
+iterate; there, plain `booley flow` runs are the loop, and each one is faster
+and shows more.
 
 Adoption is optional and happens in stages. A Project that declares no
 Target Metrics is never measured and nothing here applies to it.
@@ -48,8 +49,7 @@ lines (`[defaults.sim]` and `[defaults.coverage]`, each with
 
 `metrics.toml` sits in the Booley Directory, `.booley/` at the top of your
 repository. It holds one table per Target and Flow, `[<target>.<flow>]`, for
-these Flows: `lint`, `sim`, `coverage`, `synth` and `fpga`. The mutation Flow
-has no table, so `mutation_score` is not a metric.
+these Flows: `lint`, `sim`, `coverage`, `synth` and `fpga`.
 
 Inside a table:
 
@@ -122,8 +122,7 @@ An unquoted prefixed key or a relative bound gets one; an unknown metric lists
 the metrics of its Flow instead.
 
 ```text
-[sim_core.sim] smoke.cycle_count_max: a table holds bounds at its top level,
-and an unquoted dotted key is a nested table; quote the key
+[sim_core.sim] smoke: a table holds bounds at its top level, and an unquoted dotted key is a nested table; quote the key
   write instead: "smoke.cycle_count_max" = 1000
 ```
 
@@ -164,15 +163,11 @@ the work is accepted:
     shows as "rules loosened" or "tests changed"; a `--target` run shows "not
     stored", and a cancelled run shows its status.
 
-Failing rows come first. The metric table follows, with the columns Target,
-Flow, Clock or Test, Metric, Value, Bound, Δ and Verdict.
+Failing rows come first, and the metric table follows.
 
 The report also compares your rules with the Base's. A loosened bound is
 shown, never refused, with its note or "(no note)" beside it, so a reviewer
 sees it.
-
-In the Dashboard, `Enter` on a session's measurement line opens the Markdown
-report; see [the Dashboard](USAGE.md#the-dashboard).
 
 ## Base runs
 
@@ -183,7 +178,8 @@ decides a verdict. When one exists, the report adds the Δ column and warns
 where a metric got worse.
 
 Without one, the report prints the command to create it:
-`booley measure --all <base>`.
+`booley measure --all <base>`. A commit on the default branch's own history
+has no Base; name an earlier commit with `--base`.
 
 ## Limits
 
