@@ -254,7 +254,8 @@ Commit `AGENTS.md` in the Booley Directory's own repository instead:
 ```
 
 - Use one fixed label per variant: `In stealth mode`, `With a cocotb
-  testbench`, `On Windows`, `With host-installed licensed tools`.
+  testbench`, `On Windows`, `With host-installed licensed tools`, `With your own
+  image`, and `With the RISC-V image`.
 - Say only what differs, and link the variant's own page (`STEALTH.md`,
   `WINDOWS.md`, ...) for the full story. Keep the callout at block level, not
   inside a list item, and leave blank lines around its Markdown body.

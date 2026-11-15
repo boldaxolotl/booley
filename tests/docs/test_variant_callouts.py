@@ -2,8 +2,8 @@
 
 Rule 26 of docs/internals/DOCS_PRINCIPLES.md keeps text that applies to one
 variant (stealth mode, Windows, a cocotb testbench, host-installed licensed
-tools, one EDA tool of a Flow) out of the main flow, in a ``<details markdown>``
-callout. This guard checks the shape of every callout: the label is one of four
+tools, your own Sandbox image, the RISC-V image, one EDA tool of a Flow) out of the main flow, in a ``<details markdown>``
+callout. This guard checks the shape of every callout: the label is one of the
 fixed strings or ``With <EDA tool>``, a fixed-variant body links the variant's
 page, and the block formatting survives the site's Python-Markdown renderer. Which passages belong in a callout stays an editorial
 judgment; no test can decide that.
@@ -30,6 +30,8 @@ _VARIANTS: dict[str, tuple[str, str | None]] = {
     "On Windows": ("WINDOWS.md", None),
     "With a cocotb testbench": ("FLOW-SIM.md", "cocotb-targets-python-testbenches"),
     "With host-installed licensed tools": ("SANDBOX.md", "commercial-eda-provisioning"),
+    "With your own image": ("SANDBOX.md", "custom-sandbox-image"),
+    "With the RISC-V image": ("SANDBOX.md", "custom-sandbox-image"),
 }
 
 # EDA tools that may label a ``With <Tool>`` callout: the tools of Flows that
@@ -194,6 +196,8 @@ _LINKS = {
     "On Windows": "[Windows](WINDOWS.md#every-file-shows-as-modified-inside-the-container)",
     "With a cocotb testbench": "[Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches)",
     "With host-installed licensed tools": "[Commercial EDA](SANDBOX.md#commercial-eda-provisioning)",
+    "With your own image": "[Custom image](SANDBOX.md#custom-sandbox-image)",
+    "With the RISC-V image": "[RISC-V image](SANDBOX.md#custom-sandbox-image)",
 }
 
 

@@ -1003,7 +1003,7 @@ compile-flag probe.
 
    For the image contents, how to pull or build it, and how to layer extra
   EDA tools on top with `# booley:keep` (needed when a repo like ibex also bakes
-   Python deps), see `/booley-docs/SANDBOX.md` → "RISC-V toolchain image".
+   Python deps), see `/booley-docs/SANDBOX.md` → "Custom sandbox image" (its "With the RISC-V image" callout).
 
 2. **Post-setup hook**: build the firmware on demand instead of committing a
    `.hex`. A Project setup script can run inside the container after a Goal
