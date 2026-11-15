@@ -71,7 +71,7 @@ test = [
     "cryptography==50.0.2",
     "hypothesis>=6.170.14",
     "pytest==9.2.0",
-    "pytest-asyncio==1.4.0",
+    "pytest-asyncio==1.4.1.post1",
     # Run independent tests concurrently in CI. Linux keeps module/class
     # affinity; Windows uses work stealing to balance slower real-Git tests.
     # tests/conftest.py gives every worker its own temp root for
@@ -106,7 +106,7 @@ quality = [
     # Exact pin: a floor let three different ruff versions coexist locally, so
     # `ruff format --check` disagreed with CI. Before bumping, re-run
     # `ruff check .` + `ruff format --check .`.
-    "ruff==0.17.2",
+    "ruff==0.17.4",
 ]
 # Every development tool: the union of the extras above.
 dev = [
