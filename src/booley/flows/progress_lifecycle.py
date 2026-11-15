@@ -1,4 +1,8 @@
-"""Shared lifecycle policy for Flow-owned progress documents."""
+"""Shared lifecycle policy for Flow-owned progress documents.
+
+``progress.json`` observes one run. It is never liveness or resume authority:
+resume decides from the durable manifest.
+"""
 
 from __future__ import annotations
 

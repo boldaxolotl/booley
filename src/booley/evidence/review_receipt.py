@@ -14,6 +14,10 @@ from booley.evidence.review_guides import ReviewGuide, declared_guide_names, gui
 
 _TICKET_FILE = "ticket.md"
 REVIEW_DETAIL_VERSION = 4
+# Bump whenever you change which proposals the Reviewer filters (see
+# ``Reviewer._filter_review_issues``). A stored receipt is valid only for the
+# filtering rules it ran under, because proposals filtered under old rules were
+# never kept: older receipts must get a fresh review.
 FILTERING_SEMANTICS_REVISION = 1
 _FRESHNESS_ONLY_CONTRACT_FIELDS = frozenset({"scope_hashes"})
 

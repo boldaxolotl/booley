@@ -140,7 +140,15 @@ def run_coverage_target(
     embedded_root: Path,
     publication_checkpoint: Callable[[str], None] | None = None,
 ) -> CoverageTargetOutcome:
-    """Collect, evaluate and publish one Target's Campaign under the attempt-owned root."""
+    """Collect, evaluate and publish one Target's Campaign under the attempt-owned root.
+
+    The nested ``coverage.json`` manifest is the commit marker: the point store
+    is written first and removed if the manifest never lands. Late-failure rule:
+    before the manifest is published, a persistence error keeps any observed
+    simulation verdict but reports collection as ``infrastructure_error`` and
+    blocks a requested evaluation; after it, later failures keep the committed
+    collection and evaluation and never turn them into ``blocked``.
+    """
     assert plan.invocation_dir is not None and plan.collection_request is not None
     return _execute_coverage_transaction(
         plan, execution, embedded_root, publication_checkpoint=publication_checkpoint

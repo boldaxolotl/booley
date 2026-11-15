@@ -222,7 +222,15 @@ def prepare_coverage_invocation(
     *,
     selection: PreparedTargetSelection | None = None,
 ) -> CoveragePreflightResult:
-    """Resolve the complete invocation without EDA or artifact/build mutations."""
+    """Resolve the complete invocation without EDA or artifact/build mutations.
+
+    Every selected Target resolves before any EDA work, so a bad selection fails
+    as one aggregated error. Collection is on only when the caller asks (a
+    Coverage Criterion never turns it on: a Criterion says what evidence must
+    show, not what a run collects). A Criterion's ``tests`` list is required
+    evidence, not a selector: a run whose suite differs, including by configured
+    skips, is a suite mismatch at evaluation.
+    """
     if selection is None:
         try:
             catalog = TargetCatalog.build(project_context.rtl_repository)
