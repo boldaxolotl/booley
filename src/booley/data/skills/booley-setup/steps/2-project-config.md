@@ -832,7 +832,8 @@ Target that has at least one registered Test. The listing writes a selector
 that reaches exactly that Target: the bare name, or the quoted `vlnv#name`
 identity when a bare name (such as a `tests.toml` key shared by several cores)
 is ambiguous. Never derive a header from the `tests.toml` key. Add each header
-as an empty table below the defaults, and no other table or key. A Target the
+as an empty table below the defaults unless the file already declares it (a
+resumed run), and no other table or key. A Target the
 listing marks as unreachable gets no table and one §3 deviation line. Then run
 `booley measure --validate` and expect `N tables`, each with the defaults'
 bound count. If `metrics.toml` is missing, record a deviation and have the
