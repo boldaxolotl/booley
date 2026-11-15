@@ -181,7 +181,7 @@ def test_specialist_examples_use_connected_session_arguments_without_cli_flags()
     rendered = render_specialists_reference()
     assert "booley specialist <name> [args...]" in rendered
     assert "CLI Flow and Specialist runs never record Goal evidence" in rendered
-    assert "Goal-bound MCP calls with `work_dir`" in rendered
+    assert "Goal Mode tool calls, which pass `work_dir`, do." in rendered
     assert "CLI-only controls" in rendered
     for name in ("coverage_analyst", "reviewer"):
         assert f"Ask your Developer Agent to call the `{name}` Specialist" in rendered
