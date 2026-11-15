@@ -1,5 +1,6 @@
 """Authoritative VaporView installation-state probes, recovery guidance, and the
-attached-window Viewer Bridge diagnosis."""
+attached-window Viewer Bridge diagnosis, which also checks the bundled Verilog-HDL
+and Live Preview extensions."""
 
 from __future__ import annotations
 
@@ -73,8 +74,10 @@ def find_manifests(home: Path) -> list[Path]:
     ]
 
 
-def installed_versions(home: Path) -> list[str] | None:
-    """Return the sorted versions of every live VaporView install, or None if unknown.
+def installed_versions(home: Path, extension_id: str = EXTENSION_ID) -> list[str] | None:
+    """Return the sorted versions of every live install of an extension, or None if unknown.
+
+    The extension is VaporView unless ``extension_id`` names another.
 
     Each extension root's ``extensions.json`` is VS Code's own registry and is
     authoritative: after a downgrade the replaced build's directory stays on
@@ -88,19 +91,19 @@ def installed_versions(home: Path) -> list[str] | None:
         return None
     versions: set[str] = set()
     for root in roots:
-        root_versions = _registry_versions(root)
+        root_versions = _registry_versions(root, extension_id)
         if root_versions is None:
             return None
         versions |= root_versions
     return sorted(versions)
 
 
-def _registry_versions(root: Path) -> set[str] | None:
-    """Collect live VaporView versions from one extension root."""
+def _registry_versions(root: Path, extension_id: str) -> set[str] | None:
+    """Collect live versions of one extension from one extension root."""
     try:
         source = (root / "extensions.json").read_text(encoding="utf-8")
     except FileNotFoundError:
-        return _directory_versions(root)
+        return _directory_versions(root, extension_id)
     except OSError:
         return None
     try:
@@ -114,7 +117,7 @@ def _registry_versions(root: Path) -> set[str] | None:
         fields = as_dict(entry) or {}
         identifier = as_dict(fields.get("identifier")) or {}
         ext_id = identifier.get("id")
-        if not isinstance(ext_id, str) or ext_id.lower() != EXTENSION_ID:
+        if not isinstance(ext_id, str) or ext_id.lower() != extension_id.lower():
             continue
         version = fields.get("version")
         if not isinstance(version, str):
@@ -123,8 +126,8 @@ def _registry_versions(root: Path) -> set[str] | None:
     return versions
 
 
-def _directory_versions(root: Path) -> set[str] | None:
-    """Collect VaporView manifest versions from non-obsolete extension directories."""
+def _directory_versions(root: Path, extension_id: str) -> set[str] | None:
+    """Collect one extension's manifest versions from non-obsolete extension directories."""
     try:
         entries = list(root.iterdir())
     except OSError:
@@ -135,7 +138,7 @@ def _directory_versions(root: Path) -> set[str] | None:
     versions: set[str] = set()
     for entry in entries:
         name = entry.name.lower()
-        if not name.startswith(f"{EXTENSION_ID}-") or name in obsolete:
+        if not name.startswith(f"{extension_id.lower()}-") or name in obsolete:
             continue
         try:
             payload = json.loads((entry / "package.json").read_text(encoding="utf-8"))
@@ -322,6 +325,21 @@ sys.exit(0 if attached else 3)
 
 
 @dataclass(frozen=True, slots=True)
+class BundledExtension:
+    """One extension the generated spec installs from a VSIX in the Sandbox Image.
+
+    ``requirement`` is a sentence appended to the remedy when the extension
+    needs more than the install.
+    """
+
+    name: str
+    extension_id: str
+    version: str
+    vsix: str
+    requirement: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class ViewerBridgeRequest:
     """Inputs to inspect the attached VS Code window's Viewer Bridge and VaporView build."""
 
@@ -331,6 +349,9 @@ class ViewerBridgeRequest:
 
 def inspect_viewer_bridge(request: ViewerBridgeRequest) -> DiagnosticReport:
     """Live probe: does an attached window's Viewer Bridge answer, with VaporView ready?
+
+    Two more findings report whether the window has the Verilog-HDL and Live
+    Preview extensions at the versions the Sandbox Image bundles.
 
     The static devcontainer spec check (``runtime.inspection``) proves the
     devcontainer *asks* for the viewer and the Booley Sandbox Integration
@@ -373,6 +394,7 @@ def inspect_viewer_bridge(request: ViewerBridgeRequest) -> DiagnosticReport:
         return report.report()
     _check_version(prefix, where, report)
     _check_bridges(prefix, where, report)
+    _check_bundled_extensions(prefix, where, report)
     return report.report()
 
 
@@ -527,3 +549,100 @@ def _report_waiting_for_trust(windows: int, waiting: int, where: str, report: Fi
             f"{description} - VaporView waits for workspace trust in {waiting} "
             f"window(s){where}; trust the folder, then run `booley doctor`"
         )
+
+
+def _bundled_extensions_probe_source(extensions: Iterable[BundledExtension]) -> str:
+    """``python3 -c`` source printing, per extension ID, its live versions and VSIX presence.
+
+    An in-container Booley whose ``installed_versions`` takes no extension ID
+    raises ``TypeError``, and one without it fails the import: both exit 1,
+    which reads as "probe could not run".
+    """
+    pairs = tuple((item.extension_id, item.vsix) for item in extensions)
+    return (
+        "import json,os;from pathlib import Path;"
+        "from booley.runtime.vaporview import installed_versions as v;"
+        "print(json.dumps({i:{'versions':v(Path.home(),i),'vsix':os.path.isfile(f)} "
+        f"for i,f in {pairs!r}}}))"
+    )
+
+
+def _remote_bundled(
+    prefix: list[str], extensions: tuple[BundledExtension, ...]
+) -> dict[str, tuple[list[str] | None, bool]] | None:
+    """Per extension ID: (live versions or None when unknown, VSIX present); None if no answer."""
+    result = _run_probe(prefix, _bundled_extensions_probe_source(extensions))
+    if result is None or result.returncode != 0:
+        return None
+    try:
+        answer = require_dict(json.loads(result.stdout), field="bundled extension probe")
+        observed: dict[str, tuple[list[str] | None, bool]] = {}
+        for item in extensions:
+            entry = require_dict(answer.get(item.extension_id), field=item.extension_id)
+            versions = entry.get("versions")
+            if versions is not None and not is_str_list(versions):
+                raise BoundaryError("versions must be a list of strings or null")
+            observed[item.extension_id] = (
+                versions,
+                require_bool_value(entry.get("vsix"), field="vsix"),
+            )
+        return observed
+    except (ValueError, BoundaryError):
+        return None
+
+
+def _check_bundled_extensions(prefix: list[str], where: str, report: Findings) -> None:
+    """Report each bundled extension besides VaporView, from one probe of the window."""
+    # Deferred: devcontainer imports this module.
+    from booley.runtime.devcontainer import BUNDLED_EXTENSIONS
+
+    observed = _remote_bundled(prefix, BUNDLED_EXTENSIONS)
+    for extension in BUNDLED_EXTENSIONS:
+        observation = None if observed is None else observed[extension.extension_id]
+        _report_bundled(extension, observation, where, report)
+
+
+def _report_bundled(
+    extension: BundledExtension,
+    observation: tuple[list[str] | None, bool] | None,
+    where: str,
+    report: Findings,
+) -> None:
+    """Pass, skip or fail one bundled extension against what the window has."""
+    name, version = extension.name, extension.version
+    description = f"{name} extension is the bundled {version}"
+    if observation is None:
+        report.skip(f"{description} - extension probe could not run{where}")
+        return
+    versions, vsix_present = observation
+    if versions is None:
+        report.skip(f"{description} - extension registry could not be read{where}")
+        return
+    other = [found for found in versions if found != version]
+    if not versions:
+        message = f"{name} extension ({extension.extension_id}) is not installed{where}"
+    elif other:
+        message = (
+            f"{name} {', '.join(other)} is installed{where}; the Sandbox Image bundles {version}"
+        )
+    elif not vsix_present:
+        message = f"{name} {version} is installed{where}, but its bundled VSIX is absent"
+    else:
+        report.pass_(description)
+        return
+    report.fail(message, _bundled_fix(extension, vsix_present))
+
+
+def _bundled_fix(extension: BundledExtension, vsix_present: bool) -> str:
+    """The remedy: install the bundled VSIX, or rebuild the image when it is absent."""
+    if vsix_present:
+        fix = (
+            "in the attached remote window's terminal run "
+            f"`code --install-extension {extension.vsix}`, then 'Developer: Reload Window'"
+        )
+    else:
+        fix = (
+            f"{extension.vsix} is absent from the Sandbox Image: rebuild the Sandbox "
+            "Image, then rebuild/reopen the Sandbox"
+        )
+    return f"{fix}; {extension.requirement}" if extension.requirement else fix
