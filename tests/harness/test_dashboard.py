@@ -646,7 +646,7 @@ def test_reported_activity_is_shown_per_session_and_unknown_is_never_guessed():
     )
 
     now = 1791454200  # 10:10:00Z, ten minutes after STAMP.
-    assert activity_label(Activity(), now) == "activity unknown"
+    assert activity_label(Activity(), now) == "activity unknown (no report yet)"
     assert activity_label(Activity(WORKING, "2026-10-08T10:09:15Z"), now) == "working · 45s"
     assert (
         activity_label(Activity(WAITING_TOOL, STAMP, "mcp__booley__Sim"), now)
@@ -672,23 +672,50 @@ def test_reported_activity_is_shown_per_session_and_unknown_is_never_guessed():
     # The overview says the same thing shorter, and the third session has no signal.
     assert "tool call (mcp__booley__Sim) 10m 00s" in by_key["codex:00"]
     assert "waiting 10m 00s" in by_key["codex:01"]
-    assert by_key["codex:02"].rstrip().endswith("unknown")
+    assert by_key["codex:02"].rstrip().endswith("unknown (no report yet)")
     app.navigation = Navigation("session", "codex:00")
     assert "\nWaiting for tool call (mcp__booley__Sim) · 10m 00s" in app._session()[0]
     app.navigation = Navigation("session", "codex:02")
-    assert "\nActivity unknown" in app._session()[0]
+    assert "\nActivity unknown (no report yet)" in app._session()[0]
+
+
+def test_unknown_activity_labels_name_the_cause():
+    from booley.harness.dashboard import sessions
+    from booley.harness.dashboard.app import activity_label
+    from booley.runtime.session_activity import (
+        BUSY_STALE_AFTER,
+        WORKING,
+        ActivitySignal,
+        observed_activity,
+    )
+
+    start = 1791453600  # 10:00:00Z, STAMP.
+    signal = ActivitySignal("codex:00", WORKING, STAMP)
+    cases = {
+        "no report yet": observed_activity(None, now=start),
+        "the report's time is ahead of this clock": observed_activity(signal, now=start - 60),
+        "no event for 2 h; the client may have stopped": observed_activity(
+            signal, now=start + BUSY_STALE_AFTER
+        ),
+    }
+    for cause, observed in cases.items():
+        facts = sessions.SessionFacts(
+            "codex:00", "S0", "S0", "Interactive", "main", "/w", "5m ago", observed, 0
+        )
+        assert activity_label(observed, start) == f"activity unknown ({cause})"
+        assert sessions.last_column(facts, start) == f"unknown ({cause})"
 
 
 def test_unknown_activity_without_client_signals():
     app = DashboardApp(snapshot)
-    # The first session owns a running Job, which its Activity cell lists after "unknown".
+    # The first session owns a running Job, which its Activity cell lists after "unknown (no report yet)".
     app.snapshot = replace(snapshot(), sessions=snapshot().sessions[1:])
     keys, rows = app._overview()[1], app._overview()[2]
     session_rows = [
         row[0].plain for key, row in zip(keys, rows, strict=True) if key.startswith("codex:")
     ]
     assert session_rows
-    assert all(row.rstrip().endswith("unknown") for row in session_rows)
+    assert all(row.rstrip().endswith("unknown (no report yet)") for row in session_rows)
     assert all("Last" not in row for row in session_rows)
 
 

@@ -83,7 +83,7 @@ function fakeEditor(options, records, settings) {
         },
         workspace: {
             isTrusted: trusted,
-            workspaceFolders: [{ uri: root }],
+            workspaceFolders: options.folders ?? [{ uri: root }],
             getConfiguration: name => ({
                 get: () => name === 'workbench' ? settings.associations : settings.protocol,
                 inspect: () => ({ defaultValue: 'off', globalValue: settings.permission }),
@@ -225,6 +225,60 @@ test('an ineligible remote, untrusted window and disabled protocol log one reaso
         assert.equal(f.log.length, 1);
         assert.match(f.log[0], reason);
     }
+});
+
+test('an auto-open skip the user can change shows its reason once', async () => {
+    const two = [{ uri: fileUri('/work/a') }, { uri: fileUri('/work/b') }];
+    const cases = [
+        [{ permission: 'off' }, /automatic-task preference/],
+        [{ trusted: false }, /untrusted/],
+        [{ folders: two }, /one opened Sandbox Project folder/],
+        [{ folders: [] }, /one opened Sandbox Project folder/],
+        [{ git: false }, /Git Project Root/],
+    ];
+    for (const [options, reason] of cases) {
+        const f = fixture(options);
+        await tick();
+        assert.equal(f.messages.length, 1, reason.source);
+        assert.match(f.messages[0].message, reason);
+        assert.equal(f.log[0], f.messages[0].message, 'the Output line says the same');
+        f.listeners.config({ affectsConfiguration: () => true });
+        f.listeners.trust();
+        f.reactivate();
+        await tick();
+        assert.equal(f.messages.length, 1, `${reason.source} is not repeated`);
+    }
+});
+
+test('a different skip reason after trust is granted gets its own notice', async () => {
+    const f = fixture({ trusted: false, git: false });
+    await tick();
+    assert.equal(f.messages.length, 1);
+    assert.match(f.messages[0].message, /untrusted/);
+    f.vscode.workspace.isTrusted = true;
+    f.listeners.trust();
+    await tick();
+    assert.equal(f.messages.length, 2);
+    assert.match(f.messages[1].message, /Git Project Root/);
+    f.listeners.config({ affectsConfiguration: () => true });
+    await tick();
+    assert.equal(f.messages.length, 2);
+});
+
+test('quiet and Output-only auto-open skips show no notification', async () => {
+    for (const options of [{ remote: undefined }, { remote: null }, { remote: 'ssh-remote' },
+        { protocol: 0 }, { enabled: false }]) {
+        const f = fixture(options);
+        await tick();
+        assert.equal(f.messages.length, 0, JSON.stringify(options));
+    }
+    const f = fixture();
+    await tick();
+    f.context.subscriptions.forEach(item => item.dispose());
+    f.vscode.workspace.isTrusted = false;
+    f.listeners.trust();
+    await tick();
+    assert.equal(f.messages.length, 0, 'a disposed controller stays quiet');
 });
 
 test('a local window starts nothing and stays quiet', async () => {
@@ -392,7 +446,8 @@ test('a terminal nobody has used does not hold the Dashboard back', async () => 
         assert.equal(f.terminals.length, 1);
         assert.equal(f.terminals[0].shown, true, 'the Dashboard comes to the front');
         assert.equal(f.terminals[0].preserveFocus, true, 'keyboard focus stays put');
-        assert.equal(f.messages.length, 0, 'no notification when nothing is in use');
+        // An untrusted start shows the untrusted-window notice, and nothing else.
+        assert.equal(f.messages.length, trusted ? 0 : 1, 'no notification when nothing is in use');
     }
 });
 
@@ -588,8 +643,9 @@ test('the open-Dashboard command opens nothing in an untrusted window', async ()
     await f.runCommand();
     assert.equal(f.calls.length, 0, 'no policy read');
     assert.equal(f.terminals.length, 0, 'no Dashboard opens');
-    assert.equal(f.messages.length, 1);
-    assert.match(f.messages[0].message, /trusted window/);
+    // The automatic open showed its own notice first; the command adds its own.
+    assert.equal(f.messages.length, 2);
+    assert.match(f.messages.at(-1).message, /trusted window/);
     assert.match(f.log.at(-1), /trusted window/);
 });
 
