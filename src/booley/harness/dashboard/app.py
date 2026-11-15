@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 import re
-import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -25,12 +24,17 @@ from textual.widgets import DataTable, OptionList, Static
 from textual.widgets.option_list import Option
 from textual.worker import Worker, WorkerState
 
-from booley.core.boundary import as_float
 from booley.goals.model import OCCUPYING_STATES
 from booley.goals.presentation import proposal_presentation
 from booley.harness.dashboard import sessions
 from booley.harness.dashboard.footer import BackTarget, footer_hints
-from booley.harness.dashboard.jobs import TERMINAL_JOB_STATES, JobSnapshot, JobView
+from booley.harness.dashboard.jobs import (
+    FINISHED_JOB_STATES,
+    TERMINAL_JOB_STATES,
+    JobSnapshot,
+    JobView,
+    job_elapsed_seconds,
+)
 from booley.harness.dashboard.launch import Launcher
 from booley.harness.dashboard.links import linked_text, open_in_editor
 from booley.harness.dashboard.measurement import checkout_of, measuring_text
@@ -91,8 +95,6 @@ REFRESH_SECONDS = 2
 CURSOR_POSITION_REQUEST = "\x1b[6n"
 # "Finished" lists this many newest Jobs; "All" lists everything the snapshot retains.
 FINISHED_JOBS = 50
-# An orphaned process is known dead even though its Job record never finalized.
-_REPORT_DETAIL_STATES = TERMINAL_JOB_STATES | {"orphaned"}
 # Fits a queued claim's need, free memory, a blocked seat and three named holders.
 _QUEUE_DETAIL_LIMIT = 400
 HELP = (
@@ -231,7 +233,7 @@ def _goal_summary(goal: GoalView) -> str:
 
 def _finished(job: JobView) -> bool:
     """True for Jobs that ended or whose process is known dead; they list under Finished."""
-    return job.state in _REPORT_DETAIL_STATES
+    return job.state in FINISHED_JOB_STATES
 
 
 def _sentence(text: str) -> str:
@@ -392,23 +394,6 @@ def _goal_text(goal: GoalDetail) -> Text:
     return text
 
 
-def job_elapsed_seconds(job: JobView, now: float | None = None) -> float | None:
-    """Extract an interval, freezing terminal Jobs even without an end stamp."""
-    if job.state in TERMINAL_JOB_STATES and not job.record.ended_at:
-        reported = as_float((job.report or {}).get("elapsed_s"))
-        return reported if reported is not None and reported >= 0 else None
-    try:
-        start = parse_timestamp(job.record.run_started_at or job.record.started_at).timestamp()
-        end = (
-            parse_timestamp(job.record.ended_at).timestamp()
-            if job.record.ended_at
-            else (time.time() if now is None else now)
-        )
-        return max(0, end - start)
-    except ValueError:
-        return None
-
-
 def _connection_label(row: SessionRow, now: float) -> str:
     if row.process_state == ProcessState.RUNNING:
         return "connected"
@@ -455,7 +440,7 @@ def _job_cells(job: JobView, now: float, handles: Mapping[str, str] | None) -> t
     target = target_arg(job.record.argv)
     owner = _owner_handle(job, handles)
     elapsed = job_elapsed_seconds(job, now)
-    if job.state in _REPORT_DETAIL_STATES:
+    if job.state in FINISHED_JOB_STATES:
         presentation = _job_presentation(job)
         result = Text(
             presentation.flow_word.value,
@@ -597,7 +582,7 @@ def _job_metadata(job: JobView, *, now: float | None = None) -> list[ResultLine]
             rows.append(ResultLine(label, format_clock(stamp, now=now)))
     rows.extend(_read_row(job, now=now))
     tool = job.recorded_tools
-    if job.state not in _REPORT_DETAIL_STATES:
+    if job.state not in FINISHED_JOB_STATES:
         tool = tool or job.eda_tool
     elif not tool and (
         report.get("flow")
@@ -633,7 +618,7 @@ def _read_row(job: JobView, *, now: float | None = None) -> list[ResultLine]:
         if waited is not None:
             row += f" · {format_duration(max(0.0, waited))} after end"
         return [ResultLine("Read", row)]
-    if record.owner is not None and job.state in _REPORT_DETAIL_STATES:
+    if record.owner is not None and job.state in FINISHED_JOB_STATES:
         return [ResultLine("Read", "unread")]
     return []
 
@@ -645,7 +630,7 @@ def _seconds_between(start: str | None, end: str) -> float | None:
 
 
 def _job_resources(job: JobView) -> list[ResultLine]:
-    if job.state in _REPORT_DETAIL_STATES:
+    if job.state in FINISHED_JOB_STATES:
         if job.report is None:
             return [ResultLine("", "resources not recorded (no report)", "unavailable")]
         resources = job.recorded_resources
