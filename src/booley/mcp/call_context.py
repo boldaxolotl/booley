@@ -121,7 +121,11 @@ def resolve_call_context(arguments: Mapping[str, Any]) -> CallContext:
 
 
 def require_goal_work_dir(arguments: Mapping[str, Any], store: GoalStore) -> None:
-    """Refuse default routing while an occupying or unreadable record exists."""
+    """Refuse default routing while an occupying or unreadable record exists.
+
+    A call that names no checkout would run on the main checkout while the agent
+    edits a Goal worktree, so a forgotten ``work_dir`` must fail, not run.
+    """
     if _explicit_work_dir(arguments) is not None:
         return
     scan = store.list_active()

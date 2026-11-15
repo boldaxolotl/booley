@@ -1,4 +1,10 @@
-"""Load project-local Flows without executing their script entry points."""
+"""Load project-local Flows without executing their script entry points.
+
+A Project Flow is not an extension point for host-provisioned EDA: neither it nor
+``booley.toml`` may name a host path, mount, image, wrapper, environment variable, license
+destination, or command, because the Developer Agent can edit both inside the Sandbox. Host
+authority is sealed at Sandbox Issuance (``booley.eda.provisioning.authority``).
+"""
 
 from __future__ import annotations
 
