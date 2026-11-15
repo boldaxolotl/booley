@@ -84,7 +84,7 @@ Target/test/policy values in machine-readable form; the mission calls a row
 | `policy` | Enter a coverage Goal with the fixed policy in `baselines.json`: `sim_properties3`, tests `[half]`, `cover_property` 66. Explicit collection yields exactly 2/3 and pass. Snapshot its Goal evidence, state and transaction IDs, then explicitly abandon it. Invalid-policy probes use separate disposable records. |
 | `analysis` | Ungated `sim_hdl --test gap --coverage`: completed Coverage Record and Simulation, verified RTL and tagged TB source closure, eligible and unscored points. Run the real configured Analyst once on the returned exact path. Also collect `sim_properties4` test `half` for property and source controls; keep both exact pointers distinct. |
 | `waiver` | Ungated `sim_waiver` test `run`, then the formal proof and two-point approval binding in "Approved fixture waivers and proof". Seal toggle 1 with exact `[run]`; recollect with the approved set and keep a passing Coverage Record with two waived bit-zero points. Also keep the separate excluded-value example on `sim_properties4` `half`, with its two fixed approvals and `cover_property` 100. |
-| `retention` | Two fresh, independent invocation numbers: `sim_toggle` test `half`, and `sim_properties4` test `half`. Also one multi-Target invocation selecting those two Targets with their complete registry suites. Record each Target pointer separately; their suites differ and are not one common test list. Copy all bytes aside before pruning. |
+| `retention` | Two fresh, independent invocation numbers: `sim_toggle` test `half`, and `sim_properties4` test `half`. Also one multi-Target invocation selecting those two Targets with their complete registry suites. Record each Target pointer separately; their suites differ and are not one common test list. |
 | `custom` | Ungated `sim_custom` test `gap` with working start and write hooks. Recovery for custom-window and native-data faults reruns this exact harness. |
 | `multi` | Ungated `sim_multi` test `run`: two `coverage_dut` instances from one RTL source and `waiver_counter` from another, plus a tagged TB. Group all four metric inventories by source path yourself. |
 | `scale` | Ungated `sim_scale` test `run`: the fixed 4,096-instance Coverage Record for scope and evidence-budget cases. Never adapt it to the observed size. |
@@ -115,10 +115,9 @@ python3 -c 'import json,sys,pathlib; r=pathlib.Path(sys.argv[1]); print(r.parent
 that wrote the reference. The result is
 `.../record/work-items/<item>/attempts/<attempt>/coverage-record/coverage.json`.
 That Coverage Record directory holds `coverage-points.jsonl.gz`, `native/raw/`,
-`native/merged/`, `hooks/` and, once pruning starts, the `availability.json`
-sidecar. Run IDs are the manifest's `tests.runs[].id`: the run ordinal plus
-the [Test Run](../../../docs/GLOSSARY.md) name, not the bare test name. Every
-Verilator Target here uses Default Seed 1, so test `half` is
+`native/merged/` and `hooks/`. Run IDs are the manifest's `tests.runs[].id`: the
+run ordinal plus the [Test Run](../../../docs/GLOSSARY.md) name, not the bare
+test name. Every Verilator Target here uses Default Seed 1, so test `half` is
 `run:001:half@1`. Each run's raw database is the `artifacts[]` entry whose
 `id` equals that run's `raw_artifact`, at a path relative to the Coverage Record
 directory (`native/raw/001-half@1.dat`). Read both from the manifest rather
@@ -294,8 +293,6 @@ survives.
 | Simulation publication | `rename` to the exact Target `/simulation.json`; fail before the replacement. |
 | Acceptance state | `rename` to the captured Goal Record `goals/<record-id>/booley_state.json`, gate `acceptance`; fail only when the temporary JSON adds an acceptance transaction absent from `--baseline-state`. |
 | Terminal progress | `rename` to the exact invocation `/progress.json`, gate `complete`; fail only when the temporary JSON has `complete: true`. Earlier writes pass through. |
-| Native-prune interruption | `unlink` of a recorded raw or merged payload under the nested Coverage Record's `native/`, after its `availability.json` sidecar is written with status `pruning`. Pick a concrete relative suffix from the recorded deletion set. |
-| Full-prune interruption | `unlink` of a recorded payload under the exact `.pruned-N/`, excluding `.prune.json`, after the invocation rename and journal. |
 
 Save the source temporary JSON copied while the syscall was paused, the
 consumed event, the exit status, and the reports and state before and after. A
@@ -318,8 +315,6 @@ operation:
 - For the Goal acceptance-state fault after all terminal Results exist, use the
   child's MCP `sim` exact resume with `work_dir`, as
   [simulation-record/RUNBOOK.md](simulation-record/RUNBOOK.md) describes.
-- A pruning retry is the **same exact selection**, keeping journals,
-  quarantine and tombstones.
 
 Never delete a lock to get past active production, and never restore
 acceptance by writing state files: the valid public Flow produces new
@@ -538,10 +533,8 @@ report, never a reason to ask a smaller question.
 The stale-source case uses a separate disposable Goal child and worktree with
 the final improved TB and a fresh passing baseline. It runs under the Goal
 registry (`goals/tests.toml`), which changes only `sim_generated` to `[gap]`.
-Restoration reruns `sim_generated` `gap` in that same active Goal. Native and
-full retention cases need their exact completed prune operation and never
-substitute a fresh, unpruned Coverage Record. Report the fault result and the
-restoration result separately.
+Restoration reruns `sim_generated` `gap` in that same active Goal. Report the
+fault result and the restoration result separately.
 
 ## Restoration and cleanup
 
@@ -551,5 +544,4 @@ clients, nested servers and controller groups; release runtimes, attachments,
 inventory and grants, fault mounts and scarce storage. Keep only inert review
 state, listed in `resources.md` with owner, path and deletion instructions.
 Confirm the borrowed compiler, credentials, shared images and caches, and
-unrelated Project state are unchanged. Pruning cases still perform their exact
-deletions. No push, PR, issue or report publication.
+unrelated Project state are unchanged. No push, PR, issue or report publication.

@@ -1492,7 +1492,7 @@ def _validate_overlaps(mounts: list[str]) -> None:
 
 def _validate_mount_surfaces(mounts: list[str], project_data_workspace_target: str | None) -> None:
     """Reject broad authority mounts and writable host binds outside fixed state."""
-    writable_targets = {"/booley-project"}
+    writable_targets = {BOOLEY_DIR_TARGET}
     if project_data_workspace_target is not None:
         writable_targets.add(project_data_workspace_target)
     forbidden = {"/", "/var/run/docker.sock", "/run/docker.sock", "/root", "/home"}
@@ -1556,7 +1556,7 @@ def _validate_project_data_bind_source(project: Path, candidate: Path) -> Path:
     except RuntimeSpecError as exc:
         source = docker_mount_path(candidate)
         raise RuntimeSpecError(
-            f"generated bind source for /booley-project could not be validated: {source}: {exc}"
+            f"generated bind source for {BOOLEY_DIR_TARGET} could not be validated: {source}: {exc}"
         ) from exc
 
 
@@ -1644,23 +1644,24 @@ def _pin_project_data_mount(
     if not isinstance(mounts, list) or any(not isinstance(item, str) for item in mounts):
         raise RuntimeSpecError("devcontainer.json mounts must be a list of strings")
     indexes = [
-        index for index, raw in enumerate(mounts) if _mount_target(raw) == "/booley-project"
+        index for index, raw in enumerate(mounts) if _mount_target(raw) == BOOLEY_DIR_TARGET
     ]
     if len(indexes) != 1:
         raise RuntimeSpecError("Booley Directory target must have one exact writable bind")
     index = indexes[0]
     allowed = {
-        "source=${localWorkspaceFolder}/.booley,target=/booley-project,type=bind",
-        f"source={expected_source},target=/booley-project,type=bind",
+        f"source=${{localWorkspaceFolder}}/.booley,target={BOOLEY_DIR_TARGET},type=bind",
+        f"source={expected_source},target={BOOLEY_DIR_TARGET},type=bind",
     }
     if mounts[index] not in allowed:
         raise RuntimeSpecError("Booley Directory mount source was not authorized by the host")
-    mounts[index] = f"source={expected_source},target=/booley-project,type=bind"
+    mounts[index] = f"source={expected_source},target={BOOLEY_DIR_TARGET},type=bind"
     shadow_target = _project_data_shadow_target(project, project_data)
     if shadow_target is None:
         if _project_data_alias_capable(_resolve_image_id(str(spec.get("image", "")))):
             raise RuntimeSpecError(
-                "selected image alias hides the external Booley Directory source; an ordinary /booley-project directory is required"
+                "selected image alias hides the external Booley Directory source; "
+                f"an ordinary {BOOLEY_DIR_TARGET} directory is required"
             )
         return
     if any(_mount_target(raw) == shadow_target for raw in mounts):
@@ -1671,8 +1672,8 @@ def _pin_project_data_mount(
         mounts[:] = [
             raw
             for raw in mounts
-            if _mount_target(raw) != "/booley-project"
-            and not str(_mount_target(raw)).startswith("/booley-project/")
+            if _mount_target(raw) != BOOLEY_DIR_TARGET
+            and not str(_mount_target(raw)).startswith(f"{BOOLEY_DIR_TARGET}/")
         ]
 
 
@@ -1922,16 +1923,16 @@ def _require_project_data_mount(
     if canonical != project:
         raise RuntimeSpecError("issued Booley Directory mount source is no longer canonical")
     expected_source = docker_mount_path(project)
-    expected = f"source={expected_source},target=/booley-project,type=bind"
-    matches = [item for item in mounts if _mount_target(item) == "/booley-project"]
+    expected = f"source={expected_source},target={BOOLEY_DIR_TARGET},type=bind"
+    matches = [item for item in mounts if _mount_target(item) == BOOLEY_DIR_TARGET]
     if layout == "canonical-alias":
         if project != project_root / ".booley":
             raise RuntimeSpecError(
                 "canonical alias layout requires checkout-local Booley Directory"
             )
         if any(
-            _mount_target(raw) == "/booley-project"
-            or str(_mount_target(raw)).startswith("/booley-project/")
+            _mount_target(raw) == BOOLEY_DIR_TARGET
+            or str(_mount_target(raw)).startswith(f"{BOOLEY_DIR_TARGET}/")
             for raw in mounts
         ):
             raise RuntimeSpecError("canonical alias layout forbids alias-subtree mounts")
@@ -2236,7 +2237,7 @@ def spec_project_data_layout(spec: dict[str, Any]) -> str:
     mounts = spec.get("mounts", [])
     return (
         "legacy"
-        if any(_mount_target(raw) == "/booley-project" for raw in mounts)
+        if any(_mount_target(raw) == BOOLEY_DIR_TARGET for raw in mounts)
         else "canonical-alias"
     )
 

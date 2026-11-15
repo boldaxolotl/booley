@@ -1813,7 +1813,7 @@ def test_ordinary_resume_retains_returned_outcome_when_terminal_write_fails(
             raise OSError("required terminal write unavailable")
 
     monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: tmp_path)
-    monkeypatch.setattr(flow, "_prepare_simulation_record_resume_dependency", lambda *_args: None)
+    monkeypatch.setattr(flow, "_lock_simulation_record_resume_origin", lambda *_args: None)
     monkeypatch.setattr(flow, "_run_validated_resume_simulation_record", run_resumed)
     monkeypatch.setattr(flow, "_simulation_record_endpoint_outcome", endpoint)
     monkeypatch.setattr(flow, "_write_simulation_record_progress", checkpoint)
@@ -1933,7 +1933,7 @@ def _faulty_simulation_record(flow, tmp_path, monkeypatch, kind, fault):
         return SimpleNamespace(recovery=recovery)
 
     monkeypatch.setattr(flow, "_write_simulation_record_progress", checkpoint)
-    monkeypatch.setattr(flow, "_prepare_simulation_record_resume_dependency", lambda *_args: None)
+    monkeypatch.setattr(flow, "_lock_simulation_record_resume_origin", lambda *_args: None)
     monkeypatch.setattr(flow, "_run_validated_resume_simulation_record", resumed)
     monkeypatch.setattr(
         "booley.flows.sim.flow_resume._fresh_simulation_record_recovery_detail",

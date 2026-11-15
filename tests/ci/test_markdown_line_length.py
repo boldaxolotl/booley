@@ -143,6 +143,7 @@ _EXEMPT_CASES: list[list[str]] = [
     [f"- {_FENCE}text", "  " + _LONG, f"  {_FENCE}"],
     [f"{_FENCE}", "<!-- BEGIN GENERATED: x -->", _LONG, f"{_FENCE}"],
     ["| " + _LONG + " |"],
+    ["<tr><td>" + _LONG + "</td></tr>"],
     ["## " + _LONG],
     ["#" * 6 + " " + _LONG],
     ["<https://example.com/" + "a" * 90 + ">"],

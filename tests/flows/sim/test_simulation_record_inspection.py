@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import uuid
 from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
@@ -15,7 +14,6 @@ from booley.flows.sim.record import (
     SimulationRecordWorkItemError,
     authenticate_work_item,
     collect_pre_sim_firings,
-    inspect_retained_simulation_record,
 )
 from booley.flows.sim.record.codec import (
     SimulationRecordIntegrityError,
@@ -47,19 +45,12 @@ def test_public_simulation_record_inspection_returns_typed_evidence_without_writ
     }
 
     evidence = authenticate_work_item(completed.store.manifest_path, completed.item_id)
-    status = inspect_retained_simulation_record(completed.store.manifest_path)
 
     assert evidence.manifest_path == completed.store.manifest_path
     assert evidence.manifest_sha256 == completed.store.manifest_sha256()
     assert evidence.work_item_id == completed.item_id
     assert evidence.work_item["work_item_id"] == completed.item_id
     assert evidence.result.document["work_item_id"] == completed.item_id
-    assert status.manifest_path == completed.store.manifest_path
-    assert status.summary_path == completed.store.summary_path
-    assert status.completed == (completed.item_id,)
-    assert status.pending == status.interrupted == ()
-    assert status.summary_complete
-    assert status.summary_completed_matches
     assert {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in before} == before
 
 
@@ -75,63 +66,6 @@ def test_public_work_item_authentication_rejects_unknown_and_unfinished_items(
         authenticate_work_item(store.manifest_path, "item:9999:0000000000000000")
     with pytest.raises(SimulationRecordWorkItemError, match="no exact terminal"):
         authenticate_work_item(store.manifest_path, work_item_id)
-
-
-def test_public_simulation_record_inspection_distinguishes_recovery_and_summary_status(
-    tmp_path: Path,
-) -> None:
-    store = SimulationRecordStore(tmp_path / "record")
-    store.publish_manifest(_manifest_for(("smoke",)))
-    store.regenerate_summary()
-    pending = inspect_retained_simulation_record(store.manifest_path)
-    assert pending.pending and not pending.interrupted
-    assert not pending.summary_complete and pending.summary_completed_matches
-
-    work_item_id = pending.pending[0]
-    store.allocate_attempt_directory(work_item_id, str(uuid.uuid4()))
-    store.regenerate_summary()
-    interrupted = inspect_retained_simulation_record(store.manifest_path)
-    assert interrupted.interrupted == (work_item_id,)
-    assert not interrupted.pending
-
-
-def test_public_simulation_record_inspection_reports_an_unpublished_summary(
-    tmp_path: Path,
-) -> None:
-    store = SimulationRecordStore(tmp_path / "record")
-    store.publish_manifest(_manifest_for(("smoke",)))
-
-    status = inspect_retained_simulation_record(store.manifest_path)
-
-    assert status.pending
-    assert not status.summary_present
-    assert not status.summary_complete
-    assert status.summary_completed_matches
-
-
-def test_public_simulation_record_inspection_rejects_malformed_summary_but_reports_mismatch(
-    tmp_path: Path,
-) -> None:
-    completed = _completed(tmp_path)
-    completed.store.regenerate_summary()
-    summary = json.loads(completed.store.summary_path.read_bytes())
-    summary["complete"] = False
-    completed.store.summary_path.write_bytes(canonical_json_bytes(summary))
-
-    status = inspect_retained_simulation_record(completed.store.manifest_path)
-    assert not status.summary_complete
-    assert status.summary_completed_matches
-
-    summary["complete"] = True
-    summary["completed"] = []
-    completed.store.summary_path.write_bytes(canonical_json_bytes(summary))
-    status = inspect_retained_simulation_record(completed.store.manifest_path)
-    assert status.summary_complete
-    assert not status.summary_completed_matches
-
-    completed.store.summary_path.write_bytes(canonical_json_bytes([]))
-    with pytest.raises(SimulationRecordIntegrityError, match="not a JSON object"):
-        inspect_retained_simulation_record(completed.store.manifest_path)
 
 
 def test_public_work_item_authentication_rejects_file_changed_during_read(
@@ -160,23 +94,6 @@ def test_public_work_item_authentication_rejects_file_changed_during_read(
 
     with pytest.raises(SimulationRecordIntegrityError, match="changed during read"):
         authenticate_work_item(manifest, completed.item_id)
-
-
-@pytest.mark.parametrize("error", ["truncated", "schema", "missing"])
-def test_summary_reader_rejects_corrupt_record(tmp_path, error):
-    store = SimulationRecordStore(tmp_path / "record")
-    store.publish_manifest(_manifest_for(("smoke",)))
-    store.regenerate_summary()
-    document = dict(store.load_summary())
-    if error == "schema":
-        document["$schema"] = "unknown"
-    elif error == "missing":
-        del document["complete"]
-    store.summary_path.write_bytes(
-        b"{" if error == "truncated" else canonical_json_bytes(document)
-    )
-    with pytest.raises(SimulationRecordIntegrityError):
-        store.load_summary()
 
 
 @pytest.mark.timeout(180)
@@ -359,23 +276,23 @@ def test_scan_ignores_corrupt_sidecar_that_collection_refuses(tmp_path, monkeypa
         collect_pre_sim_firings(store.manifest_path)
 
 
-@pytest.mark.parametrize(
-    "entry, interrupted",
-    [("retained", False), ("scan", True), ("retained", True)],
-    ids=["complete-retained", "interrupted-scan", "interrupted-retained"],
-)
-def test_other_inspections_open_no_pre_sim_sidecar(tmp_path, monkeypatch, entry, interrupted):
-    from booley.flows.sim.record.inspection import inspect_retained_simulation_record
-
-    store, firing, expected, accesses, decodes, _results = _pre_sim_read_case(
+@pytest.mark.parametrize("interrupted", [False, True], ids=["complete", "interrupted"])
+def test_scan_opens_no_pre_sim_sidecar(tmp_path, monkeypatch, interrupted):
+    store, _firing, expected, accesses, decodes, _results = _pre_sim_read_case(
         tmp_path, monkeypatch, interrupted=interrupted
     )
-    if entry == "scan":
-        assert store.scan() == expected
-    else:
-        status = inspect_retained_simulation_record(store.manifest_path)
-        assert status.completed == expected.complete
-        assert status.interrupted == expected.interrupted
-        assert firing.path.absolute() in status.retention_files
+    assert store.scan() == expected
     assert accesses == {}, "no sidecar may be opened"
     assert decodes == {}, "no sidecar may be decoded"
+
+
+def test_simulation_record_mutation_lock_never_recreates_a_missing_root(tmp_path: Path) -> None:
+    store = SimulationRecordStore(tmp_path / "record")
+
+    with (
+        pytest.raises(SimulationRecordIntegrityError, match="directory disappeared"),
+        store.mutation_lock(),
+    ):
+        raise AssertionError("unreachable")
+
+    assert not store.root.exists()

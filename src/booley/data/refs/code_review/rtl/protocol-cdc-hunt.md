@@ -19,7 +19,10 @@ Read all target files and the package/include files they depend on. For each mod
 
 - **Interfaces**: every port group that forms a protocol (ready/valid, request/acknowledge, memory, bus), what one transfer is, and the rules of that protocol -- for example "payload stays stable while valid is high and ready is low", "valid never depends combinationally on ready", "one acknowledge per request", "responses keep request order"
 - **Clock and reset domains**: every clock and reset input, and the registers each one drives
-- **Crossings**: every signal whose driver and sampler sit in different clock or reset domains, and every asynchronous external input
+- **Crossings**: every signal whose driver and sampler sit in different clock or
+  reset domains, and every asynchronous external input. For each output, name
+  the clock of every register in its combinational fan-in: an output decoded
+  from state in another domain is a crossing even when no port is named for it
 
 If the module has one clock, one reset domain, and no asynchronous input, skip the crossing categories. Do not emit a finding only to say they were skipped.
 
@@ -40,6 +43,8 @@ For every interface, transactions:
 For every crossing, from the source register to the destination:
 
 - **Single-bit level** signal and its synchronizer
+- **Combinational source**: a crossing signal built from several signals instead
+  of one register, which can glitch where the destination samples it
 - **Pulse** shorter than one destination clock period
 - **Multi-bit bus or counter**: bits changing in different cycles, and whether the encoding (such as gray code) holds
 - **Request/acknowledge round trip**: data held stable until acknowledged, and a new request before the previous one completes

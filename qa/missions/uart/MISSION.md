@@ -67,12 +67,12 @@ surfaces. The `booley-qa-run` skill runs this mission; Goal areas also follow th
 ### 1. install — Candidate install routes (~15 min)
 Intent: the published install routes deliver exactly the declared build.
 Try:
-- Use the documented install route (`docs/user/INSTALL.md`: pipx; `uv tool install` in
-  `docs/user/TROUBLESHOOTING.md`). In a new shell, version, executable, metadata and source
-  commit agree, and nothing imports from a checkout. License is Apache-2.0; generated state and
+- Use the documented install route (`docs/user/INSTALL.md`: pipx). In a new
+  shell, version, executable, metadata and source commit agree, and nothing
+  imports from a checkout. License is Apache-2.0; generated state and
   artifacts stay local.
-- On an externally managed distro, plain `pip` gets the documented rejection; the documented
-  isolated route then installs the same build.
+- On an externally managed distro, plain `pip` is rejected (PEP 668); the
+  documented isolated route then installs the same build.
 Look for: a stale `booley` on PATH, version/commit mismatch, docs that don't match the route.
 
 ### 2. bootstrap-init — Bootstrap, scaffold and init variants (~30 min)

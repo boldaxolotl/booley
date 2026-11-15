@@ -65,7 +65,9 @@ simulation, synthesis, linting, and Goal workflows.
 - **Agent Briefs:** `ready-for-agent` issues need one. See
   `docs/internals/agents/agent-brief.md`.
 - **Domain docs:** Read `GLOSSARY-MAP.md`, then the glossary for each context the
-  work touches. ADR history lives under `docs/adr/`. See
-  `docs/internals/agents/domain.md`.
+  work touches and the ADRs under `docs/adr/` that cover the area. Name
+  concepts as the owning glossary does and leave out each entry's `_Avoid_`
+  words; report a missing term instead of coining one. Name any ADR the work
+  contradicts. ADR rules: `docs/adr/README.md`.
 - **Dependency updates:** Renovate opens update and security PRs. See
   `docs/internals/agents/dependency-updates.md`.

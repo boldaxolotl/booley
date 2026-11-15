@@ -156,9 +156,8 @@ not count (see [Working with evidence](#working-with-evidence)).
   Goal too if they must also pass.
 
 If you remove, change, or skip a frozen Test, its Goal stays unmet until you
-approve a Goal change. See
-[A Goal that names Test Runs stays unmet](TROUBLESHOOTING.md#a-goal-that-names-test-runs-stays-unmet)
-for each reason a Goal can stay unmet.
+approve a Goal change. `booley goal status` gives the reason for each unmet
+Goal.
 
 **Seeing the frozen Test Runs.** The Dashboard's Goal details list each Goal's
 frozen Test Runs with their outcomes, the parts still pending, the Test Runs

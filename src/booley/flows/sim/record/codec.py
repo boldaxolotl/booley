@@ -534,7 +534,7 @@ def _read_required_suite(value: object) -> None:
 
 
 def _read_build_variant_ids(value: object) -> None:
-    """Read the build-variant IDs inspection and retention use."""
+    """Read the build-variant IDs inspection uses."""
     for index, item in enumerate(_exact_list(value, "build_variants", MAX_WORK_ITEMS)):
         variant = require_dict(item, field=f"build_variants[{index}]")
         _require_variant_id(variant.get("build_variant_id"))

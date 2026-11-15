@@ -106,6 +106,5 @@ optional is not covered by a primary run.
 | Coverage Goals and policy | [coverage/cov-goal](missions/coverage/MISSION.md), [coverage/cov-policy](missions/coverage/MISSION.md) |
 | Approved coverage waivers | [coverage/cov-waivers](missions/coverage/MISSION.md) |
 | Coverage Record storage | [coverage/cov-numeric](missions/coverage/MISSION.md), [coverage/cov-retention](missions/coverage/MISSION.md), [coverage/cov-storage](missions/coverage/MISSION.md) |
-| Coverage Record retention | [coverage/cov-retention](missions/coverage/MISSION.md) |
 | Coverage Analyst | [coverage/cov-analyst](missions/coverage/MISSION.md) |
 | Coverage Analyst evidence boundary | [coverage/cov-analyst](missions/coverage/MISSION.md) |

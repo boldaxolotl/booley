@@ -34,7 +34,9 @@ Keyed, in order:
 Records 6-9 are computed once per run (:func:`sandbox_identity`); 1-5 and 10
 are re-read after OpenROAD so a change during the run stores nothing.
 
-Not keyed: thread count (spike #2467: same output at 1-16 threads, no seed);
+Not keyed: thread count (spike #2467: same output at 1-16 threads, no seed;
+it reaches OpenROAD as a make command-line variable, so neither the recipe nor
+the keyed environment holds it);
 the absolute build dir (all script paths are cwd-relative); Yosys inputs (in
 the netlist); ``HOME`` (init file only, skipped by ``-no_init``); and the
 executor's ``TMPDIR``/``TMP``/``TEMP``, ``PYTHONPYCACHEPREFIX``,

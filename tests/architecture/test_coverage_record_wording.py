@@ -112,11 +112,6 @@ _KEPT_SPELLINGS: dict[str, tuple[str, ...]] = {
     "src/booley/goals/review_package.py": ('"campaign"',),
     # Old 0.3.0/0.4.0 names Booley refuses or reads: placeholder, report fields, directories.
     "src/booley/flows/sim/config.py": ('field == "campaign"', "{campaign}"),
-    "src/booley/flows/sim/record_retention.py": (
-        '"campaigns"',
-        "``campaigns``",
-        "detail.campaigns",
-    ),
     "src/booley/presentation/report_results.py": ('"campaigns"', "detail.campaigns"),
     "tests/goals/test_generated_inputs.py": ("targets/sim/campaign/manifest.json",),
     "tests/harness/test_doctor_selftest_builtin.py": ('["campaigns"]',),

@@ -23,8 +23,6 @@ from booley.core.boundary import (
     require_bool_value,
     require_finite_number,
     require_int,
-    require_list,
-    require_str_value,
 )
 from booley.flows.artifact_durability import (
     durable_create,
@@ -34,7 +32,6 @@ from booley.flows.artifact_durability import (
 from booley.flows.sim.build_session import CacheDecision
 from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.record_files import (
-    parse_json_object,
     read_bounded,
     read_json_object,
     stream_digest,
@@ -48,7 +45,6 @@ from .bundle import require_bundle_inventory
 from .codec import (
     MANIFEST_MAX_BYTES,
     RECORD_MAX_BYTES,
-    SUMMARY_MAX_BYTES,
     SimulationRecordIntegrityError,
     UnsupportedSimulationRecordFormatError,
     canonical_json_bytes,
@@ -64,13 +60,13 @@ from .codec import (
     encode_simulation_record_manifest,
     encode_simulation_result,
     linked_manifest_path,
-    raise_if_retired_schema,
     reads_simulation_record_documents,
     validate_relative_path,
 )
 from .model import (
     BundleBuildAttempt,
     BundleBuildResult,
+    FrozenJson,
     SimulationAttempt,
     SimulationRecordDocument,
     SimulationRecordManifest,
@@ -166,30 +162,20 @@ class SimulationRecordStore:
         self.root = simulation_record_directory.absolute()
         # The one link component the store may cross (#2191); ``None`` is strict.
         self.booley_dir = booley_dir
-        self._authenticated_files: set[Path] = set()
-
-    @property
-    def retention_files(self) -> tuple[Path, ...]:
-        """Files this store read or hashed, in stable order."""
-        return tuple(sorted(self._authenticated_files))
 
     def _read(self, path: Path, *, limit: int) -> bytes:
-        raw = read_bounded(
+        return read_bounded(
             path,
             limit=limit,
             error=SimulationRecordIntegrityError,
             booley_dir=self.booley_dir,
             single_link=True,
         )
-        self._authenticated_files.add(path.absolute())
-        return raw
 
     def _identity(self, path: Path) -> tuple[int, str]:
         if is_report_link(path) or not path.is_file():
             raise SimulationRecordIntegrityError(f"evidence is not a regular file: {path}")
-        identity = stream_digest(path)
-        self._authenticated_files.add(path.absolute())
-        return identity
+        return stream_digest(path)
 
     def _decode_located(self, decode: Callable[[bytes], _T], path: Path, limit: int) -> _T:
         """Read and decode one record; a Booley 0.3.0 refusal names its invocation."""
@@ -226,32 +212,6 @@ class SimulationRecordStore:
             decode_simulation_record_manifest, self.manifest_path, MANIFEST_MAX_BYTES
         )
 
-    def load_summary(self) -> Mapping[str, object]:
-        """Load the bounded retention fields from the existing summary projection."""
-        _require_safe_parents(self.summary_path, self.root, self.booley_dir)
-        raw = self._read(self.summary_path, limit=SUMMARY_MAX_BYTES)
-        document = parse_json_object(raw, error=SimulationRecordIntegrityError)
-        try:
-            raise_if_retired_schema(document.get("$schema"))
-        except UnsupportedSimulationRecordFormatError as exc:
-            raise self._locate(exc) from None
-        try:
-            schema = require_str_value(document.get("$schema"), field="record summary schema")
-            require_bool_value(document.get("complete"), field="record summary complete")
-            completed = tuple(
-                require_str_value(item, field="record summary completed item")
-                for item in require_list(
-                    document.get("completed"), field="record summary completed"
-                )
-            )
-        except BoundaryError as exc:
-            raise SimulationRecordIntegrityError(
-                "record summary retention fields are invalid"
-            ) from exc
-        if schema != _SUMMARY_SCHEMA or len(set(completed)) != len(completed):
-            raise SimulationRecordIntegrityError("record summary retention fields are invalid")
-        return document
-
     def manifest_sha256(self) -> str:
         return manifest_digest(self.load_manifest())
 
@@ -279,7 +239,7 @@ class SimulationRecordStore:
         ordinal = cast(int, item["ordinal"]) + 1
         digest = work_item_id.rsplit(":", 1)[-1]
         name = f"{ordinal:04d}-{digest}"
-        # Decode does not check the id, and retention globs assume one component:
+        # Decode does not check the id, and a path glob assumes one component:
         # refuse a "/" here, and a backslash (a separator on Windows) below.
         if "/" in name:
             raise SimulationRecordIntegrityError(
@@ -553,10 +513,10 @@ class SimulationRecordStore:
                     raise SimulationRecordIntegrityError("Pre-Sim Commands ordinal disagrees")
                 firings.append(firing)
         if terminal is not None:
+            # The terminal result is the scan-authenticated result Booley published.
+            evidence = cast(tuple[Mapping[str, FrozenJson], ...], terminal.document["evidence"])
             if [
-                reference
-                for reference in terminal.document["evidence"]
-                if reference["kind"] == "pre_sim_commands"
+                reference for reference in evidence if reference["kind"] == "pre_sim_commands"
             ] != [firing.reference for firing in firings]:
                 raise SimulationRecordIntegrityError("Pre-Sim Commands result references disagree")
             if firings:
@@ -766,7 +726,9 @@ def collect_pre_sim_firings(
     """
     if prior:
         return _reread_prior(prior, booley_dir)
-    pending = [(Path(path).absolute(), None, frozenset()) for path in reversed(manifest_paths)]
+    pending: list[tuple[Path, str | None, frozenset[str]]] = [
+        (Path(path).absolute(), None, frozenset()) for path in reversed(manifest_paths)
+    ]
     queued: set[tuple[Path, str, frozenset[str]]] = set()
     visited: set[Path] = set()
     firings = {}
@@ -792,7 +754,11 @@ def collect_pre_sim_firings(
         visited.add(path)
         for firing in store._simulation_record_firings(manifest, store.scan(manifest, digest)):
             firings[firing.key] = firing
-        for entry in manifest.document["prerequisites"]:
+        # The codec's _read_manifest reads the prerequisites list.
+        prerequisites = cast(
+            tuple[Mapping[str, Mapping[str, str]], ...], manifest.document["prerequisites"]
+        )
+        for entry in prerequisites:
             reference = entry["manifest"]
             edge = (linked_manifest_path(store.root.parents[2], reference), reference["sha256"])
             chain = ancestors | {simulation_record_id}
@@ -814,7 +780,9 @@ def _reread_prior(
     for manifest_path, attempts in by_manifest.items():
         store = SimulationRecordStore(manifest_path.parent, booley_dir=booley_dir)
         manifest = store.load_manifest()
-        items = {item["work_item_id"]: item for item in manifest.document["work_items"]}
+        # The codec's _read_manifest reads the work items list.
+        work_items = cast(tuple[Mapping[str, FrozenJson], ...], manifest.document["work_items"])
+        items = {cast(str, item["work_item_id"]): item for item in work_items}
         for directory, owned in attempts.items():
             fresh.update(store._reread_prior_attempt(manifest, items, directory, owned))
     return tuple(fresh[key] for key in dict.fromkeys(firing.key for firing in prior))
