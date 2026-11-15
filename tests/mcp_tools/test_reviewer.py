@@ -1543,13 +1543,13 @@ class TestPromptConstruction:
             ),
             ("rtl", "code_style", "rtl/a.sv", ["code_style-checklist"]),
             ("rtl", "spec", "rtl/a.sv", ["spec-hunt"]),
-            ("tb", "quality", "tb/t.sv", ["hdl-checklist"]),
-            ("tb", "quality", "tb/test.py", ["cocotb-checklist"]),
+            ("tb", "quality", "tb/t.sv", ["hdl-checklist", "tb-hunt"]),
+            ("tb", "quality", "tb/test.py", ["cocotb-checklist", "tb-hunt"]),
             (
                 "tb",
                 "quality",
                 "tb/main.cpp,tb/test.py,tb/tb.sv",
-                ["c-cpp-checklist", "hdl-checklist", "cocotb-checklist"],
+                ["c-cpp-checklist", "hdl-checklist", "cocotb-checklist", "tb-hunt"],
             ),
         ]
         for index, (category, focus, scope, expected) in enumerate(cases):
@@ -3857,7 +3857,8 @@ def test_cpp_guidance_preview_and_project_overlay(tmp_path):
         assert "Project C lifecycle rule" in prompt
         assert ("Canonical style guide for SystemVerilog" in prompt) == ("tb/tb.sv" in scope)
         assert endpoint._dry_run_preview().detail["guides"] == [
-            {"kind": "checklist", "name": name} for name in labels
+            *({"kind": "checklist", "name": name} for name in labels),
+            {"kind": "hunt", "name": "tb-hunt"},
         ]
 
 
@@ -3919,8 +3920,21 @@ def test_dry_run_lists_guides_with_kind(tmp_path):
         ),
         ("spec", [{"kind": "hunt", "name": "spec-hunt"}]),
     ]
-    for focus, expected in cases:
-        work_dir = tmp_path / focus
+    tb_cases = [
+        ("tb/t.sv", "hdl-checklist"),
+        ("tb/test.py", "cocotb-checklist"),
+    ]
+    cases = [("rtl", "rtl/a.sv", focus, expected) for focus, expected in cases] + [
+        (
+            "tb",
+            scope,
+            "quality",
+            [{"kind": "checklist", "name": name}, {"kind": "hunt", "name": "tb-hunt"}],
+        )
+        for scope, name in tb_cases
+    ]
+    for index, (category, scope, focus, expected) in enumerate(cases):
+        work_dir = tmp_path / f"case{index}"
         work_dir.mkdir()
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(
@@ -3928,9 +3942,9 @@ def test_dry_run_lists_guides_with_kind(tmp_path):
                 "--work-dir",
                 str(work_dir),
                 "--scope",
-                "rtl/a.sv",
+                scope,
                 "--category",
-                "rtl",
+                category,
                 "--focus",
                 focus,
             ]
