@@ -47,10 +47,18 @@ def _staged_bytes(path: Path, content: bytes, mode: int) -> Path:
     return temporary
 
 
-def atomic_replace_bytes(path: Path, content: bytes, *, mode: int = 0o600) -> None:
-    """Publish complete bytes at *path* with one atomic replacement."""
+def atomic_replace_bytes(
+    path: Path, content: bytes, *, mode: int = 0o600, mtime_ns: int | None = None
+) -> None:
+    """Publish complete bytes at *path* with one atomic replacement.
+
+    *mtime_ns* stamps the staged file before the rename, so the published file
+    never shows another modification time.
+    """
     temporary = _staged_bytes(path, content, mode)
     try:
+        if mtime_ns is not None:
+            os.utime(temporary, ns=(mtime_ns, mtime_ns))
         replace_file(temporary, path)
         fsync_directory(path.parent)
     finally:
