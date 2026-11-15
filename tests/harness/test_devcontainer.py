@@ -114,6 +114,18 @@ class TestBuildSpec:
             f"source={dc.DEFAULT_BOOLEY_DIR_SOURCE},target={dc.BOOLEY_DIR_TARGET},type=bind"
         )
 
+    def test_booley_dir_mounts_at_booley(self):
+        # The literal is pinned on purpose: user docs and the CI demo scripts name it.
+        spec = build_spec(dc.APP_NONE)
+        assert (
+            spec["mounts"][0] == f"source={dc.DEFAULT_BOOLEY_DIR_SOURCE},target=/booley,type=bind"
+        )
+        assert spec["remoteEnv"]["BOOLEY_DIR"] == "/booley"
+        assert (
+            spec["containerEnv"]["BOOLEY_COMPILER_CACHE_ROOT"]
+            == "/booley/.runtime/compiler-cache/ccache"
+        )
+
     def test_custom_booley_dir_source(self):
         spec = build_spec(
             dc.APP_NONE,
@@ -131,7 +143,7 @@ class TestBuildSpec:
         spec = build_spec(dc.APP_NONE)
         assert spec["containerEnv"] == {
             **git_identity_environment(GitIdentity("Dev", "dev@localhost")),
-            "BOOLEY_COMPILER_CACHE_ROOT": "/booley-project/.runtime/compiler-cache/ccache",
+            "BOOLEY_COMPILER_CACHE_ROOT": "/booley/.runtime/compiler-cache/ccache",
         }
 
     def test_fixed_container_env_is_literal_host_policy(self):
@@ -142,7 +154,7 @@ class TestBuildSpec:
         assert spec["containerEnv"] == {
             **git_identity_environment(GitIdentity("Dev", "dev@localhost")),
             "XILINXD_LICENSE_FILE": "2100@booley-license-xilinx",
-            "BOOLEY_COMPILER_CACHE_ROOT": "/booley-project/.runtime/compiler-cache/ccache",
+            "BOOLEY_COMPILER_CACHE_ROOT": "/booley/.runtime/compiler-cache/ccache",
         }
 
     def test_local_timezone_is_forwarded_to_runtime_processes(self):
@@ -188,7 +200,7 @@ class TestBuildSpec:
         )
 
     def test_mask_under_booley_dir_masks_both_container_views(self):
-        # .booley is visible TWICE (via /work and /booley-project), so
+        # .booley is visible TWICE (via /work and /booley), so
         # a subtree under it must be masked in both views or the bytes remain
         # readable through the second mount.
         spec = build_spec(
@@ -286,7 +298,7 @@ class TestMaskPathsValidation:
             assert error is not None and "workspace-relative" in error, entry
 
     def test_rejects_masking_the_whole_booley_dir(self):
-        # The session reads booley.toml through /booley-project — masking the
+        # The session reads booley.toml through /booley — masking the
         # entire dir bricks the runtime rather than hiding a secret.
         for entry in [".booley", ".booley/"]:
             error = dc.mask_paths_error([entry])

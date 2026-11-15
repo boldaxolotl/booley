@@ -44,7 +44,7 @@ def project_alias(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path
     require_symlinks(tmp_path)
     target = tmp_path / "real-project-data"
     target.mkdir()
-    alias = tmp_path / "booley-project"
+    alias = tmp_path / "booley"
     symlink_or_skip(alias, target, target_is_directory=True)
     configure_project_alias(monkeypatch, alias, target)
     return alias, target
@@ -88,14 +88,14 @@ def test_alias_traversal_is_refused(project_alias):
 def test_other_prefixes_and_relative_paths_are_unchanged(project_alias):
     alias, _target = project_alias
     for path in (
-        Path("booley-project/reports"),
+        Path("booley/reports"),
         alias.with_name(alias.name + "-other") / "reports",
     ):
         assert sandbox_layout.canonical_project_alias_path(path) == path
 
 
 def test_non_posix_paths_receive_no_exemption(monkeypatch):
-    path = Path("/booley-project/reports")
+    path = Path("/booley/reports")
     monkeypatch.setattr(sandbox_layout, "os", SimpleNamespace(name="nt"))
     assert sandbox_layout.canonical_project_alias_path(path) == path
 

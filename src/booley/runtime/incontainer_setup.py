@@ -795,7 +795,7 @@ def trust_keys(paths: Sequence[Path]) -> tuple[str, ...]:
     """Config keys under which the agent apps may look up each existing *path*.
 
     Both CLIs check the resolved path; the absolute as-spelled path is kept as
-    well (a symlinked workspace or a ``/booley-project`` bind spelling).
+    well (a symlinked workspace or a ``/booley`` bind spelling).
     Ordered, de-duplicated, pure path work.
     """
     keys: dict[str, None] = {}
