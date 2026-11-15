@@ -258,6 +258,22 @@ TESTS_TOML_SKELETON = """\
 # reads the annotated TESTS_TEMPLATE.toml shipped with the skill.
 """
 
+# Default bounds only, no `[<target>.<flow>]` table: nothing is measured until a
+# Project adds one, and the file already passes `booley measure --validate`.
+METRICS_TOML_SKELETON = """\
+# metrics.toml - the Target Metrics that `booley measure` checks.
+#
+# Written by `booley init` with the default bounds only: they apply to a
+# `[<target>.sim]` or `[<target>.coverage]` table, and there is none yet, so
+# nothing is measured. `booley cheat --metrics` explains the file.
+
+[defaults.sim]
+tests_failed_max = 0
+
+[defaults.coverage]
+tests_failed_max = 0
+"""
+
 
 # ---------------------------------------------------------------------------
 # Init step: Booley Directory (record key: booley_dir)
@@ -272,6 +288,7 @@ def _backfill_config_skeletons(
     skeletons = {
         "booley.toml": content,
         "tests.toml": TESTS_TOML_SKELETON,
+        "metrics.toml": METRICS_TOML_SKELETON,
     }
     added = [
         name
@@ -431,7 +448,7 @@ def _step_booley_dir(ctx: InitContext) -> None:
     gitignore = target / ".gitignore"
     guarded_write(gitignore, PROJECT_GITIGNORE, newline="\n")
 
-    # booley.toml + tests.toml skeletons (idempotent, never overwrites).
+    # booley.toml + tests.toml + metrics.toml skeletons (idempotent, never overwrites).
     _backfill_config_skeletons(target, ctx, "# booley-init-origin: port\n" + BOOLEY_TOML_SKELETON)
     _backfill_fusesoc_ignore(target, ctx)
     _init_project_git_repo(target, ctx)

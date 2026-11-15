@@ -4,14 +4,16 @@ The Sandbox is the Docker container where Booley works on a Project. The
 Developer Agent, every Booley Flow, and every Specialist run inside it, one
 container per Project folder. It runs as a non-root user, without your home
 directory, SSH keys, or Docker socket, and by default its network access is
-limited to a short allowlist. So an agent mistake stays inside the container instead of
-reaching your machine; read the known escape below before you treat it as a
-security boundary.
+limited to a short allowlist. So an agent mistake stays inside the container
+instead of reaching your machine; read the
+[known escape](#known-sandbox-escape-through-shared-git-metadata) before you
+treat it as a security boundary.
 
 Everyday use needs none of this page: `booley init` and the `booley-setup`
 skill configure the Sandbox, and VS Code opens it. Come here to work without
-VS Code, change host-wide network or session limits, add Python packages or
-EDA tools to the image, or use a licensed EDA tool from the host.
+VS Code, add Python packages or EDA tools to the image, use a licensed EDA tool
+from the host, change host-wide network or session limits, or apply a settings
+change or a Booley upgrade.
 
 ## Known Sandbox escape through shared Git metadata
 
@@ -20,7 +22,7 @@ Agent can plant Git configuration or hooks that later run as you when Git runs
 on the host, from your shell, your editor, or Booley itself. Stopping the
 Sandbox does not remove them. A planted object-store symlink can also redirect
 host Git writes outside the Project. This is
-[issue #1529](https://github.com/boldaxolotl/booley/issues/1529); a fix is
+[issue #1529](https://github.com/boldaxolotl/Booley/issues/1529); a fix is
 scheduled for reconsideration on **31 DEC 2026**, not promised for that date.
 
 Doctor does not detect the tampering, and host-side Doctor can itself trigger
@@ -54,152 +56,16 @@ booley session refresh                  # rebuild the image if needed and recrea
 booley session down                     # stop and remove the Sandbox
 ```
 
-`session enter` behaves like a terminal inside the container, so every
-in-Sandbox command works through it. `Ctrl-C` stops everything the command
-started inside the container.
+`session enter` works like a terminal inside the container, so every
+in-Sandbox command works through it; `Ctrl-C` stops everything the command
+started. `up` and `enter` reuse a running Sandbox, including one VS Code opened.
+`session down` also stops any `booley flow` or `booley specialist` run typed in
+a Sandbox shell.
 
-`up` and `enter` reuse a running Sandbox, including one VS Code opened.
-`refresh`, `down`, and `up --rebuild` refuse to touch a VS Code-owned Sandbox:
-close the window, or use **Dev Containers: Rebuild Container**.
-
-Before stopping, `session down` warns on stderr about each running or queued
-Standalone Job (a `booley flow` or `booley specialist` run typed in a Sandbox
-shell), because it stops with the Sandbox. The warning names the Flow or
-Specialist, the Target when the run gave one, the worktree (a Sandbox path), and
-how long it has run. `down` does not ask or wait. If it cannot read the Job
-records, it says the check was skipped and still stops the Sandbox.
-
-`session refresh` rebuilds only what changed and keeps the current Sandbox if
-nothing did. It replaces the Sandbox without a rollback: the current Sandbox keeps
-running until the new one is ready to start, and the Sandbox is unavailable only
-while the new container starts. If a step fails, the message names it and says
-what is left running; fix the cause and run `booley session refresh` again, which
-continues from that state. After a successful replacement it re-applies Project
-Initialization (Git hooks, Git settings, guidance links, exclude entries and the
-Dashboard task). It never rewrites tracked files: CRLF files and pending
-`.booley/.gitignore` or `[agent]` changes are reported, and `booley init`
-applies them. If that step fails, you keep the new Sandbox and the command
-exits non-zero.
-
-## Applying Sandbox changes
-
-Booley fixes a Sandbox's settings, `[agent]` CLIs and logins, EDA requests and
-Grants, and image when it issues the Sandbox. A running Sandbox keeps its
-previous values until you apply the change. Use the first case that applies:
-
-- **VS Code owns the Sandbox:** stop it in VS Code, run `booley init --force`,
-  then **Dev Containers: Rebuild Container**.
-- **An image you manage yourself:** rebuild or pull it, then run
-  `booley session down`, `booley init --seed`, and `booley session up`.
-- **Otherwise (headless Sandbox):** run `booley session refresh`.
-
-When `booley init` or Sandbox validation refuses a running Sandbox, its message
-names the case that applies.
-
-<details markdown>
-<summary>With host-installed licensed tools</summary>
-
-After an EDA Grant change (`booley eda grant add` or `revoke`), Booley withdraws
-the Sandbox's issuance. A headless Sandbox refreshes directly. For a VS Code-owned
-or self-managed one, stop a VS Code Sandbox in VS Code and rebuild or pull a
-self-managed image, then run `booley session down`, `booley init --seed`, and
-`booley session up`. See
-[Commercial EDA provisioning](#commercial-eda-provisioning).
-
-</details>
-
-## Agent CLI logins in the Sandbox
-
-The Sandbox receives a login only for the Agent CLIs your Project lists in
-[`[agent] clis`](CONFIG.md#agent-clis-agent). For each listed CLI it gets:
-
-- the login you made on the host (Claude's or Codex's login file),
-- the token stored by `booley auth`,
-- the API key from your shell, forwarded for that CLI only, and
-- its own volume for session history, kept across rebuilds.
-
-An unlisted CLI gets none of these, even if you are logged in to it on the host.
-With `clis = ["claude"]` the Sandbox holds only Claude's login; with
-`clis = ["claude", "codex"]` it holds both.
-
-Each CLI follows its own [`[agent.auth]`](CONFIG.md#pinning-what-bills-agent-auth)
-policy. For example, with `claude = "subscription"` and `codex = "api_key"`, Claude's
-login is copied in and its API key is not forwarded, while Codex gets its API key
-and no login. The Developer Agent's window connects to the CLI that was `default`
-when the Sandbox was issued (run `booley session refresh` after changing `default`
-to move it); Specialists use whichever listed CLI their model needs.
-
-Booley registers its MCP server and skills for every listed CLI, so a plain
-`claude` or `codex` session in the Sandbox terminal sees Booley's tools whichever
-CLI is `default`. If one CLI's registration fails (for example its user config is
-unreadable), the start reports it as `<cli>:refused` and still registers the others.
-
-After you change `clis` or `auth`, or change `default` in a Project that sets
-no `clis` (the set is then just the default CLI), the Sandbox refuses to start until you run
-`booley session refresh` (see [Applying Sandbox
-changes](#applying-sandbox-changes)).
-`booley doctor` reports a Sandbox that was issued for a different set of CLIs.
-
-Adding a CLI to `clis` hands that CLI's login to the next refreshed Sandbox. The
-agent inside the Sandbox can edit `booley.toml`, so review changes to `[agent]`
-before you refresh.
-
-## Host configuration (`config.toml`)
-
-Settings that apply to every Project on this machine live in
-`~/.config/booley/config.toml` (or `$XDG_CONFIG_HOME/booley/config.toml`).
-The file is optional, and you own it. Booley edits it only when you run
-`booley bootstrap --egress proxy` or `--egress unproxied`, which creates the
-file if needed and changes only the `[sandbox] egress` value (a symlinked
-file is refused: edit its target by hand). Without the file
-you get these defaults:
-
-```toml
-[sandbox]
-idle_timeout_seconds = 7200   # stop a Sandbox after 2 hours with no use
-max_sessions = 4              # running Sandboxes allowed on this Docker daemon
-egress_allowlist = []         # extra hostnames Sandboxes may reach
-egress = "proxy"              # "proxy" or "unproxied"
-```
-
-Booley commands that read this file (bootstrap, init, `session`, Doctor) stop
-on an unknown key or invalid value. These keys belong here only:
-`booley.toml` rejects them.
-
-- **`idle_timeout_seconds`**: a Sandbox stops after this long with no Booley
-  activity and no open editor or terminal session in it.
-- **`max_sessions`**: counts every Booley Sandbox on the Docker daemon, across
-  all Projects. At the limit, starting another one fails with a list of the
-  running Sandboxes and their ages; Booley never stops existing work to make
-  room. Free a slot with `booley session down` (headless) or by closing the VS
-  Code window, or raise the limit. An interrupted VS Code start also holds a
-  slot; cancel it in VS Code, then run the `session down` command the error
-  prints.
-- **`egress = "proxy"`** (default): Sandboxes reach the network only through
-  Booley's proxy, which allows the Claude and OpenAI API and login hosts plus
-  the hostnames in `egress_allowlist` and their subdomains. Each entry is a
-  bare hostname such as `pypi.org`: no scheme, path, port, IP address, or
-  wildcard.
-- **`egress = "unproxied"`**: Sandboxes get direct network access, including
-  to services on the host's Docker gateway address. It can't be combined with a
-  non-empty `egress_allowlist`.
-
-The policy is shared: every allowlisted hostname is reachable from every
-Project's Sandbox, in both Goal Mode and Interactive Mode.
-
-**After editing the file**, run `booley bootstrap` again. To switch `egress` in
-one step, run `booley bootstrap --egress unproxied` (or `proxy`): it records
-the mode, bootstraps under it, and names each running Sandbox still on the
-previous mode with the steps to recreate it. It refuses a result the file can't
-hold (for example `unproxied` next to a non-empty `egress_allowlist`) and a
-file that still uses the `[interactive]` table, and changes nothing in
-either case. `booley bootstrap --check-only --egress unproxied` reports the
-pending change without writing it. After switching `egress` by any route, also
-apply it in each Project: headless, run `booley session down`,
-`booley init --seed`, and `booley session up`; in VS Code, run
-`booley init --seed`, then **Dev Containers: Rebuild Container**. Until then
-the running Sandbox keeps its previous mode, and host-side Doctor warns about it; see
-[TROUBLESHOOTING](TROUBLESHOOTING.md#doctor-reports-a-sandbox-whose-egress-mode-differs-from-the-host).
+`session refresh` rebuilds only what changed and is safe to rerun after a
+failure. It doesn't touch tracked files; when it reports pending file changes,
+run `booley init`. Don't use it on a Project you open in VS Code; see
+[Applying Sandbox changes](#applying-sandbox-changes).
 
 ## Project settings (`[sandbox]`)
 
@@ -209,7 +75,7 @@ container:
 ```toml
 [sandbox]
 memory = "8g"                                  # container memory limit; unset = no limit
-# image = "booley-sandbox-riscv"               # Sandbox Image to use, see below
+# image = "booley-sandbox-riscv"               # Sandbox Image to use, see Custom sandbox image
 # pip_requirements = ["sim-requirements.txt"]  # Python packages to bake into the image
 # mount_host_skills = true                     # also load your own agent skills
 # mask_paths = ["private/notes"]               # directories the agent must not see
@@ -218,10 +84,8 @@ memory = "8g"                                  # container memory limit; unset =
 `memory` sets the [Memory Budget](CONFIG.md#jobs--concurrency-jobs) that
 admits Jobs; `booley doctor` warns while it is unset. `[sandbox] dashboard` is
 covered in [CONFIG.md](CONFIG.md#dashboard-and-quiet-goal-presence-goals).
-
-Changes to `mount_host_skills`, `mask_paths`, `image` and `pip_requirements`
-take effect once you apply them; see [Applying Sandbox
-changes](#applying-sandbox-changes).
+Every `[sandbox]` change takes effect when you
+[apply it](#after-changing-sandbox-settings).
 
 ### Hiding directories (`[sandbox].mask_paths`)
 
@@ -230,7 +94,7 @@ not read: reference answers, a competing implementation, private notes. Each
 one appears empty and read-only inside the Sandbox; the files on the host are
 untouched. Paths must be relative with no `..`, and you can hide a
 subdirectory of `.booley/` but not `.booley` itself. If any entry is invalid,
-`booley init --seed` reports it and hides nothing.
+`booley init` reports it and hides nothing.
 
 Masking hides the working tree only. A file committed to Git is still
 readable from Git history, so keep files you want hidden out of the
@@ -243,27 +107,43 @@ The Sandbox carries Booley's own `booley-*` skills. Set
 personal skills from `~/.claude/skills` (Claude Code) and `~/.agents/skills`
 (Codex). Each is mounted read-only; symlinked skills work. Booley's built-in
 skills win a name clash, and so does `~/.claude/skills` over
-`~/.agents/skills`. After adding or removing a skill, apply the change as
-[Applying Sandbox changes](#applying-sandbox-changes) describes.
+`~/.agents/skills`. Adding or removing a skill is a change to apply, like any
+setting.
 
 ### Python dependencies (`[sandbox].pip_requirements`)
 
 The Sandbox has no package index access while Flows run, so a Project's Python
-packages (cocotb BFMs, test helpers) must be baked into its image. List the
-requirements files to bake; nothing is discovered automatically:
+packages (cocotb BFMs, test helpers) are baked into its image:
 
-```toml
-[sandbox]
-pip_requirements = ["sim-requirements.txt", "python/tb/requirements.txt"]
-```
+1. Put the pins in a plain requirements file in the repository, for example
+   `sim-requirements.txt`. If the upstream project keeps them in `tox.ini`,
+   `setup.py`, or a CI workflow, copy them out.
+2. List the file in `booley.toml`. Paths are relative to the Project Root, and
+   nothing is discovered automatically; if a listed file is missing, Booley
+   stops with an error.
 
-Paths are relative to the Project Root. `booley init` then builds a Project
-image on top of the selected base and switches the Project to it; you don't
-set `image` for this. If a listed file is missing, `init` stops with an error.
-Leave the key unset to use the base image unchanged.
+    ```toml
+    [sandbox]
+    pip_requirements = ["sim-requirements.txt", "python/tb/requirements.txt"]
+    ```
 
-`booley init` and `booley session refresh` leave two kinds of lines out of the
-image and print a warning naming each one:
+3. [Apply the change](#after-changing-sandbox-settings). Booley builds a
+   Project image on top of the selected base and switches to it; you don't set
+   `image`. The file is read only at build time, so apply again after each
+   edit.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+Keep the file in the Booley Directory instead, for example
+`.booley/sim-requirements.txt`, but not `.booley/docker/requirements.txt`:
+Booley generates that one. A fresh clone won't have the file, so `booley init`
+there builds without your pins. See
+[Stealth Mode: What changes](STEALTH.md#what-changes).
+
+</details>
+
+**What is left out.** Booley skips these lines and warns about each one:
 
 - Lines that need files outside the requirements: editable installs (`-e`),
   includes (`-r`, `-c`), and local or `file:` paths. Install those at runtime
@@ -271,124 +151,15 @@ image and print a warning naming each one:
 - Pins on `fusesoc`, `edalize`, and Booley itself. Booley manages these, and
   an older pin would break its Flows.
 
-Every other pin wins over the base image, including `cocotb`. `booley init`
-(without `--check`) and `booley session refresh` print a notice for each pin
-that changes a version the base image ships.
+Every other pin wins over the base image, including `cocotb`, and Booley prints
+a notice for each version it changes.
 
 <details markdown>
 <summary>With a cocotb testbench</summary>
-
-The base image checks its own
-cocotb at build time; that check doesn't cover yours, so the first
-`booley flow sim` after the rebuild is your test of the combination. See
-[Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches).
-
-</details>
-
-**Where to keep the file.** If the upstream project keeps its test pins in
-`tox.ini`, `setup.py`, or a CI workflow, copy them into a plain requirements
-file:
-
-- **In the repository** (for example `sim-requirements.txt`): reviewed and
-  cloned like any source file. Prefer this when you can add files.
-- **In the Booley Directory** (for example `.booley/sim-requirements.txt`):
-  committed with the rest of your Booley setup. Don't use
-  `.booley/docker/requirements.txt`: Booley generates that file.
-
-<details markdown>
-<summary>In stealth mode</summary>
-
-A file in the Booley Directory keeps the tracked tree free of Booley files, but
-a fresh clone won't have it, so `booley init` there builds without your pins.
-See [Stealth Mode: What changes](STEALTH.md#what-changes).
-
-</details>
-
-The file is read only when the image is built. After changing it, rebuild
-(see [Applying Sandbox changes](#applying-sandbox-changes)).
-
-<details markdown>
-<summary>With a cocotb testbench</summary>
-
-For cocotb 1.x
-and BFM packages, also read [Baking the cocotb stack into the
-image](#baking-the-cocotb-stack-into-the-image). See also
-[Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches).
-
-</details>
-
-## Custom sandbox image
-
-To add tools that must exist in every container before anything runs, such
-as an extra EDA tool, write a Dockerfile at `.booley/docker/Dockerfile` and run
-`booley init`:
-
-```dockerfile
-FROM booley-sandbox
-USER root
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends my-tool \
-    && rm -rf /var/lib/apt/lists/*
-USER agent
-```
-
-- `FROM` must name the image the Project selects: `booley-sandbox` by
-  default, `booley-sandbox-riscv` when `[sandbox] image` selects it. With a
-  different `FROM`, `init` reports the mismatch and ignores the file.
-- Booley images end as the unprivileged `agent` user. Switch to `root` only to
-  install packages, then switch back.
-- Booley names and selects the built image itself; you don't need
-  `[sandbox].image`.
-- Booley never edits your Dockerfile, but rebuilds the image when the Booley
-  base image underneath it changes.
-- For a multi-stage Dockerfile, or one whose `FROM` uses a build argument, add
-  a `# booley:parent=<image>` line naming the Booley image it builds on, so
-  Booley knows when to rebuild.
-
-With `pip_requirements` set and no Dockerfile of your own, `init` generates
-`.booley/docker/Dockerfile` and `requirements.txt` and keeps them up to date.
-Once you edit either file, Booley stops regenerating it. To take over a
-generated file without editing it, add a `# booley:keep` line.
-
-If `[sandbox].image` names an image Booley doesn't know, Booley neither builds
-nor updates it: that image is yours to manage.
-
-For per-worktree preparation, such as building firmware, use
-[worktree setup hooks](CONFIG.md#worktree-setup-hooks-booleyhooks) instead of the image.
-
-### RISC-V toolchain image (`booley-sandbox-riscv`)
-
-RISC-V CPU projects compile firmware before simulating. Select the RISC-V
-image, which adds to the base Sandbox:
-
-- a RISC-V GCC (newlib, multilib for rv32 and rv64) under both the
-  `riscv64-unknown-elf-` and `riscv32-unknown-elf-` prefixes;
-- `srec_cat` (srecord) and `dtc` (device-tree compiler);
-- Spike, the upstream reference instruction-set simulator, for comparing
-  against your core;
-- the ratified RISC-V specifications for offline use in `$BOOLEY_RISCV_DOCS`
-  (`/opt/riscv-docs`): the unprivileged and privileged ISA manuals, the debug
-  specification, and the ELF psABI, plus `pdftotext` to read them as text.
-
-```toml
-[sandbox]
-image = "booley-sandbox-riscv"
-# pip_requirements = ["requirements.txt"]   # still works; builds on the RISC-V image
-```
-
-Booley downloads the image that matches your Booley version; a failed
-download is an error. Exact versions are in
-[SUPPORTED-EDA-TOOLS](SUPPORTED-EDA-TOOLS.md#versions-in-the-sandbox-image),
-disk space in [INSTALL](INSTALL.md#host-bootstrap). If older firmware won't
-assemble with this GCC, see
-[TROUBLESHOOTING](TROUBLESHOOTING.md#risc-v-firmware-wont-assemble-against-the-sandbox-gcc).
-
-## Baking the cocotb stack into the image
 
 The base image ships cocotb 2.x with `cocotbext-axi` and `cocotbext-uart`.
 Testbenches that need cocotb 1.x (for example for `TestFactory` or
-`cocotb.utils.get_time_from_sim_steps`) or other BFMs bake their own stack
-through [`[sandbox].pip_requirements`](#python-dependencies-sandboxpip_requirements):
+`cocotb.utils.get_time_from_sim_steps`) or other BFMs bake their own stack:
 
 - **Copy the project's full pinned test stack**, not just what the testbench
   seems to use. Module-level imports such as `cocotb_test.simulator` or
@@ -404,9 +175,86 @@ through [`[sandbox].pip_requirements`](#python-dependencies-sandboxpip_requireme
     booley session enter -- python -c "import cocotb_test.simulator, cocotb; print(cocotb.__version__)"
     ```
 
-A pin can't fix a cocotb version that doesn't work with the image's
-Verilator: the imports succeed but simulation hangs. See
-[Simulation stalls at time zero](TROUBLESHOOTING.md#simulation-stalls-at-time-zero-without-results).
+The base image checks its own cocotb at build time, not yours, so the first
+`booley flow sim` after the rebuild is your test of the combination. A pin
+can't fix a cocotb version that doesn't work with the image's Verilator: the
+imports succeed but simulation hangs. See
+[Simulation stalls at time zero](TROUBLESHOOTING.md#simulation-stalls-at-time-zero-without-results)
+and [Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches).
+
+</details>
+
+## Custom sandbox image
+
+To add tools that must exist in every container before anything runs, such
+as an extra EDA tool, write a Dockerfile at `.booley/docker/Dockerfile` and
+[apply the change](#after-changing-sandbox-settings):
+
+```dockerfile
+FROM booley-sandbox
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends my-tool \
+    && rm -rf /var/lib/apt/lists/*
+USER agent
+```
+
+- `FROM` must name the image the Project selects: `booley-sandbox` by
+  default, `booley-sandbox-riscv` when `[sandbox] image` selects it. With a
+  different `FROM`, `init` reports the mismatch and ignores the file.
+- End as the unprivileged `agent` user. Switch to `root` only to install
+  packages, then switch back.
+- For a multi-stage Dockerfile, or one whose `FROM` uses a build argument, add
+  a `# booley:parent=<image>` line naming the Booley image it builds on, so
+  Booley knows when to rebuild.
+
+Booley names and selects the built image itself, never edits your Dockerfile,
+and rebuilds the image when the Booley base image underneath it changes.
+
+To add tools on top of `pip_requirements`, edit the `.booley/docker/Dockerfile`
+that Booley generates for it. Booley stops regenerating a file once you edit
+it; to take over a generated file without editing it, add a `# booley:keep`
+line.
+
+**An image you manage yourself.** If `[sandbox].image` names an image Booley
+doesn't know, Booley neither builds nor updates it; applying changes to it
+[takes different steps](#applying-sandbox-changes).
+
+For per-worktree preparation, such as building firmware, use
+[worktree setup hooks](CONFIG.md#worktree-setup-hooks-booleyhooks) instead of the image.
+
+<details markdown>
+<summary>With the RISC-V image</summary>
+
+RISC-V CPU projects compile firmware before simulating. Select the RISC-V
+image, and stack a [custom Dockerfile](#custom-sandbox-image) on it with
+`FROM booley-sandbox-riscv` if you need more:
+
+```toml
+[sandbox]
+image = "booley-sandbox-riscv"
+# pip_requirements = ["requirements.txt"]   # still works; builds on the RISC-V image
+```
+
+It adds to the base Sandbox:
+
+- a RISC-V GCC (newlib, multilib for rv32 and rv64) under both the
+  `riscv64-unknown-elf-` and `riscv32-unknown-elf-` prefixes;
+- `srec_cat` (srecord) and `dtc` (device-tree compiler);
+- Spike, the upstream reference instruction-set simulator, for comparing
+  against your core;
+- the ratified RISC-V specifications for offline use in `$BOOLEY_RISCV_DOCS`
+  (`/opt/riscv-docs`): the unprivileged and privileged ISA manuals, the debug
+  specification, and the ELF psABI, plus `pdftotext` to read them as text.
+
+Booley downloads the image that matches your Booley version; a failed
+download is an error. Exact versions are in
+[SUPPORTED-EDA-TOOLS](SUPPORTED-EDA-TOOLS.md#versions-in-the-sandbox-image),
+disk space in [INSTALL](INSTALL.md#host-bootstrap). If older firmware won't
+assemble with this GCC, see
+[TROUBLESHOOTING](TROUBLESHOOTING.md#risc-v-firmware-wont-assemble-against-the-sandbox-gcc).
+
+</details>
 
 ## Commercial EDA provisioning
 
@@ -415,11 +263,9 @@ installed on the host instead: read-only, at `/opt/booley-eda/vivado`, and the
 tool runs inside the Sandbox. Today this covers only **Vivado 2025.2 on a
 Linux x86-64 host**: not on Windows, macOS, or Arm.
 
-The Project's request alone grants nothing. The host administrator registers
-the installation and grants it to this exact Project folder with
-`booley eda`, so a Project can't pick a host path or license server itself.
-License server addresses, license file paths, and license environment
-variables don't belong in `booley.toml`.
+A host administrator registers the installation and grants it to one Project
+folder; `booley.toml` only asks for it, and never holds license servers,
+license file paths, or license environment variables.
 
 Run these commands on the host, outside the Sandbox:
 
@@ -445,8 +291,7 @@ Run these commands on the host, outside the Sandbox:
     provisioning = "host"   # default "image"
     ```
 
-5. Apply the change as [Applying Sandbox changes](#applying-sandbox-changes)
-   describes.
+5. [Apply the change](#after-changing-sandbox-settings).
 
 `booley projects` lists every Project on this machine with its Grants. If
 Vivado will not start, see
@@ -458,86 +303,123 @@ FlexNet license server, and `booley eda grant add --license-profile` gives the
 Project access to it. This path has not been tested against real paid-seat
 checkouts, so don't rely on it yet.
 
-## Hand-written devcontainer specs (Codespaces)
+## Host configuration (`config.toml`)
 
-`booley init` writes the devcontainer spec, so you normally set neither
-variable below. You need them only when you write the spec yourself, for
-example for a GitHub Codespace. Put them in the spec's `containerEnv`, so
-every process in the container sees them, including a plain `docker exec`.
+Settings for every Project on this machine live in
+`~/.config/booley/config.toml` (or `$XDG_CONFIG_HOME/booley/config.toml`).
+The file is optional; without it you get these defaults:
 
-### Sandbox egress mode (`BOOLEY_EGRESS`)
+```toml
+[sandbox]
+idle_timeout_seconds = 7200   # stop a Sandbox after 2 hours with no use
+max_sessions = 4              # running Sandboxes allowed on this Docker daemon
+egress_allowlist = []         # extra hostnames Sandboxes may reach
+egress = "proxy"              # "proxy" or "unproxied"
+```
 
-Inside a Sandbox, Booley routes agents and tools through its egress proxy. A
-container that can't reach that proxy, such as a Codespace, must declare
-itself an **Unproxied Sandbox**:
+These keys are host-only: `booley.toml` rejects them, and Booley stops on an
+unknown key or an invalid value.
 
-| `BOOLEY_EGRESS` | Effect |
-|---|---|
-| unset or `proxy` | Default. Booley sets the `HTTP_PROXY` variables unless the environment already has them. |
-| `unproxied` | Booley sets no proxy variables; agents and tools use the network the platform gives them. |
-| anything else | `booley` and `booley-mcp` refuse to start (exit 2). `booley doctor` still runs and FAILs. |
+- **`idle_timeout_seconds`**: a Sandbox stops after this long with no Booley
+  activity and no open editor or terminal session in it.
+- **`max_sessions`**: counts every Booley Sandbox on the Docker daemon, across
+  all Projects. At the limit, starting another one fails with a list of the
+  running Sandboxes; Booley never stops existing work to make room. Free a
+  slot with `booley session down` (headless) or by closing the VS Code window,
+  or raise the limit.
+- **`egress = "proxy"`** (default): Sandboxes reach the network only through
+  Booley's proxy, which allows the Claude and OpenAI API and login hosts plus
+  the hostnames in `egress_allowlist` and their subdomains. Each entry is a
+  bare hostname such as `pypi.org`: no scheme, path, port, IP address, or
+  wildcard. The list is shared: every hostname on it is reachable from every
+  Project's Sandbox.
+- **`egress = "unproxied"`**: Sandboxes get direct network access, including
+  to services on the host's Docker gateway address. It can't be combined with a
+  non-empty `egress_allowlist`.
 
-Booley never guesses this from the platform (for example from `CODESPACES`).
-The host `[sandbox] egress` setting decides the network of a Sandbox Booley
-creates. `BOOLEY_EGRESS` must match it: Booley refuses to create a Sandbox
-whose declaration differs, and
-[Doctor reports a running one](TROUBLESHOOTING.md#doctor-reports-a-sandbox-whose-egress-mode-differs-from-the-host).
-In an Unproxied Sandbox Doctor WARNs `sandbox.unproxied`; to accept that,
-[waive the check](DOCTOR.md#doctor-waivers-doctor-waiverstoml).
+After editing the file, run `booley bootstrap`. A changed `egress` also needs
+[each Project's Sandbox recreated](#after-changing-sandbox-settings); until
+then a running Sandbox keeps its previous mode and host-side Doctor
+[warns about it](TROUBLESHOOTING.md#doctor-reports-a-sandbox-whose-egress-mode-differs-from-the-host).
 
-### Agent app in a hand-written spec (`BOOLEY_AGENT_APP`)
+To switch `egress` without editing the file, run
+`booley bootstrap --egress unproxied` (or `proxy`). It records the mode,
+bootstraps, and lists the running Sandboxes to recreate; add `--check-only` to
+preview the change.
 
-`BOOLEY_AGENT_APP` names the agent app Booley connects to: `claude`, `codex`,
-`none`, or `auto`. With `auto`, Booley decides at every Sandbox start from the
-credentials present, and allows every CLI that has one:
+## Agent CLI logins in the Sandbox
 
-1. Claude, if there is a Claude credential (`ANTHROPIC_API_KEY`,
-   `CLAUDE_CODE_OAUTH_TOKEN`, a `booley auth` token, or a Claude login).
-2. Codex, if there is a Codex credential (`OPENAI_API_KEY`, a
-   `booley auth` token, or a Codex login).
+The Sandbox gets a login only for the Agent CLIs listed in
+[`[agent] clis`](CONFIG.md#agent-clis-agent). An unlisted CLI gets nothing,
+even if you are logged in to it on the host. Each listed CLI receives what its
+[`[agent.auth]`](CONFIG.md#pinning-what-bills-agent-auth) policy allows: your
+host login, the `booley auth` token, or the API key from your shell. Its
+session history is kept across rebuilds.
 
-With both credentials, both CLIs are registered and Claude is the default; with
-one, only that CLI is. With neither, Claude starts and asks you to log in.
+Booley's tools and skills work in every listed CLI, so a plain `claude` or
+`codex` in a Sandbox terminal has them. The Developer Agent's window uses the
+`default` CLI; Specialists use whichever listed CLI their model needs.
 
-The other allowed CLI works as a plain `claude` or `codex` session in the Sandbox
-terminal. `booley chat --cli` and `[models]` pins still follow
-[`[agent] clis`](CONFIG.md#agent-clis-agent) in `booley.toml`.
+After changing `clis`, `auth`, or `default`,
+[apply the change](#after-changing-sandbox-settings). Until you do, a changed
+CLI set or `auth` stops the Sandbox from starting. Adding a CLI hands its login
+to the Sandbox, and the agent inside can edit `booley.toml`, so review `[agent]`
+edits before you apply them.
 
-Booley makes the choice in its start-up step, so the spec's
-`postStartCommand` (and `postCreateCommand`, if it has one) must run the
-registrar module `booley.harness.incontainer_register` with `python -m`.
+## Applying Sandbox changes
 
-`booley doctor` in the Sandbox shows which CLIs `auto` allowed, which is the default, and why. If
-[`[agent] default`](CONFIG.md#agent-clis-agent) (or the older `provider`) pins an app, set
-`BOOLEY_AGENT_APP` to that app or remove the pin. `auto` works only inside a
-container.
+A Sandbox keeps the settings and Booley version it was created with until you
+recreate it. Recreate it the way you open it: a Project you open in VS Code is
+rebuilt from VS Code, even while its window is closed. `booley session refresh`
+is only for Projects you enter with `booley session`; on a VS Code Project it
+either refuses or starts a second Sandbox that VS Code won't open.
 
-### Project setup in a hand-written spec (`booley init`)
+### After changing Sandbox settings
 
-Run `booley init` in the spec's `onCreateCommand` to set up the Project
-(guidance links, Dashboard task, Git settings, line endings). Project setup
-needs no Booley module import; the registrar above is a separate start step.
-A container counts as a Sandbox when `/.dockerenv` or `/run/.containerenv`
-exists or `BOOLEY_CONTAINER=1` is set; set it in `containerEnv` for an image
-that has neither file.
+This covers `[sandbox]` and `[agent]` in `booley.toml`, a
+[custom Dockerfile](#custom-sandbox-image), `egress` in
+[`config.toml`](#host-configuration-configtoml), and
+[EDA Grants](#commercial-eda-provisioning). The other `config.toml` keys need
+only `booley bootstrap`.
 
-- In a hand-written Sandbox it does Project Initialization only: no Docker,
-  image, Sandbox Issuance, pin, or inventory work.
-- It is idempotent and exits 0 when nothing changes, so it is safe on every
-  create.
-- It never overwrites a default Agent CLI that `booley.toml` sets. Otherwise
-  it fills one from `BOOLEY_AGENT_APP` (`claude` or `codex`); `auto`, `none`,
-  or unset leave it unset, with a note.
-- Once a default Agent CLI is set, it records `[agent] auth` from the
-  credentials the Sandbox holds when that value is missing or `auto`
-  (`subscription` when a CLI has both), and keeps an explicit one.
-- `worktree.useRelativePaths` is `true` only when the container's Git is 2.48
-  or newer, else `false`. A host Git sharing the bind-mounted checkout must
-  then be 2.48+ too.
-- `--seed`, `--force`, `--repin-booley-dir`, `--scaffold`, `--provider`, and
-  `--auth` are host-only and refused here, as is a pending Booley Directory
-  migration (run `booley init` on the host).
-- A Booley-issued Sandbox refuses `booley init`; run it on the host.
+- **In VS Code:** run `booley init` on the host, then
+  **Dev Containers: Rebuild Container**.
+- **Headless:** run `booley session refresh` on the host.
+
+Until you do, Doctor reports that the Sandbox differs from the settings.
+
+### After upgrading Booley
+
+1. [Upgrade Booley on the host](INSTALL.md#upgrade).
+2. In each Project, recreate the Sandbox
+   [as for a settings change](#after-changing-sandbox-settings). Until you do,
+   Doctor in the Sandbox warns `upgrade.runtime-stale`.
+3. In the new Sandbox, type `/booley-heal` in a Claude Code or Codex chat. It
+   runs the [upgrade review](DOCTOR.md#upgrade-review) and applies what the
+   new release changes for this Project.
+
+<details markdown>
+<summary>With your own image</summary>
+
+These steps apply when `[sandbox].image` names an image Booley doesn't build.
+`booley session refresh` refuses such an image.
+
+After upgrading Booley, first rebuild your image with the new Booley wheel
+installed, and run `python3 -I -m booley.runtime.dashboard_extension` as root
+in its recipe. Without that step, Dashboard auto-open and `bwave gui` views are
+unavailable.
+
+Then, after an upgrade or a settings change:
+
+- **In VS Code:** run `booley init --seed` on the host, then
+  **Dev Containers: Rebuild Container**.
+- **Headless:** run `booley session down`, `booley init --seed`, and
+  `booley session up` on the host.
+
+`--seed` rewrites the Sandbox's container settings without building any image.
+See [Custom sandbox image](#custom-sandbox-image).
+
+</details>
 
 ---
 

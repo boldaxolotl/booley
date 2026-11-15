@@ -44,7 +44,7 @@ def reviewer(tmp_path, monkeypatch):
     source.write_text("module dut; endmodule\n")
     state_path = tmp_path / "state.json"
     state = DevelopmentState.load(state_path)
-    state.init_criteria({"review_rtl_bugs_clean": True})
+    state.init_criteria({"review_rtl_bugs_done": True})
     state.save()
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
     monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
@@ -94,9 +94,14 @@ def evidence(result):
     return json.loads(Path(result.detail["audit_evidence"]).read_text())["detail"]
 
 
+def open_rows(detail):
+    """The open findings of a discovery or verify detail."""
+    return ReviewerSpecialist._open_findings(detail)
+
+
 def persisted_criterion(reviewer):
     state = DevelopmentState.load(Path(reviewer.args.state_file))
-    return state.criteria["review_rtl_bugs_clean"]
+    return state.criteria["review_rtl_bugs_done"]
 
 
 def assert_run_evidence(result):
@@ -113,7 +118,7 @@ def test_mixed_rows_preserve_raw_ordinals_and_duplicate_source_proposals(reviewe
     output(reviewer, monkeypatch, {"issues": [*malformed, outside, outside, proposal()]})
     result = reviewer._run()
     assert result.exit_code == 0
-    assert len(result.detail["pending"]) == 1
+    assert len(open_rows(result.detail)) == 1
     assert result.detail["MAJOR"] == 1
     # Each guide call audits the same canned answer: rows are per call, ordinals stay raw.
     for guide, rows in by_guide(result.detail["filtered"]).items():
@@ -133,7 +138,7 @@ def test_invalid_initial_wrapper_is_durable_error(reviewer, monkeypatch, value):
     assert result.exit_code == 2
     assert result.detail["rejected"][0]["raw"] == value
     assert evidence(result)["rejected"] == result.detail["rejected"]
-    assert reviewer.state.is_met("review_rtl_bugs_clean") is False
+    assert reviewer.state.is_met("review_rtl_bugs_done") is False
 
 
 def test_all_invalid_and_malformed_mirror_persist_on_error(reviewer, monkeypatch):
@@ -159,7 +164,7 @@ def test_source_only_audit_is_non_gating_and_surfaces_in_mcp(reviewer, monkeypat
     output(reviewer, monkeypatch, {"issues": [proposal(file="/outside/hostile[link].sv")]})
     result = reviewer._run()
     assert result.exit_code == 0
-    assert result.detail["pending"] == []
+    assert open_rows(result.detail) == []
     assert collect_review_dispositions(reviewer.state.criteria) == []
     assert result.detail.items() <= persisted_criterion(reviewer).detail.items()
     assert [len(rows) for rows in by_guide(result.detail["filtered"]).values()] == [1, 1]
@@ -181,9 +186,8 @@ def test_explicit_disposition_survives_deferred_headings(reviewer, monkeypatch, 
     reviewer.args.spec = str(spec)
     output(reviewer, monkeypatch, {"issues": [proposal(disposition=disposition)]})
     result = reviewer._run()
-    assert result.criterion_met == (disposition != "current")
-    collection = "pending" if disposition == "current" else "observations"
-    assert result.detail[collection][0]["disposition"] == disposition
+    assert bool(open_rows(result.detail)) == (disposition == "current")
+    assert result.detail["issue_list"][0]["disposition"] == disposition
     assert result.detail["filtered"] == []
 
 
@@ -207,9 +211,7 @@ def test_verify_rejections_keep_obligations_and_raw_evidence(reviewer, monkeypat
     )
     reviewer.parse_args(["--work-dir", str(reviewer.args.work_dir), "--verify"])
     result = reviewer._run()
-    assert result.criterion_met is False
-    assert len(result.detail["pending"]) == 1
-    assert result.detail["resolved"] == []
+    assert len(open_rows(result.detail)) == 1
     assert result.detail["rejected"][0]["raw"] == (rows[0] if isinstance(rows, list) else rows)
     assert result.detail["rejected"][0]["phase"] == "verification"
     assert initial.detail["rejected"] == []
@@ -240,7 +242,7 @@ def test_audit_survives_verification_without_rediscovery(reviewer, monkeypatch):
     assert second.exit_code == 0
     assert second.detail["filtered"] == first.detail["filtered"]
     assert len(second.detail["resolved"]) == 1
-    assert second.detail["pending"] == []
+    assert open_rows(second.detail) == []
 
 
 def test_failed_interactive_discovery_retains_prior_obligations_until_success(
@@ -251,12 +253,12 @@ def test_failed_interactive_discovery_retains_prior_obligations_until_success(
     output(reviewer, monkeypatch, {"issues": [None]})
     failed = reviewer._run()
     assert failed.exit_code == 2
-    assert failed.detail["pending"] == first.detail["pending"]
+    assert open_rows(failed.detail) == open_rows(first.detail)
     assert "needs_discovery" not in failed.detail
     output(reviewer, monkeypatch, {"issues": []})
     replaced = reviewer._run()
     assert replaced.criterion_met
-    assert replaced.detail["pending"] == []
+    assert open_rows(replaced.detail) == []
 
 
 @pytest.mark.parametrize("version", [None, 3, 4])
@@ -269,7 +271,7 @@ def test_read_only_acceptance_rejects_old_semantics_with_unchanged_source(review
         "_source_fingerprint": {"categories": ["rtl"], "fingerprint": {"rtl": {"digest": "same"}}},
     }
     result = evaluate_verification_freshness(
-        "review_rtl_bugs_clean",
+        "review_rtl_bugs_done",
         {"met": True, "detail": detail},
         work_dir=Path(reviewer.args.work_dir),
         fingerprint_provider=lambda *_args, **_kwargs: {"rtl": {"digest": "same"}},
@@ -279,7 +281,7 @@ def test_read_only_acceptance_rejects_old_semantics_with_unchanged_source(review
     detail.pop("contract")
     assert (
         evaluate_verification_freshness(
-            "review_rtl_bugs_clean",
+            "review_rtl_bugs_done",
             {"met": True, "detail": detail},
             work_dir=Path(reviewer.args.work_dir),
             fingerprint_provider=lambda *_args, **_kwargs: {},
@@ -347,8 +349,7 @@ def test_reused_specialist_starts_audit_history_for_new_contract(reviewer, monke
     reviewer.args.scope = "rtl/other.sv"
     output(reviewer, monkeypatch, {"issues": [proposal(file="rtl/other.sv")]})
     result = reviewer._run()
-    assert result.criterion_met is False
-    assert result.detail["pending"][0]["file"] == "rtl/other.sv"
+    assert open_rows(result.detail)[0]["file"] == "rtl/other.sv"
     assert result.detail["filtered"] == []
     assert result.detail["rejected"] == []
     assert result.detail["audit_evidence"] != first.detail["audit_evidence"]
@@ -358,7 +359,7 @@ def test_reused_specialist_starts_audit_history_for_new_contract(reviewer, monke
 def test_historical_policy_exclusion_does_not_suppress_fresh_finding(reviewer, monkeypatch):
     output(reviewer, monkeypatch, {"issues": []})
     reviewer._run()
-    entry = reviewer.state.criteria["review_rtl_bugs_clean"]
+    entry = reviewer.state.criteria["review_rtl_bugs_done"]
     entry.detail["contract"].pop("filtering_semantics_revision")
     entry.detail["resolved"] = [
         {
@@ -370,13 +371,11 @@ def test_historical_policy_exclusion_does_not_suppress_fresh_finding(reviewer, m
     reviewer.state.save()
     output(reviewer, monkeypatch, {"issues": [proposal()]})
     result = reviewer._run()
-    assert result.criterion_met is False
-    assert len(result.detail["pending"]) == 1
-    assert result.detail["resolved"] == []
+    assert len(open_rows(result.detail)) == 1
     normalized = collect_review_dispositions(reviewer.state.criteria)
     assert len(normalized) == 1
     assert normalized[0]["disposition"] == "open"
-    assert normalized[0]["finding_id"] == result.detail["pending"][0]["finding_id"]
+    assert normalized[0]["finding_id"] == open_rows(result.detail)[0]["finding_id"]
 
 
 @pytest.mark.parametrize("status", ["FIXED", "WAIVED"])
@@ -386,7 +385,7 @@ def test_interactive_discovery_replaces_historical_resolution(reviewer, monkeypa
     root = str(reviewer.args.work_dir)
     args = ["--work-dir", root, "--verify"]
     if status == "WAIVED":
-        args += ["--waive", first.detail["pending"][0]["finding_id"], "Accepted policy permits it"]
+        args += ["--waive", open_rows(first.detail)[0]["finding_id"], "Accepted policy permits it"]
     reviewer.parse_args(args)
     monkeypatch.setattr(
         reviewer,
@@ -411,9 +410,7 @@ def test_interactive_discovery_replaces_historical_resolution(reviewer, monkeypa
         ["--work-dir", root, "--scope", "rtl/dut.sv", "--category", "rtl", "--focus", "bugs"]
     )
     result = reviewer._run()
-    assert not result.criterion_met
-    assert len(result.detail["pending"]) == 1
-    assert result.detail["resolved"] == []
+    assert len(open_rows(result.detail)) == 1
 
 
 @pytest.mark.parametrize(
@@ -423,7 +420,7 @@ def test_valid_ticket_anchors_are_not_literal_filters(reviewer, monkeypatch, cla
     output(reviewer, monkeypatch, {"issues": [proposal(ticket_clause=clause)]})
     result = reviewer._run()
     assert result.exit_code == 0
-    assert result.detail["pending"][0]["ticket_clause"] == clause
+    assert open_rows(result.detail)[0]["ticket_clause"] == clause
 
 
 def test_error_diagnostics_accumulate_within_unchanged_contract(reviewer, monkeypatch):
@@ -458,7 +455,7 @@ def test_evidence_write_failure_cannot_publish_passing_criterion(reviewer, monke
     with pytest.raises(OSError, match="evidence disk unavailable"):
         reviewer._run()
     persisted = DevelopmentState.load(Path(reviewer.args.state_file))
-    assert persisted.is_met("review_rtl_bugs_clean") is False
+    assert persisted.is_met("review_rtl_bugs_done") is False
 
 
 @pytest.mark.parametrize("late_error", [False, True], ids=["normal", "late-error"])
@@ -491,7 +488,7 @@ def test_recorded_review_uses_one_evidence_file(reviewer, monkeypatch, late_erro
     output(reviewer, monkeypatch, {"issues": []})
     result = reviewer._run()
     assert result.criterion_met is (not late_error)
-    assert published == ["review_rtl_bugs_clean"]
+    assert published == ["review_rtl_bugs_done"]
     path = assert_run_evidence(result)
     assert [call.args[0] for call in write.call_args_list] == [path] * (2 if late_error else 1)
     persisted = persisted_criterion(reviewer)
@@ -533,7 +530,7 @@ def test_configured_tb_policy_does_not_discard_valid_current_finding(
     reviewer.args.scope = "tb/dut_tb.sv"
     reviewer.args.category = "tb"
     reviewer.args.focus = "quality"
-    reviewer.state.init_criteria({"review_tb_quality_clean": True})
+    reviewer.state.init_criteria({"review_tb_quality_done": True})
     reviewer.state.save()
     output(
         reviewer,
@@ -541,18 +538,16 @@ def test_configured_tb_policy_does_not_discard_valid_current_finding(
         {"issues": [proposal(category="quality", file="tb/dut_tb.sv", summary=summary)]},
     )
     result = reviewer._run()
-    assert result.criterion_met is False
-    assert result.detail["pending"][0]["summary"] == summary
+    assert open_rows(result.detail)[0]["summary"] == summary
     assert result.detail["filtered"] == []
     prompt = reviewer._build_prompt()
     assert "CUSTOM PASS" in prompt
     assert "custom.vcd" in prompt
 
 
-@pytest.mark.parametrize("mode", ["done", "clean"])
-def test_interactive_discovery_replaces_prior_advisory(reviewer, monkeypatch, mode):
+def test_interactive_discovery_replaces_prior_advisory(reviewer, monkeypatch):
     reviewer.state.criteria.clear()
-    key = f"review_rtl_bugs_{mode}"
+    key = "review_rtl_bugs_done"
     reviewer.state.init_criteria({key: True})
     output(reviewer, monkeypatch, {"issues": [proposal(disposition="advisory")]})
     first = reviewer._run()

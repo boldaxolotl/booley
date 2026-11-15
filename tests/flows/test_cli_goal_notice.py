@@ -1,7 +1,6 @@
 """Human CLI admission discloses Goal recording without changing Goal authority."""
 
 import argparse
-import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -309,31 +308,6 @@ def test_bound_mcp_flow_keeps_goal_evidence(goal_mode, monkeypatch):
     assert result.outcome.criterion_key == "lint_clean_top"
     assert result.outcome.criterion_met is True
     assert_paired_headline(flow.args.report_dir, "lint", ("lint_clean_top", True))
-
-
-@pytest.mark.timeout(120)
-def test_bound_done_reviewer_preserves_completion_policy_and_receipt(layout, monkeypatch):
-    from booley.flows.endpoint_report_criteria import freeze
-    from booley.flows.prepared_invocation import OrdinaryRunInvocation
-    from tests.goals.conftest import enter_goals
-    from tests.goals.test_mcp_routing import BUGS_DISCOVERY_CALLS, _goal_reviewer_endpoint
-    from tests.goals.test_reviewer_proposals import review_issues
-
-    layout.record = enter_goals(
-        layout, [{"family": "REVIEW", "review": "rtl_bugs", "verdict": "done", "paths": ["rtl.v"]}]
-    )
-    for replay in (False, True):
-        endpoint, provider = _goal_reviewer_endpoint(layout, monkeypatch)
-        provider.return_value.output = json.dumps({"issues": review_issues(True)})
-        freeze(endpoint, OrdinaryRunInvocation(endpoint._run))
-        result = endpoint._run()
-        assert result.exit_code == 0, result.report_text
-        assert "explicit human approval" not in result.report_text
-        report = json.loads(endpoint.write_report(result).read_text())
-        assert report["criterion_key"] == ("" if replay else "review_rtl_bugs_done")
-        # Replay reuses evidence but does not claim a new evaluation.
-        assert report["criterion_met"] is (None if replay else True)
-        assert provider.call_count == (0 if replay else BUGS_DISCOVERY_CALLS)
 
 
 def test_configured_main_store_outvotes_foreign_environment(

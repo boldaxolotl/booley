@@ -22,9 +22,7 @@ Ask the agent, for example:
 
 > Review the RTL for bugs.
 
-The agent replies with the findings and the path to the report. In
-[Goal Mode](GOAL-MODE.md), a Reviewer result can meet a review Goal; the
-Coverage Analyst only advises.
+The agent replies with the findings and the path to the report.
 
 To run one yourself, in a container terminal:
 

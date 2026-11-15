@@ -18,7 +18,11 @@ from markdown_it import MarkdownIt
 from tests.docs.test_links import _text_anchors
 from tests.shipped_docs_support import rendered_shipped_docs
 
-from booley.harness.init_cmd import BOOLEY_TOML_SKELETON, TESTS_TOML_SKELETON
+from booley.harness.init_cmd import (
+    BOOLEY_TOML_SKELETON,
+    METRICS_TOML_SKELETON,
+    TESTS_TOML_SKELETON,
+)
 from booley.harness.setup.scaffold import ScaffoldChoices, _booley_toml
 from booley.runtime import docs_links, packaged_docs
 
@@ -176,6 +180,7 @@ def _scanned_texts() -> list[tuple[str, str, bool]]:
         [
             ("BOOLEY_TOML_SKELETON", BOOLEY_TOML_SKELETON, False),
             ("TESTS_TOML_SKELETON", TESTS_TOML_SKELETON, False),
+            ("METRICS_TOML_SKELETON", METRICS_TOML_SKELETON, False),
             ("scaffold booley.toml", scaffold, False),
         ]
     )

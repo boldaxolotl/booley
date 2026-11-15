@@ -8,15 +8,18 @@ from __future__ import annotations
 
 import contextlib
 import json
-from collections.abc import Iterator
+import re
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
+from booley.criteria.presentation import CriterionPresentation
 from booley.criteria.state import DevelopmentState
 from booley.evidence.review_receipt import review_receipt_drift
+from booley.flows.execution_persistence import NoAcceptanceRecorder, ReviewInputs
 from booley.mcp.base import McpToolResult
 from booley.specialists.reviewer import ReviewerSpecialist
 
@@ -223,33 +226,6 @@ def test_verify_fail_on_counts_findings_still_open(
     assert len(result.detail["pending"]) == 1
 
 
-def test_goal_mode_refuses_spec_text_and_fail_on(project: Path) -> None:
-    from booley.flows.execution_persistence import NoAcceptanceRecorder, ReviewInputs
-
-    class GoalRecorder(NoAcceptanceRecorder):
-        def review_goal_inputs(self, key: str) -> ReviewInputs:
-            return ReviewInputs(("rtl/dut.sv",))
-
-    for option, value in (("--spec-text", "words"), ("--fail-on", "major")):
-        reviewer = ReviewerSpecialist()
-        reviewer._acceptance_recorder = GoalRecorder()
-        reviewer.parse_args(
-            ["--work-dir", str(project), "--category", "rtl", "--focus", "bugs", option, value]
-        )
-        reviewer.read_state()
-        result = reviewer._run()
-        assert result.exit_code == 2
-        assert option in result.report_text
-
-    verifier = ReviewerSpecialist()
-    verifier._acceptance_recorder = GoalRecorder()
-    verifier.parse_args(["--work-dir", str(project), "--verify", "--fail-on", "major"])
-    verifier.read_state()
-    result = verifier._run()
-    assert result.exit_code == 2
-    assert "--fail-on" in result.report_text
-
-
 @pytest.mark.parametrize("args", [BASE_ARGS, TB_ARGS], ids=["rtl", "tb"])
 def test_unscoped_file_findings_are_filtered_as_source_scope(
     project: Path, monkeypatch: pytest.MonkeyPatch, args: list[str]
@@ -277,9 +253,10 @@ def test_unscoped_file_findings_are_filtered_as_source_scope(
     assert result.exit_code == 0, result.report_text
     assert [row["file"] for row in ReviewerSpecialist._open_findings(result.detail)] == [in_scope]
     assert [row["file"] for row in result.detail["issue_list"]] == [in_scope]
-    calls = 2 if category == "bugs" else 1  # a bugs review filters each call's proposals
     assert sorted((row["file"], row["reason"]) for row in result.detail["filtered"]) == sorted(
-        (str(path), "source_scope") for path in unscoped for _ in range(calls)
+        (str(path), "source_scope")
+        for path in unscoped
+        for _ in range(2)  # one per call
     )
     assert "OUT OF SCOPE (firmware" not in result.report_text
 
@@ -310,7 +287,6 @@ def test_fw_scope_follows_scope_contract(project: Path, monkeypatch: pytest.Monk
 # --- Two guide calls: rtl/bugs runs a checklist call and a hunt call (issue #4016) ---
 
 BUGS_GUIDES = ("bugs-checklist", "bugs-hunt")
-BUGS_CLEAN_KEY = "review_rtl_bugs_clean"
 
 
 def guide_of(params: Any, guides: tuple[str, ...] = BUGS_GUIDES, focus: str = "bugs") -> str:
@@ -334,8 +310,10 @@ def review_by_guide(
     reviewer: ReviewerSpecialist | None = None,
     guides: tuple[str, ...] = BUGS_GUIDES,
     focus: str = "bugs",
+    route: Callable[[Any], str] | None = None,
 ) -> tuple[McpToolResult, list[Any]]:
     """Run a review (bugs unless told otherwise) whose agent answers per guide; returns the result and every call.
+    *route* names a call's key when the guides alone cannot tell the calls apart.
 
     An answer is a payload dict, a ready agent result, or an exception to raise. A list
     of answers is consumed one per call of that guide, the last one repeating.
@@ -347,7 +325,7 @@ def review_by_guide(
 
     def fake_agent(params: Any) -> Any:
         calls.append(params)
-        answer = answers[guide_of(params, guides, focus)]
+        answer = answers[route(params) if route else guide_of(params, guides, focus)]
         if isinstance(answer, list):
             answer = answer.pop(0) if len(answer) > 1 else answer[0]
         if isinstance(answer, Exception):
@@ -356,13 +334,6 @@ def review_by_guide(
 
     monkeypatch.setattr(reviewer, "_invoke_agent", fake_agent)
     return reviewer._run(), calls
-
-
-def seed_clean_criterion(root: Path) -> None:
-    """Make the next review a ``_clean`` (disposition loop) discovery."""
-    state = DevelopmentState.load(root / "state.json")
-    state.set_criterion(BUGS_CLEAN_KEY, met=False)
-    state.save()
 
 
 def test_bugs_review_runs_checklist_and_hunt_concurrently(
@@ -609,25 +580,20 @@ def broken_answers() -> dict[str, Any]:
 def test_any_failing_guide_call_is_a_specialist_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Either call failing in any way makes the review an error, in both review modes."""
+    """Either call failing in any way makes the review an error."""
     failures = ("raises", "no_json", "all_rejected", "mirror_disagrees")
-    for number, (mode, failing, failure) in enumerate(
-        (m, g, f) for m in ("done", "clean") for g in BUGS_GUIDES for f in failures
-    ):
+    for number, (failing, failure) in enumerate((g, f) for g in BUGS_GUIDES for f in failures):
         project = build_project(tmp_path / f"case{number}", monkeypatch)
-        _assert_failing_guide_is_error(project, monkeypatch, failing, failure, mode)
+        _assert_failing_guide_is_error(project, monkeypatch, failing, failure)
 
 
 def _assert_failing_guide_is_error(
-    project: Path, monkeypatch: pytest.MonkeyPatch, failing: str, failure: str, mode: str
+    project: Path, monkeypatch: pytest.MonkeyPatch, failing: str, failure: str
 ) -> None:
     broken = broken_answers()
     healthy = {"issues": [finding("MAJOR", summary="Healthy call finding", line=7)]}
     answers = {guide: (broken[failure] if guide == failing else healthy) for guide in BUGS_GUIDES}
     key = "review_rtl_bugs_done"
-    if mode == "clean":
-        seed_clean_criterion(project)
-        key = BUGS_CLEAN_KEY
     transcripts = project / "transcripts"
     result, calls = review_by_guide(
         project, monkeypatch, [*BASE_ARGS, "--transcript-dir", str(transcripts)], answers
@@ -697,42 +663,111 @@ def test_failed_guide_call_is_retried_once_and_the_review_succeeds(
 
 
 def test_single_call_review_is_not_retried(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    result, invoke = review(project, monkeypatch, TB_ARGS, {"issues": [{"severity": "BOGUS"}]})
+    result, invoke = review(
+        project, monkeypatch, [*BASE_ARGS[:-1], "security"], {"issues": [{"severity": "BOGUS"}]}
+    )
     assert result.exit_code == 2, result.report_text
     assert invoke.call_count == 1
     assert "retrying" not in result.report_text
 
 
-def test_goal_tb_support_only_scope_still_makes_one_call(
+class GoalShapedRecorder(NoAcceptanceRecorder):
+    """A recorder offering the Goal-era hooks; the Reviewer must not consult them."""
+
+    def review_goal_inputs(self, key: str) -> ReviewInputs:
+        raise AssertionError(f"Reviewer read Goal inputs for {key}")
+
+    def criterion_is_current(self, state: DevelopmentState, key: str) -> bool:
+        return True
+
+    def present_criterion(self, key: str, entry: object) -> CriterionPresentation:
+        return CriterionPresentation("Goal label", "ctx", "", "", "")
+
+
+def goal_shaped_reviewer(project: Path, args: list[str]) -> ReviewerSpecialist:
+    reviewer = ReviewerSpecialist()
+    reviewer._acceptance_recorder = GoalShapedRecorder()
+    reviewer.parse_args(["--work-dir", str(project), *args])
+    reviewer.read_state()
+    return reviewer
+
+
+def test_goal_shaped_recorder_leaves_hand_run_inputs(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No selected guide is one guide-less call, never zero calls."""
-    from booley.flows.execution_persistence import NoAcceptanceRecorder, ReviewInputs
+    """A Goal-shaped recorder neither supplies inputs nor restricts options (#3276)."""
+    state = DevelopmentState.load(project / "state.json")
+    state.set_criterion("review_rtl_bugs_clean", met=False)
+    state.save()
+    reviewer = goal_shaped_reviewer(
+        project, [*BASE_ARGS, "--spec-text", "words", "--fail-on", "major"]
+    )
+    calls: list[Any] = []
 
+    def fake_agent(params: Any) -> Any:
+        calls.append(params)
+        issues = [finding("MAJOR")] if guide_of(params) == "bugs-hunt" else []
+        return agent_result({"issues": issues})
+
+    monkeypatch.setattr(reviewer, "_invoke_agent", fake_agent)
+    result = reviewer._run()
+    assert result.exit_code == 1, result.report_text
+    assert len(calls) == 2
+    assert result.detail["contract"]["mode"] == "done"
+    assert "goal_target_surface" not in result.detail["contract"]
+    assert "review_rtl_bugs_done" in DevelopmentState.load(project / "state.json").criteria
+
+    verifier = goal_shaped_reviewer(project, ["--verify", "--fail-on", "major"])
+    invoke = MagicMock(return_value=agent_result(verdicts("STILL_PRESENT")))
+    monkeypatch.setattr(verifier, "_invoke_agent", invoke)
+    verified = verifier._run()
+    assert verified.exit_code == 1, verified.report_text
+    assert invoke.call_count == 1
+
+
+def test_goal_shaped_recorder_still_refuses_support_only_scope(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Support-only scopes are refused by the source-path validation, never reviewed."""
     (project / "tb/notes.txt").write_text("support file\n")
-
-    class GoalRecorder(NoAcceptanceRecorder):
-        def review_goal_inputs(self, key: str) -> ReviewInputs:
-            return ReviewInputs(("tb/notes.txt",))
-
-    reviewer = ReviewerSpecialist()
-    reviewer._acceptance_recorder = GoalRecorder()
-    reviewer.parse_args(["--work-dir", str(project), "--category", "tb", "--focus", "quality"])
-    reviewer.read_state()
+    reviewer = goal_shaped_reviewer(
+        project, ["--category", "tb", "--focus", "quality", "--scope", "tb/notes.txt"]
+    )
     invoke = MagicMock(return_value=agent_result({"issues": []}))
     monkeypatch.setattr(reviewer, "_invoke_agent", invoke)
     result = reviewer._run()
-    assert invoke.call_count == 1, result.report_text
-    assert "## Review guide" not in invoke.call_args.args[0].system_prompt
-    assert "guide_calls" not in result.detail
-    # No guide ran, so the receipt records none to go stale.
-    assert result.detail["contract"]["guides"] == []
+    assert result.exit_code == 2, result.report_text
+    assert "Goal" not in result.report_text
+    assert "tb/notes.txt" in result.report_text
+    invoke.assert_not_called()
+
+
+def test_goal_shaped_recorder_verify_limit_is_an_error(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reviewer = goal_shaped_reviewer(project, BASE_ARGS)
+    answers = {"bugs-checklist": {"issues": [finding("MAJOR")]}, "bugs-hunt": {"issues": []}}
+    monkeypatch.setattr(
+        reviewer, "_invoke_agent", lambda params: agent_result(answers[guide_of(params)])
+    )
+    assert reviewer._run().exit_code == 0
+    for _ in range(2):
+        verifier = goal_shaped_reviewer(project, ["--verify"])
+        monkeypatch.setattr(
+            verifier,
+            "_invoke_agent",
+            lambda params, **_kwargs: agent_result(verdicts("STILL_PRESENT")),
+        )
+        assert verifier._run().exit_code == 0
+    third = goal_shaped_reviewer(project, ["--verify"])
+    result = third._run()
+    assert result.exit_code == 2, result.report_text
+    assert result.report_text.startswith("review_rtl_bugs_done: 2 verify attempts exhausted")
 
 
 def test_verify_after_two_guide_review_is_one_call_and_waives_either_guide(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    seed_clean_criterion(project)
     checklist = finding("MAJOR", summary="Checklist finding")
     hunt = finding("MAJOR", summary="Hunt finding", line=8)
     result, _ = review_by_guide(
@@ -741,7 +776,10 @@ def test_verify_after_two_guide_review_is_one_call_and_waives_either_guide(
         BASE_ARGS,
         {"bugs-checklist": {"issues": [checklist]}, "bugs-hunt": {"issues": [hunt]}},
     )
-    by_summary = {row["summary"]: row["finding_id"] for row in result.detail["pending"]}
+    by_summary = {
+        row["summary"]: row["finding_id"]
+        for row in ReviewerSpecialist._open_findings(result.detail)
+    }
     assert set(by_summary) == {"Checklist finding", "Hunt finding"}
 
     verify_args = ["--verify"]
@@ -758,11 +796,10 @@ def test_verify_after_two_guide_review_is_one_call_and_waives_either_guide(
 def test_single_guide_focus_makes_one_call_as_before(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Spec, security and testbench quality reviews still make one call and one transcript."""
+    """Spec and security reviews still make one call and one transcript."""
     cases = [
         (SPEC_ARGS, "spec", "spec-hunt"),
         ([*BASE_ARGS[:-1], "security"], "security", "security-checklist"),
-        (TB_ARGS, "quality", "hdl-checklist"),
     ]
     for number, (args, category, guide) in enumerate(cases):
         project = build_project(tmp_path / f"case{number}", monkeypatch)
@@ -854,6 +891,152 @@ def _assert_guide_edit_stales_receipt(
     entry = state.criteria["review_rtl_bugs_done"]
     assert entry.met is False
     assert entry.detail["stale_review_dimensions"] == ["guides"]
+
+
+# --- TB quality: language checklists and one hunt call (issue #4021) ---
+
+TB_GUIDES = ("c-cpp-checklist", "hdl-checklist", "cocotb-checklist", "tb-hunt")
+TB_LANGUAGE_SCOPES = {
+    "hdl": ("tb/tb.sv", ["hdl-checklist"]),
+    "cocotb": ("tb/test.py", ["cocotb-checklist"]),
+    "cpp": ("tb/main.cpp", ["c-cpp-checklist"]),
+    "all": (
+        "tb/main.cpp,tb/test.py,tb/tb.sv",
+        ["c-cpp-checklist", "hdl-checklist", "cocotb-checklist"],
+    ),
+}
+TB_STYLE_MARKER = "Project style rule 4021"
+
+
+def tb_scope_args(scope: str) -> list[str]:
+    return ["--scope", scope, *TB_ARGS[2:]]
+
+
+def tb_route(params: Any) -> str:
+    """``tb-hunt`` or ``checklist`` for a call; a checklist call may carry several guides."""
+    hunt = "## Review guide — quality (tb-hunt)" in params.system_prompt
+    others = [g for g in TB_GUIDES[:3] if f"({g})" in params.system_prompt]
+    assert bool(others) != hunt, (hunt, others)
+    return "tb-hunt" if hunt else "checklist"
+
+
+def tb_project(root: Path) -> Path:
+    for name in ("tb/test.py", "tb/main.cpp"):
+        (root / name).write_text("// authored\n", encoding="utf-8", newline="\n")
+    overlay = root / ".booley" / "tb_style_guide.md"
+    overlay.parent.mkdir(parents=True, exist_ok=True)
+    overlay.write_text(TB_STYLE_MARKER, encoding="utf-8", newline="\n")
+    return root
+
+
+@pytest.mark.parametrize("language", list(TB_LANGUAGE_SCOPES))
+def test_tb_quality_runs_language_checklists_and_one_hunt_call(
+    project: Path, monkeypatch: pytest.MonkeyPatch, language: str
+) -> None:
+    """The scope's language checklists share one call; a hunt call runs beside it."""
+    scope, checklists = TB_LANGUAGE_SCOPES[language]
+    tb_project(project)
+    result, calls = review_by_guide(
+        project,
+        monkeypatch,
+        tb_scope_args(scope),
+        {
+            "checklist": {
+                "issues": [finding("MAJOR", scope.split(",")[0], "Checklist finding", "quality")]
+            },
+            "tb-hunt": {
+                "issues": [
+                    finding("MAJOR", scope.split(",")[0], "Hunt finding", "quality", line=9)
+                ]
+            },
+        },
+        route=tb_route,
+    )
+    assert result.exit_code == 0, result.report_text
+    by_route = {tb_route(call): call.system_prompt for call in calls}
+    assert sorted(by_route) == ["checklist", "tb-hunt"]
+    headings = re.findall(r"^## Review guide — .*$", by_route["checklist"], flags=re.MULTILINE)
+    assert headings == [f"## Review guide — quality ({name})" for name in checklists]
+    hunt_headings = re.findall(r"^## Review guide — .*$", by_route["tb-hunt"], flags=re.MULTILINE)
+    assert hunt_headings == ["## Review guide — quality (tb-hunt)"]
+    # Style rules stay with the checklist call; the hunt call carries none of them.
+    assert TB_STYLE_MARKER in by_route["checklist"]
+    assert TB_STYLE_MARKER not in by_route["tb-hunt"]
+    assert "Testbench style guide" not in by_route["tb-hunt"]
+    packaged = "Canonical style guide for SystemVerilog" in by_route["checklist"]
+    assert packaged == (language != "cpp")
+    assert "Canonical style guide for SystemVerilog" not in by_route["tb-hunt"]
+    kinds = {row["summary"]: row["guide_kinds"] for row in result.detail["issue_list"]}
+    assert kinds == {"Checklist finding": ["checklist"], "Hunt finding": ["hunt"]}
+    assert [(c["kind"], c["guides"]) for c in result.detail["guide_calls"]] == [
+        ("checklist", checklists),
+        ("hunt", ["tb-hunt"]),
+    ]
+
+
+def test_tb_hunt_call_gets_the_checklist_calls_inputs(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both calls share one user prompt: spec, simulation context and project contract."""
+    (project / ".booley").mkdir()
+    (project / ".booley" / "booley.toml").write_text(
+        "[flows.sim]\n"
+        'pass_sentinels = ["ALL TESTS OK"]\n'
+        'fail_sentinels = ["TESTS BROKEN"]\n'
+        'trace_files = ["waves.vcd"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    result, calls = review_by_guide(
+        project,
+        monkeypatch,
+        [*TB_ARGS, "--spec-text", "Reset drives q low."],
+        {"checklist": {"issues": []}, "tb-hunt": {"issues": []}},
+        route=tb_route,
+    )
+    assert result.exit_code == 0, result.report_text
+    prompts = {tb_route(call): call.prompt for call in calls}
+    assert sorted(prompts) == ["checklist", "tb-hunt"]
+    assert prompts["tb-hunt"] == prompts["checklist"]
+    for heading in ("## Specification", "## Simulation Context", "## Project Simulation Contract"):
+        assert heading in prompts["tb-hunt"]
+    assert "Reset drives q low." in prompts["tb-hunt"]
+    for configured in ("ALL TESTS OK", "TESTS BROKEN", "waves.vcd"):
+        assert configured in prompts["tb-hunt"]
+
+
+def test_tb_hunt_guide_defers_to_the_project_simulation_contract(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hunt guide yields its sentinel and trace defaults to the project's configuration."""
+    (project / ".booley").mkdir()
+    (project / ".booley" / "booley.toml").write_text(
+        '[flows.sim]\npass_sentinels = ["ALL TESTS OK"]\nfail_sentinels = ["TESTS BROKEN"]\n'
+        'trace_files = ["waves.vcd"]\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    demand = finding("MAJOR", "tb/tb.sv", "Testbench never prints [SIM_RESULT]", "quality")
+    result, calls = review_by_guide(
+        project,
+        monkeypatch,
+        TB_ARGS,
+        {"checklist": {"issues": []}, "tb-hunt": {"issues": [demand]}},
+        route=tb_route,
+    )
+    hunts = [call for call in calls if tb_route(call) == "tb-hunt"]
+    assert len(hunts) == 1, "expected one tb-hunt call"
+    (hunt,) = hunts
+    guide = hunt.system_prompt.split("## Review guide — quality (tb-hunt)")[1]
+    contract = [line for line in guide.splitlines() if "Project Simulation Contract" in line]
+    assert any("configured pass and fail sentinels" in line for line in contract)
+    assert any("replace this guide's defaults" in line for line in contract)
+    assert "never a finding" in guide
+    assert "ALL TESTS OK" in hunt.prompt
+    assert "waves.vcd" in hunt.prompt
+    # What the hunt reports about the contract stays a model judgment: nothing is filtered.
+    assert [row["summary"] for row in result.detail["issue_list"]] == [demand["summary"]]
+    assert result.detail["filtered"] == []
 
 
 def test_optimization_review_runs_checklist_and_hunt_calls(
