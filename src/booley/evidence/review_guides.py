@@ -2,6 +2,9 @@
 
 Receipt freshness (``booley.criteria``) may not import ``booley.specialists``, so the
 declaration lives here, where both the Reviewer and the receipt contract can read it.
+
+The shared Reviewer prompt owns the disposition and output instructions; a guide
+holds only its review checklist, so every category reports in the same shape.
 """
 
 from __future__ import annotations

@@ -21,6 +21,12 @@ replayed state and to the projection check. Interactive V1 calls compose the led
 ``booley.criteria.unbound_ledger``, Goal Mode in
 ``booley.goals.recorder``.
 
+Readers use only observations from transactions the saved state names in
+``acceptance_transactions``, which is saved in the same atomic state save as the
+updated Criteria. An interrupted append or failed save therefore keeps the
+previous verdict without deleting history. Coverage Criteria are recorded only
+through this acceptance path, never from the Coverage Record directly.
+
 A V2 intent is read back only when its envelope names the very identity its
 lookup key does, so a transaction frozen under one identity is never
 selected under another.

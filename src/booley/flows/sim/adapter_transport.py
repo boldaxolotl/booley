@@ -1,4 +1,13 @@
-"""Authenticated result transport shared by Simulation adapters."""
+"""Authenticated result transport shared by Simulation adapters.
+
+The parent trusts only this typed, atomically written, attempt-token-bound
+result. ``[SIM_SUMMARY]``, ``[SIM_RESULT]``, ``[COCOTB_RESULTS]``, ``result.json``,
+and ``results.xml`` feed an adapter's normalization and the human-readable logs
+but are never the grading channel: an output line or exit code alone can be
+stale or forged by the testbench. Only a ``completed`` termination allows a
+verdict from sentinels and return codes; a guard termination wins even when the
+child exited 0.
+"""
 
 from __future__ import annotations
 
