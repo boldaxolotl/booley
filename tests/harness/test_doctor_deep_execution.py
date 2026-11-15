@@ -222,7 +222,7 @@ def _project(root):
     )
 
 
-def test_disabled_capabilities_and_fpga_exclusion_do_not_require_checks(tmp_path, monkeypatch):
+def test_disabled_flows_do_not_require_deep_checks(tmp_path, monkeypatch):
     project = _project(tmp_path)
     monkeypatch.setattr(doctor, "_flow_enabled", lambda *_args: False)
     tracker = deep.DeepCheckTracker()
@@ -243,6 +243,7 @@ def test_disabled_capabilities_and_fpga_exclusion_do_not_require_checks(tmp_path
 
 def test_missing_targets_are_incomplete_even_without_health_warning(tmp_path, monkeypatch):
     project = _project(tmp_path)
+    project.booley_toml = {"flows": {"fpga": {}}}
     monkeypatch.setattr(doctor, "_doctor_targets", lambda *_args: [])
     tracker = deep.DeepCheckTracker()
     reporter = doctor._Reporter.create()
@@ -257,6 +258,7 @@ def test_missing_targets_are_incomplete_even_without_health_warning(tmp_path, mo
         completeness=tracker,
     )
     assert "sim.doctor-targets" in tracker.missing
+    assert "fpga.doctor-targets" in tracker.missing
     assert "sim.selftest.good" in tracker.missing
     assert "lint.selftest.bad" in tracker.missing
 
