@@ -5469,45 +5469,48 @@ def _alias_spec(workspace: Path) -> dict:
     return spec
 
 
-@pytest.mark.parametrize("image", [_NEW_IMAGE, _OLD_IMAGE], ids=["current", "pre-rename"])
 def test_prepare_refuses_alias_container_from_pre_rename_image(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, image: str
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     issuance = _test_issuance(workspace)
     _stub_prepare(monkeypatch, workspace, issuance, lambda _argv: None)
     _write_spec(workspace, _alias_spec(workspace))
     _stub_layout_probe(monkeypatch, {_NEW_IMAGE: "canonical-alias", _OLD_IMAGE: "absent"})
-    state = _running_vscode_state(workspace, image=image, booley_dir_target=None, alias=True)
-    monkeypatch.setattr(sr, "_strict_running_interactive_states", lambda: [("editor", state)])
+    states = {
+        image: _running_vscode_state(workspace, image=image, booley_dir_target=None, alias=True)
+        for image in (_NEW_IMAGE, _OLD_IMAGE)
+    }
+    running = [("editor", states[_OLD_IMAGE])]
+    monkeypatch.setattr(sr, "_strict_running_interactive_states", lambda: running)
     monkeypatch.setattr(sr, "_strict_all_interactive_states", lambda *_args: [])
 
-    if image == _NEW_IMAGE:
-        assert sr.prepare(workspace) == "current-spec"
-        return
     with pytest.raises(sr.SessionError, match=_OUTDATED_LAYOUT_REFUSAL) as caught:
         sr.prepare(workspace)
 
     assert "`docker rm editor`" in str(caught.value)
     assert "`booley init --seed`" in str(caught.value)
+    running[:] = [("editor", states[_NEW_IMAGE])]
+    assert sr.prepare(workspace) == "current-spec"
 
 
-@pytest.mark.parametrize(
-    "target", ["/booley", "/former-mount"], ids=["current-target", "former-target"]
-)
 def test_running_vscode_container_mount_follows_current_target(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, target: str
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     issuance = _test_issuance(workspace)
     _stub_prepare(monkeypatch, workspace, issuance, lambda _argv: None)
-    state = _running_vscode_state(
-        workspace, image=_NEW_IMAGE, booley_dir_target=target, alias=False
-    )
-    monkeypatch.setattr(sr, "_strict_running_interactive_states", lambda: [("editor", state)])
+    running: list[tuple[str, str]] = []
+    monkeypatch.setattr(sr, "_strict_running_interactive_states", lambda: running)
     monkeypatch.setattr(sr, "_strict_all_interactive_states", lambda *_args: [])
 
-    if target == "/booley":
-        assert sr.prepare(workspace) == "current-spec"
-        return
+    def bind_at(target: str) -> None:
+        state = _running_vscode_state(
+            workspace, image=_NEW_IMAGE, booley_dir_target=target, alias=False
+        )
+        running[:] = [("editor", state)]
+
+    bind_at("/booley")
+    assert sr.prepare(workspace) == "current-spec"
+    bind_at("/former-mount")
     with pytest.raises(sr.SessionError, match=_OUTDATED_LAYOUT_REFUSAL) as caught:
         sr.prepare(workspace)
 
@@ -5538,30 +5541,36 @@ def _docker_mounts(spec: dict, workspace: Path, booley_dir_target: str) -> list[
     return mounts
 
 
-@pytest.mark.parametrize("target", ["/booley", "/former-mount"])
 def test_session_up_refuses_sandbox_with_former_booley_dir(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, target: str
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     spec = build_spec(
         dc.APP_NONE, image="sha256:test", booley_dir_source=str(workspace / ".booley")
     )
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda image: image)
     runtime_spec.pin_image(spec)
-    environment = {**spec["remoteEnv"], **spec["containerEnv"], "BOOLEY_DIR": target}
-    state = {
-        "Image": "sha256:test",
-        "Config": {
-            "Image": "sha256:test",
-            "User": "agent",
-            "WorkingDir": "/work",
-            "Env": [f"{key}={value}" for key, value in environment.items()],
-        },
-        "HostConfig": {"Memory": 0},
-        "NetworkSettings": {
-            "Networks": {n: {} for n in sr._flag_values(spec["runArgs"], "--network")}
-        },
-        "Mounts": _docker_mounts(spec, workspace, target),
-    }
+    state: dict = {}
+
+    def bind_at(target: str) -> None:
+        environment = {**spec["remoteEnv"], **spec["containerEnv"], "BOOLEY_DIR": target}
+        state.clear()
+        state.update(
+            {
+                "Image": "sha256:test",
+                "Config": {
+                    "Image": "sha256:test",
+                    "User": "agent",
+                    "WorkingDir": "/work",
+                    "Env": [f"{key}={value}" for key, value in environment.items()],
+                },
+                "HostConfig": {"Memory": 0},
+                "NetworkSettings": {
+                    "Networks": {n: {} for n in sr._flag_values(spec["runArgs"], "--network")}
+                },
+                "Mounts": _docker_mounts(spec, workspace, target),
+            }
+        )
+
     monkeypatch.setattr(runtime_spec, "labels", lambda _stamp: ())
     monkeypatch.setattr(sr, "_session_hardening_matches", lambda *_args: True)
     monkeypatch.setattr(
@@ -5571,11 +5580,10 @@ def test_session_up_refuses_sandbox_with_former_booley_dir(
     )
     issuance = SimpleNamespace(image_id="sha256:test")
 
-    matches = sr.container_matches_issuance("test", issuance, spec=spec, workspace=workspace)
-
-    assert matches is (target == "/booley")
-    if matches:
-        return
+    bind_at("/booley")
+    assert sr.container_matches_issuance("test", issuance, spec=spec, workspace=workspace)
+    bind_at("/former-mount")
+    assert not sr.container_matches_issuance("test", issuance, spec=spec, workspace=workspace)
     request = SimpleNamespace(name="test", issuance=issuance, spec=spec, profile=None)
     monkeypatch.setattr(sr.idk, "container_exists", lambda _name: True)
     monkeypatch.setattr(

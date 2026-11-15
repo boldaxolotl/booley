@@ -109,33 +109,34 @@ class TestEnsureGuidanceLinks:
             if ino:  # st_ino is 0 on some filesystems
                 assert p.stat().st_ino == ino
 
-    @pytest.mark.parametrize("recorded_in", ["mount-history", "issued-spec"])
-    def test_repairs_a_dangling_link_through_a_recorded_former_mount(
-        self, tmp_path: Path, recorded_in: str
-    ):
-        """The F-13 breakage: a link left pointing through a former Sandbox mount."""
-        project_root, booley_dir, _canon = _make_project(tmp_path)
-        if recorded_in == "mount-history":
-            history = booley_dir / ".runtime" / "sandbox-mounts.json"
-            history.parent.mkdir()
-            history.write_text(
-                json.dumps({"schema": 1, "mounts": ["/former-mount"]}), encoding="utf-8"
-            )
-        else:
-            spec = devcontainer_path(project_root)
-            spec.parent.mkdir(parents=True)
-            spec.write_text(
-                json.dumps({"remoteEnv": {"BOOLEY_DIR": "/former-mount"}}), encoding="utf-8"
-            )
-        link = project_root / "AGENTS.md"
-        try:
-            link.symlink_to(Path("..") / "former-mount" / CANON_NAME)
-        except OSError:
-            pytest.skip("symlink creation not permitted on this host")
+    def test_repairs_a_dangling_link_through_a_recorded_former_mount(self, tmp_path: Path):
+        """The F-13 breakage: a link left pointing through a former Sandbox mount.
 
-        assert not link.exists()  # dangling, as seen from the host
-        ensure_guidance_links(project_root, booley_dir)
-        assert link.read_text(encoding="utf-8") == "# AGENTS\n"
+        The mount is recorded either in the mount history or in the issued spec.
+        """
+        for recorded_in in ("mount-history", "issued-spec"):
+            project_root, booley_dir, _canon = _make_project(tmp_path / recorded_in)
+            if recorded_in == "mount-history":
+                history = booley_dir / ".runtime" / "sandbox-mounts.json"
+                history.parent.mkdir()
+                history.write_text(
+                    json.dumps({"schema": 1, "mounts": ["/former-mount"]}), encoding="utf-8"
+                )
+            else:
+                spec = devcontainer_path(project_root)
+                spec.parent.mkdir(parents=True)
+                spec.write_text(
+                    json.dumps({"remoteEnv": {"BOOLEY_DIR": "/former-mount"}}), encoding="utf-8"
+                )
+            link = project_root / "AGENTS.md"
+            try:
+                link.symlink_to(Path("..") / "former-mount" / CANON_NAME)
+            except OSError:
+                pytest.skip("symlink creation not permitted on this host")
+
+            assert not link.exists()  # dangling, as seen from the host
+            ensure_guidance_links(project_root, booley_dir)
+            assert link.read_text(encoding="utf-8") == "# AGENTS\n", recorded_in
 
     def test_reports_an_unreadable_mount_history_as_an_os_error(self, tmp_path: Path):
         project_root, booley_dir, _canon = _make_project(tmp_path)
