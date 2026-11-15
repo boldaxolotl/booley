@@ -77,7 +77,6 @@ def _probe_executor() -> Any:
     return execution.BaselineExecutor(
         classify=classify,
         measure=measure,
-        job_class=lambda: "light",
         job_requests=lambda *_args: None,
     )
 

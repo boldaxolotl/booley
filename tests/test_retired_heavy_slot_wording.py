@@ -107,7 +107,7 @@ def test_job_glossary_entries_speak_of_the_memory_budget() -> None:
     for name in ("Job", "Standalone Job", "Job admission"):
         entry = _glossary_entry(name)
         assert "Memory Budget" in entry, f"**{name}** does not name the Memory Budget"
-        assert "slot" not in entry.replace("light slot", ""), f"**{name}** speaks of slots"
+        assert "slot" not in entry, f"**{name}** speaks of slots"
 
 
 _QUEUE_BOUND = re.compile(r"QueueFullError|queue_max|queue is full|full queue|queue_full")

@@ -5,10 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.flows import endpoint_admission
 from booley.flows.endpoint_admission import (
     AdmissionContext,
     AdmissionGate,
     _admission_cancellation_cause,
+    _Claim,
     admission,
 )
 from booley.flows.sim.config import parse_run_cwd_template
@@ -53,10 +55,6 @@ def test_admission_gate_can_only_be_entered_once() -> None:
         def _memory_admitted() -> bool:
             return False
 
-        @staticmethod
-        def _acquire_job_slot():
-            return None, None
-
     gate = AdmissionGate(Endpoint())  # type: ignore[arg-type]
     with gate.enter():
         pass
@@ -79,10 +77,6 @@ def test_admission_gate_separates_runtime_and_parent_identity(
         @staticmethod
         def _memory_admitted() -> bool:
             return False
-
-        @staticmethod
-        def _acquire_job_slot():
-            return None, None
 
     with AdmissionGate(Endpoint()).enter() as admission:  # type: ignore[arg-type]
         expected = ExecutionId(runtime_execution_id) if runtime_execution_id else None
@@ -111,14 +105,19 @@ def test_malformed_runtime_identity_rejects_before_slot_acquisition(
     monkeypatch.setenv(RUNTIME_EXECUTION_ENV, "sim-20260925T153819Z-1")
     acquisitions = 0
 
+    def acquire(_endpoint, _prepared, requeued=False):
+        nonlocal acquisitions
+        acquisitions += 1
+        return _Claim(object(), object()) if managed else _Claim(None, None)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(endpoint_admission, "_acquire_memory_reservation", acquire)
+
     class Endpoint:
         _invocation_id = "sim-20260925T153819Z-1"
 
         @staticmethod
-        def _acquire_job_slot():
-            nonlocal acquisitions
-            acquisitions += 1
-            return (object(), object()) if managed else (None, None)
+        def _memory_admitted() -> bool:
+            return True
 
     with (
         pytest.raises(ValueError, match=RUNTIME_EXECUTION_ENV),
@@ -135,14 +134,19 @@ def test_simulation_admission_reports_malformed_runtime_identity(
 ) -> None:
     monkeypatch.setenv(RUNTIME_EXECUTION_ENV, "sim-20260925T153819Z-1")
 
+    def acquire(*_args, **_kwargs):
+        raise AssertionError("slot acquisition must not run")
+
+    monkeypatch.setattr(endpoint_admission, "_acquire_memory_reservation", acquire)
+
     class Endpoint:
         name = "sim"
         endpoint_kind = "flow"
         _invocation_id = "sim-20260925T153819Z-1"
 
         @staticmethod
-        def _acquire_job_slot():
-            raise AssertionError("slot acquisition must not run")
+        def _memory_admitted() -> bool:
+            return True
 
         @staticmethod
         def _get_head_sha() -> str:
