@@ -86,9 +86,13 @@ def test_windows_open_does_not_require_missing_pywin32_constant(
         observed["flags"] = cast(int, args[5])
         return handle
 
+    def file_information(handle_value: object) -> tuple[int]:
+        observed["queried_handle"] = cast(int, handle_value)
+        return (0,)
+
     win32file = SimpleNamespace(
         CreateFile=create_file,
-        GetFileInformationByHandle=lambda _handle: (0,),
+        GetFileInformationByHandle=file_information,
     )
     monkeypatch.setitem(sys.modules, "pywintypes", SimpleNamespace(error=OSError))
     monkeypatch.setitem(sys.modules, "win32con", constants)
@@ -99,6 +103,7 @@ def test_windows_open_does_not_require_missing_pywin32_constant(
     )
 
     assert opened is handle
+    assert observed["queried_handle"] == 7
     assert observed["flags"] == 0x02200000
 
 
