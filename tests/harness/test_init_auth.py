@@ -98,10 +98,10 @@ def test_detect_auth_mode_reports_what_actually_bills(tmp_path, monkeypatch):
     creds.write_text("{}", encoding="utf-8")
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
-    assert init_cmd._detect_auth_mode("claude") == "api_key"
+    assert init_cmd._detect_auth_mode("claude", init_cmd.auth_token.VISITOR_AUTH) == "api_key"
 
     monkeypatch.delenv("ANTHROPIC_API_KEY")
-    assert init_cmd._detect_auth_mode("claude") == "subscription"
+    assert init_cmd._detect_auth_mode("claude", init_cmd.auth_token.VISITOR_AUTH) == "subscription"
 
 
 @pytest.mark.parametrize("external", [False, True])
@@ -146,7 +146,7 @@ def test_overridden_credential_is_a_hint_under_the_winning_source(monkeypatch):
     monkeypatch.setattr(init_cmd, "ok", lambda msg: rows.append(("ok", msg)))
     monkeypatch.setattr(init_cmd, "hint", lambda msg: rows.append(("hint", msg)))
 
-    init_cmd._check_provider_creds("claude", "oauth")
+    init_cmd._check_provider_creds("claude", "oauth", "subscription")
 
     assert rows == [
         ("ok", "using stored token"),

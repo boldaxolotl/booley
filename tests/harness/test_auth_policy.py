@@ -1,6 +1,6 @@
 """Tests for the ``[agent] auth`` policy: parsing, resolution, and enforcement.
 
-The knob pins what bills. ``auto`` leaves the agent CLI's own precedence alone;
+The knob pins what bills; a missing value is ``subscription`` and ``auto`` is retired.
 ``subscription`` makes Booley scrub the API-key env vars from every agent
 environment it controls (the Claude CLI's own prescribed remedy: "Unset
 ANTHROPIC_API_KEY to use your claude.ai account instead"); ``api_key`` fails
@@ -46,7 +46,7 @@ class TestParseAuth:
     def test_absent_is_none(self):
         assert bc._parse_auth({}) is None
 
-    @pytest.mark.parametrize("mode", ["auto", "subscription", "api_key"])
+    @pytest.mark.parametrize("mode", ["subscription", "api_key"])
     def test_valid_values(self, mode):
         assert bc._parse_auth({"auth": mode}) == mode
 
@@ -77,11 +77,15 @@ class TestClaudeSubscriptionScrub:
         return _build_sdk_options(params, auth_mode=auth_mode)
 
     def test_nonessential_traffic_is_disabled_in_child_env(self, clean_env):
-        assert self._options("auto").env == {"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
+        assert self._options(auth_token.VISITOR_AUTH).env == {
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+        }
 
     def test_ambient_nonessential_traffic_setting_is_preserved(self, clean_env, monkeypatch):
         monkeypatch.setenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "0")
-        assert self._options("auto").env == {"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "0"}
+        assert self._options(auth_token.VISITOR_AUTH).env == {
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "0"
+        }
 
     def test_subscription_blanks_the_api_key(self, clean_env):
         assert self._options("subscription").env == {
@@ -89,7 +93,7 @@ class TestClaudeSubscriptionScrub:
             "ANTHROPIC_API_KEY": "",
         }
 
-    @pytest.mark.parametrize("mode", ["auto", "api_key"])
+    @pytest.mark.parametrize("mode", [auth_token.VISITOR_AUTH, "api_key"])
     def test_other_modes_do_not_touch_auth_env(self, mode, clean_env):
         assert self._options(mode).env == _TRAFFIC_ENV
 
@@ -108,9 +112,9 @@ class TestClaudeStoredTokenInjection:
         params = AgentCallParams(prompt="p", model="claude-sonnet-4-6", cwd=".")
         return _build_sdk_options(params, auth_mode=auth_mode)
 
-    def test_auto_injects_the_stored_token(self, clean_env):
+    def test_visitor_injects_the_stored_token(self, clean_env):
         auth_token.store_token(_TOKEN)
-        assert self._options("auto").env == {
+        assert self._options(auth_token.VISITOR_AUTH).env == {
             **_TRAFFIC_ENV,
             auth_token.ENV_VAR: _TOKEN,
         }
@@ -132,27 +136,29 @@ class TestClaudeStoredTokenInjection:
         # stored one would silently override the user's explicit choice.
         auth_token.store_token(_TOKEN)
         monkeypatch.setenv(auth_token.ENV_VAR, "sk-ant-oat01-ambient")
-        assert self._options("auto").env == _TRAFFIC_ENV
+        assert self._options(auth_token.VISITOR_AUTH).env == _TRAFFIC_ENV
 
     def test_container_token_seed_is_injected(self, clean_env, monkeypatch):
         # In-container there is no ~/.config/booley store; the spec bind-mounts
         # the host's stored credential at a home sidecar instead.
         home = clean_env / "userhome"
         (home / auth_token.TOKEN_SEED_BASENAME[auth_token.APP_CLAUDE]).write_text(f"{_TOKEN}\n")
-        assert self._options("auto").env == {
+        assert self._options(auth_token.VISITOR_AUTH).env == {
             **_TRAFFIC_ENV,
             auth_token.ENV_VAR: _TOKEN,
         }
 
 
 class TestClaudeHealthCheck:
-    def test_auto_mode_is_auth_only_and_does_not_mutate_process_env(self, clean_env, monkeypatch):
+    def test_visitor_mode_is_auth_only_and_does_not_mutate_process_env(
+        self, clean_env, monkeypatch
+    ):
         from booley.runtime._claude_backend import ClaudeSDKBackend
 
         monkeypatch.delenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", raising=False)
 
-        assert ClaudeSDKBackend(auth_mode="auto").health_check() is None
+        assert ClaudeSDKBackend(auth_mode=auth_token.VISITOR_AUTH).health_check() is None
         assert "CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK" not in os.environ
         assert "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" not in os.environ
 
@@ -198,8 +204,8 @@ class TestCodexHealthCheck:
 
         assert warning is not None and "codex login" in warning
 
-    def test_auto_mode_is_silent(self, clean_env, monkeypatch):
-        assert self._backend(monkeypatch, "auto").health_check() is None
+    def test_visitor_mode_is_silent(self, clean_env, monkeypatch):
+        assert self._backend(monkeypatch, auth_token.VISITOR_AUTH).health_check() is None
 
 
 class TestCodexSpawnScrub:
@@ -225,8 +231,8 @@ class TestCodexSpawnScrub:
         await _codex_backend._codex_spawn(["codex"], params, "subscription")
         assert captured["env"] is not None and "OPENAI_API_KEY" not in captured["env"]
 
-        await _codex_backend._codex_spawn(["codex"], params, "auto")
-        # auto on the host inherits the environment untouched
+        await _codex_backend._codex_spawn(["codex"], params, auth_token.VISITOR_AUTH)
+        # the visitor mode inherits the environment untouched
         assert captured["env"]["OPENAI_API_KEY"] == "sk-proj-x"
 
 
@@ -239,7 +245,7 @@ class TestSandboxEnvFileScrub:
         runner = sandbox.DockerRunner.__new__(sandbox.DockerRunner)
         runner.worktree = Path.home() / "project"
         (runner.worktree / ".booley").mkdir(parents=True, exist_ok=True)
-        policy = os.environ.get("BOOLEY_PRIMARY_AUTH", "auto")
+        policy = os.environ.get("BOOLEY_PRIMARY_AUTH", "api_key")
         (runner.worktree / ".booley" / "booley.toml").write_text(f'[agent]\nauth="{policy}"\n')
         runner._append_api_key_env_file(cmd)
         if "--env-file" not in cmd:
@@ -259,7 +265,7 @@ class TestSandboxEnvFileScrub:
         assert "OPENAI_API_KEY" not in body
         assert f"CLAUDE_CODE_OAUTH_TOKEN={_TOKEN}" in body
 
-    def test_auto_forwards_the_api_key(self, clean_env, monkeypatch):
+    def test_api_key_policy_forwards_the_api_key(self, clean_env, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
 
         body = self._env_file_body(monkeypatch)
@@ -352,10 +358,10 @@ class TestDoctorPolicyAwareness:
         assert sink["warn"] == []
         assert any("revoke" in m and "accepted" in m for m in sink["note"])
 
-    def test_auto_policy_accepts_the_api_key(self, clean_env, monkeypatch):
+    def test_visitor_policy_accepts_the_api_key(self, clean_env, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
 
-        sink = self._run_oauth_check(monkeypatch, "auto")
+        sink = self._run_oauth_check(monkeypatch, auth_token.VISITOR_AUTH)
 
         assert sink["warn"] == []
         assert any("API key" in m for m in sink["pass"])
@@ -373,14 +379,16 @@ class TestDoctorPolicyAwareness:
 
         assert doctor._configured_auth_policy(audit) == "subscription"
 
-    def test_unconfigured_policy_is_auto(self, clean_env):
+    def test_unconfigured_policy_is_subscription(self, clean_env, monkeypatch):
         from booley.harness import doctor
 
-        assert doctor._configured_auth_policy(None) == "auto"
+        monkeypatch.setattr(bc, "_inside_container", lambda: False)
+
+        assert doctor._configured_auth_policy(None) == "subscription"
 
 
 @pytest.mark.parametrize("app", ["claude", "codex"])
-@pytest.mark.parametrize("policy", ["auto", "subscription", "api_key"])
+@pytest.mark.parametrize("policy", ["subscription", "api_key"])
 @pytest.mark.parametrize(
     "key,stored,login", [(bool(n & 4), bool(n & 2), bool(n & 1)) for n in range(8)]
 )
@@ -426,9 +434,7 @@ def test_issued_policy_matrix(clean_env, monkeypatch, app, policy, key, stored, 
     if key and policy != "subscription":
         expected_keys.add(auth_token.API_KEY_ENV[app])
     if stored and (
-        policy == "auto"
-        or (app == "claude" and policy == "subscription")
-        or (app == "codex" and policy == "api_key")
+        (app == "claude" and policy == "subscription") or (app == "codex" and policy == "api_key")
     ):
         expected_keys.add(auth_token.CREDENTIALS[app].env_var)
     credential_keys = {"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY"}
@@ -439,23 +445,20 @@ def test_issued_policy_matrix(clean_env, monkeypatch, app, policy, key, stored, 
     assert (".claude-creds-seed.json" in mounts or ".codex-auth-seed.json" in mounts) == (
         login and policy != "api_key"
     )
-    token_allowed = (
-        policy == "auto"
-        or (app == "claude" and policy == "subscription")
-        or (app == "codex" and policy == "api_key")
+    token_allowed = (app == "claude" and policy == "subscription") or (
+        app == "codex" and policy == "api_key"
     )
     assert (auth_token.TOKEN_SEED_BASENAME[app] in mounts) == (stored and token_allowed)
 
 
 def _without_policy_pin(findings, policy):
-    """Drop the pin FAIL that `auto` always raises (agent.credential-policy); grade the rest."""
-    pins = [f for f in findings if f.check_id == "agent.credential-policy"]
-    assert bool(pins) == (policy == "auto")
-    return [f for f in findings if f not in pins]
+    """Assert a recorded *policy* raises no pin FAIL (agent.credential-policy); grade the rest."""
+    assert not [f for f in findings if f.check_id == "agent.credential-policy"], policy
+    return list(findings)
 
 
 @pytest.mark.parametrize("app", ["claude", "codex"])
-@pytest.mark.parametrize("policy", ["auto", "subscription", "api_key"])
+@pytest.mark.parametrize("policy", ["subscription", "api_key"])
 @pytest.mark.parametrize(
     "key,stored,login", [(bool(n & 4), bool(n & 2), bool(n & 1)) for n in range(8)]
 )
@@ -510,7 +513,7 @@ def test_reporting_policy_matrix(clean_env, monkeypatch, capsys, app, policy, ke
     assert code == (0 if expected else 1)
     assert f"auth policy '{policy}'" in output
     assert "SYNTHETIC" not in output + str(sink)
-    assert bool(sink["fail"]) == (expected is None and policy != "auto")
+    assert bool(sink["fail"]) == (expected is None)
     assert any(" auth:" in message for message in sink["pass"]) == (expected is not None)
     if expected == "api_key":
         assert "bills per token" in output
@@ -600,8 +603,9 @@ async def test_registrar_and_child_policy_matrix(
         )
     container = clean_env / "container-home"
     container.mkdir()
+    mode = auth_token.VISITOR_AUTH if policy == "auto" else policy  # "auto" spells visitor
     token_allowed = (
-        policy == "auto"
+        mode == auth_token.VISITOR_AUTH
         or (app == "claude" and policy == "subscription")
         or (app == "codex" and policy == "api_key")
     )
@@ -611,10 +615,10 @@ async def test_registrar_and_child_policy_matrix(
     if app == "claude":
         settings = container / ".claude" / "settings.json"
         persisted = json.loads(settings.read_text()).get("env", {}) if settings.exists() else {}
-        child = {**os.environ, **_claude_backend._claude_env_overrides(policy)}
+        child = {**os.environ, **_claude_backend._claude_env_overrides(mode)}
         assert bool(persisted.get("CLAUDE_CODE_OAUTH_TOKEN")) == (stored and token_allowed)
     else:
-        child = await _captured_codex_child(clean_env, monkeypatch, policy, key, stored, login)
+        child = await _captured_codex_child(clean_env, monkeypatch, mode, key, stored, login)
         if child is None:
             return
         auth = container / ".codex" / "auth.json"
@@ -699,3 +703,131 @@ def test_malformed_or_unreadable_codex_login_never_establishes_subscription(
 
     monkeypatch.setattr(Path, "read_text", unreadable)
     assert auth_token.effective_credential("codex", "subscription") is None
+
+
+def _project_with_agent_section(root: Path, agent_toml: str) -> Path:
+    project = root / "project"
+    (project / ".booley").mkdir(parents=True)
+    (project / ".booley" / "booley.toml").write_bytes(f"[agent]\n{agent_toml}".encode())
+    return project
+
+
+@pytest.mark.parametrize(
+    ("agent_toml", "named"),
+    [
+        ('default = "claude"\nauth = "auto"\n', "auth = 'auto'"),
+        ('default = "codex"\n[agent.auth]\ncodex = "auto"\n', "[agent.auth] codex = 'auto'"),
+    ],
+    ids=["string", "table"],
+)
+def test_retired_auto_auth_is_rejected_at_load(clean_env, monkeypatch, agent_toml, named):
+    monkeypatch.setattr(bc, "_agent_settings", None)
+    project = _project_with_agent_section(clean_env, agent_toml)
+
+    with pytest.raises(bc.BackendConfigError) as caught:
+        bc.load_agent_settings(project)
+
+    message = str(caught.value)
+    assert named in message
+    assert "is retired" in message
+    assert 'set "subscription" or "api_key"' in message
+    assert "booley init" in message
+
+
+@pytest.mark.parametrize(
+    ("cli", "login", "key_env", "agent_toml"),
+    [
+        (
+            "claude",
+            (".claude/.credentials.json", '{"claudeAiOauth":{"accessToken":"SYNTHETIC"}}'),
+            "ANTHROPIC_API_KEY",
+            'default = "claude"\n',
+        ),
+        (
+            "codex",
+            (".codex/auth.json", '{"tokens":{"access_token":"SYNTHETIC"}}'),
+            "OPENAI_API_KEY",
+            'default = "codex"\n',
+        ),
+        (
+            "claude",
+            (".claude/.credentials.json", '{"claudeAiOauth":{"accessToken":"SYNTHETIC"}}'),
+            "ANTHROPIC_API_KEY",
+            'default = "claude"\nauth = "subscription"\n',
+        ),
+    ],
+    ids=["claude", "codex", "claude-explicit-subscription"],
+)
+def test_unset_auth_bills_the_subscription_over_an_exported_key(
+    clean_env, monkeypatch, cli, login, key_env, agent_toml
+):
+    monkeypatch.setattr(bc, "_agent_settings", None)
+    monkeypatch.setattr(bc, "_inside_container", lambda: False)
+    path = Path.home() / login[0]
+    path.parent.mkdir(parents=True)
+    path.write_bytes(login[1].encode())
+    monkeypatch.setenv(key_env, "sk-exported-api-key")
+    project = _project_with_agent_section(clean_env, agent_toml)
+
+    policy = bc.load_agent_settings(project).auth_for(cli)
+    plan = auth_token.credential_plan(cli, policy)
+
+    assert policy == "subscription"
+    assert plan.selected is not None
+    assert plan.selected.mode == auth_token.MODE_SUBSCRIPTION
+    assert key_env not in plan.child_environment(dict(os.environ))
+
+
+def test_unset_auth_in_a_container_without_a_handoff_bills_the_subscription(
+    clean_env, monkeypatch
+):
+    """A CI runner or hand-made devcontainer has no env hand-off: the host rule applies."""
+    monkeypatch.setattr(bc, "_agent_settings", None)
+    monkeypatch.setattr(bc, "_inside_container", lambda: True)
+    monkeypatch.delenv("BOOLEY_AGENT_APP", raising=False)
+    monkeypatch.delenv("BOOLEY_PRIMARY_AUTH", raising=False)
+    monkeypatch.delenv("BOOLEY_AGENT_CLIS", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-exported-api-key")
+    project = _project_with_agent_section(clean_env, 'default = "claude"\n')
+
+    assert bc.load_agent_settings(project).auth_for("claude") == "subscription"
+    assert bc.missing_auth_policy() == "subscription"
+
+
+def test_auto_is_not_a_credential_policy():
+    assert not auth_token.defers_to_cli("auto")
+    assert auth_token.defers_to_cli(auth_token.VISITOR_AUTH)
+    with pytest.raises(ValueError, match="invalid credential policy"):
+        auth_token.allowed_credential_keys(auth_token.APP_CLAUDE, "auto")
+    with pytest.raises(ValueError, match="retired"):
+        bc.decode_cli_policies("claude=auto")
+    # The retired value stays readable for the two readers that repair or report it.
+    assert bc.parse_agent_section({"auth": "auto"}, keep_retired_auth=True).auth == "auto"
+    assert bc.decode_cli_policies("claude=auto", legacy_auto=True) == {"claude": "auto"}
+
+
+def test_auth_status_in_a_handwritten_sandbox_accepts_the_visitor_key(
+    clean_env, monkeypatch, capsys
+):
+    """No Project, ``BOOLEY_PRIMARY_AUTH=auto`` and only an API key: the visitor mode runs on it."""
+    import argparse
+
+    from booley.harness import auth_cmd
+
+    monkeypatch.setattr(bc, "_inside_container", lambda: True)
+    monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "auto")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
+
+    code = auth_cmd.run_auth(argparse.Namespace(status=True, app=None), None)
+
+    assert code == 0
+    assert "ANTHROPIC_API_KEY" in capsys.readouterr().out
+
+
+def test_wire_spelling_of_the_visitor_mode_is_auto():
+    assert bc.wire_auth(auth_token.VISITOR_AUTH) == "auto"
+    assert bc.wire_auth("subscription") == "subscription"
+    assert bc.encode_cli_policies({"claude": "visitor", "codex": "api_key"}) == (
+        "claude=auto,codex=api_key"
+    )

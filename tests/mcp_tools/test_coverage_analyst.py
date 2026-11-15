@@ -829,7 +829,7 @@ def test_default_wrapper_keeps_role_usage_and_exposes_only_evidence_tool(tmp_pat
                 default_cli="claude",
                 specialist_models={"coverage_analyst": "claude-chosen-model"},
             ),
-            active_backend=ClaudeSDKBackend(),
+            active_backend=ClaudeSDKBackend(auth_mode="visitor"),
         )
     )
     try:

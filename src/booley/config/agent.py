@@ -37,9 +37,8 @@ _MODEL_PREFIX_CLI = (("claude-", "claude"), ("gpt-", "codex"))
 # unauthenticated Codex call that 401s.
 _DEFAULT_PROVIDER = "claude"
 
-# [agent] auth: which credential each Agent CLI must bill.
-#   auto         — today's behavior: the agent CLI resolves per its own
-#                  precedence (API key > rotation-free token > login file).
+# [agent] auth: which credential each Agent CLI must bill. A missing ``auth`` is
+# ``subscription``.
 #   subscription — bill the subscription: Booley scrubs the API-key env vars
 #                  (ANTHROPIC_API_KEY / OPENAI_API_KEY) from every agent
 #                  environment it controls, which is exactly the remedy the
@@ -50,40 +49,54 @@ _DEFAULT_PROVIDER = "claude"
 #                  check fails loud when the key is absent instead of letting
 #                  agents silently fall back to (and bill) the subscription.
 #
-# ``visitor`` is the Sandbox's reading of ``BOOLEY_PRIMARY_AUTH=auto`` and of an issued
-# ``cli=auto`` record: the visitor's own credential, else the sponsored gateway. It is
-# environment-only, so ``booley.toml`` still rejects it.
+# ``auto`` is retired: ``booley.toml`` rejects it. ``visitor`` is the Sandbox's reading of
+# ``BOOLEY_PRIMARY_AUTH=auto`` and of an issued ``cli=auto`` record (``RETIRED_AUTH`` is
+# that wire spelling): the visitor's own credential, else the sponsored gateway. It is
+# environment-only, so ``booley.toml`` rejects it too.
 #
 # ``gateway`` routes Codex only. It is honored inside a Sandbox: set by the
 # ``BOOLEY_PRIMARY_AUTH=gateway`` hand-off of a hand-written spec (plus BOOLEY_GATEWAY_URL /
 # BOOLEY_GATEWAY_TOKEN) or, for Codex, in ``[agent.auth]`` (a Booley-issued Sandbox
 # forwards the gateway settings and records the policy in ``BOOLEY_AGENT_CLIS``).
-_VALID_AUTH_MODES = ("auto", "subscription", "api_key")
-_ENV_AUTH_MODES = (*_VALID_AUTH_MODES, GATEWAY_AUTH)
-_DEFAULT_AUTH = "auto"
+RETIRED_AUTH = "auto"
+VALID_AUTH_MODES = ("subscription", "api_key")
+_ENV_AUTH_MODES = (*VALID_AUTH_MODES, GATEWAY_AUTH)
+DEFAULT_AUTH = "subscription"
 
 # remoteEnv key of a Booley-issued Sandbox spec recording its allowed Agent CLIs and
 # each CLI's policy, as ``claude=subscription,codex=api_key`` in ``[agent] clis`` order.
 AGENT_CLIS_ENV = "BOOLEY_AGENT_CLIS"
 
 
+def wire_auth(policy: str) -> str:
+    """*policy* as a spec spells it: ``visitor`` is written ``auto``, the rest unchanged."""
+    return RETIRED_AUTH if policy == VISITOR_AUTH else policy
+
+
 def encode_cli_policies(policies: Mapping[str, str]) -> str:
     """The ``BOOLEY_AGENT_CLIS`` value for ``{cli: policy}`` in iteration order."""
-    return ",".join(f"{cli}={policy}" for cli, policy in policies.items())
+    return ",".join(f"{cli}={wire_auth(policy)}" for cli, policy in policies.items())
 
 
-def decode_cli_policies(raw: str) -> dict[str, str]:
+def decode_cli_policies(raw: str, *, legacy_auto: bool = False) -> dict[str, str]:
     """Parse a ``BOOLEY_AGENT_CLIS`` value strictly; empty text is the empty record.
 
     Raises ``ValueError`` for an unknown CLI, a duplicate, a malformed pair or a policy
-    other than ``auto|subscription|api_key``; ``gateway`` is accepted for ``codex`` only
-    (the gateway routes Codex, never Claude).
+    other than ``subscription|api_key``; ``gateway`` is accepted for ``codex`` only
+    (the gateway routes Codex, never Claude). A recorded ``auto`` is the retired policy
+    and raises too, unless *legacy_auto* (the Sandbox's own reader) keeps it.
     """
     policies: dict[str, str] = {}
     for pair in filter(None, (part.strip() for part in raw.split(","))):
         cli, sep, policy = pair.partition("=")
         gateway_codex = cli == "codex" and policy == GATEWAY_AUTH
-        if not sep or cli not in AGENT_CLIS or not (policy in _VALID_AUTH_MODES or gateway_codex):
+        if cli in AGENT_CLIS and policy == RETIRED_AUTH and not legacy_auto:
+            raise ValueError(f"{cli}={policy} records the retired auth {RETIRED_AUTH!r}")
+        if (
+            not sep
+            or cli not in AGENT_CLIS
+            or not (policy in (*VALID_AUTH_MODES, RETIRED_AUTH) or gateway_codex)
+        ):
             raise ValueError(f"malformed Agent CLI record entry {pair!r}")
         if cli in policies:
             raise ValueError(f"duplicate Agent CLI {cli!r} in the record")
@@ -179,7 +192,7 @@ class AgentSettings:
     default_cli: str = _DEFAULT_PROVIDER
     # The Agent CLIs this Project may run; empty means just the default CLI.
     clis: tuple[str, ...] = ()
-    # One auth policy per listed CLI; an unlisted CLI reads as ``auto``.
+    # One auth policy per listed CLI; an unlisted CLI reads as ``subscription``.
     auth: Mapping[str, str] = field(default_factory=dict)
     # [models]: Specialist name -> pinned model ID. Absent = the default CLI's built-in model.
     # A ``tuple`` value is the hidden fallback list (ADR 0084 amendment, #2836): models tried
@@ -202,7 +215,7 @@ class AgentSettings:
 
     def auth_for(self, cli: str) -> str:
         """The auth policy for *cli*."""
-        return self.auth.get(cli, _DEFAULT_AUTH)
+        return self.auth.get(cli, DEFAULT_AUTH)
 
     def cli_for_specialist(self, name: str) -> str:
         """The Agent CLI *name* runs on: its pinned model's CLI, else the default CLI."""
@@ -324,8 +337,14 @@ def _checked(value: object, key: str, allowed: tuple[str, ...]) -> str:
     return str(value)
 
 
-def parse_agent_section(agent: Mapping[str, Any]) -> DeclaredAgent:
+def parse_agent_section(
+    agent: Mapping[str, Any], *, keep_retired_auth: bool = False
+) -> DeclaredAgent:
     """Check the shape of ``[agent]``: ``clis``, ``default``/``provider``, ``auth``.
+
+    ``auth = "auto"`` (string or table entry) is retired and raises, unless
+    *keep_retired_auth*: the two readers that repair or report it (``booley init`` and
+    Doctor) keep it so they can name the replacement.
 
     Environment-free, so every reader agrees on it; the checks that need the effective
     CLI set (an environment hand-off can change it) live in :func:`settings_from_data`.
@@ -350,11 +369,29 @@ def parse_agent_section(agent: Mapping[str, Any]) -> DeclaredAgent:
         )
     chosen = default if default is not None else provider
     chosen = None if chosen is None else _checked(chosen, "default", AGENT_CLIS)
-    return DeclaredAgent(clis, chosen or (clis[0] if clis else None), _parse_auth(agent))
+    return DeclaredAgent(
+        clis,
+        chosen or (clis[0] if clis else None),
+        _parse_auth(agent, keep_retired_auth=keep_retired_auth),
+    )
 
 
-def _parse_auth(agent: Mapping[str, Any]) -> str | Mapping[str, str] | None:
+def _retired_auth_error(where: str) -> BackendConfigError:
+    """The load error for ``auth = "auto"``; *where* names the string or table entry."""
+    return BackendConfigError(
+        f'booley.toml {where} = {RETIRED_AUTH!r} is retired; set "subscription" or '
+        '"api_key" (booley doctor names the one your credentials suggest), or re-run booley init'
+    )
+
+
+def _parse_auth(
+    agent: Mapping[str, Any], *, keep_retired_auth: bool = False
+) -> str | Mapping[str, str] | None:
     raw = agent.get("auth")
+    if raw == RETIRED_AUTH:
+        if not keep_retired_auth:
+            raise _retired_auth_error("[agent] auth")
+        return RETIRED_AUTH
     if raw is None or isinstance(raw, str):
         return None if raw is None else _checked(raw, "auth", _ENV_AUTH_MODES)
     if not isinstance(raw, dict):
@@ -363,6 +400,11 @@ def _parse_auth(agent: Mapping[str, Any]) -> str | Mapping[str, str] | None:
         )
     table = {}
     for cli, policy in raw.items():
+        if policy == RETIRED_AUTH:
+            if not keep_retired_auth:
+                raise _retired_auth_error(f"[agent.auth] {cli}")
+            table[_checked(cli, "auth key", AGENT_CLIS)] = RETIRED_AUTH
+            continue
         table[_checked(cli, "auth key", AGENT_CLIS)] = _checked(
             policy, f"auth.{cli}", _ENV_AUTH_MODES
         )
@@ -392,8 +434,23 @@ def resolve_default_cli(declared: DeclaredAgent | None) -> tuple[str, str] | Non
     return (app, "BOOLEY_AGENT_APP") if app in AGENT_CLIS else None
 
 
+def missing_auth_policy() -> str:
+    """The policy of a CLI whose ``booley.toml`` ``auth`` is missing.
+
+    ``subscription``, except inside a hand-written Sandbox (a container with no
+    decodable ``BOOLEY_AGENT_CLIS`` record whose spec sets ``BOOLEY_AGENT_APP`` or
+    ``BOOLEY_PRIMARY_AUTH``), where it is the env-only ``visitor`` mode: such a spec
+    keeps resolving exactly as it did when ``auto`` was a policy. Any other container
+    (a CI runner, a hand-made devcontainer) reads as the host does.
+    """
+    handoff = os.environ.get("BOOLEY_AGENT_APP") or os.environ.get("BOOLEY_PRIMARY_AUTH")
+    if _inside_container() and not _recorded_cli_policies() and (handoff or "").strip():
+        return VISITOR_AUTH
+    return DEFAULT_AUTH
+
+
 def _declared_policies(declared: DeclaredAgent, clis: tuple[str, ...]) -> dict[str, str]:
-    """One declared policy per listed CLI, from ``[agent] auth`` alone (no environment)."""
+    """One declared policy per listed CLI: ``[agent] auth``, else :func:`missing_auth_policy`."""
     auth = declared.auth
     if isinstance(auth, str):
         if auth == GATEWAY_AUTH and "claude" in clis:
@@ -405,7 +462,8 @@ def _declared_policies(declared: DeclaredAgent, clis: tuple[str, ...]) -> dict[s
     unlisted = [cli for cli in auth or {} if cli not in clis]
     if unlisted:
         raise BackendConfigError(f"booley.toml [agent.auth] {unlisted[0]} is not in [agent] clis")
-    return {cli: (auth or {}).get(cli, _DEFAULT_AUTH) for cli in clis}
+    missing = missing_auth_policy()
+    return {cli: (auth or {}).get(cli, missing) for cli in clis}
 
 
 def _auth_policies(
@@ -421,7 +479,7 @@ def _auth_policies(
     elif lazy and env_auth_handoff() is not None:
         policies[default_cli] = _env_auth()  # a hand-written spec without the CLI record
     if not _inside_container():  # the gateway is honored in a Sandbox only
-        policies = {cli: _DEFAULT_AUTH if p == GATEWAY_AUTH else p for cli, p in policies.items()}
+        policies = {cli: DEFAULT_AUTH if p == GATEWAY_AUTH else p for cli, p in policies.items()}
     return policies
 
 
@@ -429,15 +487,17 @@ def _recorded_cli_policies() -> dict[str, str]:
     """The ``BOOLEY_AGENT_CLIS`` record of the issued spec; empty when absent or malformed.
 
     A recorded ``auto`` reads as ``visitor`` here, in Sandbox readers only; the host
-    keeps validating it through :func:`decode_cli_policies`.
+    rejects it as retired through :func:`decode_cli_policies`.
     """
     raw = os.environ.get(AGENT_CLIS_ENV, "")
     try:
-        decoded = decode_cli_policies(raw)
+        decoded = decode_cli_policies(raw, legacy_auto=True)
     except ValueError as exc:
         logger.warning("Ignoring %s: %s", AGENT_CLIS_ENV, exc)
         return {}
-    return {cli: VISITOR_AUTH if policy == "auto" else policy for cli, policy in decoded.items()}
+    return {
+        cli: VISITOR_AUTH if policy == RETIRED_AUTH else policy for cli, policy in decoded.items()
+    }
 
 
 def _retired_models_error(models: Mapping[str, Any], default_cli: str) -> BackendConfigError:
@@ -729,7 +789,7 @@ def env_auth_handoff() -> str | None:
 def env_auth_mode(raw: str | None) -> str | None:
     """*raw* normalized as an environment auth mode: ``auto`` reads as ``visitor``, blank as ``None``."""
     mode = (raw or "").strip().lower() or None
-    return VISITOR_AUTH if mode == "auto" else mode
+    return VISITOR_AUTH if mode == RETIRED_AUTH else mode
 
 
 def sandbox_cli_policy(cli: str) -> str | None:
@@ -791,12 +851,12 @@ def _env_auth() -> str:
     ``resolve_default_cli`` treats an unknown ``BOOLEY_PRIMARY_PROVIDER``).
     ``gateway`` on a host (outside a container) is treated as unknown.
     """
-    raw = env_auth_handoff() or _DEFAULT_AUTH
+    raw = env_auth_handoff() or VISITOR_AUTH
     if raw not in (*_ENV_AUTH_MODES, VISITOR_AUTH) or (
         raw == GATEWAY_AUTH and not _inside_container()
     ):
-        logger.warning("Ignoring BOOLEY_PRIMARY_AUTH %r; using %s", raw, _DEFAULT_AUTH)
-        return _DEFAULT_AUTH
+        logger.warning("Ignoring BOOLEY_PRIMARY_AUTH %r; using %s", raw, VISITOR_AUTH)
+        return VISITOR_AUTH
     return raw
 
 
@@ -854,4 +914,4 @@ def project_credential_policy(
     """The CLI (default unless `cli` names one) and its declared auth policy at a root."""
     found = project_credential_policies(project_root, booley_dir=booley_dir, selected=cli)
     chosen = cli or found.default
-    return chosen, found.policies.get(chosen, _DEFAULT_AUTH)
+    return chosen, found.policies.get(chosen, missing_auth_policy())

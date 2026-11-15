@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -236,14 +237,16 @@ def test_subscription_removes_anthropic_auth_token_from_codex_child_env(gateway_
     assert "ANTHROPIC_AUTH_TOKEN" not in captured["env"]
 
 
-def test_auto_keeps_anthropic_auth_token_for_claude_but_never_forwards_it(
+def test_visitor_keeps_anthropic_auth_token_for_claude_but_never_forwards_it(
     gateway_env, monkeypatch
 ):
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", _BEARER)
 
-    plan = auth_token.credential_plan("claude", "auto")
+    plan = auth_token.credential_plan("claude", auth_token.VISITOR_AUTH)
 
-    assert "ANTHROPIC_AUTH_TOKEN" not in _claude_backend._claude_env_overrides("auto")
+    assert "ANTHROPIC_AUTH_TOKEN" not in _claude_backend._claude_env_overrides(
+        auth_token.VISITOR_AUTH
+    )
     assert "ANTHROPIC_AUTH_TOKEN" in plan.allowed_env
     assert "ANTHROPIC_AUTH_TOKEN" not in dict(plan.values)
     assert _BEARER not in repr(plan)
@@ -391,10 +394,14 @@ def test_auth_status_for_claude_ignores_codex_gateway(claude_session, monkeypatc
     assert "the gateway at" not in output
 
 
-def test_auth_status_on_host_reads_declared_gateway_as_auto(gateway_env, monkeypatch, capsys):
+def test_auth_status_on_host_reads_declared_gateway_as_subscription(
+    gateway_env, monkeypatch, capsys
+):
     monkeypatch.setattr(agent_config, "_inside_container", lambda: False)
     monkeypatch.delenv("BOOLEY_PRIMARY_AUTH")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-synthetic-host-key")
+    login = Path.home() / ".codex" / "auth.json"
+    login.parent.mkdir()
+    login.write_bytes(b'{"tokens": {"access_token": "SYNTHETIC"}}')
     _write_toml(
         gateway_env,
         '[agent]\ndefault = "codex"\nclis = ["claude", "codex"]\n[agent.auth]\ncodex = "gateway"\n',
@@ -404,8 +411,8 @@ def test_auth_status_on_host_reads_declared_gateway_as_auto(gateway_env, monkeyp
 
     output = captured.out + captured.err
     assert code == 0
-    assert "applies inside a Sandbox only; showing 'auto'" in output
-    assert "auth policy 'auto'" in output
+    assert "applies inside a Sandbox only; showing 'subscription'" in output
+    assert "auth policy 'subscription'" in output
     assert "codex: agents run on" in output
 
 
