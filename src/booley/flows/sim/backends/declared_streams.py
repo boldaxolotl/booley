@@ -23,6 +23,10 @@ from booley.flows.sim.trace_session import TraceSession
 
 _GLOB_MAGIC = "*?["
 _STREAM_DIR = "trace_streams"
+_TESTBENCH_FIX_HINT = (
+    " (if the testbench seeks in, reads back, or reopens this dump, make it write the dump "
+    "once, front to back, or dump FST instead)"
+)
 
 
 @dataclass(frozen=True)
@@ -147,8 +151,9 @@ class DeclaredTraceStreams:
             if result.success:
                 self.stores[stream.pattern] = stream.conversion.store_path
             else:
+                hint = "" if result.failure_kind == "timed_out" else _TESTBENCH_FIX_HINT
                 self.failures[stream.pattern] = (
-                    f"streaming {stream.pattern} failed: {last_line[0]}"
+                    f"streaming {stream.pattern} failed: {last_line[0]}{hint}"
                 )
             return_code = result.attempts[-1].return_code
             session.record_attempt(
