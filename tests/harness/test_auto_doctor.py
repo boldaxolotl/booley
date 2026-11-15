@@ -18,7 +18,14 @@ import pytest
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
 from booley.bwave import vaporview_bridge
 from booley.harness import auto_doctor, doctor
-from booley.runtime import doctor_stamp, health, health_presentation, inspection, vaporview
+from booley.runtime import (
+    devcontainer,
+    doctor_stamp,
+    health,
+    health_presentation,
+    inspection,
+    vaporview,
+)
 from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
 from booley.runtime.timefmt import MACHINE_TIMESTAMP_FORMAT
 from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
@@ -520,6 +527,14 @@ def _publish_with_real_bridge_check(
             return subprocess.CompletedProcess(
                 argv, 0, stdout=json.dumps([vaporview.VERIFIED_VERSION]), stderr=""
             )
+        if command[-1] == vaporview._bundled_extensions_probe_source(
+            devcontainer.BUNDLED_EXTENSIONS
+        ):
+            installed = {
+                e.extension_id: {"versions": [e.version], "vsix": True}
+                for e in devcontainer.BUNDLED_EXTENSIONS
+            }
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(installed), stderr="")
         if command[-1] in (
             vaporview._VSCODE_EXTENSION_HOST_PROBE_SOURCE,
             vaporview._VAPORVIEW_STATE_PROBE_SOURCE,
