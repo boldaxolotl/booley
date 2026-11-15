@@ -239,7 +239,7 @@ A table may name only CLIs listed in `clis`.
 `booley doctor` checks that the credential you picked exists, so Booley never
 quietly bills the other one:
 
-- **Any CLI in `clis`** whose `auth` is missing or the retired `"auto"`: fails, naming the
+- **Any CLI in `clis`** whose `auth` is missing or `"auto"`: fails, naming the
   value `booley init` would record (`subscription` with a login, `api_key` with
   only a key). Set it under `[agent]` or `[agent.auth]`, or re-run `booley init`.
 - **Default CLI**, with `subscription` or `api_key`: a missing credential fails.

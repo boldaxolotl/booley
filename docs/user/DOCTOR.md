@@ -20,7 +20,7 @@ from each side:
   and agent setup inside the Sandbox.
 
 Doctor fails when an Agent CLI listed in `[agent] clis` has no `auth` recorded in
-`.booley/booley.toml`, or has the retired `auth = "auto"` (only `subscription` and
+`.booley/booley.toml`, or has `auth = "auto"` (only `subscription` and
 `api_key` pass). The failure names the CLI and the
 value `booley init` would record from your credentials (`subscription` when you
 have a login, `api_key` when you have only a key). Set that value as the message
