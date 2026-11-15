@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,6 +14,8 @@ from booley.flows.sim.execution.contract import PreSimScopeStoppedError
 from booley.flows.sim.verilator_coverage_execution import VerilatorCoverageExecution
 from booley.runtime import execution_recovery
 from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV, ExecutionId
+
+_KILLED = 57
 
 
 class _Processes:
@@ -150,25 +154,94 @@ def test_windows_recovery_waits_for_live_leader_then_publishes(monkeypatch) -> N
     assert published
 
 
-def test_durable_publication_removes_partial_destination_on_failure(
-    tmp_path: Path, monkeypatch
+class _DyingWriter:
+    """A writer that writes half of the first chunk and dies without any cleanup."""
+
+    def __init__(self, writer) -> None:
+        self._writer = writer
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+    def write(self, data: bytes) -> None:
+        self._writer.write(data[: len(data) // 2])
+        self._writer.flush()
+        os._exit(_KILLED)
+
+    def flush(self) -> None:
+        self._writer.flush()
+
+
+def _publish(kind: str, destination: Path, raw: bytes, *, mode: int = 0o600) -> None:
+    if kind == "create":
+        artifact_durability.durable_create(destination, raw, mode=mode)
+        return
+    source = destination.parent / f"source-{destination.name}"
+    source.write_bytes(raw)
+    artifact_durability.durable_copy(source, destination, mode=mode)
+
+
+@pytest.mark.parametrize("kind", ["create", "copy"])
+def test_durable_publication_refuses_an_existing_name(tmp_path: Path, kind: str) -> None:
+    destination = tmp_path / "record"
+    _publish(kind, destination, b"first", mode=0o400)
+
+    with pytest.raises(FileExistsError):
+        _publish(kind, destination, b"second")
+
+    assert destination.read_bytes() == b"first"
+    if os.name == "nt":  # Windows reports only the read-only bit
+        assert not destination.stat().st_mode & stat.S_IWRITE
+    else:
+        assert stat.S_IMODE(destination.stat().st_mode) == 0o400
+    assert (
+        sorted(path.name for path in tmp_path.iterdir() if path.name.endswith(".booley-staged"))
+        == []
+    )
+
+
+@pytest.mark.parametrize("kind", ["create", "copy"])
+def test_durable_publication_failure_leaves_no_staged_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
     destination = tmp_path / "record"
 
-    class BrokenWriter:
-        def __enter__(self):
-            destination.write_bytes(b"partial")
-            raise RuntimeError("write failed")
+    def broken_fdopen(*_args, **_kwargs):
+        raise RuntimeError("write failed")
 
-        def __exit__(self, *_args):
-            return False
-
-    monkeypatch.setattr(artifact_durability.os, "open", lambda *_args: 99)
-    monkeypatch.setattr(artifact_durability.os, "close", lambda _fd: None)
-    monkeypatch.setattr(artifact_durability.os, "fdopen", lambda *_args, **_kwargs: BrokenWriter())
+    monkeypatch.setattr(artifact_durability.os, "fdopen", broken_fdopen)
     with pytest.raises(RuntimeError, match="write failed"):
-        artifact_durability.durable_create(destination, b"value")
+        _publish(kind, destination, b"value")
+
     assert not destination.exists()
+    assert [path.name for path in tmp_path.iterdir() if path.name.startswith(".record.")] == []
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork")
+def test_durable_publication_killed_mid_write_publishes_nothing(tmp_path: Path) -> None:
+    real_fdopen = os.fdopen
+    for kind in ("create", "copy"):
+        directory = tmp_path / kind
+        directory.mkdir()
+        destination = directory / "record"
+        pid = os.fork()
+        if pid == 0:  # the worker: die inside the write, as a SIGKILL would
+            try:
+                os.fdopen = lambda *args, **kwargs: _DyingWriter(real_fdopen(*args, **kwargs))  # type: ignore[assignment]
+                _publish(kind, destination, b"0123456789")
+            finally:
+                os._exit(3)
+        _, status = os.waitpid(pid, 0)
+
+        assert os.waitstatus_to_exitcode(status) == _KILLED, kind
+        assert not destination.exists(), kind
+        staged = [path for path in directory.iterdir() if path.name.endswith(".booley-staged")]
+        assert len(staged) == 1, kind
+        artifact_durability.discard_staged_files(directory)
+        assert not any(path.name.endswith(".booley-staged") for path in directory.iterdir()), kind
 
 
 def test_durable_directory_accepts_concurrent_creation(tmp_path: Path, monkeypatch) -> None:

@@ -101,7 +101,7 @@ def read_durable_results(
     :class:`~booley.flows.simulation_record_results.OlderBooleyRecordError` when an older
     Booley wrote it, and :class:`SimulationRecordIntegrityError`
     when the record is gone, is not the expected one, or any of its results
-    cannot be authenticated (one whose writer was killed mid-write included).
+    cannot be authenticated.
     """
     store = _store_for_manifest(manifest_path)
     try:
