@@ -3,7 +3,8 @@
 On POSIX with the bwave binary, a literal relative ``.vcd`` entry inside the run
 directory becomes a named pipe before the simulator starts. A ``bwave build``
 process reads it while the test runs, so the raw VCD never lands on disk. Any
-entry that cannot stream keeps the post-run conversion path untouched.
+entry that cannot stream keeps the post-run conversion path untouched. Every
+launch first removes a pipe a killed run left behind at such an entry.
 """
 
 from __future__ import annotations
@@ -172,3 +173,12 @@ def _clear_stale_pipe(path: Path) -> bool:
     path.unlink()
     _sidecar_path(path).unlink(missing_ok=True)
     return True
+
+
+def clear_stale_pipes(patterns: tuple[str, ...], run_dir: Path) -> None:
+    """Remove every pipe a killed run provably left at an eligible declared path."""
+    run_root = run_dir.resolve()
+    for pattern in patterns:
+        path = _eligible_path(pattern, run_root)
+        if path is not None:
+            _clear_stale_pipe(path)

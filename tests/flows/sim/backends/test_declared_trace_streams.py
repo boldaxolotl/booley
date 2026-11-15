@@ -2,7 +2,8 @@
 
 Each case runs a real adapter (Verilator or Icarus) whose simulator is a small
 Python script acting on the declared path, with the ``fake_bwave`` converter
-standing in for the native ``bwave build``.
+standing in for the native ``bwave build``. #4233: every launch, traced or not,
+first clears a pipe a killed run left behind; the Cocotb launch is covered too.
 """
 
 from __future__ import annotations
@@ -114,6 +115,23 @@ def _streaming_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_bwave:
     monkeypatch.setattr(TraceSession, "inspect", inspect)
 
 
+def _stage(adapter: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, steps: str) -> Dirs:
+    """Create the build, run and work directories and the fake simulator for *adapter*."""
+    dirs = Dirs(tmp_path / "build", tmp_path / "run", tmp_path / "work")
+    for directory in dirs:
+        directory.mkdir(parents=True, exist_ok=True)
+    sim = dirs.build / "fake_sim"
+    sim.write_text(_FAKE_SIM, encoding="utf-8")
+    sim.chmod(0o755)
+    monkeypatch.setenv("FAKE_SIM", steps)
+    if adapter == "icarus":
+        (dirs.build / "sim_cfg.scr").write_text("", encoding="utf-8")
+        monkeypatch.setattr(icarus_adapter, "_find_vvp", lambda: str(sim))
+    else:
+        (dirs.build / "Vtb_top").symlink_to(sim)
+    return dirs
+
+
 def _run(
     adapter: str,
     tmp_path: Path,
@@ -125,18 +143,10 @@ def _run(
     timeout: int = 60,
 ) -> Outcome:
     """Run one traced simulation of *adapter* whose simulator performs *steps*."""
-    dirs = Dirs(tmp_path / "build", tmp_path / "run", tmp_path / "work")
-    for directory in dirs:
-        directory.mkdir(parents=True, exist_ok=True)
+    dirs = _stage(adapter, tmp_path, monkeypatch, steps)
     for name, content in (precreate or {}).items():
         (dirs.run / name).write_text(content, encoding="utf-8")
-    sim = dirs.build / "fake_sim"
-    sim.write_text(_FAKE_SIM, encoding="utf-8")
-    sim.chmod(0o755)
-    monkeypatch.setenv("FAKE_SIM", steps)
     if adapter == "icarus":
-        (dirs.build / "sim_cfg.scr").write_text("", encoding="utf-8")
-        monkeypatch.setattr(icarus_adapter, "_find_vvp", lambda: str(sim))
         run = icarus_adapter.run_icarus_image(
             build_dir=dirs.build,
             run_cwd=dirs.run,
@@ -146,7 +156,6 @@ def _run(
             timeout=timeout,
         )
     else:
-        (dirs.build / "Vtb_top").symlink_to(sim)
         run = verilator_adapter.run_verilated_binary(
             top_module="tb_top",
             bin_dir=dirs.build,
@@ -327,3 +336,88 @@ def test_fifo_with_mismatched_sidecar_is_kept(tmp_path, monkeypatch):
 
     assert out.types() == {"a.vcd": "fifo", "b.vcd": "fifo"}
     assert foreign.lstat().st_ino == identity
+
+
+def _plant_leftovers(run_dir: Path) -> int:
+    """Plant a stale Booley pipe, a foreign pipe and a recorded regular file; return the foreign inode."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(run_dir / "fpu.vcd")
+    os.mkfifo(run_dir / "a.vcd")
+    (run_dir / "b.vcd").write_text("user data\n", encoding="utf-8")
+    for name in ("fpu.vcd", "b.vcd"):
+        status = os.lstat(run_dir / name)
+        record = {"dev": status.st_dev, "ino": status.st_ino}
+        (run_dir / f".{name}.booley-pipe").write_text(json.dumps(record), encoding="utf-8")
+    return os.lstat(run_dir / "a.vcd").st_ino
+
+
+@pytest.mark.parametrize(
+    ("adapter", "trace"),
+    [
+        pytest.param("verilator", False, id="verilator-untraced"),
+        pytest.param("icarus", False, id="icarus-untraced"),
+        pytest.param("verilator", True, id="verilator-traced-no-streaming"),
+        pytest.param("icarus", True, id="icarus-traced-no-streaming"),
+    ],
+)
+def test_every_launch_clears_only_a_proven_stale_pipe_first(adapter, trace, tmp_path, monkeypatch):
+    """A launch that does not stream still removes the pipe a killed run left, and only that."""
+    from booley.flows.sim import run_guard
+    from booley.flows.sim.adapter_contract import PreparedSimulationWork, encode_simulation_work
+
+    monkeypatch.setattr(waveform_store, "can_stream_waveform", lambda: False)
+    monkeypatch.setattr(run_guard, "install_parent_death_guard", lambda: None)
+    dirs = _stage(adapter, tmp_path, monkeypatch, "record:fpu.vcd,a.vcd,b.vcd")
+    foreign_inode = _plant_leftovers(dirs.run)
+    fields = {"trace_mode": "native_fst", "trace_args": ("--trace={file}",)} if trace else {}
+    work = PreparedSimulationWork(
+        adapter=adapter,  # pyright: ignore[reportArgumentType]
+        top="tb_top",
+        build_dir=str(dirs.build),
+        run_cwd=str(dirs.run),
+        work_dir=str(dirs.work),
+        timeout_s=60,
+        trace=trace,
+        trace_files=("fpu.vcd", "a.vcd", "b.vcd"),
+        **fields,
+    )
+    main = icarus_adapter.main if adapter == "icarus" else verilator_adapter.main
+
+    main([encode_simulation_work(work)])
+
+    types = json.loads((dirs.run / "types.json").read_text(encoding="utf-8"))
+    assert types == {"fpu.vcd": "missing", "a.vcd": "fifo", "b.vcd": "file"}
+    assert not os.path.lexists(dirs.run / ".fpu.vcd.booley-pipe")
+    assert os.lstat(dirs.run / "a.vcd").st_ino == foreign_inode
+    assert (dirs.run / "b.vcd").read_text(encoding="utf-8") == "user data\n"
+    assert (dirs.run / ".b.vcd.booley-pipe").is_file()
+
+
+def test_cocotb_launch_clears_a_stale_booley_pipe_first(tmp_path, monkeypatch):
+    """The Cocotb launch shares the run directory, so it clears the same leftovers first."""
+    from booley.flows.sim.adapter_contract import PreparedSimulationWork, encode_simulation_work
+    from booley.flows.sim.backends import cocotb as cocotb_adapter
+
+    run_dir = tmp_path / "run"
+    foreign_inode = _plant_leftovers(run_dir)
+    seen: list[list[str]] = []
+
+    def record(**_kwargs: object) -> int:
+        seen.append(sorted(path.name for path in run_dir.iterdir()))
+        return 0
+
+    monkeypatch.setattr(cocotb_adapter, "run_cocotb_sim", record)
+    work = PreparedSimulationWork(
+        adapter="cocotb",
+        build_dir=str(tmp_path / "build"),
+        run_cwd=str(run_dir),
+        timeout_s=60,
+        eda_tool="icarus",
+        cocotb_module="m",
+        trace_files=("fpu.vcd", "a.vcd", "b.vcd"),
+    )
+
+    assert cocotb_adapter.main([encode_simulation_work(work)]) == 0
+
+    assert seen == [[".b.vcd.booley-pipe", "a.vcd", "b.vcd"]]
+    assert os.lstat(run_dir / "a.vcd").st_ino == foreign_inode
