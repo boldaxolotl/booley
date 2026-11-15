@@ -51,6 +51,7 @@ from booley.runtime import (
 )
 from booley.runtime import devcontainer as dc
 from booley.runtime.booley_dir import reset_cache, resolve_checkout_booley_dir
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS, Attachment
 from booley.targets.catalog import TargetCatalog
 from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
 from tests.conftest import add_git_command_config
@@ -3395,6 +3396,72 @@ def _derived_project_audit(root: Path) -> doctor.ProjectAudit:
     )
 
 
+@pytest.fixture(autouse=True)
+def _no_docker_for_stale_image_remedy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the image-stale remedy's owner lookup off the host's Docker daemon."""
+    monkeypatch.setattr(doctor.session_runtime, "sandbox_attachment", lambda _root: None)
+
+
+def _stale_image_case(name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Arm one ``sandbox.image-stale`` check; return its ``(check, image)``."""
+    proj = tmp_path / "myproj"
+    (proj / ".booley").mkdir(parents=True)
+    project = _derived_project_audit(proj)
+    derived = doctor.pi.project_image_name(proj)
+    if name == "base":
+        dockerfile = tmp_path / "Dockerfile"
+        dockerfile.write_text("FROM scratch\n", encoding="utf-8")
+        os.utime(dockerfile, (2000.0, 2000.0))
+        monkeypatch.setattr(doctor, "_booley_dockerfile", lambda: dockerfile)
+        monkeypatch.setattr(doctor, "_image_created_epoch", lambda _exe, _img: 1000.0)
+        return (
+            lambda pass_, warn: doctor._check_image_freshness(
+                project, "docker", doctor.DOCKER_IMAGE, pass_, warn
+            ),
+            doctor.DOCKER_IMAGE,
+        )
+    if name == "derived":
+        created = {doctor.DOCKER_IMAGE: 2000.0, derived: 1000.0}
+        monkeypatch.setattr(doctor, "_image_created_epoch", lambda _exe, img: created.get(img))
+        check = doctor._check_derived_image_freshness
+    elif name == "custom":
+        _write_project_dockerfile(proj, mtime=2000.0)
+        monkeypatch.setenv("BOOLEY_DIR", str(proj / ".booley"))
+        reset_cache()
+        monkeypatch.setattr(doctor, "_image_created_epoch", lambda _exe, _img: 1000.0)
+        derived = "openc910-booley-sandbox"
+        check = doctor._check_custom_image_freshness
+    else:
+        _write_issued_image_spec(proj)
+        mismatch = doctor.image_identity.Comparison(doctor.image_identity.Status.MISMATCH, "old")
+        monkeypatch.setattr(doctor.idk, "compare_issued_build", lambda *_a, **_k: mismatch)
+        check = doctor._check_image_bakes_current_booley
+    return (lambda pass_, warn: check(project, "docker", derived, pass_, warn)), derived
+
+
+@pytest.mark.parametrize("check", ["base", "derived", "custom", "bakes"])
+def test_image_stale_names_owner_workflow(check, tmp_path, monkeypatch):
+    run, _image = _stale_image_case(check, tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        doctor.session_runtime, "sandbox_attachment", lambda _root: Attachment.VSCODE
+    )
+    warns: list[str] = []
+
+    run(lambda _msg: None, warns.append)
+
+    assert len(warns) == 1
+    assert warns[0].endswith(
+        "on the host run `booley init`, then use Dev Containers: Rebuild Container"
+        if check in {"base", "custom"}
+        else "on the host run `booley init`, then use Dev Containers: Rebuild Container."
+    )
+    assert not any(word in warns[0] for word in ("--force", "session refresh"))
+
+
+def test_image_stale_without_a_project_lists_both_workflows():
+    assert doctor._image_stale_remedy(None) == UNKNOWN_SANDBOX_STEPS
+
+
 def test_derived_image_freshness_warns_when_derived_predates_base(tmp_path, monkeypatch):
     # A project image built FROM an older base freezes stale Booley layers; a
     # base rebuild does not propagate. Doctor must flag that drift.
@@ -4632,7 +4699,8 @@ class TestVenueCheck:
         doctor._check_runtime_location(None, "booley-sandbox", rec.p, rec.w, rec.s, rec.f)
         warns = [m for lvl, m in rec.events if lvl == "warn"]
         assert any("/.dockerenv fallback" in m for m in warns)
-        assert any("base AND derived sandbox images" in m for m in warns)
+        assert any("recreate the Sandbox: in VS Code, " in m for m in warns)
+        assert not any("--force" in m for m in warns)
         # The slot store half still runs.
         assert any("slot store root writable" in m for lvl, m in rec.events if lvl == "pass")
 
@@ -4682,7 +4750,7 @@ class TestVenueCheck:
         doctor._check_runtime_location("docker", "booley-sandbox", rec.p, rec.w, rec.s, rec.f)
         assert rec.fails() == []
         warns = [m for lvl, m in rec.events if lvl == "warn"]
-        assert any("base AND derived sandbox images" in m for m in warns)
+        assert any("recreate the Sandbox: in VS Code, " in m for m in warns)
 
     def test_host_side_skips_when_image_absent(self, tmp_path, monkeypatch):
         _set_venue(monkeypatch, False)

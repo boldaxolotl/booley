@@ -446,15 +446,9 @@ replaces words with `redacted`, run `booley init` to install the current hook.
 You changed
 [`[sandbox] egress`](https://booley.dev/docs/sandbox/#host-configuration-configtoml)
 in the host `config.toml`, and a Sandbox still runs in the other mode. Doctor
-warns with `host.sandbox-egress-mismatch`. Recreate that Sandbox:
-
-- Headless: `booley session down --project <root>`, then
-  `booley init --seed --project <root>`, then start it again.
-- VS Code: `booley init --seed --project <root>`, then **Dev Containers:
-  Rebuild Container** in that Project's window.
-
-A stopped Sandbox refuses to start after the switch; run
-`booley init --seed` and start it again. To keep one Sandbox in the other mode
+warns with `host.sandbox-egress-mismatch`. Recreate that Sandbox
+[as for a settings change](https://booley.dev/docs/sandbox/#after-changing-sandbox-settings),
+whether it is running or stopped. To keep one Sandbox in the other mode
 on purpose, waive `host.sandbox-egress-mismatch` with `subject` set to its
 Project root; see [Doctor waivers](https://booley.dev/docs/doctor/#doctor-waivers-doctor-waiverstoml).
 
@@ -500,8 +494,8 @@ write now and diffs it against the file on disk. The warning
 (`interactive.devcontainer-drift`) lists each changed key path (the first 20),
 `-` for what is on disk and `+` for what init would write, so you see what a
 reseed changes. Follow the remedy the warning prints; for a VS Code Sandbox
-that is usually `booley init --seed --project <root>`, then **Dev Containers:
-Rebuild Container** in that Project's window.
+that is usually `booley init`, then **Dev Containers: Rebuild Container** in
+that Project's window.
 
 Inside the Sandbox, Doctor compares only what it can see (VS Code settings and
 extensions, the attach hook, and the agent state volumes) and says host
@@ -742,8 +736,9 @@ Make command-line variables override the environment. Two of them cost you:
 
 If the build warns `Verilator compiler cache unavailable: <reason>;
 compiling uncached`, fix the named reason: ccache missing from the build
-`PATH`, cache storage Booley can't create, or an unset cache root (run
-`booley session refresh` on the host).
+`PATH`, cache storage Booley can't create, or an unset cache root
+(recreate the Sandbox; see
+[Applying Sandbox changes](https://booley.dev/docs/sandbox/#applying-sandbox-changes)).
 
 ### Pre-Sim Commands fail with `Syntax error: Bad fd number`
 

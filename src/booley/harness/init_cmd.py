@@ -1017,9 +1017,7 @@ def _warn_on_live_session_on_old_image(ctx: InitContext, image: str) -> None:
         warn(
             f"the running Sandbox '{name}' was created from the previous "
             f"{image} image and keeps serving it — this rebuild is invisible inside "
-            "it. Run `booley session down && booley session up` to restart the "
-            "session on the image just built (in VS Code: Reopen in Container / "
-            "Rebuild Container)."
+            f"it. To restart it on the image just built, {sr.stale_image_advice(ctx.project_root, name)}."
         )
 
 
@@ -2816,9 +2814,11 @@ def _write_pin_with_consent(
     if not has_pin:
         ok(f"pinned {BOOLEY_DIR_NAME} -> {current.target}")
     else:
+        from booley.runtime import session_runtime as sr
+
         ok(
             f"re-pinned {BOOLEY_DIR_NAME}: {old_target} -> {current.target}; "
-            "restart a running Sandbox with `booley session refresh`"
+            f"to recreate a running Sandbox, {sr.sandbox_remedy(root)}"
         )
     ctx.record("booley_dir_pin", "ok", current.target)
     return True

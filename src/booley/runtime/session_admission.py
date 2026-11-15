@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shlex
 import subprocess
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -41,6 +40,7 @@ from booley.runtime.platform_paths import (
     same_host_path,
 )
 from booley.runtime.private_store import SESSION_STORE_REPAIR
+from booley.runtime.sandbox_apply import Attachment, apply_steps, image_is_managed, shell_command
 from booley.runtime.timefmt import format_age, parse_timestamp, rfc3339_from_datetime
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
@@ -262,14 +262,16 @@ def running_sandboxes(*, run: Run = _run) -> tuple[Sandbox, ...]:
 
 def recreate_remedy(item: Sandbox) -> str:
     """Name the host steps that recreate one Sandbox from a freshly issued spec."""
-    seed = _command(["booley", "init", "--seed", "--project", item.project_root])
+    root = item.project_root
+    managed = image_is_managed(Path(root))
     if item.vscode:
-        return (
-            f"recreate it: run `{seed}`, then use Dev Containers: Rebuild Container "
-            "in its VS Code window"
-        )
-    down = _command(["booley", "session", "down", "--project", item.project_root])
-    return f"recreate it: run `{down}`, `{seed}`, then start the Sandbox again"
+        steps = apply_steps(Attachment.VSCODE, managed=managed, project=root)
+        return f"recreate it: {steps} in its VS Code window"
+    if not Path(root).is_dir():
+        down = shell_command(["booley", "session", "down", "--project", root])
+        return f"stop it: run `{down}`"
+    steps = apply_steps(Attachment.HEADLESS, managed=managed, project=root)
+    return f"recreate it: {steps}"
 
 
 def _noninteractive_relay(document: dict[str, Any], container_id: str, name: str) -> bool:
@@ -609,16 +611,10 @@ def _valid_identity(item: Sandbox, root: str) -> bool:
     return any(matches_project_label(item.project_id, candidate) for candidate in roots)
 
 
-def _command(argv: list[str]) -> str:
-    if os.name == "nt":
-        return "& " + " ".join("'" + arg.replace("'", "''") + "'" for arg in argv)
-    return shlex.join(argv)
-
-
 def _identity_recovery(item: Sandbox, root: str) -> str:
-    stop = _command(["docker", "stop", item.container_id])
-    remove = _command(["docker", "rm", item.container_id])
-    down = _command(["booley", "session", "down", "--project", root])
+    stop = shell_command(["docker", "stop", item.container_id])
+    remove = shell_command(["docker", "rm", item.container_id])
+    down = shell_command(["booley", "session", "down", "--project", root])
     return (
         f"Sandbox {item.name} ({item.container_id}) Project identity disagrees with {root}. "
         f"{'In PowerShell, s' if os.name == 'nt' else 'S'}top it with `{stop}`, "
@@ -730,7 +726,7 @@ def _refusal(
             )
             continue
         argv = ["booley", "session", "down", "--project", root]
-        command = _command(argv)
+        command = shell_command(argv)
         shell = " in PowerShell" if os.name == "nt" else ""
         lines.append(f"Free capacity{shell} with `{command}`.")
     lines.extend(diagnostics)

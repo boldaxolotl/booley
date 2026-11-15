@@ -58,7 +58,15 @@ def test_init_pins_an_unpinned_linked_entry(project: Path) -> None:
     assert booley_dir_pin.read_pin(project).target == str((project / ".booley").resolve())
 
 
-def test_init_repins_only_with_flag(project: Path, tmp_path: Path) -> None:
+def test_init_repins_only_with_flag(
+    project: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from booley.runtime import session_runtime
+
+    monkeypatch.setattr(session_runtime, "sandbox_remedy", lambda _root: "recreate it somehow")
     _reconcile(project)
     new = _new_target(tmp_path, "ext-b")
     _retarget(project, new)
@@ -66,6 +74,7 @@ def test_init_repins_only_with_flag(project: Path, tmp_path: Path) -> None:
     proceed, _ctx = _reconcile(project, repin_booley_dir=True)
 
     assert proceed
+    assert "to recreate a running Sandbox, recreate it somehow" in capsys.readouterr().out
     assert booley_dir_pin.read_pin(project).target == str(new.resolve())
     booley_dir_pin.require_pinned_entry(project)
 

@@ -28,6 +28,7 @@ from booley.runtime import devcontainer as dc
 from booley.runtime import health, issuance_invalidation, platform_paths
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
+from booley.runtime.sandbox_apply import Attachment
 from booley.runtime.session_admission import (
     admit_start as real_admit_start,
 )
@@ -649,7 +650,10 @@ class TestPrepareLegacyContainer:
         message = str(caught.value)
         assert source in message
         assert target in message
-        assert "booley session refresh" in message
+        assert (
+            "on the host run `booley init`, then use Dev Containers: Rebuild Container" in message
+        )
+        assert "session refresh" not in message
 
     def test_ambiguous_running_legacy_container_refuses_without_mutation(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch
@@ -949,7 +953,7 @@ class TestIssuedRuntimeDriftFix:
             "Mounts": mounts if pinned else [],
         }
 
-    def test_stopped_exact_vscode_uses_automatic_rebuild_guidance(
+    def test_stopped_exact_vscode_names_rebuild_container(
         self,
         workspace: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -963,9 +967,11 @@ class TestIssuedRuntimeDriftFix:
             ["stale-vscode"],
         )
 
-        assert fix == "run `booley session down`, then `booley session up --rebuild`"
+        assert fix == (
+            "for VS Code Sandbox(s) 'stale-vscode', on the host run `booley init`, then use Dev Containers: Rebuild Container"
+        )
 
-    def test_running_exact_vscode_requires_stop_first(
+    def test_running_exact_vscode_names_rebuild_container(
         self,
         workspace: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -979,7 +985,32 @@ class TestIssuedRuntimeDriftFix:
             ["active-vscode"],
         )
 
-        assert "stop VS Code Sandbox(s) 'active-vscode'" in fix
+        assert fix == (
+            "for VS Code Sandbox(s) 'active-vscode', on the host run `booley init`, then use Dev Containers: Rebuild Container"
+        )
+
+    def test_canonical_headless_drift_names_refresh(
+        self,
+        workspace: Path,
+    ) -> None:
+        fix = sr.issued_runtime_drift_fix(
+            workspace,
+            _test_issuance(workspace),
+            [sr.session_container_name(workspace)],
+        )
+
+        assert fix == "run `booley session refresh` on the host"
+
+    def test_drift_without_a_named_resource_lists_both_workflows(
+        self,
+        workspace: Path,
+    ) -> None:
+        fix = sr.issued_runtime_drift_fix(workspace, _test_issuance(workspace), [])
+
+        assert fix == (
+            "in VS Code, on the host run `booley init`, then use Dev Containers: Rebuild Container; "
+            "headless, run `booley session refresh` on the host"
+        )
 
     def test_running_legacy_vscode_fix_names_removal_steps(
         self,
@@ -997,7 +1028,7 @@ class TestIssuedRuntimeDriftFix:
 
         assert "`docker rm active-vscode`" in fix
         assert "`booley init --seed`" in fix
-        assert "stop VS Code Sandbox(s)" not in fix
+        assert "for VS Code Sandbox(s)" not in fix
 
     def test_failed_layout_probe_requires_manual_inspection(
         self,
@@ -1081,7 +1112,11 @@ class TestIssuedRuntimeDriftFix:
         )
 
         assert "inspect ambiguous Sandbox resource(s) 'ambiguous-runtime'" in fix
-        assert "stop VS Code Sandbox(s) 'active-vscode'" in fix
+        assert (
+            "for VS Code Sandbox(s) 'active-vscode', on the host run `booley init`, then use Dev Containers: Rebuild Container"
+            in fix
+        )
+        assert "stop" not in fix
 
     def test_windows_host_paths_identify_running_vscode(
         self,
@@ -1104,7 +1139,10 @@ class TestIssuedRuntimeDriftFix:
             ["active-vscode"],
         )
 
-        assert "stop VS Code Sandbox(s) 'active-vscode'" in fix
+        assert (
+            "for VS Code Sandbox(s) 'active-vscode', on the host run `booley init`, then use Dev Containers: Rebuild Container"
+            in fix
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1256,6 +1294,7 @@ class TestInitReconciliation:
 
         monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
         monkeypatch.setattr(session_issuance, "load_issued_snapshot", withdrawn)
+        monkeypatch.setattr(sr, "sandbox_attachment", lambda _root: Attachment.HEADLESS)
         state = _refresh_state(running=True)
         with (
             patch.object(sr, "_strict_refresh_container", return_value=state),
@@ -2515,7 +2554,7 @@ class TestStaleBooleyBakeWarning:
     Booley code. Advisory only — no verdict (pip install, unlabeled image) must
     stay silent."""
 
-    def test_mismatch_warns_names_fields_and_fix(self, caplog, monkeypatch):
+    def test_mismatch_warns_names_fields_and_fix(self, workspace, caplog, monkeypatch):
         expected = sr.image_identity.BooleyBuildIdentity("1.0", "abc123", None, "current")
         observed = sr.image_identity.ImageMetadata(
             "sha256:issued",
@@ -2531,23 +2570,25 @@ class TestStaleBooleyBakeWarning:
         monkeypatch.setattr(sr.image_identity, "current_host_build_identity", lambda: expected)
         monkeypatch.setattr(sr.idk, "inspect_image_metadata", lambda *_args, **_kwargs: observed)
 
-        sr._warn_on_stale_booley_bake({"image": "sha256:issued"})
+        monkeypatch.setattr(sr, "sandbox_remedy", lambda _root: "recreate it")
+
+        sr._warn_on_stale_booley_bake({"image": "sha256:issued"}, workspace)
 
         assert "stale Booley code" in caplog.text
         assert "revision abc123 -> def456" in caplog.text
         assert "wheel_source_fingerprint current -> stale" in caplog.text
-        assert "booley session refresh" in caplog.text
+        assert "recreate it" in caplog.text
 
-    def test_unknown_identity_is_silent(self, caplog):
+    def test_unknown_identity_is_silent(self, workspace, caplog):
         result = sr.image_identity.Comparison(sr.image_identity.Status.UNKNOWN)
         with patch.object(sr.idk, "compare_issued_build", return_value=result):
-            sr._warn_on_stale_booley_bake({"image": "sha256:issued"})
+            sr._warn_on_stale_booley_bake({"image": "sha256:issued"}, workspace)
         assert "stale Booley code" not in caplog.text
 
-    def test_match_is_silent(self, caplog):
+    def test_match_is_silent(self, workspace, caplog):
         result = sr.image_identity.Comparison(sr.image_identity.Status.MATCH)
         with patch.object(sr.idk, "compare_issued_build", return_value=result):
-            sr._warn_on_stale_booley_bake({"image": "sha256:issued"})
+            sr._warn_on_stale_booley_bake({"image": "sha256:issued"}, workspace)
         assert "stale Booley code" not in caplog.text
 
 
@@ -2557,10 +2598,20 @@ class TestStaleSessionContainerWarning:
     `sessions_on_stale_image` probe, now wired in)."""
 
     def test_stale_container_warns_by_name(self, workspace, caplog):
-        with patch.object(sr, "sessions_on_stale_image", return_value=["booley-session-i2c"]):
+        name = sr.session_container_name(workspace)
+        with patch.object(sr, "sessions_on_stale_image", return_value=[name]):
             sr._warn_on_stale_session_containers({"image": "booley-sandbox"}, workspace)
-        assert "booley-session-i2c" in caplog.text
+        assert name in caplog.text
         assert "superseded by a rebuild" in caplog.text
+        assert "run `booley session refresh` on the host" in caplog.text
+        assert "session down" not in caplog.text
+
+    def test_stale_vscode_container_names_rebuild_container(self, workspace, caplog):
+        with patch.object(sr, "sessions_on_stale_image", return_value=["vsc-editor"]):
+            sr._warn_on_stale_session_containers({"image": "booley-sandbox"}, workspace)
+        assert "vsc-editor" in caplog.text
+        assert "to pick up the new image, use Dev Containers: Rebuild Container." in caplog.text
+        assert "session down" not in caplog.text
 
     def test_current_containers_are_silent(self, workspace, caplog):
         with patch.object(sr, "sessions_on_stale_image", return_value=[]):
@@ -3694,8 +3745,9 @@ def test_startup_preserves_identity_drift_diagnostic(tmp_path, monkeypatch):
         sr._validate_up_request(tmp_path)
 
 
-def test_startup_egress_drift_names_init_seed(tmp_path, monkeypatch):
+def test_startup_egress_drift_names_session_refresh(tmp_path, monkeypatch):
     monkeypatch.setattr(sr, "_load_spec", lambda _root: {})
+    monkeypatch.setattr(sr, "sandbox_attachment", lambda _root: Attachment.HEADLESS)
 
     def refuse(*_args):
         raise runtime_spec.EgressDriftError(
@@ -3707,11 +3759,11 @@ def test_startup_egress_drift_names_init_seed(tmp_path, monkeypatch):
         sr._validate_up_request(tmp_path)
     message = str(raised.value)
     assert "egress = 'unproxied'" in message
-    assert "`booley init --seed`" in message
-    assert "`booley session down`" in message
+    assert message.endswith("run `booley session refresh` on the host")
+    assert "--seed" not in message
 
 
-def test_vscode_prepare_names_init_seed_for_egress_drift(tmp_path, monkeypatch):
+def test_vscode_prepare_names_init_for_egress_drift(tmp_path, monkeypatch):
     monkeypatch.setattr(sr, "_refuse_outdated_vscode_containers", lambda *_args: None)
 
     def refuse(*_args):
@@ -3721,8 +3773,11 @@ def test_vscode_prepare_names_init_seed_for_egress_drift(tmp_path, monkeypatch):
     with pytest.raises(sr.SessionError) as raised:
         sr._refuse_then_validate(tmp_path, {})
     message = str(raised.value)
-    assert "`booley init --seed`" in message
-    assert "Rebuild Container" in message
+    assert message.endswith(
+        "on the host run `booley init`, then use Dev Containers: Rebuild Container"
+    )
+    assert "--seed" not in message
+    assert "stop" not in message
     assert "session refresh" not in message
 
 
@@ -4367,66 +4422,6 @@ def test_project_sandbox_resolution_ignores_noninteractive_resources(
     assert sr.resolve_running_sandbox(workspace).container_id == fixture.state["Id"]
     if kind == "ordinary-service":
         assert not any(resource["Id"] in call for call in fixture.calls if call[1] == "container")
-
-
-@pytest.mark.parametrize(
-    "state,expected",
-    [
-        ("managed", "booley session refresh"),
-        ("licensed", "booley session refresh"),
-        ("corrupt", "booley init --seed"),
-        ("external", "rebuild/pull"),
-        ("vscode", "stop the Sandbox in VS Code"),
-        ("runtime", "booley session up --rebuild"),
-        ("inside", "on the host"),
-    ],
-    ids=["managed", "licensed", "corrupt", "external", "vscode", "runtime", "inside"],
-)
-def test_drift_remedy_has_one_state_appropriate_workflow(tmp_path, monkeypatch, state, expected):
-    from types import SimpleNamespace
-
-    from booley.runtime import runtime_context, session_issuance, session_runtime
-
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: state == "inside")
-    loads, probes = [], []
-
-    def issuance(_root):
-        loads.append(_root)
-        if state == "corrupt":
-            raise session_issuance.IssuanceUnavailableError("unreadable stamp")
-        return SimpleNamespace(license_profile="site" if state == "licensed" else None)
-
-    def vscode_owner(_root):
-        probes.append(_root)
-        return "editor" if state == "vscode" else None
-
-    monkeypatch.setattr(session_issuance, "load_issued_snapshot", issuance)
-    monkeypatch.setattr(session_issuance, "stamp_is_absent", lambda _root: False)
-    monkeypatch.setattr(session_runtime, "vscode_session_container", vscode_owner)
-    monkeypatch.setattr(
-        session_runtime.project_image, "project_sandbox_image", lambda _root: "selected"
-    )
-    monkeypatch.setattr(
-        session_runtime.project_image,
-        "is_managed_sandbox_image",
-        lambda *_args: state != "external",
-    )
-    remedy = session_runtime.sandbox_remedy(tmp_path, runtime_only=state == "runtime")
-    assert expected in remedy
-    if state in {"managed", "licensed", "vscode", "inside"}:
-        assert remedy.count("booley session refresh") == (state in {"managed", "licensed"})
-    if state in {"managed", "licensed"}:
-        assert "init --seed" not in remedy
-        assert "session down" not in remedy
-    if state == "vscode":
-        assert "booley init --force" in remedy and "Dev Containers: Rebuild Container" in remedy
-    if state == "inside":
-        assert "booley doctor" in remedy
-    expected_loads = 0 if state == "inside" else 1
-    assert (len(loads), len(probes)) == (
-        expected_loads,
-        0 if state in {"inside", "corrupt"} else 1,
-    )
 
 
 @pytest.mark.parametrize(
@@ -5178,49 +5173,6 @@ def test_require_only_canonical_sandbox(workspace, monkeypatch):
                 sr.require_only_canonical_sandbox(workspace)
         else:
             assert sr.require_only_canonical_sandbox(workspace) is None, label
-
-
-def test_sandbox_remedy_points_withdrawn_stamp_to_refresh(workspace, monkeypatch):
-    from booley.runtime import runtime_context
-
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    state = SimpleNamespace(stamp="absent", owner=None, managed=True, licensed=False)
-
-    def load(_root):
-        if state.stamp != "present":
-            raise runtime_spec.IssuanceUnavailableError("stamp unavailable")
-        return SimpleNamespace(license_profile="site" if state.licensed else None)
-
-    monkeypatch.setattr(runtime_spec, "load_issued_snapshot", load)
-    monkeypatch.setattr(runtime_spec, "stamp_is_absent", lambda _root: state.stamp == "absent")
-    monkeypatch.setattr(sr, "vscode_session_container", lambda _root: state.owner)
-    monkeypatch.setattr(sr.project_image, "project_sandbox_image", lambda _root: "selected")
-    monkeypatch.setattr(sr.project_image, "is_managed_sandbox_image", lambda *_args: state.managed)
-    refresh = "run `booley session refresh` on the host"
-
-    # Withdrawn (absent) stamp, managed image, no VS Code Sandbox: refresh repairs it.
-    assert sr.sandbox_remedy(workspace) == refresh
-
-    # A present but corrupt stamp still needs the reseed workflow.
-    state.stamp = "corrupt"
-    assert "booley init --seed" in sr.sandbox_remedy(workspace)
-
-    # A VS Code owner or an external image keeps its workflow when the stamp is withdrawn.
-    state.stamp = "absent"
-    state.owner = "editor"
-    assert "booley init --seed" in sr.sandbox_remedy(workspace)
-    state.owner, state.managed = None, False
-    assert "booley init --seed" in sr.sandbox_remedy(workspace)
-
-    # With a stamp present, VS Code and external-image owners keep their workflows ...
-    state.stamp, state.managed, state.owner = "present", True, "editor"
-    assert "Dev Containers: Rebuild Container" in sr.sandbox_remedy(workspace)
-    state.owner, state.managed = None, False
-    assert "rebuild/pull the selected external image" in sr.sandbox_remedy(workspace)
-
-    # ... and a licensed Sandbox no longer needs `session down` first.
-    state.managed, state.licensed = True, True
-    assert sr.sandbox_remedy(workspace) == refresh
 
 
 def _prepare_refresh_start(wired, monkeypatch, *, licensed: bool):

@@ -801,8 +801,9 @@ def test_forget_with_live_session_withdraws_stamp(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from booley.runtime import project_image, runtime_context, session_runtime
+    from booley.runtime import runtime_context, session_runtime
     from booley.runtime import session_issuance as issuance
+    from booley.runtime.sandbox_apply import Attachment
 
     project, _prepared, _path, image = _issued_project(tmp_path, keeper_host, monkeypatch)
     keeper_host.containers["c" * 64] = keeper_host.tags[keeper_image(project)]
@@ -814,12 +815,12 @@ def test_forget_with_live_session_withdraws_stamp(
     assert json.loads(capsys.readouterr().out)["keeper"]["status"] == "retained-in-use"
     assert issuance.stamp_is_absent(project)
     # The Session now takes the existing withdrawn-stamp path: an editor-owned Sandbox
-    # is told to reseed rather than to rebuild from a stamp that no longer exists.
+    # is told to rebuild from VS Code, which reissues the stamp that no longer exists.
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    monkeypatch.setattr(session_runtime, "vscode_session_container", lambda _root: "editor")
-    monkeypatch.setattr(project_image, "project_sandbox_image", lambda _root: "selected")
-    monkeypatch.setattr(project_image, "is_managed_sandbox_image", lambda *_args: True)
-    assert "booley init --seed" in session_runtime.sandbox_remedy(project)
+    monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _root: Attachment.VSCODE)
+    assert session_runtime.sandbox_remedy(project) == (
+        "on the host run `booley init`, then use Dev Containers: Rebuild Container"
+    )
 
 
 def _write_session_files(project_root: str) -> None:

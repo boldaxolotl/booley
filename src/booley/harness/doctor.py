@@ -150,6 +150,7 @@ from booley.runtime.image_provenance import is_local_image_id
 from booley.runtime.platform_paths import run_captured_bounded
 from booley.runtime.project_gitignore import missing_gitignore_patterns
 from booley.runtime.resource_history import DOCTOR_RUN_ENV
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 from booley.runtime.session_issuance import SANDBOX_IMAGE_ID_ENV
 from booley.runtime.timefmt import format_clock, format_duration, format_human_datetime
 from booley.runtime.worktree_evidence import untracked_common_paths
@@ -1652,8 +1653,8 @@ def _worktree_core_directory(booley_dir: Path, project_root: Path | None) -> Pat
 # the sandbox image build, and the derived-image drift gotcha means the base
 # rebuild alone silently leaves per-project images stale.
 _RUNTIME_MARKER_FIX = (
-    "rebuild the base AND derived sandbox images (booley init --force) — "
-    "the image predates the ADR 0028 runtime marker"
+    "the image predates the ADR 0028 runtime marker; recreate the Sandbox: "
+    f"{UNKNOWN_SANDBOX_STEPS}"
 )
 
 
@@ -2173,7 +2174,17 @@ def _image_created_epoch(docker_exe: str, image: str) -> float | None:
     return _parse_docker_created(result.stdout)
 
 
+def _image_stale_remedy(project: ProjectAudit | None) -> str:
+    """Name the documented steps that recreate the Sandbox on a fresh image."""
+    from booley.runtime import session_runtime
+
+    if project is None:
+        return UNKNOWN_SANDBOX_STEPS
+    return session_runtime.sandbox_remedy(project.project_root)
+
+
 def _check_image_freshness(
+    project: ProjectAudit | None,
     docker_exe: str | None,
     image: str,
     _pass: Check,
@@ -2205,7 +2216,7 @@ def _check_image_freshness(
     if dockerfile_mtime > created:
         _warn(
             f"sandbox image '{image}' predates {dockerfile.name}; booley init "
-            "will not rebuild it - run booley init --force (or rebuild the image)"
+            f"will not rebuild it; rebuild the image, then {_image_stale_remedy(project)}"
         )
     else:
         _pass(f"sandbox image '{image}' is newer than {dockerfile.name}")
@@ -2250,7 +2261,7 @@ def _check_derived_image_freshness(
         _warn(
             f"project image '{image}' predates its base '{DOCKER_IMAGE}'; it "
             "carries a stale Booley build (e.g. missing a newer flow stage). "
-            "Rebuild it with booley init --force."
+            f"Recreate the Sandbox: {_image_stale_remedy(project)}."
         )
     else:
         _pass(f"project image '{image}' is newer than its base '{DOCKER_IMAGE}'")
@@ -2297,7 +2308,7 @@ def _check_custom_image_freshness(
         _warn(
             f"custom sandbox image '{image}' predates {dockerfile}; the container "
             "runs the old toolchain until you rebuild it (edited Dockerfile, no "
-            "rebuild)"
+            f"rebuild); then {_image_stale_remedy(project)}"
         )
     else:
         _pass(f"custom sandbox image '{image}' is newer than its Dockerfile")
@@ -2338,7 +2349,7 @@ def _check_image_bakes_current_booley(
                 f"issued Sandbox Image '{issued_image}' bakes Booley sources that no longer "
                 f"match the canonical host installation ({result.detail}); the sandbox runs "
                 "stale code (egress is locked, so it can't pip-install the "
-                "fix). Rebuild with booley session refresh."
+                f"fix). Recreate the Sandbox: {_image_stale_remedy(project)}."
             )
             return
         if result.status is image_identity.Status.MATCH:
@@ -2593,7 +2604,7 @@ def _run_container_checks(
         _fail(f"{image} image missing", "booley init or build the configured sandbox image")
         return
 
-    _check_image_freshness(docker_exe, image, _pass, _warn)
+    _check_image_freshness(project, docker_exe, image, _pass, _warn)
     _check_derived_image_freshness(project, docker_exe, image, _pass, _warn)
     _check_custom_image_freshness(project, docker_exe, image, _pass, _warn)
     _check_image_bakes_current_booley(project, docker_exe, image, _pass, _warn)
