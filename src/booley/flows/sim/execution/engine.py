@@ -125,6 +125,7 @@ from .contract import (
     SimulationSelection,
     SimulationTargetOutcome,
     SimulationTestOutcome,
+    SimulationVerdict,
 )
 from .freshness import (
     ArtifactValidationError,
@@ -1763,7 +1764,7 @@ def _outcome_names(
     return attempt.test_names or (fallback,)
 
 
-def _adapter_verdict(adapter: AdapterResult | None) -> str:
+def _adapter_verdict(adapter: AdapterResult | None) -> SimulationVerdict:
     if adapter is None:
         return "fail"
     if adapter.passed:
@@ -1779,7 +1780,7 @@ def _test_outcome(
     adapter: AdapterResult | None,
     item: Any,
     name: str,
-    verdict: str,
+    verdict: SimulationVerdict,
     cycle_status: str,
     cycles: int | None,
     log: SimulationArtifactEvidence | None,

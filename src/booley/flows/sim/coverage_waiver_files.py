@@ -8,7 +8,7 @@ import stat
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.runtime.booley_dir import crossed_booley_dir_entry
@@ -45,6 +45,10 @@ class SecureFileScan:
 
 class SecurePathError(OSError):
     """A requested path could not be opened through verified ancestor handles."""
+
+    relative_path: str
+    kind: PathProblemKind
+    entry_kind: PathEntryKind
 
     def __init__(
         self, relative_path: str, kind: PathProblemKind, entry_kind: PathEntryKind
@@ -142,11 +146,12 @@ class _DescriptorSecureTree:
 
     def read_file(self, relative: str) -> bytes:
         parts = _parts(relative)
+        name = parts[-1]
         with ExitStack() as stack:
             parent = self._root_descriptor
             if len(parts) > 1:
                 parent = self._open_directory_chain(PurePosixPath(*parts[:-1]).as_posix(), stack)
-            return self._read_regular_at(parent, parts[-1], relative)
+            return self._read_regular_at(parent, name, relative)
 
     def _scan_directory(
         self,
@@ -235,7 +240,7 @@ class _DescriptorSecureTree:
         )
 
 
-def _windows_error_kind(exc: OSError) -> PathProblemKind:  # pragma: no cover
+def _windows_error_kind(exc: Exception) -> PathProblemKind:  # pragma: no cover
     """Classify errors from the Windows-only adapter, exercised in Windows CI."""
     winerror = getattr(exc, "winerror", None)
     return "missing" if winerror in {2, 3} else "unreadable"
@@ -273,7 +278,7 @@ class _WindowsSecureTree:  # pragma: no cover
         except (OSError, pywintypes.error) as exc:
             kind: PathEntryKind = "directory" if expected_directory else "file"
             raise SecurePathError(str(path), _windows_error_kind(exc), kind) from exc
-        attributes = win32file.GetFileInformationByHandle(handle)[0]
+        attributes = win32file.GetFileInformationByHandle(handle.handle)[0]
         if not follow and attributes & win32con.FILE_ATTRIBUTE_REPARSE_POINT:
             handle.Close()
             kind = "directory" if expected_directory else "file"
@@ -311,16 +316,18 @@ class _WindowsSecureTree:  # pragma: no cover
                 raise
             if not chunk:
                 break
-            chunks.append(chunk)
+            # types-pywin32 types ReadFile's data as str; a synchronous read returns bytes.
+            chunks.append(cast(bytes, chunk))
         return b"".join(chunks)
 
     def read_file(self, relative: str) -> bytes:
         parts = _parts(relative)
+        name = parts[-1]
         with ExitStack() as stack:
             parent = self._root
             if len(parts) > 1:
                 parent = self._open_directory_chain(PurePosixPath(*parts[:-1]).as_posix(), stack)
-            path = parent / parts[-1]
+            path = parent / name
             handle = self._open(path, expected_directory=False)
             stack.callback(handle.Close)
             return self._read_handle(handle)

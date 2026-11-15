@@ -15,7 +15,7 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import Literal, NewType, TypeAlias, cast
+from typing import Literal, NewType, TypeAlias, TypedDict, cast
 
 from booley.core.boundary import (
     BoundaryError,
@@ -762,43 +762,43 @@ def _validate_evaluation_shape(
 def _validate_provenance_shapes(
     valid_top: Mapping[str, object], findings: list[CoverageFinding]
 ) -> None:
-    if isinstance(valid_top.get("invocation"), Mapping):
-        _validate_invocation_shape(valid_top["invocation"], findings)
-    if isinstance(valid_top.get("target"), Mapping):
-        _validate_target_shape(valid_top["target"], findings)
-    if isinstance(valid_top.get("collector"), Mapping):
-        _validate_collector_shape(valid_top["collector"], findings)
-    if isinstance(valid_top.get("build"), Mapping):
-        _validate_build_shape(valid_top["build"], findings)
-    if isinstance(valid_top.get("coverage_window"), Mapping):
-        _validate_window_shape(valid_top["coverage_window"], findings)
-    if isinstance(valid_top.get("fingerprints"), Mapping):
-        _validate_fingerprints_shape(valid_top["fingerprints"], findings)
-    if isinstance(valid_top.get("source_closure"), Mapping):
-        _validate_source_closure_shape(valid_top["source_closure"], findings)
+    if isinstance(invocation := valid_top.get("invocation"), Mapping):
+        _validate_invocation_shape(invocation, findings)
+    if isinstance(target := valid_top.get("target"), Mapping):
+        _validate_target_shape(target, findings)
+    if isinstance(collector := valid_top.get("collector"), Mapping):
+        _validate_collector_shape(collector, findings)
+    if isinstance(build := valid_top.get("build"), Mapping):
+        _validate_build_shape(build, findings)
+    if isinstance(coverage_window := valid_top.get("coverage_window"), Mapping):
+        _validate_window_shape(coverage_window, findings)
+    if isinstance(fingerprints := valid_top.get("fingerprints"), Mapping):
+        _validate_fingerprints_shape(fingerprints, findings)
+    if isinstance(source_closure := valid_top.get("source_closure"), Mapping):
+        _validate_source_closure_shape(source_closure, findings)
 
 
 def _validate_observation_shapes(
     valid_top: Mapping[str, object], points: Sequence[object], findings: list[CoverageFinding]
 ) -> None:
-    if isinstance(valid_top.get("tests"), Mapping):
-        _validate_tests_shape(valid_top["tests"], findings)
-    if isinstance(valid_top.get("artifacts"), list):
-        _validate_artifact_shapes(valid_top["artifacts"], findings)
-    if isinstance(valid_top.get("normalization"), Mapping):
-        _validate_normalization_shape(valid_top["normalization"], findings)
+    if isinstance(tests := valid_top.get("tests"), Mapping):
+        _validate_tests_shape(tests, findings)
+    if isinstance(records := valid_top.get("artifacts"), list):
+        _validate_artifact_shapes(records, findings)
+    if isinstance(normalization := valid_top.get("normalization"), Mapping):
+        _validate_normalization_shape(normalization, findings)
     _validate_point_shapes(points, findings)
 
 
 def _validate_outcome_shapes(
     valid_top: Mapping[str, object], findings: list[CoverageFinding]
 ) -> None:
-    if isinstance(valid_top.get("findings"), list):
-        _validate_finding_shapes(valid_top["findings"], findings)
-    if isinstance(valid_top.get("collection"), Mapping):
-        _validate_collection_shape(valid_top["collection"], findings)
-    if isinstance(valid_top.get("evaluation"), Mapping):
-        _validate_evaluation_shape(valid_top["evaluation"], findings)
+    if isinstance(records := valid_top.get("findings"), list):
+        _validate_finding_shapes(records, findings)
+    if isinstance(collection := valid_top.get("collection"), Mapping):
+        _validate_collection_shape(collection, findings)
+    if isinstance(evaluation := valid_top.get("evaluation"), Mapping):
+        _validate_evaluation_shape(evaluation, findings)
 
 
 def _structural_findings(
@@ -891,6 +891,7 @@ def _duplicate_key_findings(
     findings: list[CoverageFinding] = []
     seen: set[object] = set()
     for index, record in enumerate(records):
+        assert isinstance(record, Mapping)
         value = record[key]
         if value in seen:
             findings.append(
@@ -1017,7 +1018,9 @@ def _validate_point_identity(
             )
         )
     seen_identities.add(encoded_identity)
-    metric = str(point["identity"]["metric"])
+    identity = point["identity"]
+    assert isinstance(identity, Mapping)
+    metric = str(identity["metric"])
     if metric not in reported_capabilities:
         findings.append(
             _error(
@@ -1119,6 +1122,7 @@ def _validate_points(
     findings: list[CoverageFinding] = []
     seen: set[bytes] = set()
     for index, point in enumerate(points):
+        assert isinstance(point, Mapping)
         pointer = f"/points/{index}"
         findings.extend(_validate_point_identity(point, pointer, seen, reported))
         findings.extend(_validate_point_disposition(point, pointer, rtl_sources))
@@ -1318,7 +1322,14 @@ def _decode_run(document: Mapping[str, object]) -> CoverageRun:
     )
 
 
-def _decode_run_identity(document: Mapping[str, object]) -> dict[str, object]:
+class _RunIdentity(TypedDict):
+    test_run: str
+    variant: str | None
+    seed: int | None
+    fingerprint: str
+
+
+def _decode_run_identity(document: Mapping[str, object]) -> _RunIdentity:
     """A run's Test Run name, Test Variant, seed and fingerprint, exactly as recorded.
 
     The Coverage Record validator has already checked the recorded identity; nothing
@@ -1340,7 +1351,7 @@ def _decode_artifact(document: Mapping[str, object]) -> CoverageArtifact:
         kind=str(document["kind"]),
         path=str(document["path"]),
         sha256=str(document["sha256"]),
-        bytes=int(document["bytes"]),
+        bytes=require_int(document["bytes"], field="bytes"),
         state=str(document["state"]),
         owner_run=str(document["owner_run"]) if "owner_run" in document else None,
         attributes=freeze_coverage_mapping(
