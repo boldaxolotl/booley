@@ -183,6 +183,7 @@ async def finish(session: ToolSession, worktree: Path, record_id: str) -> str:
 def _run(
     command: list[str], cwd: Path, env: dict[str, str], *, stdin_payload: str | None = None
 ) -> str:
+    # Kept on subprocess.run: the CI driver streams stdin to a CLI that run_bounded_child cannot feed.
     result = subprocess.run(
         command,
         cwd=cwd,
