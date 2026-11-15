@@ -40,7 +40,13 @@ from booley.runtime.platform_paths import (
     same_host_path,
 )
 from booley.runtime.private_store import SESSION_STORE_REPAIR
-from booley.runtime.sandbox_apply import Attachment, apply_steps, image_is_managed, shell_command
+from booley.runtime.sandbox_apply import (
+    Attachment,
+    apply_steps,
+    image_is_managed,
+    quote_arg,
+    shell_command,
+)
 from booley.runtime.timefmt import format_age, parse_timestamp, rfc3339_from_datetime
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
@@ -268,8 +274,7 @@ def recreate_remedy(item: Sandbox) -> str:
         steps = apply_steps(Attachment.VSCODE, managed=managed, project=root)
         return f"recreate it: {steps} in its VS Code window"
     if not Path(root).is_dir():
-        down = shell_command(["booley", "session", "down", "--project", root])
-        return f"stop it: run `{down}`"
+        return f"stop it: run `booley session down --project {quote_arg(root)}`"
     steps = apply_steps(Attachment.HEADLESS, managed=managed, project=root)
     return f"recreate it: {steps}"
 

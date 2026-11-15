@@ -12,6 +12,7 @@ from booley.runtime.sandbox_apply import (
     UNKNOWN_SANDBOX_STEPS,
     Attachment,
     apply_steps,
+    quote_arg,
 )
 
 SANDBOX_MD = Path(__file__).resolve().parents[2] / "docs" / "user" / "SANDBOX.md"
@@ -73,7 +74,7 @@ def test_project_scoped_steps_keep_the_documented_commands() -> None:
     assert [c.split(" --project")[0] for c in commands] == _documented()[
         (Attachment.HEADLESS, False)
     ][0]
-    assert all(c.endswith("--project /work/p") for c in commands)
+    assert all(c.endswith(f"--project {quote_arg('/work/p')}") for c in commands)
 
 
 def test_unknown_sandbox_steps_point_at_the_documented_own_image_section() -> None:

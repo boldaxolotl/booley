@@ -16,6 +16,7 @@ from booley.config.host_config import load_host_policy
 from booley.harness import bootstrap, bootstrap_cli
 from booley.runtime import session_admission
 from booley.runtime.image_lifecycle import Intent
+from booley.runtime.sandbox_apply import quote_arg
 from tests.conftest import require_symlinks
 
 _UNPROXIED = b'[sandbox]\negress = "unproxied"\n'
@@ -233,12 +234,8 @@ def test_mode_change_names_running_sandboxes_on_old_mode(
     # The remedy quotes commands per host shell, so compare against its own rendering.
     assert session_admission.recreate_remedy(editor) in out
     assert session_admission.recreate_remedy(headless) in out
-    editor_command = session_admission.shell_command(
-        ["booley", "init", "--project", str(roots["editor"])]
-    )
-    headless_command = session_admission.shell_command(
-        ["booley", "session", "refresh", "--project", str(roots["headless"])]
-    )
+    editor_command = f"booley init --project {quote_arg(str(roots['editor']))}"
+    headless_command = f"booley session refresh --project {quote_arg(str(roots['headless']))}"
     assert f"run `{editor_command}`, then use Dev Containers: Rebuild Container" in out
     assert f"recreate it: run `{headless_command}` on the host" in out
     assert "--seed" not in out

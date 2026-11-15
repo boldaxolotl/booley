@@ -20,7 +20,8 @@ from booley.config.host_config import SandboxHostPolicy
 from booley.config.project_config import normalize_tests_toml
 from booley.harness import doctor, doctor_deep, host_diagnostics
 from booley.harness.setup import readiness
-from booley.runtime import doctor_stamp, inspection, platform_paths, session_admission, vaporview
+from booley.runtime import doctor_stamp, inspection, platform_paths, vaporview
+from booley.runtime.sandbox_apply import quote_arg
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 from tests.conftest import symlink_or_skip
@@ -198,9 +199,8 @@ def test_host_doctor_warns_for_each_mismatched_running_sandbox(
     # Each recreate command names the stale Project, quoted for the host shell
     # (POSIX shells or PowerShell on Windows).
     for command in fix_commands:
-        assert (
-            session_admission.shell_command([*command, str(stale_root.resolve())]) in finding.fix
-        )
+        words = " ".join(command)
+        assert f"`{words} {quote_arg(str(stale_root.resolve()))}`" in finding.fix
     assert ("Rebuild Container" in finding.fix) is editor
     assert "--seed" not in finding.fix
     assert result.exit_code == 0
