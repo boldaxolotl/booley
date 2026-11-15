@@ -300,7 +300,7 @@ file:
 
 A file in the Booley Directory keeps the tracked tree free of Booley files, but
 a fresh clone won't have it, so `booley init` there builds without your pins.
-See [what survives a fresh clone](STEALTH.md#what-survives-a-fresh-clone).
+See [Stealth Mode: What changes](STEALTH.md#what-changes).
 
 </details>
 
