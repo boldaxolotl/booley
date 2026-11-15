@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from booley.core.boundary import BoundaryError
@@ -64,3 +66,14 @@ def test_sim_sentinels_come_from_project_config(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr(config, "_sim_config", lambda _work_dir: {})
     assert config.resolve_sim_sentinels() == ([], [])
+
+
+def test_resolvers_accept_a_string_project_root(tmp_path: Path) -> None:
+    """The resolvers' declared ``str`` project root reads the same configuration as a Path."""
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_text(
+        '[flows.sim]\ntrace_args = ["--trace-depth=2"]\n', encoding="utf-8"
+    )
+
+    assert config.resolve_trace_args(str(tmp_path)) == ["--trace-depth=2"]
