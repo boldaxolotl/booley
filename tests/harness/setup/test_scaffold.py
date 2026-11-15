@@ -844,6 +844,9 @@ def test_scaffold_variants_have_no_doctor_warnings_and_enabled_header(
         asic=asic,
         fpga_part="xc7a35tcpg236-1" if fpga else None,
     )
+    resolved = gather_scaffold_choices(args, _ctx(tmp_path, monkeypatch))
+    assert resolved is not None
+    assert resolved.style_lint is (linter == "verilator")
     assert step_scaffold(_ctx(tmp_path, monkeypatch), args)
     _track_scaffold(tmp_path)
     cfg = tmp_path / ".booley"
