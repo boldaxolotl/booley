@@ -251,7 +251,7 @@ def test_docs_landing_table_lists_every_user_doc_in_sidebar_order():
 
     landing = (WEBSITE / "docs/docs/index.md").read_text(encoding="utf-8")
     body = landing.split("<tbody>", 1)[1].split("</tbody>", 1)[0]
-    rows = re.findall(r"<tr>(.*?)</tr>", body)
+    rows = re.findall(r"<tr>(.*?)</tr>", body, re.DOTALL)
     sections: list[tuple[str, int]] = []
     pages = []
     for row in rows:

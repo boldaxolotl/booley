@@ -1923,14 +1923,9 @@ async def _dispatch_application_tool(
         if server_identity is None
         else job_ownership.caller_for(server_identity, request_context)
     )
-    if request_context is not None:
-        special_result = await _dispatch_special_mcp_tool(
-            name, arguments, jobs, status_mcp_tool_names, request_context, caller
-        )
-    else:
-        special_result = await _dispatch_special_mcp_tool(
-            name, arguments, jobs, status_mcp_tool_names, caller=caller
-        )
+    special_result = await _dispatch_special_mcp_tool(
+        name, arguments, jobs, status_mcp_tool_names, caller=caller
+    )
     if special_result is not None:
         return special_result
     bwave_result = await _dispatch_bwave(name, arguments, request_context)
