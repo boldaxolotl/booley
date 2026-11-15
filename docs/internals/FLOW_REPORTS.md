@@ -101,7 +101,7 @@ component):
     record/
       manifest.json                    what this run will execute (fixed at start)
       summary.json                     where it stands now
-      build-variants/.../              simulator builds every attempt launches, read-only, and their results
+      build-variants/.../              shared simulator builds (launched read-only by every attempt) and their results
       work-items/.../attempts/.../     one directory per test or batch, with its attempts
     simulation.json                    the Target's results
     coverage.json                      coverage runs only: the Coverage Record reference

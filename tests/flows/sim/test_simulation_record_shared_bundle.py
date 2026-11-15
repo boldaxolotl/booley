@@ -965,6 +965,7 @@ def test_in_place_verification_returns_the_recorded_inventory(
         ("stray_directory", "undeclared bundle entry"),
         ("stray_in_evidence", "undeclared bundle entry"),
         ("stray_link", "undeclared bundle entry"),
+        ("hard_link", "another hard link"),
     ],
 )
 def test_in_place_verification_refuses_every_change_to_the_bundle(
@@ -983,12 +984,33 @@ def test_in_place_verification_refuses_every_change_to_the_bundle(
         (directory / "evidence" / "stray.json").write_bytes(b"{}")
     elif change == "missing":
         (directory / "simv").unlink()
+    elif change == "hard_link":
+        os.link(directory / "simv", tmp_path / "alias")
     else:
         name = "bundle.json" if change == "manifest" else "build-execution.json"
         (directory / "evidence" / name).write_bytes(b"changed")
 
     with pytest.raises(SimulationRecordIntegrityError, match=message):
         verify_bundle_in_place(bundle, result, directory)
+
+
+@pytest.mark.parametrize("failing", ["stream_digest", "scandir"])
+def test_in_place_verification_reports_an_unreadable_bundle_as_an_integrity_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing: str
+) -> None:
+    from booley.flows.sim.record import bundle as bundle_module
+
+    bundle, result, directory = _ready_bundle(tmp_path, monkeypatch)
+
+    def unreadable(*_args: object, **_kwargs: object) -> Any:
+        raise PermissionError("denied")
+
+    if failing == "stream_digest":
+        monkeypatch.setattr(bundle_module, "stream_digest", unreadable)
+    else:
+        monkeypatch.setattr(os, "scandir", unreadable)
+    with pytest.raises(SimulationRecordIntegrityError, match="unreadable"):
+        bundle_module.verify_bundle_in_place(bundle, result, directory)
 
 
 def _run_failed_shared_build_simulation_record(

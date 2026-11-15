@@ -136,8 +136,8 @@ def canonical_json_bytes(value: object) -> bytes:
 MANIFEST_SCHEMA = "booley.simulation-record-manifest/v1"
 
 # v5 = the Simulation Record identity key, on top of v3's required ``test_run`` of every observation: the resolved name of the
-# Test Run it observed (ADR 0072), with ``bundle_verification`` in place of the
-# per-attempt executable snapshot. Observations are unique by Test Run.
+# Test Run it observed (ADR 0072), and ``bundle_verification``, the in-place check of the
+# launched bundle. Observations are unique by Test Run.
 RESULT_SCHEMA = "booley.simulation-result/v5"
 
 # Formats an older Booley wrote. They are recognised only to be refused.

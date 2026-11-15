@@ -66,7 +66,12 @@ def verify_bundle_in_place(
 
 def _verify_file(root: Path, declared: Mapping[str, object], label: str) -> None:
     path = _regular_child(root, cast(str, declared["path"]))
-    size, digest = stream_digest(path)
+    if path.lstat().st_nlink != 1:
+        raise SimulationRecordIntegrityError(f"bundle artifact has another hard link: {path}")
+    try:
+        size, digest = stream_digest(path)
+    except OSError as exc:
+        raise SimulationRecordIntegrityError(f"bundle artifact is unreadable: {path}") from exc
     if size != declared["bytes"] or digest != declared["sha256"]:
         raise SimulationRecordIntegrityError(f"{label} changed: {path}")
 
@@ -82,8 +87,13 @@ def _require_only(root: Path, allowed_files: set[str]) -> None:
     pending = [root]
     while pending:
         directory = pending.pop()
-        with os.scandir(directory) as scan:
-            entries = list(scan)
+        try:
+            with os.scandir(directory) as scan:
+                entries = list(scan)
+        except OSError as exc:
+            raise SimulationRecordIntegrityError(
+                f"bundle directory is unreadable: {directory}"
+            ) from exc
         for entry in entries:
             relative = Path(entry.path).relative_to(root).as_posix()
             if entry.is_symlink():
