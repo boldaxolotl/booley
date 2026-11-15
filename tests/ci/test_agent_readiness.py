@@ -84,6 +84,7 @@ def test_verification_commands_are_stable(tmp_path, monkeypatch):
         "ruff.ci-format",
         "pyright.ci-check",
         "packaged-copies.check",
+        "function-length.check",
         "pytest.broad",
         "coverage.changed-lines",
     ]
@@ -102,6 +103,14 @@ def test_verification_commands_are_stable(tmp_path, monkeypatch):
     )
     assert (packaged.cwd, packaged.purpose) == (str(tmp_path), "lint")
     assert packaged.required_at == "before-commit"
+    length = commands[5]
+    assert length.argv == (
+        python,
+        "-B",
+        str(tmp_path / ".github/scripts/check_function_length.py"),
+    )
+    assert (length.cwd, length.purpose) == (str(tmp_path), "lint")
+    assert length.required_at == "before-commit"
     report = readiness.coverage_xml_path(tmp_path)
     broad, coverage = commands[-2:]
     assert broad.argv == (
