@@ -96,7 +96,7 @@ def warn_make_option_overrides(target: str, tokens: Sequence[str], *, cache_acti
             continue
         if found.group(1) == "OBJCACHE":
             logger.warning(
-                "Simulation Target %r: make_options assignment %s turns off build reuse, "
+                "Simulation Target %r: make_options assignment %s means build reuse is off, "
                 "so every run rebuilds the simulation model; to stop using the compiler "
                 "cache, set enabled = false under [flows.sim.compiler_cache]",
                 target,
