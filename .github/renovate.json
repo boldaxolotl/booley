@@ -294,28 +294,21 @@
       "currentValueTemplate": "master"
     },
     {
-      "description": "Copies of the VaporView pin: the verified-version constant and the troubleshooting steps.",
+      "description": "Copy of the VaporView pin: the verified-version constant.",
       "customType": "regex",
-      "managerFilePatterns": [
-        "/^src/booley/runtime/vaporview\\.py$/",
-        "/^docs/user/TROUBLESHOOTING\\.md$/"
-      ],
+      "managerFilePatterns": ["/^src/booley/runtime/vaporview\\.py$/"],
       "matchStrings": [
-        "VERIFIED_VERSION = \\\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\\\"",
-        "bundled VaporView (?<currentValue>\\d+\\.\\d+\\.\\d+)\\.",
-        "vaporview-(?<currentValue>\\d+\\.\\d+\\.\\d+)\\.vsix",
-        "lramseyer\\.vaporview@(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+        "VERIFIED_VERSION = \\\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\\\""
       ],
       "datasourceTemplate": "custom.openvsx",
       "depNameTemplate": "lramseyer/vaporview"
     },
     {
-      "description": "Copies of the Verilog-HDL extension pin: the devcontainer constant, the session runtime bundle list and the troubleshooting commands.",
+      "description": "Copies of the Verilog-HDL extension pin: the devcontainer constant and the session runtime bundle list.",
       "customType": "regex",
       "managerFilePatterns": [
         "/^src/booley/runtime/devcontainer\\.py$/",
-        "/^\\.github/contracts/session-runtime\\.toml$/",
-        "/^docs/user/TROUBLESHOOTING\\.md$/"
+        "/^\\.github/contracts/session-runtime\\.toml$/"
       ],
       "matchStrings": [
         "_HDL_VERSION = \\\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\\\"",
@@ -325,12 +318,11 @@
       "depNameTemplate": "mshr-h/veriloghdl"
     },
     {
-      "description": "Copies of the Live Preview extension pin: the devcontainer constant, the session runtime bundle list and the troubleshooting commands.",
+      "description": "Copies of the Live Preview extension pin: the devcontainer constant and the session runtime bundle list.",
       "customType": "regex",
       "managerFilePatterns": [
         "/^src/booley/runtime/devcontainer\\.py$/",
-        "/^\\.github/contracts/session-runtime\\.toml$/",
-        "/^docs/user/TROUBLESHOOTING\\.md$/"
+        "/^\\.github/contracts/session-runtime\\.toml$/"
       ],
       "matchStrings": [
         "_LIVE_PREVIEW_VERSION = \\\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\\\"",

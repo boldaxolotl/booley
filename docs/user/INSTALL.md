@@ -2,8 +2,7 @@
 
 This guide installs the Booley CLI on your machine and prepares the host with
 Host Bootstrap. Do it once per machine. To connect Booley to an RTL project
-afterwards, follow [Setup](SETUP.md). If a step fails, see
-[Troubleshooting](TROUBLESHOOTING.md#installation-and-editor-integration).
+afterwards, follow [Setup](SETUP.md).
 
 ## Requirements
 
@@ -23,7 +22,11 @@ supported. You need:
 <details markdown>
 <summary>On Windows</summary>
 
-Also read [Windows](WINDOWS.md) for first-run traps.
+A fresh Windows has no Python, only Microsoft Store shortcuts named `python`
+and `py`. Install Python first, for example with
+`winget install Python.Python.3.13`, then open a new terminal. You need no
+Ubuntu and no EDA tools on Windows; see
+[Windows support](FEATURES.md#windows-support).
 
 </details>
 
@@ -39,9 +42,7 @@ booley bootstrap
 ```
 <!-- /booley-smoke:install -->
 
-Check that `booley --version` works. Seeing `externally-managed-environment`,
-PATH, or other install errors? See
-[Troubleshooting](TROUBLESHOOTING.md#installation-fails-with-externally-managed-environment).
+Check that `booley --version` works.
 
 ## Upgrade
 
@@ -86,7 +87,8 @@ Booley stops a build after 7200 seconds (2 hours); set
 <details markdown>
 <summary>On Windows</summary>
 
-A local image build can take longer on Windows. See [Windows](WINDOWS.md).
+A local image build can take longer on Windows. See
+[Windows support](FEATURES.md#windows-support).
 
 </details>
 
