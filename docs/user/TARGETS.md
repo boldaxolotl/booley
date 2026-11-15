@@ -187,5 +187,4 @@ keep your own cores in `.booley/cores/`: Booley then ignores every other
 
 ---
 
-If a Target misbehaves, start with [Troubleshooting](TROUBLESHOOTING.md) and
-[Doctor](DOCTOR.md).
+If a Target misbehaves, start with [Doctor](DOCTOR.md).
