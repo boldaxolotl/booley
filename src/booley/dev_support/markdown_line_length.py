@@ -93,13 +93,17 @@ def changed_lines(root: Path, base: str) -> dict[str, set[int]]:
     changed: dict[str, set[int]] = {}
     path: str | None = None
     number = 0
-    for line in diff.splitlines():
-        if line.startswith("+++ "):
+    in_hunk = False
+    for line in diff.split("\n"):
+        if line.startswith("diff --git "):
+            in_hunk = False
+        elif not in_hunk and line.startswith("+++ "):
             if line.startswith('+++ "'):
                 raise CoverageGateError(f"unexpected quoted path in diff: {line}")
             path = line[len("+++ b/") :]
             changed.setdefault(path, set())
         elif (hunk := _HUNK.match(line)) is not None:
+            in_hunk = True
             number = int(hunk.group(1))
         elif path is not None and line.startswith("+"):
             changed[path].add(number)
@@ -138,17 +142,22 @@ class _Block:
 
     def __init__(self) -> None:
         self.fence: str | None = None
+        self.fence_quoted = False
         self.front_matter = False
         self.generated: str | None = None
 
     def in_block(self, number: int, line: str, text: str) -> bool:
         """Advance on ``line`` and return whether it lies inside a block (edges included)."""
+        quoted = text != line.lstrip()
         if number == 1 and line == "---":
             self.front_matter = True
             return True
         if self.front_matter:
             self.front_matter = line not in {"---", "..."}
             return True
+        if self.fence is not None and not (self.fence_quoted and not quoted):
+            return self._fence(text, quoted)
+        self.fence = None
         if self.generated is not None:
             end = _GENERATED_END.match(line)
             if end is not None and end.group(1) == self.generated:
@@ -158,10 +167,10 @@ class _Block:
         if begin is not None:
             self.generated = begin.group(1)
             return True
-        return self._fence(text)
+        return self._fence(text, quoted)
 
-    def _fence(self, text: str) -> bool:
-        match = _FENCE.match(text)
+    def _fence(self, text: str, quoted: bool) -> bool:
+        match = _FENCE.match(_LIST_MARKER.sub("", text, count=1))
         if self.fence is not None:
             closes = (
                 match is not None
@@ -174,6 +183,7 @@ class _Block:
             return True
         if match is not None and not (match.group(1)[0] == "`" and "`" in match.group(2)):
             self.fence = match.group(1)
+            self.fence_quoted = quoted
             return True
         return False
 
@@ -185,7 +195,8 @@ def long_lines(text: str, changed: set[int]) -> list[tuple[int, int]]:
     """
     block = _Block()
     found: list[tuple[int, int]] = []
-    for number, line in enumerate(text.splitlines(), start=1):
+    for number, raw in enumerate(text.split("\n"), start=1):
+        line = raw.removesuffix("\r")
         stripped = _QUOTE.sub("", line, count=1)
         if block.in_block(number, line, stripped):
             continue

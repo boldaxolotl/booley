@@ -98,6 +98,18 @@ def test_generator_and_test_owned_markdown_is_not_checked(repo: Path) -> None:
     assert "changelog.d/README.md:1: " in out
 
 
+def test_added_line_that_looks_like_a_diff_header_is_content(repo: Path) -> None:
+    """Catches `++ x` read as a `+++ ` file header, and form-feed line drift."""
+    _commit(repo, {"doc.md": "x\n"}, "base")
+    _git(repo, "switch", "-q", "-c", "codex/feature")
+    _commit(repo, {"doc.md": f"x\n++ counter\na\x0cb\r\n{_LONG}\n"}, "branch")
+
+    code, out, _ = _run(repo)
+
+    assert code == 1, out
+    assert "doc.md:4: 103 columns (limit 80)" in out
+
+
 def test_explicit_base_and_git_failures(repo: Path) -> None:
     """`--base` is honored; an unusable base or missing history exits 2."""
     _commit(repo, {"doc.md": "x\n"}, "base")
@@ -128,6 +140,8 @@ _EXEMPT_CASES: list[list[str]] = [
     ["~~~", _LONG, "~~~"],
     [f"> {_FENCE}", f"> {_LONG}", f"> {_FENCE}"],
     [f"{_FENCE}text", _LONG],  # unclosed fence runs to the end
+    [f"- {_FENCE}text", "  " + _LONG, f"  {_FENCE}"],
+    [f"{_FENCE}", "<!-- BEGIN GENERATED: x -->", _LONG, f"{_FENCE}"],
     ["| " + _LONG + " |"],
     ["## " + _LONG],
     ["#" * 6 + " " + _LONG],
@@ -166,6 +180,8 @@ def test_prose_past_a_closed_fence_or_short_token_fails() -> None:
         ["#hashtag " + _LONG],
         ["| a", _LONG],
         ["[label]: ok", _LONG],
+        [f"{_FENCE}", "<!-- BEGIN GENERATED: x -->", f"{_FENCE}", _LONG],
+        [f"> {_FENCE}", "> code", "", _LONG],
     ]
     for lines in cases:
         text = "\n".join(lines) + "\n"
