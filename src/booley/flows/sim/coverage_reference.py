@@ -48,8 +48,8 @@ class CoverageRecordReferenceError(ValueError):
 class CoverageRecordReference:
     """Immutable Coverage Record reference document.
 
-    ``decode_coverage_campaign_reference`` validates bytes;
-    ``build_coverage_campaign_reference`` constructs one from values Booley owns.
+    ``decode_coverage_record_reference`` validates bytes;
+    ``build_coverage_record_reference`` constructs one from values Booley owns.
     """
 
     document: Mapping[str, object]

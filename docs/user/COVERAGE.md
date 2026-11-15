@@ -89,7 +89,7 @@ The other lines:
   Percentages are cut off, not rounded, to one decimal (or to the
   decimals of the minimum, if it has more), so `100.0%` always means every
   point is covered and a `met` metric never prints below its minimum.
-- **`Coverage Record`** is the Target's Coverage Campaign file, described
+- **`Coverage Record`** is the Target's `coverage.json`, described
   below. It is printed whatever the collection status, and also for the
   Targets that finished before a run failed or was cancelled.
 

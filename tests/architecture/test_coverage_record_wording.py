@@ -66,6 +66,7 @@ _PERSISTED: tuple[str, ...] = (
     "campaign_id",
     "campaign_path",
     "campaign_reference",
+    "coverage_campaign_reference",
     "nested_campaign_sha256",
     "simulation_campaign",
     "adopted_campaign",
@@ -90,7 +91,7 @@ _KEPT_SPELLINGS: dict[str, tuple[str, ...]] = {
     "tests/dev_support/test_mutation_variants.py": ('"campaign/variants"',),
     "tests/dev_support/test_mutation_workspace.py": ('"campaign"',),
     "tests/flows/test_endpoint_admission.py": ("mutation campaign's",),
-    "tests/flows/test_transport_contract.py": ("run_campaign",),
+    "tests/flows/test_transport_contract.py": ("run_campaign", "_run_campaign"),
     "tests/mcp_tools/test_specialist_workspace.py": ("mutation/campaign/variants",),
     # Target campaign: the paired-campaign Criteria and the vacuous-suite refusal.
     "src/booley/criteria/templates.py": (
@@ -129,7 +130,7 @@ _KEPT_SPELLINGS: dict[str, tuple[str, ...]] = {
     # Scratch-prefix cleanup of what Booley 0.4.0 left behind.
     "src/booley/runtime/owned_scratch.py": ("booley-coverage-campaign-",),
     # The written coverage_record_id value starts with "campaign:" (a persisted value, #2909).
-    "src/booley/flows/sim/coverage_transaction.py": ('f"campaign:{',),
+    "src/booley/flows/sim/coverage_transaction.py": ('"campaign:{',),
     "tests/flows/sim/test_coverage_canonical_forms.py": ("campaign:sim_counter",),
     "tests/flows/sim/test_coverage_policy.py": ("campaign:sim_counter",),
     "tests/flows/sim/test_coverage_provisional.py": ("campaign:sim_counter", "campaign:other"),
@@ -161,7 +162,9 @@ def _text(path: Path) -> str | None:
 
 def _masked(line: str, spellings: tuple[str, ...]) -> str:
     for spelling in sorted((*_PERSISTED, *spellings), key=len, reverse=True):
-        line = line.replace(spelling, "")
+        left = r"(?<![A-Za-z0-9_])" if re.match(r"\w", spelling) else ""
+        right = r"(?![A-Za-z0-9_])" if re.search(r"\w$", spelling) else ""
+        line = re.sub(f"{left}{re.escape(spelling)}{right}", "", line)
     return line
 
 
