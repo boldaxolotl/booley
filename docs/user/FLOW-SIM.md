@@ -168,7 +168,8 @@ How it differs from an SV Target:
 ## Reading results
 
 The run ends with a block per Target: its verdict (`PASS`, `FAIL`, `ERROR` or
-`INCONCLUSIVE`, see below), the paths to its Campaign manifest and the report,
+`INCONCLUSIVE`, see below), the paths to its Simulation Record manifest and the
+report,
 and for a failure the end of the simulator output. The Test Runs are listed
 when there is more to say than "everything passed at the Default Seed" (a
 failure, another seed or Variant, a Test that ran more than once, or a
@@ -179,14 +180,14 @@ not pass names its log.
 Example (Verilator):
 
 ```text
-sim_soc: FAIL (Simulation Campaign 3f2a9c1e-…)
-  manifest: /work/.booley/flow-reports/sim/12/targets/sim_soc/campaign/manifest.json
+sim_soc: FAIL (Simulation Record 3f2a9c1e-…)
+  manifest: /work/.booley/flow-reports/sim/12/targets/sim_soc/record/manifest.json
   report: /work/.booley/flow-reports/sim/12/report.json
   <end of the failed test's simulator output>
   Test Runs: 3 (2 passed, 1 failed)
     PASS         stress+soak@1804289383
     FAIL         stress+soak@846930886
-      log: /work/.booley/flow-reports/sim/12/targets/sim_soc/campaign/work-items/0002-…/attempts/0001-…/evidence/0001-run.log
+      log: /work/.booley/flow-reports/sim/12/targets/sim_soc/record/work-items/0002-…/attempts/0001-…/evidence/0001-run.log
     PASS         stress+soak@1681692777
   Rerun a failed Test Run with the same seed:
     booley flow sim --target sim_soc --test=stress+soak@846930886
@@ -213,12 +214,12 @@ even when all of them passed.
 Example (Verilator):
 
 ```text
-sim_dma: PASS (Simulation Campaign 7b1c44d0-…)
-  manifest: /work/.booley/flow-reports/sim/12/targets/sim_dma/campaign/manifest.json
+sim_dma: PASS (Simulation Record 7b1c44d0-…)
+  manifest: /work/.booley/flow-reports/sim/12/targets/sim_dma/record/manifest.json
   report: /work/.booley/flow-reports/sim/12/report.json
   Test Runs: 1 (1 passed)
     PASS         irq@1
-      waveform: /work/.booley/flow-reports/sim/12/targets/sim_dma/campaign/work-items/0001-…/attempts/0001-…/evidence/0003-trace.fst
+      waveform: /work/.booley/flow-reports/sim/12/targets/sim_dma/record/work-items/0001-…/attempts/0001-…/evidence/0003-trace.fst
 ```
 
 The paths:
@@ -487,8 +488,9 @@ RTL exits `1`; a tool, setup or timeout problem exits `2`.
 For a long run, such as a multi-hour regression, resuming saves re-running the
 tests that already finished. For a short run, just start it again.
 
-Every run records its plan and results in a Simulation Campaign, one per
-Target. The CLI prints each Campaign's `manifest.json` path before it starts,
+Every run records its plan and results in a Simulation Record, one per
+Target. The CLI prints each Simulation Record's `manifest.json` path before it
+starts,
 and the verdict card repeats it. Ask the agent to resume the run, or:
 
 ```bash
@@ -509,7 +511,8 @@ booley flow sim --resume-from <manifest.json>
 - A test with a recorded result is finished, even if it failed. Resume never
   re-runs failures; start a new run for that.
 - Resume refuses when the Target's sources, Tests or simulation settings have
-  changed since the original run. Don't edit Campaign files by hand: resume
+  changed since the original run. Don't edit Simulation Record files by hand:
+  resume
   checks that they are intact.
 
 <details markdown>
@@ -604,7 +607,7 @@ Commit a placeholder file such as `.gitkeep` so it does. Tests that share it run
 one at a time. If the directory only receives per-run output, add the
 `{attempt}` placeholder instead (`run_cwd = "runs/{attempt}"`): Booley then
 creates a private directory for each attempt and removes it afterwards, and
-tests can run in parallel. `{target}`, `{test}` and `{campaign}` are also
+tests can run in parallel. `{target}`, `{test}` and `{record}` are also
 available.
 
 ## Build reuse

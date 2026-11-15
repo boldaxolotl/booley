@@ -33,7 +33,7 @@ from booley.goals.store import GoalStore
 from booley.goals.translate import translate_goals
 
 ROOT = Path(__file__).resolve().parents[2]
-FIXTURE = ROOT / "qa/shared/coverage/simulation-campaign"
+FIXTURE = ROOT / "qa/shared/coverage/simulation-record"
 
 
 @dataclass(frozen=True)

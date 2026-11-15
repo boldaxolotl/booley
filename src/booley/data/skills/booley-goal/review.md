@@ -19,7 +19,7 @@ changes, constraint edits, and Test Runs.
    rather than weakened tests or constraints. For Goals that name Test Runs,
    read the frozen Test Runs and their outcomes, the list "Test Runs resolved
    after entry" (their defaults were taken from `tests.toml` during the work),
-   and any "Simulation Campaigns not fully accounted for". Check that the
+   and any "Simulation Records not fully accounted for". Check that the
    testbench does not special-case a frozen seed.
 5. Present a concise account of the result, then end with the paths Finish
    returned (`<summary>` is the reply's `Full briefing` path, `<package>` its
