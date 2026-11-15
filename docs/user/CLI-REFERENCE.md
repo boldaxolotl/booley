@@ -202,7 +202,9 @@ This creates `.booley/worktrees/<name>`, prints its path, and starts it at the
 current commit on a new branch `booley/<name>`. A branch that occupies that
 name (the name itself, a leading path such as `booley`, or a branch below it), or an
 existing destination, is refused and left untouched; the error names the branch in
-the way. So is a name Git cannot use in a branch name (such as `x.lock` or `a..b`). A name of the form
+the way. So is a name Git cannot use in a branch name (such as `x.lock` or `a..b`).
+After a Sandbox mount point change, a worktree whose checkout is missing also stops
+the command; the error names it. A name of the form
 `<branch>--<description>` checks out the existing branch `<branch>` instead and
 creates no branch. Git submodules are filled in from the main
 checkout, without network access. Then the Project's `post-setup` hook
