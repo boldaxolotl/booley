@@ -415,6 +415,11 @@ def test_live_job_without_session_registry_refuses_unchanged(tmp_path, retired, 
         assert store.refresh(token).state == "holding"
     # A holder an older version left in a retired class directory still counts as live.
     (slots / CLASS_MEMORY).rename(slots / retired)
+    for entry in (slots / retired).glob("[hw]-*"):
+        # Older versions wrote these entries without a memory claim.
+        payload = json.loads(entry.read_bytes())
+        payload.pop("memory", None)
+        entry.write_bytes(json.dumps(payload).encode())
     directory.rename(tmp_path / OLD)
     before = _snapshot(tmp_path)
     with pytest.raises(BooleyLayoutError, match="live/unknown Job"):
