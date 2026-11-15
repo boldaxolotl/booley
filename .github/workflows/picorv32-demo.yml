@@ -16,7 +16,6 @@ on:
       - ".github/contracts/session-runtime.toml"
       - ".github/scripts/docker_base_contract.py"
       - ".github/scripts/export_demo_contract.py"
-      - ".github/scripts/goal_mode_driver.py"
       - ".github/scripts/picorv32_ci_inputs.py"
       - ".github/scripts/picorv32_demo_contract.py"
       - ".github/scripts/riscv_candidate.sh"
@@ -24,7 +23,8 @@ on:
       - ".github/scripts/validate_installed_artifact.py"
       - ".github/scripts/verify_picorv32_demo.sh"
       - ".github/scripts/run_picorv32_ci_demo.sh"
-      - ".github/scripts/release_validation/goal_readiness.py"
+      - ".github/scripts/release_validation/measure_round_trip.py"
+      - ".github/scripts/release_validation/measurement_evidence.py"
       - ".github/workflows/picorv32-demo.yml"
       - "crates/bwave/**"
       - "pyproject.toml"
@@ -54,6 +54,7 @@ on:
       - "src/booley/fusesoc/**"
       - "src/booley/harness/**"
       - "src/booley/mcp/**"
+      - "src/booley/measurement/**"
       - "src/booley/presentation/**"
       - "src/booley/projects/**"
       - "src/booley/runtime/**"
@@ -306,6 +307,7 @@ jobs:
               source_revision: $source_revision}' \
             > "${evidence}/image-identity.json"
           cat "${evidence}/image-identity.json"
+          echo "image_id=${image_id}" >> "${GITHUB_OUTPUT}"
           {
             echo "RISC-V Sandbox candidate: \`${image_id}\`"
             echo "Stable base: \`${base_source}\` (\`${base_digest}\`)"
@@ -326,8 +328,10 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/picorv32-demo"
           sudo chown -R 1000:1000 demo "${RUNNER_TEMP}/picorv32-demo"
 
-      - name: Verify public demo contract with current Booley source
-        id: goal-readiness
+      - name: Run measurement round trip on the public demo
+        id: measurement
+        env:
+          BOOLEY_IMAGE_DIGEST: ${{ steps.image-identity.outputs.image_id }}
         run: |
           docker run --init --rm --network none \
             --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
@@ -336,7 +340,8 @@ jobs:
             -w /work \
             -e BOOLEY_DIR=/work/.booley \
             -e BOOLEY_IN_SANDBOX=1 \
-            -e BOOLEY_GOAL_READINESS_EVIDENCE=/evidence/goal-readiness.json \
+            -e BOOLEY_IMAGE_DIGEST \
+            -e BOOLEY_MEASUREMENT_EVIDENCE=/evidence/measurement.json \
             -e PYTHONPATH=/booley-source/src \
             -e BOOLEY_MCP_MODE=interactive \
             booley-riscv-test bash -euo pipefail -c '
@@ -350,11 +355,11 @@ jobs:
             if test -e "${path}"; then sudo chown -R "$(id -u):$(id -g)" "${path}"; fi
           done
 
-      - name: Retain Goal readiness evidence
-        if: always() && (steps.goal-readiness.outcome == 'success' || steps.goal-readiness.outcome == 'failure')
+      - name: Retain measurement evidence
+        if: always() && (steps.measurement.outcome == 'success' || steps.measurement.outcome == 'failure')
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: picorv32-goal-readiness-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/picorv32-demo/goal-readiness.json
+          name: picorv32-measurement-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/picorv32-demo/measurement.json
           if-no-files-found: error
           retention-days: 14

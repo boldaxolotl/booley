@@ -5,7 +5,7 @@ set -euo pipefail
 
 readonly WORKSPACE="$1"
 readonly CONTAINER_NAME="$2"
-readonly EVIDENCE_DIR="${RUNNER_TEMP}/riscv-image-evidence/goal-readiness"
+readonly EVIDENCE_DIR="${RUNNER_TEMP}/riscv-image-evidence/measurement"
 
 mkdir -p "${EVIDENCE_DIR}"
 sudo chown -R 1000:1000 demo "${EVIDENCE_DIR}"
@@ -19,7 +19,8 @@ sudo chown -R 1000:1000 demo "${EVIDENCE_DIR}"
   --mount "type=bind,src=${EVIDENCE_DIR},dst=/evidence" \
   -w /work \
   -e BOOLEY_DIR=/booley-project \
-  -e BOOLEY_GOAL_READINESS_EVIDENCE=/evidence/goal-readiness.json \
+  -e BOOLEY_IMAGE_DIGEST="$(docker image inspect --format '{{.Id}}' booley-riscv-test)" \
+  -e BOOLEY_MEASUREMENT_EVIDENCE=/evidence/measurement.json \
   -e BOOLEY_IN_SANDBOX=1 \
   -e BOOLEY_RUN_PICORV32_FLOWS=1 \
   -e PYTHONPATH=/booley-source/src \
