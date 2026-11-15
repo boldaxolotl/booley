@@ -775,7 +775,7 @@ def test_setup_guide_describes_default_lint_targets():
 
     assert "`lint_my_ip_style`" in guide
     assert "Verible style lint (default both)" in guide
-    assert "Project Setup normally creates two" in flow_lint
+    assert "Verilator Target and a Verible style Target" in flow_lint
 
 
 def test_setup_plan_plain_text_terms_are_in_glossary():

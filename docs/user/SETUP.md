@@ -288,9 +288,7 @@ and cleanup. The skill stops for your approval only once, after Step 0.
 - **1 · Environment · host.** Applies the plan's sandbox-image decision if it
   made one (`booley init` re-run), then hands you into **Reopen in Container**.
 - **2 · Project config.** The [`.core` Target(s)](TARGETS.md),
-  [`tests.toml`](TESTS.md), and [`booley.toml`](CONFIG.md). This includes two
-  lint Targets by default, Verilator with `-Wall` and Verible style lint; the
-  plan records any you decline.
+  [`tests.toml`](TESTS.md), and [`booley.toml`](CONFIG.md).
 - **3 · AGENTS.md.** A concise Project-level guidance file for Developer Agents.
 - **4 · Doctor.** `booley doctor` is Booley's built-in health check: it audits
   your config, `.core` Targets, toolchain, and sandbox and reports on each

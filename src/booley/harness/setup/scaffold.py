@@ -222,7 +222,7 @@ def _resolve_style_lint(args, lint_eda_tool: str, name: str) -> bool | None:
         if explicit is not None:
             err(
                 "--style-lint/--no-style-lint applies only with the Verilator lint Target; "
-                "--lint-eda-tool verible already makes lint_<name> the Verible style lint Target"
+                f"--lint-eda-tool verible already makes lint_{name} the Verible style lint Target"
             )
             return None
         return False
