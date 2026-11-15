@@ -106,6 +106,10 @@ evidence, logs, and worktrees for your Project. It sits at the Project Root
 by default and is named `.booley/`; Stealth keeps it out of the RTL repository's
 tracked files, while open setup commits its durable configuration.
 
+## Target Metrics
+Aliases: metrics
+The checks a Target declares in `.booley/metrics.toml`, such as "no Test fails". Each is either enforced (a bound the result must meet) or only tracked (reported, never blocking). `booley measure` checks a commit against them. Adoption is optional: a Project with no metrics table is unaffected.
+
 ## `.core`
 Aliases: FuseSoC core
 A `.core` file is a FuseSoC build description listing source files, dependencies,

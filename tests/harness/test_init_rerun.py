@@ -1002,7 +1002,7 @@ def _stale_project(root: Path) -> Path:
 
 
 def _assert_backfill_report(output: str, missing: list[str]) -> None:
-    assert "would add 2 config skeleton file(s)" in output
+    assert "would add 3 config skeleton file(s)" in output
     assert (
         f"would add {len(missing)} missing ignore pattern(s) to .gitignore: {', '.join(missing)}"
         in output
@@ -1016,6 +1016,7 @@ def _assert_applied_backfills(repo: Path, target: Path, missing: list[str]) -> N
     assert stat.S_IMODE(target.stat().st_mode) == 0o700
     assert (target / "booley.toml").read_bytes() == init_cmd.BOOLEY_TOML_SKELETON.encode()
     assert (target / "tests.toml").read_bytes() == init_cmd.TESTS_TOML_SKELETON.encode()
+    assert (target / "metrics.toml").read_bytes() == init_cmd.METRICS_TOML_SKELETON.encode()
     assert (target / "FUSESOC_IGNORE").read_bytes() == init_cmd.FUSESOC_IGNORE_BODY.encode()
     ignore = (target / ".gitignore").read_text()
     assert ignore.startswith("# custom ignore\ntmp/\n")
@@ -1028,8 +1029,47 @@ def _assert_applied_backfills(repo: Path, target: Path, missing: list[str]) -> N
         ".gitignore",
         "booley.toml",
         "tests.toml",
+        "metrics.toml",
         "FUSESOC_IGNORE",
     }
+
+
+def test_fresh_booley_dir_writes_metrics_defaults_that_validate(
+    repo, monkeypatch, capsys: pytest.CaptureFixture[str]
+):
+    from tests.harness.test_measure_cli import _measure
+
+    init_cmd._step_booley_dir(InitContext(project_root=repo))
+    metrics = repo / ".booley" / "metrics.toml"
+    assert metrics.read_bytes() == init_cmd.METRICS_TOML_SKELETON.encode()
+    assert tomllib.loads(metrics.read_text(encoding="utf-8")) == {
+        "defaults": {"sim": {"tests_failed_max": 0}, "coverage": {"tests_failed_max": 0}}
+    }
+    capsys.readouterr()
+    assert _measure(monkeypatch, repo, "--validate") == 0
+    assert "declares no `[<target>.<flow>]` table" in capsys.readouterr().out
+
+
+def test_booley_dir_backfills_metrics_toml_only_when_absent(repo, capsys):
+    absent = _stale_project(repo)
+    kept_root = repo / "other"
+    kept_root.mkdir()
+    kept = _stale_project(kept_root)
+    user_text = b"[sim_core.sim]\ntests_failed_max = 3\n"
+    for target in (absent, kept):
+        (target / "booley.toml").write_bytes(b"# mine\n")
+        (target / "tests.toml").write_bytes(b"# mine\n")
+    (kept / "metrics.toml").write_bytes(user_text)
+
+    for target, root in ((absent, repo), (kept, kept_root)):
+        init_cmd._step_booley_dir(InitContext(project_root=root, check_only=True))
+        output = capsys.readouterr().out
+        assert ("would add 1 config skeleton file(s)" in output) is (target is absent)
+        init_cmd._step_booley_dir(InitContext(project_root=root))
+        capsys.readouterr()
+
+    assert (absent / "metrics.toml").read_bytes() == init_cmd.METRICS_TOML_SKELETON.encode()
+    assert (kept / "metrics.toml").read_bytes() == user_text
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission repair")
@@ -1048,6 +1088,7 @@ def test_booley_dir_check_reports_all_backfills_and_converges(repo, capsys):
     assert all(r.name == "booley_dir" and r.status == "warn" for r in ctx.results)
     assert any(r.detail == "permissions need 0700" for r in ctx.results)
     assert any("tests.toml" in r.detail for r in ctx.results)
+    assert any("metrics.toml" in r.detail for r in ctx.results)
     assert _complete_snapshot(repo) == before
     init_cmd._step_booley_dir(InitContext(project_root=repo))
     _assert_applied_backfills(repo, target, missing)
