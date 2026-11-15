@@ -8,9 +8,10 @@ variables win over the Target's and the ambient environment.
 from __future__ import annotations
 
 import logging
+import re
 import shlex
 import shutil
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,6 +23,8 @@ logger = logging.getLogger(__name__)
 # Build variables Booley manages; Verilator build reuse keeps them out of its key.
 _CCACHE = ("CCACHE_DIR", "CCACHE_MAXSIZE", "CCACHE_COMPILERCHECK", "CCACHE_BASEDIR")
 RESERVED = frozenset({"OBJCACHE", "USER_CPPFLAGS", COMPILER_CACHE_ROOT_ENV, *_CCACHE})
+# Make command-line assignments that override a value this module manages.
+_MAKE_OVERRIDE = re.compile(r"(OBJCACHE|USER_CPPFLAGS)\s*[:?+]?=")
 
 
 class CompilerCacheConfigurationError(ValueError):
@@ -83,6 +86,31 @@ def compose_environment(
         if target[name] != managed.get(name, ambient.get(name, "")):
             logger.warning("Target compiler-cache setting %s yields to Booley's value", name)
     return {**target, **managed}
+
+
+def warn_make_option_overrides(target: str, tokens: Sequence[str], *, cache_active: bool) -> None:
+    """Warn once per authored Make assignment that defeats the cache or build reuse."""
+    for token in tokens:
+        found = _MAKE_OVERRIDE.match(token)
+        if found is None:
+            continue
+        if found.group(1) == "OBJCACHE":
+            logger.warning(
+                "Simulation Target %r: make_options assignment %s turns off build reuse, "
+                "so every run rebuilds the simulation model; to stop using the compiler "
+                "cache, set enabled = false under [flows.sim.compiler_cache]",
+                target,
+                token,
+            )
+        elif cache_active:
+            logger.warning(
+                "Simulation Target %r: make_options assignment %s replaces the "
+                "USER_CPPFLAGS that carries Booley's compiler-cache debug-prefix map, "
+                "so builds with -g miss the cache; set the flags in the Target env's "
+                "USER_CPPFLAGS, which Booley keeps, or pass them with Verilator's -CFLAGS",
+                target,
+                token,
+            )
 
 
 def _cache_blocker(policy: CompilerCachePolicy, search_path: str | None) -> str:

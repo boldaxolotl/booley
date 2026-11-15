@@ -246,3 +246,80 @@ def test_real_edalize_preparation_preserves_make_overrides(
     assert prepared.environment["OBJCACHE"] == "ccache"
     assert prepared.environment["CCACHE_DIR"] == str(cache_dir)
     assert not cache_dir.exists()
+
+
+def _make_option_warnings(caplog) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "booley.flows.sim.compiler_cache"
+        and "make_options" in record.getMessage()
+    ]
+
+
+@pytest.mark.parametrize(
+    ("legacy", "cache_active"),
+    [(False, True), (False, False), (True, True), (True, False)],
+    ids=["flow-active", "flow-off", "tool-active", "tool-off"],
+)
+def test_make_options_cache_overrides_warn_with_fix(
+    project, tmp_path, monkeypatch, caplog, legacy, cache_active
+):
+    root, _data = project
+    if cache_active:
+        monkeypatch.setenv(COMPILER_CACHE_ROOT_ENV, str(tmp_path / "cache"))
+    options = {
+        "make_options": [
+            "-j2",
+            "OTHER=yes",
+            "USER_CPPFLAGS=-DX=1",
+            "OBJCACHE=",
+            "USER_CPPFLAGS_EXTRA=1",
+            "MYOBJCACHE=1",
+        ]
+    }
+    with caplog.at_level("WARNING", logger="booley.flows.sim.compiler_cache"):
+        _prepare_real_verilator_target(root, options, legacy=legacy)
+    warnings = _make_option_warnings(caplog)
+    objcache = [message for message in warnings if "OBJCACHE=" in message]
+    assert len(objcache) == 1
+    for text in ("'sim'", "build reuse", "enabled = false", "[flows.sim.compiler_cache]"):
+        assert text in objcache[0]
+    flags = [message for message in warnings if "USER_CPPFLAGS=-DX=1" in message]
+    if cache_active:
+        assert len(flags) == 1
+        for text in ("'sim'", "Target env", "-CFLAGS"):
+            assert text in flags[0]
+        assert len(warnings) == 2
+    else:
+        assert not flags
+        assert len(warnings) == 1
+
+
+def test_make_options_override_operators_warn_per_assignment(
+    project, tmp_path, monkeypatch, caplog
+):
+    root, _data = project
+    monkeypatch.setenv(COMPILER_CACHE_ROOT_ENV, str(tmp_path / "cache"))
+    options = {
+        "make_options": [
+            "OBJCACHE:=ccache",
+            "OBJCACHE?=",
+            "-j2 USER_CPPFLAGS+=-DX",
+            '"OBJCACHE ="',
+        ]
+    }
+    with caplog.at_level("WARNING", logger="booley.flows.sim.compiler_cache"):
+        _prepare_real_verilator_target(root, options)
+    warnings = _make_option_warnings(caplog)
+    assert len(warnings) == 4
+    for assignment in ("OBJCACHE:=ccache", "OBJCACHE?=", "OBJCACHE =", "USER_CPPFLAGS+=-DX"):
+        assert sum(assignment in message for message in warnings) == 1
+
+
+def test_make_options_without_overrides_log_no_new_warning(project, tmp_path, monkeypatch, caplog):
+    root, _data = project
+    monkeypatch.setenv(COMPILER_CACHE_ROOT_ENV, str(tmp_path / "cache"))
+    with caplog.at_level("WARNING", logger="booley.flows.sim.compiler_cache"):
+        _prepare_real_verilator_target(root, {"make_options": ["-j2", "OTHER=yes"]})
+    assert not _make_option_warnings(caplog)
