@@ -1149,7 +1149,7 @@ class Slots:
 
     def __init__(self, booley_dir: Path, *, max_light: int = 1) -> None:
         booley_dir.mkdir(parents=True, exist_ok=True)
-        (booley_dir / "booley.toml").write_bytes(f"[jobs]\nmax_light = {max_light}\n".encode())
+        (booley_dir / "booley.toml").write_bytes(b'[project]\nname = "unit"\n')
         from booley.config.jobs import SlotCaps
 
         root = slots_dir(booley_dir)
@@ -1199,10 +1199,10 @@ ADMITTED_BY_MEMORY = "Admitted by memory: waits while its estimate does not fit 
 @pytest.mark.parametrize(
     ("flow", "live", "dead", "queue", "timeout"),
     [
-        ("mutation", 0, 0, "Runs now", LONG_TIMEOUT),
-        ("mutation", 1, 0, "Queues behind 1 Job (position 1) for a light slot", LONG_TIMEOUT),
-        ("mutation", 2, 0, "Queues behind 2 Jobs (position 2) for a light slot", LONG_TIMEOUT),
-        ("mutation", 0, 1, "Runs now", LONG_TIMEOUT),
+        ("mutation", 0, 0, ADMITTED_BY_MEMORY, LONG_TIMEOUT),
+        ("mutation", 1, 0, ADMITTED_BY_MEMORY, LONG_TIMEOUT),
+        ("mutation", 2, 0, ADMITTED_BY_MEMORY, LONG_TIMEOUT),
+        ("mutation", 0, 1, ADMITTED_BY_MEMORY, LONG_TIMEOUT),
         ("synth", 0, 0, ADMITTED_BY_MEMORY, LONG_TIMEOUT),
         ("lint", 1, 0, ADMITTED_BY_MEMORY, None),
     ],
@@ -1235,21 +1235,6 @@ async def test_review_shows_whether_the_job_runs_now_or_queues(
 
 ROOMY = (0, 1)  # ahead, cap
 COUNTED = ("light", False)
-
-
-@pytest.mark.asyncio
-async def test_a_long_queue_never_refuses_submit(checkout, tmp_path, slots, spawned):
-    slots().occupy(9)  # one holder and eight waiters: the old queue bound
-    app = make_app(checkout, real_launcher(tmp_path / "booley"))
-    async with app.run_test(size=(120, 40)) as pilot:
-        wizard = await to_form(app, pilot, "mutation")
-        await check_arguments(app, pilot, wizard, ARGUMENTS)
-        assert "Queues behind 9 Jobs (position 9)" in shown(wizard, "#run-review")
-        assert shown(wizard, "#run-error") == ""
-        await pilot.press("enter")  # Submit
-        await pilot.pause()
-        assert len(spawned) == 1
-        assert app.window == "jobs"
 
 
 @pytest.mark.asyncio

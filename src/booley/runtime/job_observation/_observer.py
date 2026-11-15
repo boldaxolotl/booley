@@ -112,12 +112,19 @@ def _state(rec: job_records.JobRecord, slots: list[job_slots.SlotToken], proc_ro
 def _with_item_claims(matched: list[job_slots.SlotToken]) -> list[job_slots.SlotToken]:
     """The Job's own entry, standing for a waiting work-item claim when one waits.
 
-    A Job holding a slot may also hold Memory Reservations for its work items, in
-    its own PID. One non-memory entry with item claims beside it is the Job: it is
-    ``queued`` while an item claim waits.
+    A Job holding a claim may also hold Memory Reservations for its work items, in
+    its own PID. One non-memory entry or companion memory entry (a mutation
+    coordinator) with item claims beside it is the Job: it is ``queued`` while an
+    item claim waits.
     """
-    own = [token for token in matched if token.job_class != job_slots.CLASS_MEMORY]
-    items = [token for token in matched if token.job_class == job_slots.CLASS_MEMORY]
+
+    def is_own(token: job_slots.SlotToken) -> bool:
+        return token.job_class != job_slots.CLASS_MEMORY or (
+            token.memory is not None and token.memory.companion
+        )
+
+    own = [token for token in matched if is_own(token)]
+    items = [token for token in matched if not is_own(token)]
     if len(own) != 1 or not items:
         return matched
     waiting = [token for token in items if not token.is_holder]

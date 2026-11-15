@@ -66,6 +66,11 @@ class StoredRun:
     measured: bool
     document: dict[str, Any]
 
+    @property
+    def markdown(self) -> Path:
+        """Where ``booley measure`` publishes this run's Markdown Measurement Report."""
+        return self.path.with_suffix(".md")
+
 
 def _load(path: Path) -> StoredRun:
     try:

@@ -153,18 +153,22 @@ class ChildScheduler:
         store: job_slots.SlotStore,
         *,
         all_tables: bool,
+        progress: Callable[[int, int], None] | None = None,
     ) -> None:
         self._entries = [_Entry(rules, prepared) for rules, prepared in planned]
         self._store = store
         self._all_tables = all_tables
         self._stopping = False
         self._cancelled = False
+        self._progress = progress
+        self._reported: int | None = None
 
     # ------------------------------------------------------------------ driving
 
     def step(self, *, cancel: bool) -> bool:
         """Do one pass; return whether work remains."""
         self._reap_ended()
+        self._report_progress()
         if cancel:
             self._cancel()
             return False
@@ -174,6 +178,13 @@ class ChildScheduler:
         else:
             self._start_planned()
         return bool(self._live()) or (not self._stopping and self._has_planned())
+
+    def _report_progress(self) -> None:
+        """Tell the caller how many tables have ended, when that count changed."""
+        finished = sum(entry.measurement is not None for entry in self._entries)
+        if self._progress is not None and finished != self._reported:
+            self._progress(finished, len(self._entries))
+        self._reported = finished
 
     def _live(self) -> list[_Entry]:
         return [entry for entry in self._entries if entry.live]
@@ -465,11 +476,13 @@ def run_children(
     main_booley_dir: Path,
     all_tables: bool,
     cancelled: Callable[[], bool],
+    progress: Callable[[int, int], None] | None = None,
 ) -> ChildrenOutcome:
     """Run the *prepared* children within the admission queue and settle every one.
 
     *cancelled* is polled each pass; a ``BaseException`` (a Ctrl-C) stops and settles every
-    child before it propagates. The outcome lists the tables in *tables* order.
+    child before it propagates. *progress* gets ``(finished, total)`` tables at the first pass
+    and whenever the finished count changes. The outcome lists the tables in *tables* order.
 
     Raises:
         CheckoutFlowError: the first child could not be launched.
@@ -484,7 +497,7 @@ def run_children(
         for _table, child in prepared:
             child.discard()
         raise
-    scheduler = ChildScheduler(prepared, store, all_tables=all_tables)
+    scheduler = ChildScheduler(prepared, store, all_tables=all_tables, progress=progress)
     try:
         while scheduler.step(cancel=cancelled()):
             time.sleep(_POLL_S)
