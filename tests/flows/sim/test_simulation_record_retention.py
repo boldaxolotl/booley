@@ -834,7 +834,7 @@ def test_image_alias_prunes_only_authenticated_invocation(tmp_path, monkeypatch)
 
     require_symlinks(tmp_path)
     coverage_invocation(tmp_path, monkeypatch)
-    alias = tmp_path / "booley-project"
+    alias = tmp_path / "booley"
     symlink_or_skip(alias, tmp_path / "reports", target_is_directory=True)
     configure_project_alias(monkeypatch, alias, tmp_path / "reports")
     neighbor = tmp_path / "reports/sim/2"

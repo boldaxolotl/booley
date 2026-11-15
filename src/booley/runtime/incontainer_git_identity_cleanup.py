@@ -14,6 +14,7 @@ from booley.runtime.incontainer_git_identity import (
     _worktree_config_path,
     load_git_identity,
 )
+from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET
 
 
 def _config(checkout: Path, target: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -97,7 +98,7 @@ def cleanup_git_identity(checkout: Path, identity: GitIdentity) -> None:
 
 def main() -> None:
     """Clean the designated Interactive Project Root, never a Ticket apply path."""
-    booley_dir = Path(os.environ.get("BOOLEY_DIR", "/booley-project"))
+    booley_dir = Path(os.environ.get("BOOLEY_DIR", BOOLEY_DIR_TARGET))
     checkout = Path(os.environ.get("BOOLEY_GIT_CHECKOUT", Path.cwd()))
     cleanup_git_identity(checkout, load_git_identity(booley_dir))
 

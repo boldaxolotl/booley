@@ -28,7 +28,7 @@ same change as the RTL they justify.
   verified and is labelled that way; the human decision is the authority.
   Rejections share this limit.
 - **Store.** Candidates live in an ignored per-Ticket record,
-  `tickets/waiver-candidates/<slug>.json`, beside the ADR 0065 state record
+  `tickets/waiver-candidates/<slug>.json`, beside the Ticket state record
   and outside every Ticket worktree. Nothing tracked changes before approval.
 - **Accumulation.** Candidates from every Analyst run on a Campaign add up.
   There is one entry per point: it keeps the latest justification and

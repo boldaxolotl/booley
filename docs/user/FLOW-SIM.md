@@ -648,8 +648,8 @@ in the Sandbox, including Goal worktrees. To inspect or empty it, run inside
 the Sandbox:
 
 ```sh
-CCACHE_DIR=/booley-project/.runtime/compiler-cache/ccache ccache --show-stats
-CCACHE_DIR=/booley-project/.runtime/compiler-cache/ccache ccache --clear
+CCACHE_DIR=/booley/.runtime/compiler-cache/ccache ccache --show-stats
+CCACHE_DIR=/booley/.runtime/compiler-cache/ccache ccache --clear
 ```
 
 If ccache isn't available, the build prints a warning and compiles without it.
