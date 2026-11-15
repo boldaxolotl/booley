@@ -79,6 +79,7 @@ from booley.core.boundary import (
 from booley.flows import execution, runtime_reality, target_test_plan_inspection
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.fpga import vivado_startup
+from booley.flows.invocation import default_timeout_ms
 from booley.flows.sim.backends import cocotb_target_checks
 from booley.flows.sim.config import (
     DEFAULT_SIM_BUILD_TIMEOUT_MS,
@@ -178,20 +179,21 @@ _DEEP_TIMEOUTS_S = {
     "sim": 900,
     "lint": 300,
     "synth": 1800,
+    "fpga": default_timeout_ms("fpga") // 1000,
 }
-# The synthesis Flow's timeout is an inner, per-target boundary. Doctor owns
-# an outer subprocess that must leave time for configure work, process-tree
-# cleanup, boundary interpretation, and the eager terminal report write after
-# that inner boundary expires.
-_SYNTH_DEEP_FINALIZE_MARGIN_S = 180
+# The synthesis and FPGA Flows' timeouts are inner, per-work-unit boundaries.
+# Doctor owns an outer subprocess that must leave time for configure work,
+# process-tree cleanup, boundary interpretation, and the eager terminal report
+# write after that inner boundary expires.
+_IMPLEMENTATION_DEEP_FINALIZE_MARGIN_S = 180
 _SIM_DEEP_FINALIZE_MARGIN_S = 30
 
 # The three core Flow tables remain required project configuration. FPGA is an
-# optional axis: plain Doctor covers it when configured or selected by Target
-# metadata, while deep Doctor deliberately stops short of implementation.
+# optional axis: plain and deep Doctor cover it only when it is configured or
+# selected by Target metadata (see _fpga_doctor_applicable).
 _REQUIRED_FLOW_TABLES = ("sim", "lint", "synth")
 _PLAIN_DOCTOR_FLOWS = (*_REQUIRED_FLOW_TABLES, "fpga")
-_DEEP_DOCTOR_FLOWS = _REQUIRED_FLOW_TABLES
+_DEEP_DOCTOR_FLOWS = _PLAIN_DOCTOR_FLOWS
 # --deep fail-path self-test conventions. Simulation runs its normal smoke test
 # against a project-owned bad overlay; lint uses a conventional known-bad
 # ``.core`` Target. See _run_selftest_checks (QA-4/QA-5).
@@ -5298,6 +5300,8 @@ def _run_deep_checks(
         if not _flow_enabled(project, flow_name):
             _skip(f"{flow_name} deep check skipped - disabled")
             continue
+        if flow_name == "fpga" and not _fpga_doctor_applicable(project):
+            continue
         targets = _doctor_targets(project, flow_name)
         if not targets:
             tracker.require(f"{flow_name}.doctor-targets")
@@ -5321,27 +5325,7 @@ def _run_deep_checks(
             )
             _diagnostics(outcome.report)
             tracker.completed(identifier, outcome.completed)
-    _run_fpga_impl_deep_notice(project, _skip)
     _run_selftest_checks(project, flow_runtime, _pass, _warn, _skip, _fail, completeness=tracker)
-
-
-def _run_fpga_impl_deep_notice(project: ProjectAudit, _skip: Check) -> None:
-    """Disclose that ``fpga_impl`` gets no deep smoke (F-15).
-
-    FPGA is deliberately excluded from :data:`_DEEP_DOCTOR_FLOWS` — a full FPGA
-    implementation is far too slow for ``--deep`` — but it was *silently*
-    absent: ``--deep`` produced no line for it at all. Nothing ever smokes it
-    end-to-end, and nothing said so. Emit an
-    explicit SKIP naming the manual command, so the gap is loud, not invisible.
-    """
-    if not _flow_enabled(project, "fpga"):
-        return
-    for target in _doctor_targets(project, "fpga"):
-        _skip(
-            f"fpga deep smoke [{target}] skipped - a full FPGA implementation is too "
-            "slow for --deep; smoke it manually end-to-end: "
-            f"booley flow fpga --target {target}"
-        )
 
 
 @dataclass(frozen=True)
@@ -5764,7 +5748,8 @@ def _deep_timeout_s(project: ProjectAudit, flow_name: str) -> int:
     """Wall-clock budget for a ``--deep`` Flow smoke, in seconds (F5).
 
     The hardcoded :data:`_DEEP_TIMEOUTS_S` floor is a *minimum*, not the
-    authority. Synthesis honors its configured run budget plus finalization.
+    authority. Synthesis and FPGA honor their configured run budget plus
+    finalization.
     Simulation validates and reserves its distinct build, Pre-Sim, run, and
     finalization budgets. Other legacy calculations retain their established
     fallback behavior for unparseable values.
@@ -5775,8 +5760,8 @@ def _deep_timeout_s(project: ProjectAudit, flow_name: str) -> int:
         planned_s = build_s + DEFAULT_TIMEOUT_S + run_s + _SIM_DEEP_FINALIZE_MARGIN_S
         return max(_DEEP_TIMEOUTS_S["sim"], planned_s)
     timeout_s = _configured_timeout_s(project, flow_name, _DEEP_TIMEOUTS_S[flow_name])
-    if flow_name == "synth":
-        timeout_s += _SYNTH_DEEP_FINALIZE_MARGIN_S
+    if flow_name in ("synth", "fpga"):
+        timeout_s += _IMPLEMENTATION_DEEP_FINALIZE_MARGIN_S
     return timeout_s
 
 
@@ -6278,6 +6263,10 @@ def _flow_argv(
     ]
     if dry_run:
         argv.extend(["--dry-run", "--timeout-ms", "30000"])
+    if flow_name == "fpga" and not dry_run:
+        # A warm implementation cache returns stored metrics before Vivado
+        # runs, so a deep run must bypass it to prove the tool works.
+        argv.append("--no-cache")
     if flow_name == "sim":
         if test_override is not None:
             argv.extend(["--test", test_override])
