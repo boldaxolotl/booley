@@ -439,7 +439,7 @@ def test_coverage_card_example_matches_rendered_card(tmp_path: Path) -> None:
     )
     outcome = SimpleNamespace(
         target={"selector": "sim_soc"},
-        manifest_path=root / "sim/12/targets/sim_soc/campaign/manifest.json",
+        manifest_path=root / "sim/12/targets/sim_soc/record/manifest.json",
         aggregate_grade="pass",
         coverage_reference=object(),
         observations=(),
@@ -482,11 +482,11 @@ def test_sim_card_examples_name_the_run_report(tmp_path: Path) -> None:
 
 _CARD_ROW = re.compile(r"^    (PASS|FAIL|ERROR|INCONCLUSIVE)\s")
 _CARD_LOG = re.compile(
-    r"^      log: /work/\.booley/flow-reports/sim/\d+/targets/\w+/campaign/work-items/"
+    r"^      log: /work/\.booley/flow-reports/sim/\d+/targets/\w+/record/work-items/"
     r"\d{4}-[^/\s]+/attempts/\d{4}-[^/\s]+/evidence/\d{4}-run\.log$"
 )
 _CARD_WAVEFORM = re.compile(
-    r"^      waveform: /work/\.booley/flow-reports/sim/\d+/targets/\w+/campaign/work-items/"
+    r"^      waveform: /work/\.booley/flow-reports/sim/\d+/targets/\w+/record/work-items/"
     r"\d{4}-[^/\s]+/attempts/\d{4}-[^/\s]+/evidence/\d{4}-[^/\s]+\.fst$"
 )
 

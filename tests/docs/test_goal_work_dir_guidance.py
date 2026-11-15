@@ -168,7 +168,7 @@ GUIDANCE_REGIONS = (
     ),
     (
         "docs/internals/SPECIALIST_IMPLEMENTATION.md",
-        "The model prompt contains only a compact Campaign reference.",
+        "The model prompt contains only a compact Coverage Record reference.",
         "\nChanging filters",
         "Analyst",
     ),

@@ -51,8 +51,8 @@ _KEPT_TREES: dict[str, str] = {
     "tests/flows/sim/test_simulation_record_layout.py": "proves the old directories are refused",
     "tests/flows/sim/test_simulation_record_unsupported_formats.py": "proves old records are refused",
     "tests/flows/sim/test_simulation_record_acceptance.py": "persisted acceptance spellings",
-    # QA mission assets (#2911 owns them).
-    "tests/qa/": "QA mission assets spelled by their tests (#2911)",
+    # QA asset names and the older records their validators read.
+    "tests/qa/": "QA asset names and the older records their validators read",
     # Guards and tools that name the spelling they forbid or rewrite.
     "tests/architecture/test_simulation_record_identifiers.py": "guard of campaign names",
     "tests/architecture/test_simulation_record_paths.py": "guard of campaign paths",
@@ -137,9 +137,6 @@ _KEPT_SPELLINGS: dict[str, tuple[str, ...]] = {
     "tests/flows/sim/test_coverage_waiver_promotion.py": ("campaign:sim_counter",),
     "tests/flows/sim/test_coverage_waivers.py": ("campaign:sim_counter",),
     "tests/mcp_tools/test_coverage_evidence.py": ('"campaign:"',),
-    # Doc text and QA assets that #2911 renames with the assets.
-    "tests/docs/test_flow_reference.py": ("/campaign/manifest.json", "/campaign/work-items/"),
-    "tests/docs/test_goal_work_dir_guidance.py": ("compact Campaign reference",),
 }
 
 
