@@ -8,7 +8,11 @@ from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
 
-from booley.core.booley_layout import INTERACTIVE_LOGS_DIR_NAME
+from booley.core.booley_layout import (
+    GOALS_DIR_NAME,
+    INTERACTIVE_LOGS_DIR_NAME,
+    is_goal_record_name,
+)
 from booley.core.boundary import as_dict, as_float
 from booley.goals.binding import GoalBindingError, GoalRunBinding
 from booley.goals.model import GoalRecord
@@ -21,6 +25,7 @@ from booley.harness.standalone_job import (
 from booley.runtime import job_records
 from booley.runtime.handles import HandleStore, job_handle_expired
 from booley.runtime.job_observation import JobObservation, JobObserver
+from booley.runtime.timefmt import parse_timestamp
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 
@@ -28,6 +33,8 @@ MAX_INTERACTIVE_ROOTS = 64
 # History selection has its own enumeration bound, independent of record projection.
 MAX_SCANNED_INTERACTIVE_ROOTS = 4096
 TERMINAL_JOB_STATES = frozenset({"completed", "failed", "cancelled"})
+# An orphaned process is known dead even though its Job record never finalized.
+FINISHED_JOB_STATES = TERMINAL_JOB_STATES | {"orphaned"}
 
 
 @dataclass(frozen=True)
@@ -90,10 +97,33 @@ def retained_job_roots(
     Ordered by what a bounded scan must not lose: the caller's interactive
     root, then every Goal Record, then older interactive sessions newest first.
     """
+    return _retained_roots(
+        booley_dir,
+        [record_paths(booley_dir, rec.id).jobs_dir for rec in records],
+        interactive_root,
+    )
+
+
+def on_disk_goal_job_roots(booley_dir: Path) -> list[Path]:
+    """The Job directory of every Goal record directory on disk, without loading a record."""
+    try:
+        names = sorted(
+            entry.name
+            for entry in (booley_dir / GOALS_DIR_NAME).iterdir()
+            if is_goal_record_name(entry.name) and entry.is_dir()
+        )
+    except OSError:
+        return []
+    return [record_paths(booley_dir, name).jobs_dir for name in names]
+
+
+def _retained_roots(
+    booley_dir: Path, goal_roots: Sequence[Path], interactive_root: Path | None
+) -> tuple[Path, ...]:
     roots = [] if interactive_root is None else [interactive_root]
     from booley.goals.sim_baseline_store import BASELINE_FAMILIES, baseline_jobs_dir
 
-    roots.extend(record_paths(booley_dir, rec.id).jobs_dir for rec in records)
+    roots.extend(goal_roots)
     for family in BASELINE_FAMILIES:
         baseline = baseline_jobs_dir(booley_dir, family)
         if baseline.is_dir():
@@ -149,10 +179,31 @@ class JobReader:
         interactive_root: Path | None = None,
         session_handles: dict[str, str] | None = None,
         now: float | None = None,
+        artifact_roots: Sequence[Path] = (),
     ) -> JobSnapshot:
-        """Reuse the Goal enumeration that supplied this Dashboard refresh."""
+        """Reuse the Goal enumeration that supplied this Dashboard refresh.
+
+        Reports are also found under *artifact_roots* (a checkout's own Booley
+        Directory outside the Main Booley Directory).
+        """
         roots = retained_job_roots(self._booley_dir, records, interactive_root=interactive_root)
-        observed = self._observer.read(roots)
+        return self._snapshot(roots, session_handles, now, artifact_roots)
+
+    def read_on_disk(
+        self, *, now: float | None = None, artifact_roots: Sequence[Path] = ()
+    ) -> JobSnapshot:
+        """Every retained Job, found by directory layout alone (no Goal Record is loaded)."""
+        roots = _retained_roots(self._booley_dir, on_disk_goal_job_roots(self._booley_dir), None)
+        return self._snapshot(roots, None, now, artifact_roots)
+
+    def _snapshot(
+        self,
+        roots: Sequence[Path],
+        session_handles: dict[str, str] | None,
+        now: float | None,
+        artifact_roots: Sequence[Path],
+    ) -> JobSnapshot:
+        observed = self._observer.read(roots, artifact_roots=artifact_roots)
         catalogs: dict[str, TargetCatalog | None] = {}
         handles, diagnostics = HandleStore(self._booley_dir, jobs=True).snapshot()
         owners, owner_diagnostics = (
@@ -204,12 +255,30 @@ def _job_view(
         diagnostic=job.diagnostic,
         artifacts=job.artifacts,
         queue=job.queue,
+        queue_position=job.queue_position,
         eda_tool=_configured_tool(job.record, catalogs),
         handle=handle,
         owner_handle=owner_handle,
         log_path=_linkable(log_path, directory=False),
         transcript_dir=_linkable(transcript_dir, directory=True),
     )
+
+
+def job_elapsed_seconds(job: JobView, now: float | None = None) -> float | None:
+    """Extract an interval, freezing terminal Jobs even without an end stamp."""
+    if job.state in TERMINAL_JOB_STATES and not job.record.ended_at:
+        reported = as_float((job.report or {}).get("elapsed_s"))
+        return reported if reported is not None and reported >= 0 else None
+    try:
+        start = parse_timestamp(job.record.run_started_at or job.record.started_at).timestamp()
+        end = (
+            parse_timestamp(job.record.ended_at).timestamp()
+            if job.record.ended_at
+            else (time.time() if now is None else now)
+        )
+        return max(0, end - start)
+    except ValueError:
+        return None
 
 
 def _linkable(path: Path | None, *, directory: bool) -> str:

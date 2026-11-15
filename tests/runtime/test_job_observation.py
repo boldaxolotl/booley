@@ -355,6 +355,7 @@ def test_observer_reports_the_memory_wait_of_a_queued_claim(tmp_path, monkeypatc
     view = JobObserver(tmp_path, slots_root=slots.parent).read((root,)).jobs[0]
 
     assert view.state == "queued"
+    assert view.queue_position == 1
     assert view.queue == (
         "position 1: needs 400 MiB; 300 MiB free of the 1,000 MiB Memory Budget; "
         "largest holders: run-2 (synth, a) 500 MiB, run-1 (synth, a) 200 MiB"
