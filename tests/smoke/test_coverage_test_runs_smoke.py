@@ -73,7 +73,7 @@ def test_real_coverage_merges_two_variants_and_two_seeds_of_one_test(tmp_path: P
     result = collect_target_coverage(
         handle,
         selected_tests=("smoke",),
-        artifact_root=tmp_path / "campaign",
+        artifact_root=tmp_path / "record",
         invoke=_invoke,
         options=SimulationOptions(timeout_ms=30_000),
         test_runs=runs,
@@ -89,7 +89,7 @@ def test_real_coverage_merges_two_variants_and_two_seeds_of_one_test(tmp_path: P
     ids = [f"run:{index:03d}:{name}" for index, name in enumerate(names, start=1)]
     assert [run.id for run in result.runs] == ids
     for index, name in enumerate(names, start=1):
-        assert (tmp_path / "campaign/native/raw" / f"{index:03d}-{name}.dat").is_file()
+        assert (tmp_path / "record/native/raw" / f"{index:03d}-{name}.dat").is_file()
     assert result.merge.status == "equivalent"
     hit_by = {frozenset(point.hits_by_run) for point in result.points if point.hits_by_run}
     # The union keeps what only one Test Variant reached, per run.

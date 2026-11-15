@@ -133,26 +133,26 @@ def test_pair_parsing_and_typed_normalization(
     assert getattr(request, name.replace("-", "_")) is expected
 
 
-@pytest.mark.parametrize("flow_type", FLOWS)
-@pytest.mark.parametrize("human_first", [False, True])
-def test_projection_isolation(flow_type: type[BuiltinFlow], human_first: bool) -> None:
-    flow = flow_type()
-    expected = json.loads((Path(__file__).parent / "fixtures/builtin_schemas.json").read_text())[
-        flow.name
-    ]
-    parsers = []
-    for _ in range(2):
-        for human in (human_first, not human_first):
-            parser = build_parser(flow, human=human)
-            parser.format_help()
-            parsers.append(parser)
-            assert flow_schema(flow) == expected
-    assert parsers[0].format_help() == parsers[2].format_help()
-    assert parsers[1].format_help() == parsers[3].format_help()
-    transport = build_cli_parser(flow, CliInvocation(transport=True))
-    assert "--work-dir" in transport._option_string_actions
-    assert "--project" not in transport._option_string_actions
-    assert transport.parse_args(["--target", "example", "-q"])._console_quiet
+def test_projection_isolation() -> None:
+    for flow_type in FLOWS:
+        for human_first in (False, True):
+            flow = flow_type()
+            expected = json.loads(
+                (Path(__file__).parent / "fixtures/builtin_schemas.json").read_text()
+            )[flow.name]
+            parsers = []
+            for _ in range(2):
+                for human in (human_first, not human_first):
+                    parser = build_parser(flow, human=human)
+                    parser.format_help()
+                    parsers.append(parser)
+                    assert flow_schema(flow) == expected
+            assert parsers[0].format_help() == parsers[2].format_help()
+            assert parsers[1].format_help() == parsers[3].format_help()
+            transport = build_cli_parser(flow, CliInvocation(transport=True))
+            assert "--work-dir" in transport._option_string_actions
+            assert "--project" not in transport._option_string_actions
+            assert transport.parse_args(["--target", "example", "-q"])._console_quiet
 
 
 def test_resume_and_required_target_guidance() -> None:

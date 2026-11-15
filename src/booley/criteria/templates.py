@@ -732,7 +732,7 @@ class CriteriaTemplate:
                 if spec.name == "coverage":
                     if candidate in coverage_targets:
                         raise ValueError(
-                            f"Target {candidate!r} occurs in more than one coverage record"
+                            f"Target {candidate!r} occurs in more than one coverage authoring record"
                         )
                     coverage_targets.add(candidate)
                 baseline = spec.params.get(BASELINE_TARGET_PARAM, candidate)
@@ -933,10 +933,10 @@ def _parse_coverage_entries(
     specs: list[CriterionSpec] = []
     for item in items:
         try:
-            record = require_dict(item, field="coverage record")
+            record = require_dict(item, field="coverage authoring record")
         except BoundaryError:
             raise ValueError("coverage must be a list of authoring records") from None
-        targets, policy = _validate_coverage_record(record)
+        targets, policy = _validate_coverage_authoring_record(record)
         for target in targets:
             specs.append(
                 CriterionSpec(
@@ -1054,10 +1054,10 @@ def _validate_coverage_tests(value: object) -> str | list[str]:
         raise ValueError("coverage.tests must be 'all' or a non-empty list of names") from None
 
 
-def _validate_coverage_record(item: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:
+def _validate_coverage_authoring_record(item: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:
     unknown = set(item) - {"targets", "metrics", "tests"}
     if unknown:
-        raise ValueError(f"coverage record has unknown fields: {sorted(unknown)}")
+        raise ValueError(f"coverage authoring record has unknown fields: {sorted(unknown)}")
     if "targets" not in item:
         raise ValueError("coverage.targets is required")
     if "metrics" not in item:

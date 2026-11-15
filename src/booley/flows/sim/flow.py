@@ -1385,7 +1385,7 @@ class SimulateFlow(
     def _with_coverage_record_lines(
         result: EndpointOutcome, outcomes: Sequence[SimulationRecordOutcome]
     ) -> EndpointOutcome:
-        """Append the finished Targets' ``coverage campaign:`` lines to a stopped run's card."""
+        """Append the finished Targets' ``Coverage Record:`` lines to a stopped run's card."""
         lines = _coverage_record_lines(outcomes)
         if lines:
             result.report_text = "\n".join([result.report_text, *lines])

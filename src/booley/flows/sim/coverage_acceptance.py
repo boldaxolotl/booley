@@ -1,4 +1,4 @@
-"""Test Run rows and grades of collected Coverage Campaign runs."""
+"""Test Run rows and grades of collected Coverage Record runs."""
 
 from __future__ import annotations
 

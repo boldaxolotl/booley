@@ -63,7 +63,7 @@ def check_case(root: Path, harness: str, outcome: str) -> dict:
     coverage = collect_target_coverage(
         handle,
         selected_tests=("check",),
-        artifact_root=root / "campaign",
+        artifact_root=root / "record",
         invoke=partial(invoke, cwd=root),
         options=options,
     )

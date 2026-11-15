@@ -162,7 +162,7 @@ def test_legacy_coverage_record_without_point_store_is_refused(record_context) -
     )
 
     assert section["status"] == "failed"
-    assert "only point-store Campaigns" in section["reason"]
+    assert "only point-store Coverage Records" in section["reason"]
 
 
 def test_corrupt_candidate_record_is_reported_not_raised(record_context) -> None:

@@ -416,7 +416,7 @@ For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl
 
 | Specialist | Purpose | Sets | Modifies code |
 |------------|---------|------|:-------------:|
-| `coverage_analyst` | Explain one exact coverage.json Campaign and propose advisory next steps | — | — |
+| `coverage_analyst` | Explain one exact coverage.json Coverage Record and propose advisory next steps | — | — |
 | `reviewer` | Single-focus code review: reports issues by severity | `REVIEW:rtl_spec`, `REVIEW:rtl_bugs`, `REVIEW:rtl_protocol`, `REVIEW:tb_quality`, `REVIEW:rtl_security`, `REVIEW:rtl_optimization`, `REVIEW:rtl_code_style` | — |
 
 #### `coverage_analyst`

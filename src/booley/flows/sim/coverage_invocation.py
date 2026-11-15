@@ -1,4 +1,4 @@
-"""Read-only all-Target preparation for an explicit Coverage Campaign invocation."""
+"""Read-only all-Target preparation for an explicit Coverage Record invocation."""
 
 from __future__ import annotations
 
@@ -82,7 +82,7 @@ class CoverageTargetPlan:
     declared_tests: tuple[str, ...]
     selected_tests: tuple[str, ...]
     trace: bool
-    #: Every Test Run the campaign collects, grouped in ``selected_tests`` order.
+    #: Every Test Run the Coverage Record collects, grouped in ``selected_tests`` order.
     test_runs: tuple[TestRun, ...] = ()
     criterion: CoverageCriterion | None = None
     criterion_key: str = ""
@@ -132,7 +132,7 @@ def _suite(
     required = criterion.tests if criterion and criterion.tests is not None else declared
     skipped = set(lookup_target_section(context.skipped_tests, handle.identity) or ())
     # Selection never consults the Coverage Criterion: its test list is required
-    # evidence, compared with what ran by evaluate_coverage_campaign (suite mismatch).
+    # evidence, compared with what ran by evaluate_coverage_record (suite mismatch).
     if runs is not None:
         selected = tuple(dict.fromkeys(str(run.test) for run in runs))
     elif request.tests is not None:

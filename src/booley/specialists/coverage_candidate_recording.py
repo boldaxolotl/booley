@@ -1,9 +1,9 @@
 """Record a Coverage Analyst run's screened Waiver Candidates for its Goal Record (ADR 0066).
 
 The Analyst's model never writes. After the deterministic screen, this adapter
-binds each ``ready_for_human_review`` candidate to the exact persisted Campaign
+binds each ``ready_for_human_review`` candidate to the exact persisted Coverage Record
 and records it in the Goal Record's candidate store. It then reports the strict and
-Provisional Coverage Verdicts for that Campaign, so the Developer Agent sees both.
+Provisional Coverage Verdicts for that Coverage Record, so the Developer Agent sees both.
 
 Recording is best-effort: a store failure is reported, never raised, because
 the advisory analysis itself succeeded.
@@ -34,7 +34,7 @@ from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 @dataclass(frozen=True)
 class GoalCandidateContext:
-    """Where one Goal Record's candidates live and how Campaign paths are anchored."""
+    """Where one Goal Record's candidates live and how Coverage Record paths are anchored."""
 
     flow_reports_root: Path
     record_dir: Path
@@ -54,7 +54,9 @@ def _binding(
     flow_reports_root: Path,
 ) -> store.CoverageRecordBinding:
     if summary is None or summary.source_schema != COVERAGE_RECORD_SCHEMA:
-        raise ValueError("only point-store Campaigns (storage v5) can bind Waiver Candidates")
+        raise ValueError(
+            "only point-store Coverage Records (storage v5) can bind Waiver Candidates"
+        )
     assert summary.point_store is not None  # a stored Coverage Record always carries a point store
     try:
         relative = canonical_project_alias_path(coverage_record_path.absolute()).relative_to(
@@ -62,7 +64,7 @@ def _binding(
         )
     except ValueError as exc:
         raise ValueError(
-            "Campaign is not under this Goal Record's flow-reports directory"
+            "Coverage Record is not under this Goal Record's flow-reports directory"
         ) from exc
     return store.CoverageRecordBinding(
         campaign_id=coverage_record.coverage_record_id,
@@ -102,7 +104,7 @@ def _provisional_block(
     binding: store.CoverageRecordBinding,
     record: store.CandidateRecord,
 ) -> dict[str, object]:
-    """Strict and provisional verdicts over every candidate recorded for this Campaign."""
+    """Strict and provisional verdicts over every candidate recorded for this Coverage Record."""
     candidates = [
         item.as_provisional() for item in record.candidates.values() if item.binding == binding
     ]

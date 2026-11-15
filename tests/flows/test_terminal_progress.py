@@ -804,9 +804,9 @@ def test_simulation_record_worker_inherits_invocation_observer(tmp_path):
     def execute(attempt, *_args):
         assert current_progress() is sink
         result = flow._execute_boundary(
-            [sys.executable, "-c", "print('campaign worker line')"], timeout=BOUNDARY_HANG_GUARD_S
+            [sys.executable, "-c", "print('record worker line')"], timeout=BOUNDARY_HANG_GUARD_S
         )
-        assert result.stdout == "campaign worker line\n"
+        assert result.stdout == "record worker line\n"
 
     scheduler = BoundedSimulationRecordScheduler(
         capacity,
@@ -816,8 +816,8 @@ def test_simulation_record_worker_inherits_invocation_observer(tmp_path):
     sink = observer(tmp_path, tool_output=True)
     with sink.installed():
         scheduler.run([{"test": "smoke"}])
-    assert "campaign worker line" in sink.stream.getvalue()
-    assert b"campaign worker line" in sink.log_path.read_bytes()
+    assert "record worker line" in sink.stream.getvalue()
+    assert b"record worker line" in sink.log_path.read_bytes()
 
 
 def test_internal_sim_result_records_filtered_but_retained_in_transcript(tmp_path):

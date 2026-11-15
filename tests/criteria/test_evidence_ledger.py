@@ -252,7 +252,7 @@ def test_current_generation_filters_valid_historical_records(
                 log,
                 state,
                 changes,
-                invocation_id="campaign",
+                invocation_id="record",
                 producer="sim",
                 execution_id="execution",
                 identity=identity,

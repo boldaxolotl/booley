@@ -1,4 +1,4 @@
-"""A coverage campaign collects several Test Runs of one Test (ADR 0072).
+"""A Coverage Record collects several Test Runs of one Test (ADR 0072).
 
 Two Test Variants of one Test, a pinned seed and ``test@xN`` are each one
 simulator process in the one ``coverage_aggregate`` work item; the merged

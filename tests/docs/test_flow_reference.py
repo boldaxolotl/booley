@@ -197,7 +197,7 @@ def test_sim_report_fields_stay_documented(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
     monkeypatch.setattr("booley.core.booley_dir._cache", None)
-    # A coverage campaign writes the ordinary projection plus the coverage fields.
+    # A Coverage Record writes the ordinary projection plus the coverage fields.
     _native_cycle_simulation_record(tmp_path, monkeypatch)
     (path,) = (tmp_path / "reports").glob("sim/*/targets/*/simulation.json")
     projection = _read_json(path)
@@ -386,7 +386,7 @@ def test_target_omission_rule_matches_usage_and_reference() -> None:
 
 
 _DOC_REPORTS_ROOT = "/work/.booley/flow-reports"
-_CARD_PATH_LABELS = ("manifest", "report", "coverage campaign")
+_CARD_PATH_LABELS = ("manifest", "report", "Coverage Record")
 
 
 def _text_blocks(page: str) -> list[str]:
@@ -454,7 +454,7 @@ def test_coverage_card_example_matches_rendered_card(tmp_path: Path) -> None:
     )[0].splitlines()
 
     documented = next(
-        block for block in _text_blocks("COVERAGE.md") if "coverage campaign:" in block
+        block for block in _text_blocks("COVERAGE.md") if "Coverage Record:" in block
     )
     assert _as_documented(rendered, root) == documented.splitlines()
 

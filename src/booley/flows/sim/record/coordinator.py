@@ -455,7 +455,7 @@ class SimulationRecord:
             )
         except (CoverageRecordStoreError, CoverageRecordValidationError) as exc:
             raise SimulationRecordIntegrityError(
-                "nested Coverage Campaign cannot be authenticated"
+                "nested Coverage Record cannot be authenticated"
             ) from exc
         self._publication_checkpoint("before:coverage_reference")
         return publish_coverage_record_reference(store.root.parent / "coverage.json", reference)

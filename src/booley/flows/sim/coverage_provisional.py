@@ -1,15 +1,15 @@
 """Pure Provisional Coverage Verdicts: strict evidence plus screened Waiver Candidates.
 
 ADR 0066. The strict verdict (Approved Waiver Set only) is already persisted in
-the evaluated Campaign. This module layers a Ticket's Waiver Candidates on top
-of that evaluated Campaign without re-matching approved waivers, and returns an
+the evaluated Coverage Record. This module layers a Ticket's Waiver Candidates on top
+of that evaluated Coverage Record without re-matching approved waivers, and returns an
 evaluation in the strict evaluation's shape, so the existing Criterion
 projection can read it unchanged. A provisional verdict never satisfies a
 Criterion; it only decides whether a Ticket may go to review.
 
-Every candidate is re-derived from the Campaign here (D1: candidate records are
+Every candidate is re-derived from the Coverage Record here (D1: candidate records are
 checked, not trusted). A candidate is offered only when it names an eligible,
-zero-hit RTL point of this exact Campaign and its source still matches.
+zero-hit RTL point of this exact Coverage Record and its source still matches.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ class ProvisionalCoverageError(ValueError):
 
 @dataclass(frozen=True)
 class ProvisionalCandidate:
-    """The binding of one recorded Waiver Candidate, as the Campaign must confirm it."""
+    """The binding of one recorded Waiver Candidate, as the Coverage Record must confirm it."""
 
     candidate_id: str
     coverage_record_id: str
@@ -103,17 +103,17 @@ def _binding_problem(
     coverage_record: CoverageRecord,
     current_sources: Mapping[str, str] | None,
 ) -> tuple[CandidateStatus, str] | None:
-    """Check the candidate's Campaign, Target, and source binding."""
+    """Check the candidate's Coverage Record, Target, and source binding."""
     if candidate.coverage_record_id != coverage_record.coverage_record_id:
-        return "stale", "Candidate belongs to a different Coverage Campaign."
+        return "stale", "Candidate belongs to a different Coverage Record."
     if candidate.target_identity != coverage_record.target.identity:
-        return "invalid", "Candidate Target differs from the Campaign Target."
+        return "invalid", "Candidate Target differs from the Coverage Record Target."
     if _coverage_record_sources(coverage_record).get(candidate.source) != candidate.source_sha256:
-        return "invalid", "Candidate source digest differs from the Campaign's."
+        return "invalid", "Candidate source digest differs from the Coverage Record's."
     if current_sources is not None and current_sources.get(candidate.source) != (
         candidate.source_sha256
     ):
-        return "stale", "RTL source changed since the Campaign was collected."
+        return "stale", "RTL source changed since the Coverage Record was collected."
     return None
 
 
@@ -249,15 +249,15 @@ def evaluate_provisional_coverage(
     *,
     current_sources: Mapping[str, str] | None = None,
 ) -> ProvisionalVerdict:
-    """Return the Provisional Coverage Verdict of one strictly evaluated Campaign.
+    """Return the Provisional Coverage Verdict of one strictly evaluated Coverage Record.
 
     ``current_sources`` maps RTL paths to their SHA-256 at the Ticket head being
-    judged; pass None only when the Campaign's own source closure is current.
+    judged; pass None only when the Coverage Record's own source closure is current.
     """
     if len(candidates) > MAX_PROVISIONAL_CANDIDATES:
         raise ProvisionalCoverageError(
             f"{len(candidates)} Waiver Candidates exceed the limit of "
-            f"{MAX_PROVISIONAL_CANDIDATES} for one Campaign"
+            f"{MAX_PROVISIONAL_CANDIDATES} for one Coverage Record"
         )
     strict_status = str(coverage_record.evaluation.get("status"))
     usable, screens = _usable_candidates(coverage_record, candidates, current_sources)
@@ -277,7 +277,7 @@ def evaluate_provisional_coverage(
         CandidateScreen(
             item.candidate_id,
             "offered",
-            "Eligible zero-hit point of this Campaign.",
+            "Eligible zero-hit point of this Coverage Record.",
             needed=item.candidate_id in needed,
         )
         for item in usable.values()
@@ -294,7 +294,7 @@ def criterion_from_evaluation(coverage_record: CoverageRecord) -> CoverageCriter
     """
     evaluation = coverage_record.evaluation
     if evaluation["status"] not in {"pass", "fail"}:
-        raise ProvisionalCoverageError("Campaign has no scored strict coverage evaluation")
+        raise ProvisionalCoverageError("Coverage Record has no scored strict coverage evaluation")
     thresholds = cast(Mapping[str, int | float], evaluation["thresholds"])
     suite = cast(Mapping[str, tuple[str, ...]], evaluation["suite"])
     stored = [(str(metric), minimum) for metric, minimum in thresholds.items()]
@@ -306,7 +306,7 @@ def criterion_from_evaluation(coverage_record: CoverageRecord) -> CoverageCriter
             DurableTargetIdentity(coverage_record.target.identity), rebuilt, tests
         )
     except ValueError as exc:
-        raise ProvisionalCoverageError(f"Campaign threshold is malformed: {exc}") from exc
+        raise ProvisionalCoverageError(f"Coverage Record threshold is malformed: {exc}") from exc
 
 
 def _sorted(screens: list[CandidateScreen]) -> tuple[CandidateScreen, ...]:

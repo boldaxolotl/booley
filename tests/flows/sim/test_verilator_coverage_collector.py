@@ -47,12 +47,12 @@ def _request(
             custom_main_hooks=hooks,
         ),
         selected_tests=(SelectedCoverageRun(test),),
-        artifact_root=tmp_path / "campaign",
+        artifact_root=tmp_path / "record",
         reset_included=reset_included,
     )
 
 
-def _native_record(
+def _native_entry(
     record_type: str,
     comment: str,
     *,
@@ -144,7 +144,7 @@ class _StaleRawExecution(_MissingRawExecution):
 
 
 class _MalformedRawExecution(_MissingRawExecution):
-    def __init__(self, payload: str | bytes = _HEADER + "not a coverage record\n") -> None:
+    def __init__(self, payload: str | bytes = _HEADER + "not a native counter entry\n") -> None:
         self.payload = payload
 
     def run(self, request) -> SimulationRunResult:
@@ -166,15 +166,15 @@ class _IncompatibleRawExecution(_MissingRawExecution):
 class _RichNativeExecution(_GeneratedMainExecution):
     payload = _HEADER + "".join(
         (
-            _native_record("line", "block", hierarchy="TOP.first"),
-            _native_record("line", "block", hierarchy="TOP.second"),
-            _native_record("branch", "if"),
-            _native_record("expr", "(enable == 1) => 1"),
-            _native_record("toggle", "count[0]:0->1"),
-            _native_record("user", "wrap_seen"),
-            _native_record("fsm", "RUN->WRAP"),
-            _native_record("covergroup", "values.high"),
-            _native_record("future_kind", "opaque"),
+            _native_entry("line", "block", hierarchy="TOP.first"),
+            _native_entry("line", "block", hierarchy="TOP.second"),
+            _native_entry("branch", "if"),
+            _native_entry("expr", "(enable == 1) => 1"),
+            _native_entry("toggle", "count[0]:0->1"),
+            _native_entry("user", "wrap_seen"),
+            _native_entry("fsm", "RUN->WRAP"),
+            _native_entry("covergroup", "values.high"),
+            _native_entry("future_kind", "opaque"),
         )
     )
 
@@ -277,7 +277,7 @@ class _CocotbExecution(_GeneratedMainExecution):
         hits = len(self.run_requests)
         request.raw_path.parent.mkdir(parents=True, exist_ok=True)
         request.raw_path.write_text(
-            _HEADER + _native_record("line", "block", hits=hits),
+            _HEADER + _native_entry("line", "block", hits=hits),
             encoding="utf-8",
         )
         return SimulationRunResult(verdict="pass" if hits == 1 else "fail")
@@ -285,7 +285,7 @@ class _CocotbExecution(_GeneratedMainExecution):
     def command(self, request) -> SimulationCommandResult:
         request.output_path.parent.mkdir(parents=True, exist_ok=True)
         request.output_path.write_text(
-            _HEADER + _native_record("line", "block", hits=3),
+            _HEADER + _native_entry("line", "block", hits=3),
             encoding="utf-8",
         )
         return SimulationCommandResult(returncode=0)
@@ -311,7 +311,7 @@ class _BadMergeExecution(_GeneratedMainExecution):
         if self.mode == "malformed":
             payload = _HEADER + "garbage\n"
         elif self.mode == "mismatch":
-            payload = _HEADER + _native_record("line", "block", hits=999)
+            payload = _HEADER + _native_entry("line", "block", hits=999)
         else:
             payload = _HEADER + _LINE_POINT
         request.output_path.write_text(payload, encoding="utf-8")
@@ -541,7 +541,7 @@ def test_missing_raw_database_is_a_collector_error_without_losing_simulation_tru
             sources=(),
         ),
         selected_tests=(SelectedCoverageRun("reset"),),
-        artifact_root=tmp_path / "campaign",
+        artifact_root=tmp_path / "record",
     )
 
     result = collect(request, _MissingRawExecution())
@@ -571,7 +571,7 @@ def test_unsafe_raw_database_is_reported_as_unsafe(
             sources=(),
         ),
         selected_tests=(SelectedCoverageRun("reset"),),
-        artifact_root=tmp_path / "campaign",
+        artifact_root=tmp_path / "record",
     )
 
     result = collect(request, _UnsafeRawExecution(mode, tmp_path / "outside" / "raw.dat"))
@@ -594,7 +594,7 @@ def test_stale_raw_database_is_retained_but_excluded_from_collection(tmp_path: P
             sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
         ),
         selected_tests=(SelectedCoverageRun("wrap"),),
-        artifact_root=tmp_path / "campaign",
+        artifact_root=tmp_path / "record",
     )
 
     raw = request.artifact_root / "native" / "raw" / "001-wrap.dat"
@@ -641,7 +641,7 @@ def test_malformed_raw_database_is_unqueryable_and_preserves_timeout(tmp_path: P
             sources=(),
         ),
         selected_tests=(SelectedCoverageRun("hang"),),
-        artifact_root=tmp_path / "campaign",
+        artifact_root=tmp_path / "record",
     )
 
     result = collect(request, _MalformedRawExecution())
@@ -665,7 +665,7 @@ def test_incompatible_native_format_blocks_normalization_with_stable_evidence(
             sources=(),
         ),
         selected_tests=(SelectedCoverageRun("reset"),),
-        artifact_root=tmp_path / "campaign",
+        artifact_root=tmp_path / "record",
     )
 
     result = collect(request, _IncompatibleRawExecution())
@@ -690,7 +690,7 @@ def test_known_deferred_and_unknown_record_classes_are_retained_losslessly(
             sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
         ),
         selected_tests=(SelectedCoverageRun("all_metrics"),),
-        artifact_root=tmp_path / "campaign",
+        artifact_root=tmp_path / "record",
     )
 
     result = collect(request, _RichNativeExecution())
@@ -766,7 +766,7 @@ def test_post_reset_window_requires_one_fresh_successful_start_hook(tmp_path: Pa
             sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
         ),
         selected_tests=(SelectedCoverageRun("post_reset"),),
-        artifact_root=tmp_path / "campaign",
+        artifact_root=tmp_path / "record",
         reset_included=False,
     )
 
@@ -794,7 +794,7 @@ def test_missing_post_reset_hook_evidence_is_a_structured_collector_error(
             sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
         ),
         selected_tests=(SelectedCoverageRun("forgot_hook"),),
-        artifact_root=tmp_path / "campaign",
+        artifact_root=tmp_path / "record",
         reset_included=False,
     )
 
@@ -863,7 +863,7 @@ def test_invalid_start_hook_is_a_collector_error(
             sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
         ),
         selected_tests=(SelectedCoverageRun("bad_hook"),),
-        artifact_root=tmp_path / "campaign",
+        artifact_root=tmp_path / "record",
         reset_included=False,
     )
 
@@ -900,7 +900,7 @@ def test_invalid_custom_main_hook_declarations_fail_before_execution(
             custom_main_hooks=hooks,
         ),
         selected_tests=(SelectedCoverageRun("custom"),),
-        artifact_root=tmp_path / "campaign",
+        artifact_root=tmp_path / "record",
         reset_included=reset_included,
     )
 
@@ -934,7 +934,7 @@ def test_custom_main_requires_one_successful_runtime_write_hook(tmp_path: Path) 
             custom_main_hooks=("write_hook",),
         ),
         selected_tests=(SelectedCoverageRun("custom"),),
-        artifact_root=tmp_path / "campaign",
+        artifact_root=tmp_path / "record",
     )
 
     result = collect(
@@ -1102,7 +1102,7 @@ def test_cocotb_trace_coverage_runs_one_process_per_test_and_keeps_failed_run_da
             sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
         ),
         selected_tests=(SelectedCoverageRun("increments"), SelectedCoverageRun("wraps")),
-        artifact_root=tmp_path / "campaign",
+        artifact_root=tmp_path / "record",
         trace=True,
     )
 
@@ -1129,7 +1129,7 @@ def test_native_merge_tool_failure_retains_normalized_per_run_evidence(tmp_path:
             sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
         ),
         selected_tests=(SelectedCoverageRun("reset"),),
-        artifact_root=tmp_path / "campaign",
+        artifact_root=tmp_path / "record",
     )
 
     result = collect(request, _MergeFailureExecution())
@@ -1169,7 +1169,7 @@ def test_bad_native_merge_never_discards_per_run_evidence(
             sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
         ),
         selected_tests=(SelectedCoverageRun("reset"),),
-        artifact_root=tmp_path / "campaign",
+        artifact_root=tmp_path / "record",
     )
     if mode == "stale":
         merged = request.artifact_root / "native" / "merged" / "coverage.dat"
@@ -1205,7 +1205,7 @@ def test_build_failure_reports_elaboration_truth_for_every_selected_test(tmp_pat
             sources=(),
         ),
         selected_tests=(SelectedCoverageRun("a"), SelectedCoverageRun("b")),
-        artifact_root=tmp_path / "campaign",
+        artifact_root=tmp_path / "record",
     )
 
     result = collect(request, _BuildFailureExecution())
@@ -1229,7 +1229,7 @@ def test_collector_rejects_any_verilator_other_than_the_exact_safe_pin(tmp_path:
             sources=(),
         ),
         selected_tests=(SelectedCoverageRun("reset"),),
-        artifact_root=tmp_path / "campaign",
+        artifact_root=tmp_path / "record",
     )
 
     result = collect(request, _WrongVerilatorExecution())
@@ -1248,7 +1248,7 @@ def test_collector_rejects_any_verilator_other_than_the_exact_safe_pin(tmp_path:
 def test_native_source_presence_precedes_metric_filtering(
     tmp_path: Path, record_type: str, hits: int
 ) -> None:
-    payload = _HEADER + _native_record(record_type, "point", hits=hits).replace(
+    payload = _HEADER + _native_entry(record_type, "point", hits=hits).replace(
         "rtl/counter.sv", "/stage/rtl/counter.sv"
     )
 
@@ -1262,7 +1262,7 @@ def test_native_source_presence_precedes_metric_filtering(
 
 
 @pytest.mark.parametrize("isolated", [True, False], ids=["isolated", "non-isolated"])
-def test_native_record_in_a_mirrored_header_is_named_by_project_path(
+def test_native_entry_in_a_mirrored_header_is_named_by_project_path(
     tmp_path: Path, isolated: bool
 ) -> None:
     """AC3: a header the build read through its private mirror shows its Project path."""
@@ -1276,7 +1276,7 @@ def test_native_record_in_a_mirrored_header_is_named_by_project_path(
         )
         request = replace(request, target=target)
     export = "src/acme_demo_counter-booleycoverage_1/rtl/inc/defs.svh"
-    payload = _HEADER + _native_record("line", "block").replace("rtl/counter.sv", export)
+    payload = _HEADER + _native_entry("line", "block").replace("rtl/counter.sv", export)
 
     result = collect(request, _PresenceExecution(payload))
 
@@ -1287,12 +1287,12 @@ def test_native_record_in_a_mirrored_header_is_named_by_project_path(
     assert point.identity.source == result.native_sources[0]
 
 
-def test_native_record_in_the_authored_source_matches_through_the_mirror_name(
+def test_native_entry_in_the_authored_source_matches_through_the_mirror_name(
     tmp_path: Path,
 ) -> None:
     """A native ``src/<core>/rtl/counter.sv`` suffix-matches the Project-relative input."""
     export = "src/acme_demo_counter-booleycoverage_1/rtl/counter.sv"
-    payload = _HEADER + _native_record("line", "block").replace("rtl/counter.sv", export)
+    payload = _HEADER + _native_entry("line", "block").replace("rtl/counter.sv", export)
 
     result = collect(_request(tmp_path, "mirrored-source"), _PresenceExecution(payload))
 
