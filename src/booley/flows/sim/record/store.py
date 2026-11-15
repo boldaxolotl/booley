@@ -66,6 +66,7 @@ from .codec import (
 from .model import (
     BundleBuildAttempt,
     BundleBuildResult,
+    FrozenJson,
     SimulationAttempt,
     SimulationRecordDocument,
     SimulationRecordManifest,
@@ -512,10 +513,10 @@ class SimulationRecordStore:
                     raise SimulationRecordIntegrityError("Pre-Sim Commands ordinal disagrees")
                 firings.append(firing)
         if terminal is not None:
+            # The terminal result is the scan-authenticated result Booley published.
+            evidence = cast(tuple[Mapping[str, FrozenJson], ...], terminal.document["evidence"])
             if [
-                reference
-                for reference in terminal.document["evidence"]
-                if reference["kind"] == "pre_sim_commands"
+                reference for reference in evidence if reference["kind"] == "pre_sim_commands"
             ] != [firing.reference for firing in firings]:
                 raise SimulationRecordIntegrityError("Pre-Sim Commands result references disagree")
             if firings:
@@ -725,7 +726,9 @@ def collect_pre_sim_firings(
     """
     if prior:
         return _reread_prior(prior, booley_dir)
-    pending = [(Path(path).absolute(), None, frozenset()) for path in reversed(manifest_paths)]
+    pending: list[tuple[Path, str | None, frozenset[str]]] = [
+        (Path(path).absolute(), None, frozenset()) for path in reversed(manifest_paths)
+    ]
     queued: set[tuple[Path, str, frozenset[str]]] = set()
     visited: set[Path] = set()
     firings = {}
@@ -751,7 +754,11 @@ def collect_pre_sim_firings(
         visited.add(path)
         for firing in store._simulation_record_firings(manifest, store.scan(manifest, digest)):
             firings[firing.key] = firing
-        for entry in manifest.document["prerequisites"]:
+        # The codec's _read_manifest reads the prerequisites list.
+        prerequisites = cast(
+            tuple[Mapping[str, Mapping[str, str]], ...], manifest.document["prerequisites"]
+        )
+        for entry in prerequisites:
             reference = entry["manifest"]
             edge = (linked_manifest_path(store.root.parents[2], reference), reference["sha256"])
             chain = ancestors | {simulation_record_id}
@@ -773,7 +780,9 @@ def _reread_prior(
     for manifest_path, attempts in by_manifest.items():
         store = SimulationRecordStore(manifest_path.parent, booley_dir=booley_dir)
         manifest = store.load_manifest()
-        items = {item["work_item_id"]: item for item in manifest.document["work_items"]}
+        # The codec's _read_manifest reads the work items list.
+        work_items = cast(tuple[Mapping[str, FrozenJson], ...], manifest.document["work_items"])
+        items = {cast(str, item["work_item_id"]): item for item in work_items}
         for directory, owned in attempts.items():
             fresh.update(store._reread_prior_attempt(manifest, items, directory, owned))
     return tuple(fresh[key] for key in dict.fromkeys(firing.key for firing in prior))

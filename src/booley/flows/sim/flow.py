@@ -1,6 +1,6 @@
 # pyright: reportIncompatibleMethodOverride=true, reportIncompatibleVariableOverride=true
 # The directive makes a mismatch between SimulateFlow and the host declarations in
-# elab_only.py, standalone.py and test_selection.py a type error; keep it.
+# elab_only.py, flow_resume.py, standalone.py and test_selection.py a type error; keep it.
 """SimulateFlow — BooleyFlow for running RTL simulation.
 
 Runs RTL simulation for one or more configs via the Edalize sim flow + a
@@ -63,7 +63,7 @@ from booley.flows.sim.record_invocation import SimulationRecordInvocation
 from booley.flows.sim.record_layout import RECORD_DIRECTORY
 from booley.flows.sim.record_reports import invocation_booley_dir, target_report_directory
 from booley.flows.sim.request import SimRequest
-from booley.flows.sim.verilator_coverage import SimulationExecutionPort
+from booley.flows.sim.verilator_coverage import AuthenticatedSimulationExecutionPort
 from booley.flows.target_test_plan import TargetTestPlan
 from booley.flows.target_test_suite import (
     resolve_target_test_suite,
@@ -285,7 +285,7 @@ class SimulateFlow(
         *,
         coverage_execution: Callable[
             [TargetHandle, SimulationOptions, tuple[str, ...], str],
-            SimulationExecutionPort,
+            AuthenticatedSimulationExecutionPort,
         ]
         | None = None,
         simulation_record_publication_checkpoint: Callable[[str], None] | None = None,
@@ -1444,7 +1444,7 @@ class SimulateFlow(
         options: SimulationOptions,
         pre_sim_commands: tuple[str, ...],
         pre_sim_build_access: str,
-    ) -> SimulationExecutionPort:
+    ) -> AuthenticatedSimulationExecutionPort:
         from booley.flows.sim.verilator_coverage_execution import VerilatorCoverageExecution
 
         return (
