@@ -26,7 +26,7 @@ Three facts about today's code shape the design:
 
 - A shell `booley flow` or `booley specialist` runs in the foreground and
   writes no Job record, so the Dashboard never shows it, even while it holds a
-  Job slot. ADR 0076 already assumes such runs write a Job record.
+  Job slot.
 - The MCP Job runner (`JobLifecycle`) kills its child when its owning process
   shuts down, keeps output only as bounded in-memory tails, and writes no log
   file. It cannot host a run that must outlive the Dashboard.
@@ -104,7 +104,7 @@ command is shown and can be copied. It also shows:
 - **One Job record for human runs.** A shell `booley flow` or
   `booley specialist` stays in the foreground but writes a Job record with no
   owning session, which makes it a **Standalone Job**. The Dashboard shows it
-  like any other Job, and ADR 0076's overlap check can rely on it.
+  like any other Job.
 - **A detached Standalone Job worker.** The baseline sim worker becomes a
   generic worker for any Flow or Specialist. The Dashboard spawns it in its
   own session and returns; the worker writes the Job record, PID, `job.log`,

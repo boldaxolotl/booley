@@ -189,7 +189,7 @@ unusable from a linked worktree: Booley refuses that routed call rather than
 run it on the server cwd while the Dashboard shows the worktree.
 Agent-facing guidance still tells the agent to pass `work_dir` explicitly.
 The decision is in
-[ADR 0068](../adr/0068-booley-dashboard.md#amendments-2026-11-08-the-callers-checkout-routes-calls-without-work_dir-2606).
+[ADR 0068](../adr/0068-booley-dashboard.md).
 
 ## The Python contract
 
