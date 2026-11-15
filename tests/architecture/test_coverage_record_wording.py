@@ -186,7 +186,8 @@ def test_campaign_is_said_only_for_kept_names() -> None:
             if spelling in text:
                 used_spellings.add((relative, spelling))
         for number, line in enumerate(text.splitlines(), 1):
-            if _WORD in _masked(line, spellings).lower():
+            # Masking is costly; a line without the word needs none (a 60s timeout bounds this scan).
+            if _WORD in line.lower() and _WORD in _masked(line, spellings).lower():
                 offenders.append(f"{relative}:{number}: {line.strip()[:100]}")
     assert not offenders, (
         "campaign is said for the Coverage Record; say Coverage Record, or list the kept "
