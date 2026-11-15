@@ -1536,7 +1536,7 @@ class TestPromptConstruction:
         cases = [
             ("rtl", "bugs", "rtl/a.sv", ["bugs-checklist", "bugs-hunt"]),
             ("rtl", "protocol", "rtl/a.sv", ["protocol-cdc-checklist"]),
-            ("rtl", "security", "rtl/a.sv", ["security-checklist"]),
+            ("rtl", "security", "rtl/a.sv", ["security-checklist", "security-hunt"]),
             ("rtl", "optimization", "rtl/a.sv", ["optimization-checklist"]),
             ("rtl", "code_style", "rtl/a.sv", ["code_style-checklist"]),
             ("rtl", "spec", "rtl/a.sv", ["spec-hunt"]),
@@ -1571,6 +1571,41 @@ class TestPromptConstruction:
             if focus == "spec":
                 assert "## Trace targets" in system
                 assert "## Checklist" not in system
+
+    def test_security_hunt_prompt_names_scenario_categories_and_scope_boundaries(
+        self, tmp_path: Path
+    ):
+        """A guide edit or packaging change must not drop what the hunt call receives."""
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(
+            [
+                "--work-dir",
+                str(tmp_path),
+                "--scope",
+                "rtl/a.sv",
+                "--category",
+                "rtl",
+                "--focus",
+                "security",
+            ]
+        )
+        hunt = tuple(g for g in endpoint._review_guides("security", "rtl") if g.kind == "hunt")
+        system = endpoint._build_system_prompt("security", hunt)
+        assert "(security-hunt)" in system
+        assert "(security-checklist)" not in system
+        boundaries = system.split("## Scope Boundaries", 1)[1].split("\n## ", 1)[0]
+        assert "`bugs`" in boundaries
+        assert "`protocol`" in boundaries
+        assert '{"issues": []}' in boundaries
+        for category in (
+            "Attacker-controlled inputs",
+            "Debug, test, and scan access",
+            "Reset and power",
+            "Error, alert, and escalation paths",
+            "Fault injection",
+            "Secret flow",
+        ):
+            assert f"**{category}**" in system, category
 
     def test_rtl_optimization_prompt_checks_for_runtime_constant_work(self, state_file: Path):
         endpoint = ReviewerSpecialist()
@@ -2181,7 +2216,7 @@ class TestFullRtlReview:
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_single_focus_security(self, mock_agent, state_file: Path, capsys):
-        """Single focus runs one agent call, criterion key reflects focus."""
+        """Single focus runs one agent call per guide kind, criterion key reflects focus."""
         mock_agent.return_value = _make_agent_result([])
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(
@@ -2198,7 +2233,7 @@ class TestFullRtlReview:
         result = endpoint._run()
         assert result.exit_code == 0
         assert result.criterion_key == "review_rtl_security_done"
-        assert mock_agent.call_count == 1
+        assert mock_agent.call_count == 2  # security declares a checklist and a hunt guide
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_criterion_set_rtl_spec(self, mock_agent, state_file: Path):
@@ -4232,6 +4267,13 @@ def test_dry_run_lists_guides_with_kind(tmp_path):
             [
                 {"kind": "checklist", "name": "bugs-checklist"},
                 {"kind": "hunt", "name": "bugs-hunt"},
+            ],
+        ),
+        (
+            "security",
+            [
+                {"kind": "checklist", "name": "security-checklist"},
+                {"kind": "hunt", "name": "security-hunt"},
             ],
         ),
         ("spec", [{"kind": "hunt", "name": "spec-hunt"}]),

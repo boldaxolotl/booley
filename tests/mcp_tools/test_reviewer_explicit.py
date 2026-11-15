@@ -262,7 +262,7 @@ def test_interactive_discovery_replaces_findings_and_latest_call_controls_verify
         project, monkeypatch, [*args[:-1], "security"], goal=False, payload={"issues": []}
     )
     assert reviewer._run().exit_code == 0
-    assert invoke.call_count == 1
+    assert invoke.call_count == 2  # security declares a checklist and a hunt guide
     verifier, invoke = endpoint(project, monkeypatch, ["--verify"], goal=False)
     assert "no open findings" in verifier._run().report_text
     invoke.assert_not_called()
@@ -506,8 +506,8 @@ def test_done_findings_need_no_verify_and_do_not_block_discovery(
         project, monkeypatch, ["--category", "rtl", "--focus", next_focus], payload={"issues": []}
     )
     assert reviewer._run().exit_code == 0
-    # rtl/bugs declares two guides (checklist + hunt), one agent call each; security has one.
-    assert invoke.call_count == (2 if next_focus == "bugs" else 1)
+    # rtl/bugs and rtl/security each declare a checklist and a hunt guide: one agent call each.
+    assert invoke.call_count == 2
 
 
 def test_review_history_is_scoped_to_checkout_under_shared_booley_dir(
