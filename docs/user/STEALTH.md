@@ -60,76 +60,34 @@ native cores, so run Flows through Booley.
 
 ## Commit messages
 
-When you or the agent commit, the commit-msg hook:
-
-- **Rejects attribution footers**: `Co-Authored-By:` lines, lines starting with
-  🤖, and a last line `Generated with <name>` where the name is a banned word,
-  such as "Generated with Codex". The message is left as written; remove the
-  line and commit again. The agent does this on its own. This check runs first,
-  and the error doesn't echo the line.
-- **Rejects banned words** in the subject or body. The hook never rewrites the
-  message file. It lists each match on stderr, such as `'booley' in the subject`
-  or `'booley' on line 3`, and says where the message is kept:
-
-    ```text
-    commit-msg: Stealth Mode rejected this commit message; it contains banned terms:
-      - 'booley' in the subject
-    Reword the message, or, if a term is an ordinary name in this design, remove it from [stealth] banned_words or banned_substrings in the project config TOML.
-    Your message was kept unchanged in "/path/to/repo/.git/COMMIT_EDITMSG".
-    To retry with the same text, rerun your git commit command with the same options (-a, --amend, paths) and replace -m/-F with: -v -e -F "/path/to/repo/.git/COMMIT_EDITMSG"
-    ```
-
-    To retry, rerun the same `git commit` command with its options (`-a`,
-    `--amend`, paths) and replace `-m` or `-F` with
-    `-v -e -F "<that path>"`. That opens the kept message in your editor so you
-    can reword it. A rejected merge commit also tells you to finish it with
-    `git commit -m "<message>"`, or to pass `-m` to `git merge`.
-
-The hook skips the lines the editor template comments out and the diff that
-`git commit -v` appends. The pre-push hook still checks the final message.
-
-The default banned words are `claude`, `anthropic`, `copilot`, `codex`,
-`openai`, `chatgpt`, `gemini`, `booley`, `gpt`, `llm`, and `co-authored-by`.
-To also check `cursor` or `ticket`, add them to `banned_words`.
+The commit-msg hook rejects a message that has an attribution footer
+(`Co-Authored-By:`, a 🤖 line, or `Generated with <banned word>`) or a banned
+word. It never rewrites the message: it names each match, keeps your text, and
+prints the `git commit` command that reopens it in your editor. The agent
+rewords and retries on its own. Finish a rejected merge with
+`git commit -m "<message>"`, or pass `-m` to `git merge`. Comment lines and the
+`git commit -v` diff aren't checked.
 
 ```toml
 [stealth]
 enabled = true
 # banned_words = ["claude", "codex", "acme_codename"]  # replaces the default list
 # banned_substrings = ["quokka"]                        # adds terms; default none
+# max_body_lines = 5                                    # default: unlimited
 ```
 
-- **`banned_words` replaces the default list**, it doesn't add to it. Copy the
-  defaults you want to keep. `banned_words = []` turns the word check off;
-  attribution lines are still rejected.
-- **Words match whole identifier parts**, ignoring case. `_`, `-`, `.`, `/`, and
-  case or letter-digit changes split a name into parts, so a listed `ticket` matches
-  `ticket_fifo` but not `Tickets` or `ticketing`, and `gpt` matches `GPT4`.
-- **AI vendor and product names match anywhere**: `claude`, `anthropic`,
-  `codex`, `openai`, `chatgpt`, `copilot`, `gemini`, and `booley` match inside
-  `myClaudeHelper` too.
-- **`banned_substrings` match anywhere**: `quokka` also matches `myquokkafile`.
-  An entry that is part of a Booley feedback placeholder, such as `<redacted>`
-  or `<email>`, is an error until you remove it.
-
-If your design uses `gpt` or `llm` as ordinary names, set `banned_words` without
-them. Otherwise a commit message about `gpt_core` is rejected, and a push that
-adds `rtl/gpt_core.sv` is blocked.
-
-### Capping the body (`max_body_lines`)
-
-Unlimited by default. `max_body_lines = 0` allows the subject line only;
-`max_body_lines = 5` allows five body lines. Blank lines and `#` comment lines
-don't count. A message over the cap is rejected, not trimmed, so nothing you
-wrote is lost. Merge commits are capped too.
-
-```toml
-[stealth]
-max_body_lines = 5
-```
-
-To skip the cap for one commit, set `BOOLEY_SKIP_COMMIT_VALIDATION=1`.
-Banned terms and attribution footers are still rejected; it never skips them.
+- **Default `banned_words`:** `claude`, `anthropic`, `copilot`, `codex`,
+  `openai`, `chatgpt`, `gemini`, `booley`, `gpt`, `llm`, `co-authored-by`.
+  Setting the key replaces the list; `[]` turns the word check off.
+- **Words match whole name parts**, ignoring case: `ticket` matches
+  `ticket_fifo` but not `ticketing`. AI vendor and product names, and every
+  `banned_substrings` entry, match anywhere, so `claude` matches
+  `myClaudeHelper`.
+- **Ordinary names in your design**, such as `gpt_core`, need `gpt` dropped
+  from `banned_words`, or both commits and pushes that touch them are blocked.
+- **`max_body_lines`** rejects a message with more body lines than the cap;
+  `0` allows the subject only. `BOOLEY_SKIP_COMMIT_VALIDATION=1` skips the cap
+  for one commit, never the banned-word checks.
 
 ## Push checks
 
