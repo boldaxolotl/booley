@@ -260,3 +260,18 @@ class ResourceEstimator:
                 for key in keys
             )
         )
+
+
+def specialist_memory_mb(records: Iterable[dict[str, Any]], name: str) -> float | None:
+    """The reservation in MiB a Specialist's own history asks for, or ``None``.
+
+    The largest measured peak among the records of Specialist *name*, times
+    :data:`ESTIMATE_MARGIN`, as a Flow phase's estimate does. ``None`` when the
+    history holds no measured peak for it.
+    """
+    peaks = [
+        float(record["peak_memory_mb"])
+        for record in records
+        if specialist_name(record) == name and record["peak_memory_mb"] is not None
+    ]
+    return max(peaks) * ESTIMATE_MARGIN if peaks else None

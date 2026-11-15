@@ -4539,6 +4539,23 @@ class TestRetiredJobsKeys:
         ) in output
         assert "memory admission replaced it" not in output
 
+    def test_max_light_fails_with_its_own_reason(self, tmp_path, monkeypatch, capsys):
+        booley_dir = _write_project(tmp_path)
+        _patch_environment(monkeypatch, tmp_path, booley_dir)
+        toml = booley_dir / "booley.toml"
+        toml.write_bytes(toml.read_bytes() + b"\n[jobs]\nmax_light = 2\n")
+
+        rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
+
+        output = colors.strip_ansi(capsys.readouterr().out)
+        assert rc != 0
+        assert "booley.toml sets retired [jobs] key max_light (line 17)" in output
+        assert (
+            "delete [jobs].max_light (line 17);"
+            " Specialists and the Mutation Flow are admitted by memory"
+        ) in output
+        assert "memory admission replaced it" not in output
+
     def test_memory_budget_fails_with_its_own_fix(self, tmp_path, monkeypatch, capsys):
         booley_dir = _write_project(tmp_path)
         _patch_environment(monkeypatch, tmp_path, booley_dir)

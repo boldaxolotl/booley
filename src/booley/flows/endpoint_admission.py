@@ -25,7 +25,6 @@ from booley.flows.memory_admission import (
     MemorySizing,
     fixed_job_threads,
     job_threads_at_start,
-    measure_memory_claim,
 )
 from booley.flows.reservation_phases import PhasePlan, ReservationShrinker, shrinking
 from booley.runtime import job_slots, oom_priority
@@ -131,8 +130,8 @@ class AdmissionGate:
     def _claim(self) -> _Claim:
         """Claim the Job's admission: a Memory Reservation, else a light slot.
 
-        Sim, synth, fpga, lint and Custom Flow Jobs are memory-admitted; the
-        claim carries the plan that sized it (``None`` for a slot).
+        Sim, synth, fpga, lint, Custom Flow, Specialist and Mutation Flow Jobs are
+        memory-admitted; the claim carries the plan that sized it (``None`` for a slot).
         """
         endpoint = self._endpoint
         if endpoint._memory_admitted():
@@ -463,7 +462,7 @@ def _acquire_memory_reservation(
     seats = required_seats(endpoint._licensed_tools(), config)
     store = job_slots.SlotStore(root, parse_caps(config))
     requests = None if prepared is None else prepared.invocation.job_requests()
-    plan = measure_memory_claim(project, requests)
+    plan = endpoint._memory_admission_plan(project, requests)
     if requeued:
         _refuse_waiting_behind_own_claim(endpoint, store)
         plan = plan.alone()
@@ -485,6 +484,9 @@ def _acquire_memory_reservation(
         job=label,
         queue_reason=OOM_REQUEUE_REASON if requeued else None,
     )
+    if claim.companion:
+        # A Specialist or coordinator fixes no thread count and shrinks no Flow's share.
+        return _Claim(store, token, plan, None, MemorySizing(project))
     try:
         threads = job_threads_at_start(store, available_cpu_count())
     except BaseException:
