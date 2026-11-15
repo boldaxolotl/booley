@@ -13,7 +13,6 @@ from time import time as wall_clock
 from typing import Any
 from urllib.parse import urlencode
 
-from booley.goals.store import GoalStore
 from booley.harness.dashboard.jobs import (
     FINISHED_JOB_STATES,
     JobReader,
@@ -41,7 +40,6 @@ def read_snapshot(
     reader: JobReader,
     sampler: ResourceSampler,
     *,
-    booley_dir: Path,
     slots: Path | None,
     proc_root: Path,
     worktree: Path,
@@ -49,7 +47,7 @@ def read_snapshot(
 ) -> dict[str, Any]:
     """Read every retained Job once and project the part that belongs to *worktree*."""
     now = wall_clock()
-    jobs = _read_jobs(reader, booley_dir, worktree, now)
+    jobs = _read_jobs(reader, worktree, now)
     resources = sampler.sample(worktree, now=monotonic())
     admission = _admission(jobs, slots, proc_root)
     mine = _worktree_jobs(worktree, jobs)
@@ -60,9 +58,9 @@ def read_snapshot(
     }
 
 
-def find_report(reader: JobReader, booley_dir: Path, worktree: Path, report: str) -> Path | None:
+def find_report(reader: JobReader, worktree: Path, report: str) -> Path | None:
     """The report file a Job of *worktree* links to as *report*; ``None`` for any other path."""
-    jobs = _read_jobs(reader, booley_dir, worktree, wall_clock())
+    jobs = _read_jobs(reader, worktree, wall_clock())
     return next(
         (
             job.report_path
@@ -73,17 +71,14 @@ def find_report(reader: JobReader, booley_dir: Path, worktree: Path, report: str
     )
 
 
-def _read_jobs(
-    reader: JobReader, booley_dir: Path, worktree: Path, now: float
-) -> tuple[JobView, ...]:
+def _read_jobs(reader: JobReader, worktree: Path, now: float) -> tuple[JobView, ...]:
     # A checkout outside the Main Booley Directory keeps its Standalone Jobs' reports in
     # its own Booley Directory.
     try:
         extra = (resolve_checkout_booley_dir(worktree).resolve(),)
     except (OSError, ValueError, RuntimeError):
         extra = ()
-    records = GoalStore(booley_dir).list_records().records
-    return reader.read(records, now=now, artifact_roots=extra).jobs
+    return reader.read_on_disk(now=now, artifact_roots=extra).jobs
 
 
 def _worktree_jobs(worktree: Path, jobs: Sequence[JobView]) -> list[JobView]:

@@ -8,7 +8,11 @@ from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
 
-from booley.core.booley_layout import INTERACTIVE_LOGS_DIR_NAME
+from booley.core.booley_layout import (
+    GOALS_DIR_NAME,
+    INTERACTIVE_LOGS_DIR_NAME,
+    is_goal_record_name,
+)
 from booley.core.boundary import as_dict, as_float
 from booley.goals.binding import GoalBindingError, GoalRunBinding
 from booley.goals.model import GoalRecord
@@ -93,10 +97,33 @@ def retained_job_roots(
     Ordered by what a bounded scan must not lose: the caller's interactive
     root, then every Goal Record, then older interactive sessions newest first.
     """
+    return _retained_roots(
+        booley_dir,
+        [record_paths(booley_dir, rec.id).jobs_dir for rec in records],
+        interactive_root,
+    )
+
+
+def on_disk_goal_job_roots(booley_dir: Path) -> list[Path]:
+    """The Job directory of every Goal record directory on disk, without loading a record."""
+    try:
+        names = sorted(
+            entry.name
+            for entry in (booley_dir / GOALS_DIR_NAME).iterdir()
+            if is_goal_record_name(entry.name) and entry.is_dir()
+        )
+    except OSError:
+        return []
+    return [record_paths(booley_dir, name).jobs_dir for name in names]
+
+
+def _retained_roots(
+    booley_dir: Path, goal_roots: Sequence[Path], interactive_root: Path | None
+) -> tuple[Path, ...]:
     roots = [] if interactive_root is None else [interactive_root]
     from booley.goals.sim_baseline_store import BASELINE_FAMILIES, baseline_jobs_dir
 
-    roots.extend(record_paths(booley_dir, rec.id).jobs_dir for rec in records)
+    roots.extend(goal_roots)
     for family in BASELINE_FAMILIES:
         baseline = baseline_jobs_dir(booley_dir, family)
         if baseline.is_dir():
@@ -160,6 +187,22 @@ class JobReader:
         Directory outside the Main Booley Directory).
         """
         roots = retained_job_roots(self._booley_dir, records, interactive_root=interactive_root)
+        return self._snapshot(roots, session_handles, now, artifact_roots)
+
+    def read_on_disk(
+        self, *, now: float | None = None, artifact_roots: Sequence[Path] = ()
+    ) -> JobSnapshot:
+        """Every retained Job, found by directory layout alone (no Goal Record is loaded)."""
+        roots = _retained_roots(self._booley_dir, on_disk_goal_job_roots(self._booley_dir), None)
+        return self._snapshot(roots, None, now, artifact_roots)
+
+    def _snapshot(
+        self,
+        roots: Sequence[Path],
+        session_handles: dict[str, str] | None,
+        now: float | None,
+        artifact_roots: Sequence[Path],
+    ) -> JobSnapshot:
         observed = self._observer.read(roots, artifact_roots=artifact_roots)
         catalogs: dict[str, TargetCatalog | None] = {}
         handles, diagnostics = HandleStore(self._booley_dir, jobs=True).snapshot()

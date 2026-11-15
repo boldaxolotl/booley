@@ -456,6 +456,21 @@ def test_interactive_history_bounds_enumeration_before_selecting_newest(tmp_path
     assert jobs.retained_job_roots(tmp_path, ()) == (roots[1],)
 
 
+def test_on_disk_goal_job_roots_skip_non_goal_directories_and_a_missing_goals_dir(tmp_path):
+    from booley.core.booley_layout import GOALS_DIR_NAME
+    from booley.harness.dashboard import jobs
+
+    assert jobs.on_disk_goal_job_roots(tmp_path) == []
+    goals = tmp_path / GOALS_DIR_NAME
+    (goals / "history").mkdir(parents=True)
+    (goals / "alpha-20260101T000000Z").mkdir()
+    (goals / "stray.txt").write_bytes(b"")
+
+    roots = jobs.on_disk_goal_job_roots(tmp_path)
+
+    assert [root.parent.parent.name for root in roots] == ["alpha-20260101T000000Z"]
+
+
 def test_dashboard_job_view_preserves_every_observation_field(tmp_path, monkeypatch):
     from dataclasses import MISSING, fields
 

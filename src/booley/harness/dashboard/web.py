@@ -95,7 +95,6 @@ def create_app(
             body = read_snapshot(
                 reader,
                 sampler,
-                booley_dir=booley_dir,
                 slots=slots,
                 proc_root=proc_root,
                 worktree=worktree,
@@ -109,7 +108,7 @@ def create_app(
         if not wanted:
             raise _RefusalError(400, "report is required: use the report_url of a snapshot Job")
         with lock:
-            path = find_report(reader, booley_dir, worktree, wanted)
+            path = find_report(reader, worktree, wanted)
         try:
             data = None if path is None else path.read_bytes()
         except OSError:
