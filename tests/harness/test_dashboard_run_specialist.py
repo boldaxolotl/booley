@@ -187,7 +187,7 @@ async def test_reviewer_launches_with_the_shown_command_submitted(
             command
             == f"cd {shlex.quote(str(checkout))} && booley specialist reviewer {' '.join(expected)}"
         )
-        assert shown(wizard, "#run-review").splitlines()[0].startswith("Runs now")
+        assert shown(wizard, "#run-review").splitlines()[0].startswith("Admitted by memory")
         await pilot.press("down", "enter")  # Copy command
         assert copied == [command]
         await pilot.press("up", "enter")  # Submit
@@ -224,7 +224,7 @@ def test_specialist_check_parses_like_the_shell(tmp_path, monkeypatch, capsys):
     result = launch.check(tmp_path, "specialist", "reviewer", tuple(arguments))
     assert result.error == ""
     assert result.facts is not None
-    assert (result.facts.job_class, result.facts.dry_run) == ("light", False)
+    assert (result.facts.job_class, result.facts.dry_run) == ("memory", False)
     capsys.readouterr()
     with pytest.raises(SystemExit) as exit_info:
         launch.main(["specialist", "reviewer", "--", "--category", "x"])

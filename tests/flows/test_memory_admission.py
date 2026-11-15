@@ -544,3 +544,126 @@ def test_job_thread_count_prefers_the_admission_then_the_inherited_environment(
     monkeypatch.setenv(admission.JOB_THREADS_ENV, "many")
     with pytest.raises(ValueError, match="many"):
         admission.job_thread_count()
+
+
+def _specialist_record(name: str, peak_mib: float | None) -> dict[str, Any]:
+    """A Specialist's history record: the Target key fields plus the Specialist's name."""
+    record = _record("", f"specialist:{name}", 0.0)
+    record["key"]["specialist"] = name
+    record["peak_memory_mb"] = peak_mib
+    return record
+
+
+def test_specialist_claim_reserves_its_own_history() -> None:
+    records = [
+        _specialist_record("reviewer", 300),
+        _specialist_record("reviewer", 346),
+        _specialist_record("reviewer", None),  # an unmeasured run says nothing
+        _specialist_record("coverage_analyst", 900),
+        _record("a", "synth", 2000),
+    ]
+
+    plan = _admission().plan_specialist_claim("reviewer", records, BUDGET_MIB)
+
+    # 346 MiB x the estimator's 1.25 margin.
+    assert plan.claim == job_slots.MemoryClaim(
+        budget_mb=BUDGET_MIB, reservation_mb=432.5, companion=True
+    )
+    assert plan.warning is None and plan.phases == ()
+
+
+def test_specialist_claim_without_history_reserves_the_default() -> None:
+    admission = _admission()
+    # The largest peak measured in #4067 (362 MiB), with the estimate margin.
+    assert admission.DEFAULT_SPECIALIST_RESERVATION_MB == 452.5
+    records = [_specialist_record("reviewer", None), _record("a", "synth", 900)]
+    for name, history in (("reviewer", records), ("coverage_analyst", [])):
+        plan = admission.plan_specialist_claim(name, history, 4000.0)
+        assert plan.claim == job_slots.MemoryClaim(
+            budget_mb=4000.0, reservation_mb=452.5, companion=True
+        )
+
+
+@pytest.mark.parametrize(
+    ("records", "budget_mib", "claim_budget", "reservation"),
+    [
+        pytest.param([], None, 452.5, 452.5, id="budget-unreadable"),
+        pytest.param(
+            [_specialist_record("reviewer", 4000)],
+            None,
+            452.5,
+            452.5,
+            id="unreadable-ignores-history",
+        ),
+        pytest.param(
+            [_specialist_record("reviewer", 4000)],
+            4000.0,
+            4000.0,
+            452.5,
+            id="estimate-over-budget",
+        ),
+        pytest.param([], 452.5, 452.5, 226.25, id="budget-equal-to-the-default"),
+        pytest.param([], 300.0, 300.0, 150.0, id="budget-below-the-default"),
+        pytest.param(
+            [_specialist_record("reviewer", 200)], 300.0, 300.0, 150.0, id="history-capped"
+        ),
+        pytest.param([], 0.0, 0.0, 0.0, id="budget-zero"),
+    ],
+)
+def test_specialist_and_coordinator_claims_stay_bounded(
+    records: list[dict[str, Any]],
+    budget_mib: float | None,
+    claim_budget: float,
+    reservation: float,
+) -> None:
+    admission = _admission()
+
+    claim = admission.plan_specialist_claim("reviewer", records, budget_mib).claim
+
+    assert (claim.budget_mb, claim.reservation_mb) == (claim_budget, reservation)
+    assert claim.companion and not claim.run_alone
+    if budget_mib:
+        assert claim.reservation_mb is not None and claim.reservation_mb < budget_mib
+    coordinator = admission.plan_coordinator_claim(budget_mib).claim
+    assert coordinator == job_slots.MemoryClaim(
+        budget_mb=budget_mib or 0.0, reservation_mb=0.0, companion=True
+    )
+
+
+def test_measuring_a_specialist_or_coordinator_reads_the_history_and_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    admission = _admission()
+    monkeypatch.setattr(
+        admission, "compute_memory_budget", lambda: SimpleNamespace(bytes=1000 * 2**20)
+    )
+    monkeypatch.setattr(
+        admission, "load_records", lambda _dir: [_specialist_record("reviewer", 100)]
+    )
+
+    assert admission.measure_specialist_claim(tmp_path, "reviewer").claim.reservation_mb == 125.0
+    assert admission.measure_coordinator_claim().claim.budget_mb == 1000.0
+    monkeypatch.setattr(
+        admission, "compute_memory_budget", lambda: (_ for _ in ()).throw(OSError("no MemTotal"))
+    )
+    assert admission.measure_specialist_claim(tmp_path, "reviewer").claim.reservation_mb == 452.5
+    assert admission.measure_coordinator_claim().claim.budget_mb == 0.0
+
+
+def test_job_threads_leave_companion_holders_out(tmp_path: Path) -> None:
+    world = FakeWorld()
+    store = make_store(tmp_path / "slots", world)
+    records = _history(("a", 40), ("b", 40))
+    tokens = [
+        _join(store, world, 101 + index, _plan(_synth(target), records))
+        for index, target in enumerate("ab")
+    ]
+    admission = _admission()
+    for index in range(2):
+        spawn(world, 201 + index)
+        claim = admission.plan_specialist_claim("reviewer", [], BUDGET_MIB).claim
+        tokens.append(store.submit(job_slots.CLASS_MEMORY, pid=201 + index, memory=claim))
+    assert [store.refresh(token).state for token in tokens] == [HOLDING] * 4
+
+    # Two Flow claims and two Specialists over 8 cores: only the Flows divide them.
+    assert admission.job_threads_at_start(store, 8) == 4

@@ -198,12 +198,12 @@ def test_a_retired_key_in_the_commit_does_not_stop_its_measurement(
         config=ONE_AT_A_TIME + "max_heavy = 1\n",
     )
     live_settings = world.main / "booley.toml"
-    live_settings.write_bytes(b"[jobs]\nmax_light = 1\n")
+    live_settings.write_bytes(b"[jobs]\nmax_tickets = 1\n")
 
     assert measure(monkeypatch, world) == 0
     assert len(stored_documents(world)) == 1
 
-    live_settings.write_bytes(b"[jobs]\nmax_light = 1\nmax_heavy = 1\n")
+    live_settings.write_bytes(b"[jobs]\nmax_tickets = 1\nmax_heavy = 1\n")
     capsys.readouterr()
     assert measure(monkeypatch, world, entry="main") == 2
     assert "max_heavy" in capsys.readouterr().err

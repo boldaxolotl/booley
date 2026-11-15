@@ -35,7 +35,11 @@ order; the first waiter that does not fit (the front) blocks the claims behind
 it, except that a claim with its own wall-clock estimate jumps ahead when it
 fits now and is estimated to finish before the front can start. The front's
 earliest start comes from the running claims' estimated finishes; an unknown
-finish makes it unknown, so nothing jumps. An entry whose claim cannot be read
+finish makes it unknown, so nothing jumps. A **companion** claim (a Specialist
+or a mutation coordinator) never keeps another claim waiting on it alone: it
+does not count toward a run-alone claim's wait, the first other claim starts
+when only companions hold, and a companion that does not fit never becomes the
+front. An entry whose claim cannot be read
 counts as not fitting and ends jumping. A holder may lower its own reservation
 as its phases finish (``shrink_reservation``), never raise it. A claim may also hold
 a **seat** of a licensed EDA tool, judged against the tool's Seat Cap: it
@@ -101,7 +105,7 @@ __all__ = ["MemoryClaim", "SlotCaps", "parse_caps"]
 logger = logging.getLogger(__name__)
 
 # Job classes (ADR 0028 Decision 5), resolved by workload type.
-CLASS_LIGHT = "light"  # Specialists — model-API-bound, ~no local footprint
+CLASS_LIGHT = "light"  # no production user; removed in the next part (#4116)
 CLASS_MEMORY = "memory"  # admitted by Memory Reservation against a budget (ADR 0087)
 JOB_CLASSES = (CLASS_LIGHT, CLASS_MEMORY)
 # Class directories older versions wrote; nothing admits into them, but a live
@@ -230,6 +234,9 @@ class MemoryClaim:
     the Seat Cap it is judged against (persisted like ``budget_mb``).
     ``wall_s`` is the Job's own wall-clock estimate in seconds (``None`` when it
     has no history of its own); only such a claim may jump ahead of the queue.
+    ``companion`` marks a Specialist's or a mutation coordinator's claim: it
+    reserves memory but never keeps another claim waiting on it alone (see
+    ``_MemoryLoad._fits``), and is never run-alone.
     """
 
     budget_mb: float
@@ -237,6 +244,7 @@ class MemoryClaim:
     run_alone: bool = False
     seats: tuple[tuple[str, int], ...] = ()
     wall_s: float | None = None
+    companion: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.run_alone, bool):
@@ -249,6 +257,8 @@ class MemoryClaim:
         if self.wall_s is not None and require_finite_number(self.wall_s, field="wall_s") < 0:
             raise ValueError(f"wall_s must be >= 0, got {self.wall_s!r}")
         if self.run_alone:
+            if self.companion:
+                raise ValueError("a companion memory claim is never run-alone")
             if self.reservation_mb is not None:
                 raise ValueError("a run-alone memory claim carries no reservation_mb")
             return
@@ -269,6 +279,7 @@ class MemoryClaim:
             "run_alone": self.run_alone,
             "seats": dict(self.seats),
             "wall_s": self.wall_s,
+            "companion": self.companion,
         }
 
     @staticmethod
@@ -286,6 +297,7 @@ class MemoryClaim:
                 run_alone=value.get("run_alone") is True,
                 seats=tuple(seats.items()),
                 wall_s=value.get("wall_s"),
+                companion=value.get("companion") is True,
             )
         except (KeyError, TypeError, ValueError, OverflowError):
             return None
@@ -428,15 +440,23 @@ def _reserves(claim: MemoryClaim) -> bool:
     return claim.run_alone or bool(claim.reservation_mb)
 
 
+def _reserves_ordinarily(claim: MemoryClaim) -> bool:
+    """True when *claim* holds memory and is not a companion claim."""
+    return _reserves(claim) and not claim.companion
+
+
 def _fits_among(claim: MemoryClaim, running: list[MemoryClaim], budget_mb: float) -> bool:
     """True when *claim* can start beside the *running* claims under *budget_mb*."""
     seats_held = Counter(tool for other in running for tool, _cap in other.seats)
     if any(seats_held[tool] >= cap for tool, cap in claim.seats):
         return False
+    ordinary_running = any(_reserves_ordinarily(other) for other in running)
     if claim.run_alone:
-        return not any(_reserves(other) for other in running)
+        return not ordinary_running
     if any(other.run_alone for other in running):
         return False
+    if not claim.companion and not ordinary_running:
+        return True  # only companions hold: the first other claim starts
     used_mb = sum(other.reservation_mb or 0.0 for other in running)
     return used_mb + (claim.reservation_mb or 0.0) <= budget_mb
 
@@ -452,7 +472,7 @@ class _MemoryLoad:
 
     budget_mb: float
     used_mb: float = 0.0
-    running: int = 0  # claims that reserve memory (a zero holder is none)
+    running: int = 0  # ordinary claims that reserve memory (a zero or companion holder is none)
     alone: bool = False
     stopped: bool = False  # an earlier claim could not start: only a short claim may jump it
     seats_used: dict[str, int] = field(default_factory=dict[str, int])
@@ -471,6 +491,8 @@ class _MemoryLoad:
             if not self._may_jump(claim, now):
                 return False
         elif not self._fits(claim):
+            if claim.companion:
+                return False  # a waiting companion is never the front: it blocks nobody
             self.stopped = True
             self.front_start = self._earliest_start(claim, now)
             return False
@@ -479,7 +501,7 @@ class _MemoryLoad:
 
     def start(self, claim: MemoryClaim, finish: float) -> None:
         """Count *claim* as running until the estimated *finish* (``inf`` = unknown)."""
-        self.running += _reserves(claim)
+        self.running += _reserves_ordinarily(claim)
         self.alone = self.alone or claim.run_alone
         self.used_mb += claim.reservation_mb or 0.0
         for tool, _cap in claim.seats:
@@ -492,7 +514,11 @@ class _MemoryLoad:
             return False
         if claim.run_alone:
             return self.running == 0
-        return not self.alone and self.used_mb + (claim.reservation_mb or 0.0) <= self.budget_mb
+        if self.alone:
+            return False
+        if not claim.companion and self.running == 0:
+            return True  # only companions hold: the first other claim starts
+        return self.used_mb + (claim.reservation_mb or 0.0) <= self.budget_mb
 
     def _earliest_start(self, front: MemoryClaim, now: float) -> float | None:
         """When *front* can start under its own budget, from the running claims' finishes.
@@ -533,9 +559,11 @@ def _memory_queue(
 
     Each holder comes with its start epoch (``None`` when unstamped). Returns
     ``(starts_now, position)``. The walk starts each claim in order
-    against *claim*'s budget: a run-alone claim starts only when nothing runs,
-    any other claim only when nothing run-alone runs and its reservation still
-    fits. A claim holding a seat of a licensed tool also needs a free seat
+    against *claim*'s budget: a run-alone claim starts only when no ordinary
+    claim reserves memory (companion holders do not count), any other claim only
+    when nothing run-alone runs and its reservation still fits, or when only
+    companion holders reserve memory. A companion claim that does not fit is
+    skipped: it never becomes the front. A claim holding a seat of a licensed tool also needs a free seat
     under its own Seat Cap, which each claim carries (a cap changed while Jobs
     wait applies to new claims only). The first claim that does not start (the
     front) blocks the claims behind it, except a claim with its own wall-clock
@@ -834,11 +862,12 @@ class SlotStore:
         *memory* is required for the memory class and refused for the others.
         *queue_reason* names why a requeued Job claims again; it is stored in
         the entry so the caller can read it while the Job waits or runs.
-        A claim that opens as zero is refused (only a holder reaches zero).
+        A claim that opens as zero is refused (only a holder reaches zero),
+        except a companion claim, which may reserve nothing.
         """
         if (memory is not None) != (job_class == CLASS_MEMORY):
             raise ValueError(f"a memory claim goes with the {CLASS_MEMORY} class only")
-        if memory is not None and not _reserves(memory):
+        if memory is not None and not (_reserves(memory) or memory.companion):
             raise ValueError("a new memory claim must reserve memory or run alone")
         if memory is None:
             self.caps.cap_for(job_class)  # an unknown class raises before any directory exists

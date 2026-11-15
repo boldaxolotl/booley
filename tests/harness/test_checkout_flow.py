@@ -237,7 +237,7 @@ def make_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Worl
         ctl.mkdir()
         tools = live / ".booley" / "mcp_tools"
         tools.mkdir(parents=True)
-        settings = "[jobs]\nmax_light = SLOTS\n" + config.replace("{live}", str(live))
+        settings = "[jobs]\nmax_tickets = SLOTS\n" + config.replace("{live}", str(live))
         (live / ".booley" / "booley.toml").write_bytes(settings.replace("SLOTS", "4").encode())
         (tools / f"{FLOW}.py").write_bytes(STUB_FLOW.format(ctl=str(ctl)).encode())
         for relative, text in (files or {}).items():

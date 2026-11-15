@@ -134,12 +134,15 @@ container shares one trust domain.
 
 ### Job admission
 
-Every Flow or Specialist run is a Job in one of two classes: `memory` for EDA
-work (simulation, synthesis, FPGA implementation, lint, Custom Flows) and
-`light` for model-bound work (Specialists and the Mutation Flow). Light Jobs are capped by count
-(`max_light`). A memory Job holds a reservation, estimated from the Resource
-History, and runs while the reservations fit the Memory Budget
-(`runtime/memory_budget.py`, computed from `[sandbox].memory`).
+Every Flow or Specialist run is a Job in the `memory` class. A Job holds a
+reservation, estimated from the Resource History, and runs while the
+reservations fit the Memory Budget (`runtime/memory_budget.py`, computed from
+`[sandbox].memory`). A Specialist and a mutation campaign's coordinating Job
+make **companion** claims: a Specialist reserves its own history's peak (or a
+default, never more than half the budget), the coordinator reserves nothing.
+A companion claim never keeps another claim waiting on it alone, so a run-alone
+claim starts beside companions, the first other claim starts when only
+companions hold, and a waiting companion blocks nobody.
 Excess work queues without limit, and a running Job is never
 preempted. Queue order comes from the requester role, not the class:
 `interactive` requests sort ahead of `background` ones, so a human waiting at

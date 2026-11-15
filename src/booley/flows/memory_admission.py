@@ -1,4 +1,4 @@
-"""Memory admission of sim, synth, fpga, lint and Custom Flow Jobs (ADR 0087).
+"""Memory admission of sim, synth, fpga, lint and Custom Flow Jobs, Specialists and the Mutation Flow (ADR 0087).
 
 Such a Job is admitted in the ``memory`` Job Class: it holds a Memory Reservation estimated from the Resource History
 and runs beside other Jobs while the reservations fit the Memory Budget. A Job
@@ -20,11 +20,13 @@ from pathlib import Path
 from typing import Any
 
 from booley.flows.job_estimates import (
+    ESTIMATE_MARGIN,
     Fit,
     JobEstimate,
     JobRequest,
     ResourceEstimator,
     phase_occurrences,
+    specialist_memory_mb,
 )
 from booley.runtime.job_slots import CLASS_MEMORY, MemoryClaim, SlotStore, SlotToken
 from booley.runtime.memory_budget import compute_memory_budget
@@ -36,6 +38,11 @@ logger = logging.getLogger(__name__)
 JOB_THREADS_ENV = "BOOLEY_INTERNAL_JOB_THREADS"
 
 _BYTES_PER_MIB = 1024 * 1024
+
+#: What a Specialist with no history of its own reserves, in MiB: the largest peak
+#: measured in #4067 (PR #4084, three runs each: reviewer 344 / 344 / 346 MiB,
+#: coverage_analyst 351 / 359 / 362 MiB) times the estimate margin.
+DEFAULT_SPECIALIST_RESERVATION_MB = 362.0 * ESTIMATE_MARGIN
 
 _job_threads: ContextVar[int | None] = ContextVar("booley_job_threads", default=None)
 
@@ -131,6 +138,40 @@ def plan_work_item_claim(
     return _claim_for_estimate(ResourceEstimator(records).estimate_keys(keys), budget_mb)
 
 
+def plan_specialist_claim(
+    name: str, records: Sequence[dict[str, Any]], budget_mb: float | None
+) -> MemoryAdmissionPlan:
+    """Size one Specialist's companion claim (pure policy).
+
+    It reserves the estimate from its own history, or the default when it has
+    none or the estimate exceeds the budget. It never claims the whole budget:
+    a readable budget caps the reservation at half. With no readable budget it
+    reserves the default, judged against a budget equal to the default.
+    """
+    if budget_mb is None:
+        reservation = DEFAULT_SPECIALIST_RESERVATION_MB
+        claim_budget = reservation
+    else:
+        estimate = specialist_memory_mb(records, name)
+        reservation = (
+            estimate
+            if estimate is not None and estimate <= budget_mb
+            else DEFAULT_SPECIALIST_RESERVATION_MB
+        )
+        reservation = min(reservation, budget_mb / 2)
+        claim_budget = budget_mb
+    return MemoryAdmissionPlan(
+        MemoryClaim(budget_mb=claim_budget, reservation_mb=reservation, companion=True)
+    )
+
+
+def plan_coordinator_claim(budget_mb: float | None) -> MemoryAdmissionPlan:
+    """The mutation coordinator's companion claim: it reserves nothing, so it fits always."""
+    return MemoryAdmissionPlan(
+        MemoryClaim(budget_mb=budget_mb or 0.0, reservation_mb=0.0, companion=True)
+    )
+
+
 def _can_shrink(requests: Sequence[JobRequest]) -> bool:
     """Whether every request is a sim (not coverage), synth or fpga run.
 
@@ -185,6 +226,18 @@ def measure_memory_claim(
     return plan_memory_claim(requests, *_read_history_and_budget(booley_dir))
 
 
+def measure_specialist_claim(booley_dir: Path | None, name: str) -> MemoryAdmissionPlan:
+    """Read the Resource History and the Memory Budget, then size Specialist *name*'s claim."""
+    records, budget_mb, _budget_error = _read_history_and_budget(booley_dir)
+    return plan_specialist_claim(name, records, budget_mb)
+
+
+def measure_coordinator_claim() -> MemoryAdmissionPlan:
+    """Read the Memory Budget, then make the mutation coordinator's claim."""
+    _records, budget_mb, _budget_error = _read_history_and_budget(None)
+    return plan_coordinator_claim(budget_mb)
+
+
 @dataclass
 class MemorySizing:
     """What an admitted Job lends its Simulation Record to size each work item's claim.
@@ -216,6 +269,9 @@ def job_threads_at_start(
     the Job itself; the result is fixed for the Job's run and later Jobs never
     shrink it. It is never above *cores* and never below one.
 
+    Companion holders (Specialists and mutation coordinators) are left out: they
+    use no EDA threads and must not shrink a Flow Job's share.
+
     A Simulation Record work item that took its own claim passes its Flow's token as
     *own_flow*: the Flow's reservation is zero by then (an item takes a claim
     only after the Flow dropped to zero), so it holds no share of the cores and
@@ -224,6 +280,7 @@ def job_threads_at_start(
     holders, _waiters = store.snapshot(CLASS_MEMORY)
     if own_flow is not None:
         holders = [token for token in holders if token.lease_id != own_flow.lease_id]
+    holders = [token for token in holders if token.memory is None or not token.memory.companion]
     return max(1, cores // max(1, len(holders)))
 
 

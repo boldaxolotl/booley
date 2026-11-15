@@ -47,6 +47,7 @@ from booley.flows.cli_help import CliHelp, SurfaceHelp
 from booley.flows.eda_failures import new_attempt_token
 from booley.flows.flow_config import tb_top_for_target
 from booley.flows.job_estimates import JobRequest, sim_job_request
+from booley.flows.memory_admission import MemoryAdmissionPlan, measure_coordinator_claim
 from booley.flows.mutation import workspace
 from booley.flows.mutation.build_sources import (
     materialize_build_mutation,
@@ -860,10 +861,17 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         ),
         example="booley flow mutation --target sim_soc --count 10 --seed 0",
     )
-    # A run builds and simulates, yet keeps the admission class it always had.
-    JOB_CLASS: ClassVar[str | None] = job_slots.CLASS_LIGHT
+    # The coordinating Job holds a zero companion claim; its builds and simulations
+    # reserve their own memory (see ``memory_claims``).
+    JOB_CLASS: ClassVar[str | None] = job_slots.CLASS_MEMORY
     default_timeout: ClassVar[int] = 1800
     satisfies: ClassVar[list[str]] = ["mutation_score"]
+
+    def _memory_admission_plan(
+        self, project: Path | None, requests: Sequence[JobRequest] | None
+    ) -> MemoryAdmissionPlan:
+        return measure_coordinator_claim()
+
     #: Set by ``_apply_campaign_defaults``: no ``--scope`` and no criterion scope was given.
     _scope_defaulted: bool = False
     #: What admits each build and simulation; unmanaged (no claims) outside a managed run.
