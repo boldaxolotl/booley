@@ -1145,6 +1145,11 @@ def _depend_entries(entries: Any) -> set[tuple[str, str]]:
     return pairs
 
 
+def _fileset_depend_entries(fileset: Mapping[str, Any]) -> set[tuple[str, str]]:
+    """A fileset's ``depend`` plus ``depend_append``, which FuseSoC merges into it."""
+    return _depend_entries(fileset.get("depend")) | _depend_entries(fileset.get("depend_append"))
+
+
 def _target_depend_entries(core_doc: Mapping[str, Any], target: str) -> set[tuple[str, str]]:
     """Depend entries a single Target pulls in.
 
@@ -1161,7 +1166,7 @@ def _target_depend_entries(core_doc: Mapping[str, Any], target: str) -> set[tupl
     for fs_name in possible_target_fileset_names(target_def):
         fileset = filesets.get(fs_name) if isinstance(filesets, Mapping) else None
         if isinstance(fileset, Mapping):
-            pairs |= _depend_entries(fileset.get("depend"))
+            pairs |= _fileset_depend_entries(fileset)
     return pairs
 
 
@@ -1183,7 +1188,7 @@ def _core_depend_entries(core_doc: Mapping[str, Any]) -> set[tuple[str, str]]:
     if isinstance(filesets, Mapping):
         for fileset in filesets.values():
             if isinstance(fileset, Mapping):
-                pairs |= _depend_entries(fileset.get("depend"))
+                pairs |= _fileset_depend_entries(fileset)
     return pairs
 
 

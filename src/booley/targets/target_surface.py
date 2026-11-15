@@ -241,7 +241,10 @@ def _resolved_error(
     """First line of a resolution failure, plus the hint the first line would drop."""
     message = str(exc).strip()
     first_line = message.splitlines()[0] if message else type(exc).__name__
-    missing = catalog.unprovided_dependencies(handle)
+    try:
+        missing = catalog.unprovided_dependencies(handle)
+    except fusesoc_registry.FuseSocError:  # catalog drifted mid-failure: keep the original line
+        return first_line
     if missing:
         return f"{first_line} {fusesoc_registry.unprovided_dependency_hint(missing)}"
     return first_line

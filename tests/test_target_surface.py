@@ -1104,6 +1104,24 @@ class TestDetail:
             "itself)"
         )
 
+    def test_resolution_error_survives_a_core_edited_during_failure(self, tmp_path: Path):
+        core = tmp_path / "top.core"
+        core.write_bytes(
+            b"CAPI=2:\nname: acme:lib:top:0\nfilesets:\n  rtl:\n    depend: ['::missing:0']\n"
+            b"targets:\n  sim:\n    flow: sim\n    flow_options: {tool: verilator}\n"
+            b"    filesets: [rtl]\n"
+        )
+
+        def failing(cmd, **kwargs):
+            core.write_bytes(core.read_bytes() + b"# edited\n")
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+
+        payload = detail_payload(tmp_path, "sim", runner=failing)
+
+        assert payload["resolved_error"] == (
+            "fusesoc run --setup --target sim acme:lib:top:0 failed (exit 1):"
+        )
+
     def test_cheap_half(self, project: Path):
         payload = detail_payload(project, "sim", resolve=False)
         assert payload["selector"] == "sim"

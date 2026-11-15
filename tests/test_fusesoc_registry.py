@@ -2155,6 +2155,28 @@ class TestSelectableCoreClosure:
             ">=::vlog_tb_utils:1.1",
         )
 
+    def test_unprovided_dependencies_include_depend_append(self, tmp_path: Path):
+        # FuseSoC merges a fileset's depend_append into depend: both are collected,
+        # directly and through a Project core.
+        _write_core(
+            tmp_path / "top",
+            self._root("top", "acme:lib:dep").replace(
+                "    depend:", "    depend_append: ['::appended:0']\n    depend:"
+            ),
+        )
+        _write_core(
+            tmp_path / "dep",
+            self._leaf("dep").replace(
+                "filesets:\n  rtl:\n    files:",
+                "filesets:\n  rtl:\n    depend_append: ['::deep_appended:0']\n    files:",
+            ),
+        )
+        catalog = TargetCatalog.build(tmp_path)
+        assert catalog.unprovided_dependencies(catalog.select("sim")) == (
+            "::appended:0",
+            "::deep_appended:0",
+        )
+
     def test_unprovided_dependency_hint_names_each_of_several(self):
         hint = fusesoc_registry.unprovided_dependency_hint(["::a:0", "::b:0"])
         assert hint.startswith("no Project .core provides '::a:0', '::b:0': ")

@@ -93,7 +93,10 @@ def inspect_core_resolution(request: CoreResolutionRequest) -> CoreResolutionRes
 
 def _resolution_hint(catalog: TargetCatalog, handle: TargetHandle) -> str:
     """The fix for a failed Target: name an unprovided ``depend:``, else its ``.core``."""
-    missing = catalog.unprovided_dependencies(handle)
+    try:
+        missing = catalog.unprovided_dependencies(handle)
+    except FuseSocError:  # a .core changed during the Sandbox run: the generic hint stays true
+        missing = ()
     if missing:
         return unprovided_dependency_hint(missing)
     return f"fix {handle.core_file.name} (declares Target '{handle.name}') or its depends graph"

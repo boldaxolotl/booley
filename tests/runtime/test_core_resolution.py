@@ -201,6 +201,41 @@ def test_transitive_unprovided_dependency_is_named(tmp_path, monkeypatch):
     assert "::mid:0" not in fix
 
 
+def test_provided_dependency_failure_names_the_core(tmp_path, monkeypatch):
+    """A Target whose depend: a Project core provides keeps the .core-naming hint."""
+    _write_core(tmp_path, "unit", ("sim",), depend=("::mid:0",))
+    (tmp_path / "mid.core").write_bytes(b"CAPI=2:\nname: ::mid:0\n")
+
+    result = _inspect(tmp_path, ("sim",), _Sandbox(monkeypatch, _failing_with(_FUSESOC_EXCERPT)))
+
+    assert _rows(result) == [
+        (
+            Severity.FAIL,
+            ".core Target 'sim' fails to resolve",
+            "fix unit.core (declares Target 'sim') or its depends graph",
+        )
+    ]
+
+
+def test_core_edited_during_resolution_keeps_the_generic_hint(tmp_path, monkeypatch):
+    """A .core edited while the Sandbox runs must not abort the failure report."""
+    _write_core(tmp_path, "unit", ("sim",), depend=("::missing:0",))
+
+    def verdicts(argv, payload):
+        (tmp_path / "unit.core").write_bytes(b"CAPI=2:\nname: ::unit:0\n# edited\n")
+        return _failing_with(_FUSESOC_EXCERPT)(argv, payload)
+
+    result = _inspect(tmp_path, ("sim",), _Sandbox(monkeypatch, verdicts))
+
+    assert _rows(result) == [
+        (
+            Severity.FAIL,
+            ".core Target 'sim' fails to resolve",
+            "fix unit.core (declares Target 'sim') or its depends graph",
+        )
+    ]
+
+
 def test_unselectable_target_fails_before_dispatch(tmp_path, monkeypatch):
     """A selector the catalog rejects FAILs with its reason and is never dispatched."""
     _write_core(tmp_path, "unit", ("sim_ok",))
