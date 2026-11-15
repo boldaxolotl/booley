@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -20,13 +21,23 @@ class EndpointValidationError(Exception):
         super().__init__("Endpoint validation failed:\n  " + "\n  ".join(failures))
 
 
-def validate_custom_endpoints_and_criteria(project_root: Path) -> None:
+@dataclass(frozen=True)
+class SkippedEndpoint:
+    """A custom endpoint file validation skipped, with why and how to fix it."""
+
+    file: str
+    reason: str
+    fix: str
+
+
+def validate_custom_endpoints_and_criteria(project_root: Path) -> list[SkippedEndpoint]:
     """Validate custom MCP endpoints and project criteria.
 
     Load order: criteria TOML first, then endpoint scan, then cross-validation.
 
-    Per-endpoint errors (checks 1-5, 7, 9) → skip endpoint + warn.
-    Structural errors (checks 6, 8) → hard-fail.
+    Per-endpoint errors (checks 1-5, 7, 9) → skip endpoint or log a warning. A
+    file skipped by checks 1, 3 or 4 is returned. Structural errors (checks 6, 8)
+    → hard-fail.
     """
     try:
         # Probe importability up front: if any of these are unavailable, skip
@@ -43,7 +54,7 @@ def validate_custom_endpoints_and_criteria(project_root: Path) -> None:
         )
     except ImportError:
         logger.debug("Custom MCP endpoint validation skipped (imports unavailable)")
-        return
+        return []
 
     # --- Load criteria and validate structural integrity ---
     all_criteria_names = _validate_criteria_structure(project_root)
@@ -53,18 +64,22 @@ def validate_custom_endpoints_and_criteria(project_root: Path) -> None:
     custom_mcp_tools_dir = resolve_checkout_booley_dir(project_root) / "mcp_tools"
     # --- Per-endpoint validation (warn + skip on error) ---
     if not custom_mcp_tools_dir.is_dir():
-        return
+        return []
 
     builtin_names = {t.name for t in discover_mcp_tools()}
+    skipped: list[SkippedEndpoint] = []
 
     for py_file in sorted(custom_mcp_tools_dir.glob("*.py")):
         if py_file.stem.startswith("_"):
             continue
-        _validate_single_endpoint(
+        outcome = _validate_single_endpoint(
             py_file, specialist_config, flow_config, builtin_names, all_criteria_names
         )
+        if outcome is not None:
+            skipped.append(outcome)
 
     logger.debug("Custom MCP endpoint validation complete")
+    return skipped
 
 
 def _validate_criteria_structure(project_root: Path) -> set[str]:
@@ -133,8 +148,8 @@ def _validate_single_endpoint(
     flow_config: dict[str, Any],
     builtin_names: set[str],
     all_criteria_names: set[str],
-) -> None:
-    """Validate one custom MCP endpoint file; warn and skip on local errors."""
+) -> SkippedEndpoint | None:
+    """Validate one custom MCP endpoint file; return it when it is skipped."""
     from booley.mcp.registry import extract_mcp_tool_info
 
     # Check 1: Parse errors
@@ -142,35 +157,35 @@ def _validate_single_endpoint(
         source = py_file.read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(py_file))
     except SyntaxError as e:
-        logger.warning(
-            "CUSTOM MCP ENDPOINT SKIPPED: %s — Python syntax error: %s", py_file.name, e
+        return SkippedEndpoint(
+            py_file.name,
+            f"Python syntax error on line {e.lineno}: {e.msg}",
+            "fix the syntax error",
         )
-        return
 
     # Check 3: No recognized MCP endpoint subclass
     info = extract_mcp_tool_info(py_file, builtin=False)
     if info is None:
-        logger.warning(
-            "CUSTOM MCP TOOL SKIPPED: %s — no McpTool/BooleyFlow/Specialist "
-            "subclass found, or missing name/description",
+        return SkippedEndpoint(
             py_file.name,
+            "no McpTool, BooleyFlow or Specialist subclass with plain string "
+            "literal name and description",
+            "make `name` and `description` plain string literals on an McpTool, "
+            "BooleyFlow or Specialist subclass",
         )
-        return
 
     from booley.mcp.endpoint_config import endpoint_is_enabled
 
     if not endpoint_is_enabled(info.name, info.kind, specialist_config, flow_config):
-        return
+        return None
 
     # Check 4: Name collision with builtin
     if info.name in builtin_names:
-        logger.warning(
-            "CUSTOM MCP ENDPOINT SKIPPED: %s — name '%s' conflicts with a built-in endpoint. "
-            "Rename it in the class definition.",
+        return SkippedEndpoint(
             py_file.name,
-            info.name,
+            f"name '{info.name}' collides with the built-in endpoint '{info.name}'",
+            "rename the class's `name` attribute",
         )
-        return
 
     _check_satisfies_refs(py_file, info, all_criteria_names)
     _warn_retired_sandbox_attr(py_file, tree)
@@ -184,6 +199,7 @@ def _validate_single_endpoint(
             py_file.name,
             info.name,
         )
+    return None
 
 
 def _load_endpoint_config(project_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
