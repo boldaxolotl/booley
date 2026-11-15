@@ -1627,10 +1627,9 @@ def test_deep_timeout_honors_configured_timeout_ms(tmp_path):
 
     # FPGA: the outer limit sits above the Flow's own default and honors a
     # larger configured timeout_ms; a smaller one keeps the default.
-    fpga_default_s = default_timeout_ms("fpga") // 1000
-    bare_fpga = doctor._deep_timeout_s(bare, "fpga")
-    assert bare_fpga == fpga_default_s + doctor._IMPLEMENTATION_DEEP_FINALIZE_MARGIN_S
-    for timeout_ms, expected_s in ((10_800_000, 10_800), (60_000, fpga_default_s)):
+    assert default_timeout_ms("fpga") == 7_200_000
+    assert doctor._deep_timeout_s(bare, "fpga") == 7_200 + 180
+    for timeout_ms, expected_s in ((10_800_000, 10_800), (60_000, 7_200)):
         configured = doctor.ProjectAudit(
             project_root=tmp_path,
             booley_dir=tmp_path / ".booley",
@@ -1638,10 +1637,7 @@ def test_deep_timeout_honors_configured_timeout_ms(tmp_path):
             configs_toml={},
             first_target="",
         )
-        assert (
-            doctor._deep_timeout_s(configured, "fpga")
-            == expected_s + doctor._IMPLEMENTATION_DEEP_FINALIZE_MARGIN_S
-        )
+        assert doctor._deep_timeout_s(configured, "fpga") == expected_s + 180
 
     custom = doctor.ProjectAudit(
         project_root=tmp_path,
@@ -8967,6 +8963,8 @@ def test_deep_fpga_failure_or_timeout_keeps_deep_checks_due(tmp_path, monkeypatc
             version=__version__, clean=reporter.result(0).clean
         )
         assert record.outcome != doctor_deep.DeepOutcome.SUCCESS
+        if answer is timeout:
+            assert tracker.missing[0].startswith("fpga.smoke.")
         status = doctor_deep.evaluate_deep_status(record, version=__version__, image_id="image")
         assert status.current is False
 

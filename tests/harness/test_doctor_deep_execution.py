@@ -222,7 +222,7 @@ def _project(root):
     )
 
 
-def test_disabled_capabilities_and_fpga_exclusion_do_not_require_checks(tmp_path, monkeypatch):
+def test_disabled_flows_do_not_require_deep_checks(tmp_path, monkeypatch):
     project = _project(tmp_path)
     monkeypatch.setattr(doctor, "_flow_enabled", lambda *_args: False)
     tracker = deep.DeepCheckTracker()
