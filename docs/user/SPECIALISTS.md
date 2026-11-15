@@ -14,7 +14,8 @@ Booley ships two:
 - **[Reviewer](REVIEWER.md)** reviews RTL or testbench code for one concern at
   a time, such as bugs, protocol, or spec compliance.
 - **Coverage Analyst** explains a coverage report and suggests what to test
-  next. See [Analyzing a Campaign](COVERAGE.md#analyzing-a-campaign).
+  next. See [Analyzing a Coverage
+  Record](COVERAGE.md#analyzing-a-coverage-record).
 
 ## Running a Specialist
 

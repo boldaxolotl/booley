@@ -22,7 +22,7 @@ test either hits or misses. Each metric counts a different kind of point:
 | `cover_property` | one SystemVerilog `cover property` | the property matches |
 
 One hit by one test is enough. Verilator also records FSM and covergroup
-data; Booley keeps it in the Campaign but gives it no percentage, so no
+data; Booley keeps it in the Coverage Record but gives it no percentage, so no
 threshold applies to it.
 
 ## Collecting coverage
@@ -36,7 +36,7 @@ threshold applies to it.
    ([selecting Test Runs](FLOW-SIM.md#test-runs-test-variants-and-seeds)).
 3. Read the result (next section).
 4. To find out what is missing and why, ask the agent to run the
-   [Coverage Analyst](#analyzing-a-campaign) on the run.
+   [Coverage Analyst](#analyzing-a-coverage-record) on the run.
 
 If any selected Target does not use Verilator, the whole run is refused
 before anything builds. Coverage runs only in the default `--mode simulate`.
@@ -46,16 +46,16 @@ Generated or custom C++ mains, HDL testbenches, and cocotb all work.
 
 ## Reading results
 
-Each Target gets its own **Coverage Campaign**: the coverage record of one
+Each Target gets its own **Coverage Record**: the coverage evidence of one
 Target in one run. The easiest way to read it is to ask the agent, for example
 "What coverage did sim_soc reach?". The agent gets every metric's percentage,
-any threshold and whether it was met, and the Campaign's location.
+any threshold and whether it was met, and the Coverage Record's location.
 
 A run you start yourself prints a block per Target. Example (Verilator):
 
 ```text
 sim_soc: simulation PASS · coverage collection COMPLETE · evaluation PASS (Simulation Record …)
-  manifest: /work/.booley/flow-reports/sim/12/targets/sim_soc/campaign/manifest.json
+  manifest: /work/.booley/flow-reports/sim/12/targets/sim_soc/record/manifest.json
   report: /work/.booley/flow-reports/sim/12/report.json
   coverage: line 92.3% · branch 81.0% (min 80%, met) · toggle 64.2%
   Coverage Record: /work/.booley/flow-reports/sim/12/targets/sim_soc/coverage.json
@@ -120,9 +120,10 @@ filled in when a
 threshold is set for that metric. A metric the design has no points for, such as
 `cover_property` in a design without `cover property` statements, is left out.
 
-**`sim/<N>/targets/<target>/coverage.json`** is the Coverage Campaign. Pass
+**`sim/<N>/targets/<target>/coverage.json`** is the Coverage Record. Pass
 its path to [`booley coverage uncovered`](#finding-uncovered-points) to list
-the uncovered points, or to the [Coverage Analyst](#analyzing-a-campaign) to
+the uncovered points, or to the [Coverage Analyst](#analyzing-a-coverage-record)
+to
 find out what is uncovered and why.
 
 ### How the numbers are counted
@@ -201,7 +202,8 @@ than splitting on them.
   per-file count, pipe the list:
   `booley coverage uncovered <coverage.json> | awk -F: 'NF > 1 {print $1}' | sort | uniq -c | sort -rn`.
 
-Ask the agent, which runs the [Coverage Analyst](#analyzing-a-campaign), to
+Ask the agent, which runs the [Coverage Analyst](#analyzing-a-coverage-record),
+to
 explain why points are uncovered.
 
 ## Coverage waivers
@@ -236,9 +238,9 @@ once an approval file does.
    checks that a person approved it.
 4. Rerun coverage to see the waivers applied.
 
-## Analyzing a Campaign
+## Analyzing a Coverage Record
 
-The **Coverage Analyst** is a Specialist that explains one Coverage Campaign:
+The **Coverage Analyst** is a Specialist that explains one Coverage Record:
 what is uncovered, the likely reasons, which tests to add, and which points
 look like Waiver Candidates. Ask the agent, for example "Why is
 branch coverage on sim_soc so low?". Its model only reads the evidence: it
@@ -249,7 +251,7 @@ To run it yourself inside the Sandbox, pass the Target's
 [`coverage.json`](#reading-results):
 
 ```bash
-booley specialist coverage_analyst --campaign <path to coverage.json>
+booley specialist coverage_analyst --record <path to coverage.json>
 ```
 
 ## Disk space
@@ -314,7 +316,7 @@ source_sha256 = "sha256:<SHA-256 of rtl/counter.sv>"
 [[approval]]
 id = "reserved-counter-branch"
 target = "acme:demo:counter:1#sim_counter"
-point_id = "<point id from the Campaign>"
+point_id = "<point id from the Coverage Record>"
 reason = "excluded"
 justification = "Reserved behavior is intentionally excluded."
 approved_by = "verification-owner@example.test"

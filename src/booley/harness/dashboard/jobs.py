@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
@@ -17,6 +18,7 @@ from booley.harness.standalone_job import (
 from booley.runtime import job_records
 from booley.runtime.handles import HandleStore, job_handle_expired
 from booley.runtime.job_observation import JobObservation, JobObserver
+from booley.runtime.timefmt import parse_timestamp
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 
@@ -24,6 +26,8 @@ MAX_INTERACTIVE_ROOTS = 64
 # History selection has its own enumeration bound, independent of record projection.
 MAX_SCANNED_INTERACTIVE_ROOTS = 4096
 TERMINAL_JOB_STATES = frozenset({"completed", "failed", "cancelled"})
+# An orphaned process is known dead even though its Job record never finalized.
+FINISHED_JOB_STATES = TERMINAL_JOB_STATES | {"orphaned"}
 
 
 @dataclass(frozen=True)
@@ -127,10 +131,15 @@ class JobReader:
         interactive_root: Path | None = None,
         session_handles: dict[str, str] | None = None,
         now: float | None = None,
+        artifact_roots: Sequence[Path] = (),
     ) -> JobSnapshot:
-        """Read the retained Job history into one display snapshot."""
+        """Read the retained Job history into one display snapshot.
+
+        Reports are also found under *artifact_roots* (a checkout's own Booley
+        Directory outside the Main Booley Directory).
+        """
         roots = retained_job_roots(self._booley_dir, interactive_root=interactive_root)
-        observed = self._observer.read(roots)
+        observed = self._observer.read(roots, artifact_roots=artifact_roots)
         catalogs: dict[str, TargetCatalog | None] = {}
         handles, diagnostics = HandleStore(self._booley_dir, jobs=True).snapshot()
         owners, owner_diagnostics = (
@@ -182,12 +191,30 @@ def _job_view(
         diagnostic=job.diagnostic,
         artifacts=job.artifacts,
         queue=job.queue,
+        queue_position=job.queue_position,
         eda_tool=_configured_tool(job.record, catalogs),
         handle=handle,
         owner_handle=owner_handle,
         log_path=_linkable(log_path, directory=False),
         transcript_dir=_linkable(transcript_dir, directory=True),
     )
+
+
+def job_elapsed_seconds(job: JobView, now: float | None = None) -> float | None:
+    """Extract an interval, freezing terminal Jobs even without an end stamp."""
+    if job.state in TERMINAL_JOB_STATES and not job.record.ended_at:
+        reported = as_float((job.report or {}).get("elapsed_s"))
+        return reported if reported is not None and reported >= 0 else None
+    try:
+        start = parse_timestamp(job.record.run_started_at or job.record.started_at).timestamp()
+        end = (
+            parse_timestamp(job.record.ended_at).timestamp()
+            if job.record.ended_at
+            else (time.time() if now is None else now)
+        )
+        return max(0, end - start)
+    except ValueError:
+        return None
 
 
 def _linkable(path: Path | None, *, directory: bool) -> str:

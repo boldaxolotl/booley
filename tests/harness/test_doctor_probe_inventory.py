@@ -87,6 +87,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "inspect_interactive_git",
             "inspect_viewer_bridge",
             "_run_agent_credential_checks",
+            "_check_sandbox_mcp_server",
             "inspect_mcp_server",
         }
     ),

@@ -218,6 +218,17 @@ def _agent_auth_arg(value: str) -> str:
     return normalized
 
 
+def _tcp_port(value: str) -> int:
+    """A TCP port number, for ``booley dashboard --port``."""
+    try:
+        port = int(value)
+    except ValueError:
+        port = 0
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be a whole number from 1 to 65535")
+    return port
+
+
 logger = logging.getLogger("booley")
 
 
@@ -529,21 +540,39 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     add_worktree_subparser(sub)
     _add_utility_subparsers(sub)
-    dashboard = sub.add_parser(
-        "dashboard",
-        help="Open the Sandbox Dashboard",
-        description=(
-            "Open the Sandbox Dashboard: sessions, Jobs and Targets, and Run to start a Booley Flow"
-        ),
-    )
-    attach = dashboard.add_mutually_exclusive_group()
-    attach.add_argument("--attach-policy", action="store_true", help=argparse.SUPPRESS)
-    attach.add_argument("--on-attach", action="store_true", help=argparse.SUPPRESS)
+    _add_dashboard_subparser(sub)
 
     _install_project_options(parser)
     _describe_commands(parser, sub)
 
     return parser
+
+
+def _add_dashboard_subparser(sub: argparse._SubParsersAction) -> None:
+    dashboard = sub.add_parser(
+        "dashboard",
+        help="Open the Sandbox Dashboard",
+        description=(
+            "Open the Sandbox Dashboard: sessions, Jobs and Targets, and Run to start a Booley "
+            "Flow. With --web, serve each worktree's Jobs as JSON instead."
+        ),
+    )
+    attach = dashboard.add_mutually_exclusive_group()
+    attach.add_argument("--attach-policy", action="store_true", help=argparse.SUPPRESS)
+    attach.add_argument("--on-attach", action="store_true", help=argparse.SUPPRESS)
+    attach.add_argument(
+        "--web",
+        action="store_true",
+        help="Serve each worktree's Jobs as JSON on 127.0.0.1 instead of opening the terminal "
+        "Dashboard",
+    )
+    dashboard.add_argument(
+        "--port",
+        type=_tcp_port,
+        default=None,
+        metavar="PORT",
+        help="Port of --web (default: 8090)",
+    )
 
 
 def _describe_commands(
@@ -1057,6 +1086,13 @@ def _add_utility_subparsers(sub) -> None:
 
 
 def _cmd_dashboard(args: argparse.Namespace, project_root: Path) -> int:
+    if args.port is not None and not args.web:
+        print("booley dashboard: --port needs --web", file=sys.stderr)
+        return 2
+    if args.web:
+        from booley.harness.dashboard.web import DEFAULT_PORT, serve
+
+        return serve(project_root, args.port or DEFAULT_PORT)
     from booley.harness.dashboard.command import run_attach, run_dashboard
 
     if args.attach_policy or args.on_attach:

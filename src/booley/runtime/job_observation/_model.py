@@ -23,6 +23,8 @@ class JobObservation:
     artifacts: tuple[str, ...] = ()
     # What a queued memory claim waits for; empty for any other Job.
     queue: str = ""
+    # 1-based place of a queued memory claim among the blocked claims; ``None`` otherwise.
+    queue_position: int | None = None
 
     @property
     def key(self) -> tuple[str, str]:

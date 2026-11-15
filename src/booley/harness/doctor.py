@@ -121,6 +121,7 @@ from booley.runtime import (
     doctor_stamp,
     health,
     image_identity,
+    incontainer_setup,
     inspection,
     project_repositories,
     runtime_context,
@@ -2727,6 +2728,8 @@ def _run_mcp_checks(
     """Validate Interactive Mode: devcontainer spec, excludes, Docker objects,
     auth token, and in-container MCP server discovery (ADR 0018)."""
     _section("Interactive Mode checks")
+    if runtime_context.inside_session_runtime():
+        _check_sandbox_mcp_server(reporter)
     if project is None:
         reporter.skip_("Interactive Mode checks skipped - project config invalid")
         return
@@ -2765,6 +2768,23 @@ def _run_mcp_checks(
     reporter.diagnostics(
         server_inspection.inspect_mcp_server(
             _mcp_server_inspection_request(project, docker_exe, image)
+        )
+    )
+
+
+def _check_sandbox_mcp_server(reporter: _Reporter) -> None:
+    """Check the running HTTP MCP server from inside the Sandbox, where Docker is absent."""
+    from booley.config import agent, agent_app
+
+    try:
+        clis = agent.sandbox_agent_clis()
+    except agent_app.AgentAppError as exc:
+        # The start hook exits before starting the server; the agent checks FAIL this choice.
+        reporter.skip_(f"Sandbox MCP server check skipped - {exc}")
+        return
+    reporter.diagnostics(
+        incontainer_setup.inspect_http_server(
+            incontainer_setup.HttpServerInspectionRequest(agent_clis=clis)
         )
     )
 
@@ -3522,7 +3542,9 @@ def _run_project_checks(
     _check_project_trackability(project.project_root, project.booley_dir, reporter.warn_)
     _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
     _check_repo_footprint(project.project_root, reporter.pass_, reporter.warn_)
-    _check_custom_endpoints_and_criteria(project.project_root, reporter.pass_, reporter.fail_)
+    _check_custom_endpoints_and_criteria(
+        project.project_root, reporter.pass_, reporter.warn_, reporter.fail_
+    )
     _check_disabled_endpoints(project, reporter.note_)
     if reporter.agent_check_enabled("worker backend health check"):
         _check_agent_backend_health(
@@ -3794,14 +3816,16 @@ def _check_repo_footprint(project_root: Path, _pass: Check, _warn: Check) -> Non
         _pass("no Booley scaffolding files tracked in the repo")
 
 
-def _check_custom_endpoints_and_criteria(project_root: Path, _pass: Check, _fail: Fail) -> None:
+def _check_custom_endpoints_and_criteria(
+    project_root: Path, _pass: Check, _warn: Warn, _fail: Fail
+) -> None:
     try:
         from booley.mcp.endpoint_validation import (
             EndpointValidationError,
             validate_custom_endpoints_and_criteria,
         )
 
-        validate_custom_endpoints_and_criteria(project_root)
+        skipped = validate_custom_endpoints_and_criteria(project_root)
     except EndpointValidationError as exc:
         _fail("custom endpoint/Criteria validation failed", exc.failures[0])
         return
@@ -3817,7 +3841,12 @@ def _check_custom_endpoints_and_criteria(project_root: Path, _pass: Check, _fail
             "fix .booley/mcp_tools and Criteria configuration",
         )
         return
-    _pass("custom endpoints and Criteria validated")
+    for item in skipped:
+        _warning_sink(_warn, "project.custom-endpoint-skipped", subject=item.file)(
+            f"custom endpoint {item.file} skipped: {item.reason}", item.fix
+        )
+    if not skipped:
+        _pass("custom endpoints and Criteria validated")
 
 
 def _check_disabled_endpoints(project: ProjectAudit, _note: Check) -> None:

@@ -223,6 +223,11 @@ class Registration:
 
 def registered_worktrees(repository: Path) -> list[Registration]:
     """Worktrees registered in *repository*, not counting its own checkout."""
+    return worktree_registrations(repository)[1:]
+
+
+def worktree_registrations(repository: Path) -> list[Registration]:
+    """Every registered worktree of *repository*, its own (main) checkout first."""
     raw = _git(repository, "worktree", "list", "--porcelain", "-z")
     records: list[list[str]] = [[]]
     for field in _text(raw).split("\0"):
@@ -231,7 +236,7 @@ def registered_worktrees(repository: Path) -> list[Registration]:
         elif records[-1]:
             records.append([])
     entries: list[Registration] = []
-    for record in records[1:]:
+    for record in records:
         if not record or not record[0].startswith("worktree "):
             continue
         branch = next((f[7:] for f in record if f.startswith("branch ")), None)

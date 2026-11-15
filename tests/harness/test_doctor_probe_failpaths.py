@@ -288,7 +288,7 @@ class TestCustomToolsAndCriteria:
             rec.f(m, fix)
             fixes.append(fix)
 
-        doctor._check_custom_endpoints_and_criteria(tmp_path, rec.p, fail_with_fix)
+        doctor._check_custom_endpoints_and_criteria(tmp_path, rec.p, rec.w, fail_with_fix)
         assert rec.kinds() == {"fail"}
         assert "custom endpoint/Criteria validation failed" in rec.fails()[0]
         # The first TicketPreflightError failure is surfaced as the fix hint.
@@ -302,7 +302,7 @@ class TestCustomToolsAndCriteria:
 
         monkeypatch.setattr(endpoint_validation, "validate_custom_endpoints_and_criteria", boom)
         rec = _Rec()
-        doctor._check_custom_endpoints_and_criteria(tmp_path, rec.p, rec.f)
+        doctor._check_custom_endpoints_and_criteria(tmp_path, rec.p, rec.w, rec.f)
         assert rec.kinds() == {"fail"}
         assert "criteria.toml is not a table" in rec.fails()[0]
 
@@ -321,7 +321,7 @@ class TestCustomToolsAndCriteria:
             rec.f(m, fix)
             fixes.append(fix)
 
-        doctor._check_custom_endpoints_and_criteria(tmp_path, rec.p, fail_with_fix)
+        doctor._check_custom_endpoints_and_criteria(tmp_path, rec.p, rec.w, fail_with_fix)
         assert rec.kinds() == {"fail"}
         assert fixes == ["run Doctor from the Project's workspace, not a Booley source checkout"]
 
