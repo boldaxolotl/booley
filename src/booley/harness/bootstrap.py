@@ -77,6 +77,8 @@ class BootstrapFinding:
     state: BootstrapState
     detail: str
     remedy: str | None = None
+    doctor_fix: str | None = None
+    """Doctor's FAIL hint when it differs from rerunning `booley bootstrap`."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -597,9 +599,7 @@ def _skill_reconciliation_finding(
     )
     if errors:
         detail = "; ".join(errors)
-        return (
-            _qa_warning(detail) if qa else BootstrapFinding(resource, BootstrapState.ERROR, detail)
-        )
+        return _qa_warning(detail) if qa else _skill_error_finding(detail, reconciliations)
     changes = tuple(
         (item.target, sum(event.changed for event in item.report.events))
         for item in reconciliations
@@ -621,6 +621,23 @@ def _skill_reconciliation_finding(
         resource,
         state,
         f"{action} {len(reconciliations)} skill target(s): {targets}",
+    )
+
+
+def _skill_error_finding(
+    detail: str, reconciliations: tuple[HostSkillReconciliation, ...]
+) -> BootstrapFinding:
+    """Make conflict texts, which name their entry and fix, Doctor's hint."""
+    conflicts = "; ".join(
+        event.detail
+        for item in reconciliations
+        for event in item.report.events
+        if event.outcome == "conflict"
+    )
+    if not conflicts:
+        return BootstrapFinding("skills", BootstrapState.ERROR, detail)
+    return BootstrapFinding(
+        "skills", BootstrapState.ERROR, detail, remedy="", doctor_fix=conflicts
     )
 
 

@@ -358,7 +358,12 @@ def _plan_recorded(
         return _plan_missing_recorded(target_dir, record, desired, entry)
     if entry.kind != "link" or entry.target != record.target:
         event = _event(
-            record.name, "conflict", target_dir, desired, entry, "recorded link was replaced"
+            record.name,
+            "conflict",
+            target_dir,
+            desired,
+            entry,
+            _not_booleys(target_dir / record.name),
         )
         return _Action(event, "none", entry, None, None)
     if desired is None:
@@ -374,7 +379,8 @@ def _plan_recorded(
             target_dir,
             desired,
             entry,
-            "managed link retarget requires explicit authority; rerun booley init --force",
+            f"`{target_dir / desired.name}` is Booley's link to another skill source; "
+            "rerun `booley bootstrap --force` to relink it",
         )
         return _Action(event, "none", entry, record, record)
     event = _event(desired.name, "retargeted", target_dir, desired, entry)
@@ -399,6 +405,13 @@ def _plan_missing_recorded(
         return _Action(event, "none", entry, None, None)
     event = _event(desired.name, "created", target_dir, desired, entry)
     return _Action(event, "create", entry, _record_for(desired), None)
+
+
+def _not_booleys(entry_path: Path) -> str:
+    return (
+        f"`{entry_path}` is not Booley's: rename it if it is your own skill, "
+        "delete it if it is a dangling link, then rerun `booley bootstrap`"
+    )
 
 
 def _plan_unrecorded(
@@ -433,7 +446,7 @@ def _plan_unrecorded(
             )
             return _Action(event, "none", entry, None, None)
     event = _event(
-        entry_name, "conflict", target_dir, desired, entry, "desired skill name is occupied"
+        entry_name, "conflict", target_dir, desired, entry, _not_booleys(target_dir / entry_name)
     )
     return _Action(event, "none", entry, None, None)
 
@@ -574,7 +587,10 @@ def _apply_action(
     except OSError as exc:
         return _error_event(action, f"cannot recheck entry: {exc}"), action.record_on_failure
     if current != action.expected:
-        detail = "entry changed during reconciliation"
+        detail = (
+            f"`{action.event.entry_path}` changed while Booley was linking it; "
+            "rerun `booley bootstrap`"
+        )
         event = _event(
             action.event.name,
             "conflict",
