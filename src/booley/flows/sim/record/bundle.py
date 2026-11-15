@@ -20,7 +20,7 @@ from .codec import (
     encode_executable_snapshot,
     validate_relative_path,
 )
-from .model import ExecutableSnapshot, SimulatorBundle
+from .model import ExecutableSnapshot, FrozenJson, SimulatorBundle
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,7 +82,8 @@ def create_executable_snapshot(
     snapshot_root.chmod(0o700)
     copied = _copy_snapshot_artifacts(bundle, bundle_root, snapshot_root)
     document = _snapshot_document(identity, bundle, build_result, created_at, copied)
-    value = ExecutableSnapshot(document)
+    # _freeze_json checks the values when the document is constructed.
+    value = ExecutableSnapshot(cast(Mapping[str, FrozenJson], document))
     _create_file(snapshot_root / "snapshot.json", encode_executable_snapshot(value))
     return value
 
