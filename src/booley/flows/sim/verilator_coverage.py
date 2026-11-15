@@ -14,7 +14,8 @@ from booley.core.boundary import as_positive_int
 from booley.flows.test_runs import TestRun
 
 from .backends.shared import RunTerminationKind, SimulationFailureKind
-from .coverage_campaign import (
+from .coverage_json import FrozenJson, content_digest
+from .coverage_record import (
     NO_DECLARED_INPUTS_FINGERPRINT,
     CoverageArtifact,
     CoverageCapability,
@@ -26,7 +27,6 @@ from .coverage_campaign import (
     SimulationVerdict,
     encode_coverage_point_id,
 )
-from .coverage_json import FrozenJson, content_digest
 from .execution.artifacts import artifact_path_component
 from .execution.contract import PreSimEvidence, pre_sim_failure_message
 from .execution.freshness import (

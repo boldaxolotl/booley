@@ -224,7 +224,7 @@ def test_coverage_analyst_takes_the_record_argument_parameter_and_environment(
     environment = analyst._evidence_environment(tmp_path, record, tmp_path / "audit.json")
     assert environment["BOOLEY_COVERAGE_RECORD"] == str(record)
 
-    assert Exposure.from_mapping({"BOOLEY_COVERAGE_RECORD": "x"}).campaign is True
+    assert Exposure.from_mapping({"BOOLEY_COVERAGE_RECORD": "x"}).coverage_record is True
 
     monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
     monkeypatch.setattr(coverage_evidence, "_TERMINAL_ERROR", None)
@@ -245,9 +245,9 @@ def test_coverage_analysis_scratch_and_cancellation_thread_use_record_names(
         raise RuntimeError("scratch opened")
 
     monkeypatch.setattr(coverage_analyst_module, "owned_tempdir", stop)
-    campaign = types.SimpleNamespace(invocation={"id": "1"})
+    coverage_record = types.SimpleNamespace(invocation={"id": "1"})
     with pytest.raises(RuntimeError, match="scratch opened"):
-        coverage_analyst_module.analyze_coverage_campaign(campaign, None, "")  # type: ignore[arg-type]
+        coverage_analyst_module.analyze_coverage_record(coverage_record, None, "")  # type: ignore[arg-type]
     assert prefixes == ["booley-coverage-record-"], "scratch prefix is not the record one"
 
     scope = SupervisedExecutionScope(None, tmp_path / ".booley", lambda: False)
@@ -286,7 +286,7 @@ def run_cwd_message(report_text: str) -> str:
     return line[line.index(marker) :]
 
 
-def test_coverage_analyst_refuses_the_old_campaign_input(tmp_path: Path) -> None:
+def test_coverage_analyst_refuses_the_old_coverage_record_input(tmp_path: Path) -> None:
     analyst = CoverageAnalystSpecialist()
     with pytest.raises(SystemExit):
         analyst.parse_args(["--campaign", str(tmp_path / "coverage.json")])
@@ -294,7 +294,7 @@ def test_coverage_analyst_refuses_the_old_campaign_input(tmp_path: Path) -> None
     schema = flow_schema(CoverageAnalystSpecialist())
     assert "campaign" not in schema["properties"]
     assert schema["additionalProperties"] is False
-    assert Exposure.from_mapping({"BOOLEY_COVERAGE_CAMPAIGN": "x"}).campaign is False
+    assert Exposure.from_mapping({"BOOLEY_COVERAGE_CAMPAIGN": "x"}).coverage_record is False
 
 
 def test_report_listing_reports_a_0_4_0_simulation_report_as_older() -> None:

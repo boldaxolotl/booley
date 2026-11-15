@@ -20,7 +20,7 @@ from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintConfigResult, LintFlow, LintWarning
 from booley.flows.mutation.flow import MutationFlow
 from booley.flows.sim.build import BuildOutcome
-from booley.flows.sim.coverage_campaign import CoverageRollup
+from booley.flows.sim.coverage_record import CoverageRollup
 from booley.flows.sim.elab_only import ElabOnlyTargetResult
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record_presentation import _simulation_record_report_lines
@@ -421,7 +421,7 @@ def _rollup(metric: str, covered: int, eligible: int) -> CoverageRollup:
 
 def test_coverage_card_example_matches_rendered_card(tmp_path: Path) -> None:
     root = tmp_path / "flow-reports"
-    campaign = SimpleNamespace(
+    coverage_record = SimpleNamespace(
         collection={"status": "complete", "diagnostics": ()},
         evaluation={
             "status": "pass",
@@ -448,7 +448,7 @@ def test_coverage_card_example_matches_rendered_card(tmp_path: Path) -> None:
 
     rendered = _simulation_record_report_lines(
         (outcome,),
-        {"sim_soc": campaign},
+        {"sim_soc": coverage_record},
         trailing_lines=None,
         report_path=root / "sim/12/report.json",
     )[0].splitlines()

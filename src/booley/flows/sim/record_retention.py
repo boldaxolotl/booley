@@ -30,13 +30,13 @@ from booley.runtime.filesystem_utils import is_transient_read_error, read_file_b
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 from booley.runtime.session_paths import RUNTIME_DIR
 
-from .coverage_campaign import CoverageCampaign
-from .coverage_campaign_store import LoadedCoverageCampaign, load_coverage_campaign
+from .coverage_record import CoverageRecord
+from .coverage_record_store import LoadedCoverageRecord, load_coverage_record
 from .coverage_reference import (
     MAX_REFERENCE_BYTES,
     REFERENCE_SCHEMA,
-    authenticate_coverage_campaign_owner,
-    resolve_coverage_campaign_reference,
+    authenticate_coverage_record_owner,
+    resolve_coverage_record_reference,
 )
 from .record import (
     ProjectionTrust,
@@ -235,7 +235,7 @@ def _refuse_standalone_coverage(root: Path, target: Path) -> SimulationRecordRet
 
 def _target(
     root: Path, selector: str, *, require_projection: bool = True
-) -> tuple[Path, LoadedCoverageCampaign]:
+) -> tuple[Path, LoadedCoverageRecord]:
     if not isinstance(selector, str) or not selector or selector in {".", "..", "latest"}:
         raise SimulationRecordRetentionError("Select one exact Target selector")
     progress = _read_object(root / "progress.json")
@@ -253,14 +253,16 @@ def _target(
     if _is_standalone_coverage(public):
         raise _refuse_standalone_coverage(root, target)
     try:
-        resolved = resolve_coverage_campaign_reference(public_path)
-        authenticate_coverage_campaign_owner(resolved)
+        resolved = resolve_coverage_record_reference(public_path)
+        authenticate_coverage_record_owner(resolved)
     except UnsupportedSimulationRecordFormatError as exc:
         raise SimulationRecordRetentionError(str(exc)) from exc
     loaded = resolved.loaded
-    storage = resolved.campaign_path.parent
-    campaign = loaded.campaign
-    if campaign.target.selector != selector or campaign.invocation["id"] != int(root.name):
+    storage = resolved.coverage_record_path.parent
+    coverage_record = loaded.coverage_record
+    if coverage_record.target.selector != selector or coverage_record.invocation["id"] != int(
+        root.name
+    ):
         raise SimulationRecordRetentionError(
             "Campaign identity disagrees with the exact selection"
         )
@@ -268,7 +270,7 @@ def _target(
         return storage, loaded
     projection = _read_object(target / "simulation.json")
     if (
-        projection.get("target_identity") != campaign.target.identity
+        projection.get("target_identity") != coverage_record.target.identity
         or projection.get("complete") is not True
     ):
         raise SimulationRecordRetentionError(
@@ -277,9 +279,9 @@ def _target(
     return storage, loaded
 
 
-def _native_artifacts(campaign: CoverageCampaign) -> list[dict[str, object]]:
+def _native_artifacts(coverage_record: CoverageRecord) -> list[dict[str, object]]:
     artifacts = []
-    for artifact in campaign.artifacts:
+    for artifact in coverage_record.artifacts:
         if artifact.kind not in {"raw_native", "merged_native"}:
             continue
         path = Path(artifact.path)
@@ -316,7 +318,7 @@ def _prune_native(root: Path, target: str) -> Path:
     if not sidecar.exists():
         # First attempt: a recorded native payload must still be present. A retry
         # trusts the sidecar Booley wrote and only repeats the removal.
-        for artifact in loaded.campaign.artifacts:
+        for artifact in loaded.coverage_record.artifacts:
             if (
                 artifact.kind in {"raw_native", "merged_native"}
                 and artifact.sha256
@@ -1056,7 +1058,7 @@ def _target_owned_files(root: Path, target: Path) -> set[Path]:
                 f"Simulation Record dependency registry is invalid: {exc}"
             ) from exc
         for coverage in status.coverage_directories:
-            expected.update(_campaign_coverage_files(coverage))
+            expected.update(_coverage_record_files(coverage))
         lock = simulation_record / ".lock"
         if lock.exists():
             if not _valid_lock_sentinel(lock):
@@ -1067,11 +1069,11 @@ def _target_owned_files(root: Path, target: Path) -> set[Path]:
     return expected
 
 
-def _campaign_coverage_files(coverage: Path) -> set[Path]:
-    campaign_path = coverage / "coverage.json"
-    if campaign_path.exists():
+def _coverage_record_files(coverage: Path) -> set[Path]:
+    coverage_record_path = coverage / "coverage.json"
+    if coverage_record_path.exists():
         try:
-            loaded = load_coverage_campaign(campaign_path)
+            loaded = load_coverage_record(coverage_record_path)
         except UnsupportedSimulationRecordFormatError as exc:
             raise SimulationRecordRetentionError(str(exc)) from exc
         return _coverage_owned_files(coverage, loaded)
@@ -1095,7 +1097,7 @@ def _campaign_coverage_files(coverage: Path) -> set[Path]:
     }
 
 
-def _coverage_owned_files(storage: Path, loaded: LoadedCoverageCampaign) -> set[Path]:
+def _coverage_owned_files(storage: Path, loaded: LoadedCoverageRecord) -> set[Path]:
     marker = storage / ".collection-started"
     if marker.exists() and marker.read_bytes() != b"":
         raise SimulationRecordRetentionError(f"Coverage collection marker changed: {marker}")
@@ -1107,19 +1109,21 @@ def _coverage_owned_files(storage: Path, loaded: LoadedCoverageCampaign) -> set[
     point_store = loaded.summary.point_store
     if point_store is not None:
         expected.add((storage / point_store.path).absolute())
-    expected.update((storage / artifact.path).absolute() for artifact in loaded.campaign.artifacts)
+    expected.update(
+        (storage / artifact.path).absolute() for artifact in loaded.coverage_record.artifacts
+    )
     return expected
 
 
-def _availability_document(loaded: LoadedCoverageCampaign, *, status: str) -> dict[str, object]:
-    campaign = loaded.campaign
+def _availability_document(loaded: LoadedCoverageRecord, *, status: str) -> dict[str, object]:
+    coverage_record = loaded.coverage_record
     point_store = loaded.summary.point_store
     return {
         "$schema": "booley.coverage-availability/v2",
-        "coverage_record_id": campaign.campaign_id,
+        "coverage_record_id": coverage_record.coverage_record_id,
         "coverage_record_sha256": loaded.summary.manifest_sha256.removeprefix("sha256:"),
         "point_store_sha256": point_store.sha256 if point_store is not None else None,
-        "artifacts": _native_artifacts(campaign),
+        "artifacts": _native_artifacts(coverage_record),
         "status": status,
     }
 
