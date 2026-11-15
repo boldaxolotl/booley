@@ -692,6 +692,7 @@ class TestSingleProcess:
 
     def test_release_of_a_removed_entry_starts_no_retry(self, root, world, caplog):
         spawn(world, 100)
+        spawn(world, os.getpid())  # the process the lease gates name
         store = make_store(root, world)
         other = make_store(root, world)
         token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
@@ -701,6 +702,7 @@ class TestSingleProcess:
         with other._lease_gate(token):
             token.path.unlink()
             store.release(token)
+            assert (token.path.parent / f".{token.lease_id}.lease.lock").exists()
 
         assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
         assert self._release_threads(token) == []

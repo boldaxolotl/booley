@@ -146,8 +146,8 @@ _MEMORY_VIEW_ATTEMPTS = 3
 # replace each spend up to ~1.1 s of shared sharing-error backoff.
 _RENEWAL_JOIN_SECONDS = 5.0
 # A release that cannot take the lease gate retries in the background for about
-# 90 x (1 s + the gate's own attempts), longer than the 60 s after which
-# ``_lease_gate`` clears the gate a crashed process left behind.
+# 90 x (1 s + the gate's own attempts), longer than the 60 s after which a
+# gate without a recorded owner (an older release's, or junk) counts as stale.
 _RELEASE_RETRY_ATTEMPTS = 90
 _RELEASE_RETRY_SECONDS = 1.0
 _ENTRY_CREATE_ATTEMPTS = 20
@@ -1183,9 +1183,8 @@ class SlotStore:
 
         Returns ``None`` once stamped, else the state promotion must report:
         LOST when the entry is gone or corrupt (a cancel won; ``acquire``'s
-        release removes the junk), QUEUED when it is
-        unreadable, not ``active`` (recovery claimed it; reap removes it), or
-        could not be rewritten. The caller holds the lease gate and the entry
+        release removes the junk), QUEUED when it is unreadable, not ``active``
+        (recovery claimed it; reap removes it), or could not be rewritten. The caller holds the lease gate and the entry
         is reread under it; the name embeds the lease, so the file at
         ``token.path`` can only carry this owner's lease.
 
