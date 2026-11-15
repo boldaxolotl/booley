@@ -22,12 +22,12 @@ from .codec import (
     SimulationRecordIntegrityError,
     canonical_json_bytes,
 )
-from .model import SimulationRecordDocument, frozen_pre_sim_commands
+from .model import FrozenJson, SimulationRecordDocument, frozen_pre_sim_commands
 from .planning import manifest_digest
 
 if TYPE_CHECKING:
     from .coordinator import WorkExecutionRequest
-    from .model import FrozenJson, SimulationAttempt, SimulationRecordManifest
+    from .model import SimulationAttempt, SimulationRecordManifest
 
 _SCHEMA = "booley.pre-sim-evidence/v2"
 _FIELDS = frozenset(
