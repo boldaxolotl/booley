@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 from pathlib import Path
 
 import pytest
 
 from booley.runtime import sandbox_layout
+from tests.subprocess_budget import run_bounded_child
 
 
 def simulate_mount_change(monkeypatch: pytest.MonkeyPatch, current: Path, former: Path) -> str:
@@ -62,18 +62,12 @@ def respell_registration(admin: Path, current: Path, former: Path, *, relative: 
     os.utime(marker, ns=(stamp, stamp))
     config = admin / "config.worktree"
     if config.is_file() and _config_has_core_worktree(config):
-        subprocess.run(
+        run_bounded_child(
             ["git", "config", "--file", str(config), "core.worktree", spell(marker.parent, admin)],
             check=True,
-            timeout=30,
         )
 
 
 def _config_has_core_worktree(config: Path) -> bool:
-    found = subprocess.run(
-        ["git", "config", "--file", str(config), "--get", "core.worktree"],
-        capture_output=True,
-        timeout=30,
-        check=False,
-    )
+    found = run_bounded_child(["git", "config", "--file", str(config), "--get", "core.worktree"])
     return found.returncode == 0

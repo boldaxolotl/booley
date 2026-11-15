@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from tests.mount_change_support import respell_registration, simulate_mount_change
+from tests.subprocess_budget import run_bounded_child
 
 from booley.core import booley_dir
 from booley.runtime import atomic_files, mount_history, worktree_mount_repair
@@ -21,14 +22,7 @@ _IDENTITY = ("-c", "user.name=T", "-c", "user.email=t@example.com")
 
 
 def _git(cwd: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *_IDENTITY, *args],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=True,
-    )
+    result = run_bounded_child(["git", *_IDENTITY, *args], cwd=cwd, check=True)
     return result.stdout.strip()
 
 
