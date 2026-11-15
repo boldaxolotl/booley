@@ -207,8 +207,8 @@ could be planned. An ordinary or coverage `sim` dry run lists each Target's
 pending Simulation Campaign work items instead, and an ordinary or coverage
 `sim` planning failure names every error without a partial plan.
 
-When a Flow fails for a reason you can't explain, see
-[Troubleshooting](TROUBLESHOOTING.md). If Booley itself seems wrong, report it
+When a Flow fails for a reason you can't explain, run `booley doctor` (see
+[Doctor](DOCTOR.md)). If Booley itself seems wrong, report it
 as described in [When Booley itself misbehaves](USAGE.md#when-booley-itself-misbehaves).
 
 ### Cleaning up reports

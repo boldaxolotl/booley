@@ -158,8 +158,13 @@ Jobs are never preempted. See [Jobs](CONFIG.md#jobs--concurrency-jobs).
 Booley runs from a native Windows checkout with Docker Desktop: every EDA tool
 runs inside the Sandbox, so you don't build Verilator or Yosys on Windows or
 install Ubuntu. A WSL-hosted checkout is an optional advanced workflow, not a
-requirement. See [Windows first-run problems](WINDOWS.md) for speed and
-licensed-tool limits.
+requirement.
+
+EDA runs can be slower than on Linux, because the container reads your
+checkout through a Windows bind mount, and local image builds take longer.
+The `fpga` Flow doesn't run on Windows: it needs a Vivado installed on a Linux
+host; see
+[Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning).
 
 ## Stealth Mode
 

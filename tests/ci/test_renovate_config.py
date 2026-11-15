@@ -53,7 +53,6 @@ _DEMO_CONTRACT = ".github/contracts/picorv32-demo.toml"
 _VENDORED_MANIFEST = "crates/bwave/vendor/fst-writer/Cargo.toml"
 _EDA_DOC = "docs/user/SUPPORTED-EDA-TOOLS.md"
 _SESSION_CONTRACT = ".github/contracts/session-runtime.toml"
-_TROUBLESHOOTING = "docs/user/TROUBLESHOOTING.md"
 _VERILATOR_IDENTITY = "src/booley/flows/sim/verilator_identity.py"
 _DEVCONTAINER = "src/booley/runtime/devcontainer.py"
 _VAPORVIEW_MODULE = "src/booley/runtime/vaporview.py"
@@ -96,13 +95,10 @@ _COPIES: tuple[tuple[str, str, int], ...] = (
     (_SESSION_CONTRACT, _XPACK, 1),
     (_EDA_DOC, _SPIKE, 1),
     (_VAPORVIEW_MODULE, _VAPORVIEW, 1),
-    (_TROUBLESHOOTING, _VAPORVIEW, 3),
     (_DEVCONTAINER, _HDL, 1),
     (_SESSION_CONTRACT, _HDL, 1),
-    (_TROUBLESHOOTING, _HDL, 1),
     (_DEVCONTAINER, _LIVE_SERVER, 1),
     (_SESSION_CONTRACT, _LIVE_SERVER, 1),
-    (_TROUBLESHOOTING, _LIVE_SERVER, 1),
     (_EDA_DOC, _UBUNTU, 1),
     (_DOCKERFILE_BASE, _UBUNTU, 1),
     (_DOCKERFILE_BASE, _OPENROAD_BUILDER, 1),

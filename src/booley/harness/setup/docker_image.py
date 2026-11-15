@@ -920,7 +920,7 @@ def _report_wheel_failure(ctx: InitContext, exc: Exception) -> bool:
     elif "ensurepip is not available" in combined:
         # Debian/Ubuntu split venv out of the interpreter package; ``build``
         # needs it to make its isolated environment. The version must match the
-        # interpreter running init, not the distro default (docs/user/TROUBLESHOOTING.md).
+        # interpreter running init, not the distro default.
         pyver = f"{sys.version_info.major}.{sys.version_info.minor}"
         hint(f"sudo apt install python{pyver}-venv   (matches this interpreter)")
         hint("or: pip install build && python -m build --wheel --no-isolation")

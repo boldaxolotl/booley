@@ -76,8 +76,11 @@ is best).
 <summary>On Windows</summary>
 
 If the checkout has CRLF line endings, which is common with Git for Windows,
-init converts them to LF, and it refuses to do that on a dirty tree.
-See [Windows](WINDOWS.md#every-file-shows-as-modified-inside-the-container).
+the Linux container sees every file as modified. Init converts them to LF and
+turns off Git's line-ending conversion for the repository
+(`core.autocrlf=false`, `core.eol=lf`); it refuses to convert on a dirty tree.
+Don't fix it by hand: `git checkout -- .` keeps the CRLF endings. See
+[Windows support](FEATURES.md#windows-support).
 
 </details>
 
@@ -167,8 +170,7 @@ Where each credential comes from:
 
 **For long runs, run `booley auth`.** The normal login renews itself
 periodically, and a renewal can sign out every running Developer Agent or
-Specialist in the middle of a run
-([details](TROUBLESHOOTING.md#developer-agents-and-specialists-turn-into-not-logged-in-partway-through-an-unattended-run)).
+Specialist in the middle of a run.
 `booley auth` saves a login that doesn't need renewing:
 
 | App | Login that doesn't expire | How |
@@ -373,4 +375,5 @@ repository.
   which boundary. The reference the skill's plan step checks against.
 - [USAGE.md](USAGE.md): day-to-day use and Interactive Mode.
 - [CLI-REFERENCE.md](CLI-REFERENCE.md): CLI reference.
-- [TROUBLESHOOTING.md](TROUBLESHOOTING.md): symptoms and their fixes when something misbehaves.
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md): the few problems Booley can't
+  report by itself.

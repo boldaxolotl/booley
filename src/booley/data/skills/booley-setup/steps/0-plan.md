@@ -391,8 +391,11 @@ script lines) as you go.
     cannot serve as a standalone lint/synthesis top, so both flows are dead until you add a thin
     **flat-port wrapper** (one small file, not a blocker; `booley doctor` flags
     it at setup time). `sim` is unaffected: a cocotb testbench brings its
-    own wrapper. Symptom and wrapper recipe: Booley's `/booley-docs/TROUBLESHOOTING.md` → "interface
-    parameter mismatch".
+    own wrapper. Symptom: lint or synthesis stops on the design's own check,
+    such as `Interface DATA_W parameter mismatch`, because unbound interfaces
+    take default parameters. The wrapper creates the interfaces with real
+    parameters, instantiates the design, and exposes plain ports; point the
+    lint and synthesis Targets at it.
   - **Packed-struct / user-typedef ports** (`input fp_operation_type op`, a
     `typedef struct packed` or an enum from a package) — **no wrapper needed.**
     A packed struct is just a bit vector with names on it; the frontends flatten
@@ -419,8 +422,9 @@ script lines) as you go.
   appendix), never to vendor a prebuilt blob. And don't stop at "a RISC-V
   toolchain exists in the image" — plan an execution-time check of the
   project's exact compile flags against the sandbox compiler, because vendor
-  `-march` strings are a classic trap (Booley's `/booley-docs/TROUBLESHOOTING.md` → "RISC-V
-  firmware won't assemble against the sandbox GCC").
+  `-march` strings are a classic trap: the sandbox GCC rejects a vendor ISA
+  string such as `rv64imafdcxtheadc` (OpenC910), which only the vendor's own
+  toolchain, built into a project image, accepts.
 - **Repository shape.** Three topology traps are worth ten minutes of looking
   before any config is planned. *Self-referential symlinks*: some repos ship
   links that make the tree infinitely recursive for any walker that follows
@@ -1033,9 +1037,8 @@ compile-flag probe.
    ```
 
    The explicit `_zicsr` is not cosmetic — the sandbox GCC won't assemble an
-   older project's default `-march=rv32imc` without it. See Booley's
-   `/booley-docs/TROUBLESHOOTING.md` → "RISC-V firmware won't assemble against the sandbox GCC"
-   for that and the vendor-ISA `-march` trap.
+   older project's default `-march=rv32imc` without it: GCC moved the CSR
+   instructions out of the base ISA.
 
    Keep the hook thin — have it call a **tracked** script in the repo
    (`booley/build_firmware.sh`) rather than holding the build recipe itself.

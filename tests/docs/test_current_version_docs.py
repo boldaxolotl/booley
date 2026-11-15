@@ -65,14 +65,6 @@ ALLOWLIST = (
 )
 
 # These are current diagnostic/schema literals, not historical narrative.
-ALLOWLIST += tuple(
-    ExceptionRule(path, "`workspace.legacy-source-stash`", "Current Doctor warning ID.", 1)
-    for path in ("docs/user/TROUBLESHOOTING.md",)
-)
-ALLOWLIST += tuple(
-    ExceptionRule(path, "including `.retired` records", "Supported recovery-record suffix.", 1)
-    for path in ("docs/user/TROUBLESHOOTING.md",)
-)
 ALLOWLIST += (
     ExceptionRule("docs/user/DOCTOR.md", "`config.retired-goals`", "Current Doctor check ID.", 1),
 )

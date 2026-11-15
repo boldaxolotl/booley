@@ -331,8 +331,7 @@ The worktree starts at the main checkout's last commit, so commit first what
 the new session needs: uncommitted changes to the Project's files are not
 copied. Booley also fills the Git submodules and runs the Project's post-setup
 hook before the agent starts, which can take minutes on a large Project; if a
-step fails, it removes the worktree and starts no agent (see
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md#a-new-worktree-fails-in-the-post-setup-hook)).
+step fails, it removes the worktree and starts no agent.
 The worktree gets your current Booley configuration.
 
 <details markdown>
@@ -342,8 +341,7 @@ The worktree's branch is `wt/s<N>`, so the line above and the exit messages
 below name `wt/s3` instead of `booley/s3`.
 
 One warning names the uncommitted Booley Directory files left out of the new
-worktree (see
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md#a-new-worktree-lacks-my-uncommitted-booley-changes)).
+worktree.
 See [Stealth Mode](STEALTH.md).
 
 </details>
@@ -441,8 +439,7 @@ start it with `booley chat --new-worktree` from a container terminal. Asking a
 running agent to create a worktree is not enough: its Booley tool calls still
 run on the main checkout. Start Codex with `booley chat` too. Read-only
 sessions, such as one that only explains code or runs reviews, can share the
-main checkout. See
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md#two-developer-agents-keep-clobbering-each-others-edits).
+main checkout.
 
 ### What the Developer Agent is allowed to do
 
@@ -472,9 +469,7 @@ and commits again. See [STEALTH.md](STEALTH.md#commit-messages).
 
 Per-session logs of Flow and Specialist calls through Booley’s tool server
 are saved in `.booley/.interactive_logs/`. Chat transcripts live in
-the Developer Agent CLI’s own session storage. If the
-Developer Agent can't reach Booley (`booley` is missing from its `/mcp` list), see
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md#booley-is-missing-from-mcp-in-claude-code-or-codex).
+the Developer Agent CLI’s own session storage.
 
 ### Editing Project instructions
 
@@ -500,8 +495,8 @@ When a simulation with tracing fails, the Developer Agent reads the waveform on 
 with `bwave`. When *you* want to see it, ask: *"show me the FIFO handshake
 around the failure"*. The agent opens it in a VaporView tab in VS Code, showing
 just the signals and time range that matter. VS Code installs the extension
-automatically when you attach to the container. If it is missing, see
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md#bwave-gui-fails-on-a-scoped-view).
+automatically when you attach to the container. If it is missing,
+`booley doctor` in the Sandbox prints the command that installs it.
 
 ## When Booley itself misbehaves
 

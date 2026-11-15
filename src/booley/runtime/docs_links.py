@@ -74,7 +74,6 @@ USER_DOCS = (
     UserDoc("SUPPORTED-EDA-TOOLS.md", "supported-eda-tools", "Supported EDA tools", "Reference"),
     UserDoc("DOCTOR.md", "doctor", "Doctor", "Help"),
     UserDoc("TROUBLESHOOTING.md", "troubleshooting", "Troubleshooting", "Help"),
-    UserDoc("WINDOWS.md", "windows", "Windows", "Help"),
 )
 # Contributor docs the site also publishes, after the user docs. They stay in
 # docs/internals/ for contributors and agents, and Booley never prints links

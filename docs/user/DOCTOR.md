@@ -63,14 +63,13 @@ renewing a license, it hands to you with exact instructions. It asks before it
 waives a warning, and it doesn't change your RTL or testbench unless you ask it
 to.
 
-To fix a specific message yourself, look it up in
-[Troubleshooting](TROUBLESHOOTING.md).
+To fix a problem yourself, follow the `→` hint under it.
 
 ### Goal Mode leftovers
 
 | Check ID | Level | Meaning and fix |
 |---|---|---|
-| `config.retired-goals` | `✗` | `booley.toml` has a `[goals]` section; see [Troubleshooting](TROUBLESHOOTING.md#a-goals-section-in-booleytoml). |
+| `config.retired-goals` | `✗` | `booley.toml` has a `[goals]` section. Delete its tables, or ask the Developer Agent to run `/booley-heal`. |
 | `goals.leftover` | `!` | A `goals/` or `goalsets/` directory is still there. Booley does not read or delete it; delete it once you do not need its records. |
 
 ## Automatic checks

@@ -144,7 +144,6 @@ from booley.runtime.booley_dir import (
     sandbox_booley_dir,
 )
 from booley.runtime.checkout_role import SourceCheckoutProjectError
-from booley.runtime.docs_links import docs_url
 from booley.runtime.gateway_token import GatewayTokenCommandError, run_token_command
 from booley.runtime.image_provenance import is_local_image_id
 from booley.runtime.platform_paths import run_captured_bounded
@@ -1005,9 +1004,12 @@ def _check_legacy_source_stashes(project_root: Path, reporter: _Reporter) -> Non
                 f"An older run left a source stash record at {manifest}",
                 subject=str(manifest),
             ),
-            "Inspect the record before Sandbox rebuild or temp cleanup. Recovery is "
-            "manual; never overwrite current sources. Guide: "
-            + docs_url("TROUBLESHOOTING.md", "recover-sources-hidden-by-an-interrupted-older-run"),
+            "Recovery is manual, in this Sandbox, before a Sandbox rebuild or temp "
+            "cleanup: (1) back up the worktree, including untracked files; (2) open "
+            "the record: each `moved` pair lists the original path, then its copy "
+            "under `stash_dir`; (3) if the stash directory has mode 000, run "
+            "`chmod u+rwx <stash-dir>`; (4) copy back only missing files and never "
+            "overwrite one that exists; (5) delete the stash and its record",
         )
 
 

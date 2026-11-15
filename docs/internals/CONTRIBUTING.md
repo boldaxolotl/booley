@@ -85,8 +85,7 @@ installed in a persistent environment qualifies: editable installs and
 packages under the system temporary directory, `.worktrees`, `.runtime`, or
 `qa-runs` never do. To make your development wheel the host installation on
 purpose, install it in a persistent environment and run
-`booley bootstrap --update` from it; see
-[The wrong `booley` runs](../user/TROUBLESHOOTING.md#the-wrong-booley-runs).
+`booley bootstrap --update` from it.
 
 ### Agent source-development checks
 
