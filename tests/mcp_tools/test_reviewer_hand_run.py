@@ -15,8 +15,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from booley.criteria.presentation import CriterionPresentation
 from booley.criteria.state import DevelopmentState
 from booley.evidence.review_receipt import review_receipt_drift
+from booley.flows.execution_persistence import NoAcceptanceRecorder, ReviewInputs
 from booley.mcp.base import McpToolResult
 from booley.specialists.reviewer import ReviewerSpecialist
 
@@ -223,33 +225,6 @@ def test_verify_fail_on_counts_findings_still_open(
     assert len(result.detail["pending"]) == 1
 
 
-def test_goal_mode_refuses_spec_text_and_fail_on(project: Path) -> None:
-    from booley.flows.execution_persistence import NoAcceptanceRecorder, ReviewInputs
-
-    class GoalRecorder(NoAcceptanceRecorder):
-        def review_goal_inputs(self, key: str) -> ReviewInputs:
-            return ReviewInputs(("rtl/dut.sv",))
-
-    for option, value in (("--spec-text", "words"), ("--fail-on", "major")):
-        reviewer = ReviewerSpecialist()
-        reviewer._acceptance_recorder = GoalRecorder()
-        reviewer.parse_args(
-            ["--work-dir", str(project), "--category", "rtl", "--focus", "bugs", option, value]
-        )
-        reviewer.read_state()
-        result = reviewer._run()
-        assert result.exit_code == 2
-        assert option in result.report_text
-
-    verifier = ReviewerSpecialist()
-    verifier._acceptance_recorder = GoalRecorder()
-    verifier.parse_args(["--work-dir", str(project), "--verify", "--fail-on", "major"])
-    verifier.read_state()
-    result = verifier._run()
-    assert result.exit_code == 2
-    assert "--fail-on" in result.report_text
-
-
 @pytest.mark.parametrize("args", [BASE_ARGS, TB_ARGS], ids=["rtl", "tb"])
 def test_unscoped_file_findings_are_filtered_as_source_scope(
     project: Path, monkeypatch: pytest.MonkeyPatch, args: list[str]
@@ -310,7 +285,6 @@ def test_fw_scope_follows_scope_contract(project: Path, monkeypatch: pytest.Monk
 # --- Two guide calls: rtl/bugs runs a checklist call and a hunt call (issue #4016) ---
 
 BUGS_GUIDES = ("bugs-checklist", "bugs-hunt")
-BUGS_CLEAN_KEY = "review_rtl_bugs_clean"
 
 
 def guide_of(params: Any, guides: tuple[str, ...] = BUGS_GUIDES, focus: str = "bugs") -> str:
@@ -356,13 +330,6 @@ def review_by_guide(
 
     monkeypatch.setattr(reviewer, "_invoke_agent", fake_agent)
     return reviewer._run(), calls
-
-
-def seed_clean_criterion(root: Path) -> None:
-    """Make the next review a ``_clean`` (disposition loop) discovery."""
-    state = DevelopmentState.load(root / "state.json")
-    state.set_criterion(BUGS_CLEAN_KEY, met=False)
-    state.save()
 
 
 def test_bugs_review_runs_checklist_and_hunt_concurrently(
@@ -609,25 +576,20 @@ def broken_answers() -> dict[str, Any]:
 def test_any_failing_guide_call_is_a_specialist_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Either call failing in any way makes the review an error, in both review modes."""
+    """Either call failing in any way makes the review an error."""
     failures = ("raises", "no_json", "all_rejected", "mirror_disagrees")
-    for number, (mode, failing, failure) in enumerate(
-        (m, g, f) for m in ("done", "clean") for g in BUGS_GUIDES for f in failures
-    ):
+    for number, (failing, failure) in enumerate((g, f) for g in BUGS_GUIDES for f in failures):
         project = build_project(tmp_path / f"case{number}", monkeypatch)
-        _assert_failing_guide_is_error(project, monkeypatch, failing, failure, mode)
+        _assert_failing_guide_is_error(project, monkeypatch, failing, failure)
 
 
 def _assert_failing_guide_is_error(
-    project: Path, monkeypatch: pytest.MonkeyPatch, failing: str, failure: str, mode: str
+    project: Path, monkeypatch: pytest.MonkeyPatch, failing: str, failure: str
 ) -> None:
     broken = broken_answers()
     healthy = {"issues": [finding("MAJOR", summary="Healthy call finding", line=7)]}
     answers = {guide: (broken[failure] if guide == failing else healthy) for guide in BUGS_GUIDES}
     key = "review_rtl_bugs_done"
-    if mode == "clean":
-        seed_clean_criterion(project)
-        key = BUGS_CLEAN_KEY
     transcripts = project / "transcripts"
     result, calls = review_by_guide(
         project, monkeypatch, [*BASE_ARGS, "--transcript-dir", str(transcripts)], answers
@@ -703,36 +665,103 @@ def test_single_call_review_is_not_retried(project: Path, monkeypatch: pytest.Mo
     assert "retrying" not in result.report_text
 
 
-def test_goal_tb_support_only_scope_still_makes_one_call(
+class GoalShapedRecorder(NoAcceptanceRecorder):
+    """A recorder offering the Goal-era hooks; the Reviewer must not consult them."""
+
+    def review_goal_inputs(self, key: str) -> ReviewInputs:
+        raise AssertionError(f"Reviewer read Goal inputs for {key}")
+
+    def criterion_is_current(self, state: DevelopmentState, key: str) -> bool:
+        return True
+
+    def present_criterion(self, key: str, entry: object) -> CriterionPresentation:
+        return CriterionPresentation("Goal label", "ctx", "", "", "")
+
+
+def goal_shaped_reviewer(project: Path, args: list[str]) -> ReviewerSpecialist:
+    reviewer = ReviewerSpecialist()
+    reviewer._acceptance_recorder = GoalShapedRecorder()
+    reviewer.parse_args(["--work-dir", str(project), *args])
+    reviewer.read_state()
+    return reviewer
+
+
+def test_goal_shaped_recorder_leaves_hand_run_inputs(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No selected guide is one guide-less call, never zero calls."""
-    from booley.flows.execution_persistence import NoAcceptanceRecorder, ReviewInputs
+    """A Goal-shaped recorder neither supplies inputs nor restricts options (#3276)."""
+    state = DevelopmentState.load(project / "state.json")
+    state.set_criterion("review_rtl_bugs_clean", met=False)
+    state.save()
+    reviewer = goal_shaped_reviewer(
+        project, [*BASE_ARGS, "--spec-text", "words", "--fail-on", "major"]
+    )
+    calls: list[Any] = []
 
+    def fake_agent(params: Any) -> Any:
+        calls.append(params)
+        issues = [finding("MAJOR")] if guide_of(params) == "bugs-hunt" else []
+        return agent_result({"issues": issues})
+
+    monkeypatch.setattr(reviewer, "_invoke_agent", fake_agent)
+    result = reviewer._run()
+    assert result.exit_code == 1, result.report_text
+    assert len(calls) == 2
+    assert result.detail["contract"]["mode"] == "done"
+    assert "goal_target_surface" not in result.detail["contract"]
+    assert "review_rtl_bugs_done" in DevelopmentState.load(project / "state.json").criteria
+
+    verifier = goal_shaped_reviewer(project, ["--verify", "--fail-on", "major"])
+    invoke = MagicMock(return_value=agent_result(verdicts("STILL_PRESENT")))
+    monkeypatch.setattr(verifier, "_invoke_agent", invoke)
+    verified = verifier._run()
+    assert verified.exit_code == 1, verified.report_text
+    assert invoke.call_count == 1
+
+
+def test_goal_shaped_recorder_still_refuses_support_only_scope(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Support-only scopes are refused by the source-path validation, never reviewed."""
     (project / "tb/notes.txt").write_text("support file\n")
-
-    class GoalRecorder(NoAcceptanceRecorder):
-        def review_goal_inputs(self, key: str) -> ReviewInputs:
-            return ReviewInputs(("tb/notes.txt",))
-
-    reviewer = ReviewerSpecialist()
-    reviewer._acceptance_recorder = GoalRecorder()
-    reviewer.parse_args(["--work-dir", str(project), "--category", "tb", "--focus", "quality"])
-    reviewer.read_state()
+    reviewer = goal_shaped_reviewer(
+        project, ["--category", "tb", "--focus", "quality", "--scope", "tb/notes.txt"]
+    )
     invoke = MagicMock(return_value=agent_result({"issues": []}))
     monkeypatch.setattr(reviewer, "_invoke_agent", invoke)
     result = reviewer._run()
-    assert invoke.call_count == 1, result.report_text
-    assert "## Review guide" not in invoke.call_args.args[0].system_prompt
-    assert "guide_calls" not in result.detail
-    # No guide ran, so the receipt records none to go stale.
-    assert result.detail["contract"]["guides"] == []
+    assert result.exit_code == 2, result.report_text
+    assert "Goal" not in result.report_text
+    assert "tb/notes.txt" in result.report_text
+    invoke.assert_not_called()
+
+
+def test_goal_shaped_recorder_verify_limit_is_an_error(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reviewer = goal_shaped_reviewer(project, BASE_ARGS)
+    answers = {"bugs-checklist": {"issues": [finding("MAJOR")]}, "bugs-hunt": {"issues": []}}
+    monkeypatch.setattr(
+        reviewer, "_invoke_agent", lambda params: agent_result(answers[guide_of(params)])
+    )
+    assert reviewer._run().exit_code == 0
+    for _ in range(2):
+        verifier = goal_shaped_reviewer(project, ["--verify"])
+        monkeypatch.setattr(
+            verifier,
+            "_invoke_agent",
+            lambda params, **_kwargs: agent_result(verdicts("STILL_PRESENT")),
+        )
+        assert verifier._run().exit_code == 0
+    third = goal_shaped_reviewer(project, ["--verify"])
+    result = third._run()
+    assert result.exit_code == 2, result.report_text
+    assert result.report_text.startswith("review_rtl_bugs_done: 2 verify attempts exhausted")
 
 
 def test_verify_after_two_guide_review_is_one_call_and_waives_either_guide(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    seed_clean_criterion(project)
     checklist = finding("MAJOR", summary="Checklist finding")
     hunt = finding("MAJOR", summary="Hunt finding", line=8)
     result, _ = review_by_guide(
@@ -741,7 +770,10 @@ def test_verify_after_two_guide_review_is_one_call_and_waives_either_guide(
         BASE_ARGS,
         {"bugs-checklist": {"issues": [checklist]}, "bugs-hunt": {"issues": [hunt]}},
     )
-    by_summary = {row["summary"]: row["finding_id"] for row in result.detail["pending"]}
+    by_summary = {
+        row["summary"]: row["finding_id"]
+        for row in ReviewerSpecialist._open_findings(result.detail)
+    }
     assert set(by_summary) == {"Checklist finding", "Hunt finding"}
 
     verify_args = ["--verify"]
