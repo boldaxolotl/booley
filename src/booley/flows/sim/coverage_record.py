@@ -197,7 +197,7 @@ def _format_validation_error(findings: tuple[CoverageFinding, ...]) -> str:
     return rendered
 
 
-class CoverageCampaignValidationError(ValueError):
+class CoverageRecordValidationError(ValueError):
     """All stable findings produced while decoding one invalid Campaign."""
 
     def __init__(self, findings: tuple[CoverageFinding, ...]) -> None:
@@ -253,10 +253,10 @@ class CoverageSourceRollup:
 
 
 @dataclass(frozen=True)
-class CoverageCampaign:
+class CoverageRecord:
     """One indivisible normalized coverage record for one Target invocation."""
 
-    campaign_id: str
+    coverage_record_id: str
     invocation: Mapping[str, FrozenJson]
     target: CoverageTarget
     collector: CoverageCollector
@@ -1406,9 +1406,9 @@ def _decode_points(points: list[dict[str, object]]) -> tuple[CoveragePoint, ...]
     return tuple(decoded)
 
 
-def _decode_valid_campaign(
+def _decode_valid_coverage_record(
     document: Mapping[str, object], points: list[dict[str, object]]
-) -> CoverageCampaign:
+) -> CoverageRecord:
     invocation = document["invocation"]
     target = document["target"]
     collector = document["collector"]
@@ -1429,8 +1429,8 @@ def _decode_valid_campaign(
     # Rollups exist only for complete collection; they are always derived from the
     # points and never decoded from the stored array.
     rollups = derive_coverage_rollups(decoded_points) if collection["status"] == "complete" else ()
-    return CoverageCampaign(
-        campaign_id=str(document["coverage_record_id"]),
+    return CoverageRecord(
+        coverage_record_id=str(document["coverage_record_id"]),
         invocation=_decode_invocation(invocation),
         target=CoverageTarget(identity=str(target["identity"]), selector=str(target["selector"])),
         collector=_decode_collector(collector),
@@ -1455,7 +1455,7 @@ def _decode_manifest(
     manifest: Mapping[str, object],
     points: list[dict[str, object]],
     expected_target: DurableTargetIdentity,
-) -> CoverageCampaign:
+) -> CoverageRecord:
     """Validate a manifest and its point rows once, then decode them to a Campaign.
 
     Consumes *points*. Stored rollups are ignored: the Campaign's are derived.
@@ -1463,8 +1463,8 @@ def _decode_manifest(
     structural_findings = _structural_findings(manifest, points)
     semantic_findings = _semantic_findings(manifest, points, expected_target, structural_findings)
     if all_findings := structural_findings + semantic_findings:
-        raise CoverageCampaignValidationError(all_findings)
-    return _decode_valid_campaign(manifest, points)
+        raise CoverageRecordValidationError(all_findings)
+    return _decode_valid_coverage_record(manifest, points)
 
 
 def _encode_capability(capability: CoverageCapability) -> dict[str, object]:
@@ -1543,38 +1543,39 @@ def _encode_rollup(rollup: CoverageRollup) -> dict[str, object]:
     }
 
 
-def encode_coverage_campaign(campaign: CoverageCampaign) -> dict[str, object]:
+def encode_coverage_record(coverage_record: CoverageRecord) -> dict[str, object]:
     """Encode *campaign* as a fresh canonical V1 JSON object."""
     return {
         "$schema": DOCUMENT_SCHEMA,
-        "coverage_record_id": campaign.campaign_id,
-        "invocation": coverage_mapping_document(campaign.invocation),
+        "coverage_record_id": coverage_record.coverage_record_id,
+        "invocation": coverage_mapping_document(coverage_record.invocation),
         "target": {
-            "identity": campaign.target.identity,
-            "selector": campaign.target.selector,
+            "identity": coverage_record.target.identity,
+            "selector": coverage_record.target.selector,
         },
         "collector": {
-            "kind": campaign.collector.kind,
-            "version": coverage_mapping_document(campaign.collector.version),
-            "native_format": coverage_mapping_document(campaign.collector.native_format),
+            "kind": coverage_record.collector.kind,
+            "version": coverage_mapping_document(coverage_record.collector.version),
+            "native_format": coverage_mapping_document(coverage_record.collector.native_format),
             "capabilities": [
-                _encode_capability(capability) for capability in campaign.collector.capabilities
+                _encode_capability(capability)
+                for capability in coverage_record.collector.capabilities
             ],
         },
-        "build": coverage_mapping_document(campaign.build),
-        "coverage_window": coverage_mapping_document(campaign.coverage_window),
-        "fingerprints": coverage_mapping_document(campaign.fingerprints),
-        "source_closure": coverage_mapping_document(campaign.source_closure),
+        "build": coverage_mapping_document(coverage_record.build),
+        "coverage_window": coverage_mapping_document(coverage_record.coverage_window),
+        "fingerprints": coverage_mapping_document(coverage_record.fingerprints),
+        "source_closure": coverage_mapping_document(coverage_record.source_closure),
         "tests": {
-            "declared": list(campaign.declared_tests),
-            "selected": list(campaign.selected_tests),
-            "runs": [_encode_run(run) for run in campaign.runs],
+            "declared": list(coverage_record.declared_tests),
+            "selected": list(coverage_record.selected_tests),
+            "runs": [_encode_run(run) for run in coverage_record.runs],
         },
-        "artifacts": [_encode_artifact(artifact) for artifact in campaign.artifacts],
-        "normalization": coverage_mapping_document(campaign.normalization),
-        "points": [_encode_point(point) for point in campaign.points],
-        "rollups": [_encode_rollup(rollup) for rollup in campaign.rollups],
-        "collection": coverage_mapping_document(campaign.collection),
+        "artifacts": [_encode_artifact(artifact) for artifact in coverage_record.artifacts],
+        "normalization": coverage_mapping_document(coverage_record.normalization),
+        "points": [_encode_point(point) for point in coverage_record.points],
+        "rollups": [_encode_rollup(rollup) for rollup in coverage_record.rollups],
+        "collection": coverage_mapping_document(coverage_record.collection),
         "findings": [
             {
                 "severity": finding.severity,
@@ -1582,9 +1583,9 @@ def encode_coverage_campaign(campaign: CoverageCampaign) -> dict[str, object]:
                 "pointer": finding.pointer,
                 "message": finding.message,
             }
-            for finding in campaign.findings
+            for finding in coverage_record.findings
         ],
-        "evaluation": coverage_mapping_document(campaign.evaluation),
+        "evaluation": coverage_mapping_document(coverage_record.evaluation),
     }
 
 
@@ -1614,8 +1615,8 @@ def derive_coverage_rollups(points: Iterable[CoveragePoint]) -> tuple[CoverageRo
 
 
 def apply_point_dispositions(
-    campaign: CoverageCampaign, dispositions: Mapping[str, Mapping[str, object]]
-) -> CoverageCampaign:
+    coverage_record: CoverageRecord, dispositions: Mapping[str, Mapping[str, object]]
+) -> CoverageRecord:
     """Return *campaign* with the named points' dispositions and the rollups they imply.
 
     *dispositions* maps Coverage Point id to its new disposition; other points
@@ -1628,10 +1629,10 @@ def apply_point_dispositions(
         replace(point, disposition=freeze_coverage_mapping(dispositions[point.id]))
         if point.id in dispositions
         else point
-        for point in campaign.points
+        for point in coverage_record.points
     )
-    rollups = derive_coverage_rollups(points) if campaign.rollups else ()
-    return replace(campaign, points=points, rollups=rollups)
+    rollups = derive_coverage_rollups(points) if coverage_record.rollups else ()
+    return replace(coverage_record, points=points, rollups=rollups)
 
 
 def coverage_metric_semantics(metric: str) -> str:

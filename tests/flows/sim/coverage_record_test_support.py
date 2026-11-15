@@ -7,13 +7,13 @@ import gzip
 import json
 from pathlib import Path
 
-from booley.flows.sim.coverage_campaign import CoverageCampaign, DurableTargetIdentity
-from booley.flows.sim.coverage_campaign_store import decode_coverage_campaign
+from booley.flows.sim.coverage_record import CoverageRecord, DurableTargetIdentity
+from booley.flows.sim.coverage_record_store import decode_coverage_record
 
 
-def decode_document(document: dict, target: DurableTargetIdentity) -> CoverageCampaign:
+def decode_document(document: dict, target: DurableTargetIdentity) -> CoverageRecord:
     """Decode a single-document test Campaign through the store's one decode."""
-    return decode_coverage_campaign(document, list(document["points"]), target)
+    return decode_coverage_record(document, list(document["points"]), target)
 
 
 def rewrite_manifest_as_v4(manifest: dict) -> None:
@@ -27,12 +27,12 @@ def rewrite_manifest_as_v4(manifest: dict) -> None:
             del run[field]
 
 
-def corrupt_campaign_with_duplicate_negative_point(
-    campaign_path: Path, *, run_id: str = "run:reset"
+def corrupt_coverage_record_with_duplicate_negative_point(
+    coverage_record_path: Path, *, run_id: str = "run:reset"
 ) -> None:
     """Rewrite one Campaign with duplicate-point and negative-hit defects."""
-    manifest = json.loads(campaign_path.read_text(encoding="utf-8"))
-    points_path = campaign_path.parent / manifest["point_store"]["path"]
+    manifest = json.loads(coverage_record_path.read_text(encoding="utf-8"))
+    points_path = coverage_record_path.parent / manifest["point_store"]["path"]
     records = [json.loads(line) for line in gzip.decompress(points_path.read_bytes()).splitlines()]
     duplicate = copy.deepcopy(records[-1])
     duplicate["hits_by_run"] = {run_id: -1}
@@ -53,7 +53,7 @@ def corrupt_campaign_with_duplicate_negative_point(
     }
     manifest["rollups"][0].update(rollup_values)
     manifest["source_rollups"][0]["rollups"][0].update(rollup_values)
-    campaign_path.write_text(
+    coverage_record_path.write_text(
         json.dumps(manifest, sort_keys=True, indent=2, allow_nan=False) + "\n",
         encoding="utf-8",
     )

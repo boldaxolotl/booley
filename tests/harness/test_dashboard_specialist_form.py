@@ -251,7 +251,7 @@ def test_coverage_form_writes_the_record_and_the_optional_words():
     assert "--instruction=--x" in form.argv({**COVERAGE_FULLEST, "instruction": "--x"})
 
 
-def write_campaign(invocation: Path, target: str, *, complete: bool | str = True) -> Path:
+def write_coverage_record(invocation: Path, target: str, *, complete: bool | str = True) -> Path:
     """One Target's campaign under *invocation*; ``complete="bad"`` writes a malformed projection."""
     directory = invocation / "targets" / target
     directory.mkdir(parents=True)
@@ -267,23 +267,23 @@ def write_campaign(invocation: Path, target: str, *, complete: bool | str = True
     return path
 
 
-def test_finished_campaigns_are_listed_newest_first_with_target_and_date(
+def test_finished_coverage_records_are_listed_newest_first_with_target_and_date(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    from booley.harness.dashboard.specialist_form import SimRun, finished_campaigns
+    from booley.harness.dashboard.specialist_form import SimRun, finished_coverage_records
 
     monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+00:00")
     worktree = tmp_path / "wt"
     reports = worktree / ".booley" / "flow-reports" / "sim"
-    write_campaign(reports / "2", "sim_fifo")
-    write_campaign(reports / "10", "sim_fifo")
-    write_campaign(reports / "10", "sim_wide")
-    write_campaign(reports / "11", "sim_fifo", complete=False)
-    write_campaign(reports / "11", "sim_wide", complete="bad")
+    write_coverage_record(reports / "2", "sim_fifo")
+    write_coverage_record(reports / "10", "sim_fifo")
+    write_coverage_record(reports / "10", "sim_wide")
+    write_coverage_record(reports / "11", "sim_fifo", complete=False)
+    write_coverage_record(reports / "11", "sim_wide", complete="bad")
     (reports / "11" / "targets" / "sim_bare").mkdir()  # a Target directory without a campaign
     (reports / "13").mkdir()  # an invocation without a targets directory
     outside = tmp_path / "runtime" / "sim" / "12"
-    outside_path = write_campaign(outside, "sim_fifo")
+    outside_path = write_coverage_record(outside, "sim_fifo")
     runs = [
         SimRun(reports / "10", "2024-03-01T10:00:00Z"),
         SimRun(reports / "2", "2024-03-02T09:00:00Z"),
@@ -291,7 +291,7 @@ def test_finished_campaigns_are_listed_newest_first_with_target_and_date(
         SimRun(reports / "13", "2024-03-04T09:00:00Z"),
         SimRun(outside, "not a time"),
     ]
-    found = finished_campaigns(worktree, runs)
+    found = finished_coverage_records(worktree, runs)
     base = ".booley/flow-reports/sim"
     assert [choice.path for choice in found] == [
         f"{base}/2/targets/sim_fifo/coverage.json",
@@ -305,17 +305,17 @@ def test_finished_campaigns_are_listed_newest_first_with_target_and_date(
         "sim_wide  2024-03-01 10:00  sim #10",
         "sim_fifo  unknown  sim #12",
     ]
-    assert finished_campaigns(worktree, []) == ()
+    assert finished_coverage_records(worktree, []) == ()
 
 
-def test_an_unreadable_campaign_does_not_hide_the_readable_ones(
+def test_an_unreadable_coverage_record_does_not_hide_the_readable_ones(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    from booley.harness.dashboard.specialist_form import SimRun, finished_campaigns
+    from booley.harness.dashboard.specialist_form import SimRun, finished_coverage_records
 
     reports = tmp_path / "wt" / ".booley" / "flow-reports" / "sim"
-    write_campaign(reports / "1", "sim_a")
-    write_campaign(reports / "1", "sim_b")
+    write_coverage_record(reports / "1", "sim_a")
+    write_coverage_record(reports / "1", "sim_b")
     real_is_file = Path.is_file
 
     def is_file(self: Path) -> bool:
@@ -324,7 +324,9 @@ def test_an_unreadable_campaign_does_not_hide_the_readable_ones(
         return real_is_file(self)
 
     monkeypatch.setattr(Path, "is_file", is_file)
-    found = finished_campaigns(tmp_path / "wt", [SimRun(reports / "1", "2024-03-01T10:00:00Z")])
+    found = finished_coverage_records(
+        tmp_path / "wt", [SimRun(reports / "1", "2024-03-01T10:00:00Z")]
+    )
     assert [choice.path for choice in found] == [
         ".booley/flow-reports/sim/1/targets/sim_b/coverage.json"
     ]

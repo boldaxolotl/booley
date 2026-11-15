@@ -1,4 +1,4 @@
-"""Immutable in-memory values for a Simulation Campaign.
+"""Immutable in-memory values for a Simulation Record.
 
 The model has no filesystem, process, CLI, persistence, or validation imports.
 Untrusted JSON becomes one of these values only through :mod:`.codec`.
@@ -19,7 +19,7 @@ FrozenJson: TypeAlias = JsonScalar | tuple["FrozenJson", ...] | Mapping[str, "Fr
 def simulation_status_from_observations(
     observations: tuple[Mapping[str, object], ...],
 ) -> str:
-    """Reduce Campaign observations to the endpoint simulation vocabulary."""
+    """Reduce Simulation Record observations to the endpoint simulation vocabulary."""
     executions = {item["execution"] for item in observations}
     functional = {item["functional"] for item in observations}
     for status in ("aborted", "crash", "timeout"):
@@ -85,7 +85,7 @@ def grade_observations(
     functional: FunctionalObservation,
     assertions: AssertionObservation,
 ) -> StrictGrade:
-    """Apply the exhaustive Simulation Campaign grade table."""
+    """Apply the exhaustive Simulation Record grade table."""
     grade = StrictGrade.INCONCLUSIVE
     if failure_class is FailureClass.INFRASTRUCTURE:
         grade = StrictGrade.ERROR
@@ -112,7 +112,7 @@ class SimulationRecordDocument:
     def __post_init__(self) -> None:
         frozen = _freeze_json(self.document)
         if not isinstance(frozen, Mapping):
-            raise TypeError("campaign document must be an object")
+            raise TypeError("record document must be an object")
         object.__setattr__(self, "document", frozen)
 
     def canonical_bytes(self) -> bytes:

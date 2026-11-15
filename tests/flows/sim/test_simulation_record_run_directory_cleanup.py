@@ -98,7 +98,7 @@ def test_cleanup_stops_at_parent_with_foreign_content(tmp_path: Path) -> None:
 
 
 def _claim_siblings_in_parallel(tmp_path: Path) -> None:
-    """Claim eight sibling attempts of one campaign behind a barrier; none may fail."""
+    """Claim eight sibling attempts of one record behind a barrier; none may fail."""
     workers = 8
     barrier = threading.Barrier(workers)
     errors: list[BaseException] = []

@@ -1,4 +1,4 @@
-"""A Simulation Campaign reports each Test Run (ADR 0072)."""
+"""A Simulation Record reports each Test Run (ADR 0072)."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def _run(
     default_seed: int | None = None,
     **request: Any,
 ) -> tuple[SimulationRecordSimRun, dict[str, Any]]:
-    """Run ``lite`` on the campaign path; a fake simulator fails launches whose document names *failing*."""
+    """Run ``lite`` on the record path; a fake simulator fails launches whose document names *failing*."""
 
     def process(launch: Launch) -> SubprocessResult:
         failed = bool(failing) and any(failing in arg for arg in launch.work.plusargs)
@@ -119,7 +119,7 @@ def test_simulation_record_report_lists_rows_and_a_rerun_command_per_failed_run(
 def test_simulation_record_criterion_detail_carries_the_rows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """In Ticket mode the Criterion's campaign detail carries the same rows."""
+    """In Ticket mode the Criterion's record detail carries the same rows."""
     state_path = _ticket_state(tmp_path, monkeypatch, ["sim_pass_lite"])
     recorder = _AcceptanceAdapter(
         log_dir=tmp_path / "logs",
@@ -139,7 +139,7 @@ def test_simulation_record_criterion_detail_carries_the_rows(
 
 
 def _coverage_run(test_run, verdict: str, **attributes):
-    from booley.flows.sim.coverage_campaign import CoverageRun
+    from booley.flows.sim.coverage_record import CoverageRun
 
     return CoverageRun(
         f"001-{test_run.name}",

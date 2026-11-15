@@ -447,6 +447,13 @@ def test_issued_policy_matrix(clean_env, monkeypatch, app, policy, key, stored, 
     assert (auth_token.TOKEN_SEED_BASENAME[app] in mounts) == (stored and token_allowed)
 
 
+def _without_policy_pin(findings, policy):
+    """Drop the pin FAIL that `auto` always raises (agent.credential-policy); grade the rest."""
+    pins = [f for f in findings if f.check_id == "agent.credential-policy"]
+    assert bool(pins) == (policy == "auto")
+    return [f for f in findings if f not in pins]
+
+
 @pytest.mark.parametrize("app", ["claude", "codex"])
 @pytest.mark.parametrize("policy", ["auto", "subscription", "api_key"])
 @pytest.mark.parametrize(
@@ -495,7 +502,7 @@ def test_reporting_policy_matrix(clean_env, monkeypatch, capsys, app, policy, ke
     )
     reporter = doctor._Reporter.create()
     doctor._run_agent_credential_checks(audit, reporter)
-    findings = reporter.findings or []
+    findings = _without_policy_pin(reporter.findings or [], policy)
     sink = {
         name: [f.message for f in findings if f.severity.value == name]
         for name in ("pass", "warn", "skip", "fail")

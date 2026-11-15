@@ -1,4 +1,4 @@
-"""Immutable acceptance facts the acceptance coordinator builds from campaign records."""
+"""Immutable acceptance facts the acceptance coordinator builds from record records."""
 
 from __future__ import annotations
 

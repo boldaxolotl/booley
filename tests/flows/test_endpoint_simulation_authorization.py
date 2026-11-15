@@ -1,4 +1,4 @@
-"""Strict Ticket authorization for prepared Simulation Campaign Targets."""
+"""Strict Ticket authorization for prepared Simulation Record Targets."""
 
 from __future__ import annotations
 

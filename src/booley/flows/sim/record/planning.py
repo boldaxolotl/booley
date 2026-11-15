@@ -1,4 +1,4 @@
-"""Pure planning helpers for durable Simulation Campaign workloads."""
+"""Pure planning helpers for durable Simulation Record workloads."""
 
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ class WorkloadDiagnostic:
         }
 
     def report(self, *, verbose: bool = False) -> str:
-        lines = ["campaign workload mismatch:", *self.mismatch_summary]
+        lines = ["record workload mismatch:", *self.mismatch_summary]
         if not self.mismatch_summary:
             lines.append("no root cause identified")
         lines.append(f"{self.derived_fingerprint_count} derived fingerprints differ")
@@ -213,14 +213,14 @@ def _project_parameters(projection: _Projection) -> None:
 
 
 def _project_defines(projection: _Projection) -> None:
-    """Explain a legacy Campaign that recorded the unsupported `flow_options.defines`."""
+    """Explain a legacy Simulation Record that recorded the unsupported `flow_options.defines`."""
     if ("defines",) not in projection.regions:
         return
     projection.explain(
         ("defines",),
         (
             "recorded flow_options.defines is no longer recorded (no Flow applies it); "
-            "re-plan the Campaign",
+            "re-plan the Simulation Record",
         ),
     )
 

@@ -17,30 +17,30 @@ from uuid import uuid4
 import pytest
 
 from booley.criteria.state import DevelopmentState
-from booley.flows.sim.coverage_campaign import (
-    DurableTargetIdentity,
-    encode_coverage_point_id,
-)
-from booley.flows.sim.coverage_campaign_store import (
-    load_coverage_campaign,
-    publish_coverage_campaign,
-)
 from booley.flows.sim.coverage_policy import (
     CoverageCriterion,
     CoverageThreshold,
-    evaluate_coverage_campaign,
+    evaluate_coverage_record,
     evaluation_json,
     strict_reevaluation,
 )
 from booley.flows.sim.coverage_provisional import criterion_from_evaluation
+from booley.flows.sim.coverage_record import (
+    DurableTargetIdentity,
+    encode_coverage_point_id,
+)
+from booley.flows.sim.coverage_record_store import (
+    load_coverage_record,
+    publish_coverage_record,
+)
 from booley.flows.sim.coverage_reference import (
-    build_coverage_campaign_reference,
-    encode_coverage_campaign_reference,
-    publish_coverage_campaign_reference,
+    build_coverage_record_reference,
+    encode_coverage_record_reference,
+    publish_coverage_record_reference,
 )
 from booley.flows.sim.coverage_waivers import CoverageWaiverValidationError
 from booley.flows.sim.waiver_candidates import (
-    CampaignBinding,
+    CoverageRecordBinding,
     WaiverProposal,
     candidate_id,
     load,
@@ -60,8 +60,8 @@ from booley.goals.store import GoalStore
 from booley.mcp import goal_waivers as service
 from booley.mcp.goal_freshness import GOAL_FRESHNESS_RESOLVERS
 from booley.mcp.goal_waivers import GoalWaiverService
-from tests.flows.sim.coverage_campaign_test_support import decode_document
-from tests.flows.sim.test_coverage_campaign import _POINT_ID, _valid_document
+from tests.flows.sim.coverage_record_test_support import decode_document
+from tests.flows.sim.test_coverage_record import _POINT_ID, _valid_document
 from tests.goals.conftest import enter_goals, git, run_row
 from tests.goals.test_proposals import Crash, approve, interrupted_transaction
 
@@ -147,8 +147,10 @@ def prepared(
     )
     service = GoalWaiverService(layout.control, layout.record)
     paths = record_paths(layout.control, layout.record.id)
-    campaign, source_sha = fixture_campaign(source, service, covered=covered, total=total)
-    persisted, loaded = persist_campaign(paths, campaign)
+    coverage_record, source_sha = fixture_coverage_record(
+        source, service, covered=covered, total=total
+    )
+    persisted, loaded = persist_coverage_record(paths, coverage_record)
     recorder = GoalEvidenceRecorder(
         bind_run(GoalStore(layout.control), layout.worktree, "coverage"),
         resolvers=GOAL_FRESHNESS_RESOLVERS,
@@ -159,7 +161,7 @@ def prepared(
         False,
         detail={
             "coverage_campaign_reference": persisted,
-            "evaluation": evaluation_json(campaign),
+            "evaluation": evaluation_json(coverage_record),
             "test_runs": [run_row()],
         },
     )
@@ -167,7 +169,7 @@ def prepared(
         state, changes, invocation_id="coverage", producer="simulation_campaign"
     )
     state.save()
-    candidate = fixture_candidate(paths, campaign, loaded, persisted, source_sha)
+    candidate = fixture_candidate(paths, coverage_record, loaded, persisted, source_sha)
     return (
         ChangeEnvironment(EntryEnvironment(layout.control), service),
         candidate,
@@ -175,7 +177,7 @@ def prepared(
     )
 
 
-def fixture_campaign(source, service, *, covered=1, total=2):
+def fixture_coverage_record(source, service, *, covered=1, total=2):
     document = _valid_document()
     document["collector"]["capabilities"][0].update(collection="supported", scoring="scored_v1")
     document["invocation"]["id"] = 1
@@ -194,13 +196,13 @@ def fixture_campaign(source, service, *, covered=1, total=2):
     )
     source_sha = "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
     document["source_closure"]["rtl"][0]["sha256"] = source_sha
-    campaign = decode_document(document, IDENTITY)
-    campaign = evaluate_coverage_campaign(
-        campaign,
+    coverage_record = decode_document(document, IDENTITY)
+    coverage_record = evaluate_coverage_record(
+        coverage_record,
         CoverageCriterion(IDENTITY, (CoverageThreshold("line", Fraction(100)),), None),
         service._current_waivers(),
     )
-    return campaign, source_sha
+    return coverage_record, source_sha
 
 
 def fixture_point(seed, index, *, hit):
@@ -214,7 +216,7 @@ def fixture_point(seed, index, *, hit):
     return point
 
 
-def fixture_candidate(paths, campaign, loaded, persisted, source_sha):
+def fixture_candidate(paths, coverage_record, loaded, persisted, source_sha):
     item = WaiverProposal(
         _POINT_ID,
         "rtl/counter.sv",
@@ -223,8 +225,8 @@ def fixture_candidate(paths, campaign, loaded, persisted, source_sha):
         "Reviewed fixture exclusion",
         ("rtl/counter.sv:10",),
     )
-    binding = CampaignBinding(
-        campaign.campaign_id,
+    binding = CoverageRecordBinding(
+        coverage_record.coverage_record_id,
         loaded.summary.manifest_sha256,
         loaded.summary.point_store.sha256,
         persisted["path"],
@@ -241,11 +243,11 @@ def fixture_candidate(paths, campaign, loaded, persisted, source_sha):
     return outcome.candidate_ids[0]
 
 
-def persist_campaign(paths, campaign):
+def persist_coverage_record(paths, coverage_record):
     reports = paths.runtime_dir / "flow-reports"
     origin = reports / "sim" / "1" / "targets" / "top"
     attempt = str(uuid4())
-    nested = publish_coverage_campaign(
+    nested = publish_coverage_record(
         origin
         / "record"
         / "work-items"
@@ -253,10 +255,10 @@ def persist_campaign(paths, campaign):
         / "attempts"
         / f"0001-{attempt}"
         / "coverage-record",
-        campaign,
-    ).campaign
-    loaded = load_coverage_campaign(nested)
-    reference = build_coverage_campaign_reference(
+        coverage_record,
+    ).coverage_record
+    loaded = load_coverage_record(nested)
+    reference = build_coverage_record_reference(
         simulation_record_id=str(uuid4()),
         simulation_manifest_sha256="sha256:" + "a" * 64,
         target_identity=str(IDENTITY),
@@ -266,11 +268,11 @@ def persist_campaign(paths, campaign):
         simulation_work_item_id="item:0000:0123456789abcdef",
         simulation_attempt_id=attempt,
         origin_target_directory=origin,
-        coverage_campaign_path=nested,
+        coverage_record_path=nested,
     )
     public = origin / "coverage.json"
-    publish_coverage_campaign_reference(public, reference)
-    raw = encode_coverage_campaign_reference(reference)
+    publish_coverage_record_reference(public, reference)
+    raw = encode_coverage_record_reference(reference)
     persisted = {
         "path_base": "reports_root",
         "path": public.relative_to(reports).as_posix(),
@@ -331,7 +333,7 @@ def public_change(layout, env, arguments):
 
 # Slowest Windows CI duration is 31 s; the headroom rule asks for three times that.
 @pytest.mark.timeout(120)
-def test_public_relax_then_waive_preserves_current_bounds_on_reloaded_campaign(layout):
+def test_public_relax_then_waive_preserves_current_bounds_on_reloaded_coverage_record(layout):
     env, candidate, _root = prepared(layout, covered=18, total=20)
     public_change(layout, env, relaxation(90, "accept measured threshold"))
     record = env.store.load(layout.record.id)
@@ -365,11 +367,11 @@ def test_recorder_never_stamps_removed_producer_waivers_as_fresh(layout, race):
     approve(layout, env, propose(layout, env, candidate).proposal.id)
     record = env.store.load(layout.record.id)
     current = load_goal_state(env.store, record)
-    campaign = env.waivers._resolved(current.criteria[KEY].detail).loaded.campaign
+    coverage_record = env.waivers._resolved(current.criteria[KEY].detail).loaded.coverage_record
     producer = strict_reevaluation(
-        campaign,
+        coverage_record,
         env.waivers._current_waivers(),
-        criterion=criterion_from_evaluation(campaign),
+        criterion=criterion_from_evaluation(coverage_record),
     )
     detail = {"evaluation": evaluation_json(producer)}
     assert detail["evaluation"]["status"] == "pass"
@@ -773,7 +775,7 @@ def test_prediction_uses_captured_after_bytes_once(layout, monkeypatch, anchor, 
     assert seen == {e.path.relative_to(root): e.after for e in captured}
 
 
-def test_candidate_campaign_mismatch_is_ineligible(layout):
+def test_candidate_coverage_record_mismatch_is_ineligible(layout):
     env, candidate, _ = prepared(layout)
     path = record_paths(layout.control, layout.record.id).root / "waiver-candidates.json"
     value = json.loads(path.read_text())

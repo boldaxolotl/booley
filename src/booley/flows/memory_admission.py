@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -116,7 +116,7 @@ def plan_work_item_claim(
     budget_mb: float | None,
     budget_error: str | None,
 ) -> tuple[MemoryClaim, str | None]:
-    """Size one Simulation Campaign work item's claim like a Job's, and its warning.
+    """Size one Simulation Record work item's claim like a Job's, and its warning.
 
     *request* is ``None`` when the item cannot be sized (it runs alone). Its
     build phase counts only when *build* is true: a settled shared build is not
@@ -153,7 +153,7 @@ def _shrinkable_phases(
 
 
 def _read_history_and_budget(
-    booley_dir: Path | None, config: Mapping[str, object]
+    booley_dir: Path | None,
 ) -> tuple[list[dict[str, Any]], float | None, str | None]:
     """The Resource History records, the Memory Budget in MiB, and why it is unavailable.
 
@@ -171,7 +171,7 @@ def _read_history_and_budget(
     budget_mb: float | None = None
     budget_error: str | None = None
     try:
-        budget_mb = compute_memory_budget(config).bytes / _BYTES_PER_MIB
+        budget_mb = compute_memory_budget().bytes / _BYTES_PER_MIB
     except (OSError, ValueError) as exc:
         budget_error = str(exc)
     return records, budget_mb, budget_error
@@ -179,27 +179,25 @@ def _read_history_and_budget(
 
 def measure_memory_claim(
     booley_dir: Path | None,
-    config: Mapping[str, object],
     requests: Sequence[JobRequest] | None,
 ) -> MemoryAdmissionPlan:
     """Read the Resource History and the Memory Budget, then size the claim."""
-    return plan_memory_claim(requests, *_read_history_and_budget(booley_dir, config))
+    return plan_memory_claim(requests, *_read_history_and_budget(booley_dir))
 
 
 @dataclass
 class MemorySizing:
-    """What an admitted Job lends its Campaign to size each work item's claim.
+    """What an admitted Job lends its Simulation Record to size each work item's claim.
 
     ``warnings`` collects the items' distinct warnings for the Job's result.
     """
 
     booley_dir: Path | None
-    config: Mapping[str, object]
     warnings: list[str] = field(default_factory=list[str], init=False)
 
     def plan_work_item(self, request: JobRequest | None, *, build: bool) -> MemoryClaim:
         """Size one item from the history as it is now (earlier items add to it)."""
-        records, budget_mb, budget_error = _read_history_and_budget(self.booley_dir, self.config)
+        records, budget_mb, budget_error = _read_history_and_budget(self.booley_dir)
         claim, warning = plan_work_item_claim(
             request, build=build, records=records, budget_mb=budget_mb, budget_error=budget_error
         )
@@ -218,7 +216,7 @@ def job_threads_at_start(
     the Job itself; the result is fixed for the Job's run and later Jobs never
     shrink it. It is never above *cores* and never below one.
 
-    A Campaign work item that took its own claim passes its Flow's token as
+    A Simulation Record work item that took its own claim passes its Flow's token as
     *own_flow*: the Flow's reservation is zero by then (an item takes a claim
     only after the Flow dropped to zero), so it holds no share of the cores and
     is left out. Every other caller passes nothing and counts every holder.

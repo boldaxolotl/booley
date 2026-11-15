@@ -15,13 +15,14 @@ from booley.flows.lint.flow import LintFlow
 from booley.flows.sim.flow import SimulateFlow
 from booley.runtime.endpoint_execution import EndpointOutcome
 from tests.flows.report_headline import assert_paired_headline
+from tests.memory_budget_support import pin_budget
 from tests.oom_priority_support import FakeProc
 
 # The Criterion key each kind judges, planned before the run and reported after it.
 PLANNED_KEYS = {
     "ordinary": "echo_ok",
     "target_selection": "lint_clean_chosen",
-    "campaign": "sim_pass_chosen",
+    "simulation_record": "sim_pass_chosen",
 }
 
 
@@ -103,7 +104,7 @@ def _target_selection(runtime: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[A
 def _simulation_record(
     runtime: Path, monkeypatch: pytest.MonkeyPatch, admissions: list[object]
 ) -> tuple[Any, Any]:
-    """Simulation whose Campaign preflight is prepared and run through class-level hooks."""
+    """Simulation whose Simulation Record preflight is prepared and run through class-level hooks."""
     from booley.flows.sim.flow import PreparedSimulationEndpoint
     from tests.flows.test_target_omission import write_targets
     from tests.target_test_support import make_target_handle
@@ -181,7 +182,7 @@ def _spy_lifecycle(monkeypatch: pytest.MonkeyPatch) -> tuple[list[object], list[
     return invocations, entered
 
 
-@pytest.mark.parametrize("kind", ["ordinary", "target_selection", "campaign"])
+@pytest.mark.parametrize("kind", ["ordinary", "target_selection", "simulation_record"])
 def test_prepared_invocation_kind_drives_lifecycle(
     kind: str, runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -191,7 +192,7 @@ def test_prepared_invocation_kind_drives_lifecycle(
     expected_type = {
         "ordinary": OrdinaryRunInvocation,
         "target_selection": TargetSelectionInvocation,
-        "campaign": SimulationRecordInvocation,
+        "simulation_record": SimulationRecordInvocation,
     }[kind]
     key = PLANNED_KEYS[kind]
     _bind_strict_state(runtime, monkeypatch, key)
@@ -212,10 +213,10 @@ def test_prepared_invocation_kind_drives_lifecycle(
     assert result.exit_code == 0, result.outcome.report_text
     (invocation,) = invocations
     assert type(invocation) is expected_type
-    # Only the campaign borrows the admission context the run entered once.
-    assert invocation.borrows_admission is (kind == "campaign")
+    # Only the record borrows the admission context the run entered once.
+    assert invocation.borrows_admission is (kind == "simulation_record")
     assert len(entered) == 1
-    if kind == "campaign":
+    if kind == "simulation_record":
         assert simulation_record_admissions == entered
         assert simulation_record_admissions[0] is not None
     assert recorded == [key]
@@ -243,7 +244,7 @@ def _assert_holds_reservation_through_run(
 
     booley_dir = runtime / ".booley"
     booley_dir.mkdir()
-    (booley_dir / "booley.toml").write_text('[jobs]\nmemory_budget = "1000m"\n', encoding="utf-8")
+    pin_budget(monkeypatch, 1000)
     # A fake /proc with no process: ranking never touches the worker's real OOM priority.
     monkeypatch.setattr("booley.runtime.oom_priority.PROC", FakeProc())
     monkeypatch.delenv("BOOLEY_SLOTS_DIR", raising=False)

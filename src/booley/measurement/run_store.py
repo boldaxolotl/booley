@@ -4,8 +4,9 @@ Layout: ``<Main Booley Directory>/measurements/<project_tree>/<run_id>.json``, a
 run's text reports under ``.../<run_id>/<n>-<flow>/<name>`` (``n`` is the table's
 index, which keeps ``:`` and ``#`` of a VLNV out of Windows paths).
 
-Every stored run is kept; the store never deletes one. Only full runs are stored:
-a ``--target`` run never is. The JSON document is published last, so a run exists
+Every stored run is kept; the store never deletes one. Only full runs are stored in the
+Main Booley Directory: a ``--target`` run never is, and is written to a store rooted at its
+``measure`` Job's directory instead. The JSON document is published last, so a run exists
 only once complete. A crash between the report copies and the document leaves a
 ``<run_id>/`` directory without a document, which no lookup sees and which is
 harmless (retention is out of scope).
@@ -135,7 +136,10 @@ def _plan_reports(
 
 class MeasurementStore:
     def __init__(self, main_booley_dir: Path) -> None:
-        """Open the store of the Project whose Main Booley Directory is given."""
+        """Open the store of the Project whose Main Booley Directory is given.
+
+        The directory is the Main Booley Directory, or a ``--target`` run's Job directory.
+        """
         self._root = main_booley_dir / "measurements"
 
     def write(self, run: MeasurementRun, reports: Sequence[FlowReport]) -> StoredRun:

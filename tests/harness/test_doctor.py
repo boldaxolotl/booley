@@ -138,6 +138,8 @@ name = "unit"
 [flows.synth]
 
 {sandbox_section}
+[agent]
+auth = "subscription"
 """.lstrip().replace("{sandbox_section}", sandbox_section)
     (booley_dir / "booley.toml").write_text(
         booley_toml,
@@ -250,6 +252,8 @@ def _patch_host_environment(monkeypatch, root: Path) -> None:
     # The suite itself may run under an agent CLI (CLAUDECODE, CODEX_HOME, ...);
     # a plain host shell is the baseline these fixtures model.
     monkeypatch.setattr(runtime_context, "agent_session_app", lambda: None)
+    # The fixture Project pins `auth = "subscription"`, which needs a credential to pass.
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-fixture")
     monkeypatch.setattr(Path, "home", lambda: _write_skills_home(root))
     runtime = "doc" + "ker"
     monkeypatch.setattr(doctor.shutil, "which", lambda name: runtime if name == runtime else None)
@@ -598,9 +602,12 @@ def test_doctor_fails_and_does_not_stamp_agent_app_drift(
     booley_dir = _write_project(tmp_path)
     toml_path = booley_dir / "booley.toml"
     toml_path.write_text(
-        toml_path.read_text(encoding="utf-8") + '\n[agent]\nprovider = "codex"\n',
+        toml_path.read_text(encoding="utf-8")
+        .replace("[agent]\n", '[agent]\nprovider = "codex"\n')
+        .replace('"subscription"', '"api_key"'),
         encoding="utf-8",
     )
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fixture")
     dc.write_devcontainer(tmp_path, build_spec(dc.APP_CLAUDE))
     _patch_environment(monkeypatch, tmp_path, booley_dir)
 
@@ -618,8 +625,9 @@ def test_mcp_checks_report_spec_issued_for_other_cli_set(tmp_path, monkeypatch, 
     booley_dir = _write_project(tmp_path)
     toml_path = booley_dir / "booley.toml"
     toml_path.write_text(
-        toml_path.read_text(encoding="utf-8")
-        + '\n[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n',
+        toml_path.read_text(encoding="utf-8").replace(
+            "[agent]\n", '[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n'
+        ),
         encoding="utf-8",
     )
     dc.write_devcontainer(tmp_path, build_spec(dc.APP_CLAUDE))
@@ -4508,9 +4516,9 @@ class TestRetiredJobsKeys:
 
         output = colors.strip_ansi(capsys.readouterr().out)
         assert rc != 0
-        assert "booley.toml sets retired [jobs] key max_heavy (line 15)" in output
-        assert "delete [jobs].max_heavy (line 15); memory admission replaced it" in output
-        assert "retired [jobs] key heavy_memory (line 16)" in output
+        assert "booley.toml sets retired [jobs] key max_heavy (line 17)" in output
+        assert "delete [jobs].max_heavy (line 17); memory admission replaced it" in output
+        assert "retired [jobs] key heavy_memory (line 18)" in output
         # Doctor did not stop at the config: later checks still ran.
         assert "project guidance file missing" in output
 
@@ -4524,11 +4532,26 @@ class TestRetiredJobsKeys:
 
         output = colors.strip_ansi(capsys.readouterr().out)
         assert rc != 0
-        assert "booley.toml sets retired [jobs] key queue_max (line 15)" in output
+        assert "booley.toml sets retired [jobs] key queue_max (line 17)" in output
         assert (
-            "delete [jobs].queue_max (line 15); the Job queue has no limit:"
+            "delete [jobs].queue_max (line 17); the Job queue has no limit:"
             " a Job waits until it runs or is cancelled"
         ) in output
+        assert "memory admission replaced it" not in output
+
+    def test_memory_budget_fails_with_its_own_fix(self, tmp_path, monkeypatch, capsys):
+        booley_dir = _write_project(tmp_path)
+        _patch_environment(monkeypatch, tmp_path, booley_dir)
+        toml = booley_dir / "booley.toml"
+        toml.write_bytes(toml.read_bytes() + b'\n[jobs]\nmemory_budget = "24g"\n')
+
+        rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
+
+        output = colors.strip_ansi(capsys.readouterr().out)
+        assert rc != 0
+        assert "booley.toml sets retired [jobs] key memory_budget (line 17)" in output
+        assert "delete [jobs].memory_budget (line 17);" in output
+        assert "set [sandbox].memory instead" in output
         assert "memory admission replaced it" not in output
 
 
@@ -4540,6 +4563,7 @@ class TestSandboxMemoryCheck:
         doctor._check_sandbox_memory(_adr28_project(tmp_path), rec.p, rec.w, rec.s)
         assert rec.kinds() == {"warn"}
         assert "the Memory Budget falls back to installed memory" in rec.events[0][1]
+        assert "memory_budget" not in rec.events[0][1]
 
     def test_passes_when_sandbox_memory_is_set(self, tmp_path):
         toml = {"sandbox": {"memory": "16g"}}
@@ -6497,6 +6521,7 @@ class TestSubscriptionCredsHealth:
         monkeypatch.setattr(doctor, "_configured_auth_policy", lambda *_: "auto")
         monkeypatch.setattr(doctor, "_check_agent_auth_token", lambda *_a, **_k: None)
         monkeypatch.setattr(doctor, "_check_oauth_token", lambda *_a, **_k: None)
+        monkeypatch.setattr(doctor, "_check_auth_recorded", lambda *_a: None)
         published = []
         monkeypatch.setattr(
             doctor.health, "publish_result", lambda _root, **kw: published.append(kw)
@@ -7280,7 +7305,9 @@ def test_doctor_renders_removed_documentation_item_with_fix(
 ):
     booley_dir = _write_project(tmp_path)
     _patch_environment(monkeypatch, tmp_path, booley_dir)
-    (booley_dir / "booley.toml").write_text('[project]\nname = "unit"\n' + config)
+    (booley_dir / "booley.toml").write_text(
+        '[project]\nname = "unit"\n[agent]\nauth = "subscription"\n' + config
+    )
 
     result = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 

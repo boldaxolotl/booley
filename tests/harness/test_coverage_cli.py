@@ -8,12 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from booley.flows.sim.coverage_campaign import DurableTargetIdentity, encode_coverage_point_id
-from booley.flows.sim.coverage_campaign_store import publish_coverage_campaign
 from booley.flows.sim.coverage_provenance import coverage_digest
+from booley.flows.sim.coverage_record import DurableTargetIdentity, encode_coverage_point_id
+from booley.flows.sim.coverage_record_store import publish_coverage_record
 from booley.harness import booley as cli
-from tests.flows.sim.coverage_campaign_test_support import decode_document
-from tests.flows.sim.test_coverage_campaign import _valid_document
+from tests.flows.sim.coverage_record_test_support import decode_document
+from tests.flows.sim.test_coverage_record import _valid_document
 
 pytestmark = pytest.mark.usefixtures("host_command")
 
@@ -116,9 +116,11 @@ def persist_record(
         document["collection"]["status"] = status
         document["normalization"]["status"] = "partial"
         document["rollups"] = []
-    campaign = decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
+    coverage_record = decode_document(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
     target_dir = root / "reports/sim/12/targets/sim_counter"
-    path = publish_coverage_campaign(target_dir, campaign).campaign
+    path = publish_coverage_record(target_dir, coverage_record).coverage_record
     (target_dir / "simulation.json").write_text(
         json.dumps(
             {
@@ -258,7 +260,7 @@ def _not_json(path: Path) -> None:
     path.write_text("not json {", encoding="utf-8")
 
 
-def _not_a_campaign(path: Path) -> None:
+def _not_a_coverage_record(path: Path) -> None:
     path.write_text(json.dumps({"hello": "world"}), encoding="utf-8")
 
 
@@ -294,7 +296,7 @@ def test_unreadable_record_exits_2_naming_the_file(
     elif defect == "not-json":
         _not_json(path)
     elif defect == "not-a-campaign":
-        _not_a_campaign(path)
+        _not_a_coverage_record(path)
     elif defect == "wrong-file-name":
         argument = path.rename(path.with_name("campaign.json"))
     elif defect == "nested-attempt-manifest":

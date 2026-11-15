@@ -33,7 +33,7 @@ _SHUTDOWN_POLL_SLICES = 10
 
 
 class SimulationRecordCapacityError(RuntimeError):
-    """The campaign can no longer safely use its admitted capacity."""
+    """The record can no longer safely use its admitted capacity."""
 
 
 class LeaseLostError(SimulationRecordCapacityError):
@@ -59,7 +59,7 @@ class ChildPermit:
 
 
 class SimulationRecordCapacity:
-    """Deep adapter from an admitted endpoint context to campaign permits."""
+    """Deep adapter from an admitted endpoint context to record permits."""
 
     def __init__(
         self,
@@ -92,7 +92,7 @@ class SimulationRecordCapacity:
 
     @property
     def max_lanes(self) -> int:
-        """Lanes the campaign may start: the container's cores when each item is admitted
+        """Lanes the record may start: the container's cores when each item is admitted
         by memory (admission decides how many run at once), else one."""
         return available_cpu_count() if self.items_admitted else 1
 
@@ -116,9 +116,7 @@ class SimulationRecordCapacity:
     def outer_permit(self) -> Iterator[OuterPermit]:
         """Lend the already-held outer permit exactly once."""
         if self._outer_entered:
-            raise SimulationRecordCapacityError(
-                "outer campaign permit may be borrowed exactly once"
-            )
+            raise SimulationRecordCapacityError("outer record permit may be borrowed exactly once")
         self._outer_entered = True
         if self.managed and (
             self._admission.slot_store is None or self._admission.outer_token is None
@@ -169,7 +167,7 @@ class SimulationRecordCapacity:
         """
         store = self._admission.slot_store
         if not self.managed or store is None:
-            raise SimulationRecordCapacityError("unmanaged campaigns cannot acquire child permits")
+            raise SimulationRecordCapacityError("unmanaged records cannot acquire child permits")
         child_id = ExecutionId(uuid.uuid4().hex)
         prepared = self._lanes.prepare(
             child_id,
@@ -182,7 +180,7 @@ class SimulationRecordCapacity:
         try:
             publish(child_id)
             if self._cancelled():
-                raise ClaimAbortedError("campaign shutdown requested")
+                raise ClaimAbortedError("record shutdown requested")
             token = self._acquire_child(store, child_id, memory, queue_reason)
         except BaseException:
             self._lanes.mark_terminal(prepared, "record_error")
@@ -211,7 +209,7 @@ class SimulationRecordCapacity:
         """
         flow_token = self._admission.outer_token
         if not isinstance(flow_token, SlotToken):
-            raise SimulationRecordCapacityError("a memory-admitted campaign holds a Flow token")
+            raise SimulationRecordCapacityError("a memory-admitted record holds a Flow token")
         return job_threads_at_start(store, available_cpu_count(), own_flow=flow_token)
 
     @contextmanager
@@ -234,9 +232,9 @@ class SimulationRecordCapacity:
         try:
             try:
                 try:
-                    # A claim admitted as the campaign was cancelled never starts its item.
+                    # A claim admitted as the record was cancelled never starts its item.
                     if self._cancelled():
-                        raise ClaimAbortedError("campaign cancellation requested")
+                        raise ClaimAbortedError("record cancellation requested")
                     yield permit
                 except SimulationRecordCapacityError as exc:
                     cause = self._failed_cause(exc, permit)
@@ -248,7 +246,7 @@ class SimulationRecordCapacity:
                 if cause == "lease_lost":
                     raise LeaseLostError(lease_lost)
                 if self._cancelled():
-                    raise ClaimAbortedError("campaign cancellation requested")
+                    raise ClaimAbortedError("record cancellation requested")
             finally:
                 self._retire(store, child_id, token)
         except BaseException:
@@ -330,7 +328,7 @@ class SimulationRecordCapacity:
         return token
 
     def cancellation_cause(self) -> str | None:
-        """Why the campaign was first cancelled, or ``None`` while it was not."""
+        """Why the record was first cancelled, or ``None`` while it was not."""
         with self._gate:
             return self._cause
 
@@ -343,7 +341,7 @@ class SimulationRecordCapacity:
                 self._cause = cause
 
     def cancel_waiters(self, cause: str | None = None) -> None:
-        """Stop admission and withdraw only this campaign's queued claims.
+        """Stop admission and withdraw only this record's queued claims.
 
         ``cause`` is latched before shutdown is signalled; calls without one
         never mask the cause that triggered them.
@@ -374,7 +372,7 @@ class SimulationRecordCapacity:
         """Start exact recovery of each held child whose lease was lost, once.
 
         Called from the scheduler's await loop, so recovery begins while the lane's
-        work is still running. It never stops the campaign: a lost child lease is
+        work is still running. It never stops the record: a lost child lease is
         scoped to that lane's item. Confirmed children are skipped: their token
         was reaped after the terminal record, so there is nothing to recover.
         """

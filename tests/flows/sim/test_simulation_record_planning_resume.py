@@ -1,4 +1,4 @@
-"""Planning and resume behavior of Simulation Campaigns."""
+"""Planning and resume behavior of Simulation Records."""
 
 from __future__ import annotations
 

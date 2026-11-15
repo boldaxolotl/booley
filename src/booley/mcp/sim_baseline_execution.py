@@ -2,7 +2,7 @@
 
 A detached supervisor owns the checkout. A bounded child runs the ordinary
 Simulation Flow with a standalone, in-memory adapter: no Goal state, ledger
-or campaign registration is reachable from it.
+or record registration is reachable from it.
 """
 
 from __future__ import annotations
@@ -562,13 +562,12 @@ def _memory_plan(
     executor: BaselineExecutor,
     job_class: str,
     booley_dir: Path,
-    config: Mapping[str, object],
     work: tuple[Path, str, tuple[Any, ...]],
 ) -> MemoryAdmissionPlan | None:
     """The Memory Reservation a memory-class baseline plans, else ``None``."""
     if job_class != job_slots.CLASS_MEMORY:
         return None
-    return measure_memory_claim(booley_dir, config, executor.job_requests(*work))
+    return measure_memory_claim(booley_dir, executor.job_requests(*work))
 
 
 def _slot_narrator(store: job_slots.SlotStore, job_class: str) -> Callable[[int | None], None]:
@@ -651,7 +650,7 @@ def _background_slot(
     job_class = executor.job_class()
     config = load_job_budget_config(booley_dir=booley_dir)
     store = job_slots.SlotStore(job_slots.slots_dir(booley_dir), parse_caps(config))
-    plan = _memory_plan(executor, job_class, booley_dir, config, work)
+    plan = _memory_plan(executor, job_class, booley_dir, work)
     memory = None
     if plan is not None:
         job_class = job_slots.CLASS_MEMORY
@@ -866,7 +865,7 @@ def _remaining_seconds(output: Path) -> float:
 
 
 class BaselineExecution(StandaloneFlowExecution):
-    """Capture producer samples and authenticated campaigns, with no state persistence."""
+    """Capture producer samples and authenticated records, with no state persistence."""
 
     def __init__(self, checkout: Path, target: str) -> None:
         self.checkout, self.target = checkout, target
@@ -913,7 +912,7 @@ def simulate(request: Mapping[str, Any]) -> dict[str, Any]:
     )
     oom_killed = result.outcome.oom_killed
     if oom_killed and request.get("armed") is True:
-        # The supervisor discards this attempt; reading its aborted Campaigns could only raise.
+        # The supervisor discards this attempt; reading its aborted Simulation Records could only raise.
         return oom_killed_result(SCHEMA)
     rows: list[dict[str, Any]] = []
     for simulation_record in adapter.simulation_records:
@@ -943,7 +942,7 @@ def oom_killed_result(schema: str) -> dict[str, Any]:
 
 
 def _exclude_uncompleted(rows: list[dict[str, Any]]) -> None:
-    """Authenticated Campaign rows retain whether a failure was functional.
+    """Authenticated Simulation Record rows retain whether a failure was functional.
 
     Shared Simulation grades an aborted design run as fail. Baseline reporting
     instead needs a completed functional failure, so it reads the classification

@@ -818,7 +818,7 @@ def _run_failed_shared_build_simulation_record(
         "booley.flows.sim.record.serial_execution.TargetCatalog.build",
         lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: handle),
     )
-    # Publish the results as the Campaign would for an item that took no claim of its own.
+    # Publish the results as the Simulation Record would for an item that took no claim of its own.
     monkeypatch.setattr(
         "booley.flows.sim.record.coordinator.work_item_attempt_requeues", lambda **_: False
     )
