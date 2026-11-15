@@ -692,12 +692,12 @@ _LINE_STATUS = {
 
 #: Counts-table rows in display order: (counter key, label).
 _COUNT_LABELS = (
-    ("pass", "passed"),
-    ("warn", "warnings"),
-    ("waived", "waived"),
-    ("note", "notes"),
-    ("skip", "skipped"),
-    ("fail", "failed"),
+    (Severity.PASS, "passed"),
+    (Severity.WARN, "warnings"),
+    (Severity.WAIVED, "waived"),
+    (Severity.NOTE, "notes"),
+    (Severity.SKIP, "skipped"),
+    (Severity.FAIL, "failed"),
 )
 
 
@@ -1708,7 +1708,7 @@ def _check_seat_caps(project: ProjectAudit | None, _pass: Check, _fail: Fail) ->
 def _check_sandbox_memory(
     project: ProjectAudit | None,
     _pass: Check,
-    _warn: Check,
+    _warn: Warn,
     _skip: Check,
 ) -> None:
     """ADR 0087: ``[sandbox].memory`` sizes the Memory Budget Jobs are admitted against.
@@ -2499,7 +2499,7 @@ def _check_current_runtime_dashboard_extension(_pass: Check, _warn: Check) -> No
 
 
 def _check_current_runtime_git_identity(
-    project: ProjectAudit | None, _pass: Check, _warn: Check, _skip: Check
+    project: ProjectAudit | None, _pass: Check, _warn: Warn, _skip: Check
 ) -> None:
     """Check Git would commit as ``[agent.git]`` and no gitconfig competes with it."""
     if project is None:
@@ -3226,11 +3226,11 @@ def _provider_not_installed_reason(provider: str, *, is_default: bool = True) ->
 def _check_agent_auth_token(
     provider: str,
     _pass: Check,
-    _warn: Check,
+    _warn: Warn,
     _skip: Check,
     policy: str = "subscription",
     *,
-    _fail: Check | None = None,
+    _fail: Fail | None = None,
     plan: auth_token.CredentialPlan | None = None,
     missing_fix: str = "",
     is_default: bool = True,
@@ -3328,7 +3328,7 @@ def _host_login_can_rotate(provider: str) -> bool:
 def _check_oauth_token(
     provider: str,
     _pass: Check,
-    _warn: Check,
+    _warn: Warn,
     _skip: Check,
     policy: str = "subscription",
     *,
@@ -3445,7 +3445,7 @@ def _subscription_expiry_message(
 def _check_subscription_creds_health(
     provider: str,
     _pass: Check,
-    _warn: Check,
+    _warn: Warn,
     policy: str = "subscription",
     *,
     plan: auth_token.CredentialPlan | None = None,
@@ -3656,7 +3656,7 @@ def _check_handle_map_size(booley_dir: Path, _warn: Check) -> None:
             )
 
 
-def _check_project_gitignore(booley_dir: Path, _pass: Check, _warn: Check) -> None:
+def _check_project_gitignore(booley_dir: Path, _pass: Check, _warn: Warn) -> None:
     """Warn when ``.booley/.gitignore`` lacks a transient-state pattern ``init`` adds.
 
     A missing ``tickets/board/`` pattern leaves closed Tickets' deletions in
@@ -5812,11 +5812,11 @@ def _configured_timeout_s(project: ProjectAudit, flow_name: str, floor: int) -> 
     if not isinstance(section, dict):
         return floor
     raw = section.get("timeout_ms")
-    if raw is None:
+    if not isinstance(raw, (int, float, str)):
         return floor
     try:
         configured_s = int(raw) // 1000
-    except (TypeError, ValueError):
+    except ValueError:
         return floor
     return max(floor, configured_s)
 
