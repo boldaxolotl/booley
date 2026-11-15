@@ -200,7 +200,7 @@ skill tells you which defaults it used:
 | --- | --- |
 | Simulator EDA tool | Verilator (default) / Icarus |
 | Testbench style | SystemVerilog (default) / cocotb |
-| Lint EDA tool | Verilator (default) / Verible |
+| Lint | Verilator with all warnings (`-Wall`) and Verible style lint (default both) / either one alone |
 | Flows to enable | ASIC synthesis (default on), FPGA (default off, give the part) |
 | ASIC synthesis mode | `physical` (default) / `logical` |
 | Keep Booley out of git history | off (default) / on |
@@ -215,8 +215,9 @@ What lands, wired together and ready to run:
 - `rtl/my_ip.sv`: a small parameterized counter standing in for your design
 - `tb/tb_my_ip.sv` (or `tb/test_my_ip.py` for cocotb): a self-checking
   testbench with two tests, following the shipped TB style guides
-- `my_ip.core`: one Target per enabled flow (`sim_my_ip`, `lint_my_ip`, and
-  optionally `synth_my_ip` (plus SDC in physical mode), `fpga_my_ip` + XDC)
+- `my_ip.core`: one Target per enabled flow (`sim_my_ip`, `lint_my_ip` with
+  Verilator and `-Wall`, `lint_my_ip_style` with Verible, and optionally
+  `synth_my_ip` (plus SDC in physical mode), `fpga_my_ip` + XDC)
 - `.booley/booley.toml` and [`tests.toml`](TESTS.md), populated rather than
   skeletons
 
@@ -287,7 +288,9 @@ and cleanup. The skill stops for your approval only once, after Step 0.
 - **1 · Environment · host.** Applies the plan's sandbox-image decision if it
   made one (`booley init` re-run), then hands you into **Reopen in Container**.
 - **2 · Project config.** The [`.core` Target(s)](TARGETS.md),
-  [`tests.toml`](TESTS.md), and [`booley.toml`](CONFIG.md).
+  [`tests.toml`](TESTS.md), and [`booley.toml`](CONFIG.md). This includes two
+  lint Targets by default, Verilator with `-Wall` and Verible style lint; the
+  plan records any you decline.
 - **3 · AGENTS.md.** A concise Project-level guidance file for Developer Agents.
 - **4 · Doctor.** `booley doctor` is Booley's built-in health check: it audits
   your config, `.core` Targets, toolchain, and sandbox and reports on each
@@ -316,7 +319,7 @@ with `/booley-goal start`, or start an
 
 After `booley init`, run `/booley-setup new` on the host, in your Claude Code or
 Codex chat at the Project Root. It asks the design choices in one batched round
-(IP name, simulator, testbench style, lint tool, flows, synthesis mode, and
+(IP name, simulator, testbench style, lint Targets, flows, synthesis mode, and
 whether to keep Booley out of git history, each with a recommended answer),
 then writes a working,
 green-by-construction project. So there's no feasibility triage and no config

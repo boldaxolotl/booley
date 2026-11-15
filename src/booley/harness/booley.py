@@ -669,6 +669,28 @@ def _add_doctor_subparser(sub) -> None:
     )
 
 
+def _add_init_lint_arguments(init_p) -> None:
+    """Add the scaffold lint Target controls to ``booley init``."""
+    init_p.add_argument(
+        "--lint-eda-tool",
+        choices=("verilator", "verible"),
+        help=(
+            "Scaffold: lint EDA tool of lint_<name> (default verilator, with -Wall; "
+            "verible makes it the only, style, lint Target)"
+        ),
+    )
+    init_p.add_argument(
+        "--style-lint",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        dest="style_lint",
+        help=(
+            "Scaffold: add the Verible style lint Target lint_<name>_style "
+            "(default on with the Verilator lint Target)"
+        ),
+    )
+
+
 def _add_init_scaffold_arguments(init_p) -> None:
     """Add the optional new-IP scaffold controls to ``booley init``."""
     init_p.add_argument(
@@ -690,11 +712,7 @@ def _add_init_scaffold_arguments(init_p) -> None:
         choices=("sv", "cocotb"),
         help="Scaffold: testbench style (default sv; cocotb is sandbox-sim only)",
     )
-    init_p.add_argument(
-        "--lint-eda-tool",
-        choices=("verilator", "verible"),
-        help="Scaffold: lint EDA tool (default verilator --lint-only; verible = style lint)",
-    )
+    _add_init_lint_arguments(init_p)
     init_p.add_argument("--lint-tool", action=_RetiredEdaToolOptionAction, help=argparse.SUPPRESS)
     init_p.add_argument(
         "--asic",

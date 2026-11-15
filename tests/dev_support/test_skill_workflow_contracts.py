@@ -743,6 +743,41 @@ def test_setup_plan_rows_have_plain_label_and_explanation():
         assert heading in template
 
 
+def test_setup_recommends_verilator_wall_and_verible_style_lint():
+    template = _decision_rows(_skill_text("booley-setup", "SETUP_PLAN_TEMPLATE.md"))["11"]
+    plan = _compact_skill_text("booley-setup", "steps/0-plan.md")
+    config = _compact_skill_text("booley-setup", "steps/2-project-config.md")
+    greenfield = _compact_skill_text("booley-setup", "steps/new-greenfield.md")
+    core = yaml.safe_load(_skill_text("booley-setup", "CORE_TEMPLATE.yaml"))["targets"]
+
+    assert template[3].startswith("Lint Targets: Verilator `-Wall` + Verible style")
+    assert "default both" in template[3]
+    for required in (
+        "`verilator_options: [-Wall]`",
+        "decline either",
+        "Never drop `-Wall` silently",
+        "with `lint_off -file",
+    ):
+        assert required in plan
+    assert "`verilator_options: [-Wall]`" in config
+    assert "offer, never impose" not in config
+    assert "offer, never impose" not in plan
+    assert "`--no-style-lint`" in greenfield
+    assert "`--lint-eda-tool verible`" in greenfield
+    assert core["lint_dut"]["flow_options"]["verilator_options"] == ["-Wall"]
+    assert core["lint_dut_style"]["flow_options"]["tool"] == "verible"
+
+
+def test_setup_guide_describes_default_lint_targets():
+    root = Path(__file__).resolve().parents[2]
+    guide = " ".join((root / "docs/user/SETUP.md").read_text(encoding="utf-8").split())
+    flow_lint = " ".join((root / "docs/user/FLOW-LINT.md").read_text(encoding="utf-8").split())
+
+    assert "`lint_my_ip_style`" in guide
+    assert "Verible style lint (default both)" in guide
+    assert "Project Setup normally creates two" in flow_lint
+
+
 def test_setup_plan_plain_text_terms_are_in_glossary():
     terms = _glossary_terms()
     assert terms >= _REQUIRED_SETUP_TERMS

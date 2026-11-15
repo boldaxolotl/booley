@@ -723,18 +723,24 @@ separate columns (see "How a row resolves"). The standard checklist:
     still need authoring/confirmation, and Red for that Target when no safe seam
     exists. RTL elaboration alone never makes this row Green. An enabled synth
     Target with any unclassified candidate cannot be approved.
-11. **Style lint** — offer Verible style lint as a second lint Target only if
-    the user wants it (offer, never impose). "Never impose" means
-    never inflict a *foreign* style on a repo — it does not mean ignoring the
-    repo's own. **A strong in-repo signal makes this an ordinary inferred row:**
-    a `.rules.verible_lint`/`verible.filelist`, a CI job running
+11. **Lint Targets** — recommend two lint Targets by default: a Verilator lint
+    Target with `verilator_options: [-Wall]` (structural and semantic warnings:
+    `UNUSED*`, `UNDRIVEN`, `GENUNNAMED`, `ASCRANGE`, widths) and a Verible style
+    lint Target (`flow_options: {tool: verible}`). The user can decline either;
+    record each Target as `yes` or `declined` in the row. Reuse the repo's own
+    style rules when they exist: **a strong in-repo signal** (a
+    `.rules.verible_lint`/`verible.filelist`, a CI job running
     `verible-verilog-lint`, or a format/check script driving
-    `verible-verilog-format` (see the source-mutating-helper pile above) all say
-    the project already lints with Verible. With such a signal, propose `yes`
-    with that evidence and reuse the repo's own rules file as a
-    `file_type: veribleLintRules` fileset entry — you are matching the project,
-    not imposing. Unattended: signal ⇒ `yes` (`inferred`/high, not starred);
-    no signal ⇒ `no`, and say so in one line.
+    `verible-verilog-format`; see the source-mutating-helper pile above) says
+    the project already lints with Verible, so record the Verible Target as
+    `yes` with that evidence and reuse the repo's own rules file as a
+    `file_type: veribleLintRules` fileset entry. When the Targets lint upstream
+    RTL the Project does not own, tell the user that `-Wall` and Verible's
+    default rules may report findings there, and how to handle them: waive
+    Verilator findings in a `.vlt` control file with `lint_off -file
+    "<upstream path glob>"`, and scope the Verible Target's fileset to the
+    Project's own RTL. Never drop `-Wall` silently; removing it is the user's
+    recorded decision. Unattended: both `yes` (`inferred`/high, not starred).
 12. **Elaboration Check** — record whether the project needs the stronger
     `sim --mode elab-only-standalone` module sweep; ordinary Simulation already
     records its authenticated build-stage outcome.
@@ -922,7 +928,7 @@ Refine the decision sheet with concrete options and their tradeoffs:
   confidence. Unattended: take those defaults with confidence, without a star.
 - **Codebase first**: never ask what the repo can answer. Ask to *confirm*
   low-confidence inferences, to *choose* where evidence genuinely
-  under-determines (TB flavor, the Target set / config variants, style lint,
+  under-determines (TB flavor, the Target set / config variants,
   host-EDA-tool placement), and to
   *supply* what only the user knows (license servers, which flows they care
   about, host EDA-tool installs).

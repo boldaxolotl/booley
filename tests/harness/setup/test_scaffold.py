@@ -55,6 +55,7 @@ def _choices(**overrides) -> ScaffoldChoices:
         "lint_eda_tool": "verilator",
         "asic": True,
         "fpga_part": None,
+        "style_lint": True,  # the CLI default
     }
     defaults.update(overrides)
     return ScaffoldChoices(**defaults)
@@ -69,6 +70,7 @@ def _args(**overrides) -> argparse.Namespace:
         "asic": None,
         "fpga_part": None,
         "stealth": False,
+        "style_lint": None,
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -123,9 +125,16 @@ def test_default_combo_files_and_shapes() -> None:
     assert lint["flow"] == "lint"
     assert lint["flow_options"] == {
         "tool": "verilator",
+        "verilator_options": ["-Wall"],
         "booley": {"doctor": ["lint"]},
     }
     assert lint["toplevel"] == "my_ip"
+    assert core["targets"]["lint_my_ip_style"] == {
+        "flow": "lint",
+        "flow_options": {"tool": "verible", "booley": {"doctor": ["lint"]}},
+        "filesets": ["rtl"],
+        "toplevel": "my_ip",
+    }
 
     synth = core["targets"]["synth_my_ip"]
     assert synth["flow"] == "generic"
@@ -182,11 +191,21 @@ def test_sim_bad_overlay_only_injects_the_reset_defect() -> None:
     )
 
 
-@pytest.mark.parametrize("lint_eda_tool", ["verilator", "verible"])
+@pytest.mark.parametrize(
+    ("lint_eda_tool", "style_lint", "lint_targets"),
+    [
+        ("verilator", True, ["lint_my_ip", "lint_my_ip_style"]),
+        ("verible", False, ["lint_my_ip"]),
+    ],
+)
 def test_scaffold_supplies_doctor_fail_path_fixtures(
-    tmp_path: Path, lint_eda_tool: str, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    lint_eda_tool: str,
+    style_lint: bool,
+    lint_targets: list[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    files = scaffold_files(_choices(lint_eda_tool=lint_eda_tool))
+    files = scaffold_files(_choices(lint_eda_tool=lint_eda_tool, style_lint=style_lint))
 
     sim_overlay = ".booley/selftest/sim/bad-overlay/my_ip.sv"
     lint_bad_source = "verif/booley_doctor_selftest/lint_bad.sv"
@@ -219,6 +238,7 @@ def test_scaffold_supplies_doctor_fail_path_fixtures(
     assert lint_plan is not None
     assert lint_plan.good.target == "lint_my_ip"
     assert lint_plan.bad.target == "lint_selftest_bad"
+    assert doctor._doctor_targets(project, "lint") == lint_targets
 
     core = _core(files)
     assert "lint_selftest_bad" not in core["targets"]
@@ -351,7 +371,7 @@ def test_cocotb_verilator_options() -> None:
 
 
 def test_verible_lint_keeps_elaboration_check_on_sim() -> None:
-    files = scaffold_files(_choices(lint_eda_tool="verible"))
+    files = scaffold_files(_choices(lint_eda_tool="verible", style_lint=False))
     core = _core(files)
     assert core["targets"]["lint_my_ip"]["flow_options"] == {
         "tool": "verible",
@@ -361,6 +381,13 @@ def test_verible_lint_keeps_elaboration_check_on_sim() -> None:
     cfg = tomllib.loads(files[".booley/booley.toml"])
     assert "elab" not in cfg["flows"]
     assert core["targets"]["sim_my_ip"]["flow_options"]["booley"]["doctor"] == ["sim"]
+
+
+def test_style_lint_opt_out_keeps_one_verilator_target() -> None:
+    core = _core(scaffold_files(_choices(style_lint=False)))
+    lint_targets = {name for name in core["targets"] if name.startswith("lint_")}
+    assert lint_targets == {"lint_my_ip"}
+    assert core["targets"]["lint_my_ip"]["flow_options"]["verilator_options"] == ["-Wall"]
 
 
 def test_no_asic_omits_synth_target_and_sdc() -> None:
@@ -463,9 +490,11 @@ def test_gather_reports_defaults_without_prompting(tmp_path: Path, monkeypatch, 
         lint_eda_tool="verilator",
         asic=True,
         fpga_part=None,
+        style_lint=True,
     )
     out = capsys.readouterr().out
     for line in (
+        "Style lint: Verible Target lint_my_ip_style (default; set --no-style-lint to skip)",
         "Simulator: verilator (default; set --sim-eda-tool)",
         "Testbench style: sv (default; set --tb-style)",
         "Lint EDA tool: verilator (default; set --lint-eda-tool)",
@@ -489,6 +518,26 @@ def test_gather_flags_win_over_defaults(tmp_path: Path, monkeypatch, capsys) -> 
         False,
     )
     capsys.readouterr()
+
+
+def test_gather_no_style_lint_opts_out(tmp_path: Path, monkeypatch, capsys) -> None:
+    choices = gather_scaffold_choices(_args(style_lint=False), _ctx(tmp_path, monkeypatch))
+    assert choices is not None
+    assert choices.style_lint is False
+    assert "Style lint:" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("flag", [True, False])
+def test_gather_rejects_style_lint_flag_with_verible(
+    tmp_path: Path, monkeypatch, capsys, flag: bool
+) -> None:
+    ctx = _ctx(tmp_path, monkeypatch)
+    assert gather_scaffold_choices(_args(lint_eda_tool="verible", style_lint=flag), ctx) is None
+    assert "--lint-eda-tool verible" in capsys.readouterr().out
+
+    choices = gather_scaffold_choices(_args(lint_eda_tool="verible"), ctx)
+    assert choices is not None
+    assert choices.style_lint is False
 
 
 # ---------------------------------------------------------------------------
@@ -744,12 +793,16 @@ def _assert_target_names_conform(findings) -> None:
     assert not [m for m in messages if "rename it" in m or "bare axis" in m]
 
 
-def _assert_variant_sources_and_header(tmp_path, simulator, tb_style, asic, fpga):
+def _assert_variant_sources_and_header(tmp_path, simulator, tb_style, linter, asic, fpga):
     rtl = (tmp_path / "rtl/my_ip.sv").read_text()
     header = rtl.split("every configured flow (")[1].split(")")[0]
     enabled = ["simulate", "lint"] + (["synth"] if asic else []) + (["fpga"] if fpga else [])
     assert header.replace("//", "").split() == " / ".join(enabled).split()
     core = yaml.safe_load((tmp_path / "my_ip.core").read_text())
+    lint_targets = {name for name in core["targets"] if name.startswith("lint_")}
+    assert lint_targets == (
+        {"lint_my_ip", "lint_my_ip_style"} if linter == "verilator" else {"lint_my_ip"}
+    )
     owned = simulator == "verilator" and tb_style == "sv"
     config = tomllib.loads((tmp_path / ".booley/booley.toml").read_text())
     assert config["flows"]["sim"] == ({"trace_files": ["dump.vcd"]} if owned else {})
@@ -816,7 +869,7 @@ def test_scaffold_variants_have_no_doctor_warnings_and_enabled_header(
         (f.check_id, f.subject, f.message) for f in findings if f.severity in {"warn", "fail"}
     ]
     _assert_target_names_conform(findings)
-    _assert_variant_sources_and_header(tmp_path, simulator, tb_style, asic, fpga)
+    _assert_variant_sources_and_header(tmp_path, simulator, tb_style, linter, asic, fpga)
     _healthy_host_doctor(tmp_path, monkeypatch)
 
 

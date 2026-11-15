@@ -2,7 +2,7 @@
 
 Everything else in init assumes an *existing* RTL project being ported to
 Booley; this step covers the opposite case, designing an IP from scratch. It
-asks nothing: the design choices (simulator, testbench style, lint EDA tool,
+asks nothing: the design choices (simulator, testbench style, lint Targets,
 ASIC/FPGA flows, Stealth) arrive as flags — ``/booley-setup new`` asks the user
 and passes the answers — and a missing flag takes the default init reports. It
 emits a minimal but *working* project — parameterized counter RTL, a
@@ -100,6 +100,8 @@ class ScaffoldChoices:
     asic: bool  # emit asic_synthesize Target
     fpga_part: str | None  # Vivado part → emit fpga Target + XDC; None = skip
     synth_mode: str = "physical"
+    # Emit the Verible lint_<name>_style Target; the CLI defaults it on.
+    style_lint: bool = False
     stealth: bool = False  # --stealth: hidden footprint, cores under .booley/cores/
 
 
@@ -201,6 +203,35 @@ def _resolve_synth_mode(args, asic: bool) -> str | None:
     return "physical" if explicit is None else explicit
 
 
+def _resolve_lint(args, name: str) -> tuple[str, bool] | None:
+    """The lint EDA tool and whether the Verible style Target is written."""
+    lint_eda_tool = _flag_or_default(args, "lint_eda_tool", "verilator", "Lint EDA tool")
+    if lint_eda_tool not in LINT_EDA_TOOLS:
+        err(
+            f"lint EDA tool {lint_eda_tool!r} is not supported; "
+            f"choose one of: {', '.join(LINT_EDA_TOOLS)}"
+        )
+        return None
+    style_lint = _resolve_style_lint(args, lint_eda_tool, name)
+    return None if style_lint is None else (lint_eda_tool, style_lint)
+
+
+def _resolve_style_lint(args, lint_eda_tool: str, name: str) -> bool | None:
+    explicit = getattr(args, "style_lint", None)
+    if lint_eda_tool == "verible":
+        if explicit is not None:
+            err(
+                "--style-lint/--no-style-lint applies only with the Verilator lint Target; "
+                "--lint-eda-tool verible already makes lint_<name> the Verible style lint Target"
+            )
+            return None
+        return False
+    if explicit is not None:
+        return bool(explicit)
+    info(f"Style lint: Verible Target lint_{name}_style (default; set --no-style-lint to skip)")
+    return True
+
+
 def _flag_or_default(args, flag: str, default: str, label: str) -> str:
     """The value of ``--<flag>``, or *default* with a line saying so."""
     flagged = getattr(args, flag, None)
@@ -239,13 +270,10 @@ def gather_scaffold_choices(args, ctx: InitContext) -> ScaffoldChoices | None:
 
     tb_style = _flag_or_default(args, "tb_style", "sv", "Testbench style")
 
-    lint_eda_tool = _flag_or_default(args, "lint_eda_tool", "verilator", "Lint EDA tool")
-    if lint_eda_tool not in LINT_EDA_TOOLS:
-        err(
-            f"lint EDA tool {lint_eda_tool!r} is not supported; "
-            f"choose one of: {', '.join(LINT_EDA_TOOLS)}"
-        )
+    lint = _resolve_lint(args, name)
+    if lint is None:
         return None
+    lint_eda_tool, style_lint = lint
 
     asic_flag = getattr(args, "asic", None)
     if asic_flag is not None:
@@ -274,6 +302,7 @@ def gather_scaffold_choices(args, ctx: InitContext) -> ScaffoldChoices | None:
         asic=asic,
         fpga_part=fpga_part or None,
         synth_mode=synth_mode,
+        style_lint=style_lint,
         stealth=stealth,
     )
 
@@ -722,6 +751,13 @@ def _lint_language_option(c: ScaffoldChoices) -> str:
     return sv_lang_flag
 
 
+def _lint_tool_options(c: ScaffoldChoices) -> str:
+    """Verilator lint Targets add ``-Wall``; Edalize's lint flow adds only ``--lint-only``."""
+    if c.lint_eda_tool == "verilator":
+        return ", verilator_options: [-Wall]"
+    return _lint_language_option(c)
+
+
 def _sim_target(c: ScaffoldChoices) -> str:
     flow_options, toplevel = _sim_flow_options(c)
     filesets = "rtl, tb, tb_cpp" if _owns_sim_main(c) else "rtl, tb"
@@ -737,11 +773,23 @@ def _sim_target(c: ScaffoldChoices) -> str:
 
 
 def _lint_target(c: ScaffoldChoices) -> str:
-    language_option = _lint_language_option(c)
+    language_option = _lint_tool_options(c)
     return f"""\
   lint_{c.name}:
     flow: lint
     flow_options: {{tool: {c.lint_eda_tool}{language_option}, booley: {{doctor: [lint]}}}}
+    filesets: [rtl]
+    toplevel: {c.name}
+"""
+
+
+def _style_lint_target(c: ScaffoldChoices) -> str:
+    if not c.style_lint:
+        return ""
+    return f"""\
+  lint_{c.name}_style:
+    flow: lint
+    flow_options: {{tool: verible, booley: {{doctor: [lint]}}}}
     filesets: [rtl]
     toplevel: {c.name}
 """
@@ -778,7 +826,13 @@ def _fpga_target(c: ScaffoldChoices) -> str:
 def _core_file(c: ScaffoldChoices) -> str:
     """Render the public scaffold design description."""
     filesets = _tb_fileset(c) + _sim_main_fileset(c) + _constraint_filesets(c)
-    targets = _sim_target(c) + _lint_target(c) + _synth_target(c) + _fpga_target(c)
+    targets = (
+        _sim_target(c)
+        + _lint_target(c)
+        + _style_lint_target(c)
+        + _synth_target(c)
+        + _fpga_target(c)
+    )
     return f"""\
 CAPI=2:
 name: ::{c.name}:0
@@ -1147,8 +1201,9 @@ def step_scaffold(ctx: InitContext, args) -> bool:
         return False
     reset_cache()  # .booley may have just come into existence
 
+    lint_summary = "verilator+verible" if choices.style_lint else choices.lint_eda_tool
     summary = (
-        f"sim={choices.sim_eda_tool}/{choices.tb_style} lint={choices.lint_eda_tool} "
+        f"sim={choices.sim_eda_tool}/{choices.tb_style} lint={lint_summary} "
         f"asic={'on' if choices.asic else 'off'} "
         f"synth_mode={choices.synth_mode if choices.asic else 'disabled'} "
         f"fpga={choices.fpga_part or 'off'}"
