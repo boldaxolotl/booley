@@ -38,7 +38,10 @@ REVIEW_GUIDES: dict[tuple[str, str], tuple[ReviewGuide, ...]] = {
         ReviewGuide("checklist", "rtl/bugs-checklist.md"),
         ReviewGuide("hunt", "rtl/bugs-hunt.md"),
     ),
-    ("rtl", "protocol"): (ReviewGuide("checklist", "rtl/protocol-cdc-checklist.md"),),
+    ("rtl", "protocol"): (
+        ReviewGuide("checklist", "rtl/protocol-cdc-checklist.md"),
+        ReviewGuide("hunt", "rtl/protocol-cdc-hunt.md"),
+    ),
     ("rtl", "security"): (
         ReviewGuide("checklist", "rtl/security-checklist.md"),
         ReviewGuide("hunt", "rtl/security-hunt.md"),

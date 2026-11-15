@@ -1535,7 +1535,7 @@ class TestPromptConstruction:
     def test_each_focus_loads_its_declared_guides(self, tmp_path: Path):
         cases = [
             ("rtl", "bugs", "rtl/a.sv", ["bugs-checklist", "bugs-hunt"]),
-            ("rtl", "protocol", "rtl/a.sv", ["protocol-cdc-checklist"]),
+            ("rtl", "protocol", "rtl/a.sv", ["protocol-cdc-checklist", "protocol-cdc-hunt"]),
             ("rtl", "security", "rtl/a.sv", ["security-checklist", "security-hunt"]),
             ("rtl", "optimization", "rtl/a.sv", ["optimization-checklist"]),
             ("rtl", "code_style", "rtl/a.sv", ["code_style-checklist"]),
@@ -2346,7 +2346,7 @@ def test_provider_failure_keeps_reviewer_outcome_and_persists_traceback(
             "--category",
             "rtl",
             "--focus",
-            "protocol",
+            "optimization",
             "--work-dir",
             str(tmp_path),
             "--report-dir",
@@ -4270,6 +4270,13 @@ def test_dry_run_lists_guides_with_kind(tmp_path):
             ],
         ),
         (
+            "protocol",
+            [
+                {"kind": "checklist", "name": "protocol-cdc-checklist"},
+                {"kind": "hunt", "name": "protocol-cdc-hunt"},
+            ],
+        ),
+        (
             "security",
             [
                 {"kind": "checklist", "name": "security-checklist"},
@@ -4297,3 +4304,24 @@ def test_dry_run_lists_guides_with_kind(tmp_path):
         preview = endpoint._dry_run_preview()
         assert preview.detail["guides"] == expected
         assert f"guides={','.join(g['name'] for g in expected)}" in preview.report_text
+
+
+def test_protocol_cdc_hunt_guide_names_scenarios_and_scope():
+    """The hunt guide keeps the focus's scope boundaries and names every scenario category."""
+    from booley.evidence.review_guides import review_guides_root
+
+    text = (review_guides_root() / "rtl" / "protocol-cdc-hunt.md").read_text(encoding="utf-8")
+    scope = text.split("## Scope Boundaries", 1)[1].split("\n## ", 1)[0]
+    assert "Reviewer Specialist for Bugs" in scope
+    assert "Reviewer Specialist for Optimization" in scope
+    lowered = text.split("### 2. Enumerate scenarios", 1)[1].split("\n### 3.", 1)[0].lower()
+    for category in (
+        "start",
+        "stall",
+        "back-pressure",
+        "abort",
+        "back-to-back",
+        "clock domain",
+        "reset domain",
+    ):
+        assert category in lowered, category

@@ -105,7 +105,7 @@ def edit(path: Path, content: bytes, moves: list[dict[str, Any]]) -> dict[str, A
     }
 
 
-def _pointer(target: Path, parent: Path, relative: bool, *, prefix: str = "") -> bytes:
+def pointer_bytes(target: Path, parent: Path, relative: bool, *, prefix: str = "") -> bytes:
     spelling = os.path.relpath(target, parent) if relative else str(target)
     return (prefix + spelling.replace(os.sep, "/") + "\n").encode()
 
@@ -125,7 +125,7 @@ def pointer_edits(rows: list[dict[str, Any]], moves: list[dict[str, Any]]) -> li
         marker = checkout / ".git"
         if marker.is_file():
             old = marker.read_text(encoding="utf-8").strip().removeprefix("gitdir: ")
-            content = _pointer(
+            content = pointer_bytes(
                 mapped(admin, moves),
                 mapped(checkout, moves),
                 not Path(old).is_absolute(),
@@ -147,7 +147,7 @@ def _linked_admin_edits(
         result.append(
             edit(
                 path,
-                _pointer(
+                pointer_bytes(
                     mapped(target, moves), mapped(admin, moves), not Path(previous).is_absolute()
                 ),
                 moves,

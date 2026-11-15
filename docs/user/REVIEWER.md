@@ -25,15 +25,17 @@ code and never edits it. For a pass/fail verdict from an EDA tool, use a
 The `bugs` review also flags some problems that [Lint](FLOW-LINT.md) and
 synthesis already report, such as latches and width mismatches.
 
-A `bugs` or `security` review runs two searches side by side: one checks the
-code against a list of known patterns, the other hunts by tracing scenarios. The
-`bugs` hunt traces scenarios such as reset, back-to-back operations, and full or
-empty states; the `security` hunt traces attacker-controlled inputs, debug and
-test access, resets, and error and fault paths. A review reports the findings of
-both and merges findings the two searches report at the same file and line. It
-uses about twice the model time and tokens of one search. A search that fails
-runs once more; if it fails again, the whole review is an error instead of a
-partial result.
+A `bugs`, `protocol`, or `security` review runs two searches side by side: one
+checks the code against a list of known patterns, the other hunts by tracing
+scenarios. The `bugs` hunt traces scenarios such as reset, back-to-back
+operations, and full or empty states; the `protocol` hunt traces stalls,
+back-pressure, aborts, and clock or reset domain crossings through each
+interface; the `security` hunt traces attacker-controlled inputs, debug and test
+access, resets, and error and fault paths. A review reports the findings of both
+and merges findings the two searches report at the same file and line. It uses
+about twice the model time and tokens of one search. A search that fails runs
+once more; if it fails again, the whole review is an error instead of a partial
+result.
 
 A review sees only one side of the RTL/testbench split. A testbench review
 never reads the RTL, so it judges the tests against the spec rather than
@@ -115,7 +117,7 @@ booley specialist reviewer --verify
 | `--fail-on critical\|major\|minor` | Exit 1 when an open finding is at or above that severity. Without it, a completed review exits 0 even with open findings. |
 | `--verify` | Recheck the latest review's open findings. Accepts only `--waive` and `--fail-on`. |
 | `--waive <finding-id> "<reason>"` | With `--verify`: propose a waiver. Repeatable. |
-| `--dry-run` | Preview the call without running the review: lists the checks it would run; a `bugs` or `security` review shows two. |
+| `--dry-run` | Preview the call without running the review: lists the checks it would run; a `bugs`, `protocol`, or `security` review shows two. |
 
 The options every Specialist shares are in [Specialists](SPECIALISTS.md#running-a-specialist).
 [CLI-REFERENCE.md](CLI-REFERENCE.md#reviewer) has the full reference,

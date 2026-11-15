@@ -24,6 +24,7 @@ _MEMORY_ADMISSION = "memory admission replaced it"
 RETIRED_JOBS_KEYS: dict[str, str] = {
     "max_heavy": _MEMORY_ADMISSION,
     "heavy_memory": _MEMORY_ADMISSION,
+    "max_light": "Specialists and the Mutation Flow are admitted by memory",
     "queue_max": "the Job queue has no limit: a Job waits until it runs or is cancelled",
     "memory_budget": (
         "the Memory Budget is computed from [sandbox].memory: set [sandbox].memory instead"

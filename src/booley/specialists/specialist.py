@@ -19,6 +19,7 @@ import os
 import subprocess
 import threading
 from abc import abstractmethod
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,8 @@ from booley.dev_support.commit_message_format import _auto_format_commit_message
 from booley.flows import job_resources
 from booley.flows.cli_arguments import HumanParser, add_timeout_args
 from booley.flows.cli_help import SurfaceHelp
+from booley.flows.job_estimates import JobRequest
+from booley.flows.memory_admission import MemoryAdmissionPlan, measure_specialist_claim
 from booley.flows.prepared_invocation import OrdinaryRunInvocation, PreparedInvocation
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpTool, McpToolResult
 from booley.runtime import job_slots
@@ -77,9 +80,14 @@ class Specialist(McpTool):
     endpoint_kind = "specialist"
     report_schema = "booley.specialist-report/v1"
 
-    # Specialists are model-API-bound with ~no local footprint (ADR 0028):
-    # every Specialist admits under the LIGHT class pool.
-    JOB_CLASS = job_slots.CLASS_LIGHT
+    # A Specialist is admitted by memory (ADR 0087): a companion claim that
+    # reserves its own history's peak, or a default.
+    JOB_CLASS = job_slots.CLASS_MEMORY
+
+    def _memory_admission_plan(
+        self, project: Path | None, requests: Sequence[JobRequest] | None
+    ) -> MemoryAdmissionPlan:
+        return measure_specialist_claim(project, self.name)
 
     # Default max conversation turns
     default_max_turns: int | None = None

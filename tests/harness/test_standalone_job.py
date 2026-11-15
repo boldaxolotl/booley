@@ -508,3 +508,31 @@ def test_a_nested_run_without_own_run_is_not_a_job(monkeypatch, project):
         StandaloneJob.prepare(project, "stub", ["booley", "flow", "stub"], report_root=None)
         is None
     )
+
+
+def test_progress_is_recorded_while_the_job_runs_and_never_after_it_ends(monkeypatch, project):
+    """``record_progress`` rewrites the running record; a finished Job's record stays final."""
+    from booley.harness.standalone_job import StandaloneJob, checkout_report_root
+
+    monkeypatch.delenv("BOOLEY_RUN_ID", raising=False)
+    job = StandaloneJob.prepare(
+        project, "measure", ["booley", "measure"], report_root=checkout_report_root(project)
+    )
+    assert job is not None
+    seen: list[dict[str, int] | None] = []
+
+    def run() -> int:
+        job.record_progress(1, 3)
+        (running,) = records(project)
+        seen.append(running.progress)
+        return 0
+
+    try:
+        assert job.run(run) == 0
+        job.record_progress(2, 3)
+    finally:
+        job.discard()
+
+    assert seen == [{"finished": 1, "total": 3}]
+    (rec,) = records(project)
+    assert (rec.status, rec.progress) == ("done", {"finished": 1, "total": 3})

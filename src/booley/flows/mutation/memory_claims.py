@@ -1,8 +1,9 @@
 """Memory Reservations for a mutation campaign's builds and simulations.
 
-The campaign is one light Job, yet each variant build and each simulation of the
-Target's tests holds a Memory Reservation of its own while it runs, sized from
-the Simulation Target's Resource History. One that cannot be sized runs alone,
+The campaign is one memory-class Job with a zero companion claim, and each
+variant build and each simulation of the Target's tests holds a Memory
+Reservation of its own while it runs, sized from the Simulation Target's
+Resource History. One that cannot be sized runs alone,
 as an unsized Simulation Record work item does.
 """
 
