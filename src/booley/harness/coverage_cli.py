@@ -1,4 +1,4 @@
-"""`booley coverage`: read-only views of a finished coverage run's retained record."""
+"""`booley coverage`: read-only views of a finished coverage run's Coverage Record."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ def add_subparser(sub: argparse._SubParsersAction) -> None:
     commands = parser.add_subparsers(dest="coverage_command", required=True, metavar="<command>")
     uncovered = commands.add_parser(
         "uncovered",
-        help="List every uncovered scored point of one coverage record",
+        help="List every uncovered scored point of one Coverage Record",
         description=(
             "List every point no Test Run hit, as `source:line  metric  detail  hierarchy`, "
             "sorted by source, line, and metric. Waived and unscored points are not listed."
@@ -55,7 +55,7 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
     except (OSError, ValueError, RecursionError) as exc:
         reason = exc.__cause__ or exc
         print(
-            f"ERROR: cannot read coverage record {args.coverage_json}: {reason}", file=sys.stderr
+            f"ERROR: cannot read Coverage Record {args.coverage_json}: {reason}", file=sys.stderr
         )
         print(_RECORD_HINT, file=sys.stderr)
         return EXIT_ERROR

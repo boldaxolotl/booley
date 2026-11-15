@@ -1018,7 +1018,7 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
         "Run FIFO pipeline smoke test",
         "Run native FST/Verilator cross-validation",
         "Run Verilator compiler and native coverage acceptance",
-        "Run Coverage Campaign release matrix and production collector",
+        "Run Coverage Record release matrix and production collector",
         "Run simulator ground-truth tests",
         "Run cocotb Icarus/Verilator production-image flows",
     }

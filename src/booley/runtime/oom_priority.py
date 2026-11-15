@@ -255,7 +255,7 @@ def job_oom_priority(
 
     A companion claim that reserves nothing (a mutation coordinator) is no-op too:
     it still counts in every other Job's order, but its builds and simulations
-    rank the campaign's processes under their own claims.
+    rank the mutation run's processes under their own claims.
     """
     if (
         store is None

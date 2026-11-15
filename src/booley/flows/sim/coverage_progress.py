@@ -1,4 +1,4 @@
-"""Observational progress for one sequential Coverage Campaign invocation."""
+"""Observational progress for one sequential Coverage Record invocation."""
 
 import os
 from dataclasses import dataclass, field

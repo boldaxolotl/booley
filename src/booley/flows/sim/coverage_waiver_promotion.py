@@ -194,8 +194,8 @@ def _binding_lines(candidate: WaiverCandidate) -> list[str]:
         ("Coverage Point", proposal.point_id),
         ("Source", proposal.source),
         ("Source SHA-256", proposal.source_sha256),
-        ("Campaign", binding.campaign_id),
-        ("Campaign manifest SHA-256", binding.manifest_sha256),
+        ("Coverage Record", binding.campaign_id),
+        ("Coverage Record manifest SHA-256", binding.manifest_sha256),
         ("Point store SHA-256", binding.point_store_sha256),
         ("Proposal count", str(candidate.proposal_count)),
     )

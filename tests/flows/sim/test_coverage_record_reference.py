@@ -1,4 +1,4 @@
-"""Hostile public-seam tests for Simulation-owned Coverage Campaign references."""
+"""Hostile public-seam tests for Simulation-owned Coverage Record references."""
 
 from __future__ import annotations
 
@@ -488,7 +488,7 @@ def test_reference_follows_only_the_booley_dir_entry(
         symlink_or_skip(physical_reports, tmp_path / "elsewhere", target_is_directory=True)
         physical_reports = tmp_path / "elsewhere"
     relative = Path("sim/1/targets") / _TARGET_SELECTOR
-    # The nested Campaign is published through the physical spelling so only the
+    # The nested Coverage Record is published through the physical spelling so only the
     # reference readers see the entry.
     physical_nested = _nested_coverage_record(physical_reports / relative)
     reports = project / ".booley" / "flow-reports"

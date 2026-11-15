@@ -216,7 +216,7 @@ def cli_help() -> dict[str, str]:
         pytest.raises(RuntimeError, match="capture"),
     ):
         record_retention.main()
-    rendered.update(parser_help(parse.call_args.args[0], "campaign-retention"))
+    rendered.update(parser_help(parse.call_args.args[0], "record-retention"))
     return rendered
 
 

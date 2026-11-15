@@ -131,7 +131,7 @@ def prepared(
     source.parent.mkdir(exist_ok=True)
     source.write_bytes(b"module counter; endmodule\n")
     if existing:
-        # Written before the Campaign is observed: the observation binds the waiver set.
+        # Written before the Coverage Record is observed: the observation binds the waiver set.
         approval = root / directory / "rtl" / "counter.sv.toml"
         approval.parent.mkdir(parents=True)
         approval.write_text(existing_approval_file(existing, source.read_bytes()))
@@ -652,7 +652,7 @@ def test_numeric_coverage_relaxation_reevaluates_immutable_points_without_waiver
     assert not list(root.rglob("*.toml"))
 
 
-@pytest.mark.parametrize("drift", ["campaign", "candidate", "policy"])
+@pytest.mark.parametrize("drift", ["record", "candidate", "policy"])
 def test_recovery_uses_captured_binding_after_producer_drift(layout, drift):
     import shutil
 
@@ -660,7 +660,7 @@ def test_recovery_uses_captured_binding_after_producer_drift(layout, drift):
     view = propose(layout, env, candidate)
     _, transaction = interrupted_transaction(layout, env, view)
     paths = record_paths(layout.control, layout.record.id)
-    if drift == "campaign":
+    if drift == "record":
         shutil.rmtree(paths.runtime_dir / "flow-reports")
     elif drift == "candidate":
         path = paths.root / "waiver-candidates.json"
@@ -779,7 +779,7 @@ def test_candidate_coverage_record_mismatch_is_ineligible(layout):
     env, candidate, _ = prepared(layout)
     path = record_paths(layout.control, layout.record.id).root / "waiver-candidates.json"
     value = json.loads(path.read_text())
-    next(iter(value["candidates"].values()))["campaign_id"] = "different-campaign"
+    next(iter(value["candidates"].values()))["campaign_id"] = "different-record"
     path.write_text(json.dumps(value))
     with pytest.raises(ProposalError, match="not eligible"):
         propose(layout, env, candidate)
