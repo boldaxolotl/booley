@@ -3,7 +3,7 @@
 import json
 import os
 import stat
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +30,9 @@ class JobArtifactCache:
         self._committed: dict[Path, FileEntry] = {}
         self.begin()
 
-    def begin(self) -> None:
+    def begin(self, extra_roots: Sequence[Path] = ()) -> None:
+        """Start a refresh; reports may also live under *extra_roots* (besides the Project)."""
+        self._allowed = (self._project, *(_absolute(root) for root in extra_roots))
         self._next: dict[Path, FileEntry] = {}
         self._indexes: dict[tuple[Path, str], dict[tuple[str, str], Artifact]] = {}
         self._overflow: dict[tuple[Path, str], Iterator[tuple[int, int, Path]]] = {}
@@ -66,19 +68,24 @@ class JobArtifactCache:
                         break
         return index.get((kind, run_id))
 
+    def _base_of(self, path: Path) -> Path | None:
+        """The Project or allowed extra root holding *path*, if any."""
+        return next((base for base in self._allowed if path.is_relative_to(base)), None)
+
     def _inspect(self, path: Path, *, directory: bool = False) -> os.stat_result | None:
         path = _absolute(path)
-        if not path.is_relative_to(self._project):
+        base = self._base_of(path)
+        if base is None:
             raise OSError(f"Job artifact path outside Project: {path}")
         for parent in reversed((path, *path.parents)):
-            if not parent.is_relative_to(self._project) or parent in self._directories:
+            if not parent.is_relative_to(base) or parent in self._directories:
                 continue
-            # self._project is the Booley Directory (the cache is built from it): the one
-            # component that may be a link.
-            info = parent.stat() if is_booley_dir_entry(parent, self._project) else parent.lstat()
+            # *base* is a Booley Directory (the cache is built from the Project's, and a
+            # caller names the others): the one component that may be a link.
+            info = parent.stat() if is_booley_dir_entry(parent, base) else parent.lstat()
             if stat.S_ISDIR(info.st_mode):
                 self._directories.add(parent)
-            elif parent != path or directory or path == self._project:
+            elif parent != path or directory or path == base:
                 raise OSError(f"Job artifact directory unavailable: {parent}")
             elif stat.S_ISLNK(info.st_mode):
                 raise OSError(f"Job artifact symlink unavailable: {path}")
@@ -119,7 +126,7 @@ class JobArtifactCache:
 
     def _index(self, root: Path, endpoint: str, parent: Path) -> dict[tuple[str, str], Artifact]:
         result: dict[tuple[str, str], Artifact] = {}
-        if not root.is_relative_to(self._project):
+        if self._base_of(root) is None:
             self.diagnostics.append(f"Job artifact root unavailable: {root}")
             return result
         total = 0
