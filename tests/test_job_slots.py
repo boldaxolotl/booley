@@ -513,6 +513,31 @@ class TestSingleProcess:
         holders, waiters = store.observe(CLASS_MEMORY)
         assert [t for t in holders + waiters if t.lease_id == waiter.lease_id] == []
 
+    def test_promotion_is_refused_while_a_cancel_holds_the_gate(self, root, world):
+        spawn(world, 100)
+        store = make_store(root, world)
+        canceller = make_store(root, world)
+        waiter = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+
+        with canceller._lease_gate(waiter) as held:
+            assert held
+            state = store.refresh(waiter)
+
+        assert state.state == QUEUED
+        assert not waiter.is_holder
+        holders, waiters = store.observe(CLASS_MEMORY)
+        assert holders == []
+        assert [t.lease_id for t in waiters] == [waiter.lease_id]
+
+    def test_cancel_refuses_a_holder_token(self, root, world):
+        spawn(world, 100)
+        store = make_store(root, world)
+        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+        assert store.refresh(token).state == HOLDING
+
+        assert store.cancel_waiter_token(token) is False
+        assert token.path.exists()
+
     def test_promotion_never_reactivates_a_recovery_claimed_waiter(self, root, world):
         spawn(world, 100)
         store = make_execution_store(
@@ -554,15 +579,17 @@ class TestSingleProcess:
         assert token.is_holder
         assert owner.renew(token) is True
 
-    def _release_threads(self) -> list[threading.Thread]:
-        return [t for t in threading.enumerate() if t.name.startswith("booley-slot-release-")]
+    def _release_threads(self, token: job_slots.SlotToken) -> list[threading.Thread]:
+        name = f"booley-slot-release-{token.lease_id[:8]}"
+        return [t for t in threading.enumerate() if t.name == name]
 
-    def test_release_retries_until_the_lease_gate_frees(self, root, world):
+    def test_release_retries_until_the_lease_gate_frees(self, root, world, caplog):
         spawn(world, 100)
         store = make_store(root, world)
         other = make_store(root, world)
         token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
         assert store.refresh(token).state == HOLDING
+        caplog.set_level(logging.WARNING, logger="booley.runtime.job_slots")
         gate_free = threading.Event()
         test_thread = threading.current_thread()
 
@@ -578,10 +605,16 @@ class TestSingleProcess:
                 assert token.path.exists()
         finally:
             gate_free.set()
-        for thread in self._release_threads():
+        for thread in self._release_threads(token):
             thread.join(timeout=10)
 
+        assert self._release_threads(token) == []
         assert not token.path.exists()
+        assert any(
+            "deferred" in r.getMessage() and token.path.name in r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+        )
 
     def test_release_logs_when_the_lease_gate_never_frees(self, root, world, caplog):
         spawn(world, 100)
@@ -590,13 +623,18 @@ class TestSingleProcess:
         token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
         assert store.refresh(token).state == HOLDING
         caplog.set_level(logging.WARNING, logger="booley.runtime.job_slots")
+        sleeps: list[float] = []
+        store._sleep = sleeps.append
 
         with other._lease_gate(token) as held:
             assert held
             store.release(token)
-            for thread in self._release_threads():
+            for thread in self._release_threads(token):
                 thread.join(timeout=10)
+            assert self._release_threads(token) == []
             assert token.path.exists()
+
+        assert len(sleeps) >= job_slots._RELEASE_RETRY_ATTEMPTS
 
         messages = [r.getMessage() for r in caplog.records]
         assert any("Could not release slot entry" in m and token.path.name in m for m in messages)
@@ -631,7 +669,7 @@ class TestSingleProcess:
             store.release(token)
 
         assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
-        assert self._release_threads() == []
+        assert self._release_threads(token) == []
 
     def test_release_frees_the_slot(self, root, world):
         spawn(world, 100)

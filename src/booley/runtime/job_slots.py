@@ -625,7 +625,7 @@ class SlotToken:
 
     @property
     def is_holder(self) -> bool:
-        return self.path.name.startswith(f"{_HOLDER}-")
+        return _is_holder_path(self.path)
 
 
 @dataclass(frozen=True)
@@ -723,6 +723,10 @@ def _entry_name(state: str, priority: int, seq: int, pid: int, n: int) -> str:
     # Fixed-width priority/sequence/PID fields preserve admission precedence;
     # the lease-derived suffix gives otherwise equal entries a stable total order.
     return f"{state}-p{priority}-s{seq:010d}-{pid:010d}-{n:04d}.json"
+
+
+def _is_holder_path(path: Path) -> bool:
+    return path.name.startswith(f"{_HOLDER}-")
 
 
 def _parse_entry_name(name: str) -> tuple[str, int, int, int, int] | None:
@@ -1198,7 +1202,8 @@ class SlotStore:
         """Stamp complete holder metadata before the waiter→holder rename.
 
         Returns ``None`` once stamped, else the state promotion must report:
-        LOST when the entry is gone (a cancel won), QUEUED when it is
+        LOST when the entry is gone or corrupt (a cancel won; ``acquire``'s
+        release removes the junk), QUEUED when it is
         unreadable, not ``active`` (recovery claimed it; reap removes it), or
         could not be rewritten. The caller holds the lease gate and the entry
         is reread under it; the name embeds the lease, so the file at
@@ -1322,7 +1327,7 @@ class SlotStore:
         if self._release_entry(token):
             return
         logger.warning(
-            "Release of slot entry %s deferred: its lease gate is busy. Retrying in the "
+            "Release of slot entry %s deferred: it could not take its lease gate. Retrying in the "
             "background; if this process exits first, the entry keeps its reservation "
             "until reap removes it",
             token.path.name,
@@ -1338,10 +1343,11 @@ class SlotStore:
             self._warn_release_gave_up(token)
 
     def _release_entry(self, token: SlotToken) -> bool:
-        """Release under the lease gate: False only when the gate stayed busy.
+        """Release under the lease gate: False only when the gate could not be taken.
 
         True also covers a gate that could not be taken because the entry is
-        already gone (nothing is left to release).
+        already gone (nothing is left to release). False means the gate could
+        not be taken while the entry still exists.
         """
         with self._lease_gate(token) as acquired:
             if not acquired:
@@ -1375,7 +1381,7 @@ class SlotStore:
     @staticmethod
     def _warn_release_gave_up(token: SlotToken) -> None:
         logger.warning(
-            "Could not release slot entry %s: its lease gate stayed busy; "
+            "Could not release slot entry %s: it could not take its lease gate; "
             "the entry keeps its reservation until reaped",
             token.path.name,
         )
@@ -1647,7 +1653,7 @@ class SlotStore:
         # the holder name, and a cancel that waited for the gate must not then
         # withdraw the new holder.
         path = token.path
-        if path.name.startswith(f"{_HOLDER}-"):
+        if _is_holder_path(path):
             return False
         return self._withdraw_waiter(token, path)
 
