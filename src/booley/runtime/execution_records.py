@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from booley.core.file_lock import release_file_lock, wait_for_file_lock
+from booley.runtime.atomic_files import STAGED_SUFFIX
 from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.filesystem_utils import (
     is_transient_read_error,
@@ -33,7 +35,9 @@ _PROTOCOL_FILENAMES = {
     "force-cancel",
     "attachment-heartbeat",
     "context.json",
+    "record.lock",
 }
+_RECORD_LOCK_TIMEOUT_SECONDS = 30.0
 _TERMINAL_FIELDS = {
     "schema_version",
     "state",
@@ -62,6 +66,7 @@ class ExecutionPaths:
 
     root: Path
     record: Path
+    lock: Path
     cancel: Path
     force: Path
     heartbeat: Path
@@ -78,6 +83,7 @@ def execution_paths(
     return ExecutionPaths(
         root=root,
         record=root / "record.json",
+        lock=root / "record.lock",
         cancel=root / "cancel.json",
         force=root / "force-cancel",
         heartbeat=root / "attachment-heartbeat",
@@ -100,6 +106,31 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
         _fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def update_execution_record(
+    paths: ExecutionPaths,
+    change: Callable[[dict[str, Any] | None], dict[str, Any] | None],
+) -> None:
+    """Read, change and replace one execution record under its cross-process lock.
+
+    *change* receives the current record (``None`` when absent or unreadable)
+    and returns the record to write, or ``None`` to write nothing. An execution
+    directory that no longer exists is never recreated: *change* sees ``None``
+    and its result is dropped. *change* runs under the lock, so it must not
+    block.
+    """
+    if not paths.root.is_dir():
+        change(None)
+        return
+    with paths.lock.open("a+", encoding="utf-8") as handle:
+        wait_for_file_lock(handle, timeout_s=_RECORD_LOCK_TIMEOUT_SECONDS)
+        try:
+            updated = change(read_json(paths.record))
+            if updated is not None:
+                atomic_write_json(paths.record, updated)
+        finally:
+            release_file_lock(handle)
 
 
 def _fsync_directory(path: Path) -> None:
@@ -355,7 +386,11 @@ def _remove_terminal_record(root: Path, *, cutoff: float) -> bool:
             return False
     except OSError:
         return False
-    if any(entry.name not in _PROTOCOL_FILENAMES or not entry.is_file() for entry in entries):
+    if any(
+        (entry.name not in _PROTOCOL_FILENAMES and not entry.name.endswith(STAGED_SUFFIX))
+        or not entry.is_file()
+        for entry in entries
+    ):
         return False
     try:
         for entry in entries:

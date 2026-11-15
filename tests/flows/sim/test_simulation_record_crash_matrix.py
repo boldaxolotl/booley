@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import signal
+import time
+import traceback
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -359,6 +364,478 @@ def test_coverage_aggregate_boundary_resume_matrix(tmp_path: Path, crash_point: 
     # The crashed attempt stays on disk; the resume adds exactly one.
     assert store.scan().items[0].attempt_count == 2
     assert len(list(store.root.glob("work-items/*/result.json"))) == 1
+
+
+# --- Process death in the middle of a durable write (#4213) -------------------------
+
+_KILLED = 57
+_STAGED = ".booley-staged"
+_needs_fork = pytest.mark.skipif(not hasattr(os, "fork"), reason="the kill matrix forks a worker")
+
+
+class _KillAtWrite:
+    """Publication checkpoint: arm on ``before:<boundary>``, then die inside the next write.
+
+    ``mid-write`` kills inside the first byte-stream write after arming, having
+    written half of it; ``after-link`` kills right after the next hard link
+    claimed a final name. Either way the worker exits like a SIGKILL: no
+    ``finally`` and no cleanup. The path involved goes to ``side_file`` first.
+    """
+
+    def __init__(self, boundary: str, phase: str, side_file: Path) -> None:
+        self.boundary = boundary
+        self.phase = phase
+        self.side_file = side_file
+        self.test_process = os.getpid()
+        self.seen: list[str] = []
+
+    def __call__(self, name: str) -> None:
+        self.seen.append(name)
+        # The resume in the test process shares this checkpoint and must not die.
+        if name == f"before:{self.boundary}" and os.getpid() != self.test_process:
+            self._arm()
+
+    def _arm(self) -> None:
+        paths: dict[int, str] = {}
+        real_open, real_fdopen, real_link = os.open, os.fdopen, os.link
+        side_file = self.side_file
+
+        def die(path: object) -> None:
+            side_file.write_text(str(path), encoding="utf-8")
+            os._exit(_KILLED)
+
+        def remembering_open(path, *args, **kwargs):
+            descriptor = real_open(path, *args, **kwargs)
+            paths[descriptor] = str(path)
+            return descriptor
+
+        def dying_fdopen(descriptor, mode="r", *args, **kwargs):
+            writer = real_fdopen(descriptor, mode, *args, **kwargs)
+            if "b" not in mode or "w" not in mode:
+                return writer
+            return _HalfWriter(writer, lambda: die(paths.get(descriptor, "")))
+
+        def dying_link(source, destination, **kwargs):
+            real_link(source, destination, **kwargs)
+            die(destination)
+
+        os.open = remembering_open  # type: ignore[assignment]
+        if self.phase == "mid-write":
+            os.fdopen = dying_fdopen  # type: ignore[assignment]
+        else:
+            os.link = dying_link  # type: ignore[assignment]
+
+
+class _HalfWriter:
+    """A binary writer that writes half of its first chunk, then runs ``die``."""
+
+    def __init__(self, writer, die) -> None:
+        self._writer = writer
+        self._die = die
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+    def write(self, data: bytes) -> None:
+        self._writer.write(data[: len(data) // 2])
+        self._writer.flush()
+        self._die()
+
+    def flush(self) -> None:
+        self._writer.flush()
+
+
+def _run_killed(run, trace: Path) -> None:
+    """Run ``run`` in a forked worker and require it to die inside its write.
+
+    The worker has none of the test's own threads. A worker that returns, or
+    fails for another reason, fails the test with its traceback; a worker that
+    hangs is killed at a deadline so none outlives the test.
+    """
+    pid = os.fork()
+    if pid == 0:
+        try:
+            try:
+                run()
+            except BaseException:  # noqa: BLE001 - the worker reports every failure, then exits
+                trace.write_text(traceback.format_exc(), encoding="utf-8")
+                os._exit(4)
+        finally:
+            os._exit(3)
+    deadline = time.monotonic() + 30
+    while True:
+        done, status = os.waitpid(pid, os.WNOHANG)
+        if done:
+            break
+        if time.monotonic() > deadline:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+            pytest.fail("the killed worker hung")
+        time.sleep(0.02)
+    code = os.waitstatus_to_exitcode(status)
+    detail = trace.read_text(encoding="utf-8") if trace.exists() else "the run returned"
+    assert code == _KILLED, f"the worker exited {code} before reaching its write: {detail}"
+
+
+def _assert_killed_inside_the_write(
+    side_file: Path, phase: str, target_directory: Path, *, staging: tuple[str, ...] = (_STAGED,)
+) -> None:
+    """The worker died in a write below the Target directory, never under a reader's name.
+
+    ``staging`` is what a hidden staged file may end with: the durable helper's
+    suffix, plus ``.tmp`` where the summary or the Acceptance Journal stage.
+    """
+    path = Path(side_file.read_text(encoding="utf-8"))
+    assert path.is_relative_to(target_directory), path
+    if phase == "after-link":
+        assert path.is_file()
+        assert path.stat().st_nlink == 2
+        return
+    assert not path.exists() or (path.name.startswith(".") and path.name.endswith(staging)), path
+
+
+def _check_every_case(tmp_path: Path, cases, check) -> None:
+    """Run ``check(case_directory, *case)`` for each case, naming the case that failed."""
+    for index, case in enumerate(cases):
+        try:
+            check(tmp_path / f"case-{index}", *case)
+        except Exception as exc:
+            raise AssertionError(f"kill case {case}: {exc!r}") from exc
+
+
+def _staging_of(boundary: str) -> tuple[str, ...]:
+    return (_STAGED, ".tmp") if boundary == "summary_replace" else (_STAGED,)
+
+
+@dataclass
+class _SerialCase:
+    record: SimulationRecord
+    request: NewSimulationRecordRunRequest
+    store: SimulationRecordStore
+    manifest: object
+    plan: object
+    launches: list[int]
+    target_directory: Path
+
+
+def _serial_case(root: Path, monkeypatch: pytest.MonkeyPatch, shared: bool, checkpoint):
+    manifest = _crash_manifest(shared=shared)
+    plan = create_simulation_record_plan(manifest)
+    root.mkdir()
+    project, build_root, run_log = _crash_environment(root)
+    launches: list[int] = []
+    group = _CrashGroup(build_root, run_log, launches)
+    monkeypatch.setattr(
+        "booley.flows.sim.record.serial_execution.TargetCatalog.build",
+        lambda _root: _CrashCatalog(project),
+    )
+    executor = OrdinaryHdlSerialExecutor(
+        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+        execution_factory=lambda _options: _CrashExecution(group),  # type: ignore[arg-type,return-value]
+        publication_checkpoint=checkpoint,
+    )
+    invocation = root / "reports" / "000001"
+    invocation.mkdir(parents=True)
+    request = NewSimulationRecordRunRequest(
+        plan=plan,
+        project_root=project,
+        report_root=invocation.parent,
+        policy=SimulationRecordPolicy(),
+        invocation_directory=invocation,
+        admission=_admission(),
+    )
+    return _SerialCase(
+        SimulationRecord(executor, publication_checkpoint=checkpoint),
+        request,
+        SimulationRecordStore(invocation / "targets" / "sim" / "record"),
+        manifest,
+        plan,
+        launches,
+        invocation / "targets" / "sim",
+    )
+
+
+_TIMING_KEYS = {
+    "attempt_id",
+    "attempt_ordinal",
+    "producer_invocation_id",
+    "finished_at",
+    "elapsed_seconds",
+    # What the attempt's own Simulator Bundle binds: a fresh identity per attempt.
+    "bundle_id",
+    "build_result",
+    "bundle_manifest_sha256",
+    # How a runtime input reached the run directory: the killed attempt left it there.
+    "method",
+    "owned",
+}
+
+
+_ROOT_KEYS = {"manifest_sha256", "simulation_record_id", "work_item_id", "workload_sha256"}
+
+
+def _comparable(value, *, per_root: bool = False):
+    """A Result without attempt identity and timing; references reduced to their digests.
+
+    ``per_root`` also drops what embeds the project's absolute path (the
+    record, work item and workload identities) and reduces each reference to
+    its kind, for records built under different roots.
+    """
+    if isinstance(value, list):
+        return [_comparable(item, per_root=per_root) for item in value]
+    if not isinstance(value, dict):
+        return value
+    if "sha256" in value and "path" in value:
+        return {"kind": value.get("kind")} if per_root else {"sha256": value["sha256"]}
+    snapshot = value.get("executable_snapshot")
+    if isinstance(snapshot, dict):
+        value = {
+            **value,
+            "executable_snapshot": {k: v for k, v in snapshot.items() if k != "manifest"},
+        }
+    dropped = _TIMING_KEYS | (_ROOT_KEYS if per_root else set())
+    return {
+        key: _comparable(item, per_root=per_root)
+        for key, item in value.items()
+        if key not in dropped
+    }
+
+
+def _comparable_results(store: SimulationRecordStore, *, per_root: bool = False) -> list[object]:
+    paths = sorted(store.root.glob("work-items/*/result.json"))
+    return [_comparable(json.loads(path.read_bytes()), per_root=per_root) for path in paths]
+
+
+def _assert_no_staged_files(target_directory: Path) -> None:
+    leftovers = [
+        path.name
+        for path in target_directory.rglob("*")
+        if path.name.endswith(_STAGED)
+        or (path.name.startswith(".summary.json.") and path.suffix == ".tmp")
+    ]
+    assert leftovers == []
+
+
+def _serial_kill_case(
+    root: Path, monkeypatch: pytest.MonkeyPatch, boundary: str, route: str, phase: str
+) -> None:
+    root.mkdir()
+    side_file = root / "side.txt"
+    kill = _KillAtWrite(boundary, phase, side_file)
+    killed = _serial_case(root / "killed", monkeypatch, route == "shared", kill)
+    _run_killed(lambda: killed.record.run(killed.request), root / "trace.txt")
+    _assert_killed_inside_the_write(
+        side_file, phase, killed.target_directory, staging=_staging_of(boundary)
+    )
+
+    crash_point = "before:manifest_commit" if not killed.store.manifest_path.exists() else "x"
+    outcome = _resume_crashed_simulation_record(
+        killed.record, killed.request, killed.store, killed.manifest, killed.plan, crash_point
+    )
+    baseline = _serial_case(root / "baseline", monkeypatch, route == "shared", None)
+    baseline_outcome = baseline.record.run(baseline.request)
+
+    assert outcome.complete is True
+    assert baseline_outcome.complete is True
+    assert {item.state for item in killed.store.scan().items} == {"complete"}
+    _assert_no_staged_files(killed.target_directory)
+    assert _comparable_results(killed.store) == _comparable_results(baseline.store)
+    assert _comparable_results(killed.store) != []
+
+
+@_needs_fork
+@pytest.mark.timeout(180)
+def test_serial_publication_killed_mid_write_resumes_like_an_uninterrupted_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A SIGKILL inside any durable write leaves nothing a reader trusts, and resume completes.
+
+    Every durable boundary, on both build routes, killed inside its write and right
+    after its link (the summary is replaced, never linked).
+    """
+    cases = [
+        (boundary, route, phase)
+        for boundary in _DURABLE_BOUNDARIES
+        for route in ("shared", "private")
+        for phase in ("mid-write", "after-link")
+        if not (phase == "after-link" and boundary == "summary_replace")
+    ]
+    _check_every_case(
+        tmp_path, cases, lambda root, *case: _serial_kill_case(root, monkeypatch, *case)
+    )
+
+
+def _fresh_native_execution(_plan, _options, _commands, _access) -> NativeExecution:
+    # Binding the snapshot rewrites the executable path, so each attempt needs its own.
+    native = NativeExecution()
+    runtime = native.build_root / "data/stimulus.bin"
+    runtime.parent.mkdir()
+    runtime.write_bytes(b"authenticated runtime input")
+    return native
+
+
+def _coverage_case(root: Path, checkpoint):
+    root.mkdir()
+    plan, target = _coverage_simulation_record_plan(root, runtime_input=True)
+    record = SimulationRecord(
+        CoverageAggregateExecutor(
+            plans={target.handle.identity: target},
+            execution_factory=_fresh_native_execution,
+            publication_checkpoint=checkpoint,
+        ),
+        publication_checkpoint=checkpoint,
+    )
+    invocation = root / "reports" / "1"
+    invocation.mkdir(parents=True)
+    policy = SimulationRecordPolicy()
+    request = NewSimulationRecordRunRequest(
+        plan, root, invocation.parent, policy, invocation, _admission()
+    )
+    store = SimulationRecordStore(invocation / "targets/sim_0/record")
+    resume = ResumeSimulationRecordRunRequest(
+        _validated_resume(store, plan, target, root),
+        plan,
+        root,
+        invocation.parent,
+        policy,
+        invocation,
+        _admission(),
+    )
+    return record, request, resume, store, invocation / "targets" / "sim_0"
+
+
+def _coverage_kill_case(root: Path, boundary: str, phase: str) -> None:
+    root.mkdir()
+    side_file = root / "side.txt"
+    kill = _KillAtWrite(boundary, phase, side_file)
+    record, request, resume, store, target_directory = _coverage_case(root / "killed", kill)
+    _run_killed(lambda: record.run(request), root / "trace.txt")
+    _assert_killed_inside_the_write(side_file, phase, target_directory)
+
+    outcome = record.run(resume)
+    base_record, base_request, _resume, base_store, _target = _coverage_case(
+        root / "baseline", None
+    )
+    baseline = base_record.run(base_request)
+
+    assert outcome.complete is True
+    assert baseline.complete is True
+    assert {item.state for item in store.scan().items} == {"complete"}
+    _assert_no_staged_files(target_directory)
+    assert _comparable_results(store, per_root=True) == _comparable_results(
+        base_store, per_root=True
+    )
+    assert _comparable_results(store) != []
+
+
+@_needs_fork
+def test_coverage_aggregate_killed_mid_write_resumes(tmp_path: Path) -> None:
+    """The coverage aggregate's durable writes survive a SIGKILL like the serial executor's."""
+    cases = [
+        (boundary, phase)
+        for boundary in ("simulation_attempt", "runtime_inputs", "coverage_reference")
+        for phase in ("mid-write", "after-link")
+    ]
+    _check_every_case(tmp_path, cases, _coverage_kill_case)
+
+
+def _pre_sim_kill_case(root: Path, monkeypatch: pytest.MonkeyPatch, access: str) -> None:
+    root.mkdir()
+    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
+
+    side_file = root / "side.txt"
+    kill = _KillAtWrite("pre_sim_evidence", "mid-write", side_file)
+    _run_killed(
+        lambda: _successful_pre_sim_record(root, monkeypatch, access, checkpoint=kill),
+        root / "trace.txt",
+    )
+    invocation = root / "reports/1"
+    store = SimulationRecordStore(invocation / "targets/sim/record")
+    _assert_killed_inside_the_write(side_file, "mid-write", invocation)
+    # The worker's patches died with it: the resume in this process needs its own.
+    from tests.flows.sim.simulation_record_test_support import _handle
+
+    monkeypatch.setattr(
+        "booley.flows.sim.record.serial_execution.TargetCatalog.build",
+        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: _handle(root / "project")),
+    )
+    monkeypatch.setattr(
+        "booley.flows.sim.record.serial_execution.simulation_target_environment",
+        lambda _handle: {},
+    )
+
+    assert collect_pre_sim_firings(store.manifest_path) == ()
+    assert store.scan().interrupted
+    resumed, counters = _resume_real_hook_crash(root, invocation, store)
+    assert counters["launch"] == 1
+    assert len(resumed.pre_sim_firings) == 1
+    assert all(
+        firing.document["stdout_tail"] == "hook-out\n" for firing in resumed.pre_sim_firings
+    )
+    assert collect_pre_sim_firings(store.manifest_path) != ()
+    _assert_no_staged_files(invocation)
+
+
+@_needs_fork
+def test_pre_sim_evidence_killed_mid_write_resumes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A SIGKILL inside a Pre-Sim firing's evidence write leaves no firing, and resume reruns it."""
+    _check_every_case(
+        tmp_path,
+        [("immutable",), ("legacy-per-test",)],
+        lambda root, access: _pre_sim_kill_case(root, monkeypatch, access),
+    )
+
+
+@_needs_fork
+def test_acceptance_intent_killed_mid_write_retries_idempotently(tmp_path: Path) -> None:
+    """Guard: the Acceptance Journal already stages its intent, so a kill mid-write is retryable."""
+    boundary = "acceptance_intent"
+    log_dir, state, changes = _transaction_state(tmp_path)
+    identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
+    side_file = tmp_path / "side.txt"
+    kill = _KillAtWrite(boundary, "mid-write", side_file)
+
+    def record() -> object:
+        return acceptance_ledger.record_or_verify_transaction(
+            log_dir,
+            state,
+            changes,
+            acceptance_facts=_simulation_record_facts(),
+            identity=identity,
+            publication_checkpoint=kill,
+        )
+
+    _run_killed(record, tmp_path / "trace.txt")
+    _assert_killed_inside_the_write(side_file, "mid-write", tmp_path, staging=(".tmp",))
+    transaction = record()
+
+    assert len(list((log_dir / "acceptance" / "transactions").glob("*.json"))) == 1
+    assert len(transaction.evidence) == len(changes)
+
+
+@_needs_fork
+def test_compatibility_projection_killed_mid_write_is_retryable(tmp_path: Path) -> None:
+    """Guard: the projection is replaced atomically, so a kill mid-write leaves no partial file."""
+    path = tmp_path / "simulation.json"
+    side_file = tmp_path / "side.txt"
+    kill = _KillAtWrite("compatibility_projection", "mid-write", side_file)
+
+    def write() -> None:
+        write_compatibility_projection(
+            path, {"target": "sim"}, acceptance_committed=True, publication_checkpoint=kill
+        )
+
+    _run_killed(write, tmp_path / "trace.txt")
+    _assert_killed_inside_the_write(side_file, "mid-write", tmp_path, staging=(".tmp",))
+    assert not path.exists()
+    write()
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {"complete": True, "target": "sim"}
 
 
 @pytest.mark.parametrize(

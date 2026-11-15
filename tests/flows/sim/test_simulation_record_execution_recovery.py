@@ -71,6 +71,7 @@ from booley.runtime.job_slots import (
     SlotStore,
 )
 from tests.conftest import symlink_or_skip
+from tests.execution_test_support import run_with_recovery_between_read_and_write
 from tests.flows.sim.simulation_record_test_support import (
     _BAD_DIGEST,
     _PARALLEL_SYNC_TIMEOUT_S,
@@ -969,3 +970,33 @@ def test_foreign_attempt_result_fails_closed_at_the_read_boundary(tmp_path: Path
 
     with pytest.raises(SimulationRecordIntegrityError, match="final published attempt"):
         SimulationRecord(_ForeignAttemptExecutor()).run(request)
+
+
+def test_mark_terminal_never_replaces_the_terminal_record_recovery_writes_mid_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = _two_item_manifest()
+    registry = ChildExecutionRegistry(manifest, tmp_path)
+    execution_id = ExecutionId(uuid.uuid4().hex)
+    work_item_id = str(manifest.document["work_items"][0]["work_item_id"])  # type: ignore[index]
+    prepared = registry.prepare(
+        execution_id,
+        work_item_id=work_item_id,
+        attempt_id=str(uuid.uuid4()),
+        attempt_ordinal=1,
+        attempt_directory=tmp_path / "attempt",
+        parent_execution_id=ExecutionId(uuid.uuid4().hex),
+    )
+
+    replaced = run_with_recovery_between_read_and_write(
+        monkeypatch,
+        execution_id,
+        tmp_path,
+        lambda: registry.mark_terminal(prepared, "record_error"),
+    )
+
+    assert "terminal" not in replaced
+    final = read_json(execution_paths(execution_id, booley_dir=tmp_path).record)
+    assert final is not None
+    assert final["state"] == "terminal"
+    assert final["tree_terminal"] is True

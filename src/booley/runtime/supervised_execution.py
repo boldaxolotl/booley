@@ -9,15 +9,16 @@ from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
     ExecutionId,
-    atomic_write_json,
+    ExecutionPaths,
     execution_paths,
-    read_json,
+    update_execution_record,
 )
-from booley.runtime.pid import capture_process_identity
+from booley.runtime.pid import ProcessIdentity, capture_process_identity
 from booley.runtime.platform_paths import kill_process_tree
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -44,18 +45,37 @@ class SupervisedProcessSet:
             if cancelled:
                 kill_process_tree(process)
         if self._execution_id is not None and not cancelled and not self._cancelled():
-            identity = capture_process_identity(process.pid)
-            self._write_record(self._execution_id, "running", identity, tree_terminal=False)
+            self._record_running(self._execution_id, process)
+
+    def _record_running(self, execution_id: ExecutionId, process: subprocess.Popen) -> None:
+        identity = capture_process_identity(process.pid)
+        already_terminal = False
+
+        def change(current: dict[str, Any] | None) -> dict[str, Any] | None:
+            nonlocal already_terminal
+            if current is not None and current.get("state") == "terminal":
+                already_terminal = True
+                return None
+            return self._record("running", identity)
+
+        update_execution_record(self._paths(execution_id), change)
+        if already_terminal:
+            # The execution was proven empty and recorded terminal: nothing may
+            # run under it, and the terminal record is never replaced.
+            kill_process_tree(process)
 
     def unregister(self, process: subprocess.Popen) -> None:
         with self._gate:
             self._processes.discard(process)
             active = bool(self._processes)
         if self._execution_id is not None and not active:
-            paths = execution_paths(self._execution_id, booley_dir=self._project_data)
-            current = read_json(paths.record)
-            if current is not None and current.get("state") == "running":
-                self._write_record(self._execution_id, "waiting", None, tree_terminal=False)
+
+            def change(current: dict[str, Any] | None) -> dict[str, Any] | None:
+                if current is not None and current.get("state") == "running":
+                    return self._record("waiting", None)
+                return None
+
+            update_execution_record(self._paths(self._execution_id), change)
 
     def pids(self) -> tuple[int, ...]:
         """The PIDs of the registered processes not yet reaped.
@@ -72,24 +92,22 @@ class SupervisedProcessSet:
         for process in processes:
             kill_process_tree(process)
 
-    def _write_record(
-        self, execution_id: ExecutionId, state: str, leader, *, tree_terminal: bool
-    ) -> None:
-        paths = execution_paths(execution_id, booley_dir=self._project_data)
-        atomic_write_json(
-            paths.record,
-            {
-                "schema_version": PROTOCOL_VERSION,
-                "state": state,
-                "runtime_identity": None,
-                "supervisor": None,
-                "leader": leader.to_payload() if leader is not None else None,
-                "exit_code": None,
-                "tree_terminal": tree_terminal,
-                "terminal_cause": None,
-                "updated_at": utc_now_rfc3339(),
-            },
-        )
+    def _paths(self, execution_id: ExecutionId) -> ExecutionPaths:
+        return execution_paths(execution_id, booley_dir=self._project_data)
+
+    @staticmethod
+    def _record(state: str, leader: ProcessIdentity | None) -> dict[str, Any]:
+        return {
+            "schema_version": PROTOCOL_VERSION,
+            "state": state,
+            "runtime_identity": None,
+            "supervisor": None,
+            "leader": leader.to_payload() if leader is not None else None,
+            "exit_code": None,
+            "tree_terminal": False,
+            "terminal_cause": None,
+            "updated_at": utc_now_rfc3339(),
+        }
 
 
 def no_cancellation_cause() -> str | None:

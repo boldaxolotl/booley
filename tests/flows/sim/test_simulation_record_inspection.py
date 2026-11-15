@@ -296,3 +296,40 @@ def test_simulation_record_mutation_lock_never_recreates_a_missing_root(tmp_path
         raise AssertionError("unreachable")
 
     assert not store.root.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows publishes by rename, never by link")
+def test_authenticate_work_item_accepts_a_record_left_linked_by_a_killed_publication(
+    tmp_path: Path,
+) -> None:
+    completed = _completed(tmp_path)
+    result = completed.store.work_item_directory(completed.item_id) / "result.json"
+    staged = result.with_name(".result.json.x.booley-staged")
+    os.link(result, staged)
+
+    evidence = authenticate_work_item(completed.store.manifest_path, completed.item_id)
+
+    assert evidence.work_item_id == completed.item_id
+    assert not staged.exists()
+    assert result.is_file()
+
+
+def test_mutation_lock_discards_killed_publication_leftovers(tmp_path: Path) -> None:
+    completed = _completed(tmp_path)
+    store = completed.store
+    item_directory = store.work_item_directory(completed.item_id)
+    leftovers = (
+        item_directory / ".result.json.x.booley-staged",
+        store.root.parent / ".coverage.json.x.booley-staged",
+        store.root / ".summary.json.x.tmp",
+    )
+    unrelated = item_directory / ".x.tmp"
+    for path in (*leftovers, unrelated):
+        path.write_bytes(b"{")
+
+    with store.mutation_lock():
+        pass
+
+    assert [path.exists() for path in leftovers] == [False, False, False]
+    assert unrelated.exists()
+    assert (item_directory / "result.json").is_file()
