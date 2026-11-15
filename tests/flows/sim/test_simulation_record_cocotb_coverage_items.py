@@ -230,9 +230,11 @@ class _ImageCheckingExecution(NativeExecution):
         self.original_executable = self.executable
         self.executed_original = False
 
-    def bind_authenticated_attempt(self, snapshot_root: Path, run_cwd: Path) -> None:
+    def bind_authenticated_attempt(
+        self, bundle_root: Path, evidence_root: Path, run_cwd: Path, verify_bundle
+    ) -> None:
         assert run_cwd.is_dir()
-        self.executable = snapshot_root / self.executable.name
+        self.executable = bundle_root / self.executable.name
         self.original_executable.write_bytes(b"substituted original image")
 
     def run(self, request):
@@ -249,8 +251,10 @@ class _RuntimeCheckingExecution(NativeExecution):
         runtime.write_bytes(b"authenticated runtime input")
         self.bound = False
 
-    def bind_authenticated_attempt(self, snapshot_root: Path, run_cwd: Path) -> None:
-        super().bind_authenticated_attempt(snapshot_root, run_cwd)
+    def bind_authenticated_attempt(
+        self, bundle_root: Path, evidence_root: Path, run_cwd: Path, verify_bundle
+    ) -> None:
+        super().bind_authenticated_attempt(bundle_root, evidence_root, run_cwd, verify_bundle)
         assert (run_cwd / "data/stimulus.bin").read_bytes() == (b"authenticated runtime input")
         self.bound = True
 
@@ -259,7 +263,7 @@ class _RuntimeCheckingExecution(NativeExecution):
         return super().run(request)
 
 
-def test_coverage_aggregate_executes_authenticated_snapshot_not_original(
+def test_coverage_aggregate_executes_authenticated_bundle_not_original(
     tmp_path: Path,
 ) -> None:
     native = _ImageCheckingExecution()
@@ -268,6 +272,58 @@ def test_coverage_aggregate_executes_authenticated_snapshot_not_original(
     assert outcome.complete is True
     assert native.executed_original is False
     _assert_native_build_scope(store)
+
+
+def test_coverage_attempt_launches_from_its_private_bundle_without_a_copy(tmp_path: Path) -> None:
+    native = NativeExecution()
+    outcome, store = _run_coverage_simulation_record(tmp_path, native)
+
+    assert outcome.complete is True
+    (attempt,) = store.root.glob("work-items/*/attempts/*")
+    assert native.executable.parent == attempt / "private-build"
+    assert native.evidence_root == attempt / "execution-evidence"
+    assert not (attempt / "snapshot").exists()
+    copies = [
+        path
+        for path in attempt.rglob("*")
+        if path.is_file() and path.read_bytes() == b"authenticated simulator image"
+    ]
+    assert copies == [attempt / "private-build" / "simv"]
+    result = store.scan().items[0].result
+    assert result is not None
+    assert result.document["bundle_verification"]["verified_after_exit"] is True
+
+
+class _MutatingExecution(NativeExecution):
+    """A native execution whose run changes the bundle before or after its launch."""
+
+    def __init__(self, when: str) -> None:
+        super().__init__()
+        self.when = when
+
+    def _stray(self) -> None:
+        (self.executable.parent / "stray.so").write_bytes(b"stray")
+
+    def run(self, request):
+        if self.when == "before_launch":
+            self._stray()
+        result = super().run(request)
+        if self.when == "during_run":
+            self._stray()
+        return result
+
+
+@pytest.mark.parametrize("when", ["before_launch", "during_run"])
+def test_coverage_bundle_mutation_fails_closed(tmp_path: Path, when: str) -> None:
+    native = _MutatingExecution(when)
+
+    with pytest.raises(SimulationRecordIntegrityError, match="undeclared bundle entry"):
+        _run_coverage_simulation_record(tmp_path, native)
+
+    # The integrity failure is the bundle's, not a coverage collection error, and no
+    # Result is published for the attempt.
+    assert (len(native.runs) == 0) is (when == "before_launch")
+    assert not list(tmp_path.glob("reports/1/targets/*/record/work-items/*/result.json"))
 
 
 def _assert_native_build_scope(store: SimulationRecordStore) -> None:
@@ -476,7 +532,7 @@ def test_coverage_design_build_failure_has_exact_blocked_matrix(tmp_path: Path) 
     assert result is not None
     assert result.document["state"] == "blocked_by_build"
     assert result.document["bundle_id"] is None
-    assert result.document["executable_snapshot"] is None
+    assert result.document["bundle_verification"] is None
     assert result.document["runtime_inputs"] == ()
     for observation in result.document["observations"]:
         assert observation["execution"] == "blocked_by_build"
@@ -559,8 +615,8 @@ class _CocotbGroup:
     def bind_authenticated_bundle(self, evidence) -> None:
         assert evidence == _build_execution()
 
-    def launch_snapshot(self, snapshot_root: Path, run_cwd: Path):
-        del snapshot_root, run_cwd
+    def launch_bundle(self, bundle_root: Path, evidence_root: Path, run_cwd: Path):
+        del bundle_root, evidence_root, run_cwd
         self._harness.launches.append(self.names)
         path = self.build_root / "cocotb-results.json"
         tests = self._harness.reported or tuple(
@@ -861,7 +917,6 @@ def _aggregate_result_bound_fixture(tmp_path, monkeypatch):
     document["$schema"] = RESULT_SCHEMA
     document.update(serial_execution._common(request))
     document["attempt_id"] = request.attempt_id
-    document["executable_snapshot"]["manifest"]["owner"] = request.attempt_id
     document["evidence"] = store.pre_sim_references(request.attempt_directory)
     document["observations"] = [
         {
