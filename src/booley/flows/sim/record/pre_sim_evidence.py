@@ -174,6 +174,7 @@ class PreSimFiringDecoder:
         """Shared validation for constructed facts and persisted JSON."""
         try:
             value = _validate_fields(value)
+            # The manifest decoder proved the fingerprints member is an object.
             fingerprints = cast(Mapping[str, object], self.manifest.document["fingerprints"])
             binding = {
                 "simulation_record_id": self.manifest.document["simulation_record_id"],

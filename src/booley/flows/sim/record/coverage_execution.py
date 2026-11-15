@@ -543,7 +543,7 @@ def _coverage_test_outcome(item: Mapping[str, object]) -> SimulationTestOutcome:
     if not isinstance(error_tail, str):
         error_tail = "" if verdict == "pass" else f"coverage simulation {verdict}"
     # The verdict is checked against the literal set above; the termination and failure kind
-    # come from the in-process collector outcome.
+    # are written by this package's collector and are not re-checked on read.
     test = SimulationTestOutcome(
         name=name,
         verdict=cast(SimulationVerdict, verdict),

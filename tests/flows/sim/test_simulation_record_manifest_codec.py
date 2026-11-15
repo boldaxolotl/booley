@@ -1084,7 +1084,20 @@ def test_duplicate_parameter_names_report_ambiguity_instead_of_crashing():
     old = _diagnostic_document(parameters=[{"name": "N", "value": 1}, {"name": "N", "value": 2}])
     new = _diagnostic_document(parameters=[{"name": "N", "value": 1}])
     diagnostic = _project_diagnostics(old, new)
-    assert "parameter names ambiguous: duplicate parameter name" in diagnostic.mismatch_summary
+    assert (
+        "parameter names ambiguous: duplicate or non-string parameter name"
+        in diagnostic.mismatch_summary
+    )
+
+
+def test_non_string_parameter_name_reports_ambiguity_instead_of_crashing():
+    old = _diagnostic_document(parameters=[{"name": {}, "value": 1}])
+    new = _diagnostic_document(parameters=[{"name": "N", "value": 1}])
+    diagnostic = _project_diagnostics(old, new)
+    assert (
+        "parameter names ambiguous: duplicate or non-string parameter name"
+        in diagnostic.mismatch_summary
+    )
 
 
 def test_conflicting_source_replica_remains_visible():

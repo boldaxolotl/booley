@@ -73,7 +73,7 @@ class SimulationRecordWorkloadMismatchError(SimulationRecordIntegrityError):
 
 _EXPLAINED, _DERIVED = "explained", "derived"
 _AMBIGUOUS_SOURCES = "source paths ambiguous: duplicate source path"
-_AMBIGUOUS_PARAMETERS = "parameter names ambiguous: duplicate parameter name"
+_AMBIGUOUS_PARAMETERS = "parameter names ambiguous: duplicate or non-string parameter name"
 
 
 @dataclass(slots=True)
@@ -157,9 +157,8 @@ def _entry_map(
     entries: Sequence[Mapping[str, object]], key: str
 ) -> dict[str, Mapping[str, object]] | None:
     names = [entry[key] for entry in entries]
-    if len(set(names)) != len(names):
+    if not all(isinstance(name, str) for name in names) or len(set(names)) != len(names):
         return None
-    # Entries are JSON objects keyed by a string name.
     return {cast(str, entry[key]): entry for entry in entries}
 
 
