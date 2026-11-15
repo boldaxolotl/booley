@@ -1165,7 +1165,7 @@ def test_core_audit_skips_core_repository_hygiene_without_targets(tmp_path, monk
 
 _CORE_RESOLUTION_OUTPUT = (
     "  ✗  .core Target 'sim_bad' fails to resolve\n"
-    "     → fix the .core / depends graph\n"
+    "     → fix unit.core (declares Target 'sim_bad') or its depends graph\n"
     "      Parse error. Ignoring file /work/unit.core:\n"
     "      filesets.tb.depend must be array\n"
     "      second line\n"
@@ -1177,8 +1177,9 @@ def test_core_resolution_deep_output_is_pinned(tmp_path, monkeypatch, capsys):
     """The deep ``.core`` resolution rows keep their text, order, excerpt and counts.
 
     The literal was captured from Doctor's own resolution before it moved to its
-    owner and is unchanged by the move; the rows now reach the reporter as the
-    owner's one typed report, and the excerpt is shown without ``--verbose``.
+    owner; only the failing Target's fix changed (it names the ``.core``). The
+    rows now reach the reporter as the owner's one typed report, and the
+    excerpt is shown without ``--verbose``.
     """
     from tests.harness.test_doctor_deep_execution import _core_resolution_project
 

@@ -921,3 +921,23 @@ def test_prepared_sole_omission_keeps_one_snapshot(project):
     assert selection.target_arg == "sim"
     assert selection.matches(project, "sim")
     assert not selection.matches(project, "")
+
+
+def test_inspection_failure_names_unprovided_dependency(tmp_path: Path) -> None:
+    (tmp_path / "top.core").write_bytes(
+        b"CAPI=2:\nname: acme:lib:top:0\nfilesets:\n  rtl:\n    depend: ['>=::vlog_tb_utils:1.1']\n"
+        b"targets:\n  sim:\n    flow: sim\n    flow_options: {tool: verilator}\n"
+        b"    filesets: [rtl]\n"
+    )
+    catalog = TargetCatalog.build(tmp_path)
+
+    with pytest.raises(fusesoc_registry.FuseSocError) as excinfo:
+        catalog.inspect(catalog.select("sim"))
+
+    assert str(excinfo.value).endswith(
+        "\n"
+        "no Project .core provides '>=::vlog_tb_utils:1.1': the Sandbox has no FuseSoC libraries "
+        "and cannot fetch them; copy it into the repository as a .core, or drop the depend: "
+        "(check first whether the testbench guards its use with an `ifdef` or defines the module "
+        "itself)"
+    )
