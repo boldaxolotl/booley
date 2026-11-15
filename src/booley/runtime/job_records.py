@@ -118,6 +118,8 @@ class JobRecord:
     # Directory holding this Job's ``flow-reports/`` and ``mcp-tool-reports/`` when it is
     # not the records root's parent (a Standalone Job's records live elsewhere).
     report_root: str | None = None
+    # Flows finished and total of a Job that runs child Flows: ``{"finished": n, "total": m}``.
+    progress: dict[str, int] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
