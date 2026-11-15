@@ -356,11 +356,9 @@ class SimulationRecordResumeMixin:
             invocation: Path,
             manifest_published: Callable[[Path], None],
         ) -> _SimulationRecordSteps | EndpointOutcome:
-            dependency_error = self._prepare_simulation_record_resume_dependency(
-                validated, invocation, observed
-            )
-            if dependency_error is not None:
-                return dependency_error
+            lock_error = self._lock_simulation_record_resume_origin(validated, observed)
+            if lock_error is not None:
+                return lock_error
             coverage_plan = (
                 self._resume_coverage_target_plan(validated)
                 if _is_coverage_manifest(validated.manifest)
@@ -384,10 +382,9 @@ class SimulationRecordResumeMixin:
             ),
         )
 
-    def _prepare_simulation_record_resume_dependency(
+    def _lock_simulation_record_resume_origin(
         self,
         validated: ValidatedResumeManifest,
-        invocation: Path,
         observed: SimulationRecordRecoveryStatus,
     ) -> EndpointOutcome | None:
         from .record_reports import simulation_record_invocation_lock
@@ -408,23 +405,6 @@ class SimulationRecordResumeMixin:
                     detail=_simulation_record_recovery_detail(observed),
                 )
             self._held_resume_origins.add(origin)
-        try:
-            from .record.dependency import register_simulation_record_dependency
-
-            register_simulation_record_dependency(
-                validated.path,
-                simulation_record_id=cast(
-                    str, validated.manifest.document["simulation_record_id"]
-                ),
-                manifest_sha256=validated.sha256,
-                dependent_invocation=invocation,
-            )
-        except (OSError, ValueError) as exc:
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=f"Simulation Record resume dependency failed: {exc}",
-                detail=_simulation_record_recovery_detail(observed),
-            )
         return None
 
     def _simulation_record_resume_failure(

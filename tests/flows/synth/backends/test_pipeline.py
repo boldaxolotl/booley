@@ -16,6 +16,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -275,6 +276,28 @@ class TestConfigureSynthesis:
         assert "kind=missing_eda_tool" in result.stdout
         assert "stage=openroad" in result.stdout
         assert "subject=openroad" in result.stdout
+
+    @pytest.mark.skipif(os.name == "nt", reason="generated Makefile requires a POSIX shell")
+    def test_openroad_thread_assignment_reaches_the_openroad_argv(self, tmp_path: Path):
+        plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
+
+        def openroad_argv(*assignment: str) -> list[str]:
+            result = subprocess.run(
+                ["make", "-n", "-C", str(plan.build_dir), "openroad", *assignment],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            (line,) = (
+                line
+                for line in result.stdout.splitlines()
+                if line.lstrip().startswith("openroad ")
+            )
+            return shlex.split(line.split(">", 1)[0])
+
+        threaded = openroad_argv(syn_make.openroad_thread_assignment(3))
+        assert threaded == ["openroad", "-threads", "3", "-no_init", "-exit", "run_openroad.tcl"]
+        assert openroad_argv() == ["openroad", "-no_init", "-exit", "run_openroad.tcl"]
 
     def test_slang_frontend_skips_sv2v_stage(self, tmp_path: Path):
         plan = syn_make.configure_synthesis(
