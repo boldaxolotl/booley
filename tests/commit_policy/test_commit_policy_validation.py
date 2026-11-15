@@ -65,3 +65,31 @@ def test_identifier_message_validation_uses_both_tiers(tmp_path):
     )
     assert validate_message("fix: booley_config BooleyRunner myquokkafile\n", project_root=root)
     assert validate_message("fix: reagent precursor\n", project_root=root) == []
+
+
+def test_bundle_import_falls_back_to_flat_commit_policy_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inside the hook bundle the installed package is absent; the flat module is used."""
+    import importlib.util
+    import sys
+    import types
+
+    from booley.commit_policy import validation
+
+    flat = types.ModuleType("booley_commit_policy")
+    flat.__dict__.update(
+        find_banned=lambda text, project_root=None: [],
+        max_body_lines=lambda project_root=None: 1,
+        stealth_enabled=lambda project_root=None: True,
+    )
+    monkeypatch.setitem(sys.modules, "booley.commit_policy.policy", None)
+    monkeypatch.setitem(sys.modules, "booley_commit_policy", flat)
+    spec = importlib.util.spec_from_file_location("bundled_validation", validation.__file__)
+    assert spec is not None and spec.loader is not None
+    bundled = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bundled)
+
+    # The flat module's cap of one body line is what the bundled copy enforces.
+    assert bundled.body_length_errors("Update ALU\n\none\ntwo\n")
+    assert bundled.body_length_errors("Update ALU\n\none\n") == []
