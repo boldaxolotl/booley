@@ -167,8 +167,8 @@ def test_documented_command_paths_are_registered_and_allowed() -> None:
         ("booley board prepare-review", "unknown subcommand board"),
         ("booley flow coverage_analyst --record coverage.json", "unknown Flow coverage_analyst"),
         (
-            "python -m booley.flows.sim.campaign_retention --reports-root r --invocation 1 --full",
-            "undocumented module CLI booley.flows.sim.campaign_retention",
+            "python -m booley.flows.sim.record_prune --reports-root r --invocation 1 --full",
+            "undocumented module CLI booley.flows.sim.record_prune",
         ),
     ],
 )
