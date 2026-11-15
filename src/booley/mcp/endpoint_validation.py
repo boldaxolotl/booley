@@ -35,8 +35,9 @@ def validate_custom_endpoints_and_criteria(project_root: Path) -> list[SkippedEn
 
     Load order: criteria TOML first, then endpoint scan, then cross-validation.
 
-    Per-endpoint errors (checks 1-5, 7, 9) → skip endpoint; each skipped file is
-    returned. Structural errors (checks 6, 8) → hard-fail.
+    Per-endpoint errors (checks 1-5, 7, 9) → skip endpoint or log a warning. A
+    file skipped by checks 1, 3 or 4 is returned. Structural errors (checks 6, 8)
+    → hard-fail.
     """
     try:
         # Probe importability up front: if any of these are unavailable, skip
