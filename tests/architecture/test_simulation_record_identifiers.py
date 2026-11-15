@@ -695,6 +695,7 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
             "campaign_error",
         }
     ),
+    "src/booley/flows/mutation/memory_claims.py": frozenset({"CampaignClaims"}),
     "src/booley/flows/target_campaign.py": frozenset(
         {
             "CampaignResults",
@@ -733,6 +734,15 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
             "test_campaign_without_build_failures_names_no_replacement",
             "test_campaign_runs_the_baseline_then_each_mutant",
             "test_happy_path_publishes_campaign_artifacts",
+        }
+    ),
+    "tests/flows/mutation/test_memory_claims.py": frozenset(
+        {
+            "_campaign",
+            "test_an_item_that_ran_alone_over_budget_warns_in_the_campaign_result",
+            "test_campaign_processes_rank_as_the_held_claim",
+            "test_queued_claim_is_withdrawn_when_the_campaign_is_cancelled",
+            "test_queued_simulation_claim_is_withdrawn_when_the_campaign_is_cancelled",
         }
     ),
     "tests/flows/test_target_campaign.py": frozenset(

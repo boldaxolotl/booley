@@ -953,7 +953,9 @@ def test_waiting_simulation_record_queues_one_item_claim_in_manifest_order(
     assert released.is_set()
     assert outcome.complete is True
     assert sorted(scenario.state.completion_order) == list(names)
-    assert list(scenario.seen) == list(names)  # items start in manifest order
+    # Admitted lanes start items concurrently, so the order they record is a thread race: the
+    # turn's order is pinned by the one queued item claim above, not by this list.
+    assert sorted(scenario.seen) == list(names)
 
 
 def _item_attempts(scenario: _Scenario) -> dict[str, tuple[int, dict]]:
