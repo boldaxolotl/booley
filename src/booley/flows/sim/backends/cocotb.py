@@ -85,6 +85,7 @@ from booley.flows.sim.backends.cocotb_results import (
     recover_timeout_progress,
     results_payload,
 )
+from booley.flows.sim.backends.declared_streams import clear_stale_pipes
 from booley.flows.sim.backends.shared import (
     BOOLEY_DUMP_VCD_NAME,
     CurrentRunTraces,
@@ -1122,6 +1123,7 @@ def run_cocotb_sim(
 
 def _run_work(work: PreparedSimulationWork) -> int:
     """Run the prepared *work* as this process's one Cocotb launch."""
+    clear_stale_pipes(work.trace_files, Path(work.run_cwd or work.build_dir))
     return run_cocotb_sim(
         build_dir=Path(work.build_dir),
         eda_tool=work.eda_tool,

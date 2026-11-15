@@ -1174,6 +1174,30 @@ def test_sim_forwards_project_verdict_sentinels(tmp_path: Path, monkeypatch):
     assert work.fail_sentinels == ("ERROR!",)
 
 
+def test_mutant_launch_declares_the_project_trace_files(tmp_path: Path, monkeypatch):
+    """The adapter can only clear a stale pipe at a path the launch declares."""
+    captured: list[list[str]] = []
+
+    def _fake_run(cmd, *args, **kwargs):
+        captured.append(list(cmd))
+        return _fake_proc(rc=0, stdout="[ok]", stderr="")
+
+    _patch_resolve_target(monkeypatch)
+    monkeypatch.setattr("booley.flows.mutation.flow.subprocess.run", _fake_run)
+    monkeypatch.setattr(
+        "booley.flows.sim.config._sim_config",
+        lambda work_dir: {"trace_files": ["fpu.vcd"]},
+    )
+
+    endpoint = _make_endpoint(tmp_path, monkeypatch)
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    endpoint._run_elab("default", tmp_path, build_dir)
+    endpoint._run_sim_pinned("default", tmp_path, build_dir, "tb")
+
+    assert launched_work(captured[-1]).trace_files == ("fpu.vcd",)
+
+
 def test_mutant_launch_grades_from_the_document(tmp_path: Path, monkeypatch, capsys) -> None:
     for adapter in ("hdl", "cocotb"):
         for outcome in ("detected", "survived", "inconclusive"):
