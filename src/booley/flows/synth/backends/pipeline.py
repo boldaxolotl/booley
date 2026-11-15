@@ -366,6 +366,19 @@ def _required_output(token: str, stage: str, path: str, *, nonempty: bool = True
     return f"\t@test {predicate} {shlex.quote(path)} || {{ echo {marker}; exit 2; }}"
 
 
+#: Make variable holding OpenROAD's whole thread option; empty leaves OpenROAD's default.
+_OPENROAD_THREAD_OPTION = "BOOLEY_OPENROAD_THREAD_OPTION"
+
+
+def openroad_thread_assignment(threads: int) -> str:
+    """The make command-line assignment that runs OpenROAD with *threads* threads.
+
+    A command-line assignment, not recipe text: the recipe is an OpenROAD
+    reuse-key input and the thread count must not be (spike #2467).
+    """
+    return f"{_OPENROAD_THREAD_OPTION}=-threads {threads}"
+
+
 def _sta_recipe_lines(spec: SynthSpec, token: str) -> list[str]:
     """The physical synthesis + timing stage's recipe body."""
     lines = ["\t@echo 'BOOLEY_STAGE: sta'"]
@@ -373,8 +386,8 @@ def _sta_recipe_lines(spec: SynthSpec, token: str) -> list[str]:
     body = [
         _eda_tool_preflight(token, "openroad", "openroad"),
         *(_required_file(token, "openroad", str(path), path.name) for path in pdk),
-        "\topenroad -no_init -exit run_openroad.tcl > openroad.log 2>&1 "
-        + _fail_tail("openroad.log"),
+        f"\topenroad $({_OPENROAD_THREAD_OPTION}) -no_init -exit run_openroad.tcl"
+        " > openroad.log 2>&1 " + _fail_tail("openroad.log"),
         _required_output(token, "openroad", "reports/timing/overall.rpt"),
         _required_output(token, "openroad", "reports/timing/overall.csv.rpt", nonempty=False),
         _required_output(token, "openroad", f"openroad_{spec.design_name}.v"),

@@ -1,16 +1,9 @@
 """Simulation records are named for the Simulation Record, and Booley 0.4.0's are refused.
 
-Part 3 of ADR 0090 renames the Simulation Record manifest, attempt result, dependency
-receipt, supervised child context and terminal causes. Every 0.4.0 record is read from
-committed bytes: ``tests/flows/fixtures/booley_0_4_0/{complete,interrupted,coverage}``
-were written by Booley 0.4.0's own ``SimulateFlow``, and ``resumed/`` holds the one
-document those captures lack, a dependency receipt. It was captured the same way: the
-tag's ``tests/flows/sim/test_simulation_record_resume_diagnostics.py::_interrupted_campaign`` helper
-and fake simulator ran an interrupted run, a source change made the tag's
-``SimulateFlow().execute(SimRequest(resume_from=<manifest>))`` refuse the resume, and that
-refusal registered the receipt under the origin's ``campaign/dependency-receipts/``. The
-receipt alone is committed, with the capture's temporary root replaced by
-``/booley-0.4.0-capture``.
+Part 3 of ADR 0090 renames the Simulation Record manifest, attempt result, supervised
+child context and terminal causes. Every 0.4.0 record is read from committed bytes:
+``tests/flows/fixtures/booley_0_4_0/{complete,interrupted,coverage}`` were written by
+Booley 0.4.0's own ``SimulateFlow``.
 """
 
 from __future__ import annotations
@@ -27,7 +20,7 @@ import pytest
 
 from booley.flows.builtin_cli import parse_request
 from booley.flows.sim.flow import SimulateFlow
-from booley.flows.sim.record import inspect_retained_simulation_record, read_durable_results
+from booley.flows.sim.record import read_durable_results
 from booley.flows.sim.record.codec import (
     SimulationRecordIntegrityError,
     canonical_json_bytes,
@@ -39,11 +32,6 @@ from booley.flows.sim.record.codec import (
     decode_simulation_result,
     decode_simulator_bundle,
 )
-from booley.flows.sim.record.dependency import (
-    read_simulation_record_dependencies,
-    register_simulation_record_dependency,
-)
-from booley.flows.sim.record_retention import SimulationRecordRetentionError, prune_invocation
 from booley.runtime import execution_records
 from booley.runtime.execution_records import (
     ExecutionId,
@@ -54,11 +42,7 @@ from booley.runtime.execution_records import (
 from booley.runtime.execution_recovery import recover_execution
 from tests.flows.sim import test_simulation_record_lane_pool as lane_pool
 from tests.flows.sim.simulation_record_test_support import _retained_invocation
-from tests.flows.sim.test_simulation_record_dependency import (
-    SIMULATION_RECORD_ID,
-    _origin,
-    _two_role_simulation_records,
-)
+from tests.flows.sim.test_simulation_record_dependency import _two_role_simulation_records
 from tests.flows.sim.test_simulation_record_unsupported_formats import (
     _assert_refused,
     _assert_unsupported_type,
@@ -72,15 +56,11 @@ from tests.flows.sim.test_simulation_record_unsupported_formats import (
 reports = _reports_fixture
 
 _FIXTURES = Path(__file__).parents[1] / "fixtures" / "booley_0_4_0"
-_RECEIPT_DIRECTORY = (
-    _FIXTURES / "resumed" / "sim" / "1" / "targets" / "sim_0" / "campaign" / "dependency-receipts"
-)
 
 # Every schema Booley 0.4.0 wrote for the records this part renames, with the decoder
 # that must refuse it.
 _OLD_MANIFEST = "booley.simulation-campaign-manifest/v4"
 _OLD_RESULT = "booley.simulation-result/v3"
-_OLD_RECEIPT = "booley.simulation-campaign-dependency/v1"
 _OLD_RECORDS = {
     _OLD_MANIFEST: decode_simulation_record_manifest,
     _OLD_RESULT: decode_simulation_result,
@@ -116,11 +96,6 @@ def _tree(root: Path) -> dict[str, bytes]:
 def _rewrite(path: Path, raw: bytes) -> None:
     path.chmod(0o600)
     path.write_bytes(raw)
-
-
-def _0_4_0_receipt() -> Path:
-    (receipt,) = _RECEIPT_DIRECTORY.glob("*.json")
-    return receipt
 
 
 # --- AC1: the names a run writes -----------------------------------------------------------
@@ -163,7 +138,7 @@ def test_a_run_writes_simulation_record_names(tmp_path: Path) -> None:
     assert "record_id" not in summary
 
 
-def test_prerequisites_and_dependency_receipts_name_the_simulation_record(
+def test_prerequisites_name_the_simulation_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _invocation, candidate, baseline = _two_role_simulation_records(tmp_path, monkeypatch)
@@ -182,25 +157,6 @@ def test_prerequisites_and_dependency_receipts_name_the_simulation_record(
     roles = flow._simulation_record_endpoint_outcome([candidate, baseline]).detail["pre_sim_roles"]
     kinds = {ref["kind"] for role in roles.values() for ref in role["manifests"]}
     assert kinds == {"simulation_record_manifest"}
-
-    origin, digest = _origin(tmp_path / "origin")
-    dependent = tmp_path / "origin" / "reports" / "sim" / "2"
-    dependent.mkdir(parents=True)
-    register_simulation_record_dependency(
-        origin,
-        simulation_record_id=SIMULATION_RECORD_ID,
-        manifest_sha256=digest,
-        dependent_invocation=dependent,
-    )
-
-    (receipt_path,) = origin.parent.glob("dependency-receipts/*.json")
-    receipt = _json(receipt_path)
-    assert receipt["$schema"] == "booley.simulation-record-dependency/v1"
-    assert receipt["simulation_record_id"] == SIMULATION_RECORD_ID
-    assert "campaign_id" not in receipt
-    assert "record_id" not in receipt
-    (read_back,) = read_simulation_record_dependencies(origin)
-    assert read_back.simulation_record_id == SIMULATION_RECORD_ID
 
 
 def _prepared_lane(
@@ -257,19 +213,11 @@ def test_a_0_4_0_manifest_is_refused_naming_its_invocation(reports: Path) -> Non
     _assert_unsupported_type(decoded.value)
     _assert_refused(str(decoded.value), _OLD_MANIFEST)
 
-    # Retention, Goal status and the Dashboard each read it through one of these.
-    for read in (
-        lambda: inspect_retained_simulation_record(manifest),
-        lambda: read_durable_results(manifest, "sha256:" + "0" * 64),
-    ):
-        with pytest.raises(ValueError) as refused:
-            read()
-        _assert_unsupported_type(refused.value)
-        _assert_refused(str(refused.value), _OLD_MANIFEST, invocation)
-
-    with pytest.raises(SimulationRecordRetentionError) as pruned:
-        prune_invocation(reports, 1)
-    _assert_refused(str(pruned.value), _OLD_MANIFEST, invocation)
+    # Goal status and the Dashboard each read it through this.
+    with pytest.raises(ValueError) as refused:
+        read_durable_results(manifest, "sha256:" + "0" * 64)
+    _assert_unsupported_type(refused.value)
+    _assert_refused(str(refused.value), _OLD_MANIFEST, invocation)
 
 
 def test_a_0_4_0_attempt_result_is_refused_naming_its_invocation(tmp_path: Path) -> None:
@@ -283,27 +231,6 @@ def test_a_0_4_0_attempt_result_is_refused_naming_its_invocation(tmp_path: Path)
 
     _assert_unsupported_type(excinfo.value)
     _assert_refused(str(excinfo.value), _OLD_RESULT, reports_root / "sim/1")
-
-
-def test_a_0_4_0_dependency_receipt_is_refused(tmp_path: Path) -> None:
-    reports_root, _project_data, store = _retained_invocation(tmp_path)
-    receipts = store.root / "dependency-receipts"
-    receipts.mkdir()
-    shutil.copyfile(_0_4_0_receipt(), receipts / _0_4_0_receipt().name)
-
-    with pytest.raises(ValueError) as read:
-        read_simulation_record_dependencies(store.manifest_path)
-    _assert_unsupported_type(read.value)
-    _assert_refused(str(read.value), _OLD_RECEIPT)
-
-    # Pruning with dependents reads the registry: an older record is not a corrupt one.
-    invocation = reports_root / "sim" / "1"
-    before = _tree(invocation)
-    with pytest.raises(SimulationRecordRetentionError) as pruned:
-        prune_invocation(reports_root, 1, include_dependents=True)
-    _assert_refused(str(pruned.value), _OLD_RECEIPT, reports_root / "sim/1")
-    assert "dependency registry is invalid" not in str(pruned.value)
-    assert _tree(invocation) == before
 
 
 def test_every_0_4_0_record_of_a_complete_run_is_refused(reports: Path) -> None:
@@ -369,21 +296,6 @@ def test_old_simulation_record_names_are_not_aliases(tmp_path: Path) -> None:
         with pytest.raises(SimulationRecordIntegrityError, match="exact fields") as refused:
             decode(_with_old_key(_json(path)))
         assert "older Booley" not in str(refused.value)
-
-    # The current receipt schema with the old key is malformed.
-    origin, digest = _origin(tmp_path / "origin")
-    dependent = tmp_path / "origin" / "reports" / "sim" / "2"
-    dependent.mkdir(parents=True)
-    register_simulation_record_dependency(
-        origin,
-        simulation_record_id=SIMULATION_RECORD_ID,
-        manifest_sha256=digest,
-        dependent_invocation=dependent,
-    )
-    (receipt_path,) = origin.parent.glob("dependency-receipts/*.json")
-    _rewrite(receipt_path, _with_old_key(_json(receipt_path)))
-    with pytest.raises(ValueError, match="Malformed Simulation Record dependency receipt"):
-        read_simulation_record_dependencies(origin)
 
     # A context sidecar is the current one only: schema v1, or v2 with the old key, is not.
     simulation_record = lane_pool._SimulationRecord(tmp_path / "lane", ("alpha",), lanes=1)

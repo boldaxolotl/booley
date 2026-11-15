@@ -1,4 +1,4 @@
-"""Progress-shape policy shared by Flows, Job observation and Simulation Record retention."""
+"""Progress-shape policy shared by Flows and Job observation."""
 
 from __future__ import annotations
 
