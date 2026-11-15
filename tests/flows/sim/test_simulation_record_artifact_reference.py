@@ -16,15 +16,15 @@ from tests.fusesoc_test_support import symlinked_booley_dir
 
 def _reference(tmp_path):
     base = tmp_path / "origin"
-    artifact = base / "campaign/manifest.json"
+    artifact = base / "record/manifest.json"
     artifact.parent.mkdir(parents=True)
-    artifact.write_bytes(b'{"campaign":true}\n')
+    artifact.write_bytes(b'{"record":true}\n')
     return base, build_artifact_reference(
         artifact,
         base_name="origin_target",
         base=base,
         kind="simulation_record_manifest",
-        owner="campaign-id",
+        owner="record-id",
         maximum=1024,
     )
 
@@ -39,22 +39,22 @@ def test_reference_resolves_after_complete_base_copy(tmp_path):
         bases={"origin_target": copied},
         allowed_bases={"origin_target"},
         expected_kind="simulation_record_manifest",
-        expected_owner="campaign-id",
+        expected_owner="record-id",
         maximum=1024,
     )
 
-    assert resolved.path == copied / "campaign/manifest.json"
-    assert resolved.raw == b'{"campaign":true}\n'
+    assert resolved.path == copied / "record/manifest.json"
+    assert resolved.raw == b'{"record":true}\n'
 
 
 @pytest.mark.parametrize(
     ("field", "value"),
     [
         ("path_base", "reports_root"),
-        ("path", "/campaign/manifest.json"),
-        ("path", "campaign/../manifest.json"),
-        ("path", "campaign\\manifest.json"),
-        ("path", "campaign/manifest.json\x00"),
+        ("path", "/record/manifest.json"),
+        ("path", "record/../manifest.json"),
+        ("path", "record\\manifest.json"),
+        ("path", "record/manifest.json\x00"),
         ("bytes", 0),
         ("sha256", "sha256:" + "0" * 64),
         ("kind", "other"),
@@ -71,7 +71,7 @@ def test_reference_rejects_wrong_profile_or_identity(tmp_path, field, value):
             bases={"origin_target": base},
             allowed_bases={"origin_target"},
             expected_kind="simulation_record_manifest",
-            expected_owner="campaign-id",
+            expected_owner="record-id",
             maximum=1024,
         )
 
@@ -80,9 +80,9 @@ def test_reference_rejects_link_below_base(tmp_path):
     base, reference = _reference(tmp_path)
     outside = tmp_path / "outside"
     outside.mkdir()
-    (outside / "manifest.json").write_bytes(b'{"campaign":true}\n')
-    shutil.rmtree(base / "campaign")
-    (base / "campaign").symlink_to(outside, target_is_directory=True)
+    (outside / "manifest.json").write_bytes(b'{"record":true}\n')
+    shutil.rmtree(base / "record")
+    (base / "record").symlink_to(outside, target_is_directory=True)
 
     with pytest.raises(ArtifactReferenceError, match=r"link|escapes"):
         resolve_artifact_reference(
@@ -90,7 +90,7 @@ def test_reference_rejects_link_below_base(tmp_path):
             bases={"origin_target": base},
             allowed_bases={"origin_target"},
             expected_kind="simulation_record_manifest",
-            expected_owner="campaign-id",
+            expected_owner="record-id",
             maximum=1024,
         )
 
@@ -99,26 +99,26 @@ def test_reference_encoder_rejects_link_below_base(tmp_path):
     base = tmp_path / "origin"
     outside = tmp_path / "outside"
     outside.mkdir()
-    (outside / "manifest.json").write_bytes(b'{"campaign":true}\n')
+    (outside / "manifest.json").write_bytes(b'{"record":true}\n')
     base.mkdir()
-    (base / "campaign").symlink_to(outside, target_is_directory=True)
+    (base / "record").symlink_to(outside, target_is_directory=True)
 
     with pytest.raises(ArtifactReferenceError, match=r"link|escapes"):
         build_artifact_reference(
-            base / "campaign/manifest.json",
+            base / "record/manifest.json",
             base_name="origin_target",
             base=base,
             kind="simulation_record_manifest",
-            owner="campaign-id",
+            owner="record-id",
             maximum=1024,
         )
 
 
 def test_report_reference_uses_the_containing_document_after_reports_root_copy(tmp_path):
     reports = tmp_path / "reports"
-    origin = reports / "sim/1/targets/sim/campaign/manifest.json"
+    origin = reports / "sim/1/targets/sim/record/manifest.json"
     origin.parent.mkdir(parents=True)
-    origin.write_bytes(b'{"campaign":true}\n')
+    origin.write_bytes(b'{"record":true}\n')
     resume_report = reports / "sim/2/report.json"
     resume_report.parent.mkdir(parents=True)
     resume_report.write_text("{}")
@@ -127,7 +127,7 @@ def test_report_reference_uses_the_containing_document_after_reports_root_copy(t
         base_name="reports_root",
         base=reports,
         kind="simulation_record_manifest",
-        owner="campaign-id",
+        owner="record-id",
         maximum=1024,
     )
     copied = tmp_path / "copied"
@@ -137,18 +137,18 @@ def test_report_reference_uses_the_containing_document_after_reports_root_copy(t
         copied / "sim/2/report.json",
         reference,
         expected_kind="simulation_record_manifest",
-        expected_owner="campaign-id",
+        expected_owner="record-id",
         maximum=1024,
     )
 
-    assert resolved.path == copied / "sim/1/targets/sim/campaign/manifest.json"
+    assert resolved.path == copied / "sim/1/targets/sim/record/manifest.json"
 
 
 def test_report_reference_accepts_explicit_external_origin_target(tmp_path):
     origin = tmp_path / "origin-target"
-    artifact = origin / "campaign/manifest.json"
+    artifact = origin / "record/manifest.json"
     artifact.parent.mkdir(parents=True)
-    artifact.write_bytes(b'{"campaign":true}\n')
+    artifact.write_bytes(b'{"record":true}\n')
     report = tmp_path / "other-reports/sim/1/report.json"
     report.parent.mkdir(parents=True)
     report.write_text("{}")
@@ -157,7 +157,7 @@ def test_report_reference_accepts_explicit_external_origin_target(tmp_path):
         base_name="external_origin_target",
         base=origin,
         kind="simulation_record_manifest",
-        owner="campaign-id",
+        owner="record-id",
         maximum=1024,
     )
 
@@ -165,7 +165,7 @@ def test_report_reference_accepts_explicit_external_origin_target(tmp_path):
         report,
         reference,
         expected_kind="simulation_record_manifest",
-        expected_owner="campaign-id",
+        expected_owner="record-id",
         maximum=1024,
         external_origin_target=origin,
     )
@@ -185,7 +185,7 @@ def test_reference_builder_rejects_artifact_outside_declared_base(tmp_path):
             base_name="origin_target",
             base=base,
             kind="simulation_record_manifest",
-            owner="campaign-id",
+            owner="record-id",
             maximum=1024,
         )
 
@@ -196,7 +196,7 @@ def _resolve_origin(reference, bases, *, maximum=1024):
         bases=bases,
         allowed_bases={"origin_target"},
         expected_kind="simulation_record_manifest",
-        expected_owner="campaign-id",
+        expected_owner="record-id",
         maximum=maximum,
     )
 
@@ -229,7 +229,7 @@ def test_reference_rejects_missing_and_oversized_artifacts(tmp_path):
 
     with pytest.raises(ArtifactReferenceError, match="exceeds size limit"):
         _resolve_origin(reference, {"origin_target": base}, maximum=4)
-    (base / "campaign/manifest.json").unlink()
+    (base / "record/manifest.json").unlink()
     with pytest.raises(ArtifactReferenceError, match="not a regular file"):
         _resolve_origin(reference, {"origin_target": base})
 
@@ -242,7 +242,7 @@ def test_report_reference_requires_numbered_invocation_report(tmp_path):
             tmp_path / "reports/sim/latest/report.json",
             reference,
             expected_kind="simulation_record_manifest",
-            expected_owner="campaign-id",
+            expected_owner="record-id",
             maximum=1024,
         )
 
@@ -261,13 +261,13 @@ def test_reference_follows_only_the_booley_dir_entry(tmp_path, layout):
         # ``flow-reports`` itself is a link to a real directory: refused as today.
         (tmp_path / "real-reports").mkdir()
         (external / "flow-reports").symlink_to(tmp_path / "real-reports", target_is_directory=True)
-    origin = reports / "sim/1/targets/sim/campaign/manifest.json"
+    origin = reports / "sim/1/targets/sim/record/manifest.json"
     origin.parent.mkdir(parents=True, exist_ok=True)
-    origin.write_bytes(b'{"campaign":true}\n')
+    origin.write_bytes(b'{"record":true}\n')
     report = reports / "sim/2/report.json"
     report.parent.mkdir(parents=True)
     report.write_text("{}")
-    fields = {"kind": "simulation_record_manifest", "owner": "campaign-id", "maximum": 1024}
+    fields = {"kind": "simulation_record_manifest", "owner": "record-id", "maximum": 1024}
 
     def follow() -> None:
         reference = build_artifact_reference(
@@ -291,7 +291,7 @@ def test_reference_follows_only_the_booley_dir_entry(tmp_path, layout):
             maximum=1024,
             booley_dir=entry,
         )
-        assert from_report.raw == b'{"campaign":true}\n'
+        assert from_report.raw == b'{"record":true}\n'
 
     if layout == "below":
         with pytest.raises(ArtifactReferenceError, match=r"link|escapes"):
@@ -302,15 +302,15 @@ def test_reference_follows_only_the_booley_dir_entry(tmp_path, layout):
 
 def test_artifact_reference_accepts_a_hard_linked_artifact(tmp_path):
     base, reference = _reference(tmp_path)
-    artifact = base / "campaign/manifest.json"
-    (base / "campaign/manifest-alias.json").hardlink_to(artifact)
+    artifact = base / "record/manifest.json"
+    (base / "record/manifest-alias.json").hardlink_to(artifact)
 
     resolved = resolve_artifact_reference(
         reference,
         bases={"origin_target": base},
         allowed_bases={"origin_target"},
         expected_kind="simulation_record_manifest",
-        expected_owner="campaign-id",
+        expected_owner="record-id",
         maximum=1024,
     )
 

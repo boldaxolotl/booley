@@ -151,7 +151,7 @@ class ChildScheduler:
         store: job_slots.SlotStore,
         *,
         all_tables: bool,
-        progress: Callable[[int, int], None] | None = None,
+        progress: Callable[[int, int, tuple[str, ...]], None] | None = None,
     ) -> None:
         self._entries = [_Entry(rules, prepared) for rules, prepared in planned]
         self._store = store
@@ -159,7 +159,7 @@ class ChildScheduler:
         self._stopping = False
         self._cancelled = False
         self._progress = progress
-        self._reported: int | None = None
+        self._reported: tuple[int, tuple[str, ...]] | None = None
 
     # ------------------------------------------------------------------ driving
 
@@ -178,11 +178,12 @@ class ChildScheduler:
         return bool(self._live()) or (not self._stopping and self._has_planned())
 
     def _report_progress(self) -> None:
-        """Tell the caller how many tables have ended, when that count changed."""
+        """Tell the caller the tables ended and running, when either changed."""
         finished = sum(entry.measurement is not None for entry in self._entries)
-        if self._progress is not None and finished != self._reported:
-            self._progress(finished, len(self._entries))
-        self._reported = finished
+        running = tuple(f"{entry.rules.target}.{entry.rules.flow}" for entry in self._live())
+        if self._progress is not None and (finished, running) != self._reported:
+            self._progress(finished, len(self._entries), running)
+        self._reported = (finished, running)
 
     def _live(self) -> list[_Entry]:
         return [entry for entry in self._entries if entry.live]
@@ -473,13 +474,14 @@ def run_children(
     main_booley_dir: Path,
     all_tables: bool,
     cancelled: Callable[[], bool],
-    progress: Callable[[int, int], None] | None = None,
+    progress: Callable[[int, int, tuple[str, ...]], None] | None = None,
 ) -> ChildrenOutcome:
     """Run the *prepared* children within the admission queue and settle every one.
 
     *cancelled* is polled each pass; a ``BaseException`` (a Ctrl-C) stops and settles every
-    child before it propagates. *progress* gets ``(finished, total)`` tables at the first pass
-    and whenever the finished count changes. The outcome lists the tables in *tables* order.
+    child before it propagates. *progress* gets ``(finished, total, running)``: the tables ended and
+    the ``<target>.<flow>`` of each child started and not ended, at the first pass and whenever
+    either changes. The outcome lists the tables in *tables* order.
 
     Raises:
         CheckoutFlowError: the first child could not be launched.

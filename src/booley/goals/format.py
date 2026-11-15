@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 def _format_coverage_metric(
     key: str, d: dict[str, Any], p: dict[str, Any], stale: bool
 ) -> str | None:
-    """Format a Coverage Campaign status, or None for another Criterion family."""
+    """Format a Coverage Record status, or None for another Criterion family."""
     if key != "coverage" and not key.startswith("coverage_"):
         return None
     status = d.get("status")
@@ -172,7 +172,7 @@ def format_criterion_metric(key: str, entry: Any) -> str:  # noqa: PLR0911 — m
     p: dict[str, Any] = entry.params or {}
     stale = getattr(entry, "stale", False)
 
-    # Elaboration and Coverage Campaign status.
+    # Elaboration and Coverage Record status.
     coverage = _format_status_metric(key, entry, d, p, stale)
     if coverage is not None:
         return coverage

@@ -7,8 +7,8 @@ intentional change of that stored form may update its literal.
 
 Every input holds unsorted keys and non-ASCII text in a field the pinned form
 keeps, so key sorting and ``ensure_ascii`` are both observable. All pinned inputs
-are literals except the campaign of the point-store and manifest tests, which
-is the shared valid Campaign document with literal overrides.
+are literals except the Coverage Record of the point-store and manifest tests, which
+is the shared valid Coverage Record document with literal overrides.
 """
 
 from __future__ import annotations
@@ -112,7 +112,7 @@ def test_point_id_golden_is_shared_by_collector_and_codec(tmp_path: Path) -> Non
             custom_main_hooks=(),
         ),
         selected_tests=(SelectedCoverageRun("reset"),),
-        artifact_root=tmp_path / "campaign",
+        artifact_root=tmp_path / "record",
         reset_included=True,
     )
 
@@ -124,7 +124,7 @@ def test_point_id_golden_is_shared_by_collector_and_codec(tmp_path: Path) -> Non
 
 
 def _coverage_record_document() -> dict[str, object]:
-    """The shared valid Campaign with the golden point and a non-ASCII selector."""
+    """The shared valid Coverage Record with the golden point and a non-ASCII selector."""
     document = _valid_document()
     document["target"]["selector"] = "sim_zähler"  # type: ignore[index]
     document["points"][0].update(id=GOLDEN_POINT_ID, identity=GOLDEN_IDENTITY)  # type: ignore[index]
@@ -135,7 +135,7 @@ def _publish(tmp_path: Path):
     coverage_record = decode_document(
         _coverage_record_document(), DurableTargetIdentity("acme:demo:counter:1.0#sim_counter")
     )
-    return publish_coverage_record(tmp_path / "campaign", coverage_record)
+    return publish_coverage_record(tmp_path / "record", coverage_record)
 
 
 def test_point_store_lines_golden(tmp_path: Path) -> None:

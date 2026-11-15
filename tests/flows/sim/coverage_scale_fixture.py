@@ -1,4 +1,4 @@
-"""Deterministic heterogeneous Coverage Campaigns for scale characterization."""
+"""Deterministic heterogeneous Coverage Records for scale characterization."""
 
 from dataclasses import replace
 
@@ -18,7 +18,7 @@ from tests.flows.sim.test_coverage_record import _valid_document
 
 
 def scale_coverage_record(point_count: int) -> CoverageRecord:
-    """Build a stable mixed Campaign whose point population has realistic query dimensions."""
+    """Build a stable mixed Coverage Record whose point population has realistic query dimensions."""
     document = _valid_document()
     target = DurableTargetIdentity(document["target"]["identity"])
     base = decode_document(document, target)

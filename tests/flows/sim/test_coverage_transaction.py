@@ -635,7 +635,7 @@ def test_merge_failure_keeps_simulation_truth_when_later_publication_fails(tmp_p
             return SimulationCommandResult(1, stderr="merge executable unavailable")
 
     def checkpoint(boundary):
-        if boundary == "after:coverage_campaign":
+        if boundary == "after:coverage_record":
             raise OSError("injected post-merge publication failure")
 
     outcome = run_target(
@@ -712,7 +712,7 @@ def persistence_fault(boundary):
     original_replace, original_link = Path.replace, os.link
     filenames = {
         "point_store": "coverage-points.jsonl.gz",
-        "campaign": "coverage.json",
+        "coverage_record": "coverage.json",
     }
 
     def replace_file(source, destination):
@@ -835,7 +835,7 @@ def test_incomplete_collection_never_accuses_module_sources(tmp_path):
     assert not any(f.code == GAP_CODE for f in coverage_record.findings)
 
 
-@pytest.mark.parametrize("boundary", ["point_store", "campaign"])
+@pytest.mark.parametrize("boundary", ["point_store", "coverage_record"])
 def test_persistence_boundaries_abort_with_a_truthful_outcome(tmp_path, monkeypatch, boundary):
     import os
 
@@ -882,7 +882,7 @@ def test_direct_coverage_outcome_includes_metrics(tmp_path):
         retained_plan = replace(plan, invocation_dir=tmp_path / "reports/sim" / str(number + 3))
 
         def checkpoint(boundary):
-            if boundary == "after:coverage_campaign":
+            if boundary == "after:coverage_record":
                 raise OSError("publication interrupted")
 
         retained = run_target(retained_plan, NativeExecution(), publication_checkpoint=checkpoint)

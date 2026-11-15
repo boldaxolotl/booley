@@ -68,7 +68,7 @@ from .serial_execution import (
 
 
 class _CoverageAggregateError(RuntimeError):
-    """A nested Coverage Campaign failed with validated Target facts."""
+    """A nested Coverage Record failed with validated Target facts."""
 
     def __init__(self, message: str, detail: Mapping[str, object]) -> None:
         super().__init__(message)
@@ -192,7 +192,7 @@ def _publish_hook(request, evidence, ordinal, checkpoint) -> None:
 
 
 class CoverageAggregateExecutor(SerialWorkExecutor):
-    """Execute one complete Coverage Campaign as one Simulation Work Item."""
+    """Execute one complete Coverage Record as one Simulation Work Item."""
 
     def __init__(
         self,
@@ -228,7 +228,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
             return self._execute_observed(request)
 
     def _execute_observed(self, request: WorkExecutionRequest) -> SimulationResult:
-        """Collect, merge and commit one nested Coverage Campaign atomically."""
+        """Collect, merge and commit one nested Coverage Record atomically."""
         _raise_if_pre_sim_scope_stopped(request)
         if request.work_item["kind"] != "coverage_aggregate":
             raise SimulationRecordIntegrityError(
@@ -513,9 +513,9 @@ def _publish_coverage_build_failure(
 def _coverage_tests(outcome: CoverageTargetOutcome) -> tuple[Mapping[str, object], ...]:
     tests = outcome.detail.get("tests", ())
     if not isinstance(tests, tuple):
-        raise SimulationRecordIntegrityError("Coverage Campaign returned invalid test evidence")
+        raise SimulationRecordIntegrityError("Coverage Record returned invalid test evidence")
     if not tests:
-        raise SimulationRecordIntegrityError("Coverage Campaign returned no test evidence")
+        raise SimulationRecordIntegrityError("Coverage Record returned no test evidence")
     return cast(tuple[Mapping[str, object], ...], tests)
 
 
@@ -535,7 +535,7 @@ def _coverage_test_outcome(item: Mapping[str, object]) -> SimulationTestOutcome:
         or not name
         or verdict not in {"pass", "fail", "timeout", "crash", "inconclusive", "elab_error"}
     ):
-        raise SimulationRecordIntegrityError("Coverage Campaign test evidence is invalid")
+        raise SimulationRecordIntegrityError("Coverage Record test evidence is invalid")
     error_tail = item.get("error_tail")
     if not isinstance(error_tail, str):
         error_tail = "" if verdict == "pass" else f"coverage simulation {verdict}"

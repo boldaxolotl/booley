@@ -103,6 +103,10 @@ stops the run and the later tables are "not evaluated". `--validate` takes no
 other option. Ctrl-C cancels the measurement: a run with a finished Flow is
 stored as cancelled, never as measured, and the command ends with status 130.
 
+The Developer Agent can run the same measurement for you. It reports the verdict
+line, the failing rows and the paths of the reports, and cancelling it stops the
+measurement's Flows.
+
 The Dashboard opens by itself when you attach to the container; see
 [The dashboard](USAGE.md#the-dashboard).
 
@@ -412,7 +416,7 @@ For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl
 
 | Specialist | Purpose | Sets | Modifies code |
 |------------|---------|------|:-------------:|
-| `coverage_analyst` | Explain one exact coverage.json Campaign and propose advisory next steps | — | — |
+| `coverage_analyst` | Explain one exact coverage.json Coverage Record and propose advisory next steps | — | — |
 | `reviewer` | Single-focus code review: reports issues by severity | `REVIEW:rtl_spec`, `REVIEW:rtl_bugs`, `REVIEW:rtl_protocol`, `REVIEW:tb_quality`, `REVIEW:rtl_security`, `REVIEW:rtl_optimization`, `REVIEW:rtl_code_style` | — |
 
 #### `coverage_analyst`

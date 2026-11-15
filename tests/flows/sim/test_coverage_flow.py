@@ -246,7 +246,7 @@ def _assert_card_names_run_files(report_text: str, tmp_path: Path) -> None:
     assert _card_path(block, "report").is_file()
     assert "  coverage: line 100.0%" in block
     coverage_record_file = (tmp_path / "reports/sim/1/targets/sim_0/coverage.json").resolve()
-    assert _card_path(block, "coverage campaign") == coverage_record_file
+    assert _card_path(block, "Coverage Record") == coverage_record_file
     assert coverage_record_file.is_file()
 
 
@@ -875,10 +875,10 @@ def test_multi_target_collector_error_preserves_completed_and_later_targets(tmp_
     assert invalid_manifest["rollups"] == []
     failed_block = _target_block(result.outcome.report_text, "sim_1")
     assert not any(line.startswith("  coverage: ") for line in failed_block)
-    assert _card_path(failed_block, "coverage campaign").is_file()
+    assert _card_path(failed_block, "Coverage Record").is_file()
     completed_block = _target_block(result.outcome.report_text, "sim_2")
     assert "  coverage: line 100.0%" in completed_block
-    assert _card_path(completed_block, "coverage campaign").is_file()
+    assert _card_path(completed_block, "Coverage Record").is_file()
     headline = _target_headline(result.outcome.report_text, "sim_1")
     assert headline == (
         "sim_1: simulation PASS · coverage collection COLLECTOR_ERROR "
@@ -915,8 +915,8 @@ def test_fatal_coverage_failure_lists_completed_simulation_records(tmp_path, mon
     lines = result.outcome.report_text.splitlines()
     assert "second Target exploded" in lines[0]
     expected = (tmp_path / "reports/sim/1/targets/sim_0/coverage.json").resolve()
-    assert [line for line in lines if line.startswith("  coverage campaign: ")] == [
-        f"  coverage campaign: {expected}"
+    assert [line for line in lines if line.startswith("  Coverage Record: ")] == [
+        f"  Coverage Record: {expected}"
     ]
     assert expected.is_file()
 
@@ -935,7 +935,7 @@ def test_unmatched_coverage_failure_lists_completed_simulation_records(tmp_path,
     assert result.report_text.splitlines() == [
         "Simulation Record coverage execution failed: cannot match failed Target to the "
         "prepared Coverage plan (no such Target)",
-        f"  coverage campaign: {(tmp_path / 'targets/sim_0/coverage.json').resolve()}",
+        f"  Coverage Record: {(tmp_path / 'targets/sim_0/coverage.json').resolve()}",
     ]
 
 
@@ -1053,8 +1053,8 @@ def test_nested_coverage_publication_failure_preserves_simulation_truth(tmp_path
     _prepare_atomic_coverage_state(tmp_path, monkeypatch)
 
     def checkpoint(boundary):
-        if boundary == "before:coverage_campaign":
-            raise OSError("injected nested Coverage Campaign publication failure")
+        if boundary == "before:coverage_record":
+            raise OSError("injected nested Coverage Record publication failure")
 
     result = SimulateFlow(
         coverage_execution=lambda _handle, _options, _commands, _access: NativeExecution(),
@@ -1830,7 +1830,7 @@ def test_requeued_resume_attempt_keeps_the_origin_lock_it_already_holds(tmp_path
     validated = SimpleNamespace(
         path=origin / "targets/sim_0/record/manifest.json",
         booley_dir=None,
-        manifest=SimpleNamespace(document={"simulation_record_id": "campaign"}),
+        manifest=SimpleNamespace(document={"simulation_record_id": "coverage_record"}),
         sha256="0" * 64,
     )
     flow = SimulateFlow()
@@ -1875,7 +1875,7 @@ def test_resume_retains_explicit_configured_skipped_test(tmp_path, monkeypatch):
         f"  manifest: {manifest.resolve()}\n"
         f"  report: {(tmp_path / 'resumed/sim/1/report.json').resolve()}\n"
         "  coverage: line 100.0%\n"
-        f"  coverage campaign: {(manifest.parents[1] / 'coverage.json').resolve()}"
+        f"  Coverage Record: {(manifest.parents[1] / 'coverage.json').resolve()}"
     )
     resolved = resolve_report_artifact_reference(
         report_path,
@@ -2095,7 +2095,7 @@ def test_coverage_publication_crash_resumes_at_the_aggregate_boundary(
 
 
 @pytest.mark.parametrize(
-    "boundary", ["before:coverage_campaign", "after:coverage_campaign", "before:simulation_result"]
+    "boundary", ["before:coverage_record", "after:coverage_record", "before:simulation_result"]
 )
 def test_coverage_collection_crash_refuses_resume(tmp_path, monkeypatch, boundary):
     """A collection without a recorded result is refused, never silently re-run."""
@@ -3225,7 +3225,7 @@ def test_job_report_coverage_metrics_match_coverage_record(tmp_path, monkeypatch
     )
     for selector in ("sim_0", "sim_1"):
         public_path = _card_path(
-            _target_block(result.outcome.report_text, selector), "coverage campaign"
+            _target_block(result.outcome.report_text, selector), "Coverage Record"
         )
         assert public_path == (reports / f"sim/1/targets/{selector}/coverage.json").resolve()
         assert public_path.is_file()
@@ -3332,7 +3332,7 @@ def test_coverage_analysis_refuses_a_coverage_record_written_by_booley_0_3_0(tmp
     assert "booley.coverage-campaign/v4" in message
     assert str(coverage_record_path.parents[2]) in message
     assert "COV_SCHEMA_VERSION_UNSUPPORTED" not in message
-    assert not message.startswith("Cannot analyze Campaign")
+    assert not message.startswith("Cannot analyze Coverage Record")
 
 
 def _add_second_coverage_target(tmp_path: Path, state_path: Path) -> None:
@@ -3394,7 +3394,7 @@ def test_coverage_summary_failure_acceptance(
     def fail_last_retention(_progress, outcome) -> None:
         retained.append(outcome)
         if len(retained) == len(targets.split(",")):
-            raise OSError("injected Campaign summary publication failure")
+            raise OSError("injected Coverage Record summary publication failure")
 
     hook_results: list[bool] = []
     hook = SimulateFlow.record_flow_owned_acceptance

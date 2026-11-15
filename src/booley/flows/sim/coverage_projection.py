@@ -1,4 +1,4 @@
-"""Project aggregate Coverage Campaign evidence onto one Criterion."""
+"""Project aggregate Coverage Record evidence onto one Criterion."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ def project_coverage_criterion(
     *,
     atomic: bool,
 ) -> tuple[bool, dict[str, Any]]:
-    """Return one fail-closed verdict and its immutable campaign detail."""
+    """Return one fail-closed verdict and its immutable Coverage Record detail."""
     projected = dict(detail)
     if not atomic:
         return evaluation.get("status") == "pass", projected
@@ -27,7 +27,7 @@ def project_coverage_criterion(
     if metric not in verdicts:
         if evaluation.get("status") in {"pass", "fail"}:
             raise AcceptanceRecordingError(
-                f"scored Coverage Campaign omits authored metric {metric!r}"
+                f"scored Coverage Record omits authored metric {metric!r}"
             )
         return False, projected
     suite_matches = evaluation["suite"]["status"] == "match"

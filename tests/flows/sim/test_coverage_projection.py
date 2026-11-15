@@ -1,4 +1,4 @@
-"""Atomic Coverage Criterion projection from aggregate campaign evidence."""
+"""Atomic Coverage Criterion projection from aggregate Coverage Record evidence."""
 
 from __future__ import annotations
 
@@ -109,8 +109,11 @@ def test_direct_non_atomic_projection_keeps_aggregate_fallback(
     status: str, expected: bool
 ) -> None:
     met, detail = project_coverage_criterion(
-        CriterionEntry(), _evaluation(status=status), {"campaign": "coverage.json"}, atomic=False
+        CriterionEntry(),
+        _evaluation(status=status),
+        {"coverage_record": "coverage.json"},
+        atomic=False,
     )
 
     assert met is expected
-    assert detail == {"campaign": "coverage.json"}
+    assert detail == {"coverage_record": "coverage.json"}

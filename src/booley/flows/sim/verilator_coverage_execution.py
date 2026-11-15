@@ -597,7 +597,7 @@ def _selected_runs(
     selected_tests: tuple[str, ...],
     test_runs: tuple[TestRun, ...] | None,
 ) -> tuple[SelectedCoverageRun, ...]:
-    """One collector process per Test Run, in the order the campaign records them."""
+    """One collector process per Test Run, in the order the Coverage Record records them."""
     if test_runs is None and not selected_tests:
         return ()
     if test_runs is None:

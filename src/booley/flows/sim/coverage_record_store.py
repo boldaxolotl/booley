@@ -93,7 +93,7 @@ class CoveragePointStoreReference:
 
 @dataclass(frozen=True)
 class CoverageRecordSummary:
-    """The persisted envelope callers bind to; Campaign facts come from the codec."""
+    """The persisted envelope callers bind to; Coverage Record facts come from the codec."""
 
     source_schema: str
     document: Mapping[str, FrozenJson]
@@ -103,7 +103,7 @@ class CoverageRecordSummary:
 
 @dataclass(frozen=True)
 class LoadedCoverageRecord:
-    """A complete Campaign together with its validated persisted envelope."""
+    """A complete Coverage Record together with its validated persisted envelope."""
 
     summary: CoverageRecordSummary
     coverage_record: CoverageRecord
@@ -111,14 +111,14 @@ class LoadedCoverageRecord:
 
 @dataclass(frozen=True)
 class CoverageRecordPaths:
-    """Canonical files published for one current Campaign."""
+    """Canonical files published for one current Coverage Record."""
 
     coverage_record: Path
     points: Path
 
 
 class CoverageRecordStoreError(ValueError):
-    """Campaign persistence cannot produce or recover exact evidence."""
+    """Coverage Record persistence cannot produce or recover exact evidence."""
 
     def __init__(self, code: str, message: str | None = None) -> None:
         if message is None:
@@ -217,17 +217,17 @@ def publish_coverage_record(
 ) -> CoverageRecordPaths:
     """Publish a complete Coverage Record without replacing existing final files."""
     if _contains_link(target_dir):
-        raise CoverageRecordStoreError("Coverage Campaign path contains a link")
+        raise CoverageRecordStoreError("Coverage Record path contains a link")
     target_dir.mkdir(parents=True, exist_ok=True)
     coverage_record_path = target_dir / "coverage.json"
     points_path = target_dir / POINT_STORE_NAME
     if coverage_record_path.exists() or points_path.exists():
-        raise CoverageRecordStoreError("Coverage Campaign publication cannot replace evidence")
+        raise CoverageRecordStoreError("Coverage Record publication cannot replace evidence")
     points_bytes, reference = _point_store_bytes(coverage_record)
     manifest_bytes = MANIFEST_JSON.encode(_manifest(coverage_record, reference))
     if len(manifest_bytes) > MAX_MANIFEST_BYTES:
         raise CoverageRecordStoreError(
-            "COV_MANIFEST_LIMIT", "Coverage Campaign manifest exceeds its size limit"
+            "COV_MANIFEST_LIMIT", "Coverage Record manifest exceeds its size limit"
         )
     atomic_write_once(points_path, points_bytes)
     # The manifest is the commit marker: link it last, and drop the point store
@@ -335,10 +335,10 @@ def decode_coverage_record(
     points: list[dict[str, object]],
     expected_target: DurableTargetIdentity,
 ) -> CoverageRecord:
-    """Decode a manifest and its point rows into a Campaign: the one decode.
+    """Decode a manifest and its point rows into a Coverage Record: the one decode.
 
     *manifest* has already passed the store's schema gate, exact field set
-    and size ceilings; ``load_coverage_campaign*`` are the entry points for
+    and size ceilings; ``load_coverage_record*`` are the entry points for
     persisted bytes. Consumes *points*. Stored rollups are discarded and
     derived from the points; a stored pass/fail evaluation is re-scored from
     them with the stored thresholds, so no stored derived value is trusted.
@@ -366,7 +366,7 @@ def _invocation_of(path: Path) -> Path | None:
 
     Two layouts: the Target-level ``<invocation>/targets/<Target>/coverage.json`` and the
     nested ``<invocation>/targets/<Target>/<record>/work-items/<item>/attempts/<attempt>/
-    <coverage record>/coverage.json``, whose directory names differ between Booley 0.4.0
+    <Coverage Record directory>/coverage.json``, whose directory names differ between Booley 0.4.0
     and now, so only the depth is matched.
     """
     parents = path.parents
@@ -389,13 +389,13 @@ def _load_manifest(
     try:
         if len(raw) > MAX_MANIFEST_BYTES:
             raise CoverageRecordStoreError(
-                "COV_MANIFEST_LIMIT", "Coverage Campaign manifest exceeds its size limit"
+                "COV_MANIFEST_LIMIT", "Coverage Record manifest exceeds its size limit"
             )
         try:
             parsed = json.loads(raw)
         except ValueError as exc:  # a JSONDecodeError, or an integer over the digit limit
             raise CoverageRecordStoreError(
-                "COV_MANIFEST_FORMAT", f"Cannot load Coverage Campaign: {exc}"
+                "COV_MANIFEST_FORMAT", f"Cannot load Coverage Record: {exc}"
             ) from exc
         document = dict(require_dict(parsed))
         schema = document.get("$schema")
@@ -408,12 +408,12 @@ def _load_manifest(
         if schema != COVERAGE_RECORD_SCHEMA:
             raise CoverageRecordStoreError(
                 "COV_SCHEMA_VERSION_UNSUPPORTED",
-                "Unsupported Coverage Campaign schema; delete the Coverage Campaign "
+                "Unsupported Coverage Record schema; delete the Coverage Record "
                 f"directory {path.parent} or recollect coverage with this Booley version",
             )
         if set(document) != _MANIFEST_FIELDS:
             raise CoverageRecordStoreError(
-                "COV_MANIFEST_FORMAT", f"Malformed {schema} Coverage Campaign manifest"
+                "COV_MANIFEST_FORMAT", f"Malformed {schema} Coverage Record manifest"
             )
         point_store = _decode_reference(document["point_store"])
         if expected_target is None:
@@ -428,7 +428,7 @@ def _load_manifest(
         raise
     except (UnicodeError, BoundaryError) as exc:
         raise CoverageRecordStoreError(
-            "COV_MANIFEST_FORMAT", f"Cannot load Coverage Campaign: {exc}"
+            "COV_MANIFEST_FORMAT", f"Cannot load Coverage Record: {exc}"
         ) from exc
     summary = CoverageRecordSummary(
         source_schema=schema,
@@ -456,7 +456,7 @@ def load_coverage_record(
         return _load_manifest(path, _read_manifest_bytes(path), expected_target)
     except OSError as exc:
         raise CoverageRecordStoreError(
-            "COV_MANIFEST_FORMAT", f"Cannot load Coverage Campaign: {exc}"
+            "COV_MANIFEST_FORMAT", f"Cannot load Coverage Record: {exc}"
         ) from exc
 
 

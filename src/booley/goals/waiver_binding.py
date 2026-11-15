@@ -1,6 +1,6 @@
 """Immutable persisted waiver facts, independent of coverage and MCP adapters.
 
-Only storage shape is checked here. Campaign authentication, candidate eligibility
+Only storage shape is checked here. Coverage Record authentication, candidate eligibility
 and waiver policy interpretation remain with their concrete owners. No value is
 trimmed, coerced or reconstructed from mutable producer files during recovery.
 """

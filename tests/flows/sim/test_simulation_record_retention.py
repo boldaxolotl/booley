@@ -493,7 +493,7 @@ def test_full_pruning_refuses_only_unrecognized_content(
     run = coverage_invocation(tmp_path, monkeypatch)
     invocation = tmp_path / "reports/sim/1"
     if defect != "extra_invocation":
-        # Native payload files live in the nested Coverage Campaign directory.
+        # Native payload files live in the nested Coverage Record directory.
         relative = str(run.storage.relative_to(invocation) / relative)
     selected = invocation / relative
     if defect == "changed":

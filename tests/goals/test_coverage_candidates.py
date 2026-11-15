@@ -1,4 +1,4 @@
-"""Specialist candidates follow the binding's record and Campaign Target identity."""
+"""Specialist candidates follow the binding's record and Coverage Record Target identity."""
 
 import json
 import shutil
@@ -47,7 +47,7 @@ def test_goal_candidate_record_retains_coverage_record_target_under_bound_record
 ):
     _env, paths = environment(goal_mode)
     context = GoalCandidateContext.from_recorder(GoalFlowExecution(bind(goal_mode)))
-    fixture = tmp_path / "campaign-fixture"
+    fixture = tmp_path / "coverage-record-fixture"
     original = source_project(fixture)
     shutil.copytree(fixture / "reports", context.flow_reports_root, dirs_exist_ok=True)
     path = context.flow_reports_root / original.relative_to(fixture / "reports")

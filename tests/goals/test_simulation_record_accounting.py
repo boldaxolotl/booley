@@ -76,7 +76,7 @@ class _SimulationRecord:
         self.error: Exception | None = None
         #: Every work item has a result: nothing more can come out of the record.
         self.complete = False
-        self.manifest = layout.control / "reports" / "campaign" / "manifest.json"
+        self.manifest = layout.control / "reports" / "record" / "manifest.json"
         layout.simulation_record_reader = self.read
 
     def read(self, path: Path, manifest_sha256: str) -> DurableSimulationRecordResults:
@@ -448,7 +448,7 @@ def test_replay_reads_a_pending_idle_simulation_record_only_through_its_reader(
 
 def test_registration_refuses_malformed_content() -> None:
     good = SimulationRecordRegistration(
-        "c", MANIFEST_SHA, "/x/campaign/manifest.json", {}, {}, "2026-10-13T10:00:00Z"
+        "c", MANIFEST_SHA, "/x/record/manifest.json", {}, {}, "2026-10-13T10:00:00Z"
     )
     assert SimulationRecordRegistration.from_json(good.to_json(), where="r") == good
     for broken in (

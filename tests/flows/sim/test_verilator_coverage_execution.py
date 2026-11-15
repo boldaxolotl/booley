@@ -1225,7 +1225,7 @@ def test_coverage_pre_sim_project_relative_hook_uses_project_root(
     run = expand_run_directory(
         configured,
         project_root=tmp_path,
-        simulation_record_id="campaign",
+        simulation_record_id="record",
         target_key="sim",
         work_item_key="alpha",
         attempt_key="attempt",

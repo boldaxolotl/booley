@@ -305,7 +305,7 @@ class TestFormatMcpToolResult:
         headline = (
             "sim_custom: simulation PASS · coverage collection COMPLETE · "
             "evaluation FAIL (branch: observed 1/2 points; displayed 50%; minimum 80%) "
-            "(Simulation Record campaign-123)"
+            "(Simulation Record record-123)"
         )
         report = {"status": "fail", "report_text": headline}
 
@@ -2061,7 +2061,7 @@ class TestCancel:
         jobrec.write_record(rec, root=session_jobs_dir())
         jobs = _JobManager(_FakeLifetime())
 
-        async def stop(_pid):
+        async def stop(_pid, _grace=None):
             current = jobrec.read_record(rec.run_id, root=session_jobs_dir())
             assert current is not None and current.status == jobrec.STATUS_RUNNING
 
@@ -2101,7 +2101,7 @@ class TestCancel:
             jobs._record_terminal(current, 0, timed_out=False)
             return True
 
-        async def stop(_pid):
+        async def stop(_pid, _grace=None):
             return None
 
         monkeypatch.setattr(jobs, "_adopt_report_outcome", adopt)
