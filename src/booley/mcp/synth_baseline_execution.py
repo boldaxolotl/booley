@@ -36,13 +36,6 @@ def classify_synth(
     return identity, [], units
 
 
-def synth_job_class() -> str:
-    """The synthesis Flow's own Job Class declaration."""
-    from booley.flows.synth.flow import AsicSynthesizeFlow
-
-    return AsicSynthesizeFlow()._resolve_job_class()
-
-
 def synth_job_requests(
     _checkout: Path, _target: str, units: tuple[dict[str, Any], ...]
 ) -> tuple[JobRequest, ...]:

@@ -69,11 +69,9 @@ class JobObserver:
         memory: tuple[list[job_slots.SlotToken], list[job_slots.SlotToken]] = ([], [])
         if self._slots_root is not None:
             store = job_slots.SlotStore(self._slots_root)
-            for kind in job_slots.JOB_CLASSES:
-                holders, waiters = store.observe(kind)
-                tokens.extend((*holders, *waiters))
-                if kind == job_slots.CLASS_MEMORY:
-                    memory = (holders, waiters)
+            holders, waiters = store.observe(job_slots.CLASS_MEMORY)
+            tokens.extend((*holders, *waiters))
+            memory = (holders, waiters)
         return tokens, memory
 
 

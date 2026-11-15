@@ -15,6 +15,8 @@ import pytest
 from booley.core.source_categories import CATEGORY_RTL, CATEGORY_TB
 from booley.criteria.state import DevelopmentState
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.flows import endpoint_admission
+from booley.flows.endpoint_admission import _Claim
 from booley.flows.endpoint_diff import _classify_files, read_source_dirs_from_toml
 from booley.flows.endpoint_events import _write_display_event
 from booley.flows.endpoint_reporting import _StdoutWitness
@@ -296,7 +298,7 @@ def test_dry_run_skips_admission_and_persistent_bookkeeping(tmp_path: Path) -> N
     before = state_file.read_bytes()
 
     class DryRunMcpTool(ConcreteMcpTool):
-        JOB_CLASS = "agent"
+        JOB_CLASS = job_slots.CLASS_MEMORY
         non_persisting_dry_run = True
         post_run_called = False
 
@@ -310,7 +312,7 @@ def test_dry_run_skips_admission_and_persistent_bookkeeping(tmp_path: Path) -> N
     env = _env_with_state(state_file)
     with (
         mock.patch.dict(os.environ, env),
-        mock.patch.object(endpoint, "_acquire_job_slot") as acquire_slot,
+        mock.patch.object(endpoint_admission, "_acquire_memory_reservation") as acquire_slot,
     ):
         result = endpoint.execute_cli(["--dry-run"])
 
@@ -322,7 +324,7 @@ def test_dry_run_skips_admission_and_persistent_bookkeeping(tmp_path: Path) -> N
 
 def test_dry_run_without_preview_opt_in_keeps_normal_lifecycle() -> None:
     class ExistingDryRunMcpTool(ConcreteMcpTool):
-        JOB_CLASS = "agent"
+        JOB_CLASS = job_slots.CLASS_MEMORY
         post_run_called = False
 
         def _add_args(self, parser: argparse.ArgumentParser) -> None:
@@ -332,12 +334,14 @@ def test_dry_run_without_preview_opt_in_keeps_normal_lifecycle() -> None:
             self.post_run_called = True
 
     endpoint = ExistingDryRunMcpTool()
-    with mock.patch.object(endpoint, "_acquire_job_slot", return_value=(None, None)) as acquire:
+    with mock.patch.object(
+        endpoint_admission, "_acquire_memory_reservation", return_value=_Claim(None, None)
+    ) as acquire:
         result = endpoint.execute_cli(["--dry-run"])
 
     assert result.exit_code == EXIT_SUCCESS
     assert endpoint.post_run_called is True
-    acquire.assert_called_once_with()
+    acquire.assert_called_once()
 
 
 def test_dry_run_lifecycle_is_snapshotted_before_endpoint_mutates_args() -> None:
@@ -353,7 +357,7 @@ def test_dry_run_lifecycle_is_snapshotted_before_endpoint_mutates_args() -> None
 
     endpoint = MutatingDryRunMcpTool()
     with (
-        mock.patch.object(endpoint, "_acquire_job_slot") as acquire_slot,
+        mock.patch.object(endpoint_admission, "_acquire_memory_reservation") as acquire_slot,
         mock.patch.object(endpoint, "_post_run") as post_run,
     ):
         result = endpoint.execute_cli(["--dry-run"])
@@ -1859,10 +1863,10 @@ class TestMainDisplayEvents:
             assert evt["target"] == "rtl", f"{evt['type']} should have target='rtl'"
 
 
-class LightMcpTool(ConcreteMcpTool):
-    """ConcreteMcpTool classed as light class — participates in slot-store admission."""
+class MemoryMcpTool(ConcreteMcpTool):
+    """ConcreteMcpTool classed as memory class — participates in slot-store admission."""
 
-    JOB_CLASS = job_slots.CLASS_LIGHT
+    JOB_CLASS = job_slots.CLASS_MEMORY
 
 
 class TestJobSlotAdmission:
@@ -1908,31 +1912,31 @@ class TestJobSlotAdmission:
         from booley.runtime.booley_dir import reset_cache
 
         reset_cache()
-        endpoint = LightMcpTool()
+        endpoint = MemoryMcpTool()
         assert endpoint.main(["--work-dir", str(tmp_path)]) == EXIT_SUCCESS
         reset_cache()  # don't leak a cached "no project" into other tests
 
     def test_classed_endpoint_holds_slot_during_run(self, tmp_path: Path, monkeypatch):
-        """A HEAVY endpoint holds exactly one holder entry while _run() executes
+        """A memory-admitted endpoint holds exactly one holder entry while _run() executes
         and releases it after main() returns (finally-path release)."""
         slots = self._runtime_env(monkeypatch, tmp_path)
         seen: dict[str, list] = {}
 
-        class ObservingMcpTool(LightMcpTool):
+        class ObservingMcpTool(MemoryMcpTool):
             def _run(inner) -> McpToolResult:  # noqa: N805 — closure style
                 store = job_slots.SlotStore(slots)
-                holders, waiters = store.snapshot(job_slots.CLASS_LIGHT)
+                holders, waiters = store.snapshot(job_slots.CLASS_MEMORY)
                 seen["holders"] = holders
                 seen["waiters"] = waiters
                 return McpToolResult(exit_code=EXIT_SUCCESS)
 
         endpoint = ObservingMcpTool()
         assert endpoint.main(["--work-dir", str(tmp_path)]) == EXIT_SUCCESS
-        # During _run: our PID held the one light slot, nothing queued.
+        # During _run: our PID held the one memory slot, nothing queued.
         assert [t.pid for t in seen["holders"]] == [os.getpid()]
         assert seen["waiters"] == []
         # After main: the finally released the claim — no live entries remain.
-        assert list((slots / job_slots.CLASS_LIGHT).glob("*.json")) == []
+        assert list((slots / job_slots.CLASS_MEMORY).glob("*.json")) == []
 
 
 class TestMcpToolEventScan:
@@ -2141,8 +2145,10 @@ class TestSlotClaimBudget:
 
         endpoint = ConcreteMcpTool()
         endpoint.parse_args([])
-        monkeypatch.setattr(type(endpoint), "JOB_CLASS", job_slots.CLASS_LIGHT, raising=False)
-        store, token = endpoint._acquire_job_slot()
+        monkeypatch.setattr(type(endpoint), "JOB_CLASS", job_slots.CLASS_MEMORY, raising=False)
+        claim = endpoint_admission._acquire_memory_reservation(endpoint, None)
+        store, token = claim.store, claim.token
+        assert store is not None
         assert token is not None
         assert token.timeout_s == 1200.0
         store.release(token)
@@ -2155,8 +2161,10 @@ class TestSlotClaimBudget:
 
         endpoint = ConcreteMcpTool()
         endpoint.parse_args([])
-        monkeypatch.setattr(type(endpoint), "JOB_CLASS", job_slots.CLASS_LIGHT, raising=False)
-        store, token = endpoint._acquire_job_slot()
+        monkeypatch.setattr(type(endpoint), "JOB_CLASS", job_slots.CLASS_MEMORY, raising=False)
+        claim = endpoint_admission._acquire_memory_reservation(endpoint, None)
+        store, token = claim.store, claim.token
+        assert store is not None
         assert token is not None
         assert token.timeout_s is None
         store.release(token)

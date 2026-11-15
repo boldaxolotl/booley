@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from booley.config.jobs import SlotCaps
 from booley.harness.dashboard.jobs import JobReader
 from booley.harness.standalone_job import standalone_jobs_dir, standalone_log_path
 from booley.runtime import booley_dir, job_records, job_slots
@@ -63,10 +62,7 @@ CTL = Path({ctl!r})
 class CheckoutStub(BooleyFlow):
     name = "checkout_stub"
     description = "Checkout Flow runner fixture"
-    JOB_CLASS = "light"
-
-    def _memory_admitted(self):
-        return False  # counted light slot: the test queues behind a plain slot holder
+    JOB_CLASS = "memory"  # admitted by Memory Reservation, so a run-alone holder blocks it
     target_required = False
 
     def _add_args(self, parser):
@@ -656,12 +652,16 @@ def test_checkout_flow_queues_behind_live_flow_in_main_slot_store(
     monkeypatch.setenv("BOOLEY_INHERITED_SLOT", "caller-slot")
     monkeypatch.setenv("BOOLEY_SLOTS_DIR", str(world.live / "elsewhere"))
     slots_root = world.main / "runtime" / "jobs" / "slots"
-    store = job_slots.SlotStore(slots_root, SlotCaps())
-    # Flows of the session's own checkout hold all of Main's light slots (the stub Flow is light-class).
+    store = job_slots.SlotStore(slots_root)
+    # A Flow of the session's own checkout runs alone in Main's memory class.
     argv = _proc_cmdline(os.getpid()) or []
     holders = [
-        store.acquire(job_slots.CLASS_LIGHT, pid=os.getpid(), argv=argv)
-        for _ in range(SlotCaps().max_light)
+        store.acquire(
+            job_slots.CLASS_MEMORY,
+            pid=os.getpid(),
+            argv=argv,
+            memory=job_slots.MemoryClaim(budget_mb=1024, run_alone=True),
+        )
     ]
     reader = JobReader(world.main, slots_root=slots_root)
     released = False

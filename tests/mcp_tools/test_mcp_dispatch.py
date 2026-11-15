@@ -1797,6 +1797,10 @@ class TestAttachSurvivesRestart:
         assert "simulate-y-4" not in text  # not attached to the finished job
 
 
+# A run-alone claim: fits an empty store, so a submitted entry is promoted on refresh.
+_RUN_ALONE = job_slots.MemoryClaim(budget_mb=1024.0, run_alone=True)
+
+
 class TestCancel:
     """The synthetic booley_cancel endpoint stops queued and running jobs."""
 
@@ -1898,7 +1902,7 @@ class TestCancel:
             root = job_slots.slots_dir()
             assert root is not None
             store = job_slots.SlotStore(root)
-            token = store.submit(job_slots.CLASS_LIGHT, pid=child.pid, argv=[])
+            token = store.submit(job_slots.CLASS_MEMORY, pid=child.pid, argv=[], memory=_RUN_ALONE)
             assert store.refresh(token).state == job_slots.HOLDING
             out = self._cancel({"run_id": "simulate-c-4"})
             assert "CANCELLED: running job" in _text(out)
@@ -1939,9 +1943,10 @@ class TestCancel:
             # Waiter entry, never refreshed → stays queued at position 0.
             # argv=[] skips the /proc identity check for the fake claim.
             job_slots.SlotStore(root).submit(
-                job_slots.CLASS_LIGHT,
+                job_slots.CLASS_MEMORY,
                 pid=child.pid,
                 argv=[],
+                memory=_RUN_ALONE,
             )
             out = self._cancel({"run_id": "simulate-c-3"})
             text = _text(out)
@@ -2141,11 +2146,14 @@ class TestJobPhase:
         root = job_slots.slots_dir()
         assert root is not None
         job_slots.SlotStore(root).submit(
-            job_slots.CLASS_LIGHT,
+            job_slots.CLASS_MEMORY,
             pid=os.getpid(),
             argv=[],
+            memory=_RUN_ALONE,
         )
-        assert _job_phase("simulate-p-1") == "QUEUED (position 1)"
+        assert _job_phase("simulate-p-1") == (
+            "QUEUED (position 1): waits to run alone (memory estimate unknown or above the Memory Budget)"
+        )
 
     def test_memory_waiter_phase_reports_need_free_memory_and_holders(self, _report_env):
         import os
@@ -2216,7 +2224,7 @@ class TestJobPhase:
         root = job_slots.slots_dir()
         assert root is not None
         store = job_slots.SlotStore(root)
-        token = store.submit(job_slots.CLASS_LIGHT, pid=os.getpid(), argv=[])
+        token = store.submit(job_slots.CLASS_MEMORY, pid=os.getpid(), argv=[], memory=_RUN_ALONE)
         assert store.refresh(token).state == job_slots.HOLDING
         assert _job_phase("simulate-p-3") == "RUNNING"
 

@@ -15,7 +15,6 @@ from tests.subprocess_budget import run_bounded_child
 from tests.test_job_slots import FakeWorld, make_store
 
 import booley
-from booley.config.jobs import SlotCaps
 from booley.runtime import job_slots
 
 BUDGET_MB = 10_000.0
@@ -29,7 +28,7 @@ def world() -> FakeWorld:
 
 @pytest.fixture
 def store(tmp_path: Path, world: FakeWorld) -> job_slots.SlotStore:
-    return make_store(tmp_path / "slots", world, SlotCaps(max_light=3))
+    return make_store(tmp_path / "slots", world)
 
 
 @pytest.fixture
@@ -256,15 +255,6 @@ def test_admission_ordinals_follow_admission_and_are_stored(
     assert third.admitted == 1  # ordinals only order Jobs that overlap
 
 
-def test_a_slot_claim_has_no_admission_ordinal(
-    store: job_slots.SlotStore, world: FakeWorld
-) -> None:
-    world.alive[101] = ["coordinator"]
-    token = store.acquire(job_slots.CLASS_LIGHT, pid=101)
-    (holder,), _waiters = store.observe(job_slots.CLASS_LIGHT)
-    assert (token.admitted, holder.admitted) == (None, None)
-
-
 class TestJobOomRankingLifecycle:
     def test_ranks_while_held_and_restores_the_coordinator_after(
         self,
@@ -386,14 +376,10 @@ class TestJobOomRankingLifecycle:
         assert proc.writes == []
         assert proc.values[tool] == 0
 
-    def test_only_a_memory_claim_is_ranked(
-        self, store: job_slots.SlotStore, world: FakeWorld
+    def test_a_missing_store_or_token_is_not_ranked(
+        self, store: job_slots.SlotStore, world: FakeWorld, proc: FakeProc
     ) -> None:
-        world.alive[101] = ["coordinator"]
-        holder = store.acquire(job_slots.CLASS_LIGHT, pid=101)
-        assert not isinstance(
-            oom_priority.job_oom_priority(store, holder), oom_priority.JobOomRanking
-        )
+        holder, _tool = _admit(store, world, proc, 101)
         assert not isinstance(
             oom_priority.job_oom_priority(store, None), oom_priority.JobOomRanking
         )
