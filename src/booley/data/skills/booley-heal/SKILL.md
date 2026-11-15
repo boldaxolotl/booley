@@ -69,6 +69,22 @@ Never describe one of those partial outcomes as healed.
 2. Run plain `booley doctor` and retain its complete output. Manual Doctor is
    the repair entry point for limited housekeeping such as guidance links; include those changes in the evidence and rerun before
    diagnosing remaining rows.
+   Then check the Project's guidance for the measuring pointer: when the
+   canonical `<booley_dir>/AGENTS.md` exists and does not contain
+   `booley cheat --metrics`, add this bullet (the `booley-setup` template's
+   Metric-Driven Development bullet, verbatim) at the end of its
+   "Booley-Specific Instructions" section, or at the end of the file when that
+   section is absent:
+
+   ```markdown
+   - Metric-Driven Development: before measuring a commit with `booley measure`, read `booley cheat --metrics`; it gives the measuring rules and each Target's metrics.
+   ```
+
+   For a hybrid footprint, apply the same edit to the tracked root copy so the
+   two stay identical. Never add the bullet when the text is present, never
+   create `AGENTS.md` for it, and list the edit among the changed files in the
+   report. This is not a Doctor finding and not a reason to add `metrics.toml`
+   tables.
 3. Build the active set from every `FAIL` and unwaived `WARN`. Record, where
    present, the severity, message, `→` fix hint, check ID, and subject.
 4. Group only findings that demonstrably share one root cause. Repair parsing
