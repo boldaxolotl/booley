@@ -1303,8 +1303,8 @@ class SlotStore:
         Refuses after recovery claimed the lease or once it expired, and then sets
         ``lease_health.lost``. A lease gate held elsewhere refuses without
         setting it: the lease still holds until it expires, so the renewal
-        thread keeps retrying until then (two missed intervals at the
-        current lease and interval lengths).
+        thread keeps retrying until then (about three missed intervals at
+        the current lease and interval lengths).
         """
         with self._lease_gate(token) as acquired:
             if not acquired:
@@ -1442,7 +1442,9 @@ class SlotStore:
         """Publish *gate* with *owner* already written; False when another gate holds the name.
 
         Windows denies the link while a released gate's delete is still
-        pending; that gate is busy too, not an error.
+        pending; that gate is busy too, not an error. A crash between the write
+        and the unlink leaves an orphaned tmp: accepted, like an entry tmp,
+        because ``observe`` ignores it and it is one small file.
         """
         tmp = gate.with_name(f".{gate.name}.{uuid.uuid4().hex}.tmp")
         try:
@@ -1486,17 +1488,16 @@ class SlotStore:
             try:
                 handle = stack.enter_context(path.open("a+b"))
                 acquire_file_lock(handle)
+                stack.callback(release_file_lock, handle)
+                locked = True
             except LockContentionError:  # another breaker is judging
-                yield False
-                return
+                locked = False
             except OSError as exc:  # no stale gate in this class can be broken
+                locked = False
                 if not self._break_lock_warned:
                     self._break_lock_warned = True
                     logger.warning("Cannot take the gate break lock %s: %s", path, exc)
-                yield False
-                return
-            stack.callback(release_file_lock, handle)
-            yield True
+            yield locked
 
     def _gate_is_stale(self, gate: Path) -> bool:
         """True only when *gate*'s owner is provably gone: dead, a zombie, or its PID recycled.
@@ -1505,17 +1506,19 @@ class SlotStore:
         with its owner written, so a dead owner's gate is broken at once. A
         gate without an owner (a bare PID or a lease-gate directory from an
         older release, or junk) is stale once old. An unreadable gate is not
-        stale: its owner may be alive (#1905).
+        stale: its owner may be alive (#1905). A gate whose owner captured no
+        identity degrades to PID liveness (the gate has no argv to compare), so
+        a recycled PID keeps such a gate alive until that process exits.
         """
         if gate.is_dir():
             return self._is_old_junk(gate)
         try:
-            text = gate.read_text(encoding="utf-8")
+            data = gate.read_bytes()
         except OSError:
             return False
         try:
-            payload = json.loads(text)
-        except ValueError:
+            payload = json.loads(data.decode("utf-8"))
+        except ValueError:  # not UTF-8 or not JSON: junk, like a bare PID
             payload = None
         if isinstance(payload, dict) and type(payload.get("pid")) is int:
             identity = ProcessIdentity.from_payload(payload.get("owner_identity"))

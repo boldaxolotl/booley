@@ -982,6 +982,7 @@ class TestGhostReaping:
         assert holder.lease_state == job_slots.LEASE_CANCELLING
         assert cancellations == [execution_id]
         assert store.renew(token) is False
+        assert token.lease_health.lost.is_set()
         store.release(token)
         assert token.path.exists()
 
@@ -1909,28 +1910,32 @@ class _SecondActor:
 def _pause(monkeypatch, gate: Path, actor: _SecondActor, method: str) -> None:
     """Run *actor* when this thread first calls ``Path.<method>`` on *gate*.
 
-    A read pauses after it returns (the breaker has judged), a removal before it runs.
+    ``read`` stands for both ``read_text`` and ``read_bytes``. A read pauses
+    after it returns (the breaker has judged), a removal before it runs.
     """
     paused_thread = threading.current_thread()
-    original = getattr(Path, method)
+    names = ("read_text", "read_bytes") if method == "read" else (method,)
     removes = method in ("unlink", "rmdir")
 
-    def paused(path, *args, **kwargs):
-        here = path == gate and threading.current_thread() is paused_thread
-        if here and removes:
-            actor.run_once()
-        result = original(path, *args, **kwargs)
-        if here and not removes:
-            actor.run_once()
-        return result
+    for name in names:
+        original = getattr(Path, name)
 
-    monkeypatch.setattr(Path, method, paused)
+        def paused(path, *args, _original=original, **kwargs):
+            here = path == gate and threading.current_thread() is paused_thread
+            if here and removes:
+                actor.run_once()
+            result = _original(path, *args, **kwargs)
+            if here and not removes:
+                actor.run_once()
+            return result
+
+        monkeypatch.setattr(Path, name, paused)
 
 
 class TestStaleGateBreaking:
     """Two processes that find the same stale gate: at most one of them holds it."""
 
-    @pytest.mark.parametrize("pause", ["read_text", "unlink"], ids=["judging", "removing"])
+    @pytest.mark.parametrize("pause", ["read", "unlink"], ids=["judging", "removing"])
     def test_one_breaker_holds_a_stale_promotion_gate(self, root, world, monkeypatch, pause):
         spawn(world, 100)
         spawn(world, 200)
@@ -1979,17 +1984,21 @@ class TestStaleGateBreaking:
         breaker = make_store(root, world)
         breaker_token = breaker.submit(CLASS_MEMORY, memory=_ALONE, pid=200)
         gate = root / CLASS_MEMORY / ".promotion.lock"
-        original_read = Path.read_text
+        originals = {name: getattr(Path, name) for name in ("read_text", "read_bytes")}
 
-        def scanned(path, *args, **kwargs):
-            if path == gate:
-                raise windows_sharing_error()  # a scanner holds the gate file
-            return original_read(path, *args, **kwargs)
+        def scanner(name):
+            def scanned(path, *args, **kwargs):
+                if path == gate:
+                    raise windows_sharing_error()  # a scanner holds the gate file
+                return originals[name](path, *args, **kwargs)
+
+            return scanned
 
         with holder._promotion_gate(holder_token) as held:
             assert held
             world.clock = gate.stat().st_mtime + job_slots._UNREADABLE_REAP_AGE_SECONDS + 1
-            monkeypatch.setattr(Path, "read_text", scanned)
+            for name in originals:
+                monkeypatch.setattr(Path, name, scanner(name))
             with breaker._promotion_gate(breaker_token) as acquired:
                 assert not acquired
 
@@ -2008,6 +2017,26 @@ class TestStaleGateBreaking:
                     assert not acquired
         assert gate.exists()
         assert caplog.text.count("Cannot take the gate break lock") == 1
+
+    @pytest.mark.parametrize("content", [b"\xff\xfe junk\n", b"not json\n"], ids=["bytes", "text"])
+    def test_junk_promotion_gate_is_broken_once_old(self, root, world, content):
+        spawn(world, 100)
+        store = make_store(root, world)
+        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+        gate = root / CLASS_MEMORY / ".promotion.lock"
+        gate.write_bytes(content)
+        with store._promotion_gate(token) as acquired:
+            assert not acquired  # not yet old: its writer may still be mid-write
+        world.clock = gate.stat().st_mtime + job_slots._UNREADABLE_REAP_AGE_SECONDS + 1
+        with store._promotion_gate(token) as acquired:
+            assert acquired
+
+    def test_gate_owner_is_recaptured_after_a_fork(self, root, world, monkeypatch):
+        store = make_store(root, world)
+        first = store._gate_owner()
+        assert store._gate_owner().pid == first.pid
+        monkeypatch.setattr(os, "getpid", lambda: first.pid + 1)
+        assert store._gate_owner().pid == first.pid + 1
 
     def test_recycled_pid_promotion_gate_is_broken(self, root, world):
         spawn(world, 100)
