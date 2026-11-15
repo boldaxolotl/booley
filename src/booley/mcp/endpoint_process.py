@@ -38,6 +38,24 @@ from booley.runtime.timefmt import utc_now_rfc3339
 _STREAM_CAP_MULTIPLIER = 4
 _WATCHDOG_TICK_SECONDS = 5.0
 CANCEL_GRACE_SECONDS = 5.0
+# ``booley measure`` stops its children within 30 s (``checkout_flow.STOP_GRACE_S``) and then
+# stores the cancelled run; a test keeps this number above that window.
+MEASURE_STOP_GRACE_SECONDS = 45.0
+
+
+def stop_grace_seconds(endpoint: str) -> float | None:
+    """How long *endpoint* needs to stop on SIGTERM; None when the default applies.
+
+    The grace both bounds a cancel and makes a timeout terminate before it kills, so the
+    children a ``measure`` Job leads in their own process groups are stopped, not orphaned.
+    """
+    return MEASURE_STOP_GRACE_SECONDS if endpoint == "measure" else None
+
+
+def cancel_grace_seconds(endpoint: str) -> float:
+    """The SIGTERM grace a cancel of *endpoint* allows before it kills the group."""
+    stop = stop_grace_seconds(endpoint)
+    return CANCEL_GRACE_SECONDS if stop is None else stop
 
 
 def _stdout_cap_bytes() -> int:
@@ -226,12 +244,15 @@ async def _run_subprocess(
     is_requeued: Callable[[], bool] | None = None,
     watchdog_tick: float = _WATCHDOG_TICK_SECONDS,
     cancel_grace: float = CANCEL_GRACE_SECONDS,
+    stop_grace: float | None = None,
     log_path: Path | None = None,
     cwd: Path | None = None,
 ) -> tuple[int, str, str, bool]:
     """Run a grouped child with bounded tails and wall-clock or active-time budget.
 
-    The child runs in *cwd* (default: this process's working directory).
+    The child runs in *cwd* (default: this process's working directory). A *stop_grace*
+    replaces *cancel_grace* and also makes a timeout SIGTERM the group and wait that long
+    before the kill, where otherwise a timeout kills at once.
 
     With *log_path* the child's full combined output is also written there as it
     arrives; a log failure never fails the run and is reported as a final
@@ -249,6 +270,8 @@ async def _run_subprocess(
     except OSError as exc:
         return 2, "", f"Subprocess launch failed for {cmd[0]!r}: {exc}", False
     group = capture_process_group(proc)
+    if stop_grace is not None:
+        cancel_grace = stop_grace
     if on_spawn is not None:
         # PID publication remains best-effort, as in the historical supervisor.
         with contextlib.suppress(Exception):
@@ -270,6 +293,7 @@ async def _run_subprocess(
             is_requeued=is_requeued,
             watchdog_tick=watchdog_tick,
             cancel_grace=cancel_grace,
+            terminate_on_timeout=stop_grace is not None,
         )
     finally:
         log.close()
@@ -287,6 +311,7 @@ async def _supervise_output(
     is_requeued: Callable[[], bool] | None,
     watchdog_tick: float,
     cancel_grace: float,
+    terminate_on_timeout: bool = False,
 ) -> tuple[int, str, str, bool]:
     try:
         try:
@@ -300,7 +325,12 @@ async def _supervise_output(
             )
         except TimeoutError:
             return await _timeout_subprocess_result(
-                child.process, child.group, timeout, child.stdout, child.stderr
+                child.process,
+                child.group,
+                timeout,
+                child.stdout,
+                child.stderr,
+                terminate_grace=cancel_grace if terminate_on_timeout else None,
             )
         except asyncio.CancelledError:
             # Give cooperative cleanup a bounded chance, then force surviving descendants.
@@ -368,10 +398,15 @@ async def _timeout_subprocess_result(
     timeout: int,
     stdout_task: asyncio.Task[bytes],
     stderr_task: asyncio.Task[bytes],
+    *,
+    terminate_grace: float | None = None,
 ) -> tuple[int, str, str, bool]:
-    """Kill a timed-out subprocess and construct its bounded diagnostic."""
+    """Stop a timed-out subprocess (killed at once unless *terminate_grace*) and report it."""
     snapshot = await _async_process_snapshot(proc.pid)
-    await _kill_async_process_tree(proc, group)
+    if terminate_grace is None:
+        await _kill_async_process_tree(proc, group)
+    else:
+        await _cancel_async_process_tree(proc, group, grace_seconds=terminate_grace)
     await _cancel_stream_tasks(stdout_task, stderr_task)
     stderr = f"Subprocess timed out after {timeout}s"
     if snapshot:
@@ -495,7 +530,7 @@ def write_synthetic_endpoint_end(
 
 
 async def _cancel_adopted_process_group(
-    pid: int, *, grace_seconds: float = CANCEL_GRACE_SECONDS
+    pid: int, grace_seconds: float = CANCEL_GRACE_SECONDS
 ) -> None:
     """Cancel a disk-only job by its session-leader PID."""
     await terminate_adopted_process_group(

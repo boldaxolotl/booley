@@ -26,6 +26,8 @@ from booley.mcp.endpoint_process import (
     _cancel_adopted_process_group,
     _endpoint_subprocess_env,
     _run_subprocess,
+    cancel_grace_seconds,
+    stop_grace_seconds,
     write_synthetic_endpoint_end,
 )
 from booley.mcp.job_ownership import Caller, owns
@@ -358,6 +360,8 @@ class JobLifecycle:
         overrides = {"BOOLEY_RUN_ID": rec.run_id, "BOOLEY_SLOT_TIMEOUT_S": str(rec.timeout_s)}
         if publish_display_identity:
             overrides["BOOLEY_DISPLAY_INVOCATION_ID"] = rec.run_id
+        stop_grace = stop_grace_seconds(rec.endpoint)
+        stop = {} if stop_grace is None else {"stop_grace": stop_grace}
         return await self._run_process(
             rec.argv,
             timeout=rec.timeout_s,
@@ -367,6 +371,7 @@ class JobLifecycle:
             is_requeued=lambda: self._child_requeued(rec),
             on_first_active=lambda: self._stamp_run_started(rec),
             log_path=jobrec.job_log_path(rec.run_id, self._write_root(rec)),
+            **stop,
         )
 
     async def _run_and_record(self, rec: jobrec.JobRecord, context: CallContext) -> None:
@@ -463,7 +468,7 @@ class JobLifecycle:
                 self._record_terminal(fresh, 2, timed_out=False)
             return
         if rec.pid is not None:
-            await self._cancel_process(rec.pid)
+            await self._cancel_process(rec.pid, cancel_grace_seconds(rec.endpoint))
             # A SIGTERMed owner records its own failure; that is still the user's
             # cancellation. Only a completion that won the race is kept as is.
             fresh = self._read_run(rec.run_id)

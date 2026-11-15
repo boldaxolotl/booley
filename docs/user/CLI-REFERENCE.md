@@ -107,6 +107,13 @@ stops the run and the later tables are "not evaluated". `--validate` takes no
 other option. Ctrl-C cancels the measurement: a run with a finished Flow is
 stored as cancelled, never as measured, and the command ends with status 130.
 
+The Developer Agent runs the same command through the `booley_measure` MCP tool,
+with the same options. The tool returns a `run_id` at once; `booley_poll` shows
+how many Flows have finished of the total and which are running, then the exit
+status, the verdict line, the failing rows and the paths of the Markdown and
+JSON reports. `booley_cancel` cancels the measurement like Ctrl-C and stops its
+Flows.
+
 The Dashboard opens by itself when you attach to the container; see
 [The dashboard](USAGE.md#the-dashboard).
 

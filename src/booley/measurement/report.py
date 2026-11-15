@@ -487,3 +487,21 @@ def terminal_report(document: Mapping[str, Any], *, width: int | None = None) ->
         lines.extend(["", bold(title)])
         lines.extend(line for block in blocks for line in _terminal_lines(block, width))
     return "\n".join(lines) + "\n"
+
+
+def agent_summary(document: Mapping[str, Any]) -> str:
+    """The Developer Agent's result of a measurement: plain text, bounded, never truncated.
+
+    The verdict line, each failing row (no excerpt, no suggested command) up to the 20-line
+    cap and a count of the rest, then the Markdown and JSON report paths.
+    """
+    rows = [
+        block.text.replace("\n", " ")
+        for block in _failing(document, _Names(document))[1]
+        if isinstance(block, _Text)
+    ]
+    lines = [_verdict_line(document).text, *rows[:_LIST_CAP]]
+    if len(rows) > _LIST_CAP:
+        lines.append(f"... and {len(rows) - _LIST_CAP} more failing rows in the Markdown report")
+    paths = document["view"]["paths"]
+    return "\n".join([*lines, f"Markdown: {paths['markdown']}", f"JSON: {paths['json']}"])

@@ -53,6 +53,7 @@ from booley.harness.standalone_job import (
     standalone_log_root,
 )
 from booley.measurement.base import BaseError, resolve_base
+from booley.measurement.mcp_job import McpMeasureJob
 from booley.measurement.measuring_rules import exit_rule
 from booley.measurement.metrics_file import (
     MetricsFileError,
@@ -61,7 +62,7 @@ from booley.measurement.metrics_file import (
     load_metrics_rules,
 )
 from booley.measurement.protected_set import protected_set
-from booley.measurement.report import terminal_report, write_markdown_report
+from booley.measurement.report import agent_summary, terminal_report, write_markdown_report
 from booley.measurement.run_document import MeasurementRun, RunStatus
 from booley.measurement.run_key import (
     KeyedCommit,
@@ -101,6 +102,16 @@ class MeasureRequest:
     as_json: bool  # --json
     argv: tuple[str, ...]  # the user's arguments, for the Job record
     target: str | None = None  # --target
+
+
+@dataclass(frozen=True)
+class _JobHooks:
+    """What a measurement takes from the Job it runs as: its run id and where it reports."""
+
+    run_id: str
+    progress: Callable[[int, int, tuple[str, ...]], None]
+    # Gets the exit status and the summary of a finished measurement; an MCP Job only.
+    publish: Callable[[int, str], None] | None = None
 
 
 class MeasureRefusedError(Exception):
@@ -152,7 +163,15 @@ def _cancel_signals() -> Iterator[_CancelSignals]:
 
 
 def run_measure(project_root: Path, request: MeasureRequest) -> int:
-    """Measure the commit *request* names as its own ``measure`` Job; return the exit status."""
+    """Measure the commit *request* names as a ``measure`` Job; return the exit status.
+
+    Under an MCP ``measure`` Job the process is that Job, and writes no record of its own.
+    Otherwise the run is a Standalone Job of its own.
+    """
+    mcp_job = McpMeasureJob.find()
+    if mcp_job is not None:
+        hooks = _JobHooks(mcp_job.run_id, mcp_job.record_progress, mcp_job.publish_result)
+        return _guarded(project_root, request, hooks)
     job = StandaloneJob.prepare(
         project_root,
         "measure",
@@ -163,13 +182,16 @@ def run_measure(project_root: Path, request: MeasureRequest) -> int:
     if job is None:
         print("ERROR: no Main Booley Directory to store the measurement in", file=sys.stderr)
         return _with_rule(_EXIT_REFUSED)
+    hooks = _JobHooks(
+        job.run_id, lambda finished, total, _running: job.record_progress(finished, total)
+    )
     try:
-        return job.run(lambda: _guarded(project_root, request, job))
+        return job.run(lambda: _guarded(project_root, request, hooks))
     finally:
         job.discard()
 
 
-def _guarded(project_root: Path, request: MeasureRequest, job: StandaloneJob) -> int:
+def _guarded(project_root: Path, request: MeasureRequest, hooks: _JobHooks) -> int:
     """Run the measurement; a refusal or a failure prints its error and exits 2.
 
     The text goes to stderr, which the Job copies into its ``job.log``. A
@@ -178,7 +200,7 @@ def _guarded(project_root: Path, request: MeasureRequest, job: StandaloneJob) ->
     code = _EXIT_REFUSED
     try:
         with _cancel_signals() as signals:
-            code = _measure(project_root, request, job, signals)
+            code = _measure(project_root, request, hooks, signals)
     except MeasureRefusedError as refusal:
         print(f"ERROR: {refusal}", file=sys.stderr)
     except Exception as failure:  # noqa: BLE001 — the command boundary: infrastructure failures
@@ -283,7 +305,7 @@ def _preflight(
 
 
 def _measure(
-    project_root: Path, request: MeasureRequest, job: StandaloneJob, signals: _CancelSignals
+    project_root: Path, request: MeasureRequest, hooks: _JobHooks, signals: _CancelSignals
 ) -> int:
     from booley.core.booley_dir import main_booley_dir_of
 
@@ -294,8 +316,8 @@ def _measure(
     if not request.again:
         stored = _measured_run(store, keyed.key)
         if stored is not None:
-            return _show(project_root, store, stored, commit, request)
-    return _measure_commit(project_root, request, job, signals, commit, main)
+            return _show(project_root, store, stored, commit, request, hooks)
+    return _measure_commit(project_root, request, hooks, signals, commit, main)
 
 
 def _measured_run(store: MeasurementStore, key: MeasurementKey) -> StoredRun | None:
@@ -313,6 +335,7 @@ def _show(
     stored: StoredRun,
     commit: str,
     request: MeasureRequest,
+    hooks: _JobHooks,
 ) -> int:
     """Print the stored run of an already Measured commit: no checkout, no Flow, no new run."""
     print(
@@ -320,8 +343,16 @@ def _show(
         "(--again measures it again)",
         file=sys.stderr,
     )
-    _print_report(run_view(project_root, store, stored, commit, base=request.base), request)
+    view = run_view(project_root, store, stored, commit, base=request.base)
+    _print_report(view, request)
+    _publish(hooks, 0, view)
     return 0
+
+
+def _publish(hooks: _JobHooks, exit_code: int, view: dict[str, Any]) -> None:
+    """Hand an MCP Job the outcome of a measurement that ran to its report."""
+    if hooks.publish is not None:
+        hooks.publish(exit_code, agent_summary(view))
 
 
 def _print_report(view: dict[str, Any], request: MeasureRequest) -> None:
@@ -372,13 +403,13 @@ def _drift_text(entry: SubmoduleDrift) -> str:
 def _measure_commit(
     project_root: Path,
     request: MeasureRequest,
-    job: StandaloneJob,
+    hooks: _JobHooks,
     signals: _CancelSignals,
     commit: str,
     main: Path,
 ) -> int:
     """Export *commit*, run its Flows, store the run and print the report."""
-    run_id = job.run_id
+    run_id = hooks.run_id
     started_at = datetime.now(UTC)
     started = time.monotonic()
     scratch = Path(tempfile.mkdtemp(prefix="booley-measure-"))
@@ -402,7 +433,7 @@ def _measure_commit(
                 main_booley_dir=main,
                 all_tables=request.all_tables,
                 cancelled=signals.is_set,
-                progress=job.record_progress,
+                progress=hooks.progress,
             )
         except CheckoutFlowError as exc:  # the first child could not be launched
             raise MeasureRefusedError(str(exc)) from exc
@@ -442,9 +473,11 @@ def _measure_commit(
     # A signal while storing leaves a complete run: the exit must agree with what is stored.
     if status is RunStatus.CANCELLED:
         raise KeyboardInterrupt
-    return measure_exit_code(
+    code = measure_exit_code(
         result.verdict for table in outcome.tables for result in table.run.results
     )
+    _publish(hooks, code, view)
+    return code
 
 
 def _flow_reports(outcome: ChildrenOutcome) -> list[FlowReport]:

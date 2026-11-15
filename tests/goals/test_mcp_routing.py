@@ -189,7 +189,7 @@ def test_two_goal_worktrees_and_interactive_restart_poll_cancel(goal_mode, monke
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(container.parent))
     monkeypatch.setattr(server, "is_pid_alive", lambda pid: pid == 123)
 
-    async def terminate(_pid):
+    async def terminate(_pid, _grace=None):
         return None
 
     monkeypatch.setattr(server, "_cancel_adopted_process_group", terminate)
