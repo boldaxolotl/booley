@@ -14,6 +14,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -449,6 +450,188 @@ class TestSingleProcess:
 
         assert store.renew(token) is False
         assert not token.path.exists()
+
+    @pytest.mark.parametrize("variant", ["promotion", "recovery"])
+    def test_cancel_in_a_rewrite_window_never_leaves_a_cancelled_entry(
+        self, root, world, monkeypatch, variant
+    ):
+        spawn(world, 100)
+        cancellations: list[str] = []
+        store = make_execution_store(
+            root,
+            world,
+            execution_terminal=lambda _execution_id: False,
+            cancellations=cancellations,
+        )
+        canceller = make_store(root, world)
+        execution_id = "d" * 32
+        if variant == "recovery":
+            blocker = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+            assert store.refresh(blocker).state == HOLDING
+        waiter = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100, execution_id=execution_id)
+        cancelled: list[bool] = []
+        real_replace = job_slots.replace_file
+
+        def cancel_then_replace(src, dst, **kwargs):
+            if not cancelled:
+                cancelled.append(canceller.cancel_waiter_token(waiter))
+            return real_replace(src, dst, **kwargs)
+
+        monkeypatch.setattr(job_slots, "replace_file", cancel_then_replace)
+
+        if variant == "promotion":
+            assert store.refresh(waiter).state == HOLDING
+        else:
+            copy = next(t for t in store.observe(CLASS_MEMORY)[1] if t.lease_id == waiter.lease_id)
+            assert store.begin_token_recovery(copy) is True
+
+        assert cancelled == [False]
+        holders, waiters = store.observe(CLASS_MEMORY)
+        entries = [t for t in holders + waiters if t.lease_id == waiter.lease_id]
+        assert len(entries) == 1
+        if variant == "promotion":
+            assert entries[0].is_holder
+        else:
+            assert entries[0].lease_state == job_slots.LEASE_CANCELLING
+
+    def test_promotion_after_a_successful_cancel_reports_lost(self, root, world):
+        spawn(world, 100)
+        store = make_store(root, world)
+        canceller = make_store(root, world)
+        waiter = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+        cancelled: list[bool] = []
+        real_promote = store._promote
+
+        def cancel_then_promote(token):
+            cancelled.append(canceller.cancel_waiter_token(waiter))
+            return real_promote(token)
+
+        store._promote = cancel_then_promote  # type: ignore[method-assign]
+
+        assert store.refresh(waiter).state == LOST
+        assert cancelled == [True]
+        holders, waiters = store.observe(CLASS_MEMORY)
+        assert [t for t in holders + waiters if t.lease_id == waiter.lease_id] == []
+
+    def test_promotion_never_reactivates_a_recovery_claimed_waiter(self, root, world):
+        spawn(world, 100)
+        store = make_execution_store(
+            root,
+            world,
+            execution_terminal=lambda _execution_id: False,
+            cancellations=[],
+        )
+        waiter = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100, execution_id="e" * 32)
+        copy = store.observe(CLASS_MEMORY)[1][0]
+        assert store.begin_token_recovery(copy) is True
+
+        assert store.refresh(waiter).state == QUEUED
+
+        holders, waiters = store.observe(CLASS_MEMORY)
+        assert holders == []
+        assert [t.lease_state for t in waiters] == [job_slots.LEASE_CANCELLING]
+
+    def test_cancel_after_a_finished_promotion_spares_the_holder(self, root, world, monkeypatch):
+        spawn(world, 100)
+        owner = make_store(root, world)
+        canceller = make_store(root, world)
+        token = owner.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+        real_gate = canceller._lease_gate
+        promoted: list[bool] = []
+
+        @contextlib.contextmanager
+        def promote_while_waiting(tok):
+            if not promoted:
+                promoted.append(owner.refresh(token).state == HOLDING)
+            with real_gate(tok) as acquired:
+                yield acquired
+
+        monkeypatch.setattr(canceller, "_lease_gate", promote_while_waiting)
+
+        assert canceller.cancel_waiter_token(token) is False
+        assert promoted == [True]
+        assert token.path.exists()
+        assert token.is_holder
+        assert owner.renew(token) is True
+
+    def _release_threads(self) -> list[threading.Thread]:
+        return [t for t in threading.enumerate() if t.name.startswith("booley-slot-release-")]
+
+    def test_release_retries_until_the_lease_gate_frees(self, root, world):
+        spawn(world, 100)
+        store = make_store(root, world)
+        other = make_store(root, world)
+        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+        assert store.refresh(token).state == HOLDING
+        gate_free = threading.Event()
+        test_thread = threading.current_thread()
+
+        def sleep(_seconds: float) -> None:
+            if threading.current_thread() is not test_thread:
+                gate_free.wait(timeout=10)
+
+        store._sleep = sleep
+        try:
+            with other._lease_gate(token) as held:
+                assert held
+                store.release(token)
+                assert token.path.exists()
+        finally:
+            gate_free.set()
+        for thread in self._release_threads():
+            thread.join(timeout=10)
+
+        assert not token.path.exists()
+
+    def test_release_logs_when_the_lease_gate_never_frees(self, root, world, caplog):
+        spawn(world, 100)
+        store = make_store(root, world)
+        other = make_store(root, world)
+        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+        assert store.refresh(token).state == HOLDING
+        caplog.set_level(logging.WARNING, logger="booley.runtime.job_slots")
+
+        with other._lease_gate(token) as held:
+            assert held
+            store.release(token)
+            for thread in self._release_threads():
+                thread.join(timeout=10)
+            assert token.path.exists()
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("Could not release slot entry" in m and token.path.name in m for m in messages)
+
+    def test_release_without_a_thread_logs_the_give_up(self, root, world, caplog, monkeypatch):
+        spawn(world, 100)
+        store = make_store(root, world)
+        other = make_store(root, world)
+        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+        assert store.refresh(token).state == HOLDING
+        caplog.set_level(logging.WARNING, logger="booley.runtime.job_slots")
+
+        def no_thread(self_thread):
+            raise RuntimeError("can't start new thread")
+
+        monkeypatch.setattr(threading.Thread, "start", no_thread)
+        with other._lease_gate(token):
+            store.release(token)
+
+        assert any("Could not release slot entry" in r.getMessage() for r in caplog.records)
+
+    def test_release_of_a_removed_entry_starts_no_retry(self, root, world, caplog):
+        spawn(world, 100)
+        store = make_store(root, world)
+        other = make_store(root, world)
+        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+        assert store.refresh(token).state == HOLDING
+        caplog.set_level(logging.WARNING, logger="booley.runtime.job_slots")
+
+        with other._lease_gate(token):
+            token.path.unlink()
+            store.release(token)
+
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+        assert self._release_threads() == []
 
     def test_release_frees_the_slot(self, root, world):
         spawn(world, 100)
