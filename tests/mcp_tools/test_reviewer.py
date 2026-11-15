@@ -1603,6 +1603,7 @@ class TestPromptConstruction:
         for category in (
             "Redundant storage",
             "Redundant terms",
+            "Register reuse",
             "Equivalent structure",
             "Oversized",
             "Critical-path placement",
@@ -1613,7 +1614,14 @@ class TestPromptConstruction:
         assert "MINOR** -- A small saving" in system
         assert "must not add material delay to a critical path" in system
         assert "reserved, debug, formal, and coverage hooks" in system
+        assert "Track each wide register's lifetime" in system
         assert "## Patterns" not in system
+        checklist = tuple(
+            g for g in REVIEW_GUIDES[("rtl", "optimization")] if g.kind == "checklist"
+        )
+        assert "share the same storage" not in endpoint._build_system_prompt(
+            "optimization", checklist
+        )
 
     def test_rtl_optimization_prompt_checks_for_runtime_constant_work(self, state_file: Path):
         endpoint = ReviewerSpecialist()

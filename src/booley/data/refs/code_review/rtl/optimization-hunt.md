@@ -22,7 +22,7 @@ Project-specific overlays may be supplied by the caller or change-request contex
 
 Read all target files and the package/include files they depend on. For each module, write down for yourself:
 
-- **Registers**: width, reset value, every writer, every reader, and the cycles in which the value is used
+- **Registers**: width, reset value, every writer, every reader, and the cycles in which the value is used. Track each wide register's lifetime through every pipeline stage and operating mode: when it is stored, when it is used, and when it is not needed
 - **Arithmetic blocks**: operand widths and the range of values each operand can reach
 - **Mux trees, case statements, and priority chains**: the select, the legs, and which legs are reachable
 - **FSMs**: states, encoding, and transitions
@@ -35,6 +35,7 @@ For each mapped element, ask every category below. Skip a category only when it 
 
 - **Redundant storage**: a register that holds, or delays by one cycle, a value that other state or inputs already provide in every cycle it is read
 - **Redundant terms**: a qualifier, guard, compare, or saturation check that an upstream decoder, an instantiated primitive, or an enclosing condition already guarantees
+- **Register reuse**: wide registers whose values are needed at different times can share the same storage. Two values can share a register if one is not needed whenever the other is stored or used. Reading the prior value and replacing it on the same clock edge is safe, because downstream logic sees the value from before the edge. Moving a load by one cycle may also prevent the lifetimes from overlapping. Ignore small counters, flags, and other control registers. Show when each value is stored, used, and not needed; include the bits saved, schedule or throughput changes, and any cycle where both values would need to be written
 - **Equivalent structure**: duplicate units, FSM states that behave the same, mux legs that compute the same value, and compare chains where fewer bits already decide every legal case
 - **Oversized**: registers, counters, operands, and intermediate expressions wider than the range of values they can hold across every legal configuration
 - **Critical-path placement**: a mux, decode term, or qualifier placed in front of a deep block (adder, scrambler, memory index, wide compare) or ORed onto a late path, where moving it after the block or into a registered signal keeps behavior

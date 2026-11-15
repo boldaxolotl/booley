@@ -29,7 +29,7 @@ A `bugs` or `optimization` review runs two searches side by side: one checks
 the code against a list of known patterns, the other hunts. The `bugs` hunt
 traces scenarios such as reset, back-to-back operations, and full or empty
 states for defects; the `optimization` hunt looks for redundant, oversized, or
-critical-path logic. It reports the findings of both and merges findings the
+critical-path logic and registers that could share storage. It reports the findings of both and merges findings the
 two searches report at the same file, line, and kind. It uses about twice the model
 time and tokens of one search. A search that fails runs once more; if it fails
 again, the whole review is an error instead of a partial result.
