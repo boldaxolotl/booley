@@ -87,8 +87,8 @@ Explain what a thing is and its main kinds before its naming rules.
 
 ### 8. One job per doc, one topic per section
 
-Move off-topic material to the doc it belongs in and leave a link;
-troubleshooting stays in [TROUBLESHOOTING.md](../user/TROUBLESHOOTING.md).
+Move off-topic material to the doc it belongs in and leave a link. A feature
+doc has no troubleshooting section: principle 34 says where a problem goes.
 Merge sections that cover overlapping ground and fold a minor behavior into
 its parent. A feature doc leaves shared UI to that UI's doc. Split a giant doc:
 one page per Flow, one per topic. Headings match their scope: a rule for all
@@ -138,10 +138,11 @@ those words counts too: "it sets no delay target" describes the old version
 when only the old version set one, and "re-running init replaces `auto`"
 describes upgrading from an old default. Say what the thing does now.
 
-A retired setting gets one action, in
-[TROUBLESHOOTING.md](../user/TROUBLESHOOTING.md) under the error it causes:
-"Delete `[flows.sim].standalone_frontend` if your `booley.toml` sets it." A
-reference doc such as `CONFIG.md` lists only the current keys.
+A retired setting is named in two places only: the message that refuses it,
+which says what to do ("delete the key"), and the changelog. A reference doc
+such as `CONFIG.md` lists only the current keys, and
+[TROUBLESHOOTING.md](../user/TROUBLESHOOTING.md) gets no entry for it
+(principle 34).
 
 ### 15. Credit sources and mark temporary designs
 
@@ -265,9 +266,10 @@ Commit `AGENTS.md` in the Booley Directory's own repository instead:
 - Use one fixed label per variant: `In stealth mode`, `With a cocotb
   testbench`, `On Windows`, `With host-installed licensed tools`, `With your own
   image`, and `With the RISC-V image`.
-- Say only what differs, and link the variant's own page (`STEALTH.md`,
-  `WINDOWS.md`, ...) for the full story. Keep the callout at block level, not
-  inside a list item, and leave blank lines around its Markdown body.
+- Say only what differs, and link the variant's own page or section
+  (`STEALTH.md`, `FEATURES.md#windows-support`, ...) for the full story. Keep
+  the callout at block level, not inside a list item, and leave blank lines
+  around its Markdown body.
 - Leave in the main text: choices every user makes (port or scaffold, FPGA or
   ASIC), hard limits (no coverage on Icarus), and reference tables that must
   list every value.
@@ -357,3 +359,41 @@ make sense to both readers:
 
 Bad: "Measure only when the user asks for a Measured Commit." Good: "The
 Developer Agent measures only when you ask for a Measured Commit."
+
+## Troubleshooting
+
+### 34. A troubleshooting entry is the last resort
+
+[TROUBLESHOOTING.md](../user/TROUBLESHOOTING.md) holds only the problems
+Booley can't explain to the user by itself. Before you add an entry, or accept
+one in review, go down this list and stop at the first line that fits:
+
+1. **Booley can detect it:** add a Doctor check whose hint is the fix. No
+   entry titled "Doctor reports X".
+2. **Booley prints a message about it:** put the fix in the message. An entry
+   that explains an error message is a bug report on that message.
+3. **It fails silently or hangs:** that is a product bug.
+4. **A release caused it** (a retired key, an upgrade step, leftovers of an
+   older version): the changelog and the refusal message cover it
+   (principle 14).
+5. **The average user meets it** in normal use of a feature: it belongs in
+   that feature's doc, as how the feature behaves.
+6. **Another tool's own error** (Verilator, GCC, Git, Docker, pip), which that
+   tool's message and docs resolve: no entry. The exception is a tool whose
+   usual fix fails in the Sandbox, or whose error names the wrong thing.
+
+For lines 1 to 3, file an issue instead of writing the entry (principle 3),
+and put the workaround in the issue.
+
+What is left gets an entry: a rare situation whose symptom doesn't name its
+cause and that Booley can't detect.
+
+- **The heading is the symptom** as the user meets it, in the words of the
+  error or of what they see: "RTL opens as plain text", not "Coverage Campaign
+  diagnostics".
+- **The body is the cause in one sentence, then the fix.** No reference
+  tables, and no "never delete X" rule without a symptom.
+
+Bad: an entry "Missing Seat Cap" that repeats the fix the refusal already
+prints. Good: no entry, because the message says "add `[jobs.seats]
+vivado = <seats you own>` to `booley.toml`".

@@ -135,8 +135,8 @@ Use evidence in this order:
    folder (https://booley.dev/docs/troubleshooting/ shows the latest release,
    so use it only when versions match). Search it using exact error
    fragments and concrete nouns from the finding. Read the whole matching section, including its commands and Sandbox-location
-   qualifications. The guide documents common residue and pitfalls Doctor cannot
-   fully infer; do not force an unrelated recipe onto a finding just because a
+   qualifications. The guide holds only the few problems Booley cannot report
+   by itself; do not force an unrelated recipe onto a finding just because a
    keyword matched.
 3. **Named evidence.** Inspect the report directory, `run.log`, stdout, stderr,
    config, `.core` Target, or generated file Doctor identifies.
