@@ -48,7 +48,8 @@ FLOW = "checkout_stub"
 # The stub Flow's behavior follows ``--target``: ``pass`` runs one real command,
 # ``fail`` returns a failing outcome, ``crash`` raises, ``abort`` exits at once with no
 # report, ``wait`` (or any target starting with ``wait``) waits (bounded) for the ``release``
-# marker and ``env`` records what it saw. Every run appends its target to ``order`` when it
+# marker, ``linger`` is a ``wait`` that takes 7 s to stop once interrupted, and ``env`` records
+# what it saw. Every run appends its target to ``order`` when it
 # starts, and a target starting with ``metrics`` returns a typed detail. Its control
 # directory is written into the source.
 STUB_FLOW = """
@@ -113,10 +114,17 @@ class CheckoutStub(BooleyFlow):
                 encoding="utf-8",
             )
             return EndpointOutcome()
+        if target == "linger":
+            def stop(*_):  # a stop takes 7 s, longer than the MCP default cancel grace of 5 s
+                (CTL / "stopping").write_text("1", encoding="utf-8")
+                time.sleep(7)
+                os._exit(130)
+            signal.signal(signal.SIGINT, stop)
+            (CTL / "lingering").write_text("1", encoding="utf-8")  # the handler is installed
         if target == "stubborn":
             signal.signal(signal.SIGINT, signal.SIG_IGN)  # only a kill ends this Flow
             (CTL / "ignoring").write_text("1", encoding="utf-8")
-        if target.startswith("wait") or target == "stubborn":
+        if target.startswith("wait") or target in ("stubborn", "linger"):
             deadline = time.monotonic() + 45
             while not (CTL / "release").exists() and time.monotonic() < deadline:
                 time.sleep(0.02)

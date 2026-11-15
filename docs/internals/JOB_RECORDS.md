@@ -30,6 +30,11 @@ server can tell a running Job from a crashed one without in-memory state.
 | `report_root` | Where a Standalone Job's reports live, when not next to the records. |
 | `progress` | `{"finished": n, "total": m}`: child Flows ended and planned, for a Job that runs child Flows (`measure`); null otherwise. |
 
+An MCP `measure` Job keeps `progress.json` and `result.json` (its exit code and
+summary, read as its report) beside its `job.log` instead of `progress`. It gets
+a 45 s stop grace on cancel and on timeout, so its child Flows finish their own
+30 s stop window and the run is stored before the group is killed.
+
 Readers ignore unknown fields so an older Booley can read a newer record, and
 missing fields take their defaults. The persistence layer checks only the
 envelope (positive `schema`; string or null `work_dir`, `session_key`,

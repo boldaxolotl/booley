@@ -1213,6 +1213,7 @@ class TestBooleyStatus:
 
         assert [mcp_tool["name"] for mcp_tool in mcp_tools] == [
             "booley_cancel",
+            "booley_measure",
             "booley_poll",
             "booley_report",
             "booley_status",
@@ -1362,6 +1363,7 @@ class TestBooleySleep:
 
         assert [mcp_tool["name"] for mcp_tool in mcp_tools] == [
             "booley_cancel",
+            "booley_measure",
             "booley_poll",
             "booley_report",
             "booley_sleep",
