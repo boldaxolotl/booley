@@ -1676,7 +1676,11 @@ def _project_data_mount_root_is_pinned(
     local_source = workspace.resolve() / ".booley"
     state = _decode_container_inspect(raw)
     mounts = state.get("Mounts") if state is not None else None
-    if not isinstance(mounts, list) or any(not isinstance(item, dict) for item in mounts):
+    if (
+        state is None
+        or not isinstance(mounts, list)
+        or any(not isinstance(item, dict) for item in mounts)
+    ):
         return False
     by_target = {item.get("Destination"): item for item in mounts}
     if pending_project_data != local_source:
