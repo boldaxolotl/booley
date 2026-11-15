@@ -14,8 +14,6 @@ import pytest
 from booley.criteria.state import (
     DevelopmentState,
 )
-from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
-from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.specialists.reviewer import (
     RTL_FOCUS_CATEGORIES,
     SEVERITY_CRITICAL,
@@ -76,8 +74,8 @@ def test_verify_statuses_compatibility_view() -> None:
 def test_reviewer_criterion_binding_is_source_scoped(state_file: Path) -> None:
     state = DevelopmentState.load(state_file)
     state.init_criteria(
-        {"review_tb_quality_clean": True},
-        criterion_params={"review_tb_quality_clean": {"scope": ["tb/uart_tb.sv"]}},
+        {"review_tb_quality_done": True},
+        criterion_params={"review_tb_quality_done": {"scope": ["tb/uart_tb.sv"]}},
         strict=True,
     )
     state.save()
@@ -1536,17 +1534,22 @@ class TestPromptConstruction:
         cases = [
             ("rtl", "bugs", "rtl/a.sv", ["bugs-checklist", "bugs-hunt"]),
             ("rtl", "protocol", "rtl/a.sv", ["protocol-cdc-checklist", "protocol-cdc-hunt"]),
-            ("rtl", "security", "rtl/a.sv", ["security-checklist"]),
-            ("rtl", "optimization", "rtl/a.sv", ["optimization-checklist"]),
+            ("rtl", "security", "rtl/a.sv", ["security-checklist", "security-hunt"]),
+            (
+                "rtl",
+                "optimization",
+                "rtl/a.sv",
+                ["optimization-checklist", "optimization-hunt"],
+            ),
             ("rtl", "code_style", "rtl/a.sv", ["code_style-checklist"]),
             ("rtl", "spec", "rtl/a.sv", ["spec-hunt"]),
-            ("tb", "quality", "tb/t.sv", ["hdl-checklist"]),
-            ("tb", "quality", "tb/test.py", ["cocotb-checklist"]),
+            ("tb", "quality", "tb/t.sv", ["hdl-checklist", "tb-hunt"]),
+            ("tb", "quality", "tb/test.py", ["cocotb-checklist", "tb-hunt"]),
             (
                 "tb",
                 "quality",
                 "tb/main.cpp,tb/test.py,tb/tb.sv",
-                ["c-cpp-checklist", "hdl-checklist", "cocotb-checklist"],
+                ["c-cpp-checklist", "hdl-checklist", "cocotb-checklist", "tb-hunt"],
             ),
         ]
         for index, (category, focus, scope, expected) in enumerate(cases):
@@ -1571,6 +1574,87 @@ class TestPromptConstruction:
             if focus == "spec":
                 assert "## Trace targets" in system
                 assert "## Checklist" not in system
+
+    def test_security_hunt_prompt_names_scenario_categories_and_scope_boundaries(
+        self, tmp_path: Path
+    ):
+        """A guide edit or packaging change must not drop what the hunt call receives."""
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(
+            [
+                "--work-dir",
+                str(tmp_path),
+                "--scope",
+                "rtl/a.sv",
+                "--category",
+                "rtl",
+                "--focus",
+                "security",
+            ]
+        )
+        hunt = tuple(g for g in endpoint._review_guides("security", "rtl") if g.kind == "hunt")
+        system = endpoint._build_system_prompt("security", hunt)
+        assert "(security-hunt)" in system
+        assert "(security-checklist)" not in system
+        boundaries = system.split("## Scope Boundaries", 1)[1].split("\n## ", 1)[0]
+        assert "`bugs`" in boundaries
+        assert "`protocol`" in boundaries
+        assert '{"issues": []}' in boundaries
+        for category in (
+            "Attacker-controlled inputs",
+            "Debug, test, and scan access",
+            "Reset and power",
+            "Error, alert, and escalation paths",
+            "Fault injection",
+            "Secret flow",
+        ):
+            assert f"**{category}**" in system, category
+
+    def test_optimization_hunt_guide_names_scenario_categories_and_scope_boundaries(
+        self, tmp_path: Path
+    ):
+        from booley.specialists.reviewer import REVIEW_GUIDES
+
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(
+            [
+                "--work-dir",
+                str(tmp_path),
+                "--scope",
+                "rtl/a.sv",
+                "--category",
+                "rtl",
+                "--focus",
+                "optimization",
+            ]
+        )
+        hunt = tuple(g for g in REVIEW_GUIDES[("rtl", "optimization")] if g.kind == "hunt")
+        system = endpoint._build_system_prompt("optimization", hunt)
+
+        assert "## Review guide \u2014 optimization (optimization-hunt)" in system
+        assert "## Scope Boundaries" in system
+        for category in (
+            "Redundant storage",
+            "Redundant terms",
+            "Register reuse",
+            "Equivalent structure",
+            "Oversized",
+            "Critical-path placement",
+            "Behavior-neutral dead logic",
+        ):
+            assert f"**{category}**" in system
+        assert "MAJOR** -- A likely critical-path or Fmax improvement" in system
+        assert "MINOR** -- A small saving" in system
+        assert "must not add material delay to a critical path" in system
+        assert "reserved, debug, formal, and coverage hooks" in system
+        assert "Track each wide register's lifetime" in system
+        assert "## Patterns" not in system
+        checklist = tuple(
+            g for g in REVIEW_GUIDES[("rtl", "optimization")] if g.kind == "checklist"
+        )
+        assert "share the same storage" not in endpoint._build_system_prompt(
+            "optimization", checklist
+        )
 
     def test_rtl_optimization_prompt_checks_for_runtime_constant_work(self, state_file: Path):
         endpoint = ReviewerSpecialist()
@@ -2181,7 +2265,7 @@ class TestFullRtlReview:
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_single_focus_security(self, mock_agent, state_file: Path, capsys):
-        """Single focus runs one agent call, criterion key reflects focus."""
+        """Single focus runs one agent call per guide kind, criterion key reflects focus."""
         mock_agent.return_value = _make_agent_result([])
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(
@@ -2198,7 +2282,7 @@ class TestFullRtlReview:
         result = endpoint._run()
         assert result.exit_code == 0
         assert result.criterion_key == "review_rtl_security_done"
-        assert mock_agent.call_count == 1
+        assert mock_agent.call_count == 2  # security declares a checklist and a hunt guide
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_criterion_set_rtl_spec(self, mock_agent, state_file: Path):
@@ -2311,7 +2395,7 @@ def test_provider_failure_keeps_reviewer_outcome_and_persists_traceback(
             "--category",
             "rtl",
             "--focus",
-            "security",
+            "code_style",
             "--work-dir",
             str(tmp_path),
             "--report-dir",
@@ -2633,287 +2717,12 @@ class TestTbQualityPrompt:
 
 
 # ---------------------------------------------------------------------------
-# One-shot guard
+# Verify
 # ---------------------------------------------------------------------------
-
-
-class TestOneShotGuard:
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_legacy_met_without_receipt_reruns(self, mock_agent, state_file: Path):
-        """A legacy met review without freshness evidence is rerun fail-closed."""
-        # Pre-set the criterion as met
-        st = DevelopmentState.load(state_file)
-        st.set_criterion("review_rtl_bugs_done", met=True)
-        st.save()
-        mock_agent.return_value = _make_agent_result([])
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        endpoint.read_state()
-        result = endpoint._run()
-        # A policy refusal is NOT an infra crash: exit 2 is reserved for
-        # "the MCP tool could not run" (docs/user/FLOW_REFERENCE.md exit taxonomy).
-        assert result.exit_code == 0
-        # One bugs review makes two calls (checklist and hunt guides).
-        assert mock_agent.call_count == 2
-        assert "RESULT: REVIEWED — NO FINDINGS" in result.report_text
-        assert result.criterion_met is True
-        detail = DevelopmentState.load(state_file).criteria["review_rtl_bugs_done"].detail
-        assert detail["review_detail_version"] == 4
-        assert detail["receipt_id"]
-
-    @pytest.mark.parametrize("met", [True, False])
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_one_shot_replays_prior_verdict_verbatim(
-        self, mock_agent, state_file: Path, monkeypatch: pytest.MonkeyPatch, met
-    ):
-        """The replayed report repeats the recorded findings, not just a refusal (F-49)."""
-        # This standalone receipt has no Ticket context. An inherited logs dir
-        # would bind it to a missing decisions file and correctly mark it stale.
-        monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"])
-        st = DevelopmentState.load(state_file)
-        st.set_criterion(
-            "review_rtl_bugs_done",
-            met=met,
-            detail={
-                "issues": 1,
-                "issue_list": [
-                    {
-                        "severity": "MINOR",
-                        "confidence": "HIGH",
-                        "category": "bugs",
-                        "file": "rtl/mod_a.sv",
-                        "line": 42,
-                        "summary": "unused signal",
-                    }
-                ],
-                "gate_passed": met,
-                "review_detail_version": 4,
-                "contract": endpoint._review_contract_detail(),
-                SOURCE_FINGERPRINT_DETAIL_KEY: {
-                    "categories": ["rtl"],
-                    "fingerprint": compute_source_fingerprint(Path.cwd()),
-                },
-            },
-        )
-        st.save()
-
-        endpoint.read_state()
-        result = endpoint._replay_done_verdict("review_rtl_bugs_done")
-
-        assert result.exit_code == 0
-        assert mock_agent.call_count == 0
-        assert "RESULT: REVIEWED WITH FINDINGS (1 minor)" in result.report_text
-        assert "rtl/mod_a.sv:42 — unused signal" in result.report_text
-        # State is untouched: replaying must not rewrite the recorded verdict.
-        assert result.criterion_met is True
-        assert result.detail["gate_passed"] is True
-
-
-# ---------------------------------------------------------------------------
-# TB ordering guard
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# _clean mode
-# ---------------------------------------------------------------------------
-
-
-class TestCleanModeInitial:
-    """Tests for _clean mode: initial review pass."""
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_clean_initial_gate_passes_met_immediately(
-        self,
-        mock_agent,
-        state_file: Path,
-        capsys,
-    ):
-        """Gate passes on initial review => criterion met immediately."""
-        mock_agent.return_value = _make_agent_result([])
-        st = DevelopmentState.load(state_file)
-        st.set_criterion("review_rtl_bugs_clean", met=False)
-        st.save()
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        endpoint.read_state()
-        result = endpoint._run()
-
-        assert result.exit_code == 0
-        assert result.criterion_met is True
-        assert result.criterion_key == "review_rtl_bugs_clean"
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("review_rtl_bugs_clean") is True
-        captured = capsys.readouterr()
-        assert "RESULT: PASS" in captured.out
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_clean_initial_gate_fails_stores_issues(
-        self,
-        mock_agent,
-        state_file: Path,
-        capsys,
-    ):
-        """Gate fails on initial review => criterion unmet, issues stored."""
-        mock_agent.return_value = _make_agent_result(
-            [
-                _make_issue_dict("CRITICAL"),
-                _make_issue_dict("MINOR", line=43, summary="Style nit"),
-            ]
-        )
-        st = DevelopmentState.load(state_file)
-        st.set_criterion("review_rtl_bugs_clean", met=False)
-        st.save()
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        endpoint.read_state()
-        result = endpoint._run()
-
-        assert result.exit_code == 0
-        assert result.criterion_met is False
-        assert result.criterion_key == "review_rtl_bugs_clean"
-        assert result.detail["verify_attempts"] == 0
-        assert result.detail["original_issues"] == 2
-        assert len(result.detail["pending"]) == 2
-        assert result.detail["resolved"] == []
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("review_rtl_bugs_clean") is False
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_minor_finding_remains_open_until_fixed_or_waived(
-        self,
-        mock_agent,
-        state_file: Path,
-    ):
-        mock_agent.return_value = _make_agent_result([_make_issue_dict("MINOR")])
-        st = DevelopmentState.load(state_file)
-        st.set_criterion("review_rtl_bugs_clean", met=False)
-        st.save()
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(_review_args())
-        endpoint.read_state()
-        result = endpoint._run()
-
-        assert result.exit_code == 0
-        assert result.criterion_met is False
-        assert len(result.detail["pending"]) == 1
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_clean_already_met_returns_early(
-        self,
-        mock_agent,
-        state_file: Path,
-    ):
-        """Already met _clean criterion => immediate exit, no agent call."""
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        st = DevelopmentState.load(state_file)
-        st.set_criterion("review_rtl_bugs_clean", met=True)
-        st.save()
-        endpoint.read_state()
-        st = DevelopmentState.load(state_file)
-        st.set_criterion(
-            "review_rtl_bugs_clean",
-            met=True,
-            detail={
-                "review_detail_version": 4,
-                "contract": endpoint._review_contract_detail(),
-                SOURCE_FINGERPRINT_DETAIL_KEY: {
-                    "categories": ["rtl"],
-                    "fingerprint": compute_source_fingerprint(Path.cwd()),
-                },
-            },
-        )
-        st.save()
-
-        endpoint.read_state()
-        endpoint._goal_mode = True
-        result = endpoint._run_clean_mode("review_rtl_bugs_clean")
-
-        assert result.exit_code == 0
-        assert mock_agent.call_count == 0
-        assert "already met" in result.report_text
 
 
 class TestCleanModeVerify:
-    """Tests for _clean mode: verify review pass."""
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_source_change_triggers_fresh_discovery_before_clean_passes(
-        self,
-        mock_agent,
-        state_file: Path,
-    ):
-        mock_agent.return_value = _make_agent_result(
-            [_make_issue_dict("MINOR", summary="New final-state issue")]
-        )
-        st = DevelopmentState.load(state_file)
-        st.set_criterion(
-            "review_rtl_bugs_clean",
-            met=False,
-            detail={
-                "issues": 1,
-                "pending": [_make_issue_dict("MAJOR")],
-                "resolved": [],
-                "verify_attempts": 0,
-                "original_issues": 1,
-                "review_source_digest": "prior-source-digest",
-            },
-        )
-        st.save()
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(_review_args())
-        endpoint.read_state()
-        result = endpoint._run()
-
-        # One bugs review makes two calls (checklist and hunt guides).
-        assert mock_agent.call_count == 2
-        assert result.exit_code == 0
-        assert result.criterion_met is False
-        assert result.detail["pending"][0]["summary"] == "New final-state issue"
+    """Verify of the latest review's open findings."""
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_justified_waiver_resolves_finding_and_is_persisted(
@@ -2937,8 +2746,8 @@ class TestCleanModeVerify:
         )
         st = DevelopmentState.load(state_file)
         st.set_criterion(
-            "review_rtl_bugs_clean",
-            met=False,
+            "review_rtl_bugs_done",
+            met=True,
             detail={
                 "issues": 1,
                 "pending": [_make_issue_dict("MINOR")],
@@ -2998,8 +2807,8 @@ class TestCleanModeVerify:
         )
         st = DevelopmentState.load(state_file)
         st.set_criterion(
-            "review_rtl_bugs_clean",
-            met=False,
+            "review_rtl_bugs_done",
+            met=True,
             detail={
                 "issues": 2,
                 "pending": [
@@ -3039,7 +2848,7 @@ class TestCleanModeVerify:
         assert len(result.detail["resolved"]) == 2
         assert all(r["status"] == "fixed" for r in result.detail["resolved"])
         st = DevelopmentState.load(state_file)
-        assert st.is_met("review_rtl_bugs_clean") is True
+        assert st.is_met("review_rtl_bugs_done") is True
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_verify_some_still_present(
@@ -3066,8 +2875,8 @@ class TestCleanModeVerify:
         )
         st = DevelopmentState.load(state_file)
         st.set_criterion(
-            "review_rtl_bugs_clean",
-            met=False,
+            "review_rtl_bugs_done",
+            met=True,
             detail={
                 "issues": 2,
                 "pending": [
@@ -3140,8 +2949,8 @@ class TestCleanModeVerify:
         )
         st = DevelopmentState.load(state_file)
         st.set_criterion(
-            "review_tb_quality_clean",
-            met=False,
+            "review_tb_quality_done",
+            met=True,
             detail={
                 "issues": 1,
                 "pending": [
@@ -3197,8 +3006,8 @@ class TestCleanModeVerify:
         """Two verify attempts already done => exit error, no agent call."""
         st = DevelopmentState.load(state_file)
         st.set_criterion(
-            "review_rtl_bugs_clean",
-            met=False,
+            "review_rtl_bugs_done",
+            met=True,
             detail={
                 "issues": 1,
                 "issue_list": [_make_issue_dict("CRITICAL")],
@@ -3243,8 +3052,8 @@ class TestCleanModeVerify:
         )
         st = DevelopmentState.load(state_file)
         st.set_criterion(
-            "review_rtl_bugs_clean",
-            met=False,
+            "review_rtl_bugs_done",
+            met=True,
             detail={
                 "issues": 2,
                 "issue_list": [
@@ -3307,8 +3116,8 @@ class TestCleanModeVerify:
         )
         st = DevelopmentState.load(state_file)
         st.set_criterion(
-            "review_rtl_bugs_clean",
-            met=False,
+            "review_rtl_bugs_done",
+            met=True,
             detail={
                 "issues": 3,
                 "pending": [
@@ -3371,8 +3180,8 @@ class TestCleanModeVerify:
         )
         st = DevelopmentState.load(state_file)
         st.set_criterion(
-            "review_rtl_bugs_clean",
-            met=False,
+            "review_rtl_bugs_done",
+            met=True,
             detail={
                 "issues": 1,
                 "pending": [_make_issue_dict("CRITICAL")],
@@ -3406,47 +3215,14 @@ class TestCleanModeVerify:
         assert len(result.detail["resolved"]) == 1
 
 
-class TestMutualExclusionGuard:
-    """Tests for _done/_clean mutual exclusion."""
-
-    def test_both_done_and_clean_exits_error(self, state_file: Path):
-        """Both _done and _clean for same base key => exit error."""
-        st = DevelopmentState.load(state_file)
-        st.set_criterion("review_rtl_bugs_done", met=True)
-        st.set_criterion("review_rtl_bugs_clean", met=False)
-        st.save()
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        endpoint.read_state()
-        result = endpoint._run()
-
-        assert result.exit_code == 2
-        assert "Mutual exclusion" in result.report_text
-
-
-# ---------------------------------------------------------------------------
-# Bounded clean-review impasse
-# ---------------------------------------------------------------------------
-
-
 class TestCleanReviewImpasse:
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_impasse_never_creates_automatic_waiver(self, mock_agent, state_file: Path):
         st = DevelopmentState.load(state_file)
         finding = _make_issue_dict("MAJOR", summary="Still unresolved")
         st.set_criterion(
-            "review_rtl_bugs_clean",
-            met=False,
+            "review_rtl_bugs_done",
+            met=True,
             detail={
                 "issues": 1,
                 "pending": [finding],
@@ -3464,7 +3240,7 @@ class TestCleanReviewImpasse:
         assert result.exit_code == 2
         assert "without creating an automatic waiver" in result.report_text
         assert mock_agent.call_count == 0
-        detail = DevelopmentState.load(state_file).criteria["review_rtl_bugs_clean"].detail
+        detail = DevelopmentState.load(state_file).criteria["review_rtl_bugs_done"].detail
         assert detail["pending"] == [finding]
         assert detail["resolved"] == []
 
@@ -3503,8 +3279,8 @@ class TestFindingIdentityByIndex:
         )
         st = DevelopmentState.load(state_file)
         st.set_criterion(
-            "review_rtl_bugs_clean",
-            met=False,
+            "review_rtl_bugs_done",
+            met=True,
             detail={
                 "issues": 2,
                 "pending": [
@@ -3571,8 +3347,8 @@ class TestFindingIdentityByIndex:
         )
         st = DevelopmentState.load(state_file)
         st.set_criterion(
-            "review_rtl_bugs_clean",
-            met=False,
+            "review_rtl_bugs_done",
+            met=True,
             detail={
                 "issues": 1,
                 "pending": [
@@ -3641,8 +3417,8 @@ class TestVerifyFixedPersistence:
         )
         st = DevelopmentState.load(state_file)
         st.set_criterion(
-            "review_rtl_bugs_clean",
-            met=False,
+            "review_rtl_bugs_done",
+            met=True,
             detail={
                 "issues": 2,
                 "issue_list": [
@@ -3950,43 +3726,6 @@ def _make_pico_tb_repo(repo: Path) -> tuple[str, Path]:
     return base, tb
 
 
-@pytest.mark.parametrize("invalid", ["malformed", "provider", "changed", "missing"])
-@patch("booley.specialists.specialist._call_agent_sync")
-def test_incomplete_or_changed_legacy_done_receipt_does_not_replay(
-    mock_agent, state_file, monkeypatch, invalid
-):
-    monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
-    endpoint = ReviewerSpecialist()
-    endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"])
-    detail = {
-        "review_detail_version": 4,
-        "contract": endpoint._review_contract_detail(),
-        "gate_passed": False,
-        "issue_list": [],
-        SOURCE_FINGERPRINT_DETAIL_KEY: {
-            "categories": ["rtl"],
-            "fingerprint": compute_source_fingerprint(Path.cwd()),
-        },
-    }
-    if invalid == "malformed":
-        detail["issue_list"] = ["invalid"]
-    elif invalid == "provider":
-        detail["error"] = "provider failure"
-    elif invalid == "missing":
-        detail.pop("issue_list")
-    else:
-        detail["contract"]["scope_hashes"] = {"rtl/mod_a.sv": "old"}
-    state = DevelopmentState.load(state_file)
-    state.set_criterion("review_rtl_bugs_done", False, detail=detail)
-    state.save()
-    mock_agent.return_value = _make_agent_result([])
-    endpoint.read_state()
-    result = endpoint._run()
-    # One bugs review makes two calls (checklist and hunt guides).
-    assert mock_agent.call_count == 2
-    assert "did NOT re-run" not in result.report_text
-
-
 def test_goal_spec_arg_ignores_ticket_document(tmp_path, monkeypatch):
     from booley.evidence.review_receipt import _ticket_path
     from booley.specialists.reviewer import resolve_spec_content
@@ -4055,60 +3794,26 @@ def test_unbound_done_findings_do_not_claim_goal_approval(
     assert DevelopmentState.load(state_file).criteria["review_rtl_bugs_done"].detail["issue_list"]
 
 
-@pytest.mark.parametrize("path", ["fresh", "replay"])
 @patch("booley.specialists.specialist._call_agent_sync")
 def test_standalone_done_findings_print_no_approval_notice(
-    mock_agent, state_file: Path, monkeypatch: pytest.MonkeyPatch, path
+    mock_agent, state_file: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """A standalone recorder gets the same `done` report as Goal and interactive runs."""
+    """A standalone recorder gets the same `done` report as an interactive run."""
     from booley.flows.execution_persistence import StandaloneFlowExecution
 
     monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
     endpoint = ReviewerSpecialist()
     endpoint.configure_flow_execution(StandaloneFlowExecution())
     endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"])
-    if path == "fresh":
-        mock_agent.return_value = _make_agent_result([_make_issue_dict("CRITICAL")])
-        endpoint.read_state()
-        result = endpoint._run()
-        assert "RESULT: REVIEWED WITH FINDINGS" in result.report_text
-    else:
-        st = DevelopmentState.load(state_file)
-        st.set_criterion(
-            "review_rtl_bugs_done",
-            met=True,
-            detail={
-                "issues": 1,
-                "issue_list": [
-                    {
-                        "severity": "MINOR",
-                        "confidence": "HIGH",
-                        "category": "bugs",
-                        "file": "rtl/mod_a.sv",
-                        "line": 42,
-                        "summary": "unused signal",
-                    }
-                ],
-                "gate_passed": True,
-                "review_detail_version": 4,
-                "contract": endpoint._review_contract_detail(),
-                SOURCE_FINGERPRINT_DETAIL_KEY: {
-                    "categories": ["rtl"],
-                    "fingerprint": compute_source_fingerprint(Path.cwd()),
-                },
-            },
-        )
-        st.save()
-        endpoint.read_state()
-        result = endpoint._replay_done_verdict("review_rtl_bugs_done")
-        assert "rtl/mod_a.sv:42 — unused signal" in result.report_text
-        assert result.detail["review_outcome"] == "corrective"
+    mock_agent.return_value = _make_agent_result([_make_issue_dict("CRITICAL")])
+    endpoint.read_state()
+    result = endpoint._run()
+    assert "RESULT: REVIEWED WITH FINDINGS" in result.report_text
     assert "explicit human approval" not in result.report_text
 
 
 @pytest.mark.parametrize("category,scope", [("rtl", "shared/main.cpp"), ("tb", "shared/dut.sv")])
-@pytest.mark.parametrize("goal_mode", [False, True])
-def test_registered_opposite_scope_refused_in_both_modes(tmp_path, category, scope, goal_mode):
+def test_registered_opposite_scope_is_refused(tmp_path, category, scope):
     from tests.test_target_catalog import _category_sim_core
 
     _category_sim_core(tmp_path)
@@ -4116,7 +3821,6 @@ def test_registered_opposite_scope_refused_in_both_modes(tmp_path, category, sco
     endpoint.parse_args(
         ["--work-dir", str(tmp_path), "--scope", scope, "--category", category, "--focus", "bugs"]
     )
-    endpoint._goal_mode = goal_mode
     assert any("opposite-category" in error for error in endpoint._validate_args())
 
 
@@ -4188,7 +3892,8 @@ def test_cpp_guidance_preview_and_project_overlay(tmp_path):
         assert "Project C lifecycle rule" in prompt
         assert ("Canonical style guide for SystemVerilog" in prompt) == ("tb/tb.sv" in scope)
         assert endpoint._dry_run_preview().detail["guides"] == [
-            {"kind": "checklist", "name": name} for name in labels
+            *({"kind": "checklist", "name": name} for name in labels),
+            {"kind": "hunt", "name": "tb-hunt"},
         ]
 
 
@@ -4241,10 +3946,37 @@ def test_dry_run_lists_guides_with_kind(tmp_path):
                 {"kind": "hunt", "name": "protocol-cdc-hunt"},
             ],
         ),
+        (
+            "security",
+            [
+                {"kind": "checklist", "name": "security-checklist"},
+                {"kind": "hunt", "name": "security-hunt"},
+            ],
+        ),
+        (
+            "optimization",
+            [
+                {"kind": "checklist", "name": "optimization-checklist"},
+                {"kind": "hunt", "name": "optimization-hunt"},
+            ],
+        ),
         ("spec", [{"kind": "hunt", "name": "spec-hunt"}]),
     ]
-    for focus, expected in cases:
-        work_dir = tmp_path / focus
+    tb_cases = [
+        ("tb/t.sv", "hdl-checklist"),
+        ("tb/test.py", "cocotb-checklist"),
+    ]
+    cases = [("rtl", "rtl/a.sv", focus, expected) for focus, expected in cases] + [
+        (
+            "tb",
+            scope,
+            "quality",
+            [{"kind": "checklist", "name": name}, {"kind": "hunt", "name": "tb-hunt"}],
+        )
+        for scope, name in tb_cases
+    ]
+    for index, (category, scope, focus, expected) in enumerate(cases):
+        work_dir = tmp_path / f"case{index}"
         work_dir.mkdir()
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(
@@ -4252,9 +3984,9 @@ def test_dry_run_lists_guides_with_kind(tmp_path):
                 "--work-dir",
                 str(work_dir),
                 "--scope",
-                "rtl/a.sv",
+                scope,
                 "--category",
-                "rtl",
+                category,
                 "--focus",
                 focus,
             ]

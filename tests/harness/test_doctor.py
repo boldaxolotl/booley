@@ -8903,3 +8903,21 @@ class TestSeatCapCheck:
         rec = _Rec()
         doctor._check_seat_caps(None, rec.p, rec.f)
         assert rec.events == []
+
+
+def test_doctor_reports_nothing_about_metrics_without_a_table(tmp_path, monkeypatch, capsys):
+    from booley.harness.init_cmd import METRICS_TOML_SKELETON
+
+    def findings(root: Path, with_metrics: bool):
+        root.mkdir()
+        booley_dir = _write_project(root)
+        if with_metrics:
+            (booley_dir / "metrics.toml").write_bytes(METRICS_TOML_SKELETON.encode())
+        _patch_environment(monkeypatch, root, booley_dir)
+        result = doctor.run_doctor_result(argparse.Namespace(verbose=False, deep=False), root)
+        output = capsys.readouterr().out
+        assert "metric" not in output.lower()
+        assert not [f for f in result.findings if "metric" in f.message.lower()]
+        return {(f.check_id, f.severity, f.subject) for f in result.findings}
+
+    assert findings(tmp_path / "with", True) == findings(tmp_path / "without", False)

@@ -2,11 +2,10 @@
 
 Runs LLM-powered code review on RTL or testbench files, reports issues by
 severity (CRITICAL, MAJOR, MINOR).  Each invocation covers exactly ONE focus
-category. An idempotency guard prevents re-running the same review focus while
-its persisted source fingerprint remains current.
+category.
 
-Exit codes: 0 = review completed, 1 = an open finding at or above ``--fail-on``
-(Goal Mode: gate failed), 2 = Specialist error.
+Exit codes: 0 = review completed, 1 = an open finding at or above ``--fail-on``,
+2 = Specialist error.
 """
 
 from __future__ import annotations
@@ -53,10 +52,6 @@ from booley.evidence.review_vocabulary import (
 )
 from booley.flows.cli_help import CliHelp
 from booley.flows.endpoint_diff import read_source_dirs_from_toml
-from booley.flows.execution_persistence import (
-    EvidenceDiscarded,
-    execution_goal_name,
-)
 from booley.mcp.base import (
     EXIT_ERROR,
     EXIT_FAILURE,
@@ -931,8 +926,6 @@ def validate_scope_category(
     scope_paths: list[str],
     category: str,
     work_dir: Path | None = None,
-    *,
-    allow_support: bool = False,
 ) -> list[str]:
     """Validate scope paths match the review category.
 
@@ -960,8 +953,6 @@ def validate_scope_category(
                 for path in scope_paths
                 if canonical_project_path(work_dir, path) in opposite
             ]
-    if allow_support:
-        return []
     from booley.runtime.shared_infra import source_path_matches
 
     errors: list[str] = []
@@ -1009,7 +1000,7 @@ class ReviewerSpecialist(Specialist):
     description: str = "Single-focus code review: reports issues by severity"
     cli_help: ClassVar[CliHelp | None] = CliHelp(
         summary=(
-            "Have an AI reviewer discover findings in Goal-owned files (Interactive: --scope) with one "
+            "Have an AI reviewer discover findings in the --scope files with one "
             "review focus and list the issues it finds by severity. Use it for a second "
             "opinion on a change before you merge it. The reviewer reads code and "
             "never edits it. Use --verify to check only the latest review's open findings; only --waive proposals and --fail-on may accompany verification."
@@ -1081,13 +1072,9 @@ class ReviewerSpecialist(Specialist):
         self._audit_guide = ""
         self._guide_call_rows: list[dict[str, Any]] = []
         self._review_run_id = ""
-        self._acceptance_current: bool | None = None
-        self._goal_receipt_replayed = False
-        self._goal_mode = False
         self._resolved_scope: list[str] | None = None
         self._review_change: ReviewChange | None = None
         self._full_scope: tuple[str, ...] | None = None
-        self._goal_target_surface: dict[str, Any] | None = None
         self._simulation_context: str | None = None
         self._verify_prior: dict[str, Any] = {}
         self._sampled_contract: dict[str, Any] | None = None
@@ -1127,9 +1114,6 @@ class ReviewerSpecialist(Specialist):
 
     def _prepare_invocation(self) -> McpToolResult | None:
         """Resolve caller intent before validating or changing review state."""
-        from booley.flows.execution_persistence import ReviewGoalInputs
-
-        self._goal_mode = isinstance(self._acceptance_recorder, ReviewGoalInputs)
         if self._is_verify_pass():
             return self._prepare_verify_invocation()
         if getattr(self.args, "waive", []):
@@ -1138,66 +1122,7 @@ class ReviewerSpecialist(Specialist):
             return McpToolResult(
                 exit_code=EXIT_ERROR, report_text="Discovery requires --category and --focus"
             )
-        return self._prepare_goal_discovery() if self._goal_mode else None
-
-    def _prepare_goal_discovery(self) -> McpToolResult | None:
-        from booley.flows.execution_persistence import ReviewGoalInputs
-
-        recorder = self._acceptance_recorder
-        # Only reached when `_goal_mode`, i.e. the recorder provides Review Goal inputs.
-        assert isinstance(recorder, ReviewGoalInputs)
-        forbidden = self._supplied_options() & {
-            "--scope",
-            "--spec",
-            "--spec-text",
-            "--steer",
-            "--instruction",
-            "--fail-on",
-            "--base",
-        }
-        if forbidden:
-            return McpToolResult(
-                exit_code=EXIT_ERROR,
-                report_text=f"{', '.join(sorted(forbidden))} refused: the Review Goal defines scope, spec, review context and verdict.",
-            )
-        try:
-            key = self._criterion_key()
-            open_key = next(
-                (
-                    name
-                    for name, entry in self.state.criteria.items()
-                    if name.startswith("review_")
-                    and name.endswith("_clean")
-                    and self._open_findings(entry.detail)
-                ),
-                None,
-            )
-            if open_key is not None:
-                return self._open_findings_refusal(open_key)
-            params = recorder.review_goal_inputs(key)
-            self._resolved_scope = list(params.scope)
-            self._goal_target_surface = (
-                dict(params.target_surface) if params.target_surface is not None else None
-            )
-            self.args.spec = params.spec
-            self.args.steer = None
-        except (OSError, ValueError) as exc:
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
-        missing = [
-            name for name in self._parse_scope() if not (Path(self.args.work_dir) / name).is_file()
-        ]
-        if missing:
-            return McpToolResult(
-                exit_code=EXIT_ERROR,
-                report_text=f"Review Goal files not found: {', '.join(missing)}",
-            )
         return None
-
-    def _open_findings_refusal(self, key: str) -> McpToolResult:
-        return McpToolResult(
-            exit_code=EXIT_ERROR,
-            report_text=f"{execution_goal_name(self._acceptance_recorder, key)} has open findings. Resolve this clean review before starting another discovery review. Use reviewer --verify and --waive <finding-id> <justification>.",
-        )
 
     def _supplied_options(self) -> set[str]:
         # Every Specialist run enters through parse_args, which records the raw argv.
@@ -1212,15 +1137,13 @@ class ReviewerSpecialist(Specialist):
             "--project",
             "--report-dir",
             "--transcript-dir",
+            "--fail-on",
         }
-        if not self._goal_mode:
-            allowed.add("--fail-on")  # Goal Mode owns its verdict
         forbidden = self._supplied_options() - allowed
         if forbidden:
-            accepted = "--waive" if self._goal_mode else "--waive and --fail-on"
             return McpToolResult(
                 exit_code=EXIT_ERROR,
-                report_text=f"--verify accepts only {accepted}; refused {', '.join(sorted(forbidden))}",
+                report_text=f"--verify accepts only --waive and --fail-on; refused {', '.join(sorted(forbidden))}",
             )
         selected = self._latest_review()
         if selected is None:
@@ -1228,7 +1151,7 @@ class ReviewerSpecialist(Specialist):
                 exit_code=EXIT_ERROR,
                 report_text="--verify refused: no prior review with open findings",
             )
-        key, entry = selected
+        _, entry = selected
         prior = deepcopy(entry.detail)
         findings = self._open_findings(prior)
         if not findings:
@@ -1238,32 +1161,18 @@ class ReviewerSpecialist(Specialist):
             )
         if error := self._validate_waiver_proposals(findings):
             return error
-        return self._restore_verify_context(key, prior, findings)
+        self._restore_verify_context(prior, findings)
+        return None
 
     def _restore_verify_context(
-        self, key: str, prior: dict[str, Any], findings: list[dict[str, Any]]
-    ) -> McpToolResult | None:
+        self, prior: dict[str, Any], findings: list[dict[str, Any]]
+    ) -> None:
         contract = prior["contract"]
         self.args.category, self.args.focus = contract["category"], contract["focus"]
         self._resolved_scope = list(contract["scope"])
         self.args.spec = contract.get("spec_source") or None
         self.args.spec_text = contract.get("spec_text")
         self.args.steer = None
-        if self._criterion_key() != key:
-            return McpToolResult(
-                exit_code=EXIT_ERROR,
-                report_text="Latest review no longer matches its Goal; run a review for the current Goal",
-            )
-        # Admission and publication fence the Goal revision. Verify uses the
-        # discovery contract even when the current Target no longer resolves.
-        if self._goal_mode:
-            root = Path(self.args.work_dir).resolve()
-            for path in self._resolved_scope:
-                if not (root / path).resolve().is_relative_to(root):
-                    return McpToolResult(
-                        exit_code=EXIT_ERROR,
-                        report_text=f"Review path {path!r} escapes the Goal worktree",
-                    )
         if "pending" not in prior:
             prior["resolved"] = [
                 *prior.get("resolved", []),
@@ -1284,7 +1193,6 @@ class ReviewerSpecialist(Specialist):
         )
         prior["pending"] = findings
         self._verify_prior = prior
-        return None
 
     def _next_review_order(self) -> int:
         return 1 + max(
@@ -1355,9 +1263,7 @@ class ReviewerSpecialist(Specialist):
         return bool(getattr(self.args, "verify", False))
 
     def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument(
-            "--scope", default=None, help="Interactive Mode: comma-separated review files"
-        )
+        parser.add_argument("--scope", default=None, help="Comma-separated review files")
         parser.add_argument(
             "--base",
             default=None,
@@ -1458,7 +1364,6 @@ class ReviewerSpecialist(Specialist):
             scope_paths,
             self.args.category,
             self.args.work_dir,
-            allow_support=self._goal_mode,
         )
         errors.extend(scope_errors)
         _warn_unregistered_sources(scope_paths, self.args.work_dir)
@@ -1494,7 +1399,6 @@ class ReviewerSpecialist(Specialist):
             self._scope_contract = resolve_review_scope(
                 self._parse_scope(),
                 category=self.args.category,
-                allow_support=self._goal_mode,
             )
         except ReviewContractError as exc:
             return str(exc)
@@ -1513,7 +1417,7 @@ class ReviewerSpecialist(Specialist):
                 guides=self._review_guides(
                     next(iter(self._parse_focus()), ""), self.args.category
                 ),
-                mode="clean" if self._is_clean_mode() else "done",
+                mode="done",
                 spec_path=Path(spec_arg) if spec_arg else None,
                 spec_text=getattr(self.args, "spec_text", None),
                 steering=self.steering_text(),
@@ -1522,8 +1426,6 @@ class ReviewerSpecialist(Specialist):
                 ),
             )
         )
-        if self._goal_target_surface is not None:
-            contract["goal_target_surface"] = dict(self._goal_target_surface)
         return contract
 
     # --- System prompt construction ---
@@ -1575,7 +1477,7 @@ match the strength of the evidence.
         style_focus = (category == "rtl" and focus == "code_style") or (
             category == "tb" and focus == "quality"
         )
-        if style_focus:
+        if style_focus and (not guides or any(g.kind == "checklist" for g in guides)):
             self._append_style_guides(sections, category, gp)
         sections.append(self._output_instructions(focus, category, diff_scoped=self._diff_scoped))
         return "\n".join(sections)
@@ -1611,7 +1513,12 @@ match the strength of the evidence.
             "cocotb": contract.has_cocotb,
             "cpp": contract.has_cpp,
         }
-        return tuple(g for g in guides if g.language is None or in_scope[g.language])
+        # A language-less guide needs at least one testbench source language in scope.
+        return tuple(
+            g
+            for g in guides
+            if (any(in_scope.values()) if g.language is None else in_scope[g.language])
+        )
 
     def _append_style_guides(
         self,
@@ -1700,9 +1607,7 @@ match the strength of the evidence.
 
     def _spec_report_lines(self) -> list[str]:
         """Name the spec a hand-run review used; empty when it did not inline one."""
-        if self._goal_mode or (
-            SPEC_FOCUS not in self._parse_focus() and self.args.category != "tb"
-        ):
+        if SPEC_FOCUS not in self._parse_focus() and self.args.category != "tb":
             return []
         spec_text = getattr(self.args, "spec_text", None)
         content, source = resolve_spec_content(
@@ -1894,35 +1799,8 @@ object, even after calling the capability.
     # --- Mode detection helpers ---
 
     def _criterion_key(self) -> str:
-        """Return the full criterion key (with suffix) from state.
-
-        Checks for ``{base}_clean`` first, then ``{base}_done``.
-        Raises ValueError if both exist (mutual exclusion).
-        Falls back to ``_done`` when state is unavailable.
-        """
-        base_key = self._criterion_base_key()
-        clean_key = f"{base_key}_clean"
-        done_key = f"{base_key}_done"
-        try:
-            state = self.state
-        except RuntimeError:
-            return done_key
-        if not state:
-            return done_key
-        has_clean = state.has_criterion(clean_key)
-        has_done = state.has_criterion(done_key)
-        if has_clean and has_done:
-            raise ValueError(
-                f"Mutual exclusion: both {done_key} and {clean_key} exist — "
-                "remove one from the Criteria"
-            )
-        if has_clean:
-            return clean_key
-        return done_key
-
-    def _is_clean_mode(self) -> bool:
-        """True when the active criterion uses the ``_clean`` suffix."""
-        return self._criterion_key().endswith("_clean")
+        """Return the full criterion key: ``{base}_done``."""
+        return f"{self._criterion_base_key()}_done"
 
     def _check_scope_files_exist(self) -> list[str]:
         """Return list of scope files that don't exist in the work directory.
@@ -1962,12 +1840,9 @@ object, even after calling the capability.
                 exit_code=EXIT_ERROR,
                 report_text="Another review is running for this state; retry after it finishes.",
             )
-        except EvidenceDiscarded as exc:
-            self.discard_evidence(exc)
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
 
     def _run_review(self) -> McpToolResult:
-        """Single-focus review with terminal _done or disposition-loop _clean mode."""
+        """Single-focus review: discovery or verify of the latest review's findings."""
         self._audit = {"filtered": [], "rejected": []}
         self._non_corrective_issues = []
         self._tb_project_policy = None
@@ -1976,16 +1851,11 @@ object, even after calling the capability.
         self._resolved_scope = None
         self._review_change = None
         self._full_scope = None
-        self._goal_target_surface = None
         self._simulation_context = None
         self._review_run_id = f"{self._invocation_id}-{uuid4().hex}"
         self._review_evidence_written = False
-        try:
-            if error := self._prepare_invocation():
-                return error
-        except EvidenceDiscarded as exc:
-            self.discard_evidence(exc)
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
+        if error := self._prepare_invocation():
+            return error
         prepared = self._prepare_review_run()
         if isinstance(prepared, McpToolResult):
             return prepared
@@ -2016,14 +1886,12 @@ object, even after calling the capability.
         self._review_evidence_written = True
         return path
 
-    def _completed_exit_code(self, open_severities: list[str], *, legacy_failed: bool) -> int:
+    def _completed_exit_code(self, open_severities: list[str]) -> int:
         """Exit code of a completed review.
 
-        Goal Mode keeps its gate verdict. A hand-run review fails only when
-        ``--fail-on`` is set and an open finding is at or above that severity.
+        A review fails only when ``--fail-on`` is set and an open finding is at or
+        above that severity.
         """
-        if self._goal_mode:
-            return EXIT_FAILURE if legacy_failed else EXIT_SUCCESS
         fail_on = getattr(self.args, "fail_on", None)
         if fail_on is None:
             return EXIT_SUCCESS
@@ -2041,7 +1909,7 @@ object, even after calling the capability.
         self, crit_key: str, met: bool, detail: dict[str, Any], exit_code: int
     ) -> None:
         criterion_met = met
-        if self._is_verify_pass() and crit_key.endswith("_done"):
+        if self._is_verify_pass():
             prior_entry = self.state.criteria[crit_key]
             prior = self._verify_prior
             detail["contract"] = {
@@ -2076,22 +1944,14 @@ object, even after calling the capability.
             }
         elif not result.detail:
             result.detail = dict(prior)
-        if self._acceptance_current is not None:
-            result.detail = deepcopy(result.detail)
         path = self._review_evidence_path
         if not self._review_evidence_written or result.exit_code == EXIT_ERROR:
             self._attach_review_evidence(result.detail, result.exit_code)
-        if (
-            result.exit_code == EXIT_ERROR
-            and self.state
-            and not (self._is_verify_pass() and crit_key.endswith("_done"))
-        ):
+        if result.exit_code == EXIT_ERROR and self.state and not self._is_verify_pass():
             self.set_criterion(crit_key, False, detail=result.detail)
         if (
             self.state
             and not getattr(self.args, "diagnostic", False)
-            and not self._goal_receipt_replayed
-            and self._acceptance_current is None
             and self.evidence_discarded is None
         ):
             entry = self.state.criteria.get(crit_key)
@@ -2135,10 +1995,7 @@ object, even after calling the capability.
                 report_text="Validation errors:\n" + "\n".join(f"  - {e}" for e in errors),
             )
 
-        try:
-            crit_key = self._criterion_key()
-        except ValueError as exc:
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
+        crit_key = self._criterion_key()
 
         # Scope file existence guard: if review targets don't exist yet
         # (e.g., TB not coded yet), fail early instead of letting the LLM
@@ -2226,11 +2083,7 @@ object, even after calling the capability.
         except OSError as exc:
             recovery = ""
             if self._is_verify_pass():
-                recovery = (
-                    " Restore the original specification before retrying --verify, or request an approved Goal Change."
-                    if self._goal_mode
-                    else " Restore the original specification or start a new Interactive discovery review."
-                )
+                recovery = " Restore the original specification or start a new Interactive discovery review."
             return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc) + recovery)
         if SPEC_FOCUS not in self._parse_focus() or spec_content is not None:
             return None
@@ -2264,7 +2117,7 @@ object, even after calling the capability.
         )
 
     def _execute_review(self, crit_key: str) -> McpToolResult:
-        """Run one validated terminal or corrective review."""
+        """Run one validated discovery or verify review."""
         prior = self._get_prior_detail(crit_key) or {}
         self._audit = {
             name: list(prior.get(name) or [])
@@ -2277,20 +2130,12 @@ object, even after calling the capability.
             for name in ("filtered", "rejected")
         }
 
-        self._refresh_review_freshness(crit_key)
+        self._refresh_review_freshness()
 
         self.emit_progress(f"reviewing {self.args.category}/{next(iter(self._parse_focus()))}")
 
         if self._is_verify_pass():
             return self._run_clean_verify(crit_key, self._verify_prior)
-        if self._is_clean_mode():
-            return self._run_clean_mode(crit_key)
-
-        # _done mode records terminal review completion, not cleanliness.
-        # Fresh completed legacy receipts may still have an unmet cleanliness gate.
-        if self._goal_mode and self._done_receipt_completed(crit_key):
-            self._goal_receipt_replayed = self._acceptance_current is not None
-            return self._replay_done_verdict(crit_key)
 
         # Run single-focus review
         overall_start = time.monotonic()
@@ -2308,76 +2153,31 @@ object, even after calling the capability.
         elapsed = time.monotonic() - overall_start
         return self._build_result(issues, output_lines, elapsed=elapsed)
 
-    def _refresh_review_freshness(self, crit_key: str) -> None:
-        """Use the acceptance owner's freshness policy before replaying evidence."""
-        # Refresh before either mode's idempotency guard.  Report submission
-        # uses this same operation, so Reviewer cannot replay a verdict which
-        # the acceptance path will immediately call stale.
-        from booley.flows.execution_persistence import criterion_is_current_for
+    # --- Verify ---
 
-        self._goal_receipt_replayed = False
-        self._acceptance_current = (
-            criterion_is_current_for(self._acceptance_recorder, self.state, crit_key)
-            if self.state
-            else None
-        )
-        if self.state and self._acceptance_current is None:
+    def _refresh_review_freshness(self) -> None:
+        """Mark recorded verification evidence stale when its sources changed."""
+        if self.state:
             refresh_verification_freshness(
                 self.state,
                 work_dir=Path(self.args.work_dir),
             )
 
-    def _done_receipt_completed(self, crit_key: str) -> bool:
-        """Replay only fresh completed review evidence, never incomplete/error detail."""
-        entry = self.state.criteria.get(crit_key)
-        if entry is None or entry.stale or self._acceptance_current is False:
-            return False
-        detail = entry.detail or {}
-        findings = detail.get("issue_list")
-        return (
-            detail.get("review_detail_version") == REVIEW_DETAIL_VERSION
-            and not detail.get("error")
-            and isinstance(findings, list)
-            and all(
-                isinstance(row, dict) and row.get("severity") and row.get("summary")
-                for row in findings
-            )
-        )
-
-    # --- _clean mode ---
-
-    def _already_clean_result(self, crit_key: str) -> McpToolResult:
-        msg = (
-            f"{execution_goal_name(self._acceptance_recorder, crit_key)} already met for the current source fingerprint. "
-            "Do not call this reviewer again; proceed with remaining work."
-        )
-        return McpToolResult(
-            exit_code=EXIT_SUCCESS,
-            report_text=msg,
-            display_lines=[
-                f"SKIPPED: {execution_goal_name(self._acceptance_recorder, crit_key)} already met (done — do not retry)"
-            ],
-        )
-
     def _clean_verify_limit(self, crit_key: str, prior_detail: dict[str, Any]):
         if prior_detail.get("verify_attempts", 0) >= 2:
             msg = (
-                f"{execution_goal_name(self._acceptance_recorder, crit_key)}: 2 verify attempts exhausted — unresolved findings remain. "
+                f"{crit_key}: 2 verify attempts exhausted — unresolved findings remain. "
                 "Fix them or propose explicit, justified review waivers; findings are never "
                 "waived automatically."
             )
-            return McpToolResult(exit_code=self._verify_refusal_code(), report_text=msg)
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=msg)
         if prior_detail.get("total_verify_cycles", 0) >= 3:
             msg = (
-                f"{execution_goal_name(self._acceptance_recorder, crit_key)}: 3 review/resolve cycles exhausted — unresolved findings "
+                f"{crit_key}: 3 review/resolve cycles exhausted — unresolved findings "
                 "remain. Blocking without creating an automatic waiver."
             )
-            return McpToolResult(exit_code=self._verify_refusal_code(), report_text=msg)
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=msg)
         return None
-
-    def _verify_refusal_code(self) -> int:
-        """Hand-run refusals are errors, so exit 1 only means an open finding."""
-        return EXIT_FAILURE if self._goal_mode else EXIT_ERROR
 
     def _run_clean_verify(self, crit_key: str, prior_detail: dict[str, Any]) -> McpToolResult:
         limit = self._clean_verify_limit(crit_key, prior_detail)
@@ -2403,37 +2203,6 @@ object, even after calling the capability.
             crit_key=crit_key,
         )
 
-    def _run_clean_mode(self, crit_key: str) -> McpToolResult:
-        """Drive the _clean criterion through initial review → verify loop."""
-        if (
-            self._goal_mode
-            and self.state.is_met(crit_key)
-            and self._acceptance_current is not False
-        ):
-            self._goal_receipt_replayed = self._acceptance_current is not None
-            return self._already_clean_result(crit_key)
-        return self._run_clean_initial(crit_key)
-
-    def _run_clean_initial(self, crit_key: str) -> McpToolResult:
-        """Run the first (no prior findings) review pass for _clean mode."""
-        overall_start = time.monotonic()
-        issues, output_lines = self._run_single_review()
-        if issues is None:
-            return McpToolResult(
-                exit_code=EXIT_ERROR,
-                report_text=self._provider_failure_report(
-                    output_lines, "Reviewer Specialist invocation failed"
-                ),
-                detail=self._guide_calls_detail(),
-            )
-        elapsed = time.monotonic() - overall_start
-        return self._build_result_clean_initial(
-            issues,
-            output_lines,
-            elapsed=elapsed,
-            crit_key=crit_key,
-        )
-
     def _review_source_digest(self) -> str:
         """Return a digest of only the files declared in this review scope."""
         try:
@@ -2449,70 +2218,6 @@ object, even after calling the capability.
             logger.warning("Could not fingerprint sources for review freshness", exc_info=True)
             return ""
         return hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
-
-    def _replay_done_verdict(self, crit_key: str) -> McpToolResult:
-        """Re-report an already-completed _done review instead of re-running it.
-
-        Reviews are idempotent while their source fingerprint is current:
-        re-reviewing burns a creator round for a verdict that cannot change. That is a
-        *policy* decision, not a Specialist failure, so this is a benign idempotent
-        outcome (exit 0) rather than the exit-2 reserved for "the Specialist could
-        not run". The prior verdict is replayed verbatim from criterion state
-        so a caller that re-invokes after further edits still gets the answer
-        it was looking for, plus an explicit note that no new review ran.
-        """
-        prior, issues, counts = self._replayed_facts(crit_key)
-        gate_passed = True
-        _status, count_str = _format_status_and_counts(counts, gate_passed)
-        outcome = "REVIEWED WITH FINDINGS" if issues else "REVIEWED — NO FINDINGS"
-
-        lines = [
-            f"{execution_goal_name(self._acceptance_recorder, crit_key)} already completed for the current source, so this call "
-            "did NOT re-run the review.",
-            "Replaying the recorded verdict verbatim:",
-            f"\nRESULT: {outcome} ({count_str})",
-        ]
-        lines += [f"  {_format_issue_line(iss)}" for iss in issues]
-        lines.append(
-            "\nThis review is already completed for the current source. Calling "
-            "`reviewer` again only replays this verdict while the reviewed source remains "
-            "current. A later source edit makes the criterion stale and requires "
-            "a new final review. Use a review Goal requiring `clean` when findings "
-            "must be fixed or explicitly waived and re-verified."
-        )
-        report_text = "\n".join(lines)
-        print(report_text)
-
-        return McpToolResult(
-            exit_code=EXIT_SUCCESS,
-            criterion_key=crit_key,
-            criterion_met=True,
-            detail=dict(prior),
-            display_lines=[
-                f"SKIPPED: {execution_goal_name(self._acceptance_recorder, crit_key)} already completed for current source — prior verdict replayed"
-            ],
-            report_text=report_text,
-        )
-
-    def _replayed_facts(
-        self, crit_key: str
-    ) -> tuple[dict[str, Any], list[ReviewIssue], dict[str, int]]:
-        """Compute the prior producer facts shared by replay rendering and its result."""
-        from booley.evidence.review_dispositions import corrective_done_findings
-
-        prior = self._get_prior_detail(crit_key) or {}
-        issues = [ReviewIssue.from_dict(d) for d in prior.get("issue_list", [])]
-        current = corrective_done_findings({crit_key: {"detail": prior}})
-        counts = count_by_severity([ReviewIssue.from_dict(row) for row in current])
-        detail = {
-            **prior,
-            "gate_passed": True,
-            "issues": len(current),
-            "observation_count": len(issues),
-            **counts,
-            "review_outcome": "corrective" if current else "advisory" if issues else "no_findings",
-        }
-        return detail, issues, counts
 
     def _get_prior_detail(self, crit_key: str) -> dict[str, Any] | None:
         """Retrieve the detail dict for a criterion from state."""
@@ -3146,13 +2851,10 @@ Schema enforcement (applied upstream by the harness):
     def _guide_calls(self, focus: str, category: str) -> tuple[tuple[ReviewGuide, ...], ...]:
         """Group the focus's selected guides into model calls, one per guide kind.
 
-        Kinds run in order of first appearance. Always at least one call: a focus with no
-        selected guide (a Goal Mode testbench review of support files only) is one call
-        without a guide section, never zero calls.
+        Kinds run in order of first appearance. Scope validation guarantees every accepted
+        scope selects at least one guide, so this is never zero calls.
         """
         guides = self._review_guides(focus, category)
-        if not guides:
-            return ((),)
         kinds = dict.fromkeys(guide.kind for guide in guides)
         return tuple(tuple(g for g in guides if g.kind == kind) for kind in kinds)
 
@@ -3217,7 +2919,7 @@ Schema enforcement (applied upstream by the harness):
             for issue in issues:
                 issue.guide_kinds = run.kinds
             self._non_corrective_issues = []
-            run.kept = self._filter_review_issues(issues, run.lines, observation_info=not tagged)
+            run.kept = self._filter_review_issues(issues, run.lines)
             run.observations = self._non_corrective_issues
         except Exception as exc:  # noqa: BLE001 — normalize the review-provider boundary
             run.kept = None
@@ -3295,8 +2997,6 @@ Schema enforcement (applied upstream by the harness):
             f"INFO: guide calls reported {per_call}; merged {merged} exact duplicate(s)"
         )
         self._non_corrective_issues = observations
-        if observations and self._criterion_key().endswith("_clean"):
-            output_lines.extend(self._observation_info_lines())
         # The first call's session is the one persisted; a later verify never resumes it.
         session = next(
             (s for run in runs if isinstance(s := getattr(run.result, "session_id", None), str)),
@@ -3370,14 +3070,8 @@ Schema enforcement (applied upstream by the harness):
         self,
         issues: list[ReviewIssue],
         output_lines: list[str],
-        *,
-        observation_info: bool = True,
     ) -> list[ReviewIssue]:
-        """Enforce explicit source membership and honor agent dispositions.
-
-        *observation_info* adds the clean-mode INFO lines counting observations; a
-        multi-call review adds them once, after merging.
-        """
+        """Enforce explicit source membership and honor agent dispositions."""
         kept: list[ReviewIssue] = []
         dropped = 0
         for ordinal, issue in enumerate(issues, 1):
@@ -3403,30 +3097,7 @@ Schema enforcement (applied upstream by the harness):
             output_lines.append(
                 f"INFO: filtered {dropped} proposal(s) outside explicit source scope; preserved in audit evidence"
             )
-        if (
-            observation_info
-            and self._non_corrective_issues
-            and self._criterion_key().endswith("_clean")
-        ):
-            output_lines.extend(self._observation_info_lines())
         return kept
-
-    def _observation_info_lines(self) -> list[str]:
-        """Clean-mode INFO lines counting observations kept out of the gate."""
-        pre_existing = sum(
-            issue.origin == ORIGIN_PRE_EXISTING for issue in self._non_corrective_issues
-        )
-        advisory = len(self._non_corrective_issues) - pre_existing
-        lines: list[str] = []
-        if advisory:
-            lines.append(
-                f"INFO: preserved {advisory} advisory/deferred observation(s) without gating this review"
-            )
-        if pre_existing:
-            lines.append(
-                f"INFO: preserved {pre_existing} pre-existing observation(s) without gating this review"
-            )
-        return lines
 
     def _issue_file_in_scope(self, issue_file: str) -> bool:
         """Match an agent-reported file against the explicit review scope."""
@@ -3538,7 +3209,7 @@ Schema enforcement (applied upstream by the harness):
         detail = self._done_detail(done_outcome, elapsed=elapsed)
         crit_key = self._criterion_key()
         exit_code = self._completed_exit_code(
-            [row["severity"] for row in done_outcome.corrective_records], legacy_failed=False
+            [row["severity"] for row in done_outcome.corrective_records]
         )
         self._record_review_detail(crit_key, True, detail, exit_code)
         return McpToolResult(
@@ -3550,79 +3221,7 @@ Schema enforcement (applied upstream by the harness):
             report_text=report_text,
         )
 
-    # --- _clean mode result builders ---
-
-    def _build_result_clean_initial(
-        self,
-        issues: list[ReviewIssue],
-        output_lines: list[str],
-        *,
-        elapsed: float,
-        crit_key: str,
-    ) -> McpToolResult:
-        """Record discovery: every corrective finding starts open."""
-        counts = count_by_severity(issues)
-        gate_passed = not issues
-
-        status, count_str = _format_status_and_counts(counts, gate_passed)
-        output_lines.extend(_format_issue_line(issue) for issue in issues)
-        output_lines.append(f"\nRESULT: {status} ({count_str})")
-        output_lines.extend(
-            _pre_existing_lines(
-                issue
-                for issue in self._non_corrective_issues
-                if issue.origin == ORIGIN_PRE_EXISTING
-            )
-        )
-
-        report_text = "\n".join(output_lines)
-        # Print concise result summary to stdout (consumed by callers and tests)
-        print(report_text)
-
-        detail = self._clean_discovery_detail(issues, counts, elapsed)
-        exit_code = self._completed_exit_code(
-            [issue.severity for issue in issues], legacy_failed=not gate_passed
-        )
-
-        if gate_passed:
-            self._record_review_detail(crit_key, True, detail, exit_code)
-        else:
-            detail["verify_attempts"] = 0
-            detail["original_issues"] = len(issues)
-            self._record_review_detail(crit_key, False, detail, exit_code)
-
-        lines = [f"{count_str}, gate {status}"]
-        for issue in issues:
-            lines.append(f"  {_format_issue_line(issue)}")
-
-        return McpToolResult(
-            exit_code=exit_code,
-            criterion_key=crit_key,
-            criterion_met=gate_passed,
-            display_lines=lines,
-            detail=detail,
-            report_text=report_text,
-        )
-
-    def _clean_discovery_detail(
-        self, issues: list[ReviewIssue], counts: dict[str, int], elapsed: float
-    ) -> dict[str, Any]:
-        detail: dict[str, Any] = {
-            "review_detail_version": REVIEW_DETAIL_VERSION,
-            "review_call_order": self._next_review_order(),
-            **self._audit_detail(),
-            **self._guide_calls_detail(),
-            "issues": len(issues),
-            "pending": [_finding_record(iss) for iss in issues],
-            "resolved": [],
-            "observations": [_finding_record(iss) for iss in self._non_corrective_issues],
-            **counts,
-            "elapsed_s": round(elapsed, 1),
-            "review_source_digest": self._review_source_digest(),
-            "contract": self._review_contract_detail(),
-        }
-
-        return detail
+    # --- Verify result builders ---
 
     def _build_result_clean_verify(
         self,
@@ -3674,9 +3273,7 @@ Schema enforcement (applied upstream by the harness):
         report_text = "\n".join(context.output_lines)
         print(report_text)
         detail, verify_attempts = self._clean_verify_detail(context, counts)
-        exit_code = self._completed_exit_code(
-            [row["severity"] for row in context.pending], legacy_failed=not met
-        )
+        exit_code = self._completed_exit_code([row["severity"] for row in context.pending])
         self._record_review_detail(context.crit_key, met, detail, exit_code)
         if met:
             focus = next(iter(self._parse_focus()))
@@ -3687,11 +3284,7 @@ Schema enforcement (applied upstream by the harness):
         return McpToolResult(
             exit_code=exit_code,
             criterion_key=context.crit_key,
-            criterion_met=(
-                self.state.criteria[context.crit_key].met
-                if context.crit_key.endswith("_done")
-                else met
-            ),
+            criterion_met=self.state.criteria[context.crit_key].met,
             display_lines=lines,
             detail=detail,
             report_text=report_text,
@@ -3737,8 +3330,7 @@ Schema enforcement (applied upstream by the harness):
                 "scope_hashes": self._review_contract_detail()["scope_hashes"],
             },
         }
-        if context.crit_key.endswith("_done"):
-            detail["issue_list"] = [*context.pending, *context.resolved, *context.observations]
+        detail["issue_list"] = [*context.pending, *context.resolved, *context.observations]
         return detail, verify_attempts
 
     def _split_verify_findings(

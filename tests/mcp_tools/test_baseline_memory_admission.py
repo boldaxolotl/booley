@@ -119,7 +119,7 @@ def test_baseline_memory_claim_names_its_job_flow_and_target(memory_scene):
 
 def test_waiting_baseline_narrates_its_memory_wait(tmp_path, capsys):
     store = job_slots.SlotStore(tmp_path / "slots")
-    narrate = execution._slot_narrator(store, job_slots.CLASS_MEMORY)
+    narrate = execution._slot_narrator(store)
 
     narrate(0)  # no claim of this process: promoted since the tick, nothing to say
     assert capsys.readouterr().err == ""

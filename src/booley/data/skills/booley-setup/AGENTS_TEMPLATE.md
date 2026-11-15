@@ -8,7 +8,7 @@ generated links. An explicitly selected hybrid port/integration footprint instea
 tracks a content-identical root `AGENTS.md` (see `steps/3-agents-md.md`, Step 3).
 
 The stealth, RISC-V, and worktree bullets are conditional; `steps/3-agents-md.md`
-says when to keep each.
+says when to keep each. The Metric-Driven Development bullet is unconditional.
 
 ```markdown
 # AGENTS.md
@@ -35,6 +35,7 @@ keep that copy and the canonical guide identical and stage their changes.
 - If `booley_status` is absent from the MCP tool list, you are on the host and nothing is broken. Point the user to "Reopen in Container" (or `booley session up && booley session enter`); do not substitute raw EDA commands.
 - Interactive Mode: at the start of a tab, call `booley_status` and display its status block. The user shares a VS Code window attached to the Sandbox, so show files with `code --goto <path>[:<line>]` and diffs with `code --diff <left> <right>` when useful.
 - Doctor during task work: verify changes with the relevant Booley Flows and, at most, plain `booley doctor`. `booley doctor --deep` belongs to Project Setup, `/booley-heal`, and Booley version changes; do not run it for task work or handoffs. Report findings your change did not cause (pre-existing, host-owned, or Sandbox provisioning) in the handoff instead of fixing them. Never edit `booley.toml`, `.core` files, `doctor-waivers.toml`, or Goal Records to silence such a finding. If the task itself changes project configuration, Targets, dependencies, or the Sandbox, fix the findings it caused or add a narrow, reviewed waiver for a deliberate constraint, and state that deep verification (`/booley-heal`) is due.
+- Metric-Driven Development: before measuring a commit with `booley measure`, read `booley cheat --metrics`; it gives the measuring rules and each Target's metrics.
 - RISC-V reference docs (ISA, debug specification, ELF psABI) live at `$BOOLEY_RISCV_DOCS`; start with `INDEX.md` there.
 - Booley Specialists for deeper RTL work: `coverage_analyst` and `reviewer`. Check that tests catch planted bugs with the `mutation` Flow (`booley flow mutation --target <sim-target>`).
 - Another branch or commit: never use plain `git worktree add` or copy `.booley/`. Commit Project changes, then run `booley worktree new <name>` inside the Sandbox from the workspace root (`--help` explains naming). Pass `work_dir=<worktree path>` to a Flow to use that checkout; project config still comes from the canonical Booley Directory. To remove a worktree, run `booley worktree rm <name>` in the Sandbox (it keeps evidence and branches and refuses unsaved work). For QoR against a past commit, prefer `synth`/`fpga` `--baseline <git ref>`.

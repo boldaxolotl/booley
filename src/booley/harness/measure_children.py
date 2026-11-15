@@ -27,7 +27,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from booley.config.jobs import parse_caps
 from booley.harness.checkout_flow import (
     STOP_GRACE_S,
     CheckoutFlowError,
@@ -46,7 +45,6 @@ from booley.measurement.verdicts import (
     evaluate_table,
 )
 from booley.runtime import job_slots
-from booley.runtime.shared_infra import load_job_budget_config
 
 if TYPE_CHECKING:
     from booley.flows.metric_declarations import FlowMetricValues
@@ -246,13 +244,12 @@ class ChildScheduler:
         running: its waiting item claim is never withdrawn.
         """
         found: job_slots.SlotToken | None = None
-        for job_class in job_slots.JOB_CLASSES:
-            holders, waiters = self._store.snapshot(job_class)
-            if any(token.pid == pid for token in holders):
-                return None
-            for token in waiters:
-                if token.pid == pid and token.queue_reason is None:
-                    found = token
+        holders, waiters = self._store.snapshot(job_slots.CLASS_MEMORY)
+        if any(token.pid == pid for token in holders):
+            return None
+        for token in waiters:
+            if token.pid == pid and token.queue_reason is None:
+                found = token
         return found
 
     def _withdraw_if_waiting(self, entry: _Entry) -> None:
@@ -491,10 +488,7 @@ def run_children(
     """
     main = main_booley_dir.resolve()
     try:
-        store = job_slots.SlotStore(
-            job_slots.project_slots_dir(main),
-            parse_caps(load_job_budget_config(booley_dir=main)),
-        )
+        store = job_slots.SlotStore(job_slots.project_slots_dir(main))
     except BaseException:  # nothing started: leave no scratch behind
         for _table, child in prepared:
             child.discard()

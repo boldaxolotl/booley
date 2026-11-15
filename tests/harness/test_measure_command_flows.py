@@ -165,7 +165,7 @@ def test_an_unmet_bound_stops_later_tables_unless_all(
     tables = {t["identity"].split("#")[1]: t for t in stored.document["tables"]}
     assert [r["verdict"] for r in tables["metrics_ok"]["results"]] == ["unmet"]
     assert not stored.measured
-    # Both children start at once and race for the one live light slot, so which runs first is
+    # Both children start at once and race for the one live memory claim, so which runs first is
     # not fixed; the table whose child never ran is the one the unmet bound withdrew.
     ran_b = "metrics_b" in started_targets(world)
     assert "metrics_ok" in started_targets(world)

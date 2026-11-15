@@ -46,6 +46,7 @@ The grill covers:
 - simulator (Verilator / Icarus) and testbench style (SystemVerilog / cocotb);
 - lint EDA tool (Verilator / Verible);
 - whether they want `AGENTS.md`;
+- enable metrics now or later? (row 6a; recommend later);
 - one merged git-history question (rows 16 + 20), asked exactly:
   **"Keep Booley out of your git history?"** Recommend No/open for a repo born
   with Booley: commit `.booley/`, use native cores, row 20 =
@@ -100,6 +101,9 @@ only):
   removes tracked files).
 - **Repo has existing RTL/`.core` but isn't scaffolded**: it's a port — run
   the normal plan phase instead of guessing.
+
+With row 6a `now`, apply Step 2 §2d to the scaffold's simulation Target before
+the Step 4 gate.
 
 Then, in the container, run **Step 3 (optional — offer it) and Step 4
 (the doctor gate)**. Use plain `booley doctor` while fixing the scaffold, then

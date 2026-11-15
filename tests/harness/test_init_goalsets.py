@@ -198,7 +198,7 @@ def test_init_seeds_the_goalsets(
     assert {path.name for path in (booley_dir / GOALSETS_DIR).iterdir()} == EXPECTED_FILES
     # Config skeletons and Goalsets each have one reconciliation step.
     output = capsys.readouterr().out
-    assert "added 2 config skeleton file(s)" in output
+    assert "added 3 config skeleton file(s)" in output
     assert output.count("created 4 Goalsets") == 1
     assert "Goalsets already present" not in output
 
@@ -211,7 +211,7 @@ def test_init_check_only_writes_nothing(
 
     assert list(booley_dir.iterdir()) == []
     output = capsys.readouterr().out
-    assert "would add 2 config skeleton file(s)" in output
+    assert "would add 3 config skeleton file(s)" in output
     assert output.count("4 missing Goalsets") == 1
 
 

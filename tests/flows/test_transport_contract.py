@@ -284,7 +284,8 @@ def test_unbound_typed_request_never_acquires_a_job(flow_type, runtime, monkeypa
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
     flow = flow_type()
     monkeypatch.setattr(
-        EndpointState, "_acquire_job_slot", lambda self: pytest.fail("admitted unbound request")
+        "booley.flows.endpoint_admission._acquire_memory_reservation",
+        lambda *_a, **_k: pytest.fail("admitted unbound request"),
     )
     result = flow.execute(flow.request_type(target="demo", work_dir=runtime))
     assert flow.generic_binding_gate_applies() is True
@@ -320,7 +321,8 @@ def test_simulation_coverage_run_is_not_binding_gated(runtime, monkeypatch):
     sentinel = EndpointOutcome(exit_code=2, report_text="coverage preparation refusal")
     prepare_as(monkeypatch, flow, sentinel)
     monkeypatch.setattr(
-        EndpointState, "_acquire_job_slot", lambda self: pytest.fail("admitted before preparation")
+        "booley.flows.endpoint_admission._acquire_memory_reservation",
+        lambda *_a, **_k: pytest.fail("admitted before preparation"),
     )
 
     result = flow.execute(flow.request_type(target="demo", work_dir=runtime, coverage=True))
@@ -352,7 +354,8 @@ group = "verification"
     flow = LintFlow()
     flow.satisfies = ["project_check"]
     monkeypatch.setattr(
-        EndpointState, "_acquire_job_slot", lambda self: pytest.fail("admitted unbound request")
+        "booley.flows.endpoint_admission._acquire_memory_reservation",
+        lambda *_a, **_k: pytest.fail("admitted unbound request"),
     )
 
     result = flow.execute(flow.request_type(target="demo", work_dir=runtime))
@@ -1393,35 +1396,6 @@ def test_public_hooks_see_raw_then_projected_headline(
     result = LintFlow().execute(LintFlow.request_type(target="first", work_dir=runtime))
     assert observed == [("acceptance", "producer_raw", False), ("post", "lint_clean_first", True)]
     _assert_headline(result, runtime / "flow-reports", "lint", ("lint_clean_first", True))
-
-
-def test_public_ambiguous_reviewer_fallback_remains_unknown(runtime, monkeypatch):
-    from booley.runtime.endpoint_execution import EndpointOutcome
-    from booley.specialists.reviewer import ReviewerSpecialist
-
-    _headline_state(
-        runtime, monkeypatch, {"review_rtl_bugs_done": True, "review_rtl_bugs_clean": True}
-    )
-
-    def run(self):
-        self.set_criterion("review_rtl_bugs_done", True)
-        return EndpointOutcome()
-
-    class StableDisplayReviewer(ReviewerSpecialist):
-        display_tag = "review"
-
-    monkeypatch.setattr(StableDisplayReviewer, "_run", run)
-    events = _display_events(monkeypatch)
-    reviewer = StableDisplayReviewer()
-    result = reviewer.execute_cli(
-        ["--scope", ".", "--category", "rtl", "--focus", "bugs", "--work-dir", str(runtime)]
-    )
-    assert result.exit_code == 0, result.outcome
-    assert reviewer._report_criteria.known is False
-    assert (result.outcome.criterion_key, result.outcome.criterion_met) == ("", None)
-    assert_paired_headline(reviewer.args.report_dir, "reviewer", None)
-    end = next(event for event in events if event["type"] == "endpoint_end")
-    assert (end.get("criterion_key", ""), end.get("criterion_met")) == ("", None)
 
 
 def test_sim_verbose_mcp_schema_deliberately_exposes_optional_boolean():

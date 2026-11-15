@@ -54,6 +54,9 @@ booley bootstrap --update
 ```
 <!-- /booley-smoke:upgrade -->
 
+Then recreate each Project's Sandbox and run the upgrade review; see
+[After upgrading Booley](SANDBOX.md#after-upgrading-booley).
+
 ## Host Bootstrap
 
 Host Bootstrap (`booley bootstrap`) prepares this machine once for every Booley

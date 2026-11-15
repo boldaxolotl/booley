@@ -38,7 +38,7 @@ There are two ways to select it:
   With `BOOLEY_AGENT_APP=auto`, leave `BOOLEY_PRIMARY_AUTH` unset or `auto`
   instead: the gateway is then used only when the Sandbox has no Claude or
   Codex credential; a visitor's own credential always beats it (see
-  [the agent app](../user/SANDBOX.md#agent-app-in-a-hand-written-spec-booley_agent_app)).
+  [the agent app](HAND-WRITTEN-SPECS.md#agent-app-in-a-hand-written-spec-booley_agent_app)).
 
 | Variable | Meaning |
 | --- | --- |
