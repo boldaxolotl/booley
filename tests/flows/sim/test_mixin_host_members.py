@@ -1,4 +1,4 @@
-"""The Simulation Flow mixins declare only host members SimulateFlow provides (#3808)."""
+"""The Simulation Flow mixins declare only host members SimulateFlow provides (#3808, #3809)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import ast
 import inspect
 from types import ModuleType
 
-from booley.flows.sim import elab_only, standalone, test_selection
+from booley.flows.sim import elab_only, flow_resume, standalone, test_selection
 from booley.flows.sim.flow import SimulateFlow
 
 
@@ -33,6 +33,7 @@ def test_mixin_host_declarations_are_provided_by_simulate_flow() -> None:
     flow = SimulateFlow()
     for module, class_name in (
         (elab_only, "ElabOnlyMixin"),
+        (flow_resume, "SimulationRecordResumeMixin"),
         (standalone, "StandaloneMixin"),
         (test_selection, "SimulationTestSelectionMixin"),
     ):
