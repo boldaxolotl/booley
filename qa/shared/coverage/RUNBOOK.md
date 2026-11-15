@@ -117,9 +117,9 @@ python3 -c 'import json,sys,pathlib; r=pathlib.Path(sys.argv[1]); print(r.parent
 that wrote the reference. The result is
 `.../record/work-items/<item>/attempts/<attempt>/coverage-record/coverage.json`.
 That Campaign directory holds `coverage-points.jsonl.gz`, `native/raw/`,
-`native/merged/` and `hooks/`. Run IDs are the manifest's `tests.runs[].id`: the run ordinal plus
-the [Test Run](../../../docs/GLOSSARY.md) name, not the bare test name. Every
-Verilator Target here uses Default Seed 1, so test `half` is
+`native/merged/` and `hooks/`. Run IDs are the manifest's `tests.runs[].id`: the
+run ordinal plus the [Test Run](../../../docs/GLOSSARY.md) name, not the bare
+test name. Every Verilator Target here uses Default Seed 1, so test `half` is
 `run:001:half@1`. Each run's raw database is the `artifacts[]` entry whose
 `id` equals that run's `raw_artifact`, at a path relative to the Campaign
 directory (`native/raw/001-half@1.dat`). Read both from the manifest rather
@@ -523,8 +523,8 @@ report, never a reason to ask a smaller question.
 The stale-source case uses a separate disposable Goal child and worktree with
 the final improved TB and a fresh passing baseline. It runs under the Goal
 registry (`goals/tests.toml`), which changes only `sim_generated` to `[gap]`.
-Restoration reruns `sim_generated` `gap` in that same active Goal. Report the fault result and the
-restoration result separately.
+Restoration reruns `sim_generated` `gap` in that same active Goal. Report the
+fault result and the restoration result separately.
 
 ## Restoration and cleanup
 
