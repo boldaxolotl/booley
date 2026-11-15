@@ -137,7 +137,7 @@ Booley reserves the largest peak memory it recorded for a Job
 ([resource history](#job-resource-history)), plus 25%. With no record of its
 own, the Job borrows the largest peak recorded for the same Target and step,
 then for that step anywhere in the Project. Only a step Booley has never
-measured makes the Job run alone. A simulation campaign runs independent tests
+measured makes the Job run alone. A Simulation Record runs independent tests
 in parallel while their reservations fit.
 
 If the kernel kills a Job for running out of memory, Booley runs it again once,

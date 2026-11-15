@@ -15,7 +15,7 @@ import yaml
 from booley.flows.sim.record.codec import MANIFEST_SCHEMA
 
 ROOT = Path(__file__).resolve().parents[2]
-FIXTURE = ROOT / "qa/missions/picorv32/fixtures/simulation-campaign"
+FIXTURE = ROOT / "qa/missions/picorv32/fixtures/simulation-record"
 
 
 def _validator():

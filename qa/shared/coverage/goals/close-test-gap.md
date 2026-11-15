@@ -10,9 +10,9 @@ assertion it has today.
 - This Project's registry lists only `gap` for `sim_generated`, so
   `"tests": "all"` below means exactly `[gap]`.
 - Collect coverage through MCP before and after the change. Ask the Coverage
-  Analyst about the exact first Campaign.
+  Analyst about the exact first Coverage Record.
 - Keep the first collection's evidence (simulation passes, coverage fails),
-  the Analyst's advice, and the final full Campaign.
+  the Analyst's advice, and the final full Coverage Record.
 - Finish with a clean, committed diff that touches only the testbench, and a
   Session Summary.
 
