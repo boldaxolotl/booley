@@ -43,8 +43,9 @@ SECTIONS: tuple[Section, ...] = (
     ),
     Section(
         "metrics",
-        "Metrics",
-        "Each Target's metrics as `metrics.toml` text (needs a Project)",
+        "Metric-Driven Development",
+        "Measuring rules and `metrics.toml` basics, then each Target's metrics as "
+        "`metrics.toml` text (needs a Project)",
     ),
     Section("flows", "Booley Flows", "Deterministic end-to-end orchestration"),
     Section(

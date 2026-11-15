@@ -14,7 +14,8 @@ and Flow reports are kept in the ``measure`` Job's own directory, beside its ``j
 Exit status: 0 when every enforced bound is met, 1 when one is unmet, 2 when a Flow errored,
 when nothing was in scope or when the measurement failed before or while storing (nothing
 is stored for a refusal), and 130 for a cancellation, which is stored as a cancelled run
-when at least one child finished.
+when at least one child finished. After exit status 1 or 2 the last line on stderr is the
+rule to follow next (:mod:`booley.measurement.measuring_rules`, #4133).
 
 Cancellation has three phases. Before any child starts, a signal raises ``KeyboardInterrupt``
 at once: every step cleans up after itself and nothing is stored. While the children run,
@@ -52,6 +53,7 @@ from booley.harness.standalone_job import (
     standalone_log_root,
 )
 from booley.measurement.base import BaseError, resolve_base
+from booley.measurement.measuring_rules import exit_rule
 from booley.measurement.metrics_file import (
     MetricsFileError,
     MetricsRules,
@@ -160,7 +162,7 @@ def run_measure(project_root: Path, request: MeasureRequest) -> int:
     )
     if job is None:
         print("ERROR: no Main Booley Directory to store the measurement in", file=sys.stderr)
-        return _EXIT_REFUSED
+        return _with_rule(_EXIT_REFUSED)
     try:
         return job.run(lambda: _guarded(project_root, request, job))
     finally:
@@ -173,15 +175,24 @@ def _guarded(project_root: Path, request: MeasureRequest, job: StandaloneJob) ->
     The text goes to stderr, which the Job copies into its ``job.log``. A
     ``KeyboardInterrupt`` passes through: the Job records it as cancelled.
     """
+    code = _EXIT_REFUSED
     try:
         with _cancel_signals() as signals:
-            return _measure(project_root, request, job, signals)
+            code = _measure(project_root, request, job, signals)
     except MeasureRefusedError as refusal:
         print(f"ERROR: {refusal}", file=sys.stderr)
     except Exception as failure:  # noqa: BLE001 — the command boundary: infrastructure failures
         print(f"ERROR: measurement failed: {failure}", file=sys.stderr)
         traceback.print_exc()
-    return _EXIT_REFUSED
+    return _with_rule(code)
+
+
+def _with_rule(code: int) -> int:
+    """Print the rule *code* calls for as the last line on stderr; return *code*."""
+    rule = exit_rule(code)
+    if rule is not None:
+        print(rule, file=sys.stderr)
+    return code
 
 
 def _resolve_commit(project_root: Path, request: MeasureRequest) -> str:
