@@ -95,7 +95,7 @@ def test_public_claude_call_retries_with_injected_policy(tmp_path, monkeypatch):
         label="reviewer",
         artifact_paths=resolve,
     )
-    result = asyncio.run(claude.ClaudeSDKBackend().call(params))
+    result = asyncio.run(claude.ClaudeSDKBackend(auth_mode="visitor").call(params))
     assert result.output == "done"
     assert calls == ["work", "work"]
     assert [p.name for p in destinations] == ["reviewer.jsonl", "reviewer-retry2.jsonl"]

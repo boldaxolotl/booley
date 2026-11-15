@@ -117,7 +117,7 @@ class TestClaudeSdkLaunchContract:
         captured_options, fake_query = _capturing_successful_query()
         monkeypatch.setattr(cb, "query", fake_query)
 
-        result = await ClaudeSDKBackend().call(
+        result = await ClaudeSDKBackend(auth_mode="visitor").call(
             AgentCallParams(prompt="p", model="sonnet", cwd=tmp_path)
         )
 
@@ -705,7 +705,7 @@ async def test_claude_model_refusal_is_terminal_and_actionable(tmp_path, monkeyp
     monkeypatch.setattr(cb.anyio, "sleep", sleep)
 
     with pytest.raises((AgentProviderError, ResultError)) as raised:
-        await ClaudeSDKBackend().call(
+        await ClaudeSDKBackend(auth_mode="visitor").call(
             AgentCallParams(prompt="work", model=_REFUSED_CLAUDE_MODEL, cwd=tmp_path)
         )
 
@@ -1024,7 +1024,7 @@ class TestIdleStreamTimeout:
         # Total elapsed (~0.48s) far exceeds the timeout (0.3s), but every
         # inter-event gap (0.06s) is well under it. A fixed wall-clock timeout
         # would kill this; the idle/heartbeat timeout must not.
-        backend = ClaudeSDKBackend()
+        backend = ClaudeSDKBackend(auth_mode="visitor")
         sentinels = [object() for _ in range(8)]
         # Completing the whole stream without raising TimeoutError is the check.
         self._run_stream(
@@ -1037,7 +1037,7 @@ class TestIdleStreamTimeout:
 
     def test_genuine_stall_times_out(self):
         # No event for longer than the idle window -> TimeoutError.
-        backend = ClaudeSDKBackend()
+        backend = ClaudeSDKBackend(auth_mode="visitor")
         with pytest.raises(TimeoutError):
             self._run_stream(
                 backend,
@@ -1061,7 +1061,7 @@ class TestCallOnceTimeoutResultSalvage:
 
         from booley.runtime import _claude_backend as cb
 
-        backend = ClaudeSDKBackend()
+        backend = ClaudeSDKBackend(auth_mode="visitor")
         counters = cb._UsageCounters()
         counters.final_text = "partial findings so far"
 
@@ -1091,7 +1091,7 @@ class TestCallOnceTimeoutResultSalvage:
 
         from booley.runtime import _claude_backend as cb
 
-        backend = ClaudeSDKBackend()
+        backend = ClaudeSDKBackend(auth_mode="visitor")
         counters = cb._UsageCounters()
 
         async def _fake_process(self, prompt, options, timeout_seconds, c, tf, oe, st, **_kwargs):
