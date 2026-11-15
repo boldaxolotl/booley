@@ -191,14 +191,20 @@ def test_sim_bad_overlay_only_injects_the_reset_defect() -> None:
     )
 
 
-@pytest.mark.parametrize(
-    ("lint_eda_tool", "style_lint", "lint_targets"),
-    [
+def test_scaffold_supplies_doctor_fail_path_fixtures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cases = [
         ("verilator", True, ["lint_my_ip", "lint_my_ip_style"]),
         ("verible", False, ["lint_my_ip"]),
-    ],
-)
-def test_scaffold_supplies_doctor_fail_path_fixtures(
+    ]
+    for lint_eda_tool, style_lint, lint_targets in cases:
+        _check_doctor_fail_path_fixtures(
+            tmp_path / lint_eda_tool, lint_eda_tool, style_lint, lint_targets, monkeypatch
+        )
+
+
+def _check_doctor_fail_path_fixtures(
     tmp_path: Path,
     lint_eda_tool: str,
     style_lint: bool,
@@ -527,13 +533,12 @@ def test_gather_no_style_lint_opts_out(tmp_path: Path, monkeypatch, capsys) -> N
     assert "Style lint:" not in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("flag", [True, False])
-def test_gather_rejects_style_lint_flag_with_verible(
-    tmp_path: Path, monkeypatch, capsys, flag: bool
-) -> None:
+def test_gather_rejects_style_lint_flag_with_verible(tmp_path: Path, monkeypatch, capsys) -> None:
     ctx = _ctx(tmp_path, monkeypatch)
-    assert gather_scaffold_choices(_args(lint_eda_tool="verible", style_lint=flag), ctx) is None
-    assert "--lint-eda-tool verible" in capsys.readouterr().out
+    for flag in (True, False):
+        args = _args(lint_eda_tool="verible", style_lint=flag)
+        assert gather_scaffold_choices(args, ctx) is None
+        assert "--lint-eda-tool verible" in capsys.readouterr().out
 
     choices = gather_scaffold_choices(_args(lint_eda_tool="verible"), ctx)
     assert choices is not None
