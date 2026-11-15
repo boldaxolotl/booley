@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import BoundaryError, as_str, require_dict
+from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET
 
 _DEFAULT_NAME = "Dev"
 _DEFAULT_EMAIL = "dev@localhost"
@@ -186,7 +187,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ticket", action="store_true", required=True)
     parser.parse_args()
-    booley_dir = Path(os.environ.get("BOOLEY_DIR", "/booley-project"))
+    booley_dir = Path(os.environ.get("BOOLEY_DIR", BOOLEY_DIR_TARGET))
     identity = load_git_identity(booley_dir)
     checkout = Path(os.environ.get("BOOLEY_GIT_CHECKOUT", Path.cwd()))
     apply_git_identity(checkout, identity)

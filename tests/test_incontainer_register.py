@@ -1144,7 +1144,7 @@ def first_run(tmp_path, monkeypatch):
     booley_dir.reset_cache()
     home = tmp_path / "home"
     root = tmp_path / "work"
-    booley = tmp_path / "booley-project"
+    booley = tmp_path / "booley"
     for directory in (home, root, booley):
         directory.mkdir()
     yield SimpleNamespace(
@@ -1360,7 +1360,7 @@ def test_main_registers_trust_for_hook_cwd(first_run, tmp_path, monkeypatch):
     monkeypatch.chdir(project)
     monkeypatch.setenv("PWD", str(project))
     monkeypatch.setenv("HOME", str(first_run.home))
-    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "booley-project"))
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "booley"))
     monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test")
     monkeypatch.setattr(reg, "ensure_http_server", lambda *, mode: "running")
@@ -1634,7 +1634,7 @@ def _gateway_start(first_run, tmp_path, monkeypatch, *, app, record, gateway_val
     monkeypatch.setenv("PWD", str(project))
     monkeypatch.setenv("HOME", str(first_run.home))
     monkeypatch.setenv("USERPROFILE", str(first_run.home))
-    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "booley-project"))
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "booley"))
     monkeypatch.setenv("BOOLEY_AGENT_APP", app)
     monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
     for key in _GATEWAY_KEYS:

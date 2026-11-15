@@ -328,3 +328,45 @@ class TestRequirementName:
         assert pi.requirement_name("pkg @ https://example.com/pkg.whl") == "pkg"
         assert pi.requirement_name("-r other.txt") is None
         assert pi.requirement_name("https://example.com/pkg.whl") is None
+
+
+_IMAGE_ID = "sha256:" + "d" * 64
+
+
+@pytest.mark.parametrize(
+    ("stdout", "expected"), [("canonical-alias\n", True), ("directory\n", False)]
+)
+def test_layout_probe_reads_alias_and_directory(
+    monkeypatch: pytest.MonkeyPatch, stdout: str, expected: bool
+) -> None:
+    pi.project_data_alias_capable.cache_clear()
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, stdout, ""),
+    )
+
+    assert pi.project_data_alias_capable(_IMAGE_ID) is expected
+    pi.project_data_alias_capable.cache_clear()
+
+
+def test_layout_probe_refuses_image_without_booley_mount_point(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pi.project_data_alias_capable.cache_clear()
+    scripts: list[str] = []
+
+    def run(argv, **_kwargs):
+        scripts.append(argv[-1])
+        return subprocess.CompletedProcess(argv, 0, "absent\n", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    with pytest.raises(pi.DockerImageError, match="booley init") as caught:
+        pi.project_data_alias_capable(_IMAGE_ID)
+    pi.project_data_alias_capable.cache_clear()
+
+    assert isinstance(caught.value, pi.ImageLayoutMissingError)
+    assert _IMAGE_ID in str(caught.value)
+    assert "/booley " in str(caught.value)
+    assert "'/booley'" in scripts[0]

@@ -5870,7 +5870,7 @@ def _display_report_dir(project: ProjectAudit, report_dir: Path) -> str:
     """Render *report_dir* so the hint is valid where it is READ, not where run.
 
     Doctor may run inside the Sandbox, where the Booley Directory is the
-    ``/booley-project`` bind mount — a path that exists in no other runtime, while
+    ``/booley`` bind mount — a path that exists in no other runtime, while
     the FAIL hint is often read from the host (where the same files sit under
     ``<repo>/.booley/``). For that well-known mount, print the
     repo-relative rendering that resolves on both host and runtime; any other Booley Directory

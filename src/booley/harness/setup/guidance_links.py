@@ -16,12 +16,14 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import posixpath
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 from booley.runtime.booley_dir import BooleyDirOutsideCheckoutError, own_booley_dir_relative
+from booley.runtime.devcontainer import devcontainer_path
 from booley.runtime.git import add_git_excludes
 from booley.runtime.init_plan import (
     InitAction,
@@ -33,6 +35,8 @@ from booley.runtime.init_plan import (
     apply_init_plan,
     plan_init_filesystem,
 )
+from booley.runtime.mount_history import MountHistoryError, recorded_former_mounts
+from booley.runtime.sandbox_layout import WORK_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -92,11 +96,20 @@ def plan_guidance_links(project_root: Path, booley_dir: Path) -> InitPlan:
         raise FileNotFoundError(f"canonical guidance file not found: {canon}")
     portable_target = _portable_target(project_root, canon)
     legacy_digest = hashlib.sha256(canon.read_bytes()).hexdigest()
+    try:
+        former_mounts = recorded_former_mounts(booley_dir, devcontainer_path(project_root))
+    except MountHistoryError as exc:
+        raise OSError(str(exc)) from exc
+    # A release that linked through a Sandbox mount left `../<mount>/AGENTS.md`, in the
+    # native spelling `init_plan` reads back from the link.
+    former_relative = tuple(
+        str(Path(posixpath.relpath(f"{former}/{CANON_NAME}", WORK_DIR)))
+        for former in former_mounts
+    )
     targets = []
     for name in LINK_NAMES:
         link = project_root / name
         expected_relative = os.path.relpath(portable_target, link.parent)
-        container_relative = str(Path("..") / "booley-project" / CANON_NAME)
         targets.append(
             InitTarget.link_file(
                 link,
@@ -104,7 +117,7 @@ def plan_guidance_links(project_root: Path, booley_dir: Path) -> InitPlan:
                 portable_target,
                 reason="point root guidance at the canonical project guidance",
                 recognized_legacy_digests=(legacy_digest,),
-                recognized_legacy_link_targets=(expected_relative, container_relative),
+                recognized_legacy_link_targets=(expected_relative, *former_relative),
             )
         )
     return plan_init_filesystem(
@@ -226,8 +239,8 @@ def _portable_target(project_root: Path, canon: Path) -> Path:
     """The path a symlink should point at, valid in both launch contexts (F-13).
 
     Inside the Sandbox the Booley Directory is bind-mounted at
-    ``/booley-project``, outside the workspace — so a link relative to it reads
-    ``../booley-project/AGENTS.md``, which on the host resolves to a sibling of
+    ``/booley``, outside the workspace — so a link relative to it reads
+    ``../booley/AGENTS.md``, which on the host resolves to a sibling of
     the repo that does not exist. The host then sees two dangling links and an
     editor or host-side agent reads no guidance at all.
 
