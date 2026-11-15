@@ -634,10 +634,10 @@ class TestSingleProcess:
             assert self._release_threads(token) == []
             assert token.path.exists()
 
-        assert len(sleeps) >= job_slots._RELEASE_RETRY_ATTEMPTS
 
         messages = [r.getMessage() for r in caplog.records]
         assert any("Could not release slot entry" in m and token.path.name in m for m in messages)
+        assert len(sleeps) >= job_slots._RELEASE_RETRY_ATTEMPTS
 
     def test_release_without_a_thread_logs_the_give_up(self, root, world, caplog, monkeypatch):
         spawn(world, 100)
