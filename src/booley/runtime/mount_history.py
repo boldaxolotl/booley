@@ -78,13 +78,19 @@ def _former(record: str) -> tuple[str, ...]:
 
 
 def translate_stored_path(value: str, *, record: str) -> str:
-    """Rebase *value* from a former mount point onto the current one."""
-    current = Path(sandbox_layout.BOOLEY_DIR_TARGET)
-    path = Path(value)
+    """Rebase *value* from a former mount point onto the current one.
+
+    Stored paths are POSIX Sandbox paths whatever the host, so they are compared as such.
+    """
+    current = PurePosixPath(sandbox_layout.BOOLEY_DIR_TARGET)
+    path = PurePosixPath(value)
     if not path.is_absolute() or path.is_relative_to(current):
         return value
-    rebased = rebase(path, _former(record))
-    return value if rebased is None else str(rebased)
+    for mount in _former(record):
+        former = PurePosixPath(mount)
+        if path.is_relative_to(former):
+            return str(current / path.relative_to(former))
+    return value
 
 
 def former_spellings(value: str, *, record: str) -> tuple[str, ...]:
