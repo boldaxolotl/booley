@@ -138,7 +138,10 @@ def _lint_in_sandbox(project: Path, target: str = "lint_style"):
     # runners may own pytest's temporary directory with another UID. Grant the
     # image user access only to this disposable mount root so it can create its
     # FuseSoC work and report directories without changing the image identity.
-    project.chmod(project.stat().st_mode | stat.S_IRWXO)
+    # Scaffolded projects ship nested directories (`.booley/`) the flow writes
+    # runtime state into, so open every directory, not just the root.
+    for directory in [project, *(d for d in project.rglob("*") if d.is_dir())]:
+        directory.chmod(directory.stat().st_mode | stat.S_IRWXO)
     return _run_in_sandbox(
         [
             "python3",
