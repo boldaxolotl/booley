@@ -1,127 +1,85 @@
----
-status: accepted
----
-
 # Deepen the Simulation Adapter Seam
 
-Simulation Campaign policy lives in the deep `SimulationCampaign` module rather
-than `SimulateFlow`. That module owns immutable planning, manifest publication,
-durable serial scheduling and resume. Its private `OrdinaryHdlSerialExecutor`
-bridges one admitted work item to the existing adapter boundary. `SimulateFlow`
-selects Targets and tests, coordinates Cycle Count prerequisites, applies
-Criteria, renders reports, and chooses the public exit code. Adapter composition
-continues to own Verilator, Icarus, and Cocotb command shaping; leaf adapters own
-simulator launch, verdict normalization, and trace finalization.
+Status: accepted
 
-The public `booley.flows.sim.campaign` package also owns storage-backed read
-capabilities. External Simulation, Coverage, and retention callers read
-one terminal work item (amended 2026-10-21, see Amendments) or inspect
-retention eligibility through that package and receive immutable typed evidence.
-Durable store construction, path layout,
-manifest/result recovery scanning, and summary decoding remain private to the
-Campaign implementation. Campaign coordination retains direct store access
-(amended 2026-10-25, see Amendments)
-because it owns the durable transaction; callers do not receive a
-store, recovery collection, or storage-relative helper to interpret themselves.
+## Context
 
-Here, trace finalization means current-attempt orchestration and final evidence:
-leaf adapters consume B-Wave's waveform-store interface for inspection,
-conversion, discovery, and converter-process mechanics. They do not own or
-duplicate those B-Wave-specific mechanics.
+`SimulateFlow` once built simulator commands, scheduled work and read output
+markers itself, so every new simulator concern widened an already broad
+orchestration module, and a stale or forged output line could pass for the
+current attempt's evidence.
 
-`SimulationExecution.ordinary_group(handle, selection)` owns compilation and
-launch mechanics for an ordinary-HDL selection and returns immutable normalized
-evidence. `OrdinaryHdlSerialExecutor` owns the surrounding Simulation Attempt,
-Simulator Bundle Build Attempt/Result, executable snapshot, runtime-input and
-Pre-Sim sequencing required by the manifest. The compatibility
-`SimulationExecution.run(handle, selection)` and `preview(handle, selection)`
-operations remain available for execution models that have not moved to the
-durable serial path. Neither `SimulationCampaign` nor `SimulateFlow` depends on
-leaf-adapter details.
+## Decision
 
-The caller expresses test intent as either an ordered, nonempty `NamedTests`
-value or `DefaultSelection`. `None` is not an adapter-level test identity. A
-default native selection means one default simulator invocation; a default
-Cocotb selection means an unfiltered module run whose test names may be learned
-only from current-attempt Cocotb evidence.
+### Who owns what
 
-Every prepared adapter invocation may carry a versioned result path, an
-unpredictable attempt token, the durable Target identity, and the complete
-ordered selected-test set. The child publishes its normalized result by atomic
-replacement. The decoder rejects a schema, token, adapter, Target, selection,
-count, or verdict contradiction. Existing summary lines and result files remain
-compatibility evidence for human logs and older integrations; production Flow
-grading uses the typed channel.
+- The Simulation Record owns policy: the immutable plan, manifest, durable
+  serial scheduling and resume. `SimulateFlow` owns Target and test selection,
+  Cycle Count prerequisites, Criteria, reports and the exit code. Neither
+  depends on leaf-adapter details.
+- Adapter composition is the only place that selects a simulator. Leaf
+  adapters run only their own simulator (launch, verdict normalization, trace
+  finalization) and import neither a sibling adapter nor the Flow. Waveform
+  mechanics (inspection, conversion, discovery) stay in B-Wave's store
+  interface; adapters do not duplicate them.
+- A work item reaches the adapter through one execution boundary that
+  compiles, launches and returns immutable normalized evidence. The record's
+  executor owns the surrounding attempt, build, snapshot and Pre-Sim sequencing.
+- External callers read a Simulation Record, Coverage Record or retention
+  eligibility only through the record package's read capabilities, which
+  return immutable typed evidence. Store layout, recovery scanning and summary
+  decoding stay private. Read-only inspection never regenerates projections and
+  keeps incomplete recovery, an incomplete summary and corrupt storage distinct.
 
-The authenticated result carries normalized per-test verdicts and diagnostics.
-The parent validates the result file as a fresh, contained current-attempt
-artifact before accepting it, and independently validates run logs and trace
-artifacts. Build, Pre-Sim Commands, workload, artifact, and infrastructure
-evidence all cross the execution boundary in the returned outcome instead of
-being rebuilt from output markers by the Flow.
+### Evidence crosses the seam typed
 
-Project-owned settings are resolved from `TargetHandle.project_root` for each
-invocation. This applies equally to the active checkout and an ephemeral Cycle
-Count baseline worktree; a module cache populated for one checkout cannot
-supply another checkout's test list, selector, environment, or Pre-Sim
-Commands.
+- The caller states test intent as an ordered, nonempty set of named tests or
+  as the default selection. `None` is not a test identity. A default native
+  selection is one simulator invocation; a default Cocotb selection is an
+  unfiltered module run whose test names are learned from current-attempt
+  evidence.
+- The child publishes a versioned result by atomic replacement, bound to an
+  unpredictable attempt token, the adapter, the durable Target identity and
+  the full ordered selection. The decoder rejects any contradiction. The
+  parent accepts the file only as a fresh, contained current-attempt artifact
+  and validates logs and trace artifacts on its own. Production grading uses
+  this channel; summary lines and result files are for humans and older
+  integrations. Build, Pre-Sim, workload, artifact and infrastructure evidence
+  all return in the outcome, never rebuilt from output markers.
+- Transport failure is typed infrastructure evidence, except that a wrapper
+  timeout keeps its precedence when the child published no result.
+- Record evidence is authenticated when a Simulator Bundle or snapshot is
+  launched or reused, and trusted on read: a scan binds each work item's final
+  attempt and result by attempt ID and ordinal without re-hashing the build
+  chain.
+- Project-owned settings (test list, selector, environment, Pre-Sim Commands)
+  resolve from the Target's own checkout on every invocation, so a Cycle Count
+  baseline worktree is judged by its own configuration, never a cache filled
+  for another checkout.
 
-## Considered Options
+### Pre-Sim and Elaboration Check
 
-- Keeping simulator command construction in `SimulateFlow` was rejected because
-  it makes each new simulator concern widen an already broad orchestration
-  module.
-- Treating output markers or mutable build-directory files as the new adapter
-  interface was rejected because stale or mismatched evidence can be mistaken
-  for the current attempt.
-- Giving each adapter its own result schema was rejected because the parent
-  would still need simulator-specific parsing and precedence policy.
-- Moving build preparation into each adapter was rejected because full
-  Simulation and Elaboration Check deliberately share the same authenticated
-  `sim.build` contract.
-- A single end-to-end timeout was rejected for this refactor. The established
-  simulator budget, wrapper trace-cleanup margin, and independent Pre-Sim
-  Commands budget remain behaviorally compatible.
+- On the durable path, Pre-Sim Commands fire once per Simulation Attempt,
+  after bundle authentication and runtime-input staging and before launch. The
+  explicit legacy per-test access mode uses a private build per work item and
+  fires before compilation. Cocotb fires once per batch.
+- Elaboration Check does not use this seam; it shares only build preparation
+  and classification with full Simulation.
+
+## Rejected alternatives
+
+- **Per-adapter result schemas:** the parent would still need simulator-
+  specific parsing and precedence rules.
+- **Output markers or mutable build files as the interface:** stale evidence
+  passes for the current attempt.
+- **Build preparation inside each adapter:** full Simulation and Elaboration
+  Check deliberately share one authenticated build contract.
+- **One end-to-end timeout:** the simulator budget, wrapper trace-cleanup
+  margin and independent Pre-Sim budget stay separate.
 
 ## Consequences
 
-Leaf adapters import neither sibling adapters nor `sim.flow`; one composition
-module is the only adapter selector. Artifact paths crossing the seam are
-validated for containment, regular-file identity, and freshness, with an
-explicit allowance for configured absolute trace destinations. Transport
-failure is typed infrastructure evidence, except that a wrapper timeout retains
-its established timeout precedence when the child could not publish a terminal
-result.
-
-For the durable ordinary-HDL path, immutable Pre-Sim Commands fire once per
-Simulation Attempt after Simulator Bundle authentication and runtime-input
-staging but before snapshot launch. Explicit `legacy-per-test` access instead
-uses a private build per work item and runs the command before compilation.
-Cocotb retains one command per batch until it gains finer durable work-item
-isolation. Elaboration Check does not enter this adapter seam and continues to
-share only build preparation and classification with full Simulation.
-
-Read-only Campaign inspection never regenerates projections. It preserves the
-existing distinction between incomplete recovery, an incomplete summary or
-projection, and corrupt storage while normalizing storage I/O failures at the
-public Campaign boundary. A source-dependency rule and named-type ownership gate
-enforce this refined seam for production code.
-
-## Amendments (2026-10-21)
-
-Recorded while implementing issue #1745. Campaign evidence is authenticated
-when a Simulator Bundle or executable snapshot is
-launched or reused, and trusted on read. A scan decodes each work item's final
-attempt and result and binds them by attempt ID and ordinal. It does not re-read
-the build, bundle or snapshot chain or re-hash evidence files. Retention owns the
-files a completed attempt's result names and its Booley-written build trees.
-
-## Amendments (2026-10-25)
-
-Recorded while implementing issue #1950. A parallel Campaign lane keeps its
-execution identity: an execution ID, a context sidecar, and a waiting then
-terminal execution record. The attempt names that ID. A Campaign it starts writes no
-child entry, retirement or release record, and the attempt scan no longer reads or
-digest-checks a child entry. Resume and full pruning cancel an interrupted
-attempt's lane execution before removing its run directory and fail closed when
-the lane cannot be proven terminal. `child_protocol` has no store access.
+- A source-dependency rule enforces the leaf-adapter isolation.
+- Resume and full pruning cancel an interrupted attempt's lane execution
+  before removing its run directory, and fail closed when the lane cannot be
+  proven terminal.
