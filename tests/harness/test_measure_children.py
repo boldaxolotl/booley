@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from booley.config.jobs import SlotCaps
 from booley.flows.metric_declarations import FlowMetricValues
 from booley.harness.checkout_flow import CheckoutFlowResult, CheckoutFlowStatus
 from booley.measurement.metrics_file import Bound, TableRules
@@ -170,13 +169,21 @@ class FakePrepared:
 class Fleet:
     """The prepared children of one measurement and what happened to them."""
 
-    def __init__(self, world: FakeWorld, store: job_slots.SlotStore) -> None:
+    def __init__(self, world: FakeWorld, store: job_slots.SlotStore, *, slots: int) -> None:
         self.world = world
         self.store = store
+        self.slots = slots
         self.next_pid = 1000
         self.started: list[str] = []
         self.exits_on_interrupt = True
         self.prepared: dict[str, FakePrepared] = {}
+
+    def slot_claim(self, store: job_slots.SlotStore, pid: int) -> job_slots.SlotToken:
+        """The first claim of a Flow child: one of the budget's *slots* equal reservations."""
+        claim = job_slots.MemoryClaim(budget_mb=self.slots, reservation_mb=1)
+        return store.submit(
+            job_slots.CLASS_MEMORY, pid=pid, role=job_slots.ROLE_INTERACTIVE, memory=claim
+        )
 
     def plan(
         self, rules: list[TableRules], claim: Claim | None = None
@@ -201,13 +208,9 @@ class Fleet:
         ]
 
 
-def light_claim(store: job_slots.SlotStore, pid: int) -> job_slots.SlotToken:
-    """The first claim of a Flow child: a light-class entry of the interactive role."""
-    return store.submit(job_slots.CLASS_LIGHT, pid=pid, role=job_slots.ROLE_INTERACTIVE)
-
-
-def make_fleet(root: Path, world: FakeWorld, **caps: int) -> Fleet:
-    return Fleet(world, make_store(root, world, SlotCaps(**caps)))
+def make_fleet(root: Path, world: FakeWorld, *, slots: int) -> Fleet:
+    """A fleet whose Memory Budget holds *slots* equal one-megabyte claims at once."""
+    return Fleet(world, make_store(root, world), slots=slots)
 
 
 def by_target(outcome: ChildrenOutcome) -> dict[str, tuple[Verdict, ...]]:
@@ -225,8 +228,8 @@ def test_children_all_start_cheapest_tier_first(root_dir: Path, world: FakeWorld
     ordered = in_cost_tier_order(rules)
     assert [entry.flow for entry in ordered] == ["lint"] * 3 + ["sim"] * 3 + ["synth"] * 3
 
-    fleet = make_fleet(root_dir, world, max_light=1)
-    scheduler = ChildScheduler(fleet.plan(ordered, light_claim), fleet.store, all_tables=True)
+    fleet = make_fleet(root_dir, world, slots=1)
+    scheduler = ChildScheduler(fleet.plan(ordered, fleet.slot_claim), fleet.store, all_tables=True)
     scheduler.step(cancel=False)
     assert fleet.started == [entry.target for entry in ordered]  # none is held back
     assert len(fleet.live()) == 9
@@ -238,7 +241,7 @@ def test_children_all_start_cheapest_tier_first(root_dir: Path, world: FakeWorld
 def test_scheduler_reports_flows_finished_of_total(root_dir: Path, world: FakeWorld):
     from booley.harness.measure_children import ChildScheduler
 
-    fleet = make_fleet(root_dir, world, max_light=3)
+    fleet = make_fleet(root_dir, world, slots=3)
     reported: list[tuple[int, int]] = []
     scheduler = ChildScheduler(
         fleet.plan([table("a"), table("b")]),
@@ -267,8 +270,8 @@ def failing_script(root_dir: Path, world: FakeWorld, *, all_tables: bool):
     """
     from booley.harness.measure_children import ChildScheduler
 
-    fleet = make_fleet(root_dir, world, max_light=2)
-    planned = fleet.plan([table(name) for name in "ab" + WAITING], light_claim)
+    fleet = make_fleet(root_dir, world, slots=2)
+    planned = fleet.plan([table(name) for name in "ab" + WAITING], fleet.slot_claim)
     scheduler = ChildScheduler(planned, fleet.store, all_tables=all_tables)
     scheduler.step(cancel=False)
     assert fleet.started == list("ab" + WAITING)
@@ -350,9 +353,11 @@ def test_cancel_withdraws_waiting_children_and_stops_running_ones(
     from booley.harness.measure_children import CANCELLED_REASON, ChildScheduler
 
     waiting_names = [f"waiting{number}" for number in range(7)]
-    fleet = make_fleet(root_dir, world, max_light=1)
+    fleet = make_fleet(root_dir, world, slots=1)
     scheduler = ChildScheduler(
-        fleet.plan([table(name) for name in ("exited", "running", *waiting_names)], light_claim),
+        fleet.plan(
+            [table(name) for name in ("exited", "running", *waiting_names)], fleet.slot_claim
+        ),
         fleet.store,
         all_tables=False,
     )
@@ -391,7 +396,7 @@ def test_a_second_interrupt_during_cleanup_still_kills_every_child(
 ):
     from booley.harness.measure_children import ChildScheduler
 
-    fleet = make_fleet(root_dir, world, max_light=3)
+    fleet = make_fleet(root_dir, world, slots=3)
     fleet.exits_on_interrupt = False
     scheduler = ChildScheduler(fleet.plan([table("a"), table("b")]), fleet.store, all_tables=True)
     scheduler.step(cancel=False)
@@ -412,7 +417,7 @@ def test_close_settles_every_child_even_when_one_settlement_fails(
 ):
     from booley.harness.measure_children import ChildScheduler
 
-    fleet = make_fleet(root_dir, world, max_light=3)
+    fleet = make_fleet(root_dir, world, slots=3)
     scheduler = ChildScheduler(
         fleet.plan([table("a"), table("b"), table("c")]), fleet.store, all_tables=True
     )
@@ -436,9 +441,9 @@ def test_requeued_children_are_not_refused_and_report_their_final_attempt(
 ):
     from booley.harness.measure_children import ChildScheduler
 
-    store = make_store(root_dir, world, SlotCaps())
+    store = make_store(root_dir, world)
     budget = 1000.0
-    fleet = Fleet(world, store)
+    fleet = Fleet(world, store, slots=1)
     names = list("abcdefghi")
 
     def first_attempt(store: job_slots.SlotStore, pid: int) -> job_slots.SlotToken:
@@ -503,9 +508,9 @@ def test_a_running_flow_waiting_for_a_work_item_claim_is_not_withdrawn(
     """A Simulation Record's work items claim under the Flow's PID: that Flow is running, not waiting."""
     from booley.harness.measure_children import STOPPED_REASON, ChildScheduler
 
-    fleet = make_fleet(root_dir, world, max_light=2)
+    fleet = make_fleet(root_dir, world, slots=2)
     scheduler = ChildScheduler(
-        fleet.plan([table("a"), table("b"), table("c")], light_claim),
+        fleet.plan([table("a"), table("b"), table("c")], fleet.slot_claim),
         fleet.store,
         all_tables=False,
     )
@@ -514,9 +519,7 @@ def test_a_running_flow_waiting_for_a_work_item_claim_is_not_withdrawn(
     for name in "ab":  # the two slots are taken: both children hold their admission
         assert fleet.store.refresh(fleet.child(name).token).state == job_slots.HOLDING  # type: ignore[arg-type]
     # Its admission is held; one of its work items waits for a slot of its own.
-    item = fleet.store.submit(
-        job_slots.CLASS_LIGHT, pid=simulation_record_child.pid, role=job_slots.ROLE_INTERACTIVE
-    )
+    item = fleet.slot_claim(fleet.store, simulation_record_child.pid)
     assert fleet.store.refresh(item).state == job_slots.QUEUED  # type: ignore[arg-type]
     fleet.child("a").finish(unmet())
     scheduler.step(cancel=False)
@@ -537,7 +540,7 @@ def test_a_second_interrupt_while_signalling_still_kills_every_child(
 ):
     from booley.harness.measure_children import ChildScheduler
 
-    fleet = make_fleet(root_dir, world, max_light=3)
+    fleet = make_fleet(root_dir, world, slots=3)
     fleet.exits_on_interrupt = False
     scheduler = ChildScheduler(fleet.plan([table("a"), table("b")]), fleet.store, all_tables=True)
     scheduler.step(cancel=False)
@@ -607,8 +610,8 @@ def test_a_child_that_cannot_be_launched_after_another_started_gets_error_verdic
     from booley.harness.checkout_flow import CheckoutFlowError
     from booley.harness.measure_children import STOPPED_REASON, ChildScheduler
 
-    fleet = make_fleet(root_dir, world, max_light=2)
-    planned = fleet.plan([table(name) for name in "abc"], light_claim)
+    fleet = make_fleet(root_dir, world, slots=2)
+    planned = fleet.plan([table(name) for name in "abc"], fleet.slot_claim)
 
     def refuse() -> FakeChild:
         raise CheckoutFlowError("Flow 'lint' could not be started: disk full")
@@ -648,8 +651,8 @@ def test_the_first_child_that_cannot_be_launched_raises(root_dir: Path, world: F
     from booley.harness.checkout_flow import CheckoutFlowError
     from booley.harness.measure_children import ChildScheduler
 
-    fleet = make_fleet(root_dir, world, max_light=2)
-    planned = fleet.plan([table("a"), table("b")], light_claim)
+    fleet = make_fleet(root_dir, world, slots=2)
+    planned = fleet.plan([table("a"), table("b")], fleet.slot_claim)
 
     def refuse() -> FakeChild:
         raise CheckoutFlowError("Flow 'lint' could not be started: disk full")

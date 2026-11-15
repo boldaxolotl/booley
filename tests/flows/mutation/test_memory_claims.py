@@ -1,6 +1,6 @@
 """A mutation campaign's builds and simulations hold Memory Reservations (#4115).
 
-The campaign is one light Job; each variant build and each simulation of the
+The campaign is one memory-admitted Job; each variant build and each simulation of the
 Target's tests claims memory of its own from the Simulation Target's Resource
 History, runs alone when it cannot be sized, waits in queue order, and is
 withdrawn when the campaign is cancelled.
