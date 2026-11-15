@@ -69,6 +69,8 @@ class Bench:
     sdc: str = SDC
     netlist: str = NETLIST
     argv: list[str] = field(default_factory=list)
+    #: Every boundary command, in order.
+    commands: list[list[str]] = field(default_factory=list)
     openroad_calls: int = 0
     #: Read the SDC in place in the Project, as projection mode (ignore_native_cores) does.
     sdc_in_place: bool = False
@@ -123,6 +125,7 @@ class Bench:
         # Stamped before writing: the stale guard stays active while the coarse
         # file clock cannot make this call's own writes look stale.
         dispatched = time.time() - 1
+        self.commands.append(cmd)
         build = self.root / cmd[2]
         stage = cmd[3] if len(cmd) > 3 else "all"
         stdout = ""
@@ -244,6 +247,29 @@ def _without_volatile(value: object) -> object:
     if not isinstance(value, dict):
         return value
     return {k: _without_volatile(v) for k, v in value.items() if k not in _VOLATILE_REPORT_KEYS}
+
+
+def test_openroad_gets_the_job_thread_share_without_changing_the_reuse_key(bench: Bench) -> None:
+    from booley.flows.memory_admission import fixed_job_threads
+
+    def stage_commands(stage: str) -> list[list[str]]:
+        return [cmd for cmd in bench.commands if cmd[3:4] == [stage]]
+
+    bench.run_fresh()
+    rel = bench.commands[0][2]
+    assert stage_commands("openroad") == [["make", "-C", rel, "openroad"]]
+
+    bench.commands.clear()
+    with fixed_job_threads(2):
+        bench.run_fresh("--no-cache")
+    assert stage_commands("openroad") == [
+        ["make", "-C", rel, "openroad", "BOOLEY_OPENROAD_THREAD_OPTION=-threads 2"]
+    ]
+    assert stage_commands("yosys") == [["make", "-C", rel, "yosys"]]
+
+    # The slot stored at 2 threads (and the none before) matches at 8: same key.
+    with fixed_job_threads(8):
+        bench.run_hit()
 
 
 def test_unchanged_rerun_reuses_openroad_with_producer_label(bench: Bench) -> None:
