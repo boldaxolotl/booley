@@ -1796,7 +1796,7 @@ def test_retired_class_holders_are_outside_admission(tmp_path, world, retired):
 
 
 def test_retired_class_directory_is_untouched_by_live_classes(tmp_path, world):
-    """Old claims are outside the light/memory admission and cancellation surface."""
+    """Old claims are outside the memory admission and cancellation surface."""
     roots = [tmp_path / "clean" / "slots", tmp_path / "legacy" / "slots"]
     legacy = roots[1] / "ticket"
     legacy.mkdir(parents=True)

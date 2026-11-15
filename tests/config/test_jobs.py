@@ -1,4 +1,4 @@
-"""``[jobs]`` cap parsing."""
+"""``[jobs]`` Seat Cap and retired-key parsing."""
 
 from pathlib import Path
 

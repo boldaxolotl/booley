@@ -394,8 +394,9 @@ def test_malformed_link_journal_refuses_before_any_rename(tmp_path, monkeypatch)
     assert _snapshot(tmp_path) == before
 
 
+@pytest.mark.parametrize("promote", [True, False], ids=["holder", "waiter"])
 @pytest.mark.parametrize("retired", ["heavy", "light"])
-def test_live_job_without_session_registry_refuses_unchanged(tmp_path, retired):
+def test_live_job_without_session_registry_refuses_unchanged(tmp_path, retired, promote):
     import os
 
     from booley.runtime.job_slots import CLASS_MEMORY, MemoryClaim, SlotStore
@@ -404,12 +405,14 @@ def test_live_job_without_session_registry_refuses_unchanged(tmp_path, retired):
     directory = tmp_path / NEW
     slots = directory / "runtime/jobs/slots"
     store = SlotStore(slots)
-    store.submit(
+    token = store.submit(
         CLASS_MEMORY,
         pid=os.getpid(),
         argv=["independent-job"],
         memory=MemoryClaim(budget_mb=1024, run_alone=True),
     )
+    if promote:
+        assert store.refresh(token).state == "holding"
     # A holder an older version left in a retired class directory still counts as live.
     (slots / CLASS_MEMORY).rename(slots / retired)
     directory.rename(tmp_path / OLD)
