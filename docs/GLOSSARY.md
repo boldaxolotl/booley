@@ -93,7 +93,7 @@ One approved change to a Goal of an active Goal Mode: add, relax, retarget, or w
 _Avoid_: amendment, Ticket Amendment, waiver request, criteria edit; audit log (for the Change Log)
 
 **Protected Input**:
-A file that decides how evidence is produced and is therefore digested at Goal Mode entry: Project configuration, `booley.toml`, hooks, generators, Project MCP tool code under `mcp_tools`, and files the Project lists in `[project].protected_inputs` ([full list](internals/FLOW_IMPLEMENTATION.md#goal-baselines-and-editable-design-inputs)). Editing one warns at once and blocks Finish until reverted.
+A file that decides how evidence is produced and is therefore digested at Goal Mode entry; editing one blocks Finish until reverted. The set is in `src/booley/goals/protected_inputs.py`.
 _Avoid_: frozen file, locked config, Scope
 
 **Review Package**:

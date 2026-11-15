@@ -1,3 +1,8 @@
+# Sandbox Image contract: what the standard and RISC-V images must keep doing.
+# Size work may change packaging, layers, debug symbols, and implementation
+# details freely; removing a required behavior needs its own reviewed change to
+# this file. `.github/scripts/image_contract.py` runs it against built images.
+
 schema = 1
 
 [common]

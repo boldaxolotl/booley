@@ -226,6 +226,8 @@ def _category(message: str, code: str | None) -> str:
 
 
 def _disposition(message: str, category: str) -> tuple[WarningDisposition, str | None]:
+    # Unknown warning forms default to "advisory" (actionable), so a new message
+    # is never silently ignored; only a known-benign form earns "benign".
     if category in {"combinational_loop", "multi_driver"}:
         return "structural", None
     if _BENIGN_STA_0503_RE.match(message):

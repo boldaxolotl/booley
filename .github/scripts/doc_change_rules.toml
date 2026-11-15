@@ -1,5 +1,10 @@
-# Rules for .github/scripts/doc_change_class.py. How they work, and how to move
-# a kind between classes, is in docs/internals/agents/doc-change-classes.md.
+# Rules for .github/scripts/doc_change_class.py. The classes, labels, and the
+# local run command are in docs/internals/agents/doc-change-classes.md.
+#
+# Move a kind between classes by editing its class line. Add a kind with
+# [[kind]]: name, class, check, paths, and a comment saying why it has that
+# class. Add a check to CHECKS and _check in doc_change_class.py, with a test.
+# The script rejects unknown keys, classes, and checks.
 #
 # Patterns use fnmatch: "*" matches any characters, including "/".
 # The class of a kind is the only thing to edit to move it between classes.
