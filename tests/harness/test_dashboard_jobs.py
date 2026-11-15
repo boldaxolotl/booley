@@ -456,6 +456,21 @@ def test_interactive_history_bounds_enumeration_before_selecting_newest(tmp_path
     assert jobs.retained_job_roots(tmp_path, ()) == (roots[1],)
 
 
+def test_on_disk_goal_job_roots_skip_non_goal_directories_and_a_missing_goals_dir(tmp_path):
+    from booley.core.booley_layout import GOALS_DIR_NAME
+    from booley.harness.dashboard import jobs
+
+    assert jobs.on_disk_goal_job_roots(tmp_path) == []
+    goals = tmp_path / GOALS_DIR_NAME
+    (goals / "history").mkdir(parents=True)
+    (goals / "alpha-20260101T000000Z").mkdir()
+    (goals / "stray.txt").write_bytes(b"")
+
+    roots = jobs.on_disk_goal_job_roots(tmp_path)
+
+    assert [root.parent.parent.name for root in roots] == ["alpha-20260101T000000Z"]
+
+
 def test_dashboard_job_view_preserves_every_observation_field(tmp_path, monkeypatch):
     from dataclasses import MISSING, fields
 
@@ -472,11 +487,12 @@ def test_dashboard_job_view_preserves_every_observation_field(tmp_path, monkeypa
         diagnostic="isolated observation",
         artifacts=(str(tmp_path / "trace.vcd"),),
         queue="needs 400 MiB",
+        queue_position=3,
     )
     monkeypatch.setattr(
         JobObserver,
         "read",
-        lambda _self, _roots: ObservationSnapshot((observation,), ("history truncated",)),
+        lambda _self, _roots, **_kw: ObservationSnapshot((observation,), ("history truncated",)),
     )
 
     snapshot = JobReader(tmp_path).read((), interactive_root=root)
@@ -491,6 +507,23 @@ def test_dashboard_job_view_preserves_every_observation_field(tmp_path, monkeypa
         for field in fields(JobObservation)
     )
     assert snapshot.diagnostics == ("history truncated",)
+
+
+def test_report_under_an_allowed_extra_root_is_found(tmp_path):
+    project = tmp_path / "project"
+    outside = tmp_path / "outside"
+    root = project / "logs/.runtime/jobs"
+    job_records.write_record(rec(status="done", exit_code=0, report_root=str(outside)), root)
+    report = outside / "flow-reports/sim/1/report.json"
+    report.parent.mkdir(parents=True)
+    report.write_bytes(b'{"run_id": "one", "passed": true}')
+    reader = JobReader(project)
+
+    assert reader.read((), interactive_root=root).jobs[0].report is None
+
+    found = reader.read((), interactive_root=root, artifact_roots=(outside,)).jobs[0]
+    assert found.report == {"run_id": "one", "passed": True}
+    assert found.report_path == report
 
 
 @pytest.mark.parametrize(
