@@ -444,7 +444,7 @@ def _agent_facts(name: str, asked_ms: int, timeout_ms: int) -> dict[str, Any]:
     installing the settings is safe). The model and CLI are filled before the health check,
     so a credential error still shows them.
     """
-    from booley.config.agent import set_agent_settings, worktree_agent_settings
+    from booley.config.agent import set_agent_settings, wire_auth, worktree_agent_settings
     from booley.harness.dashboard.targets import first_line
     from booley.runtime import auth_token
     from booley.runtime.agent_config import get_backend_config
@@ -464,7 +464,7 @@ def _agent_facts(name: str, asked_ms: int, timeout_ms: int) -> dict[str, Any]:
         model, cli = run_choice(settings, name)
         policy = settings.auth_for(cli)
         # ``visitor`` shows as ``auto``, the ``BOOLEY_PRIMARY_AUTH`` spelling a hand-written spec uses.
-        shown = "auto" if policy == auth_token.VISITOR_AUTH else policy
+        shown = wire_auth(policy)
         facts.update(model=model, cli=cli, policy=shown)
         problem = get_backend_config().backend_for(cli).health_check()
         if problem:

@@ -203,8 +203,8 @@ _RISK = "{label}: no rotation-free credential; agents use a refreshing one, whic
 
 
 def test_single_cli_project_output_is_unchanged(home, tmp_path, monkeypatch):
-    monkeypatch.setattr(doctor, "_configured_auth_policy", _visitor_policy)
     """The other CLI's login is present and installed, yet it is never audited."""
+    monkeypatch.setattr(doctor, "_configured_auth_policy", _visitor_policy)
     _login(home, "claude")
     _login(home, "codex")
     for only, label, login in (

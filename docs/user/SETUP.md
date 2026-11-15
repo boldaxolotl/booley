@@ -139,8 +139,8 @@ one that has only a key (a Claude OAuth token counts as a login, a Codex
 `subscription`); without a terminal it records `subscription` and says so.
 With neither, it records `subscription` and prints how to sign in.
 
-Init records the choice so it is on record. A missing `auth` bills the
-subscription, and an exported API key is ignored. With a recorded choice,
+Init records the choice so `booley doctor` can check it. A missing `auth` bills
+the subscription, and an exported API key is ignored. With a recorded choice,
 `booley doctor` fails when the default Agent CLI's credential is missing instead
 of quietly using another one (for another allowed CLI it only warns, unless a Specialist runs on it). A Project that also runs a Specialist on the other Agent CLI can
 bill each CLI differently. All values are in

@@ -27,7 +27,7 @@ have a login, `api_key` when you have only a key). Set that value as the message
 says, or re-run `booley init`.
 
 Doctor checks the sign-in of every Agent CLI listed in `[agent] clis`. A missing
-sign-in for the default CLI is a failure, because `[agent] auth` pins a billing mode. For another listed CLI it is a
+sign-in for the default CLI is a failure. For another listed CLI it is a
 warning that names that CLI's login command; when `[models]` runs a Specialist on
 that CLI it is a failure, whatever `[agent] auth` says. The Sandbox receives the
 sign-in of every listed CLI (see

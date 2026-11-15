@@ -438,11 +438,13 @@ def missing_auth_policy() -> str:
     """The policy of a CLI whose ``booley.toml`` ``auth`` is missing.
 
     ``subscription``, except inside a hand-written Sandbox (a container with no
-    decodable ``BOOLEY_AGENT_CLIS`` record), where it is the env-only ``visitor`` mode:
-    a spec that names its CLI through ``BOOLEY_AGENT_APP`` and ``BOOLEY_PRIMARY_AUTH``
-    keeps resolving exactly as it did when ``auto`` was a policy.
+    decodable ``BOOLEY_AGENT_CLIS`` record whose spec sets ``BOOLEY_AGENT_APP`` or
+    ``BOOLEY_PRIMARY_AUTH``), where it is the env-only ``visitor`` mode: such a spec
+    keeps resolving exactly as it did when ``auto`` was a policy. Any other container
+    (a CI runner, a hand-made devcontainer) reads as the host does.
     """
-    if _inside_container() and not _recorded_cli_policies():
+    handoff = os.environ.get("BOOLEY_AGENT_APP") or os.environ.get("BOOLEY_PRIMARY_AUTH")
+    if _inside_container() and not _recorded_cli_policies() and (handoff or "").strip():
         return VISITOR_AUTH
     return DEFAULT_AUTH
 

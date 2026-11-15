@@ -220,9 +220,6 @@ auth = "subscription"   # "subscription" or "api_key"
 
 Leave `auth` out and the subscription pays, whatever API key is exported.
 `booley doctor` still fails on a missing `auth`, so the choice is on record.
-`auth = "auto"` is retired: Booley refuses to load a `booley.toml` that sets it
-(string or `[agent.auth]` entry) and `booley doctor` fails on it. Replace it
-with `subscription` or `api_key`, or re-run `booley init`.
 
 A single value applies to every CLI in `clis`. To bill each CLI differently,
 use a table with one entry per CLI; `booley doctor` fails for a CLI you leave
