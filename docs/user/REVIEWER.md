@@ -83,14 +83,6 @@ names that file. Every other project file, firmware included, is readable
 context. A finding in a file outside the review's files is kept in the review
 evidence and never counts as open.
 
-## In Goal Mode
-
-A [Review Goal](GOAL-MODE.md#review-goals) such as `REVIEW:rtl_bugs` fixes the
-files, the spec, and the verdict, so you don't pass them. A `done` Goal only
-needs the review to run; a `clean` Goal needs every finding fixed or waived,
-and the agent drives the fix-and-verify loop above on its own. Reviews you run
-by hand never count toward a Goal.
-
 ## Your project's style rules
 
 The `code_style` and testbench `quality` reviews follow style guides shipped

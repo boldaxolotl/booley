@@ -205,11 +205,12 @@ def test_shipped_documentation_never_dispatches_a_specialist_as_a_flow() -> None
             assert f"booley flow {name}" not in text, document
 
 
-def test_reviewer_reference_states_mode_kind_and_opposite_scope_contract():
+def test_reviewer_reference_states_kind_and_opposite_scope_contract():
     text = render_specialists_reference()
     assert "(.v, .vh, .sv, .svh)" in text
-    assert "Goal Mode also accepts other explicitly scoped support files" in text
-    assert "opposite-category sources are refused in either mode" in text
+    assert "opposite-category sources are refused" in text
+    reviewer = text[text.index("#### `reviewer`") :]
+    assert "Goal" not in reviewer
 
 
 def test_reviewer_reference_admits_exact_cpp_headers():

@@ -11,11 +11,6 @@ import pytest
 
 from booley.criteria.freshness import evaluate_verification_freshness
 from booley.criteria.state import DevelopmentState
-from booley.flows.execution_persistence import (
-    EvidenceDiscarded,
-    NoAcceptanceRecorder,
-    ReviewInputs,
-)
 from booley.flows.review_scope import resolve_review_files
 from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.goals.entry import check_goal_targets
@@ -31,7 +26,7 @@ from booley.mcp.server import _params_to_argv
 from booley.runtime.file_lock import nonblocking_file_lock
 from booley.specialists.reviewer import ReviewerSpecialist
 
-KEY = "review_rtl_bugs_clean"
+KEY = "review_rtl_bugs_done"
 ISSUE = {
     "severity": "MAJOR",
     "confidence": "HIGH",
@@ -45,21 +40,12 @@ ISSUE = {
 }
 
 
-class GoalRecorder(NoAcceptanceRecorder):
-    def review_goal_inputs(self, key: str) -> ReviewInputs:
-        assert key.startswith("review_rtl_")
-        return ReviewInputs(("rtl/dut.sv",))
-
-
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (tmp_path / "rtl").mkdir()
     (tmp_path / "rtl/dut.sv").write_text("module dut; endmodule\n")
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(tmp_path / "state.json"))
     monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
-    state = DevelopmentState.load(tmp_path / "state.json")
-    state.init_criteria({KEY: True})
-    state.save()
     return tmp_path
 
 
@@ -68,12 +54,9 @@ def endpoint(
     monkeypatch: pytest.MonkeyPatch,
     args: list[str],
     *,
-    goal: bool = True,
     payload: dict[str, Any] | None = None,
 ) -> tuple[ReviewerSpecialist, MagicMock]:
     reviewer = ReviewerSpecialist()
-    if goal:
-        reviewer._acceptance_recorder = GoalRecorder()
     reviewer.parse_args(["--work-dir", str(root), *args])
     reviewer.read_state()
     invoke = MagicMock(
@@ -90,7 +73,10 @@ def discovery(
     root: Path, monkeypatch: pytest.MonkeyPatch, **kwargs: Any
 ) -> tuple[McpToolResult, ReviewerSpecialist, MagicMock]:
     reviewer, invoke = endpoint(
-        root, monkeypatch, ["--category", "rtl", "--focus", "bugs"], **kwargs
+        root,
+        monkeypatch,
+        ["--scope", "rtl/dut.sv", "--category", "rtl", "--focus", "bugs"],
+        **kwargs,
     )
     return reviewer._run(), reviewer, invoke
 
@@ -117,70 +103,6 @@ def test_review_paths_match_category_and_stay_inside_worktree(project: Path) -> 
     (project / "rtl/link.sv").symlink_to(outside)
     with pytest.raises(ValueError, match="escapes"):
         resolve_review_files(project, "rtl", {"paths": ["rtl/link.sv"]})
-
-
-@pytest.mark.parametrize(
-    "option,value",
-    [
-        ("--scope", "rtl/dut.sv"),
-        ("--spec", "spec.md"),
-        ("--steer", "skip reset"),
-        ("--base", "main"),
-    ],
-)
-def test_goal_refuses_developer_review_inputs(
-    project: Path, monkeypatch: pytest.MonkeyPatch, option: str, value: str
-) -> None:
-    reviewer, invoke = endpoint(
-        project, monkeypatch, ["--category", "rtl", "--focus", "bugs", option, value]
-    )
-    result = reviewer._run()
-    assert result.exit_code == 2
-    assert "Review Goal defines" in result.report_text
-    invoke.assert_not_called()
-
-
-def test_goal_discovery_refuses_open_findings_and_verify_only_checks_fixes(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    initial, _, _ = discovery(project, monkeypatch)
-    assert initial.exit_code == 1
-    assert initial.detail["pending"][0]["finding_id"] in initial.report_text
-    refused, _, invoke = discovery(project, monkeypatch)
-    assert refused.exit_code == 2
-    assert "--verify" in refused.report_text
-    invoke.assert_not_called()
-    (project / "rtl/dut.sv").write_text("module dut; logic fixed; endmodule\n")
-    verifier, invoke = endpoint(
-        project,
-        monkeypatch,
-        ["--verify"],
-        payload={
-            "findings": [
-                {"index": 1, "status": "FIXED", "evidence": "rtl/dut.sv:1 reset value corrected"},
-            ]
-        },
-    )
-    result = verifier._run()
-    assert result.exit_code == 0
-    assert result.criterion_met
-    assert result.detail["pending"] == []
-    assert "FIXED" in result.report_text and "VERIFY RESULT: PASS (0 issues)" in result.report_text
-    assert invoke.call_count == 1
-    assert "ONLY job" in invoke.call_args.args[0].system_prompt
-    assert not evaluate_verification_freshness(
-        KEY,
-        verifier.state.criteria[KEY],
-        work_dir=project,
-        fingerprint_provider=compute_source_fingerprint,
-    ).stale
-    (project / "rtl/dut.sv").write_text("module dut; logic changed_again; endmodule\n")
-    assert evaluate_verification_freshness(
-        KEY,
-        verifier.state.criteria[KEY],
-        work_dir=project,
-        fingerprint_provider=compute_source_fingerprint,
-    ).stale
 
 
 @pytest.mark.parametrize(
@@ -212,8 +134,8 @@ def test_waivers_require_explicit_open_id_and_reviewer_acceptance(
     project: Path, monkeypatch: pytest.MonkeyPatch, status: str, requested: bool, expected: int
 ) -> None:
     initial, _, _ = discovery(project, monkeypatch)
-    finding_id = initial.detail["pending"][0]["finding_id"]
-    args = ["--verify"] + (
+    finding_id = ReviewerSpecialist._open_findings(initial.detail)[0]["finding_id"]
+    args = ["--verify", "--fail-on", "major"] + (
         ["--waive", finding_id, "Reset output is intentionally retained by policy"]
         if requested
         else []
@@ -256,14 +178,14 @@ def test_interactive_discovery_replaces_findings_and_latest_call_controls_verify
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     args = ["--scope", "rtl/dut.sv", "--category", "rtl", "--focus", "bugs"]
-    reviewer, _ = endpoint(project, monkeypatch, args, goal=False)
+    reviewer, _ = endpoint(project, monkeypatch, args)
     assert reviewer._run().exit_code == 0
     reviewer, invoke = endpoint(
-        project, monkeypatch, [*args[:-1], "security"], goal=False, payload={"issues": []}
+        project, monkeypatch, [*args[:-1], "security"], payload={"issues": []}
     )
     assert reviewer._run().exit_code == 0
     assert invoke.call_count == 2  # security declares a checklist and a hunt guide
-    verifier, invoke = endpoint(project, monkeypatch, ["--verify"], goal=False)
+    verifier, invoke = endpoint(project, monkeypatch, ["--verify"])
     assert "no open findings" in verifier._run().report_text
     invoke.assert_not_called()
 
@@ -299,30 +221,6 @@ def test_done_verify_preserves_completion_freshness(
         work_dir=project,
         fingerprint_provider=compute_source_fingerprint,
     ).stale
-
-
-def test_verify_budgets_keep_cumulative_limit_after_category_reset(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    discovery(project, monkeypatch)
-    for _cycle in range(3):
-        state = DevelopmentState.load(project / "state.json")
-        state.reset_category("rtl")
-        state.save()
-        verifier, invoke = endpoint(
-            project,
-            monkeypatch,
-            ["--verify"],
-            payload={"findings": [{"index": 1, "status": "STILL_PRESENT"}]},
-        )
-        assert verifier._run().exit_code == 1
-        assert invoke.call_count == 1
-    state = DevelopmentState.load(project / "state.json")
-    state.reset_category("rtl")
-    state.save()
-    verifier, invoke = endpoint(project, monkeypatch, ["--verify"])
-    assert "3 review/resolve cycles exhausted" in verifier._run().report_text
-    invoke.assert_not_called()
 
 
 def test_mcp_waiver_pairs_roundtrip() -> None:
@@ -385,7 +283,6 @@ def test_verify_does_not_certify_a_changed_spec(
         project,
         monkeypatch,
         ["--scope", "rtl/dut.sv", "--category", "rtl", "--focus", "spec", "--spec", "spec.md"],
-        goal=False,
         payload={"issues": [{**ISSUE, "category": "spec"}]},
     )
     assert reviewer._run().exit_code == 0
@@ -394,7 +291,6 @@ def test_verify_does_not_certify_a_changed_spec(
         project,
         monkeypatch,
         ["--verify"],
-        goal=False,
         payload={
             "findings": [{"index": 1, "status": "FIXED", "evidence": "rtl/dut.sv:1 corrected"}]
         },
@@ -414,7 +310,10 @@ def test_source_change_during_review_cannot_certify_unreviewed_bytes(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     reviewer, invoke = endpoint(
-        project, monkeypatch, ["--category", "rtl", "--focus", "bugs"], payload={"issues": []}
+        project,
+        monkeypatch,
+        ["--scope", "rtl/dut.sv", "--category", "rtl", "--focus", "bugs"],
+        payload={"issues": []},
     )
     response = invoke.return_value
 
@@ -463,7 +362,6 @@ def test_interactive_history_survives_without_explicit_state_environment(
         project,
         monkeypatch,
         ["--scope", "rtl/dut.sv", "--category", "rtl", "--focus", "bugs"],
-        goal=False,
     )
     assert reviewer._run().exit_code == 0  # Interactive discovery defaults to done.
     assert reviewer.state.file_path is not None
@@ -471,24 +369,12 @@ def test_interactive_history_survives_without_explicit_state_environment(
         project,
         monkeypatch,
         ["--verify"],
-        goal=False,
         payload={
             "findings": [{"index": 1, "status": "FIXED", "evidence": "rtl/dut.sv:1 corrected"}]
         },
     )
     assert verifier._run().exit_code == 0
     assert verifier.state.file_path == reviewer.state.file_path
-
-
-def test_goal_resolves_open_review_before_starting_another_focus(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    discovery(project, monkeypatch)
-    reviewer, invoke = endpoint(project, monkeypatch, ["--category", "rtl", "--focus", "security"])
-    result = reviewer._run()
-    assert result.exit_code == 2
-    assert "before starting another discovery review" in result.report_text
-    invoke.assert_not_called()
 
 
 @pytest.mark.parametrize("next_focus", ["bugs", "security"])
@@ -503,7 +389,10 @@ def test_done_findings_need_no_verify_and_do_not_block_discovery(
     assert initial.exit_code == 0 and initial.detail["issue_list"]
     (project / "rtl/dut.sv").write_text("module dut; wire changed; endmodule")
     reviewer, invoke = endpoint(
-        project, monkeypatch, ["--category", "rtl", "--focus", next_focus], payload={"issues": []}
+        project,
+        monkeypatch,
+        ["--scope", "rtl/dut.sv", "--category", "rtl", "--focus", next_focus],
+        payload={"issues": []},
     )
     assert reviewer._run().exit_code == 0
     # rtl/bugs and rtl/security each declare a checklist and a hunt guide: one agent call each.
@@ -520,12 +409,11 @@ def test_review_history_is_scoped_to_checkout_under_shared_booley_dir(
         project,
         monkeypatch,
         ["--scope", "rtl/dut.sv", "--category", "rtl", "--focus", "bugs"],
-        goal=False,
     )
     assert first._run().exit_code == 0
     other = tmp_path / "other"
     other.mkdir()
-    second, invoke = endpoint(other, monkeypatch, ["--verify"], goal=False)
+    second, invoke = endpoint(other, monkeypatch, ["--verify"])
     assert first.state.file_path != second.state.file_path
     assert "no prior review" in second._run().report_text
     invoke.assert_not_called()
@@ -534,33 +422,21 @@ def test_review_history_is_scoped_to_checkout_under_shared_booley_dir(
 def test_review_calls_refuse_overlap_and_reload_history_loaded_before_other_call(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    first, invoke = endpoint(project, monkeypatch, ["--category", "rtl", "--focus", "bugs"])
+    args = ["--scope", "rtl/dut.sv", "--category", "rtl"]
+    first, invoke = endpoint(project, monkeypatch, [*args, "--focus", "bugs"])
     second, second_invoke = endpoint(
-        project, monkeypatch, ["--category", "rtl", "--focus", "security"]
+        project, monkeypatch, [*args, "--focus", "security"], payload={"issues": []}
     )
     lock_path = (project / "state.json").with_suffix(".review.lock")
     with lock_path.open("a+") as handle, nonblocking_file_lock(handle):
         assert "Another review is running" in first._run().report_text
         invoke.assert_not_called()
-    assert first._run().exit_code == 1
-    assert "open findings" in second._run().report_text
-    second_invoke.assert_not_called()
-
-
-def test_goal_revision_discard_during_preparation_is_reported_without_publication(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    reviewer, invoke = endpoint(project, monkeypatch, ["--category", "rtl", "--focus", "bugs"])
-    before = (project / "state.json").read_bytes()
-    monkeypatch.setattr(
-        reviewer._acceptance_recorder,
-        "review_goal_inputs",
-        MagicMock(side_effect=EvidenceDiscarded("Goal changed")),
-    )
-    assert reviewer._run().exit_code == 2
-    assert reviewer.evidence_discarded == "Goal changed"
-    assert (project / "state.json").read_bytes() == before
-    invoke.assert_not_called()
+    assert first._run().exit_code == 0
+    result = second._run()
+    assert result.exit_code == 0
+    assert second_invoke.call_count == 2  # security: checklist and hunt
+    assert result.detail["review_call_order"] == 2
+    assert "review_rtl_bugs_done" in DevelopmentState.load(project / "state.json").criteria
 
 
 def test_review_scope_can_be_authored_before_files_are_created(project: Path) -> None:
@@ -640,45 +516,6 @@ def test_mcp_endpoint_command_forwards_verify_waivers(
     assert args.verify and args.waive == [["finding", "intentional by specification"]]
 
 
-def test_done_verify_publication_discards_stale_goal_evidence(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    state = DevelopmentState.load(project / "state.json")
-    state.criteria.clear()
-    state.init_criteria({"review_rtl_bugs_done": True})
-    state.save()
-    discovery(project, monkeypatch)
-    before = (project / "state.json").read_bytes()
-    verifier, _ = endpoint(
-        project,
-        monkeypatch,
-        ["--verify"],
-        payload={"findings": [{"index": 1, "status": "FIXED", "evidence": "reset corrected"}]},
-    )
-    monkeypatch.setattr(
-        verifier,
-        "_stamp_source_fingerprint",
-        MagicMock(side_effect=EvidenceDiscarded("Goal revision changed during verification")),
-    )
-    verifier._run()
-    assert verifier.evidence_discarded == "Goal revision changed during verification"
-    assert (project / "state.json").read_bytes() == before
-
-
-def test_verify_rejects_a_frozen_goal_path_replaced_by_an_external_symlink(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    discovery(project, monkeypatch)
-    outside = project.parent / "external.sv"
-    outside.write_text("module external; endmodule")
-    source = project / "rtl/dut.sv"
-    source.unlink()
-    source.symlink_to(outside)
-    verifier, invoke = endpoint(project, monkeypatch, ["--verify"])
-    assert "escapes the Goal worktree" in verifier._run().report_text
-    invoke.assert_not_called()
-
-
 @pytest.mark.parametrize("disposition", ["advisory", "deferred", "out_of_scope"])
 def test_done_verify_keeps_non_corrective_findings_and_completion_metadata(
     project: Path, monkeypatch: pytest.MonkeyPatch, disposition: str
@@ -743,12 +580,11 @@ def test_missing_spec_during_verify_explains_recovery(
         project,
         monkeypatch,
         ["--scope", "rtl/dut.sv", "--category", "rtl", "--focus", "spec", "--spec", "spec.md"],
-        goal=False,
         payload={"issues": [{**ISSUE, "category": "spec"}]},
     )
     assert reviewer._run().exit_code == 0
     spec.unlink()
-    verifier, invoke = endpoint(project, monkeypatch, ["--verify"], goal=False)
+    verifier, invoke = endpoint(project, monkeypatch, ["--verify"])
     result = verifier._run()
     assert result.exit_code == 2 and "Restore the original specification" in result.report_text
     assert "Pass --spec" not in result.report_text

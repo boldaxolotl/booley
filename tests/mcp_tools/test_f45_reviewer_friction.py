@@ -235,7 +235,7 @@ def test_explicit_verify_preserves_advisory_observations(tmp_path, monkeypatch):
     rtl = tmp_path / "rtl" / "uart.sv"
     rtl.parent.mkdir()
     rtl.write_text("module uart; endmodule\n")
-    state_file = _state(tmp_path, monkeypatch, "review_rtl_code_style_clean")
+    state_file = _state(tmp_path, monkeypatch, "review_rtl_code_style_done")
     corrective = _issue("code_style", "rtl/uart.sv", "Reset behavior violates the Ticket")
     advisory = _issue("code_style", "rtl/uart.sv", "Consider a clearer local signal name")
     advisory["severity"] = "MINOR"
@@ -276,10 +276,11 @@ def test_explicit_verify_preserves_advisory_observations(tmp_path, monkeypatch):
         rtl.write_text("module uart; wire fixed; endmodule\n")
         second = _run_review(["--work-dir", str(tmp_path), "--verify"])
 
-    detail = DevelopmentState.load(state_file).criteria["review_rtl_code_style_clean"].detail
+    detail = DevelopmentState.load(state_file).criteria["review_rtl_code_style_done"].detail
     assert agent.call_count == 2
-    assert first.criterion_met is False
-    assert second.criterion_met is True
+    assert first.detail["review_outcome"] == "corrective"
+    assert second.detail["pending"] == []
+    assert second.detail["resolved"][0]["status"] == "fixed"
     assert len(detail["observations"]) == 1
     assert detail["observations"][0]["summary"] == advisory["summary"]
     assert detail["observations"][0]["disposition"] == "advisory"
