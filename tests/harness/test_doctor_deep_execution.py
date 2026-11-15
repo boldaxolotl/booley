@@ -261,15 +261,17 @@ def test_missing_targets_are_incomplete_even_without_health_warning(tmp_path, mo
     assert "lint.selftest.bad" in tracker.missing
 
 
-def test_waived_missing_selftest_warning_cannot_supply_execution(tmp_path, monkeypatch):
+@pytest.mark.parametrize("waived", [False, True])
+def test_missing_selftest_fixture_stays_incomplete_waived_or_not(tmp_path, monkeypatch, waived):
     project = _project(tmp_path)
     from booley.audit.doctor_waivers import load_doctor_waivers
 
-    path = project.booley_dir / "doctor-waivers.toml"
-    path.write_text(
-        'version=1\n[[waiver]]\ncheck="flow.fail-path-unvalidated"\n'
-        'reason="Reviewed exclusion"\npermanent=true\n'
-    )
+    if waived:
+        path = project.booley_dir / "doctor-waivers.toml"
+        path.write_text(
+            'version=1\n[[waiver]]\ncheck="flow.fail-path-unvalidated"\n'
+            'reason="Reviewed exclusion"\npermanent=true\n'
+        )
     reporter = doctor._Reporter.create(load_doctor_waivers(project.booley_dir))
     tracker = deep.DeepCheckTracker()
     monkeypatch.setattr(doctor, "_flow_enabled", lambda _project, flow: flow == "sim")
@@ -282,9 +284,11 @@ def test_waived_missing_selftest_warning_cannot_supply_execution(tmp_path, monke
         reporter.fail_,
         completeness=tracker,
     )
-    assert reporter.result(0).clean
-    assert reporter.counts["waived"] == 1
+    assert reporter.result(0).clean is waived
+    assert reporter.counts["waived"] == int(waived)
+    assert reporter.counts["warn"] == int(not waived)
     assert tracker.missing == ("sim.selftest.bad", "sim.selftest.good")
+    assert deep.DeepAttemptSummary(tracker.missing, (), IMAGE).complete is False
 
 
 @pytest.mark.parametrize("skip_agents", [False, True])
