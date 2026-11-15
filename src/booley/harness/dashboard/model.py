@@ -33,6 +33,11 @@ from booley.goals.status import GoalStatus, GoalStatusView, build_status
 from booley.goals.store import GoalStore
 from booley.harness import upgrade_review
 from booley.harness.dashboard.jobs import JobReader, JobSnapshot
+from booley.harness.dashboard.measurement import (
+    MeasurementLine,
+    checkout_of,
+    measurement_lines,
+)
 from booley.harness.dashboard.resources import ProcessSampler, Resources, ResourceSampler
 from booley.mcp.session_registry import SessionRegistry, SessionRow, namespace
 from booley.review.goal_package import GoalCompletionPackage
@@ -97,6 +102,8 @@ class DashboardSnapshot:
     session_handles: Mapping[str, str] = field(default_factory=dict)
     #: Display title per session key (``S3 · uart-fix``); read with the handles in one map read.
     session_titles: Mapping[str, str] = field(default_factory=dict)
+    #: The measurement line per checkout a session targets; a checkout without one shows none.
+    measurements: Mapping[str, MeasurementLine] = field(default_factory=dict)
 
 
 def _live_baseline_comparison(goal: GoalStatus, entry: Any) -> tuple[str, ...]:
@@ -385,6 +392,7 @@ class DashboardReader:
             self._activity(sessions.rows, now),
             handles,
             titles,
+            measurement_lines({checkout_of(row.attribution) for row in sessions.rows}, measured),
         )
 
     def _activity(self, rows: tuple[SessionRow, ...], now: float) -> dict[str, Activity]:

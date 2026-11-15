@@ -28,6 +28,7 @@ server can tell a running Job from a crashed one without in-memory state.
 | `binding` | The Goal run binding (`booley.goal-run-binding/v1`), or null outside Goal Mode. |
 | `owner`, `read_at` | Who started the Job and when that owner first received its final result (see below). |
 | `report_root` | Where a Standalone Job's reports live, when not next to the records. |
+| `progress` | `{"finished": n, "total": m}`: child Flows ended and planned, for a Job that runs child Flows (`measure`); null otherwise. |
 
 Readers ignore unknown fields so an older Booley can read a newer record, and
 missing fields take their defaults. The persistence layer checks only the

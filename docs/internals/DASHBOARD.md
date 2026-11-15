@@ -36,6 +36,15 @@ Registry holds it:
   least 40 cells until those three are gone, then takes the cut, because it
   shows which session needs the user. Values that still do not fit end in
   `…`; Work dir keeps its tail, because paths differ at the end.
+- A session whose checkout declares a `[target.flow]` table has a measurement
+  row under its session row (`measurement.py` reads Git and the run store on
+  each refresh; a `metrics.toml` that does not load, or a checkout without a
+  readable HEAD, shows none). Its key is `measurement:<session key>` when it
+  has a Markdown report, and Enter opens that report; otherwise the key
+  starts with `HEADER_PREFIX`, so the cursor skips it. While a `measure` Job
+  runs in the checkout the row shows the Job's finished and total child
+  Flows (its `progress`) and the elapsed time instead of the stored state, and
+  opens nothing.
 - "Too narrow" means the list's own width, not the terminal's. Beside the
   preview the list gets half the terminal, so it drops columns as a narrow
   terminal would.
