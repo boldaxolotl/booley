@@ -14,11 +14,11 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 from booley.core.boundary import BoundaryError
 from booley.flows.artifact_durability import (
@@ -63,6 +63,7 @@ from booley.flows.test_runs import TestRun
 from booley.runtime.endpoint_execution import work_item_attempt_requeues
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import TargetHandle
 
 from ..build import build_output_tail
 from .codec import (
@@ -90,10 +91,12 @@ from .model import (
     ExecutableSnapshot,
     ExecutionObservation,
     FailureClass,
+    FrozenJson,
     FunctionalObservation,
     SimulationAttempt,
     SimulationResult,
     SimulatorBundle,
+    frozen_pre_sim_commands,
     grade_observations,
 )
 from .planning import manifest_digest
@@ -130,7 +133,7 @@ class _SharedFailure:
 
 @dataclass(frozen=True, slots=True)
 class _GroupInputs:
-    handle: object
+    handle: TargetHandle
     names: tuple[str, ...]
     #: The work item's concrete Test Runs; ``None`` for a manifest older than v4.
     test_runs: tuple[TestRun, ...] | None
@@ -181,8 +184,10 @@ class BuildScope:
 
 
 class _OrdinaryGroup(Protocol):
-    build_root: Path
-    artifact_paths: tuple[Path, ...]
+    @property
+    def build_root(self) -> Path: ...
+    @property
+    def artifact_paths(self) -> tuple[Path, ...]: ...
 
     def planning_disclosure(self) -> dict[str, object]: ...
     def compile(self) -> BuildOutcome: ...
@@ -233,7 +238,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
 
     def _execute_observed(self, request: WorkExecutionRequest) -> SimulationResult:
         scope = current_supervised_execution()
-        if _frozen_hook_commands(request) and scope is not None and scope.cancelled():
+        if frozen_pre_sim_commands(request.manifest) and scope is not None and scope.cancelled():
             raise PreSimScopeStoppedError("execution scope stopped before Pre-Sim Commands")
         item = request.work_item
         if item["kind"] not in {"ordinary_hdl", "cocotb_batch"}:
@@ -292,7 +297,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         finally:
             # The shared build is settled (built, reused, recovered or failed). Pre-Sim
             # Commands run unmeasured after it, so their Jobs keep the build estimate.
-            if not _frozen_hook_commands(request):
+            if not frozen_pre_sim_commands(request.manifest):
                 end_phase(handle.selector, "sim_build")
         return self._launch_shared(
             request,
@@ -584,7 +589,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             options,
             None,
             True,
-            commands=_frozen_hook_commands(request),
+            commands=frozen_pre_sim_commands(request.manifest),
             test_runs=work_item_test_runs(request.work_item),
         )
         if pre_sim is not None:
@@ -646,8 +651,11 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         ready: _ReadyLaunch,
     ) -> SimulationResult:
         token = request.attempt_id.replace("-", "")
-        runtime_view = getattr(ready.build[2], "runtime_view", None)
-        view = runtime_view(run_cwd, token) if callable(runtime_view) else nullcontext(run_cwd)
+        # Only a group that owns a runtime view has this method (the engine's PreparedOrdinaryGroup).
+        runtime_view: Callable[[Path, str], AbstractContextManager[Path]] | None = getattr(
+            ready.build[2], "runtime_view", None
+        )
+        view = runtime_view(run_cwd, token) if runtime_view is not None else nullcontext(run_cwd)
         with view as effective_cwd:
             return self._run_ready_group_in_view(request, build_directory, effective_cwd, ready)
 
@@ -742,7 +750,7 @@ def _immutable_hook_failure(
         options,
         run_cwd,
         False,
-        commands=_frozen_hook_commands(request),
+        commands=frozen_pre_sim_commands(request.manifest),
         test_runs=work_item_test_runs(request.work_item),
     )
     if pre_sim is not None:
@@ -812,12 +820,6 @@ def simulation_attempt(request: WorkExecutionRequest) -> tuple[SimulationAttempt
         "started_at": _now(),
     }
     return SimulationAttempt(document), run
-
-
-def _frozen_hook_commands(request: WorkExecutionRequest) -> tuple[str, ...]:
-    workload = cast(Mapping[str, object], request.manifest.document["workload"])
-    recipe = cast(Mapping[str, object], workload["source_recipe"])
-    return tuple(cast(tuple[str, ...], recipe["pre_sim_commands"]))
 
 
 def _run_hook(
@@ -937,11 +939,9 @@ def _setup_result(
     elapsed: float,
 ) -> SimulationResult:
     selection = cast(Mapping[str, object], request.work_item["selection"])
-    fallback = (
-        ""
-        if selection["kind"] == "unfiltered"
-        else cast(str, request.manifest.document["target"]["selector"])
-    )
+    # The codec's _read_strings proves target.selector is a string.
+    target = cast(Mapping[str, str], request.manifest.document["target"])
+    fallback = "" if selection["kind"] == "unfiltered" else target["selector"]
     tests = tuple(
         SimulationTestOutcome(
             name=name,
@@ -1036,7 +1036,8 @@ def publish_ready_build_result(
     document = _ready_result_document(
         request, build_directory, build_attempt, bundle, bundle_raw, execution_ref, elapsed
     )
-    result = BundleBuildResult(document)
+    # _freeze_json checks the values when the document is constructed.
+    result = BundleBuildResult(cast(Mapping[str, FrozenJson], document))
     request.store.publish_build_result(build_directory, result)
     return result, bundle
 
@@ -1076,6 +1077,8 @@ def _ready_result_document(
     elapsed: float,
 ) -> dict[str, object]:
     build_id = cast(str, build_attempt.document["build_attempt_id"])
+    # _simulator_bundle built the artifacts list in this process.
+    bundle_artifacts = cast(tuple[Mapping[str, FrozenJson], ...], bundle.document["artifacts"])
     return {
         "$schema": "booley.bundle-build-result/v2",
         **_common(request, include_work_item=False),
@@ -1098,7 +1101,7 @@ def _ready_result_document(
             "manifest_bytes": len(bundle_raw),
             "manifest_sha256": content_digest(bundle_raw),
             "sharing": bundle.document["sharing"],
-            "artifacts": [dict(item) for item in bundle.document["artifacts"]],
+            "artifacts": [dict(item) for item in bundle_artifacts],
         },
         "observation": None,
         "evidence": [execution_ref] if execution_ref is not None else [],
@@ -1311,9 +1314,8 @@ def _blocked_shared_result(
         identities = names
     else:
         # The default selection's name is the Target selector; Test Run binding
-        # (discovered_test_run) maps it back to the unnamed invocation.
-        target = cast(Mapping[str, object], request.manifest.document["target"])
-        identities = (cast(str, target["selector"]),)
+        # (discovered_test_run) maps it back to the unnamed invocation; the codec proves it a str.
+        identities = (cast(Mapping[str, str], request.manifest.document["target"])["selector"],)
     observations = []
     for index, identity in enumerate(identities):
         test = SimulationTestOutcome(
@@ -1331,8 +1333,9 @@ def _blocked_shared_result(
         )
         if failure.failure_class == FailureClass.INFRASTRUCTURE:
             observation["functional"] = observation["assertions"] = "not_observed"
+            # A failed build result's observation carries the build detail object.
             observation["detail"] = _compact_build_detail(
-                cast(Mapping[str, object], failure.result.document["observation"])["detail"],
+                cast(Mapping[str, Any], failure.result.document["observation"])["detail"],
                 1 if index == 0 else len(identities),
             )
         observation["failure_class"] = failure.failure_class.value

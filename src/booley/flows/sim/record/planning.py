@@ -73,6 +73,7 @@ class SimulationRecordWorkloadMismatchError(SimulationRecordIntegrityError):
 
 _EXPLAINED, _DERIVED = "explained", "derived"
 _AMBIGUOUS_SOURCES = "source paths ambiguous: duplicate source path"
+_AMBIGUOUS_PARAMETERS = "parameter names ambiguous: duplicate parameter name"
 
 
 @dataclass(slots=True)
@@ -152,11 +153,14 @@ def _diagnostic_display(text: str) -> str:
     return json.dumps(json.loads(text), ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
-def _entry_map(entries: Sequence[Mapping[str, object]], key: str):
+def _entry_map(
+    entries: Sequence[Mapping[str, object]], key: str
+) -> dict[str, Mapping[str, object]] | None:
     names = [entry[key] for entry in entries]
     if len(set(names)) != len(names):
         return None
-    return {entry[key]: entry for entry in entries}
+    # Entries are JSON objects keyed by a string name.
+    return {cast(str, entry[key]): entry for entry in entries}
 
 
 def _source_maps(projection: _Projection):
@@ -197,7 +201,10 @@ def _project_parameters(projection: _Projection) -> None:
         _entry_map(document["workload"]["source_recipe"]["parameters"], "name")
         for document in projection.documents
     )
-    lines = []
+    if old_map is None or new_map is None:
+        projection.roots.append(_AMBIGUOUS_PARAMETERS)
+        return
+    lines: list[str] = []
     for name in sorted(set(old_map) | set(new_map)):
         old_value = _diagnostic_value(old_map[name]["value"]) if name in old_map else "<absent>"
         new_value = _diagnostic_value(new_map[name]["value"]) if name in new_map else "<absent>"

@@ -7,7 +7,7 @@ import shlex
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.progress_lifecycle import (
@@ -75,6 +75,20 @@ from .record_presentation import (
     _simulation_record_recovery_detail,
 )
 from .record_scaffold import _group_disclosures, _SimulationRecordRun, _SimulationRecordSteps
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from contextlib import ExitStack
+
+    from booley.flows.base import SubprocessResult
+    from booley.flows.execution_persistence import AcceptanceRecorder
+    from booley.flows.job_estimates import JobRequest
+    from booley.flows.sim.request import SimRequest
+    from booley.flows.sim.verilator_coverage import AuthenticatedSimulationExecutionPort
+    from booley.flows.target_test_plan import TargetTestPlan
+
+    from .execution import SimulationExecution, SimulationOptions
+    from .record import SimulationRecordPolicy
 
 
 def _manifest_no_waivers(manifest: SimulationRecordManifest) -> bool:
@@ -149,6 +163,51 @@ def _checkpoint_coverage_record(
 
 class SimulationRecordResumeMixin:
     """Simulation Record resume paths for `SimulateFlow`."""
+
+    if TYPE_CHECKING:
+        # Host members SimulateFlow provides; Pyright checks them against the host.
+        publication_resources: ExitStack[bool | None]
+        _held_resume_origins: set[Path]
+        _simulation_record_publication_checkpoint: Callable[[str], None] | None
+        _acceptance_recorder: AcceptanceRecorder
+
+        @property
+        def args(self) -> SimRequest: ...
+        def _target_test_plan(self, target: str) -> TargetTestPlan: ...
+        def _record_simulation_record_tool(self, manifest: SimulationRecordManifest) -> None: ...
+        def _simulation_record_policy(self) -> SimulationRecordPolicy: ...
+        @staticmethod
+        def _simulation_record_cancelled_outcome(
+            error: SimulationRecordCancellationError,
+            detail: Mapping[str, object] | None = None,
+        ) -> EndpointOutcome: ...
+        def _capture_cycle_report(self, outcomes: Sequence[SimulationRecordOutcome]) -> None: ...
+        def _write_simulation_record_progress(
+            self,
+            targets: Sequence[str],
+            outcomes: Sequence[SimulationRecordOutcome],
+            *,
+            phase: str,
+            complete: bool,
+        ) -> None: ...
+        def _simulation_record_endpoint_outcome(
+            self, outcomes: list[SimulationRecordOutcome]
+        ) -> EndpointOutcome: ...
+        def work_item_job_request(
+            self, selector: str, runs: Sequence[TestRun], flags: tuple[str, ...]
+        ) -> JobRequest | None: ...
+        def _record_pre_sim_firing(self, key: tuple[str, str, str, int]) -> None: ...
+        def _execute_boundary(
+            self, cmd: list[str], *, timeout: int | None = None, cwd: Path | None = None
+        ) -> SubprocessResult: ...
+        def _coverage_simulation_record_execution(
+            self,
+            plan: CoverageTargetPlan,
+            options: SimulationOptions,
+            pre_sim_commands: tuple[str, ...],
+            pre_sim_build_access: str,
+        ) -> AuthenticatedSimulationExecutionPort: ...
+        def _simulation_execution(self) -> SimulationExecution: ...
 
     def _refuse_unfinished_coverage_resume(
         self, validated: ValidatedResumeManifest

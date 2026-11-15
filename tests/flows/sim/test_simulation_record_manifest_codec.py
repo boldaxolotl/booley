@@ -1080,6 +1080,13 @@ def test_duplicate_source_paths_preserve_second_entry_evidence(duplicate_digest)
     assert diagnostic.derived_fingerprint_count == 5
 
 
+def test_duplicate_parameter_names_report_ambiguity_instead_of_crashing():
+    old = _diagnostic_document(parameters=[{"name": "N", "value": 1}, {"name": "N", "value": 2}])
+    new = _diagnostic_document(parameters=[{"name": "N", "value": 1}])
+    diagnostic = _project_diagnostics(old, new)
+    assert "parameter names ambiguous: duplicate parameter name" in diagnostic.mismatch_summary
+
+
 def test_conflicting_source_replica_remains_visible():
     old = _diagnostic_document(sources=[_diagnostic_source("a.sv")])
     new = json.loads(json.dumps(old))

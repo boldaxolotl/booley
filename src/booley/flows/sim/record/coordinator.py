@@ -1176,8 +1176,8 @@ def _prerequisite_facts(
         linked, expected_test, baseline_run = _authenticate_prerequisite_manifest(
             store, entry, manifest_reference
         )
-        selected = _selected_prerequisite_result(store.scan(linked), entry)
-        result_path = store.work_item_directory(selected.work_item_id) / "result.json"
+        work_item_id, result = _selected_prerequisite_result(store.scan(linked), entry)
+        result_path = store.work_item_directory(work_item_id) / "result.json"
         raw = result_path.read_bytes()
         digest = content_digest(raw)
         result_reference = {
@@ -1186,9 +1186,9 @@ def _prerequisite_facts(
             "bytes": len(raw),
             "sha256": digest,
             "kind": "simulation_result",
-            "owner": selected.result.document["attempt_id"],
+            "owner": result.document["attempt_id"],
         }
-        observation = _healthy_cycle_observation(selected.result, expected_test)
+        observation = _healthy_cycle_observation(result, expected_test)
         if observation is None:
             raise SimulationRecordIntegrityError(
                 "Cycle Count prerequisite has no cycle observation"
@@ -1254,14 +1254,16 @@ def _authenticate_prerequisite_manifest(
     return linked, names[0], runs[0]
 
 
-def _selected_prerequisite_result(recovery: SimulationRecordRecovery, entry: Mapping[str, object]):
+def _selected_prerequisite_result(
+    recovery: SimulationRecordRecovery, entry: Mapping[str, object]
+) -> tuple[str, SimulationResult]:
     selected = next(
         (item for item in recovery.items if item.work_item_id == entry["work_item_id"]),
         None,
     )
     if selected is None or selected.result is None:
         raise SimulationRecordIntegrityError("Cycle Count prerequisite result is unavailable")
-    return selected
+    return selected.work_item_id, selected.result
 
 
 def _healthy_cycle_observation(

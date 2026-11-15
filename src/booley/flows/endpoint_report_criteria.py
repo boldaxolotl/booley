@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from booley.criteria.state import CriterionChange
 from booley.fusesoc.fusesoc_registry import FuseSocError
@@ -17,6 +17,17 @@ if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
     from booley.flows.prepared_invocation import PreparedInvocation
     from booley.targets.domain import TargetHandle
+
+
+class _TargetKeyed(Protocol):
+    """What `target_keys` reads of a Target: a catalog handle or a record's candidate identity."""
+
+    @property
+    def name(self) -> str: ...
+    @property
+    def identity(self) -> str: ...
+    @property
+    def selector(self) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -132,7 +143,7 @@ def _named_keys(endpoint, name: str, families: set[str], conventional: set[str])
 
 
 def target_keys(
-    endpoint, handle: TargetHandle, families: set[str], conventional: set[str]
+    endpoint, handle: _TargetKeyed, families: set[str], conventional: set[str]
 ) -> set[str]:
     keys = _named_keys(endpoint, handle.name, families, conventional)
     for key, entry in endpoint.state.criteria.items():

@@ -1006,7 +1006,7 @@ def _referenced_invocation_artifacts(root: Path, document: Mapping[str, object])
 
 def _validate_invocation_artifact_layout(relative: Path) -> None:
     parts = relative.parts
-    role_offset = 2 if len(parts) > 1 and parts[1] == "candidate" else 3
+    role_offset = 2 if parts[1:2] == ("candidate",) else 3
     if len(parts) < role_offset + 4 or parts[0] != "artifacts":
         raise SimulationRecordRetentionError(f"Invalid invocation artifact layout: {relative}")
     if parts[1] not in {"candidate", "baseline"}:
