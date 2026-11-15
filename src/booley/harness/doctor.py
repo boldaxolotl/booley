@@ -3517,7 +3517,9 @@ def _run_project_checks(
     _check_project_trackability(project.project_root, project.booley_dir, reporter.warn_)
     _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
     _check_repo_footprint(project.project_root, reporter.pass_, reporter.warn_)
-    _check_custom_endpoints_and_criteria(project.project_root, reporter.pass_, reporter.fail_)
+    _check_custom_endpoints_and_criteria(
+        project.project_root, reporter.pass_, reporter.warn_, reporter.fail_
+    )
     _check_disabled_endpoints(project, reporter.note_)
     if reporter.agent_check_enabled("worker backend health check"):
         _check_agent_backend_health(
@@ -3880,14 +3882,16 @@ def _check_repo_footprint(project_root: Path, _pass: Check, _warn: Check) -> Non
         _pass("no Booley scaffolding files tracked in the repo")
 
 
-def _check_custom_endpoints_and_criteria(project_root: Path, _pass: Check, _fail: Fail) -> None:
+def _check_custom_endpoints_and_criteria(
+    project_root: Path, _pass: Check, _warn: Warn, _fail: Fail
+) -> None:
     try:
         from booley.mcp.endpoint_validation import (
             EndpointValidationError,
             validate_custom_endpoints_and_criteria,
         )
 
-        validate_custom_endpoints_and_criteria(project_root)
+        skipped = validate_custom_endpoints_and_criteria(project_root)
     except EndpointValidationError as exc:
         _fail("custom endpoint/Criteria validation failed", exc.failures[0])
         return
@@ -3903,7 +3907,12 @@ def _check_custom_endpoints_and_criteria(project_root: Path, _pass: Check, _fail
             "fix .booley/mcp_tools and Criteria configuration",
         )
         return
-    _pass("custom endpoints and Criteria validated")
+    for item in skipped:
+        _warning_sink(_warn, "project.custom-endpoint-skipped", subject=item.file)(
+            f"custom endpoint {item.file} skipped: {item.reason}", item.fix
+        )
+    if not skipped:
+        _pass("custom endpoints and Criteria validated")
 
 
 def _check_disabled_endpoints(project: ProjectAudit, _note: Check) -> None:
