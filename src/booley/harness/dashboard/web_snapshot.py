@@ -21,6 +21,7 @@ from booley.harness.dashboard.jobs import (
     job_elapsed_seconds,
 )
 from booley.harness.dashboard.resources import Resources, ResourceSampler
+from booley.harness.dashboard.sessions import session_key_label
 from booley.presentation.report_results import present_job_report
 from booley.runtime import job_records, job_slots
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
@@ -168,7 +169,7 @@ def _label(job: JobView) -> str:
 def _owner(job: JobView) -> str:
     """``you`` for a Standalone Job (no owning session), else the session's handle or key."""
     key = job.record.session_key
-    return "you" if not key else job.owner_handle or key
+    return "you" if not key else session_key_label(job.owner_handle or key)
 
 
 def _started(job: JobView) -> float:

@@ -312,6 +312,8 @@ def test_detached_worktree_has_no_branch(world, tmp_path, monkeypatch):
         ("relative", 400),
         ("unknown", 404),
         ("deleted", 404),
+        ("recreated", 404),
+        ("foreign", 404),
         ("outside", 404),
     ],
 )
@@ -325,12 +327,18 @@ def test_unaccepted_worktree_gets_a_json_error_without_jobs(
     for path in (deleted, outside, tmp_path / "nowhere"):
         _job(world, f"run-{path.name}", path, target="leak")
     shutil.rmtree(deleted)
+    if kind in {"recreated", "foreign"}:
+        deleted.mkdir()
+    if kind == "foreign":
+        git(deleted, "init", "-q")
     params = {
         "missing": {},
         "empty": {"worktree": ""},
         "relative": {"worktree": "wt"},
         "unknown": {"worktree": str(tmp_path / "nowhere")},
         "deleted": {"worktree": str(deleted)},
+        "recreated": {"worktree": str(deleted)},
+        "foreign": {"worktree": str(deleted)},
         "outside": {"worktree": str(outside)},
     }[kind]
 
@@ -343,6 +351,17 @@ def test_unaccepted_worktree_gets_a_json_error_without_jobs(
     assert list(body) == ["error"]
     assert isinstance(body["error"], str)
     assert "leak" not in response.text
+
+
+def test_a_sessions_key_without_a_handle_reads_as_its_process():
+    from types import SimpleNamespace
+
+    from booley.harness.dashboard.web_snapshot import _owner
+
+    key = "pid:pid:[4026531836]:42:7"
+    job = SimpleNamespace(record=SimpleNamespace(session_key=key), owner_handle="")
+
+    assert _owner(job).startswith("PID 42")
 
 
 def test_unlistable_worktrees_are_a_503_without_jobs(world, monkeypatch):

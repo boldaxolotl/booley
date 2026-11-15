@@ -16,6 +16,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from booley.core.booley_dir import resolve_common_booley_dir, resolve_main_checkout_root
+from booley.core.booley_layout import BooleyLayoutError, git_common_directory
 from booley.harness.dashboard.jobs import JobReader
 from booley.harness.dashboard.resources import ResourceSampler
 from booley.harness.dashboard.web_snapshot import find_report, read_snapshot
@@ -44,7 +45,7 @@ def _accepted_worktree(main: Path, value: str | None) -> tuple[Path, str | None]
     """The resolved main checkout or linked worktree *value* names, with its branch.
 
     Raises ``_RefusalError``: 400 for a missing or relative path, 404 for any path that is
-    not a registered worktree whose directory exists, 503 when Git cannot list them.
+    not a registered worktree whose directory is still its checkout, 503 when Git cannot list them.
     """
     if not value:
         raise _RefusalError(400, "worktree is required: pass an absolute path as ?worktree=")
@@ -57,10 +58,16 @@ def _accepted_worktree(main: Path, value: str | None) -> tuple[Path, str | None]
     try:
         real = Path(value).resolve()
         for registration in registrations:
-            if real.is_dir() and registration.path.resolve() == real:
+            # A directory recreated over a deleted worktree is not that worktree: it must
+            # still be a checkout of this repository.
+            if (
+                real.is_dir()
+                and registration.path.resolve() == real
+                and git_common_directory(real) == git_common_directory(main)
+            ):
                 branch = registration.branch
                 return real, None if branch is None else branch.removeprefix("refs/heads/")
-    except (OSError, ValueError, RuntimeError):
+    except (OSError, ValueError, RuntimeError, BooleyLayoutError):
         pass
     raise _RefusalError(404, "worktree is not the main checkout or a worktree of this Project")
 

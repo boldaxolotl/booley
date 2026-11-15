@@ -59,7 +59,7 @@ booley chat --resume <id>         # Claude: arguments after chat and its options
 booley chat resume --last         # Codex: the same, with its own subcommands
 booley chat -- --help             # the agent CLI's help (Booley's is booley chat --help)
 booley dashboard                  # sessions and Jobs; see Usage
-booley dashboard --web --port 9000 # serve each worktree's Jobs as JSON on 127.0.0.1 (default port 8090)
+booley dashboard --web            # serve each worktree's Jobs as JSON (--port PORT, default 8090)
 booley measure                    # measure HEAD against its committed metrics.toml and store the run
 booley measure <sha> --base <sha> # measure another commit; compare with another Base
 booley measure --all --json       # evaluate every table after a failure; print the report as JSON
