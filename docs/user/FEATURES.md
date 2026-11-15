@@ -9,6 +9,7 @@ New to Booley's vocabulary (Developer Agent, Specialist, Sandbox, Booley Flow, T
 - [Open Source](#open-source)
 - [Goal Mode](#goal-mode)
 - [Named Targets and Tests](#named-targets-and-tests)
+- [Regression Runs](#regression-runs)
 - [Docker Sandboxing](#docker-sandboxing)
 - [Independent Specialists](#independent-specialists)
 - [Waveform-Based Debug](#waveform-based-debug)
@@ -61,6 +62,14 @@ To start, type `/booley-goal` and describe the task. The Developer Agent propose
 ## Named Targets and Tests
 
 Every build configuration of your design is a named Target, and every test is a named entry. The idea and the implementation of Targets come from [FuseSoC](https://github.com/olofk/fusesoc): Targets live in FuseSoC `.core` files, and FuseSoC resolves them. The Developer Agent picks a Target and a test by name and can't make up its own simulator arguments. So every pass or fail traces back to a declared configuration and seed, and every failure comes with the exact command to rerun it. Target and test names mean the same thing to you, the Developer Agent, every Specialist and every Booley Flow, run after run. cocotb testbenches work the same way. See [TARGETS.md](TARGETS.md) and [TESTS.md](TESTS.md).
+
+## Regression Runs
+
+One `sim` call runs a whole regression, not just one test. With no tests named it runs every Test of the Target; name tests to run a subset, or list them in a file. Run a test N times with different random seeds (`stress@x20`), or pin one seed to reproduce a failure. Test Variants give one test several named sets of run-time arguments, such as a `soak` variant with a longer run. Tests run in parallel as long as they fit the machine's memory, and add `--coverage` to merge coverage from all of them into one result.
+
+The report gives one verdict for the whole run and names the seed of every failure, with the command that reruns it with that seed. A multi-hour run that gets interrupted resumes where it stopped, with the same seeds, without rerunning the tests that already finished. See [FLOW-SIM.md](FLOW-SIM.md) and [TESTS.md](TESTS.md).
+
+Each run stands alone today: named and scheduled regressions, results compared across runs, and grouping of related failures are on the [roadmap](../internals/ROADMAP.md#verification-engineering).
 
 ## Docker Sandboxing
 

@@ -1,4 +1,4 @@
-"""Manifest-order bounded scheduling for Simulation Campaign work items."""
+"""Manifest-order bounded scheduling for Simulation Record work items."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def _lane_label(attempt: ScheduledAttempt) -> str:
 
 
 class SimulationRecordSchedulingError(RuntimeError):
-    """A campaign-fatal worker failure stopped further admission."""
+    """A record-fatal worker failure stopped further admission."""
 
 
 class _TurnHold:
@@ -63,7 +63,7 @@ class _TurnHold:
 class _StartTurn:
     """Lets one lane at a time take the next item and get its claim admitted.
 
-    Items then start in manifest order, and the Campaign has at most one item
+    Items then start in manifest order, and the Simulation Record has at most one item
     claim waiting in the slot store at any time.
     """
 
@@ -72,7 +72,7 @@ class _StartTurn:
         self._stop = stop
 
     def take(self) -> _TurnHold | None:
-        """Wait for the turn; ``None`` once the campaign stops.
+        """Wait for the turn; ``None`` once the record stops.
 
         Waiters check only the stop event, which the supervisor sets within moments of
         any shutdown: a full cancellation check would rescan the slot store per lane.
@@ -112,7 +112,7 @@ class BoundedSimulationRecordScheduler:
         self._prepare_child = prepare_child or (lambda _attempt, _child: None)
         self._stop = threading.Event()
         self._errors: queue.SimpleQueue[BaseException] = queue.SimpleQueue()
-        # A lost child lease interrupts one lane's item without stopping the campaign.
+        # A lost child lease interrupts one lane's item without stopping the record.
         self._interruptions: queue.SimpleQueue[LeaseLostError] = queue.SimpleQueue()
         self._lane_gate = threading.Lock()
         self._live = 0
@@ -185,7 +185,7 @@ class BoundedSimulationRecordScheduler:
         return threading.Thread(
             target=copy_context().run,
             args=(target, *args),
-            name=f"booley-campaign-{suffix}",
+            name=f"booley-record-{suffix}",
             daemon=True,
         )
 
@@ -224,7 +224,7 @@ class BoundedSimulationRecordScheduler:
                 self._capacity.hold_outer_until(exited)
                 alive = ", ".join(lane.name for lane in lanes if lane.is_alive())
                 raise SimulationRecordSchedulingError(
-                    f"campaign workers exceeded bounded shutdown: {alive}"
+                    f"record workers exceeded bounded shutdown: {alive}"
                 )
 
     def _lane(
@@ -232,7 +232,7 @@ class BoundedSimulationRecordScheduler:
         ready: queue.Queue[Mapping[str, object]],
         outer: bool,
     ) -> None:
-        """Run ready items until the queue drains or the campaign stops."""
+        """Run ready items until the queue drains or the record stops."""
         try:
             if self._turn is not None:
                 while self._run_turn(ready, outer):
@@ -251,7 +251,7 @@ class BoundedSimulationRecordScheduler:
     def _run_turn(self, ready: queue.Queue[Mapping[str, object]], outer: bool) -> bool:
         """Take the start turn, then the next item.
 
-        ``False`` ends the lane: the campaign stopped, the queue drained or the item failed.
+        ``False`` ends the lane: the record stopped, the queue drained or the item failed.
         """
         assert self._turn is not None
         hold = self._turn.take()
@@ -373,7 +373,7 @@ class BoundedSimulationRecordScheduler:
             while key in self._active_collisions and not self._stop.is_set():
                 self._collision_condition.wait(timeout=0.05)
             if self._stop.is_set():
-                raise SimulationRecordSchedulingError("campaign shutdown requested")
+                raise SimulationRecordSchedulingError("record shutdown requested")
             self._active_collisions.add(key)
         try:
             yield
@@ -384,7 +384,7 @@ class BoundedSimulationRecordScheduler:
 
 
 def _worker_failure_cause(exc: BaseException) -> str:
-    return f"campaign stop requested after a work item failed ({type(exc).__name__})"
+    return f"record stop requested after a work item failed ({type(exc).__name__})"
 
 
 __all__ = [

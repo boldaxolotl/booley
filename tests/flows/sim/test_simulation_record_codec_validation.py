@@ -1,4 +1,4 @@
-"""Focused rejection tests for campaign documents at the persistence boundary."""
+"""Focused rejection tests for record documents at the persistence boundary."""
 
 from __future__ import annotations
 

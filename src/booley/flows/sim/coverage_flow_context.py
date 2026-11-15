@@ -21,9 +21,9 @@ from booley.flows.execution_persistence import (
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.targets.catalog import TargetCatalog
 
-from .coverage_campaign import DurableTargetIdentity
 from .coverage_invocation import CoverageProjectContext
 from .coverage_policy import CoverageCriterion, CoverageThreshold
+from .coverage_record import DurableTargetIdentity
 
 
 def coverage_context_for_execution(

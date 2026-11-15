@@ -1,7 +1,7 @@
 """A traced sim run registers its waveforms as bwave sessions (issue #2578).
 
-Tests run a real Campaign through the faked process edge of ``simulation_record_boundary``
-(so the traces are the evidence files a Campaign records) and then look the
+Tests run a real Simulation Record through the faked process edge of ``simulation_record_boundary``
+(so the traces are the evidence files the Simulation Record keeps) and then look the
 sessions up the way an agent shell does: a separate process in the run's
 checkout, with its own temporary directory, that resolves the checkout's bwave
 session store (issue #3483).

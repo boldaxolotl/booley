@@ -306,7 +306,7 @@ def render_goal_overview(
     ]
     if "unsettled_campaigns" in facts:
         unsettled = require_list(facts["unsettled_campaigns"], field="unsettled_campaigns")
-        lines.append(f"Simulation Campaigns not fully accounted for: {len(unsettled)}")
+        lines.append(f"Simulation Records not fully accounted for: {len(unsettled)}")
     return "\n".join([*lines, "", *briefing])
 
 
@@ -393,13 +393,13 @@ def render_goal_html(
 
 
 def _unsettled_simulation_record_lines(facts: dict[str, Any]) -> list[str]:
-    """Simulation Campaigns whose results were never fully accounted for (ADR 0072)."""
+    """Simulation Records whose results were never fully accounted for (ADR 0072)."""
     if "unsettled_campaigns" not in facts:
         return []
     listed = require_list(facts["unsettled_campaigns"], field="unsettled_campaigns")
     return [
         "",
-        "Simulation Campaigns not fully accounted for",
+        "Simulation Records not fully accounted for",
         json.dumps(listed, indent=2, sort_keys=True, ensure_ascii=False),
     ]
 

@@ -198,7 +198,7 @@ limit, and N the smaller of the two.
 |---|---|---:|
 | `PASS` | Detected Mutants reach the threshold. | `0` |
 | `FAIL` | Fewer Mutants were detected than required. | `1` |
-| `ERROR` | No verdict: a failing baseline, a Target that cannot run, an unusable `--scope` entry, an invalid option, or a baseline build failure. | `2` |
+| `ERROR` | No verdict: a failing baseline, a Target that cannot run, an unusable `--scope` entry, an invalid option, a baseline build failure, or a test run killed by the system, for example out of memory. | `2` |
 
 Each run's files are in its numbered run directory, under `flow-reports/` in
 the Booley Directory or `--report-dir`

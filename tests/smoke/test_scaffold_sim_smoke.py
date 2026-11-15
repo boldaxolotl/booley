@@ -12,7 +12,7 @@ from tests.bwave.native_binary import require_exact_binary
 from tests.subprocess_budget import run_bounded_child
 
 from booley.dev_support.test_profiles import native_test_binary, native_test_problem
-from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
+from booley.flows.sim.coverage_reference import resolve_coverage_record_reference
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 from booley.harness.setup.scaffold import ScaffoldChoices, scaffold_files
@@ -79,17 +79,17 @@ def _assert_coverage(reports: Path, detail: dict) -> None:
     ref = detail["targets"]["sim_wave_counter"]["coverage_record"]
     assert ref["path_base"] == "report_invocation"
     path = reports / "sim/1" / ref["path"]
-    resolved = resolve_coverage_campaign_reference(path)
-    campaign = resolved.loaded.campaign
-    artifact_root = resolved.campaign_path.parent
-    assert campaign.collection["status"] == "complete"
-    assert campaign.coverage_window["mode"] == "whole_run"
-    assert {run.test for run in campaign.runs} == {"reset", "count"}
-    assert all(run.simulation_verdict == "pass" for run in campaign.runs)
-    raw = [a for a in campaign.artifacts if a.kind == "raw_native"]
+    resolved = resolve_coverage_record_reference(path)
+    coverage_record = resolved.loaded.coverage_record
+    artifact_root = resolved.coverage_record_path.parent
+    assert coverage_record.collection["status"] == "complete"
+    assert coverage_record.coverage_window["mode"] == "whole_run"
+    assert {run.test for run in coverage_record.runs} == {"reset", "count"}
+    assert all(run.simulation_verdict == "pass" for run in coverage_record.runs)
+    raw = [a for a in coverage_record.artifacts if a.kind == "raw_native"]
     assert len(raw) == 2
     assert all((artifact_root / a.path).stat().st_size > 0 for a in raw)
-    hooks = [a for a in campaign.artifacts if a.kind == "coverage_hook_evidence"]
+    hooks = [a for a in coverage_record.artifacts if a.kind == "coverage_hook_evidence"]
     assert len(hooks) == 2
     for artifact in hooks:
         evidence = json.loads((artifact_root / artifact.path).read_text())
@@ -132,7 +132,7 @@ def test_real_scaffold_simulation_modes(
 def _assert_trace(tmp_path, reports, scaffold_native_binary):
     assert os.name == "posix", "streaming smoke requires POSIX FIFOs"
     assert not list(tmp_path.rglob("dump.vcd")), "Flow must honor its per-attempt FIFO"
-    # Campaign publication retains evidence copies as well as producing stores.
+    # Simulation Record publication retains evidence copies as well as producing stores.
     stores = list((reports / "sim/1").rglob("*.fst"))
     assert stores, "current invocation must retain a queryable Trace Artifact"
     for store in stores:

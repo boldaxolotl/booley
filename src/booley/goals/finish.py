@@ -117,7 +117,7 @@ class FinishEnvironment:
     resolvers: GoalFreshnessResolvers = DEFAULT_RESOLVERS
     on_boundary: Callable[[str], None] | None = None
     waiver_factory: Callable[[GoalRecord], WaiverPort] | None = None
-    #: Reads the finished results of Simulation Campaigns that never published.
+    #: Reads the finished results of Simulation Records that never published.
     simulation_record_reader: SimulationRecordResultsReader | None = None
     generated_inputs: (
         Callable[[GoalRecord, DevelopmentState, Path], tuple[GeneratedBuildInput, ...]] | None
@@ -239,7 +239,7 @@ def _freeze(
     operation: LifecycleOperation, record: GoalRecord, env: FinishEnvironment
 ) -> dict[str, Any]:
     # Finish judges the Goals by their ledger: bring in what earlier Simulation
-    # Campaigns durably observed but never published first (ADR 0072). Whatever
+    # Simulation Records durably observed but never published first (ADR 0072). Whatever
     # stays unaccounted reads unmet below.
     try:
         account_for_simulation_records(

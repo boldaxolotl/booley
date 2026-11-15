@@ -80,17 +80,21 @@ def _producer_manifest(runtime: Path, envelope: dict[str, Any]) -> Mapping[str, 
             producer["simulation_record_id"] != envelope["campaign_id"]
             or producer["origin"] != envelope["origin"]
         ):
-            raise LifecycleError("selected campaign manifest has a foreign producer identity")
+            raise LifecycleError(
+                "selected Simulation Record manifest has a foreign producer identity"
+            )
         matches.append(
             {**producer, "producer_manifest_path": str(path), "producer_manifest_bytes": raw.hex()}
         )
     if len(matches) > 1:
-        raise LifecycleError("selected producer has ambiguous duplicate campaign manifests")
+        raise LifecycleError(
+            "selected producer has ambiguous duplicate Simulation Record manifests"
+        )
     return matches[0] if matches else None
 
 
 def _declares_source_identities(producer: Mapping[str, object]) -> bool:
-    """Whether a campaign manifest's disclosures map generated files to sources.
+    """Whether a record manifest's disclosures map generated files to sources.
 
     The fact is read from the disclosures: a setup planner with contract
     version 2, or any entry that names a source path.

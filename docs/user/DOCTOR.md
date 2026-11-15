@@ -19,9 +19,15 @@ from each side:
   `booley session enter`): the same configuration plus the tools, MCP server,
   and agent setup inside the Sandbox.
 
+Doctor fails when an Agent CLI listed in `[agent] clis` has no `auth` recorded in
+`.booley/booley.toml`, or has `auth = "auto"` (only `subscription` and `api_key` pass). The failure names the CLI and the
+value `booley init` would record from your credentials (`subscription` when you
+have a login, `api_key` when you have only a key). Set that value as the message
+says, or re-run `booley init`.
+
 Doctor checks the sign-in of every Agent CLI listed in `[agent] clis`. A missing
-sign-in for the default CLI is graded as before (a failure when `[agent] auth`
-pins a billing mode, a warning under `auto`). For another listed CLI it is a
+sign-in for the default CLI is a failure when `[agent] auth`
+pins a billing mode. For another listed CLI it is a
 warning that names that CLI's login command; when `[models]` runs a Specialist on
 that CLI it is a failure, whatever `[agent] auth` says. The Sandbox receives the
 sign-in of every listed CLI (see

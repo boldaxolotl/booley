@@ -57,7 +57,7 @@ _TIMEOUT = _text("timeout", "Timeout", "--timeout", "How long the review may run
 _ANALYSIS_TIMEOUT = _text(
     "timeout", "Timeout", "--timeout", "How long the analysis may run, e.g. 30m."
 )
-_CAMPAIGN = Field(
+_COVERAGE_RECORD = Field(
     "campaign",
     "campaign",
     "Coverage Record",
@@ -67,8 +67,8 @@ _CAMPAIGN = Field(
     required=True,
 )
 # The picker row that opens the text editor; no campaign path equals it.
-TYPE_CAMPAIGN: Final = "Type a coverage.json path…"
-NO_CAMPAIGNS: Final = (
+TYPE_COVERAGE_RECORD: Final = "Type a coverage.json path…"
+NO_COVERAGE_RECORDS: Final = (
     "No finished Coverage Record in this worktree. Run a coverage Simulation on a Target "
     "first (booley flow sim --coverage --target <Target>), or type a coverage.json path."
 )
@@ -175,7 +175,7 @@ class SimRun:
 
 
 @dataclass(frozen=True)
-class CampaignChoice:
+class CoverageRecordChoice:
     """One finished coverage campaign the picker offers: the ``--record`` path and its row text."""
 
     path: str
@@ -217,13 +217,15 @@ def _sort_key(ended_at: str, target: str) -> tuple[bool, float, str]:
     return (instant is None, -instant.timestamp() if instant else 0.0, target)
 
 
-def finished_campaigns(worktree: Path, runs: Iterable[SimRun]) -> tuple[CampaignChoice, ...]:
+def finished_coverage_records(
+    worktree: Path, runs: Iterable[SimRun]
+) -> tuple[CoverageRecordChoice, ...]:
     """The finished coverage campaigns of *runs*, newest first.
 
     Reads one ``targets/`` directory per run and no deeper; whatever cannot be read is skipped.
     Runs in a worker thread.
     """
-    found: list[tuple[tuple[bool, float, str], CampaignChoice]] = []
+    found: list[tuple[tuple[bool, float, str], CoverageRecordChoice]] = []
     for run in runs:
         try:
             directories = sorted((run.invocation / "targets").iterdir())
@@ -239,7 +241,7 @@ def finished_campaigns(worktree: Path, runs: Iterable[SimRun]) -> tuple[Campaign
             if target is None or not listed:
                 continue
             label = f"{target}  {format_clock(run.ended_at)}  sim #{run.invocation.name}"
-            choice = CampaignChoice(_shown_path(worktree, coverage), label)
+            choice = CoverageRecordChoice(_shown_path(worktree, coverage), label)
             found.append((_sort_key(run.ended_at, target), choice))
     return tuple(choice for _, choice in sorted(found, key=lambda entry: entry[0]))
 
@@ -260,7 +262,7 @@ class CoverageAnalystForm:
 
     def fields(self, values: Mapping[str, str]) -> tuple[Field, ...]:
         """The rows to show for *values*: max turns and timeout only when More is open."""
-        rows = [_CAMPAIGN, _INSTRUCTION, _MORE]
+        rows = [_COVERAGE_RECORD, _INSTRUCTION, _MORE]
         if values.get("more"):
             rows += [_MAX_TURNS, _ANALYSIS_TIMEOUT]
         return tuple(rows)
@@ -275,7 +277,7 @@ class CoverageAnalystForm:
 
     def argv(self, values: Mapping[str, str]) -> tuple[str, ...]:
         """The argument words: the campaign, then the optional rows that hold a value."""
-        words = text_words(_CAMPAIGN.flag, values.get("campaign", ""))
+        words = text_words(_COVERAGE_RECORD.flag, values.get("campaign", ""))
         for field in (_INSTRUCTION, _MAX_TURNS, _ANALYSIS_TIMEOUT):
             words += text_words(field.flag, values.get(field.dest, ""))
         return tuple(words)

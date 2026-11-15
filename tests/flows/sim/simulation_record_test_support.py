@@ -1,4 +1,4 @@
-"""Shared builders and fakes for the Simulation Campaign suites."""
+"""Shared builders and fakes for the Simulation Record suites."""
 
 from __future__ import annotations
 
@@ -223,7 +223,7 @@ def _simulation_outcome(
     role: str = "candidate",
     seeds: Mapping[str, int] | None = None,
 ) -> SimulationRecordOutcome:
-    """A Campaign outcome of *observations*; *seeds* names the seed of a test's Test Run."""
+    """A Simulation Record outcome of *observations*; *seeds* names the seed of a test's Test Run."""
     runs: dict[str | None, TestRun] = {}
     for observation in observations:
         test = cast("str | None", observation["test"])
@@ -1008,7 +1008,7 @@ def _holder_claim(holders: int) -> MemoryClaim:
 
 
 def _outer_claim(store: SlotStore) -> SlotToken:
-    """The Flow's own claim, as an admitted Campaign holds it once its items take their own."""
+    """The Flow's own claim, as an admitted Simulation Record holds it once its items take their own."""
     return store.acquire(
         CLASS_MEMORY,
         pid=os.getpid(),
@@ -1029,7 +1029,7 @@ class _FixedSizing:
 
 
 def _managed(store: SlotStore, outer, *, holders: int = 2, **overrides: Any) -> AdmissionContext:
-    """A managed admission whose Campaign lends *holders* claims' worth of memory."""
+    """A managed admission whose Simulation Record lends *holders* claims' worth of memory."""
     return AdmissionContext(
         "managed",
         store,
@@ -1071,7 +1071,7 @@ def _capacity(
     """Real capacity, with its lane registry, over a fresh Booley Directory."""
     project_data = tmp_path / "project" / ".booley"
     project_data.mkdir(parents=True, exist_ok=True)
-    if admission.memory_sizing is None:  # a Campaign that sizes no item claims
+    if admission.memory_sizing is None:  # a Simulation Record that sizes no item claims
         return simulation_record_capacity.SimulationRecordCapacity(
             admission, _two_item_manifest(), project_data
         )
@@ -1304,7 +1304,7 @@ def _interrupted_simulation_record(tmp_path, monkeypatch, runtime_execution_id):
     monkeypatch.setattr(ChildExecutionRegistry, "mark_terminal", interrupted_mark)
     simulation_record = SimulationRecord(executor, work_item_request=lambda *_args: None)
     execution_id = ExecutionId(runtime_execution_id) if runtime_execution_id else None
-    # The Flow's claim, with three item claims' worth of memory left to lend its Campaign.
+    # The Flow's claim, with three item claims' worth of memory left to lend its Simulation Record.
     outer = slots.acquire(
         CLASS_MEMORY,
         pid=os.getpid(),
@@ -1602,7 +1602,7 @@ class _NoEdaExecutor:
         self.calls = 0
 
     def prepare_attempt(self, request: WorkExecutionRequest) -> None:
-        raise AssertionError("unmanaged campaigns must not prepare child attempts")
+        raise AssertionError("unmanaged records must not prepare child attempts")
 
     def execute(self, request: WorkExecutionRequest) -> SimulationResult:
         self.calls += 1
@@ -1894,7 +1894,7 @@ class CoverageInvocation:
         return self.target / "coverage.json"
 
     @property
-    def campaign_path(self) -> Path:
+    def coverage_record_path(self) -> Path:
         """The Coverage Campaign the reference selects, in its nested directory."""
         return self.storage / "coverage.json"
 
@@ -1909,7 +1909,7 @@ def coverage_invocation(tmp_path, monkeypatch, *, prepare=None) -> CoverageInvoc
 
     ``prepare(tmp_path)`` writes the project; the default is the two-test counter project.
     """
-    from booley.flows.sim.coverage_reference import resolve_coverage_campaign_reference
+    from booley.flows.sim.coverage_reference import resolve_coverage_record_reference
     from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.request import SimRequest
     from tests.flows.sim.test_coverage_invocation import project
@@ -1927,5 +1927,7 @@ def coverage_invocation(tmp_path, monkeypatch, *, prepare=None) -> CoverageInvoc
     request = SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports)
     assert flow.execute(request).exit_code == 0
     target = reports / "sim/1/targets/sim_0"
-    storage = resolve_coverage_campaign_reference(target / "coverage.json").campaign_path.parent
+    storage = resolve_coverage_record_reference(
+        target / "coverage.json"
+    ).coverage_record_path.parent
     return CoverageInvocation(reports, target, storage)

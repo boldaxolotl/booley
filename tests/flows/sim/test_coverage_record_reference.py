@@ -10,29 +10,29 @@ from pathlib import Path
 import pytest
 
 from booley.flows.sim import coverage_reference
-from booley.flows.sim.coverage_campaign import (
-    CoverageCampaignValidationError,
+from booley.flows.sim.coverage_record import (
+    CoverageRecordValidationError,
     DurableTargetIdentity,
 )
-from booley.flows.sim.coverage_campaign_store import (
-    publish_coverage_campaign,
+from booley.flows.sim.coverage_record_store import (
+    publish_coverage_record,
 )
 from booley.flows.sim.coverage_reference import (
     MAX_REFERENCE_BYTES,
-    CoverageCampaignReference,
-    CoverageCampaignReferenceError,
-    build_coverage_campaign_reference,
-    decode_coverage_campaign_reference,
-    encode_coverage_campaign_reference,
-    publish_coverage_campaign_reference,
-    resolve_coverage_campaign_reference,
-    resolve_persisted_coverage_campaign_reference,
+    CoverageRecordReference,
+    CoverageRecordReferenceError,
+    build_coverage_record_reference,
+    decode_coverage_record_reference,
+    encode_coverage_record_reference,
+    publish_coverage_record_reference,
+    resolve_coverage_record_reference,
+    resolve_persisted_coverage_record_reference,
 )
-from tests.flows.sim.coverage_campaign_test_support import (
-    corrupt_campaign_with_duplicate_negative_point,
+from tests.flows.sim.coverage_record_test_support import (
+    corrupt_coverage_record_with_duplicate_negative_point,
     decode_document,
 )
-from tests.flows.sim.test_coverage_campaign import _valid_document
+from tests.flows.sim.test_coverage_record import _valid_document
 from tests.runtime.test_sandbox_layout import project_alias
 
 __all__ = ["project_alias"]
@@ -46,7 +46,9 @@ _MANIFEST_SHA256 = "sha256:" + "a" * 64
 _ORIGIN_INVOCATION_ID = 12
 
 
-def _nested_campaign(origin_target: Path, *, attempt_id: str = _SIMULATION_ATTEMPT_ID) -> Path:
+def _nested_coverage_record(
+    origin_target: Path, *, attempt_id: str = _SIMULATION_ATTEMPT_ID
+) -> Path:
     attempt = (
         origin_target
         / "record"
@@ -55,12 +57,12 @@ def _nested_campaign(origin_target: Path, *, attempt_id: str = _SIMULATION_ATTEM
         / "attempts"
         / f"0001-{attempt_id}"
     )
-    campaign = decode_document(_valid_document(), DurableTargetIdentity(_TARGET_IDENTITY))
-    return publish_coverage_campaign(attempt / "coverage-record", campaign).campaign
+    coverage_record = decode_document(_valid_document(), DurableTargetIdentity(_TARGET_IDENTITY))
+    return publish_coverage_record(attempt / "coverage-record", coverage_record).coverage_record
 
 
-def _reference(origin_target: Path, nested: Path) -> CoverageCampaignReference:
-    return build_coverage_campaign_reference(
+def _reference(origin_target: Path, nested: Path) -> CoverageRecordReference:
+    return build_coverage_record_reference(
         simulation_record_id=_SIMULATION_RECORD_ID,
         simulation_manifest_sha256=_MANIFEST_SHA256,
         target_identity=_TARGET_IDENTITY,
@@ -70,14 +72,14 @@ def _reference(origin_target: Path, nested: Path) -> CoverageCampaignReference:
         simulation_work_item_id=_WORK_ITEM_ID,
         simulation_attempt_id=_SIMULATION_ATTEMPT_ID,
         origin_target_directory=origin_target,
-        coverage_campaign_path=nested,
+        coverage_record_path=nested,
     )
 
 
 def _rewrite_reference(
-    value: CoverageCampaignReference, pointer: tuple[str, ...], replacement: object
+    value: CoverageRecordReference, pointer: tuple[str, ...], replacement: object
 ) -> bytes:
-    document = json.loads(encode_coverage_campaign_reference(value))
+    document = json.loads(encode_coverage_record_reference(value))
     selected: dict[str, object] = document
     for component in pointer[:-1]:
         selected = selected[component]  # type: ignore[assignment]
@@ -91,9 +93,9 @@ def _rewrite_reference(
 def _persisted_reference(
     report_root: Path,
     public_path: Path,
-    value: CoverageCampaignReference,
+    value: CoverageRecordReference,
 ) -> dict[str, object]:
-    raw = encode_coverage_campaign_reference(value)
+    raw = encode_coverage_record_reference(value)
     nested = value.document["coverage_record"]
     assert isinstance(nested, Mapping)
     return {
@@ -107,13 +109,13 @@ def _persisted_reference(
 
 def test_reference_codec_round_trips_exact_canonical_immutable_document(tmp_path: Path) -> None:
     target = tmp_path / "targets" / _TARGET_SELECTOR
-    nested = _nested_campaign(target)
+    nested = _nested_coverage_record(target)
     value = _reference(target, nested)
 
-    raw = encode_coverage_campaign_reference(value)
-    decoded = decode_coverage_campaign_reference(raw)
+    raw = encode_coverage_record_reference(value)
+    decoded = decode_coverage_record_reference(raw)
 
-    assert encode_coverage_campaign_reference(decoded) == raw
+    assert encode_coverage_record_reference(decoded) == raw
     assert raw.endswith(b"\n") and raw.count(b"\n") == 1
     with pytest.raises(TypeError):
         decoded.document["origin_invocation_id"] = 99  # type: ignore[index]
@@ -126,16 +128,16 @@ def test_building_and_encoding_a_built_reference_never_decodes(
 ) -> None:
     """A reference Booley built from its own values is encoded without re-validation."""
     target = tmp_path / "targets" / _TARGET_SELECTOR
-    nested = _nested_campaign(target)
+    nested = _nested_coverage_record(target)
 
-    def refuse(_raw: bytes) -> CoverageCampaignReference:
+    def refuse(_raw: bytes) -> CoverageRecordReference:
         raise AssertionError("a Booley-built reference was decoded")
 
-    monkeypatch.setattr(coverage_reference, "decode_coverage_campaign_reference", refuse)
+    monkeypatch.setattr(coverage_reference, "decode_coverage_record_reference", refuse)
 
     value = _reference(target, nested)
 
-    assert encode_coverage_campaign_reference(value).endswith(b"\n")
+    assert encode_coverage_record_reference(value).endswith(b"\n")
 
 
 @pytest.mark.parametrize(
@@ -166,23 +168,23 @@ def test_reference_codec_rejects_boundary_and_identity_substitutions(
     tmp_path: Path, pointer: tuple[str, ...], replacement: object
 ) -> None:
     target = tmp_path / "targets" / _TARGET_SELECTOR
-    value = _reference(target, _nested_campaign(target))
+    value = _reference(target, _nested_coverage_record(target))
 
-    with pytest.raises(CoverageCampaignReferenceError):
-        decode_coverage_campaign_reference(_rewrite_reference(value, pointer, replacement))
+    with pytest.raises(CoverageRecordReferenceError):
+        decode_coverage_record_reference(_rewrite_reference(value, pointer, replacement))
 
 
-def test_reference_codec_refuses_a_nested_v4_campaign_as_an_older_booley_record(
+def test_reference_codec_refuses_a_nested_v4_coverage_record_as_an_older_booley_record(
     tmp_path: Path,
 ) -> None:
     """Booley 0.3.0 wrote v4: it is too old, not an invalid storage contract."""
     from booley.flows.sim.record.codec import UnsupportedSimulationRecordFormatError
 
     target = tmp_path / "targets" / _TARGET_SELECTOR
-    value = _reference(target, _nested_campaign(target))
+    value = _reference(target, _nested_coverage_record(target))
 
     with pytest.raises(UnsupportedSimulationRecordFormatError, match="older Booley"):
-        decode_coverage_campaign_reference(
+        decode_coverage_record_reference(
             _rewrite_reference(value, ("coverage_record", "schema"), "booley.coverage-campaign/v4")
         )
 
@@ -193,7 +195,7 @@ def test_resolving_a_nested_v4_reference_outside_the_report_layout_cannot_name_a
     from booley.flows.sim.record.codec import UnsupportedSimulationRecordFormatError
 
     target = tmp_path / "targets" / _TARGET_SELECTOR
-    value = _reference(target, _nested_campaign(target))
+    value = _reference(target, _nested_coverage_record(target))
     stray = tmp_path / "stray" / "coverage.json"
     stray.parent.mkdir()
     stray.write_bytes(
@@ -201,18 +203,18 @@ def test_resolving_a_nested_v4_reference_outside_the_report_layout_cannot_name_a
     )
 
     with pytest.raises(UnsupportedSimulationRecordFormatError) as excinfo:
-        resolve_coverage_campaign_reference(stray)
+        resolve_coverage_record_reference(stray)
 
     assert "delete its Simulation invocation directory and start a fresh run" in str(excinfo.value)
 
 
 def test_reference_codec_rejects_unknown_fields_noncanonical_bytes_and_size() -> None:
-    with pytest.raises(CoverageCampaignReferenceError):
-        decode_coverage_campaign_reference(b"{}\n")
-    with pytest.raises(CoverageCampaignReferenceError):
-        decode_coverage_campaign_reference(b"{ }\n")
-    with pytest.raises(CoverageCampaignReferenceError):
-        decode_coverage_campaign_reference(b"x" * (MAX_REFERENCE_BYTES + 1))
+    with pytest.raises(CoverageRecordReferenceError):
+        decode_coverage_record_reference(b"{}\n")
+    with pytest.raises(CoverageRecordReferenceError):
+        decode_coverage_record_reference(b"{ }\n")
+    with pytest.raises(CoverageRecordReferenceError):
+        decode_coverage_record_reference(b"x" * (MAX_REFERENCE_BYTES + 1))
 
 
 @pytest.mark.parametrize("container", [(), ("target",), ("coverage_record",)])
@@ -220,62 +222,65 @@ def test_reference_codec_rejects_unknown_fields(
     tmp_path: Path, container: tuple[str, ...]
 ) -> None:
     target = tmp_path / "targets" / _TARGET_SELECTOR
-    value = _reference(target, _nested_campaign(target))
-    document = json.loads(encode_coverage_campaign_reference(value))
+    value = _reference(target, _nested_coverage_record(target))
+    document = json.loads(encode_coverage_record_reference(value))
     selected = document if not container else document[container[0]]
     selected["substitute"] = "unexpected"  # type: ignore[index]
     raw = json.dumps(document, sort_keys=True, separators=(",", ":")).encode() + b"\n"
 
-    with pytest.raises(CoverageCampaignReferenceError, match="exact fields"):
-        decode_coverage_campaign_reference(raw)
+    with pytest.raises(CoverageRecordReferenceError, match="exact fields"):
+        decode_coverage_record_reference(raw)
 
 
 def test_publication_is_create_only_and_idempotent_for_identical_bytes(tmp_path: Path) -> None:
     target = tmp_path / "targets" / _TARGET_SELECTOR
-    value = _reference(target, _nested_campaign(target))
+    value = _reference(target, _nested_coverage_record(target))
     path = target / "coverage.json"
 
-    assert publish_coverage_campaign_reference(path, value) == value
-    recovered = publish_coverage_campaign_reference(path, value)
-    assert encode_coverage_campaign_reference(recovered) == path.read_bytes()
+    assert publish_coverage_record_reference(path, value) == value
+    recovered = publish_coverage_record_reference(path, value)
+    assert encode_coverage_record_reference(recovered) == path.read_bytes()
 
-    conflicting = decode_coverage_campaign_reference(
+    conflicting = decode_coverage_record_reference(
         _rewrite_reference(value, ("producer_invocation_id",), 20)
     )
-    with pytest.raises(CoverageCampaignReferenceError, match="conflicts"):
-        publish_coverage_campaign_reference(path, conflicting)
+    with pytest.raises(CoverageRecordReferenceError, match="conflicts"):
+        publish_coverage_record_reference(path, conflicting)
 
 
-def test_resolver_authenticates_real_nested_campaign_at_exact_attempt_path(
+def test_resolver_authenticates_real_nested_coverage_record_at_exact_attempt_path(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "targets" / _TARGET_SELECTOR
-    nested = _nested_campaign(target)
+    nested = _nested_coverage_record(target)
     path = target / "coverage.json"
-    publish_coverage_campaign_reference(path, _reference(target, nested))
+    publish_coverage_record_reference(path, _reference(target, nested))
 
-    resolved = resolve_coverage_campaign_reference(path)
+    resolved = resolve_coverage_record_reference(path)
 
-    assert resolved.campaign_path == nested
-    assert resolved.loaded.campaign.campaign_id == _valid_document()["coverage_record_id"]
-    assert resolved.loaded.campaign.target.identity == _TARGET_IDENTITY
+    assert resolved.coverage_record_path == nested
+    assert (
+        resolved.loaded.coverage_record.coverage_record_id
+        == _valid_document()["coverage_record_id"]
+    )
+    assert resolved.loaded.coverage_record.target.identity == _TARGET_IDENTITY
 
 
 def test_persisted_resolver_authenticates_outer_and_nested_references(tmp_path: Path) -> None:
     report_root = tmp_path / "reports"
     target = report_root / "sim" / "1" / "targets" / _TARGET_SELECTOR
-    nested = _nested_campaign(target)
+    nested = _nested_coverage_record(target)
     value = _reference(target, nested)
     public_path = target / "coverage.json"
-    publish_coverage_campaign_reference(public_path, value)
+    publish_coverage_record_reference(public_path, value)
 
-    resolved = resolve_persisted_coverage_campaign_reference(
+    resolved = resolve_persisted_coverage_record_reference(
         report_root,
         _persisted_reference(report_root, public_path, value),
     )
 
     assert resolved.reference_path == public_path
-    assert resolved.campaign_path == nested
+    assert resolved.coverage_record_path == nested
 
 
 @pytest.mark.parametrize(
@@ -296,42 +301,42 @@ def test_persisted_resolver_rejects_wrapper_substitution(
 ) -> None:
     report_root = tmp_path / "reports"
     target = report_root / "sim" / "1" / "targets" / _TARGET_SELECTOR
-    nested = _nested_campaign(target)
+    nested = _nested_coverage_record(target)
     value = _reference(target, nested)
     public_path = target / "coverage.json"
-    publish_coverage_campaign_reference(public_path, value)
+    publish_coverage_record_reference(public_path, value)
     persisted = _persisted_reference(report_root, public_path, value)
     persisted[field] = replacement
 
-    with pytest.raises(CoverageCampaignReferenceError):
-        resolve_persisted_coverage_campaign_reference(report_root, persisted)
+    with pytest.raises(CoverageRecordReferenceError):
+        resolve_persisted_coverage_record_reference(report_root, persisted)
 
 
 def test_persisted_resolver_rejects_linked_public_reference(tmp_path: Path) -> None:
     report_root = tmp_path / "reports"
     target = report_root / "sim" / "1" / "targets" / _TARGET_SELECTOR
-    nested = _nested_campaign(target)
+    nested = _nested_coverage_record(target)
     value = _reference(target, nested)
     real_path = target / "real-coverage.json"
-    publish_coverage_campaign_reference(real_path, value)
+    publish_coverage_record_reference(real_path, value)
     public_path = target / "coverage.json"
     public_path.symlink_to(real_path.name)
     persisted = _persisted_reference(report_root, public_path, value)
 
-    with pytest.raises(CoverageCampaignReferenceError, match="contains a link"):
-        resolve_persisted_coverage_campaign_reference(report_root, persisted)
+    with pytest.raises(CoverageRecordReferenceError, match="contains a link"):
+        resolve_persisted_coverage_record_reference(report_root, persisted)
 
 
-def test_resolver_propagates_nested_campaign_validation_findings(tmp_path: Path) -> None:
+def test_resolver_propagates_nested_coverage_record_validation_findings(tmp_path: Path) -> None:
     target = tmp_path / "targets" / _TARGET_SELECTOR
-    nested = _nested_campaign(target)
+    nested = _nested_coverage_record(target)
     reference = _reference(target, nested)
-    corrupt_campaign_with_duplicate_negative_point(nested)
+    corrupt_coverage_record_with_duplicate_negative_point(nested)
     nested_bytes = nested.read_bytes()
-    reference = decode_coverage_campaign_reference(
+    reference = decode_coverage_record_reference(
         _rewrite_reference(reference, ("coverage_record", "bytes"), len(nested_bytes))
     )
-    reference = decode_coverage_campaign_reference(
+    reference = decode_coverage_record_reference(
         _rewrite_reference(
             reference,
             ("coverage_record", "sha256"),
@@ -339,10 +344,10 @@ def test_resolver_propagates_nested_campaign_validation_findings(tmp_path: Path)
         )
     )
     path = target / "coverage.json"
-    publish_coverage_campaign_reference(path, reference)
+    publish_coverage_record_reference(path, reference)
 
-    with pytest.raises(CoverageCampaignValidationError) as caught:
-        resolve_coverage_campaign_reference(path)
+    with pytest.raises(CoverageRecordValidationError) as caught:
+        resolve_coverage_record_reference(path)
 
     message = str(caught.value)
     assert "COV_POINT_ID_DUPLICATE at /points/1/id" in message
@@ -353,22 +358,22 @@ def test_resolver_decodes_authenticated_reference_bytes_during_path_swap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = tmp_path / "targets" / _TARGET_SELECTOR
-    nested = _nested_campaign(target)
+    nested = _nested_coverage_record(target)
     value = _reference(target, nested)
-    honest = encode_coverage_campaign_reference(value)
+    honest = encode_coverage_record_reference(value)
     substitute = _rewrite_reference(value, ("producer_invocation_id",), 20)
     path = target / "coverage.json"
     path.write_bytes(honest)
-    original = coverage_reference.decode_coverage_campaign_reference
+    original = coverage_reference.decode_coverage_record_reference
 
-    def swap_after_authenticated_read(raw: bytes) -> CoverageCampaignReference:
+    def swap_after_authenticated_read(raw: bytes) -> CoverageRecordReference:
         path.write_bytes(substitute)
         return original(raw)
 
     monkeypatch.setattr(
-        coverage_reference, "decode_coverage_campaign_reference", swap_after_authenticated_read
+        coverage_reference, "decode_coverage_record_reference", swap_after_authenticated_read
     )
-    resolved = coverage_reference.resolve_coverage_campaign_reference(path)
+    resolved = coverage_reference.resolve_coverage_record_reference(path)
 
     assert resolved.reference.document["producer_invocation_id"] == 19
     assert path.read_bytes() == substitute
@@ -376,20 +381,20 @@ def test_resolver_decodes_authenticated_reference_bytes_during_path_swap(
 
 def test_resolver_rejects_nested_byte_digest_substitution(tmp_path: Path) -> None:
     target = tmp_path / "targets" / _TARGET_SELECTOR
-    nested = _nested_campaign(target)
+    nested = _nested_coverage_record(target)
     path = target / "coverage.json"
-    publish_coverage_campaign_reference(path, _reference(target, nested))
+    publish_coverage_record_reference(path, _reference(target, nested))
     nested.write_bytes(nested.read_bytes() + b" ")
 
-    with pytest.raises(CoverageCampaignReferenceError, match="bytes disagree"):
-        resolve_coverage_campaign_reference(path)
+    with pytest.raises(CoverageRecordReferenceError, match="bytes disagree"):
+        resolve_coverage_record_reference(path)
 
 
 def test_resolver_rejects_reference_digest_substitution_even_for_valid_nested_bytes(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "targets" / _TARGET_SELECTOR
-    nested = _nested_campaign(target)
+    nested = _nested_coverage_record(target)
     value = _reference(target, nested)
     raw = _rewrite_reference(
         value,
@@ -399,33 +404,33 @@ def test_resolver_rejects_reference_digest_substitution_even_for_valid_nested_by
     path = target / "coverage.json"
     path.write_bytes(raw)
 
-    with pytest.raises(CoverageCampaignReferenceError, match="bytes disagree"):
-        resolve_coverage_campaign_reference(path)
+    with pytest.raises(CoverageRecordReferenceError, match="bytes disagree"):
+        resolve_coverage_record_reference(path)
 
 
 def test_resolver_rejects_linked_reference_and_nested_path_components(tmp_path: Path) -> None:
     target = tmp_path / "targets" / _TARGET_SELECTOR
-    nested = _nested_campaign(target)
+    nested = _nested_coverage_record(target)
     value = _reference(target, nested)
     real_reference = target / "real-reference.json"
-    real_reference.write_bytes(encode_coverage_campaign_reference(value))
+    real_reference.write_bytes(encode_coverage_record_reference(value))
     (target / "coverage.json").symlink_to(real_reference.name)
-    with pytest.raises(CoverageCampaignReferenceError, match="not a regular file"):
-        resolve_coverage_campaign_reference(target / "coverage.json")
+    with pytest.raises(CoverageRecordReferenceError, match="not a regular file"):
+        resolve_coverage_record_reference(target / "coverage.json")
 
     (target / "coverage.json").unlink()
     actual_work_items = target / "record" / "work-items"
     moved_work_items = target / "record" / "real-work-items"
     actual_work_items.rename(moved_work_items)
     actual_work_items.symlink_to(moved_work_items.name)
-    (target / "coverage.json").write_bytes(encode_coverage_campaign_reference(value))
-    with pytest.raises(CoverageCampaignReferenceError, match="contains a link"):
-        resolve_coverage_campaign_reference(target / "coverage.json")
+    (target / "coverage.json").write_bytes(encode_coverage_record_reference(value))
+    with pytest.raises(CoverageRecordReferenceError, match="contains a link"):
+        resolve_coverage_record_reference(target / "coverage.json")
 
 
 def test_resolver_rejects_attempt_identity_as_unrelated_path_substring(tmp_path: Path) -> None:
     target = tmp_path / "targets" / _TARGET_SELECTOR
-    honest = _nested_campaign(target)
+    honest = _nested_coverage_record(target)
     misleading = (
         target
         / "record"
@@ -443,27 +448,27 @@ def test_resolver_rejects_attempt_identity_as_unrelated_path_substring(tmp_path:
     )
     value = _reference(target, misleading)
     path = target / "coverage.json"
-    path.write_bytes(encode_coverage_campaign_reference(value))
+    path.write_bytes(encode_coverage_record_reference(value))
 
-    with pytest.raises(CoverageCampaignReferenceError, match="Attempt identity"):
-        resolve_coverage_campaign_reference(path)
+    with pytest.raises(CoverageRecordReferenceError, match="Attempt identity"):
+        resolve_coverage_record_reference(path)
 
 
 def test_image_alias_public_and_persisted_references(project_alias):
     alias, target = project_alias
     origin = target / "sim/12/targets/sim_counter"
-    nested = _nested_campaign(origin)
+    nested = _nested_coverage_record(origin)
     reference = _reference(origin, nested)
     public = origin / "coverage.json"
-    publish_coverage_campaign_reference(public, reference)
-    resolved = resolve_coverage_campaign_reference(alias / public.relative_to(target))
+    publish_coverage_record_reference(public, reference)
+    resolved = resolve_coverage_record_reference(alias / public.relative_to(target))
     assert resolved.reference_path == public
-    assert resolved.campaign_path == nested
+    assert resolved.coverage_record_path == nested
     persisted = _persisted_reference(target, public, reference)
-    assert resolve_persisted_coverage_campaign_reference(alias, persisted) == resolved
+    assert resolve_persisted_coverage_record_reference(alias, persisted) == resolved
     (target / "linked").symlink_to(target, target_is_directory=True)
     with pytest.raises((ValueError, OSError), match=r"link|regular"):
-        resolve_coverage_campaign_reference(alias / "linked" / public.relative_to(target))
+        resolve_coverage_record_reference(alias / "linked" / public.relative_to(target))
 
 
 @pytest.mark.parametrize("linked", ["entry", "below"])
@@ -485,7 +490,7 @@ def test_reference_follows_only_the_booley_dir_entry(
     relative = Path("sim/1/targets") / _TARGET_SELECTOR
     # The nested Campaign is published through the physical spelling so only the
     # reference readers see the entry.
-    physical_nested = _nested_campaign(physical_reports / relative)
+    physical_nested = _nested_coverage_record(physical_reports / relative)
     reports = project / ".booley" / "flow-reports"
     target = reports / relative
     nested = target / physical_nested.relative_to(physical_reports / relative)
@@ -493,17 +498,17 @@ def test_reference_follows_only_the_booley_dir_entry(
 
     if linked == "below":
         physical_value = _reference(physical_reports / relative, physical_nested)
-        publish_coverage_campaign_reference(
+        publish_coverage_record_reference(
             physical_reports / relative / "coverage.json", physical_value
         )
-        with pytest.raises(CoverageCampaignReferenceError):
-            resolve_coverage_campaign_reference(public_path)
+        with pytest.raises(CoverageRecordReferenceError):
+            resolve_coverage_record_reference(public_path)
         return
     value = _reference(target, nested)
-    assert publish_coverage_campaign_reference(public_path, value) == value
-    assert publish_coverage_campaign_reference(public_path, value) == value
-    assert resolve_coverage_campaign_reference(public_path).campaign_path == nested
-    persisted = resolve_persisted_coverage_campaign_reference(
+    assert publish_coverage_record_reference(public_path, value) == value
+    assert publish_coverage_record_reference(public_path, value) == value
+    assert resolve_coverage_record_reference(public_path).coverage_record_path == nested
+    persisted = resolve_persisted_coverage_record_reference(
         reports, _persisted_reference(reports, public_path, value)
     )
     assert persisted.reference_path == public_path

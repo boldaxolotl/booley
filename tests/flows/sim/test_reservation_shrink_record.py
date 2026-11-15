@@ -1,8 +1,8 @@
-"""A Simulation Campaign's Memory Reservation shrinks as its build and runs end (#3240, ADR 0087).
+"""A Simulation Record's Memory Reservation shrinks as its build and runs end (#3240, ADR 0087).
 
 The real ``SimulateFlow`` runs on the fake-Verilator Project of the build-reuse
 tests. The shrinker is built the way admission builds it: ``plan_memory_claim``
-over the Flow's own ``campaign_job_requests``, so the request keys must match
+over the Flow's own ``simulation_record_job_requests``, so the request keys must match
 the keys the report sites use.
 """
 

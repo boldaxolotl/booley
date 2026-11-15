@@ -198,7 +198,7 @@ class _TimedOutCoverageExecution(_MixedCoverageExecution):
 
 
 def _coverage_outcome(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execution: Any) -> Any:
-    """Run ``sim --coverage`` on a two-test Target and return its Campaign outcome."""
+    """Run ``sim --coverage`` on a two-test Target and return its Simulation Record outcome."""
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
     data = tmp_path / ".booley"
@@ -259,14 +259,14 @@ def test_boolean_cycle_count_gives_no_value(tmp_path: Path) -> None:
     assert simulation_flow_metrics(outcome).per_test == {"cycle_count": {"count": 3}}
 
 
-def test_unreadable_coverage_campaign_produces_no_metrics(
+def test_unreadable_coverage_record_produces_no_metrics(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from booley.flows.metric_declarations import MetricsUnavailableError
-    from booley.flows.sim.metrics import coverage_campaign_path, simulation_flow_metrics
+    from booley.flows.sim.metrics import coverage_record_path, simulation_flow_metrics
 
     outcome = _coverage_outcome(tmp_path, monkeypatch, _MixedCoverageExecution())
-    coverage_campaign_path(outcome).write_bytes(b"{ not json")
+    coverage_record_path(outcome).write_bytes(b"{ not json")
 
     with pytest.raises(MetricsUnavailableError, match="Coverage Campaign could not be read"):
         simulation_flow_metrics(outcome)

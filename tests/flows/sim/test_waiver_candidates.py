@@ -21,8 +21,8 @@ from booley.core.boundary import BoundaryError
 from booley.core.file_lock import acquire_file_lock, release_file_lock
 from booley.flows.sim import waiver_candidates as store
 from booley.flows.sim.waiver_candidates import (
-    CampaignBinding,
     CandidateRecord,
+    CoverageRecordBinding,
     Rejection,
     WaiverCandidateLockError,
     WaiverCandidateRecordError,
@@ -43,12 +43,12 @@ POINT = "cp1:eyJwb2ludCI6MX0"
 OTHER_POINT = "cp1:eyJwb2ludCI6Mn0"
 
 
-def _binding(campaign: str = "camp-1", point_store: str = SHA_A) -> CampaignBinding:
-    return CampaignBinding(
-        campaign_id=campaign,
+def _binding(coverage_record: str = "camp-1", point_store: str = SHA_A) -> CoverageRecordBinding:
+    return CoverageRecordBinding(
+        campaign_id=coverage_record,
         manifest_sha256=SHA_A,
         point_store_sha256=point_store,
-        campaign_path=f"sim/1/core/{campaign}/coverage.json",
+        campaign_path=f"sim/1/core/{coverage_record}/coverage.json",
         target_identity="vlnv:acme:ip:core:1.0#sim_core",
         target_selector="sim_core",
     )
@@ -114,7 +114,7 @@ def test_first_proposal_creates_the_record_lazily(tmp_path: Path) -> None:
         assert waiver_candidates_path(tmp_path).stat().st_mode & 0o777 == 0o644
 
 
-def test_same_campaign_bumps_count_and_replaces_justification(tmp_path: Path) -> None:
+def test_same_coverage_record_bumps_count_and_replaces_justification(tmp_path: Path) -> None:
     _record(tmp_path)
     _record(tmp_path, _proposal(justification="tied low"), invocation_id="inv-2", now=LATER)
 
@@ -126,7 +126,7 @@ def test_same_campaign_bumps_count_and_replaces_justification(tmp_path: Path) ->
     assert candidate.last_invocation_id == "inv-2"
 
 
-def test_different_campaign_replaces_entry_and_resets_count(tmp_path: Path) -> None:
+def test_different_coverage_record_replaces_entry_and_resets_count(tmp_path: Path) -> None:
     _record(tmp_path)
     _record(tmp_path)
     newer = _binding("camp-2", point_store=SHA_B)
@@ -331,7 +331,7 @@ from pathlib import Path
 from booley.flows.sim import waiver_candidates as store
 
 directory, name, rounds, shared = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3]), sys.argv[4]
-binding = store.CampaignBinding(
+binding = store.CoverageRecordBinding(
     "camp-1", "sha256:" + "a" * 64, "sha256:" + "a" * 64,
     "sim/1/core/camp-1/coverage.json", "vlnv:acme:ip:core:1.0#sim_core", "sim_core",
 )
