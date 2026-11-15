@@ -23,7 +23,7 @@ Python code, and review checks it the same way: cite the principle number.
   [USER_DOCS_PRINCIPLES.md](USER_DOCS_PRINCIPLES.md); its Scope lists
   their files. The cheatsheet follows
   [principle 33](USER_DOCS_PRINCIPLES.md#33-write-the-cheatsheet-for-the-user-and-the-agent)
-  there.
+  in that file.
 
 In these principles, "the reader" is whoever the doc is for: the user in a
 user doc, a contributor or agent in an internal doc.
@@ -145,7 +145,8 @@ A retired setting is named in two places only: the message that refuses it,
 which says what to do ("delete the key"), and the changelog. A reference doc
 such as `CONFIG.md` lists only the current keys, and
 [TROUBLESHOOTING.md](../user/TROUBLESHOOTING.md) gets no entry for it
-[(principle 34)](USER_DOCS_PRINCIPLES.md#34-a-troubleshooting-entry-is-the-last-resort).
+([principle
+34](USER_DOCS_PRINCIPLES.md#34-a-troubleshooting-entry-is-the-last-resort)).
 
 ### 15. Credit sources and mark temporary designs
 
