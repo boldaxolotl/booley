@@ -15,6 +15,7 @@ from booley.harness import chat_checkout
 from booley.runtime import agent_transcripts, conversation_records
 from booley.runtime.agent_transcripts import RecencyUnknownError
 from booley.runtime.conversation_records import ConversationRecord
+from booley.runtime.mount_history import translate_stored_path
 
 
 @dataclass(frozen=True)
@@ -99,8 +100,15 @@ def _main(
     return ResumeTarget(None, None, (), tuple(agent_args), conversation_id, notice)
 
 
-def _start_directory(worktree: Path, recorded: str) -> Path:
-    """The recorded directory when it still lies inside *worktree*, else the worktree root."""
+def _start_directory(worktree: Path, record: ConversationRecord) -> Path:
+    """The recorded directory, under the current mount, when it lies inside *worktree*.
+
+    Otherwise the worktree root. ``record.cwd`` itself stays as recorded: it is where the
+    agent CLI filed the conversation.
+    """
+    recorded = translate_stored_path(
+        record.cwd, record=f"saved conversation {record.conversation_id}"
+    )
     candidate = Path(recorded)
     if candidate.is_dir() and candidate.resolve().is_relative_to(worktree.resolve()):
         return candidate
@@ -124,7 +132,7 @@ def _worktree_target(
     if provider == "codex":
         names.append("codex:" + record.conversation_id)
     worktree = common / "worktrees" / record.worktree
-    cwd = _start_directory(worktree, record.cwd)
+    cwd = _start_directory(worktree, record)
     return ResumeTarget(worktree, cwd, tuple(names), tuple(agent_args), record.conversation_id)
 
 
