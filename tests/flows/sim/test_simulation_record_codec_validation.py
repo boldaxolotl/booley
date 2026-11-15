@@ -8,6 +8,7 @@ import pytest
 
 from booley.flows.sim.record import codec
 from booley.flows.sim.record.codec import SimulationRecordIntegrityError
+from booley.flows.sim.record.store import SimulationRecordStore
 from tests.flows.sim.test_simulation_record_codec_golden import (
     _BUILD_READY,
     _simulation_result,
@@ -270,8 +271,6 @@ def _prerequisite_entry() -> dict[str, object]:
     ids=["workload-run-cwd", "target-selector", "work-item-kind", "prerequisite-manifest-path"],
 )
 def test_manifest_reader_rejects_a_missing_nested_field(tmp_path, path, field) -> None:
-    from booley.flows.sim.record.inspection import inspect_retained_simulation_record
-
     document = _manifest()
     document["prerequisites"] = [_prerequisite_entry()]
     parent: object = document
@@ -285,4 +284,4 @@ def test_manifest_reader_rejects_a_missing_nested_field(tmp_path, path, field) -
     manifest.parent.mkdir()
     manifest.write_bytes(raw)
     with pytest.raises(SimulationRecordIntegrityError, match=field):
-        inspect_retained_simulation_record(manifest)
+        SimulationRecordStore(manifest.parent).load_manifest()

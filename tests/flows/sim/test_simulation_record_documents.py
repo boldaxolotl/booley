@@ -16,7 +16,6 @@ temporary root replaced by ``/booley-0.4.0-capture``.
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -24,15 +23,12 @@ import pytest
 
 from booley.flows.sim.coverage_analysis_input import CoverageAnalysisError, read_coverage_record
 from booley.flows.sim.execution.contract import SimulationTestOutcome
-from booley.flows.sim.record import inspect_retained_simulation_record
 from booley.flows.sim.record.codec import (
     canonical_json_bytes,
     raise_if_retired,
 )
 from booley.flows.sim.record.projection import decode_simulation_projection
-from booley.flows.sim.record_retention import SimulationRecordRetentionError, prune_invocation
 from tests.flows.sim.simulation_record_test_support import (
-    _retained_invocation,
     coverage_invocation,
 )
 from tests.flows.sim.test_simulation_record_cocotb_coverage_items import _run_cocotb
@@ -48,7 +44,6 @@ from tests.flows.sim.test_simulation_record_unsupported_formats import (
 reports = _reports_fixture
 
 _FIXTURES = Path(__file__).parents[1] / "fixtures" / "booley_0_4_0"
-_OLD_SUMMARY = "booley.simulation-campaign-summary/v1"
 _OLD_PROJECTION = "booley.simulation-projection/v3"
 _OLD_TRANSPORT = "booley.cocotb-campaign-transport/v1"
 _OLD_KINDS = ("simulation_campaign_manifest", "coverage_campaign_reference")
@@ -76,15 +71,6 @@ def _kinds(value: object) -> set[str]:
         for item in value:
             found |= _kinds(item)
     return found
-
-
-def _tree(root: Path) -> dict[str, bytes]:
-    """Every file under *root* by relative path, to show a refusal changed nothing."""
-    return {
-        path.relative_to(root).as_posix(): path.read_bytes()
-        for path in sorted(root.rglob("*"))
-        if path.is_file() and path.suffix != ".lock"
-    }
 
 
 def _0_4_0_projection(kind: str) -> dict[str, Any]:
@@ -144,37 +130,9 @@ def test_a_cocotb_attempt_writes_the_record_transport(tmp_path: Path) -> None:
 # --- AC2: every 0.4.0 document is refused as older ------------------------------------------
 
 
-def test_a_0_4_0_summary_is_refused_naming_its_invocation(tmp_path: Path) -> None:
-    reports_root, _project_data, store = _retained_invocation(tmp_path)
-    (old_summary,) = _FIXTURES.glob("complete/sim/1/targets/sim/campaign/summary.json")
-    assert _json(old_summary)["$schema"] == _OLD_SUMMARY
-    _write(store.summary_path, _json(old_summary))
-    invocation = reports_root / "sim" / "1"
-    before = _tree(invocation)
-
-    with pytest.raises(ValueError) as inspected:
-        inspect_retained_simulation_record(store.manifest_path)
-    _assert_unsupported_type(inspected.value)
-    _assert_refused(str(inspected.value), _OLD_SUMMARY, invocation)
-
-    with pytest.raises(SimulationRecordRetentionError) as pruned:
-        prune_invocation(reports_root, 1)
-    _assert_refused(str(pruned.value), _OLD_SUMMARY, invocation)
-    assert _tree(invocation) == before
-
-
 def test_a_0_4_0_projection_is_refused_naming_its_invocation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Retention reads the projection of a retained Record.
-    (tmp_path / "retained").mkdir()
-    reports_root, _project_data, _store = _retained_invocation(tmp_path / "retained")
-    invocation = reports_root / "sim" / "1"
-    _write(invocation / "targets" / "sim" / "simulation.json", _0_4_0_projection("complete"))
-    with pytest.raises(SimulationRecordRetentionError) as pruned:
-        prune_invocation(reports_root, 1)
-    _assert_refused(str(pruned.value), _OLD_PROJECTION, invocation)
-
     # Coverage analysis reads the projection beside a Coverage reference.
     (tmp_path / "coverage").mkdir()
     run = coverage_invocation(tmp_path / "coverage", monkeypatch)
@@ -196,39 +154,7 @@ def test_a_0_4_0_cocotb_transport_is_refused_as_older() -> None:
     _assert_refused(str(refused.value), _OLD_TRANSPORT)
 
 
-# --- AC3: retention reports a 0.4.0 receipt as older, ignores a 0.4.0 sibling projection ----
-
-
-def test_retention_prunes_an_origin_beside_a_0_4_0_sibling_projection(tmp_path: Path) -> None:
-    reports_root, _project_data, _store = _retained_invocation(tmp_path)
-    sibling = reports_root / "sim" / "2"
-    projection = sibling / "targets" / "sim" / "simulation.json"
-    projection.parent.mkdir(parents=True)
-    _write(projection, _0_4_0_projection("complete"))
-    before = _tree(sibling)
-
-    prune_invocation(reports_root, 1)
-
-    assert not (reports_root / "sim" / "1").exists()
-    assert _tree(sibling) == before
-
-
-def test_retention_reports_a_0_4_0_resume_receipt_as_older(reports: Path) -> None:
-    receipt = reports / "sim" / "2"
-    shutil.copytree(_FIXTURES / "resumed" / "sim" / "2", receipt)
-    before = _tree(receipt)
-
-    with pytest.raises(SimulationRecordRetentionError) as pruned:
-        prune_invocation(reports, 2)
-
-    text = str(pruned.value)
-    assert "detail.campaigns" in text
-    _assert_refused(text, "detail.campaigns", receipt)
-    assert "unresolved completed Target" not in text
-    assert _tree(receipt) == before
-
-
-# --- AC4: no old key or kind is an alias -------------------------------------------------------
+# --- AC3: no old key or kind is an alias -------------------------------------------------------
 
 
 def test_old_projection_keys_and_kinds_are_not_aliases(
@@ -257,14 +183,6 @@ def test_old_projection_keys_and_kinds_are_not_aliases(
         with pytest.raises(CoverageAnalysisError) as analysed:
             read_coverage_record(run.target / "coverage.json")
         refusals.append(str(analysed.value))
-
-    # (d) Retention treats the old manifest kind in a current projection as a disagreement.
-    altered = json.loads(json.dumps(current))
-    altered["simulation_record_manifest"]["kind"] = _OLD_KINDS[0]
-    _write(path, altered)
-    with pytest.raises(ValueError, match="kind or owner disagrees") as pruned:
-        prune_invocation(run.reports, 1)
-    refusals.append(str(pruned.value))
 
     assert refusals
     assert all("older Booley" not in text for text in refusals)
