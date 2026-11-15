@@ -108,6 +108,8 @@ class JobRecord:
     schema: int = 2
     work_dir: str | None = None
     session_key: str | None = None
+    # The Goal run binding, stored as an opaque mapping: runtime never interprets it, which keeps
+    # this package free of Goal Mode imports. MCP validates it (``mcp.job_results.job_binding``).
     binding: dict[str, Any] | None = None
     process_identity: dict[str, Any] | None = None
     ended_at: str | None = None

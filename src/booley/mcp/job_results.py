@@ -70,7 +70,14 @@ def read_record_or_none(run_id: str, root: Path | None) -> jobrec.JobRecord | No
 
 
 def _locate_job(run_id: str, *, roots: tuple[Path, ...] | None = None) -> LocatedJob | None:
-    """Find a unique run across roots; refuse even legacy collisions."""
+    """Find a unique run across roots; refuse even legacy collisions.
+
+    A ``run_id`` in more than one root is an error: silently picking one could
+    show or cancel the wrong Job. A Goal-bound Job's report and checkpoint lookups
+    use the Goal Record its binding names (``JobRepository.report_booley_dir``),
+    never the server's current Goal selection, so a finished Job never attaches
+    itself to a Goal Mode entered later in the same worktree.
+    """
     search_roots: list[Path | None] = list(job_roots() if roots is None else roots)
     if run_id in _KNOWN_JOB_ROOTS and _KNOWN_JOB_ROOTS[run_id] not in search_roots:
         search_roots.insert(0, _KNOWN_JOB_ROOTS[run_id])
@@ -435,6 +442,11 @@ def _find_attachable_job(
 
 
 def _attach_binding_key(binding: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The binding facts two calls must share to be the same work.
+
+    ``invocation_id`` and ``record_revision`` are dropped: calls that differ only in
+    those are one Job. A finished Job is never attached to; a repeat call runs again.
+    """
     if binding is None:
         return None
     try:

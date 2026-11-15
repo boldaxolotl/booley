@@ -11,11 +11,7 @@ Neighboring docs own the rest:
 | Document | Owns |
 |---|---|
 | [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and the per-Flow pages | Running built-in Booley Flows and reading their results |
-| [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) | How the built-in `sim`, `lint`, `synth`, `fpga`, and `mutation` Flows build commands, run, and produce evidence |
-| [FLOW_IMPLEMENTATION_SIM.md](FLOW_IMPLEMENTATION_SIM.md) | Simulation Flow internals: adapter seam, verdicts, Elaboration Check, coverage persistence |
-| [JOB_RECORDS.md](JOB_RECORDS.md) | How Jobs are recorded, owned, and found again |
-| [FLOW_REPORTS.md](FLOW_REPORTS.md) | Report locations and JSON schemas of the built-in Flows |
-| [SPECIALIST_IMPLEMENTATION.md](SPECIALIST_IMPLEMENTATION.md) | Evidence contracts of the built-in Reviewer and Coverage Analyst |
+| [FLOW_REPORTS.md](FLOW_REPORTS.md) | Report locations and layout of the built-in Flows |
 | [CONFIG.md](../user/CONFIG.md) | Every `booley.toml` key, default, and example |
 | [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) | Supported EDA tools, provisioning, and their requirements |
 
@@ -48,9 +44,7 @@ MCP surface; only their source location differs.
 
 ### The common lifecycle
 
-Every call follows the same lifecycle. How the resulting Job is recorded,
-owned, and found again is in [JOB_RECORDS.md](JOB_RECORDS.md).
-
+Every call follows the same lifecycle.
 
 1. The registry discovers the implementation and exposes its arguments as an
    MCP schema.
@@ -61,22 +55,10 @@ owned, and found again is in [JOB_RECORDS.md](JOB_RECORDS.md).
 4. The endpoint runs: a Flow runs its subprocess, a Specialist runs its model
    call, a direct endpoint runs its own code.
 5. The endpoint turns the raw output into an outcome (`McpToolResult`).
-6. The coordinator records acceptance before it persists any mutable state or
-   report, then releases admission. In Goal Mode, evidence is appended under
-   the call's [Run Binding](../../src/booley/goals/GLOSSARY.md) first; outside
-   Goal Mode nothing persists as Goal evidence.
-
-Recording acceptance before persistence means a crash can never leave a report
-that claims evidence the Goal Record does not hold. If that final recording
-fails, the call returns exit 2 with a structured `completion_error`, keeps the
-result and Target facts it already has, skips the mutable persistence, and
-makes one attempt to write a recovery report. A failure while updating a
-Criterion during the run follows the ordinary error path instead; see
-[Failures](FLOW_IMPLEMENTATION.md#failures).
-
-The coordinator takes an already-prepared request, so it contains no CLI or MCP
-request shape: the `booley flow` CLI and the MCP server reach the same code,
-and the MCP side keeps only discovery, schema validation, and wire payloads.
+6. The coordinator records acceptance, persists state and the report, then
+   releases admission. In Goal Mode, evidence is appended under the call's
+   [Run Binding](../../src/booley/goals/GLOSSARY.md); outside Goal Mode nothing
+   persists as Goal evidence.
 
 The MCP server, every Flow, and every Specialist refuse to start outside the
 Sandbox, so an extension and every subprocess it starts run there too. An
@@ -89,7 +71,7 @@ The registry reads endpoint metadata from Python source with the standard
 `ast` module and never imports the file, so a broken or slow Project module
 cannot crash or stall discovery. It scans:
 
-- the built-in Flow packages `booley.flows.{sim,lint,synth,fpga}`;
+- the built-in Flow packages under `booley.flows`;
 - the built-in Specialists in `booley.specialists`;
 - the Project's `mcp_tools/*.py` in the selected Booley Directory (by default
   `.booley/mcp_tools/`). Files whose name starts with `_` are skipped.
@@ -121,79 +103,6 @@ Endpoint names must be unique. Discovery refuses a catalog with two enabled
 endpoints of the same name, so a custom endpoint that reuses a built-in name
 blocks the tool list until it is renamed.
 
-### Environment filters
-
-Server environment variables decide which enabled endpoints a server lists.
-They let Booley give each nested Specialist model only the tools its job
-needs:
-
-- A nested agent's server (`BOOLEY_NESTED_AGENT=1`) lists only the names in
-  `BOOLEY_NESTED_MCP_TOOLS`. Otherwise `BOOLEY_MCP_TOOLS`, when set, limits
-  the list; when unset, every enabled endpoint is listed.
-- `booley_status` and `booley_report` appear on an interactive server
-  (`BOOLEY_MCP_MODE=interactive`) or when `BOOLEY_MCP_TOOLS` names them.
-- Interactive, non-nested servers list `goal_enter`, `goal_status`, `goal_propose_change`, and `goal_finish`; these Goal tools ignore `BOOLEY_MCP_TOOLS`, and other servers never list them.
-
-Changing these variables needs a new server process.
-
-### Live refresh
-
-Each tool-list request rereads the selected Booley Directory's `booley.toml`.
-Enabling or disabling an endpoint, or adding, removing, renaming, or editing a
-custom endpoint, refreshes the running catalog, and the server sends
-`notifications/tools/list_changed`; clients must listen for it or request a
-fresh list. Booley never publishes a partial catalog: when a refresh fails,
-for example on an invalid `booley.toml` or a duplicate name, the request fails
-and the last complete catalog stays in place. A custom file that cannot be
-parsed simply drops out of the list.
-
-### `work_dir` routing
-
-The Developer Agent passes the Goal worktree's absolute root as `work_dir` to
-every tool that accepts it.
-
-Built-in MCP worktree routing:
-
-| Accepts `work_dir` | Does not accept `work_dir` |
-| --- | --- |
-| `sim`, `lint`, `synth`, `fpga`, `mutation` | `booley_status` |
-| `reviewer`, `coverage_analyst` | `booley_poll`, `booley_cancel` |
-| `goal_enter`, `goal_status`, `goal_propose_change`, `goal_finish` | `booley_sleep`, `coverage_evidence` |
-| `booley_targets`, `booley_report`, `booley_measure` | `bwave` |
-
-`booley_sleep` appears only when diagnostic tools are enabled, and
-`coverage_evidence` only in the Coverage Analyst's nested server.
-`booley_measure` appears on the Developer Agent's interactive server, or on a
-server whose `BOOLEY_MCP_TOOLS` names it; a nested Specialist sees it only when
-its nested tool set names it.
-
-While any Goal Record occupies the Project, or one is unreadable, Booley Flows,
-Specialists, Project endpoints, Goal tools, and `booley_report` refuse a call
-that names no checkout (no `work_dir` and no caller in a linked worktree),
-even a diagnostic call meant for another checkout; `booley_targets` may omit
-it. The refusal exists so a forgotten `work_dir` cannot silently run on the
-main checkout while the agent edits a Goal worktree.
-
-A call that omits `work_dir`, or passes an empty one, targets the checkout of
-the calling agent's session process when that process's cwd is the root of a
-linked worktree of the server's repository other than the server cwd. The
-session process is the Claude Code peer, or the owner of a Codex session that
-`booley chat --no-daemon` started; ordinary and hand-started Codex never route,
-because a shared daemon's cwd belongs to no particular session. Any other
-caller gets the server cwd, which in the Sandbox is the main checkout. The
-checkout is filled in after schema validation and only for tools that accept
-`work_dir`; an explicit `work_dir` always wins. A routed call counts as
-explicit for Goal binding. A main-checkout caller is not routed and still gets
-the Goal refusal.
-
-Endpoints built on the shared parser get `work_dir` in their schema
-automatically. A custom `mcp_schema()` hook that drops it makes the endpoint
-unusable from a linked worktree: Booley refuses that routed call rather than
-run it on the server cwd while the Dashboard shows the worktree.
-Agent-facing guidance still tells the agent to pass `work_dir` explicitly.
-The decision is in
-[ADR 0068](../adr/0068-booley-dashboard.md#amendments-2026-11-08-the-callers-checkout-routes-calls-without-work_dir-2606).
-
 ## The Python contract
 
 Import the bases from their defining modules; the package `__init__` files do
@@ -205,8 +114,8 @@ not re-export them:
 | `Specialist` | `booley.specialists.specialist` | `_add_agent_args`, `_build_prompt`, `_interpret_output` |
 | `McpTool`, `McpToolResult` | `booley.mcp.base` | `_add_args`, `_run` |
 
-The built-in Flows use a separate `BuiltinFlow` base with typed requests (see
-[Code structure](FLOW_IMPLEMENTATION.md#code-structure)); `BooleyFlow`, `Specialist`, and
+The built-in Flows use a separate `BuiltinFlow` base with typed requests;
+`BooleyFlow`, `Specialist`, and
 `McpTool` keep the argparse-based contract that Project extensions depend on.
 
 Every implementation declares literal `name` and `description` class
@@ -226,7 +135,8 @@ Every endpoint inherits these arguments and adds only its own:
 
 The MCP schema is generated from the same argparse parser, so a new argument
 reaches both the CLI and MCP without extra code. An endpoint may supply its
-own schema with an `mcp_schema()` method.
+own schema with an `mcp_schema()` method; keep `work_dir` in it: an endpoint whose
+schema drops it is unusable from a linked worktree.
 
 Put `booley flow` options such as `-C` before the endpoint name
 (`booley flow -C ../other drc_check`): once the CLI reaches an option it does
@@ -306,59 +216,6 @@ optional. A direct `McpTool` endpoint reports the fields it sets, with
 The `Specialist` base fills the token and cost fields, and the base class adds
 `lines_added`/`lines_removed` for code-modifying endpoints. Finish judges a
 Goal only on persisted, current evidence, never on a result's headline.
-
-### Common artifact contract
-
-Reports with durable outputs carry an `artifacts` block: two entry-point files
-plus the **directories** holding everything else.
-
-```json
-"artifacts": {
-  "log":    ".booley/.runtime/edalize/synth/synth_soc/run.log",
-  "report": ".booley/.runtime/flow-reports/synth_synth_soc.json",
-  "dirs": {
-    "build":  ".booley/.runtime/edalize/synth/synth_soc/synth",
-    "timing": ".booley/.runtime/edalize/synth/synth_soc/synth/reports/timing"
-  }
-}
-```
-
-| Key | Meaning |
-|---|---|
-| `log` | This run's primary log, often outside the build directory |
-| `report` | The durable structured report itself |
-| `dirs` | `{role: path}` for artifact directories, such as `build`, `timing`, `impl`, `synth`, or `mutant_logs` |
-
-The block appears at the top level of the durable report and inside the result
-`detail`, which reaches the agent as MCP `structuredContent`. That copy
-survives a tail-truncated log and the 64 KiB limit on structured output. The
-contract names directory roles rather than files because EDA tools rename and
-add output files far more often than the roles change; a reader lists the
-directory when it needs everything. A multi-Target Flow nests one block per
-Target (`artifacts[target]`). Two rules make every pointer trustworthy:
-
-- **Never present when wrong.** Omit a key when its file or directory does not
-  exist or cannot be shown to belong to this run. Each Flow's freshness rules
-  are in [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) and
-  [FLOW_IMPLEMENTATION_SIM.md](FLOW_IMPLEMENTATION_SIM.md).
-- **Always relative to the work dir.** Absolute Sandbox paths do not carry
-  over to the host. Paths are relative to the endpoint's work dir, even when
-  Goal Mode writes reports into a Goal Record outside that worktree.
-
-A `--baseline` run reports no `artifacts` block: it runs in a throwaway
-worktree, so its relative paths would resolve to the current run's files.
-
-For `synth` and `fpga`, `detail.implementation.results[target]` also carries
-the grade, QoR metrics, baseline deltas, cache summary, and artifact pointers.
-When the result is too large, Booley drops embedded recipe snapshots and
-diagnostic excerpts first, then per-clock detail, then whole Targets in a fixed
-order, and lists what it dropped; it never trades the QoR for links alone.
-
-The `mutation` Flow follows the same convention: each run writes one
-self-contained campaign directory whose manifest cites the baseline log, one
-log per mutant, the mutation specifications, results, and source variants. Its
-`mutant_logs` role points at that run's copy, not the shared runtime
-directory.
 
 ### `satisfies`, `satisfies_args`, and `per_target`
 
@@ -634,19 +491,6 @@ metadata and Criterion wiring; `booley doctor` runs it alongside its Project
 checks. Goal entry validates its worktree and Goal arguments separately. None
 of these replaces running the endpoint on a real case.
 
-| Check | Result |
-|---|---|
-| Python syntax error in a custom endpoint file | Warning; the file is skipped |
-| No `BooleyFlow`, `Specialist`, or `McpTool` subclass with literal `name` and `description` | Warning; the file is skipped |
-| Name matches a built-in endpoint | Warning; its remaining checks are skipped |
-| `satisfies` names an undefined Criterion | Warning |
-| Enabled endpoint with an empty `satisfies` | Warning |
-| Project Criterion redefines a base Criterion | **Validation fails** |
-
-Warnings go to the validator's log; Doctor shows the aggregate result.
-Validation skips a disabled custom endpoint, but checks a name collision
-against every built-in, enabled or not.
-
 To validate a new endpoint:
 
 1. Run `booley doctor` and fix every endpoint and Criterion finding.
@@ -656,112 +500,3 @@ To validate a new endpoint:
    confirm exit 0, 1, and 2 mean met, unmet, and could not reach a verdict.
 5. For Goal use, enter Goal Mode with a supported Goal and confirm with
    `goal_status` that the evidence lands and goes stale when sources change.
-
-## Host-provisioned EDA is not an extension point
-
-A [Host-Provisioned Sandbox EDA Tool](../GLOSSARY.md#execution) runs through
-its ordinary built-in Flow: the same MCP schema, the same FuseSoC/Edalize
-build, the same subprocess inside the Sandbox, and the same result, artifacts,
-and Criteria. Provisioning changes only where the installation files come
-from.
-
-The host owns that authority. An EDA Installation Registration, an optional
-License Profile, and a Project Grant (see
-[Configuration](../GLOSSARY.md#configuration)) are sealed into the Sandbox at
-Sandbox Issuance, and license traffic goes only through a FlexNet License
-Relay. Project configuration may only request host provisioning for a
-supported EDA kind. Neither it nor a custom endpoint can name a host path,
-mount, image, wrapper, environment variable, license destination, or command,
-because both are files the Developer Agent can edit inside the Sandbox. A new
-commercial EDA kind therefore needs a built-in policy with Doctor probes, mount
-and lifecycle tests, and full-Flow evidence before it joins
-[SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md). The user-facing
-setup is in [SANDBOX.md](../user/SANDBOX.md#commercial-eda-provisioning).
-
-## Built-in Flow calls
-
-The built-in `sim`, `lint`, `synth`, `fpga`, and `mutation` endpoints expose the same
-controls as their CLI ([FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md)), with
-these MCP-specific shapes.
-
-**Target selection.** MCP takes one comma-separated `target` string rather
-than an array; caller order is kept, as on the CLI.
-
-**Verdict.** The result carries the Flow's exit grade (`0`/`1`/`2`) in an
-`EXIT_CODE:` line and in structured output. MCP `isError` is true for any
-nonzero exit, so it cannot tell a design failure from a run that could not
-reach a verdict; read the grade.
-
-**Report.** The per-invocation report (fields in
-[FLOW_REPORTS.md](FLOW_REPORTS.md#invocation-report)) is attached as
-`structuredContent.reports[0]`, and `structuredContent.passed` repeats the
-overall verdict. If the report is too large for the MCP result, `reports` is
-empty, `truncated` is `true`, and the result keeps the Flow, Target, exit
-code, and artifact pointers needed to open the durable report.
-
-**Progress fallback.** For `progress.json` fallback evidence, `partial` is true
-whenever the phase is not `complete` or Targets are still pending, so
-`aborted` and `superseded` are terminal but partial, and neither appears as a
-running checkpoint. When a Job ends without completing, is cancelled by the
-user, or is found orphaned at server start, the supervisor marks an
-unfinished checkpoint `aborted`, but only after it has reaped the child
-process. The repair is best effort: a missing or unwritable checkpoint never
-changes the Job's exit or cancellation result.
-
-### Simulation input
-
-The `sim` input takes Test Run selectors as a non-empty array of unique
-strings:
-
-```json
-{"target":"sim_soc","test":["reset","interrupts"]}
-```
-
-Each entry is a Test name or a Test Run selector such as `reset+fast` or
-`reset@7` (see [TESTS.md](../user/TESTS.md)). The CLI's `--tests-file` has no
-MCP property; send the selectors directly. Coverage selections use sorted
-test-name order for Campaign identity and run numbering, whatever the array
-order. Plain selections keep array order, and an omitted `test` runs the
-configured suite minus skipped Tests. HDL tests run in that order; cocotb
-decides the function order within its filtered batch. `resume_from` names one
-manifest and conflicts with `target`, `test`, `seed`, explicit `mode`,
-`coverage`, `trace`, and `no_waivers`.
-
-Structured campaign output reports `grade`, `complete`, aggregate
-`observation_counts`, and a maximum-32 `observations` preview. Every preview
-entry keeps nullable `test`, `execution`, nullable `failure_class` (`design` or
-`infrastructure`), `functional`, `assertions`, `assertion_count`, nullable
-`cycle_count`, bounded `detail`, and `log` and `trace` (the Test Run's
-simulator log and waveform as POSIX paths relative to the directory of the
-campaign's `artifacts.simulation` reference, `null` when the file does not
-exist). `observation_total` and `observations_truncated` say whether the
-preview is complete. The full `report.json.cycle_counts` mapping (see
-[FLOW_REPORTS.md](FLOW_REPORTS.md)) is dropped from inline output before the
-64 KiB structured-output check; read the numbered report for all counts.
-
-`observation_counts` aggregates three independent axes:
-
-- `execution`: whether the simulator completed, timed out, was guard-aborted,
-  or failed before producing trustworthy test evidence;
-- `functional`: the pass/fail/inconclusive test verdict;
-- `assertions`: assertion evidence observed for that test.
-
-`failure_class` is derived from those axes. It says whether a non-passing
-outcome is blamed on the `infrastructure` or the `design`, and is `null` only
-when the test passed: every other outcome that is not an infrastructure
-failure, including an inconclusive one, is `design`.
-
-The preview is deliberately not the full record. For that, resolve the
-`manifest` artifact reference and read its authenticated terminal results.
-
-### Simulation coverage input
-
-`sim` takes an optional boolean `coverage` (default `false`); the CLI's
-`--coverage` and `--cov` set the same field. No Criterion turns coverage on
-by itself. Every selected Target passes coverage preflight before any report
-is allocated, and one Target whose simulator cannot collect coverage (anything
-but Verilator) rejects the whole request. Structured Target results keep
-simulation, collection, and evaluation separate and point to the exact
-canonical reports. The Coverage Analyst takes the returned Campaign path in a
-separate call. The ordered persistence and Criterion-evidence steps are in
-[Coverage Campaign orchestration](FLOW_IMPLEMENTATION_SIM.md#coverage-campaign-orchestration).

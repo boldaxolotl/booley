@@ -88,8 +88,13 @@ def expected_count(flow_name: str, work_dir: Path, key: str) -> int:
     One validation rule serves every allowance (``expected_latches`` and
     ``expected_comb_loops`` under ``synth`` and ``fpga``). A missing,
     negative, boolean, or non-integer value is treated as 0 rather than
-    silently widening the gate. The rationale lives in
-    ``docs/internals/FLOW_IMPLEMENTATION.md`` (Intentional latches and loops).
+    silently widening the gate.
+
+    An inferred latch or combinational loop normally fails the run. A deliberate
+    one (an integrated clock-gating cell built from an ``always_latch``, as in
+    lowRISC's ``prim_clock_gating``) is declared here as a count. The allowance
+    is not a mute: the raw count is always reported and one more than declared
+    still fails. Multi-driven nets have no allowance.
     """
     raw = _load_flow_config(flow_name, work_dir).get(key, 0)
     if isinstance(raw, bool) or not isinstance(raw, int):
