@@ -1,12 +1,12 @@
-# PicoRV32 Simulation Campaign QA fixture
+# PicoRV32 Simulation Record QA fixture
 
 This runbook gives the QA agent running the picorv32 mission the exact steps
 for this optional hunt bait ([MISSION.md](../../MISSION.md), `hunt` area): exact
 test selection, manifest authority, interruption and resume, and Goal evidence
 scope on a small Icarus Target. Goal-child rules live in
 [GOAL-CHILD.md](../../../../shared/GOAL-CHILD.md); coverage Simulation
-Campaign recovery lives in the [coverage
-fixture](../../../../shared/coverage/simulation-campaign/RUNBOOK.md).
+Record recovery lives in the [coverage
+fixture](../../../../shared/coverage/simulation-record/RUNBOOK.md).
 Automated regressions and `validate_campaign.py` protect the public contracts;
 they do not replace running these steps against the build under test.
 
@@ -32,10 +32,10 @@ header comment in `campaign_tb.sv` says.
 
 Every command below uses `--report-dir <run-owned-root>`. Save the exact argv,
 stdout and stderr, exit status, the printed manifest path, directory listings,
-and copies of every referenced JSON document under `evidence/sim-campaign/`.
+and copies of every referenced JSON document under `evidence/sim-record/`.
 A Target's files are under `<root>/sim/<N>/targets/sim_campaign/`: the
-manifest and `summary.json` in `campaign/`, terminal Results at
-`campaign/work-items/<item>/result.json`, and the compatibility projection
+manifest and `summary.json` in `record/`, terminal Results at
+`record/work-items/<item>/result.json`, and the compatibility projection
 `simulation.json`.
 
 `validate_campaign.py` is a read-only structural cross-check with one
@@ -56,7 +56,7 @@ decides a finding.
 1. Run `booley flow sim --target sim_campaign --test tail --test quick`. The
    manifest selection, work-item order, summary observations and terminal
    Results must stay `tail, quick`, not catalog order.
-2. Run a new Simulation Campaign with `--tests-file reverse-tests.txt`.
+2. Run a new Simulation Record with `--tests-file reverse-tests.txt`.
    Comments and blank lines must drop out, leaving the same selection.
 3. Snapshot the report root and process table, then invoke
    `--test quick --test quick`. It must exit 2 with no new manifest, no new
@@ -65,7 +65,7 @@ decides a finding.
 
 ## Manifest authority
 
-For a successful Simulation Campaign, save the `manifest.json` bytes before
+For a successful Simulation Record, save the `manifest.json` bytes before
 the first work item completes and again after completion; they must be
 identical. Inspect the strict schema, exact Target identity, required suite
 (`required_suite`), workload fingerprint and ordered work items. Authenticate
@@ -85,7 +85,7 @@ reference resolves relative to its own Target directory.
    resume with `booley flow sim --resume-from <exact-manifest.json>` only. The
    `quick` Result and its attempt count must not change; `slow` is retried and
    `tail` runs afterward.
-3. Keep a copy of an interrupted Simulation Campaign for mismatch checks.
+3. Keep a copy of an interrupted Simulation Record for mismatch checks.
    Change one byte of the copied `campaign_tb.sv` and attempt the exact resume:
    it must exit 2 with a named source mismatch and no new attempt. Restore the
    byte exactly.
@@ -101,11 +101,11 @@ reference resolves relative to its own Target directory.
 2. Capture the Goal Record and Goal evidence, including the acceptance
    transaction IDs that `journal` compares, before and after each invocation.
 3. A passing strict subset (`quick`) must leave the Goal unmet.
-4. A new Simulation Campaign with the complete required suite (`quick`,
+4. A new Simulation Record with the complete required suite (`quick`,
    `slow`, `tail`) must record Goal evidence only after all three Results
    commit.
 5. If you temporarily add an extra registered test and select it explicitly,
-   its failure must still fail the whole Simulation Campaign, even though the
+   its failure must still fail the whole Simulation Record, even though the
    test is outside the required suite. Restore the catalog and fixture before
    cleanup.
 
@@ -121,4 +121,4 @@ Keep the evidence and reap owned processes. Then finish or explicitly abandon
 the Goal and remove only the run-owned core and catalog entries, report roots
 and Goal Record. Confirm the pinned upstream checkout is byte-for-byte
 unchanged, the Project catalog no longer lists `sim_campaign`, and every
-`resources.md` row for this campaign is marked released.
+`resources.md` row for this fixture is marked released.
