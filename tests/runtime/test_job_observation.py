@@ -497,5 +497,114 @@ def test_job_history_keeps_the_newest_records_and_reports_truncation(tmp_path, m
     bounded = JobObserver(tmp_path).read(roots)
     assert (
         "Job history truncated: showing the newest 2 of the first 3 records examined; "
-        "older interactive sessions were not examined"
+        "finished Jobs of older interactive sessions are not shown"
     ) in bounded.diagnostics
+
+
+def _running(run_id: str, **kwargs) -> job_records.JobRecord:
+    return job_records.JobRecord(run_id, "sim", "2026-10-08T10:00:00Z", 60, **kwargs)
+
+
+def test_history_cuts_never_drop_unfinished_records(tmp_path, monkeypatch):
+    import os
+
+    root_a, root_b = tmp_path / "a/jobs", tmp_path / "b/jobs"
+    dead = ProcessIdentity(4_194_310, "boot", 1)
+    records = (
+        (root_a, _running("fin-new", status="done"), 400),
+        (root_a, _running("fin-old", status="done"), 300),
+        (root_a, _running("orphan", pid=dead.pid, process_identity=dead.to_payload()), 150),
+        (root_a, _running("spawn-a"), 100),
+        (root_b, _running("spawn-b"), 50),
+    )
+    for root, record, stamp in records:
+        job_records.write_record(record, root)
+        os.utime(root / f"{record.run_id}.json", (stamp, stamp))
+    monkeypatch.setattr(_observer, "MAX_JOBS", 2)
+    monkeypatch.setattr(_observer, "MAX_SCANNED_JOBS", 4)
+    monkeypatch.setattr(
+        _observer,
+        "observe_process",
+        lambda _identity, *, proc_root: ProcessObservation(ProcessState.DEAD),
+    )
+    empty = tmp_path / "proc"
+    empty.mkdir()
+
+    snapshot = JobObserver(tmp_path, proc_root=empty).read((root_a, root_b))
+
+    assert sorted(job.record.run_id for job in snapshot.jobs) == [
+        "fin-new",
+        "fin-old",
+        "spawn-a",
+        "spawn-b",
+    ]
+    assert (
+        "Job history truncated: showing the newest 2 of the first 4 records examined; "
+        "finished Jobs of older interactive sessions are not shown"
+    ) in snapshot.diagnostics
+
+
+def _age(root: Path) -> None:
+    import os
+
+    os.utime(root, (1_000, 1_000))
+
+
+def test_unfinished_index_sees_new_records_and_retries_unreadable_ones(tmp_path, monkeypatch):
+    root = tmp_path / "old/jobs"
+    job_records.write_record(_running("done", status="done"), root)
+    _age(root)
+    observer = JobObserver(tmp_path)
+    assert observer.read((), unfinished_roots=(root,)).jobs == ()
+
+    job_records.write_record(_running("first"), root)
+    _age(root)
+    assert [job.record.run_id for job in observer.read((), unfinished_roots=(root,)).jobs] == [
+        "first"
+    ]
+
+    job_records.write_record(_running("second"), root)
+    _age(root)
+    parse = _observer._parse_job
+    failures = [root / "second.json"]
+
+    def flaky(path):
+        if path in failures:
+            failures.remove(path)
+            raise OSError("unreadable")
+        return parse(path)
+
+    monkeypatch.setattr(_observer, "_parse_job", flaky)
+    assert [job.record.run_id for job in observer.read((), unfinished_roots=(root,)).jobs] == [
+        "first"
+    ]
+    assert sorted(
+        job.record.run_id for job in observer.read((), unfinished_roots=(root,)).jobs
+    ) == [
+        "first",
+        "second",
+    ]
+
+
+def test_recently_changed_root_is_relisted(tmp_path, monkeypatch):
+    root = tmp_path / "old/jobs"
+    job_records.write_record(_running("done", status="done"), root)
+    _age(root)
+    stamp = root.stat().st_mtime_ns
+    listed = []
+    glob = Path.glob
+
+    def spy(path, pattern):
+        listed.append(path)
+        return glob(path, pattern)
+
+    monkeypatch.setattr(Path, "glob", spy)
+    observer = JobObserver(tmp_path)
+    monkeypatch.setattr(_observer, "time_ns", lambda: stamp + 1_000_000_000)
+    observer.read((), unfinished_roots=(root,))
+    observer.read((), unfinished_roots=(root,))
+    assert listed.count(root) == 2
+    monkeypatch.setattr(_observer, "time_ns", lambda: stamp + 3_000_000_000)
+    observer.read((), unfinished_roots=(root,))
+    observer.read((), unfinished_roots=(root,))
+    assert listed.count(root) == 3

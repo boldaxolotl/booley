@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -553,6 +554,63 @@ def test_standalone_job_of_the_worktree_is_owned_by_you(world, monkeypatch):
     assert [(row["target"], row["owner"], row["state"]) for row in body["now"]] == [
         ("t_sa", "you", "running")
     ]
+
+
+def test_unfinished_jobs_of_old_sessions_are_listed_and_counted(world, monkeypatch):
+    for index in range(65):
+        newer = world.booley / ".interactive_logs" / f"new{index}" / ".runtime" / "jobs"
+        newer.mkdir(parents=True)
+    _job(world, "run-s", world.wt, target="t_spawn", status="running", ended=None)
+    _job(
+        world,
+        "run-q",
+        world.wt,
+        target="t_queued",
+        status="running",
+        ended=None,
+        pid=7002,
+        live=True,
+    )
+    _job(
+        world,
+        "run-r",
+        world.wt,
+        target="t_run",
+        status="running",
+        ended=None,
+        pid=7001,
+        live=True,
+    )
+    _job(
+        world,
+        "run-sa",
+        world.wt,
+        target="t_sa",
+        session=None,
+        status="running",
+        ended=None,
+        pid=7003,
+        live=True,
+    )
+    _slot(world, "h", 1, 7101, {"memory": _claim(200.0)})
+    _slot(world, "w", 2, 7002, {"owner_identity": _identity(7002), "memory": _claim(400.0)})
+    # The roots holding the unfinished Jobs are the oldest of all 66.
+    for root in (world.booley / ".interactive_logs").glob("*/.runtime/jobs"):
+        old = root.parent.parent.name in {"sess1", "standalone"}
+        stamp = 1_000 if old else 2_000_000_000
+        os.utime(root, (stamp, stamp))
+
+    with _client(world, monkeypatch) as client:
+        body = _snapshot(client, world.wt)
+
+    assert sorted((row["target"], row["state"]) for row in body["now"]) == [
+        ("t_queued", "queued"),
+        ("t_run", "running"),
+        ("t_sa", "running"),
+        ("t_spawn", "spawning"),
+    ]
+    admission = body["header"]["admission"]
+    assert (admission["running_jobs"], admission["queued_jobs"]) == (2, 1)
 
 
 def test_header_carries_resources_budget_and_jobs_counted_once(world, monkeypatch):

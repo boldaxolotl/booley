@@ -118,9 +118,10 @@ source of truth: it observes state other components own.
   list; an owner filter narrows it to a session or Standalone Jobs. A
   finished Job is still a Job. Execution completion is distinguished from
   passing checks, and execution failure from failed checks.
-- **History is bounded and accepts loss.** A snapshot reads a bounded number
-  of record files, newest first, saying what it cut. A Job that sat unchanged
-  while many newer records were written can drop out of the snapshot.
+- **Finished history is bounded and accepts loss.** A snapshot lists a
+  bounded number of finished Jobs, newest first, saying what it cut, so an old
+  finished Job can drop out. Every unfinished Job is listed, whatever the age
+  of its session.
 
 ### Attach
 
