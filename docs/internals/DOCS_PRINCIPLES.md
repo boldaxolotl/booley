@@ -75,9 +75,8 @@ its siblings, and offer to fix those too.
 
 ### 6. The opening paragraph says what it is, when to use it, and when not to
 
-Example: "Goal Mode suits area/timing optimization and new features where the
-design must stay correct; it is not built for debugging. It keeps long
-unattended runs within budget."
+Example: "Lint suits checking style and common bugs before simulation; it does
+not show that the design works. Run it before the first simulation."
 
 ### 7. Concept before syntax
 
@@ -90,7 +89,7 @@ troubleshooting stays in [TROUBLESHOOTING.md](../user/TROUBLESHOOTING.md).
 Merge sections that cover overlapping ground and fold a minor behavior into
 its parent. A feature doc leaves shared UI to that UI's doc. Split a giant doc:
 one page per Flow, one per topic. Headings match their scope: a rule for all
-Goals doesn't sit under a heading about one kind of Goal.
+Flows doesn't sit under a heading about one Flow.
 
 ### 9. Each fact has one home
 
@@ -226,7 +225,7 @@ internal model.
 
 After the opening paragraph (principle 6), the how-to comes as a numbered list
 of the real steps, including the points where the user has to act ("the agent
-stops and confirms the Goals with you"). Reference goes last and stays short:
+stops and confirms the Target with you"). Reference goes last and stays short:
 syntax, file formats, presets. The less the user writes it by hand, the
 shorter it gets.
 

@@ -11,10 +11,10 @@ from pathlib import Path
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 _ROOT = Path(__file__).parents[1]
-# A Sandbox-only module that stays cheap (six tests) and never reaches a host command.
-_MARKED_MODULE = "tests/goals/test_waiver_policy.py"
+# A Sandbox-only module that stays cheap (few tests) and never reaches a host command.
+_MARKED_MODULE = "tests/harness/test_chat_terminal.py"
 # A neighbouring module that covers host code and must stay unmarked.
-_HOST_MODULE = "tests/goals/test_store.py"
+_HOST_MODULE = "tests/harness/test_cheatsheet.py"
 
 
 def _pytest(tmp_path: Path, *arguments: str) -> subprocess.CompletedProcess[str]:

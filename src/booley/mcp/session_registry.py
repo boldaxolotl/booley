@@ -1,4 +1,4 @@
-"""Advisory session presence and the attribution facts routing shares; no reader selects Goal work."""
+"""Advisory session presence and the attribution facts routing shares; no reader selects work."""
 
 from __future__ import annotations
 
@@ -545,7 +545,7 @@ def _worktree_facts(work_dir: Path) -> tuple[Path, str, str]:
 
 
 def canonical_attribution(facts: Attribution) -> Attribution:
-    """Match pre-Goal path rows to the same repository/admin identity used by Goal Records.
+    """Match path rows to one repository/admin identity.
 
     A row without a work_dir reports the live checkout root and branch of its
     default_work_dir instead, so presentation shows where its calls run.

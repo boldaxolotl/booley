@@ -446,25 +446,16 @@ def test_count_selector_links_every_drawn_seed_and_refuses_each_by_name(tmp_path
 
 
 @pytest.mark.parametrize("spelling", ["ref", "local:lib:core:1#ref"])
-def test_a_goal_binds_the_baseline_of_its_own_target(spelling: str):
-    """Goal entry names the Target only in ``target``, as a selector or an identity.
+def test_a_criterion_binds_the_baseline_of_its_own_target(spelling: str):
+    """A Criterion naming the Target only in ``target`` (selector or identity) binds it.
 
-    Relative Cycle Count Goals used to stay unmet in Goal Mode with
-    ``baseline_observation: "mismatched"``: acceptance looked for the
-    baseline Target only in ``_baseline_target`` or ``_target_selector``.
+    Acceptance used to look for the baseline Target only in ``_baseline_target``
+    or ``_target_selector``, leaving the relative Cycle Count Criterion unmet
+    with ``baseline_observation: "mismatched"``.
     """
     from booley.flows.sim.acceptance import _bound_baseline
-    from booley.goals.model import GoalFamily, GoalSpec
-    from booley.goals.state_store import goal_criterion_params
 
-    goal = GoalSpec(
-        "cycle_count_ref_stress",
-        GoalFamily.CYCLE_COUNT,
-        spelling,
-        {"test": "stress", "cycle_count_increase_at_most": 5},
-        ("goalset",),
-    )
-    (params,) = goal_criterion_params([goal]).values()
+    params = {"target": spelling, "test": "stress", "cycle_count_increase_at_most": 5}
     fingerprint = "sha256:" + "9" * 64
     current = {"test": "stress", "test_run": "stress@1", "test_run_fingerprint": fingerprint}
     own = _baseline_fact("stress@1")

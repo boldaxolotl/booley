@@ -31,7 +31,7 @@ Project-specific prompting.
 
 The Developer Agent never starts an EDA program, Project script, or Specialist
 itself. It calls an MCP tool inside the Sandbox, and that tool owns the request
-schema, execution, result interpretation, and any Goal evidence update. Keeping
+schema, execution, result interpretation, and any evidence update. Keeping
 that ownership in one place is what lets Booley trust the evidence: the agent
 chooses arguments, never verdicts.
 
@@ -62,12 +62,10 @@ owned, and found again is in [JOB_RECORDS.md](JOB_RECORDS.md).
    call, a direct endpoint runs its own code.
 5. The endpoint turns the raw output into an outcome (`McpToolResult`).
 6. The coordinator records acceptance before it persists any mutable state or
-   report, then releases admission. In Goal Mode, evidence is appended under
-   the call's [Run Binding](../../src/booley/goals/GLOSSARY.md) first; outside
-   Goal Mode nothing persists as Goal evidence.
+   report, then releases admission.
 
 Recording acceptance before persistence means a crash can never leave a report
-that claims evidence the Goal Record does not hold. If that final recording
+that claims evidence Booley does not hold. If that final recording
 fails, the call returns exit 2 with a structured `completion_error`, keeps the
 result and Target facts it already has, skips the mutable persistence, and
 makes one attempt to write a recovery report. A failure while updating a
@@ -98,7 +96,7 @@ A file registers the first class whose direct base is named `BooleyFlow`,
 `Specialist`, or `McpTool` and whose `name` and `description` are string
 literals. A class that inherits through your own intermediate base is not
 found. The protocol utilities (`booley_status`, `booley_poll`,
-`booley_cancel`, `booley_targets`, `booley_report`, the Goal tools, `bwave`,
+`booley_cancel`, `booley_targets`, `booley_report`, `bwave`,
 `booley_sleep`, and `coverage_evidence`) are defined in `booley.mcp.catalog`
 rather than discovered.
 
@@ -132,7 +130,6 @@ needs:
   the list; when unset, every enabled endpoint is listed.
 - `booley_status` and `booley_report` appear on an interactive server
   (`BOOLEY_MCP_MODE=interactive`) or when `BOOLEY_MCP_TOOLS` names them.
-- Interactive, non-nested servers list `goal_enter`, `goal_status`, `goal_propose_change`, and `goal_finish`; these Goal tools ignore `BOOLEY_MCP_TOOLS`, and other servers never list them.
 
 Changing these variables needs a new server process.
 
@@ -149,7 +146,7 @@ parsed simply drops out of the list.
 
 ### `work_dir` routing
 
-The Developer Agent passes the Goal worktree's absolute root as `work_dir` to
+The Developer Agent passes its worktree's absolute root as `work_dir` to
 every tool that accepts it.
 
 Built-in MCP worktree routing:
@@ -158,18 +155,10 @@ Built-in MCP worktree routing:
 | --- | --- |
 | `sim`, `lint`, `synth`, `fpga`, `mutation` | `booley_status` |
 | `reviewer`, `coverage_analyst` | `booley_poll`, `booley_cancel` |
-| `goal_enter`, `goal_status`, `goal_propose_change`, `goal_finish` | `booley_sleep`, `coverage_evidence` |
-| `booley_targets`, `booley_report` | `bwave` |
+| `booley_targets`, `booley_report` | `booley_sleep`, `coverage_evidence`, `bwave` |
 
 `booley_sleep` appears only when diagnostic tools are enabled, and
 `coverage_evidence` only in the Coverage Analyst's nested server.
-
-While any Goal Record occupies the Project, or one is unreadable, Booley Flows,
-Specialists, Project endpoints, Goal tools, and `booley_report` refuse a call
-that names no checkout (no `work_dir` and no caller in a linked worktree),
-even a diagnostic call meant for another checkout; `booley_targets` may omit
-it. The refusal exists so a forgotten `work_dir` cannot silently run on the
-main checkout while the agent edits a Goal worktree.
 
 A call that omits `work_dir`, or passes an empty one, targets the checkout of
 the calling agent's session process when that process's cwd is the root of a
@@ -179,9 +168,7 @@ session process is the Claude Code peer, or the owner of a Codex session that
 because a shared daemon's cwd belongs to no particular session. Any other
 caller gets the server cwd, which in the Sandbox is the main checkout. The
 checkout is filled in after schema validation and only for tools that accept
-`work_dir`; an explicit `work_dir` always wins. A routed call counts as
-explicit for Goal binding. A main-checkout caller is not routed and still gets
-the Goal refusal.
+`work_dir`; an explicit `work_dir` always wins. 
 
 Endpoints built on the shared parser get `work_dir` in their schema
 automatically. A custom `mcp_schema()` hook that drops it makes the endpoint
@@ -217,9 +204,9 @@ Every endpoint inherits these arguments and adds only its own:
 | Argument | Meaning |
 |---|---|
 | `-C`/`--project PATH` | Project Root, on the human CLI; MCP and the internal parser use `work_dir` |
-| `--report-dir` | Where `report.json` lands; a Goal-bound run defaults to its Goal Record's reports |
+| `--report-dir` | Where `report.json` lands |
 | `--target` | The Target or Targets to operate on; repeat it or pass a comma-separated list. `self.args.target` always holds one comma-separated string |
-| `--diagnostic` | Run without satisfying Goals |
+| `--diagnostic` | Mark the run as diagnostic |
 
 The MCP schema is generated from the same argparse parser, so a new argument
 reaches both the CLI and MCP without extra code. An endpoint may supply its
@@ -292,17 +279,15 @@ itself could not run, and only 1 may count against the design.
 
 Call `self.set_criterion(key, met)` for each Criterion the run evaluates.
 For a Flow or Specialist, Booley derives `criterion_key` and `criterion_met`
-from those calls, so do not set them yourself: in a Goal-bound run, exactly one
+from those calls, so do not set them yourself: exactly one
 mapped and evaluated Criterion gives its key and verdict; none, several, or
-several selected Targets give an empty key and `None`. A call without Goal
-binding, including an Interactive Mode MCP call, gets an empty key and `None`,
+several selected Targets give an empty key and `None`. Otherwise a call gets an empty key and `None`,
 and its report omits both fields, so report readers must treat them as
 optional. A direct `McpTool` endpoint reports the fields it sets, with
 `criterion_met` defaulting to `False`.
 
 The `Specialist` base fills the token and cost fields, and the base class adds
-`lines_added`/`lines_removed` for code-modifying endpoints. Finish judges a
-Goal only on persisted, current evidence, never on a result's headline.
+`lines_added`/`lines_removed` for code-modifying endpoints.
 
 ### Common artifact contract
 
@@ -339,8 +324,7 @@ Target (`artifacts[target]`). Two rules make every pointer trustworthy:
   are in [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) and
   [FLOW_IMPLEMENTATION_SIM.md](FLOW_IMPLEMENTATION_SIM.md).
 - **Always relative to the work dir.** Absolute Sandbox paths do not carry
-  over to the host. Paths are relative to the endpoint's work dir, even when
-  Goal Mode writes reports into a Goal Record outside that worktree.
+  over to the host. Paths are relative to the endpoint's work dir.
 
 A `--baseline` run reports no `artifacts` block: it runs in a throwaway
 worktree, so its relative paths would resolve to the current run's files.
@@ -387,9 +371,7 @@ for key in [f"drc_clean_{target}" for target in targets] or ["drc_clean"]:
 After a successful run of an endpoint with `code_modifying = True`, Booley
 classifies the git diff as RTL or testbench changes and resets every Criterion
 whose `category` matches. Leaving the flag off on an endpoint that edits code
-leaves those Criteria looking current. Goal status also compares source and
-Target fingerprints on its own, so a Goal never stays met on stale evidence
-because of a missing flag.
+leaves those Criteria looking current.
 
 ## Write a custom endpoint
 
@@ -530,7 +512,7 @@ as you would a built-in:
 - *"Run `drc_check` on the `variant_a` Target with the signoff rule set."*
 - *"Ask `protocol_reviewer` to check `rtl/axi_slave.sv`."*
 
-The agent selects the arguments and invokes the MCP tool. In Goal Mode the same implementation runs under the Goal's Run Binding, and its evidence can count for a declared Goal when the evidence key and subject match. Outside Goal Mode the verdict comes back to the session and nothing persists as Goal evidence.
+The agent selects the arguments and invokes the MCP tool. The verdict comes back to the session.
 
 To take the agent out of the loop while you debug arguments or result
 handling, run the endpoint from a Sandbox terminal
@@ -542,17 +524,14 @@ booley specialist protocol_reviewer --scope rtl/axi_slave.sv
 ```
 
 A direct `McpTool` endpoint has no CLI command; exercise it through the agent.
-CLI runs never record Goal evidence: they write reports to the checkout's
+CLI runs write reports to the checkout's
 Booley Directory (`flow-reports/` for Flows, `mcp-tool-reports/` for
 Specialists) unless you pass `--report-dir`, and return the usual exit codes.
-Verify Goal evidence through a Goal-bound MCP call with `work_dir`.
 
 ### Where its output goes
 
 An Interactive Mode MCP server writes its logs under
-`.interactive_logs/<session-id>/` in the Main Booley Directory. A Goal-bound
-run keeps logs under the Goal Record's `logs/` and reports under its
-`.runtime/flow-reports/`. Use the paths the result returns rather than
+`.interactive_logs/<session-id>/` in the Main Booley Directory. Use the paths the result returns rather than
 guessing.
 
 If a custom endpoint does not appear, check its syntax and literal metadata,
@@ -561,19 +540,8 @@ disable it, run `booley doctor`, and request a fresh tool list.
 
 ## Criteria
 
-A [Goal](../GLOSSARY.md#execution) is Goal Mode's mandatory success condition;
-a [Criterion](../GLOSSARY.md#execution-and-evidence) is the internal
-condition-plus-evidence form that Goal Mode translates its Goals into. Producers
-call `set_criterion()`; Booley routes those updates to the declared Goals, and
-Finish checks current evidence for every Goal (see
-[GOAL-MODE.md](../user/GOAL-MODE.md#working-with-evidence)).
-
-Goal entry accepts only the fixed families in `goals.model.GoalFamily`:
-`lint`, `sim`, `elab`, `synth`, `fpga`, `cycle_count`, `coverage`, `mutation`,
-and `review`. A Project Criterion does not add a family. A Custom Flow's
-evidence counts for a Goal only when its evidence key and subject match a Goal
-of one of those families; otherwise its Criteria are diagnostic. The fixed
-list keeps every Goal judged by evidence whose meaning Booley defines.
+A [Criterion](../GLOSSARY.md#execution-and-evidence) is the internal
+condition-plus-evidence form. Producers call `set_criterion()`.
 
 ### The Criterion catalog
 
@@ -622,13 +590,13 @@ To add a Criterion:
    `satisfies_args` hints if the arguments differ per Criterion.
 4. For `per_target = true`, call `set_criterion()` with the expanded
    `<criterion>_<target>` keys.
-5. Run `booley doctor`, then check the live catalog with `booley cheat --goals`.
+5. Run `booley doctor`.
 
 ## Validation and diagnostics
 
 Shared validation in `booley.mcp.endpoint_validation` checks custom endpoint
 metadata and Criterion wiring; `booley doctor` runs it alongside its Project
-checks. Goal entry validates its worktree and Goal arguments separately. None
+checks. None
 of these replaces running the endpoint on a real case.
 
 | Check | Result |
@@ -651,8 +619,6 @@ To validate a new endpoint:
 3. Run it through the Developer Agent on a known-good and a known-bad case.
 4. Run a Flow with `booley flow` or a Specialist with `booley specialist` and
    confirm exit 0, 1, and 2 mean met, unmet, and could not reach a verdict.
-5. For Goal use, enter Goal Mode with a supported Goal and confirm with
-   `goal_status` that the evidence lands and goes stale when sources change.
 
 ## Host-provisioned EDA is not an extension point
 

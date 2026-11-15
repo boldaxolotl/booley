@@ -53,9 +53,6 @@ booley flow mutation --target sim_soc
 booley flow <name> --help                     # every option of one Flow
 ```
 
-Your own runs never count as Goal evidence; only the agent's runs in Goal Mode
-do.
-
 ### Background Jobs
 
 When a Flow or Specialist started through an MCP tool outlives the inline wait,
@@ -107,7 +104,7 @@ page.
 | `--timeout DURATION` | Time limit per unit of work, for example `90s`, `30m`, or `1h30m`. Time spent waiting in the queue doesn't count. |
 | `--dry-run` | Print what would run and stop. No EDA tool runs. |
 | `--report-dir <path>` | Write reports here instead of the default location. |
-| `--diagnostic` | Mark the run as diagnostic so it never counts as Goal evidence. |
+| `--diagnostic` | Mark the run as diagnostic. |
 | `-q/--quiet` | Hide live progress and log paths; show only the verdict and errors. |
 
 `mutation` is the exception to the Target rules above: it requires `--target`
@@ -120,8 +117,7 @@ Without `--timeout`, a Flow uses `[flows.<name>].timeout_ms` from
 
 `synth` and `fpga` also take `--baseline <git-ref>`: they run the Flow a
 second time at that commit and report the difference, so you can see what a
-change cost in area or timing. In Goal Mode the baseline is the commit pinned
-when the Goal started.
+change cost in area or timing.
 
 <details markdown>
 <summary>In stealth mode</summary>
@@ -199,7 +195,7 @@ out of time exits `2`. [Simulation results](FLOW-SIM.md#reading-results)
 has the details.
 
 **Reports.** Each run writes a JSON report and full logs under `flow-reports/`
-in the Booley Directory (Goal runs use the Goal's runtime directory), or under
+in the Booley Directory, or under
 `--report-dir`. Each run gets the next number under its Flow's directory, such
 as `flow-reports/sim/12/`, with the run's `report.json` at the top. Each
 Flow's page says which files in it to open.
@@ -222,7 +218,6 @@ deletes them:
 
 | Run started by | Reports | Cleaned up |
 |---|---|---|
-| A Goal | The Goal Record, in the main checkout's Booley Directory | Automatically, once the Goal has ended and its worktree and Goal Branch are gone. |
 | The agent in Interactive Mode | `.interactive_logs/<session>/` in the main checkout's Booley Directory, from any checkout | Not automatically; see below. |
 | You, from the CLI | `flow-reports/` in the Booley Directory of the checkout you run in, or `--report-dir` | With the worktree, for a run in a linked worktree. |
 

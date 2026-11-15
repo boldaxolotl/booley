@@ -1,18 +1,14 @@
-"""Dashboard Job history, Goal metadata validation and Target display enrichment."""
+"""Dashboard Job history and Target display enrichment."""
 
 from __future__ import annotations
 
 import time
-from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
 
 from booley.core.booley_layout import INTERACTIVE_LOGS_DIR_NAME
 from booley.core.boundary import as_dict, as_float
-from booley.goals.binding import GoalBindingError, GoalRunBinding
-from booley.goals.model import GoalRecord
-from booley.goals.paths import record_paths
 from booley.harness.standalone_job import (
     standalone_jobs_dir,
     standalone_log_path,
@@ -83,21 +79,13 @@ class JobSnapshot:
 
 
 def retained_job_roots(
-    booley_dir: Path, records: Sequence[GoalRecord], *, interactive_root: Path | None = None
+    booley_dir: Path, *, interactive_root: Path | None = None
 ) -> tuple[Path, ...]:
-    """Interactive roots and every retained Goal, including finished/abandoned records.
+    """Interactive roots: the caller's own root, then older sessions newest first.
 
-    Ordered by what a bounded scan must not lose: the caller's interactive
-    root, then every Goal Record, then older interactive sessions newest first.
+    Ordered by what a bounded scan must not lose.
     """
     roots = [] if interactive_root is None else [interactive_root]
-    from booley.goals.sim_baseline_store import BASELINE_FAMILIES, baseline_jobs_dir
-
-    roots.extend(record_paths(booley_dir, rec.id).jobs_dir for rec in records)
-    for family in BASELINE_FAMILIES:
-        baseline = baseline_jobs_dir(booley_dir, family)
-        if baseline.is_dir():
-            roots.append(baseline)
     history = []
     for path in islice(
         booley_dir.glob(f"{INTERACTIVE_LOGS_DIR_NAME}/*/.runtime/jobs"),
@@ -116,14 +104,6 @@ def retained_job_roots(
     return tuple(dict.fromkeys(roots))
 
 
-def _validate_goal_binding(record: job_records.JobRecord) -> None:
-    if record.binding is not None:
-        try:
-            GoalRunBinding.from_json(record.binding)
-        except GoalBindingError as exc:
-            raise ValueError(str(exc)) from exc
-
-
 class JobReader:
     """Compose retained history and display policy over one persistent observer."""
 
@@ -139,19 +119,17 @@ class JobReader:
             booley_dir,
             slots_root=slots_root,
             proc_root=proc_root,
-            validate_record=_validate_goal_binding,
         )
 
     def read(
         self,
-        records: Sequence[GoalRecord],
         *,
         interactive_root: Path | None = None,
         session_handles: dict[str, str] | None = None,
         now: float | None = None,
     ) -> JobSnapshot:
-        """Reuse the Goal enumeration that supplied this Dashboard refresh."""
-        roots = retained_job_roots(self._booley_dir, records, interactive_root=interactive_root)
+        """Read the retained Job history into one display snapshot."""
+        roots = retained_job_roots(self._booley_dir, interactive_root=interactive_root)
         observed = self._observer.read(roots)
         catalogs: dict[str, TargetCatalog | None] = {}
         handles, diagnostics = HandleStore(self._booley_dir, jobs=True).snapshot()

@@ -36,8 +36,7 @@ pip install -e ".[dev]"     # editable install plus test and lint tools (pytest,
 pytest                      # tests/ serially; pass a path or -k for a fast subset
 ```
 
-A bare `pytest` skips `tests/goals/` until Goal Mode is removed (#3276); run
-those with `pytest tests/goals`. Tests that need the native B-Wave binary skip
+Tests that need the native B-Wave binary skip
 until you build it (see [Agent source-development checks](#agent-source-development-checks)).
 
 CI installs with `-c .github/ci/constraints.txt`, a committed file that pins
@@ -124,7 +123,7 @@ point at which to run it:
 |---|---|---|
 | `ruff.agent-gate` | `ruff check src/ tests/` | Before commit |
 | `packaged-copies.check` | `sync_packaged_copies.py --check`: fails when the packaged `CHANGELOG.md` mirror is stale | Before commit |
-| `pytest.broad` | `pytest tests/` (which skips `tests/goals/`) with coverage, up to eight xdist workers | Optional broad verification |
+| `pytest.broad` | `pytest tests/` with coverage, up to eight xdist workers | Optional broad verification |
 | `ruff.ci-check`, `ruff.ci-format`, `pyright.ci-check` | CI's lint job: `ruff check .`, `ruff format --check .`, `pyright` | Handoff |
 | `coverage.changed-lines` | CI's 90% changed-line coverage gate, against the newest merge base with `main` | Handoff |
 

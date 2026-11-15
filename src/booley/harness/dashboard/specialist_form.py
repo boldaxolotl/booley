@@ -75,47 +75,27 @@ NO_COVERAGE_RECORDS: Final = (
 
 
 def focuses(category: str) -> tuple[str, ...]:
-    """The review focuses of *category*: the review Goal kinds, so a new Goal kind appears here."""
-    # The only Goal Mode dependency of the wizard (with ``spec_prefill``); imported lazily so it
-    # is one allowlisted module that goes away with Goal Mode (#3511).
-    from booley.goals.model import REVIEW_KINDS
+    """The review focuses of *category*, in the order the wizard lists them."""
+    # Lazy: the Reviewer module is heavy and the wizard only needs these two constants.
+    from booley.specialists.reviewer import RTL_FOCUSES, TB_FOCUS_CATEGORIES
 
-    prefix = f"{category}_"
-    return tuple(kind.removeprefix(prefix) for kind in REVIEW_KINDS if kind.startswith(prefix))
-
-
-def spec_prefill(booley_dir: Path, worktree: Path) -> str:
-    """The spec of *worktree*'s active spec-review Goal, else ``""`` (also when the store is unreadable)."""
-    from booley.goals.model import REVIEW_VERDICTS, SPEC_REVIEW_KIND
-    from booley.goals.store import GoalStore, GoalStoreError
-
-    try:
-        record = GoalStore(booley_dir).active_for_worktree(worktree)
-    except (GoalStoreError, OSError):
-        return ""
-    keys = {f"review_{SPEC_REVIEW_KIND}_{verdict}" for verdict in REVIEW_VERDICTS}
-    specs = (
-        goal.spec.params.get("spec", "")
-        for goal in (record.goals if record else ())
-        if goal.spec.key in keys
-    )
-    return next((str(spec) for spec in specs if spec), "")
+    if category == "rtl":
+        return RTL_FOCUSES
+    return tuple(sorted(TB_FOCUS_CATEGORIES)) if category == "tb" else ()
 
 
 @dataclass(frozen=True)
 class ReviewerForm:
     """The reviewer's form: its rows follow the values, and the values become the command's words.
 
-    ``spec_prefill`` is the spec the worktree's active spec-review Goal names (else empty);
     ``note`` says which model and Agent CLI the run uses (or why that cannot be read).
     """
 
-    spec_prefill: str
     note: str = ""
 
     def initial(self) -> dict[str, str]:
         """The values a fresh form starts with."""
-        return {"category": "rtl", "spec": self.spec_prefill}
+        return {"category": "rtl", "spec": ""}
 
     def fields(self, values: Mapping[str, str]) -> tuple[Field, ...]:
         """The rows to show for *values*: the spec path only for the spec focus, more only when open."""

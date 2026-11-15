@@ -6,7 +6,6 @@ import argparse
 import os
 import re
 import sys
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -55,9 +54,6 @@ class CliInvocation:
 
     project: Path | None = None
     transport: bool = False
-    # The command layer's human Goal-recording advisory, called with the run's work_dir.
-    # Absent for direct module runs, which then print nothing.
-    goal_recording_advisory: Callable[[Path], None] | None = None
 
     @classmethod
     def of(cls, endpoint) -> CliInvocation:

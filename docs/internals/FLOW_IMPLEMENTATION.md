@@ -37,7 +37,7 @@ built-in Flows: a Custom Flow requires an explicit Target by default. A Target's
 identity is its declaring core's VLNV (the `.core` file's
 Vendor:Library:Name:Version identifier) plus its Target name; the Flow receives
 the shortest selector that is unambiguous in the Project, the bare name when
-unique, otherwise a VLNV suffix and `#name`. Goals and evidence compare
+unique, otherwise a VLNV suffix and `#name`. Evidence compares
 identity, while commands render selectors. The CLI (`booley flow sim --target
 sim_core`) and the MCP call run the same Flow code.
 
@@ -142,19 +142,13 @@ print(result.exit_code, result.outcome.detail)
 This call runs inside the Sandbox and does the same validation, admission,
 and persistence as the CLI. Each Flow's request type (`SimRequest`,
 `LintRequest`, `SynthRequest`, `FpgaRequest`) lives in its package beside its
-implementation. `slug` (the Goal Record ID) and `state_file` are not
-constructor arguments: they come from the environment or the Goal binding, so
-a caller cannot point a run at another Goal's state. A request is copied for
+implementation. `slug` and `state_file` are not
+constructor arguments: they come from the environment, so
+a caller cannot point a run at another run's state. A request is copied for
 execution because preparation and baseline work may change it.
 
-Which execution adapter runs decides whether Goal evidence is recorded:
-
-- `StandaloneFlowExecution` (direct calls and `booley flow`) records no Goal
-  evidence and skips final persistence.
-- `GoalFlowExecution` (`booley/goals/flow_execution.py`), which MCP composition
-  supplies with the call's Run Binding, records Goal evidence. A direct caller
-  must compose it explicitly to get the same path. It imports no Flow or MCP
-  code, and MCP builds it lazily, so loading MCP never loads Goal Mode.
+`StandaloneFlowExecution` (direct calls and `booley flow`) records no evidence
+and skips final persistence.
 
 | Class or module | Owns |
 |---|---|
@@ -184,15 +178,9 @@ EDA executable, transport schemas, and Project-local `BooleyFlow` and
 
 ### Ordering
 
-Preparation validates the runtime, Flow enablement, the bound Goal worktree,
-and the Target-to-Goal binding before Job admission. An omitted `--target` is
-resolved before the binding check; an explicit one is checked after it. The
-Run Binding captures the Goal Record and specification revisions plus the
-Protected Inputs; publication checks it again before appending evidence or
-merging state, and a binding that has changed discards the evidence
-rather than assigning it to another Goal Record. The admission claim is held
-through the run, final acceptance, state persistence, and reporting, then
-released.
+Preparation validates the runtime and Flow enablement before Job admission.
+The admission claim is held through the run, final acceptance, state
+persistence, and reporting, then released.
 
 Acceptance is recorded at two points, and both must stay:
 
@@ -283,46 +271,15 @@ as if it were live, and a Flow can use the header to check that a `run.log` its
 report points to really belongs to this run. The generic artifact shape is in
 [MCP-TOOLS.md](MCP-TOOLS.md#common-artifact-contract).
 
-## Goal baselines and editable design inputs
-
-Ordinary CLI calls are diagnostic; Goal verification goes through the
-MCP-bound execution adapter, which binds evidence to the Goal Record. Goal
-entry pins the clean linked worktree's HEAD as the base and creates a Goal
-Branch. A baseline-relative Goal runs its baseline Target at that base. The
-candidate Target is an editable design input: renaming or removing a bound
-Target leaves the Goal unmet until it is restored or a human approves a
-retargeting Goal Change Proposal. Target and constraint (`.sdc`, `.xdc`)
-changes appear in the Review Package rather than being forbidden, because the
-agent may legitimately need to edit them
-([ADR 0067](../adr/0067-replace-ticket-mode-with-goal-mode.md)).
+## Protected Inputs
 
 [Protected Inputs](../GLOSSARY.md#execution) are files that decide how
-evidence is produced, so changing them mid-Goal would let the agent move the
-goalposts. They are: Project configuration and checkout-root `booley.toml`,
-the `pipeline.toml` beside every `booley.toml` candidate (the configuration
-reader still falls back to it), worktree-root `FUSESOC_IGNORE`, and `hooks`,
-`.managed`, `generators`, and `mcp_tools` at their consumer roots, plus files
-the Project lists in `[project].protected_inputs`
-([CONFIG.md](../user/CONFIG.md#additional-protected-inputs-projectprotected_inputs)).
-`booley/goals/protected_inputs.py` digests every candidate location a reader
-might use (the Goal worktree, the Main Booley Directory, the primary
-checkout's `.booley/`, and absolute configured paths), not only the one
-currently selected, because emulating each reader's choice would let a
-selection mismatch hide a change. Goal entry captures working-tree and
-committed identities; for declared files it also stores a per-file capture
-(path, contents, type, executable bit) so a violation can name the file.
-Drift warns at once, discards run evidence at publication, refuses Goal Change
-Proposals, and blocks Finish until reverted.
-
-A Goal without a bound Target is checked against authored sources only.
-Generated build artifacts, the Git-ignored files a Target consumes other than
-HDL, `.core` files, and declared programs, are
-left out of its fingerprints and of the committed-input check at Finish, so
-regenerating one does not stale the Goal unless the Reviewer's scope names it.
-HDL, `.core` files, declared programs, symlinks, paths outside the repository,
-and files in a nested Git repository are never left out, so a regenerated
-ignored file cannot hide authored logic. A Goal bound to a Target still needs
-a Simulation producer for each uncommitted generated input.
+evidence is produced. A Measurement reports edits to them
+(`booley.measurement.protected_set`). The set holds the Project's
+configuration files, every Target's `.core` file and testbench files, the
+files the Project lists in `[project].protected_inputs`
+([CONFIG.md](../user/CONFIG.md#additional-protected-inputs-projectprotected_inputs)),
+its approved coverage waiver directory, and its timing constraint files.
 
 ## Shared implementation-report envelope
 
@@ -582,7 +539,7 @@ actionable, so a new message is never silently ignored.
 The Criterion detail carries the area, cell, and wire counts, the
 `warning_summary`, the timing fields of the mode, the latch, loop,
 multi-driver, and process counts, `baseline_metrics` whenever a baseline ran
-(an explicit `--baseline` or the one pinned at Goal entry), the current and
+(an explicit `--baseline`), the current and
 baseline recipe fingerprints and snapshots, and `_metric_map` / `_min_allowed`
 for threshold display. Report files are in
 [FLOW_REPORTS.md](FLOW_REPORTS.md#synth).
@@ -684,8 +641,7 @@ derives `critical_path_ps = (period_ns - wns_ns) * 1000` and
 `fmax_mhz = 1e6 / critical_path_ps` (null when the delay is not positive); any
 field is null when the clock has no path or no known period. A flat threshold
 such as `fmax_mhz_min` applies to every clock; a clock-scoped one such as
-`clk_i.fmax_mhz_min` applies to that clock only
-([GOAL-MODE.md](../user/GOAL-MODE.md#thresholds)).
+`clk_i.fmax_mhz_min` applies to that clock only.
 
 ### Verdict semantics
 

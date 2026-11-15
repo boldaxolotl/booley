@@ -424,16 +424,6 @@ def test_unopenable_lock_still_starts_here_in_main(project, monkeypatch, capsys)
     assert "works in worktree" not in started.stderr
 
 
-def test_unreadable_registry_does_not_send_auto_to_a_worktree(project, monkeypatch, capsys):
-    # Bug caught: a malformed [goals] table (read for the quiet window) crashing the launch.
-    _write_toml(project, "[goals]\nquiet_after = 1\n")
-
-    started = _start(project, monkeypatch, capsys)
-
-    assert started.cwd == project
-    assert _worktrees(project) == []
-
-
 def test_invalid_worktree_knob_stops_the_launch(project, monkeypatch, capsys):
     _write_toml(project, '[worktree]\nchat = "sometimes"\n')
 

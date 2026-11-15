@@ -177,15 +177,15 @@ def test_coverage_rows_and_rerun_commands():
     ]
 
 
-def test_coverage_rows_come_from_the_frozen_test_runs_only():
+def test_coverage_rows_come_from_the_planned_test_runs_only():
     from booley.flows.sim.coverage_acceptance import coverage_test_run_rows
 
     bare = build_test_run("smoke")
-    # A run collected without frozen Test Runs is the bare Test.
+    # A run collected without planned Test Runs is the bare Test.
     assert coverage_test_run_rows((), [_coverage_run(bare, "pass")]) == [
         {**test_run_document(bare), "grade": "pass"}
     ]
-    # A run that names a Test Run nobody froze, or another fingerprint, has no row.
+    # A run that names a Test Run nobody planned, or another fingerprint, has no row.
     assert coverage_test_run_rows((), [_coverage_run(_SOAK_7, "pass")]) == []
     changed = build_test_run("stress", variant="soak", seed=7, args=("+iters=1",))
     assert coverage_test_run_rows((changed,), [_coverage_run(_SOAK_7, "pass")]) == []

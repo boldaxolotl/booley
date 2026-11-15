@@ -82,6 +82,15 @@ to.
 To fix a specific message yourself, look it up in
 [Troubleshooting](TROUBLESHOOTING.md).
 
+### Goal Mode leftovers
+
+Goal Mode is not part of Booley. Doctor reports what an earlier version left behind:
+
+| Check ID | Level | Meaning and fix |
+|---|---|---|
+| `config.retired-goals` | `✗` | `booley.toml` still has a `[goals]` section. Delete the `[goals]` tables (Doctor names the lines and the file); `/booley-heal` does it. |
+| `goals.leftover` | `!` | A `goals/` or `goalsets/` directory from an earlier version is still there. Booley does not read or delete it; delete it once you do not need its records. |
+
 ## Automatic checks
 
 Booley runs plain Doctor in the background when the Sandbox starts, if the
@@ -107,7 +116,7 @@ and on the Dashboard. The full output of the last run is in
   call for each model a Specialist runs on, made through that model's Agent CLI
   (a model Codex reaches through a gateway makes no extra call). A model the
   provider refuses fails Doctor and names the `[models]` entry to change,
-  instead of failing a Goal later (skip these calls with
+  instead of failing a run later (skip these calls with
   `--skip-agent-checks`);
 - a short simulation, lint, and ASIC synthesis on each Target marked for Doctor
   (see [Marking Targets for Doctor](TARGETS.md#marking-targets-for-doctor));

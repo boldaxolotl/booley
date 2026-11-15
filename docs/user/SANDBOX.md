@@ -185,7 +185,7 @@ on an unknown key or invalid value. These keys belong here only:
   non-empty `egress_allowlist`.
 
 The policy is shared: every allowlisted hostname is reachable from every
-Project's Sandbox, in both Goal Mode and Interactive Mode.
+Project's Sandbox.
 
 **After editing the file**, run `booley bootstrap` again. To switch `egress` in
 one step, run `booley bootstrap --egress unproxied` (or `proxy`): it records
@@ -217,7 +217,7 @@ memory = "8g"                                  # container memory limit; unset =
 
 `memory` sets the [Memory Budget](CONFIG.md#jobs--concurrency-jobs) that
 admits Jobs; `booley doctor` warns while it is unset. `[sandbox] dashboard` is
-covered in [CONFIG.md](CONFIG.md#dashboard-and-quiet-goal-presence-goals).
+covered in [CONFIG.md](CONFIG.md#dashboard-sandboxdashboard).
 
 Changes to `mount_host_skills`, `mask_paths`, `image` and `pip_requirements`
 take effect once you apply them; see [Applying Sandbox

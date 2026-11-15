@@ -47,7 +47,6 @@ on:
       - "src/booley/dev_support/validate_commit_msg.py"
       - "src/booley/eda/**"
       - "src/booley/evidence/**"
-      - "src/booley/goals/**"
       - "src/booley/review/**"
       - "src/booley/feedback/**"
       - "src/booley/flows/**"

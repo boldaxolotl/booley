@@ -25,7 +25,6 @@ server can tell a running Job from a crashed one without in-memory state.
 | `display_scope` | Which presentation the Job belongs to, so a Specialist's nested Job does not replace the Developer Agent's status line. |
 | `schema` | Envelope version, currently `2`; a record without it reads as `1`. |
 | `work_dir`, `session_key` | The checkout the call named, and the caller's worktree session key. |
-| `binding` | The Goal run binding (`booley.goal-run-binding/v1`), or null outside Goal Mode. |
 | `owner`, `read_at` | Who started the Job and when that owner first received its final result (see below). |
 | `report_root` | Where a Standalone Job's reports live, when not next to the records. |
 | `progress` | `{"finished": n, "total": m}`: child Flows ended and planned, for a Job that runs child Flows (`measure`); null otherwise. |
@@ -33,15 +32,11 @@ server can tell a running Job from a crashed one without in-memory state.
 Readers ignore unknown fields so an older Booley can read a newer record, and
 missing fields take their defaults. The persistence layer checks only the
 envelope (positive `schema`; string or null `work_dir`, `session_key`,
-`report_root`; mapping or null `binding`) and raises `JobRecordError` on a
-malformed one. It does not interpret the binding; MCP composition validates it
-(`mcp.job_results.job_binding`), which keeps the runtime package free of Goal
-Mode imports.
+`report_root`) and raises `JobRecordError` on a malformed one.
 
-Run IDs: a Goal-bound call uses the binding's `invocation_id`; an unbound
-background Job uses `make_run_id`, `<endpoint>-<timestamp>-<counter>-<8 hex>`,
+Run IDs: a background Job uses `make_run_id`, `<endpoint>-<timestamp>-<counter>-<8 hex>`,
 where the random suffix keeps IDs unique across servers sharing a directory;
-an unbound inline call uses a random UUID.
+an inline call uses a random UUID.
 
 ## Ownership and reading results
 
@@ -68,22 +63,15 @@ another server may already have delivered.
 ## Finding a Job
 
 `mcp.job_results.job_roots()` lists every place a record can be: the
-container jobs root, the Simulation and synthesis baseline jobs directories,
-and the jobs directory of every retained Goal Record, whatever its state
-(entering, finishing, finished, abandoned, or failed). `_locate_job` searches
-those plus the root the manager remembered at admission, and returns
+container jobs root. `_locate_job` searches it plus the root the manager
+remembered at admission, and returns
 `LocatedJob(record, root)`. A `run_id` found in more than one root is an
 error: silently picking one could show or cancel the wrong Job. Poll and
 cancel therefore work without `work_dir`.
 
-The manager stamps the admission binding into the record before it launches
-the child, and writes terminal updates to the root that binding names. A
-record without a binding falls back to the root it was found in. Startup
-reconciliation and cancellation of an adopted Job keep the located root.
-Report and checkpoint lookups use the bound Goal Record's runtime directory
-(or the located root), never the server's current Goal selection, so a
-finished Job never attaches itself to a Goal Mode entered later in the same
-worktree.
+The manager writes terminal updates to the root it remembered at admission.
+Startup reconciliation and cancellation of an adopted Job keep the located
+root.
 
 ## Reading Jobs for display
 
@@ -91,7 +79,7 @@ worktree.
 processes, and report artifacts from the roots its caller passes, and never
 polls, repairs, or writes a Job. The Booley Dashboard's
 `harness.dashboard.jobs.JobReader` chooses those roots: the current
-interactive root, every Goal Record, the baseline jobs directories, then the
+interactive root, then the
 newest 64 older interactive roots (examining at most 4,096 candidates), and
 adds display fields such as handles and the Target's EDA tool. Rule D37 in
 [SOURCE-DEPENDENCY-CONTRACT.md](SOURCE-DEPENDENCY-CONTRACT.md) keeps the
@@ -101,9 +89,5 @@ leaves interpreting Targets to its caller.
 ## Attaching to a running duplicate
 
 A new call attaches to a live Job instead of starting another only when the
-endpoint, the normalized `argv`, and the binding match. The binding comparison
-ignores `invocation_id` and `record_revision`, and transcript paths do not
-count, so two calls that differ only in those are the same work. The Goal
-Record, specification revisions, Protected Input snapshot, eligibility, and
-Target surfaces do count. A finished Job is never attached to; a repeat call
+endpoint and the normalized `argv` match. A finished Job is never attached to; a repeat call
 runs again.

@@ -261,10 +261,10 @@ def _ticket_coverage_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *te
 
 
 @pytest.mark.parametrize("tests", [(), ("gap",), ("gap@1",)])
-def test_default_coverage_runs_keep_recording_goal_evidence(tmp_path, monkeypatch, tests):
+def test_default_coverage_runs_keep_recording_evidence(tmp_path, monkeypatch, tests):
     result, state_path, initial_state = _ticket_coverage_result(tmp_path, monkeypatch, *tests)
 
-    assert "diagnostic_test_runs" not in result.outcome.detail  # outside Goal Mode
+    assert "diagnostic_test_runs" not in result.outcome.detail
     assert state_path.read_bytes() != initial_state
     assert len(DevelopmentState.load(state_path).acceptance_transactions) == 1
 

@@ -16,7 +16,7 @@ from textual.widgets import DataTable, Static
 from booley.harness.dashboard.app import HELP, DashboardApp
 from booley.harness.dashboard.jobs import JobSnapshot
 from tests.harness.test_dashboard import choose_in_bar, open_session, snapshot
-from tests.harness.test_dashboard_windows import JOB_ROW, PROPOSAL_ROW, open_row, world
+from tests.harness.test_dashboard_windows import JOB_ROW, open_row, world
 
 # The keys the Dashboard used to bind: session digits, Help, Jobs filters, Sessions, owner.
 RETIRED_KEYS = (*"123456789", "?", "j", "r", "a", "s", "u")
@@ -113,11 +113,11 @@ async def test_footer_in_detail_views_adds_esc_back():
         app.query_one(DataTable).move_cursor(row=len(app.row_keys) - 1, animate=False)
         await pilot.pause()
         assert footer(app) == "↑↓ move · ←→ Sessions / Jobs / Targets · esc back"
-        app.query_one(DataTable).move_cursor(row=PROPOSAL_ROW - 1, animate=False)
+        app.query_one(DataTable).move_cursor(row=JOB_ROW, animate=False)
         await pilot.pause()
         assert footer(app) == "↑↓ move · ⏎ open · ←→ Sessions / Jobs / Targets · esc back"
         await pilot.press("enter")
-        assert app.navigation.view == "goal"
+        assert app.navigation.view == "job"
         assert footer(app) == SCROLL_FOOTER
 
 
@@ -240,15 +240,12 @@ async def open_full_width_view(app, pilot, view):
         await pilot.pause()
     else:
         await open_session(app, pilot, "codex:00")
-        if view == "goal":
-            await pilot.press("enter")
-        else:
-            await open_row(app, pilot, PROPOSAL_ROW if view == "proposal" else JOB_ROW)
+        await open_row(app, pilot, JOB_ROW)
     assert app.navigation.view == view
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("view", ["goal", "job", "proposal"])
+@pytest.mark.parametrize("view", ["job"])
 async def test_footer_in_full_width_details_names_scrolling(view):
     current = world()
     app = DashboardApp(lambda: current)

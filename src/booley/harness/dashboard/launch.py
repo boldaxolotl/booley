@@ -282,8 +282,7 @@ class Launcher:
     def form(self, kind: str, name: str, worktree: Path) -> RunForm | SpecialistForm:
         """The form of a Flow or a built-in Specialist (``KeyError`` for any other name).
 
-        The reviewer's spec path is prefilled from *worktree*'s Goal; the coverage analyst's
-        campaigns are read when its picker opens, so one that finishes meanwhile shows up.
+        The coverage analyst's campaigns are read when its picker opens, so one that finishes meanwhile shows up.
         """
         if kind == "flow":
             return form(name)
@@ -292,12 +291,11 @@ class Launcher:
             REVIEWER,
             CoverageAnalystForm,
             ReviewerForm,
-            spec_prefill,
         )
 
         note = agent_note(worktree, name)
         builders: dict[str, Callable[[], SpecialistForm]] = {
-            REVIEWER: lambda: ReviewerForm(spec_prefill(self._booley_dir, worktree), note),
+            REVIEWER: lambda: ReviewerForm(note),
             COVERAGE_ANALYST: lambda: CoverageAnalystForm(note),
         }
         return builders[name]()

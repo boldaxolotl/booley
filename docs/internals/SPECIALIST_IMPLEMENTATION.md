@@ -97,7 +97,7 @@ The report holds the observed evidence, the model's hypotheses and
 recommendations, explicit limitations, source-access status, screened
 Waiver Candidates, and the exact evidence it was allowed to retrieve.
 
-The Analyst is advisory: it never marks a Goal met or changes Goal evidence.
+The Analyst is advisory: it never changes evidence.
 Invalid input, or model output that is malformed or incomplete, is an
 execution error. A valid report succeeds even when its Campaign records a
 simulation failure or a coverage miss, because reporting that miss is its
@@ -115,17 +115,7 @@ snapshot, never through file tools.
 
 ### Waiver Candidates
 
-In a Goal-bound run, the wrapper, not the model, records candidates screened
-`ready_for_human_review` in the Goal Record's `waiver-candidates.json` (owned by
-`flows.sim.waiver_candidates`). It adds a `waiver_candidate_record` detail of
-the form `{status: "recorded", recorded, filtered_by_rejection,
-candidate_ids, verdicts: {strict, provisional, candidates}}`, and after the
-first report line (`Coverage advisory: <recommendation> (<eligibility>,
-<source_access>)`) prints `Waiver Candidates recorded N (filtered by rejection
-M); coverage strict X · provisional Y`. A recording failure gives
-`{status: "failed", reason}` and the line `Waiver Candidates not recorded:
-<reason>` without failing the analysis. Outside Goal Mode no candidates are
-recorded.
+Candidates are reported, not recorded.
 
 Stored evaluation maps directly to the closure recommendation: `pass` →
 `coverage_ready`, `fail` → `coverage_not_ready`, `blocked` →
@@ -137,11 +127,10 @@ Stored evaluation maps directly to the closure recommendation: `pass` →
   invalid-reason candidate;
 - `investigate`: missing source verification or evidence, or an `unreachable`
   point with observed hits;
-- `ready_for_human_review`: everything else. The human accepts or rejects it
-  through a coverage-waiver Goal Change Proposal.
+- `ready_for_human_review`: everything else. A human decides whether to write
+  an approval file for it.
 
-An `unreachable` candidate needs no model proof reference; approval writes a
-`review` proof. The model never writes the waiver record.
+An `unreachable` candidate needs no model proof reference. The model never writes the waiver record.
 
 ### Evidence access
 

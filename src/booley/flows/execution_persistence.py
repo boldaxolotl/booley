@@ -10,9 +10,7 @@ from typing import Any, Protocol, runtime_checkable
 from booley.criteria.presentation import CriterionPresentation, criterion_presentation
 from booley.criteria.state import CriterionChange, DevelopmentState, StatePersistence
 from booley.evidence.acceptance import ResolvedFlowAcceptance
-from booley.flows.frozen_test_runs import FrozenTestRuns
 from booley.flows.request import FlowRequest
-from booley.flows.simulation_record_results import StartedSimulationRecord
 from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.runtime.endpoint_execution import EndpointOutcome
 
@@ -59,22 +57,15 @@ class ReviewInputs:
 
 @runtime_checkable
 class GoalPresentationProvider(Protocol):
-    """Optional presentation pinned by the execution owner, independent of Goals."""
+    """Optional presentation pinned by the execution owner."""
 
     def present_criterion(self, key: str, entry: object) -> CriterionPresentation: ...
-
-
-@runtime_checkable
-class CandidateStoreProvider(Protocol):
-    """Optional neutral paths for recording advisory coverage candidates."""
-
-    def candidate_store_paths(self) -> tuple[Path, Path]: ...
 
 
 def execution_presentation(
     recorder: AcceptanceRecorder, key: str, entry: object = None
 ) -> CriterionPresentation:
-    """Use the admitted Goal identity when supplied; retain diagnostic presentation."""
+    """Use the presentation the execution owner pins when supplied; else the default."""
     if isinstance(recorder, GoalPresentationProvider):
         return recorder.present_criterion(key, entry)
     return criterion_presentation(key, entry)
@@ -142,51 +133,6 @@ def criterion_is_current_for(
 
 
 @runtime_checkable
-class FrozenTestRunsSource(Protocol):
-    """Optional recorder capability: the Test Runs the run's Goals are frozen to."""
-
-    def frozen_test_runs(self) -> FrozenTestRuns: ...
-
-
-def frozen_test_runs_for(recorder: AcceptanceRecorder) -> FrozenTestRuns | None:
-    """The frozen Test Runs *recorder* judges evidence by; ``None`` outside Goal Mode.
-
-    May raise :class:`EvidenceDiscarded` when the recorder's authority can no
-    longer be read.
-    """
-    if isinstance(recorder, FrozenTestRunsSource):
-        return recorder.frozen_test_runs()
-    return None
-
-
-@runtime_checkable
-class SimulationRecordRegistry(Protocol):
-    """Optional recorder capability: learn of each Simulation Record before it runs.
-
-    A record that is cancelled or killed never returns an outcome; a
-    recorder that was told of it can still account for the results it left.
-    """
-
-    def register_simulation_record(self, simulation_record: StartedSimulationRecord) -> None: ...
-
-
-def wants_simulation_records(recorder: object) -> bool:
-    """Whether *recorder* wants to be told of each Simulation Record before it runs."""
-    return isinstance(recorder, SimulationRecordRegistry)
-
-
-def register_simulation_record_for(
-    recorder: object, simulation_record: StartedSimulationRecord
-) -> None:
-    """Tell *recorder* that *record* is about to run, if it wants to know.
-
-    May raise :class:`AcceptanceRecordingError`.
-    """
-    if isinstance(recorder, SimulationRecordRegistry):
-        recorder.register_simulation_record(simulation_record)
-
-
-@runtime_checkable
 class StatePersistenceSource(Protocol):
     """Optional recorder capability: choose how the execution's state is saved.
 
@@ -212,7 +158,7 @@ class EvidenceDiscarded(AcceptanceRecordingError):  # noqa: N818 - names the out
     """An invocation's evidence was discarded before anything was written.
 
     A recorder raises it when the authority the run was admitted under no
-    longer holds (Goal Mode's publication gate). The endpoint completion path
+    longer holds. The endpoint completion path
     catches it once per invocation, writes nothing more for that invocation,
     and reports ``evidence discarded: <reason>`` with the run's own result.
     """

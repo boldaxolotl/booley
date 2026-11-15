@@ -64,21 +64,8 @@ until marked ready; Mergify's queue drafts run.
   files. `README.md` and `docs/user/INSTALL.md` add `package-artifacts` (with
   `build-dist`), which renders the README and runs the install guide's
   commands. `website/` and `docs/user/` add `site-build` and `lint`.
-- Goal and review code (`src/booley/goals/`, `src/booley/review/`) select both
+- Review code (`src/booley/review/`) selects both
   image jobs, `bwave-smoke` and `riscv-image`.
-
-### Goal Mode unit tests
-
-Temporary, until Goal Mode is removed
-([#3276](https://github.com/boldaxolotl/booley/issues/3276)). Collecting
-`tests/` skips `tests/goals/` (`collect_ignore` in `tests/conftest.py`); run
-them by naming the path, for example `pytest tests/goals`. Goal source
-(`src/booley/goals/`) is omitted from coverage, and `docs-check` and
-`flake-stress` never select those modules. A `tests/goals/` change selects only
-`lint`, unless a test outside `tests/goals/` imports that file; then it is an
-ordinary test change. The Goal Mode image smoke
-(`tests/smoke/test_goal_mode_image_smoke.py`) runs only when
-`BOOLEY_GOAL_MODE_SMOKE=1` is set.
 
 ## Main pushes and the nightly run
 
@@ -135,7 +122,7 @@ locally with `pytest <module> --count=10 -n 4 --dist=load`.
 
 ## Sandbox-only tests
 
-Windows runs Booley only as a host. Goal Mode, Booley Flows, Specialists, MCP
+Windows runs Booley only as a host. Booley Flows, Specialists, MCP
 tools, the Dashboard, chat, and worktree code run in the
 [Sandbox](../../docs/GLOSSARY.md#using-booley), a Linux container, so their
 tests would only find Windows failures in code that never runs there. The
@@ -203,7 +190,6 @@ differently by two shards.
 weights. Each stored weight is the median of the observed call times of a
 currently eligible test, kept only when it exceeds the one-second default;
 missing or unobserved tests use the default, and stale entries are harmless.
-Neither model may list a `tests/goals/` test (`tests/ci/test_ci_test_shards.py`).
 
 Every shard writes `test-timings.json` with three parts:
 
@@ -307,7 +293,7 @@ products are not diagnostic outputs.
 The `riscv-image` job builds and checks the RISC-V
 [Sandbox Image](../../docs/GLOSSARY.md#using-booley). It is selected only by
 its own inputs on every event: `RISCV_IMAGE_PREFIXES` and `RISCV_IMAGE_FILES`
-in `.github/scripts/picorv32_ci_inputs.py` (the demo, Goal, review, and
+in `.github/scripts/picorv32_ci_inputs.py` (the demo, review, and
 evidence code among them) and any Dockerfile or image data change. Nightly and
 manual runs select it only when the last commit changed those inputs, and a
 `main` push never does, because its queue candidate already ran it.

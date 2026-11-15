@@ -6,9 +6,9 @@ or ``.git``. Git's built-in checkout machinery writes each blob straight to its 
 path, so no file is held in memory and none is written twice. Git LFS and other
 external filters are refused rather than approximated.
 
-Goal Mode shares the byte-projection pieces (:class:`BytePolicy`,
-:func:`shadow_repository`, :func:`pinned_attributes`, :func:`materialize_tree`,
-:func:`configured_submodule_paths`); :func:`export_commit` is the Goal-neutral entry
+The byte-projection pieces (:class:`BytePolicy`, :func:`shadow_repository`,
+:func:`pinned_attributes`, :func:`materialize_tree`,
+:func:`configured_submodule_paths`) back :func:`export_commit`, the entry
 point for the measurement environment.
 """
 

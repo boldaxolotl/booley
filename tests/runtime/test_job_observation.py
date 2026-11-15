@@ -89,17 +89,6 @@ def test_record_still_running_after_a_dead_observation_stays_orphaned(tmp_path, 
     assert [job.state for job in snapshot.jobs] == ["orphaned"]
 
 
-def test_observer_does_not_interpret_caller_owned_binding_schema(tmp_path):
-    root = tmp_path / "jobs"
-    binding = {"schema": "other-context/v1", "context": "recorded"}
-    write_job(root, "one", binding=binding)
-
-    snapshot = JobObserver(tmp_path).read((root,))
-
-    assert snapshot.jobs[0].record.binding == binding
-    assert snapshot.diagnostics == ()
-
-
 def test_metadata_validator_rejects_before_artifact_io_and_isolates_the_record(
     tmp_path, monkeypatch
 ):

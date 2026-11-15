@@ -6,7 +6,6 @@ import logging
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -201,7 +200,7 @@ def _report_mcp_tool_def() -> dict[str, Any]:
             "properties": {
                 "work_dir": {
                     "type": "string",
-                    "description": "Goal worktree whose reports to fetch. Required while Goal Mode is active.",
+                    "description": "Worktree whose reports to fetch. Omit to use the session workspace.",
                 },
                 "endpoint": {
                     "type": "string",
@@ -455,10 +454,6 @@ def utilities_visible(exposure: Exposure) -> bool:
     return not exposure.coverage_record
 
 
-def goals_visible(exposure: Exposure) -> bool:
-    return exposure.interactive and exposure.nested is None
-
-
 def coverage_visible(exposure: Exposure) -> bool:
     return (
         exposure.nested is not None
@@ -490,8 +485,6 @@ def visible_definitions(
     exposure: Exposure, endpoint_definitions: Sequence[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     """Assemble supplemental tools with already-filtered endpoints, preserving objects."""
-    from booley.mcp.goal_tools import goal_tool_defs
-
     definitions = [
         *endpoint_definitions,
         *(tool for tool in _BWAVE_MCP_TOOLS if tool_visible(tool["name"], exposure)),
@@ -507,42 +500,4 @@ def visible_definitions(
     ):
         if visible:
             definitions.append(builder())
-    if goals_visible(exposure):
-        definitions.extend(goal_tool_defs())
     return sorted(definitions, key=lambda item: item["name"])
-
-
-def _default_interactive_definitions() -> list[dict[str, Any]]:
-    from booley.mcp.goal_tools import GOAL_TOOL_NAMES
-    from booley.mcp.registry import discover_mcp_tools
-
-    endpoints, errors = discover_builtin_definitions(discover_mcp_tools(), Exposure())
-    if errors:
-        raise RuntimeError("Interactive builtin discovery incomplete: " + "; ".join(errors))
-    return [
-        {**tool, "is_goal": True} if tool["name"] in GOAL_TOOL_NAMES else tool
-        for tool in visible_definitions(Exposure(), endpoints)
-    ]
-
-
-def partition_work_dir(
-    definitions: Sequence[dict[str, Any]],
-) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
-    """Classify actual schemas, rejecting configurable endpoints that break the category rule."""
-    accepting, nonaccepting = [], []
-    for definition in sorted(definitions, key=lambda item: item["name"]):
-        accepts = "work_dir" in definition["schema"].get("properties", {})
-        if definition.get("module") and not accepts:
-            raise ValueError(
-                f"Configurable endpoint {definition['name']} lacks work_dir in its schema"
-            )
-        (accepting if accepts else nonaccepting).append(definition)
-    return tuple(accepting), tuple(nonaccepting)
-
-
-@cache
-def work_dir_guidance() -> str:
-    """Compose Goal routing text from the installed default Interactive schemas."""
-    from booley.goals.rules import work_dir_guidance as render_guidance
-
-    return render_guidance(partition_work_dir(_default_interactive_definitions()))

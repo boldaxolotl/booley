@@ -211,8 +211,7 @@ def authorize_targets(
     return EndpointOutcome(
         exit_code=EXIT_ERROR,
         report_text=(
-            f"{endpoint.name}: Goal Mode has no authorized Criterion binding for Target(s): "
-            + ", ".join(missing)
+            f"{endpoint.name}: no Criterion is bound for Target(s): " + ", ".join(missing)
         ),
     )
 

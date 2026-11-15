@@ -169,10 +169,10 @@ def test_parse_caps_reads_only_max_light(caplog: pytest.LogCaptureFixture) -> No
     assert "unknown key" not in caplog.text  # the retirement refusal reports queue_max
 
 
-def test_refuse_retired_jobs_keys_reads_the_main_booley_directory(
+def test_refuse_retired_config_reads_the_main_booley_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.config.jobs import refuse_retired_jobs_keys
+    from booley.config.retired import refuse_retired_config
     from booley.runtime import booley_dir as booley_dir_module
 
     booley_dir = tmp_path / ".booley"
@@ -182,14 +182,14 @@ def test_refuse_retired_jobs_keys_reads_the_main_booley_directory(
     (booley_dir / "booley.toml").write_bytes(b"[jobs]\nmax_heavy = 1\n")
 
     with pytest.raises(ValueError, match=r"max_heavy \(line 2: "):
-        refuse_retired_jobs_keys(tmp_path)
+        refuse_retired_config(tmp_path)
 
     (booley_dir / "booley.toml").write_bytes(b"[jobs]\nmax_light = 1\n")
     with pytest.raises(ValueError, match=r"max_light \(line 2: "):
-        refuse_retired_jobs_keys(tmp_path)
+        refuse_retired_config(tmp_path)
     (booley_dir / "booley.toml").write_bytes(b"[jobs]\nmax_tickets = 1\n")
-    refuse_retired_jobs_keys(tmp_path)
+    refuse_retired_config(tmp_path)
     # A Project that cannot be resolved has nothing to refuse.
     monkeypatch.delenv("BOOLEY_DIR")
     booley_dir_module.reset_cache()
-    refuse_retired_jobs_keys(tmp_path / "nowhere")
+    refuse_retired_config(tmp_path / "nowhere")

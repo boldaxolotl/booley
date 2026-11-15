@@ -416,7 +416,7 @@ def test_non_rtl_and_unscored_native_points_cannot_be_waiver_candidates(kind, ex
         (
             {},
             "ready_for_human_review",
-            "A human must accept or reject this candidate through a Goal Change Proposal",
+            "A human must accept or reject this candidate",
         ),
         ({"run:smoke": 3}, "investigate", "Unreachability is contradicted by observed hits"),
     ],
@@ -424,7 +424,7 @@ def test_non_rtl_and_unscored_native_points_cannot_be_waiver_candidates(kind, ex
 def test_unreachable_needs_zero_hits_but_no_model_proof_reference(
     hits, expected, expected_reason
 ) -> None:
-    """ADR 0066: the review proof is written at approval; observed hits still contradict."""
+    """Observed hits contradict unreachability."""
     from dataclasses import replace
     from types import MappingProxyType
 

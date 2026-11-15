@@ -130,7 +130,7 @@ def _remove_tree(path: Path) -> None:
 
 
 # Booley Directory children whose ``<id>/.runtime`` holds Flow reports for agent runs:
-# Interactive Mode MCP sessions and Goal Mode Goal Records.
+# Interactive Mode MCP sessions and the Goal Record directories an earlier version left behind.
 _RUNTIME_OWNER_DIRS = frozenset({INTERACTIVE_LOGS_DIR_NAME, GOALS_DIR_NAME})
 
 

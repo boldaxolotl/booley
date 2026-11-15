@@ -1,4 +1,4 @@
-"""Criteria templates — default Criteria sets for the built-in Goalsets.
+"""Criteria templates — default Criteria sets for the built-in ticket types.
 
 Handles per-target expansion: a single logical criterion like ``lint_clean``
 with targets ``[lite, full, combo]`` expands into ``lint_clean_lite``,
@@ -157,7 +157,7 @@ class CriterionDef:
     workflow_region: str  # pre_sim | core_loop | post_sim
     per_target: bool
     category: str  # rtl | tb | none
-    group: str  # functional family for docs grouping (see criteria_reference)
+    group: str  # functional family for docs grouping (see criteria.reference)
     # True for a family whose public binding is one Target and one named test.
     per_test: bool = False
     # Omitted from the generated reference/cheatsheet, but still fully usable if a
@@ -519,7 +519,7 @@ _PER_CLOCK_METRICS: frozenset[str] = frozenset(
     {"critical_path_ps", "fmax_mhz", "wns_ns", "whs_ns", "period_ns"}
 )
 # Threshold-param flavour suffixes, longest first so the base metric splits off
-# unambiguously (mirrors criteria_reference._THRESHOLD_SUFFIXES).
+# unambiguously (mirrors reference._THRESHOLD_SUFFIXES).
 _THRESHOLD_SUFFIXES: tuple[str, ...] = (
     "_increase_at_most",
     "_reduce_at_least",
@@ -690,7 +690,7 @@ class CriteriaTemplate:
 
     @classmethod
     def for_ticket_type(cls, ticket_type: str) -> CriteriaTemplate:
-        """Load the default template for a built-in Goalset key."""
+        """Load the default template for a built-in ticket type."""
         specs = TEMPLATE_REGISTRY.get(ticket_type, _BUGFIX_CRITERIA)
         return cls(specs=list(specs))
 

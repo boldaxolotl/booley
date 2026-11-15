@@ -211,6 +211,29 @@ def test_a_retired_key_in_the_commit_does_not_stop_its_measurement(
 
 
 @linux_only
+def test_a_goals_section_in_the_commit_does_not_stop_its_measurement(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The commit's own ``booley.toml`` still has a [goals] section; the live one does not.
+    world = metrics_project(
+        make_world,
+        "[metrics_ok.checkout_stub]\nmarker_max = 10\n",
+        config=ONE_AT_A_TIME + "\n[goals]\nquiet_after = 60\n",
+    )
+    live_settings = world.main / "booley.toml"
+    live_settings.write_bytes(b"[jobs]\nmax_tickets = 1\n")
+
+    assert measure(monkeypatch, world) == 0
+    assert len(stored_documents(world)) == 1
+
+    live_settings.write_bytes(b"[jobs]\nmax_tickets = 1\n\n[goals]\nquiet_after = 60\n")
+    capsys.readouterr()
+    assert measure(monkeypatch, world, entry="main") == 2
+    assert "[goals] section" in capsys.readouterr().err
+    assert len(stored_documents(world)) == 1  # nothing new was stored
+
+
+@linux_only
 def test_a_target_run_measures_one_target_and_keeps_its_reports_with_the_job(
     make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -34,7 +34,7 @@ def test_each_nonempty_directory_has_a_waivable_warning_and_delete_fix(tmp_path)
     assert all(f.severity == "warn" for f in findings)
     for finding in findings:
         assert finding.fix == (
-            "move any Ticket you still need into a Goalset or archive it, "
+            "archive any Ticket you still need, "
             f"then delete {tmp_path / 'tickets' / finding.subject}"
         )
         assert "empty directories: locks" in finding.message
@@ -74,7 +74,7 @@ def test_edited_guidance_warns_to_move_rules_before_delete(tmp_path, name):
     assert finding.check_id == "tickets.leftover-guidance"
     assert finding.subject == name
     assert finding.fix == (
-        f"move its rules into a Goalset under .booley/goalsets/, then delete {tmp_path / name}"
+        f"move its rules into the Project's AGENTS.md, then delete {tmp_path / name}"
     )
 
 
@@ -102,5 +102,5 @@ def test_unreadable_leftovers_warn_without_crashing(tmp_path, monkeypatch, kind)
         "tickets.leftover-board" if kind == "board" else "tickets.leftover-guidance"
     )
     assert "access denied" in finding.message
-    assert "Goalset" in finding.fix
+    assert "delet" in finding.fix
     assert path.exists()

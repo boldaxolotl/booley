@@ -28,7 +28,7 @@ express, a per-test build step such as compiling a test's firmware, goes in
    `booley targets <name>` (one Target in detail). `--for sim|lint|synth|fpga`
    shows only the Targets that Flow can run.
 
-Renaming a Target also means updating its `tests.toml` section, any Goals, and
+Renaming a Target also means updating its `tests.toml` section and
 anything else that calls it by name; ask the agent to do all of it in one
 change.
 

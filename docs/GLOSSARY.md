@@ -6,14 +6,14 @@ up here when it is unfamiliar and use it exactly as defined; this is not an
 onboarding sequence. Each entry says what a term means, not how it is built:
 behavior and configuration belong in the user and internal docs. The
 [context map](../GLOSSARY-MAP.md) points to the vocabularies that one context
-owns, such as Goal Mode or B-Wave.
+owns, such as B-Wave.
 
-Booley is an **agentic development environment (ADE)** for RTL design and verification: the working environment where an engineer directs and supervises Developer Agents doing RTL work, whether hands-on or unattended. **Goal Mode** and **Interactive Mode** share the same isolated **Sandbox**, Booley Flows, and Specialists; neither mode alone defines the product.
+Booley is an **agentic development environment (ADE)** for RTL design and verification: the working environment where an engineer directs and supervises Developer Agents doing RTL work, whether hands-on or unattended. **Interactive Mode** runs in an isolated **Sandbox** with Booley Flows and Specialists.
 _Avoid_ (for the product itself): IDE, agentic RTL IDE, framework, system, library, platform, toolkit, package, harness
 
 The glossary also records words to _avoid_. Booley's concepts collide with
 overloaded industry words such as “tool,” “agent,” “target,” and “harness”; one
-term per concept keeps prompts, Goals, documentation, and code aligned. Treat
+term per concept keeps prompts, documentation, and code aligned. Treat
 each entry's _Avoid_ terms as rejected synonyms rather than loose alternatives.
 
 ## Using Booley
@@ -38,11 +38,11 @@ _Avoid_: Project Initialization, onboarding, porting
 
 ### Execution
 
-How and where Booley work runs. The **Sandbox** is the execution environment; **Goal Mode** and **Interactive Mode** are the two execution modes; the remaining entries are the machinery inside.
+How and where Booley work runs. The **Sandbox** is the execution environment; **Interactive Mode** is the execution mode; the remaining entries are the machinery inside.
 
 **Developer Agent**:
-The agent of an agent session (Claude Code or Codex) in a **Sandbox**. It authors code and chooses which **Booley Flows** and **Specialists** to use. It exists in **Interactive Mode** and in **Goal Mode**, whether a human is steering or the work is unattended.
-_Avoid_: coding agent, host agent, main agent, outer agent, the agent session in Goal Mode
+The agent of an agent session (Claude Code or Codex) in a **Sandbox**. It authors code and chooses which **Booley Flows** and **Specialists** to use. It works in **Interactive Mode** with a human steering.
+_Avoid_: coding agent, host agent, main agent, outer agent
 
 **Agent CLI**:
 The coding-agent program an agent runs on: Claude Code (`claude`) or Codex (`codex`). A Project lists the Agent CLIs it may use and names a default, which runs the **Developer Agent** and Booley's own calls; each **Specialist** runs on the Agent CLI its model implies (`claude-*` on Claude Code, `gpt-*` on Codex). Each Agent CLI has its own sign-in and billing policy.
@@ -61,51 +61,19 @@ The host-owned act of sealing and vouching for one exact Sandbox specification, 
 _Avoid_: Session Runtime Issuance, EDA runtime spec, provisioning issuance
 
 **Interactive Mode**:
-Execution mode in which a human steers the Developer Agent inside a Sandbox, using the Developer Agent's CLI in a Sandbox terminal. The Developer Agent's filesystem access, shell execution, git operations, MCP servers, Booley Flows, and Specialists execute inside it; work outside Goal Mode has no persistent Goal tracking. The same session may enter Goal Mode when the human is ready to state machine-checked Goals.
+Execution mode in which a human steers the Developer Agent inside a Sandbox, using the Developer Agent's CLI in a Sandbox terminal. The Developer Agent's filesystem access, shell execution, git operations, MCP servers, Booley Flows, and Specialists execute inside it; commits are accepted by [Metric-Driven Development](#metric-driven-development-and-reviews).
 _Avoid_: MCP Mode, Standalone Mode, Tab Mode, Booley Interactive
 
-**Goal Mode**:
-The execution mode the Developer Agent enters within its session in a linked worktree, on its own Goal Branch, in which its work is judged against its Goals until it finishes with all Goals met or is abandoned. It serves both human-steered and unattended work; the worktree owns its Goal Record. [ADR 0092](adr/0092-measure-commits-against-target-metrics.md) removes Goal Mode in 0.5.0 in favor of [Metric-Driven Development](#metric-driven-development-and-reviews).
-_Avoid_: ticket mode, ticket, goal session, objective
-
-**Goal Branch**:
-The branch created from a clean worktree's HEAD when a session enters Goal Mode; that HEAD is the base against which Goals are judged. One Goal Mode owns exactly one Goal Branch.
-_Avoid_: ticket branch, work branch
-
-**Goal**:
-A named, mandatory boolean condition held by a session in Goal Mode, met only by Booley Flow or Specialist evidence at the session's current code. The Developer Agent may ask to relax a Goal; only a human may approve it. Its **Goal Name** is its single human-visible name: its uppercase capability and Target, or its review kind, with requirements beside it. Shared evaluation code still says [Criterion](#execution-and-evidence).
-_Avoid_: Criterion, acceptance criterion, optional criterion, check, gate; Goal label, encoded key (for a Goal Name)
-
-**Goalset**:
-A named, Project-owned bundle of Goals, written as free-form prose that the Developer Agent translates into Goals when entering Goal Mode.
-_Avoid_: Ticket Creation Guidance, criteria defaults, goal profile
-
-**Session Summary**:
-The mandatory prose report the Developer Agent writes when its session finishes Goal Mode: what changed and why, which Booley Flows and Specialists it used, and remaining uncertainties.
-_Avoid_: Developer Report, run report, Goal Report
-
-**Goal Record**:
-The local, uncommitted state of one Goal Mode in the **Main Booley Directory**: state, worktree, Goal Branch, base commit, Goals, protected-input digests, change log, evidence, and the Session Summary. Outside Stealth its committed counterpart is the summary file on the Goal Branch when that path is Git-trackable and owned by the RTL repository; Paired Checkout summaries remain local.
-_Avoid_: ticket record, board entry, goal file
-
-**Goal Change**:
-One approved change to a Goal of an active Goal Mode: add, relax, retarget, or waive coverage points through a Waiver Candidate. It starts as a **Goal Change Proposal**, the Developer Agent's request, pending until a human approves or rejects it by elicitation form or quoted words in chat. The **Change Log**, the Goal Record's append-only list of Goal Changes, keeps each one's before and after, kind, reason, approval method and session.
-_Avoid_: amendment, Ticket Amendment, waiver request, criteria edit; audit log (for the Change Log)
-
 **Protected Input**:
-A file that decides how evidence is produced and is therefore digested at Goal Mode entry: Project configuration, `booley.toml`, hooks, generators, Project MCP tool code under `mcp_tools`, and files the Project lists in `[project].protected_inputs` ([full list](internals/FLOW_IMPLEMENTATION.md#goal-baselines-and-editable-design-inputs)). Editing one warns at once and blocks Finish until reverted.
+A file that decides how evidence is produced and is therefore a protected input: Project configuration, `booley.toml`, hooks, generators, Project MCP tool code under `mcp_tools`, and files the Project lists in `[project].protected_inputs`. A Measurement reports edits to them as protected-set changes.
 _Avoid_: frozen file, locked config, Scope
 
-**Review Package**:
-The structured result Finish produces for a Goal Mode: diff summary against the base, each Goal with its final evidence, the Change Log, open review findings, Target changes, constraint-file edits, and the Session Summary. Finish replies with a short summary and the path of the full text.
-_Avoid_: triage package, run report, acceptance report
-
 **Session**:
-In the Session Registry, one agent client thread or process that calls Booley from a worktree, falling back to the worktree itself when the client cannot be told apart. It feeds the Dashboard and the shared-worktree warning. When the client's process runs at the root of a linked worktree of the server's repository, that worktree is the default checkout for its calls that omit `work_dir`; a Codex client qualifies only when `booley chat` started it. It never selects a Goal Record.
+In the Session Registry, one agent client thread or process that calls Booley from a worktree, falling back to the worktree itself when the client cannot be told apart. It feeds the Dashboard and the shared-worktree warning. When the client's process runs at the root of a linked worktree of the server's repository, that worktree is the default checkout for its calls that omit `work_dir`; a Codex client qualifies only when `booley chat` started it.
 _Avoid_: connection, tab, MCP session, Sandbox session
 
 **Sandbox Attachment**:
-The connection method by which a human-facing app or autonomous driver uses a Sandbox. VS Code Dev Containers ("Open Folder in Container" / "Reopen in Container") attaches the editor and its agent sessions for Interactive Mode and Goal Mode; `booley session` provides terminal attachment for automation.
+The connection method by which a human-facing app or autonomous driver uses a Sandbox. VS Code Dev Containers ("Open Folder in Container" / "Reopen in Container") attaches the editor and its agent sessions for Interactive Mode; `booley session` provides terminal attachment for automation.
 _Avoid_: Runtime Attachment, remote, tunnel, app bridge
 
 **Doctor**:
@@ -125,7 +93,7 @@ A run of a Booley Flow or Specialist, tracked by a Job record and its `run_id` f
 _Avoid_: task, process, async call
 
 **Standalone Job**:
-A Job with no owning session, started by a human from a Sandbox shell or the Booley Dashboard. It is admitted like any other Job (against the Memory Budget), writes `job.log`, and never records, satisfies, or invalidates Goal evidence.
+A Job with no owning session, started by a human from a Sandbox shell or the Booley Dashboard. It is admitted like any other Job (against the Memory Budget), writes `job.log`.
 _Avoid_: human run, dashboard job, manual job
 
 **Job admission**:
@@ -141,7 +109,7 @@ A codebase on which Project Initialization has run, with a **Booley Directory** 
 _Avoid_: repo, workspace
 
 **Booley Directory**:
-Where Booley keeps everything for a **Project**: configuration, Goalsets, Goal Records, evidence, logs, and worktrees; by default `.booley/` at the **Project Root**. **Common Booley State**, what all checkouts share, lives only in the **Main Booley Directory**; **Checkout Booley State** belongs to one checkout (its versioned configuration, build trees and reports). A linked worktree's **Worktree Booley Directory** holds only the latter.
+Where Booley keeps everything for a **Project**: configuration, evidence, logs, and worktrees; by default `.booley/` at the **Project Root**. **Common Booley State**, what all checkouts share, lives only in the **Main Booley Directory**; **Checkout Booley State** belongs to one checkout (its versioned configuration, build trees and reports). A linked worktree's **Worktree Booley Directory** holds only the latter.
 _Avoid_: Project directory, Project dir, Project data, state dir; global state, worktree state (for Common or Checkout Booley State)
 
 **Project Root**:
@@ -149,7 +117,7 @@ The top directory of a **Project**'s codebase checkout, and the default home of 
 _Avoid_: Project directory, Project checkout, repo root
 
 **Main Booley Directory**:
-The **Booley Directory** of the main checkout. It holds the Common Booley State and the main checkout's Checkout Booley State, and so owns the **Project**'s Goal Records, Goalsets, and lifecycle files.
+The **Booley Directory** of the main checkout. It holds the Common Booley State and the main checkout's Checkout Booley State, and so owns the **Project**'s lifecycle files.
 _Avoid_: control Project, control Project directory, session Project
 
 **Paired Checkout**:
@@ -194,7 +162,7 @@ _Avoid_: Pre-Run Commands, pre-test hook, prebuild adapter, test fixture script
 ### Flows, EDA tools, and MCP tools
 
 **Booley Flow**:
-Deterministic end-to-end orchestration: `lint`, `sim` (Simulation), `synth` (ASIC Synthesis), or `fpga` (FPGA Implementation), invoked through MCP or the CLI inside the **Sandbox**. Every Booley Flow builds its command for a resolved **Target** through Booley's FuseSoC/Edalize path, executes it inside the Sandbox, and interprets the result into evidence. In Goal Mode its MCP-bound evidence updates Goals; a CLI call returns a diagnostic verdict.
+Deterministic end-to-end orchestration: `lint`, `sim` (Simulation), `synth` (ASIC Synthesis), or `fpga` (FPGA Implementation), invoked through MCP or the CLI inside the **Sandbox**. Every Booley Flow builds its command for a resolved **Target** through Booley's FuseSoC/Edalize path, executes it inside the Sandbox, and interprets the result into evidence. A CLI call returns a diagnostic verdict.
 _Avoid_: B-Tool, mechanical tool, utility, command
 
 **EDA tool**:
@@ -206,7 +174,7 @@ Protocol-level mechanism used to invoke a Flow or Specialist. MCP tools are impl
 _Avoid_: bare tool, Booley Flow (when referring specifically to the protocol endpoint)
 
 **Elaboration Check**:
-A fast Simulation Flow mode that compiles, elaborates, and links a simulation Target without running its tests. It can satisfy an `elab` Goal through `elab_pass` evidence; it does not satisfy a `sim` Goal, which requires test execution.
+A fast Simulation Flow mode that compiles, elaborates, and links a simulation Target without running its tests. It yields `elab_pass` evidence; it does not yield `sim` evidence, which requires test execution.
 _Avoid_: syntax check, compile-only, Elaboration Flow, simulation substitute
 
 **Specialist**:
@@ -214,7 +182,7 @@ An optional capability the **Developer Agent** invokes for one task, with fresh 
 _Avoid_: agentic MCP tool, agent, worker; optional blindness, reviewer independence (for Specialist Source Isolation)
 
 **Custom Flow**:
-A project-authored Booley Flow that does not ship with Booley. Its MCP tool implementation lives under `.booley/mcp_tools/`; it implements the same deterministic orchestration and evidence contract as built-in Flows, is discovered and invoked through the same MCP tool infrastructure, and may produce evidence for declared Goals. It adds a new Flow alongside the built-ins (for example, a DRC check); it is not a side door for replacing the EDA tool driven by an existing Flow.
+A project-authored Booley Flow that does not ship with Booley. Its MCP tool implementation lives under `.booley/mcp_tools/`; it implements the same deterministic orchestration and evidence contract as built-in Flows, is discovered and invoked through the same MCP tool infrastructure, and may produce evidence like a built-in Flow. It adds a new Flow alongside the built-ins (for example, a DRC check); it is not a side door for replacing the EDA tool driven by an existing Flow.
 _Avoid_: Custom Tool, plugin, user tool, project tool
 
 **Mutation Flow**:
@@ -236,11 +204,11 @@ A named, fixed set of run-time arguments and environment for one **Test**, decla
 _Avoid_: test config, preset, profile, flavor, plusarg override, build variant
 
 **Test Run**:
-One **Test Variant** simulated with one seed, written `test+variant@seed`: `test@seed` for a **Test** without Variants, and without `@seed` on a Target that cannot apply seeds. With no seed named it uses the **Default Seed**, a Booley-wide constant a Target may override, never the simulator's own. It is the unit that simulation evidence records and Goals name; only a Test Run that exactly matches a Goal's resolved form counts toward that Goal.
+One **Test Variant** simulated with one seed, written `test+variant@seed`: `test@seed` for a **Test** without Variants, and without `@seed` on a Target that cannot apply seeds. With no seed named it uses the **Default Seed**, a Booley-wide constant a Target may override, never the simulator's own. It is the unit that simulation evidence records.
 _Avoid_: run (bare), iteration, seed run, QA Run; random seed (for the Default Seed)
 
 **Simulation Record**:
-The durable, resumable record of the exact simulation workload one Simulation Flow invocation runs on one **Target**, with the strict aggregate outcome of all selected work; an explicit resume continues it later. It may contain a [**Coverage Record**](../src/booley/flows/sim/GLOSSARY.md). Code, messages, formats and docs say "campaign" until [#2711](https://github.com/boldaxolotl/booley/issues/2711); Goal-side names keep it ([ADR 0090](adr/0090-rename-simulation-and-coverage-campaigns-to-records.md)).
+The durable, resumable record of the exact simulation workload one Simulation Flow invocation runs on one **Target**, with the strict aggregate outcome of all selected work; an explicit resume continues it later. It may contain a [**Coverage Record**](../src/booley/flows/sim/GLOSSARY.md). Code, messages, formats and docs say "campaign" until [#2711](https://github.com/boldaxolotl/booley/issues/2711), [ADR 0090](adr/0090-rename-simulation-and-coverage-campaigns-to-records.md).
 _Avoid_: Simulation Campaign, campaign, regression run, test batch
 
 **Simulator Bundle**:
@@ -262,7 +230,7 @@ _Avoid_: regex, marker, exit-code-only verdict
 ### Presentation
 
 **Booley Dashboard**:
-The terminal view, one per Sandbox, of agent sessions, Goals, Booley Flow Jobs, Targets, and health signals in that Sandbox, from which a human can also launch Booley Flows as Standalone Jobs. Its **Session activity** is what a session's agent client last reported through lifecycle hooks (working, waiting for tool call, or waiting for user input), or unknown when nothing fresh was reported; it is never inferred from Booley calls or Jobs.
+The terminal view, one per Sandbox, of agent sessions, Booley Flow Jobs, Targets, and health signals in that Sandbox, from which a human can also launch Booley Flows as Standalone Jobs. Its **Session activity** is what a session's agent client last reported through lifecycle hooks (working, waiting for tool call, or waiting for user input), or unknown when nothing fresh was reported; it is never inferred from Booley calls or Jobs.
 _Avoid_: control room, console, monitor; session status, session state (for Session activity)
 
 ## Execution and evidence
@@ -273,7 +241,7 @@ _Avoid_: check, gate, acceptance test
 
 ### Metric-Driven Development and reviews
 
-How a commit is accepted once Goal Mode is removed: [ADR 0092](adr/0092-measure-commits-against-target-metrics.md) measures commits against metrics their Targets declare, and [ADR 0091](adr/0091-review-commits-outside-measurement.md) reviews commits outside that measurement. Booley loads and checks `metrics.toml` (`booley measure --validate`); measuring a commit, Measurement Runs, and Review Runs are not built yet.
+How a commit is accepted: [ADR 0092](adr/0092-measure-commits-against-target-metrics.md) measures commits against metrics their Targets declare, and [ADR 0091](adr/0091-review-commits-outside-measurement.md) reviews commits outside that measurement. Booley loads and checks `metrics.toml` (`booley measure --validate`); measuring a commit, Measurement Runs, and Review Runs are not built yet.
 
 **Metric-Driven Development**:
 Accepting work by measuring a commit against the **Target Metrics** its Project declares, in place of approving a list of criteria for each task. Adoption is optional: a Project that declares no metrics is unaffected.
@@ -307,12 +275,12 @@ You will not need these unless you are reading older work records, code, or docs
 - **`[jobs].memory_budget`** → the Memory Budget computed from `[sandbox].memory`: Retired. It replaced the computed budget without subtracting the reserve; `booley.toml` refuses it.
 - **light Job**, **light slot**, `max_light` → **Job admission**: Retired. Specialists and the Mutation Flow's coordinating Job are admitted by memory, and `booley.toml` refuses `[jobs].max_light`.
 - **`queue_max`**, **full queue** → **none**: Retired. The queue has no limit: a Job waits until it runs or is cancelled, and `booley.toml` refuses `[jobs].queue_max`.
-- **Ticket Mode** → **Goal Mode**: Retired ticket-driven workflow. `booley run` and `booley board` now print a migration pointer and exit 2.
-- **Harness** → **none**: Retired name for Ticket lifecycle orchestration. Name the Goal Record, evidence machinery, or Sandbox capability concerned. The `booley.harness` package still contains active CLI, Doctor, and setup code.
-- **Console** → **Booley Dashboard** for the live view; **none** for the old single-Ticket display: The Dashboard shows sessions, Goals, Jobs, and health across the Sandbox.
+- **Ticket Mode** and **Goals** → **Interactive Mode** with **Metric-Driven Development**: Retired workflows. `booley run` and `booley board` print a migration pointer and exit 2.
+- **Harness** → **none**: Retired name for Ticket lifecycle orchestration. Name the evidence machinery, or Sandbox capability concerned. The `booley.harness` package still contains active CLI, Doctor, and setup code.
+- **Console** → **Booley Dashboard** for the live view; **none** for the old single-Ticket display: The Dashboard shows sessions, Jobs, and health across the Sandbox.
 - **Simulation Campaign** → **Simulation Record** ([ADR 0090](adr/0090-rename-simulation-and-coverage-campaigns-to-records.md)); that entry says where "campaign" remains.
 - **Coverage Campaign** → [**Coverage Record**](../src/booley/flows/sim/GLOSSARY.md), on the same terms.
-- **Result Cache** and **`booley ci`** → **Measurement Run**: the Result Cache was never finished, and [ADR 0092](adr/0092-measure-commits-against-target-metrics.md) measures commits instead. Its key-part helpers under `booley.result_cache` go with Goal Mode.
+- **Result Cache** and **`booley ci`** → **Measurement Run**: the Result Cache was never finished, and [ADR 0092](adr/0092-measure-commits-against-target-metrics.md) measures commits instead. Its key-part helpers under `booley.result_cache` were removed with Goals.
 - **Escalation** → **none**: the Developer Agent asks the human in chat ([ADR 0067](adr/0067-replace-ticket-mode-with-goal-mode.md)).
 - **TB Coder** → **none**: the Developer Agent writes testbenches itself.
 

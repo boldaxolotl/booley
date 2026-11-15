@@ -418,7 +418,6 @@ def _stub_full_init_dependencies(
 ) -> None:
     for name in (
         "_step_core_projections",
-        "_step_goalsets",
         "_step_auth",
         "_step_git_hooks",
         "_step_project_git_hooks",

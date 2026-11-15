@@ -193,7 +193,7 @@ the user report.
 
 Setup is not finished until `.booley/` has a decided home in git.
 Leaving it merely untracked-and-unmentioned is wrong in both modes: the config,
-hooks, Goalsets, and authored cores under it are real work, and nothing is
+hooks and authored cores under it are real work, and nothing is
 versioning them. The plan's row 16 says which of the two outcomes applies. Do
 this once, at the end, when the config has stopped moving.
 
@@ -236,7 +236,7 @@ allowlist exactly—hybrid does not authorize committing operational state.
   otherwise. Hidden authored cores require `[stealth] enabled = true`; with
   it, `booley init` creates the inner repo and ignored root-level projections.
   Its `.gitignore` (written by `booley init`) already keeps the
-  transient state — `tmp/`, `.runtime/`, `worktrees/`, Goal logs and locks —
+  transient state — `tmp/`, `.runtime/`, `worktrees/`, and logs and locks —
   out. The inner repo is invisible to the parent, which sees only an excluded
   directory.
 - Also confirm the RTL repo's own `.gitignore` picked up **no** Booley lines
@@ -252,21 +252,7 @@ allowlist exactly—hybrid does not authorize committing operational state.
   migration; row 16 does not authorize deleting that history.
 - When preserving an independently versioned Booley Directory, retain its Git
   metadata and the outer exclusion when present; leave an already absent
-  exclusion absent. Read the current checkout's non-concise Doctor result:
-  - For an actual `goals.history-ignored:independent-booley-history` **WARN**,
-    record the accepted preservation policy using **Using Doctor waivers**:
-    copy that exact check and subject into a waiver, explain the independent
-    history and local-summary policy, and use `permanent = true` for that stable
-    project decision. Commit the waiver in the independent Booley repository so
-    future Paired Checkouts receive it and their inner checkout stays clean.
-    Rerun the warning's original command and verify the `!` row becomes a `~` row.
-  - An unexcluded authenticated Paired Checkout reports **PASS**:
-    `Goal summaries remain local; Paired Checkout preserves independent Booley history`.
-    That result needs no preservation waiver. A standalone current checkout's
-    unchanged `Goal history is eligible for commits` **PASS** also needs no
-    waiver; it describes that checkout, not a later Paired Checkout. If the
-    preservation warning became a PASS, remove its now-unmatched waiver using
-    the existing waiver cleanup and commit that change in independent history.
+  exclusion absent.
   Complete the existing final Doctor invocations with zero failures and active
   warnings. Continue below only after the human's chosen history migration into
   the RTL repository is complete.
@@ -285,7 +271,7 @@ allowlist exactly—hybrid does not authorize committing operational state.
   is to track the directory, not to re-hide it.
 - Verify what landed with `git ls-files .booley | head`: the inner
   `.gitignore` should have kept `tmp/`, `.runtime/`, `worktrees/`, and the
-  Goal logs/locks out. If transient state slipped in, unstage it and fix the
+  logs/locks out. If transient state slipped in, unstage it and fix the
   inner `.gitignore` before committing — a committed `.runtime/` churns every
   run.
 - Rerun Doctor. With Stealth off, removing the Booley exclusion requires no
@@ -303,7 +289,7 @@ the RTL repo's tracked tree.
 The Doctor command owns its Flow output locations, so do not redirect them with
 invented environment variables. Write only setup-authored command captures and
 exit-code sidecars beneath the run's scratch root; nothing is registered. Flow
-output, Job state, clean stamps, Goal Records, worktrees, and reusable
+output, Job state, clean stamps, worktrees, and reusable
 `.runtime/edalize` slots stay where Doctor writes them and are never removed by
 Step 7.
 

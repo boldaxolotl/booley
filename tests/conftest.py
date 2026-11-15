@@ -28,13 +28,6 @@ pytest_plugins = [
     "tests.thread_leak_guard",
 ]
 
-# Temporary (#3329): a bare ``pytest tests/`` skips the Goal Mode unit tests; the
-# coverage omit for ``src/booley/goals`` (pyproject.toml) and the classifier
-# exemption (.github/scripts/ci_goal_tests.py) go with it. Remove all three when
-# Goal Mode is removed (#3276), or when metrics-driven development fully replaces
-# it. Naming the path still collects them: ``pytest tests/goals``.
-collect_ignore = ["goals"]
-
 
 @pytest.fixture(autouse=True)
 def adapter_subprocesses_import_this_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -694,21 +687,6 @@ def write_activity_signal(booley_dir: Path, key: str, state: str, at: str, tool:
     signal = {"schema": SCHEMA, "key": key, "state": state, "at": at}
     path.write_text(json.dumps(signal | ({"tool": tool} if tool else {})), encoding="utf-8")
     return path
-
-
-@pytest.fixture(autouse=True)
-def _inline_ended_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep cleanup deterministic; worker tests explicitly restore the process launcher."""
-    from booley.goals import ended_records
-    from booley.goals.store import GoalStore
-
-    monkeypatch.setattr(
-        ended_records,
-        "_launch_cleanup",
-        lambda booley_dir, repo_dir: ended_records.sweep_ended_records(
-            GoalStore(booley_dir), repo_dir
-        ),
-    )
 
 
 _FAKE_BWAVE = '''#!{python}

@@ -115,7 +115,6 @@ The Dashboard opens by itself when you attach to the container; see
 ```bash
 booley cheat                      # list the cheatsheet sections
 booley cheat --all                # the whole cheatsheet
-booley cheat --goals              # Goal Mode, the Goal catalog, and thresholds
 booley cheat --metrics            # the measuring rules, then each Target's metrics as metrics.toml text (needs a Project)
 booley coverage uncovered <coverage.json>   # uncovered points of a coverage run
 booley coverage uncovered <coverage.json> --metric branch --source rtl/fifo.sv
@@ -188,7 +187,7 @@ The setup is in [Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisio
 ### Worktrees
 
 A worktree is a second checkout of your Project where a separate Developer
-Agent can work without touching your files, for example one per Goal Mode
+Agent can work without touching your files, for example one per
 session. `booley chat` creates one (`s<N>`, on branch `booley/s<N>`) when the
 main checkout is in use; see
 [Several agents at once](USAGE.md#several-agents-at-once). You can also run, in
@@ -218,7 +217,7 @@ branch that already gained commits is kept.
 
 The worktree gets its own Booley Directory (the `.booley/` folder), a
 **Snapshot**: a copy of the Booley Directory's configuration (settings,
-`cores/`, hooks, Goal and Ticket history). Build results, reports, logs, and
+`cores/`, hooks, Ticket history). Build results, reports, logs, and
 evidence stay in the main Booley Directory. A path Booley does not classify is
 not copied, and the command names it.
 
@@ -251,7 +250,6 @@ under `.booley/worktrees/`, from the main checkout or from any worktree:
 | `UNCOMMITTED` | Changed and untracked entries (an untracked folder counts once), not counting untracked files in the worktree's own `.booley/`. A Paired Checkout reads `N, paired M`, `M` being the same count in its inner checkout |
 | `UNMERGED` | Commits not yet in the main checkout's branch. Commits whose change is already there count as merged, including a branch merged by squash. A Paired Checkout reads `N, paired M` |
 | `SESSION` | Handles of live sessions in the worktree |
-| `GOAL` | Its active Goal, if any |
 | `LAST USED` | When the worktree was created, a Booley tool call last ran there, `booley chat` was last launched inside it, or the session of a worktree that `booley chat` created ended (a resumed session counts through its tool calls); `never` for a worktree that predates the record |
 
 A worktree whose directory is gone is not listed; a warning names it.
@@ -264,14 +262,13 @@ booley worktree rm <name> [--force]
 ```
 
 It moves the worktree's evidence aside, removes the worktree, and keeps its
-branch (`booley/<name>`, `wt/<name>` in Stealth Mode, or the Goal Branch), so commits made in the worktree
+branch (`booley/<name>`, or `wt/<name>` in Stealth Mode), so commits made in the worktree
 stay reachable. A worktree on a detached HEAD, which has no branch, is reported
 as `detached HEAD was <commit>`; save that commit on a branch if you need it.
 
 Without `--force` it refuses, listing every reason, while the worktree has:
 
-- a live Session or an active Goal Mode (an unreadable Session Registry or Goal
-  Record also refuses);
+- a live Session (an unreadable Session Registry also refuses);
 - uncommitted changes in the worktree, including untracked files in a
   Snapshot's `.booley/` that are neither evidence nor a copy of the Main
   Booley Directory's file;
@@ -325,7 +322,7 @@ keeps and about a failed run (an invalid `gc_older_than`, for instance). Run
 `booley worktree gc` to see why a worktree was kept.
 
 Each idle worktree goes through `booley worktree rm` without `--force`, so
-everything `rm` refuses is kept: a live Session, an active Goal Mode, and
+everything `rm` refuses is kept: a live Session and
 unsaved work (see the list above). A removed worktree prints the same lines as
 `rm`, evidence and branches included. Each worktree that stays prints `Kept
 worktree <name>:` and why, such as that it was used too recently, that the
@@ -357,7 +354,6 @@ These commands exist mainly for the agent's skills and are left out of
 | Command | Where | What it's for |
 |---|---|---|
 | `booley session` | host | Start, enter, or stop the Sandbox without VS Code; see [SANDBOX.md](SANDBOX.md#entering-the-sandbox-without-vs-code) |
-| `booley goal` | container | Show or abandon a Goal Mode; see [GOAL-MODE.md](GOAL-MODE.md#watching-recovery-and-parallel-sessions) |
 | `booley upgrade` | either | Review a Booley upgrade; see [Upgrade review](DOCTOR.md#upgrade-review) |
 | `booley feedback` | either | Record Booley bugs and impressions; use `/booley-feedback` instead |
 | `booley cleanup` | either | Remove a skill's scratch files |
@@ -386,7 +382,7 @@ accepts one that Booley hasn't set up yet.
 Ask the Developer Agent (*"run the reset test on `sim_lite`"*, *"how much area
 did that cost?"*) and it picks the Flow or Specialist, the Target, and the
 options. The **Sets** column shows which
-[Goal evidence](GOAL-MODE.md#working-with-evidence) each one can produce. The
+evidence each one can produce. The
 EDA tool that runs underneath depends on the Target; see
 [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md). `booley cheat --flows` and
 `booley cheat --specialists` print the same lists.
@@ -396,13 +392,13 @@ EDA tool that runs underneath depends on the Target; see
 
 Deterministic end-to-end orchestration; no LLM:
 
-| Booley Flow | Purpose | Sets |
-|--------|---------|------|
-| `sim` | Run RTL simulation for one or more Targets | `ELAB:{target}`, `SIM:{target}`, `CYCLE_COUNT:{target}`, `COVERAGE:{target}` |
-| `lint` | Run lint for one or more Targets | `LINT:{target}` |
-| `synth` | Run ASIC synthesis for one or more Targets with optional baseline comparison | `SYNTH:{target}` |
-| `fpga` | Run FPGA implementation for one or more Targets with optional baseline comparison | `FPGA:{target}` |
-| `mutation` | Deterministic mutation testing: seeded Mutants from fixed Mutation Operators, each built and tested in isolation | `MUTATION:{target}` |
+| Booley Flow | Purpose |
+|--------|---------|
+| `sim` | Run RTL simulation for one or more Targets |
+| `lint` | Run lint for one or more Targets |
+| `synth` | Run ASIC synthesis for one or more Targets with optional baseline comparison |
+| `fpga` | Run FPGA implementation for one or more Targets with optional baseline comparison |
+| `mutation` | Deterministic mutation testing: seeded Mutants from fixed Mutation Operators, each built and tested in isolation |
 
 Shared Flow options and results are in [FLOW_REFERENCE.md](FLOW_REFERENCE.md), each Flow's own in [FLOW-SIM.md](FLOW-SIM.md), [FLOW-LINT.md](FLOW-LINT.md), [FLOW-SYNTH.md](FLOW-SYNTH.md), [FLOW-FPGA.md](FLOW-FPGA.md), and [FLOW-MUTATION.md](FLOW-MUTATION.md), including the report files each one writes; `booley flow <name> --help` prints the options too.
 
@@ -412,16 +408,16 @@ Specialists running in scoped, isolated workspaces:
 
 Ask your Developer Agent session to invoke a Specialist by name with the arguments below (written as it passes them, `name="value"`; the CLI spells each as a flag, `--name value`). Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--max-turns` and `--timeout` are CLI-only controls.
 
-For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. Common options are `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Model-call minimum budgets apply; seconds-only providers round up. CLI Flow and Specialist runs never record Goal evidence; use the Developer Agent's Goal-bound MCP calls with `work_dir`. A CLI run is also a Standalone Job: it shows in the Dashboard and copies its output to `.interactive_logs/standalone/<run_id>/job.log` in the Project's common Booley Directory (the main checkout's `.booley` from a linked worktree).
+For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. Common options are `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Model-call minimum budgets apply; seconds-only providers round up. A CLI run is a Standalone Job: it shows in the Dashboard and copies its output to `.interactive_logs/standalone/<run_id>/job.log` in the Project's common Booley Directory (the main checkout's `.booley` from a linked worktree).
 
-| Specialist | Purpose | Sets | Modifies code |
-|------------|---------|------|:-------------:|
-| `coverage_analyst` | Explain one exact coverage.json Campaign and propose advisory next steps | — | — |
-| `reviewer` | Single-focus code review: reports issues by severity | `REVIEW:rtl_spec`, `REVIEW:rtl_bugs`, `REVIEW:rtl_protocol`, `REVIEW:tb_quality`, `REVIEW:rtl_security`, `REVIEW:rtl_optimization`, `REVIEW:rtl_code_style` | — |
+| Specialist | Purpose | Modifies code |
+|------------|---------|:-------------:|
+| `coverage_analyst` | Explain one exact coverage.json Campaign and propose advisory next steps | — |
+| `reviewer` | Single-focus code review: reports issues by severity | — |
 
 #### `coverage_analyst`
 
-Ask your Developer Agent to call the `coverage_analyst` Specialist with `record="<exact-coverage.json>"` and optional `instruction="<question>"`. The Analyst explains retained native evidence and proposes advisory next steps; its model only reads evidence. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. In Goal Mode, screened Waiver Candidates support a proposed Goal change, which needs human approval. Finish requires every Goal met; advisory reports do not mark strict coverage met. Verified Target sources are optional; stale sources give report-only analysis.
+Ask your Developer Agent to call the `coverage_analyst` Specialist with `record="<exact-coverage.json>"` and optional `instruction="<question>"`. The Analyst explains retained native evidence and proposes advisory next steps; its model only reads evidence. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. Screened Waiver Candidates are advisory and need human approval; advisory reports do not mark strict coverage met. Verified Target sources are optional; stale sources give report-only analysis.
 
 #### `reviewer`
 
@@ -467,7 +463,7 @@ booley specialist reviewer --help            # a Specialist's arguments
 Without `--target`, a Flow runs when there is exactly one eligible Target,
 and that selection is announced; with zero or multiple eligible Targets it
 stops with exit code 2 and lists them. A resumed simulation (`--resume-from`) keeps the Target of the
-run it resumes. Runs you start yourself never count as Goal evidence.
+run it resumes.
 
 Options, exit codes, and results are in [FLOW_REFERENCE.md](FLOW_REFERENCE.md);
 Specialists in [SPECIALISTS.md](SPECIALISTS.md);

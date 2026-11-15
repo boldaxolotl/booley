@@ -15,7 +15,7 @@ docs show only the few files a user opens; keep them consistent with this page.
 | [FLOW_IMPLEMENTATION_SIM.md](FLOW_IMPLEMENTATION_SIM.md) | The same for `sim`: Campaigns, coverage collection, retention |
 | [MCP-TOOLS.md](MCP-TOOLS.md#built-in-flow-calls) | How the same results reach an agent over MCP |
 
-The reports are evidence: Goals, Criteria, resume, and the Coverage Analyst all
+The reports are evidence: Criteria, resume, and the Coverage Analyst all
 read them later, often in another process. So every run gets its own numbered
 directory, files point at each other by relative path plus size and SHA-256,
 and a reader can tell a stale or swapped file from the one the run wrote.
@@ -31,8 +31,7 @@ Booley picks the report root in this order:
 
 1. `--report-dir`, if given.
 2. `$BOOLEY_RUNTIME_DIR/flow-reports`, when that variable is set. Every MCP
-   endpoint subprocess sets it: a Goal-bound call uses the Goal Record's runtime
-   directory, an ordinary Interactive Mode call the server's session runtime
+   endpoint subprocess sets it: an Interactive Mode call uses the server's session runtime
    (`.interactive_logs/<session>/.runtime` in the Booley Directory).
 3. Otherwise, `flow-reports/` in the Booley Directory of the checkout.
 
@@ -66,7 +65,7 @@ same report, with `mcp_tool` in place of `flow`.
 | `flow`, `target`, `argv`, `mode` | Which Flow ran, the requested Target selector, the raw command-line arguments, and `detail.mode` when the Flow set one. |
 | `exit_code`, `passed` | `passed` means exit `0`, whatever the Criteria say. |
 | `criterion_key`, `criterion_met` | The Criterion this run decided and its verdict, when exactly one applicable Criterion maps to the run, it was evaluated, and one Target was selected. Otherwise an empty key and `null`. Present only on runs with an acceptance identity (normally Goal-bound), so read them as optional keys. |
-| `timestamp`, `elapsed_s`, `slug` | When the report was written (at the end of the run), wall-clock duration, and the Goal Record ID for a Goal-bound run (otherwise empty). |
+| `timestamp`, `elapsed_s`, `slug` | When the report was written (at the end of the run), wall-clock duration, and the run's slug (empty unless the environment sets one). |
 | `detail` | Flow-specific results and pointers to per-Target files. |
 | `eda_tool`, `eda_tools` | The EDA tool that ran: scalar `eda_tool` for one Target, or `eda_tools` mapping each selected Target to its tool (`null` if unresolved) whenever several Targets were selected. A standalone sweep that used one frontend fills the scalar. |
 | `resources` | `cpu_user_s` and `cpu_sys_s` in seconds, `peak_rss_mb` in MiB. Optional. |
@@ -371,8 +370,8 @@ to `{percent, threshold, met}`, from the same Coverage Campaign as
   `met: false`.
 - An unscored Campaign gives an empty map.
 
-A threshold miss on a run that executed cleanly still exits `0`; for a
-Goal-bound run with one evaluated Criterion, `criterion_met` is `false`.
+A threshold miss on a run that executed cleanly still exits `0`; with one
+evaluated Criterion, `criterion_met` is `false`.
 
 ### Coverage retention
 

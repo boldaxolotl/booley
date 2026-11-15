@@ -11,8 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.config.eda import SUPPORTED_EDA_KINDS
-from booley.core.booley_dir import resolve_common_booley_dir
-from booley.core.config_paths import resolve_toml
+from booley.config.retired import TABLE_HEADER, normalized_name, opens_multiline_string
 
 logger = logging.getLogger(__name__)
 
@@ -137,10 +136,6 @@ def required_seats(tools: Iterable[str], data: Mapping[str, Any]) -> tuple[tuple
     return tuple((tool, caps[tool]) for tool in used)
 
 
-class RetiredJobsKeyError(ValueError):
-    """``booley.toml`` still sets a ``[jobs]`` key that was retired."""
-
-
 @dataclass(frozen=True, slots=True)
 class RetiredKey:
     """A retired ``[jobs]`` key and the 1-based line it sits on."""
@@ -149,22 +144,7 @@ class RetiredKey:
     line: int
 
 
-_TABLE_HEADER = re.compile(r"^\s*\[\[?\s*([^\[\]]*?)\s*\]\]?\s*(?:#.*)?$")
 _JOBS_INLINE = re.compile(r"^\s*[\"']?jobs[\"']?\s*=")
-
-
-def _normalized_name(raw: str) -> str:
-    """A TOML table or key name without quotes or spaces around its dots."""
-    return re.sub(r"\s*\.\s*", ".", raw.replace('"', "").replace("'", "")).strip()
-
-
-def _opens_multiline_string(line: str) -> str | None:
-    """The delimiter of a multi-line string this line opens and leaves open, if any."""
-    _, _, value = line.partition("=")
-    for delimiter in ('"""', "'''"):
-        if delimiter in value and value.count(delimiter) % 2 == 1:
-            return delimiter
-    return None
 
 
 def _retired_key_lines(text: str) -> dict[str, int]:
@@ -181,17 +161,17 @@ def _retired_key_lines(text: str) -> dict[str, int]:
             if delimiter in line:
                 delimiter = None
             continue
-        header = _TABLE_HEADER.match(line)
+        header = TABLE_HEADER.match(line)
         if header is not None:
-            table = _normalized_name(header.group(1))
+            table = normalized_name(header.group(1))
             continue
-        name = _normalized_name(line.partition("=")[0])
+        name = normalized_name(line.partition("=")[0])
         if _JOBS_INLINE.match(line):
             lines.setdefault("", number)
         for key in RETIRED_JOBS_KEYS:
             if (name == key and table == "jobs") or (name == f"jobs.{key}" and table == ""):
                 lines.setdefault(key, number)
-        delimiter = _opens_multiline_string(line)
+        delimiter = opens_multiline_string(line)
     return lines
 
 
@@ -231,20 +211,3 @@ def retired_jobs_keys_message(path: Path, found: Iterable[RetiredKey]) -> str:
         f"booley.toml sets retired [jobs] keys: {named}. "
         f"Fix: delete these lines from {path} (or run booley-heal to remove them)."
     )
-
-
-def refuse_retired_jobs_keys(project_root: Path | None) -> None:
-    """Raise :class:`RetiredJobsKeyError` while the live Project configuration sets a retired key.
-
-    Reads only the Main Booley Directory's ``booley.toml``, the file admission
-    reads: a linked worktree's or a measured commit's copy is never read, so
-    exported checkouts stay measurable. A Project that cannot be resolved has
-    nothing to refuse.
-    """
-    try:
-        path = resolve_toml(resolve_common_booley_dir(project_root))
-    except (FileNotFoundError, ValueError, RuntimeError):
-        return
-    found = retired_jobs_keys(path)
-    if found:
-        raise RetiredJobsKeyError(retired_jobs_keys_message(path, found))

@@ -3,7 +3,7 @@
 `.booley/booley.toml` holds your Project's Booley settings. This page covers the
 Project-wide ones: Project identity, extra Protected Inputs, turning Flows and
 Specialists off, Job limits, the Agent CLIs and their billing, models, the
-Dashboard and Goal presence, worktree settings (where `booley chat` starts,
+Dashboard, worktree settings (where `booley chat` starts,
 cleanup of idle worktrees, and Git submodules), and feedback redaction. Settings for one Flow, the Sandbox, or
 Stealth Mode live on their own pages; the table below says where.
 
@@ -16,7 +16,7 @@ here to look up what a setting means and what its default is.
 
 | Setting | Documented in |
 |---|---|
-| `[project]`, `enabled`, `[jobs]`, `[agent]`, `[models]`, `[goals]`, `[worktree]`, `[submodules]`, `[sandbox].dashboard`, `[feedback]` | this page |
+| `[project]`, `enabled`, `[jobs]`, `[agent]`, `[models]`, `[worktree]`, `[submodules]`, `[sandbox].dashboard`, `[feedback]` | this page |
 | `[flows.sim]` | [Simulation](FLOW-SIM.md#configuration-flowssim) |
 | `[coverage.waivers]` and per-Target coverage settings | [Coverage](COVERAGE.md#configuration) |
 | `[flows.lint]` | [Lint](FLOW-LINT.md#configuration-flowslint) |
@@ -49,10 +49,8 @@ A running Sandbox keeps using the location it started with until you run
 
 ### Additional Protected Inputs: `[project].protected_inputs`
 
-In Goal Mode, Booley freezes the files that decide how a Goal is judged, so the
-agent can't pass a Goal by changing the yardstick. Booley's own configuration
-and `.booley/hooks/` are always frozen. List your own files here when they also
-shape the result, such as a Makefile a hook runs, firmware sources, or
+Booley's own configuration and `.booley/hooks/` are always protected. List your
+own files here when they also shape the result, such as a Makefile a hook runs, firmware sources, or
 reference vectors. Booley can't find them from your scripts, so list each one:
 
 ```toml
@@ -62,7 +60,7 @@ protected_inputs = ["Makefile", "firmware/**/*.c", "vectors/"]
 ```
 
 Leaving the key out or the list empty adds nothing. Paths are relative to the
-Project Root of the Goal's worktree and use `/` on every host.
+Project Root and use `/` on every host.
 
 | Form | Example | Matches |
 |---|---|---|
@@ -70,26 +68,13 @@ Project Root of the Goal's worktree and use `/` on every host.
 | Glob | `firmware/**/*.c` | `*` and `?` stay within one folder; `**` alone spans any number of folders, including none; dotfiles match |
 | Directory | `vectors/` | every file below it; the trailing `/` is required |
 
-**When you start a Goal**, Booley lists the matched files. It refuses to start,
-naming the entry at fault, when an entry:
+Booley rejects an entry that is absolute, contains `..`, a backslash, `[]`,
+`{}`, or `**` joined to other characters (`**.c`), or names a directory without
+the trailing `/`. A Measurement reports edits to the files these entries match.
 
-- matches no file, or matches a file Git doesn't track (untracked or ignored);
-- matches into a submodule, a nested repository, `.git`, or Goal Record storage;
-- is absolute, contains `..`, a backslash, `[]`, `{}`, or `**` joined to other
-  characters (`**.c`), or names a directory without the trailing `/`;
-- matches a symlink that doesn't resolve to a tracked file in the repository.
-
-**While the Goal runs**, adding, removing, renaming, or editing a matched file,
-or committing such a change, warns at once and blocks Finish. Restoring the file
-clears it. To change the list itself, abandon the Goal and start again; an
-approved Goal Change can't lift the protection.
-
-Two limits:
-
-- Keep build outputs out of the patterns. A build that writes into a protected
-  folder counts as an edit, so prefer `firmware/**/*.c` to `firmware/` when
-  compilation writes there.
-- An edit made and reverted while a Flow is running goes unnoticed.
+Keep build outputs out of the patterns. A build that writes into a protected
+folder counts as an edit, so prefer `firmware/**/*.c` to `firmware/` when
+compilation writes there.
 
 ## Flow and Specialist availability: `enabled`
 
@@ -105,7 +90,7 @@ enabled = false
 ```
 
 A disabled Flow disappears from what the Developer Agent can run. A disabled
-Specialist also disappears from `booley specialist` and from Goal sessions. The
+Specialist also disappears from `booley specialist` and from agent sessions. The
 value must be `true` or `false`, and Doctor rejects Specialist names it doesn't
 know. Custom Flows and Specialists your Project adds use the same switch.
 
@@ -302,14 +287,11 @@ entry to change. `booley doctor --deep` checks every model ahead of time.
 keys or a `[models.roles]` table doesn't load; the error shows the `[models]`
 entries to use instead.
 
-## Dashboard and quiet Goal presence (`[goals]`)
+## Dashboard (`[sandbox].dashboard`)
 
 ```toml
 [sandbox]
 dashboard = true     # open the Dashboard when VS Code attaches to the Sandbox
-
-[goals]
-quiet_after = 7200   # seconds, 60 to 604800
 ```
 
 With `dashboard = false` the [Dashboard](USAGE.md#the-dashboard) does not
@@ -318,10 +300,13 @@ so does **Booley: Open Dashboard** (it needs a trusted Sandbox window with one
 Git folder). If it doesn't open when it should, see [Dashboard
 troubleshooting](TROUBLESHOOTING.md#the-dashboard-does-not-open-on-sandbox-attach).
 
-A Goal session that makes no Booley call for `quiet_after` seconds (default two
-hours) counts as quiet. The Dashboard may drop it from the Sessions list, and
-Doctor warns that the Goal has no recent activity. Quiet never ends or abandons
-a Goal.
+### A `[goals]` section is refused
+
+Goal Mode is not part of Booley, so `booley.toml` may not have a `[goals]`
+section. While it does, every Project command refuses and names the section and
+its lines, and `booley doctor` fails. Delete the `[goals]` tables;
+`booley-heal` does it for you. `booley measure` still measures an older commit
+whose own `booley.toml` has the section.
 
 ## Worktrees
 
@@ -363,19 +348,11 @@ toolchain or fetches vectors, under `.booley/hooks/`. `booley worktree new` runs
 `post-setup` (`.sh`, `.py`, or no suffix) in the new worktree after it fills the
 Git submodules, with `BOOLEY_WORKTREE` set to the worktree. The output is shown
 and logged, and a failure removes the worktree again. Keep generated build
-outputs ignored by Git, and commit deliberate inputs before Goal entry. Hooks
-are frozen as Protected Inputs while a Goal runs.
-
-Goal Mode's baseline runs, which measure the Goal's base commit, also run
-`post-setup` in their fresh checkout of that commit, with `BOOLEY_WORKTREE` set
-to it, so files the hook builds (a firmware image, say) exist at the base too. Make the hook safe to run
-twice and read its inputs from the checkout. If it fails, only the Targets that
-need its output lose their baseline, with the hook's error as the reason. A
-hook that changes a tracked file makes the baseline unavailable.
+outputs ignored by Git.
 
 ### Git submodules (`[submodules]`)
 
-Goal Mode and baseline comparisons run in separate git worktrees. Booley
+Baseline comparisons run in separate git worktrees. Booley
 fills each worktree's submodules from your local copy at the same path, at the
 commit the branch pins, without cloning anything, so private SSH URLs are
 fine. Recursive submodules work the same way.
@@ -400,7 +377,7 @@ See [Stealth Mode](STEALTH.md).
 </details>
 
 Each submodule must be present, clean, and have its full history (not a
-shallow clone) before a Goal or baseline run starts. Otherwise the run stops
+shallow clone) before a baseline run starts. Otherwise the run stops
 with one of:
 
 - `submodule <path> not found in source Project; initialize it first`

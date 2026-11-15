@@ -541,7 +541,7 @@ def test_no_mutation_tester_endpoint():
     assert "mutation_tester" not in {item.name for item in discover_mcp_tools()}
 
 
-def test_interactive_catalog_includes_exactly_four_goal_tools(monkeypatch):
+def test_interactive_catalog_offers_no_goal_tool(monkeypatch):
     monkeypatch.setattr(catalog, "_BWAVE_MCP_TOOLS", [])
 
     for name in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_COVERAGE_RECORD"):
@@ -555,13 +555,8 @@ def test_interactive_catalog_includes_exactly_four_goal_tools(monkeypatch):
             catalog.Exposure.from_mapping(os.environ), builtins
         )
     }
-    assert len(names) == 10
-    assert {name for name in names if name.startswith("goal_")} == {
-        "goal_enter",
-        "goal_status",
-        "goal_propose_change",
-        "goal_finish",
-    }
+    assert len(names) == 6
+    assert not {name for name in names if name.startswith("goal_")}
 
 
 @pytest.mark.parametrize("disabled", [None, "flow", "specialist", "mcp_tool"])
@@ -648,7 +643,7 @@ def test_schema_worker_excludes_job_report_and_transport_owners(tmp_path):
     path.write_text(
         "import sys\n"
         "for module in ('booley.mcp.server', 'booley.mcp.job_lifecycle', "
-        "'booley.mcp.job_results', 'booley.mcp.report_encoding', 'booley.mcp.sim_baseline_jobs'):\n"
+        "'booley.mcp.job_results', 'booley.mcp.report_encoding'):\n"
         "    assert module not in sys.modules, module\n"
         "from booley.mcp.base import McpTool\n"
         "class Local(McpTool):\n"

@@ -2859,7 +2859,7 @@ def test_endpoint_child_relocates_initial_import_and_direct_run_caches(
         "is_flow": True,
         "is_specialist": False,
     }
-    command = mcp_server._endpoint_command("project_probe", {}, definition, {}, _call_ctx())
+    command = mcp_server._endpoint_command("project_probe", {}, definition, {})
     command[0] = sys.executable
     environment = endpoint_process._endpoint_subprocess_env(_call_ctx())
     source_root = Path(mcp_server.__file__).resolve().parents[2]
@@ -3112,4 +3112,33 @@ async def test_flow_tool_call_refuses_retired_jobs_keys(tmp_path, monkeypatch):
     assert result.is_error
     text = result.value[0].text
     assert "max_heavy (line 2: memory admission replaced it)" in text
+    assert "booley-heal" in text
+
+
+@pytest.mark.asyncio
+async def test_flow_tool_call_refuses_a_goals_section(tmp_path, monkeypatch):
+    """A Flow call refuses while booley.toml has a [goals] section; its line and fix are named."""
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_bytes(
+        b'[project]\nname = "unit"\n\n[goals]\nquiet_after = 60\n'
+    )
+    monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
+    monkeypatch.setattr(
+        mcp_server, "_dispatch_booley_mcp_tool", AsyncMock(side_effect=AssertionError("ran"))
+    )
+
+    result = await mcp_server._dispatch_application_tool(
+        "sim",
+        {},
+        {"name": "sim", "is_flow": True},
+        jobs=_JobManager(_FakeLifetime()),
+        status_mcp_tool_names=[],
+        mcp_tool_call_counts={},
+    )
+
+    assert result.is_error
+    text = result.value[0].text
+    assert "[goals] section (line 4)" in text
+    assert "delete the [goals] tables (lines 4-5)" in text
     assert "booley-heal" in text

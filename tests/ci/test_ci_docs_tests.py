@@ -198,20 +198,6 @@ def test_new_content_reader_is_derived(
     assert expected in _script().derive(repo)
 
 
-def test_goal_unit_tests_are_never_derived(tmp_path: Path) -> None:
-    """CI never runs Goal Mode unit tests (#3329), even those that read documentation."""
-    reader = 'SPEC = "docs/user/X.md"\n\n\ndef test_r():\n    assert SPEC\n'
-    repo = _tracked_repo(
-        tmp_path,
-        {"tests/goals/test_reader.py": reader, "tests/other/test_reader.py": reader},
-    )
-
-    derived = set(_script().derive(repo))
-
-    assert "tests/other/test_reader.py" in derived
-    assert "tests/goals/test_reader.py" not in derived
-
-
 def test_unrelated_test_is_not_derived(tmp_path: Path) -> None:
     repo = _tracked_repo(
         tmp_path,
@@ -221,17 +207,9 @@ def test_unrelated_test_is_not_derived(tmp_path: Path) -> None:
             # though it mentions the word "docs".
             "src/booley/words.py": 'BUCKET = "docs"\n',
             "tests/test_words.py": "from booley import words\n",
-            # Synthetic fixture conftests write documentation into temporary
-            # projects; they do not read this repository's documentation.
-            "tests/goals/conftest.py": 'SPEC = "docs/user/X.md"\n',
-            "tests/goals/test_goal.py": "def test_g():\n    assert True\n",
-            # An outside importer of the synthetic conftest is no reader either.
-            "tests/harness/test_uses_goal.py": "from tests.goals import conftest\n",
         },
     )
 
     derived = set(_script().derive(repo))
     assert "tests/test_unrelated.py" not in derived
     assert "tests/test_words.py" not in derived
-    assert "tests/goals/test_goal.py" not in derived
-    assert "tests/harness/test_uses_goal.py" not in derived

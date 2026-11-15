@@ -232,7 +232,7 @@ def _ignore_native_layout(tmp_path: Path, monkeypatch, layout: str) -> tuple[Pat
     (main / ".gitignore").write_text(".booley/\n", encoding="utf-8")
     commit_all(main)
     worktree = snapshot(main, name="wt")
-    # Goal runs place the variant build under the main Booley Directory,
+    # Runs from a linked worktree place the variant build under the main Booley Directory,
     # outside the worktree root.
     return worktree, main / ".booley" / ".runtime" / "mutant_1"
 

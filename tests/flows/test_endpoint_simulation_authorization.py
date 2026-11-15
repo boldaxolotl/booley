@@ -404,4 +404,4 @@ def test_target_authorization_names_running_flow() -> None:
     rejection = authorize_targets(endpoint, (candidate,))  # type: ignore[arg-type]
 
     assert rejection is not None
-    assert rejection.report_text.startswith("lint: Goal Mode has no authorized Criterion binding")
+    assert rejection.report_text.startswith("lint: no Criterion is bound")

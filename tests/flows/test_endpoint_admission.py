@@ -571,9 +571,7 @@ def test_target_authorization_precedes_job_admission(
     )
 
     assert result.exit_code == EXIT_ERROR
-    assert result.outcome.report_text == (
-        "sim: Goal Mode has no authorized Criterion binding for Target(s): other"
-    )
+    assert result.outcome.report_text == ("sim: no Criterion is bound for Target(s): other")
     assert ran == []
     # Preparation itself returns the refusal, so no prepared invocation reaches admission.
     refusal = flow.prepare_endpoint_invocation()
@@ -1568,50 +1566,6 @@ def test_killed_attempt_runs_no_command_after_its_oom_kill(
 
     assert len(harness.invocations) == 2
     assert marker.read_text(encoding="utf-8").splitlines() == ["attempt 2"]
-
-
-def _goal_bound(harness: _Harness) -> None:
-    """Bind *harness*'s Flow to a Goal: its recorder names an acceptance identity."""
-    from booley.flows.execution_persistence import StandaloneFlowExecution
-
-    class GoalExecution(StandaloneFlowExecution):
-        def acceptance_identity(self) -> dict[str, Any]:
-            return {"goal": "g", "criteria_set": "c"}
-
-    harness.adapter = GoalExecution()
-
-
-def test_goal_bound_job_is_not_requeued_after_an_oom_kill(
-    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # The contrast first (a harness patches the Flow class, so one runs at a time).
-    standalone = _requeue_harness("synth", memory_runtime, runtime, monkeypatch)
-    assert _attempts_of(standalone, memory_runtime, _killed) == 2
-
-    bound = _requeue_harness("synth", memory_runtime, runtime, monkeypatch)
-    _per_attempt(bound, memory_runtime, _killed)
-    _goal_bound(bound)
-    result = bound.execute()
-
-    assert len(bound.invocations) == 1
-    assert result.exit_code == 1
-    assert "oom_requeue" not in result.outcome.detail
-
-
-def test_unreadable_goal_identity_counts_as_bound(memory_runtime: Path, runtime: Path) -> None:
-    from booley.flows.execution_persistence import AcceptanceRecordingError
-
-    class UnreadableIdentity:
-        def acceptance_identity(self) -> dict[str, Any]:
-            raise AcceptanceRecordingError("the Goal binding cannot be read")
-
-    flow = AsicSynthesizeFlow()
-    prepared = _selection_prepared(flow, runtime)
-
-    with AdmissionGate(flow, prepared).enter() as context:
-        assert flow.may_requeue_after_oom(prepared, context)
-        flow._acceptance_recorder = UnreadableIdentity()  # type: ignore[assignment]
-        assert not flow.may_requeue_after_oom(prepared, context)
 
 
 # --- progress of a requeued Job (#3763) ----------------------------------------------

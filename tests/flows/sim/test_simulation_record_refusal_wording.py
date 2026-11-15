@@ -26,8 +26,6 @@ from booley.flows.sim.record.scheduler import (
 from booley.flows.sim.record.store import SimulationRecordIntegrityError
 from booley.flows.sim.record_layout import RECORD_DIRECTORY
 from booley.flows.sim.record_retention import SimulationRecordRetentionError
-from booley.mcp import goal_generated_inputs
-from booley.mcp.goal_generated_inputs import LifecycleError
 
 
 def test_policy_refuses_non_positive_timeouts() -> None:
@@ -304,31 +302,3 @@ def test_flow_refusals(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     with pytest.raises(ValueError, match="Simulation Record progress complete and phase"):
         flow._write_simulation_record_progress([], [], phase="running", complete=False)
-
-
-def test_generated_input_producer_refusals(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import hashlib
-
-    raw = b"{}\n"
-    reports = tmp_path / "flow-reports"
-    for name in ("one", "two"):
-        (reports / name).mkdir(parents=True)
-        (reports / name / "manifest.json").write_bytes(raw)
-    envelope = {
-        "manifest_sha256": "sha256:" + hashlib.sha256(raw.rstrip(b"\n")).hexdigest(),
-        "campaign_id": "owner",
-        "origin": "origin",
-    }
-    producer = {"simulation_record_id": "owner", "origin": "origin"}
-    monkeypatch.setattr(
-        goal_generated_inputs,
-        "decode_simulation_record_manifest",
-        lambda _raw: SimpleNamespace(document=producer),
-    )
-    with pytest.raises(LifecycleError, match="ambiguous duplicate Simulation Record manifests"):
-        goal_generated_inputs._producer_manifest(tmp_path, envelope)
-    producer["origin"] = "foreign"
-    with pytest.raises(LifecycleError, match="foreign producer identity"):
-        goal_generated_inputs._producer_manifest(tmp_path, envelope)

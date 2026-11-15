@@ -20,7 +20,6 @@ Analyst's evidence boundary in
 | Area | Executable evidence |
 |---|---|
 | Interactive Mode | `tests/flows/sim/test_coverage_flow.py`: collect through `SimulateFlow`, then run the Analyst on the produced exact path. The model transport is substituted and project bytes stay unchanged. The same file checks independent Simulation and coverage verdicts and collector and publication failures. |
-| Goal Mode | `tests/goals/test_translate.py` (simulation and coverage Goal translation), `tests/goals/test_recorder.py` (bound evidence publication, transaction recovery, complete coverage detail), and `tests/goals/test_simulation_coverage_verdicts.py` (every pass/fail simulation × coverage combination through the Goal adapter). Neither `pytest tests/` nor CI collects `tests/goals/` until Goal Mode is removed ([#3276](https://github.com/boldaxolotl/booley/issues/3276)), so run `pytest tests/goals` by hand. |
 | Record storage | `tests/flows/sim/test_coverage_campaign_store.py`: deterministic source rollups, exact deep-load equivalence, rejection of every schema except V5, the uncompressed-size ceiling, malformed-store rejection, safe paths, and create-if-absent publication. |
 | Public contracts | CLI aliases and help, the MCP boolean schema, the exposed Criterion catalog, generated references, and the docs and transport schema tests. |
 | Sandbox Image | `tests/docker/verilator_acceptance.py`, then the release matrix, production collector, and compiler-cache smoke tests, then native FST cross-validation; all run in CI's `bwave-smoke` job. |

@@ -2,7 +2,7 @@
 
 This page is for contributors and agents changing Booley. It explains how
 Booley's parts fit together and why the load-bearing ones are built the way
-they are; read it before changing the Sandbox, the MCP server, Goal Mode, or a
+they are; read it before changing the Sandbox, the MCP server, or a
 Booley Flow. Terms such as Booley Flow, Target, Specialist, and Sandbox are
 defined in the [glossary](../GLOSSARY.md). How to use Booley is in
 [USAGE.md](../user/USAGE.md) and [CLI-REFERENCE.md](../user/CLI-REFERENCE.md).
@@ -19,15 +19,8 @@ inputs and machine-checkable results, and exposes those Flows and LLM-backed
 **Specialists** to the Developer Agent through MCP.
 
 All Booley work runs in one container, the **Sandbox**, per opened project
-folder. Two execution modes share it and the same `.booley/` configuration:
-
-- **Interactive Mode**: a human steers the Developer Agent in a VS Code
-  devcontainer.
-- **Goal Mode**: the same agent session works toward mandatory,
-  machine-checked Goals on a Goal Branch in a linked worktree, with the human
-  steering or away. The `/booley-goal` skill guides entry; after the human
-  clears the chat, `/booley-goal start` guides the work, Goal changes, and
-  Finish.
+folder. A human steers the Developer Agent in a VS Code devcontainer
+(Interactive Mode), using the `.booley/` configuration.
 
 The host owns Host Bootstrap, the Sandbox lifecycle, EDA installation
 registrations and Project Grants, the egress proxy, and the idle reaper.
@@ -42,7 +35,7 @@ Preparation runs in one direction:
 2. **Project Initialization** (`booley init`) reconciles one Project's files
    and Git integration. On the host it also prepares the Project's Sandbox
    Image and then issues the Sandbox specification.
-3. The issued **Sandbox** hosts Interactive Mode and Goal Mode.
+3. The issued **Sandbox** hosts Interactive Mode.
 
 A later step checks the earlier one but never repairs it. `booley init
 --force` rebuilds only the Project's own images; when the base image is
@@ -50,7 +43,7 @@ missing or stale it stops and asks for `booley bootstrap --update`. This keeps
 host-wide changes in one command the user runs deliberately
 ([ADR 0056](../adr/0056-separate-host-bootstrap-from-project-initialization.md)).
 
-![Booley architecture: VS Code opens an agent session (Claude Code or Codex, in Interactive or Goal Mode) inside the Booley devcontainer Sandbox. The agent enters and finishes Goals, edits the Project Git worktree, and calls the MCP Server (Booley Flows), which drives the EDA tools (linter, simulator, synthesis tool) through Edalize, sends evidence to the Goals, and calls Specialist Agents. An Egress Proxy Container lets the Sandbox reach the LLM provider only, and a heavy tool installed on the host (Vivado) is mounted read-only.](../user/assets/architecture.svg)
+![Booley architecture: VS Code opens an agent session (Claude Code or Codex, in Interactive Mode) inside the Booley devcontainer Sandbox. The agent edits the Project Git worktree, and calls the MCP Server (Booley Flows), which drives the EDA tools (linter, simulator, synthesis tool) through Edalize, and calls Specialist Agents. An Egress Proxy Container lets the Sandbox reach the LLM provider only, and a heavy tool installed on the host (Vivado) is mounted read-only.](../user/assets/architecture.svg)
 
 ### Why an ADE, not an IDE
 
@@ -71,7 +64,7 @@ counts, and coverage checked by Booley against fresh results. The rest of this
 page describes those pieces.
 
 The framing also decides where product work goes: into supervising agents
-(several sessions at once, Goal and Job progress, fast review), not into
+(several sessions at once, Job progress, fast review), not into
 editor features. VS Code already is a good editor
 ([ADR 0083](../adr/0083-position-booley-as-an-agentic-development-environment.md)).
 
@@ -124,9 +117,8 @@ Cloud coding agents (Codex cloud, Devin) and research harnesses (SWE-agent,
 OpenHands) start a fresh sandbox per task. Booley uses one container per opened
 project folder instead. The Dev Containers extension attaches one container per
 VS Code window; a container per chat tab would need session-to-container
-plumbing the extension lacks. Goal Mode then stays in the same container and
-agent session, sharing one MCP server, one EDA stack, and one configuration
-with Interactive Mode, so an unattended Goal Mode is just a tab left running.
+plumbing the extension lacks. Every session shares one MCP server, one EDA stack, and one configuration,
+so an unattended session is just a tab left running.
 
 The cost: every session draws on one container's memory and CPU, which makes
 admission control mandatory (next section), and every worktree in the
@@ -214,8 +206,7 @@ installation and licensing policy.
 ### Why FuseSoC
 
 Booley owns the build: the layer that turns a design into the exact command
-for each EDA tool. That ownership makes Goals possible. A Goal is a structured
-reading of a Flow's result, and Booley can only trust a result it produced
+for each EDA tool. That ownership makes trusted results possible: Booley can only trust a result it produced
 from an invocation it controlled. Booley, not the agent's prompt, decides how a
 Flow runs.
 
@@ -266,10 +257,7 @@ Interactive Mode is the hands-on workflow and the way into the Sandbox.
 folder in the container connects VS Code to the Sandbox. On every container
 start, `postStartCommand` starts a loopback MCP server inside the container,
 so a reopened session reconnects on its own. Through it the Developer Agent
-reaches Flows, read-only Specialists, B-Wave, and runtime status. Goal MCP
-tools are listed only by interactive, non-nested servers and ignore
-`BOOLEY_MCP_TOOLS`; nested and explicit allowlists control every other MCP
-tool. See [SETUP.md](../user/SETUP.md) for the lifecycle and
+reaches Flows, read-only Specialists, B-Wave, and runtime status. `BOOLEY_MCP_TOOLS` and nested allowlists control which MCP tools are listed. See [SETUP.md](../user/SETUP.md) for the lifecycle and
 [USAGE.md](../user/USAGE.md#interactive-mode) for daily use.
 
 ### Why VS Code
@@ -285,72 +273,18 @@ VS Code covers three needs in one program:
 - **A good editor.** Hardware work is not pure delegation: the user reads and
   edits RTL between agent turns in the same workspace.
 
-## Goal Mode
+## Dashboard
 
-Goal Mode runs in the existing agent session; there is no separate execution
-loop. Entry needs the root of a clean linked worktree and creates a Goal Branch
-from its HEAD. The worktree owns one Goal Record, and any session in that
-worktree may continue it. The worktree and Goal Branch live inside the
-Sandbox: the branch and its commits are durable, while the worktree is
-Sandbox-scoped scratch.
-
-While any Goal Record occupies the Project, Booley refuses a Booley Flow,
-Specialist, or custom-tool call, a report fetch, or a Goal tool call that names
-no checkout: no `work_dir` and no default checkout from the calling
-[Session](../GLOSSARY.md#execution). It refuses the same calls while a Goal
-Record is unreadable. The rule is Project-wide, so it also covers calls meant
-for a checkout outside the Goal worktree, and a Project-defined endpoint must
-declare `work_dir` to run. `booley_targets` may omit it; the
-[built-in routing inventory](MCP-TOOLS.md#work_dir-routing) lists the tools
-that accept none. A call into an occupied Goal worktree captures an immutable
-Run Binding: the Goal Record and its revision, each Goal's specification, and
-the Protected Input digests.
-
-The agent can't meet a Goal by saying so: only Booley Flow or Specialist
-evidence counts, and only through MCP with a Run Binding. CLI runs never record
-Goal evidence. Publishing evidence rechecks the Run Binding, and relevant
-source or Target changes make older evidence stale. A Goal Change Proposal
-needs human approval and is recorded in the Change Log. Finish needs fresh
-evidence for every Goal at a clean committed HEAD, unchanged Protected Inputs,
-and a Session Summary; it produces a Review Package and never merges the
-branch. Abandon keeps the work; the abandoned Goal Record stays until its
-worktree and Goal Branch are both gone.
-
-`booley goal` offers `status` and `abandon`. `booley dashboard` is the Sandbox
-view and can also start Booley Flows
+`booley dashboard` is the Sandbox view and can also start Booley Flows
 ([ADR 0086](../adr/0086-launch-flows-and-specialists-from-the-dashboard.md));
-its layout rules are in [DASHBOARD.md](DASHBOARD.md). See
-[GOAL-MODE.md](../user/GOAL-MODE.md#goal-mode),
-[ADR 0067](../adr/0067-replace-ticket-mode-with-goal-mode.md), and the
-[Goal Mode glossary](../../src/booley/goals/GLOSSARY.md).
-
-### Why Goal Mode within Interactive Mode
-
-Hardware work is full of tasks where the next step depends on the last result:
-explore a design, measure, read a waveform, decide. The plan is found along
-the way, so a hands-on mode is the floor, not an option. Exploration and
-machine-checked completion need different state, but not a different agent:
-the human enters Goal Mode once the success conditions are clear, instead of
-writing a work item before exploring.
-
-Goal Mode adds Goals that only evidence can meet. Code changes need fresh
-evidence, a human approves any relaxed Goal, and Finish has no human override
-and no automatic merge. The cost is durable Goal state, Run Bindings, freshness
-checks, and an approval log; in return, long unattended work stays
-inspectable with one acceptance system.
+its layout rules are in [DASHBOARD.md](DASHBOARD.md).
 
 ### Shared execution and evidence
 
-Code that Goal-bound and unbound runs share:
-
-- `mcp.project_flow_loader` loads Project Flows for Goal-bound runs.
 - `runtime.agent_execution` runs the Agent CLI for Specialists and Doctor.
-- `flows.sim.waiver_candidates` serves Goal waiver handling and coverage
-  analysis.
 - `specialists.verification_freshness` refreshes verification evidence for
-  unbound Specialist calls, using the shared Criteria freshness policy.
-- `mcp.unbound_recorder` records evidence for MCP calls with no Goal; bound
-  runs use their Goal adapter.
+  Specialist calls, using the shared Criteria freshness policy.
+- `mcp.unbound_recorder` records evidence for MCP calls.
 
 Evaluation inside this code uses the internal
 [Criterion](../GLOSSARY.md#execution-and-evidence) vocabulary.
@@ -407,9 +341,8 @@ in [SETUP.md](../user/SETUP.md#sign-in-and-billing).
 
 ## Why plain files
 
-Booley keeps all state in files: Goal Records and their Change Logs, evidence
-state as JSON, Job claims, and Job records. A Goal's durable result is a
-git branch. There is no database or state daemon, so nothing needs installing
+Booley keeps all state in files: evidence state as JSON, Job claims, and Job
+records. There is no database or state daemon, so nothing needs installing
 or keeping alive, and any state can be read with `ls` and `cat`. The cost is
 that atomic renames and lock files are the concurrency primitives, and they
 take care to get right. That trade fits Booley's scale: one human per Project.
@@ -417,11 +350,10 @@ take care to get right. That trade fits Booley's scale: one human per Project.
 ## Common and Checkout Booley State
 
 A Project's Booley Directory splits into two kinds of state. Common Booley
-State, which every checkout shares (Session and Job coordination, Goal
-Records, Project-wide records and evidence, shared caches), lives only in the
+State, which every checkout shares (Session and Job coordination, Project-wide records and evidence, shared caches), lives only in the
 main checkout's Booley Directory, and a command run in any worktree reaches it
 there. Checkout Booley State belongs to one checkout: configuration versioned
-with its code (`booley.toml`, `cores/`, hooks, Goal history) and the build trees
+with its code (`booley.toml`, `cores/`, hooks) and the build trees
 and Flow reports of its sources. `booley.core.booley_dir_parts` classifies each
 path; the path-by-path split is in
 [ADR 0082](../adr/0082-give-each-concurrent-interactive-session-its-own-worktree.md).
@@ -463,9 +395,7 @@ detect or prevent it. The fix is tracked in
 [#1529](https://github.com/boldaxolotl/booley/issues/1529); see the
 [current precautions](../user/SANDBOX.md#known-sandbox-escape-through-shared-git-metadata).
 
-Goal work stays on its Goal Branch for review. Protected Input checks guard the
-configuration that produces evidence, and the Review Package shows changed
-files, Targets, and constraints. Git keeps committed changes for review and
+Protected Input checks guard the configuration that produces evidence. Git keeps committed changes for review and
 recovery, but the writable Git metadata stays subject to the escape hatch
 above.
 

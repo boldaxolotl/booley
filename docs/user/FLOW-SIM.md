@@ -278,12 +278,6 @@ test, and so does a nonzero simulator exit code.
 If every Test Run comes back inconclusive, see
 [Every simulation test comes back INCONCLUSIVE](TROUBLESHOOTING.md#every-simulation-test-comes-back-inconclusive).
 
-**Goals.** In [Goal Mode](GOAL-MODE.md), a `sim` run that the agent makes in
-the Goal's worktree records evidence for `SIM`, `ELAB`, `CYCLE_COUNT` and
-`COVERAGE` Goals. Runs you start from the CLI never do. Which Test Runs a
-Goal needs, and how seeds are frozen, is in
-[Simulation, Cycle Count, and coverage Goals](GOAL-MODE.md#simulation-cycle-count-and-coverage-goals).
-
 ## Pass/fail sentinels and cycle counts
 
 A simulation that exits with code `0` hasn't necessarily passed: a testbench
@@ -330,15 +324,10 @@ same test. The simulator can't tell Booley that number, because only the
 testbench knows which cycles count (say, from the benchmark's start to its
 end, not the reset sequence). So the testbench reports it by printing
 `[SIM_CYCLES] <test> <count>`, for example `[SIM_CYCLES] coremark 12345`.
-Without it, Booley has no cycle count for the test, and a `CYCLE_COUNT` Goal
-on it stays unmet.
+Without it, Booley has no cycle count for the test.
 `cycle_sentinels` replaces that prefix with one your testbench already prints,
 such as `["CoreMark completed in:"]` for `CoreMark completed in: coremark 12345`.
-Counts appear as `cycles=N` on the verdict card and in the report. They are
-informational unless a `CYCLE_COUNT` Goal sets
-[thresholds](GOAL-MODE.md#thresholds) on them, such as "at most 12,000
-cycles" or "cycle count drops at least 8%" against the code the Goal started
-from.
+Counts appear as `cycles=N` on the verdict card and in the report.
 
 <details markdown>
 <summary>With a cocotb testbench</summary>
@@ -465,8 +454,7 @@ define along with it.
 
 `--mode elab-only` compiles, elaborates and links the simulator without running
 any tests: a fast "does it still build?" check. A later full run can reuse the
-build. A successful build meets an `ELAB` Goal, and so does the build step of a
-normal run, even if a test then fails.
+build.
 
 `--mode elab-only-standalone` also elaborates each reusable RTL module on its
 own. This catches a module that compiles only thanks to a define or include
@@ -644,7 +632,7 @@ the Job runs alone, fewer when other Jobs run beside it
 **Compiler cache.** The C++ compilation uses ccache, so a rebuild after a
 small change is quicker. The cache is kept in the Project's Booley Directory,
 so it survives Sandbox rebuilds and is shared by every checkout of the Project
-in the Sandbox, including Goal worktrees. To inspect or empty it, run inside
+in the Sandbox, including worktrees. To inspect or empty it, run inside
 the Sandbox:
 
 ```sh

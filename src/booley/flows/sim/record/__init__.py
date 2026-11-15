@@ -56,7 +56,6 @@ from .inspection import (
     read_durable_results,
     recover_retained_simulation_record_resources,
     retained_simulation_record_lock,
-    started_simulation_record,
 )
 from .model import (
     BundleBuildAttempt,
@@ -141,6 +140,5 @@ __all__ = [
     "resolve_artifact_reference",
     "resolve_report_artifact_reference",
     "retained_simulation_record_lock",
-    "started_simulation_record",
     "validate_resume_manifest",
 ]

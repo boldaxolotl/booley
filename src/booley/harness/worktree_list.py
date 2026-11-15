@@ -17,13 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from booley.config.goals import quiet_after
 from booley.core.booley_dir import (
     own_booley_dir_repo_path,
     resolve_common_booley_dir,
     resolve_main_checkout_root,
 )
-from booley.goals.store import GoalStore, GoalStoreError
 from booley.mcp.session_registry import SessionRegistry, namespace
 from booley.runtime.git_environment import inherited_git_environment
 from booley.runtime.handles import HandleStore
@@ -43,7 +41,6 @@ _HEADER = (
     "UNCOMMITTED",
     "UNMERGED",
     "SESSION",
-    "GOAL",
     "LAST USED",
 )
 
@@ -65,7 +62,6 @@ class WorktreeState:
     unmerged: int
     paired_unmerged: int | None
     sessions: tuple[str, ...]
-    goal: str | None
     last_used: float | None
 
 
@@ -213,7 +209,6 @@ class _Context:
     common: Path
     target: str
     sessions: dict[Path, list[str]]
-    goals: GoalStore
 
 
 @dataclass(frozen=True)
@@ -255,7 +250,7 @@ def registered_worktrees(repository: Path) -> list[Registration]:
 
 def _session_labels(common: Path, now: float, diagnostics: list[str]) -> dict[Path, list[str]]:
     """Session handles by resolved checkout path, as the Dashboard shows them."""
-    registry = SessionRegistry(common, quiet_after=quiet_after(common))
+    registry = SessionRegistry(common)
     snapshot = registry.visible_snapshot(now=now, scope=namespace())
     handles, handle_diagnostics = HandleStore(common).snapshot()
     # A project that never ran a Session has no registry directory: not a problem.
@@ -270,18 +265,7 @@ def _session_labels(common: Path, now: float, diagnostics: list[str]) -> dict[Pa
     return labels
 
 
-def _active_goal(context: _Context, worktree: Path, diagnostics: list[str]) -> str | None:
-    try:
-        record = context.goals.active_for_worktree(worktree)
-    except GoalStoreError as exc:
-        diagnostics.append(f"Goal Mode of worktree {worktree.name} is unavailable: {exc}")
-        return None
-    return None if record is None else record.id
-
-
-def _describe(
-    context: _Context, path: Path, branch_ref: str | None, diagnostics: list[str]
-) -> WorktreeState:
+def _describe(context: _Context, path: Path, branch_ref: str | None) -> WorktreeState:
     booley_dir = own_booley_dir_repo_path(path)
     nested = path / booley_dir
     paired = (nested / ".git").is_file()
@@ -299,7 +283,6 @@ def _describe(
         unmerged=count_unmerged(path, context.target),
         paired_unmerged=paired_unmerged,
         sessions=tuple(sorted(context.sessions.get(path.resolve(), []))),
-        goal=_active_goal(context, path, diagnostics),
         last_used=last_used(context.common, path.name),
     )
 
@@ -331,7 +314,6 @@ def collect_worktrees(project_root: Path, *, now: float) -> tuple[list[WorktreeS
         common=common,
         target=merge_target(main),
         sessions=_session_labels(common, now, diagnostics),
-        goals=GoalStore(common, lock_timeout_s=0),
     )
     states: list[WorktreeState] = []
     for registration in interactive_registrations(main, common):
@@ -339,7 +321,7 @@ def collect_worktrees(project_root: Path, *, now: float) -> tuple[list[WorktreeS
         if not path.exists():
             diagnostics.append(f"worktree {path.name} is registered but its directory is missing")
             continue
-        states.append(_describe(context, path, registration.branch, diagnostics))
+        states.append(_describe(context, path, registration.branch))
     return sorted(states, key=lambda state: state.name), diagnostics
 
 
@@ -360,7 +342,6 @@ def _row(state: WorktreeState, now: float) -> tuple[str, ...]:
         _paired_cell(state.uncommitted, state.paired_uncommitted),
         _paired_cell(state.unmerged, state.paired_unmerged),
         ", ".join(state.sessions) or "-",
-        state.goal or "-",
         "never" if state.last_used is None else format_age(state.last_used, now=now),
     )
 

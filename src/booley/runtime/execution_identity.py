@@ -4,8 +4,8 @@ ADR 0076 section 2 keys a cached result by, among other parts, the Booley code
 that produced it and the host that ran it. This module computes both as
 ``sha256:<hex>`` strings and refuses (``IdentityError``) whenever it cannot
 account for every input, so a consumer reports "unavailable" instead of
-serving a result under a partial identity. Goal evidence freshness (#2052)
-reuses both.
+serving a result under a partial identity. Measurement environments
+reuse both.
 
 ``booley_build_identity`` is the installed-content identity of the ``booley``,
 ``fusesoc`` and ``edalize`` distributions. It is not the image identity of

@@ -41,9 +41,6 @@ RUNTIME_PATHS = (
     "runtime/sessions/thread.json",
     "runtime/jobs/slots/light/token.json",
     ".interactive_logs/session.log",
-    "goals/g1/record.json",
-    "goals/g1/.record.json.tmp",
-    "goals/locks/work.lock",
     "tickets/board/ticket.md",
     "tickets/state/state.json",
     "tickets/waiver-candidates/candidate.json",
@@ -66,9 +63,7 @@ AUTHORED_PATHS = (
     "doctor-waivers.toml",
     "cores/top.core",
     "selftest/sim/fixture.sv",
-    "goalsets/default.md",
     "hooks/check.py",
-    "goals/history/g1.md",
     "tickets/history/ticket.md",
     "cores/logs/result.log",
     "custom-output/report.json",
@@ -181,27 +176,15 @@ def _publish_bookkeeping(root, data, repo):
     return (stamp, *sessions, jobs / "run.json", execution)
 
 
-def _publish_goal_and_ticket(root, data, repo):
-    """Goal records/locks and retained Ticket state: separate local owners."""
-    from tests.goals.test_store import _enter
-
+def _publish_ticket(root, data, repo):
+    """Retained Ticket state: a local owner."""
     from booley.criteria.state import DevelopmentState
-    from booley.goals.paths import record_paths
-    from booley.goals.store import GoalStore
 
-    store = GoalStore(data)
-    record = _enter(store, repo, "audit-20261010T000000Z")
-    paths = record_paths(data, record.id)
-    assert paths.record_file.is_file()
-    assert_clean(repo)
-    with store.record_lock(record.id):
-        assert paths.lock_file.is_file()
-        assert_clean(repo)
     ticket = data / "tickets/state/audit.json"
     state = DevelopmentState.load(ticket)
     state.init_criteria({"lint_clean": True})
     state.save()
-    return (paths.record_file, paths.lock_file, ticket)
+    return (ticket,)
 
 
 def _publish_logs_and_cache(root, data, repo):
@@ -266,7 +249,7 @@ def test_audited_storage_families_keep_project_clean(versioned_project):
         assert outputs, publish.__name__
         assert all(path.is_file() for path in outputs), outputs
         assert_clean(repo)
-    outputs = _publish_goal_and_ticket(root, data, repo)
+    outputs = _publish_ticket(root, data, repo)
     assert all(path.is_file() for path in outputs), outputs
     assert_clean(repo)
     # Git worktrees are themselves a runtime storage family. The real Git
@@ -469,12 +452,6 @@ def test_dashboard_task_runtime_ownership_keeps_project_clean(versioned_project)
 
 
 def test_retained_ticket_storage_families_keep_project_clean(versioned_project):
-    from tests.flows.sim.test_waiver_candidates import _record
-
-    from booley.flows.sim.waiver_candidates import (
-        waiver_candidates_lock_path,
-        waiver_candidates_path,
-    )
     from booley.runtime.atomic_files import atomic_write_once
 
     _root, data, repo = versioned_project
@@ -484,7 +461,8 @@ def test_retained_ticket_storage_families_keep_project_clean(versioned_project):
     assert board.is_file()
     assert_clean(repo)
     record_dir = data / "tickets/waiver-candidates/audit"
-    assert _record(record_dir).recorded == 1
-    assert waiver_candidates_path(record_dir).is_file()
-    assert waiver_candidates_lock_path(record_dir).is_file()
+    record_dir.mkdir(parents=True)
+    for name in ("candidates.json", "candidates.lock"):
+        assert atomic_write_once(record_dir / name, b"{}\n", mode=0o644)
+        assert (record_dir / name).is_file()
     assert_clean(repo)

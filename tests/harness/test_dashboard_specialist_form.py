@@ -50,7 +50,7 @@ HIDDEN: dict[str, dict[str, str]] = {
         "--work-dir": "the worktree chooses the Project",
         "--timeout-ms": "hidden alias of --timeout, which the form writes",
         "--report-dir": "the Job writes to its default report directory",
-        "--diagnostic": "a Standalone Job never records Goal evidence",
+        "--diagnostic": "a Standalone Job never records Criterion evidence",
         "--transcript-dir": "the Job worker sets it beside job.log",
         "--verify": "continues the Developer Agent's own review loop, not a first review",
         "--waive": "continues the Developer Agent's own review loop, not a first review",
@@ -66,7 +66,7 @@ HIDDEN: dict[str, dict[str, str]] = {
         "--work-dir": "the worktree chooses the Project",
         "--timeout-ms": "hidden alias of --timeout, which the form writes",
         "--report-dir": "the Job writes to its default report directory",
-        "--diagnostic": "a Standalone Job never records Goal evidence",
+        "--diagnostic": "a Standalone Job never records Criterion evidence",
         "--transcript-dir": "the Job worker sets it beside job.log",
     },
 }
@@ -78,7 +78,7 @@ def reviewer_form():
     """The reviewer's form. Imported here so a Dashboard without it fails the test body, not collection."""
     from booley.harness.dashboard.specialist_form import ReviewerForm
 
-    return ReviewerForm("docs/spec.md")
+    return ReviewerForm()
 
 
 def coverage_form():

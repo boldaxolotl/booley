@@ -1,11 +1,8 @@
 """Canonical acceptance-criteria reference, rendered from the single source of truth.
 
 Single source of truth: ``data/criteria.toml`` (base) plus an optional project
-``.booley/criteria.toml``. The ``booley cheat`` CLI renders these blocks
-live, while ``data/cheatsheet.md`` embeds committed copies
-between paired ``<!-- BEGIN GENERATED: <name> -->`` / ``<!-- END GENERATED: <name> -->``
-markers that a pytest keeps byte-identical to this renderer. Add, rename, or retire
-a criterion (or a threshold param) and every reference updates from this one place.
+``.booley/criteria.toml``. Add, rename, or retire a criterion (or a threshold
+param) and the rendered reference updates from this one place.
 
 Two generated blocks live here:
 
@@ -18,10 +15,6 @@ Two generated blocks live here:
 
 The "Set by" column consumes an immutable endpoint catalog supplied by an outer
 composition root; Criteria never performs MCP discovery.
-
-Regenerate the committed doc blocks with::
-
-    python -m booley.dev_support.criteria_reference src/booley/data/cheatsheet.md
 """
 
 from __future__ import annotations

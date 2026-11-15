@@ -208,7 +208,6 @@ CLASSIFIED=$(python -m booley.flows.sim.record_retention --help)
         "booley cleanup preview",
         "booley upgrade status",
         "booley session status",
-        "booley goal status",
     ],
 )
 def test_registered_documented_commands_pass(command: str) -> None:

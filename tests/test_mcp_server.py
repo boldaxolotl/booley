@@ -1217,10 +1217,6 @@ class TestBooleyStatus:
             "booley_report",
             "booley_status",
             "booley_targets",
-            "goal_enter",
-            "goal_finish",
-            "goal_propose_change",
-            "goal_status",
             "sim",
         ]
 
@@ -1367,10 +1363,6 @@ class TestBooleySleep:
             "booley_sleep",
             "booley_status",
             "booley_targets",
-            "goal_enter",
-            "goal_finish",
-            "goal_propose_change",
-            "goal_status",
             "sim",
         ]
 

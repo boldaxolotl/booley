@@ -498,5 +498,5 @@ def _candidate_screen(item, point, rtl, sources) -> tuple[str, str]:
         return "investigate", "Unreachability is contradicted by observed hits"
     return (
         "ready_for_human_review",
-        "A human must accept or reject this candidate through a Goal Change Proposal",
+        "A human must accept or reject this candidate",
     )

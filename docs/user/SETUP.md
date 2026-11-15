@@ -162,11 +162,8 @@ Where each credential comes from:
 - **Subscription:** usage counts against your plan. When you hit a Claude
   rate limit, Booley waits and retries a Specialist call within its retry and
   timeout budgets; a Codex call stops and must be invoked again after the
-  limit resets. Resume an interrupted Goal session with
-  `goal_status(rules=true)`.
+  limit resets.
 - **API key:** you pay per token.
-
-Both work in Interactive Mode and Goal Mode.
 
 **For long runs, run `booley auth`.** The normal login renews itself
 periodically, and a renewal can sign out every running Developer Agent or
@@ -308,9 +305,7 @@ Each step is also a standalone how-to file in the skill's `steps/` directory if
 you'd rather write it by hand.
 
 Once `booley doctor` (and `--deep`) is green, you're set up. Head to
-[GOAL-MODE.md](GOAL-MODE.md) to set up your first Goal Mode with `/booley-goal` and run it
-with `/booley-goal start`, or start an
-[Interactive Mode](USAGE.md#interactive-mode) session.
+[Interactive Mode](USAGE.md#interactive-mode) to start your first session.
 
 ### A new IP: greenfield mode
 
@@ -344,9 +339,7 @@ testbench, keeping the generated wiring as the pattern. Refresh
 to match the current interface, keeping it buildable and behaviorally failing
 the selected smoke Test. Re-run the Doctor check
 whenever the shape of the project changes (new Target, new flow, new
-constraints). From there, drive development the normal way: see
-[GOAL-MODE.md](GOAL-MODE.md) to set up your first Goal Mode with `/booley-goal` and run it
-with `/booley-goal start`, or start an
+constraints). From there, drive development the normal way: start an
 [Interactive Mode](USAGE.md#interactive-mode) session.
 
 ## Project files
@@ -380,5 +373,4 @@ repository.
   which boundary. The reference the skill's plan step checks against.
 - [USAGE.md](USAGE.md): day-to-day use and Interactive Mode.
 - [CLI-REFERENCE.md](CLI-REFERENCE.md): CLI reference.
-- [GOAL-MODE.md](GOAL-MODE.md): Goal Mode.
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md): symptoms and their fixes when something misbehaves.

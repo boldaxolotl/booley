@@ -19,7 +19,6 @@ from booley.flows.builtin_cli import build_parser
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.flows.synth.recipe import synthesis_recipe_args
 from booley.mcp import catalog, catalog_worker, server
-from booley.mcp.call_context import resolve_call_context
 from booley.mcp.flow_adapter import flow_schema
 from booley.mcp.registry import discover_mcp_tools
 
@@ -69,7 +68,7 @@ def test_mcp_flatten_reaches_synth_recipe(mcp_value: bool | None, target_flatten
         arguments["flatten"] = mcp_value
 
     command = server._endpoint_command(
-        "synth", arguments, definition, collections.defaultdict(int), resolve_call_context({})
+        "synth", arguments, definition, collections.defaultdict(int)
     )
     # Argv follows the Flow runner's endpoint name, or the module under ``-m``.
     module_index = next(

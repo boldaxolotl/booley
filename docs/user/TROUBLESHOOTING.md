@@ -217,6 +217,16 @@ means the next build rebuilds the layers it removed.
 
 ## Jobs and memory
 
+### A `[goals]` section in `booley.toml`
+
+Goal Mode is not part of Booley, so `booley.toml` may not have a `[goals]`
+section. Flow and Specialist runs and every command that works on a Project
+stop with a message that names the section, its lines, and the file; `booley
+doctor` and `booley upgrade` still run, and Doctor fails. Delete the `[goals]`
+tables the message names. In a Developer Agent chat that is already open, `/booley-heal` removes them for you.
+`booley measure` still measures an older commit whose own `booley.toml` has the
+section.
+
 ### Deleted `[jobs]` keys
 
 `booley.toml` sets `max_heavy`, `max_light`, `heavy_memory`, `queue_max` or
@@ -296,7 +306,7 @@ line:
 - `Session S<N> is working in the main checkout`: that session made a Booley
   tool call from the main checkout and has not ended. A Codex started by hand, or a
   session Booley could not tell apart by process, that ended without notice counts as
-  in use until it goes quiet (`[goals] quiet_after`, two hours by default).
+  in use until it has made no Booley call for two hours.
 
 Either way, `booley chat --here` starts in the main checkout now.
 
@@ -397,7 +407,7 @@ error: pathspec '.booley/booley.toml' did not match any file(s) known to git
 This happens in [Stealth Mode](https://booley.dev/docs/stealth/), or in a
 Project set up while Stealth was the default (Doctor then warns
 `stealth.enabled-unset`): your RTL repository ignores `.booley/`, so its Git commands can't see `booley.toml`,
-`tests.toml`, Goalsets or `.core` files there. If `.booley/` is its own Git
+`tests.toml` or `.core` files there. If `.booley/` is its own Git
 repository, run Git there:
 
 ```bash
@@ -539,40 +549,6 @@ or clear its temp directory:
 3. If the stash directory has mode `000`, run `chmod u+rwx <stash-dir>`. Copy
    back only missing files; never overwrite one that exists.
 4. Once the sources are back, delete the stash and its record.
-
-## Goal Mode
-
-### Goal evidence and state recovery
-
-If Goal status says a Goal has no current evidence, it names what produced it
-(for example `rerun Reviewer`); ask the agent to rerun that. If saving Goal
-state keeps failing or Booley reports a corrupt record, report it (see
-[Still stuck](#still-stuck)). Don't edit or delete Goal state or evidence files.
-
-### A Goal that names Test Runs stays unmet
-
-Simulation, Cycle Count and coverage Goals are judged on the exact Test Runs
-that Goal Mode fixed when it started; see
-[Simulation, Cycle Count, and coverage Goals](https://booley.dev/docs/goal-mode/#simulation-cycle-count-and-coverage-goals).
-`booley goal status` lists each Goal's Test Runs with their outcomes and one of
-these reasons. A coverage Goal is decided by its coverage floors alone, so it
-can be met while one of its Test Runs failed.
-
-| Reason | Meaning | Fix |
-|---|---|---|
-| `goal-test-run-incomplete` | Some Test Runs haven't passed yet. | Ask the agent to run them. |
-| `goal-test-run-failed` | A Test Run failed on the current files; a later pass on the same files doesn't clear it. | Fix the cause, then rerun; status prints rerun commands. |
-| `goal-test-run-pending` | The Goal names a Target, Test or Test Variant that doesn't exist yet. | Add it; Booley adds it to the Goal on the next run or status read. |
-| `goal-test-run-unresolvable` | `tests.toml` can't be loaded, the Target can't take a seed, or the Test is skipped. | Fix `tests.toml` as the message says, or approve a Goal change. |
-| `goal-simulation-suite-empty` | The Goal covers every Test of its Target, and every Test is skipped. | Register a Test, or remove one from `skip`. |
-| `goal-test-run-missing` | A Test Run's Target, Test or Variant is gone or skipped. | Restore it, or approve a `retarget` the agent proposes. For a skipped Test, unskip it or approve dropping it. |
-| `goal-test-run-changed` | A Test Run's arguments or environment changed in `tests.toml`. | Restore them, or approve a `retarget`. |
-| `goal-test-run-metric-missing` | The last run didn't measure the Goal's Cycle Count or coverage. | Ask the agent to run exactly the Goal's Test Runs (with coverage, for a coverage Goal). |
-| `goal-campaign-unaccounted` | A Simulation Campaign for the Goal is still running, holds an unadopted failure, or can't be read. | Wait for it or resume it, then read status again. |
-
-Don't edit or delete the Simulation Campaign records under the Goal Record's
-`logs/acceptance/campaigns/`. Booley moves an unreadable one aside when you
-approve a Goal change.
 
 ## Simulation
 
@@ -880,22 +856,6 @@ Never delete Booley's job or execution records to force progress; they protect
 running EDA processes. To get rid of an abandoned Campaign, delete its run
 folder once no run is active
 ([Cleaning up reports](https://booley.dev/docs/flow-reference/#cleaning-up-reports)).
-
-### Waiver Candidates at review
-
-How waivers are proposed and approved is in
-[Coverage waivers at review](https://booley.dev/docs/coverage/#coverage-waivers).
-
-- **`[coverage.waivers] is not configured`:** set up the
-  [approval directory](https://booley.dev/docs/coverage/#waiver-directory-coveragewaivers)
-  before you enter Goal Mode; `booley.toml` is protected during it.
-- **A proposal stays pending:** cancelling or an invalid form decides nothing.
-  Ask the agent to resume that proposal, or approve or reject it in chat with
-  a reason.
-- **A candidate is stale or invalid:** ask the agent to rerun coverage and the
-  Coverage Analyst. Never copy a candidate into an approval file by hand.
-- **Approved, but the Goal is still unmet:** approval alone doesn't meet a
-  Goal. Ask the agent to rerun coverage, then check Goal status.
 
 ## Still stuck
 

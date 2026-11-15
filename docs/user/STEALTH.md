@@ -51,8 +51,6 @@ Doctor warn `stealth.enabled-unset`; add `enabled = true` to keep Stealth, or
   Flow. Edit the file under `.booley/cores/`, not the copy.
 - **Commit messages are checked**, see [Commit messages](#commit-messages).
 - **Pushes are checked**, see [Push checks](#push-checks).
-- **Goal Mode summaries stay local** instead of being committed on the Goal
-  Branch ([GOAL-MODE.md](GOAL-MODE.md)).
 - **Worktrees get a Paired Checkout** of `.booley/`: a checkout of its
   repository's last commit on its own branch, so commit Booley changes there
   before you create a worktree

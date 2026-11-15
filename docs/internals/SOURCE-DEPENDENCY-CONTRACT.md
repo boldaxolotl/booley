@@ -98,7 +98,6 @@ Other tests in `tests/architecture/` guard narrower ownership rules:
 | Test file | Guards |
 | --- | --- |
 | `test_source_dependency_contract.py` | Simulation Record storage types stay in their owners; low-level Target mechanics stay behind `TargetCatalog` and the FuseSoC adapter; MCP Job owners never reach `mcp.server`; shared health never reaches command, MCP, or Specialist code. |
-| `test_goal_mode_boundaries.py` | Only the modules listed in its `_ALLOWED` table import `booley.goals` or `booley.criteria`. |
 | `test_config_eda_runtime_separation.py` | The approved cyclic groups match the measured ones; separated packages cannot rejoin a cycle with `booley.flows`; no `booley.flows` module imports `booley.specialists`. |
 | `test_color_helper_contract.py` | Raw terminal color codes appear only in `booley.presentation.colors`. |
 | `test_shared_endpoint_dispatch.py` | Shared endpoint code calls declared hooks instead of checking for the Simulation Flow by name. |
@@ -117,11 +116,10 @@ Each package owns one concept from the [glossary map](../../GLOSSARY-MAP.md):
 | Criteria | `booley.criteria` | Define and evaluate acceptance policy, independent of the endpoint that produced the evidence. |
 | Criterion evidence values | `booley.evidence` | Persisted evidence field names, recipe identity, reviewer receipts, and per-clock timing values that Criteria and Flows share. |
 | Specialist | `booley.specialists` | Run a scoped LLM sub-agent and return structured evidence. |
-| Goal Mode | `booley.goals` | Translate Goals into Criteria; own Goal Records, their locks and revisions, and the Change Log. |
 | MCP | `booley.mcp` | Expose Flows and Specialists to the Developer Agent. |
 | B-Wave | `booley.bwave` | Inspect, convert, find, and query waveform stores; drive human viewing. |
 | Metric-Driven Development | `booley.measurement` | What each Flow measures and how it is read. |
-| Result Cache | `booley.result_cache` | Result Key part helpers (unfinished; removed with Goal Mode, ADR 0092). |
+| Result Cache | `booley.result_cache` | Result Key part helpers (unfinished; ADR 0092). |
 
 `booley.harness` holds the CLI, Doctor, and setup code; the old "Harness"
 orchestration term is retired. Supporting packages own their named
@@ -175,12 +173,9 @@ D42.
 | D32 | Prefix `booley.runtime` | Prefix `booley.dev_support` | Packaged execution uses commit policy through its shared owner; development commands don't own Runtime behavior. |
 | D33 | Prefix `booley.feedback` | Prefix `booley.harness` | Feedback renders reports from resolved environment observations without command code. |
 | D34 | Prefix `booley.commit_policy` | Prefixes `booley.runtime`, `booley.harness`, `booley.dev_support` | Shared commit policy stays independent of execution and of script adapters. |
-| D35 | Prefix `booley.goals` | Prefixes `booley.harness`, `booley.mcp`, `booley.specialists`, `booley.flows.{sim,synth,fpga,lint}` | MCP and the commands compose Goal Mode; Goal policy doesn't depend on them, on Specialists, or on concrete Flows. |
-| D36 | Prefix `booley.runtime` | Prefix `booley.goals` | Runtime takes explicit execution inputs; Goal history and binding belong to higher-level composition. |
 | D37 | Prefix `booley.runtime.job_observation` | Prefix `booley.targets` | Job observation reports process and artifact facts without interpreting Targets. |
-| D38 | Prefixes `booley.flows`, `booley.specialists` | Prefix `booley.goals` | Evidence producers get Goal presentation and candidate paths through neutral execution interfaces. |
 | D39 | Prefix `booley.flows` | Prefix `booley.harness` | Flows run under any composition; the command layer passes human CLI concerns in through the invocation. |
-| D40 | Prefix `booley.presentation` | Prefixes `booley.harness`, `booley.mcp`, `booley.runtime`, `booley.goals`, `booley.flows` | Shared presentation primitives sit beneath every composition and execution owner. |
+| D40 | Prefix `booley.presentation` | Prefixes `booley.harness`, `booley.mcp`, `booley.runtime`, `booley.flows` | Shared presentation primitives sit beneath every composition and execution owner. |
 | D41 | Prefix `booley.runtime` | Prefix `booley.flows` | Runtime owns Sandbox and Job mechanisms; it reads Flow progress shape through `booley.core` and never imports a Flow. |
 | D42 | Prefixes `booley.flows.{sim,synth,fpga,lint}`, package-files `booley.flows` | Prefix `booley.flows.mutation` | The Mutation Flow composes the Simulation Flow's build and execution by design; the dependency runs one way, so no sibling Flow or Flow-neutral module imports it. |
 
@@ -200,14 +195,14 @@ Code shared by a Flow's backends is unclassified.
 Most rules exist because code both sides need was moved below them. When a
 rule blocks an import, put the shared piece in the owner named here.
 
-- **Runtime below Flows, Goals, and commands (D5, D6, D36, D37, D41).**
+- **Runtime below Flows and commands (D5, D6, D37, D41).**
   Runtime takes explicit inputs, so Sandbox and Job mechanics work under any
   caller. Flow progress shape lives in `booley.core.progress_shape`. Job
   observation (`booley.runtime.job_observation`) is read-only and reads the
   roots its caller passes; the Dashboard's `harness.dashboard.jobs.JobReader`
-  picks those roots from Goal Records and adds Goal and Target meaning.
+  picks those roots and adds Target meaning.
   `runtime.project_repositories` owns repository discovery and bounded Git
-  inspection for Goal worktrees and submodules. The MCP Job owners
+  inspection for worktrees and submodules. The MCP Job owners
   (`mcp.job_lifecycle`, `mcp.job_results`, `mcp.endpoint_process`,
   `mcp.report_encoding`) never reach `mcp.server`, so Job behavior doesn't
   depend on the MCP SDK or transport.
@@ -225,16 +220,13 @@ rule blocks an import, put the shared piece in the owner named here.
   `core.scope_matching` owns pure Scope matching, so neither package needs
   Runtime or Flows. Runtime keeps glob expansion and Git staging. These two
   packages are the one approved cyclic group.
-- **Flows (D8-D11, D16, D38).** `booley.evidence` holds the values that cross
+- **Flows (D8-D11, D16).** `booley.evidence` holds the values that cross
   from an evidence producer into Criteria (`fields`, `recipe`, `timing`,
   `acceptance`), so Criteria and Flows both depend downward. Source scanning
   and fingerprints stay in Flows (`flows.source_fingerprint`).
-- **Goal Mode (D35, D38).** `flows.execution_persistence` defines the
-  recording interface (`AcceptanceRecorder`). `goals.flow_execution` supplies
-  the Goal adapter, and `mcp.unbound_recorder` the one for calls outside a
-  Goal. MCP (`mcp.call_context`, `mcp.goal_flow_runner`) binds a call to its
-  Goal Record and picks the concrete Flow, so Flows never import Goals and
-  Goals never import a concrete Flow.
+- **Evidence recording.** `flows.execution_persistence` defines the
+  recording interface (`AcceptanceRecorder`), and `mcp.unbound_recorder`
+  is the adapter MCP supplies.
 - **Doctor (D26).** Each diagnostic owner takes a request and returns a
   complete report, so Doctor, MCP, and the Dashboard read the same
   observations. The owners, their permitted side effects, and how to add one
@@ -312,6 +304,3 @@ change, and attach the `compare_report.py` output.
   shrink `APPROVED_LEGACY_SCCS` to the measured groups in the same change. A
   new cycle across packages is a design change: fix the imports instead of
   approving it.
-- **Import `booley.goals` or `booley.criteria` from a new module.** Add the
-  module and its reason to `_ALLOWED` in
-  `tests/architecture/test_goal_mode_boundaries.py`.

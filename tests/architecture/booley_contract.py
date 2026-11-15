@@ -90,7 +90,6 @@ DIRECTION_RULES = (
             prefix("booley.harness"),
             prefix("booley.mcp"),
             prefix("booley.runtime"),
-            prefix("booley.goals"),
             prefix("booley.flows"),
         ),
         "shared presentation primitives stay beneath every composition and execution owner",
@@ -101,13 +100,6 @@ DIRECTION_RULES = (
         (prefix("booley.harness"),),
         "Flows run under any composition; the Harness command layer supplies human CLI "
         "concerns through the invocation, never by Flow import",
-    ),
-    DirectionRule(
-        "D36",
-        (prefix("booley.runtime"),),
-        (prefix("booley.goals"),),
-        "Runtime consumes explicit execution inputs; Goal history and binding interpretation "
-        "belong to higher-level composition",
     ),
     DirectionRule(
         "D37",
@@ -121,24 +113,6 @@ DIRECTION_RULES = (
         (prefix("booley.flows"),),
         "Runtime owns Sandbox and Job mechanisms; it reads Flow progress shape through "
         "booley.core and never imports a Flow",
-    ),
-    DirectionRule(
-        "D38",
-        (prefix("booley.flows"), prefix("booley.specialists")),
-        (prefix("booley.goals"),),
-        "evidence producers receive Goal presentation and candidate paths through neutral execution interfaces",
-    ),
-    DirectionRule(
-        "D35",
-        (prefix("booley.goals"),),
-        (
-            prefix("booley.harness"),
-            prefix("booley.mcp"),
-            prefix("booley.specialists"),
-            *_FLOW_PREFIXES,
-        ),
-        "Goal Mode policy and records are composed by MCP and command entry points; they do "
-        "not depend on those entry points, Specialists, or concrete Flows",
     ),
     DirectionRule(
         "D34",
@@ -223,7 +197,6 @@ DIRECTION_RULES = (
                 "feedback",
                 "flows",
                 "fusesoc",
-                "goals",
                 "harness",
                 "mcp",
                 "presentation",

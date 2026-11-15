@@ -22,11 +22,7 @@ Registry holds it:
   and registry maintenance (once a minute) deletes it. A later tool call
   shows the session again. Hooks write markers under thread or process keys
   only, so a `worktree:` fallback row never matches one and stays until
-  `[goals].quiet_after`.
-- Doctor's `goals.quiet-session` check reads registry rows but not end
-  markers. Once maintenance deletes an ended row, Doctor can warn within
-  about a minute of `SessionEnd` instead of after `quiet_after`; the warning
-  already says it is not evidence of abandonment.
+  it has been quiet for two hours.
 
 ## Sessions list
 
@@ -58,9 +54,8 @@ Registry holds it:
   beside the Jobs list.
 - A session's preview shows its handle and mode, activity with duration,
   branch, work dir, start age, connection, last Booley call with its age, the
-  shared-worktree warning when present, a one-line Goal summary in Goal Mode,
-  and its unfinished Jobs. Finished Jobs and the full Goal list are left to
-  session detail. Absent values show `—`.
+  shared-worktree warning when present, and its unfinished Jobs. Finished Jobs
+  are left to session detail. Absent values show `—`.
 - A Standalone Jobs row previews the same content as Job detail.
 - The preview follows the cursor and refreshes with each snapshot without
   moving the cursor or the list scroll.

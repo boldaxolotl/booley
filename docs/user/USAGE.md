@@ -10,8 +10,8 @@ with AI coding agents to follow it.
 3. [Interactive Mode](#interactive-mode): [first session](#open-your-first-developer-agent-session), [what to ask for](#what-you-can-ask-for), [skills](#booley-skills), [good prompts](#write-a-useful-prompt), [long runs and results](#long-runs-and-results), [dashboard](#the-dashboard), [parallel work](#several-agents-at-once), [reviewing changes](#what-the-developer-agent-is-allowed-to-do), [editing instructions](#editing-project-instructions), [waveforms](#viewing-waveforms)
 4. [Reporting problems and feedback](#when-booley-itself-misbehaves)
 
-Goal Mode has its own guide, [GOAL-MODE.md](GOAL-MODE.md). Every command,
-Flow, and Specialist is listed in [CLI-REFERENCE.md](CLI-REFERENCE.md).
+Every command, Flow, and Specialist is listed in
+[CLI-REFERENCE.md](CLI-REFERENCE.md).
 
 ## Read this first
 
@@ -47,7 +47,7 @@ and keeps the Developer Agent away from the rest of your computer.
 
 Command blocks go in the terminal named in the text around them. Sentences in
 *italics* are prompts for the Developer Agent chat. Skills such as
-`/booley-goal` also go in the Developer Agent chat, not in a terminal.
+`/booley-heal` also go in the Developer Agent chat, not in a terminal.
 
 Booley uses some terms with exact meanings. When one is unfamiliar, look it up
 in the glossary linked from the [context map](../../GLOSSARY-MAP.md).
@@ -73,7 +73,7 @@ Don't continue until `booley doctor` shows no failures or warnings.
   change it also walks you through the
   [upgrade review](DOCTOR.md#upgrade-review).
 - For a quick overview of Booley, start with `booley cheat`. It lists the
-  available sections; print the ones you need, for example `booley cheat --goals`
+  available sections; print the ones you need, for example `booley cheat --metrics`
   or `booley cheat --commands --project-files`. Use `booley cheat --all` for the
   whole cheatsheet; `booley cheat --list` also shows the section list.
 - `booley doctor --deep` goes further and runs short real simulations, lints,
@@ -175,13 +175,6 @@ the new `fifo_ptr` module to the `sim_full` Target."* It updates the `.core`
 file and `.booley/tests.toml` for you. The background is in
 [TARGETS.md](TARGETS.md) and [TESTS.md](TESTS.md).
 
-**Work that must be finished properly?** When a task has conditions that must
-hold before it counts as done (all tests pass, a clean review, area under a
-limit), type `/booley-goal` and describe the work, confirm the Goals, clear the
-chat, and type `/booley-goal start`. Booley then won't let the agent declare it
-done until each condition is met with evidence. See
-[GOAL-MODE.md](GOAL-MODE.md#how-to-use-goal-mode).
-
 ### Booley skills
 
 Skills are guided workflows you start by typing their name in the Developer
@@ -190,7 +183,6 @@ Agent chat:
 | Skill | Use it when |
 | --- | --- |
 | `/booley-setup` | Setting up a Project (you started this on the host during setup) |
-| `/booley-goal` | Work needs conditions that must be met, with evidence |
 | `/booley-heal` | Doctor reports problems, or a Flow stopped working |
 | `/booley-feedback` | Reporting a Booley bug, confusion, praise, or an idea |
 
@@ -240,7 +232,7 @@ The Dashboard has three windows; press `←` or `→` to switch:
 
 - **Sessions:** every Developer Agent session and what its agent last
   reported: working, waiting for a tool call, or waiting for your input.
-  Sessions waiting for your input or a Goal change decision are grouped under
+  Sessions waiting for your input are grouped under
   **NEEDS YOU**, and the tab reads `Sessions N◆` while N sessions need you.
   When the session's checkout declares a `[target.flow]` table in
   `metrics.toml`, a second line under the session shows its measurement:
@@ -383,7 +375,7 @@ Keep or discard worktree s3? [K/d]
 Enter keeps it. Discard removes the worktree, the same as
 `booley worktree rm s3`, and keeps its branches, so committed work stays
 reachable. Booley never merges anything for you. If the removal is refused, for
-example because the agent is still running somewhere or a Goal is active,
+example because the agent is still running somewhere,
 Booley shows why and asks a second time before it removes the worktree anyway.
 A session in the main checkout gets no question.
 
@@ -396,7 +388,7 @@ Manage worktrees from a container terminal:
 - `booley worktree list` shows each worktree's branch, unmerged work, and
   live sessions.
 - `booley worktree rm <name>` removes one and keeps its branches. It refuses
-  while a session runs there, a Goal is active, or work would be lost.
+  while a session runs there or work would be lost.
 - `booley worktree gc` removes worktrees idle longer than `[worktree]
   gc_older_than` (default `7d`). `booley chat` runs it at every launch.
 

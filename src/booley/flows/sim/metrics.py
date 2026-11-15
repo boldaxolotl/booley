@@ -127,7 +127,7 @@ def simulation_flow_metrics(outcome: SimulationRecordOutcome) -> FlowMetricValue
     """Return the typed metrics of one Target's simulation or coverage run.
 
     ``tests_failed`` counts every Test Run that did not pass (failed, timed out,
-    crashed, not run or inconclusive), as Goal Mode's failed-test count does.
+    crashed, not run or inconclusive).
     ``cycle_count`` is keyed by Test Run name and only for a Test Run that passed with
     a count. A coverage run adds the five coverage percentages, omitted when the
     coverage collection did not complete (a failing test is still a value).

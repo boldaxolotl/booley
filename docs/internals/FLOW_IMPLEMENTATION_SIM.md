@@ -1,11 +1,11 @@
 # Simulation Flow implementation
 
 How the built-in Simulation Flow (`sim`) runs a Target's tests and turns the
-result into evidence: the adapter boundary, verdicts, Cycle Count Goals, the
+result into evidence: the adapter boundary, verdicts, Cycle Count Criteria, the
 compiler cache, the Elaboration Check, and coverage collection, retention, and
 analysis. It is for contributors and agents changing `booley.flows.sim`. What
 all built-in Flows share (FuseSoC resolution, evidence contracts, the
-invocation lifecycle, Goal baselines) is in
+invocation lifecycle, baselines) is in
 [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md); report files and the
 Simulation Campaign layout are in [FLOW_REPORTS.md](FLOW_REPORTS.md#sim); how
 to run a simulation is in [FLOW-SIM.md](../user/FLOW-SIM.md) and
@@ -132,24 +132,10 @@ Target skips the Criterion rather than failing it, because nothing was proven
 either way; it still exits 1. Configuration errors (bad `--target`, disabled
 Flow, unknown `--test`) and Flow crashes exit 2, outside this vocabulary.
 
-## Per-test Cycle Count Goals
+## Per-test Cycle Count Criteria
 
 A Cycle Count Criterion binds one Target and Test Run to numeric thresholds
-([ADR 0051](../adr/0051-per-test-cycle-count-criteria.md)). A Goal entry
-argument looks like:
-
-```json
-{
-  "family": "CYCLE_COUNT",
-  "target": "sim_coremark",
-  "test": "coremark",
-  "thresholds": {
-    "cycle_count_max": 100000,
-    "cycle_count_reduce_at_least": "5%",
-    "cycle_count_reduce_at_least_cycles": 2000
-  }
-}
-```
+([ADR 0051](../adr/0051-per-test-cycle-count-criteria.md)).
 
 The named test must pass and print exactly one
 `[SIM_CYCLES] <test> <non-negative count>` line (cycle sentinels match the
@@ -160,14 +146,14 @@ meet its Criterion even when another test in the batch fails. Without a
 Cycle Count Criterion, cycle counts are only observed.
 
 `_max` and `_min` thresholds use the current run. Percentage and `_cycles`
-thresholds also run the same Target and Test Run at the Goal's pinned base in
+thresholds also run the same Target and Test Run at the base commit in
 an ephemeral worktree; the baseline counts only when the Test Run's arguments
 and environment match. A zero baseline cannot define a percentage and fails
 closed. When either side was lost to infrastructure, relative Criteria are
 left unchanged, since that says nothing about the count. Changes to declared
 workload inputs (RTL, testbench, firmware, vectors, constraints) between base
 and candidate are recorded with the comparison (`criteria/cycle_count.py`)
-rather than rejected, so a Goal can measure intentional testbench or firmware
+rather than rejected, so a comparison can measure intentional testbench or firmware
 changes; they mean the change cannot be credited to the RTL alone.
 
 ## Logs and traces
@@ -213,7 +199,7 @@ root is trusted as given and only created, never validated further.
 Sandbox Issuance fixes `BOOLEY_COMPILER_CACHE_ROOT` to
 `.runtime/compiler-cache/ccache` under the Booley Directory mount
 (`booley.runtime.compiler_cache`), in both container and remote environments,
-and Goal-bound and review subprocesses inherit it. Its presence and value
+and review subprocesses inherit it. Its presence and value
 take part in specification validation, digest and drift detection, and
 refresh, so a Sandbox issued before the cache existed gets a refresh hint.
 There is no host Booley Directory fallback. The cache sits outside every
@@ -309,17 +295,6 @@ Waiver configuration is `[coverage.waivers]` in the Booley Directory's
 ([COVERAGE.md](../user/COVERAGE.md#waiver-directory-coveragewaivers));
 coverage window and hook settings stay on the Target under
 `flow_options.booley.coverage`.
-
-In Goal Mode, the Coverage Analyst records screened Waiver Candidates in the
-Goal Record's `waiver-candidates.json` (`flows/sim/waiver_candidates.py`),
-with strict and provisional verdicts. A Provisional Coverage Verdict only
-informs the human and cannot meet a Goal. The Developer Agent proposes a
-waiver through `goal_propose_change`; human approval revalidates the
-candidate, Campaign, source, and policy identities, updates the Approved
-Waiver Set, recomputes strict coverage, and records the change in the Goal
-Change Log. A waiver-policy change made outside that path invalidates older
-coverage evidence instead of counting as Goal approval
-([ADR 0066](../adr/0066-record-waiver-candidates-for-approval-at-review.md)).
 
 ### Persistence and recovery
 

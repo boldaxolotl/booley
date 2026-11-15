@@ -1,9 +1,9 @@
 """Split the quick-reference cheatsheet into flag-addressable sections.
 
 ``booley cheat`` lists the available sections by default; ``--all`` prints
-the whole sheet. Section flags (``--goals``, ``--flows``, ...) select
-individual slices: the Goal skill only needs the Goal Mode section, a user
-debugging a container only needs the Sandbox & Docker table.
+the whole sheet. Section flags (``--metrics``, ``--flows``, ...) select
+individual slices: a user debugging a container only needs the Sandbox & Docker
+table.
 
 Sections are the ``### `` headings of ``data/cheatsheet.md``; the table below
 pins each to a stable CLI flag name. A heading in the file with no entry here
@@ -36,12 +36,6 @@ class Section:
 SECTIONS: tuple[Section, ...] = (
     Section("commands", "Commands", "Public `booley` subcommands"),
     Section(
-        "goals",
-        "Goal Mode",
-        "Goals, Goalsets, Goal catalog, threshold params, and session lifecycle",
-        aliases=("criteria",),
-    ),
-    Section(
         "metrics",
         "Metric-Driven Development",
         "Measuring rules and `metrics.toml` basics, then each Target's metrics as "
@@ -59,8 +53,7 @@ SECTIONS: tuple[Section, ...] = (
         "Project Files",
         "Editable .booley files and affected capabilities",
     ),
-    Section("skills", "Skills", "Project and Goal workflow skills"),
-    Section("artifacts", "Artifacts", "Where reports, logs, and state land"),
+    Section("skills", "Skills", "Project workflow skills"),
     Section(
         "sandbox",
         "Sandbox & Docker",

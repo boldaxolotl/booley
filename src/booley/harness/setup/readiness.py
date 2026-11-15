@@ -221,7 +221,7 @@ def _report_autocrlf_risk(
     if risk is None:
         return False
     if risk.code is LineEndingObservationCode.AUTOCRLF_EFFECTIVE_TRUE:
-        message = "core.autocrlf=true — the tree is LF today, but the next clone or checkout will re-create it with CRLF and break Goal Mode"
+        message = "core.autocrlf=true — the tree is LF today, but the next clone or checkout will re-create it with CRLF and break measurements"
     else:
         message = "core.autocrlf is not set locally — the effective value is false today, but a global config change can re-create CRLF checkouts"
     report.warn(
@@ -513,12 +513,9 @@ def _check_project_setup(
     # the rest of the Project (Doctor keeps checking). Audit the Main Booley
     # Directory's file: the one every command's refusal reads, so a linked worktree's
     # Doctor reports what the refusal names.
-    _add_config_audit(
-        project_schema.audit_retired_jobs_keys(
-            resolve_toml(resolve_common_booley_dir(project_root))
-        ),
-        report,
-    )
+    main_toml = resolve_toml(resolve_common_booley_dir(project_root))
+    _add_config_audit(project_schema.audit_retired_jobs_keys(main_toml), report)
+    _add_config_audit(project_schema.audit_retired_goals_section(main_toml), report)
     from booley.targets.flow_names import canonicalize_config
 
     booley_toml = canonicalize_config(booley_toml)
@@ -596,7 +593,6 @@ def _validate_booley_toml(data: dict[str, Any], booley_dir: Path, report: Findin
     valid &= _add_config_audit(project_schema.audit_stealth_table(data), report)
     valid &= _add_config_audit(flow_schema.audit_flow_tables(data, _REQUIRED_FLOW_TABLES), report)
     valid &= _add_config_audit(project_schema.audit_sandbox_table(data), report)
-    valid &= _add_config_audit(project_schema.audit_goals_table(data), report)
     valid &= _add_config_audit(project_schema.audit_worktree_table(data), report)
     valid &= _add_config_audit(project_schema.audit_jobs_table(data), report)
     valid &= _add_config_audit(project_schema.audit_interactive_table(data), report)

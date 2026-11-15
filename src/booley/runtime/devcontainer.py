@@ -499,8 +499,8 @@ def mask_paths_error(value: object) -> str | None:
     subpaths are accepted: an absolute path would mask an arbitrary container
     path and a ``..`` segment would walk the mask outside the workspace mount —
     either turns a privacy knob into a container-layout editor. Masking
-    ``.booley`` itself is rejected too: the session reads its config,
-    Goal Records, and worktrees through that mount (``BOOLEY_DIR``), so
+    ``.booley`` itself is rejected too: the session reads its config
+    and worktrees through that mount (``BOOLEY_DIR``), so
     hiding the whole dir bricks the runtime — mask *subtrees* of it instead.
     """
     if value is None:

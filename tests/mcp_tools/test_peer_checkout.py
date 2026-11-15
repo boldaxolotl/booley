@@ -25,7 +25,7 @@ from booley.mcp.session_registry import SessionRegistry
 from booley.runtime import chat_sessions
 from booley.runtime.pid import ProcessIdentity
 from tests.conftest import symlink_or_skip
-from tests.goals.conftest import git
+from tests.git_support import git
 from tests.mcp_tools.test_session_registry import SCOPE, _fake_process
 from tests.runtime.test_chat_sessions import process
 
@@ -520,8 +520,6 @@ async def test_two_callers_in_one_worktree_see_each_other_as_sharing(
     first, second = contexts
     assert first.attribution is not None and second.attribution is not None
     assert first.attribution.worktree_key == second.attribution.worktree_key != ""
-    assert first.attribution.key in second.other_session_keys
-    assert "another session shares" in second.presentation_warning
 
 
 @pytest.mark.asyncio

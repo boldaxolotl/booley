@@ -465,10 +465,10 @@ def _run_simulation_record(tmp_path, monkeypatch, manifest, invocation):
     return SimulationRecord(_executor(build, counters)).run(request), counters
 
 
-def test_relative_cycle_goals_on_two_tests_share_one_baseline_simulation_record(
+def test_relative_cycle_criteria_on_two_tests_share_one_baseline_simulation_record(
     tmp_path, monkeypatch
 ):
-    """Two relative Cycle Count Goals of one Target link two work items of one baseline.
+    """Two relative Cycle Count Criteria of one Target link two work items of one baseline.
 
     Both prerequisites name the same baseline record, which used to be refused
     as a duplicate ("prerequisite identities must be unique") or run as a cycle.
