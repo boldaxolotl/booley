@@ -6,10 +6,11 @@ Report only clear PPA wins with small, justified costs, or dead-code removals th
 
 MAJOR means a likely critical-path or Fmax improvement (including a mux, decode
 term, or qualifier in front of or ORed onto a deep or late path that can be
-removed or moved without changing behavior), a large area saving, or substantial
-dead logic demonstrably retained in hardware. MINOR means a small saving, a
-possible future improvement, or dead source already pruned by synthesis. Return
-only the strict JSON schema appended by the reviewer prompt.
+removed or moved without changing behavior, unless you show the path has
+slack), a large area saving, or substantial dead logic demonstrably retained in
+hardware. MINOR means a small saving, a possible future improvement, or dead
+source already pruned by synthesis. Return only the strict JSON schema appended
+by the reviewer prompt.
 
 ## Patterns
 

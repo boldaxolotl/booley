@@ -67,8 +67,8 @@ Severity heuristic:
 - **MAJOR** -- A likely critical-path or Fmax improvement, a large area saving,
   or substantial dead logic demonstrably retained in hardware. A mux, decode
   term, or qualifier that sits in front of or ORed onto a deep or late path,
-  where removing or moving it keeps behavior, is MAJOR unless you show the path
-  is short
+  where removing or moving it keeps behavior, is a likely critical-path
+  improvement (MAJOR) unless you show the path has slack
 - **MINOR** -- A small saving, a possible future improvement, or dead source already pruned by synthesis
 
 Confidence:
