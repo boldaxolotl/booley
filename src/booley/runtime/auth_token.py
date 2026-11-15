@@ -267,7 +267,7 @@ def _gateway_credential(app: str) -> EffectiveCredential | None:
 
 
 def effective_credential(
-    app: str = APP_CLAUDE, policy: str = "auto", *, home: Path | None = None
+    app: str = APP_CLAUDE, policy: str = "subscription", *, home: Path | None = None
 ) -> EffectiveCredential | None:
     """Resolve which credential *app*'s agents would actually use under *policy*.
 
@@ -280,7 +280,7 @@ def effective_credential(
 
 
 def login_credential(
-    app: str, policy: str = "auto", *, home: Path | None = None
+    app: str, policy: str = "subscription", *, home: Path | None = None
 ) -> EffectiveCredential | None:
     """The credential *app* is logged in with under *policy*, or ``None``; no network call.
 
@@ -298,7 +298,7 @@ def login_credential(
     return credential
 
 
-def cli_logged_in(app: str, policy: str = "auto", *, home: Path | None = None) -> bool:
+def cli_logged_in(app: str, policy: str = "subscription", *, home: Path | None = None) -> bool:
     """Whether *app* has a login its agents could use under *policy*."""
     return login_credential(app, policy, home=home) is not None
 
@@ -308,9 +308,8 @@ def _native_credential(
 ) -> EffectiveCredential | None:
     """Resolve which credential *app*'s agents would actually use, CLI-style.
 
-    *policy* is the project's ``[agent] auth`` knob. ``auto`` (and the Sandbox's
-    ``visitor``, which resolves identically) models the bare
-    CLI precedence below. ``subscription`` resolves as if the API-key env var
+    *policy* is the project's ``[agent] auth`` knob. The Sandbox's ``visitor`` models the
+    bare CLI precedence below. ``subscription`` resolves as if the API-key env var
     were scrubbed (which is what Booley does to agent envs under that policy);
     for Codex the API key IS the rotation-free credential, so only the login
     file remains. ``api_key`` resolves the API key alone — ``None`` then means
@@ -480,9 +479,9 @@ CREDENTIAL_SCHEMA = "1"
 def defers_to_cli(policy: str) -> bool:
     """Whether *policy* leaves the credential choice to the CLI's own precedence.
 
-    ``auto`` is the ``[agent] auth`` spelling and ``visitor`` the Sandbox one.
+    Only the env-only ``visitor`` mode does; ``auto`` is retired and defers to nothing.
     """
-    return policy in {"auto", VISITOR_AUTH}
+    return policy == VISITOR_AUTH
 
 
 def subscription_available(app: str, policy: str, path: Path) -> bool:
@@ -517,7 +516,7 @@ def subscription_available(app: str, policy: str, path: Path) -> bool:
 
 def allowed_credential_keys(app: str, policy: str) -> frozenset[str]:
     """Deterministic transport permissions, independent of shell exports."""
-    if policy not in {"auto", VISITOR_AUTH, "subscription", "api_key", GATEWAY_AUTH}:
+    if policy not in {VISITOR_AUTH, "subscription", "api_key", GATEWAY_AUTH}:
         raise ValueError("invalid credential policy; refresh the Sandbox")
     if app not in CREDENTIALS or policy == GATEWAY_AUTH:
         return frozenset()
@@ -527,7 +526,7 @@ def allowed_credential_keys(app: str, policy: str) -> frozenset[str]:
         return frozenset({ENV_VAR}) if app == APP_CLAUDE else frozenset()
     allowed = {API_KEY_ENV[app], CREDENTIALS[app].env_var}
     if app == APP_CLAUDE:
-        # ``auto`` leaves the CLI's own precedence untouched, bearer included.
+        # ``visitor`` leaves the CLI's own precedence untouched, bearer included.
         allowed |= SCRUB_ONLY_ENV_KEYS
     return frozenset(allowed)
 
@@ -589,7 +588,7 @@ def inspect_config_seed(path: Path, policy: str) -> None:
 
 
 def credential_plan(
-    app: str = APP_CLAUDE, policy: str = "auto", *, home: Path | None = None
+    app: str = APP_CLAUDE, policy: str = "subscription", *, home: Path | None = None
 ) -> CredentialPlan:
     """Resolve once, keeping secrets out of repr and serialized metadata."""
     allowed = allowed_credential_keys(app, policy)
@@ -634,7 +633,7 @@ def credential_plan(
     )
 
 
-def link_codex_auth(source: Path, destination: Path, policy: str = "auto") -> None:
+def link_codex_auth(source: Path, destination: Path, policy: str = "subscription") -> None:
     """Make a Booley-owned private auth entry a link to the real login.
 
     A link, not a copy: Codex rotates ``auth.json`` in place, so a copy would

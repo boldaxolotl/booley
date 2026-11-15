@@ -1005,3 +1005,23 @@ def test_tb_hunt_guide_defers_to_the_project_simulation_contract(
     # What the hunt reports about the contract stays a model judgment: nothing is filtered.
     assert [row["summary"] for row in result.detail["issue_list"]] == [demand["summary"]]
     assert result.detail["filtered"] == []
+
+
+def test_optimization_review_runs_checklist_and_hunt_calls(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An optimization review makes a checklist call and a hunt call and merges the union."""
+    args = ["--scope", "rtl/dut.sv", "--category", "rtl", "--focus", "optimization"]
+    same = finding("MINOR", summary="Counter is wider than its range", category="optimization")
+    result, invoke = review(project, monkeypatch, args, {"issues": [same]})
+
+    assert result.exit_code == 0, result.report_text
+    assert invoke.call_count == 2
+    systems = [call.args[0].system_prompt for call in invoke.call_args_list]
+    for guide in ("optimization-checklist", "optimization-hunt"):
+        carrying = [s for s in systems if f"## Review guide \u2014 optimization ({guide})" in s]
+        assert len(carrying) == 1, guide
+    assert [c["kind"] for c in result.detail["guide_calls"]] == ["checklist", "hunt"]
+    issues = result.detail["issue_list"]
+    assert len(issues) == 1
+    assert issues[0]["guide_kinds"] == ["checklist", "hunt"]

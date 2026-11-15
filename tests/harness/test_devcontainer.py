@@ -740,7 +740,7 @@ def test_project_resource_name_identity_bytes_remain_stable(tmp_path):
     assert expected in devcontainer.state_volume_mount("claude", expected)
 
 
-def test_subscription_keeps_the_auto_login_volume(tmp_path, monkeypatch):
+def test_subscription_keeps_the_unsuffixed_login_volume(tmp_path, monkeypatch):
     from booley.runtime import auth_token
 
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -752,7 +752,7 @@ def test_subscription_keeps_the_auto_login_volume(tmp_path, monkeypatch):
             project_id="one-project",
             cli_seeds=[dc.CliSeeds(auth_token.credential_plan("claude", mode))],
         )
-        for mode in ("auto", "subscription", "api_key")
+        for mode in (auth_token.VISITOR_AUTH, "subscription", "api_key")
     ]
     volumes = [next(mount for mount in spec["mounts"] if "type=volume" in mount) for spec in specs]
     assert volumes[0] == volumes[1]

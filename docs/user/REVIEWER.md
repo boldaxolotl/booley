@@ -30,7 +30,9 @@ list of known bug patterns, the other hunts for defects by tracing scenarios
 such as reset, back-to-back operations, and full or empty states. A `protocol`
 review does the same with its own hunt, which traces scenarios such as stalls,
 back-pressure, aborts, and clock or reset domain crossings through each
-interface. It reports the findings of both searches and merges findings the two
+interface. An `optimization` review pairs its checklist with a hunt for
+redundant, oversized, or critical-path logic and registers that could share
+storage. Each reports the findings of both searches and merges findings the two
 searches report at the same file and line. It uses about twice the model time
 and tokens of one search. A search that fails runs once more; if it fails
 again, the whole review is an error instead of a partial result.
@@ -122,7 +124,7 @@ booley specialist reviewer --verify
 | `--fail-on critical\|major\|minor` | Exit 1 when an open finding is at or above that severity. Without it, a completed review exits 0 even with open findings. |
 | `--verify` | Recheck the latest review's open findings. Accepts only `--waive` and `--fail-on`. |
 | `--waive <finding-id> "<reason>"` | With `--verify`: propose a waiver. Repeatable. |
-| `--dry-run` | Preview the call without running the review: lists the checks it would run; a `bugs`, `protocol` or testbench `quality` review shows two. |
+| `--dry-run` | Preview the call without running the review: lists the checks it would run; a `bugs`, `protocol`, `optimization` or testbench `quality` review shows two. |
 
 The options every Specialist shares are in [Specialists](SPECIALISTS.md#running-a-specialist).
 [CLI-REFERENCE.md](CLI-REFERENCE.md#reviewer) has the full reference,

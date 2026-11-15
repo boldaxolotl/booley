@@ -2821,24 +2821,24 @@ def _recorded_auth_fix(
 def _check_auth_recorded(
     project: ProjectAudit, clis: tuple[str, ...], reporter: _Reporter
 ) -> None:
-    """FAIL each Project CLI whose ``[agent] auth`` is missing or ``auto``.
+    """FAIL each Project CLI whose ``[agent] auth`` is missing or the retired ``auto``.
 
-    ``auto`` bills an exported API key before a subscription login, so a Project
-    must record the choice. The finding names the value ``booley init`` would record.
+    A Project records its billing choice. The finding names the value ``booley init``
+    would record.
     """
+    from booley.config.agent import RETIRED_AUTH
     from booley.harness import init_cmd
 
     declared = _declared_agent(project)
     auth = declared.auth if declared else None
     for cli in clis:
         recorded = auth if isinstance(auth, str) else (auth or {}).get(cli)
-        if recorded not in (None, "auto"):
+        if recorded not in (None, RETIRED_AUTH):
             continue
         value = init_cmd.detected_auth_policy(cli)
-        state = "is not set" if recorded is None else "is 'auto'"
+        state = "is not set" if recorded is None else f"{RETIRED_AUTH!r} is retired"
         reporter.fail_(
-            f"{cli}: booley.toml [agent] auth {state}, so an exported API key would bill "
-            f"instead of a subscription; detected: {value}",
+            f"{cli}: booley.toml [agent] auth {state}; detected: {value}",
             _recorded_auth_fix(declared, clis, cli, value),
             check_id="agent.credential-policy",
             subject=cli,
@@ -2880,7 +2880,7 @@ def _check_cli_credentials(
     """Audit one allowed Agent CLI's credential, policy, and rotation risk.
 
     The default CLI keeps its grading (FAIL under a pinned policy, WARN under
-    ``auto``). Another allowed CLI WARNs for a missing credential, with the CLI's
+    the visitor mode). Another allowed CLI WARNs for a missing credential, with the CLI's
     own login fix, unless a ``[models]`` pin runs a Specialist on it: then it
     FAILs under every policy, because that Specialist's calls would fail.
     """
@@ -3044,7 +3044,7 @@ def _check_gateway_auth(provider: str, reporter: _Reporter, *, chosen_by_auto: b
             run_token_command(settings.token_command)
         except GatewayTokenCommandError as exc:
             if chosen_by_auto:
-                # Like a missing login under auth = 'auto': the user has not signed in
+                # Like a missing login in the visitor mode: the user has not signed in
                 # yet, which is a warning, not a broken setup.
                 reporter.warn_(
                     warning("agent.credential-missing", str(exc), subject=provider),
@@ -3069,7 +3069,8 @@ def _declared_agent(project: ProjectAudit | None) -> DeclaredAgent | None:
     if not isinstance(agent_section, dict):
         return None
     try:
-        return parse_agent_section(agent_section)
+        # A retired ``auth = "auto"`` is read, not refused, so Doctor can name its fix.
+        return parse_agent_section(agent_section, keep_retired_auth=True)
     except BackendConfigError:
         return None
 
@@ -3127,11 +3128,13 @@ def _allowed_clis(project: ProjectAudit | None, default_cli: str) -> tuple[str, 
 def _configured_auth_policy(project: ProjectAudit | None, cli: str | None = None) -> str:
     """Audit *cli*'s policy (default CLI when omitted); ambient handoff is only a no-Project fallback."""
     from booley.config.agent import (
-        _DEFAULT_AUTH,
-        _VALID_AUTH_MODES,
+        DEFAULT_AUTH,
+        RETIRED_AUTH,
+        VALID_AUTH_MODES,
         _inside_container,
         env_auth_handoff,
         gateway_handoff_active,
+        missing_auth_policy,
     )
 
     default_cli = _configured_provider(project)
@@ -3144,15 +3147,21 @@ def _configured_auth_policy(project: ProjectAudit | None, cli: str | None = None
         return GATEWAY_AUTH  # env-only policy: it outranks the Project toml
     env_auth = env_auth_handoff() or ""
     if project is None:
-        return env_auth if env_auth in _VALID_AUTH_MODES else _DEFAULT_AUTH
+        return (
+            env_auth
+            if env_auth in (*VALID_AUTH_MODES, auth_token.VISITOR_AUTH)
+            else missing_auth_policy()
+        )
     declared = _declared_agent(project)
     if declared is None:
-        return _DEFAULT_AUTH
+        return missing_auth_policy()
     auth = declared.auth
     policy = auth if isinstance(auth, str) else (auth or {}).get(cli)
     if policy == GATEWAY_AUTH and not _inside_container():
-        return _DEFAULT_AUTH  # like the env hand-off, the toml gateway applies in a Sandbox only
-    return policy or _DEFAULT_AUTH
+        return DEFAULT_AUTH  # like the env hand-off, the toml gateway applies in a Sandbox only
+    if policy is None or policy == RETIRED_AUTH:
+        return missing_auth_policy()
+    return policy
 
 
 _AGENT_APP_LABELS = {auth_token.APP_CLAUDE: "Claude Code", auth_token.APP_CODEX: "Codex"}
@@ -3178,7 +3187,7 @@ def _check_agent_auth_token(
     _pass: Check,
     _warn: Check,
     _skip: Check,
-    policy: str = "auto",
+    policy: str = "subscription",
     *,
     _fail: Check | None = None,
     plan: auth_token.CredentialPlan | None = None,
@@ -3197,11 +3206,11 @@ def _check_agent_auth_token(
 
     Scoped to one allowed CLI (see :func:`_allowed_clis`): a CLI the Project does
     not list is never audited. *missing_fix* names the sign-in for a missing credential;
-    *missing_fails* grades a missing credential FAIL (through *_fail*) even under ``auto``.
+    *missing_fails* grades a missing credential FAIL (through *_fail*) even in the visitor mode.
     """
     _warn = _warning_sink(_warn, "agent.credential-missing", subject=provider)
     plan = plan or auth_token.credential_plan(provider, policy)
-    if policy != "auto" and plan.selected is None:
+    if not auth_token.defers_to_cli(policy) and plan.selected is None:
         message = f"{provider}: no usable credential under auth = '{policy}'; provide the pinned credential"
         if _fail:
             _fail(message, missing_fix)
@@ -3218,7 +3227,7 @@ def _check_agent_auth_token(
         hint = (
             f"[agent] auth = '{policy}' pins the billing mode — provide that credential "
             "or change the knob"
-            if policy != "auto"
+            if not auth_token.defers_to_cli(policy)
             else "run its login or export an API key"
         )
         message = (
@@ -3280,7 +3289,7 @@ def _check_oauth_token(
     _pass: Check,
     _warn: Check,
     _skip: Check,
-    policy: str = "auto",
+    policy: str = "subscription",
     *,
     _note: Check | None = None,
     plan: auth_token.CredentialPlan | None = None,
@@ -3296,7 +3305,7 @@ def _check_oauth_token(
     neither can be revoked by a refresh elsewhere. Advisory: plenty of short runs
     are fine on subscription creds, but a multi-hour headless run is not.
 
-    Stays a WARN (see :class:`_Reporter`) under automatic credential selection:
+    Stays a WARN (see :class:`_Reporter`) in the visitor mode and under ``api_key``:
     it names a real, reachable failure mode with a one-command remedy. An
     explicit ``auth = "subscription"`` accepts that tradeoff, so it is a NOTE.
     In a Sandbox without the app's seed sidecar the login was made inside it, no
@@ -3396,7 +3405,7 @@ def _check_subscription_creds_health(
     provider: str,
     _pass: Check,
     _warn: Check,
-    policy: str = "auto",
+    policy: str = "subscription",
     *,
     plan: auth_token.CredentialPlan | None = None,
     display_overrides: dict[str, str] | None = None,

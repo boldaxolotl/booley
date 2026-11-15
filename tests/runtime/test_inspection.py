@@ -25,13 +25,14 @@ from tests.harness import test_session_runtime as resolution_fixtures
 
 from booley.harness import doctor
 from booley.harness.setup import readiness
-from booley.runtime import devcontainer as dc
 from booley.runtime import (
+    auth_token,
     inspection,
     project_image,
     runtime_context,
     session_runtime,
 )
+from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
 
 
@@ -757,12 +758,30 @@ class TestDevcontainerSpecStaleness:
         assert rec.fails() and all("BOOLEY_AGENT_APP" in m for m in rec.fails())
         assert not any(lvl == "warn" for lvl, _ in rec.events)
 
+    def test_handwritten_spec_primary_auth_auto_is_not_malformed(self, tmp_path, monkeypatch):
+        # A hand-written spec has no issued record: ``BOOLEY_PRIMARY_AUTH=auto`` is the
+        # env-only visitor mode, rebuilt byte-identically, never a retired record.
+        from booley.runtime import devcontainer as dc
+
+        spec = build_spec(dc.APP_CLAUDE, policy=auth_token.VISITOR_AUTH)
+        spec["remoteEnv"].pop("BOOLEY_AGENT_CLIS", None)
+        assert spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] == "auto"
+        assert dc.spec_cli_policies(spec) == {"claude": auth_token.VISITOR_AUTH}
+        rebuilt = dc.sandbox_visible_expectation(spec)
+        assert rebuilt["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] == "auto"
+        assert dc.sandbox_visible(rebuilt) == dc.sandbox_visible(spec)
+        dc.write_devcontainer(tmp_path, spec)
+
+        rec = self._run(tmp_path, monkeypatch, declared_provider="claude")
+
+        assert not [m for m in rec.fails() if "malformed" in m]
+
     @staticmethod
     def _two_cli_spec(app: str) -> dict:
 
         spec = build_spec(app)
         spec["name"] = "Booley Interactive (claude, codex)"
-        spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] = "claude=auto,codex=auto"
+        spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] = "claude=subscription,codex=subscription"
         return spec
 
     def test_spec_for_allowed_cli_set_raises_no_cli_set_failure(self, tmp_path, monkeypatch):
@@ -800,7 +819,7 @@ class TestDevcontainerSpecStaleness:
         from booley.runtime import devcontainer as dc
 
         spec = build_spec(dc.APP_CLAUDE)
-        spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] = "claude=auto,bogus=auto"
+        spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] = "claude=subscription,bogus=subscription"
         dc.write_devcontainer(tmp_path, spec)
         rec = self._run(tmp_path, monkeypatch, declared_provider="claude")
         assert any("record is malformed" in m for m in rec.fails())

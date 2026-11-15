@@ -189,7 +189,7 @@ def _run_probe(
             "BOOLEY_GATEWAY_TOKEN": "SYNTHETIC_GATEWAY_TOKEN",
         }
     command, environment = prepare_codex_text_only(
-        [*command, "-"], params, environment, auth_mode="gateway" if gateway else "auto"
+        [*command, "-"], params, environment, auth_mode="gateway" if gateway else "subscription"
     )
     # Unbounded child: the child needs stdin data (input=)
     return subprocess.run(

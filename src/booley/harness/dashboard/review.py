@@ -81,7 +81,7 @@ def specialist_lines(facts: SpecialistFacts) -> list[str]:
     lines.append(timeout)
     if facts.warning:
         lines.append(
-            f"Warning: no {facts.cli} credential found under auth = 'auto'; a proxy token or"
+            f"Warning: no {facts.cli} credential found in this Sandbox; a proxy token or"
             f" cloud provider may still work. To sign in: {facts.warning}"
         )
     return lines

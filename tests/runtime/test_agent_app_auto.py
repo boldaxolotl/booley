@@ -125,14 +125,14 @@ def _refusal(action) -> str:
 # What each credential situation resolves to: (default app, policy the consumers see,
 # every allowed CLI with the default first).
 _CASES = {
-    "claude-api-key": ("claude", "auto", ("claude",)),
-    "claude-oauth-token": ("claude", "auto", ("claude",)),
-    "claude-login": ("claude", "auto", ("claude",)),
-    "codex-api-key": ("codex", "auto", ("codex",)),
-    "codex-login": ("codex", "auto", ("codex",)),
-    "both": ("claude", "auto", ("claude", "codex")),
+    "claude-api-key": ("claude", "visitor", ("claude",)),
+    "claude-oauth-token": ("claude", "visitor", ("claude",)),
+    "claude-login": ("claude", "visitor", ("claude",)),
+    "codex-api-key": ("codex", "visitor", ("codex",)),
+    "codex-login": ("codex", "visitor", ("codex",)),
+    "both": ("claude", "visitor", ("claude", "codex")),
     "gateway": ("codex", "gateway", ("codex",)),
-    "nothing": ("claude", "auto", ("claude",)),
+    "nothing": ("claude", "visitor", ("claude",)),
 }
 
 
@@ -254,7 +254,7 @@ def test_visitor_credential_beats_a_configured_gateway(
 
     assert f"app:{app} " in status
     assert not config_agent.gateway_handoff_active()
-    assert set(get_agent_settings().auth.values()) == {"auto"}
+    assert set(get_agent_settings().auth.values()) == {"visitor"}
     assert "booley_gateway" not in _codex_config(sandbox.home)
 
 
@@ -487,6 +487,46 @@ def test_handwritten_auto_policy_selects_the_visitor_mode(sandbox, monkeypatch, 
     assert 'model_provider = "booley_gateway"' in _codex_config(home)
 
 
+@pytest.mark.parametrize("handoff", ["app-auto-unset", "primary-auth-auto"])
+def test_handwritten_sandbox_without_auth_keeps_the_visitor_credential(
+    sandbox, monkeypatch, capsys, handoff
+):
+    """A hand-written spec (no issued record) whose ``booley.toml`` has no ``auth``.
+
+    The missing ``auth`` reads as the env-only visitor mode there, as ``auto`` did, so the
+    exported key is still selected and forwarded, on the lazy and the eager loader alike.
+    """
+    from booley.runtime import auth_token
+
+    booley_dir = sandbox.project / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_bytes(b'[agent]\nclis = ["claude"]\ndefault = "claude"\n')
+    _give("claude-api-key", sandbox.home, monkeypatch)
+    if handoff == "app-auto-unset":
+        _start(capsys)  # BOOLEY_AGENT_APP=auto, BOOLEY_PRIMARY_AUTH unset: the registrar decides
+    else:
+        monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
+        monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "auto")
+
+    lazy = get_agent_settings()
+    eager = load_agent_settings(sandbox.project)
+
+    for settings in (lazy, eager):
+        assert settings.auth_for("claude") == "visitor"
+        plan = auth_token.credential_plan("claude", settings.auth_for("claude"))
+        assert plan.selected is not None
+        assert plan.selected.mode == auth_token.MODE_API_KEY
+        assert plan.child_environment({})["ANTHROPIC_API_KEY"] == "synthetic-claude-key"
+
+
+def test_missing_auth_is_subscription_with_an_issued_record(sandbox, monkeypatch):
+    """The visitor reading is for hand-written specs only: an issued record rules."""
+    monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
+    monkeypatch.setenv("BOOLEY_AGENT_CLIS", "claude=subscription")
+
+    assert config_agent.missing_auth_policy() == "subscription"
+
+
 def test_gateway_fallback_keys_on_the_visitor_mode(sandbox, monkeypatch):
     """The gateway fallback depends on the visitor mode, not on the ``auto`` config policy."""
     from booley.runtime import auth_token
@@ -494,7 +534,7 @@ def test_gateway_fallback_keys_on_the_visitor_mode(sandbox, monkeypatch):
     lookups: list[str] = []
     real = auth_token.login_credential
 
-    def spy(app, policy="auto", *, home=None):
+    def spy(app, policy="visitor", *, home=None):
         lookups.append(policy)
         return real(app, policy, home=home)
 
