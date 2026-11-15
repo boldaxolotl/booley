@@ -229,6 +229,15 @@ def _executable_version(executable: Path) -> str | None:
     return words[1]
 
 
+def _launcher(identity: HostInstallationIdentity) -> Path:
+    """The identity's executable, with the `.exe` Windows launchers drop from argv[0]."""
+    path = Path(identity.executable)
+    with_suffix = path.with_suffix(".exe")
+    if not path.suffix and not path.exists() and with_suffix.exists():
+        return with_suffix
+    return path
+
+
 def shadowing_installs(
     recorded: HostInstallationIdentity,
     running: HostInstallationIdentity,
@@ -237,14 +246,15 @@ def shadowing_installs(
     executables = _path_executables()
     if len(executables) < 2:
         return None
+    launchers = {"recorded": _launcher(recorded), "running": _launcher(running)}
     entries: list[str] = []
     for executable in executables:
-        is_running = same_host_path(executable, running.executable)
+        is_running = same_host_path(executable, launchers["running"])
         version = running.version if is_running else _executable_version(executable)
         marks = "".join(
             f", {label}"
-            for label, identity in (("recorded", recorded), ("running", running))
-            if same_host_path(executable, identity.executable)
+            for label in ("recorded", "running")
+            if same_host_path(executable, launchers[label])
         )
         shown = f"v{version}" if version else "version unknown"
         entries.append(f"{executable} ({shown}{marks})")

@@ -549,13 +549,16 @@ def test_mismatch_message_unchanged_with_one_distinct_install(tmp_path, monkeypa
 @_POSIX_ONLY
 @pytest.mark.parametrize("probe", ["failing", "hanging"])
 def test_mismatch_lists_unreadable_version_as_unknown(tmp_path, monkeypatch, probe):
-    body = "exit 3" if probe == "failing" else "exec sleep 60"
-    monkeypatch.setattr(host_install, "_VERSION_TIMEOUT_S", 0.5, raising=False)
+    started = tmp_path / "probe-started"
+    hang = f": > '{started}'; exec '{sys.executable}' -c 'import time; time.sleep(60)'"
+    body = "exit 3" if probe == "failing" else hang
+    monkeypatch.setattr(host_install, "_VERSION_TIMEOUT_S", 1.0)
     old, _new, state = _two_installs(tmp_path, monkeypatch, body)
 
     message = host_install.host_install_error(tmp_path, path=state)
 
     assert message is not None
+    assert started.exists() == (probe == "hanging")
     assert f"{old} (version unknown, recorded)" in message
 
 
@@ -596,3 +599,21 @@ def test_mismatch_lists_platform_executable_name(tmp_path, monkeypatch):
         "remove or upgrade the installs listed before the one you want, or run "
         "`booley bootstrap --update` to record the running one"
     )
+
+
+def test_mismatch_marks_launcher_whose_identity_lacks_exe(tmp_path, monkeypatch):
+    for directory in ("first", "second"):
+        (tmp_path / directory).mkdir()
+        (tmp_path / directory / "booley.exe").write_bytes(b"")
+        (tmp_path / directory / "booley.exe").chmod(0o755)
+    first, second = ((tmp_path / part / "booley.exe").resolve() for part in ("first", "second"))
+    monkeypatch.setattr(host_install, "_path_executables", lambda: [first, second])
+    monkeypatch.setattr(host_install, "_executable_version", lambda _exe: None)
+    recorded = replace(_identity(), executable=str(first.with_suffix("")))
+    running = replace(_identity(), executable=str(second.with_suffix("")), revision="def456")
+
+    listing = host_install.shadowing_installs(recorded, running)
+
+    assert listing is not None
+    assert f"{first} (version unknown, recorded)" in listing
+    assert f"{second} (v1.2.3, running)" in listing
