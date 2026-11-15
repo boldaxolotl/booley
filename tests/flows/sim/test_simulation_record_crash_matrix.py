@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import signal
@@ -382,10 +383,15 @@ class _KillAtWrite:
     ``finally`` and no cleanup. The path involved goes to ``side_file`` first.
     """
 
-    def __init__(self, boundary: str, phase: str, side_file: Path) -> None:
+    def __init__(
+        self, boundary: str, phase: str, side_file: Path, *, hook_path_opens: bool = False
+    ) -> None:
         self.boundary = boundary
         self.phase = phase
         self.side_file = side_file
+        # The Acceptance Journal and the Development State write through
+        # ``Path.open``/``Path.write_text``, not ``os.fdopen``.
+        self.hook_path_opens = hook_path_opens
         self.test_process = os.getpid()
         self.seen: list[str] = []
 
@@ -400,8 +406,11 @@ class _KillAtWrite:
         real_open, real_fdopen, real_link = os.open, os.fdopen, os.link
         side_file = self.side_file
 
+        real_io_open = io.open
+
         def die(path: object) -> None:
-            side_file.write_text(str(path), encoding="utf-8")
+            with real_io_open(side_file, "w", encoding="utf-8") as record:
+                record.write(str(path))
             os._exit(_KILLED)
 
         def remembering_open(path, *args, **kwargs):
@@ -419,9 +428,17 @@ class _KillAtWrite:
             real_link(source, destination, **kwargs)
             die(destination)
 
+        def dying_io_open(path, mode="r", *args, **kwargs):
+            writer = real_io_open(path, mode, *args, **kwargs)
+            if "w" not in mode:
+                return writer
+            return _HalfWriter(writer, lambda: die(paths.get(path, path)))
+
         os.open = remembering_open  # type: ignore[assignment]
         if self.phase == "mid-write":
             os.fdopen = dying_fdopen  # type: ignore[assignment]
+            if self.hook_path_opens:
+                io.open = dying_io_open  # type: ignore[assignment]
         else:
             os.link = dying_link  # type: ignore[assignment]
 
@@ -793,27 +810,31 @@ def test_pre_sim_evidence_killed_mid_write_resumes(
 
 _JOURNAL_STAGING_LEFTOVER = pytest.mark.xfail(
     strict=True,
+    raises=acceptance_ledger.AcceptanceLedgerError,
     reason="#4280: the staged file a kill leaves makes the retry refuse the transactions directory",
 )
 
 
 @_needs_fork
 @pytest.mark.parametrize(
-    "boundary",
+    ("boundary", "killed_in"),
     [
-        "acceptance_intent",
-        pytest.param("acceptance_record", marks=_JOURNAL_STAGING_LEFTOVER),
-        pytest.param("acceptance_commit", marks=_JOURNAL_STAGING_LEFTOVER),
+        ("acceptance_intent", "acceptance/intents/."),
+        ("acceptance_record", "acceptance/evidence/.tmp.acceptance"),
+        pytest.param(
+            "acceptance_commit", "acceptance/transactions/.", marks=_JOURNAL_STAGING_LEFTOVER
+        ),
+        ("acceptance_state", ".runtime/booley_state.tmp"),
     ],
 )
 def test_acceptance_journal_killed_mid_write_retries_idempotently(
-    tmp_path: Path, boundary: str
+    tmp_path: Path, boundary: str, killed_in: str
 ) -> None:
     """Guard: the Acceptance Journal stages each write, so a kill mid-write leaves nothing trusted."""
     log_dir, state, changes = _transaction_state(tmp_path)
     identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
     side_file = tmp_path / "side.txt"
-    kill = _KillAtWrite(boundary, "mid-write", side_file)
+    kill = _KillAtWrite(boundary, "mid-write", side_file, hook_path_opens=True)
 
     def record() -> object:
         return acceptance_ledger.record_or_verify_transaction(
@@ -826,7 +847,9 @@ def test_acceptance_journal_killed_mid_write_retries_idempotently(
         )
 
     _run_killed(record, tmp_path / "trace.txt")
-    _assert_killed_inside_the_write(side_file, "mid-write", tmp_path, staging=(".tmp",))
+    killed_path = Path(side_file.read_text(encoding="utf-8"))
+    assert killed_path.is_relative_to(tmp_path)
+    assert killed_in in killed_path.relative_to(tmp_path).as_posix(), killed_path
     transaction = record()
 
     assert len(list((log_dir / "acceptance" / "transactions").glob("*.json"))) == 1
