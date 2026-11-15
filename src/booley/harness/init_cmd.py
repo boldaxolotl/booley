@@ -1223,7 +1223,7 @@ def _report_seeded_mounts(
         ok(
             f"masking {len(mask_paths)} path(s) from the container: "
             f"{', '.join(mask_paths)} (read-only empty binds over /work — and "
-            "over /booley-project for .booley subtrees)"
+            f"over {dc.BOOLEY_DIR_TARGET} for .booley subtrees)"
         )
 
 
@@ -2228,7 +2228,7 @@ BOOLEY_MASCOT = r"""
 def _step_guidance_links(ctx: InitContext, planned: InitPlan | None = None) -> None:
     """Create/repair the root AGENTS.md & CLAUDE.md links, host-side (F-13).
 
-    The Booley Directory lives at ``/booley-project`` inside the Sandbox, so
+    The Booley Directory lives at ``/booley`` inside the Sandbox, so
     a link written relative to that mount dangles on the host. A host-side
     editor or agent then reads no guidance at all. ``ensure_guidance_links``
     targets a repo-local path valid on both host and runtime and falls back to a

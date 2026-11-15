@@ -43,6 +43,7 @@ from booley.runtime.platform_paths import (
     run_captured_bounded,
     same_host_path,
 )
+from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET
 
 if TYPE_CHECKING:
     from booley.eda.provisioning.authority import LicenseProfile
@@ -1300,8 +1301,8 @@ def _refuse_outdated_vscode_containers(workspace: Path, spec: dict[str, Any]) ->
 
     Reads the not yet validated spec only to pick the layout to check; a
     tampered spec still fails `validate` right after.  A spec too malformed to
-    read is left to `validate`.  Proving a canonical-alias layout probes the
-    spec's image, and a failed probe raises `SessionError` unchanged.
+    read is left to `validate`.  Proving a canonical-alias layout probes each
+    running container's own image, and a failed probe raises `SessionError` unchanged.
     """
     from booley.runtime import session_issuance as runtime_spec
 
@@ -1319,9 +1320,7 @@ def _refuse_outdated_vscode_containers(workspace: Path, spec: dict[str, Any]) ->
     for name, raw in _strict_running_interactive_states():
         if not _inspected_container_serves_workspace(
             name, raw, workspace
-        ) or _project_data_mount_root_is_pinned(
-            raw, workspace, pending, layout=layout, image_id=image
-        ):
+        ) or _project_data_mount_root_is_pinned(raw, workspace, pending, layout=layout):
             continue
         state = _decode_container_inspect(raw)
         assert state is not None
@@ -1340,7 +1339,7 @@ def _refuse_outdated_vscode_containers(workspace: Path, spec: dict[str, Any]) ->
         names = ", ".join(repr(name) for name in identified + ambiguous)
         raise SessionError(
             f"refusing Sandbox preparation: running Sandbox(es) {names} mount an outdated "
-            "Booley Directory layout (for example from before Booley 0.3.0) and are not "
+            "Booley Directory layout (for example from before the mount moved to /booley) and are not "
             f"migrated; {'; '.join(repairs)}"
         )
 
@@ -1431,7 +1430,6 @@ def issued_runtime_drift_fix(
                     workspace,
                     pending,
                     layout=issuance.project_data_layout,
-                    image_id=issuance.image_id,
                 )
             except SessionError:
                 # The image probe failed: treat the container as unproven, not as a crash.
@@ -1673,28 +1671,42 @@ def _inspected_container_serves_workspace(name: str, raw: str, workspace: Path) 
 
 
 def _project_data_mount_root_is_pinned(
-    raw: str, workspace: Path, pending_project_data: Path, *, layout: str, image_id: str
+    raw: str, workspace: Path, pending_project_data: Path, *, layout: str
 ) -> bool:
     local_source = workspace.resolve() / ".booley"
-    if pending_project_data != local_source:
-        return True
     state = _decode_container_inspect(raw)
     mounts = state.get("Mounts") if state is not None else None
-    if not isinstance(mounts, list) or any(not isinstance(item, dict) for item in mounts):
+    if (
+        state is None
+        or not isinstance(mounts, list)
+        or any(not isinstance(item, dict) for item in mounts)
+    ):
         return False
     by_target = {item.get("Destination"): item for item in mounts}
+    if pending_project_data != local_source:
+        # An external Booley Directory is bound straight at the target.
+        external = _writable_bind(by_target.get(BOOLEY_DIR_TARGET))
+        raw_external = external.get("Source", "") if external is not None else None
+        return (
+            isinstance(raw_external, str)
+            and host_path_from_docker_mount(raw_external) == pending_project_data
+        )
     canonical_alias = layout == "canonical-alias"
+    # The container's own image proves its alias: a Sandbox started before the mount
+    # point moved has the same /work/.booley bind as a new one.
+    container_image = state.get("Image")
     if canonical_alias and (
-        not _project_data_alias_capable(image_id)
+        not isinstance(container_image, str)
+        or not _project_data_alias_capable(container_image)
         or any(
             isinstance(target, str)
-            and (target == "/booley-project" or target.startswith("/booley-project/"))
+            and (target == BOOLEY_DIR_TARGET or target.startswith(f"{BOOLEY_DIR_TARGET}/"))
             for target in by_target
         )
     ):
         by_target = {}
     project_data = _writable_bind(
-        by_target.get("/work/.booley" if canonical_alias else "/booley-project")
+        by_target.get("/work/.booley" if canonical_alias else BOOLEY_DIR_TARGET)
     )
     if project_data is None:
         return False
@@ -2275,7 +2287,7 @@ def _select_or_start_project_runtime(workspace: Path) -> tuple[str, dict[str, st
 def _probe_command_cwd(container_id: str, cwd: str) -> None:
     """Refuse a selected Sandbox directory the agent user cannot enter.
 
-    Discovery only maps into the issued ``/work`` and ``/booley-project``
+    Discovery only maps into the issued ``/work`` and ``/booley``
     mounts, so a probe inside the container is the whole check.
     """
     probe = _run(
@@ -2503,12 +2515,18 @@ def status(workspace: Path) -> str:
 
 
 def _project_data_alias_capable(image_id: str) -> bool:
-    from booley.runtime.project_image import DockerImageError, project_data_alias_capable
+    from booley.runtime.project_image import (
+        DockerImageError,
+        ImageLayoutMissingError,
+        project_data_alias_capable,
+    )
 
     if not isinstance(image_id, str):
         raise SessionError("Sandbox image identity is unavailable for Booley Directory proof")
     try:
         return project_data_alias_capable(image_id)
+    except ImageLayoutMissingError:
+        return False
     except DockerImageError as exc:
         raise SessionError(str(exc)) from exc
 

@@ -43,7 +43,7 @@ def _alias_doctor_project(flow_project, tmp_path, monkeypatch, host):
     require_symlinks(tmp_path)
     data = tmp_path / "external-project-data"
     shutil.copytree(flow_project / ".booley", data)
-    alias = tmp_path / "booley-project"
+    alias = tmp_path / "booley"
     symlink_or_skip(alias, data, target_is_directory=True)
     config = data / "booley.toml"
     config.write_text(

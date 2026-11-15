@@ -2288,6 +2288,10 @@ def _layout_alias_capable(image_id: str) -> bool:
         )
     try:
         return project_image.project_data_alias_capable(image_id)
+    except project_image.ImageLayoutMissingError:
+        # Only a prediction of whether a layout derivative applies. A stale managed
+        # image is rebuilt, an external one is refused at issuance with the fix.
+        return False
     except project_image.DockerImageError as exc:
         raise ImageLifecycleError(str(exc)) from exc
 

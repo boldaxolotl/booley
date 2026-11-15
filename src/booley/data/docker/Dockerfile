@@ -129,12 +129,12 @@ LABEL org.opencontainers.image.version=${BOOLEY_VERSION} \
       booley.build-fingerprint=${BOOLEY_PAYLOAD_FINGERPRINT}
 
 USER root
-RUN if test -e /booley-project || test -L /booley-project; then \
-        test -L /booley-project && test "$(readlink /booley-project)" = /work/.booley; \
-    else ln -s /work/.booley /booley-project; fi \
-    && chown -h root:root /booley-project \
+RUN if test -e /booley || test -L /booley; then \
+        test -L /booley && test "$(readlink /booley)" = /work/.booley; \
+    else ln -s /work/.booley /booley; fi \
+    && chown -h root:root /booley \
     && test "$(stat -c %u /)" = 0 \
-    && test "$(readlink /booley-project)" = /work/.booley \
+    && test "$(readlink /booley)" = /work/.booley \
     && DOCS_DIR="$(python3 -I -c 'from booley.runtime.paths import user_docs_dir; print(user_docs_dir())')" \
     && ln -sfn "$DOCS_DIR" /booley-docs \
     && chown -h root:root /booley-docs \

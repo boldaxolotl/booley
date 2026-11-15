@@ -2776,7 +2776,7 @@ def test_image_alias_coverage_flow_publishes_authenticated_references(tmp_path, 
     data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests=["reset", "wrap"]\n')
-    alias = tmp_path / "booley-project"
+    alias = tmp_path / "booley"
     symlink_or_skip(alias, data, target_is_directory=True)
     configure_project_alias(monkeypatch, alias, data)
     flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())

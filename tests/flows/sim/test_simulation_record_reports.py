@@ -44,7 +44,7 @@ def test_project_alias_simulation_executes_simulation_record(
     require_symlinks(tmp_path)
     data = tmp_path / "external-project-data"
     data.mkdir()
-    alias = tmp_path / "booley-project"
+    alias = tmp_path / "booley"
     symlink_or_skip(alias, data, target_is_directory=True)
     monkeypatch.setattr(doctor.dc, "BOOLEY_DIR_TARGET", str(alias))
     from tests.runtime.test_sandbox_layout import configure_project_alias
@@ -56,7 +56,7 @@ def test_project_alias_simulation_executes_simulation_record(
         SimRequest(
             target="sim",
             work_dir=flow_project,
-            report_dir=Path("booley-project/reports") if relative else alias / "reports",
+            report_dir=Path("booley/reports") if relative else alias / "reports",
             test=("first",),
             timeout_ms=30_000,
         )

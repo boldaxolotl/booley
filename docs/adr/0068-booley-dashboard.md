@@ -1,492 +1,159 @@
 # Booley Dashboard replaces the Console
 
-Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices; amended 2026-10-14: persistent handles; amended 2026-10-15: Sandbox attach; amended 2026-10-16: compact Doctor health; amended 2026-10-26: readability and navigation redesign; Read-only superseded for human launches by ADR 0086, 2026-10-28; amended 2026-10-29: Jobs list columns; amended 2026-10-29: session end and tool-call registration; amended 2026-11-08: readable process keys; amended 2026-11-08: unseen Dashboards and the open command, see Amendments; superseded except Jobs and Sandbox resources by [ADR 0093](0093-show-jobs-per-worktree-in-the-t3-code-preview-panel.md) once T3 Code replaces VS Code)
-
-The Console showed one Ticket execution at a time. Goal Mode (ADR 0067)
-removes Ticket execution and runs several agent sessions, often unattended,
-in one Sandbox, so the human needs one place to see all of them. The Booley
-Dashboard is a read-only terminal view, one per Sandbox, opened by
-`booley dashboard`. The Console retires; its Textual code may be reused.
-The overview stays concise; session, Goal, and Job details have separate views.
-
-Amended by [ADR 0092](0092-measure-commits-against-target-metrics.md): when
-Goal Mode is removed, the Goal status summary, Goal views and Goal-change
-proposals below are replaced by one session-row line about Measured Commits.
-
-## Decisions
-
-- **One per Sandbox.** A bundled workspace extension opens the Dashboard in a VS Code
-  terminal on Sandbox attach. It covers every worktree and session in that
-  Sandbox. No host-wide view across Sandboxes in v1. The client is not shown:
-  a Sandbox runs one agent client.
-- **Sessions.** One MCP connection to Booley is one session, registered
-  when it opens (worktree, branch, start time) and removed when it closes;
-  entries whose process died are pruned. A connection, not a process,
-  because the host MCP daemon may serve several sessions. A tab that never
-  connects to Booley's MCP is invisible. The same registry drives ADR
-  0067's shared-worktree warning. Session disconnection does not discard its
-  Jobs or their results; an open detail view indicates the disconnection.
-- **Read-only.** Approvals stay with the proposing MCP tool and chat;
-  abandoning stays on the CLI. Navigation and filtering do not start,
-  cancel, retry, or otherwise change work.
-- **Visual language.** Reuse the Ticket Mode Console's color scheme and
-  status meanings: green for passing, red for failing, orange for needs
-  recheck, and dim text for not yet run. Goal descriptions use the existing
-  accent color for readability; status headings and symbols retain their
-  status colors. Labels and symbols accompany color.
-
-### Dashboard overview
-
-- **Sessions are the top-level rows.** Show Interactive sessions and sessions
-  in Goal Mode together: worktree, branch, mode, uptime, and session activity
-  state. Show shared-worktree warnings, a compact Goal status summary and
-  pending Goal-change proposal count when in Goal Mode, and short summaries
-  of running Booley Flow Jobs (Flow, Target, elapsed time). Omit the last MCP
-  call and its age, and omit an extra "Goal Mode is off" line.
-- **Session activity is reported, not inferred.** Distinguish working,
-  waiting for a tool call, and waiting for user input using explicit
-  agent-client lifecycle signals. A running background Job alone does not
-  mean the session is waiting for it. MCP silence does not establish any of
-  these states. If signals are unavailable or stale, show unknown activity
-  rather than guessing. Reliable signal collection and association with the
-  MCP session must be established during implementation; the approved mock
-  uses synthetic signals.
-- **Sandbox resources.** Show total CPU usage, memory usage against the
-  Sandbox limit, and free disk space in a compact strip. Define CPU usage
-  against total Sandbox CPU capacity. Per-Job CPU and memory belong in the
-  Jobs view, not in overview Job summaries. Unavailable measurements display
-  `—`.
-- **Health only when attention is needed.** Show Doctor failures and pending
-  upgrade reviews, with relevant diagnostic freshness. Hide the healthy
-  Doctor line. Design failures in Booley Flows are not Doctor failures.
-- **Standalone Jobs only when running.** Jobs started outside a session get
-  their own compact section, hidden when none are running. Jobs and health
-  remain visible when applicable even with no connected sessions or Goal Mode.
-- **Recent results are not overview content.** They are available through
-  the combined Jobs and results view.
-
-### Session detail
-
-- **Orientation.** Show the session's worktree, branch, mode, uptime,
-  shared-worktree warning, and connection state. The last Booley call and its
-  age may remain in this detail view, without implying session activity.
-- **Goals in Goal Mode.** Show every Goal, grouped as failing, needs recheck,
-  not yet run, checking, or passing. Preserve the existing evidence rules:
-  passing means met, failing and not yet run are distinct unmet states, and
-  needs recheck means stale. Checking is an activity indication, not evidence
-  that the Goal is met. Adapt the number of Goal columns to terminal width,
-  preserving predictable keyboard reading order.
-- **Generated, concise Goal descriptions.** Each Goal occupies one short
-  line generated from its structured definition: Goal family, Target, Test
-  Run selector, and requirement or threshold as applicable. Reuse the existing
-  criterion presentation machinery; do not require an agent-authored prose
-  title. For example: `Simulation sim_fifo · burst+stall@42 must pass`, or
-  `Synthesis synth_fifo · Fmax ≥ 200 MHz`. Keep full descriptions accessible
-  in the detail view when a row must be truncated.
-- **Goal evidence.** Selecting a Goal opens its requirement, status, last
-  check time, available observations or failure details, and evidence paths.
-  Stale evidence is identified as requiring recheck, without naming the
-  change that made it stale, consistent with ADR 0067.
-- **Proposals and activity.** Show pending Goal-change proposals with their
-  proposed changes; approval remains in chat. Show the session's running
-  Jobs and a bounded list of recent Booley calls and outcomes. Session Job
-  history is reached through the Jobs and results view. For Interactive
-  sessions without Goal Mode, Jobs and activity are the main content.
-
-### Jobs and results
-
-- **One combined view.** Running, Recent, and All are filters over the same
-  Job list. `j` opens Running; `r` opens Recent. From a session detail view,
-  these shortcuts scope the list to that session; the user can switch to all
-  sessions and standalone Jobs. Recent results are ordered newest first.
-- **Job list.** Show Flow, Target, owning session or standalone identity,
-  queued/running/completed/failed state, elapsed time, and reported execution
-  stage when available. Running Jobs show CPU and memory usage; completed
-  Jobs show their outcome instead of current resource measurements.
-- **Selected Job.** Show the Flow configuration, EDA tool, start/end times,
-  elapsed time, execution stage, available resource measurements including
-  peak memory, result summary, and artifact paths. Distinguish execution
-  completion from passing checks, and execution failure from failed checks.
-  Show useful metrics or failure explanations when supported by evidence.
-- **Responsive details.** On wide terminals, place the selected Job's details
-  beside the list. On narrow terminals, `Enter` opens a dedicated detail view.
-  Keep selection on a Job when it completes so the result can be inspected
-  in place; automatic refresh preserves selection and scroll position.
-- **Paths, not inline logs.** Display log, report, and artifact paths, preferably
-  clickable through the terminal or editor's supported file-link mechanism.
-  Do not embed a log viewer. Publish only paths to available artifacts.
-
-### Navigation and remaining implementation choices
-
-- **Keyboard navigation.** Give sessions stable shortcuts `1`–`9` while
-  connected; removing one does not renumber the others. Arrow keys and
-  `Enter` allow selecting any session, including sessions beyond nine, and
-  inspecting Goals and Jobs. `Esc` returns to the previous view. A visible
-  footer shows the applicable shortcuts; `?` opens help.
-- **Freshness and empty states.** Refresh automatically, identify unavailable
-  or stale data, and explain empty session or filtered Job lists. Avoid empty
-  health and standalone-Job sections on the overview.
-- **Implementation choices still open.** Establish the client lifecycle
-  integration for session activity, the bounds and retention of Job history,
-  and terminal/editor file-link compatibility. The visual design does not
-  establish that these integrations already exist.
-- **Not in v1.** Active Specialist runs, per-session token usage, and recent
-  Feedback findings remain deferred.
-
-
-## Amendments (2026-10-06)
-
-Recorded after the Phase 0
-[session identity spike](../internals/validation/0067-goal-mode-session-identity.md).
-
-- **Sessions.** A session is one agent client thread or process, falling
-  back to the worktree: Codex sends a thread id in every request's `_meta`;
-  Claude Code does not, but each tab is its own process, found from the
-  loopback peer port; when neither applies the key is the call's resolved
-  `work_dir`. Codex tabs share one daemon process, so Codex never gets a
-  process key: without a thread id it falls back to the worktree. Rows
-  are not tied to HTTP connections (a client opens a new one per call):
-  a row is upserted on every Booley call under its key and removed when
-  its identity is dead (the process is gone, or a thread's last call is
-  older than the quiet threshold) or when its worktree disappears. "One
-  MCP connection is one session, registered when it opens and removed
-  when it closes" is replaced by this rule. There is no host MCP daemon;
-  the sentence about it is withdrawn.
-- **Registry is presentational.** It feeds the Dashboard rows and ADR
-  0067's shared-worktree warning only. No lifecycle rule reads it, and it
-  never selects a Goal record or a `work_dir`.
-
-## Amendments (2026-10-11)
-
-Settles the three "implementation choices still open". The hook findings come
-from spikes on Claude Code 2.1.285/2.1.295 and Codex 0.160.0/0.162.0.
-
-- **Session activity comes from client lifecycle hooks.** The Sandbox Image
-  declares the hooks in the files that already carry its web policy:
-  `/etc/claude-code/managed-settings.json` and `/etc/codex/requirements.toml`.
-  Both clients treat hooks there as managed, so they run without per-user
-  hook trust and survive a fresh state volume. Every hook runs
-  `/usr/local/libexec/booley/session_activity_hook.py <client>`, which stores
-  the session's last event under `runtime/session_activity/` in the Project
-  directory. The client waits for the hook on every prompt and tool call, so
-  it has a 3 s timeout, prints nothing to stdout, reports a problem on stderr
-  only, and always exits 0.
-- **The hook does not import Booley.** It is a standalone standard-library
-  script in the runtime base image. Importing the `booley` package costs
-  about 0.1 s per event, which adds minutes to a long session. The script
-  repeats the event table, the registry key formats, the signal file layout
-  and the Project directory resolution order; tests hold it in agreement with
-  the package that reads the signals.
-- **Event mapping.** `UserPromptSubmit`, `PostToolUse` and
-  `PostToolUseFailure` mean working; `PreToolUse` means waiting for a tool
-  call; `PermissionRequest` and `Stop` mean waiting for user input;
-  `SessionEnd` removes the signal. The last event wins. Codex has no
-  failed-tool event; its next event after a failed call is `PostToolUse` or
-  `Stop`.
-- **Interrupted turns.** A turn the user interrupts ends without `Stop`.
-  Codex reports `Interrupt`, and Claude Code reports the `idle_prompt`,
-  `permission_prompt` and `elicitation_dialog` notifications; all mean
-  waiting for user input. These two rules follow the clients' documentation
-  and accepted configuration; neither event was observed firing in the
-  spikes. Where they do not fire, an interrupted session shows its last busy
-  state until the next event or the freshness limit.
-- **Accepted inaccuracies.** With parallel tool calls the first to finish
-  shows working. After an approval the session shows waiting for user input
-  until the tool finishes, because neither client reports that an approval
-  was resolved.
-- **Association with the session.** A Claude Code hook is a descendant of the
-  process that owns the session's MCP connections: `CLAUDE_PID` names that
-  process when it is an ancestor of the hook; otherwise the nearest ancestor
-  with a Session Registry row is used, and the search stops at a nearer
-  Claude Code process that has no row, so an inner client's events are never
-  credited to an outer session. A Codex hook payload carries the
-  thread id the registry keys on (`agent_id` for a subagent thread,
-  otherwise `session_id`). A hook that cannot name a session records nothing.
-  Worktree-fallback sessions therefore always show unknown activity.
-- **Freshness.** Working and waiting for a tool call become unknown after
-  7200 s without a new event, the longest Booley tool call: a client that
-  dies mid-turn sends no closing event. Waiting for user input does not go
-  stale while the session's row lives. Registry maintenance removes a signal
-  once its session has no row and the signal is older than the quiet
-  threshold. The hook and maintenance share no lock: maintenance re-examines
-  a signal immediately before removing it and spares one the hook has just
-  replaced. Losing the remaining instant shows unknown until the next event.
-- **Doctor.** Inside the Sandbox, Doctor warns when either client's hooks
-  are missing from the image; the Dashboard then shows unknown activity.
-- **Job history bounds and retention.** The Dashboard deletes nothing; Job
-  records stay with the interactive session or Goal Record that produced
-  them. One snapshot examines at most 16384 record files, in this order: the
-  caller's interactive session, every Goal Record, then the 64 newest older
-  interactive sessions. It reads the newest 4096 of those by modification
-  time and says what it cut. Past either bound the oldest interactive
-  history goes first. A record is rewritten when its Job changes state, so a
-  Job that has run unchanged while 4096 newer records were written drops out
-  of the snapshot; this is accepted. Recent lists the newest 50 results and
-  keeps the selected one listed; All lists every record in the snapshot.
-- **File links.** A report, artifact or evidence path on a line of its own
-  opens in the installed VS Code-family editor when clicked, through
-  `code --goto`. Opening a file is navigation: it starts a detached editor
-  process and changes no work. OSC 8 `file://` links are not used: VS Code's terminal,
-  where the Dashboard normally runs, does not open them. Without an editor
-  command the Dashboard says so and the path stays copyable.
-
-## Amendments (2026-10-14)
-
-Settles [#1512](https://github.com/boldaxolotl/booley/issues/1512): full session
-keys and Job run IDs are unreadable as names, and the nine navigation shortcuts
-cannot identify every session or remain meaningful across Dashboard restarts.
-
-- **Persistent Project handles.** Sessions use `S<n>`. Jobs use `J-SIM<n>`,
-  `J-SYN<n>`, `J-LINT<n>`, or `J-FPGA<n>`, with `SIM` also covering simulation
-  baselines and `J-JOB<n>` for other endpoints. Sessions and Jobs have separate
-  monotonic counters; one Job counter spans every kind. Handles appear in
-  overview rows, running summaries, session and Job details, Job lists, owner
-  labels and scoped Jobs orientation. Full keys remain secondary detail text.
-  Keyboard shortcuts and internal run IDs keep their existing meanings.
-- **Allocation and retention.** Session registration reserves a handle under
-  the registry writer lock in `runtime/sessions/handles/map.json`. This separate
-  map survives presence pruning. Job creation reserves a handle in
-  `runtime/job-handles/map.json` under its own bounded writer lock. Both maps
-  live in the resolved Booley Directory and publish complete, fsynced state
-  atomically. Reservation precedes row/record publication; a failed publication
-  can leave a gap, and registration of the same key or run ID reuses its
-  reservation. A new invocation with a new run ID gets a new handle. Numbers
-  are never recycled; inline Jobs retain allocations after their transient
-  records are removed. Snapshot creation excludes both maps from worktree copies.
-- **Worktree fallback migration.** A path key becoming a repository/admin key
-  carries its handle forward through a direct alias if the canonical key has
-  no allocation. If both already have allocations, preserve both. Dashboard
-  ownership and scoped lists follow established aliases without rewriting Job
-  records or changing execution routing.
-- **Observational Dashboard.** Session registration and Job creation allocate
-  handles. Historical records without allocations keep `S?` / `J-TYPE?`.
-  The Dashboard only reads maps; each refresh shares its session-map snapshot.
-  Handle-store failures are advisory and never prevent session presence or Job
-  execution. Schema 1 and string mappings are checked at the boundary; counters
-  are repaired above existing numeric suffixes. Unreadable, unsupported,
-  redirected or oversized maps are diagnosed rather than reset. The 16 MiB
-  bound prevents allocation from recycling handles through a reset.
-
-## Amendments (2026-10-15)
-
-- **Attach through a workspace extension.** VS Code defines
-  `task.allowAutomaticTasks` as an application preference, so a devcontainer's
-  remote Machine setting cannot enable a `folderOpen` task. Application images
-  build a deterministic VSIX from wheel-owned sources at
-  `/usr/local/libexec/booley/dashboard.vsix`; Dev Containers installs that local
-  artifact before extension activation. No Marketplace publication or local
-  editor/profile extension installation is required. The extension and every
-  Dashboard process run inside the Sandbox.
-- **Explicit policy, fixed process.** In a trusted Dev Containers window with
-  the generated attach protocol enabled and one Git Project Root opened, the
-  extension reads live policy through
-  `booley dashboard --attach-policy`, then opens a transient terminal running
-  the fixed executable and arguments `booley dashboard --on-attach`. Python
-  rechecks configuration and ownership immediately before starting the existing
-  Dashboard. A Sandbox socket remains the final singleton guard. Ordinary manual
-  `booley dashboard` retains its behavior.
-- **Preserve preferences and task ownership.** The extension does not enable
-  unrelated automatic tasks. An explicit user automatic-task preference of off,
-  the existing folder opt-out, and `[sandbox].dashboard = false` suppress attach.
-  Default-off automatic-task permission is distinct from an explicit user opt-out.
-  The owned task remains a manual shortcut; reconciliation removes its old
-  `folderOpen` option only when its bytes still match ownership. Retained task
-  conflicts, deliberate removals and pending migration suppress the new opener.
-  Existing compare-and-swap publication and issuance rollback remain in force.
-- **Terminal lifetime.** One launch attempt per editor window session persists
-  through an extension-host restart, which leaves its terminal running. A new
-  window/reload can open the view again;
-  deliberately closing it does not restart it in that session. The extension
-  disposes only terminals it owns, with no terminal-name-based cleanup. Output
-  channel diagnostics distinguish policy opt-outs and startup failures.
-
-## Amendments (2026-10-27, GitHub Codespaces attach)
-
-- **Codespaces is a Sandbox remote.** VS Code reports `env.remoteName` as
-  `codespaces` in a GitHub Codespace, whose workspace extension host runs in the
-  Codespace container. The workspace extension treats it like the Dev Containers
-  remotes (`dev-container`, `attached-container`): trust, the attach protocol,
-  the automatic-task preference, one opened folder, a Git Project Root and
-  `booley dashboard --attach-policy` gate the same fixed terminal. Other remote
-  kinds stay ineligible (#2255).
-- **Skips before policy are visible.** An ineligible remote kind, an untrusted
-  window and a disabled attach protocol each write one reason line to the
-  **Booley Dashboard** Output channel. A local window, with no remote, stays
-  quiet.
-
-## Amendments (2026-10-15, Codex chat tab identity)
-
-- **Marked Codex launches are an exception to thread identity.** The earlier
-  prohibition on Codex process keys assumes a shared daemon. A named
-  `booley chat` launch passes `--no-daemon`, reserves its process identity's
-  handle, and marks that allocation before exec. Its own native CLI, including
-  app-server helpers, resolves to that one process session. Built-in subagent
-  conversations receive no separate Booley IDs. Ordinary unmarked Codex clients
-  retain thread identity. This gives a terminal a stable handle without making
-  the first conversation to call Booley its owner.
-- **One runtime owner.** Launch reservations, MCP registration and lifecycle
-  signals use the shared runtime Booley Directory, including `BOOLEY_DIR` when
-  set. Checkout-specific agent-provider settings can still come from a local
-  worktree snapshot. They do not choose a separate handle registry.
-- **Migration and liveness.** The observer carries the original thread key
-  through process attribution so registration can migrate a previous thread row
-  and establish handle aliases. Historical allocations are never renumbered.
-  Migration retains the predecessor's worktree when a call omits `work_dir`.
-  No alias records thread ownership. A late peerless completion that began
-  before tab ownership lands on the thread row until that thread's next
-  attributed call folds it into the tab, or quiet expiry removes it. Until then
-  its own response may carry a false shared-worktree warning and the Dashboard
-  may show two rows with the tab's handle.
-  Marked process rows follow process liveness rather than thread quiet expiry.
-- **Activity boundaries.** The lifecycle hook uses the same process identity
-  and reads the handle map with a bounded, stricter parse than `HandleStore`
-  and a marker exists only where `HandleStore` accepted the map. A map the
-  hook cannot read keeps thread attribution. Only the main
-  conversation's events update that tab's activity. A separately launched inner
-  Codex CLI, such as `codex exec`, retains its own thread attribution and cannot
-  update the outer tab's signal. The nearest CLI must belong to the marked
-  launch; its app-server helpers do not constitute another interactive client.
-
-### 2026-10-16: Compact Doctor health (#1511)
-
-The Dashboard always shows one compact Doctor line: active FAIL and WARN counts,
-or dim `Doctor: OK` for a clean result. A due result adds ` · stale`, and a
-missing or unreadable result shows a dim unavailable notice. This supersedes the
-earlier “Health only when attention is needed” and “Hide the healthy Doctor line”
-rules.
-Independent upgrade-review notices and non-consuming, read-only snapshot rules
-remain unchanged; full findings stay in the existing Doctor presentations.
-
-## Amendments (2026-10-26)
-
-### 2026-10-26: Readability and navigation redesign
-
-Field use showed the overview was hard to scan: each session was one long `·`-joined line, the activity a human acts on sat at its end, and eight footer shortcuts competed for attention. This amendment supersedes the navigation rules above (stable `1`–`9` shortcuts, `?` help, the `j`, `r`, `a`, `s` and `u` keys, the visible shortcut footer), the Recent filter name, adaptive Goal columns, the session-scoped Jobs shortcuts and the `· stale` Doctor suffix.
-
-- **Two windows.** Sessions, the first window, and Jobs. Each keeps its own position, so switching away and back returns to the same detail and row. Results are not a separate concept: a finished Job is a Job.
-- **Arrows, Enter and Esc only.** ↑↓ move, Enter opens the selected row, Esc goes back and does nothing at a window's top level. ←→ switch windows from any depth. ↑ on the first row focuses a top bar holding the window tabs, the Jobs filters and Help; there ←→ choose, Enter applies, and ↓ or Esc return to the list. `q` still quits but is not displayed. The footer shows only the keys that apply where the cursor is.
-- **Sessions are grouped by what needs the human.** Needs you holds sessions waiting for user input or holding a pending Goal-change proposal; Working holds working and waiting-for-tool-call sessions; Unknown, dim, holds the rest. Inside a group the longest time in the current state comes first, and the cursor follows the selected session as rows move. A Standalone Jobs group appears only while one runs. Rows are aligned columns: handle, mode (with the Goal summary), branch, work directory, start age, and the activity or running-Job summary. As the terminal narrows, start age, then work directory, then branch are dropped; long values are truncated with `…`. Absent values show a dim `—`. Waiting times are plain text.
-- **Window tabs carry counts.** The Sessions tab counts sessions that need the human; the Jobs tab counts unfinished Jobs.
-- **Preview on wide terminals.** At 120 columns or wider, the highlighted session's orientation, Goal summary and running Jobs appear beside the list. Narrower terminals hide the preview.
-- **Session detail.** Goals use one column, still grouped by status. Only the session's unfinished Jobs are listed there; its finished Jobs are reached through the Jobs window's owner filter.
-- **Jobs filters.** Running (queued or running), Finished (newest 50) and All. The owner filter cycles All, each session handle, and Standalone, and the Jobs window always opens on All. An empty list says why it is empty and which filter shows something.
-- **Doctor freshness.** A due result reads ` · recheck due`, in the attention color, instead of ` · stale`.
-
-## Amendments (2026-10-28)
-
-### 2026-10-28: Human launches (ADR 0086)
-
-[ADR 0086](0086-launch-flows-and-specialists-from-the-dashboard.md) lets the
-human launch Booley Flows and built-in Specialists from the Dashboard as
-Standalone Jobs, and adds a Targets window. This supersedes the **Read-only**
-bullet for those launches only. Goal-change approvals stay with chat,
-abandoning stays on the CLI, and the Dashboard still never cancels, retries,
-or otherwise changes a Job it did not start.
-
-## Amendments (2026-10-29)
-
-### 2026-10-29: Jobs list columns (#1516)
-
-Job rows were one long `·`-joined line that overflowed the list beside the detail pane. This amendment supersedes the **Job list** rule above, including its rule that running rows show CPU and memory.
-
-- **Columns.** A Job row is aligned columns: Job, Target, Session, State, Result, Crit, Elapsed. A Flow-typed Job's handle names its Flow, so there is no Flow column; other Jobs show a generic handle and the detail names the endpoint. Result is the Flow-result word shared with Job detail (a dim `…` while the Job is unfinished). Crit is `✓` or `✗` from the Criterion line, blank when there is none. Absent Target or Session shows a dim `—`.
-- **Moved to detail.** Stage, exit code, session connection and running CPU and memory appear only in the selected Job's detail.
-- **Fit.** Typical rows fit beside the detail pane at 120 columns with no horizontal scroll; Job, Session, State, Crit and Elapsed keep their natural width, so unusually wide cells in them can still overflow. Target is cut with `…` first, down to six characters; then a long Result word is cut with `…`. The detail shows the full values.
-
-### 2026-10-29: Handle pruning (#1550)
-
-Neither handle map ever shrank, so each grew toward its 16 MiB bound, past which no new handle could be allocated. This amendment supersedes five rules of the 2026-10-14 amendments: "separate monotonic counters", "This separate map survives presence pruning", "Numbers are never recycled; inline Jobs retain allocations after their transient records are removed", "Historical records without allocations keep `S?` / `J-TYPE?`", and "The 16 MiB bound prevents allocation from recycling handles through a reset".
-
-- **Pruning.** A top-level Booley MCP server prunes both maps once at start, in a background thread, after startup reconciliation. Nested Specialist servers do not prune. A prune that cannot get a map's writer lock within 1 s, or hits any error, logs `Handle pruning skipped` and the server continues; a corrupt map is left unchanged and still refused by load.
-- **Job entries.** An entry expires when every record for its run ID is terminal and its `ended_at` (`started_at` for reconciled records without one) is more than 24 h old. An entry with a running record, an unreadable record or a malformed record never expires. An entry with no record at all (synchronous runs delete theirs) expires once the submit stamp in its run ID is more than 24 h old, or at once when the ID has no stamp.
-- **Session entries.** An entry, with all its aliases, expires unless a registry row exists for the entry or one of its aliases, a kept Job names the entry or an alias as its owner, or the entry or an alias is a `pid:` process key (a `booley chat` tab) whose process is not proven dead (the registry's own rule: only dead, reused or zombie processes are).
-- **Numbering.** A map left with no entries restarts at 1. Otherwise its counter keeps counting above every remaining number, so a number still in use is never handed out again; numbers freed by pruning can be.
-- **Dashboard.** An expired Job whose handle was pruned shows its run ID, and its owner shows the owner's session key when that session has no handle. `?` stays reserved for live Jobs and Sessions without a handle.
-- **Doctor.** `handles.map-size` warns when a map exceeds 75% of the bound.
-
-### 2026-10-29: Session end and tool-call registration (#2394)
-
-A `tools/list` request created a `worktree:` fallback row for a tab that had made no tool call, and `SessionEnd` removed only the activity signal, so the row stayed until `quiet_after`. This amendment supersedes three rules above.
-
-- **Rows come from tool calls.** Supersedes 2026-10-06 "a row is upserted on every Booley call under its key and removed when its identity is dead". A row is created or refreshed only by a Booley tool call; `tools/list` and every other request write no row and never change `last_call_at`. A tab that has made no tool call is not listed. A row is also removed once its session has ended.
-- **`SessionEnd` leaves an end marker.** Supersedes 2026-10-11 Event mapping "`SessionEnd` removes the signal". The hook replaces the session's signal with an end marker: the same file and layout, with `state: "ended"`. A marker is not activity; the Dashboard shows unknown activity for it. A row whose key has a marker newer than its `last_call_at` (strictly, at one-second resolution) is hidden at once, whatever its kind, and registry maintenance deletes it. A later tool call moves `last_call_at` past the marker and shows the session again. A missing, unreadable, symlinked, oversized, malformed or foreign marker, a wrong schema, another state, a non-canonical time, or a time more than 5 s in the future is ignored, and the row follows `quiet_after` and process liveness as before.
-- **Markers are removed with their row.** Supersedes 2026-10-11 Freshness "Registry maintenance removes a signal once its session has no row and the signal is older than the quiet threshold" for end markers: maintenance removes a marker as soon as its session has no row, after re-examining it as for any signal.
-
-Consequences:
-
-- Ending is revocable. Any later hook event of the same key overwrites the marker, so a row that maintenance has not yet pruned follows the ordinary rules again. A row already pruned (one maintenance pass, at most 60 s) returns only with the next Booley tool call, with a new start time and an empty call history. This includes a Claude Code `/clear`, which fires `SessionEnd` in a process that survives.
-- Without a usable `CLAUDE_PID`, a Claude Code tab's hooks find no row before its first tool call, so they record nothing until then. With `CLAUDE_PID` they record as before, and its `SessionEnd` marker is removed by the next maintenance pass.
-- A `worktree:` fallback row created by a real tool call cannot be ended by a hook and still waits out `quiet_after`.
-- Doctor's `goals.quiet-session` check does not read markers. Once maintenance prunes an ended row, it can warn within about a minute of `SessionEnd` instead of after `quiet_after`; the warning already says it is not evidence of abandonment.
-- Accepted inaccuracies: a tool call still in flight when `SessionEnd` fires moves `last_call_at` past the marker when it completes, and a still-running earlier hook (`Stop`) that finishes after `SessionEnd` replaces the marker. In both cases the row waits out `quiet_after`. A full activity store (`MAX_SIGNALS`) drops a `SessionEnd` for a key with no signal, which falls back the same way.
-
-## Amendments (2026-11-03): Background work after `Stop`
-
-A Goal Mode session that ended its turn while Claude Code ran a Booley Reviewer call in the background showed waiting for user input, although Claude Code resumes the turn on its own when that call returns. Claude Code's `Stop` input lists in-flight work as `background_tasks` (MCP tasks, shells, subagents, monitors, workflows, and others). This amendment supersedes the 2026-10-11 Event mapping rule "`Stop` means waiting for user input" for a `Stop` that lists background work.
-
-- **A `Stop` with awaited background work waits for it.** A `Stop` whose `background_tasks` holds an MCP task, subagent or workflow means waiting for tool call: finite work whose result resumes the turn. Shell and monitor tasks are not awaited, because a dev server or log watcher may run for the whole session. The signal names the first awaited task (by its tool when that is usable text, otherwise by its type) with `+N` for further awaited tasks, and carries `background: true`. A `Stop` without awaited background work, which includes every Codex `Stop` (Codex sends no `background_tasks`), still means waiting for user input. `session_crons` is not read: a scheduled wakeup may be hours away. This is still a client report: the Dashboard infers nothing from Booley calls or running Jobs.
-- **The idle prompt does not end the wait.** The `idle_prompt` notification, sent about 60 s after a turn ends, is ignored while the session's signal carries `background: true`. A permission prompt, elicitation or any other event replaces the signal as before.
-- **Freshness.** A background wait is a busy state, so it becomes unknown after 7200 s without a new event, like any other wait for a tool call.
-
-Consequences:
-
-- A background shell the agent does wait for, such as a test run, still shows waiting for user input after `Stop`.
-- The hook ships in the Sandbox Image; a session running an older image keeps the previous mapping until the image is rebuilt.
-
-## Amendments (2026-11-08, unseen Dashboards and the open command)
-
-A reload of a browser-based VS Code window could not deliver the Dashboard terminal's disposal to the remote terminal host, so the Dashboard process survived with no terminal showing it. It still held the Sandbox socket, so the attach policy reported it as open and the reload's new auto-open attempt stopped, as did a manual `booley dashboard` (#2857). This amendment refines "A Sandbox socket remains the final singleton guard"; the socket still decides who owns the view, but a socket alone no longer proves the view is shown.
-
-- **Open means seen.** The Dashboard sends a terminal cursor-position request on its 2 s refresh and records when its terminal last answered. A terminal emulator attached to the pty answers, wherever it runs (any VS Code window, a plain terminal, tmux); a pty whose renderer is gone does not. A Dashboard counts as open while it answered within the last ~6 s. A Dashboard that starts counts its start as an answer. One unanswered for 15 s is unseen. Between 6 s and 15 s the check waits and asks once more, and an owner that accepts the connection but does not reply is asked a second time before it counts as wedged, so a hidden browser tab, a busy Sandbox or one late reply does not lose its Dashboard. Heartbeat and verdict live in one module (`view_probe`), and a small thread answers the check from the Dashboard process, so a starting or blocked UI cannot delay the answer.
-- **An unseen Dashboard is retired.** `booley dashboard` and `booley dashboard --on-attach` stop an unseen owner (`SIGTERM`, then `SIGKILL`) and start a new one. The signal goes only to a process whose start time still matches the one recorded when the owner was identified. `booley dashboard --attach-policy` reports `already_open: false` for an unseen Dashboard, so the extension's re-attempt after a reload opens the view again. A re-attempt that runs while the old Dashboard still counts as seen (it answered within the last ~6 s) is repeated once, 16 s later; the tab can take up to about 30 s to come back.
-- **No takeover without proof.** An owner that cannot prove it is unseen counts as open: one from an older Booley that never answers the check, one that belongs to another user, one that sends a malformed reply, or a socket bound but not yet listening. An owner that is alive but wedged and never replies is unseen.
-- **Open command.** The extension contributes `booley.dashboard.open` (**Booley: Open Dashboard**). In a trusted Sandbox window with one Git folder it reveals the Dashboard terminal the window shows (adopting one the extension created with its fixed launch if its own handle was lost to an extension-host restart), or opens one. It may reopen the Dashboard in the same session, which supersedes "deliberately closing it does not restart it in that session" for this explicit action only; the automatic attempt is unchanged. It is explicit like manual `booley dashboard`, so it ignores the attach protocol setting, the automatic-task preference and the Project's auto-open opt-outs, but not trust. In an untrusted window it opens nothing and says why. It waits for a pending automatic attempt instead of opening a second terminal, and reports an already-open Dashboard instead of opening another.
-
-Consequences:
-
-- A window whose connection stays down for more than 15 s while another window attaches loses its Dashboard to the newcomer, which becomes the view.
-- Recovery after a reload takes up to about 30 s instead of being immediate, in exchange for never stopping a view that is still shown.
-- The terminal stays transient; persistence across reloads is not restored.
-
-## Amendments (2026-11-08): Readable process keys (#2887)
-
-A `booley chat` tab is keyed `pid:<scope>:<pid>:<start>`, and on Linux the scope is itself `pid:[<namespace inode>]`, so the Dashboard printed `pid:pid:[4026532225]:4865:81331`. The key is a durable identifier, not a name a human reads. This amendment supersedes, for process keys only, the 2026-10-14 rule "Full keys remain secondary detail text" and the 2026-10-29 Handle pruning rule that an owner "shows the owner's session key when that session has no handle".
-
-- **Process keys render as a PID identity.** Wherever the Dashboard shows a process key (the `Session key:` line of session details, the `Session key` and `Owner` lines of Job details, the Jobs list owner cell, and the Jobs owner filter in its orientation, empty-state text and top bar), it shows `PID <pid> · ns <inode>` for a Linux key. Windows and POSIX `ps` keys carry no namespace and show `PID <pid>`. The namespace is always shown for a Linux key, not only when it differs from the Dashboard's own, because retained Jobs can name owners from an earlier container where the namespace is what tells a reused PID apart.
-- **Everything else is unchanged.** A key that is not a process key (`codex:<thread>`, `worktree:path:...`), a handle, and a malformed `pid:` key display as stored. The row label stays `Session key:`.
-- **Display only.** The stored key, the activity files named after it, the handle map and Job records do not change, and the Dashboard still looks up and cycles filters by the stored key. Two process keys that differ only in their start token read alike but stay separate entries.
-
-## Amendments (2026-11-08): The caller's checkout routes calls without `work_dir` (#2606)
-
-A call that omitted `work_dir` always ran on the server's cwd, so an agent working in a linked worktree had to remember to pass it. This amendment supersedes the 2026-10-06 rule "Registry is presentational ... never selects a Goal record or a `work_dir`" for `work_dir` only. The Session still never selects a Goal Record.
-
-- **The caller's checkout is the default.** A Booley MCP call that omits `work_dir` (or passes an empty one) targets the checkout of the calling agent's session process when that process's cwd is the root of a linked worktree of the server's repository other than the server cwd. The session process is the Claude Code peer process, or the owner of a marked `booley chat --no-daemon` Codex launch. Otherwise the call targets the server cwd, which in the Sandbox is the main checkout. An explicit `work_dir` always wins.
-- **Only linked worktrees route.** A cwd in the main checkout, a subdirectory, another repository, a submodule, a non-Git directory, or the server cwd itself is not routed. A deleted cwd, an unreadable process entry, and an unreadable Codex handle map fall back to the server cwd the same way.
-- **Ordinary Codex never routes.** Ordinary Codex threads, the shared daemon, and a Codex started by hand keep thread identity (2026-10-15) and are never routed: a daemon's cwd belongs to no particular tab, and Booley has no rule that tells a hand-started `--no-daemon` CLI from a daemon peer.
-- **One checkout, everywhere.** The routed `work_dir` is injected after schema validation, and only for tools whose schema declares `work_dir`. From there the call is indistinguishable from one that passed it: Flows get `--work-dir`, and job records store it. The registry row, the Dashboard work-directory column, and the shared-worktree warning use the same checkout.
-- **Goal binding.** A routed call counts as explicit, so it binds the active Goal Record of the caller's worktree. A caller in the main checkout is not routed and keeps the Goal refusal. This is deliberate: a forgotten `work_dir` must not silently run on the main checkout while the agent edits a Goal worktree.
-- **Endpoints must declare `work_dir`.** A routed caller's call to a Project-defined endpoint that declares no `work_dir` is refused ("Project-defined endpoints must declare `work_dir` to run for a caller working in a linked worktree."), because the endpoint would silently run on the server cwd while the row shows the worktree.
-
-Consequences:
-
-- A non-routed call from a session that was routed before, for example after its worktree was deleted or when the peer lookup fails for one call, keeps the row's previous checkout under the 2026-10-15 rule "Migration retains the predecessor's worktree when a call omits `work_dir`", until registry maintenance prunes the row.
-- The peer lookup moves onto the request path of every call without `work_dir`, including poll and status loops. For Codex the owner walk runs twice per call (routing, then attribution). There is no cache.
-
-## Amendments (2026-11-10): Handles follow worktrees, conversation records (#2610)
-
-An interactive worktree is named after its session's handle (ADR 0082): `S3` works in `worktrees/s3`. The 2026-10-29 Handle pruning amendment let a handle go while its worktree lived and restart numbering at 1 after a full prune, so a new session could be handed `S3` while `worktrees/s3` or `booley/s3` still existed. This amendment supersedes two rules of that amendment and adds the conversation records ADR 0082 Resume needs.
-
-- **Session entries (supersedes "Session entries" above).** An entry, with all its aliases, also stays while an entry named `worktrees/s<N>` exists in the Main Booley Directory for the entry's handle `S<N>`. Any directory entry counts, even one Git does not register, so a half-created worktree keeps its name. Once the worktree is removed, the next prune frees the handle unless another rule keeps it. A label that is not `S<N>` has no worktree.
-- **Numbering (supersedes "Numbering" above).** A map left with no entries still restarts at 1, but allocation, whether after a restart or not, skips every `S<N>` whose worktree `worktrees/s<N>` exists (any directory entry), or whose branch `booley/s<N>` (RTL repository) or `booley-worktree/s<N>` (Versioned Booley Directory) exists, or any branch below either name (Git refuses `booley/s3` while `booley/s3/x` exists). The branches of both repositories are read lazily, at most two Git calls per allocation, with a 5 s limit and `GIT_OPTIONAL_LOCKS=0`. A Git failure (a repository Git cannot read, Git missing, timeout) is logged as `Git branch list unavailable`, and allocation then skips only numbers whose worktree directory exists: allocation never fails because Git is unavailable. Every Session allocation path loads the map through this rule; Job maps are unaffected. Handle numbers can therefore have gaps.
-- **Conversation records.** The session-activity hook script also handles `SessionStart`, for Claude Code (`startup`, `resume`, `clear`, `compact`) and Codex. It writes no activity signal. When the payload's `cwd` is inside an interactive worktree it writes `worktrees/.conversations/<sha256(client + ":" + conversation id)>.json` in the Main Booley Directory (Common Booley State) with `schema`, `client`, `conversation_id` (Claude `session_id`, Codex thread id), `cwd`, `worktree` (name), `handle`, `process_key`, `at` (UTC RFC 3339), and `git_stamp` (`st_mtime_ns` of the worktree's `.git` file). `booley chat` reads them to resume a conversation in its worktree (#2614, ADR 0082 Resume).
-  - **Inside a worktree.** The hook's rule is the registered linked worktree of `interactive_worktree_name`: the first component below `worktrees/` matches the worktree-name pattern and `worktrees/<name>/.git` is a file. A start in the main checkout, a subdirectory outside `worktrees/`, or without a usable absolute `cwd` writes no record and removes the conversation's existing record, so a conversation started in `s3` and resumed in the main checkout stops naming `s3`. A later start of the same conversation otherwise replaces the record, so it names the worktree last used. A conversation without a record resumes in the main checkout (ADR 0082 Resume). A Codex subagent (`agent_id` set) records nothing.
-  - **Process key and handle.** Claude Code: the `CLAUDE_PID` ancestor when it is one, else the nearest ancestor whose command is `claude`. Codex: the marked `booley chat` owner, else `null`, because ordinary Codex keeps thread identity (2026-10-15) and its nearest Codex ancestor may be a daemon that belongs to no tab. `handle` is the label the Session handle map gives that key (for Codex also `codex:<thread>`), else `null`; an unreadable map still leaves the record written.
-  - **Retention.** A record lives while its worktree directory exists. The store holds at most 4096 records. At that bound the hook first removes records whose worktree directory is gone, then, if none was removed, refuses the new record with a stderr note (the hook still exits 0). Rewriting an existing record is always allowed. Files the hook cannot read as a record are never removed. Storage reached through a symlink is refused.
-  - **Same-name worktrees.** A record names its worktree by name only. A worktree of the same name can be created only after the old one and both its branches are gone, so a reader treats a worktree whose `.git` file has an `st_mtime_ns` other than the record's `git_stamp` as a different worktree and ignores the record. The comparison is for equality within one filesystem, so it needs no clock agreement.
-  - **Doctor.** The activity-hook check now requires a `SessionStart` hook in both client policies and warns until the Sandbox Image is rebuilt.
-
-Consequences:
-
-- Images built before this change record no conversations; Doctor warns (`sandbox.activity-hooks-unavailable`) until they are rebuilt.
-- A handle number whose worktree or branch was left behind stays unused until that worktree and both branches are removed.
-- A removed worktree keeps its records until the store reaches the bound; they are inert because the worktree is gone.
+Status: accepted
+
+Once T3 Code replaces VS Code,
+[ADR 0093](0093-show-jobs-per-worktree-in-the-t3-code-preview-panel.md)
+replaces this ADR except its Jobs and Sandbox resources decisions.
+
+## Context
+
+The Console showed one Ticket execution at a time. Agents now run several
+sessions, often unattended, in one Sandbox, so the human needs one place to see
+all of them and the Jobs they started. The Dashboard is a terminal view, one
+per Sandbox, opened by `booley dashboard`. It must never become a second
+source of truth: it observes state other components own.
+
+## Decision
+
+### Scope and trust
+
+- **One per Sandbox, no host-wide view.** It covers every worktree and session
+  in that Sandbox. The agent client is not shown, because a Sandbox runs one.
+- **Observational.** Navigation, filtering and refresh change no work. The
+  human launches Booley Flows and Specialists from it as Standalone Jobs
+  (ADR 0086). Goal-change approvals stay with the proposing MCP tool and chat,
+  abandoning stays on the CLI, and the Dashboard never cancels, retries or
+  otherwise changes a Job it did not start. It deletes no Job history.
+- **Overview stays concise.** Sessions are the top-level rows; session, Job
+  and Goal details are separate views. Sessions are grouped by what needs the
+  human (waiting for user input or holding a pending proposal first). Doctor
+  health is one compact line, always shown. Color carries the status meanings
+  of the retired Console (green pass, red fail, orange needs recheck, dim not
+  yet run), always with a label or symbol. Per-session token usage, active
+  Specialist runs and Feedback findings are not shown.
+- **Paths, not inline logs.** The Dashboard shows paths to published
+  artifacts and opens one in the editor on click through the editor's command
+  line. It does not embed a log viewer and does not use OSC 8 file links,
+  because VS Code's terminal does not open them.
+- **ADR 0092 replaces the Goal status, Goal views and Goal-change proposals**
+  with one Measured Commit line per session when Goal Mode is removed.
+
+### Sessions
+
+- **A session is one agent client thread or process.** Codex sends a thread id
+  in every request; Claude Code does not, but each tab is its own process,
+  found from the loopback peer port; otherwise the key is the call's resolved
+  `work_dir`. A Codex daemon shared by tabs never gets a process key, so a
+  Codex client without a thread id falls back to the worktree. A named
+  `booley chat` Codex launch is the exception: it runs without the daemon,
+  and its process identity, marked at launch, owns its CLI and helpers. That
+  gives a terminal a stable handle without making the first conversation to
+  call Booley its owner. Built-in subagents get no separate session.
+- **Rows come from Booley tool calls only.** `tools/list` and other requests
+  create nothing, so a tab that never used Booley is invisible. A row goes
+  away when its identity is dead, its worktree is gone, or the client reported
+  the session ended after its last call. Ending is revocable: a later tool
+  call shows the session again. A disconnected session keeps its Jobs and
+  results.
+- **The registry is presentational.** It feeds the Dashboard rows and the
+  shared-worktree warning. No lifecycle rule reads it, and it never selects a
+  Goal Record.
+- **One exception: the caller's checkout routes `work_dir`.** A call that omits
+  `work_dir` targets the linked worktree whose root is the cwd of the calling
+  session process; otherwise the server cwd. An explicit `work_dir` wins. Only
+  linked worktrees of the server's repository route, and ordinary Codex
+  threads never do: a shared daemon's cwd belongs to no tab, and a hand-started
+  CLI cannot be told from a daemon peer. A routed call counts as explicit for
+  Goal binding, and a Project-defined endpoint without a `work_dir` parameter
+  is refused for a routed caller. Both are deliberate: a forgotten `work_dir`
+  must not run silently on the main checkout while the agent edits a worktree.
+- **Handles name things for humans.** Sessions are `S<n>` and Jobs are
+  `J-<KIND><n>`; full keys and run IDs are not readable as names. Handles are
+  reserved at registration or Job creation and persist across Dashboard
+  restarts. Process keys display as the PID and namespace. Handles and
+  readable keys are display only: stored keys, records and routing never use
+  them. A handle-store failure never blocks a session or a Job; a damaged map
+  is diagnosed, not reset.
+- **Handles follow worktrees.** An interactive worktree is named after its
+  session handle, so a handle is never reused while its worktree or branch
+  exists, and allocation skips such numbers even when Git is unavailable.
+  Pruning bounds map growth: expired entries go, and live ones never do.
+
+### Session activity
+
+- **Activity is reported, not inferred.** It is working, waiting for a tool
+  call or waiting for user input, taken from agent-client lifecycle hooks.
+  MCP silence or a running Job alone says nothing. A missing, ended or stale
+  report shows unknown, never a guess. Busy states expire after the longest
+  Booley tool call because a client that dies mid-turn sends no closing event.
+- **Hooks live in the Sandbox Image's managed client policy**, so they run
+  without per-user hook trust and survive a fresh state volume. Doctor warns
+  when the image lacks them.
+- **The hook script is standalone and does not import Booley.** Importing the
+  package costs far more than the client's per-event wait budget allows over
+  a long session, so the script repeats the event table and file layout and
+  tests keep it in agreement with the reader. It always exits 0 and prints
+  nothing on stdout.
+- **A hook credits only its own session.** An inner client's events never
+  update an outer session's activity; a hook that cannot name a session
+  records nothing, so worktree-fallback sessions show unknown activity.
+- **Awaited background work counts as waiting for a tool call.** A Claude Code
+  `Stop` that leaves an MCP task, subagent or workflow in flight is not
+  waiting for the user, because the client resumes the turn itself. Shells and
+  monitors are not awaited (a dev server may run all session), and scheduled
+  wakeups are not read.
+- **Accepted inaccuracies:** parallel tool calls show the first to finish;
+  after an approval the session shows waiting for user input until the tool
+  ends; a tool call in flight at session end can bring the row back until it
+  expires.
+- **Conversation records** written by the same hook at session start let
+  `booley chat` resume a conversation in the interactive worktree it last
+  ran in. They are keyed so a same-named later worktree is not mistaken for
+  the old one.
+
+### Jobs
+
+- **One Job list over filters.** Running, Finished and All filter the same
+  list; an owner filter narrows it to a session or Standalone Jobs. A
+  finished Job is still a Job. Execution completion is distinguished from
+  passing checks, and execution failure from failed checks.
+- **History is bounded and accepts loss.** A snapshot reads a bounded number
+  of record files, newest first, saying what it cut. A Job that sat unchanged
+  while many newer records were written can drop out of the snapshot.
+
+### Attach
+
+- **A workspace extension opens the Dashboard, not a devcontainer task.** VS
+  Code treats automatic tasks as an application preference that a remote
+  Machine setting cannot enable. The extension ships inside the Sandbox
+  Image, installs without a Marketplace, and runs wholly inside the Sandbox.
+  It supports Dev Containers and GitHub Codespaces and no other remote.
+- **The attach is explicit policy with a fixed command.** The extension reads
+  policy from Booley, opens a transient terminal running a fixed command, and
+  Python rechecks configuration and ownership before starting. It respects a
+  user's automatic-task preference and every opt-out (`[sandbox].dashboard =
+  false`, the folder opt-out) and never enables unrelated tasks. A skip
+  before policy writes its reason to an Output channel.
+- **A command, `Booley: Open Dashboard`, is the explicit route.** Like manual
+  `booley dashboard`, it ignores the automatic-attach settings but not
+  workspace trust, and reveals an existing terminal instead of opening a
+  second.
+- **Open means seen.** A Sandbox socket decides who owns the view, but a
+  socket alone does not prove the view is shown: a browser reload can leave a
+  Dashboard process with no terminal. The Dashboard proves it is seen by a
+  terminal round trip, and an unseen owner is retired and replaced.
+  An owner that cannot prove it is unseen (older Booley, another user, a
+  malformed reply) counts as open, so a live view is never taken away without
+  evidence. The price is a short delay before a reload's view comes back.
+
+## Consequences
+
+- Hooks and the extension ship in the Sandbox Image; a session on an older
+  image keeps the older behavior until the image is rebuilt, and Doctor says
+  so.
+- Hand-started Codex clients and worktree-fallback sessions have coarser
+  identity and show unknown activity. That is accepted over guessing.
+- Anything the Dashboard shows must come from state another component owns.
+  A feature that needs the Dashboard to hold state, or a lifecycle rule that
+  reads the registry, reopens this decision.

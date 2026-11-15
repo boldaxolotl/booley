@@ -390,7 +390,7 @@ def own_booley_dir(checkout_root: Path) -> Path:
     root), else ``<root>/.booley``. Unlike :func:`resolve_checkout_booley_dir` this
     never reads ``BOOLEY_DIR`` or the process cache, resolves no symlink, and
     does not require the directory to exist, so a Sandbox mount spelling such as
-    ``/booley-project`` can never leak into a path built from it.
+    ``/booley`` can never leak into a path built from it.
     """
     return _own_booley_dir_and_kind(checkout_root)[1]
 

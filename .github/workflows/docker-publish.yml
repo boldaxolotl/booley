@@ -662,9 +662,9 @@ jobs:
             --name booley-release-${{ github.run_id }}-${{ github.run_attempt }}-simulation \
             --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
             --mount type=bind,src="${RUNNER_TEMP}/simulation-project",dst=/work \
-            --mount type=bind,src="${RUNNER_TEMP}/simulation-project/.booley",dst=/booley-project \
+            --mount type=bind,src="${RUNNER_TEMP}/simulation-project/.booley",dst=/booley \
             --mount type=bind,src="${RUNNER_TEMP}/simulation-evidence",dst=/evidence \
-            -w /work -e BOOLEY_DIR=/booley-project -e BOOLEY_IN_SANDBOX=1 \
+            -w /work -e BOOLEY_DIR=/booley -e BOOLEY_IN_SANDBOX=1 \
             -e BOOLEY_EGRESS=unproxied \
             -e PYTHONPATH=/booley-source/.github/scripts \
             "${IMAGE}" python3 -m release_validation.simulation_selftest \
@@ -813,13 +813,13 @@ jobs:
             --name booley-release-${{ github.run_id }}-${{ github.run_attempt }}-demo-surface \
             --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
             --mount type=bind,src="${{ github.workspace }}/demo",dst=/work \
-            --mount type=bind,src="${{ github.workspace }}/demo/.booley",dst=/booley-project \
+            --mount type=bind,src="${{ github.workspace }}/demo/.booley",dst=/booley \
             --mount type=bind,src="${RUNNER_TEMP}/demo-surface-evidence",dst=/evidence \
-            -w /work -e BOOLEY_DIR=/booley-project -e BOOLEY_IN_SANDBOX=1 \
+            -w /work -e BOOLEY_DIR=/booley -e BOOLEY_IN_SANDBOX=1 \
             -e BOOLEY_MCP_MODE=interactive \
             -e PYTHONPATH=/booley-source/.github/scripts \
             "${IMAGE}" python3 -m release_validation.demo_surface \
-            --project /work --project-state /booley-project \
+            --project /work --project-state /booley \
             --expected-version "${EXPECTED_VERSION}" \
             --candidate-sha "${GITHUB_SHA}" \
             --image-digest "${{ needs.build-and-push-riscv.outputs.image-digest }}" \
@@ -877,10 +877,10 @@ jobs:
             --name booley-release-${{ github.run_id }}-${{ github.run_attempt }}-picorv32 \
             --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
             --mount type=bind,src="${{ github.workspace }}/demo",dst=/work \
-            --mount type=bind,src="${{ github.workspace }}/demo/.booley",dst=/booley-project \
+            --mount type=bind,src="${{ github.workspace }}/demo/.booley",dst=/booley \
             --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly \
             --mount type=bind,src="${RUNNER_TEMP}/picorv32-evidence",dst=/evidence \
-            -w /work -e BOOLEY_DIR=/booley-project -e BOOLEY_IN_SANDBOX=1 \
+            -w /work -e BOOLEY_DIR=/booley -e BOOLEY_IN_SANDBOX=1 \
             -e BOOLEY_MCP_MODE=interactive \
             -e BOOLEY_IMAGE_DIGEST="${{ needs.build-and-push-riscv.outputs.image-digest }}" \
             -e BOOLEY_MEASUREMENT_EVIDENCE=/evidence/measurement.json -e BOOLEY_RUN_PICORV32_FLOWS "${IMAGE}" bash -euo pipefail -c \
