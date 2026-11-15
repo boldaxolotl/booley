@@ -7,22 +7,12 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 from mcp import Client
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
-
-from booley.criteria.state import DevelopmentState
-from booley.goals.model import GoalState, parse_goal_args
-from booley.goals.paths import record_paths
-from booley.goals.store import GoalStore
-from booley.harness.setup.scaffold import ScaffoldChoices, scaffold_files
-
-sys.path.insert(0, str(Path(__file__).parents[2] / ".github/scripts"))
-from goal_mode_driver import (
+from tests.goals.goal_mode_driver import (
     GoalToolRefusalError,
     Workspace,
     client_session,
@@ -33,6 +23,13 @@ from goal_mode_driver import (
     status_rows,
     tool_text,
 )
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+
+from booley.criteria.state import DevelopmentState
+from booley.goals.model import GoalState, parse_goal_args
+from booley.goals.paths import record_paths
+from booley.goals.store import GoalStore
+from booley.harness.setup.scaffold import ScaffoldChoices, scaffold_files
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("BOOLEY_GOAL_MODE_SMOKE") != "1",

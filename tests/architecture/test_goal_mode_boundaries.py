@@ -54,7 +54,6 @@ _ALLOWED: dict[str, tuple[frozenset[str], str]] = {
         frozenset({"criteria", "goals"}),
         "Criteria catalog #3512",
     ),
-    "booley.dev_support.demo_contract_codec": (frozenset({"goals"}), "Goal-only #3511"),
     "booley.dev_support.flow_specialist_reference": (frozenset({"goals"}), "Goal-only #3511"),
     "booley.flows.baseline_pins": (frozenset({"criteria"}), "Goal-only #3511"),
     "booley.flows.endpoint_acceptance": (frozenset({"criteria"}), "evidence and staleness #3512"),
