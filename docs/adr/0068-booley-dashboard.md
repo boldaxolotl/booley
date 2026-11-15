@@ -2,6 +2,10 @@
 
 Status: accepted
 
+Once T3 Code replaces VS Code,
+[ADR 0093](0093-show-jobs-per-worktree-in-the-t3-code-preview-panel.md)
+replaces this ADR except its Jobs and Sandbox resources decisions.
+
 ## Context
 
 The Console showed one Ticket execution at a time. Agents now run several

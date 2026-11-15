@@ -2,6 +2,10 @@
 
 Status: accepted
 
+Once T3 Code replaces VS Code,
+[ADR 0093](0093-show-jobs-per-worktree-in-the-t3-code-preview-panel.md)
+replaces the worktree choice and the Targets browser.
+
 ## Context
 
 The Dashboard shows every session and Job in a Sandbox, but starting a run
