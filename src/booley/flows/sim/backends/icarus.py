@@ -77,7 +77,7 @@ class _IcarusRun:
     build_dir: Path
     run_cwd: Path
     work_dir: Path
-    image: Path
+    image: str
     command: list[str]
     # Freshness filter for this run's waveform; None when tracing is off.
     current: CurrentRunTraces | None
