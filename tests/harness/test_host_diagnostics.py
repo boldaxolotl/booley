@@ -21,6 +21,7 @@ from booley.runtime import (
     session_issuance,
 )
 from booley.runtime.host_install import HostInstallationIdentity
+from booley.runtime.private_store import session_store_repair
 
 
 def _identity() -> HostInstallationIdentity:
@@ -312,6 +313,13 @@ def test_host_doctor_reports_session_store_file_named_for_another_root(
         assert str(path) in failure.message
         assert "booley init --seed --project" in failure.message
         assert path.read_bytes() == before
+    # Only the journal owes Docker cleanup; the stamp and the claim keep the plain repair.
+    stamp_failure, claim_failure, journal_failure = failures
+    for (path, _), failure in zip(misnamed[:2], (stamp_failure, claim_failure), strict=True):
+        assert failure.message.endswith(session_store_repair(path, held_root))
+        assert "docker" not in failure.message
+    assert "docker container rm -f" in journal_failure.message
+    assert "run any Docker commands it names" in journal_failure.fix
 
 
 def test_host_doctor_passes_healthy_session_stores(monkeypatch, tmp_path: Path):
