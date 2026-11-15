@@ -9,6 +9,12 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Booley no longer enforces any commit-message convention. `[stealth]
+  enforce_convention`, which required `type(scope): summary` subjects, is
+  retired: Booley ignores it, and you can delete it. Specialists commit with the message the
+  agent wrote, no longer rewritten into `type(scope): summary` form.
+  `BOOLEY_SKIP_COMMIT_VALIDATION=1` now skips only the `max_body_lines` cap.
+  Rerun `booley init` in each Stealth Project to install the new hook.
 - Mutation testing now generates Mutants deterministically and runs no LLM:
 - Stealth Mode now rejects a commit message that contains a banned term
   instead of rewriting it with `redacted`. The commit-msg hook never changes the
@@ -16,7 +22,7 @@ Packaged release history starts at 0.2.7. For older changes, see
   the `git commit -v -e -F "<path>"` retry (a rejected merge commit says how to
   finish it). Comment lines and everything below the scissors line aren't
   checked. `BOOLEY_SKIP_COMMIT_VALIDATION=1` no longer skips banned terms, only
-  the convention and body-length checks. A Specialist whose commit message has a
+  the body-length check. A Specialist whose commit message has a
   banned term now fails with the validation error instead of committing under
   its default message. `cursor` and `ticket` left the default banned list; add
   them to `banned_words` to keep them. Rerun `booley init` in each Stealth

@@ -32,7 +32,7 @@ from booley.harness.standalone_job import standalone_jobs_dir, standalone_reques
 from booley.harness.worktree_list import WorktreeListError
 from booley.mcp.registry import discover_mcp_tools
 from booley.runtime import detached_job, job_records
-from booley.runtime.job_slots import SlotStore, slots_dir
+from booley.runtime.job_slots import MemoryClaim, SlotStore, slots_dir
 from tests.harness.test_dashboard import STAMP, choose_in_bar, snapshot
 from tests.harness.test_dashboard_targets import (
     FIFO_CORE,
@@ -121,9 +121,8 @@ class FakeLauncher:
 
     Its form is the real one, built from the Flow's parser.
 
-    ``facts`` (the arguments of ``RunFacts``) is what the check reports; ``outlook`` (``ahead``,
-    ``cap``) and ``uncommitted`` are what the review reads, an exception instance
-    being raised instead; ``outlook_reads`` counts the queue reads. Run-module types are built
+    ``facts`` (the arguments of ``RunFacts``) is what the check reports; ``uncommitted`` is
+    what the review reads, an exception instance being raised instead. Run-module types are built
     when used, so this file still imports without them.
     """
 
@@ -132,13 +131,11 @@ class FakeLauncher:
         key: str = "",
         error: OSError | None = None,
         facts: tuple | None = None,
-        outlook: tuple[int, int] | Exception | None = None,
         uncommitted: int | Exception = 0,
     ) -> None:
         self.key, self.error = key, error
         self.facts = facts or (None, False)
-        self.outlook_result, self.uncommitted_result = outlook, uncommitted
-        self.outlook_reads = 0
+        self.uncommitted_result = uncommitted
         self.submitted: list[tuple[Path, str, str, tuple[str, ...]]] = []
 
     def flows(self):
@@ -160,15 +157,6 @@ class FakeLauncher:
         from booley.harness.dashboard.launch import CheckResult, RunFacts
 
         return CheckResult(facts=RunFacts(*self.facts))
-
-    def outlook(self, job_class):
-        from booley.runtime.job_slots import AdmissionOutlook
-
-        self.outlook_reads += 1
-        if isinstance(self.outlook_result, Exception):
-            raise self.outlook_result
-        assert self.outlook_result is not None
-        return AdmissionOutlook(job_class, *self.outlook_result)
 
     def uncommitted(self, worktree):
         if isinstance(self.uncommitted_result, Exception):
@@ -1145,22 +1133,21 @@ async def test_a_value_changed_while_a_check_runs_keeps_review_closed(checkout):
 
 
 class Slots:
-    """Real slot entries under a Booley Directory, owned by live or dead processes."""
+    """Real run-alone memory entries under a Booley Directory, owned by live or dead processes."""
 
-    def __init__(self, booley_dir: Path, *, max_light: int = 1) -> None:
+    def __init__(self, booley_dir: Path) -> None:
         booley_dir.mkdir(parents=True, exist_ok=True)
-        (booley_dir / "booley.toml").write_bytes(f"[jobs]\nmax_light = {max_light}\n".encode())
-        from booley.config.jobs import SlotCaps
-
+        (booley_dir / "booley.toml").write_bytes(b'[project]\nname = "unit"\n')
         root = slots_dir(booley_dir)
         assert root is not None
-        self._store = SlotStore(root, SlotCaps(max_light=max_light))
+        self._store = SlotStore(root)
+        self._alone = MemoryClaim(budget_mb=1024, run_alone=True)
         self._tokens: list = []
 
     def occupy(self, count: int) -> None:
         """Add *count* claims by this live process: the first takes the slot, the rest queue."""
         for _ in range(count):
-            token = self._store.submit("light", pid=os.getpid())
+            token = self._store.submit("memory", pid=os.getpid(), memory=self._alone)
             self._store.refresh(token)
             self._tokens.append(token)
 
@@ -1170,7 +1157,7 @@ class Slots:
 
         child = subprocess.Popen([sys.executable, "-c", "pass"])
         child.wait()
-        self._tokens.append(self._store.submit("light", pid=child.pid))
+        self._tokens.append(self._store.submit("memory", pid=child.pid, memory=self._alone))
 
     def release(self) -> None:
         for token in self._tokens:
@@ -1199,10 +1186,10 @@ ADMITTED_BY_MEMORY = "Admitted by memory: waits while its estimate does not fit 
 @pytest.mark.parametrize(
     ("flow", "live", "dead", "queue", "timeout"),
     [
-        ("mutation", 0, 0, "Runs now", LONG_TIMEOUT),
-        ("mutation", 1, 0, "Queues behind 1 Job (position 1) for a light slot", LONG_TIMEOUT),
-        ("mutation", 2, 0, "Queues behind 2 Jobs (position 2) for a light slot", LONG_TIMEOUT),
-        ("mutation", 0, 1, "Runs now", LONG_TIMEOUT),
+        ("mutation", 0, 0, ADMITTED_BY_MEMORY, LONG_TIMEOUT),
+        ("mutation", 1, 0, ADMITTED_BY_MEMORY, LONG_TIMEOUT),
+        ("mutation", 2, 0, ADMITTED_BY_MEMORY, LONG_TIMEOUT),
+        ("mutation", 0, 1, ADMITTED_BY_MEMORY, LONG_TIMEOUT),
         ("synth", 0, 0, ADMITTED_BY_MEMORY, LONG_TIMEOUT),
         ("lint", 1, 0, ADMITTED_BY_MEMORY, None),
     ],
@@ -1233,27 +1220,8 @@ async def test_review_shows_whether_the_job_runs_now_or_queues(
         assert shown(wizard, "#run-error") == ""
 
 
-ROOMY = (0, 1)  # ahead, cap
-COUNTED = ("light", False)
-
-
 @pytest.mark.asyncio
-async def test_a_long_queue_never_refuses_submit(checkout, tmp_path, slots, spawned):
-    slots().occupy(9)  # one holder and eight waiters: the old queue bound
-    app = make_app(checkout, real_launcher(tmp_path / "booley"))
-    async with app.run_test(size=(120, 40)) as pilot:
-        wizard = await to_form(app, pilot, "mutation")
-        await check_arguments(app, pilot, wizard, ARGUMENTS)
-        assert "Queues behind 9 Jobs (position 9)" in shown(wizard, "#run-review")
-        assert shown(wizard, "#run-error") == ""
-        await pilot.press("enter")  # Submit
-        await pilot.pause()
-        assert len(spawned) == 1
-        assert app.window == "jobs"
-
-
-@pytest.mark.asyncio
-async def test_memory_admitted_review_reads_no_queue_and_never_refuses_submit(checkout):
+async def test_memory_admitted_review_never_refuses_submit(checkout):
     launcher = FakeLauncher("key", facts=("memory", False))
     app = make_app(checkout, launcher)
     async with app.run_test(size=(120, 40)) as pilot:
@@ -1263,7 +1231,6 @@ async def test_memory_admitted_review_reads_no_queue_and_never_refuses_submit(ch
         assert shown(wizard, "#run-error") == ""
         await pilot.press("enter")  # Submit
         await pilot.pause()
-        assert launcher.outlook_reads == 0
         assert len(launcher.submitted) == 1
 
 
@@ -1272,7 +1239,7 @@ async def test_memory_admitted_review_reads_no_queue_and_never_refuses_submit(ch
 async def test_commands_without_a_slot_run_now_on_a_busy_queue(
     checkout, tmp_path, slots, spawned, flow, text
 ):
-    slots().occupy(2)  # the light class is busy: one holder and one waiter
+    slots().occupy(2)  # the memory class is busy: one holder and one waiter
     app = make_app(checkout, real_launcher(tmp_path / "booley"))
     async with app.run_test(size=(120, 40)) as pilot:
         wizard = await to_form(app, pilot, flow)
@@ -1353,8 +1320,8 @@ def test_check_refuses_a_child_that_gives_no_run_facts(stdout):
 
 @pytest.mark.asyncio
 async def test_review_shows_a_timeout_problem_and_still_allows_submit(checkout):
-    facts = ("light", False, None, "[flows.synth].timeout_ms must be positive")
-    launcher = FakeLauncher("key", facts=facts, outlook=ROOMY)
+    facts = ("memory", False, None, "[flows.synth].timeout_ms must be positive")
+    launcher = FakeLauncher("key", facts=facts)
     app = make_app(checkout, launcher)
     async with app.run_test(size=(120, 40)) as pilot:
         wizard = await to_form(app, pilot, "synth")
@@ -1433,13 +1400,8 @@ async def test_review_shows_no_warnings_for_a_quiet_worktree(checkout, tmp_path)
             "Cannot check uncommitted changes: [project].dir is retired",
         ),
         ({}, False, "Cannot check sessions and running Jobs: the Dashboard has not read them yet"),
-        (
-            {"facts": COUNTED, "outlook": OSError("permission denied")},
-            True,
-            "Cannot check the queue: permission denied",
-        ),
     ],
-    ids=["git-fails", "retired-layout", "snapshot-not-read", "queue-unreadable"],
+    ids=["git-fails", "retired-layout", "snapshot-not-read"],
 )
 async def test_review_says_which_checks_cannot_be_made(
     checkout, launcher_args, snapshot_read, expected

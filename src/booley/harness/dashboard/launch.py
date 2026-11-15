@@ -28,7 +28,6 @@ if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
     from booley.harness.dashboard.run_form import RunForm
     from booley.harness.dashboard.specialist_form import SpecialistForm
-    from booley.runtime.job_slots import AdmissionOutlook
 
 # The child parses and builds a request only; a minute covers a cold import on a slow host.
 CHECK_TIMEOUT_S = 60
@@ -125,7 +124,7 @@ class SpecialistFacts:
     (``refusal`` then says why). ``timeout_ms`` is what each model call will use and
     ``asked_ms`` what the form asked for. ``refusal`` is a failed auth check or an error
     the check could not evaluate (empty: the run may launch); ``warning`` is the sign-in
-    fix shown when ``auth = "auto"`` found no credential (empty: none).
+    fix shown when the visitor mode (shown as ``auto``) found no credential (empty: none).
     """
 
     model: str
@@ -305,17 +304,6 @@ class Launcher:
     def check(self, worktree: Path, kind: str, name: str, argv: tuple[str, ...]) -> CheckResult:
         return check(worktree, kind, name, argv)
 
-    def outlook(self, job_class: str) -> AdmissionOutlook:
-        """What an interactive claim on *job_class* would meet; changes nothing. ``OSError`` if unreadable."""
-        from booley.config.jobs import parse_caps
-        from booley.runtime.job_slots import SlotStore, slots_dir
-        from booley.runtime.shared_infra import load_job_budget_config
-
-        root = slots_dir(self._booley_dir)
-        assert root is not None  # a Booley Directory was given, so the store is resolvable
-        caps = parse_caps(load_job_budget_config(booley_dir=self._booley_dir))
-        return SlotStore(root, caps).outlook(job_class)
-
     def uncommitted(self, worktree: Path) -> int:
         """Uncommitted changes in *worktree*, counted as ``booley worktree list`` counts them.
 
@@ -444,7 +432,7 @@ def _agent_facts(name: str, asked_ms: int, timeout_ms: int) -> dict[str, Any]:
     installing the settings is safe). The model and CLI are filled before the health check,
     so a credential error still shows them.
     """
-    from booley.config.agent import set_agent_settings, worktree_agent_settings
+    from booley.config.agent import set_agent_settings, wire_auth, worktree_agent_settings
     from booley.harness.dashboard.targets import first_line
     from booley.runtime import auth_token
     from booley.runtime.agent_config import get_backend_config
@@ -463,8 +451,8 @@ def _agent_facts(name: str, asked_ms: int, timeout_ms: int) -> dict[str, Any]:
         set_agent_settings(settings)
         model, cli = run_choice(settings, name)
         policy = settings.auth_for(cli)
-        # The Dashboard speaks the ``booley.toml`` vocabulary: ``visitor`` shows as ``auto``.
-        shown = "auto" if policy == auth_token.VISITOR_AUTH else policy
+        # ``visitor`` shows as ``auto``, the ``BOOLEY_PRIMARY_AUTH`` spelling a hand-written spec uses.
+        shown = wire_auth(policy)
         facts.update(model=model, cli=cli, policy=shown)
         problem = get_backend_config().backend_for(cli).health_check()
         if problem:

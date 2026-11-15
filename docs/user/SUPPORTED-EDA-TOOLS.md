@@ -42,7 +42,7 @@ the [roadmap](../internals/ROADMAP.md#commercial-eda-tools).
 <summary>With a cocotb testbench</summary>
 
 The image ships cocotb 2.x. A testbench pinned to cocotb 1.x
-still runs once you [bake its own pins](SANDBOX.md#baking-the-cocotb-stack-into-the-image).
+still runs once you [bake its own pins](SANDBOX.md#python-dependencies-sandboxpip_requirements).
 See [Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches).
 
 </details>
@@ -51,7 +51,7 @@ See [Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches).
 vectors first runs that step through
 [Pre-Sim Commands](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands),
 inside the Sandbox. The compiler has to be in the image: RISC-V projects can
-use the [RISC-V image](SANDBOX.md#risc-v-toolchain-image-booley-sandbox-riscv),
+use the [RISC-V image](SANDBOX.md#custom-sandbox-image),
 and anything else goes into a
 [custom Sandbox image](SANDBOX.md#custom-sandbox-image).
 
@@ -90,10 +90,15 @@ can replace the Python packages.
 | cocotb | 2.1.0, with `cocotbext-axi` 0.1.28, `cocotbext-uart` 0.1.4, `numpy` 2.5.4 |
 | Cell library | Nangate45 typical corner, downloaded by `booley bootstrap` |
 
-The RISC-V image (`booley-sandbox-riscv`) adds the xPack RISC-V GCC
+<details markdown>
+<summary>With the RISC-V image</summary>
+
+The [RISC-V image](SANDBOX.md#custom-sandbox-image) adds the xPack RISC-V GCC
 `15.2.0-1` and upstream Spike at commit
 `4094d29094b690a7c4ae392c6d71260e5ec30b6b` (`1.1.1-dev`). This is upstream
 Spike, not lowRISC's `ibex-cosim` fork that Ibex's UVM co-simulation needs.
+
+</details>
 
 To see what your image actually has, run these on the host:
 

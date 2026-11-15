@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a commit message against project conventions.
+"""Validate a commit message against the Project's Stealth policy.
 
 Usage:
   python validate_commit_msg.py "commit message"
@@ -75,10 +75,7 @@ except ImportError:
         raise ImportError(f"cannot import run_command from any of {_run_command_modules}")
 
 
-ALLOWED_TYPES = _shared_validation.ALLOWED_TYPES
-MAX_SUMMARY_LEN = _shared_validation.MAX_SUMMARY_LEN
-SUBJECT_RE = _shared_validation.SUBJECT_RE
-convention_errors = _shared_validation.convention_errors
+body_length_errors = _shared_validation.body_length_errors
 validate_message = _shared_validation.validate_message
 
 
@@ -147,12 +144,12 @@ def main() -> int:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Validate a commit message against project conventions.",
+        description="Validate a commit message against the Project's Stealth policy.",
         epilog="Exit code 0 = valid, 1 = invalid (errors printed to stderr).",
     )
     parser.add_argument(
         "message",
-        help="commit message to validate (e.g. 'fix(core): handle edge case')",
+        help="commit message to validate",
     )
     parser.add_argument(
         "--no-diff",

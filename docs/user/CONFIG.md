@@ -26,7 +26,6 @@ here to look up what a setting means and what its default is.
 | `[sandbox]`, host `config.toml`, custom images | [SANDBOX.md](SANDBOX.md) |
 | `[eda.<tool>]` | [Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning) |
 | `[stealth]` | [STEALTH.md](STEALTH.md) |
-| `[feedback]` | [Redacted feedback](STEALTH.md#redacted-feedback-feedback) |
 | `.core` files | [TARGETS.md](TARGETS.md) |
 | Cocotb Targets | [Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches) |
 | `tests.toml` | [TESTS.md](TESTS.md) |
@@ -113,20 +112,16 @@ To choose a Specialist's model, see [`[models]`](#model-selection-models).
 
 ## Jobs & concurrency (`[jobs]`)
 
-Every Flow or Specialist run is a **Job**. Simulation, synthesis, FPGA
-implementation, and lint are admitted against a **Memory Budget**: a Job starts
-when its estimated memory fits in what the budget has left, and otherwise waits
-in a queue instead of failing. The queue has no limit: a Job waits until it
-runs or you cancel it. Specialists are light Jobs, limited by the AI
-provider rather than memory, so a count (`max_light`) caps them. Running Jobs
-are never interrupted. The defaults:
+Every Flow or Specialist run is a **Job**. Every Job is admitted against a
+**Memory Budget**: a Job starts when its estimated memory fits in what the
+budget has left, and otherwise waits in a queue instead of failing. The queue
+has no limit: a Job waits until it runs or you cancel it. Specialists and mutation
+campaigns are admitted by memory too, and a Specialist waits when the budget is
+full. Running Jobs are never interrupted. The defaults:
 
 ```toml
 [sandbox]
 memory = "32g"           # the Sandbox's memory limit; the Memory Budget comes from it
-
-[jobs]
-max_light = 3            # Specialist Jobs running at once
 
 [jobs.seats]
 # vivado = 1             # licensed seats Booley may use at once; required for Vivado
@@ -218,8 +213,8 @@ auth = "subscription"   # "subscription" or "api_key"
   the subscription pays.
 - **`api_key`**: the API key pays.
 
-Leave `auth` out and the Agent CLI decides, with an exported API key beating a
-subscription. `booley doctor` fails on a missing `auth`, and on `auth = "auto"`.
+Leave `auth` out and the subscription pays, whatever API key is exported.
+`booley doctor` still fails on a missing `auth`, so the choice is on record.
 
 A single value applies to every CLI in `clis`. To bill each CLI differently,
 use a table with one entry per CLI; `booley doctor` fails for a CLI you leave
@@ -265,10 +260,9 @@ email = "developer@example.com"
 
 Without it, commits use `Dev <dev@localhost>`. It overrides any gitconfig in the
 Sandbox and leaves your host checkout alone; `git -c`, `--author`, and
-`GIT_AUTHOR_*`/`GIT_COMMITTER_*` still win. After a change, recreate the Sandbox
-(`booley session refresh`). Doctor run in the Sandbox warns when Git would use
-another identity, and names the fix, including for a hand-written devcontainer
-spec such as GitHub Codespaces.
+`GIT_AUTHOR_*`/`GIT_COMMITTER_*` still win. After a change,
+[recreate the Sandbox](SANDBOX.md#after-changing-sandbox-settings). Doctor run
+in the Sandbox warns when Git would use another identity, and names the fix.
 
 ## Model selection (`[models]`)
 
@@ -444,8 +438,38 @@ to share, it writes `.booley/BOOLEY-FEEDBACK.md` with your Project's details
 replaced; read it before you send it. How to report: [When Booley itself
 misbehaves](USAGE.md#when-booley-itself-misbehaves).
 
-To change what the shared copy hides, use the `[feedback]` table; see
-[Redacted feedback](STEALTH.md#redacted-feedback-feedback).
+| Replaced | Becomes |
+|---|---|
+| Project Root, in every checkout | `<repo>` |
+| Home directory and any `/home/<user>`, `/Users/<user>`, or `C:\Users\<user>` path | `<home>` |
+| Git remote URLs, and the remote's `org/repo` | `<remote>`, `<org>/<repo>` |
+| Your Git name and email; any other email | `<author>`, `<author-email>`; `<email>` |
+| Design names: Project name, checkout folders, and `.core` Target names, VLNV parts, and toplevels | `<module-1>`, `<module-2>`, … |
+| `redact_extra` terms and `[stealth]` banned words and substrings | `<redacted>` |
+
+Each design name keeps its number throughout, so the report still reads. Names
+under four characters and generic ones such as `top` are never replaced. EDA
+tool names and versions, error text, tracebacks, and timing and area numbers
+are kept, because a report without them can't be acted on. A design name
+inside a quoted log line can slip through, so read attached log tails too.
+Redaction is best effort, not a guarantee.
+
+```toml
+[feedback]
+# redact_extra = ["codename"]   # extra terms to replace
+# redact_identifiers = false    # keep design names (default: replace them)
+```
+
+For an open-source design whose names are already public,
+`redact_identifiers = false` gives the maintainer a more useful report.
+
+<details markdown>
+<summary>With host-installed licensed tools</summary>
+
+Kept tool names reveal which commercial EDA tools you license. See
+[Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning).
+
+</details>
 
 ## Advanced setups
 

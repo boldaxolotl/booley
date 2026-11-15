@@ -39,7 +39,7 @@ RUNTIME_PATHS = (
     ".managed/.project-git-hooks.pyz.interrupted.tmp",
     "runtime/doctor_stamp.json",
     "runtime/sessions/thread.json",
-    "runtime/jobs/slots/light/token.json",
+    "runtime/jobs/slots/memory/token.json",
     ".interactive_logs/session.log",
     "goals/g1/record.json",
     "goals/g1/.record.json.tmp",
@@ -393,11 +393,13 @@ def test_upgrade_publication_keeps_project_clean(versioned_project):
 
 
 def test_job_slot_publication_keeps_project_clean(versioned_project):
-    from booley.runtime.job_slots import SlotStore
+    from booley.runtime.job_slots import CLASS_MEMORY, MemoryClaim, SlotStore
 
     _root, data, repo = versioned_project
     store = SlotStore(data / "runtime/jobs/slots", now=lambda: 100.0)
-    token = store.submit("light", pid=1, argv=["fixture"])
+    token = store.submit(
+        CLASS_MEMORY, pid=1, argv=["fixture"], memory=MemoryClaim(budget_mb=1024, run_alone=True)
+    )
     try:
         assert token.path.is_file()
         assert_clean(repo)

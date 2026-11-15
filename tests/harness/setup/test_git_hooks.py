@@ -2198,7 +2198,7 @@ class TestLineEndingsAutoFix:
     def _write_agent_selection(tmp_path: Path, booley_dir: Path) -> None:
         from booley.harness.init_cmd import AgentSelection, _step_agent_config
 
-        selection = AgentSelection("claude", "auto", True, "auto")
+        selection = AgentSelection("claude", "subscription", True, "subscription")
         assert _step_agent_config(_ctx(tmp_path), selection, booley_dir / "booley.toml")
 
     def test_baseline_lets_repair_ignore_booleys_own_config_edit(self, tmp_path: Path) -> None:
@@ -2217,7 +2217,7 @@ class TestLineEndingsAutoFix:
         assert (booley_dir / "notes.md").read_bytes() == b"notes\n"
         config = (booley_dir / "booley.toml").read_bytes()
         assert b"\r" not in config
-        assert config.endswith(b'[agent]\ndefault = "claude"\nauth = "auto"\n')
+        assert config.endswith(b'[agent]\ndefault = "claude"\nauth = "subscription"\n')
 
     def test_without_baseline_booleys_config_edit_blocks_repair(self, tmp_path: Path) -> None:
         from booley.harness.setup.git_hooks import _step_line_endings

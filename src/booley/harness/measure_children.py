@@ -27,7 +27,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from booley.config.jobs import parse_caps
 from booley.harness.checkout_flow import (
     STOP_GRACE_S,
     CheckoutFlowError,
@@ -46,7 +45,6 @@ from booley.measurement.verdicts import (
     evaluate_table,
 )
 from booley.runtime import job_slots
-from booley.runtime.shared_infra import load_job_budget_config
 
 if TYPE_CHECKING:
     from booley.flows.metric_declarations import FlowMetricValues
@@ -153,18 +151,22 @@ class ChildScheduler:
         store: job_slots.SlotStore,
         *,
         all_tables: bool,
+        progress: Callable[[int, int], None] | None = None,
     ) -> None:
         self._entries = [_Entry(rules, prepared) for rules, prepared in planned]
         self._store = store
         self._all_tables = all_tables
         self._stopping = False
         self._cancelled = False
+        self._progress = progress
+        self._reported: int | None = None
 
     # ------------------------------------------------------------------ driving
 
     def step(self, *, cancel: bool) -> bool:
         """Do one pass; return whether work remains."""
         self._reap_ended()
+        self._report_progress()
         if cancel:
             self._cancel()
             return False
@@ -174,6 +176,13 @@ class ChildScheduler:
         else:
             self._start_planned()
         return bool(self._live()) or (not self._stopping and self._has_planned())
+
+    def _report_progress(self) -> None:
+        """Tell the caller how many tables have ended, when that count changed."""
+        finished = sum(entry.measurement is not None for entry in self._entries)
+        if self._progress is not None and finished != self._reported:
+            self._progress(finished, len(self._entries))
+        self._reported = finished
 
     def _live(self) -> list[_Entry]:
         return [entry for entry in self._entries if entry.live]
@@ -234,13 +243,12 @@ class ChildScheduler:
         running: its waiting item claim is never withdrawn.
         """
         found: job_slots.SlotToken | None = None
-        for job_class in job_slots.JOB_CLASSES:
-            holders, waiters = self._store.snapshot(job_class)
-            if any(token.pid == pid for token in holders):
-                return None
-            for token in waiters:
-                if token.pid == pid and token.queue_reason is None:
-                    found = token
+        holders, waiters = self._store.snapshot(job_slots.CLASS_MEMORY)
+        if any(token.pid == pid for token in holders):
+            return None
+        for token in waiters:
+            if token.pid == pid and token.queue_reason is None:
+                found = token
         return found
 
     def _withdraw_if_waiting(self, entry: _Entry) -> None:
@@ -465,26 +473,25 @@ def run_children(
     main_booley_dir: Path,
     all_tables: bool,
     cancelled: Callable[[], bool],
+    progress: Callable[[int, int], None] | None = None,
 ) -> ChildrenOutcome:
     """Run the *prepared* children within the admission queue and settle every one.
 
     *cancelled* is polled each pass; a ``BaseException`` (a Ctrl-C) stops and settles every
-    child before it propagates. The outcome lists the tables in *tables* order.
+    child before it propagates. *progress* gets ``(finished, total)`` tables at the first pass
+    and whenever the finished count changes. The outcome lists the tables in *tables* order.
 
     Raises:
         CheckoutFlowError: the first child could not be launched.
     """
     main = main_booley_dir.resolve()
     try:
-        store = job_slots.SlotStore(
-            job_slots.project_slots_dir(main),
-            parse_caps(load_job_budget_config(booley_dir=main)),
-        )
+        store = job_slots.SlotStore(job_slots.project_slots_dir(main))
     except BaseException:  # nothing started: leave no scratch behind
         for _table, child in prepared:
             child.discard()
         raise
-    scheduler = ChildScheduler(prepared, store, all_tables=all_tables)
+    scheduler = ChildScheduler(prepared, store, all_tables=all_tables, progress=progress)
     try:
         while scheduler.step(cancel=cancelled()):
             time.sleep(_POLL_S)

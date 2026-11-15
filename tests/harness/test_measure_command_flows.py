@@ -156,7 +156,7 @@ def test_an_unmet_bound_stops_later_tables_unless_all(
     tables = {t["identity"].split("#")[1]: t for t in stored.document["tables"]}
     assert [r["verdict"] for r in tables["metrics_ok"]["results"]] == ["unmet"]
     assert not stored.measured
-    # Both children start at once and race for the one live light slot, so which runs first is
+    # Both children start at once and race for the one live memory claim, so which runs first is
     # not fixed; the table whose child never ran is the one the unmet bound withdrew.
     ran_b = "metrics_b" in started_targets(world)
     assert "metrics_ok" in started_targets(world)
@@ -198,12 +198,12 @@ def test_a_retired_key_in_the_commit_does_not_stop_its_measurement(
         config=ONE_AT_A_TIME + "max_heavy = 1\n",
     )
     live_settings = world.main / "booley.toml"
-    live_settings.write_bytes(b"[jobs]\nmax_light = 1\n")
+    live_settings.write_bytes(b"[jobs]\nmax_tickets = 1\n")
 
     assert measure(monkeypatch, world) == 0
     assert len(stored_documents(world)) == 1
 
-    live_settings.write_bytes(b"[jobs]\nmax_light = 1\nmax_heavy = 1\n")
+    live_settings.write_bytes(b"[jobs]\nmax_tickets = 1\nmax_heavy = 1\n")
     capsys.readouterr()
     assert measure(monkeypatch, world, entry="main") == 2
     assert "max_heavy" in capsys.readouterr().err

@@ -168,9 +168,11 @@ async def to_goal_reviewer(app, pilot, layout):
 
 @pytest.mark.asyncio
 async def test_reviewer_launches_with_the_shown_command_submitted(
-    checkout, spawned, tmp_path, empty_home
+    checkout, spawned, tmp_path, empty_home, monkeypatch
 ):
-    write_config(checkout, "")  # the check reads the worktree's settings, as the worker does
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    # the check reads the worktree's settings, as the worker does
+    write_config(checkout, '[agent]\nauth = "api_key"\n')
     booley_dir = tmp_path / "booley"
     app = make_app(checkout, real_launcher(booley_dir))
     copied: list[str] = []
@@ -187,7 +189,7 @@ async def test_reviewer_launches_with_the_shown_command_submitted(
             command
             == f"cd {shlex.quote(str(checkout))} && booley specialist reviewer {' '.join(expected)}"
         )
-        assert shown(wizard, "#run-review").splitlines()[0].startswith("Runs now")
+        assert shown(wizard, "#run-review").splitlines()[0].startswith("Admitted by memory")
         await pilot.press("down", "enter")  # Copy command
         assert copied == [command]
         await pilot.press("up", "enter")  # Submit
@@ -224,7 +226,7 @@ def test_specialist_check_parses_like_the_shell(tmp_path, monkeypatch, capsys):
     result = launch.check(tmp_path, "specialist", "reviewer", tuple(arguments))
     assert result.error == ""
     assert result.facts is not None
-    assert (result.facts.job_class, result.facts.dry_run) == ("light", False)
+    assert (result.facts.job_class, result.facts.dry_run) == ("memory", False)
     capsys.readouterr()
     with pytest.raises(SystemExit) as exit_info:
         launch.main(["specialist", "reviewer", "--", "--category", "x"])
@@ -583,11 +585,12 @@ async def type_coverage_record(app, pilot, wizard, old: str, new: str) -> None:
 
 @pytest.mark.asyncio
 async def test_coverage_analyst_launches_a_picked_or_typed_coverage_record(
-    checkout, spawned, tmp_path, empty_home
+    checkout, spawned, tmp_path, empty_home, monkeypatch
 ):
     from booley.harness.dashboard.specialist_form import SimRun
 
-    write_config(checkout, "")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    write_config(checkout, '[agent]\nauth = "api_key"\n')
     booley_dir = tmp_path / "booley"
     invocation = write_coverage_record(checkout, 1)
     app = make_app(checkout, real_launcher(booley_dir))

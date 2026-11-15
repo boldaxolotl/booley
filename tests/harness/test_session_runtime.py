@@ -3808,6 +3808,7 @@ def test_headless_api_policy_refuses_missing_key(workspace, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     spec = _spec()
     spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] = "api_key"
+    spec["remoteEnv"]["BOOLEY_AGENT_CLIS"] = "claude=api_key"
     spec["remoteEnv"]["ANTHROPIC_API_KEY"] = "${localEnv:ANTHROPIC_API_KEY}"
     with pytest.raises(sr.SessionError, match=r"requires.*credential"):
         sr.docker_run_argv(spec, workspace, "test")
@@ -4841,13 +4842,15 @@ def test_docker_run_argv_forwards_every_listed_cli_credential(workspace, monkeyp
     placeholder = {"OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}"}
 
     command = sr.docker_run_argv(
-        _two_cli_spec(record="claude=auto,codex=api_key", **placeholder), workspace, "test"
+        _two_cli_spec(record="claude=subscription,codex=api_key", **placeholder), workspace, "test"
     )
 
     assert command.environment["OPENAI_API_KEY"] == "SYNTHETIC_OPENAI"
     assert "OPENAI_API_KEY" in _flag_values(command, "-e")
     with pytest.raises(sr.SessionError, match="credential environment"):
-        sr.docker_run_argv(_two_cli_spec(record="claude=auto", **placeholder), workspace, "test")
+        sr.docker_run_argv(
+            _two_cli_spec(record="claude=subscription", **placeholder), workspace, "test"
+        )
 
 
 def test_docker_run_argv_requires_api_key_only_for_default_cli(workspace, monkeypatch):
@@ -4880,7 +4883,14 @@ def test_docker_run_argv_requires_api_key_only_for_default_cli(workspace, monkey
 
 def test_docker_run_argv_refuses_malformed_cli_record(workspace):
     with pytest.raises(sr.SessionError, match="Agent CLI record"):
-        sr.docker_run_argv(_two_cli_spec(record="claude=auto,bogus=auto"), workspace, "test")
+        sr.docker_run_argv(
+            _two_cli_spec(record="claude=subscription,bogus=subscription"), workspace, "test"
+        )
+
+
+def test_docker_run_argv_refuses_a_retired_auto_record(workspace):
+    with pytest.raises(sr.SessionError, match=r"retired auth 'auto'.*refresh the Sandbox"):
+        sr.docker_run_argv(_two_cli_spec(record="claude=auto"), workspace, "test")
 
 
 _GATEWAY_REFS = {

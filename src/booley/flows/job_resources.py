@@ -381,7 +381,7 @@ def _other_jobs_hold_slots() -> bool | None:
         return None
     store = job_slots.SlotStore(root)
     try:
-        holders = [token for name in job_slots.JOB_CLASSES for token in store.observe(name)[0]]
+        holders = store.observe(job_slots.CLASS_MEMORY)[0]
     except OSError:
         return None
     own = {os.getpid(), os.getppid()}

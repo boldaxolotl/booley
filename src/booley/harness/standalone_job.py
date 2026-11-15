@@ -166,6 +166,14 @@ class StandaloneJob:
         """The run id of this Job's record."""
         return self._record.run_id
 
+    def record_progress(self, finished: int, total: int) -> None:
+        """Record that *finished* of *total* child Flows have ended; best effort."""
+        if self._finished:
+            return
+        self._record.progress = {"finished": finished, "total": total}
+        with contextlib.suppress(OSError):
+            job_records.write_record(self._record, self._root)
+
     def discard(self) -> None:
         """Unexport the run id; the caller does this once the run, or its help path, is over."""
         if self._previous_run_id is None:

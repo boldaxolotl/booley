@@ -1,6 +1,6 @@
 """A mutation campaign's builds and simulations hold Memory Reservations (#4115).
 
-The campaign is one light Job; each variant build and each simulation of the
+The campaign is one memory-admitted Job; each variant build and each simulation of the
 Target's tests claims memory of its own from the Simulation Target's Resource
 History, runs alone when it cannot be sized, waits in queue order, and is
 withdrawn when the campaign is cancelled.
@@ -71,12 +71,18 @@ class _Managed:
 
     def context(self) -> AdmissionContext:
         pid = os.getpid()
-        light = self.store.acquire(job_slots.CLASS_LIGHT, pid=pid, argv=_proc_cmdline(pid) or [])
-        self.held.append(light)
+        # The coordinating Job: a memory-class companion claim that reserves nothing.
+        coordinator = self.store.acquire(
+            job_slots.CLASS_MEMORY,
+            pid=pid,
+            argv=_proc_cmdline(pid) or [],
+            memory=job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=0.0, companion=True),
+        )
+        self.held.append(coordinator)
         return AdmissionContext(
             mode="managed",
             slot_store=self.store,
-            outer_token=light,
+            outer_token=coordinator,
             role=job_slots.ROLE_INTERACTIVE,
             execution_id=None,
             timeout_seconds=None,
@@ -173,8 +179,19 @@ def _simulate(tmp_path: Path, project: _Project) -> Callable[[MutationFlow], obj
     return lambda endpoint: endpoint._run_target_test_suite(_TARGET, tmp_path, project.build, "tb")
 
 
+def _items(seen: _Observed) -> list[tuple[int, job_slots.MemoryClaim | None]]:
+    """The holders but the coordinator's own zero companion claim: the build or simulation."""
+    return [(pid, claim) for pid, claim in seen.holders if claim is None or not claim.companion]
+
+
+def _only_the_coordinator_holds(managed: _Managed) -> bool:
+    """No build or simulation claim is left: the coordinator's own claim is the one holder."""
+    holders, waiters = managed.store.snapshot(job_slots.CLASS_MEMORY)
+    return [token.memory for token in holders] == [managed.held[0].memory] and waiters == []
+
+
 def _reserved(seen: _Observed) -> list[float | None]:
-    return [claim.reservation_mb for _pid, claim in seen.holders if claim is not None]
+    return [claim.reservation_mb for _pid, claim in _items(seen) if claim is not None]
 
 
 def test_builds_and_simulations_hold_a_reservation_sized_from_the_target_history(
@@ -193,12 +210,12 @@ def test_builds_and_simulations_hold_a_reservation_sized_from_the_target_history
 
     build, simulation = seen
     # The build reserves its phases' largest estimate; the simulation not the shared build's.
-    assert [pid for pid, _claim in build.holders] == [os.getpid()]
+    assert [pid for pid, _claim in _items(build)] == [os.getpid()]
     assert _reserved(build) == [500.0]
-    assert [pid for pid, _claim in simulation.holders] == [os.getpid()]
+    assert [pid for pid, _claim in _items(simulation)] == [os.getpid()]
     assert _reserved(simulation) == [250.0]
     # Each claim is released when its tool ends.
-    assert managed.store.snapshot(job_slots.CLASS_MEMORY) == ([], [])
+    assert _only_the_coordinator_holds(managed)
 
 
 def test_unsized_build_and_simulation_run_alone(
@@ -216,10 +233,10 @@ def test_unsized_build_and_simulation_run_alone(
 
     assert len(seen) == 2
     for observed in seen:
-        assert [pid for pid, _claim in observed.holders] == [os.getpid()]
-        claim = observed.holders[0][1]
+        assert [pid for pid, _claim in _items(observed)] == [os.getpid()]
+        claim = _items(observed)[0][1]
         assert claim is not None and claim.run_alone and claim.reservation_mb is None
-    assert managed.store.snapshot(job_slots.CLASS_MEMORY) == ([], [])
+    assert _only_the_coordinator_holds(managed)
 
 
 def test_campaign_processes_rank_as_the_held_claim(
@@ -276,6 +293,9 @@ def _withdraw_queued_claim(
     simulation: bool = False,
 ) -> None:
     project = _project(tmp_path, monkeypatch)
+    context = (
+        managed.context()
+    )  # the coordinator's claim comes first: a run-alone holder would stop it
     managed.hold_budget()
     ran = _watch(monkeypatch, managed, inert_oom_proc)
 
@@ -289,14 +309,15 @@ def _withdraw_queued_claim(
     managed.cancellation = cancel
 
     tool = _simulate(tmp_path, project) if simulation else _build(tmp_path)
-    outcome = _campaign(monkeypatch, project, managed.context(), tool)
+    outcome = _campaign(monkeypatch, project, context, tool)
 
     assert outcome.exit_code == EXIT_ERROR
     assert "RESULT: ERROR (cancelled: " in outcome.report_text
     assert "waited for memory" in outcome.report_text
     assert ran == []  # the tool never started
     holders, waiters = managed.store.snapshot(job_slots.CLASS_MEMORY)
-    assert len(holders) == 1 and waiters == []  # only the budget holder; the entry is gone
+    # Only the budget holder and the coordinator's own claim; the queued entry is gone.
+    assert len(holders) == 2 and waiters == []
 
 
 def test_a_run_outside_admission_claims_nothing(
@@ -324,7 +345,7 @@ def test_a_run_outside_admission_claims_nothing(
     unsized = replace(managed.context(), memory_sizing=None)
     for claims in (CampaignClaims(), CampaignClaims(unmanaged), CampaignClaims(unsized)):
         with claims.hold(request, build=True):
-            assert managed.store.snapshot(job_slots.CLASS_MEMORY) == ([], [])
+            assert _only_the_coordinator_holds(managed)
     assert asked == []
 
     # An admission-less invocation leaves the Flow's claims unmanaged after its run.

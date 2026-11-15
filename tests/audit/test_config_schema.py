@@ -271,6 +271,22 @@ def test_agent_audit_uses_authoritative_agent_parser() -> None:
     assert "retired key(s): primary" in retired.findings[0].message
 
 
+@pytest.mark.parametrize(
+    "agent",
+    [{"auth": "auto"}, {"clis": ["codex"], "default": "codex", "auth": {"codex": "auto"}}],
+    ids=["string", "table"],
+)
+def test_retired_auto_auth_fails_the_agent_audit(agent: dict[str, object]) -> None:
+    audit = agent_schema.audit_agent_table({"agent": agent})
+
+    assert not audit.is_valid
+    finding = audit.findings[0]
+    assert "is retired" in finding.message
+    assert '"subscription", "api_key"' in finding.fix
+    assert '"auto"' not in finding.fix
+    assert finding.fix.endswith("or re-run booley init")
+
+
 def test_models_audit_reports_pins() -> None:
     audit = agent_schema.audit_models_table(
         {"agent": {"clis": ["claude", "codex"]}, "models": {"reviewer": "gpt-6-luna"}}

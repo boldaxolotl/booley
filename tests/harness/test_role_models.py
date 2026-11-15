@@ -341,13 +341,14 @@ def test_sandbox_settings_take_each_cli_policy_from_spec_record(tmp_path, monkey
 
 
 def test_malformed_spec_record_falls_back_to_the_default_cli_hand_off(monkeypatch):
+    monkeypatch.setattr(bc, "_inside_container", lambda: False)
     data = {"agent": {"clis": ["claude", "codex"], "default": "claude"}}
-    monkeypatch.setenv("BOOLEY_AGENT_CLIS", "claude=gateway,codex=auto")
+    monkeypatch.setenv("BOOLEY_AGENT_CLIS", "claude=gateway,codex=subscription")
     monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "api_key")
 
     settings = bc.settings_from_data(data, lazy=True)
 
-    assert dict(settings.auth) == {"claude": "api_key", "codex": "auto"}
+    assert dict(settings.auth) == {"claude": "api_key", "codex": "subscription"}
 
 
 @pytest.mark.parametrize(
@@ -355,10 +356,11 @@ def test_malformed_spec_record_falls_back_to_the_default_cli_hand_off(monkeypatc
     [
         "claude",
         "claude=bogus",
-        "gemini=auto",
-        "claude=auto,claude=auto",
+        "gemini=subscription",
+        "claude=subscription,claude=subscription",
         "claude=gateway",
-        "=auto",
+        "=subscription",
+        "claude=auto",
     ],
 )
 def test_cli_record_decoding_is_strict(raw):
@@ -367,12 +369,13 @@ def test_cli_record_decoding_is_strict(raw):
 
 
 def test_cli_record_round_trips_in_order():
-    policies = {"codex": "api_key", "claude": "auto"}
+    policies = {"codex": "api_key", "claude": "subscription"}
     assert bc.decode_cli_policies(bc.encode_cli_policies(policies)) == policies
     assert bc.decode_cli_policies("") == {}
 
 
-def test_project_credential_policies_name_the_set_default_and_each_policy(tmp_path):
+def test_project_credential_policies_name_the_set_default_and_each_policy(tmp_path, monkeypatch):
+    monkeypatch.setattr(bc, "_inside_container", lambda: False)
     _write_toml(
         tmp_path,
         '[agent]\nclis = ["codex", "claude"]\ndefault = "claude"\n\n'
@@ -382,7 +385,7 @@ def test_project_credential_policies_name_the_set_default_and_each_policy(tmp_pa
     assert (found.clis, found.default, dict(found.policies)) == (
         ("codex", "claude"),
         "claude",
-        {"codex": "api_key", "claude": "auto"},
+        {"codex": "api_key", "claude": "subscription"},
     )
 
 

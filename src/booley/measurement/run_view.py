@@ -283,7 +283,7 @@ def _view(
             target for target in document["targets"] if target not in tabled
         ],
         "evidence": _evidence(run),
-        "paths": {"json": str(run.path), "markdown": str(run.path.with_suffix(".md"))},
+        "paths": {"json": str(run.path), "markdown": str(run.markdown)},
     }
 
 

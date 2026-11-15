@@ -85,6 +85,8 @@ def test_host_doctor_isolates_xdg_config_home(
 
     assert env["HOME"] == str(home)
     assert env["XDG_CONFIG_HOME"] == str(home / ".config")
+    # The pinned Codex API key needs a credential on a credential-less runner.
+    assert env["OPENAI_API_KEY"]
 
 
 def test_host_doctor_uses_isolated_paths_and_records_evidence(
@@ -125,7 +127,7 @@ def test_host_doctor_uses_isolated_paths_and_records_evidence(
             "--provider",
             "codex",
             "--auth",
-            "auto",
+            "api-key",
             "--skip-credentials",
         ],
         ["doctor"],

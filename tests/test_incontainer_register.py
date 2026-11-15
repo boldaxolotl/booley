@@ -20,8 +20,18 @@ from booley.mcp import (
     catalog,
 )
 from booley.runtime import incontainer_setup as reg
+from booley.runtime import mount_history, worktree_mount_repair
+from booley.runtime.worktree_mount_repair import MountRepair, RegistrationProblem
 from tests.codex_config_support import count_parses, tomlkit_copy
 from tests.conftest import require_symlinks
+
+
+@pytest.fixture(autouse=True)
+def _no_worktree_repair(monkeypatch):
+    """`main` repairs worktree pointers of the checkout it runs in; these tests are not about that."""
+    monkeypatch.setattr(
+        worktree_mount_repair, "repair_mount_registrations", lambda _root: MountRepair()
+    )
 
 
 def _stub_codex_effects(monkeypatch):
@@ -101,6 +111,50 @@ def test_main_launches_automatic_doctor_after_server(monkeypatch, capsys):
         "server:started upgrade:current health:started claude:current" in capsys.readouterr().err
     )
     assert events == ["server:interactive", "observe", "health"]
+
+
+@pytest.mark.parametrize(
+    ("result", "status"),
+    [
+        (MountRepair(), "current"),
+        (MountRepair(repaired=(Path("a"),)), "repaired"),
+        (MountRepair(pruned=(Path("a"),)), "repaired"),
+        (MountRepair(problems=(RegistrationProblem(Path("a"), Path("b"), "gone"),)), "problems"),
+    ],
+)
+def test_main_repairs_worktree_pointers_before_the_server(monkeypatch, capsys, result, status):
+    events: list[str] = []
+    monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
+    monkeypatch.setattr(
+        worktree_mount_repair,
+        "repair_mount_registrations",
+        lambda root: events.append(f"repair:{root}") or result,
+    )
+    monkeypatch.setattr(entry, "_hook_start_directory", lambda: Path("start"))
+    monkeypatch.setattr(
+        reg, "ensure_http_server", lambda *, mode: events.append("server") or "started"
+    )
+    monkeypatch.setattr(reg, "register", lambda _app, *, trust_paths=(): "claude:current")
+    monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
+    monkeypatch.setattr(entry, "launch_auto_doctor", lambda: "started")
+
+    entry.main()
+
+    error = capsys.readouterr().err
+    assert events == ["repair:start", "server"]
+    assert f"worktrees:{status} server:started" in error
+    assert ("warning: worktree registration a (b): gone" in error) is bool(result.problems)
+
+
+@pytest.mark.parametrize("failure", [OSError("denied"), mount_history.MountHistoryError("bad")])
+def test_a_failed_worktree_repair_never_stops_registration(monkeypatch, capsys, failure):
+    def fail(_root):
+        raise failure
+
+    monkeypatch.setattr(worktree_mount_repair, "repair_mount_registrations", fail)
+
+    assert entry._repair_worktrees() == "failed"
+    assert "worktree pointers not repaired" in capsys.readouterr().err
 
 
 # ===========================================================================

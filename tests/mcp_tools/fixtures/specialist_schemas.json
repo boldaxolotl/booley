@@ -65,7 +65,7 @@
         "type": "string"
       },
       "scope": {
-        "description": "Interactive Mode: comma-separated review files",
+        "description": "Comma-separated review files",
         "type": "string"
       },
       "spec": {

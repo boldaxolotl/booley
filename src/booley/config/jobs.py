@@ -16,14 +16,13 @@ from booley.core.config_paths import resolve_toml
 
 logger = logging.getLogger(__name__)
 
-_CLASS_LIGHT = "light"
-
 _MEMORY_ADMISSION = "memory admission replaced it"
 
 #: Retired ``[jobs]`` keys and why; ``booley.toml`` may no longer set them.
 RETIRED_JOBS_KEYS: dict[str, str] = {
     "max_heavy": _MEMORY_ADMISSION,
     "heavy_memory": _MEMORY_ADMISSION,
+    "max_light": "Specialists and the Mutation Flow are admitted by memory",
     "queue_max": "the Job queue has no limit: a Job waits until it runs or is cancelled",
     "memory_budget": (
         "the Memory Budget is computed from [sandbox].memory: set [sandbox].memory instead"
@@ -44,53 +43,13 @@ def seat_cap_fix(tool: str) -> str:
     return f"[jobs.seats] {tool} = <seats you own>"
 
 
-@dataclass(frozen=True, slots=True)
-class SlotCaps:
-    """Per-class concurrency caps."""
-
-    max_light: int = 3
-
-    def cap_for(self, job_class: str) -> int:
-        """Return the validated cap for a Runtime job class."""
-        if job_class != _CLASS_LIGHT:
-            raise ValueError(f"Unknown job class: {job_class!r}")
-        cap = self.max_light
-        if cap < 1:
-            logger.warning("Cap for %s is %r; clamping to 1", job_class, cap)
-            return 1
-        return cap
-
-
-def parse_caps(data: dict) -> SlotCaps:
-    """Parse ``[jobs]`` caps, warning and defaulting invalid values."""
-    section = data.get("jobs", {})
-    defaults = SlotCaps()
-    if not isinstance(section, dict):
-        logger.warning("[jobs] is not a table; using defaults")
-        return defaults
-    max_light = defaults.max_light
-    if "max_light" in section:
-        value = section["max_light"]
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
-            max_light = value
-        else:
-            logger.warning(
-                "[jobs] max_light = %r is invalid (int >= 1); using %d", value, max_light
-            )
-    non_cap_keys = {*RETIRED_JOBS_KEYS, "max_light", "max_tickets", "seats"}
-    for key in section:
-        if key not in non_cap_keys:
-            logger.warning("[jobs] has unknown key %r (ignored)", key)
-    return SlotCaps(max_light=max_light)
-
-
 def parse_seat_caps(data: Mapping[str, Any]) -> dict[str, int]:
     """Parse ``[jobs.seats]``: how many licence seats the user owns, per licensed tool.
 
     Absent reads as no Seat Caps. Raises :class:`SeatCapError` naming the key
     for a table that is not a table, a key that is not a licensed tool, or a
     count that is not a whole number of at least one. A non-table ``[jobs]`` has
-    no seats here: :func:`parse_caps` already warns about it.
+    no seats here.
     """
     section = data.get("jobs")
     if not isinstance(section, Mapping) or "seats" not in section:

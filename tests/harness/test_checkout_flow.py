@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from booley.config.jobs import SlotCaps
 from booley.harness.dashboard.jobs import JobReader
 from booley.harness.standalone_job import standalone_jobs_dir, standalone_log_path
 from booley.runtime import booley_dir, job_records, job_slots
@@ -63,10 +62,7 @@ CTL = Path({ctl!r})
 class CheckoutStub(BooleyFlow):
     name = "checkout_stub"
     description = "Checkout Flow runner fixture"
-    JOB_CLASS = "light"
-
-    def _memory_admitted(self):
-        return False  # counted light slot: the test queues behind a plain slot holder
+    JOB_CLASS = "memory"  # admitted by Memory Reservation, so a run-alone holder blocks it
     target_required = False
 
     def _add_args(self, parser):
@@ -237,7 +233,7 @@ def make_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Worl
         ctl.mkdir()
         tools = live / ".booley" / "mcp_tools"
         tools.mkdir(parents=True)
-        settings = "[jobs]\nmax_light = SLOTS\n" + config.replace("{live}", str(live))
+        settings = "[jobs]\nmax_tickets = SLOTS\n" + config.replace("{live}", str(live))
         (live / ".booley" / "booley.toml").write_bytes(settings.replace("SLOTS", "4").encode())
         (tools / f"{FLOW}.py").write_bytes(STUB_FLOW.format(ctl=str(ctl)).encode())
         for relative, text in (files or {}).items():
@@ -656,11 +652,17 @@ def test_checkout_flow_queues_behind_live_flow_in_main_slot_store(
     monkeypatch.setenv("BOOLEY_INHERITED_SLOT", "caller-slot")
     monkeypatch.setenv("BOOLEY_SLOTS_DIR", str(world.live / "elsewhere"))
     slots_root = world.main / "runtime" / "jobs" / "slots"
-    store = job_slots.SlotStore(slots_root, SlotCaps(max_light=1))
-    # A Flow of the session's own checkout holds Main's only light slot.
-    holder = store.acquire(
-        job_slots.CLASS_LIGHT, pid=os.getpid(), argv=_proc_cmdline(os.getpid()) or []
-    )
+    store = job_slots.SlotStore(slots_root)
+    # A Flow of the session's own checkout runs alone in Main's memory class.
+    argv = _proc_cmdline(os.getpid()) or []
+    holders = [
+        store.acquire(
+            job_slots.CLASS_MEMORY,
+            pid=os.getpid(),
+            argv=argv,
+            memory=job_slots.MemoryClaim(budget_mb=1024, run_alone=True),
+        )
+    ]
     reader = JobReader(world.main, slots_root=slots_root)
     released = False
     with ThreadPoolExecutor(max_workers=1) as pool:
@@ -673,12 +675,14 @@ def test_checkout_flow_queues_behind_live_flow_in_main_slot_store(
 
             poll(queued, "the checkout Flow to queue")
             assert not (world.ctl / "started").exists()
-            store.release(holder)
+            for holder in holders:
+                store.release(holder)
             released = True
             result = run.result(timeout=TIMEOUT_S)
         finally:
             if not released:
-                store.release(holder)
+                for holder in holders:
+                    store.release(holder)
 
     assert result.status is CheckoutFlowStatus.PASSED
     assert (world.ctl / "started").exists()

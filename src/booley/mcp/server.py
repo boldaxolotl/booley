@@ -173,7 +173,7 @@ logging.basicConfig(
 # only via booley_report. The Specialists are lightweight on memory (Read/Grep/Glob +
 # API calls), so single-flight admission is stricter than they need, but the
 # poll affordance is exactly what was missing. The mutation Flow builds and
-# simulates; it keeps its light admission class on purpose.
+# simulates; it keeps its memory admission on purpose.
 _ASYNC_JOB_MCP_TOOLS = job_ownership.ASYNC_JOB_ENDPOINTS
 
 # How long a submit (and each poll) blocks inline before handing back a run_id.

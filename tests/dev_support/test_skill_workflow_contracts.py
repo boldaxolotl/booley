@@ -731,7 +731,7 @@ def _setup_row_sections() -> dict[str, str]:
 def test_setup_plan_rows_have_plain_label_and_explanation():
     template = _skill_text("booley-setup", "SETUP_PLAN_TEMPLATE.md")
     rows = _decision_rows(template)
-    assert set(rows) == {*(str(i) for i in range(1, 22)), "23", "10a"}
+    assert set(rows) == {*(str(i) for i in range(1, 22)), "23", "10a", "6a"}
     for row in rows.values():
         assert len(row) == 9
         assert all(row[1:4]), f"missing label, explanation, or internal key: {row}"
@@ -1023,3 +1023,74 @@ def test_setup_templates_use_axis_subject_target_names():
     keys = {key.rpartition("#")[2] for key in sections if key != "test_lists"}
     assert keys
     assert not axes & keys
+
+
+_POINTER = "booley cheat --metrics"
+
+
+def _metrics_bullet() -> str:
+    template = _skill_text("booley-setup", "AGENTS_TEMPLATE.md")
+    rendered = template.split("```markdown\n", 1)[1].split("```", 1)[0]
+    bullets = [line for line in rendered.splitlines() if line.startswith("- Metric-Driven")]
+    assert len(bullets) == 1
+    return bullets[0]
+
+
+def test_setup_asks_metrics_question_and_later_keeps_defaults():
+    rows = _decision_rows(_skill_text("booley-setup", "SETUP_PLAN_TEMPLATE.md"))
+    assert rows["6a"][1] == "Enable metrics now or later?"
+    row = _setup_row_sections()["6a"]
+    for required in (
+        "**defaults block** row",
+        "default `later`",
+        "`later` changes nothing beyond the defaults `booley init` wrote",
+        "`now` adds exactly one `[<target>.sim]` table for every Target row 6 gives at least one Test",
+        "no other table",
+        "Unattended: `later`",
+        "no review star",
+        "row 6a resolves `pre-set`",
+        "`evidence-forced: later`",
+    ):
+        assert required in row, required
+    step2 = _compact_skill_text("booley-setup", "steps/2-project-config.md")
+    section = step2.split("### 2d. metrics.toml (row 6a)", 1)[1].split("### Presenting", 1)[0]
+    for required in (
+        "booley cheat --metrics",
+        "spelled exactly as listed",
+        "Never derive a header from the `tests.toml` key",
+        "booley measure --validate",
+    ):
+        assert required in section, required
+    greenfield = _compact_skill_text("booley-setup", "steps/new-greenfield.md")
+    assert "enable metrics now or later? (row 6a; recommend later)" in greenfield
+
+
+def test_setup_agents_template_points_at_metrics_cheatsheet_once():
+    template = _skill_text("booley-setup", "AGENTS_TEMPLATE.md")
+    rendered = template.split("```markdown\n", 1)[1].split("```", 1)[0]
+    assert rendered.count(_POINTER) == 1
+    bullet = _metrics_bullet()
+    assert _POINTER in bullet
+    assert rendered.split("## Booley-Specific Instructions", 1)[1].count(bullet) == 1
+    step3 = _compact_skill_text("booley-setup", "steps/3-agents-md.md")
+    for required in (
+        "add the bullet only when the file does not contain that text",
+        "never adds it twice",
+        "leave; under leave, the pointer is the one line this step adds",
+        "The hybrid tracked root copy gets the same bytes",
+    ):
+        assert required in step3, required
+
+
+def test_heal_adds_metrics_pointer_only_when_missing():
+    heal = _skill_text("booley-heal")
+    assert heal.count(_metrics_bullet()) == 1
+    compact = " ".join(heal.split())
+    for required in (
+        f"does not contain `{_POINTER}`",
+        "Never add the bullet when the text is present",
+        "never create `AGENTS.md` for it",
+        "apply the same edit to the tracked root copy",
+        "not a reason to add `metrics.toml` tables",
+    ):
+        assert required in compact, required

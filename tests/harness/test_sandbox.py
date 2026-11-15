@@ -299,7 +299,7 @@ def test_ephemeral_shell_forwards_only_listed_cli_credentials(tmp_path, monkeypa
     monkeypatch.setenv("ANTHROPIC_API_KEY", "SYNTHETIC_ANTHROPIC")
     data = tmp_path / "project" / ".booley"
     data.mkdir(parents=True)
-    (data / "booley.toml").write_text('[agent]\nclis = ["claude"]\n')
+    (data / "booley.toml").write_text('[agent]\nclis = ["claude"]\nauth = "api_key"\n')
     for app, body in (
         ("claude", '{"claudeAiOauth":{"accessToken":"SYNTHETIC_LOGIN"}}'),
         ("codex", '{"tokens":{"access_token":"SYNTHETIC_LOGIN"},"OPENAI_API_KEY":null}'),
@@ -316,7 +316,6 @@ def test_ephemeral_shell_forwards_only_listed_cli_credentials(tmp_path, monkeypa
         body = runner._env_file.read_text()
         assert "ANTHROPIC_API_KEY=SYNTHETIC_ANTHROPIC" in body
         assert "OPENAI_API_KEY" not in body
-        assert ".claude/.credentials.json" in command
         assert ".codex" not in command
     finally:
         runner._env_file.unlink(missing_ok=True)
@@ -372,7 +371,7 @@ def test_shell_with_codex_gateway_forwards_no_gateway_variable(tmp_path, monkeyp
 
 _INVALID_AGENT_CONFIGS = {
     "default-not-listed": '[agent]\ndefault = "codex"\nclis = ["claude"]\n',
-    "unlisted-auth-key": '[agent]\nclis = ["claude"]\n[agent.auth]\ncodex = "auto"\n',
+    "unlisted-auth-key": '[agent]\nclis = ["claude"]\n[agent.auth]\ncodex = "subscription"\n',
 }
 
 

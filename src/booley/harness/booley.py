@@ -216,8 +216,8 @@ class _RootHelpAction(argparse.Action):
 def _agent_auth_arg(value: str) -> str:
     """Normalize the CLI's hyphenated auth spelling to the TOML vocabulary."""
     normalized = value.strip().lower().replace("-", "_")
-    if normalized not in {"auto", "subscription", "api_key"}:
-        raise argparse.ArgumentTypeError("choose auto, subscription, or api-key")
+    if normalized not in {"subscription", "api_key"}:
+        raise argparse.ArgumentTypeError("choose subscription or api-key")
     return normalized
 
 
@@ -766,7 +766,7 @@ def _add_init_subparser(sub) -> None:
     init_p.add_argument(
         "--auth",
         type=_agent_auth_arg,
-        metavar="{auto,subscription,api-key}",
+        metavar="{subscription,api-key}",
         help="Agent authentication policy to record (default: detected from your credentials)",
     )
     init_p.add_argument(
@@ -931,7 +931,9 @@ def _add_session_subparser(sub) -> None:
         help="Optional command, e.g. `booley session enter -- booley doctor`",
     )
     session_sub.add_parser("down", help="Stop and remove the Sandbox", parents=[root_opt])
-    session_sub.add_parser("status", help="Print running/stopped/absent")
+    session_sub.add_parser(
+        "status", help="Print running/stopped/absent, or a pending start/recovery"
+    )
     session_sub.add_parser(
         "validate",
         help="Validate the host-issued Sandbox specification",

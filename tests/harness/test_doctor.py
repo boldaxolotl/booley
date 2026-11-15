@@ -4539,6 +4539,23 @@ class TestRetiredJobsKeys:
         ) in output
         assert "memory admission replaced it" not in output
 
+    def test_max_light_fails_with_its_own_reason(self, tmp_path, monkeypatch, capsys):
+        booley_dir = _write_project(tmp_path)
+        _patch_environment(monkeypatch, tmp_path, booley_dir)
+        toml = booley_dir / "booley.toml"
+        toml.write_bytes(toml.read_bytes() + b"\n[jobs]\nmax_light = 2\n")
+
+        rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
+
+        output = colors.strip_ansi(capsys.readouterr().out)
+        assert rc != 0
+        assert "booley.toml sets retired [jobs] key max_light (line 17)" in output
+        assert (
+            "delete [jobs].max_light (line 17);"
+            " Specialists and the Mutation Flow are admitted by memory"
+        ) in output
+        assert "memory admission replaced it" not in output
+
     def test_memory_budget_fails_with_its_own_fix(self, tmp_path, monkeypatch, capsys):
         booley_dir = _write_project(tmp_path)
         _patch_environment(monkeypatch, tmp_path, booley_dir)
@@ -6518,7 +6535,7 @@ class TestSubscriptionCredsHealth:
         monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
         monkeypatch.setattr(doctor, "wall_clock", lambda: now)
         monkeypatch.setattr(doctor, "_configured_provider", lambda _: auth_token.APP_CLAUDE)
-        monkeypatch.setattr(doctor, "_configured_auth_policy", lambda *_: "auto")
+        monkeypatch.setattr(doctor, "_configured_auth_policy", lambda *_: auth_token.VISITOR_AUTH)
         monkeypatch.setattr(doctor, "_check_agent_auth_token", lambda *_a, **_k: None)
         monkeypatch.setattr(doctor, "_check_oauth_token", lambda *_a, **_k: None)
         monkeypatch.setattr(doctor, "_check_auth_recorded", lambda *_a: None)
@@ -7834,7 +7851,7 @@ def test_seed_mount_policy_no_app_does_not_inspect_invalid_policy(tmp_path, monk
     assert {f.severity.value for f in report.report().findings} == {"pass"}
 
 
-@pytest.mark.parametrize("policy", ["auto", "subscription", "api_key"])
+@pytest.mark.parametrize("policy", ["subscription", "api_key"])
 def test_seed_mount_policy_state_partitions_belong_to_same_project(tmp_path, monkeypatch, policy):
     from booley.runtime import inspection
 
@@ -8886,3 +8903,21 @@ class TestSeatCapCheck:
         rec = _Rec()
         doctor._check_seat_caps(None, rec.p, rec.f)
         assert rec.events == []
+
+
+def test_doctor_reports_nothing_about_metrics_without_a_table(tmp_path, monkeypatch, capsys):
+    from booley.harness.init_cmd import METRICS_TOML_SKELETON
+
+    def findings(root: Path, with_metrics: bool):
+        root.mkdir()
+        booley_dir = _write_project(root)
+        if with_metrics:
+            (booley_dir / "metrics.toml").write_bytes(METRICS_TOML_SKELETON.encode())
+        _patch_environment(monkeypatch, root, booley_dir)
+        result = doctor.run_doctor_result(argparse.Namespace(verbose=False, deep=False), root)
+        output = capsys.readouterr().out
+        assert "metric" not in output.lower()
+        assert not [f for f in result.findings if "metric" in f.message.lower()]
+        return {(f.check_id, f.severity, f.subject) for f in result.findings}
+
+    assert findings(tmp_path / "with", True) == findings(tmp_path / "without", False)

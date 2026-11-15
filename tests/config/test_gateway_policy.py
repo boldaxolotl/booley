@@ -115,7 +115,7 @@ def test_gateway_handoff_reaches_loaded_agent_settings(gateway_container, tmp_pa
     project = tmp_path / "project"
     (project / ".booley").mkdir(parents=True)
     (project / ".booley" / "booley.toml").write_text(
-        '[agent]\nprovider = "codex"\nauth = "auto"\n', encoding="utf-8"
+        '[agent]\nprovider = "codex"\nauth = "subscription"\n', encoding="utf-8"
     )
     gateway_container.setenv("BOOLEY_PRIMARY_AUTH", "gateway")
 
@@ -162,7 +162,7 @@ def test_cli_record_accepts_codex_gateway_and_refuses_claude_gateway():
         "codex": "gateway",
     }
     with pytest.raises(ValueError, match="malformed Agent CLI record entry"):
-        agent_config.decode_cli_policies("claude=gateway,codex=auto")
+        agent_config.decode_cli_policies("claude=gateway,codex=subscription")
 
 
 def test_issued_record_rules_per_cli_and_hides_nothing_without_codex_gateway(gateway_container):
@@ -181,7 +181,7 @@ def test_issued_record_rules_per_cli_and_hides_nothing_without_codex_gateway(gat
 
 
 def test_issued_codex_gateway_is_false_outside_a_sandbox(gateway_container):
-    gateway_container.setenv("BOOLEY_AGENT_CLIS", "claude=auto,codex=gateway")
+    gateway_container.setenv("BOOLEY_AGENT_CLIS", "claude=subscription,codex=gateway")
     gateway_container.setattr(agent_config, "_inside_container", lambda: False)
 
     assert not agent_config.issued_codex_gateway()
@@ -210,4 +210,4 @@ def test_gateway_policy_is_not_honored_outside_a_sandbox(gateway_container, tmp_
         b'[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n'
     )
 
-    assert agent_config.load_agent_settings(project).auth_for("codex") == "auto"
+    assert agent_config.load_agent_settings(project).auth_for("codex") == "subscription"

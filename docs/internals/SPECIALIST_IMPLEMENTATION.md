@@ -15,10 +15,8 @@ analysis is in
 Code: `booley/specialists/reviewer.py`, with receipts and dispositions in
 `booley/evidence/review_receipt.py` and `review_dispositions.py`.
 
-The Reviewer runs in Interactive Mode and Goal Mode. Each finding is anchored
-to the supplied specification, steering text, or concrete code behavior; a
-spec-review Goal names its specification file explicitly. The shared Reviewer
-prompt owns the disposition and output instructions, and the category guides
+Each finding is anchored to the supplied specification, steering text, or
+concrete code behavior. The shared Reviewer prompt owns the disposition and output instructions, and the category guides
 hold only review checklists, so every category reports in the same shape.
 
 ### Validation and dispositions
@@ -36,14 +34,11 @@ declares; every other file is readable context. The Coverage Analyst has no
 category and reads both the RTL and the testbench, because its task is to
 cross-check them.
 
-Dispositions decide what a finding blocks. An in-scope `current` finding can
-leave a `_clean` Criterion unmet; `advisory`, `deferred`, and `out_of_scope`
-findings stay observations. A `_done` Criterion is met once the review runs,
-whatever the dispositions, and keeps its findings. In Goal Mode a `done` Goal
-may Finish with open findings, which the Review Package shows; they do not
-require a human sign-off. A `clean` Goal needs every current finding verified
-fixed or waived with a justification the user can read. Merging the Goal
-Branch afterwards is ordinary Git.
+Dispositions decide what a finding blocks. An in-scope `current` finding
+stays open until a verify finds it fixed or accepts a waiver; `advisory`,
+`deferred`, and `out_of_scope` findings stay observations. A review's `_done`
+Criterion is met once the review runs, whatever the dispositions, and keeps its
+findings.
 
 Malformed rows are kept apart from findings so one bad row cannot erase good
 ones. Filtered source proposals and malformed canonical, `ReportFindings`

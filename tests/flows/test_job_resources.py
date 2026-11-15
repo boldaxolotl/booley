@@ -462,7 +462,12 @@ def test_other_jobs_are_holders_from_another_process(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_SLOTS_DIR", str(tmp_path / "slots"))
     store = job_slots.SlotStore(tmp_path / "slots")
     assert job_resources._other_jobs_hold_slots() is False
-    token = store.acquire(job_slots.CLASS_LIGHT, pid=os.getpid(), argv=_proc_argv())
+    token = store.acquire(
+        job_slots.CLASS_MEMORY,
+        pid=os.getpid(),
+        argv=_proc_argv(),
+        memory=job_slots.MemoryClaim(budget_mb=1024, run_alone=True),
+    )
     assert token.is_holder
     assert job_resources._other_jobs_hold_slots() is False, "this process's own slot"
     monkeypatch.setattr(job_resources.os, "getpid", lambda: token.pid + 1)

@@ -19,7 +19,7 @@ from hypothesis.stateful import (
 )
 
 from booley.runtime import job_slots
-from booley.runtime.job_slots import SlotCaps, SlotStore, SlotToken
+from booley.runtime.job_slots import MemoryClaim, SlotStore, SlotToken
 from booley.runtime.pid import DEAD, REUSED, RUNNING, ProcessIdentity, ProcessObservation
 
 # Each step touches the real slot store on disk, so input generation slows down
@@ -41,10 +41,12 @@ EXPLORATORY_SETTINGS = settings(
     suppress_health_check=_LOAD_INDEPENDENT,
 )
 
-_CLASSES = (job_slots.CLASS_LIGHT,)
+_CLASSES = (job_slots.CLASS_MEMORY,)
 _PIDS = (101, 102, 103, 104)
 _PRIORITY = {job_slots.ROLE_INTERACTIVE: 0, "background": 1}
-_CAPS = SlotCaps(max_light=2)
+# Equal reservations that fill the budget: exactly two claims hold at once.
+_SLOTS = 2
+_CLAIM = MemoryClaim(budget_mb=2, reservation_mb=1)
 
 
 class FakeProcessWorld:
@@ -127,7 +129,6 @@ class JobSlotStateMachine(RuleBasedStateMachine):
     def _new_store(self) -> SlotStore:
         return SlotStore(
             self.root,
-            _CAPS,
             is_pid_alive=self.world.is_pid_alive,
             read_cmdline=self.world.read_cmdline,
             now=self.world.now,
@@ -196,7 +197,7 @@ class JobSlotStateMachine(RuleBasedStateMachine):
         self._reap_class(job_class)
         class_entries = self._ordered(job_class)
         expected_seq = max((lease.seq for lease in class_entries), default=0) + 1
-        token = self.stores[pid].submit(job_class, pid=pid, role=role)
+        token = self.stores[pid].submit(job_class, pid=pid, role=role, memory=_CLAIM)
         assert token.seq == expected_seq
         self.leases[token.lease_id] = ModelLease(
             lease_id=token.lease_id,
@@ -226,9 +227,12 @@ class JobSlotStateMachine(RuleBasedStateMachine):
 
         ordered = self._ordered(lease.job_class)
         rank = ordered.index(lease)
-        cap = _CAPS.cap_for(lease.job_class)
-        if rank >= cap:
-            assert (actual.state, actual.position) == (job_slots.QUEUED, rank - cap)
+        if rank >= _SLOTS:
+            assert (actual.state, actual.position) == (job_slots.QUEUED, rank - _SLOTS)
+            return
+        if any(ahead.state == job_slots.QUEUED for ahead in ordered[:rank]):
+            # A waiter ahead would start first: this one fits but must not jump it.
+            assert (actual.state, actual.position) == (job_slots.QUEUED, 0)
             return
         assert actual.state == job_slots.HOLDING
         lease.state = job_slots.HOLDING
@@ -299,7 +303,7 @@ class JobSlotStateMachine(RuleBasedStateMachine):
         expected = self._ordered(job_class)
         expected_holders = [lease for lease in expected if lease.state == job_slots.HOLDING]
         expected_waiters = [lease for lease in expected if lease.state == job_slots.QUEUED]
-        assert len(holders) <= _CAPS.cap_for(job_class)
+        assert len(holders) <= _SLOTS
         assert len({token.lease_id for token in [*holders, *waiters]}) == len([*holders, *waiters])
         assert self._projection(holders) == self._model_projection(expected_holders)
         assert self._projection(waiters) == self._model_projection(expected_waiters)

@@ -59,7 +59,14 @@ import tomlkit
 from booley import __version__
 from booley.commit_policy import stealth_enabled
 from booley.config import agent_app
-from booley.config.agent import AGENT_CLIS, DeclaredAgent, encode_cli_policies, parse_agent_section
+from booley.config.agent import (
+    AGENT_CLIS,
+    DEFAULT_AUTH,
+    RETIRED_AUTH,
+    DeclaredAgent,
+    encode_cli_policies,
+    parse_agent_section,
+)
 from booley.config.gateway import GATEWAY_AUTH, GatewayConfigError, gateway_forwarded_keys
 from booley.config.host_config import retired_project_policy_message
 from booley.core.booley_dir_pin import BooleyDirPinError, EntryPin
@@ -251,6 +258,22 @@ TESTS_TOML_SKELETON = """\
 # reads the annotated TESTS_TEMPLATE.toml shipped with the skill.
 """
 
+# Default bounds only, no `[<target>.<flow>]` table: nothing is measured until a
+# Project adds one, and the file already passes `booley measure --validate`.
+METRICS_TOML_SKELETON = """\
+# metrics.toml - the Target Metrics that `booley measure` checks.
+#
+# Written by `booley init` with the default bounds only: they apply to a
+# `[<target>.sim]` or `[<target>.coverage]` table, and there is none yet, so
+# nothing is measured. `booley cheat --metrics` explains the file.
+
+[defaults.sim]
+tests_failed_max = 0
+
+[defaults.coverage]
+tests_failed_max = 0
+"""
+
 
 # ---------------------------------------------------------------------------
 # Init step: Booley Directory (record key: booley_dir)
@@ -265,6 +288,7 @@ def _backfill_config_skeletons(
     skeletons = {
         "booley.toml": content,
         "tests.toml": TESTS_TOML_SKELETON,
+        "metrics.toml": METRICS_TOML_SKELETON,
     }
     added = [
         name
@@ -424,7 +448,7 @@ def _step_booley_dir(ctx: InitContext) -> None:
     gitignore = target / ".gitignore"
     guarded_write(gitignore, PROJECT_GITIGNORE, newline="\n")
 
-    # booley.toml + tests.toml skeletons (idempotent, never overwrites).
+    # booley.toml + tests.toml + metrics.toml skeletons (idempotent, never overwrites).
     _backfill_config_skeletons(target, ctx, "# booley-init-origin: port\n" + BOOLEY_TOML_SKELETON)
     _backfill_fusesoc_ignore(target, ctx)
     _init_project_git_repo(target, ctx)
@@ -594,7 +618,8 @@ def _read_agent_selection(path: Path) -> DeclaredAgent:
     with path.open("rb") as config_file:
         data = tomllib.load(config_file)
     agent = require_dict(data.get("agent", {}), field="booley.toml [agent]")
-    return parse_agent_section(agent)
+    # A retired ``auth = "auto"`` is read, not refused: init replaces it.
+    return parse_agent_section(agent, keep_retired_auth=True)
 
 
 def _prompt_agent_choice(
@@ -711,13 +736,13 @@ def _resolve_auth(
 ) -> tuple[dict[str, str], str | dict[str, str] | None] | None:
     """Resolve each CLI's policy and the ``[agent] auth`` value to write, if any.
 
-    A recorded value other than ``auto`` is kept; ``auto`` or a missing entry takes the
+    A recorded value other than the retired ``auto`` is kept; ``auto`` or a missing entry takes the
     ``--auth`` flag, else the policy detected from the CLI's credentials. The record is
     one string when every CLI agrees, else an ``[agent.auth]`` table in ``clis`` order;
     it is ``None`` when nothing changes. ``None`` overall: a conflict or aborted prompt.
     """
     recorded = _recorded_auth(declared, clis)
-    kept = {cli: policy for cli, policy in recorded.items() if policy != "auto"}
+    kept = {cli: policy for cli, policy in recorded.items() if policy != RETIRED_AUTH}
     if requested is not None and any(policy != requested for policy in kept.values()):
         err(
             f"--auth={requested} conflicts with booley.toml [agent] "
@@ -769,7 +794,7 @@ def _resolve_agent_selection(
         ctx.record("agent_config", "err", "agent selection aborted")
         return None
     policies, record = resolved
-    return AgentSelection(provider, policies.get(provider, "auto"), write_default, record)
+    return AgentSelection(provider, policies.get(provider, DEFAULT_AUTH), write_default, record)
 
 
 def _insert_agent_fields(content: str, fields: Mapping[str, str | dict[str, str]]) -> str:
@@ -856,7 +881,7 @@ def _step_agent_config(ctx: InitContext, selection: AgentSelection, path: Path) 
     return True
 
 
-def _detect_auth_mode(provider: str, policy: str = "auto") -> str | None:
+def _detect_auth_mode(provider: str, policy: str) -> str | None:
     """The auth mode *provider*'s agents would actually run (and bill) under.
 
     Resolved with the agent CLI's own precedence (env API key first, then the
@@ -869,7 +894,7 @@ def _detect_auth_mode(provider: str, policy: str = "auto") -> str | None:
     return effective.mode if effective else None
 
 
-def _check_provider_creds(provider: str, auth_mode: str, policy: str = "auto") -> None:
+def _check_provider_creds(provider: str, auth_mode: str, policy: str) -> None:
     """Name the winning credential's source, and anything it silently outranks."""
     effective = auth_token.effective_credential(provider, policy)
     if effective is None or effective.mode != auth_mode:
@@ -1391,8 +1416,7 @@ def _credential_plans(
             plans.append(auth_token.credential_plan(cli, policy))
         except ValueError as exc:
             raise RuntimeSpecError(
-                f"{cli} credentials conflict with auth = '{policy}': {exc}; "
-                f"remove the conflict or set {cli} to 'auto' in [agent.auth]"
+                f"{cli} credentials conflict with auth = '{policy}': {exc}; remove the conflict"
             ) from exc
     return tuple(plans)
 
@@ -2920,7 +2944,7 @@ def _sandbox_agent_selection(ctx: InitContext, config_path: Path) -> AgentSelect
     ``BOOLEY_AGENT_APP`` of ``claude`` or ``codex`` is recorded as the default.
     ``auto`` is not resolved here: the registrar publishes its choice per start,
     after ``onCreateCommand``, and pinning one start's choice would defeat ``auto``.
-    A missing or ``auto`` ``auth`` is recorded from the credentials this Sandbox holds.
+    A missing or retired ``auto`` ``auth`` is recorded from the credentials this Sandbox holds.
     Raises what :func:`_read_agent_selection` raises for an unreadable ``[agent]``.
     """
     declared = _read_agent_selection(config_path)
@@ -2935,7 +2959,7 @@ def _sandbox_agent_selection(ctx: InitContext, config_path: Path) -> AgentSelect
         return None
     policies, record = resolved
     return AgentSelection(
-        provider, policies.get(provider, "auto"), declared.default is None, record
+        provider, policies.get(provider, DEFAULT_AUTH), declared.default is None, record
     )
 
 

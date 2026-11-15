@@ -75,7 +75,6 @@ from booley.harness.dashboard.targets import (
     first_line,
 )
 from booley.harness.worktree_list import WorktreeListError
-from booley.runtime.job_slots import CLASS_MEMORY, AdmissionOutlook
 
 logger = logging.getLogger(__name__)
 
@@ -169,14 +168,12 @@ class _Request:
 class _Checked:
     """A finished check: the shell's rejection, or the run's facts with the reads made for review.
 
-    ``outlook`` is ``None`` when the run takes no slot and a string when the queue cannot be
-    read; ``uncommitted`` is a string when the changes cannot be counted.
+    ``uncommitted`` is a string when the changes cannot be counted.
     """
 
     request: _Request
     error: str
     facts: RunFacts | None = None
-    outlook: AdmissionOutlook | str | None = None
     uncommitted: int | str = 0
 
 
@@ -812,7 +809,7 @@ class RunWizard(ModalScreen[str | None]):
     def _check(self, request: _Request) -> _Checked:
         """The argument check, then (when it passes) the reads the review screen shows.
 
-        Runs in a worker thread: it spawns a child and reads the slot store and Git.
+        Runs in a worker thread: it spawns a child and reads Git.
         """
         result: CheckResult = self._launcher.check(
             request.worktree, request.kind, request.name, request.argv
@@ -823,19 +820,7 @@ class RunWizard(ModalScreen[str | None]):
             uncommitted: int | str = self._launcher.uncommitted(request.worktree)
         except (WorktreeListError, BooleyLayoutError) as exc:
             uncommitted = str(exc)
-        return _Checked(request, "", result.facts, self._read_outlook(result.facts), uncommitted)
-
-    def _read_outlook(self, facts: RunFacts) -> AdmissionOutlook | str | None:
-        """The queue a run would meet; ``None`` when it takes no counted slot, a reason when unreadable.
-
-        A memory-admitted Job has no count-based outlook: its fit depends on its estimate.
-        """
-        if not facts.takes_slot or facts.job_class in (None, CLASS_MEMORY):
-            return None
-        try:
-            return self._launcher.outlook(facts.job_class)
-        except OSError as exc:
-            return str(exc) or type(exc).__name__
+        return _Checked(request, "", result.facts, uncommitted)
 
     def _form_built(self, event: Worker.StateChanged) -> None:
         """Apply a finished build for the form now wanted; a crash shows as the note."""
@@ -917,14 +902,14 @@ class RunWizard(ModalScreen[str | None]):
                 checked.request.worktree, checked.request.kind, checked.request.name, self._argv
             )
         )
-        self._render_review(checked.outlook)
+        self._render_review()
 
-    def _render_review(self, outlook: AdmissionOutlook | str | None) -> None:
+    def _render_review(self) -> None:
         """Show the queue verdict, the timeout and the warnings; a Specialist refusal also fills the error line."""
         checked = self._checked
         assert checked is not None and checked.facts is not None
         occupants = self._occupants(checked.request.worktree)
-        lines = [queue_line(checked.facts, outlook), timeout_line(checked.facts)]
+        lines = [queue_line(checked.facts), timeout_line(checked.facts)]
         specialist = checked.facts.specialist
         if specialist is not None:
             lines += specialist_lines(specialist)

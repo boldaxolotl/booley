@@ -145,7 +145,7 @@ It doesn't open when:
 - your user setting `task.allowAutomaticTasks` is `"off"`, or the Project's
   `.vscode/settings.json` sets it to `"off"`;
 - you removed or edited the Dashboard task in `.vscode/tasks.json`, or Git
-  tracks that file. To restore a removed task, set `[sandbox].dashboard = false`, run `booley init` (on the host, or in a hand-written Sandbox such as a Codespace; a Booley-issued Sandbox needs the host), set it
+  tracks that file. To restore a removed task, set `[sandbox].dashboard = false`, run `booley init` on the host, set it
   back to `true` and run `booley init` again;
 - the window isn't a Dev Containers or Codespaces window, the folder isn't a
   Git repository, or the window is not trusted yet;
@@ -219,8 +219,8 @@ means the next build rebuilds the layers it removed.
 
 ### Deleted `[jobs]` keys
 
-`booley.toml` sets `max_heavy`, `heavy_memory`, `queue_max` or `memory_budget`. Flow and
-Specialist runs and every command that works on a Project stop with a message
+`booley.toml` sets `max_heavy`, `max_light`, `heavy_memory`, `queue_max` or
+`memory_budget`. Flow and Specialist runs and every command that works on a Project stop with a message
 that names each key, its line, the reason it is refused and the file, for example
 `max_heavy (line 12: memory admission replaced it)`; `booley doctor` and
 `booley upgrade` still run. Delete the named lines from that file. In a
@@ -759,7 +759,7 @@ Test the project's exact compile flags on one real file with
 `riscv-none-elf-gcc -march=<theirs> ...` in the Sandbox before writing
 configuration. The `booley-setup` skill plans that check during
 [setup](https://booley.dev/docs/setup/#the-booley-setup-skill). Image contents:
-[RISC-V toolchain image](https://booley.dev/docs/sandbox/#risc-v-toolchain-image-booley-sandbox-riscv).
+[RISC-V toolchain image](https://booley.dev/docs/sandbox/#custom-sandbox-image).
 
 ## Lint, synthesis, and FPGA
 

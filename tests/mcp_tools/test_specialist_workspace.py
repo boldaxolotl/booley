@@ -590,7 +590,8 @@ def _assert_cpp_review_snapshot(params, repo, visible, hidden, category):
             != 0
         )
     if category == "tb":
-        assert "C/C++ testbench" in params.system_prompt
+        if "(tb-hunt)" not in params.system_prompt:  # the checklist call; the hunt call has none
+            assert "C/C++ testbench" in params.system_prompt
         assert "Canonical style guide for SystemVerilog" not in params.system_prompt
         assert "Cocotb" not in params.system_prompt
         assert "shared/helper.CPP" in params.prompt
@@ -746,9 +747,7 @@ def test_specialist_launch_reclaims_killed_run_scratch(tmp_path, monkeypatch):
             shutil.rmtree(path, ignore_errors=True)
 
 
-def _snapshot_view(
-    repo: Path, category: str, names: tuple[str, ...], *, goal_mode: bool
-) -> dict[str, bool]:
+def _snapshot_view(repo: Path, category: str, names: tuple[str, ...]) -> dict[str, bool]:
     """Run a Reviewer's agent call and report which of *names* its snapshot holds."""
     scope, focus = ("rtl/dut.sv", "bugs") if category == "rtl" else ("tb/tb.sv", "quality")
     seen: dict[str, bool] = {}
@@ -762,7 +761,6 @@ def _snapshot_view(
     endpoint.parse_args(
         ["--work-dir", str(repo), "--category", category, "--focus", focus, "--scope", scope]
     )
-    endpoint._goal_mode = goal_mode
     with (
         patch("booley.specialists.specialist._call_agent_sync", side_effect=fake_call),
         patch("booley.specialists.specialist.parent_death_watchdog", return_value=nullcontext()),
@@ -771,10 +769,9 @@ def _snapshot_view(
     return seen
 
 
-@pytest.mark.parametrize("goal_mode", [False, True], ids=["interactive", "goal"])
 @pytest.mark.parametrize("category", ["rtl", "tb"])
-def test_reviewers_read_unclassified_files_in_snapshot(tmp_path, monkeypatch, category, goal_mode):
-    """Files in no RTL or TB fileset are readable by both Reviewers, in any mode (#4052).
+def test_reviewers_read_unclassified_files_in_snapshot(tmp_path, monkeypatch, category):
+    """Files in no RTL or TB fileset are readable by both Reviewers (#4052).
 
     Undeclared HDL-named files stay hidden; the opposite category stays hidden.
     """
@@ -800,7 +797,7 @@ def test_reviewers_read_unclassified_files_in_snapshot(tmp_path, monkeypatch, ca
     )
     _git(["add", "design.core", "rtl/dut.sv", "tb/tb.sv", *visible], repo)
 
-    seen = _snapshot_view(repo, category, (*visible, *hidden), goal_mode=goal_mode)
+    seen = _snapshot_view(repo, category, (*visible, *hidden))
 
     assert {name: seen[name] for name in visible} == dict.fromkeys(visible, True)
     assert {name: seen[name] for name in hidden} == dict.fromkeys(hidden, False)
@@ -822,7 +819,7 @@ def test_rtl_fileset_files_under_fw_follow_their_category(tmp_path, monkeypatch,
     )
     _git(["add", "design.core", "rtl/dut.sv", "tb/tb.sv", "fw/rom.vhd", "fw/rom.sv"], repo)
 
-    seen = _snapshot_view(repo, category, ("fw/rom.sv", "fw/rom.vhd"), goal_mode=False)
+    seen = _snapshot_view(repo, category, ("fw/rom.sv", "fw/rom.vhd"))
 
     assert seen == dict.fromkeys(("fw/rom.sv", "fw/rom.vhd"), category == "rtl")
 
@@ -843,6 +840,6 @@ def test_c_source_in_rtl_fileset_follows_sim_harness_rule(tmp_path, monkeypatch,
     )
     _git(["add", "design.core", "rtl/dut.sv", "tb/tb.sv", "fw/boot.c"], repo)
 
-    seen = _snapshot_view(repo, category, ("fw/boot.c",), goal_mode=False)
+    seen = _snapshot_view(repo, category, ("fw/boot.c",))
 
     assert seen == {"fw/boot.c": category == "tb"}

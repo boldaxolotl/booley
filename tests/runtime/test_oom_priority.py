@@ -15,7 +15,6 @@ from tests.subprocess_budget import run_bounded_child
 from tests.test_job_slots import FakeWorld, make_store
 
 import booley
-from booley.config.jobs import SlotCaps
 from booley.runtime import job_slots
 
 BUDGET_MB = 10_000.0
@@ -29,7 +28,7 @@ def world() -> FakeWorld:
 
 @pytest.fixture
 def store(tmp_path: Path, world: FakeWorld) -> job_slots.SlotStore:
-    return make_store(tmp_path / "slots", world, SlotCaps(max_light=3))
+    return make_store(tmp_path / "slots", world)
 
 
 @pytest.fixture
@@ -102,6 +101,34 @@ def test_ranking_holds_after_many_jobs_start_and_finish(
         assert levels == sorted(levels)
         assert len(set(levels)) == len(levels)
         assert min(levels) > proc.values[1] == 0
+
+
+def test_a_mutation_tool_ranks_at_its_own_claims_level_under_a_coordinator(
+    store: job_slots.SlotStore,
+    world: FakeWorld,
+    proc: FakeProc,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("booley.runtime.oom_priority.PROC", proc)
+    # The coordinator's zero companion claim is admitted first, then another Flow.
+    world.alive[101] = ["coordinator"]
+    coordinator = store.acquire(
+        job_slots.CLASS_MEMORY,
+        pid=101,
+        role=job_slots.ROLE_BACKGROUND,
+        memory=job_slots.MemoryClaim(budget_mb=BUDGET_MB, reservation_mb=0.0, companion=True),
+    )
+    proc.add(101, parent=1, value=0)
+    _admit(store, world, proc, 102)
+
+    with oom_priority.job_oom_priority(store, coordinator):
+        assert proc.writes == []  # the coordinator's own tree is not ranked at its level
+        # A mutation build claim in the coordinator's PID, newer than both.
+        build = _item_claim(store, 101)
+        tool = proc.add(2001, parent=101)
+        with oom_priority.job_oom_priority(store, build):
+            assert proc.values[tool] == 1000
+            assert proc.values[101] == 1000 - oom_priority.COORDINATOR_GAP
 
 
 class _ItemProcesses:
@@ -228,15 +255,6 @@ def test_admission_ordinals_follow_admission_and_are_stored(
     assert third.admitted == 1  # ordinals only order Jobs that overlap
 
 
-def test_a_slot_claim_has_no_admission_ordinal(
-    store: job_slots.SlotStore, world: FakeWorld
-) -> None:
-    world.alive[101] = ["coordinator"]
-    token = store.acquire(job_slots.CLASS_LIGHT, pid=101)
-    (holder,), _waiters = store.observe(job_slots.CLASS_LIGHT)
-    assert (token.admitted, holder.admitted) == (None, None)
-
-
 class TestJobOomRankingLifecycle:
     def test_ranks_while_held_and_restores_the_coordinator_after(
         self,
@@ -358,14 +376,10 @@ class TestJobOomRankingLifecycle:
         assert proc.writes == []
         assert proc.values[tool] == 0
 
-    def test_only_a_memory_claim_is_ranked(
-        self, store: job_slots.SlotStore, world: FakeWorld
+    def test_a_missing_store_or_token_is_not_ranked(
+        self, store: job_slots.SlotStore, world: FakeWorld, proc: FakeProc
     ) -> None:
-        world.alive[101] = ["coordinator"]
-        holder = store.acquire(job_slots.CLASS_LIGHT, pid=101)
-        assert not isinstance(
-            oom_priority.job_oom_priority(store, holder), oom_priority.JobOomRanking
-        )
+        holder, _tool = _admit(store, world, proc, 101)
         assert not isinstance(
             oom_priority.job_oom_priority(store, None), oom_priority.JobOomRanking
         )

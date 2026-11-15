@@ -9,6 +9,7 @@ mount when a record is parsed. Paths outside every former mount are unchanged.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -50,24 +51,57 @@ def _read(path: Path) -> list[str]:
     return [str(item) for item in mounts]
 
 
+def former_mounts() -> tuple[str, ...]:
+    """The former mount points recorded in the mounted Booley Directory.
+
+    Raises ``MountHistoryError`` when the history cannot be read; no history is empty.
+    """
+    return tuple(_read(_history_path()))
+
+
+def rebase(path: Path, former: Iterable[str]) -> Path | None:
+    """Rebase *path* from the first of the *former* mounts holding it; ``None`` outside all."""
+    for mount in former:
+        if path.is_relative_to(mount):
+            return Path(sandbox_layout.BOOLEY_DIR_TARGET) / path.relative_to(mount)
+    return None
+
+
+def _former(record: str) -> tuple[str, ...]:
+    try:
+        return former_mounts()
+    except MountHistoryError as exc:
+        raise MountHistoryError(
+            f"{record} cannot be read: {exc}; restore {_history_path()}, which lists the former "
+            "mount points and is written by `booley init` when the mount point changes"
+        ) from exc
+
+
 def translate_stored_path(value: str, *, record: str) -> str:
     """Rebase *value* from a former mount point onto the current one."""
     current = Path(sandbox_layout.BOOLEY_DIR_TARGET)
     path = Path(value)
     if not path.is_absolute() or path.is_relative_to(current):
         return value
-    history = _history_path()
-    try:
-        former = _read(history)
-    except MountHistoryError as exc:
-        raise MountHistoryError(
-            f"{record} cannot be read: {exc}; restore {history}, which lists the former "
-            "mount points and is written by `booley init` when the mount point changes"
-        ) from exc
-    for mount in former:
+    rebased = rebase(path, _former(record))
+    return value if rebased is None else str(rebased)
+
+
+def former_spellings(value: str, *, record: str) -> tuple[str, ...]:
+    """*value*, a path under the current mount, as each former mount spelled it; () otherwise.
+
+    The current mount counts by its lexical spelling or its resolved directory, because the
+    image makes the mount a symlink and attribution resolves paths before it derives keys.
+    """
+    path = Path(value)
+    if not path.is_absolute():
+        return ()
+    current = Path(sandbox_layout.BOOLEY_DIR_TARGET)
+    for mount in dict.fromkeys((current, current.resolve())):
         if path.is_relative_to(mount):
-            return str(current / path.relative_to(mount))
-    return value
+            relative = path.relative_to(mount)
+            return tuple(str(Path(former) / relative) for former in _former(record))
+    return ()
 
 
 def _former_mount_of(spec: bytes) -> str | None:

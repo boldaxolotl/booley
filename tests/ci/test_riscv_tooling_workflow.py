@@ -123,13 +123,13 @@ def _run(
     return result, log.read_text(encoding="utf-8").splitlines()
 
 
-def test_demo_chowns_and_mounts_only_its_readiness_subdirectory(tmp_path: Path) -> None:
+def test_demo_chowns_and_mounts_only_its_measurement_subdirectory(tmp_path: Path) -> None:
     result, calls = _run(
         tmp_path,
         {"run": 'bash .github/scripts/run_picorv32_ci_demo.sh "${TEST_WORKSPACE}" booley-r2'},
         {"TEST_WORKSPACE": str(tmp_path)},
     )
-    directory = tmp_path / "runner/riscv-image-evidence/goal-readiness"
+    directory = tmp_path / "runner/riscv-image-evidence/measurement"
     assert result.returncode == 0, result.stderr
     assert [call for call in calls if call.startswith("sudo chown")] == [
         f"sudo chown -R 1000:1000 demo {directory}"
@@ -137,12 +137,12 @@ def test_demo_chowns_and_mounts_only_its_readiness_subdirectory(tmp_path: Path) 
     assert any(f"src={directory},dst=/evidence" in call for call in calls)
 
 
-def test_readiness_ownership_and_upload_access_are_restored_before_upload(
+def test_measurement_ownership_and_upload_access_are_restored_before_upload(
     tmp_path: Path,
 ) -> None:
-    directory = tmp_path / "runner/riscv-image-evidence/goal-readiness"
+    directory = tmp_path / "runner/riscv-image-evidence/measurement"
     directory.mkdir(parents=True)
-    evidence = directory / "goal-readiness.json"
+    evidence = directory / "measurement.json"
     evidence.write_text("{}")
     evidence.chmod(0o600)
     step = _step("Restore RISC-V demo checkout ownership")
@@ -399,7 +399,7 @@ def test_every_lane_warns_at_or_below_its_budget() -> None:
         (None, True),
     ],
 )
-def test_readiness_upload_marker_tracks_demo_attempt(
+def test_measurement_upload_marker_tracks_demo_attempt(
     tmp_path: Path, failure: str | None, started: bool
 ) -> None:
     env = {"TOOLING_SOURCE": "local", "TOOLING_CONTEXT": ""}
@@ -407,9 +407,9 @@ def test_readiness_upload_marker_tracks_demo_attempt(
         env[failure] = "1"
     result, calls = _lane(tmp_path, **env)
     assert result.returncode == (1 if failure else 0), result.stderr
-    marker = tmp_path / "runner/riscv-image-evidence/goal-readiness-started"
+    marker = tmp_path / "runner/riscv-image-evidence/measurement-started"
     assert marker.exists() == started
-    collected, _ = _run(tmp_path, _step("Read Goal readiness attempt marker"), {})
+    collected, _ = _run(tmp_path, _step("Read measurement attempt marker"), {})
     assert collected.returncode == 0, collected.stderr
     output = tmp_path / "github-output"
     assert (output.exists() and "started=true" in output.read_text()) == started

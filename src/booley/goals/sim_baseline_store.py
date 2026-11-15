@@ -30,10 +30,22 @@ from booley.runtime import job_records
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.filesystem_utils import read_file_bytes
+from booley.runtime.mount_history import MountHistoryError, translate_stored_path
 from booley.runtime.pid import is_pid_alive
 
 SCHEMA = "booley.sim-baseline/v1"
 INPUTS_FILE = "sim-baseline-inputs.json"
+#: Absolute Sandbox paths a request or child request stores, rebased on read.
+STORED_PATHS = (
+    "booley_dir",
+    "jobs_root",
+    "source_repository",
+    "owned_checkout",
+    "scratch_parent",
+    "owned_paired_checkout",
+    "checkout",
+    "output",
+)
 
 
 def sim_goals(record: GoalRecord) -> tuple[RecordedGoal, ...]:
@@ -155,12 +167,18 @@ def write_document(path: Path, value: Mapping[str, Any]) -> None:
 
 
 def read_document(path: Path, family: BaselineFamily | None = SIM_BASELINE) -> dict[str, Any]:
-    """Validate the envelope at its filesystem boundary; ``None`` accepts any registered family."""
+    """Validate the envelope at its filesystem boundary; ``None`` accepts any registered family.
+
+    Stored absolute paths are rebased from a former Booley Directory mount point.
+    """
     raw = require_dict(json.loads(read_file_bytes(path)), field="simulation baseline")
     if family is None:
         family_for_schema(raw.get("schema"))
     elif raw.get("schema") != family.schema:
         raise ValueError("unsupported simulation baseline schema")
+    for key in STORED_PATHS:
+        if isinstance(raw.get(key), str):
+            raw[key] = translate_stored_path(raw[key], record=f"baseline document {path}")
     return raw
 
 
@@ -449,5 +467,5 @@ def baseline_observations(
         if interrupted:
             return {"status": "unavailable", "reason": INTERRUPTED_REASON}
         return settled
-    except (OSError, ValueError, KeyError, TypeError) as exc:
+    except (OSError, ValueError, KeyError, TypeError, MountHistoryError) as exc:
         return {"status": "unavailable", "reason": f"baseline evidence cannot be read: {exc}"}

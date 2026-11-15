@@ -11,7 +11,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from booley.criteria.state import DevelopmentState
 from booley.runtime import job_records
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.session_paths import project_job_roots, session_jobs_dir
@@ -82,9 +81,6 @@ def test_reviewer_state_and_evidence_share_main(worktree, monkeypatch, sandbox_l
     state_file = Path(endpoint.args.state_file)
     assert state_file.is_relative_to(main / "reviewer-state")
 
-    state = DevelopmentState.load(state_file)
-    state.init_criteria({"review_rtl_bugs_clean": True})
-    state.save()
     monkeypatch.setattr(
         endpoint,
         "_invoke_agent",
@@ -159,29 +155,6 @@ def test_dashboard_and_chat_handles_use_main(worktree, monkeypatch):
     )
     chat_cmd._claude_command(tree, [], strict=False)
     assert reserved == [main]
-
-
-def test_admission_caps_come_from_the_slot_store_project(worktree, monkeypatch):
-    from booley.flows import endpoint_admission
-    from booley.runtime import job_slots
-
-    main, tree = worktree
-    (main / "booley.toml").write_text("[jobs]\nmax_light = 3\n", encoding="utf-8")
-    (tree / ".booley/booley.toml").write_text("[jobs]\nmax_light = 7\n", encoding="utf-8")
-    claimed: list[tuple[Path, int]] = []
-
-    class SpyStore:
-        def __init__(self, root: Path, caps: job_slots.SlotCaps) -> None:
-            claimed.append((root, caps.max_light))
-
-        def acquire(self, *_args, **_kwargs) -> str:
-            return "token"
-
-    monkeypatch.setattr(job_slots, "SlotStore", SpyStore)
-    endpoint = SimpleNamespace(name="sim", _resolve_job_class=lambda: "light")
-    monkeypatch.delenv(job_slots.INHERITED_SLOT_ENV, raising=False)
-    endpoint_admission._acquire_job_slot(endpoint)
-    assert claimed == [(main / "runtime" / "jobs" / "slots", 3)]
 
 
 def test_doctor_reads_session_state_from_main(worktree, monkeypatch):
