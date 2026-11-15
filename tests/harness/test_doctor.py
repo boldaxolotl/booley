@@ -1051,6 +1051,7 @@ def test_doctor_backend_hint_matches_mode(tmp_path, monkeypatch, capsys, deep):
     _patch_environment(monkeypatch, tmp_path, booley_dir)
     _healthy_doctor_backend(monkeypatch)
     _set_venue(monkeypatch, True)
+    monkeypatch.setattr(doctor, "_check_sandbox_mcp_server", lambda _reporter: None)
     monkeypatch.setattr(doctor, "_run_deep_checks", lambda *a, **k: None)
     monkeypatch.setattr(doctor, "_run_core_resolution", lambda *a, **k: None)
     rss_calls, model_calls = [], []
@@ -1080,6 +1081,64 @@ def test_doctor_backend_hint_matches_mode(tmp_path, monkeypatch, capsys, deep):
     # Plain Doctor never calls a model; deep Doctor probes each distinct Specialist model.
     assert rss_calls == ([tmp_path] if deep else [])
     assert bool(model_calls) is deep
+
+
+@pytest.mark.parametrize("inside", [True, False], ids=["inside", "host"])
+def test_mcp_checks_run_sandbox_server_check_only_inside_sandbox(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], inside: bool
+) -> None:
+    from booley.runtime import incontainer_setup
+
+    _set_venue(monkeypatch, inside)
+    monkeypatch.setenv("BOOLEY_AGENT_APP", "codex")
+    monkeypatch.delenv("BOOLEY_AGENT_CLIS", raising=False)
+    requests: list[incontainer_setup.HttpServerInspectionRequest] = []
+
+    def inspect(request: incontainer_setup.HttpServerInspectionRequest) -> DiagnosticReport:
+        requests.append(request)
+        findings = Findings()
+        findings.fail("Sandbox MCP server not serving on 127.0.0.1:1", "rebuild the Sandbox")
+        findings.detail("    log tail line", verbose_only=False)
+        return findings.report()
+
+    monkeypatch.setattr(incontainer_setup, "inspect_http_server", inspect)
+    reporter = doctor._Reporter.create()
+
+    doctor._run_mcp_checks(None, None, "img", reporter)
+
+    output = capsys.readouterr().out
+    if inside:
+        assert [request.agent_clis for request in requests] == [("codex",)]
+        assert "Sandbox MCP server not serving" in output
+        assert "rebuild the Sandbox" in output
+        assert "log tail line" in output
+        assert reporter.counts["fail"] == 1
+    else:
+        assert requests == []
+        assert "Sandbox MCP server" not in output
+        assert reporter.counts["fail"] == 0
+
+
+def test_sandbox_mcp_server_check_skips_unresolved_auto_choice(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.config import agent, agent_app
+    from booley.runtime import incontainer_setup
+
+    def unresolved() -> tuple[str, ...]:
+        raise agent_app.AgentAppError("no record")
+
+    def forbidden(_request: object) -> DiagnosticReport:
+        raise AssertionError("owner must not run")
+
+    monkeypatch.setattr(agent, "sandbox_agent_clis", unresolved)
+    monkeypatch.setattr(incontainer_setup, "inspect_http_server", forbidden)
+
+    doctor._check_sandbox_mcp_server(doctor._Reporter.create())
+
+    output = capsys.readouterr().out
+    assert "Sandbox MCP server check skipped" in output
+    assert "no record" in output
 
 
 def test_doctor_deep_host_preserves_probe_skip(tmp_path, monkeypatch, capsys):
