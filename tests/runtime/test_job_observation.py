@@ -10,7 +10,7 @@ import pytest
 from tests.runtime.test_job_artifacts import progress, spy
 
 from booley.runtime import job_records, job_slots
-from booley.runtime.job_observation import JobObserver, _artifacts, _observer, _unfinished
+from booley.runtime.job_observation import JobObserver, _artifacts, _observer
 from booley.runtime.pid import ProcessIdentity, ProcessObservation, ProcessState
 
 
@@ -545,6 +545,9 @@ def test_history_cuts_never_drop_unfinished_records(tmp_path, monkeypatch):
     ) in snapshot.diagnostics
 
 
+_UNFINISHED = "booley.runtime.job_observation._unfinished"
+
+
 def _age(root: Path) -> None:
     os.utime(root, (1_000, 1_000))
 
@@ -597,7 +600,7 @@ def test_recently_changed_root_is_relisted(tmp_path, monkeypatch):
         listed.append(Path(path))
         return scandir(path)
 
-    monkeypatch.setattr(_unfinished.os, "scandir", spy)
+    monkeypatch.setattr(f"{_UNFINISHED}.os.scandir", spy)
     observer = JobObserver(tmp_path)
     monkeypatch.setattr(_observer, "time_ns", lambda: stamp + 1_000_000_000)
     observer.read((), unfinished_roots=(root,))
@@ -622,7 +625,7 @@ def test_failed_directory_listing_is_retried_not_cached_as_empty(tmp_path, monke
             raise OSError("too many open files")
         return scandir(path)
 
-    monkeypatch.setattr(_unfinished.os, "scandir", flaky)
+    monkeypatch.setattr(f"{_UNFINISHED}.os.scandir", flaky)
     observer = JobObserver(tmp_path)
     assert observer.read((), unfinished_roots=(root,)).jobs == ()
     assert [job.record.run_id for job in observer.read((), unfinished_roots=(root,)).jobs] == [
