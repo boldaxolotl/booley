@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.agent_workspace.isolation import remove_shadow_package
-from booley.commit_policy import ALLOWED_TYPES, banned_phrases, stealth_enabled, validate_message
+from booley.commit_policy import banned_phrases, stealth_enabled, validate_message
 from booley.core.boundary import parse_positive_int_arg
 from booley.core.models import AgentCallParams
 
@@ -36,7 +36,6 @@ from booley.dev_support.commit_git_io import (
     _read_commit_info,
     _save_files_to_logs,
 )
-from booley.dev_support.commit_message_format import _auto_format_commit_message
 from booley.flows import job_resources
 from booley.flows.cli_arguments import HumanParser, add_timeout_args
 from booley.flows.cli_help import SurfaceHelp
@@ -604,7 +603,7 @@ class Specialist(McpTool):
     # --- Git commit helpers for code-modifying Specialists ---
 
     # Subclasses override to provide a Specialist-specific fallback message.
-    _default_commit_message: str = "wip: apply Specialist changes"
+    _default_commit_message: str = "Apply Specialist changes"
 
     # Shared commit-message guidance injected into code-modifying Specialist prompts.
     # NOTE: do not bake the banned-phrase list into this static string — the
@@ -612,19 +611,9 @@ class Specialist(McpTool):
     # ``commit_msg_utils`` and is project-specific. Use
     # ``commit_msg_banned_phrase_note()`` to get a dynamic warning string.
     COMMIT_MSG_GUIDANCE = (
-        "## Commit Message Format\n"
-        "Your `commit_message` output MUST follow conventional commits:\n"
-        "  <type>(<scope>): <summary>\n"
-        # Built from the validator's ALLOWED_TYPES so the prompt can never
-        # advertise a type the commit-msg hook rejects (or omit one it
-        # accepts — a hardcoded copy here once missed `chore`).
-        f"Valid types: {', '.join(ALLOWED_TYPES)}\n"
-        "Scope: lowercase module/file name, e.g. iir_filter, tb, rtl (required).\n"
-        "Summary: max 72 chars, lowercase start, no trailing period.\n"
-        "Single line only — no body.\n"
-        "Examples: 'feat(cla_adder): add carry-lookahead pipeline',\n"
-        "  'test(tb): add pipelined adder coverage',\n"
-        "  'fix(rtl): correct byte alignment in stage 2'\n"
+        "## Commit Message\n"
+        "Write your `commit_message` as a short, descriptive one-line summary "
+        "of the change, e.g. 'Add carry-lookahead pipeline to the adder'.\n"
     )
 
     @staticmethod
@@ -730,11 +719,13 @@ class Specialist(McpTool):
         return info
 
     def _prepare_commit_message(self, message: str | None) -> str:
-        """Auto-format and validate commit message, raising on failure."""
+        """Validate the agent's commit message as written, raising on failure.
+
+        Booley imposes no message convention; only the Project's Stealth
+        policy (banned terms, ``max_body_lines``) applies.
+        """
         work_dir = self.args.work_dir
-        msg = message or self._default_commit_message
-        category_hint = getattr(self, "modifies_category", "") or ""
-        msg = _auto_format_commit_message(msg, category=category_hint)
+        msg = (message or "").strip() or self._default_commit_message
 
         # Guard: never commit in main worktree (must be a linked worktree)
         git_path = Path(work_dir) / ".git"

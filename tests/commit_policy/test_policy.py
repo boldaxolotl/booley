@@ -292,47 +292,25 @@ class TestMaxBodyLines:
         assert max_body_lines(root) is None
 
 
-class TestEnforceConvention:
-    """[stealth] enforce_convention — the type(scope): summary check is opt-in,
-    off unless a project turns it on (SETUP-10)."""
+class TestRetiredConventionSetting:
+    """The retired subject-convention key is ignored, never an error."""
 
-    def _project(self, tmp_path, toml_body: bytes | None):
-        bp = tmp_path / ".booley"
-        bp.mkdir(parents=True)
-        if toml_body is not None:
-            (bp / "booley.toml").write_bytes(toml_body)
-        return tmp_path
+    def test_retired_key_is_ignored(self, tmp_path):
+        from booley.commit_policy.policy import stealth_policy
+        from booley.commit_policy.validation import validate_message
 
-    def test_false_when_no_config(self, tmp_path):
-        from booley.commit_policy.policy import enforce_convention
+        # Split so a repository grep for the retired name stays clean.
+        retired_key = "enforce_" + "convention"
+        (tmp_path / ".booley").mkdir()
+        (tmp_path / ".booley" / "booley.toml").write_text(
+            f"[stealth]\nenabled = true\n{retired_key} = true\nmax_body_lines = 2\n"
+        )
 
-        assert enforce_convention(self._project(tmp_path, None)) is False
+        policy = stealth_policy(tmp_path)
 
-    def test_false_when_knob_absent(self, tmp_path):
-        from booley.commit_policy.policy import enforce_convention
-
-        root = self._project(tmp_path, b'[stealth]\nbanned_words = ["foo"]\n')
-        assert enforce_convention(root) is False
-
-    def test_true_when_enabled(self, tmp_path):
-        from booley.commit_policy.policy import enforce_convention
-
-        root = self._project(tmp_path, b"[stealth]\nenforce_convention = true\n")
-        assert enforce_convention(root) is True
-
-    def test_false_when_explicitly_disabled(self, tmp_path):
-        from booley.commit_policy.policy import enforce_convention
-
-        root = self._project(tmp_path, b"[stealth]\nenforce_convention = false\n")
-        assert enforce_convention(root) is False
-
-    def test_invalid_type_logs_and_uses_default(self, tmp_path, caplog):
-        from booley.commit_policy.policy import enforce_convention
-
-        root = self._project(tmp_path, b'[stealth]\nenforce_convention = "false"\n')
-
-        assert enforce_convention(root) is False
-        assert "[stealth] enforce_convention must be a boolean" in caplog.text
+        assert policy.enabled is True
+        assert policy.max_body_lines == 2
+        assert validate_message("Update ALU\n", project_root=tmp_path) == []
 
 
 class TestAllowedAuthors:
@@ -628,7 +606,7 @@ class TestIdentifierRegression:
         assert find_banned("precursor.txt reagent.sv") == []
         from booley.commit_policy.policy import StealthPolicy
 
-        custom = StealthPolicy(True, ("agent",), None, False, ())
+        custom = StealthPolicy(True, ("agent",), None, ())
         assert "agent" in custom.find_banned("axi_agent XMLAgent reAgent Agent4")
         assert "gpt" in find_banned("4gpt7 GPT4")
 
@@ -659,7 +637,7 @@ class TestVocabularyTiers:
     def test_direct_constructor_positional_and_identity(self):
         from booley.commit_policy.policy import StealthPolicy
 
-        policy = StealthPolicy(True, ("booley", "quokka"), None, False, ())
+        policy = StealthPolicy(True, ("booley", "quokka"), None, ())
         assert policy.banned_substrings == ()
         assert policy.find_banned("mybooleyfile myquokkafile QuokkaRunner") == ["booley", "quokka"]
 
@@ -697,7 +675,6 @@ class TestVocabularyTiers:
             True,
             ("agent", "cursor", "per review findings", "booley", "anthropic", "claude"),
             None,
-            False,
             (),
         )
         for text in ("axi_agent", "XMLAgent", "reAgent", "Agent4", "éagentΩ"):
@@ -716,8 +693,8 @@ class TestVocabularyTiers:
     def test_cache_key_separates_tiers(self):
         from booley.commit_policy.policy import StealthPolicy
 
-        token = StealthPolicy(True, ("quokka",), None, False, ())
-        substring = StealthPolicy(True, ("quokka",), None, False, (), ("quokka",))
+        token = StealthPolicy(True, ("quokka",), None, ())
+        substring = StealthPolicy(True, ("quokka",), None, (), ("quokka",))
         assert token.find_banned("myquokkafile") == []
         assert substring.find_banned("myquokkafile") == ["quokka"]
 
@@ -728,15 +705,13 @@ class TestVocabularyTiers:
         directory = tmp_path / ".booley"
         directory.mkdir()
         (directory / "booley.toml").write_text('[stealth]\nbanned_substrings = ["red"]\n')
-        assert stealth_policy(tmp_path) == StealthPolicy(False, (), None, False, ())
+        assert stealth_policy(tmp_path) == StealthPolicy(False, (), None, ())
 
 
 def test_token_ascii_edges_and_overlapping_repeated_literal(tmp_path):
     from booley.commit_policy.policy import StealthPolicy
 
-    assert StealthPolicy(True, ("agent",), None, False, ()).find_banned("\u212aagent\u0131") == [
-        "agent"
-    ]
+    assert StealthPolicy(True, ("agent",), None, ()).find_banned("\u212aagent\u0131") == ["agent"]
     directory = tmp_path / ".booley"
     directory.mkdir()
     (directory / "booley.toml").write_text(
@@ -762,8 +737,8 @@ def test_all_identity_overrides_and_placeholder_unicode_equivalence():
         "gemini",
     )
     union, substrings = parse_stealth_vocabulary({"banned_words": list(identities)})
-    direct = StealthPolicy(True, identities, None, False, ())
-    loaded = StealthPolicy(True, union, None, False, (), substrings)
+    direct = StealthPolicy(True, identities, None, ())
+    loaded = StealthPolicy(True, union, None, (), substrings)
     for term in identities:
         text = "my" + term.upper() + "file"
         assert direct.find_banned(text) == loaded.find_banned(text) == [term]

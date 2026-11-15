@@ -116,14 +116,6 @@ If your design uses `gpt` or `llm` as ordinary names, set `banned_words` without
 them. Otherwise a commit message about `gpt_core` is rejected, and a push that
 adds `rtl/gpt_core.sv` is blocked.
 
-### Enforcing the subject convention (`enforce_convention`)
-
-Off by default. Set `enforce_convention = true` to reject commits whose subject
-isn't `type(scope): summary`, with a type of `feat`, `fix`, `refactor`, `test`,
-`review`, `wip`, `docs`, or `chore`, and a summary of at most 72 characters.
-Merge commits are exempt. It is off by default because a design repo usually
-carries upstream and human commits in other styles.
-
 ### Capping the body (`max_body_lines`)
 
 Unlimited by default. `max_body_lines = 0` allows the subject line only;
@@ -133,11 +125,10 @@ wrote is lost. Merge commits are capped too.
 
 ```toml
 [stealth]
-enforce_convention = true
 max_body_lines = 5
 ```
 
-To skip both checks for one commit, set `BOOLEY_SKIP_COMMIT_VALIDATION=1`.
+To skip the cap for one commit, set `BOOLEY_SKIP_COMMIT_VALIDATION=1`.
 Banned terms and attribution footers are still rejected; it never skips them.
 
 ## Push checks

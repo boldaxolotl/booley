@@ -18,7 +18,7 @@ def _configured_project(tmp_path: Path, stealth: str) -> Path:
     ("message", "error_fragment"),
     [
         ("fix(core): clean summary\n", None),
-        ("bad message\n", "doesn't match"),
+        ("Update ALU\n", None),
         ("fix(core): clean\n\nfirst\nsecond\n", "Body is 2 line(s)"),
         ("fix(core): codex mention\n", "Banned phrase"),
         ("Merge branch 'feature'\n", None),
@@ -32,7 +32,7 @@ def test_validation_uses_real_project_policy(
 ) -> None:
     root = _configured_project(
         tmp_path,
-        "enabled = true\nenforce_convention = true\nmax_body_lines = 1\n",
+        "enabled = true\nmax_body_lines = 1\n",
     )
 
     errors = validate_message(message, project_root=root)
@@ -46,7 +46,7 @@ def test_validation_uses_real_project_policy(
 def test_source_checkout_exemption_overrides_config() -> None:
     source_root = Path(__file__).resolve().parents[2]
 
-    assert policy.stealth_policy(source_root) == StealthPolicy(False, (), None, False, ())
+    assert policy.stealth_policy(source_root) == StealthPolicy(False, (), None, ())
 
 
 def test_default_validation_preserves_ordinary_engineering_prose(tmp_path: Path) -> None:

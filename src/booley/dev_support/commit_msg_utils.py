@@ -20,7 +20,6 @@ StealthPolicy = _policy.StealthPolicy
 BANNED_PHRASES = _policy.BANNED_PHRASES
 allowed_authors = _policy.allowed_authors
 banned_phrases = _policy.banned_phrases
-enforce_convention = _policy.enforce_convention
 find_banned = _policy.find_banned
 has_banned_content = _policy.has_banned_content
 identity_allowed = _policy.identity_allowed
@@ -39,7 +38,6 @@ __all__ = [
     "StealthPolicy",
     "allowed_authors",
     "banned_phrases",
-    "enforce_convention",
     "find_banned",
     "has_banned_content",
     "identity_allowed",
