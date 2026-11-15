@@ -79,7 +79,7 @@ def test_windows_open_does_not_require_missing_pywin32_constant(
         GENERIC_READ=0x80000000,
         OPEN_EXISTING=3,
     )
-    handle = SimpleNamespace(Close=lambda: None)
+    handle = SimpleNamespace(Close=lambda: None, handle=7)
     observed: dict[str, int] = {}
 
     def create_file(*args: object) -> object:

@@ -242,7 +242,7 @@ def _validated_result_fields(
     identity: AdapterTransportIdentity,
     passed: bool,
     inconclusive: bool,
-) -> tuple[tuple[str, ...], RunTerminationKind, str, str, str]:
+) -> tuple[tuple[str, ...], RunTerminationKind, str, AdapterFailureKind, str]:
     """Decode fields whose constraints depend on the invocation or verdict."""
     tests = _string_tuple(payload, "tests")
     if identity.selected_tests and tests != identity.selected_tests:
@@ -285,7 +285,7 @@ def _validated_termination(value: Any) -> RunTerminationKind:
 
 
 def _validated_failure_kind(value: Any) -> AdapterFailureKind:
-    if not isinstance(value, str) or value not in {
+    if not isinstance(value, str) or value not in (
         "",
         "design",
         "infrastructure",
@@ -293,7 +293,7 @@ def _validated_failure_kind(value: Any) -> AdapterFailureKind:
         "inconclusive",
         "artifact",
         "missing_input",
-    }:
+    ):
         raise AdapterTransportError("adapter result failure_kind is invalid")
     return value
 

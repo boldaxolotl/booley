@@ -38,7 +38,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import cast
+from typing import Final, Literal, cast
 from xml.etree import ElementTree
 
 from booley.core.boundary import (
@@ -53,9 +53,10 @@ from booley.core.boundary import (
 # Verdict vocabulary for a reconciled test — a strict subset of simulate's
 # per-test verdict enum: "pass" / "fail" map directly, "inconclusive" marks
 # the Test Run inconclusive.
-VERDICT_PASS = "pass"
-VERDICT_FAIL = "fail"
-VERDICT_INCONCLUSIVE = "inconclusive"
+VERDICT_PASS: Final = "pass"
+VERDICT_FAIL: Final = "fail"
+VERDICT_INCONCLUSIVE: Final = "inconclusive"
+ReconciledVerdict = Literal["pass", "fail", "inconclusive"]
 
 TIMEOUT_ACTIVE_DETAIL = "timed out while this test was running"
 TIMEOUT_NOT_RUN_DETAIL = "did not run before the cocotb batch timed out"
@@ -409,7 +410,7 @@ def _absent_test_detail(name: str, results: CocotbResults) -> str:
 def reconcile(
     selected: list[str],
     results: CocotbResults,
-) -> list[tuple[str, str, str]]:
+) -> list[tuple[str, ReconciledVerdict, str]]:
     """Map every *selected* tests.toml name to ``(name, verdict, detail)``.
 
     The selected-set reconciliation of ADR 0034 decision 7: every name Booley
@@ -426,7 +427,7 @@ def reconcile(
     Unexpected extra XML entries are **not** verdict-bearing (the caller may
     log them via :func:`extra_tests`).
     """
-    out: list[tuple[str, str, str]] = []
+    out: list[tuple[str, ReconciledVerdict, str]] = []
     for name in selected:
         if results.state != STATE_OK:
             out.append((name, VERDICT_INCONCLUSIVE, results.detail))
