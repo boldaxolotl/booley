@@ -121,6 +121,7 @@ from booley.runtime import (
     doctor_stamp,
     health,
     image_identity,
+    incontainer_setup,
     inspection,
     project_repositories,
     runtime_context,
@@ -2719,6 +2720,8 @@ def _run_mcp_checks(
     """Validate Interactive Mode: devcontainer spec, excludes, Docker objects,
     auth token, and in-container MCP server discovery (ADR 0018)."""
     _section("Interactive Mode checks")
+    if runtime_context.inside_session_runtime():
+        _check_sandbox_mcp_server(reporter)
     if project is None:
         reporter.skip_("Interactive Mode checks skipped - project config invalid")
         return
@@ -2757,6 +2760,23 @@ def _run_mcp_checks(
     reporter.diagnostics(
         server_inspection.inspect_mcp_server(
             _mcp_server_inspection_request(project, docker_exe, image)
+        )
+    )
+
+
+def _check_sandbox_mcp_server(reporter: _Reporter) -> None:
+    """Check the running HTTP MCP server from inside the Sandbox, where Docker is absent."""
+    from booley.config import agent, agent_app
+
+    try:
+        clis = agent.sandbox_agent_clis()
+    except agent_app.AgentAppError as exc:
+        # The start hook exits before starting the server; the agent checks FAIL this choice.
+        reporter.skip_(f"Sandbox MCP server check skipped - {exc}")
+        return
+    reporter.diagnostics(
+        incontainer_setup.inspect_http_server(
+            incontainer_setup.HttpServerInspectionRequest(agent_clis=clis)
         )
     )
 

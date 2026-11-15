@@ -25,6 +25,9 @@ Idempotent: a live server is left alone; an up-to-date registration is not
 rewritten. Stale stdio-form registrations from older Booley versions are
 migrated to the URL form.
 
+Doctor's Sandbox-side check (``inspect_http_server``) reads the same port and
+server log.
+
 Note: exact client config locations/schemas vary by app version; the writers
 below target the common formats and are intentionally easy to adjust.
 """
@@ -40,9 +43,11 @@ import sys
 import tempfile
 import time
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.runtime import auth_token
 from booley.runtime.mcp_config import (
     GATEWAY_PROVIDER_ID,
@@ -59,6 +64,7 @@ _TOOL_TIMEOUT_SEC = 7200
 _SERVER_CMD = [sys.executable, "-m", "booley.mcp.server", "--transport", "http"]
 _SERVER_LOG_PATH = "/tmp/booley_mcp_http.log"
 _SERVER_START_TIMEOUT_SECONDS = 20.0
+_SERVER_LOG_TAIL_LINES = 8
 
 
 def http_url() -> str:
@@ -82,6 +88,63 @@ def _port_is_serving(port: int, *, timeout: float = 0.5) -> bool:
             return True
     except OSError:
         return False
+
+
+@dataclass(frozen=True, slots=True)
+class HttpServerInspectionRequest:
+    """What Doctor's Sandbox-side check needs: the allowed Agent CLIs and the log."""
+
+    agent_clis: tuple[str, ...]
+    log_path: Path = Path(_SERVER_LOG_PATH)
+
+
+def inspect_http_server(request: HttpServerInspectionRequest) -> DiagnosticReport:
+    """Report whether this Sandbox's HTTP MCP server accepts connections.
+
+    Proves a TCP accept on the loopback port the start hook probes, not MCP
+    protocol health. Skips when no Agent CLI is allowed: the start hook then
+    never starts the server.
+    """
+    findings = Findings()
+    if not request.agent_clis:
+        findings.skip(
+            "Sandbox MCP server check skipped - this Sandbox allows no Agent CLI, "
+            "so its start hook does not start the server"
+        )
+        return findings.report()
+    port = http_port()
+    if _port_is_serving(port):
+        findings.pass_(
+            f"Sandbox MCP server accepts connections on 127.0.0.1:{port}; if your Agent CLI "
+            "does not list `booley`, exit the CLI and start it again so it rereads its "
+            "MCP configuration"
+        )
+        return findings.report()
+    findings.fail(
+        f"Sandbox MCP server not serving on 127.0.0.1:{port}",
+        "run `booley init --seed` on the host, then rebuild or reopen the Sandbox",
+    )
+    for line in _server_log_tail(request.log_path):
+        findings.detail(line, verbose_only=False)
+    return findings.report()
+
+
+def _server_log_tail(path: Path) -> list[str]:
+    """The end of the server log, or one line saying why it cannot be shown.
+
+    A tail, not the first error: the log is appended across Sandbox starts.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return [f"server log {path} is absent"]
+    except OSError as exc:
+        return [f"server log {path} is unreadable: {exc}"]
+    lines = [line.rstrip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return [f"server log {path} is empty"]
+    tail = lines[-_SERVER_LOG_TAIL_LINES:]
+    return [f"last {len(tail)} line(s) of {path}:", *(f"    {line}" for line in tail)]
 
 
 def ensure_http_server(
