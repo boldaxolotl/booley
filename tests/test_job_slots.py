@@ -494,7 +494,7 @@ class TestSingleProcess:
         else:
             assert entries[0].lease_state == job_slots.LEASE_CANCELLING
 
-    def test_promotion_after_a_successful_cancel_reports_lost(self, root, world):
+    def test_promotion_after_a_successful_cancel_reports_lost(self, root, world, monkeypatch):
         spawn(world, 100)
         store = make_store(root, world)
         canceller = make_store(root, world)
@@ -506,7 +506,7 @@ class TestSingleProcess:
             cancelled.append(canceller.cancel_waiter_token(waiter))
             return real_promote(token)
 
-        store._promote = cancel_then_promote  # type: ignore[method-assign]
+        monkeypatch.setattr(store, "_promote", cancel_then_promote)
 
         assert store.refresh(waiter).state == LOST
         assert cancelled == [True]
@@ -528,6 +528,25 @@ class TestSingleProcess:
         holders, waiters = store.observe(CLASS_MEMORY)
         assert holders == []
         assert [t.lease_id for t in waiters] == [waiter.lease_id]
+
+    def test_promotion_of_an_unreadable_waiter_stays_queued(self, root, world, monkeypatch):
+        spawn(world, 100)
+        store = make_store(root, world)
+        waiter = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+        real_promote = store._promote
+
+        def unreadable_promote(token):
+            def unreadable(_path):
+                raise PermissionError("entry is locked")
+
+            monkeypatch.setattr(store, "_load_token", unreadable)
+            return real_promote(token)
+
+        monkeypatch.setattr(store, "_promote", unreadable_promote)
+
+        assert store.refresh(waiter).state == QUEUED
+        assert waiter.path.exists()
+        assert not waiter.is_holder
 
     def test_cancel_refuses_a_holder_token(self, root, world):
         spawn(world, 100)
@@ -596,6 +615,7 @@ class TestSingleProcess:
         def sleep(_seconds: float) -> None:
             if threading.current_thread() is not test_thread:
                 gate_free.wait(timeout=10)
+                time.sleep(0.01)  # a real backoff: Windows delays a freed gate's rmdir
 
         store._sleep = sleep
         try:
@@ -636,7 +656,7 @@ class TestSingleProcess:
 
         messages = [r.getMessage() for r in caplog.records]
         assert any("Could not release slot entry" in m and token.path.name in m for m in messages)
-        assert len(sleeps) >= job_slots._RELEASE_RETRY_ATTEMPTS
+        assert sleeps.count(job_slots._RELEASE_RETRY_SECONDS) == job_slots._RELEASE_RETRY_ATTEMPTS
 
     def test_release_without_a_thread_logs_the_give_up(self, root, world, caplog, monkeypatch):
         spawn(world, 100)
