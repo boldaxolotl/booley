@@ -11,8 +11,9 @@ from pathlib import Path
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 _ROOT = Path(__file__).parents[1]
-# A Sandbox-only module that stays cheap (few tests) and never reaches a host command.
-_MARKED_MODULE = "tests/harness/test_chat_terminal.py"
+# A Sandbox-only module that stays cheap (the nested run must finish well inside the 30 s
+# subprocess budget even under the broad suite's coverage) and never reaches a host command.
+_MARKED_MODULE = "tests/mcp_tools/test_report_encoding.py"
 # A neighbouring module that covers host code and must stay unmarked.
 _HOST_MODULE = "tests/harness/test_cheatsheet.py"
 
