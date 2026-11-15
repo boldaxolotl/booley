@@ -23,7 +23,6 @@ from booley.measurement.run_document import Verdict
 from booley.measurement.run_store import MeasurementStore
 from booley.runtime.job_records import JobRecord
 from tests.harness.test_dashboard_preview import (
-    goal_view,
     move_to,
     session_row,
     snapshot_of,
@@ -403,10 +402,9 @@ def test_an_unreadable_ancestor_document_counts_as_not_measured(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_goal_session_keeps_its_goal_views_beside_the_line() -> None:
-    rows = [session_row(0, "wt0", work_dir="/work/a", branch="goal/fixture")]
-    goal = goal_view("wt0", "active", met=2, goals=(0,) * 5, pending_proposals=1)
-    plain = snapshot_of(rows, goals=[goal])
+async def test_session_keeps_its_detail_beside_the_line() -> None:
+    rows = [session_row(0, "wt0", work_dir="/work/a", branch="feature/x")]
+    plain = snapshot_of(rows)
     line = reader().MeasurementLine("Measured 1a2b3c4", "/store/run.md")
     lined = dataclasses.replace(plain, measurements={"/work/a": line})
     details: list[list[str]] = []
@@ -421,6 +419,6 @@ async def test_goal_session_keeps_its_goal_views_beside_the_line() -> None:
             details.append(list(app.row_keys))
 
     assert overviews[1][:2] == overviews[0]  # the group header and the session row, as before
-    assert "Goal 2/5" in overviews[1][1]
+    assert "Interactive" in overviews[1][1]
     assert overviews[1][2].strip() == "Measured 1a2b3c4"
     assert details[0] == details[1] != []

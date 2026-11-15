@@ -2,7 +2,7 @@
 
 A measurement must not depend on the shell that asked for it. The child gets an
 allow-list of what the Sandbox itself issues; everything else the caller carries
-(Python search paths, loader overrides, Git and Project selection, Goal bindings,
+(Python search paths, loader overrides, Git and Project selection,
 session routing, slot inheritance, credentials) is dropped by construction.
 
 The checkout has no Git repository, so ``git`` is refused: the run's ``PATH``

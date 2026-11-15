@@ -83,16 +83,9 @@ logger = logging.getLogger(__name__)
 # NOTE: ``spec`` was removed when spec_arbiter took over spec-compliance
 # arbitration (ADR-0014), then re-introduced (ADR 0038) after the arbiter
 # itself was pruned — without it nothing checked RTL against the spec.
-RTL_FOCUS_CATEGORIES = frozenset(
-    {
-        "spec",
-        "bugs",
-        "protocol",
-        "security",
-        "optimization",
-        "code_style",
-    }
-)
+# Ordered so the Dashboard wizard lists the focuses in this order.
+RTL_FOCUSES = ("spec", "bugs", "protocol", "security", "optimization", "code_style")
+RTL_FOCUS_CATEGORIES = frozenset(RTL_FOCUSES)
 
 # Valid review focus categories for TB mode (spec stays RTL-only — ADR 0038).
 # ``quality`` is TB-only: the RTL side splits the same ground into ``bugs``

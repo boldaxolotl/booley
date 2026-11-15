@@ -111,7 +111,6 @@ def test_pull_requests_run_demo_only_for_its_real_inputs() -> None:
         "src/booley/projects/**",
         "src/booley/runtime/**",
         "src/booley/targets/**",
-        "src/booley/goals/**",
         "src/booley/review/**",
         "src/booley/evidence/**",
     } <= paths
@@ -1074,7 +1073,7 @@ def test_demo_workflow_runs_measurement_round_trip_on_its_inputs() -> None:
     assert '--evidence "${BOOLEY_MEASUREMENT_EVIDENCE:-' in verify
 
 
-_GOAL_IMPORT_ROOTS = ("booley.goals", "booley.criteria", "goal_mode_driver")
+_GOAL_IMPORT_ROOTS = ("booley.criteria", "goal_mode_driver")
 _GOAL_FREE_PYTHON = (
     *sorted(Path(".github/scripts/release_validation").glob("*.py")),
     Path(".github/scripts/export_demo_contract.py"),
@@ -1093,8 +1092,6 @@ _GOAL_FREE_TEXT = (
     PUBLISH_WORKFLOW,
     TEST_WORKFLOW,
 )
-# Path filters that keep selecting the unrelated Goal Mode sources until #3511 removes them.
-_GOAL_PATH_ENTRY = re.compile(r"src/booley/goals/(\*\*)?|tests/fixtures/goal_mode_smoke/")
 
 
 def _imported_modules(path: Path) -> set[str]:
@@ -1119,7 +1116,6 @@ def test_release_and_demo_inputs_use_no_goal_mode() -> None:
     }
     assert {path: modules for path, modules in offenders.items() if modules} == {}
     named = {
-        str(path): re.findall(r"(?i)goal\w*", _GOAL_PATH_ENTRY.sub("", path.read_text("utf-8")))
-        for path in _GOAL_FREE_TEXT
+        str(path): re.findall(r"(?i)goal\w*", path.read_text("utf-8")) for path in _GOAL_FREE_TEXT
     }
     assert {path: words for path, words in named.items() if words} == {}

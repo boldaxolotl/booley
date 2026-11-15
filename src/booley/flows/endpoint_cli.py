@@ -120,9 +120,9 @@ def add_common_args(
         "--diagnostic",
         action="store_true",
         help=SurfaceHelp(
-            "Run without satisfying Goals. Use for a Flow/Target combination "
-            "outside the active Goal definition.",
-            cli="Run diagnostically. CLI runs never record Goal evidence; use Goal-bound MCP calls with work_dir.",
+            "Run diagnostically: records no evidence. Use for a Flow/Target combination "
+            "outside the Project's Criteria.",
+            cli="Run diagnostically: records no evidence.",
         ),
     )
 
@@ -182,13 +182,6 @@ def parse_args(endpoint, argv: list[str] | None = None) -> argparse.Namespace:
         elif len(endpoint._args.steer) == 1:
             endpoint._args.steer = endpoint._args.steer[0]
     apply_environment(endpoint._args, endpoint.endpoint_kind)
-    if (
-        not invocation.transport
-        and endpoint.endpoint_kind in {"flow", "specialist"}
-        and not endpoint._acceptance_recorder.acceptance_identity()
-        and invocation.goal_recording_advisory is not None
-    ):
-        invocation.goal_recording_advisory(endpoint._args.work_dir)
     return endpoint._args
 
 

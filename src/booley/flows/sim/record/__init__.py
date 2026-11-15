@@ -51,7 +51,6 @@ from .inspection import (
     authenticate_work_item,
     collect_pre_sim_firings,
     read_durable_results,
-    started_simulation_record,
 )
 from .model import (
     BundleBuildAttempt,
@@ -131,6 +130,5 @@ __all__ = [
     "read_durable_results",
     "resolve_artifact_reference",
     "resolve_report_artifact_reference",
-    "started_simulation_record",
     "validate_resume_manifest",
 ]

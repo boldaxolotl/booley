@@ -2,87 +2,27 @@
 
 The canonical criteria list is rendered by :mod:`booley.criteria.reference`
 from ``criteria.toml`` (+ the tool registry for the "Set by" column). These tests
-fail the moment a committed doc block drifts from the source of truth, or a
-criterion defined in the TOML is silently dropped from the reference — so the list
-can only be updated from one place.
+fail the moment a criterion defined in the TOML is silently dropped from the
+reference.
 """
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
-
-import pytest
 
 from booley.criteria.endpoint_catalog import (
     CriterionEndpointCatalog,
     EndpointCriterionRelationship,
 )
 from booley.criteria.reference import (
-    extract_generated,
     render_criteria_params_reference,
     render_criteria_reference,
 )
 from booley.criteria.templates import load_base_criteria, load_project_criteria
-from booley.runtime.paths import cheatsheet_path
 from tests.criterion_endpoint_support import builtin_endpoint_catalog
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _ENDPOINTS = builtin_endpoint_catalog()
-
-# Docs that embed a committed copy of the generated block (base render, no
-# project criteria). cheatsheet.md is also spliced live by `booley cheat`, but its
-# committed copy must still match so the raw file is correct.
-_EMBEDDED_DOCS = [cheatsheet_path()]
-
-REGEN_HINT = (
-    "Regenerate with: python -m booley.dev_support.criteria_reference "
-    "src/booley/data/cheatsheet.md"
-)
-
-_GOAL_MODE_GUIDE = REPO_ROOT / "docs" / "user" / "GOAL-MODE.md"
-_CATALOG_ROW = re.compile(r"^\| `([^`]+)` \|", re.MULTILINE)
-
-
-@pytest.mark.parametrize("doc", _EMBEDDED_DOCS, ids=lambda p: p.name)
-def test_committed_block_matches_source(doc: Path) -> None:
-    """Each committed criteria block is byte-identical to the current render."""
-    assert doc.exists(), f"missing doc: {doc}"
-    committed = extract_generated(doc.read_text(encoding="utf-8"))
-    from booley.goals.reference import render_goal_reference
-
-    assert committed == render_goal_reference(_ENDPOINTS), (
-        f"{doc.name} criteria block is stale. {REGEN_HINT}"
-    )
-
-
-def test_goal_mode_guide_names_every_goal() -> None:
-    """The user guide spreads hand-written Goal tables across its sections.
-
-    It carries no generated copy, so a new Goal must still be added there by hand.
-    """
-    from booley.goals.reference import render_goal_reference
-
-    names = _CATALOG_ROW.findall(render_goal_reference(_ENDPOINTS))
-    assert names, "catalog render produced no Goal rows"
-    guide = _GOAL_MODE_GUIDE.read_text(encoding="utf-8")
-    missing = [name for name in names if f"`{name.replace('{target}', '<target>')}`" not in guide]
-    assert missing == [], f"GOAL-MODE.md does not list these Goals: {missing}"
-
-
-# GOAL-MODE.md links to `booley cheat --goals` for the full threshold tables
-# instead of embedding them, so only the cheatsheet carries this block.
-_PARAMS_EMBEDDED_DOCS = [cheatsheet_path()]
-
-
-@pytest.mark.parametrize("doc", _PARAMS_EMBEDDED_DOCS, ids=lambda p: p.name)
-def test_committed_params_block_matches_source(doc: Path) -> None:
-    """Each committed criteria-params (flavours) block matches the current render."""
-    assert doc.exists(), f"missing doc: {doc}"
-    committed = extract_generated(doc.read_text(encoding="utf-8"), name="criteria-params")
-    assert committed == render_criteria_params_reference(), (
-        f"{doc.name} criteria-params block is stale. {REGEN_HINT}"
-    )
 
 
 def test_every_visible_criterion_is_rendered() -> None:
@@ -179,84 +119,9 @@ def test_public_coverage_reference_names_explicit_collection() -> None:
     assert "`sim` (`coverage=true`)" in row
 
 
-def test_maintainer_cli_prints_every_reference_block(monkeypatch, capsys) -> None:
-    from booley.dev_support import criteria_reference
-
-    monkeypatch.setattr(criteria_reference, "_base_endpoint_catalog", lambda: _ENDPOINTS)
-    monkeypatch.setattr(
-        criteria_reference, "render_criteria_reference", lambda catalog: "criteria"
-    )
-    monkeypatch.setattr(criteria_reference, "render_criteria_params_reference", lambda: "params")
-
-    assert criteria_reference._main([]) == 0
-
-    assert capsys.readouterr().out == (
-        "<!-- criteria -->\ncriteria\n\n<!-- criteria-params -->\nparams\n\n"
-    )
-
-
-def test_maintainer_cli_updates_reference_blocks_in_place(
-    tmp_path: Path, monkeypatch, capsys
-) -> None:
-    from booley.dev_support import criteria_reference
-
-    destination = tmp_path / "reference.md"
-    destination.write_text(
-        """before
-<!-- BEGIN GENERATED: criteria -->
-old criteria
-<!-- END GENERATED: criteria -->
-<!-- BEGIN GENERATED: criteria-params -->
-old params
-<!-- END GENERATED: criteria-params -->
-after
-""",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(criteria_reference, "_base_endpoint_catalog", lambda: _ENDPOINTS)
-    monkeypatch.setattr(
-        criteria_reference, "render_criteria_reference", lambda catalog: "criteria"
-    )
-    monkeypatch.setattr(criteria_reference, "render_criteria_params_reference", lambda: "params")
-
-    assert criteria_reference._main([str(destination)]) == 0
-
-    assert extract_generated(destination.read_text(encoding="utf-8")) == "criteria"
-    assert (
-        extract_generated(destination.read_text(encoding="utf-8"), name="criteria-params")
-        == "params"
-    )
-    assert capsys.readouterr().out == f"updated {destination}\n"
-
-
 def test_specialist_producers_show_named_arguments_without_cli_syntax() -> None:
     rendered = render_criteria_reference(_ENDPOINTS)
     row = next(line for line in rendered.splitlines() if "`review_rtl_bugs`" in line)
     assert '`reviewer` (`category="rtl"`, `focus="bugs"`)' in row
     assert "--" not in row
     assert "MCP" not in rendered
-
-
-def test_generated_goal_examples_and_named_keys_parse_through_goal_boundary():
-    import json
-    import re
-
-    from booley.goals.model import parse_goal_arg
-
-    rendered = render_criteria_params_reference()
-    examples = [
-        json.loads(text) for text in re.findall(r"```json\n(.*?)\n```", rendered, re.DOTALL)
-    ]
-    assert len(examples) >= 3
-    for example in examples:
-        parse_goal_arg(example)
-    prose = re.sub(r"```.*?```", "", rendered, flags=re.DOTALL)
-    named_keys = set(re.findall(r"(?:set|with|in) `([a-z_]+)`", prose))
-    assert {"baseline", "target", "test", "thresholds"} <= named_keys
-    assert named_keys <= set().union(*(example.keys() for example in examples))
-    families = re.findall(r"`([A-Z_]+):\{target\}`(?: and `([A-Z_]+):\{target\}`)? Goals", prose)
-    assert families
-    for pair in families:
-        for family in filter(None, pair):
-            example = next((raw for raw in examples if raw["family"] == family), examples[0])
-            parse_goal_arg({**example, "family": family.upper()})

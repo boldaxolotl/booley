@@ -133,13 +133,12 @@ def test_dashboard_without_unix_sockets_is_unavailable(tmp_path, monkeypatch, ca
     assert "AF_UNIX" in capsys.readouterr().out
 
 
-def test_goal_and_dashboard_configuration_is_always_validated():
+def test_dashboard_configuration_is_always_validated():
     from booley.audit import project_schema
 
-    data = {"goals": {"quiet_after": "invalid"}, "sandbox": {"dashboard": "invalid"}}
+    data = {"sandbox": {"dashboard": "invalid"}}
     assert not project_schema.audit_known_tables(data).findings
     assert not project_schema.audit_sandbox_table(data).is_valid
-    assert not project_schema.audit_goals_table(data).is_valid
 
 
 def test_dashboard_preflight_observes_without_reserving_a_socket(monkeypatch):

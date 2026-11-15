@@ -32,8 +32,6 @@ booley specialist                             # list the Specialists
 booley specialist reviewer --help             # its options
 ```
 
-Runs you start yourself never count as Goal evidence.
-
 Specialists accept `-C/--project`, `--report-dir`, `--diagnostic`, and, where
 it applies, `--target`. Two options exist only on the command line:
 
@@ -51,7 +49,7 @@ Reports go to `mcp-tool-reports/` in the Booley Directory, or under
   [`enabled = false`](CONFIG.md#flow-and-specialist-availability-enabled).
 
 [CLI-REFERENCE.md](CLI-REFERENCE.md#booley-flows--specialists) lists each
-Specialist's arguments and the Goals it can satisfy.
+Specialist's arguments.
 
 If a Specialist misbehaves, report it as described in
 [When Booley itself misbehaves](USAGE.md#when-booley-itself-misbehaves).

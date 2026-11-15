@@ -962,7 +962,7 @@ def _run_project_phase(
     *,
     read_only: bool,
 ) -> tuple[str | None, ProjectAudit | None]:
-    """Run host, config, Git, and Goal presence checks."""
+    """Run host, config, Git, and leftover-directory checks."""
     _section("Host checks")
     host = host_diagnostics.inspect_host()
     reporter.diagnostics(host.report)
@@ -971,11 +971,11 @@ def _run_project_phase(
     reporter.diagnostics(loaded.report)
     booley_dir, project = loaded.booley_dir, loaded.project
     mode = readiness.ReadinessMode.INSPECT if read_only else readiness.ReadinessMode.RECONCILE
-    # Goal and upgrade-review records are Common Booley State, read from main.
+    # Upgrade-review records are Common Booley State, read from main.
     common_dir = resolve_common_booley_dir(project_root) if booley_dir is not None else None
     _check_upgrade_review(common_dir, reporter)
     _check_legacy_source_stashes(project_root, reporter)
-    _check_goal_presence(project_root, common_dir, reporter)
+    _check_goal_leftovers(common_dir, booley_dir, reporter)
     if project is None:
         reporter.skip_("project setup audit skipped - no valid project config")
     else:
@@ -1072,8 +1072,8 @@ def _check_worktree_booley_pairing(project_root: Path, reporter: _Reporter) -> N
     """Warn when a linked worktree holds a plain copy of a Versioned Booley Directory.
 
     ``booley worktree new`` gives such a worktree a Paired Checkout. A copy
-    made by hand looks healthy, but Goal Mode then records no paired revision
-    and its baselines read the copy's live files instead of versioned ones.
+    made by hand looks healthy, but it records no paired revision, and measurements of
+    its commits read the copy's live files instead of versioned ones.
     """
     from booley.core.booley_layout import BooleyLayoutError
     from booley.runtime.directory_migration_git import primary_checkout
@@ -1093,7 +1093,7 @@ def _check_worktree_booley_pairing(project_root: Path, reporter: _Reporter) -> N
         return  # A Snapshot of a non-versioned Booley Directory is the expected layout.
     _warning_sink(reporter.warn_, "project-data.worktree-unpaired", subject="project-data")(
         f"{local} is a plain copy, not a Paired Checkout of the Versioned Booley Directory "
-        f"{versioned}; Goal Mode and baselines will not use its committed revisions",
+        f"{versioned}; measurements will not use its committed revisions",
         "save any work in this worktree, then recreate it with `booley worktree new <name>` "
         f"from {primary}",
     )
@@ -1259,23 +1259,31 @@ def _common_booley_dir(root: Path, reporter: _Reporter) -> Path | None:
         return None
 
 
-def _check_goal_presence(root: Path, booley_dir: Path | None, reporter: _Reporter) -> None:
-    from booley.harness.dashboard.doctor import inspect_presence
+_GOAL_LEFTOVER_DIRECTORIES = ("goals", "goalsets")
 
-    if booley_dir is None:
-        return
-    common = _common_booley_dir(root, reporter)
-    if common is None:
-        return
-    result = inspect_presence(
-        root, common, inside_sandbox=runtime_context.inside_session_runtime()
-    )
-    if result.unavailable:
-        reporter.skip_(result.unavailable)
-    for finding in result.warnings:
-        reporter.warn_(
-            finding, "inspect the Goal worktree and resume its work, or explicitly abandon it"
-        )
+
+def _check_goal_leftovers(
+    main_booley_dir: Path | None, checkout_booley_dir: Path | None, reporter: _Reporter
+) -> None:
+    """Warn about ``goals/`` and ``goalsets/`` directories an earlier version left behind.
+
+    Goal Mode was removed and nothing reads them; Doctor only looks, and nothing
+    deletes them.
+    """
+    seen: set[Path] = set()
+    for booley_dir in (main_booley_dir, checkout_booley_dir):
+        if booley_dir is None:
+            continue
+        for name in _GOAL_LEFTOVER_DIRECTORIES:
+            leftover = booley_dir / name
+            if leftover in seen or not leftover.is_dir():
+                continue
+            seen.add(leftover)
+            _warning_sink(reporter.warn_, "goals.leftover", subject=str(leftover))(
+                f"{leftover} is left over from Goal Mode, which was removed; "
+                "Booley no longer reads it",
+                "delete it when you no longer need its records",
+            )
 
 
 def _check_upgrade_review(booley_dir: Path | None, reporter: _Reporter) -> None:
@@ -1958,7 +1966,7 @@ def _run_model_access_probes(
     tracker: doctor_deep.DeepCheckTracker,
     internal_record: _AgentCallRecord | None,
 ) -> None:
-    """Probe every model the ``[models]`` table resolves, so a refusal fails Doctor, not a Goal.
+    """Probe every model the ``[models]`` table resolves, so a refusal fails Doctor, not a later Specialist run.
 
     The memory probe already exercised the internal model. Each distinct Specialist model
     gets one trivial provider turn on the Agent CLI it implies. A gateway fixes the model
@@ -3542,9 +3550,6 @@ def _run_project_checks(
     _check_ticket_leftovers(project.common_booley_dir, reporter.warn_)
     _check_handle_map_size(project.common_booley_dir, reporter.warn_)
     _check_project_gitignore(project.booley_dir, reporter.pass_, reporter.warn_)
-    _check_goal_history_ignored(
-        project.project_root, project.booley_dir, reporter.pass_, reporter.warn_
-    )
     _check_project_trackability(project.project_root, project.booley_dir, reporter.warn_)
     _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
     _check_repo_footprint(project.project_root, reporter.pass_, reporter.warn_)
@@ -3606,7 +3611,7 @@ def _check_leftover_board(booley_dir: Path, _warn: Check) -> None:
     for path, message in nonempty.items():
         _warning_sink(_warn, "tickets.leftover-board", subject=path.name)(
             message + suffix,
-            f"move any Ticket you still need into a Goalset or archive it, then delete {path}",
+            f"archive any Ticket you still need, then delete {path}",
         )
 
 
@@ -3621,14 +3626,14 @@ def _check_leftover_guidance(booley_dir: Path, _warn: Check) -> None:
         except OSError as exc:
             warning(
                 f"could not read leftover Ticket guidance in {path}: {exc}",
-                f"check permissions for {path}; move any needed rules into a Goalset before deleting it",
+                f"check permissions for {path}; keep any needed rules in the Project's AGENTS.md before deleting it",
             )
             continue
         shipped = hashlib.sha256(content).hexdigest() in _SHIPPED_TICKET_GUIDANCE_HASHES
         fix = (
             f"delete {path}"
             if shipped
-            else (f"move its rules into a Goalset under .booley/goalsets/, then delete {path}")
+            else (f"move its rules into the Project's AGENTS.md, then delete {path}")
         )
         warning(f"leftover Ticket guidance in {path}", fix)
 
@@ -3687,7 +3692,6 @@ def _check_project_trackability(root: Path, booley_dir: Path, _warn: Warn) -> No
         STEALTH_UNSET,
         STEALTH_UNSET_FIX,
         fix,
-        history_probe,
         inspect_project_trackability,
         unrecorded_stealth_exclusions,
     )
@@ -3699,102 +3703,12 @@ def _check_project_trackability(root: Path, booley_dir: Path, _warn: Warn) -> No
             STEALTH_UNSET.format(name=name), STEALTH_UNSET_FIX
         )
     inspection = inspect_project_trackability(root, booley_dir)
-    probe = history_probe(root)
     for group in inspection.ignored:
-        # The existing outer publication check owns this exact synthetic path.
-        if group.history and probe is not None and probe in group.paths:
-            continue
-        check_id = "goals.history-ignored" if group.history else "project.inputs-ignored"
-        _warning_sink(_warn, check_id, subject=group.subject)(group.message, fix())
+        _warning_sink(_warn, "project.inputs-ignored", subject=group.subject)(group.message, fix())
     for error in inspection.errors:
         _warning_sink(_warn, "project.trackability-inspection", subject="inspection-incomplete")(
             error, "repair repository access and rerun booley doctor"
         )
-
-
-def _goal_history_layout_advice(root: Path) -> tuple[str, str]:
-    from booley.runtime.project_repositories import RepositoryCheckoutError, is_git_worktree_root
-
-    project = root / own_booley_dir_repo_path(root)
-    healthy = is_git_worktree_root(project)
-    if (project / ".git").exists() and not healthy:
-        raise RepositoryCheckoutError(f"Booley repository metadata is unavailable at {project}")
-    if healthy:
-        return (
-            " Independently versioned Booley Directory preserves its own history.",
-            "retain the outer exclusion while preserving independent Booley history; "
-            "to publish through RTL, preserve or migrate that history into the RTL repository first, "
-            "then remove the exclusion and rerun booley doctor",
-        )
-    return "", "edit the reported exclusion when publication is wanted, then rerun booley doctor"
-
-
-def _check_goal_history_ignored(root: Path, booley_dir: Path, _pass: Check, _warn: Warn) -> None:
-    """Report preserved explicit exclusions which keep non-Stealth Goal history local."""
-    from booley.commit_policy import stealth_enabled
-    from booley.runtime.project_trackability import history_probe, query_ignores
-
-    if stealth_enabled(root, booley_dir=booley_dir):
-        return
-    relative = history_probe(root)
-    if relative is None:
-        return  # The RTL repository cannot publish that history; trackability owns the layout.
-    inspect_warning = _warning_sink(_warn, "goals.history-inspection")
-    try:
-        matches = query_ignores(root, (relative,))
-        result = subprocess.CompletedProcess(
-            ["git", "check-ignore"],
-            0 if matches else 1,
-            "\n".join(f"{m.source}:{m.line}:{m.pattern}\t{m.path}" for m in matches),
-            "",
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        inspect_warning(
-            f"cannot inspect Goal history exclusions: {exc}",
-            "check Git exclusions and rerun booley doctor",
-        )
-        return
-    _report_goal_history_policy(root, relative, result, _pass, _warn)
-
-
-def _report_goal_history_policy(
-    root: Path, relative: str, result: subprocess.CompletedProcess[str], _pass: Check, _warn: Warn
-) -> None:
-    from booley.runtime.project_repositories import (
-        RepositoryCheckoutError,
-        paired_project_repository,
-    )
-
-    if result.returncode not in {0, 1}:
-        _warning_sink(_warn, "goals.history-ignored")(
-            f"cannot inspect Goal history exclusions: {result.stderr.strip()}",
-            "check Git exclusions and rerun booley doctor",
-        )
-        return
-    try:
-        paired = paired_project_repository(root)
-        layout, hint = _goal_history_layout_advice(root)
-    except RepositoryCheckoutError as exc:
-        _warning_sink(_warn, "goals.history-layout-unreadable")(
-            f"cannot inspect Goal history repository layout: {exc}",
-            "preserve the exclusion and independent history; repair Booley repository metadata "
-            "and rerun booley doctor",
-        )
-        return
-    if result.returncode == 1:
-        _pass(
-            "Goal summaries remain local; Paired Checkout preserves independent Booley history"
-            if paired is not None
-            else "Goal history is eligible for commits"
-        )
-        return
-    _warning_sink(
-        _warn, "goals.history-ignored", subject="independent-booley-history" if layout else None
-    )(
-        f"Goal Session Summary path {relative} is gitignored; summaries remain local. "
-        f"Exclusion: {result.stdout.strip()}{layout}",
-        hint,
-    )
 
 
 def _check_git_state(project_root: Path, _pass: Check, _note: Check, _fail: Fail) -> None:
@@ -4739,8 +4653,7 @@ def _check_target_naming(
         )
         _note(
             f"Target '{name}' in {ref.core_file.name}: {target_naming.violation(name)} "
-            f"— {fix} (renaming also touches tests.toml keys and any "
-            "Goals naming it)"
+            f"— {fix} (renaming also touches tests.toml keys)"
         )
 
 

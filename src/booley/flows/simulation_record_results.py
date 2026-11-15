@@ -1,10 +1,10 @@
 """What a Simulation Record durably observed, as its consumers read it (ADR 0072).
 
 A record that was cancelled or killed never returns an outcome, yet every
-work item that finished left an authenticated result behind. Goal Mode must
-account for those results, and it may not depend on a concrete Flow: these
-are the flow-neutral values it is handed, and the reader the composing entry
-point supplies. The Simulation Flow implements the reader
+work item that finished left an authenticated result behind. A consumer that
+accounts for those results may not depend on a concrete Flow: these are the
+flow-neutral values it is handed, and the reader the composing entry point
+supplies. The Simulation Flow implements the reader
 (:func:`booley.flows.sim.record.read_durable_results`).
 """
 
@@ -19,7 +19,6 @@ __all__ = [
     "OlderBooleyRecordError",
     "SimulationRecordBusyError",
     "SimulationRecordResultsReader",
-    "StartedSimulationRecord",
 ]
 
 
@@ -30,24 +29,9 @@ class SimulationRecordBusyError(RuntimeError):
 class OlderBooleyRecordError(ValueError):
     """A record an older Booley wrote: intact, only too old.
 
-    Never report it as unreadable or corrupt. It lets Goal Mode name the refusal
+    Never report it as unreadable or corrupt. It lets a consumer name the refusal
     without importing the Flow that raises it.
     """
-
-
-@dataclass(frozen=True)
-class StartedSimulationRecord:
-    """A Simulation Record whose manifest is published and whose work is about to run.
-
-    ``target_names`` are the names its Target goes by (selector and
-    identity); ``candidate`` is false for a Cycle Count baseline record.
-    """
-
-    manifest_path: Path
-    simulation_record_id: str
-    manifest_sha256: str
-    target_names: tuple[str, ...]
-    candidate: bool
 
 
 @dataclass(frozen=True)

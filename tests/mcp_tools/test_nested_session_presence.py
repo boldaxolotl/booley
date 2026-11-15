@@ -55,7 +55,7 @@ async def test_nested_server_writes_no_session_rows(tmp_path, monkeypatch, neste
 
 
 @pytest.mark.asyncio
-async def test_nested_server_neither_writes_nor_prunes_but_still_warns(tmp_path, monkeypatch):
+async def test_nested_server_neither_writes_nor_prunes(tmp_path, monkeypatch):
     observer = _lifetime(tmp_path, monkeypatch, nested=True).sessions
     _seed(tmp_path, "codex:other", at=observer.now())
     request = await server._observed_request_context(
@@ -67,8 +67,7 @@ async def test_nested_server_neither_writes_nor_prunes_but_still_warns(tmp_path,
     )
     if observer._pending is not None:
         await observer._pending
-    # Reads still work: the caller sees the other session sharing its worktree.
-    assert request.presentation_warning == "WARNING: another session shares this Goal worktree"
+    assert request.attribution is not None
     registry = SessionRegistry(tmp_path)
     assert not registry.path("codex:mine").exists()
     # Maintenance is read-only too: an expired row is left for the interactive server.

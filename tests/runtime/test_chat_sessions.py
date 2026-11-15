@@ -215,16 +215,13 @@ async def test_observer_migrates_thread_rows_without_a_false_shared_warning(
         assert not registry.path("codex:main").exists()
         assert [row.attribution.key for row in registry.snapshot().rows] == [facts.key]
         assert len(registry.snapshot().rows[0].calls) == 2
-        assert await observer.shared(facts) == ((facts.key,), "")
         await observer.record(earlier, "late", "completed")
         if initial_peer_unavailable:
             # A late peerless completion recreates the thread row; the next attributed
             # call folds it into the tab.
             assert registry.path("codex:main").exists()
             facts = await observer.attribution({}, metadata, "codex-mcp-client")
-        else:
-            # A delayed completion from before migration must not restore a thread row.
-            assert await observer.shared(earlier) == ((facts.key,), "")
+        # Either way a delayed completion from before migration restores no thread row.
         assert not registry.path("codex:main").exists()
         assert [row.attribution.key for row in registry.snapshot().rows] == [facts.key]
         # New threads get aliases without allocating their own display IDs.

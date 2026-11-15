@@ -29,7 +29,7 @@ from .coverage_record import DurableTargetIdentity
 def coverage_context_for_execution(
     root: Path, state: DevelopmentState, *, recorder: AcceptanceRecorder
 ) -> CoverageProjectContext:
-    """Inject presentation only for executions with an admitted Goal presenter."""
+    """Inject presentation only for executions with a presentation provider."""
     if isinstance(recorder, GoalPresentationProvider):
         return coverage_project_context(root, state, recorder=recorder)
     return coverage_project_context(root, state)
@@ -109,7 +109,7 @@ def _coverage_policies(
                 or set(previous_metrics) & set(metrics)
             ):
                 raise ValueError(
-                    f"{label}: conflicting coverage Goals for Target {target.identity}"
+                    f"{label}: conflicting coverage Criteria for Target {target.identity}"
                 )
             previous_metrics.update(metrics)
     policies = {}

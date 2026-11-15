@@ -1,4 +1,4 @@
-"""Shell Flow and Specialist runs are Standalone Jobs: a Job record, a ``job.log``, no Goal evidence."""
+"""Shell Flow and Specialist runs are Standalone Jobs: a Job record, a ``job.log``."""
 
 from __future__ import annotations
 
@@ -17,10 +17,6 @@ from booley.mcp.registry import McpToolInfo
 from booley.runtime import job_records
 from booley.runtime.handles import job_handle_expired
 from tests.conftest import symlink_or_skip
-from tests.goals import conftest as goal_fixtures
-
-layout = goal_fixtures.layout
-goal_mode = goal_fixtures.goal_mode
 
 # Where the Dashboard already scans for Job records: the common Booley Directory's standalone log
 # root, with machine-owned records under ``.runtime/jobs`` and each run's output beside them.
@@ -99,7 +95,6 @@ def test_shell_run_writes_standalone_job(monkeypatch, project, kind):
     for rec, outcome, status in ((done, 0, "done"), (failed, 3, "failed")):
         assert (rec.status, rec.exit_code) == (status, outcome)
         assert rec.session_key is None
-        assert rec.binding is None
         assert rec.endpoint == "stub"
         assert rec.argv == ["booley", kind, "stub", "--target", "t1"]
         assert rec.work_dir == str(project)
@@ -188,24 +183,6 @@ def test_custom_endpoint_help_is_not_a_job(monkeypatch, project):
     monkeypatch.setattr(runtime_context, "ensure_proxy_env", lambda: None)
     assert shell_run(monkeypatch, project, "flow", argv=("--help",)) == 0
     assert records(project) == []
-
-
-def test_goal_worktree_shell_run_leaves_goal_evidence_unchanged(goal_mode, monkeypatch):
-    def tree(root):
-        return {
-            str(path.relative_to(root)): path.read_bytes()
-            for path in root.rglob("*")
-            if path.is_file()
-        }
-
-    before = tree(goal_mode.control / "goals")
-    StubEndpoint.outcome = 3
-    assert shell_run(monkeypatch, goal_mode.worktree, "flow") == 3
-
-    assert tree(goal_mode.control / "goals") == before
-    (rec,) = job_records.list_records(goal_mode.control / JOBS_ROOT)
-    assert rec.binding is None
-    assert rec.work_dir == str(goal_mode.worktree)
 
 
 CHILD = """
@@ -330,7 +307,7 @@ def test_signal_leaves_terminal_record(project, tmp_path, name):
     if sys.platform != "linux":
         pytest.skip("process identity observes /proc")
     assert rec.status == "running"
-    (view,) = JobReader(project / ".booley").read([]).jobs
+    (view,) = JobReader(project / ".booley").read().jobs
     assert view.state == "failed"  # the Dashboard sees the dead process
 
     from booley.harness.standalone_job import StandaloneJob, checkout_report_root

@@ -225,10 +225,3 @@ the number of Mutants, so a larger limit allows more of them. Over MCP it also
 raises the wait before the call hands back a run id. The command line does not
 stop a run when the budget passes. See
 [Flow and Specialist availability](CONFIG.md#flow-and-specialist-availability-enabled).
-
-## Goals
-
-A `MUTATION:{target}` Goal is met by this Flow's result: the Flow records the
-`mutation_score` criterion. Your own runs never count as Goal evidence. A Goal
-sets the campaign with `total: N`, `min_detected: K`, or `auto: true` in place of
-`--count` and `--min-detected`; without them it requires 8 of 10 Mutants.

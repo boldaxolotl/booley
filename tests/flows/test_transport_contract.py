@@ -1414,7 +1414,7 @@ def external_acceptance_owner(monkeypatch):
     """Retain projection coverage with the existing external ledger composition.
 
     Unbound execution has separate absence tests. This owner supplies the real
-    legacy identity/recording contract, independently of Goal Mode.
+    legacy identity/recording contract.
     """
     from booley.flows.endpoint_state import EndpointState
     from booley.mcp import flow_execution_selection
@@ -1431,7 +1431,7 @@ def external_acceptance_owner(monkeypatch):
     monkeypatch.setattr(
         flow_execution_selection,
         "_STANDALONE_SELECTION",
-        flow_execution_selection.FlowExecutionSelection(None, lambda: recorder),
+        flow_execution_selection.FlowExecutionSelection(lambda: recorder),
     )
 
 

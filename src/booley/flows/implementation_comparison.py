@@ -138,8 +138,7 @@ def _state_pair_for_candidate(
     pairs = {_state_pair_from_entry(entry, key, candidate.selector) for key, entry in matches}
     if len(pairs) != 1:
         raise ImplementationComparisonError(
-            "conflicting implementation Goal Target pairs for "
-            f"candidate Target {candidate.identity!r}"
+            f"conflicting implementation Target pairs for candidate Target {candidate.identity!r}"
         )
     return next(iter(pairs))
 

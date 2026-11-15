@@ -108,9 +108,6 @@ class JobRecord:
     schema: int = 2
     work_dir: str | None = None
     session_key: str | None = None
-    # The Goal run binding, stored as an opaque mapping: runtime never interprets it, which keeps
-    # this package free of Goal Mode imports. MCP validates it (``mcp.job_results.job_binding``).
-    binding: dict[str, Any] | None = None
     process_identity: dict[str, Any] | None = None
     ended_at: str | None = None
     # The agent that started the Job (see ``booley.mcp.job_ownership``) and when
@@ -146,15 +143,13 @@ class JobRecord:
 
 
 def _validate_envelope(data: dict[str, Any]) -> None:
-    """Validate neutral routing fields without interpreting a Goal binding."""
+    """Validate the routing fields of a Job record envelope."""
     schema = data.get("schema", 1)
     if require_int(schema, field="Job schema") <= 0:
         raise BoundaryError("Job schema must be positive")
     for key in ("work_dir", "session_key", "report_root"):
         if data.get(key) is not None:
             require_str(data, key)
-    if data.get("binding") is not None:
-        require_dict(data["binding"], field="Job binding")
 
 
 def target_arg(argv: list[str]) -> str | None:

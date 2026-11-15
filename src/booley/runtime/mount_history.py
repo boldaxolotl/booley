@@ -24,7 +24,7 @@ class MountHistoryError(RuntimeError):
     """The mount history cannot be read or extended.
 
     A ``RuntimeError`` on purpose: ``ValueError`` from a record parse reads as an
-    absent record, which would hide an existing Job or Goal.
+    absent record, which would hide an existing Job.
     """
 
 

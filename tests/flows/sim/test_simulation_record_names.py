@@ -108,7 +108,7 @@ def test_a_run_writes_simulation_record_names(tmp_path: Path) -> None:
     assert manifest["$schema"] == "booley.simulation-record-manifest/v1"
     record_id = manifest["simulation_record_id"]
     assert uuid.UUID(record_id).version == 4
-    # Goal Records own the bare ``record_id``, so it must never name a Simulation Record.
+    # The bare ``record_id`` is not a Simulation Record name.
     assert "campaign_id" not in manifest
     assert "record_id" not in manifest
 
@@ -213,7 +213,7 @@ def test_a_0_4_0_manifest_is_refused_naming_its_invocation(reports: Path) -> Non
     _assert_unsupported_type(decoded.value)
     _assert_refused(str(decoded.value), _OLD_MANIFEST)
 
-    # Goal status and the Dashboard each read it through this.
+    # The Dashboard reads it through this.
     with pytest.raises(ValueError) as refused:
         read_durable_results(manifest, "sha256:" + "0" * 64)
     _assert_unsupported_type(refused.value)

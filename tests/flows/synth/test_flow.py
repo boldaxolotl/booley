@@ -395,34 +395,49 @@ def flow_and_state(state_file: Path, tmp_path: Path):
     return flow, state_file
 
 
-def test_relative_ticket_criterion_auto_applies_pinned_baseline(
-    flow_and_state, tmp_path: Path
+def test_criteria_baseline_pin_does_not_override_the_baseline_flag(
+    state_file: Path, tmp_path: Path
 ) -> None:
-    flow, _ = flow_and_state
+    """A Criterion's pinned baseline never replaces ``--baseline``."""
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(
-        ["git", "config", "user.email", "test@example.com"],
-        cwd=tmp_path,
-        check=True,
-    )
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
-    (tmp_path / "rtl.v").write_text("module rtl; endmodule\n", encoding="utf-8")
-    subprocess.run(["git", "add", "rtl.v"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
-    base_sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=tmp_path,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+    shas = []
+    for text in ("one", "two"):
+        (tmp_path / "rtl.v").write_text(f"module {text}; endmodule\n", encoding="utf-8")
+        subprocess.run(["git", "add", "rtl.v"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-qm", text], cwd=tmp_path, check=True)
+        shas.append(
+            subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=tmp_path,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        )
+    pinned, requested = shas
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(
+        [
+            "--target",
+            "lite",
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+            "--baseline",
+            requested,
+        ]
+    )
+    flow.read_state()
     flow.state.init_criteria(
         {"synthesis_ok_lite": True},
-        criterion_params={"synthesis_ok_lite": {BASELINE_REF_PARAM: base_sha}},
+        criterion_params={"synthesis_ok_lite": {BASELINE_REF_PARAM: pinned}},
     )
 
-    assert flow._apply_ticket_baseline((_layer_target_handle(tmp_path, "lite"),)) is None
-    assert flow.args.baseline == base_sha
+    assert flow._prepare_target_pairs((_layer_target_handle(tmp_path, "lite"),)) is None
+    assert flow.args.baseline == requested
 
 
 def _write_execution_config(tmp_path: Path, body: str) -> None:
@@ -3454,7 +3469,7 @@ class TestBuildSynthCmd:
         assert not any(Path(s).is_absolute() for s in sta)
 
     def test_paths_resolve_from_a_worktree_behind_a_linked_ancestor(self, tmp_path: Path):
-        """A Codespace Goal worktree sits under the symlinked ``.booley`` entry.
+        """A Codespace worktree sits under the symlinked ``.booley`` entry.
 
         ``/workspaces/picorv32/.booley/worktrees/zbb`` is physically
         ``/workspaces/booley-prj-picorv32/worktrees/zbb``. Resolved source
@@ -4023,7 +4038,7 @@ class TestTimingReportPaths:
         assert "timing_report_paths" in message
 
     def test_knob_leaves_recipe_fingerprint_unchanged(self, state_file: Path, tmp_path: Path):
-        """Report size is not a recipe input: Goal criteria pin the fingerprint."""
+        """Report size is not a recipe input: Criteria pin the fingerprint."""
         default = self._flow(tmp_path, "")
         self._resolve(default, tmp_path)
         custom = self._flow(tmp_path, "timing_report_paths = 3\n")

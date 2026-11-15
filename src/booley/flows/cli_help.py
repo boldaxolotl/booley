@@ -98,8 +98,7 @@ EXPERT_GUIDANCE = (
 )
 BASELINE_HELP = HelpOption(
     "baseline",
-    "When omitted, use the baseline pinned at Goal entry for relative criteria; "
-    "otherwise run without baseline comparison.",
+    "Git ref to compare against. When omitted, run without baseline comparison.",
 )
 PPA_HELP = HelpOption(
     "ppa_profile",

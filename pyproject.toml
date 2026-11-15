@@ -142,8 +142,7 @@ booley = [
     "data/**/*",
     # Runtime resources resolved relative to the installed package (__file__),
     # not just present in the dev tree — omitting these ships a wheel/image that
-    # blocks at runtime: runtime/worktree_create.sh (Goal setup and
-    # `booley worktree new`) and pre-commit-ruff.sh (git hook).
+    # blocks at runtime: runtime/worktree_create.sh (`booley worktree new`) and pre-commit-ruff.sh (git hook).
     "dev_support/*.sh",
     "runtime/*.sh",
 ]
@@ -296,8 +295,7 @@ filterwarnings = [
 # ---------------------------------------------------------------------------
 [tool.coverage.run]
 source = ["booley"]
-# Goal Mode source is not measured while its tests are not collected: see tests/conftest.py.
-omit = ["tests/*", "*/booley/goals/*"]
+omit = ["tests/*"]
 branch = true
 # Raw shard artifacts are reported from a different runner. Canonical relative
 # paths also fold subprocess imports from temporary source checkouts back onto
@@ -369,7 +367,6 @@ exclude = [
     "src/booley/mcp/schema_extractor.py",
     "src/booley/mcp/server.py",
     "src/booley/mcp/session_registry.py",
-    "src/booley/mcp/sim_baseline_execution.py",
 ]
 strict = [
     # External-input coercion and the Booley Directory trust boundary.
@@ -383,15 +380,7 @@ strict = [
     "src/booley/flows/test_runs.py",
     "src/booley/flows/target_test_plan.py",
     "src/booley/flows/target_test_plan_loading.py",
-    "src/booley/flows/frozen_test_runs.py",
     "src/booley/flows/simulator_family.py",
-    "src/booley/goals",
-    "src/booley/mcp/goal_changes.py",
-    "src/booley/mcp/goal_waivers.py",
-    "src/booley/mcp/goal_freshness.py",
-    "src/booley/mcp/goal_completion.py",
-    "src/booley/mcp/goal_generated_inputs.py",
-    "src/booley/review/goal_package.py",
     "src/booley/runtime/publication_ownership.py",
     "src/booley/runtime/pinned_history.py",
 ]

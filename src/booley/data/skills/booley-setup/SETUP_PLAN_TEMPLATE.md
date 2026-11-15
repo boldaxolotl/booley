@@ -176,8 +176,6 @@
 - **Step 7 status:** pending
 - **Final disposition:** <unset>
 
-### Goalset policy
+### Dashboard
 
-- **Project rules for seeded Goalsets:** <rules and applicable Targets>
-- **Create `goalsets/default.md`:** <human decision; applies to every entry>
 - **Dashboard attachment task:** <default on, or requested opt-out>

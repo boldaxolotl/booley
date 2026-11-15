@@ -678,7 +678,7 @@ def test_checkout_flow_queues_behind_live_flow_in_main_slot_store(
             run = pool.submit(run_checkout_flow, world.request("pass"))
 
             def queued() -> bool:
-                snapshot = reader.read([])
+                snapshot = reader.read()
                 return [view.state for view in snapshot.jobs] == ["queued"]
 
             poll(queued, "the checkout Flow to queue")

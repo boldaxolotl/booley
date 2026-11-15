@@ -1,4 +1,4 @@
-"""Stable admission lock shared by Goal entry, worktree creation and layout migration."""
+"""Stable admission lock shared by worktree creation and layout migration."""
 
 from __future__ import annotations
 

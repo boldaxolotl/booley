@@ -18,8 +18,7 @@ the identity, names it inside lookup keys, envelopes, and records, and
 judges stored observations. V2 additionally takes an
 :class:`EvidenceProjection` that applies the caller's completion fencing to
 replayed state and to the projection check. Interactive V1 calls compose the ledger in
-``booley.criteria.unbound_ledger``, Goal Mode in
-``booley.goals.recorder``.
+``booley.criteria.unbound_ledger``.
 
 Readers use only observations from transactions the saved state names in
 ``acceptance_transactions``, which is saved in the same atomic state save as the
