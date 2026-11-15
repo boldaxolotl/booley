@@ -22,7 +22,7 @@ from tests.harness import test_session_runtime as resolution_fixtures
 from tests.subprocess_budget import run_bounded_child
 
 from booley.audit.diagnostic_results import Severity
-from booley.runtime import runtime_context, session_runtime, vaporview
+from booley.runtime import devcontainer, runtime_context, session_runtime, vaporview
 
 project_sandbox_resolution = resolution_fixtures.project_sandbox_resolution
 workspace = resolution_fixtures.workspace
@@ -65,6 +65,10 @@ _VERSION_FIX = (
 
 _P, _S, _F = Severity.PASS, Severity.SKIP, Severity.FAIL
 
+# The two bundled-extension lines follow the VaporView lines; `_inspect` hides them.
+_BUNDLED_NAMES = ("Verilog-HDL", "Live Preview")
+_LIVE_PREVIEW_NEEDS = "Live Preview needs VS Code 1.109 or newer"
+
 _HEALTHY = {"vaporview": _VERIFIED, "error": None, "trusted": True}
 _UNTRUSTED_ERROR = "VaporView (lramseyer.vaporview) is not installed in this VS Code window"
 _UNTRUSTED = {"vaporview": None, "error": _UNTRUSTED_ERROR, "trusted": False}
@@ -101,7 +105,27 @@ def _sources() -> dict[str, str]:
         "versions": vaporview._VAPORVIEW_VERSIONS_PROBE_SOURCE,
         "bridges": vaporview._VIEWER_BRIDGE_PROBE_SOURCE,
         "state": vaporview._VAPORVIEW_STATE_PROBE_SOURCE,
+        "bundled": vaporview._bundled_extensions_probe_source(devcontainer.BUNDLED_EXTENSIONS),
     }
+
+
+def _bundled(*observations: tuple[list[str] | None, bool]) -> _Reply:
+    """The bundled-extension probe's answer: (versions, VSIX present) per extension.
+
+    "=" in a versions list stands for the version the Sandbox Image bundles.
+    """
+    answer = {}
+    for extension, (versions, vsix) in zip(
+        devcontainer.BUNDLED_EXTENSIONS, observations, strict=True
+    ):
+        shown = (
+            None if versions is None else [extension.version if v == "=" else v for v in versions]
+        )
+        answer[extension.extension_id] = {"versions": shown, "vsix": vsix}
+    return _Reply(stdout=json.dumps(answer))
+
+
+_GOOD = (["="], True)
 
 
 @dataclass
@@ -130,7 +154,8 @@ class _Sandbox:
         if len(matches) != 1:
             pytest.fail(f"unplanned process: {command}")
         assert kwargs["timeout"] == 20
-        reply = self.replies[matches[0]]
+        # Built on demand: it reads the bundled pins, so the fixture stays cheap.
+        reply = self.replies.get(matches[0]) or _bundled(_GOOD, _GOOD)
         if reply.error is not None:
             raise reply.error
         return subprocess.CompletedProcess(command, reply.returncode, reply.stdout, "")
@@ -162,10 +187,19 @@ def _host(monkeypatch, *, container: str | None = _CONTAINER, inside: bool = Fal
     monkeypatch.setattr(session_runtime, "vscode_session_container", resolve)
 
 
-def _inspect(tmp_path: Path, docker: str | None = "docker") -> list[tuple[Severity, str, str]]:
+def _inspect_all(tmp_path: Path, docker: str | None = "docker") -> list[tuple[Severity, str, str]]:
     report = vaporview.inspect_viewer_bridge(vaporview.ViewerBridgeRequest(tmp_path, docker))
     assert all(f.check_id is None for f in report.findings)
     return [(f.severity, f.message, f.fix) for f in report.findings]
+
+
+def _inspect(tmp_path: Path, docker: str | None = "docker") -> list[tuple[Severity, str, str]]:
+    """The VaporView and Viewer Bridge findings: the bundled-extension ones are hidden."""
+    return [
+        finding
+        for finding in _inspect_all(tmp_path, docker)
+        if not finding[1].startswith(_BUNDLED_NAMES)
+    ]
 
 
 def _dark(state: _Reply) -> dict:
@@ -443,7 +477,7 @@ def test_host_probes_run_in_the_vscode_container(tmp_path, monkeypatch, sandbox)
 
     prefix = ["docker", "exec", _CONTAINER, "python3", "-c"]
     assert sandbox.calls == [
-        [*prefix, _sources()[name]] for name in ("host", "versions", "bridges")
+        [*prefix, _sources()[name]] for name in ("host", "versions", "bridges", "bundled")
     ]
 
 
@@ -454,7 +488,7 @@ def test_inside_sandbox_probes_run_locally(tmp_path, monkeypatch, sandbox):
     _inspect(tmp_path, None)
 
     assert sandbox.calls == [
-        ["python3", "-c", _sources()[n]] for n in ("host", "versions", "bridges")
+        ["python3", "-c", _sources()[n]] for n in ("host", "versions", "bridges", "bundled")
     ]
 
 
@@ -662,3 +696,199 @@ def test_viewer_bridge_project_sandbox_resolution(
             else ("no VS Code devcontainer running")
         )
         assert expected in findings[0][1]
+
+
+def _pass(extension):
+    return (_P, f"{extension.name} extension is the bundled {extension.version}", "")
+
+
+def _install_fix(extension):
+    fix = (
+        "in the attached remote window's terminal run "
+        f"`code --install-extension {extension.vsix}`, then 'Developer: Reload Window'"
+    )
+    return f"{fix}; {_LIVE_PREVIEW_NEEDS}" if extension.name == "Live Preview" else fix
+
+
+def _rebuild_fix(extension):
+    fix = (
+        f"{extension.vsix} is absent from the Sandbox Image: rebuild the Sandbox Image, "
+        "then rebuild/reopen the Sandbox"
+    )
+    return f"{fix}; {_LIVE_PREVIEW_NEEDS}" if extension.name == "Live Preview" else fix
+
+
+def _not_installed(extension):
+    message = f"{extension.name} extension ({extension.extension_id}) is not installed{_WHERE}"
+    return (_F, message, _install_fix(extension))
+
+
+def _other(extension, shown, fix):
+    message = (
+        f"{extension.name} {shown} is installed{_WHERE}; "
+        f"the Sandbox Image bundles {extension.version}"
+    )
+    return (_F, message, fix(extension))
+
+
+def _vsix_absent(extension):
+    message = f"{extension.name} {extension.version} is installed{_WHERE}, but its bundled VSIX is absent"
+    return (_F, message, _rebuild_fix(extension))
+
+
+def _unreadable(extension):
+    message = (
+        f"{extension.name} extension is the bundled {extension.version} - "
+        f"extension registry could not be read{_WHERE}"
+    )
+    return (_S, message, "")
+
+
+# (id, hdl observation, live observation, expected hdl line, expected live line)
+_BUNDLED_OUTCOMES = [
+    pytest.param(_GOOD, _GOOD, _pass, _pass, id="both-installed"),
+    pytest.param(([], True), _GOOD, _not_installed, _pass, id="hdl-missing"),
+    pytest.param(_GOOD, ([], True), _pass, _not_installed, id="live-preview-missing"),
+    pytest.param(
+        (["9.9.9"], True),
+        _GOOD,
+        lambda e: _other(e, "9.9.9", _install_fix),
+        _pass,
+        id="hdl-other-version",
+    ),
+    pytest.param(
+        (["=", "9.9.9"], True),
+        _GOOD,
+        lambda e: _other(e, "9.9.9", _install_fix),
+        _pass,
+        id="hdl-bundled-beside-other",
+    ),
+    pytest.param(
+        ([], False),
+        _GOOD,
+        lambda e: (*_not_installed(e)[:2], _rebuild_fix(e)),
+        _pass,
+        id="hdl-missing-vsix-absent",
+    ),
+    pytest.param(
+        _GOOD,
+        (["9.9.9"], False),
+        _pass,
+        lambda e: _other(e, "9.9.9", _rebuild_fix),
+        id="live-preview-other-version-vsix-absent",
+    ),
+    pytest.param((["="], False), _GOOD, _vsix_absent, _pass, id="hdl-installed-vsix-absent"),
+    pytest.param((None, True), _GOOD, _unreadable, _pass, id="hdl-registry-unreadable"),
+    pytest.param(
+        (None, False), _GOOD, _unreadable, _pass, id="hdl-registry-unreadable-vsix-absent"
+    ),
+]
+
+
+@pytest.mark.parametrize(("hdl", "live", "expect_hdl", "expect_live"), _BUNDLED_OUTCOMES)
+def test_bundled_extension_outcomes(
+    tmp_path, monkeypatch, sandbox, hdl, live, expect_hdl, expect_live
+):
+    """Each bundled extension gets one line: PASS, or FAIL/SKIP with its message and fix."""
+    _host(monkeypatch)
+    sandbox.replies["bundled"] = _bundled(hdl, live)
+    hdl_ext, live_ext = devcontainer.BUNDLED_EXTENSIONS
+
+    assert _inspect_all(tmp_path)[2:] == [expect_hdl(hdl_ext), expect_live(live_ext)]
+
+
+_PROBE_FAILURES = [
+    pytest.param(_Reply(1, "Traceback (TypeError)"), id="old-booley"),
+    pytest.param(_Reply(4), id="exit-4"),
+    pytest.param(_Reply(0, "not json"), id="garbage"),
+    pytest.param(_Reply(0, "[]"), id="not-object"),
+    pytest.param(
+        _Reply(0, '{"ms-vscode.live-server": {"versions": [], "vsix": true}}'), id="missing-entry"
+    ),
+    pytest.param(
+        _Reply(
+            0,
+            '{"mshr-h.veriloghdl": {"versions": "1.29.0", "vsix": true},'
+            ' "ms-vscode.live-server": {"versions": [], "vsix": true}}',
+        ),
+        id="bad-versions",
+    ),
+    pytest.param(
+        _Reply(
+            0,
+            '{"mshr-h.veriloghdl": {"versions": [], "vsix": "yes"},'
+            ' "ms-vscode.live-server": {"versions": [], "vsix": true}}',
+        ),
+        id="bad-vsix",
+    ),
+    pytest.param(_Reply(error=FileNotFoundError("docker")), id="no-docker"),
+    pytest.param(_Reply(error=subprocess.TimeoutExpired("docker", 20)), id="timeout"),
+]
+
+
+@pytest.mark.parametrize("reply", _PROBE_FAILURES)
+def test_bundled_extension_probe_failure_skips_both(tmp_path, monkeypatch, sandbox, reply):
+    _host(monkeypatch)
+    sandbox.replies["bundled"] = reply
+
+    expected = [
+        (
+            _S,
+            f"{e.name} extension is the bundled {e.version} - extension probe could not run{_WHERE}",
+            "",
+        )
+        for e in devcontainer.BUNDLED_EXTENSIONS
+    ]
+    assert _inspect_all(tmp_path)[2:] == expected
+
+
+def test_healthy_window_reports_vaporview_then_bundled_extensions(tmp_path, monkeypatch, sandbox):
+    _host(monkeypatch)
+
+    assert _inspect_all(tmp_path) == [
+        (_P, _VERSION, ""),
+        (_P, _BRIDGE, ""),
+        *(_pass(e) for e in devcontainer.BUNDLED_EXTENSIONS),
+    ]
+
+
+def test_no_extension_host_runs_no_extension_probe(tmp_path, monkeypatch, sandbox):
+    _host(monkeypatch)
+    sandbox.replies["host"] = _Reply(3)
+
+    assert _inspect_all(tmp_path) == [
+        (_S, f"{_BRIDGE} - no VS Code extension host attached in '{_CONTAINER}'", "")
+    ]
+    assert sandbox.probes() == ["host"]
+
+
+def test_bundled_extensions_probe_source_runs_against_a_real_registry(tmp_path):
+    """The probe text runs as `python3 -c`: keys, the registry read and the file test."""
+    registry = tmp_path / ".vscode-server" / "extensions"
+    registry.mkdir(parents=True)
+    entry = {"identifier": {"id": "mshr-h.veriloghdl"}, "version": "1.29.0"}
+    (registry / "extensions.json").write_text(json.dumps([entry]), encoding="utf-8")
+    present = tmp_path / "present.vsix"
+    present.write_bytes(b"")
+    source = vaporview._bundled_extensions_probe_source(
+        [
+            vaporview.BundledExtension("A", "mshr-h.veriloghdl", "1.29.0", str(present)),
+            vaporview.BundledExtension(
+                "B", "ms-vscode.live-server", "0.4.20", str(tmp_path / "absent.vsix")
+            ),
+        ]
+    )
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),
+        "USERPROFILE": str(tmp_path),  # Path.home() on Windows
+        "PYTHONPATH": str(Path(vaporview.__file__).parents[2]),
+    }
+
+    result = run_bounded_child([sys.executable, "-c", source], env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "mshr-h.veriloghdl": {"versions": ["1.29.0"], "vsix": True},
+        "ms-vscode.live-server": {"versions": [], "vsix": False},
+    }
