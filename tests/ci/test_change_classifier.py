@@ -1267,6 +1267,17 @@ def test_goal_unit_test_change_selects_only_lint(tmp_path: Path, path: str) -> N
     assert _required(outputs) == set(ALWAYS_JOBS) | {"lint"}
 
 
+def test_goal_markdown_change_selects_docs_check(tmp_path: Path) -> None:
+    """A Markdown file under tests/goals/ is still Markdown: the line-length check must run."""
+    repo, base = _repository(tmp_path)
+    _write(repo, "tests/goals/fixtures/README.md")
+    head = _commit(repo, "goal markdown")
+
+    outputs = _classify(repo, base, head)
+
+    assert _required(outputs) == set(ALWAYS_JOBS) | {"lint", "docs-check"}
+
+
 def test_classify_without_goal_import_facts_treats_goal_paths_as_shared() -> None:
     """A caller that cannot compute imports keeps the test lane (fail safe)."""
     categories = classify(["tests/goals/test_only.py"])
