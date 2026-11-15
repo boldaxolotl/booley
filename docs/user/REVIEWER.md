@@ -36,9 +36,9 @@ error instead of a partial result.
 A testbench `quality` review runs two searches the same way: the checklist for
 the testbench language (SystemVerilog, cocotb or C/C++), and a hunt that traces
 how each test decides pass or fail, looking for paths where a test passes
-without checking the DUT. The hunt follows the pass and fail sentinels and
-trace files your project configures. A scope with no testbench source file runs
-one search. Expect about twice the model time and tokens of the checklist alone.
+without checking the DUT. The hunt follows the pass and fail messages and
+trace files your project configures. Expect about twice the model time and
+tokens of the checklist alone.
 
 A review sees only one side of the RTL/testbench split. A testbench review
 never reads the RTL, so it judges the tests against the spec rather than
