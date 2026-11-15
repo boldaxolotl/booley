@@ -555,7 +555,7 @@ def test_interactive_catalog_includes_exactly_four_goal_tools(monkeypatch):
             catalog.Exposure.from_mapping(os.environ), builtins
         )
     }
-    assert len(names) == 10
+    assert len(names) == 11
     assert {name for name in names if name.startswith("goal_")} == {
         "goal_enter",
         "goal_status",

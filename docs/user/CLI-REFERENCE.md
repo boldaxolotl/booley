@@ -103,6 +103,10 @@ stops the run and the later tables are "not evaluated". `--validate` takes no
 other option. Ctrl-C cancels the measurement: a run with a finished Flow is
 stored as cancelled, never as measured, and the command ends with status 130.
 
+The Developer Agent can run the same measurement for you. It reports the verdict
+line, the failing rows and the paths of the reports, and cancelling it stops the
+measurement's Flows.
+
 The Dashboard opens by itself when you attach to the container; see
 [The dashboard](USAGE.md#the-dashboard).
 

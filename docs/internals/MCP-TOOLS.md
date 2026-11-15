@@ -80,9 +80,9 @@ A file registers the first class whose direct base is named `BooleyFlow`,
 `Specialist`, or `McpTool` and whose `name` and `description` are string
 literals. A class that inherits through your own intermediate base is not
 found. The protocol utilities (`booley_status`, `booley_poll`,
-`booley_cancel`, `booley_targets`, `booley_report`, the Goal tools, `bwave`,
-`booley_sleep`, and `coverage_evidence`) are defined in `booley.mcp.catalog`
-rather than discovered.
+`booley_cancel`, `booley_targets`, `booley_report`, `booley_measure`, the Goal
+tools, `bwave`, `booley_sleep`, and `coverage_evidence`) are defined in
+`booley.mcp.catalog` rather than discovered.
 
 Discovery is inclusive: every valid implementation is enabled unless
 configuration turns it off.
@@ -500,4 +500,3 @@ To validate a new endpoint:
    confirm exit 0, 1, and 2 mean met, unmet, and could not reach a verdict.
 5. For Goal use, enter Goal Mode with a supported Goal and confirm with
    `goal_status` that the evidence lands and goes stale when sources change.
-

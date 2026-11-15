@@ -110,8 +110,13 @@ def resolve_call_context(arguments: Mapping[str, Any]) -> CallContext:
     goal = _goal_call_context(arguments, explicit)
     if goal is not None:
         return goal
+    return unbound_call_context(arguments)
+
+
+def unbound_call_context(arguments: Mapping[str, Any]) -> CallContext:
+    """The facts of a call that is never Goal evidence: no Goal Record, no Run Binding."""
     return CallContext(
-        explicit_work_dir=explicit,
+        explicit_work_dir=_explicit_work_dir(arguments),
         jobs_root=container_jobs_root(),
         state_path=_env_path("BOOLEY_STATE_FILE"),
         logs_dir=_env_path("BOOLEY_LOGS_DIR"),
