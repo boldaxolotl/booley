@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Any
 
 from booley.runtime import sandbox_layout
@@ -80,14 +80,17 @@ def _former(record: str) -> tuple[str, ...]:
 def translate_stored_path(value: str, *, record: str) -> str:
     """Rebase *value* from a former mount point onto the current one.
 
-    Stored paths are POSIX Sandbox paths whatever the host, so they are compared as such.
+    Stored paths are POSIX Sandbox paths, so they are compared as such. A current mount that
+    is not POSIX-absolute (a native host path, as the tests use) is compared natively.
     """
-    current = PurePosixPath(sandbox_layout.BOOLEY_DIR_TARGET)
-    path = PurePosixPath(value)
+    target = sandbox_layout.BOOLEY_DIR_TARGET
+    flavor: type[PurePath] = PurePosixPath if PurePosixPath(target).is_absolute() else PurePath
+    current = flavor(target)
+    path = flavor(value)
     if not path.is_absolute() or path.is_relative_to(current):
         return value
     for mount in _former(record):
-        former = PurePosixPath(mount)
+        former = flavor(mount)
         if path.is_relative_to(former):
             return str(current / path.relative_to(former))
     return value
