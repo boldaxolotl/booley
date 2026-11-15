@@ -407,8 +407,7 @@ These steps apply when `[sandbox].image` names an image Booley doesn't build.
 After upgrading Booley, first rebuild your image with the new Booley wheel
 installed, and run `python3 -I -m booley.runtime.dashboard_extension` as root
 in its recipe. Without that step, Dashboard auto-open and `bwave gui` views are
-unavailable. Keep the `/booley` mount point that the Booley base image creates:
-Booley refuses an image without it and names the rebuild.
+unavailable.
 
 Then, after an upgrade or a settings change:
 

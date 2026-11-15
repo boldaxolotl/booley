@@ -6,6 +6,8 @@ import os
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
@@ -272,8 +274,9 @@ def test_worktree_new_in_sandbox_refuses_external_booley_dir(tmp_path: Path, doc
     assert _host_git(root, "worktree", "list", "--porcelain").stdout.count("worktree ") == 1
 
 
-def _derived_image_id(parent_id: str, run: str) -> str:
-    """Build a derivative of *parent_id* that runs *run* as root; return its image ID."""
+@contextmanager
+def _derived_image_id(parent_id: str, run: str) -> Iterator[str]:
+    """Build a derivative of *parent_id* that runs *run* as root; yield its image ID."""
     output = f"booley4090-layout-{uuid4().hex}:local"
     parent = f"127.0.0.1:1/booley4090-parent-{uuid4().hex}:local"
     assert _run(["docker", "tag", parent_id, parent]).returncode == 0
@@ -287,7 +290,7 @@ def _derived_image_id(parent_id: str, run: str) -> str:
         assert build.returncode == 0, build.stderr
         inspect = _run(["docker", "image", "inspect", "--format", "{{.Id}}", output])
         assert inspect.returncode == 0, inspect.stderr
-        return inspect.stdout.strip()
+        yield inspect.stdout.strip()
     finally:
         _run(["docker", "image", "rm", output, parent])
 
@@ -306,15 +309,12 @@ def test_layout_probe_reads_real_images(docker_image):
 
     assert project_image.project_data_alias_capable(alias_id) is True
     for run, capable in layouts.items():
-        image_id = _derived_image_id(alias_id, run)
-        try:
+        with _derived_image_id(alias_id, run) as image_id:
             if capable is None:
                 with pytest.raises(project_image.ImageLayoutMissingError):
                     project_image.project_data_alias_capable(image_id)
             else:
                 assert project_image.project_data_alias_capable(image_id) is capable
-        finally:
-            _run(["docker", "image", "rm", image_id])
 
 
 def _canonical_alias_recipe() -> str:

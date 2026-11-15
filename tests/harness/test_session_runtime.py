@@ -938,7 +938,7 @@ class TestIssuedRuntimeDriftFix:
         if not exact_origin:
             labels.pop("devcontainer.local_folder")
         # Current, pinned Booley Directory mounts: a running editor is not outdated.
-        source = str(workspace.resolve() / ".booley")
+        source = str(workspace / ".booley")
         mounts = [
             {"Destination": target, "Source": source, "Type": "bind", "RW": True}
             for target in ("/booley", "/work/.booley")
@@ -5515,6 +5515,20 @@ def test_running_vscode_container_mount_follows_current_target(
         sr.prepare(workspace)
 
     assert "`docker rm editor`" in str(caught.value)
+
+
+def test_external_booley_dir_mount_follows_current_target(tmp_path: Path) -> None:
+    external = tmp_path / "external-project-data"
+
+    def pinned(target: str) -> bool:
+        mount = {"Destination": target, "Source": str(external), "Type": "bind", "RW": True}
+        raw = json.dumps([{"Mounts": [mount]}])
+        return sr._project_data_mount_root_is_pinned(
+            raw, tmp_path / "project", external, layout="legacy"
+        )
+
+    assert pinned("/booley")
+    assert not pinned("/former-mount")
 
 
 def _docker_mounts(spec: dict, workspace: Path, booley_dir_target: str) -> list[dict]:

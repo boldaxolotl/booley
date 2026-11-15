@@ -421,11 +421,9 @@ def _layout_layers(record: dict) -> object:
 
 @lru_cache(maxsize=256)
 def project_data_alias_capable(image_id: str) -> bool:
-    """Probe an immutable final image for its root-owned Booley Directory mount point.
+    """Probe an image's root-owned Booley Directory mount point: alias True, directory False.
 
-    True for the root-owned canonical alias, False for a root-owned ordinary directory.
-    An image with neither was built for an older Booley (or by hand): it raises
-    ``ImageLayoutMissingError`` rather than guessing a layout.
+    An image with neither raises ``ImageLayoutMissingError`` rather than guess a layout.
     """
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
         return False

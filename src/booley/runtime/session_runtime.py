@@ -1339,7 +1339,7 @@ def _refuse_outdated_vscode_containers(workspace: Path, spec: dict[str, Any]) ->
         names = ", ".join(repr(name) for name in identified + ambiguous)
         raise SessionError(
             f"refusing Sandbox preparation: running Sandbox(es) {names} mount an outdated "
-            "Booley Directory layout (for example from before Booley 0.3.0) and are not "
+            "Booley Directory layout (for example from before the mount moved to /booley) and are not "
             f"migrated; {'; '.join(repairs)}"
         )
 
@@ -1674,17 +1674,23 @@ def _project_data_mount_root_is_pinned(
     raw: str, workspace: Path, pending_project_data: Path, *, layout: str
 ) -> bool:
     local_source = workspace.resolve() / ".booley"
-    if pending_project_data != local_source:
-        return True
     state = _decode_container_inspect(raw)
     mounts = state.get("Mounts") if state is not None else None
     if not isinstance(mounts, list) or any(not isinstance(item, dict) for item in mounts):
         return False
     by_target = {item.get("Destination"): item for item in mounts}
+    if pending_project_data != local_source:
+        # An external Booley Directory is bound straight at the target.
+        external = _writable_bind(by_target.get(BOOLEY_DIR_TARGET))
+        raw_external = external.get("Source", "") if external is not None else None
+        return (
+            isinstance(raw_external, str)
+            and host_path_from_docker_mount(raw_external) == pending_project_data
+        )
     canonical_alias = layout == "canonical-alias"
     # The container's own image proves its alias: a Sandbox started before the mount
     # point moved has the same /work/.booley bind as a new one.
-    container_image = state.get("Image") if state is not None else None
+    container_image = state.get("Image")
     if canonical_alias and (
         not isinstance(container_image, str)
         or not _project_data_alias_capable(container_image)
