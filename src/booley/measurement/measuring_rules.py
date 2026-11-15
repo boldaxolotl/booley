@@ -1,4 +1,4 @@
-"""The rules an Agent follows when it measures work (Metric-Driven Development, #4133).
+"""The rules for measuring work (Metric-Driven Development, #4133).
 
 One text, shown wherever the rules appear: ``booley measure`` prints the rule of its exit
 status, and the cheatsheet section ``booley cheat --metrics`` prints carries all of them. A
@@ -10,20 +10,20 @@ from __future__ import annotations
 from booley.core.exit_codes import EXIT_ERROR, EXIT_FAILURE
 
 UNMET_RULE = (
-    "Exit 1: fix, commit and measure again, up to 3 attempts unless the user's request "
+    "Exit 1: fix, commit and measure again, up to 3 attempts unless the request "
     "states another number."
 )
-ERROR_RULE = "Exit 2: stop and report the error to the user."
+ERROR_RULE = "Exit 2: stop and report the error."
 
 MEASURING_RULES: tuple[str, ...] = (
-    "Measure only when the user asks for a Measured Commit.",
+    "Measure only when a Measured Commit is asked for.",
     "Iterate with plain `booley flow`, not with `booley measure`.",
     "Measure the base at the start of a piece of work (`booley measure --all <base>`) only "
-    "when the work has a relative target or the user wants a comparison.",
+    "when the work has a relative target or a comparison is wanted.",
     UNMET_RULE,
     ERROR_RULE,
     "Never edit `metrics.toml` or `tests.toml` to get a met verdict, and never add tables, "
-    "without asking.",
+    "without approval.",
     "The work is complete when the commit is Measured with a green header.",
 )
 

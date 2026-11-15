@@ -45,7 +45,7 @@ requires the Sandbox.
 | `booley eda` | Manage host commercial-EDA installations, grants, and licenses |
 | `booley projects` | List remembered Project paths and their Grants |
 
-Use the [Skills](#skills) for guided agent workflows such as Goal Mode, feedback,
+The [Skills](#skills) are guided workflows you start in a Developer Agent chat, such as Goal Mode, feedback,
 version review, Project Setup cleanup, and Sandbox lifecycle management.
 
 For Host Bootstrap, `--check-only` reports pending work without writing and
@@ -60,6 +60,8 @@ clear the chat, then type `/booley-goal start` to do the work. One session
 owns a clean linked worktree and Goal Branch; every Goal is mandatory and
 judged by Flow or Specialist evidence at the current code.
 
+The `goal_*` names are MCP tools: you type `/booley-goal` and the Developer Agent calls them.
+
 | Step/tool | Purpose |
 |-----------|---------|
 | `goal_enter` | Translate Goalsets into concrete Goals and create a Goal Branch |
@@ -70,13 +72,13 @@ judged by Flow or Specialist evidence at the current code.
 | `booley goal status` | Inspect local records |
 | `booley dashboard` | Sessions, Goals, and Jobs inside the Sandbox |
 
-Pass the absolute worktree root as `work_dir` to Booley Flows, Specialists,
+The Developer Agent passes the absolute worktree root as `work_dir` to Booley Flows, Specialists,
 Goal tools, `booley_targets`, and `booley_report`. While a Goal Record
 occupies the Project, calls without it are refused (only `booley_targets` may
 omit it), and Project-defined endpoints must declare `work_dir` to run.
 `booley_status`, `booley_poll`, `booley_cancel`, and `bwave` accept no `work_dir`.
-With several Jobs running, call `booley_poll` with no `run_id` and handle whichever of your Jobs finishes first; pass a `run_id` only to wait for one specific Job. Never wait for a Job with `sleep` loops or log tails.
-Resume saved proposal and Finish IDs rather than editing records. Protected Input changes block
+With several Jobs running, it calls `booley_poll` with no `run_id` and handles whichever of its Jobs finishes first, passing a `run_id` only to wait for one specific Job; it never waits with `sleep` loops or log tails.
+Records are never edited by hand: a saved proposal or Finish is resumed by its ID. Protected Input changes block
 Finish until reverted. Open `done` review findings remain visible; Finish does not merge.
 Read Project-owned Goalsets, including `default.md`, from `goalsets/` in the
 Main Booley Directory (`BOOLEY_DIR` in the Sandbox); a
@@ -240,21 +242,21 @@ Example: `{"family": "SYNTH", "target": "synth_core", "thresholds": {"clk_i.fmax
 
 ### Metric-Driven Development
 
-Metric-Driven Development accepts work by measuring a commit against the Target Metrics in `.booley/metrics.toml`. Commit the work, then run `booley measure`: it measures only committed work, prints a report, and exits 0 when every enforced bound is met, 1 when one is unmet, and 2 on an error or when it cannot run.
+Metric-Driven Development accepts work by measuring a commit against the Target Metrics in `.booley/metrics.toml`. Commit the work, then run `booley measure`: it measures only committed work, prints a report, and exits 0 when every enforced bound is met, 1 when one is unmet, and 2 on an error or when it cannot run. A Measured Commit is one whose full `booley measure` run met every enforced bound.
 
-Rules:
+These rules apply to you whether you type the commands or a Developer Agent runs them for you:
 
-- Measure only when the user asks for a Measured Commit.
+- Measure only when a Measured Commit is asked for.
 - Iterate with plain `booley flow`, not with `booley measure`.
-- Measure the base at the start of a piece of work (`booley measure --all <base>`) only when the work has a relative target or the user wants a comparison.
-- Exit 1: fix, commit and measure again, up to 3 attempts unless the user's request states another number.
-- Exit 2: stop and report the error to the user.
-- Never edit `metrics.toml` or `tests.toml` to get a met verdict, and never add tables, without asking.
+- Measure the base at the start of a piece of work (`booley measure --all <base>`) only when the work has a relative target or a comparison is wanted.
+- Exit 1: fix, commit and measure again, up to 3 attempts unless the request states another number.
+- Exit 2: stop and report the error.
+- Never edit `metrics.toml` or `tests.toml` to get a met verdict, and never add tables, without approval.
 - The work is complete when the commit is Measured with a green header.
 
 `metrics.toml` holds one `[<target>.<flow>]` table per Target and Flow. A `<metric>_max` or `<metric>_min` key is an enforced bound, `track` lists metrics that are only reported, and `off` removes a bound that `[defaults.<flow>]` would add. `[defaults.<flow>]` adds bounds to every table of that Flow.
 
-The listing from `booley cheat --metrics` is `metrics.toml` text: save the blocks you keep as `.booley/metrics.toml`, give each bound you keep a number, delete the rest, and check the file with `booley measure --validate`.
+The listing `booley cheat --metrics` prints below is `metrics.toml` text: save the blocks you keep as `.booley/metrics.toml`, give each bound you keep a number, delete the rest, and check the file with `booley measure --validate`.
 
 <!-- BEGIN GENERATED: metrics -->
 Run `booley cheat --metrics` in a Project to list its Targets' metrics.
@@ -289,7 +291,7 @@ Key Flow-specific controls:
 <!-- BEGIN GENERATED: specialists -->
 Specialists running in scoped, isolated workspaces:
 
-Ask your Developer Agent session to invoke a Specialist by name with the arguments below. Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--max-turns` and `--timeout` are CLI-only controls.
+Ask your Developer Agent session to invoke a Specialist by name with the arguments below (written as it passes them, `name="value"`; the CLI spells each as a flag, `--name value`). Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--max-turns` and `--timeout` are CLI-only controls.
 
 For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. Common options are `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Model-call minimum budgets apply; seconds-only providers round up. CLI Flow and Specialist runs never record Goal evidence; use the Developer Agent's Goal-bound MCP calls with `work_dir`. A CLI run is also a Standalone Job: it shows in the Dashboard and copies its output to `.interactive_logs/standalone/<run_id>/job.log` in the Project's common Booley Directory (the main checkout's `.booley` from a linked worktree).
 
@@ -300,7 +302,7 @@ For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl
 
 #### `coverage_analyst`
 
-Call the `coverage_analyst` Specialist from your Developer Agent session with `record="<exact-coverage.json>"` and optional `instruction="<question>"`. The Analyst explains retained native evidence and proposes advisory next steps; its model only reads evidence. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. In Goal Mode, screened Waiver Candidates support a proposed Goal change, which needs human approval. Finish requires every Goal met; advisory reports do not mark strict coverage met. Verified Target sources are optional; stale sources give report-only analysis.
+Ask your Developer Agent to call the `coverage_analyst` Specialist with `record="<exact-coverage.json>"` and optional `instruction="<question>"`. The Analyst explains retained native evidence and proposes advisory next steps; its model only reads evidence. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. In Goal Mode, screened Waiver Candidates support a proposed Goal change, which needs human approval. Finish requires every Goal met; advisory reports do not mark strict coverage met. Verified Target sources are optional; stale sources give report-only analysis.
 
 #### `reviewer`
 
@@ -310,7 +312,7 @@ Interactive source review accepts Verilog/SystemVerilog (.v, .vh, .sv, .svh), pl
 
 The result links saved review evidence, including rejected proposals for inspection. Rejected proposals do not affect Criteria.
 
-Call the `reviewer` Specialist from your Developer Agent session with `category="<category>"` and `focus="<focus>"`.
+Ask your Developer Agent to call the `reviewer` Specialist with `category="<category>"` and `focus="<focus>"`.
 
 | Category | Focus | What it checks | Sets |
 |----------|-------|----------------|------|
