@@ -29,7 +29,7 @@ from __future__ import annotations
 # this dict contains a specialist's own name (or any other specialist's
 # name).
 NESTED_MCP_CAPABILITIES: dict[str, tuple[str, ...]] = {
-    # The report-driven Analyst gets one Campaign-scoped, read-only evidence tool.
+    # The report-driven Analyst gets one Coverage Record-scoped, read-only evidence tool.
     "coverage_analyst": ("coverage_evidence",),
     # No MCP needed for these — they reason over text, not the design.
     "reviewer": (),

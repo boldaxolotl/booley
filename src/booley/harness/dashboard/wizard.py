@@ -5,8 +5,8 @@ human parser (``run_form``): a row per option, changed in a choice list or
 a text editor stage, or for the Target and test fields a picker over the worktree's
 Targets and the chosen Target's Test Runs, plus one extra-arguments row. A Specialist's form
 (``reviewer``, ``coverage_analyst``) is written by hand (``specialist_form``) and has no
-extra-arguments row; the coverage analyst's campaign field opens a picker over the worktree's
-finished coverage campaigns. It dismisses with the new
+extra-arguments row; the coverage analyst's Coverage Record field opens a picker over the worktree's
+finished Coverage Records. It dismisses with the new
 Job's row key once submitted, or ``None`` when the human backs out of the first
 stage.
 """
@@ -83,7 +83,7 @@ CHECK_GROUP = "run-check"
 FORM_GROUP = "run-form"
 TARGETS_GROUP = "run-targets"
 TESTS_GROUP = "run-tests"
-COVERAGE_RECORDS_GROUP = "run-campaigns"
+COVERAGE_RECORDS_GROUP = "run-coverage-records"
 SPECIALISTS_GROUP = "run-specialists"
 LOADING_SPECIALISTS = "Loading Specialists…"
 LOADING_TARGETS, LOADING_RUNS = "Loading Targets…", "Loading Test Runs…"
@@ -110,7 +110,7 @@ _STAGES: dict[str, str] = {
     "form": "↑↓ move · ⏎ change · esc back",
     "choice": "↑↓ move · ⏎ keep · esc cancel",
     "target": "↑↓ move · ⏎ choose · esc back",
-    "campaign": "↑↓ move · ⏎ choose · esc back",
+    "coverage_record": "↑↓ move · ⏎ choose · esc back",
     "tests": "↑↓ move · ⏎ toggle · esc back",
     "edit": "type the value · ⏎ keep · esc cancel",
     "review": "↑↓ choose · ⏎ apply · esc back",
@@ -121,13 +121,13 @@ _PARENT = {
     "form": "flow",
     "choice": "form",
     "target": "form",
-    "campaign": "form",
+    "coverage_record": "form",
     "tests": "form",
     "edit": "form",
     "review": "form",
 }
 # The stages that change one form row; their title names the row.
-_ROW_STAGES = ("choice", "edit", "target", "campaign", "tests")
+_ROW_STAGES = ("choice", "edit", "target", "coverage_record", "tests")
 # Which widgets each stage shows; the last one takes the keyboard.
 _SHOWN: dict[str, tuple[str, ...]] = {
     "worktree": ("#run-worktrees",),
@@ -135,7 +135,7 @@ _SHOWN: dict[str, tuple[str, ...]] = {
     "form": ("#run-note", "#run-form"),
     "choice": ("#run-hint", "#run-choices"),
     "target": ("#run-hint", "#run-picks"),
-    "campaign": ("#run-hint", "#run-picks"),
+    "coverage_record": ("#run-hint", "#run-picks"),
     "tests": ("#run-hint", "#run-picks"),
     "edit": ("#run-hint", "#run-edit"),
     "review": ("#run-command", "#run-review", "#run-actions"),
@@ -239,7 +239,7 @@ class RunWizard(ModalScreen[str | None]):
         # The worktree's Targets and the chosen Target's Test Runs; None while being read.
         self._listing: TargetListing | None = None
         self._runs: RunChoices | None = None
-        # The campaign picker's read: the Jobs may not be read yet, then the campaigns, None while listing.
+        # The Coverage Record picker's read: the Jobs may not be read yet, then the Coverage Records, None while listing.
         self._jobs_read = False
         self._coverage_records: tuple[CoverageRecordChoice, ...] | None = None
         self._coverage_records_worker: Worker[tuple[CoverageRecordChoice, ...]] | None = None
@@ -315,7 +315,7 @@ class RunWizard(ModalScreen[str | None]):
             self.query_one(widget_id, Widget).display = widget_id in _SHOWN[stage]
         if stage == "form":
             self._show_form()
-        elif stage in ("target", "tests", "campaign"):
+        elif stage in ("target", "tests", "coverage_record"):
             self._fill_picks(None)
         self.query_one("#run-title", Static).update(self._title())
         self.query_one("#run-error", Static).update("")
@@ -566,7 +566,7 @@ class RunWizard(ModalScreen[str | None]):
                     self._show_error(PRESET_TARGET)
             elif field.kind == "tests":
                 self._open_tests()
-            elif field.kind == "campaign":
+            elif field.kind == "coverage_record":
                 self._open_coverage_records()
             else:
                 self._choose(field, value)
@@ -618,9 +618,9 @@ class RunWizard(ModalScreen[str | None]):
         self._show_stage("tests")
 
     def _open_coverage_records(self) -> None:
-        """Open the campaign picker, reading the worktree's finished campaigns afresh in a worker.
+        """Open the Coverage Record picker, reading the worktree's finished Coverage Records afresh in a worker.
 
-        The Jobs come from the Dashboard's last read (``sim_runs``); a campaign that finished
+        The Jobs come from the Dashboard's last read (``sim_runs``); a Coverage Record that finished
         while the wizard was open therefore shows up the next time the picker opens.
         """
         assert self._form_for is not None
@@ -637,33 +637,33 @@ class RunWizard(ModalScreen[str | None]):
                 group=COVERAGE_RECORDS_GROUP,
                 exit_on_error=False,
             )
-        self._show_stage("campaign")
+        self._show_stage("coverage_record")
 
     def _coverage_records_read(self, event: Worker.StateChanged) -> None:
-        """Show the campaigns of the read the picker waits for; a crashed read lists none."""
+        """Show the Coverage Records of the read the picker waits for; a crashed read lists none."""
         if event.worker is not self._coverage_records_worker:
             return  # a read of a picker the human has since reopened
         if event.state is WorkerState.SUCCESS:
             assert isinstance(event.worker.result, tuple)
             self._coverage_records = event.worker.result
         elif event.state is WorkerState.ERROR:
-            logger.error("Run wizard campaigns read failed", exc_info=event.worker.error)
+            logger.error("Run wizard Coverage Records read failed", exc_info=event.worker.error)
             self._coverage_records = ()
         else:
             return
         event.stop()
-        if self._stage == "campaign":
-            # None: highlight the current campaign, else the newest (the loading row is gone).
+        if self._stage == "coverage_record":
+            # None: highlight the current Coverage Record, else the newest (the loading row is gone).
             self._fill_picks(None)
 
     def _picker(self, field: Field) -> tuple[str, list[tuple[str, str]]]:
         """The hint and the (row text, value) rows of the open picker for *field*."""
-        if field.kind == "campaign":
+        if field.kind == "coverage_record":
             return self._coverage_record_picker(field)
         return self._target_picker(field) if field.kind == "target" else self._tests_picker(field)
 
     def _coverage_record_picker(self, field: Field) -> tuple[str, list[tuple[str, str]]]:
-        """The campaigns newest first, then the row that types a path (always there)."""
+        """The Coverage Records newest first, then the row that types a path (always there)."""
         manual = [(TYPE_COVERAGE_RECORD, TYPE_COVERAGE_RECORD)]
         if not self._jobs_read:
             return JOBS_NOT_READ, manual
@@ -718,7 +718,7 @@ class RunWizard(ModalScreen[str | None]):
         """Enter in a picker: a Target is chosen and closes it; a Test Run toggles in place."""
         field = self._fields()[self._changing]
         value = self._pick_values[index]
-        if field.kind == "campaign" and value == TYPE_COVERAGE_RECORD:
+        if field.kind == "coverage_record" and value == TYPE_COVERAGE_RECORD:
             self._edit(self._values.get(field.dest, ""), field.hint)
             return
         if field.kind == "tests":

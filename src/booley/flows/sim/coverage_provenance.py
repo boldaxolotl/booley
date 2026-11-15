@@ -33,7 +33,7 @@ def coverage_source_closure(inspection: TargetInspection) -> dict[str, list[dict
 
 
 def validate_coverage_sources(plan: CoverageTargetPlan) -> None:
-    """Reject source/Target drift rather than publish a Campaign under stale fingerprints."""
+    """Reject source/Target drift rather than publish a Coverage Record under stale fingerprints."""
     for category in ("rtl", "testbench"):
         for record in cast(tuple[Mapping[str, str], ...], plan.source_closure[category]):
             path = plan.handle.project_root / str(record["path"])

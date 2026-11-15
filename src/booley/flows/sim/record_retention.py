@@ -3,6 +3,11 @@
 Native removal writes a ``pruning`` availability sidecar before deleting ``native/``,
 so an interrupted cleanup is explicit and retryable.
 Full removal leaves an empty numbered tombstone to prevent invocation-id reuse.
+
+Retention acts on one exact, named invocation and Target. It never picks a
+"latest" Record or applies age or size rules, because deleting evidence must be
+a deliberate act. Both operations are safe to retry with the same selection;
+never remove journals, locks, quarantines, or ``.pruned-N`` directories by hand.
 """
 
 import json
@@ -216,18 +221,18 @@ def _refuse_older_coverage_schema(root: Path, public: Mapping[str, object]) -> N
 
 
 def _is_standalone_coverage(public: Mapping[str, object]) -> bool:
-    """Whether a Target's ``coverage.json`` is a full Campaign, not a reference to one."""
+    """Whether a Target's ``coverage.json`` is a full Coverage Record, not a reference to one."""
     return public.get("$schema") != REFERENCE_SCHEMA
 
 
 def _refuse_standalone_coverage(root: Path, target: Path) -> SimulationRecordRetentionError:
-    """Refusal for a Target ``coverage.json`` that is not a Campaign reference.
+    """Refusal for a Target ``coverage.json`` that is not a Coverage Record reference.
 
-    The usual cause is the dead layout that kept the Coverage Campaign in the Target
+    The usual cause is the dead layout that kept the Coverage Record in the Target
     directory; a damaged file reads the same, so the message names both.
     """
     return SimulationRecordRetentionError(
-        f"Coverage Campaign in {target} is not a Campaign reference: the standalone layout "
+        f"Coverage Record in {target} is not a Coverage Record reference: the standalone layout "
         "no supported Booley version writes, or a damaged file; delete the Simulation "
         f"invocation directory {root} by hand"
     )
@@ -264,7 +269,7 @@ def _target(
         root.name
     ):
         raise SimulationRecordRetentionError(
-            "Campaign identity disagrees with the exact selection"
+            "Coverage Record identity disagrees with the exact selection"
         )
     if not require_projection:
         return storage, loaded
@@ -1205,7 +1210,7 @@ def _validate_native_pruning_eligibility(root: Path, selector: str) -> None:
     status = eligibility.status
     workload = cast(Mapping[str, object], status.manifest.document["workload"])
     if workload["coverage"] is not True:
-        raise SimulationRecordRetentionError("--native-target has no native Coverage Campaign")
+        raise SimulationRecordRetentionError("--native-target has no native Coverage Record")
     if eligibility.abandoned:
         raise SimulationRecordRetentionError(
             "native-only pruning requires a completed Target; use --full to discard the "
@@ -1263,7 +1268,7 @@ def _validate_authenticated_projection(
     )
     if coverage.path != (target / "coverage.json").absolute():
         raise SimulationRecordRetentionError(
-            "Simulation Record projection Coverage Campaign reference disagrees"
+            "Simulation Record projection Coverage Record reference disagrees"
         )
 
 

@@ -78,6 +78,7 @@ from booley.mcp import (
     job_lifecycle,
     job_ownership,
     job_results,
+    measure_tool,
     peer_checkout,
 )
 from booley.mcp.application import (
@@ -94,6 +95,7 @@ from booley.mcp.call_context import (
     CallContext,
     resolve_call_context,
     resolve_work_dir,
+    unbound_call_context,
 )
 from booley.mcp.flow_execution_selection import select_flow_execution
 from booley.mcp.goal_tools import (
@@ -558,6 +560,7 @@ async def _run_subprocess(
     is_queued: Callable[[], bool] | None = None,
     on_first_active: Callable[[], None] | None = None,
     is_requeued: Callable[[], bool] | None = None,
+    stop_grace: float | None = None,
     log_path: Path | None = None,
     cwd: Path | None = None,
 ) -> tuple[int, str, str, bool]:
@@ -572,6 +575,7 @@ async def _run_subprocess(
         is_requeued=is_requeued,
         watchdog_tick=endpoint_process._WATCHDOG_TICK_SECONDS,
         cancel_grace=endpoint_process.CANCEL_GRACE_SECONDS,
+        stop_grace=stop_grace,
         log_path=log_path,
         cwd=cwd,
     )
@@ -1010,6 +1014,9 @@ def _format_job_running_poll(run_id: str, owned: bool = True) -> str:
     progress = _running_progress(run_id)
     if progress is None:
         return message
+    rec = _job_record(run_id)
+    if rec is not None and rec.endpoint == measure_tool.MEASURE_ENDPOINT:
+        return f"{message} {measure_tool.running_text(progress)}"
     completed = progress.get("completed_targets", [])
     pending = progress.get("pending_targets", [])
     phase = progress.get("phase", "running")
@@ -1088,8 +1095,8 @@ class _JobManager(JobLifecycle):
         endpoint_process.write_synthetic_endpoint_end(name, duration_s, **kwargs)
 
     @staticmethod
-    async def _cancel_process(pid: int) -> None:
-        await _cancel_adopted_process_group(pid)
+    async def _cancel_process(pid: int, grace_seconds: float) -> None:
+        await _cancel_adopted_process_group(pid, grace_seconds)
 
     def _report(self, rec: jobrec.JobRecord | None) -> tuple[dict[str, Any] | None, bool]:
         return _job_report(rec)
@@ -1097,6 +1104,14 @@ class _JobManager(JobLifecycle):
     def result_text(self, run_id: str) -> str:
         """Render a finished job's result exactly like the synchronous path."""
         result = self.terminal_result(run_id)
+        return self._result_card(result)
+
+    @staticmethod
+    def _result_card(result: JobResult) -> str:
+        """The result text: a ``measure`` Job's own summary layout, else the generic card."""
+        report = result.report if result.report_fresh else None
+        if report is not None and report.get("endpoint") == measure_tool.MEASURE_ENDPOINT:
+            return measure_tool.result_text(result.exit_code, result.stdout, result.stderr, report)
         return _format_mcp_tool_result(
             result.exit_code, result.stdout, result.stderr, result.report
         )
@@ -1110,19 +1125,8 @@ class _JobManager(JobLifecycle):
         report with its caveats spelled out.
         """
         result = result or self.terminal_result(run_id)
-        exit_code, stdout, stderr, report, report_fresh = (
-            result.exit_code,
-            result.stdout,
-            result.stderr,
-            result.report,
-            result.report_fresh,
-        )
-        content = [
-            TextContent(
-                type="text",
-                text=_format_mcp_tool_result(exit_code, stdout, stderr, report),
-            )
-        ]
+        exit_code, report, report_fresh = result.exit_code, result.report, result.report_fresh
+        content = [TextContent(type="text", text=self._result_card(result))]
         rendered = _with_structured_report(content, report if report_fresh else None)
         rec = self._read_run(run_id)
         binding = None if rec is None else job_results.job_binding(rec)
@@ -1169,7 +1173,13 @@ def _job_listing(outcome: OwnedPoll) -> str:
     """Trailing block naming the caller's other Jobs; empty when there are none."""
 
     def line(rec: jobrec.JobRecord, state: str) -> str:
-        return f"- {rec.run_id}: {rec.endpoint}, Target {target_label(rec.argv)}, {state}"
+        text = f"- {rec.run_id}: {rec.endpoint}, Target {target_label(rec.argv)}, {state}"
+        progress = (
+            _running_progress(rec.run_id)
+            if rec.endpoint == measure_tool.MEASURE_ENDPOINT
+            else None
+        )
+        return text if progress is None else f"{text}. {measure_tool.running_text(progress)}"
 
     sections = []
     if outcome.running:
@@ -1288,11 +1298,9 @@ async def _dispatch_sleep(arguments: dict[str, Any]) -> list[TextContent]:
     ]
 
 
-async def _cancel_adopted_process_group(pid: int) -> None:
+async def _cancel_adopted_process_group(pid: int, grace_seconds: float) -> None:
     """Delegate disk-only process-group cancellation."""
-    await endpoint_process._cancel_adopted_process_group(
-        pid, grace_seconds=endpoint_process.CANCEL_GRACE_SECONDS
-    )
+    await endpoint_process._cancel_adopted_process_group(pid, grace_seconds=grace_seconds)
 
 
 async def _dispatch_cancel_impl(
@@ -1304,6 +1312,7 @@ async def _dispatch_cancel_impl(
     run_id = raw.strip() if isinstance(raw, str) else ""
     if not run_id:
         return [TextContent(type="text", text="Provide the 'run_id' of a queued job.")]
+    record = jobs._read_run(run_id)
     phase = await jobs.cancel(run_id)
     if phase is None:
         return [TextContent(type="text", text=f"Unknown run_id {run_id!r}.")]
@@ -1323,6 +1332,7 @@ async def _dispatch_cancel_impl(
                 f"Fetch its result with '{catalog.POLL_MCP_TOOL_NAME}'.",
             )
         ]
+    grace_endpoint = "" if record is None else record.endpoint
     return [
         TextContent(
             type="text",
@@ -1330,7 +1340,8 @@ async def _dispatch_cancel_impl(
                 f"CANCELLED: {phase} job {run_id} was withdrawn before it started."
                 if phase == "queued"
                 else f"CANCELLED: running job {run_id} received SIGTERM; any process "
-                f"still alive after {endpoint_process.CANCEL_GRACE_SECONDS:.0f}s was force-killed."
+                f"still alive after {endpoint_process.cancel_grace_seconds(grace_endpoint):.0f}s "
+                "was force-killed."
             ),
         )
     ]
@@ -1344,16 +1355,23 @@ async def _dispatch_async_job(
     *,
     context: CallContext,
     caller: Caller | None = None,
+    inline_wait: float | None = None,
+    attach: bool = True,
 ) -> McpToolContent:
-    """Compose inline completion or a background handoff from the lifecycle."""
+    """Compose inline completion or a background handoff from the lifecycle.
+
+    *inline_wait* replaces the configured inline wait; 0 hands the ``run_id`` back at once.
+    *attach* False never joins identical live work.
+    """
     try:
         submission = await jobs.submit_and_wait(
             name,
             cmd,
             mcp_tool_timeout,
             context=context,
-            wait_seconds=_job_inline_wait_seconds(),
+            wait_seconds=_job_inline_wait_seconds() if inline_wait is None else inline_wait,
             owner=None if caller is None else caller.owner,
+            attach=attach,
         )
         state = submission.poll
         if state.status != "running" or (submission.attached and not state.tracked):
@@ -1808,7 +1826,7 @@ def _baseline_required(criterion_prefix: str, state_path: Path | None) -> bool:
 
 
 def _dispatch_coverage_evidence(arguments: dict[str, Any]) -> McpToolContent:
-    """Serve one bounded query from the Campaign-scoped evidence module."""
+    """Serve one bounded query from the Coverage Record-scoped evidence module."""
     from booley.mcp.coverage_evidence import query_active_coverage_evidence
 
     try:
@@ -1816,6 +1834,56 @@ def _dispatch_coverage_evidence(arguments: dict[str, Any]) -> McpToolContent:
     except (OSError, ValueError) as exc:
         result = {"error": "coverage_evidence_rejected", "message": str(exc)}
     return [TextContent(type="text", text=json.dumps(result, sort_keys=True))]
+
+
+async def _dispatch_measure(
+    arguments: dict[str, Any],
+    jobs: _JobManager,
+    request_context: McpRequestContext | None,
+    caller: Caller | None,
+) -> McpToolContent:
+    """Submit ``booley measure`` as a Job and hand its ``run_id`` back at once.
+
+    A measurement is never Goal evidence, so it runs with an unbound call context. It never
+    attaches to an identical live Job: ``HEAD`` and the base branch move while one runs, so
+    the same argv can name another commit.
+    """
+    work_dir_error = _validate_work_dir(arguments.get("work_dir"))
+    if work_dir_error is not None:
+        return _error_result(work_dir_error)
+    context = unbound_call_context(arguments)
+    if request_context is not None and request_context.session_key() is not None:
+        context = replace(context, session_key=request_context.session_key())
+    return await _dispatch_async_job(
+        measure_tool.MEASURE_ENDPOINT,
+        measure_tool.measure_argv(arguments),
+        measure_tool.MEASURE_TIMEOUT_S,
+        jobs,
+        context=context,
+        caller=caller,
+        inline_wait=0,
+        attach=False,
+    )
+
+
+async def _dispatch_measure_or_cancel(
+    name: str,
+    arguments: dict[str, Any],
+    jobs: _JobManager,
+    request_context: McpRequestContext | None,
+    caller: Caller | None,
+) -> McpToolContent | None:
+    """Route ``booley_measure`` and ``booley_cancel``; ``None`` when the tool is hidden."""
+    exposure = _exposure()
+    if name == catalog._CANCEL_MCP_TOOL_NAME:
+        return (
+            await _dispatch_cancel(arguments, jobs)
+            if catalog.utilities_visible(exposure)
+            else None
+        )
+    if not catalog.measure_visible(exposure):
+        return None
+    return await _dispatch_measure(arguments, jobs, request_context, caller)
 
 
 async def _dispatch_special_mcp_tool(
@@ -1857,8 +1925,8 @@ async def _dispatch_special_mcp_tool(
         return handler() if visible() else None
     if name == catalog.POLL_MCP_TOOL_NAME and catalog.utilities_visible(_exposure()):
         return await _dispatch_poll(arguments, jobs, caller)
-    if name == catalog._CANCEL_MCP_TOOL_NAME and catalog.utilities_visible(_exposure()):
-        return await _dispatch_cancel(arguments, jobs)
+    if name in {measure_tool.MEASURE_TOOL_NAME, catalog._CANCEL_MCP_TOOL_NAME}:
+        return await _dispatch_measure_or_cancel(name, arguments, jobs, request_context, caller)
     if name == catalog._SLEEP_MCP_TOOL_NAME and _exposure().debug:
         return await _dispatch_sleep(arguments)
     if name in GOAL_TOOL_NAMES and catalog.goals_visible(_exposure()):

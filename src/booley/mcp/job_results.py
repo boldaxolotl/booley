@@ -18,6 +18,7 @@ from booley.flows.progress_lifecycle import read_progress_for_run
 from booley.goals.binding import GoalBindingError, GoalRunBinding
 from booley.goals.paths import record_paths
 from booley.mcp.call_context import CallContext, container_jobs_root, project_goal_store
+from booley.measurement.mcp_job import MEASURE_ENDPOINT, read_progress, read_result
 from booley.runtime import job_records as jobrec
 from booley.runtime import job_slots
 from booley.runtime.filesystem_utils import is_transient_read_error, read_file_bytes
@@ -69,7 +70,14 @@ def read_record_or_none(run_id: str, root: Path | None) -> jobrec.JobRecord | No
 
 
 def _locate_job(run_id: str, *, roots: tuple[Path, ...] | None = None) -> LocatedJob | None:
-    """Find a unique run across roots; refuse even legacy collisions."""
+    """Find a unique run across roots; refuse even legacy collisions.
+
+    A ``run_id`` in more than one root is an error: silently picking one could
+    show or cancel the wrong Job. A Goal-bound Job's report and checkpoint lookups
+    use the Goal Record its binding names (``JobRepository.report_booley_dir``),
+    never the server's current Goal selection, so a finished Job never attaches
+    itself to a Goal Mode entered later in the same worktree.
+    """
     search_roots: list[Path | None] = list(job_roots() if roots is None else roots)
     if run_id in _KNOWN_JOB_ROOTS and _KNOWN_JOB_ROOTS[run_id] not in search_roots:
         search_roots.insert(0, _KNOWN_JOB_ROOTS[run_id])
@@ -235,7 +243,7 @@ def _job_report(
     # last-writer-wins flat copy.  In particular, an old legacy flat report
     # must not hide this run's durable progress checkpoint after a worker dies.
     report = repository.report_for_run(rec.endpoint, rec.run_id)
-    if report is None:
+    if report is None and rec.endpoint != MEASURE_ENDPOINT:  # its progress is no report
         report = repository.progress_for_run(rec.endpoint, rec.run_id)
     if report is not None:
         return report, True
@@ -434,6 +442,11 @@ def _find_attachable_job(
 
 
 def _attach_binding_key(binding: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The binding facts two calls must share to be the same work.
+
+    ``invocation_id`` and ``record_revision`` are dropped: calls that differ only in
+    those are one Job. A finished Job is never attached to; a repeat call runs again.
+    """
     if binding is None:
         return None
     try:
@@ -474,7 +487,16 @@ class JobRepository:
     ) -> dict[str, Any] | None:
         return _latest_report(endpoint, report_dirs=self.report_dirs(located, context=context))
 
+    def _measure_dir(self, run_id: str) -> Path | None:
+        """Where a ``measure`` Job keeps its progress and result: beside its ``job.log``."""
+        located = self.locate(run_id)
+        return None if located is None or located.root is None else located.root / run_id
+
     def report_for_run(self, endpoint: str, run_id: str) -> dict[str, Any] | None:
+        if endpoint == MEASURE_ENDPOINT:
+            job_dir = self._measure_dir(run_id)
+            result = None if job_dir is None else read_result(job_dir)
+            return result if result is not None and result.get("run_id") == run_id else None
         return _report_for_run_id(
             endpoint, run_id, report_dirs=self.report_dirs(self.locate(run_id))
         )
@@ -494,6 +516,9 @@ class JobRepository:
         return None if store is None else store.booley_dir
 
     def progress_for_run(self, endpoint: str, run_id: str) -> dict[str, Any] | None:
+        if endpoint == MEASURE_ENDPOINT:
+            job_dir = self._measure_dir(run_id)
+            return None if job_dir is None else read_progress(job_dir)
         located = self.locate(run_id)
         return _progress_for_run_id(
             endpoint,

@@ -15,7 +15,7 @@ on `main`, with `.git` as a directory. Stop with restore/re-enable guidance if
 validation fails. The installed `booley` revision does not matter here: triage
 verifies every finding against `origin/main`, and each run's `log.md` records
 the build it tested. Resolve repository inputs such as
-`docs/internals/agents/triage-labels.md`, `qa/missions/`, and `qa/shared/` from
+`docs/internals/agents/issue-tracker.md`, `qa/missions/`, and `qa/shared/` from
 that derived root, never from the process working directory.
 
 Input: one or more QA run directories (each has `findings.md` and `log.md`),

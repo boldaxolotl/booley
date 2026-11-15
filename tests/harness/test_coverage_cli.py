@@ -1,4 +1,4 @@
-"""`booley coverage uncovered`: list the uncovered points of one retained coverage record."""
+"""`booley coverage uncovered`: list the uncovered points of one retained Coverage Record."""
 
 from __future__ import annotations
 
@@ -130,7 +130,7 @@ def persist_record(
                 "target_identity": document["target"]["identity"],
                 "collection": status,
                 "evaluation": "not_requested",
-                "coverage_campaign": "coverage.json",
+                "coverage_record": "coverage.json",
             }
         )
     )
@@ -274,45 +274,45 @@ def _nested_attempt_manifest(path: Path) -> Path:
     return nested / "coverage.json"
 
 
-@pytest.mark.parametrize(
-    "defect",
-    [
-        "missing-file",
-        "not-json",
-        "not-a-campaign",
-        "wrong-file-name",
-        "nested-attempt-manifest",
-        "point-store-missing",
-        "point-store-corrupt",
-    ],
+_DEFECTS = (
+    "missing-file",
+    "not-json",
+    "not-a-coverage-record",
+    "wrong-file-name",
+    "nested-attempt-manifest",
+    "point-store-missing",
+    "point-store-corrupt",
 )
-def test_unreadable_record_exits_2_naming_the_file(
-    tmp_path, monkeypatch, capsys, defect: str
-) -> None:
-    path = persist_record(tmp_path)
-    argument = path
-    if defect == "missing-file":
-        argument = path.parent / "absent" / "coverage.json"
-    elif defect == "not-json":
-        _not_json(path)
-    elif defect == "not-a-campaign":
-        _not_a_coverage_record(path)
-    elif defect == "wrong-file-name":
-        argument = path.rename(path.with_name("campaign.json"))
-    elif defect == "nested-attempt-manifest":
-        argument = _nested_attempt_manifest(path)
-    elif defect == "point-store-missing":
-        _remove_point_store(path)
-    else:
-        _corrupt_point_store(path)
 
-    code, out, err = _run(monkeypatch, capsys, str(argument))
 
-    assert code == 2
-    assert out == ""
-    assert err.startswith(f"ERROR: cannot read coverage record {argument}: ")
-    assert _HINT in err.splitlines()[-1]
-    assert "Traceback" not in err
+def test_unreadable_record_exits_2_naming_the_file(tmp_path, monkeypatch, capsys) -> None:
+    for defect in _DEFECTS:
+        root = tmp_path / defect
+        root.mkdir()
+        path = persist_record(root)
+        argument = path
+        if defect == "missing-file":
+            argument = path.parent / "absent" / "coverage.json"
+        elif defect == "not-json":
+            _not_json(path)
+        elif defect == "not-a-coverage-record":
+            _not_a_coverage_record(path)
+        elif defect == "wrong-file-name":
+            argument = path.rename(path.with_name("record.json"))
+        elif defect == "nested-attempt-manifest":
+            argument = _nested_attempt_manifest(path)
+        elif defect == "point-store-missing":
+            _remove_point_store(path)
+        else:
+            _corrupt_point_store(path)
+
+        code, out, err = _run(monkeypatch, capsys, str(argument))
+
+        assert code == 2, defect
+        assert out == "", defect
+        assert err.startswith(f"ERROR: cannot read Coverage Record {argument}: "), defect
+        assert _HINT in err.splitlines()[-1], defect
+        assert "Traceback" not in err, defect
 
 
 def test_relative_path_with_parent_segments_is_read(tmp_path, monkeypatch, capsys) -> None:

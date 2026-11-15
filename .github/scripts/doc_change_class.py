@@ -3,7 +3,7 @@
 
 Usage: doc_change_class.py --base <rev> --head <rev> [--rules <file>] [--label-pr <n>]
 
-The rules live in ``doc_change_rules.toml``; see
+The rules live in ``doc_change_rules.toml``; classes and labels are in
 ``docs/internals/agents/doc-change-classes.md``. Prints one JSON object on
 stdout. Exit 2 names a malformed rules file or a Git failure; ``--label-pr``
 exits 1 when a ``gh`` call fails. Stdlib only.
@@ -201,6 +201,14 @@ def headings(text: str) -> Counter[tuple[int, str]]:
 
 
 def _cli_entries(text: str) -> set[str]:
+    """Return the CLI entries a reference page's code shows.
+
+    A heuristic on how the CLI reference is written. It reads code only: every
+    line of a fenced block and every inline code span. An entry is a ``booley``
+    command path, a flag on a ``booley`` line, a flag in any other snippet, or
+    an inline span that is one bare word. An option written without code
+    formatting is not seen.
+    """
     entries: set[str] = set()
     snippets = [(lang is not None, line) for lang, line in _blocks(text) if lang is not None]
     snippets += [
@@ -232,6 +240,12 @@ def _cli_entries(text: str) -> set[str]:
 
 
 def _config_entries(text: str) -> set[str]:
+    """Return the config keys a reference page's code shows.
+
+    A heuristic like ``_cli_entries``: a ``table.key`` pair in a fenced
+    ``toml`` block (commented defaults included), an inline ``[table]`` or
+    ``[table].key`` span, or an inline span that is one bare word.
+    """
     entries: set[str] = set()
     table = ""
     for lang, line in _blocks(text):

@@ -86,11 +86,12 @@ _FLOW_KEY_CONTROLS: dict[str, str] = {
         "`test[+variant]@xN` for N drawn seeds, and `--seed <N>|random` sets or draws the "
         "seed of every selected Test Run; "
         "there is no CLI `--skip`, and configured skips apply only to unfiltered selection. "
-        "MCP passes the same suite as a `test` array. Resume one exact durable "
+        "A Developer Agent's MCP tool call passes the same suite as a `test` array. "
+        "Resume one exact durable "
         "Simulation Record with `--resume-from <exact-manifest.json>` (optionally with "
         "`--dry-run`): Cocotb retries the whole batch; a coverage Simulation Record resumes only "
         "after its collection finished (otherwise exit 2: start a new `--coverage` run). "
-        "`--coverage` / `--cov` collects a native Coverage Campaign, "
+        "`--coverage` / `--cov` collects a native Coverage Record, "
         "and `--trace` captures waveforms for the simulation run. Focused Cocotb "
         "output summarizes unselected skips; pass `--result-verbosity full` to print "
         "every XML testcase entry (the complete XML and JSON artifacts are always retained)"
@@ -214,8 +215,8 @@ def render_flow_reference(
                 "",
                 "Common controls: repeat `--target` or use comma-separated values; "
                 "`--target a --target b,c` preserves the order `a`, `b`, `c`, and "
-                "duplicate resolved Targets are rejected. MCP keeps one "
-                "comma-separated `target` string. "
+                "duplicate resolved Targets are rejected. A Developer Agent's MCP tool call "
+                "takes one comma-separated `target` string instead. "
                 "`--dry-run` returns a normalized plan without executing EDA; "
                 "`booley flow <name> --help` shows the full contract.",
                 "",
@@ -295,7 +296,7 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
 
 
 def _render_coverage_analyst_reference() -> list[str]:
-    """Render the unified coverage campaign input contract."""
+    """Render the unified Coverage Record input contract."""
     return [
         "#### `coverage_analyst`",
         "",
@@ -304,7 +305,7 @@ def _render_coverage_analyst_reference() -> list[str]:
         "native evidence and proposes advisory next steps; its model only reads evidence. "
         "It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. "
         "In Goal Mode, screened Waiver Candidates support a proposed Goal change, "
-        "which needs human approval. Finish requires every Goal met; advisory "
+        "which needs your approval. Finish requires every Goal met; advisory "
         "reports do not mark strict coverage met. "
         "Verified Target sources are optional; stale sources give report-only analysis.",
     ]
@@ -335,8 +336,8 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
         "`--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive "
         "seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). "
         "Model-call minimum budgets apply; seconds-only providers round up. "
-        "CLI Flow and Specialist runs never record Goal evidence; use the Developer Agent's "
-        "Goal-bound MCP calls with `work_dir`. A CLI run is also a Standalone Job: it shows in "
+        "CLI Flow and Specialist runs never record Goal evidence; only the Developer Agent's "
+        "Goal Mode tool calls, which pass `work_dir`, do. A CLI run is also a Standalone Job: it shows in "
         "the Dashboard and copies its output to `.interactive_logs/standalone/<run_id>/job.log` "
         "in the Project's common Booley Directory (the main checkout's `.booley` from a linked "
         "worktree).",

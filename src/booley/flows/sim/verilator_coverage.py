@@ -57,7 +57,7 @@ VERILATOR_COVERAGE_INSTRUMENTATION = (
 
 
 _NATIVE_HEADER = "# SystemC::Coverage-3"
-_NATIVE_RECORD_RE = re.compile(r"^C '(?P<identity>.*)' (?P<hits>[0-9]+)$")
+_NATIVE_ENTRY_RE = re.compile(r"^C '(?P<identity>.*)' (?P<hits>[0-9]+)$")
 _RECORD_METRICS = {
     "line": "line",
     "branch": "branch",
@@ -70,7 +70,7 @@ _RECORD_METRICS = {
 _SCORED_METRICS = frozenset({"line", "branch", "expression", "toggle", "cover_property"})
 
 
-class _NativeRecordError(ValueError):
+class _NativeEntryError(ValueError):
     """A compatible native file contains an unqueryable record."""
 
 
@@ -103,7 +103,7 @@ class _MergeError(RuntimeError):
 
 @dataclass(frozen=True)
 class CoverageSource:
-    """One explicit native-to-Campaign source mapping from the resolved Target."""
+    """One explicit native-to-Coverage Record source mapping from the resolved Target."""
 
     native_path: str
     path: str
@@ -324,7 +324,7 @@ class CoverageCollectionResult:
 
 
 @dataclass(frozen=True)
-class _NativeRecord:
+class _NativeEntry:
     identity: str
     attributes: Mapping[str, str]
     hits: int
@@ -334,7 +334,7 @@ class _NativeRecord:
 class _CollectedRun:
     run: CoverageRun
     artifact: CoverageArtifact | None
-    records: tuple[_NativeRecord, ...]
+    records: tuple[_NativeEntry, ...]
     findings: tuple[CoverageFinding, ...] = ()
     hook_artifact: CoverageArtifact | None = None
     infrastructure_error: bool = False
@@ -362,7 +362,7 @@ def _run_stem(index: int, selected: SelectedCoverageRun) -> str:
 
 
 def _run_id(index: int, selected: SelectedCoverageRun) -> str:
-    """The Campaign-unique id of one run: its ordinal and Test Run name."""
+    """The id of one run, unique within its Coverage Record: its ordinal and Test Run name."""
     return f"run:{index:03d}:{artifact_path_component(selected.run_name)}"
 
 
@@ -374,7 +374,7 @@ def _coverage_run(
     raw_artifact: str | None,
     attributes: Mapping[str, FrozenJson],
 ) -> CoverageRun:
-    """Build the Campaign record of the *index*-th run, named by its Test Run."""
+    """Build the CoverageRun of the *index*-th run, named by its Test Run."""
     return CoverageRun(
         id=_run_id(index, selected),
         test=selected.name,
@@ -396,7 +396,7 @@ def _parse_attributes(identity: str) -> Mapping[str, str]:
             continue
         key, separator, value = pair.partition("\x02")
         if not separator or not key or key in attributes:
-            raise _NativeRecordError("malformed or duplicate native coverage attribute")
+            raise _NativeEntryError("malformed or duplicate native coverage attribute")
         attributes[key] = value
     return MappingProxyType(dict(sorted(attributes.items())))
 
@@ -405,30 +405,30 @@ def _validate_record_attributes(attributes: Mapping[str, str]) -> None:
     for name in ("l", "n"):
         value = attributes.get(name)
         if value is not None and not value.isdigit():
-            raise _NativeRecordError(
+            raise _NativeEntryError(
                 f"native coverage attribute {name!r} must be a nonnegative integer"
             )
 
 
-def _parse_native(path: Path) -> tuple[_NativeRecord, ...]:
+def _parse_native(path: Path) -> tuple[_NativeEntry, ...]:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError) as exc:
-        raise _NativeRecordError("native coverage database is not readable UTF-8") from exc
+        raise _NativeEntryError("native coverage database is not readable UTF-8") from exc
     if not lines or lines[0] != _NATIVE_HEADER:
         raise _NativeFormatError("incompatible Verilator native coverage header")
-    records: list[_NativeRecord] = []
+    records: list[_NativeEntry] = []
     for line in lines[1:]:
         if not line:
             continue
-        match = _NATIVE_RECORD_RE.fullmatch(line)
+        match = _NATIVE_ENTRY_RE.fullmatch(line)
         if match is None:
-            raise _NativeRecordError("malformed Verilator native coverage record")
+            raise _NativeEntryError("malformed Verilator native counter entry")
         identity = match["identity"]
         attributes = _parse_attributes(identity)
         _validate_record_attributes(attributes)
         records.append(
-            _NativeRecord(
+            _NativeEntry(
                 identity=identity,
                 attributes=attributes,
                 hits=int(match["hits"]),
@@ -541,7 +541,7 @@ def _hook_failure_run(
     context: _RunContext,
     verdict: SimulationVerdict,
     raw_artifact: CoverageArtifact | None,
-    records: tuple[_NativeRecord, ...],
+    records: tuple[_NativeEntry, ...],
     hook_artifact: CoverageArtifact | None,
     error: _HookEvidenceError,
 ) -> _CollectedRun:
@@ -711,7 +711,7 @@ def _read_raw_artifact(
     request: CoverageCollectionRequest,
     context: _RunContext,
     verdict: SimulationVerdict,
-) -> tuple[CoverageArtifact, tuple[_NativeRecord, ...]] | _CollectedRun:
+) -> tuple[CoverageArtifact, tuple[_NativeEntry, ...]] | _CollectedRun:
     try:
         validate_fresh_artifact(
             context.raw_path,
@@ -732,7 +732,7 @@ def _read_raw_artifact(
             message=f"Test {context.test.run_name!r} produced an incompatible native database.",
             state="incompatible",
         )
-    except _NativeRecordError:
+    except _NativeEntryError:
         return _run_failure(
             request,
             context,
@@ -778,7 +778,7 @@ def _finish_run(
     context: _RunContext,
     verdict: SimulationVerdict,
     raw_artifact: CoverageArtifact,
-    records: tuple[_NativeRecord, ...],
+    records: tuple[_NativeEntry, ...],
     hook_artifact: CoverageArtifact | None,
     *,
     pre_sim: PreSimEvidence | None = None,
@@ -807,7 +807,7 @@ def _run_failure(
     message: str,
     state: str | None = None,
     artifact: CoverageArtifact | None = None,
-    records: tuple[_NativeRecord, ...] = (),
+    records: tuple[_NativeEntry, ...] = (),
     hook_artifact: CoverageArtifact | None = None,
     pointer: str = "raw_artifact",
     attributes: Mapping[str, FrozenJson] | None = None,
@@ -971,7 +971,7 @@ def _subject(metric: str, attributes: Mapping[str, str]) -> Mapping[str, str]:
 
 
 def _point_for_record(
-    record: _NativeRecord,
+    record: _NativeEntry,
     source: CoverageSource,
     hits_by_run: Mapping[str, int],
 ) -> CoveragePoint:
@@ -1020,7 +1020,7 @@ def _normalize_points(
 ) -> tuple[CoveragePoint, ...]:
     sources = {source.native_path: source for source in request.target.sources}
     incidence: dict[str, dict[str, int]] = {}
-    records: dict[str, _NativeRecord] = {}
+    records: dict[str, _NativeEntry] = {}
     for item in collected:
         for record in item.records:
             records[record.identity] = record
@@ -1098,7 +1098,7 @@ def _merge(
     request: CoverageCollectionRequest,
     execution: SimulationExecutionPort,
     collected: tuple[_CollectedRun, ...],
-) -> tuple[CoverageArtifact, tuple[_NativeRecord, ...]]:
+) -> tuple[CoverageArtifact, tuple[_NativeEntry, ...]]:
     merged_path = request.artifact_root / "native" / "merged" / "coverage.dat"
     before = snapshot_artifact(merged_path)
     raw_paths = tuple(
@@ -1122,7 +1122,7 @@ def _merge(
     _validate_merged_freshness(request, merged_path, before)
     try:
         records = _parse_native(merged_path)
-    except (_NativeFormatError, _NativeRecordError):
+    except (_NativeFormatError, _NativeEntryError):
         raise _MergeError(
             "COV_NATIVE_MERGE_NOT_QUERYABLE",
             "Verilator native merge output was not queryable.",
@@ -1177,7 +1177,7 @@ def _merged_artifact(
     )
 
 
-def _record_totals(records: tuple[_NativeRecord, ...]) -> dict[str, int]:
+def _record_totals(records: tuple[_NativeEntry, ...]) -> dict[str, int]:
     totals: dict[str, int] = {}
     for record in records:
         totals[record.identity] = totals.get(record.identity, 0) + record.hits
@@ -1313,7 +1313,7 @@ def _unknown_findings(collected: tuple[_CollectedRun, ...]) -> tuple[CoverageFin
             "warning",
             "COV_NATIVE_RECORD_UNKNOWN",
             f"/normalization/unrecognized_records/{index}",
-            "Unknown native record retained losslessly without V1 scoring.",
+            "Unknown native counter entry retained losslessly without V1 scoring.",
         )
         for index, _record in enumerate(_unknown_records(collected))
     )
@@ -1443,7 +1443,7 @@ def _merge_collection(
 
 
 def _merge_is_equivalent(
-    collected: tuple[_CollectedRun, ...], merged: tuple[_NativeRecord, ...]
+    collected: tuple[_CollectedRun, ...], merged: tuple[_NativeEntry, ...]
 ) -> bool:
     raw = tuple(record for item in collected for record in item.records)
     return _record_totals(raw) == _record_totals(merged)

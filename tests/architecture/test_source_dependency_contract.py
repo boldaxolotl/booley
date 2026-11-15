@@ -57,7 +57,15 @@ def test_production_source_dependencies_obey_approved_contract(
 
     problems = evaluate_contract(dependencies, BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
 
-    assert not problems, "Source dependency contract failures:\n" + format_problems(problems)
+    assert not problems, (
+        "Source dependency contract failures:\n"
+        + format_problems(problems)
+        + "\nDo not add a permission to make the import pass. Move the shared piece below both"
+        " packages; the module docstring of tests/architecture/booley_contract.py says where"
+        " shared code lives and how to change the contract. To see what a change moved, run"
+        " `python3 tests/architecture/compare_report.py --before-ref <base> --after-ref <head>"
+        " --repo-root .` and attach it to the PR."
+    )
     # Flows reach Harness only through what the command layer supplies (#3062).
     assert ("booley.flows", "booley.harness") not in mutual_package_pairs(dependencies)
     assert not [

@@ -50,7 +50,7 @@ REASON_UNRESOLVABLE = "goal-test-run-unresolvable"
 _MEASURING_RUN: Mapping[GoalFamily, str] = {
     GoalFamily.CYCLE_COUNT: "run the Goal's frozen Test Run to measure its Cycle Count",
     GoalFamily.COVERAGE: (
-        "run exactly the Goal's frozen Test Runs in one coverage campaign to measure coverage"
+        "run exactly the Goal's frozen Test Runs in one Coverage Record to measure coverage"
     ),
 }
 
@@ -139,7 +139,7 @@ def outcomes_decide(goal: RecordedGoal) -> bool:
     """Whether the pass/fail outcomes of *goal*'s frozen Test Runs decide it.
 
     They do not for a coverage Goal: a Test Run that fails its checks is a
-    simulation concern, and the Goal is met when a campaign of exactly its
+    simulation concern, and the Goal is met when a Coverage Record of exactly its
     frozen runs reaches the coverage floors.
     """
     return goal.spec.family is not GoalFamily.COVERAGE

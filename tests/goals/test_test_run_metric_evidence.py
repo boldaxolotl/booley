@@ -166,7 +166,7 @@ def test_failure_from_an_ordinary_simulation_does_not_block_a_later_coverage_sim
     assert status.status == "unmet" and "did not measure the Goal" in status.reason
     assert REASON_FAILED not in status.reason and REASON_INCOMPLETE not in status.reason
     assert _shown(status) == {"stress@5": "failed", "smoke@1": "missing"}
-    # The coverage campaign runs exactly the frozen runs and reaches the floors.
+    # The Coverage Record runs exactly the frozen runs and reaches the floors.
     simulation_record = [run_row(STRESS), run_row("smoke")]
     detail = _record(coverage, "run-2", simulation_record, key=key, met=True)
     # Its ledger holds its own runs' outcomes; the earlier failure is not folded in.
@@ -226,7 +226,7 @@ def test_run_that_does_not_measure_coverage_restates_nothing_before_a_measuremen
     key = coverage.key
     first = [run_row(STRESS, "fail")]
     _record(coverage, "run-1", first, key=key, met=False, extra=OUTCOMES_ONLY)
-    # No campaign measured the Goal yet, so a later ordinary run shows its own outcomes.
+    # No Coverage Record measured the Goal yet, so a later ordinary run shows its own outcomes.
     later = _record(coverage, "run-2", [run_row("smoke")], key=key, met=False, extra=OUTCOMES_ONLY)
     assert _outcomes(coverage, coverage.key) == {"stress@5": "missing", "smoke@1": "passed"}
     assert "did not measure" in later["goal_contract_violation"]
@@ -266,14 +266,14 @@ def test_coverage_verdict_needs_exactly_the_frozen_runs_in_the_same_change(
     coverage: SimpleNamespace,
 ) -> None:
     key = coverage.key
-    # A superset campaign passed both frozen runs but merged coverage over a third run.
+    # A superset Coverage Record passed both frozen runs but merged coverage over a third run.
     superset = [run_row(STRESS), run_row("smoke"), run_row(build_test_run("stress", seed=6))]
     detail = _record(coverage, "run-1", superset, key=key, met=True)
     assert set(_outcomes(coverage, coverage.key).values()) == {"passed"}
     assert "did not measure" in detail["goal_contract_violation"]
     status = _status(coverage, key)
     assert status.status == "unmet" and "did not measure the Goal" in status.reason
-    # A subset campaign measured something else too.
+    # A subset Coverage Record measured something else too.
     _record(coverage, "run-2", [run_row(STRESS)], key=key, met=True)
     assert _status(coverage, key).status == "unmet"
     exact = _record(coverage, "run-3", [run_row(STRESS), run_row("smoke")], key=key, met=True)

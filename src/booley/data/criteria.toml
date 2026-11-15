@@ -109,7 +109,7 @@ category    = "rtl"
 group       = "verification"
 
 [coverage]
-description = "Native Coverage Campaign policy for one Simulation Target"
+description = "Native Coverage Record policy for one Simulation Target"
 workflow_region = "post_sim"
 per_target  = true
 category    = "rtl"

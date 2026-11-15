@@ -99,7 +99,7 @@ class _PublicCoverage:
 class _OutcomeEvidence:
     """The authenticated evidence of one outcome, read on first use.
 
-    Test Run rows and the public Coverage Campaign reference are each
+    Test Run rows and the public Coverage Record reference are each
     resolved at most once, however many Criteria or Goals read them.
     """
 
@@ -109,7 +109,7 @@ class _OutcomeEvidence:
         self._coverage: _PublicCoverage | None = None
 
     def coverage(self) -> _PublicCoverage:
-        """The outcome's public Coverage Campaign reference, resolved on first call."""
+        """The outcome's public Coverage Record reference, resolved on first call."""
         if self._coverage is None:
             self._coverage = _resolve_facts_coverage(self.outcome)
         return self._coverage
@@ -463,6 +463,8 @@ def _record_standalone_simulation_record(
     outcome = evidence.outcome
     if not outcome.complete or outcome.target["role"] != "candidate":
         return
+    # An inconclusive Target skips the Criterion rather than failing it: nothing
+    # was proven either way (the run still exits 1).
     if outcome.aggregate_grade not in {"pass", "fail"}:
         return
     facts = outcome.acceptance_facts.document
@@ -623,7 +625,7 @@ def _coverage_changes(
     target: Mapping[str, object],
     evidence: _OutcomeEvidence,
 ) -> list[CriterionChange]:
-    """Bind nested Coverage Campaign evaluation into the joint transaction."""
+    """Bind nested Coverage Record evaluation into the joint transaction."""
     if evidence.outcome.coverage_reference is None:
         return []
     coverage = evidence.coverage()
@@ -687,7 +689,7 @@ def _resolve_facts_coverage(outcome: SimulationRecordOutcome) -> _PublicCoverage
         or evidence["owner"] != facts["campaign_id"]
     ):
         raise AcceptanceRecordingError(
-            "public Coverage Campaign reference disagrees with Acceptance Facts"
+            "public Coverage Record reference disagrees with Acceptance Facts"
         )
     authenticate_coverage_record_owner(resolved)
     return _PublicCoverage(public_path, resolved, len(raw), digest)

@@ -1,6 +1,6 @@
 """Goal-compatible coverage/waiver service composed outside the Goal domain.
 
-Reuse strict Campaign evaluation, promotion byte builders and directory-owned
+Reuse strict Coverage Record evaluation, promotion byte builders and directory-owned
 candidate storage. No Ticket review, all-criteria prerequisite or Acceptance
 Journal enters this immediate, recoverable live-promotion lifecycle.
 """
@@ -138,7 +138,7 @@ def _loader_refusal_as_proposal_error() -> Generator[None]:
 
 
 class GoalWaiverService:
-    """One resolved record's checkout/Campaign/candidate composition."""
+    """One resolved record's checkout/Coverage Record/candidate composition."""
 
     def __init__(self, booley_dir: Path, record: GoalRecord) -> None:
         self.booley_dir = booley_dir
@@ -157,7 +157,7 @@ class GoalWaiverService:
     def _resolved(self, detail: Mapping[str, Any]) -> ResolvedCoverageRecord:
         reference = detail.get("coverage_campaign_reference")
         if not isinstance(reference, Mapping):
-            raise ProposalError("coverage evidence has no authenticated Campaign reference")
+            raise ProposalError("coverage evidence has no authenticated Coverage Record reference")
         return resolve_persisted_coverage_record_reference(
             self.paths.runtime_dir / "flow-reports", cast("Mapping[str, Any]", reference)
         )
@@ -173,7 +173,9 @@ class GoalWaiverService:
             != detail.get("evaluation")
             and "goal_derivation" not in detail
         ):
-            raise ProposalError("Campaign evaluation differs from selected producer evidence")
+            raise ProposalError(
+                "Coverage Record evaluation differs from selected producer evidence"
+            )
         current = self._current_waivers()
         expected = cast("Mapping[str, Any]", detail.get("evaluation") or {}).get(
             "approved_waiver_set_digest"
@@ -183,7 +185,7 @@ class GoalWaiverService:
         return resolved
 
     def bind(self, record: GoalRecord, goal_key: str, candidate_id: str) -> WaiverBinding:
-        """Bind one exact candidate to a selected producer Campaign and current policy."""
+        """Bind one exact candidate to a selected producer Coverage Record and current policy."""
         state = load_goal_state(GoalStore(self.booley_dir), record)
         row = selected_observations(record, state, self.booley_dir).get(goal_key)
         if row is None:
@@ -245,7 +247,7 @@ class GoalWaiverService:
             or binding.point_store_sha256 != summary.point_store.sha256
         ):
             raise ProposalError(
-                "candidate was replaced or belongs to another Campaign/point store"
+                "candidate was replaced or belongs to another Coverage Record/point store"
             )
         source = self.root / item.proposal.source
         source_digest = content_digest(source.read_bytes())
@@ -256,7 +258,9 @@ class GoalWaiverService:
             current_sources={item.proposal.source: source_digest},
         )
         if item.candidate_id not in verdict.offered_ids:
-            raise ProposalError("candidate is not eligible for this exact source/Campaign point")
+            raise ProposalError(
+                "candidate is not eligible for this exact source/Coverage Record point"
+            )
 
     def _refuse_protected(self, destination: Path, record: GoalRecord) -> None:
         from booley.goals.protected_inputs import ProtectedInputRoots
@@ -309,7 +313,7 @@ class GoalWaiverService:
             or row["detail"].get("coverage_campaign_reference")
             != binding.campaign_reference.to_json()
         ):
-            raise ProposalError("selected coverage Campaign changed since proposal creation")
+            raise ProposalError("selected Coverage Record changed since proposal creation")
         resolved = self._validate_coverage_record(row["detail"])
         if not fresh_observation(proposal.before or proposal.after, row, state, self.root):
             raise ProposalError("selected coverage producer evidence became stale")

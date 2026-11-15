@@ -637,7 +637,7 @@ def test_simulation_record_store_rejects_linked_root_before_lock_write(tmp_path:
     ):
         pass
 
-    assert not (outside / "campaign").exists()
+    assert not (outside / "record").exists()
 
 
 def _source_equal_revision_drift(tmp_path: Path) -> tuple[Path, str]:

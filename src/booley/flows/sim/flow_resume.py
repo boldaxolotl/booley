@@ -1,4 +1,9 @@
-"""Simulation Record resume (`--resume-from`) for the Simulation Flow."""
+"""Simulation Record resume (`--resume-from`) for the Simulation Flow.
+
+The validated manifest, never ``progress.json``, decides what resume recovers.
+Missing, malformed, or concurrently changed origin progress only skips marking
+the origin ``superseded``.
+"""
 
 from __future__ import annotations
 

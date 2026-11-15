@@ -45,7 +45,7 @@ def decode_simulation_projection(
     if schema is None:
         if coverage_expected:
             raise ValueError(
-                "schema-less Simulation projection cannot authenticate a Coverage Campaign"
+                "schema-less Simulation projection cannot authenticate a Coverage Record"
             )
         _validate_legacy(value)
         return SimulationProjection(value, ProjectionTrust.TARGET_CONSISTENT_LEGACY)

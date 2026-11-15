@@ -1,9 +1,9 @@
-"""Shared file, JSON and digest helpers for Simulation and Coverage Campaign records.
+"""Shared file, JSON and digest helpers for Simulation Records and Coverage Records.
 
 Every bounded record read, canonical-JSON object read, sha256 helper and streaming
 hash of the record modules lives here so each rule is stated once.  The module
 imports nothing from ``booley.flows.sim.record`` (whose package ``__init__`` pulls
-in the coordinator), so the Coverage Campaign reference can use it without a cycle.
+in the coordinator), so the Coverage Record reference can use it without a cycle.
 Callers name the domain error type each refusal raises.
 """
 

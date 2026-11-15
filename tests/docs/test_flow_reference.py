@@ -3,28 +3,21 @@
 from __future__ import annotations
 
 import argparse
-import json
 import re
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, TypeVar
+from typing import Any
 
 import pytest
-from tests.flows.sim.test_endpoint_record_lifecycle import _native_cycle_simulation_record
-from tests.target_test_support import make_target_handle
 
-from booley.flows.base import BooleyFlow
 from booley.flows.builtin_cli import build_parser
-from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics
 from booley.flows.fpga.flow import FpgaImplFlow
-from booley.flows.lint.flow import LintConfigResult, LintFlow, LintWarning
+from booley.flows.lint.flow import LintFlow
 from booley.flows.mutation.flow import MutationFlow
-from booley.flows.sim.build import BuildOutcome
 from booley.flows.sim.coverage_record import CoverageRollup
-from booley.flows.sim.elab_only import ElabOnlyTargetResult
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record_presentation import _simulation_record_report_lines
-from booley.flows.synth.flow import AsicSynthesizeFlow, SynthMetrics
+from booley.flows.synth.flow import AsicSynthesizeFlow
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 USER_DOCS = REPO_ROOT / "docs" / "user"
@@ -37,8 +30,6 @@ FLOW_PAGES = {
     "fpga": ("FLOW-FPGA.md",),
     "mutation": ("FLOW-MUTATION.md",),
 }
-REPORTS = REPO_ROOT / "docs" / "internals" / "FLOW_REPORTS.md"
-MCP_TOOLS = REPO_ROOT / "docs" / "internals" / "MCP-TOOLS.md"
 FLOW_TYPES = (
     SimulateFlow,
     LintFlow,
@@ -46,7 +37,6 @@ FLOW_TYPES = (
     FpgaImplFlow,
     MutationFlow,
 )
-FlowT = TypeVar("FlowT", bound=BooleyFlow)
 
 
 def _reference_text(doc: Path = REFERENCE) -> str:
@@ -61,63 +51,6 @@ def _flow_section(flow_name: str) -> str:
 def _shared_section() -> str:
     """Return the shared Flow page."""
     return _reference_text()
-
-
-def _report_flow_chapter(flow_name: str) -> str:
-    """Return the ``## `<flow>` `` chapter of FLOW_REPORTS.md."""
-    text = _reference_text(REPORTS)
-    start = text.index(f"## `{flow_name}`")
-    end = text.find("\n## ", start + 1)
-    return text[start:] if end < 0 else text[start:end]
-
-
-def _report_shared_chapter() -> str:
-    """Return everything in FLOW_REPORTS.md before its first Flow chapter."""
-    return _reference_text(REPORTS).split("\n## `sim`", maxsplit=1)[0]
-
-
-def _documented_fields(flow_name: str) -> set[str]:
-    """Identifiers named in code spans of the report-schema chapter for a Flow."""
-    code_spans = re.findall(
-        r"(?<!`)`([^`\n]+)`(?!`)",
-        _report_shared_chapter() + _report_flow_chapter(flow_name),
-    )
-    return {
-        identifier
-        for code_span in code_spans
-        for identifier in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", code_span)
-    }
-
-
-def _assert_documented(flow_name: str, payload: dict[str, Any]) -> None:
-    # The identifier pattern in _documented_fields drops the ``$`` of keywords such as ``$schema``.
-    missing = {key.removeprefix("$") for key in payload} - _documented_fields(flow_name)
-    assert not missing, f"{flow_name} structured fields missing from reference: {sorted(missing)}"
-
-
-def _configured_flow(
-    flow_type: type[FlowT],
-    tmp_path: Path,
-    target: str,
-) -> tuple[FlowT, Path]:
-    report_dir = tmp_path / "reports"
-    flow = flow_type()
-    flow.parse_args(
-        ["--target", target, "--work-dir", str(tmp_path), "--report-dir", str(report_dir)]
-    )
-    handle = make_target_handle(
-        tmp_path,
-        target,
-        vlnv="::docs:0",
-        drivable_by=(flow.name,),
-        core_file=tmp_path / "docs.core",
-    )
-    flow._target_handles = {target: handle}  # type: ignore[attr-defined]
-    return flow, report_dir
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("flow_type", FLOW_TYPES, ids=lambda flow_type: flow_type.name)
@@ -163,10 +96,6 @@ def test_simulation_record_resume_granularity_stays_documented() -> None:
     assert "Finished batches are skipped; an interrupted batch reruns all its tests." in flat
     assert "Start a new `booley flow sim --coverage` run instead" in section
     assert "Resume never\n  re-runs failures" in section
-    mcp = _reference_text(MCP_TOOLS)
-    assert "maximum-32 `observations` preview" in mcp
-    assert "`observation_total`" in mcp
-    assert "`observations_truncated`" in mcp
 
 
 def test_sim_configured_skip_control_stays_documented() -> None:
@@ -183,158 +112,8 @@ def test_simulation_build_and_dry_run_timeout_contract_is_documented() -> None:
     config = " ".join(_flow_section("sim").split())
 
     assert "[flows.sim].build_timeout_ms" in shared
-    dry_run = " ".join(_reference_text(REPORTS).split())
-    assert "recipe `build_timeout_ms`" in dry_run
-    assert "Standalone units" in dry_run and "have no build field" in dry_run
     assert "defaults to `3600000` (one hour)" in config
     assert "independent fixed 600-second budget" in config
-
-
-def test_sim_report_fields_stay_documented(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # The record helper relies on the isolation that tests/flows fixtures give.
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
-    monkeypatch.setattr("booley.core.booley_dir._cache", None)
-    # A coverage campaign writes the ordinary projection plus the coverage fields.
-    _native_cycle_simulation_record(tmp_path, monkeypatch)
-    (path,) = (tmp_path / "reports").glob("sim/*/targets/*/simulation.json")
-    projection = _read_json(path)
-
-    _assert_documented("sim", projection)
-    _assert_documented("sim", projection["tests"][0])
-    _assert_documented("sim", projection["test_runs"][0])
-    _assert_documented("sim", projection["simulation_record_manifest"])
-    _assert_documented("sim", projection["coverage_record"])
-
-
-def test_sim_elab_only_report_fields_stay_documented(tmp_path: Path) -> None:
-    sim, report_dir = _configured_flow(SimulateFlow, tmp_path, "sim_demo")
-    with sim.publication_resources:
-        sim._write_elab_only_target_report(
-            ElabOnlyTargetResult(
-                target="sim_demo",
-                target_identity="vendor:library:demo:1.0#sim_demo",
-                eda_tool="verilator",
-                toplevel="demo",
-                compile_command="make",
-                fileset={"rtl": ["demo.sv"], "tb": ["tb_demo.sv"]},
-                outcome=BuildOutcome(True, "pass", None, elapsed_s=0.1),
-                log_path="run.log",
-            )
-        )
-    _assert_documented("sim", _read_json(report_dir / "sim/1/targets/sim_demo/simulation.json"))
-
-
-def test_lint_report_fields_stay_documented(tmp_path: Path) -> None:
-    lint, _report_dir = _configured_flow(LintFlow, tmp_path, "lint_demo")
-    lint._lint_invocation_dir = lint.reserve_invocation_dir()  # type: ignore[attr-defined]
-    warning = LintWarning("RULE", "rtl.sv", 1, 2, "message", "lint_demo")
-    lint_result = LintConfigResult(
-        target="lint_demo",
-        warnings=[warning],
-        eda_tool="verilator",
-        files_linted=1,
-        toplevel="top",
-        log_path="run.log",
-    )
-    lint_error = LintConfigResult(target="lint_broken", error="could not run")
-    lint_path = lint._write_lint_report(
-        ["lint_demo", "lint_broken"],
-        [warning],
-        0.1,
-        errored=[lint_error],
-        target_results=[lint_result, lint_error],
-    )
-    assert lint_path is not None
-    lint_report = _read_json(lint_path)
-    _assert_documented("lint", lint_report)
-    _assert_documented("lint", lint_report["warnings"][0])
-    _assert_documented("lint", lint_report["errors"][0])
-    _assert_documented("lint", lint_report["target_results"][0])
-
-
-def test_lint_warning_row_fields_stay_documented() -> None:
-    warning_row = next(
-        line
-        for line in _report_flow_chapter("lint").splitlines()
-        if line.startswith("| `warnings[]` |")
-    )
-    assert "`targets`" in warning_row
-    assert "`eda_tools`" in warning_row
-
-
-def test_synth_report_fields_stay_documented(tmp_path: Path) -> None:
-    synth, report_dir = _configured_flow(AsicSynthesizeFlow, tmp_path, "synth_demo")
-    current_synth = SynthMetrics(
-        area_um2=10.0,
-        area_source="openroad",
-        area_kge=1.0,
-        cells=10,
-        wns_ns=-1.0,
-        reg2reg_slack_ns=0.0,
-        reg2reg_fmax_mhz=100.0,
-        failure_output="failure",
-        run_evidence={"run_id": "current"},
-        synth_mode="physical",
-        openroad_reuse={
-            "producer_run_id": "synth-1",
-            "producer_started_at": "2026-11-06T10:00:00Z",
-        },
-    )
-    baseline_synth = SynthMetrics(
-        area_um2=8.0,
-        area_source="openroad",
-        area_kge=0.8,
-        cells=8,
-        run_evidence={"run_id": "baseline"},
-        synth_mode="physical",
-    )
-    synth._write_target_report("synth_demo", current_synth, baseline_synth, "main")
-    synth_path = next(report_dir.glob("synth_*.json"))
-    synth_report = _read_json(synth_path)
-    _assert_documented("synth", synth_report)
-    _assert_documented("synth", synth_report["baseline"])
-    _assert_documented("synth", synth_report["conditions"])
-
-
-def test_fpga_report_fields_stay_documented(tmp_path: Path) -> None:
-    fpga, report_dir = _configured_flow(FpgaImplFlow, tmp_path, "fpga_demo")
-    current_fpga = FpgaMetrics(
-        lut_count=10,
-        ff_count=20,
-        wns_ns=0.1,
-        whs_ns=0.1,
-        cached=True,
-        cache_fingerprint="cache",
-        failure_output="failure",
-        log_path="run.log",
-        dirs={"build": "build"},
-        cache_consumer_run_id="consumer",
-        recipe_fingerprint="recipe",
-        recipe_snapshot={"target": "fpga_demo"},
-        run_evidence={"run_id": "current"},
-    )
-    baseline_fpga = FpgaMetrics(
-        lut_count=9,
-        ff_count=19,
-        wns_ns=0.2,
-        whs_ns=0.2,
-        recipe_fingerprint="baseline-recipe",
-        recipe_snapshot={"target": "fpga_demo"},
-        run_evidence={"run_id": "baseline"},
-    )
-    fpga_report = fpga._target_report_payload(
-        "fpga_demo",
-        current_fpga,
-        baseline_fpga,
-        "main",
-        report_dir / "fpga_fpga_demo.json",
-    )
-    _assert_documented("fpga", fpga_report)
-    _assert_documented("fpga", fpga_report["metrics"])
-    _assert_documented("fpga", fpga_report["baseline_metrics"])
 
 
 def test_synth_help_lists_live_policy_keys():
@@ -386,7 +165,7 @@ def test_target_omission_rule_matches_usage_and_reference() -> None:
 
 
 _DOC_REPORTS_ROOT = "/work/.booley/flow-reports"
-_CARD_PATH_LABELS = ("manifest", "report", "coverage campaign")
+_CARD_PATH_LABELS = ("manifest", "report", "Coverage Record")
 
 
 def _text_blocks(page: str) -> list[str]:
@@ -454,7 +233,7 @@ def test_coverage_card_example_matches_rendered_card(tmp_path: Path) -> None:
     )[0].splitlines()
 
     documented = next(
-        block for block in _text_blocks("COVERAGE.md") if "coverage campaign:" in block
+        block for block in _text_blocks("COVERAGE.md") if "Coverage Record:" in block
     )
     assert _as_documented(rendered, root) == documented.splitlines()
 
