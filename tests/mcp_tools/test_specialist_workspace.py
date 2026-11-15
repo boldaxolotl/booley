@@ -590,7 +590,8 @@ def _assert_cpp_review_snapshot(params, repo, visible, hidden, category):
             != 0
         )
     if category == "tb":
-        assert "C/C++ testbench" in params.system_prompt
+        if "(tb-hunt)" not in params.system_prompt:  # the checklist call; the hunt call has none
+            assert "C/C++ testbench" in params.system_prompt
         assert "Canonical style guide for SystemVerilog" not in params.system_prompt
         assert "Cocotb" not in params.system_prompt
         assert "shared/helper.CPP" in params.prompt
