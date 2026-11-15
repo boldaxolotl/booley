@@ -466,6 +466,7 @@ class TestSingleProcess:
         self, root, world, monkeypatch, variant
     ):
         spawn(world, 100)
+        spawn(world, os.getpid())  # the process the lease gates name
         cancellations: list[str] = []
         store = make_execution_store(
             root,
@@ -525,6 +526,7 @@ class TestSingleProcess:
 
     def test_promotion_is_refused_while_a_cancel_holds_the_gate(self, root, world):
         spawn(world, 100)
+        spawn(world, os.getpid())  # the process the lease gates name
         store = make_store(root, world)
         canceller = make_store(root, world)
         waiter = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
@@ -614,6 +616,7 @@ class TestSingleProcess:
 
     def test_release_retries_until_the_lease_gate_frees(self, root, world, caplog):
         spawn(world, 100)
+        spawn(world, os.getpid())  # the process the lease gates name
         store = make_store(root, world)
         other = make_store(root, world)
         token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
@@ -648,6 +651,7 @@ class TestSingleProcess:
 
     def test_release_logs_when_the_lease_gate_never_frees(self, root, world, caplog):
         spawn(world, 100)
+        spawn(world, os.getpid())  # the process the lease gates name
         store = make_store(root, world)
         other = make_store(root, world)
         token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
@@ -670,6 +674,7 @@ class TestSingleProcess:
 
     def test_release_without_a_thread_logs_the_give_up(self, root, world, caplog, monkeypatch):
         spawn(world, 100)
+        spawn(world, os.getpid())  # the process the lease gates name
         store = make_store(root, world)
         other = make_store(root, world)
         token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
