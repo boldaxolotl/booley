@@ -99,8 +99,8 @@ A file registers the first class whose direct base is named `BooleyFlow`,
 literals. A class that inherits through your own intermediate base is not
 found. The protocol utilities (`booley_status`, `booley_poll`,
 `booley_cancel`, `booley_targets`, `booley_report`, `booley_measure`, the Goal
-tools, `bwave`, `booley_sleep`, and `coverage_evidence`) are defined in `booley.mcp.catalog`
-rather than discovered.
+tools, `bwave`, `booley_sleep`, and `coverage_evidence`) are defined in
+`booley.mcp.catalog` rather than discovered.
 
 Discovery is inclusive: every valid implementation is enabled unless
 configuration turns it off.
@@ -164,7 +164,8 @@ Built-in MCP worktree routing:
 `booley_sleep` appears only when diagnostic tools are enabled, and
 `coverage_evidence` only in the Coverage Analyst's nested server.
 `booley_measure` appears on the Developer Agent's interactive server, or on a
-server whose `BOOLEY_MCP_TOOLS` names it; never to a nested Specialist.
+server whose `BOOLEY_MCP_TOOLS` names it; a nested Specialist sees it only when
+its nested tool set names it.
 
 While any Goal Record occupies the Project, or one is unreadable, Booley Flows,
 Specialists, Project endpoints, Goal tools, and `booley_report` refuse a call

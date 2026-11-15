@@ -575,9 +575,13 @@ class JobLifecycle:
         context: CallContext,
         wait_seconds: float,
         owner: str | None = None,
+        attach: bool = True,
     ) -> JobSubmission:
-        """Join identical live work or submit once, then wait within the inline budget."""
-        attached = self._repository.find_attachable(name, cmd, context=context)
+        """Join identical live work or submit once, then wait within the inline budget.
+
+        *attach* False always submits: the caller's argv does not pin what the work measures.
+        """
+        attached = self._repository.find_attachable(name, cmd, context=context) if attach else None
         run_id = (
             attached
             if attached is not None

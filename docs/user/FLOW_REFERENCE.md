@@ -69,11 +69,6 @@ for each finished Job you started but have not polled yet (up to ten, then a
 count of the rest; input prompts carry none), and the Dashboard's
 Job details show how long each result waited before it was read.
 
-A measurement started through `booley_measure` always returns its `run_id` at
-once. A poll then shows the Flows finished of the total and the Flows running,
-and the final result carries the exit status, the verdict line, the failing
-rows and the paths of the reports.
-
 ### Resource use
 
 Booley measures every Job's peak memory and time. `booley resources` shows the

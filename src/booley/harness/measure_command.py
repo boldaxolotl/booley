@@ -344,8 +344,8 @@ def _show(
         file=sys.stderr,
     )
     view = run_view(project_root, store, stored, commit, base=request.base)
+    _publish(hooks, 0, view)  # before the print: a server that is gone cannot lose it
     _print_report(view, request)
-    _publish(hooks, 0, view)
     return 0
 
 
@@ -469,14 +469,15 @@ def _measure_commit(
         target=preflight.scope,
     )
     write_markdown_report(view)
-    _print_report(view, request)
     # A signal while storing leaves a complete run: the exit must agree with what is stored.
     if status is RunStatus.CANCELLED:
+        _print_report(view, request)
         raise KeyboardInterrupt
     code = measure_exit_code(
         result.verdict for table in outcome.tables for result in table.run.results
     )
-    _publish(hooks, code, view)
+    _publish(hooks, code, view)  # before the print: a server that is gone cannot lose it
+    _print_report(view, request)
     return code
 
 

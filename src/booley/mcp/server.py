@@ -1174,7 +1174,11 @@ def _job_listing(outcome: OwnedPoll) -> str:
 
     def line(rec: jobrec.JobRecord, state: str) -> str:
         text = f"- {rec.run_id}: {rec.endpoint}, Target {target_label(rec.argv)}, {state}"
-        progress = _running_progress(rec.run_id) if rec.endpoint == "measure" else None
+        progress = (
+            _running_progress(rec.run_id)
+            if rec.endpoint == measure_tool.MEASURE_ENDPOINT
+            else None
+        )
         return text if progress is None else f"{text}. {measure_tool.running_text(progress)}"
 
     sections = []
@@ -1352,10 +1356,12 @@ async def _dispatch_async_job(
     context: CallContext,
     caller: Caller | None = None,
     inline_wait: float | None = None,
+    attach: bool = True,
 ) -> McpToolContent:
     """Compose inline completion or a background handoff from the lifecycle.
 
     *inline_wait* replaces the configured inline wait; 0 hands the ``run_id`` back at once.
+    *attach* False never joins identical live work.
     """
     try:
         submission = await jobs.submit_and_wait(
@@ -1365,6 +1371,7 @@ async def _dispatch_async_job(
             context=context,
             wait_seconds=_job_inline_wait_seconds() if inline_wait is None else inline_wait,
             owner=None if caller is None else caller.owner,
+            attach=attach,
         )
         state = submission.poll
         if state.status != "running" or (submission.attached and not state.tracked):
@@ -1837,7 +1844,9 @@ async def _dispatch_measure(
 ) -> McpToolContent:
     """Submit ``booley measure`` as a Job and hand its ``run_id`` back at once.
 
-    A measurement is never Goal evidence, so it runs with an unbound call context.
+    A measurement is never Goal evidence, so it runs with an unbound call context. It never
+    attaches to an identical live Job: ``HEAD`` and the base branch move while one runs, so
+    the same argv can name another commit.
     """
     work_dir_error = _validate_work_dir(arguments.get("work_dir"))
     if work_dir_error is not None:
@@ -1853,6 +1862,7 @@ async def _dispatch_measure(
         context=context,
         caller=caller,
         inline_wait=0,
+        attach=False,
     )
 
 

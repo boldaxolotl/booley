@@ -143,6 +143,44 @@ def test_measure_returns_its_run_id_at_once(
     assert record.owner == _caller().owner
 
 
+def test_a_second_measure_never_attaches_to_a_live_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HEAD moves while a measurement runs, so the same argv can name another commit."""
+    tool = measure_tool()
+    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+    monkeypatch.setattr(mcp_server, "_validate_work_dir", lambda _value: None)
+    release = asyncio.Event()
+    spawned: list[list[str]] = []
+
+    async def process(cmd, *, timeout, on_spawn=None, **kwargs):
+        spawned.append(cmd)
+        await release.wait()
+        return 0, "", "", False
+
+    monkeypatch.setattr(mcp_server, "_run_subprocess", process)
+
+    async def scenario() -> list[str]:
+        jobs = _JobManager(_FakeLifetime())
+        texts = [
+            _all_text(
+                await mcp_server._dispatch_special_mcp_tool(
+                    tool.MEASURE_TOOL_NAME, {"work_dir": str(tmp_path)}, jobs, [], None, _caller()
+                )
+            )
+            for _ in range(2)
+        ]
+        await asyncio.sleep(0.05)
+        release.set()
+        await asyncio.gather(*jobs._tasks.values())
+        return texts
+
+    first, second = asyncio.run(scenario())
+
+    assert _run_id_from(first) != _run_id_from(second)
+    assert "attached" not in second.lower() and len(spawned) == 2
+
+
 def test_an_unsupplied_option_adds_nothing_to_the_command() -> None:
     argv = measure_tool().measure_argv({"all": False, "again": None, "base": ""})
 
@@ -246,6 +284,9 @@ def test_the_final_result_carries_verdict_failing_rows_paths_and_exit_code(
     lines = text.splitlines()
     assert lines[0] == "EXIT_CODE: 1"
     assert lines[1] == "1 unmet of 2 enforced"
+    assert lines[2].endswith(
+        ": failing"
+    )  # the header line, as the agent's green-header rule needs
     assert "sim_core lint warnings_max: 3 vs ≤ 0, unmet" in text
     markdown = next(line for line in lines if line.startswith("Markdown: "))
     json_path = next(line for line in lines if line.startswith("JSON: "))
@@ -253,6 +294,27 @@ def test_the_final_result_carries_verdict_failing_rows_paths_and_exit_code(
     assert Path(json_path.removeprefix("JSON: ")).is_file()
     assert text.rstrip().endswith(UNMET_RULE)
     assert text.count("1 unmet of 2 enforced") == 1  # the summary, not the whole report again
+
+
+def test_the_result_is_published_before_the_report_is_printed_to_a_gone_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.measurement.mcp_job import read_result
+
+    project = committed_project(tmp_path, TWO_LINT_TABLES)
+    mcp_job_environment(monkeypatch)
+    script_progress(monkeypatch, lambda: None, [3, 0])
+
+    def gone(*_args: object, **_kwargs: object) -> None:
+        raise BrokenPipeError  # the server's pipe reader is gone
+
+    monkeypatch.setattr(f"{COMMAND}._print_report", gone)
+
+    assert _measure(monkeypatch, project) == 2  # the process fails, the published result stays
+
+    result = read_result(session_jobs_dir() / RUN_ID)
+    assert result is not None and result["exit_code"] == 1
+    assert result["summary"].splitlines()[0] == "1 unmet of 2 enforced"
 
 
 def test_a_server_that_lost_the_measurement_recovers_its_exit_code_and_summary(
