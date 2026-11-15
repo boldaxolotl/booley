@@ -25,8 +25,8 @@ class SimRequest(FlowRequest):
     # boundary.  Validation below immediately restores the Target XOR resume
     # invariant before any endpoint side effect.
     target: str = ""
-    # ``None`` is meaningful transport presence.  Campaign preparation chooses
-    # SIMULATE only on the new-campaign path; resume must be able to distinguish
+    # ``None`` is meaningful transport presence.  Simulation Record preparation chooses
+    # SIMULATE only on the new-record path; resume must be able to distinguish
     # an omitted mode from an explicitly supplied one.
     mode: SimulationMode | None = None
     # ``None`` preserves omission across typed and transport boundaries.  An

@@ -283,7 +283,7 @@ def test_status_uses_the_same_history_snapshot_as_its_projection(goal_mode, monk
 
     monkeypatch.setattr(evidence_ledger, "validated_evidence_records", once)
     assert lint_status(goal_mode).status == "met"
-    # Campaign accounting does its own safety reads; the projection/history pair
+    # Simulation Record accounting does its own safety reads; the projection/history pair
     # itself must be shared, never independently sampled by _goal_statuses.
     selected_reads = [rows for rows in calls if rows]
     assert len(selected_reads) == 1

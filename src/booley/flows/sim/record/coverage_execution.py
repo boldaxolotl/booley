@@ -304,7 +304,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
             plan = self._plans[identity]
         except KeyError as exc:
             raise SimulationRecordIntegrityError(
-                "coverage plan is missing for campaign Target"
+                "coverage plan is missing for record Target"
             ) from exc
         origin_invocation = request.store.root.parents[2]
         nested_plan = replace(
@@ -330,7 +330,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
             plan = self._plans[identity]
         except KeyError as exc:
             raise SimulationRecordIntegrityError(
-                "coverage plan is missing for campaign Target"
+                "coverage plan is missing for record Target"
             ) from exc
         options = simulation_options_from_policy(
             request.policy,
@@ -558,7 +558,7 @@ def _coverage_evidence(
     request: WorkExecutionRequest, outcome: CoverageTargetOutcome
 ) -> list[dict[str, object]]:
     root = request.attempt_directory / COVERAGE_RECORD_DIRECTORY
-    paths = [outcome.campaign_path]
+    paths = [outcome.coverage_record_path]
     points = root / "coverage-points.jsonl.gz"
     if points.is_file():
         paths.append(points)

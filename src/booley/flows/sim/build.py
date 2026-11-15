@@ -637,7 +637,7 @@ def _infrastructure_outcome(
 
 # Bounds for the agent-visible excerpt of a failed build's output. Sized so the
 # canonical JSON of ``{"text": report}`` (worst case: every byte escaped to two
-# characters) stays under the campaign codec's 2 KiB detail ceiling.
+# characters) stays under the record codec's 2 KiB detail ceiling.
 BUILD_REPORT_TAIL_LINES = 15
 BUILD_REPORT_TAIL_BYTES = 800
 

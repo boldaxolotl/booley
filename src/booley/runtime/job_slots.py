@@ -1704,7 +1704,7 @@ class SlotStore:
             holders, waiters = self.snapshot(job_class)
             holding = [tok for tok in holders if tok.pid == pid]
             if holding:
-                # A Campaign's work-item claims share the PID; any one may carry the reason.
+                # A Simulation Record's work-item claims share the PID; any one may carry the reason.
                 reason = next((tok.queue_reason for tok in holding if tok.queue_reason), None)
                 return TokenState(HOLDING, reason=reason)
             for position, tok in enumerate(waiters):

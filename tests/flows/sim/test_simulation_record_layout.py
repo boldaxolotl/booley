@@ -22,8 +22,8 @@ import pytest
 
 from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.coverage_reference import (
-    CoverageCampaignReferenceError,
-    resolve_persisted_coverage_campaign_reference,
+    CoverageRecordReferenceError,
+    resolve_persisted_coverage_record_reference,
 )
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record import collect_pre_sim_firings, read_durable_results
@@ -226,13 +226,13 @@ def test_pre_sim_scan_refuses_an_older_layout_manifest(reports: Path) -> None:
 def test_coverage_analysis_refuses_an_older_layout(reports: Path) -> None:
     from booley.flows.sim.coverage_analysis_input import (
         CoverageAnalysisError,
-        read_coverage_campaign,
+        read_coverage_record,
     )
 
     invocation = copy_older_invocation("0.4.0", "coverage", reports)
 
     with pytest.raises(CoverageAnalysisError) as excinfo:
-        read_coverage_campaign(invocation / "targets" / "sim_0" / "coverage.json")
+        read_coverage_record(invocation / "targets" / "sim_0" / "coverage.json")
 
     # The 0.4.0 reference is refused by its schema before its nested path is read.
     _assert_refused(
@@ -256,9 +256,9 @@ def test_a_persisted_coverage_reference_into_an_older_layout_is_refused(reports:
     }
 
     with pytest.raises(ValueError) as excinfo:
-        resolve_persisted_coverage_campaign_reference(reports, persisted)
+        resolve_persisted_coverage_record_reference(reports, persisted)
 
-    assert not isinstance(excinfo.value, CoverageCampaignReferenceError)
+    assert not isinstance(excinfo.value, CoverageRecordReferenceError)
     _assert_unsupported_type(excinfo.value)
     _assert_refused(
         str(excinfo.value),
@@ -280,7 +280,7 @@ def test_the_old_directory_names_are_not_aliases(reports: Path, tmp_path: Path) 
     assert "is not targets/<Target>/record/manifest.json" in str(linked.value)
 
     # A dependency origin is an exact Record manifest.
-    with pytest.raises(ValueError, match="exact Simulation Campaign manifest"):
+    with pytest.raises(ValueError, match="exact Simulation Record manifest"):
         read_simulation_record_dependencies(older_manifest)
 
     # Readers of a manifest path refuse the old name as an older Booley's record.

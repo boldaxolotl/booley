@@ -1,4 +1,4 @@
-"""Public lifecycle contract for prepared Simulation Campaign execution."""
+"""Public lifecycle contract for prepared Simulation Record execution."""
 
 from __future__ import annotations
 
@@ -423,7 +423,7 @@ def _request(selector: str) -> SimpleNamespace:
 
 def _retained_simulation_record_outcome(outcomes: list[object]) -> EndpointOutcome:
     targets = {f"target-{index}": {"simulation": "pass"} for index, _ in enumerate(outcomes)}
-    return EndpointOutcome(detail={"targets": targets}, report_text="campaign verdict")
+    return EndpointOutcome(detail={"targets": targets}, report_text="record verdict")
 
 
 def test_completed_simulation_record_survives_per_target_progress_failure(
@@ -440,7 +440,7 @@ def test_completed_simulation_record_survives_per_target_progress_failure(
         flow, "_simulation_record_endpoint_outcome", _retained_simulation_record_outcome
     )
     monkeypatch.setattr(
-        "booley.flows.sim.flow._retain_coverage_campaign",
+        "booley.flows.sim.flow._retain_coverage_record",
         lambda _progress, _outcome: None,
     )
 
@@ -468,8 +468,8 @@ def test_coverage_authentication_failure_returns_structured_failure(
         flow, "_simulation_record_endpoint_outcome", _retained_simulation_record_outcome
     )
     monkeypatch.setattr(
-        "booley.flows.sim.flow._retain_coverage_campaign",
-        lambda _progress, _outcome: (_ for _ in ()).throw(ValueError("untrusted campaign")),
+        "booley.flows.sim.flow._retain_coverage_record",
+        lambda _progress, _outcome: (_ for _ in ()).throw(ValueError("untrusted record")),
     )
 
     result = flow._execute_coverage_simulation_record_requests(
@@ -479,7 +479,7 @@ def test_coverage_authentication_failure_returns_structured_failure(
     assert result.exit_code == 2
     assert result.detail["records"] == {}
     assert result.detail["targets"] == {}
-    assert "untrusted campaign" in result.report_text
+    assert "untrusted record" in result.report_text
     assert len(pending) == 1
 
 
@@ -520,7 +520,7 @@ def test_all_simulation_records_survive_terminal_progress_failure(
         flow, "_simulation_record_endpoint_outcome", _retained_simulation_record_outcome
     )
     monkeypatch.setattr(
-        "booley.flows.sim.flow._retain_coverage_campaign",
+        "booley.flows.sim.flow._retain_coverage_record",
         lambda retained, outcome: retained.outcomes.append(outcome),
     )
 
@@ -655,11 +655,13 @@ def test_cli_discloses_committed_manifest_before_executor(
     def execution(*_args):
         captured = capsys.readouterr()
         lines = [
-            line for line in captured.err.splitlines() if line.startswith("campaign manifest: ")
+            line
+            for line in captured.err.splitlines()
+            if line.startswith("Simulation Record manifest: ")
         ]
         assert len(lines) == (target_count if not observed else 0)
         for line in lines:
-            manifest = Path(line.removeprefix("campaign manifest: "))
+            manifest = Path(line.removeprefix("Simulation Record manifest: "))
             assert manifest.is_absolute() and manifest.is_file()
             observed.append(manifest)
         return NativeExecution()
@@ -708,7 +710,7 @@ def test_cli_recovery_paths_survive_failures(
 
     def execution(*_args):
         seen.append(capsys.readouterr().err)
-        assert "campaign manifest: " in seen[0]
+        assert "Simulation Record manifest: " in seen[0]
         if failure == "interrupt":
             raise KeyboardInterrupt()
         if failure == "cancel":
@@ -742,15 +744,15 @@ def test_cli_recovery_paths_survive_failures(
 def _assert_recovery_announcement(capsys, seen, failure):
     output = capsys.readouterr()
     announcements = "".join(seen) + output.err
-    assert announcements.count("campaign manifest: ") == (
+    assert announcements.count("Simulation Record manifest: ") == (
         0 if failure == "before:manifest_commit" else 1
     )
     if failure != "before:manifest_commit":
         path = Path(
             next(
-                line.removeprefix("campaign manifest: ")
+                line.removeprefix("Simulation Record manifest: ")
                 for line in announcements.splitlines()
-                if line.startswith("campaign manifest: ")
+                if line.startswith("Simulation Record manifest: ")
             )
         )
         assert path.is_file()
@@ -810,7 +812,7 @@ def test_same_flow_second_failure_does_not_reuse_manifest(
     assert second.exit_code == 2
     assert "manifest:" not in second.outcome.report_text
     assert manifest_line not in second.outcome.report_text
-    assert "campaign manifest: " not in capsys.readouterr().err
+    assert "Simulation Record manifest: " not in capsys.readouterr().err
 
 
 class _CardExecution(_AdapterAbortExecution):
@@ -856,9 +858,9 @@ def test_ordinary_cli_manifest_and_card_paths(
     def factory(_options):
         output = capsys.readouterr()
         announcements = [
-            line.removeprefix("campaign manifest: ")
+            line.removeprefix("Simulation Record manifest: ")
             for line in output.err.splitlines()
-            if line.startswith("campaign manifest: ")
+            if line.startswith("Simulation Record manifest: ")
         ]
         assert len(announcements) == 1
         path = Path(announcements[0])
@@ -885,7 +887,7 @@ def test_ordinary_cli_manifest_and_card_paths(
         with pytest.raises(KeyboardInterrupt):
             flow.execute_cli(argv)
         assert len(seen) == 1 and seen[0].is_file()
-        assert "campaign manifest: " not in capsys.readouterr().err
+        assert "Simulation Record manifest: " not in capsys.readouterr().err
         return
     result = flow.execute_cli(argv)
     assert seen
@@ -913,7 +915,10 @@ def _assert_ordinary_cli_resume(flow, plan, seen, tmp_path, monkeypatch, capsys,
         assert preparing["completed_targets"] == []
         assert preparing["active"][0]["stage"] == "preparing"
         assert preparing["active"][0]["operation"] == "publication"
-        assert capsys.readouterr().err == _WORK_DIR_NOTICE + f"campaign manifest: {seen[0]}\n"
+        assert (
+            capsys.readouterr().err
+            == _WORK_DIR_NOTICE + f"Simulation Record manifest: {seen[0]}\n"
+        )
         return OrdinaryHdlSerialExecutor(
             invoke=lambda *_args, **_kwargs: None, execution_factory=factory
         )
@@ -972,7 +977,7 @@ def test_cli_manifest_is_flushed_before_execution(
             stream.getvalue()
             .removeprefix(_WORK_DIR_NOTICE)
             .strip()
-            .removeprefix("campaign manifest: ")
+            .removeprefix("Simulation Record manifest: ")
         )
         assert manifest.is_absolute() and manifest.is_file()
         return NativeExecution()
@@ -1025,7 +1030,7 @@ def test_partial_publication_discloses_only_committed_target(
     )
     output = capsys.readouterr()
     assert result.exit_code == 2
-    assert output.err.count("campaign manifest: ") == 1
+    assert output.err.count("Simulation Record manifest: ") == 1
     assert result.outcome.report_text.count("  manifest: ") == 1
     manifest = Path(
         next(
@@ -1067,7 +1072,7 @@ def test_simulation_record_recording_failure_retains_evaluated_final_report(tmp_
             return {}
 
         def record_or_verify_transaction(self, *_args, **_kwargs):
-            raise OSError("campaign ledger unavailable")
+            raise OSError("record ledger unavailable")
 
     outcome = _simulation_outcome(tmp_path, [_observation("smoke")], required=("smoke",))
     context = AcceptanceContext(
@@ -1340,16 +1345,16 @@ def test_coverage_cancellation_keeps_completed_report_only_counts(tmp_path, monk
         except StopIteration:
             raise SimulationRecordCancellationError("cancelled") from None
 
-    monkeypatch.setattr("booley.flows.sim.flow._retain_coverage_campaign", lambda *_args: None)
+    monkeypatch.setattr("booley.flows.sim.flow._retain_coverage_record", lambda *_args: None)
     progress = SimpleNamespace(checkpoint=lambda: None)
     result = flow._execute_coverage_simulation_record_requests(
         SimpleNamespace(run=run), [_request("first"), _request("second")], progress
     )
     assert result.detail == {}
     # The finished first Target keeps its public Coverage Campaign on the stopped card.
-    campaign_file = (outcome.manifest_path.parents[1] / "coverage.json").resolve()
-    assert campaign_file.is_file()
-    assert result.report_text.splitlines()[-1] == f"  coverage campaign: {campaign_file}"
+    coverage_record_file = (outcome.manifest_path.parents[1] / "coverage.json").resolve()
+    assert coverage_record_file.is_file()
+    assert result.report_text.splitlines()[-1] == f"  coverage campaign: {coverage_record_file}"
     assert flow._simulation_record_outcomes == ()
     assert all(item["cycle_count"] is None for item in outcome.observations)
     _assert_partial_acceptance_policy(flow, result, tmp_path, outcome)
@@ -1510,8 +1515,8 @@ def test_coverage_failure_persists_only_returned_outcomes(tmp_path, monkeypatch,
         '[sim_0]\ntests=["reset"]\n[sim_1]\ntests=["reset"]\n[sim_2]\ntests=["reset"]\n'
     )
     original_run = SimulationRecord.run
-    original_retain = __import__("booley.flows.sim.flow", fromlist=["_retain_coverage_campaign"])
-    retain = original_retain._retain_coverage_campaign
+    original_retain = __import__("booley.flows.sim.flow", fromlist=["_retain_coverage_record"])
+    retain = original_retain._retain_coverage_record
     returned = []
 
     def run(simulation_record, request):
@@ -1527,7 +1532,7 @@ def test_coverage_failure_persists_only_returned_outcomes(tmp_path, monkeypatch,
         return retain(progress, outcome)
 
     monkeypatch.setattr(SimulationRecord, "run", run)
-    monkeypatch.setattr(original_retain, "_retain_coverage_campaign", retain_or_fail)
+    monkeypatch.setattr(original_retain, "_retain_coverage_record", retain_or_fail)
     flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
     result = flow.execute(
         SimRequest(
@@ -1774,7 +1779,7 @@ def test_public_ticket_integrity_downgrade_never_commits_or_publishes_true(
     assert bool(state.acceptance_transactions) is (not corrupt)
     assert bool(list((log_dir / "acceptance/transactions").glob("*.json"))) is (not corrupt)
     if corrupt:
-        assert "Simulation Campaign integrity failure" in report["report_text"]
+        assert "Simulation Record integrity failure" in report["report_text"]
         assert report["detail"]["pre_sim_current"] == 2
         assert len(report["detail"]["pre_sim_lines"]) == 2
 
@@ -1825,8 +1830,8 @@ def test_ordinary_resume_retains_returned_outcome_when_terminal_write_fails(
 
 
 _UNADMITTED = {
-    "ordinary": ("sim: Simulation Campaign has no borrowed admission context", {}),
-    "coverage": ("sim: Coverage Campaign has no borrowed admission context", {}),
+    "ordinary": ("sim: Simulation Record has no borrowed admission context", {}),
+    "coverage": ("sim: coverage Simulation Record has no borrowed admission context", {}),
     "resume": (
         "sim: no admission context",
         {"manifest_sha256": "sha256:x", "completed": ["a"], "interrupted": [], "pending": ["b"]},
@@ -1862,7 +1867,7 @@ def test_simulation_record_kinds_refuse_without_admission_before_reserving(
 
 
 def _faulty_simulation_record(flow, tmp_path, monkeypatch, kind, fault):
-    """Build *kind*'s Campaign with its steps stubbed.
+    """Build *kind*'s Simulation Record with its steps stubbed.
 
     The first step publishes one manifest, then raises ``OSError`` for
     ``before_result``; for ``completion`` the work returns a result and only the
@@ -1965,9 +1970,9 @@ def test_simulation_record_kind_failure_cards_name_published_manifests(
         assert result.report_text.startswith("verdict")
     else:
         failed = {
-            "ordinary": "Simulation Campaign execution failed",
-            "coverage": "Simulation Campaign coverage planning failed",
-            "resume": "Simulation Campaign resume failed",
+            "ordinary": "Simulation Record execution failed",
+            "coverage": "Simulation Record coverage planning failed",
+            "resume": "Simulation Record resume failed",
         }[kind]
         assert result.report_text.startswith(f"{failed}: disk gone")
     # Whatever stopped the run, the card names the manifest --resume-from needs.

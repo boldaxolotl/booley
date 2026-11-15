@@ -1,14 +1,14 @@
-"""Drive ordinary Simulation through the real campaign path with a faked process edge.
+"""Drive ordinary Simulation through the real record path with a faked process edge.
 
 Stdlib + booley only (no pytest import), like ``prepared_group``, so every test
 module can share it without importing another test module.
 
 Production reaches ordinary simulation through ``SimulateFlow.execute``: the
-endpoint prepares the campaign, ``OrdinaryHdlSerialExecutor`` plans and runs one
+endpoint prepares the record, ``OrdinaryHdlSerialExecutor`` plans and runs one
 work item per test and the acceptance coordinator records Criteria. Only the
 edges that need a real toolchain are faked here: the build preparation, the
 leased build session's input capture and image authorization, and
-``SimulateFlow._execute_boundary`` (the campaign's process boundary), which
+``SimulateFlow._execute_boundary`` (the record's process boundary), which
 answers the build-stage command with a ``BOOLEY_BUILD_STAGE`` record and the
 launch command with a canned ``SubprocessResult`` plus the authenticated
 adapter result the real adapter would have written.
@@ -50,7 +50,7 @@ from booley.targets.catalog import TargetCatalog
 from tests.flows.sim.launched_work import launched_work
 from tests.target_test_support import write_sim_preview_project
 
-# Canned simulator processes shared by the campaign-path tests.
+# Canned simulator processes shared by the record-path tests.
 PASS_PROCESS = SubprocessResult(
     returncode=0,
     stdout='[SIM_RESULT] PASSED\n[SIM_CYCLES] 2561\n[SIM_SUMMARY] {"passed":true,"sva_errors":0}\n',
@@ -74,7 +74,7 @@ _BUILD_TOKEN = re.compile(r"BOOLEY_BUILD_STAGE token=(\S+?)[\s\"']")
 
 @dataclass(frozen=True)
 class Launch:
-    """One simulator launch the campaign handed to the process edge."""
+    """One simulator launch the record handed to the process edge."""
 
     target: str
     tests: tuple[str, ...]
@@ -91,7 +91,7 @@ ProcessFactory = Callable[[Launch], SubprocessResult]
 
 @dataclass
 class SimulationRecordSimRun:
-    """Outcome of one campaign-path simulation."""
+    """Outcome of one record-path simulation."""
 
     result: ExecutionResult
     flow: SimulateFlow

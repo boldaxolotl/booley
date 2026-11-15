@@ -102,7 +102,7 @@ def test_shared_endpoint_code_calls_declared_hooks():
     assert lookups == [], f"declared hooks looked up by name: {lookups}"
 
 
-# Simulation Campaign state the shared acceptance code must reach only through
+# Simulation Record state the shared acceptance code must reach only through
 # the declared hooks, never by attribute name.
 SIMULATION_ACCEPTANCE_NAMES = frozenset(
     {

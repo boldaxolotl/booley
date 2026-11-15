@@ -1,6 +1,6 @@
 """Where each Test Run's log and waveform are on disk (issue #2758).
 
-A Campaign keeps a Test Run's evidence under its work item's accepted attempt:
+A Simulation Record keeps a Test Run's evidence under its work item's accepted attempt:
 ``work-items/<NNNN>-<digest>/attempts/<NNNN>-<attempt id>/``. The names there
 say nothing about the Test Run, so reports and tools ask this module instead
 of searching. The accepted attempt is the one the acceptance facts consumed:
@@ -28,7 +28,7 @@ from .codec import (
 
 __all__ = ["TestRunFiles", "simulation_record_test_run_files"]
 
-#: Evidence kind of a Campaign work item's simulator log. A Campaign's
+#: Evidence kind of a Simulation Record work item's simulator log. A Simulation Record's
 #: execution has no artifact root, so it records only the live log, never a
 #: ``run_log`` archive.
 LOG_KIND = "live_run_log"
@@ -79,7 +79,7 @@ def simulation_record_test_run_files(outcome: _Outcome) -> tuple[TestRunFiles, .
 
     The Test Runs of one Cocotb batch share its work item, so they share its
     log and waveform. A work item without a consumed result (it never ran, or
-    the campaign was interrupted) has no files.
+    the record was interrupted) has no files.
     """
     facts = getattr(getattr(outcome, "acceptance_facts", None), "document", {})
     consumed = cast(Sequence[Mapping[str, object]], facts.get("consumed_results", ()))

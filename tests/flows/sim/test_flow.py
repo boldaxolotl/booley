@@ -44,7 +44,7 @@ _FLOW_ENABLED = True
 
 
 class SimulateFlow(ProductionSimulateFlow):
-    """Concrete Flow used by the campaign compatibility tests."""
+    """Concrete Flow used by the record compatibility tests."""
 
 
 @pytest.fixture(autouse=True)
@@ -575,9 +575,9 @@ class TestCommandBuilding:
 
 
 # ---------------------------------------------------------------------------
-# Ordinary simulation through the campaign path (SimulateFlow.execute)
+# Ordinary simulation through the record path (SimulateFlow.execute)
 #
-# These run the real endpoint, campaign planning and execution, and Criteria
+# These run the real endpoint, record planning and execution, and Criteria
 # reconciliation; only the process edge is faked (``simulation_record_boundary``).
 # ---------------------------------------------------------------------------
 
@@ -594,7 +594,7 @@ def _launched_tests(run: SimulationRecordSimRun) -> list[str]:
 
 def test_simulation_record_rejects_unknown_test_without_launching(tmp_path: Path, monkeypatch):
     # The reported bug: --test no_such_test used to run the TB's default test and
-    # report PASS. The campaign must reject it before any simulator launches.
+    # report PASS. The record must reject it before any simulator launches.
     run = run_simulation_record_sim(
         tmp_path,
         monkeypatch,

@@ -34,6 +34,13 @@ missing:
 - **Failure triage**: cluster related failures, tell design, testbench, and
   infrastructure problems apart, and rerun a representative failure with a
   waveform for focused diagnosis.
+- **Regression dashboard**: a view in the Booley Dashboard (see
+  [Native ADE Surface](#native-ade-surface)) of the history behind the two
+  items above: pass rate per Test over time, failures new or fixed since the
+  last run, flaky Tests, and the failure groups from triage.
+- **Coverage across runs**: merge coverage from several regression runs, such
+  as nightly runs with fresh random seeds, into one result. Today coverage
+  merges only the Test Runs of one run.
 
 ## Commercial EDA Tools
 

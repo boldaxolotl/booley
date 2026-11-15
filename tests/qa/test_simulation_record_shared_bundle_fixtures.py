@@ -1,4 +1,4 @@
-"""Protect Phase 3 Simulation Campaign Public QA fixtures and contracts."""
+"""Protect Phase 3 Simulation Record Public QA fixtures and contracts."""
 
 from __future__ import annotations
 

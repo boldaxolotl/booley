@@ -1027,7 +1027,7 @@ def _project_diagnostics(old, new):
 
 
 def test_manifest_with_recorded_flow_option_defines_still_decodes_and_compares():
-    """A Campaign stored with `source_recipe.defines` stays readable; resume names the cause."""
+    """A Simulation Record stored with `source_recipe.defines` stays readable; resume names the cause."""
     import copy
 
     legacy_doc = _diagnostic_document()
@@ -1044,7 +1044,7 @@ def test_manifest_with_recorded_flow_option_defines_still_decodes_and_compares()
     diagnostic = _project_diagnostics(legacy_doc, current_doc)
     assert diagnostic.mismatch_summary == (
         "recorded flow_options.defines is no longer recorded (no Flow applies it); "
-        "re-plan the Campaign",
+        "re-plan the Simulation Record",
     )
 
 

@@ -46,12 +46,12 @@ from booley.flows.sim.config import (
     resolve_pre_sim_build_access,
     resolve_pre_sim_commands,
 )
-from booley.flows.sim.coverage_campaign import CoverageFinding
 from booley.flows.sim.coverage_overlay import (
     CoverageOverlay,
     coverage_overlay_vlnv,
     write_coverage_overlay,
 )
+from booley.flows.sim.coverage_record import CoverageFinding
 from booley.flows.sim.execution.attempt import (
     AdapterAttemptOutcome,
     AdapterAttemptRequest,
@@ -87,7 +87,7 @@ from booley.fusesoc.fusesoc_registry import (
 from booley.targets.catalog import TargetCatalog, TargetCompileSurface
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
 
-from .coverage_campaign import SimulationVerdict
+from .coverage_record import SimulationVerdict
 from .verilator_coverage import (
     PINNED_VERILATOR,
     CoverageCollectionRequest,
@@ -489,7 +489,7 @@ class VerilatorCoverageExecution:
         return prepared.build_root, self._artifact_paths
 
     def bind_authenticated_attempt(self, snapshot_root: Path, run_cwd: Path) -> None:
-        """Execute only from the campaign-owned snapshot and claimed run directory."""
+        """Execute only from the record-owned snapshot and claimed run directory."""
         prepared = self._prepared
         if prepared is None:
             raise SimulationBuildSlotError("coverage simulator image is not authorized")

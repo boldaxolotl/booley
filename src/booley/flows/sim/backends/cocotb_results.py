@@ -78,7 +78,7 @@ COCOTB_RESULTS_PREFIX = "[COCOTB_RESULTS] "
 # run.log next to result.json).
 _MAX_FAILURE_CHARS = 500
 
-# Keep absent-ID details below the campaign's 1536-character tail and 2048-byte
+# Keep absent-ID details below the record's 1536-character tail and 2048-byte
 # canonical JSON detail limits, including escaping when the detail is serialized.
 _MAX_ABSENT_DETAIL_CHARS = 1200
 _MAX_DISPLAY_NAME_CHARS = 120

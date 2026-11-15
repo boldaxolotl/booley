@@ -1,4 +1,4 @@
-"""Simulation Campaign result presentation: report lines, details, artifacts, cards and exit grading."""
+"""Simulation Record result presentation: report lines, details, artifacts, cards and exit grading."""
 
 from __future__ import annotations
 
@@ -12,10 +12,10 @@ from typing import Any, cast
 
 from booley.flows.frozen_test_runs import FrozenTestRuns
 from booley.flows.metric_declarations import metrics_document
-from booley.flows.sim.coverage_campaign import CoverageCampaign, CoverageRollup
 from booley.flows.sim.coverage_json import FrozenJson
 from booley.flows.sim.coverage_policy import coverage_metrics
 from booley.flows.sim.coverage_progress import CoverageProgress
+from booley.flows.sim.coverage_record import CoverageRecord, CoverageRollup
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome
 from booley.flows.sim.record.test_run_files import TestRunFiles, simulation_record_test_run_files
 from booley.flows.sim.record.test_run_report import ROW_LIMIT as TEST_RUN_ROW_LIMIT
@@ -39,13 +39,13 @@ from .build import (
     BuildOutcome,
     SimulationBuildInfrastructureError,
 )
-from .coverage_campaign_store import load_coverage_campaign
+from .coverage_record_store import load_coverage_record
 from .coverage_reference import (
     MAX_REFERENCE_BYTES,
-    resolve_coverage_campaign_reference,
+    resolve_coverage_record_reference,
 )
 from .coverage_source_gaps import source_gap_report_lines
-from .metrics import coverage_campaign_path, simulation_flow_metrics
+from .metrics import coverage_record_path, simulation_flow_metrics
 from .record import (
     NewSimulationRecordPreview,
     NewSimulationRecordRunRequest,
@@ -111,9 +111,9 @@ def _failed_metric_detail(metrics: FrozenJson) -> str | None:
     )
 
 
-def _coverage_report_suffix(campaign: CoverageCampaign) -> str:
-    collection = campaign.collection
-    evaluation = campaign.evaluation
+def _coverage_report_suffix(coverage_record: CoverageRecord) -> str:
+    collection = coverage_record.collection
+    evaluation = coverage_record.evaluation
     collection_status = str(collection["status"]).upper()
     evaluation_status = str(evaluation["status"]).upper()
     collection_detail = None
@@ -156,32 +156,32 @@ def _coverage_metric_part(rollup: CoverageRollup, threshold: object, met: object
     return f"{rollup.metric} {value}{suffix}"
 
 
-def _coverage_metrics_line(campaign: CoverageCampaign) -> str | None:
+def _coverage_metrics_line(coverage_record: CoverageRecord) -> str | None:
     """Return the card's ``coverage:`` line, or ``None`` unless collection is complete."""
-    if campaign.collection["status"] != "complete" or not campaign.rollups:
+    if coverage_record.collection["status"] != "complete" or not coverage_record.rollups:
         return None
-    metrics = coverage_metrics(campaign)
+    metrics = coverage_metrics(coverage_record)
     parts = [
         _coverage_metric_part(
             rollup, metrics[rollup.metric]["threshold"], metrics[rollup.metric]["met"]
         )
-        for rollup in campaign.rollups
+        for rollup in coverage_record.rollups
     ]
     return "  coverage: " + " · ".join(parts)
 
 
-def _coverage_campaign_lines(outcomes: Sequence[SimulationRecordOutcome]) -> list[str]:
+def _coverage_record_lines(outcomes: Sequence[SimulationRecordOutcome]) -> list[str]:
     """One ``coverage campaign:`` line per finished coverage outcome."""
     return [
-        f"  coverage campaign: {coverage_campaign_path(outcome).resolve()}"
+        f"  coverage campaign: {coverage_record_path(outcome).resolve()}"
         for outcome in outcomes
         if getattr(outcome, "coverage_reference", None) is not None
     ]
 
 
-def _waiver_block_hint_lines(campaign: CoverageCampaign) -> list[str]:
+def _waiver_block_hint_lines(coverage_record: CoverageRecord) -> list[str]:
     """Suggest raw numbers when approved waivers, not the evidence, blocked evaluation."""
-    evaluation = campaign.evaluation
+    evaluation = coverage_record.evaluation
     if evaluation["status"] != "blocked":
         return []
     diagnostics = cast(tuple[FrozenJson, ...], evaluation["diagnostics"])
@@ -197,31 +197,33 @@ def _waiver_block_hint_lines(campaign: CoverageCampaign) -> list[str]:
     return []
 
 
-def _resolved_coverage_campaigns(
+def _resolved_coverage_records(
     outcomes: Sequence[SimulationRecordOutcome],
-) -> dict[str, CoverageCampaign]:
-    campaigns: dict[str, CoverageCampaign] = {}
+) -> dict[str, CoverageRecord]:
+    coverage_records: dict[str, CoverageRecord] = {}
     for outcome in outcomes:
         if getattr(outcome, "coverage_reference", None) is None:
             continue
-        public = coverage_campaign_path(outcome)
+        public = coverage_record_path(outcome)
         selector = str(outcome.target["selector"])
-        campaigns[selector] = resolve_coverage_campaign_reference(public).loaded.campaign
-    return campaigns
+        coverage_records[selector] = resolve_coverage_record_reference(
+            public
+        ).loaded.coverage_record
+    return coverage_records
 
 
 def _simulation_record_report_lines(
     outcomes: Sequence[SimulationRecordOutcome],
-    coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
+    coverage_records: Mapping[str, CoverageRecord] | None = None,
     trailing_lines: Sequence[str] | None = (),
     *,
     report_path: Path | None = None,
     default_seeds: Mapping[str, int | None] | None = None,
 ) -> list[str]:
-    if coverage_campaigns is None:
-        coverage_campaigns = _resolved_coverage_campaigns(outcomes)
+    if coverage_records is None:
+        coverage_records = _resolved_coverage_records(outcomes)
     blocks = _simulation_record_report_blocks(
-        outcomes, coverage_campaigns, report_path, default_seeds
+        outcomes, coverage_records, report_path, default_seeds
     )
     budget = 0
     if trailing_lines is not None:
@@ -290,7 +292,7 @@ def _observation_reasons(outcome: SimulationRecordOutcome) -> list[str]:
 
 def _simulation_record_report_blocks(
     outcomes: Sequence[SimulationRecordOutcome],
-    coverage_campaigns: Mapping[str, CoverageCampaign],
+    coverage_records: Mapping[str, CoverageRecord],
     report_path: Path | None,
     default_seeds: Mapping[str, int | None] | None,
 ) -> list[tuple[list[str], list[str]]]:
@@ -302,19 +304,19 @@ def _simulation_record_report_blocks(
         selector = str(outcome.target["selector"])
         label = outcome.aggregate_grade.upper()
         if getattr(outcome, "coverage_reference", None) is not None:
-            campaign = coverage_campaigns[selector]
-            label = f"simulation {label} · {_coverage_report_suffix(campaign)}"
-        line = f"{selector}: {label} (Simulation Campaign {simulation_record_id})"
+            coverage_record = coverage_records[selector]
+            label = f"simulation {label} · {_coverage_report_suffix(coverage_record)}"
+        line = f"{selector}: {label} (Simulation Record {simulation_record_id})"
         reasons = _observation_reasons(outcome)
         build_detail = _simulation_record_build_infrastructure_detail([outcome])
         if build_detail and reasons:
             line += f": {reasons[0].splitlines()[0]}"
         coverage_lines: list[str] = []
         if getattr(outcome, "coverage_reference", None) is not None:
-            metrics_line = _coverage_metrics_line(campaign)
+            metrics_line = _coverage_metrics_line(coverage_record)
             coverage_lines = [
                 *([metrics_line] if metrics_line else []),
-                *_coverage_campaign_lines([outcome]),
+                *_coverage_record_lines([outcome]),
             ]
         report_lines = [
             line,
@@ -328,8 +330,8 @@ def _simulation_record_report_blocks(
         ]
         suffix = []
         if getattr(outcome, "coverage_reference", None) is not None:
-            suffix.extend(_waiver_block_hint_lines(campaign))
-            suffix.extend(source_gap_report_lines(campaign))
+            suffix.extend(_waiver_block_hint_lines(coverage_record))
+            suffix.extend(source_gap_report_lines(coverage_record))
         blocks.append((report_lines, suffix))
     return blocks
 
@@ -383,7 +385,7 @@ def _pre_sim_integrity_failure(
             line for line in result.report_text.splitlines() if not _is_pre_sim_card_line(line)
         )
     result.detail["record_integrity_error"] = str(error)
-    line = f"Simulation Campaign integrity failure: {error}"
+    line = f"Simulation Record integrity failure: {error}"
     if line not in result.report_text.splitlines():
         result.report_text += f"\n{line}"
     return result
@@ -532,7 +534,7 @@ def _simulation_record_structured_details(
 
 
 def _coverage_request_target(request: NewSimulationRecordRunRequest) -> Mapping[str, object]:
-    """Expose the typed Target projection from one immutable campaign request."""
+    """Expose the typed Target projection from one immutable record request."""
     return cast(Mapping[str, object], request.plan.manifest.document["target"])
 
 
@@ -589,9 +591,9 @@ def _diagnostic_test_runs(
     frozen: FrozenTestRuns,
     names: Callable[[str], Collection[str]],
 ) -> tuple[list[str], list[str]]:
-    """Test Runs of *detail*'s campaigns no Goal requires, and the failed ones among them.
+    """Test Runs of *detail*'s records no Goal requires, and the failed ones among them.
 
-    Both as ``target: test run``. *names* gives every name of a campaign's
+    Both as ``target: test run``. *names* gives every name of a record's
     Target (selector and identity): a Goal may be written with either.
     """
     simulation_records = detail.get("records")
@@ -798,7 +800,7 @@ def _report_artifact_reference(
 def _simulation_record_recovery_detail(
     status: SimulationRecordRecoveryStatus,
 ) -> dict[str, object]:
-    """Translate campaign-owned recovery state into the endpoint's flat shape."""
+    """Translate record-owned recovery state into the endpoint's flat shape."""
     return {
         "manifest_sha256": status.manifest_sha256,
         "completed": list(status.completed),
@@ -818,7 +820,7 @@ def _baseline_refusal_line(refusal: BaselineRefusal) -> str:
 
 
 def _simulation_record_preview_entry(preview: NewSimulationRecordPreview) -> dict[str, object]:
-    """Summarize one new-campaign preview for the dry-run report and detail."""
+    """Summarize one new-record preview for the dry-run report and detail."""
     return {
         "target": dict(preview.target),
         "work_items": len(preview.work_items),
@@ -940,28 +942,26 @@ def _structured_json(value: object) -> object:
 def _coverage_compatibility_targets(
     outcomes: Sequence[SimulationRecordOutcome],
     report_invocation: Path | None = None,
-    coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
+    coverage_records: Mapping[str, CoverageRecord] | None = None,
 ) -> dict[str, object]:
     """Preserve bounded coverage endpoint fields while authority stays referenced."""
     resolved = (
-        coverage_campaigns
-        if coverage_campaigns is not None
-        else _resolved_coverage_campaigns(outcomes)
+        coverage_records if coverage_records is not None else _resolved_coverage_records(outcomes)
     )
     targets: dict[str, object] = {}
     for outcome in outcomes:
         if outcome.coverage_reference is None:
             continue
-        public = coverage_campaign_path(outcome)
+        public = coverage_record_path(outcome)
         selector = str(outcome.target["selector"])
-        campaign = resolved[selector]
+        coverage_record = resolved[selector]
         target = {
             "target": selector,
             "passed": _simulation_record_passed(outcome),
             "simulation": simulation_status_from_observations(outcome.observations),
-            "collection": campaign.collection["status"],
-            "evaluation": campaign.evaluation["status"],
-            "coverage_metrics": coverage_metrics(campaign),
+            "collection": coverage_record.collection["status"],
+            "evaluation": coverage_record.evaluation["status"],
+            "coverage_metrics": coverage_metrics(coverage_record),
             "abort_remaining": False,
         }
         reference = _coverage_reference_artifact(
@@ -1039,14 +1039,14 @@ def _publication_failure_detail(
     detail = _observed_failure_detail(failure.target_selector, failure.observations, evaluation)
     if failure.nested_coverage_record is not None:
         try:
-            campaign = load_coverage_campaign(failure.nested_coverage_record).campaign
+            coverage_record = load_coverage_record(failure.nested_coverage_record).coverage_record
         except (OSError, ValueError):
             pass  # No committed nested Campaign: keep infrastructure_error and the prepared policy.
         else:
             detail.update(
-                collection=_endpoint_collection(campaign.collection["status"]),
-                evaluation=campaign.evaluation["status"],
-                coverage_metrics=coverage_metrics(campaign),
+                collection=_endpoint_collection(coverage_record.collection["status"]),
+                evaluation=coverage_record.evaluation["status"],
+                coverage_metrics=coverage_metrics(coverage_record),
             )
     if failure.coverage_reference is not None:
         _attach_failure_reference(
@@ -1089,9 +1089,9 @@ def _unmatched_coverage_failure(
         },
         report_text="\n".join(
             [
-                "Simulation Campaign coverage execution failed: cannot match failed "
+                "Simulation Record coverage execution failed: cannot match failed "
                 f"Target to the prepared Coverage plan ({error})",
-                *_coverage_campaign_lines(outcomes),
+                *_coverage_record_lines(outcomes),
             ]
         ),
     )
@@ -1114,31 +1114,29 @@ def _coverage_failure_outcome(
         },
         report_text="\n".join(
             [
-                f"Simulation Campaign coverage execution failed: {error}",
-                *_coverage_campaign_lines(outcomes),
+                f"Simulation Record coverage execution failed: {error}",
+                *_coverage_record_lines(outcomes),
             ]
         ),
     )
 
 
-def _coverage_campaign_exit_code(
+def _coverage_record_exit_code(
     outcomes: Sequence[SimulationRecordOutcome],
-    coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
+    coverage_records: Mapping[str, CoverageRecord] | None = None,
 ) -> int:
     """Untrusted coverage forces exit 2; a threshold miss never changes the exit code."""
     resolved = (
-        coverage_campaigns
-        if coverage_campaigns is not None
-        else _resolved_coverage_campaigns(outcomes)
+        coverage_records if coverage_records is not None else _resolved_coverage_records(outcomes)
     )
     for outcome in outcomes:
         if outcome.coverage_reference is None:
             continue
         selector = str(outcome.target["selector"])
-        campaign = resolved[selector]
+        coverage_record = resolved[selector]
         if (
-            campaign.collection["status"] != "complete"
-            or campaign.evaluation["status"] == "blocked"
+            coverage_record.collection["status"] != "complete"
+            or coverage_record.evaluation["status"] == "blocked"
         ):
             return EXIT_ERROR
     return 0
@@ -1151,19 +1149,19 @@ def _grade_exit_code(grade: str) -> int:
     return EXIT_SUCCESS if grade == "pass" else EXIT_FAILURE
 
 
-def _retain_coverage_campaign(
-    progress: CoverageProgress, outcome: SimulationRecordOutcome
-) -> None:
+def _retain_coverage_record(progress: CoverageProgress, outcome: SimulationRecordOutcome) -> None:
     """Authenticate and retain one completed Target before observational writes."""
     public = outcome.manifest_path.parents[1] / "coverage.json"
-    campaign = resolve_coverage_campaign_reference(public).loaded.campaign
+    coverage_record = resolve_coverage_record_reference(public).loaded.coverage_record
     progress.outcomes.append(
         CoverageTargetOutcome(
             str(outcome.target["selector"]),
-            _coverage_campaign_exit_code([outcome], {str(outcome.target["selector"]): campaign})
+            _coverage_record_exit_code(
+                [outcome], {str(outcome.target["selector"]): coverage_record}
+            )
             or _grade_exit_code(outcome.aggregate_grade),
             public,
-            campaign.evaluation,
+            coverage_record.evaluation,
         )
     )
 

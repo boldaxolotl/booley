@@ -91,7 +91,7 @@ class _Harness:
     behavior: Callable[[], EndpointOutcome] = EndpointOutcome
     # The admission each invocation body received from its prepared invocation.
     run_admissions: list[object | None] = field(default_factory=list[object | None])
-    # The prepared simulation each Simulation Campaign body received.
+    # The prepared simulation each Simulation Record body received.
     run_prepared: list[object] = field(default_factory=list[object])
     # Prepares the Flow's real invocation kind; runs once, when the test first executes.
     prepare: Callable[[], None] = lambda: None
@@ -110,7 +110,7 @@ def harness(
 ) -> _Harness:
     """Simulation and a non-Simulation Flow, reduced to their invocation body.
 
-    Both run their real prepared-invocation kind: the Simulation Campaign (which
+    Both run their real prepared-invocation kind: the Simulation Record (which
     borrows admission) and Target selection (which does not).
     """
     return _build_harness(request.param, runtime, monkeypatch)
@@ -322,7 +322,7 @@ def _prepared(*, dry_run: bool = False, borrowing: bool = False) -> PreparedExec
 
 
 def _borrowing_invocation() -> object:
-    """A prepared invocation of the borrowing kind, as a Simulation Campaign is."""
+    """A prepared invocation of the borrowing kind, as a Simulation Record is."""
     from booley.flows.sim.flow import PreparedSimulationEndpoint
     from booley.flows.sim.record_invocation import SimulationRecordInvocation
 
@@ -345,7 +345,7 @@ def test_dry_run_invocation_runs_without_admission(
     assert result.exit_code == 0
     assert len(harness.invocations) == 1
     assert harness.admissions == [None]
-    # Only the Simulation Campaign borrows admission, and it saw none.
+    # Only the Simulation Record borrows admission, and it saw none.
     if isinstance(harness.flow, SimulateFlow):
         assert harness.run_admissions == [None]
     assert not (harness.request.report_dir / harness.flow.name).exists()
@@ -759,10 +759,10 @@ def test_unwarned_job_result_is_unchanged(harness: _Harness, memory_runtime: Pat
     assert "ran alone" not in result.outcome.report_text
 
 
-def test_only_a_memory_admitted_job_lends_work_item_sizing(
+def test_a_memory_admitted_job_lends_work_item_sizing(
     memory_runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The sizing a Campaign needs for its work items' own claims comes with the Job's claim (#3772)."""
+    """The sizing a Simulation Record needs for its work items' own claims comes with the Job's claim (#3772)."""
     with AdmissionGate(AsicSynthesizeFlow()).enter() as context:
         assert context.memory_sizing is not None
         assert context.memory_sizing.booley_dir == memory_runtime
@@ -771,6 +771,17 @@ def test_only_a_memory_admitted_job_lends_work_item_sizing(
     monkeypatch.setenv(job_slots.INHERITED_SLOT_ENV, "memory/entry")
     with AdmissionGate(AsicSynthesizeFlow()).enter() as context:
         assert context.memory_sizing is None
+
+
+def test_light_admission_lends_work_item_sizing(memory_runtime: Path) -> None:
+    """A light Job's work items (a mutation campaign's builds and simulations) take claims too."""
+    with AdmissionGate(_StubEndpoint("mutation", job_slots.CLASS_LIGHT)).enter() as context:  # type: ignore[arg-type]
+        assert context.mode == "managed"
+        assert isinstance(context.outer_token, job_slots.SlotToken)
+        assert context.outer_token.job_class == job_slots.CLASS_LIGHT
+        assert context.memory_sizing is not None
+        assert context.memory_sizing.booley_dir == memory_runtime
+        assert context.memory_sizing.warnings == []
 
 
 def test_specialist_keeps_its_light_slot_under_memory_admission(

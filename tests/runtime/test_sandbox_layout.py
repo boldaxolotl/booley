@@ -111,17 +111,17 @@ def test_directory_alias_preserves_traversal(project_alias):
 def test_alias_traversal_uses_reader_domain_errors(project_alias) -> None:
     from booley.flows.sim.coverage_analysis_input import (
         CoverageAnalysisError,
-        read_coverage_campaign,
+        read_coverage_record,
     )
-    from booley.flows.sim.coverage_campaign_store import (
-        CoverageCampaignStoreError,
-        load_coverage_campaign,
-        load_coverage_campaign_bytes,
+    from booley.flows.sim.coverage_record_store import (
+        CoverageRecordStoreError,
+        load_coverage_record,
+        load_coverage_record_bytes,
     )
     from booley.flows.sim.coverage_reference import (
-        CoverageCampaignReferenceError,
-        resolve_coverage_campaign_reference,
-        resolve_persisted_coverage_campaign_reference,
+        CoverageRecordReferenceError,
+        resolve_coverage_record_reference,
+        resolve_persisted_coverage_record_reference,
     )
     from booley.flows.sim.record import SimulationRecordIntegrityError
     from booley.flows.sim.record.resume import validate_resume_manifest
@@ -130,17 +130,17 @@ def test_alias_traversal_uses_reader_domain_errors(project_alias) -> None:
     alias, target = project_alias
     path = alias / "child/../coverage.json"
     for reader, error in (
-        (load_coverage_campaign, CoverageCampaignStoreError),
+        (load_coverage_record, CoverageRecordStoreError),
         (
-            lambda selected: load_coverage_campaign_bytes(selected, b"{}"),
-            CoverageCampaignStoreError,
+            lambda selected: load_coverage_record_bytes(selected, b"{}"),
+            CoverageRecordStoreError,
         ),
         (
-            lambda selected: resolve_persisted_coverage_campaign_reference(selected, {}),
-            CoverageCampaignReferenceError,
+            lambda selected: resolve_persisted_coverage_record_reference(selected, {}),
+            CoverageRecordReferenceError,
         ),
-        (read_coverage_campaign, CoverageAnalysisError),
-        (resolve_coverage_campaign_reference, CoverageCampaignReferenceError),
+        (read_coverage_record, CoverageAnalysisError),
+        (resolve_coverage_record_reference, CoverageRecordReferenceError),
         (
             lambda selected: validate_resume_manifest(selected, project_root=target),
             SimulationRecordIntegrityError,
@@ -149,5 +149,5 @@ def test_alias_traversal_uses_reader_domain_errors(project_alias) -> None:
     ):
         with pytest.raises(error, match="traversal") as caught:
             reader(path)
-        if error is CoverageCampaignStoreError:
+        if error is CoverageRecordStoreError:
             assert caught.value.code == "COV_PATH_UNSAFE"

@@ -1,4 +1,4 @@
-"""Simulation Campaign resume (`--resume-from`) for the Simulation Flow."""
+"""Simulation Record resume (`--resume-from`) for the Simulation Flow."""
 
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ from .record_presentation import (
     _coverage_failed_target,
     _coverage_preflight_findings_outcome,
     _CoverageTargetError,
-    _retain_coverage_campaign,
+    _retain_coverage_record,
     _simulation_record_recovery_detail,
 )
 from .record_scaffold import _group_disclosures, _SimulationRecordRun, _SimulationRecordSteps
@@ -84,7 +84,7 @@ def _manifest_no_waivers(manifest: SimulationRecordManifest) -> bool:
 
 
 def _manifest_trace(manifest: SimulationRecordManifest) -> bool:
-    """Whether the campaign *manifest* froze a traced workload."""
+    """Whether the record *manifest* froze a traced workload."""
     return cast(bool, cast(Mapping[str, object], manifest.document["workload"])["trace"])
 
 
@@ -110,7 +110,7 @@ def _is_coverage_manifest(manifest: SimulationRecordManifest) -> bool:
 def _unfinished_coverage_work(
     manifest: SimulationRecordManifest, status: SimulationRecordRecoveryStatus
 ) -> tuple[str, ...]:
-    """Coverage work-item ids without a recorded result; empty for other Campaigns."""
+    """Coverage work-item ids without a recorded result; empty for other Simulation Records."""
     if not _is_coverage_manifest(manifest):
         return ()
     unfinished = set(status.pending) | set(status.interrupted)
@@ -134,11 +134,11 @@ def _fresh_simulation_record_recovery_detail(
     return _simulation_record_recovery_detail(status)
 
 
-def _checkpoint_coverage_campaign(
+def _checkpoint_coverage_record(
     progress: CoverageProgress, outcome: SimulationRecordOutcome, evaluation: str
 ) -> None:
     try:
-        _retain_coverage_campaign(progress, outcome)
+        _retain_coverage_record(progress, outcome)
     except (OSError, ValueError) as error:
         detail = _coverage_failed_target(
             str(outcome.target["selector"]), error, evaluation, outcome
@@ -148,16 +148,16 @@ def _checkpoint_coverage_campaign(
 
 
 class SimulationRecordResumeMixin:
-    """Simulation Campaign resume paths for `SimulateFlow`."""
+    """Simulation Record resume paths for `SimulateFlow`."""
 
     def _refuse_unfinished_coverage_resume(
         self, validated: ValidatedResumeManifest
     ) -> EndpointOutcome | None:
-        """Refuse resuming a coverage Campaign whose collection has no result.
+        """Refuse resuming a coverage Simulation Record whose collection has no result.
 
         A resumed attempt builds privately and re-runs every test, so it costs
         the same as a new run.  Publication-only resumes (collection complete)
-        are untouched, as are all non-coverage Campaigns.
+        are untouched, as are all non-coverage Simulation Records.
         """
         manifest = validated.manifest
         if not _is_coverage_manifest(manifest):
@@ -167,7 +167,7 @@ class SimulationRecordResumeMixin:
         except (OSError, ValueError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
-                report_text=f"Simulation Campaign integrity failure: {exc}",
+                report_text=f"Simulation Record integrity failure: {exc}",
             )
         unfinished = _unfinished_coverage_work(manifest, status)
         if not unfinished:
@@ -183,14 +183,14 @@ class SimulationRecordResumeMixin:
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
             report_text=(
-                f"sim: cannot resume coverage Simulation Campaign {status.manifest_path}: "
+                f"sim: cannot resume coverage Simulation Record {status.manifest_path}: "
                 f"its coverage collection has no recorded result (work item {item_id} is "
                 f"{state}; the run was interrupted or is still running). Resuming would "
                 "rebuild and re-run every test, so start a new run instead:\n"
                 f"  booley flow sim --target {shlex.quote(selector)}{tests} "
                 f"--coverage{trace}{no_waivers}\n"
                 + (
-                    "The command names the Test Runs this campaign froze, so the new "
+                    "The command names the Test Runs this Simulation Record froze, so the new "
                     "run repeats their Test Variants and seeds."
                     if tests
                     else "Add the original --test/--tests-file selection if you used one."
@@ -200,11 +200,11 @@ class SimulationRecordResumeMixin:
         )
 
     def _frozen_test_run_options(self, manifest: SimulationRecordManifest, selector: str) -> str:
-        """``--test`` options that repeat the campaign's Test Runs in a new run.
+        """``--test`` options that repeat the record's Test Runs in a new run.
 
         Empty when every frozen Test Run is still its Test's default at the
         Default Seed: the plain selection then resolves to the same runs.
-        Any other campaign (a Test Variant, a pinned or drawn seed, a default
+        Any other record (a Test Variant, a pinned or drawn seed, a default
         that has since changed) is named run by run, so a new run draws and
         resolves nothing again.
         """
@@ -226,13 +226,13 @@ class SimulationRecordResumeMixin:
     def _resume_simulation_record(
         self, validated: ValidatedResumeManifest
     ) -> EndpointOutcome | _SimulationRecordRun:
-        """Validate one exact durable campaign resume: a refusal, a preview or the run."""
+        """Validate one exact durable record resume: a refusal, a preview or the run."""
         try:
             observed = SimulationRecord().inspect_resume(validated)
         except (OSError, ValueError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
-                report_text=f"Simulation Campaign integrity failure: {exc}",
+                report_text=f"Simulation Record integrity failure: {exc}",
             )
         if self.args.dry_run:
             return self._preview_simulation_record_resume(validated, observed)
@@ -259,7 +259,7 @@ class SimulationRecordResumeMixin:
         except (OSError, ValueError, RuntimeError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
-                report_text=f"Simulation Campaign resume preview failed: {exc}",
+                report_text=f"Simulation Record resume preview failed: {exc}",
                 detail=_simulation_record_recovery_detail(observed),
             )
         assert isinstance(preview, ResumeSimulationRecordPreview)
@@ -340,7 +340,7 @@ class SimulationRecordResumeMixin:
             except (OSError, ValueError) as exc:
                 return EndpointOutcome(
                     exit_code=EXIT_ERROR,
-                    report_text=f"Simulation Campaign resume origin is busy: {exc}",
+                    report_text=f"Simulation Record resume origin is busy: {exc}",
                     detail=_simulation_record_recovery_detail(observed),
                 )
             self._held_resume_origins.add(origin)
@@ -358,7 +358,7 @@ class SimulationRecordResumeMixin:
         except (OSError, ValueError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
-                report_text=f"Simulation Campaign resume dependency failed: {exc}",
+                report_text=f"Simulation Record resume dependency failed: {exc}",
                 detail=_simulation_record_recovery_detail(observed),
             )
         return None
@@ -388,7 +388,7 @@ class SimulationRecordResumeMixin:
             }
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
-            report_text=f"Simulation Campaign resume failed: {message}",
+            report_text=f"Simulation Record resume failed: {message}",
             detail=detail,
         )
 
@@ -408,7 +408,7 @@ class SimulationRecordResumeMixin:
                 validated, invocation, admission, coverage_plan, manifest_published
             )
             self._capture_cycle_report((outcome,))
-            _checkpoint_coverage_campaign(
+            _checkpoint_coverage_record(
                 progress,
                 outcome,
                 "not_requested" if coverage_plan.criterion is None else "blocked",

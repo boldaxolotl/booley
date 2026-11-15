@@ -222,7 +222,7 @@ def test_missing_tool_and_cocotb_import_failure_return_no_values_and_an_excerpt(
     from booley.measurement.metrics_file import Bound, TableRules
     from booley.measurement.verdicts import FlowFailed, evaluate_table, measure_exit_code
 
-    # What the sandbox prints with verilator off PATH, in a campaign of 12 Test Runs.
+    # What the sandbox prints with verilator off PATH, in a record of 12 Test Runs.
     build = SubprocessResult(
         returncode=127,
         stdout=(

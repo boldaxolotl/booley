@@ -204,7 +204,7 @@ def _record_and_finish(
 
 @dataclass(eq=False)
 class _JobAttempt:
-    """One attempt of a Job or of a Campaign work item: whether its commands stop after an OOM kill.
+    """One attempt of a Job or of a Simulation Record work item: whether its commands stop after an OOM kill.
 
     *parent* is the attempt it runs inside (a work item's attempt inside its
     Flow's), so a kill marks only the innermost attempt while a kill of an
@@ -218,7 +218,7 @@ class _JobAttempt:
     stopped: threading.Event = field(default_factory=threading.Event)
 
 
-# The current attempt; shared by the Job's threads (Campaign lanes copy the context).
+# The current attempt; shared by the Job's threads (Simulation Record lanes copy the context).
 _JOB_ATTEMPT: ContextVar[_JobAttempt | None] = ContextVar("booley_job_attempt", default=None)
 
 
@@ -226,7 +226,7 @@ _JOB_ATTEMPT: ContextVar[_JobAttempt | None] = ContextVar("booley_job_attempt", 
 def job_attempt(*, stop_on_oom: bool, work_item: bool = False) -> Iterator[_JobAttempt]:
     """Run one attempt of a Job; with *stop_on_oom* its commands stop after an OOM kill.
 
-    A *work_item* attempt is one Campaign work item's, run inside the Flow's.
+    A *work_item* attempt is one Simulation Record work item's, run inside the Flow's.
     """
     attempt = _JobAttempt(stop_on_oom=stop_on_oom, parent=_JOB_ATTEMPT.get(), work_item=work_item)
     token = _JOB_ATTEMPT.set(attempt)
@@ -260,7 +260,7 @@ def job_stopped_after_oom() -> bool:
 
 
 def work_item_attempt_requeues(*, passed: bool) -> bool:
-    """Whether the current Campaign work item attempt ended with an own OOM kill to requeue.
+    """Whether the current Simulation Record work item attempt ended with an own OOM kill to requeue.
 
     Only an armed work item attempt that was killed itself counts, and only
     when its result does not survive the kill: it failed, or it skipped a

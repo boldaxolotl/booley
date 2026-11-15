@@ -492,7 +492,7 @@ class ElabOnlyMixin:
         targets: list[str],
         results: list[ElabOnlyTargetResult],
     ) -> tuple[int, _StandaloneOutcome | None]:
-        """Merge the optional module sweep into the campaign exit status."""
+        """Merge the optional module sweep into the record exit status."""
         exit_code = self._elab_only_exit_code(results)
         if not self._standalone_requested():
             return exit_code, None
@@ -762,7 +762,7 @@ class ElabOnlyMixin:
         phase: str,
         complete: bool = False,
     ) -> None:
-        """Checkpoint an Elaboration Check campaign after every Target."""
+        """Checkpoint an Elaboration Check record after every Target."""
         invocation_dir = self.reserve_invocation_dir()
         if invocation_dir is None:
             return
