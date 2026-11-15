@@ -43,11 +43,21 @@ def claim(
     run_alone: bool = False,
     budget_mb: float = BUDGET_MB,
     wall_s: float | None = None,
+    companion: bool = False,
 ):
     """A memory claim against the shared test budget."""
     return job_slots.MemoryClaim(
-        budget_mb=budget_mb, reservation_mb=reservation_mb, run_alone=run_alone, wall_s=wall_s
+        budget_mb=budget_mb,
+        reservation_mb=reservation_mb,
+        run_alone=run_alone,
+        wall_s=wall_s,
+        companion=companion,
     )
+
+
+def companion(reservation_mb: float, *, budget_mb: float = BUDGET_MB):
+    """A Specialist's or coordinator's companion claim."""
+    return claim(reservation_mb, budget_mb=budget_mb, companion=True)
 
 
 def join(
@@ -847,3 +857,98 @@ def test_job_label_survives_promotion_and_a_malformed_label_reads_as_none(root, 
         entry.write_text(json.dumps(payload), encoding="utf-8")
         (holders, _waiters) = store.snapshot(job_slots.CLASS_MEMORY)
         assert holders[0].job is None
+
+
+SPECIALIST_MB = 452.5
+
+
+def test_a_run_alone_claim_starts_beside_companion_holders(root, world):
+    store = make_store(root, world)
+    specialist = join(store, world, 101, companion(SPECIALIST_MB))
+    coordinator = join(store, world, 102, companion(0))
+    assert store.refresh(specialist).state == HOLDING
+    assert store.refresh(coordinator).state == HOLDING
+    own_simulation = join(store, world, 103, claim(run_alone=True))
+    assert store.refresh(own_simulation).state == HOLDING
+    # A companion does not start beside a run-alone holder, so it never overcommits one.
+    second = join(store, world, 104, companion(SPECIALIST_MB))
+    assert store.refresh(second).state == QUEUED
+
+
+def test_a_later_work_item_starts_while_its_specialist_holds(root, world):
+    store = make_store(root, world)
+    for pid in (101, 102):
+        assert store.refresh(join(store, world, pid, companion(500))).state == HOLDING
+    flow = join(store, world, 103, claim(300))
+    assert (
+        store.refresh(flow).state == HOLDING
+    )  # only companions held: the first other claim starts
+    assert store.shrink_reservation(flow, 0)
+    first = join(store, world, 104, claim(run_alone=True))
+    second = join(store, world, 105, claim(200))
+    assert store.refresh(first).state == HOLDING
+    assert store.refresh(second) == TokenState(QUEUED, position=0)
+    store.release(first)
+    assert store.refresh(second).state == HOLDING
+
+
+def test_specialists_beyond_the_budget_queue_until_one_releases(root, world):
+    store = make_store(root, world)
+    tokens = [join(store, world, 101 + n, companion(SPECIALIST_MB)) for n in range(3)]
+    assert [store.refresh(token).state for token in tokens] == [HOLDING, HOLDING, QUEUED]
+    wait = store.memory_wait(103)
+    assert wait is not None and wait.describe().startswith("needs 452 MiB")
+    store.release(tokens[0])
+    assert store.refresh(tokens[2]).state == HOLDING
+
+
+def test_a_waiting_specialist_does_not_block_the_claims_behind_it(root, world):
+    store = make_store(root, world)
+    holder = join(store, world, 101, claim(700))
+    waiting = join(store, world, 102, companion(SPECIALIST_MB))
+    behind = join(store, world, 103, claim(200))
+    assert store.refresh(holder).state == HOLDING
+    assert store.refresh(waiting).state == QUEUED
+    assert store.refresh(behind).state == HOLDING
+    store.release(holder)
+    assert store.refresh(waiting).state == HOLDING
+
+
+def test_a_waiting_specialist_judged_by_its_own_budget_does_not_block_a_sized_claim(root, world):
+    store = make_store(root, world)
+    holder = join(store, world, 101, companion(SPECIALIST_MB, budget_mb=SPECIALIST_MB))
+    waiting = join(store, world, 102, companion(SPECIALIST_MB, budget_mb=SPECIALIST_MB))
+    behind = join(store, world, 103, claim(100))
+    assert store.refresh(holder).state == HOLDING
+    assert store.refresh(waiting).state == QUEUED
+    assert store.refresh(behind).state == HOLDING
+
+
+def test_specialists_filling_the_budget_let_the_first_other_claim_start(root, world):
+    store = make_store(root, world)
+    for pid in (101, 102):
+        assert store.refresh(join(store, world, pid, companion(500))).state == HOLDING
+    first = join(store, world, 103, claim(500))
+    second = join(store, world, 104, claim(500))
+    assert store.refresh(first).state == HOLDING
+    assert store.refresh(second).state == QUEUED
+
+
+def test_the_coordinator_does_not_reduce_how_many_specialists_fit(root, world):
+    budget = 3 * SPECIALIST_MB
+    store = make_store(root, world)
+    coordinator = join(store, world, 101, companion(0, budget_mb=budget))
+    assert store.refresh(coordinator).state == HOLDING
+    specialists = [
+        join(store, world, 102 + n, companion(SPECIALIST_MB, budget_mb=budget)) for n in range(3)
+    ]
+    assert [store.refresh(token).state for token in specialists] == [HOLDING] * 3
+    assert coordinator.memory is not None
+    assert (
+        job_slots.MemoryClaim.from_payload(coordinator.memory.to_payload()) == coordinator.memory
+    )
+
+
+def test_a_companion_claim_is_never_run_alone():
+    with pytest.raises(ValueError, match="never run-alone"):
+        job_slots.MemoryClaim(budget_mb=10, run_alone=True, companion=True)

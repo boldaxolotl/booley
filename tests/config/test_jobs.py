@@ -79,7 +79,7 @@ def test_retired_jobs_keys_are_named_with_their_lines(tmp_path: Path) -> None:
     )
 
     forms = {
-        "table": ('[jobs]\nmax_light = 2\nmax_heavy = 2\nheavy_memory = "8g"\n', (3, 4)),
+        "table": ('[jobs]\nmax_tickets = 2\nmax_heavy = 2\nheavy_memory = "8g"\n', (3, 4)),
         "dotted": ('jobs.max_heavy = 2\njobs.heavy_memory = "8g"\n', (1, 2)),
         "quoted": ('[ "jobs" ]\n"max_heavy" = 2\n\'heavy_memory\' = "8g"  # note\n', (2, 3)),
         "inline": ('title = 1\njobs = { max_heavy = 2, heavy_memory = "8g" }\n', (2, 2)),
@@ -95,8 +95,8 @@ def test_retired_jobs_keys_are_named_with_their_lines(tmp_path: Path) -> None:
     # Other tables, multi-line strings and clean, missing or broken files are no hit.
     quiet = {
         "other-table": "[sandbox]\nmax_heavy = 2\n",
-        "multi-line-string": '[jobs]\nnote = """\nmax_heavy = 2\n"""\nmax_light = 1\n',
-        "clean": "[jobs]\nmax_light = 2\n",
+        "multi-line-string": '[jobs]\nnote = """\nmax_heavy = 2\n"""\nmax_tickets = 1\n',
+        "clean": "[jobs]\nmax_tickets = 2\n",
         "broken": "[jobs\nmax_heavy = 2\n",
     }
     for name, text in quiet.items():
@@ -185,6 +185,9 @@ def test_refuse_retired_jobs_keys_reads_the_main_booley_directory(
         refuse_retired_jobs_keys(tmp_path)
 
     (booley_dir / "booley.toml").write_bytes(b"[jobs]\nmax_light = 1\n")
+    with pytest.raises(ValueError, match=r"max_light \(line 2: "):
+        refuse_retired_jobs_keys(tmp_path)
+    (booley_dir / "booley.toml").write_bytes(b"[jobs]\nmax_tickets = 1\n")
     refuse_retired_jobs_keys(tmp_path)
     # A Project that cannot be resolved has nothing to refuse.
     monkeypatch.delenv("BOOLEY_DIR")

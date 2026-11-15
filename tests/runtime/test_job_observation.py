@@ -400,11 +400,12 @@ def test_child_lane_claims_under_the_jobs_pid_do_not_make_its_state_unavailable(
     assert view.state == "running"
 
 
+@pytest.mark.parametrize("own_class", ["light", "companion"])
 @pytest.mark.parametrize(
     ("item_kind", "state"), [("h", "running"), ("w", "queued")], ids=["item-holds", "item-waits"]
 )
 def test_a_held_slot_beside_work_item_memory_claims_is_the_job_not_unavailable(
-    tmp_path, monkeypatch, item_kind, state
+    tmp_path, monkeypatch, item_kind, state, own_class
 ):
     identity = ProcessIdentity(99, "fixture", 101)
     root = tmp_path / "jobs"
@@ -414,7 +415,12 @@ def test_a_held_slot_beside_work_item_memory_claims_is_the_job_not_unavailable(
     memory = tmp_path / "slots/memory"
     light.mkdir(parents=True)
     memory.mkdir(parents=True)
-    (light / job_slots._entry_name("h", 1, 1, 99, 0)).write_text(owner)
+    if own_class == "light":
+        (light / job_slots._entry_name("h", 1, 1, 99, 0)).write_text(owner)
+    else:  # a mutation coordinator: a memory-class companion claim reserving nothing
+        companion = {"budget_mb": 1000, "reservation_mb": 0, "companion": True}
+        coordinator = json.dumps({"owner_identity": identity.to_payload(), "memory": companion})
+        (memory / job_slots._entry_name("h", 1, 1, 99, 0)).write_text(coordinator)
     (memory / job_slots._entry_name(item_kind, 1, 2, 99, 0)).write_text(owner)
     monkeypatch.setattr(
         _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)

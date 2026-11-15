@@ -309,3 +309,36 @@ Recorded while implementing
   out-of-memory kills. The check meant to catch an override above the container
   limit never had a caller. Its stated use, room for hand work in a Sandbox
   terminal, gets no replacement until a need is shown.
+
+## Amendments (2026-11-15, Specialists)
+
+Recorded while implementing
+[#4116](https://github.com/boldaxolotl/booley/issues/4116).
+
+- **Specialists and the Mutation Flow's coordinating Job are admitted by
+  memory; `max_light` is retired.** "Specialists keep the light Job Class's
+  count cap (`max_light`)" above no longer holds. `[jobs].max_light` is refused
+  like `max_heavy`, `heavy_memory`, `queue_max` and `memory_budget`, with its
+  own reason. The light class has no production user; its code goes in a later
+  change.
+- **Why.** The provider limit did not hold, and a Specialist's real local cost
+  is memory: the agent CLI measured 344 to 346 MiB (reviewer) and 351 to 362 MiB
+  (coverage_analyst) in three runs each (#4067, PR #4084). A count cap also let a
+  mutation campaign's coordinator take one of three places.
+- **Companion claims.** A Specialist and a coordinator make a *companion*
+  claim. A Specialist reserves the largest peak in its own history times 1.25,
+  else a default of 452.5 MiB (362 MiB times 1.25); an estimate over the budget
+  reserves the default; every reservation is capped at half of a readable
+  budget; an unreadable budget reserves the default against a claim budget equal
+  to it. The coordinator reserves 0 MiB, so it never changes how many
+  Specialists fit. Neither is ever run-alone.
+- **Fit rules.** A companion claim never keeps another claim waiting on it
+  alone, so a Specialist cannot wait for its own simulation. A run-alone claim
+  starts when no ordinary claim holds memory, whatever the companions hold. An
+  ordinary claim starts when it fits, or when only companions hold. A companion
+  that does not fit waits without becoming the front, so the claims behind it
+  are judged as if it were absent. Companions may starve while ordinary claims
+  keep arriving; other claims come first.
+- Companions take no fixed thread count and are left out of the divisor of
+  `job_threads_at_start`, so Flow sizing is unchanged. A companion is never
+  requeued after an out-of-memory kill.
