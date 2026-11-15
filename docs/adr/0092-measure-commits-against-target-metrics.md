@@ -24,10 +24,8 @@ Decided in [#3045](https://github.com/boldaxolotl/booley/issues/3045)
   are declared, where that ADR says Goal status and Review Package. The
   positioning stands.
 
-It **supersedes
-[ADR 0076](0076-reuse-results-at-committed-states-through-a-project-result-cache.md)**
-now: the Result Cache was never finished, and its remaining code is removed
-with Goal Mode.
+It also replaces the Result Cache design (ADR 0076, deleted), which was never
+finished: its remaining code is removed with Goal Mode.
 
 ## Context
 
@@ -36,7 +34,7 @@ decide whether it is acceptable":
 
 - Goal Mode (ADR 0067) and its planned successor, Sign-off (#2811), ask the
   user to approve a list of criteria per task before any work starts.
-- The Result Cache (ADR 0076) guards a whole-tree key against wrong hits on a
+- The Result Cache guards a whole-tree key against wrong hits on a
   mutable working tree: dirty trees, ignored files, overlapping runs, before
   and after snapshots, sampled re-runs.
 - `booley ci` (#2593) is a third entry point to the same evaluation.
@@ -108,7 +106,7 @@ Metrics belong to **Targets**, not to sessions or tasks, and Booley measures
 - **Sign-off with a per-task criteria list (#2811).** It keeps Goal Mode's
   up-front approval step under a new name, and "sign-off" already means
   tape-out sign-off (STA, DRC, LVS) in chip design.
-- **The Result Cache (ADR 0076).** Reusing results on a working tree needs
+- **The Result Cache.** Reusing results on a working tree needs
   the snapshot, overlap and sampled re-run machinery to stay correct.
   Measuring only commits, keyed by tree, gives the reuse that matters without
   it.
