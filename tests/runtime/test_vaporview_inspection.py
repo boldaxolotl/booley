@@ -881,6 +881,7 @@ def test_bundled_extensions_probe_source_runs_against_a_real_registry(tmp_path):
     env = {
         **os.environ,
         "HOME": str(tmp_path),
+        "USERPROFILE": str(tmp_path),  # Path.home() on Windows
         "PYTHONPATH": str(Path(vaporview.__file__).parents[2]),
     }
 
