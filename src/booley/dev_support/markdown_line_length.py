@@ -2,10 +2,10 @@
 
 Only lines the branch adds or changes are checked (against the newest merge
 base with ``main``, or ``--base``), so existing long lines never fail. A line
-is not prose, and never fails, inside a fenced code block, as a table row, an
-ATX heading, YAML front matter or a generated block; when it is only a link,
-URL or link reference definition; or when the only text past column 80 is one
-URL or code span. The rule and its exemptions are
+is not prose, and never fails, inside a fenced code block, as a table row
+(Markdown or HTML), an ATX heading, YAML front matter or a generated block;
+when it is only a link, URL or link reference definition; or when the only
+text past column 80 is one URL or code span. The rule and its exemptions are
 ``docs/internals/DOCS_PRINCIPLES.md`` principle 17.
 
 The module depends only on the standard library and on
@@ -129,7 +129,7 @@ def _link_only(text: str) -> bool:
 def _exempt_line(line: str, text: str) -> bool:
     """Return whether a line outside a fence or front matter is not prose."""
     return (
-        text.startswith("|")
+        text.startswith(("|", "<tr>"))  # Markdown or HTML table row
         or _HEADING.match(text) is not None
         or _link_only(text)
         or _LINK_DEFINITION.match(line) is not None

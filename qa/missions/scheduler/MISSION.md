@@ -30,8 +30,7 @@ area 1.
 
 ## Mission-specific rules
 - The docs are the oracle: `docs/user/CONFIG.md` ("Jobs and concurrency",
-  "Job resource history"), `docs/user/TROUBLESHOOTING.md` (deleted `[jobs]`
-  keys, Job killed out of memory, missing Seat Cap), `docs/user/FLOW-SIM.md`,
+  "Job resource history"), `docs/user/FLOW-SIM.md`,
   `docs/user/FLOW-FPGA.md` and ADR 0087
   (`docs/adr/0087-admit-jobs-against-a-measured-memory-budget.md`). When the
   run and a doc disagree, that is the finding; say which you believe.
@@ -148,7 +147,7 @@ Try:
   untouched. History records `oom_kill`, which raises the estimate.
 - Exactly controlled: `mem_hog --mb` above the container limit is killed
   twice and fails with an out-of-memory reason; it is not requeued again.
-- Compare with TROUBLESHOOTING.md "Job killed out of memory".
+- Compare with `docs/user/CONFIG.md` "Jobs and concurrency".
 Look for: the older Job killed first, the agent or MCP server killed, a second
 requeue, a compiler kill reported as a compile error, a result that hides the
 first attempt, a kill not recorded in history.
