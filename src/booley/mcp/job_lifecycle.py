@@ -26,6 +26,8 @@ from booley.mcp.endpoint_process import (
     _cancel_adopted_process_group,
     _endpoint_subprocess_env,
     _run_subprocess,
+    cancel_grace_seconds,
+    stop_grace_seconds,
     write_synthetic_endpoint_end,
 )
 from booley.mcp.job_ownership import Caller, owns
@@ -358,6 +360,8 @@ class JobLifecycle:
         overrides = {"BOOLEY_RUN_ID": rec.run_id, "BOOLEY_SLOT_TIMEOUT_S": str(rec.timeout_s)}
         if publish_display_identity:
             overrides["BOOLEY_DISPLAY_INVOCATION_ID"] = rec.run_id
+        stop_grace = stop_grace_seconds(rec.endpoint)
+        stop = {} if stop_grace is None else {"stop_grace": stop_grace}
         return await self._run_process(
             rec.argv,
             timeout=rec.timeout_s,
@@ -367,6 +371,7 @@ class JobLifecycle:
             is_requeued=lambda: self._child_requeued(rec),
             on_first_active=lambda: self._stamp_run_started(rec),
             log_path=jobrec.job_log_path(rec.run_id, self._write_root(rec)),
+            **stop,
         )
 
     async def _run_and_record(self, rec: jobrec.JobRecord, context: CallContext) -> None:
@@ -463,7 +468,7 @@ class JobLifecycle:
                 self._record_terminal(fresh, 2, timed_out=False)
             return
         if rec.pid is not None:
-            await self._cancel_process(rec.pid)
+            await self._cancel_process(rec.pid, cancel_grace_seconds(rec.endpoint))
             # A SIGTERMed owner records its own failure; that is still the user's
             # cancellation. Only a completion that won the race is kept as is.
             fresh = self._read_run(rec.run_id)
@@ -485,11 +490,17 @@ class JobLifecycle:
         if rec is None:
             return None
 
-        if jobrec.derive_status(rec, self._is_alive) != jobrec.STATUS_RUNNING:
+        task = self._tasks.get(run_id)
+        supervised = task is not None and not task.done()
+        if not supervised and jobrec.derive_status(rec, self._is_alive) != jobrec.STATUS_RUNNING:
             return "already_finished"
 
+        if supervised:
+            # A Job cancelled before its process published a PID is still running:
+            # let the supervising task start so its cancellation is recorded.
+            await asyncio.sleep(0)
+            rec = self._read_run(run_id) or rec
         was_queued = self._cancel_waiter(rec)
-        task = self._tasks.get(run_id)
         if task is not None:
             await self._cancel_tracked_task(run_id, task)
         else:
@@ -570,9 +581,13 @@ class JobLifecycle:
         context: CallContext,
         wait_seconds: float,
         owner: str | None = None,
+        attach: bool = True,
     ) -> JobSubmission:
-        """Join identical live work or submit once, then wait within the inline budget."""
-        attached = self._repository.find_attachable(name, cmd, context=context)
+        """Join identical live work or submit once, then wait within the inline budget.
+
+        *attach* False always submits: the caller's argv does not pin what the work measures.
+        """
+        attached = self._repository.find_attachable(name, cmd, context=context) if attach else None
         run_id = (
             attached
             if attached is not None
