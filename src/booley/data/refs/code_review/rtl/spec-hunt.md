@@ -59,6 +59,9 @@ Use the strict JSON schema appended by the reviewer prompt. Do not emit a separa
 ### A. Stated Behaviors (CRITICAL if violated)
 
 - **Reset behavior**: Does the RTL reset state match the spec's reset description? Check every output and internal register mentioned in the spec
+- **Access conditions**: For each register or field the spec says is readable or
+  writable only in a given mode, privilege, or state, check that the read path
+  and write enable use exactly that condition, not a narrower or wider one
 - **Edge cases**: Walk each edge case listed in the spec. Does the RTL handle it as described?
 - **Example operations**: Trace each example through the RTL. Does the output match?
 - **FSM states**: Does the RTL FSM match the spec's state descriptions? Correct transitions, correct actions per state?

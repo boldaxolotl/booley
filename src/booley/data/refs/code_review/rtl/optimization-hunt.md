@@ -27,6 +27,9 @@ Read all target files and the package/include files they depend on. For each mod
 - **Mux trees, case statements, and priority chains**: the select, the legs, and which legs are reachable
 - **FSMs**: states, encoding, and transitions
 - **Input paths**: the logic in front of each register, and which of it sits behind a deep block
+- **Instantiated primitives**: when a guard or compare in the target may repeat
+  behavior of an instantiated primitive (saturation, clear, enable), read that
+  primitive's source
 - **Configuration**: parameters and macros, and which combinations are legal
 
 ### 2. Enumerate scenarios
@@ -34,7 +37,10 @@ Read all target files and the package/include files they depend on. For each mod
 For each mapped element, ask every category below. Skip a category only when it cannot apply:
 
 - **Redundant storage**: a register that holds, or delays by one cycle, a value that other state or inputs already provide in every cycle it is read
-- **Redundant terms**: a qualifier, guard, compare, or saturation check that an upstream decoder, an instantiated primitive, or an enclosing condition already guarantees
+- **Redundant terms**: a qualifier, guard, compare, or saturation check that an
+  upstream decoder, an instantiated primitive, or an enclosing condition already
+  guarantees; an update condition on a register that changes nothing observable
+  because the register is rewritten before it is read
 - **Register reuse**: wide registers whose values are needed at different times can share the same storage. Two values can share a register if one is not needed whenever the other is stored or used. Reading the prior value and replacing it on the same clock edge is safe, because downstream logic sees the value from before the edge. Moving a load by one cycle may also prevent the lifetimes from overlapping. Ignore small counters, flags, and other control registers. Show when each value is stored, used, and not needed; include the bits saved, schedule or throughput changes, and any cycle where both values would need to be written
 - **Equivalent structure**: duplicate units, FSM states that behave the same, mux legs that compute the same value, and compare chains where fewer bits already decide every legal case
 - **Oversized**: registers, counters, operands, and intermediate expressions wider than the range of values they can hold across every legal configuration
@@ -58,7 +64,11 @@ Report a finding only with the element, the proof, the saving, and the cost. Dro
 Use the strict JSON schema appended by the reviewer prompt. Do not emit a separate markdown findings format, duplicate JSON schema, or summary count from this guide. Put the element, the proof of equivalence, the saving, and the cost in each finding's `summary`.
 
 Severity heuristic:
-- **MAJOR** -- A likely critical-path or Fmax improvement, a large area saving, or substantial dead logic demonstrably retained in hardware
+- **MAJOR** -- A likely critical-path or Fmax improvement, a large area saving,
+  or substantial dead logic demonstrably retained in hardware. A mux, decode
+  term, or qualifier that sits in front of or ORed onto a deep or late path,
+  where removing or moving it keeps behavior, is MAJOR unless you show the path
+  is short
 - **MINOR** -- A small saving, a possible future improvement, or dead source already pruned by synthesis
 
 Confidence:
