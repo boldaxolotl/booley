@@ -1,4 +1,4 @@
-"""The parallel Simulation Campaign path is one bounded pool of lane threads."""
+"""The parallel Simulation Record path is one bounded pool of lane threads."""
 
 from __future__ import annotations
 
@@ -143,7 +143,7 @@ def test_parallel_simulation_record_runs_only_bounded_lane_threads(
     finally:
         simulation_record.slots.release(simulation_record.outer)
     pool = sorted(name for name in started if not name.startswith(_UNRELATED_THREAD_PREFIXES))
-    assert pool == ["booley-campaign-child-1", "booley-campaign-child-2", "booley-campaign-outer"]
+    assert pool == ["booley-record-child-1", "booley-record-child-2", "booley-record-outer"]
 
 
 @pytest.mark.parametrize(
@@ -313,7 +313,7 @@ def _record_recovery_side_effects(
 
 
 def _run_terminal_reap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ordering: str) -> None:
-    """Run a two-item Campaign whose terminal child tokens are reaped in a forced order.
+    """Run a two-item Simulation Record whose terminal child tokens are reaped in a forced order.
 
     The competing reapers are the other lane's slot-store calls (``refresh``,
     ``snapshot`` and ``submit`` all reap the memory class). The ``reap_gate`` makes the
@@ -539,17 +539,16 @@ def _lane_thread_names(earlier_threads: set[threading.Thread]) -> set[str]:
     return {
         name
         for name in _simulation_record_thread_names(earlier_threads)
-        if name.startswith(("booley-campaign-outer", "booley-campaign-child"))
+        if name.startswith(("booley-record-outer", "booley-record-child"))
     }
 
 
 def _simulation_record_thread_names(earlier_threads: set[threading.Thread]) -> set[str]:
-    """Names of campaign threads started after ``earlier_threads`` was captured."""
+    """Names of record threads started after ``earlier_threads`` was captured."""
     return {
         thread.name
         for thread in threading.enumerate()
-        if thread not in earlier_threads
-        and thread.name.startswith(("booley-campaign-", "booley-record-process-cancellation"))
+        if thread not in earlier_threads and thread.name.startswith("booley-record-")
     }
 
 

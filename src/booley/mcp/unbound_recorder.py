@@ -66,5 +66,5 @@ class UnboundAcceptanceRecorder:
         identity: Mapping[str, Any],
     ) -> None:
         raise AcceptanceRecordingError(
-            "unbound Interactive recording cannot record a Simulation Campaign transaction"
+            "unbound Interactive recording cannot record a Simulation Record transaction"
         )

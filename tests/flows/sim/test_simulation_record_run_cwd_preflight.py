@@ -101,7 +101,7 @@ def literal_document(access: str, *, configured: str = "run") -> dict:
 
 
 class _Harness:
-    """One campaign run against a counting fake execution."""
+    """One record run against a counting fake execution."""
 
     def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, access: str) -> None:
         self.tmp_path = tmp_path

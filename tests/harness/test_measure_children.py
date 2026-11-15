@@ -478,7 +478,7 @@ def root_dir(tmp_path: Path) -> Path:
 def test_a_running_flow_waiting_for_a_work_item_claim_is_not_withdrawn(
     root_dir: Path, world: FakeWorld
 ):
-    """A Campaign's work items claim under the Flow's PID: that Flow is running, not waiting."""
+    """A Simulation Record's work items claim under the Flow's PID: that Flow is running, not waiting."""
     from booley.harness.measure_children import STOPPED_REASON, ChildScheduler
 
     fleet = make_fleet(root_dir, world, max_light=2)

@@ -1,4 +1,4 @@
-"""One Simulation Campaign outcome resolves its coverage reference once."""
+"""One Simulation Record outcome resolves its coverage reference once."""
 
 from __future__ import annotations
 
@@ -67,10 +67,10 @@ def test_one_outcome_resolves_its_coverage_reference_once_for_every_coverage_goa
         return spy
 
     for name, attribute in (
-        ("resolve", "resolve_coverage_campaign_reference"),
-        ("encode", "encode_coverage_campaign_reference"),
+        ("resolve", "resolve_coverage_record_reference"),
+        ("encode", "encode_coverage_record_reference"),
         ("hash", "content_digest"),
-        ("owner", "authenticate_coverage_campaign_owner"),
+        ("owner", "authenticate_coverage_record_owner"),
     ):
         monkeypatch.setattr(acceptance, attribute, counted(name, getattr(acceptance, attribute)))
 

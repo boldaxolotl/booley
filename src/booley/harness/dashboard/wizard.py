@@ -57,14 +57,14 @@ from booley.harness.dashboard.run_form import (
     command_argv,
 )
 from booley.harness.dashboard.specialist_form import (
-    NO_CAMPAIGNS,
-    TYPE_CAMPAIGN,
-    CampaignChoice,
+    NO_COVERAGE_RECORDS,
+    TYPE_COVERAGE_RECORD,
     CoverageAnalystForm,
+    CoverageRecordChoice,
     ReviewerForm,
     SimRun,
     SpecialistForm,
-    finished_campaigns,
+    finished_coverage_records,
 )
 from booley.harness.dashboard.targets import (
     TARGET_KIND_OF_FLOW,
@@ -84,11 +84,11 @@ CHECK_GROUP = "run-check"
 FORM_GROUP = "run-form"
 TARGETS_GROUP = "run-targets"
 TESTS_GROUP = "run-tests"
-CAMPAIGNS_GROUP = "run-campaigns"
+COVERAGE_RECORDS_GROUP = "run-campaigns"
 SPECIALISTS_GROUP = "run-specialists"
 LOADING_SPECIALISTS = "Loading Specialists…"
 LOADING_TARGETS, LOADING_RUNS = "Loading Targets…", "Loading Test Runs…"
-LOADING_CAMPAIGNS = "Loading Coverage Records…"
+LOADING_COVERAGE_RECORDS = "Loading Coverage Records…"
 JOBS_NOT_READ = "The Dashboard has not read the Jobs yet; type a coverage.json path."
 NO_TARGET_YET = "Choose a Target first; or type Test Runs in the extra arguments."
 TYPE_TARGETS = "Type Targets in the extra arguments."
@@ -244,8 +244,8 @@ class RunWizard(ModalScreen[str | None]):
         self._runs: RunChoices | None = None
         # The campaign picker's read: the Jobs may not be read yet, then the campaigns, None while listing.
         self._jobs_read = False
-        self._campaigns: tuple[CampaignChoice, ...] | None = None
-        self._campaigns_worker: Worker[tuple[CampaignChoice, ...]] | None = None
+        self._coverage_records: tuple[CoverageRecordChoice, ...] | None = None
+        self._coverage_records_worker: Worker[tuple[CoverageRecordChoice, ...]] | None = None
         self._pick_values: list[str] = []  # what each row of the open picker stands for
         self._extra = ""
         self._changing = 0  # the form row a choice list or editor is changing
@@ -465,7 +465,7 @@ class RunWizard(ModalScreen[str | None]):
         self._values = {}
         self._picked = {}
         self._listing = self._runs = None
-        self._campaigns = self._campaigns_worker = None
+        self._coverage_records = self._coverage_records_worker = None
         self._extra = ""
         self._changing = 0
         # The old Flow's rows must not stay selectable while the new form builds.
@@ -570,7 +570,7 @@ class RunWizard(ModalScreen[str | None]):
             elif field.kind == "tests":
                 self._open_tests()
             elif field.kind == "campaign":
-                self._open_campaigns()
+                self._open_coverage_records()
             else:
                 self._choose(field, value)
 
@@ -620,7 +620,7 @@ class RunWizard(ModalScreen[str | None]):
             )
         self._show_stage("tests")
 
-    def _open_campaigns(self) -> None:
+    def _open_coverage_records(self) -> None:
         """Open the campaign picker, reading the worktree's finished campaigns afresh in a worker.
 
         The Jobs come from the Dashboard's last read (``sim_runs``); a campaign that finished
@@ -630,28 +630,28 @@ class RunWizard(ModalScreen[str | None]):
         worktree = self._form_for[0]
         runs = self._sim_runs(worktree)
         self._jobs_read = runs is not None
-        self._campaigns = None
-        self._campaigns_worker = None
+        self._coverage_records = None
+        self._coverage_records_worker = None
         if runs is not None:
-            self._campaigns_worker = self.run_worker(
-                lambda: finished_campaigns(worktree, runs),
+            self._coverage_records_worker = self.run_worker(
+                lambda: finished_coverage_records(worktree, runs),
                 thread=True,
                 exclusive=True,
-                group=CAMPAIGNS_GROUP,
+                group=COVERAGE_RECORDS_GROUP,
                 exit_on_error=False,
             )
         self._show_stage("campaign")
 
-    def _campaigns_read(self, event: Worker.StateChanged) -> None:
+    def _coverage_records_read(self, event: Worker.StateChanged) -> None:
         """Show the campaigns of the read the picker waits for; a crashed read lists none."""
-        if event.worker is not self._campaigns_worker:
+        if event.worker is not self._coverage_records_worker:
             return  # a read of a picker the human has since reopened
         if event.state is WorkerState.SUCCESS:
             assert isinstance(event.worker.result, tuple)
-            self._campaigns = event.worker.result
+            self._coverage_records = event.worker.result
         elif event.state is WorkerState.ERROR:
             logger.error("Run wizard campaigns read failed", exc_info=event.worker.error)
-            self._campaigns = ()
+            self._coverage_records = ()
         else:
             return
         event.stop()
@@ -662,19 +662,21 @@ class RunWizard(ModalScreen[str | None]):
     def _picker(self, field: Field) -> tuple[str, list[tuple[str, str]]]:
         """The hint and the (row text, value) rows of the open picker for *field*."""
         if field.kind == "campaign":
-            return self._campaign_picker(field)
+            return self._coverage_record_picker(field)
         return self._target_picker(field) if field.kind == "target" else self._tests_picker(field)
 
-    def _campaign_picker(self, field: Field) -> tuple[str, list[tuple[str, str]]]:
+    def _coverage_record_picker(self, field: Field) -> tuple[str, list[tuple[str, str]]]:
         """The campaigns newest first, then the row that types a path (always there)."""
-        manual = [(TYPE_CAMPAIGN, TYPE_CAMPAIGN)]
+        manual = [(TYPE_COVERAGE_RECORD, TYPE_COVERAGE_RECORD)]
         if not self._jobs_read:
             return JOBS_NOT_READ, manual
-        if self._campaigns is None:
-            return LOADING_CAMPAIGNS, manual
-        if not self._campaigns:
-            return NO_CAMPAIGNS, manual
-        return field.hint, [(choice.label, choice.path) for choice in self._campaigns] + manual
+        if self._coverage_records is None:
+            return LOADING_COVERAGE_RECORDS, manual
+        if not self._coverage_records:
+            return NO_COVERAGE_RECORDS, manual
+        return field.hint, [
+            (choice.label, choice.path) for choice in self._coverage_records
+        ] + manual
 
     def _target_picker(self, field: Field) -> tuple[str, list[tuple[str, str]]]:
         rows = [] if field.required else [(AUTOMATIC, "")]
@@ -719,7 +721,7 @@ class RunWizard(ModalScreen[str | None]):
         """Enter in a picker: a Target is chosen and closes it; a Test Run toggles in place."""
         field = self._fields()[self._changing]
         value = self._pick_values[index]
-        if field.kind == "campaign" and value == TYPE_CAMPAIGN:
+        if field.kind == "campaign" and value == TYPE_COVERAGE_RECORD:
             self._edit(self._values.get(field.dest, ""), field.hint)
             return
         if field.kind == "tests":
@@ -881,7 +883,7 @@ class RunWizard(ModalScreen[str | None]):
             FORM_GROUP: self._form_built,
             TARGETS_GROUP: self._read_finished,
             TESTS_GROUP: self._read_finished,
-            CAMPAIGNS_GROUP: self._campaigns_read,
+            COVERAGE_RECORDS_GROUP: self._coverage_records_read,
         }
         if group in handlers:
             handlers[group](event)

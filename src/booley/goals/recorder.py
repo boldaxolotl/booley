@@ -417,7 +417,7 @@ class GoalEvidenceRecorder:
         acceptance_facts: Mapping[str, Any],
         identity: Mapping[str, Any],
     ) -> AcceptanceTransaction:
-        """V2: record or recover one Simulation Campaign transaction as Goal evidence.
+        """V2: record or recover one Simulation Record transaction as Goal evidence.
 
         *identity* is ignored: a Goal transaction's identity is the
         group of the Goals its changes affect (module docstring).
@@ -434,7 +434,7 @@ class GoalEvidenceRecorder:
                     identity=publication_identity,
                     publication_checkpoint=self._checkpoint,
                 )
-                # The campaign's results are in the ledger now: nothing is left to adopt.
+                # The record's results are in the ledger now: nothing is left to adopt.
                 simulation_record_accounting.mark_published(
                     self._gate.store, self._binding.record_id, acceptance_facts
                 )
@@ -446,12 +446,12 @@ class GoalEvidenceRecorder:
             return transaction
 
     def register_simulation_record(self, simulation_record: StartedSimulationRecord) -> None:
-        """Register a Simulation Campaign this run is about to start (ADR 0072).
+        """Register a Simulation Record this run is about to start (ADR 0072).
 
-        Earlier campaigns are accounted for first, then the campaign is
+        Earlier records are accounted for first, then the record is
         registered with the freshness stamp of each Goal of its Target as
         the files are now, so that its finished results can be adopted with
-        the contents they ran at if the campaign never publishes
+        the contents they ran at if the record never publishes
         (:mod:`booley.goals.simulation_record_accounting`). A run whose evidence the
         gate discards registers nothing: nothing it observes will count.
         """
@@ -466,11 +466,11 @@ class GoalEvidenceRecorder:
             return
         except (AcceptanceLedgerError, GoalStoreError, ValueError) as exc:
             raise AcceptanceRecordingError(
-                f"Simulation Campaign {simulation_record.manifest_path} cannot be registered: {exc}"
+                f"Simulation Record {simulation_record.manifest_path} cannot be registered: {exc}"
             ) from exc
 
     def _account(self, store: GoalStore) -> None:
-        """Bring earlier durable evidence into the ledger; this run's campaigns are its own."""
+        """Bring earlier durable evidence into the ledger; this run's records are its own."""
         simulation_record_accounting.account_for_simulation_records(
             store,
             self._binding.record_id,
@@ -497,7 +497,7 @@ class GoalEvidenceRecorder:
         keys = sorted({change.key for change in changes})
         identity = self.identity_for(keys)
         with self._gate.publishing(keys) as record:
-            # No new evidence before what earlier campaigns durably observed is in the ledger.
+            # No new evidence before what earlier records durably observed is in the ledger.
             try:
                 self._account(self._gate.store)
             except (AcceptanceLedgerError, GoalStoreError) as exc:

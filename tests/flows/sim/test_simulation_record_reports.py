@@ -1,4 +1,4 @@
-"""Crash-safe Simulation Campaign compatibility projections."""
+"""Crash-safe Simulation Record compatibility projections."""
 
 import errno
 import json
@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from booley.flows.sim import record_reports
-from booley.flows.sim.coverage_campaign import CoverageRollup
+from booley.flows.sim.coverage_record import CoverageRollup
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record import collect_pre_sim_firings
 from booley.flows.sim.record_presentation import (
@@ -219,19 +219,21 @@ def test_cycle_card_preserves_complete_reason_strings(reason, tmp_path, monkeypa
     resolved = []
     monkeypatch.setattr(
         record_presentation,
-        "_resolved_coverage_campaigns",
+        "_resolved_coverage_records",
         lambda _outcomes: (
             resolved.append(True)
             or {"sim": SimpleNamespace(collection={"status": "collector_error"})}
         ),
     )
     monkeypatch.setattr(
-        record_presentation, "_coverage_report_suffix", lambda _campaign: "coverage"
+        record_presentation, "_coverage_report_suffix", lambda _coverage_record: "coverage"
     )
     monkeypatch.setattr(
-        record_presentation, "_waiver_block_hint_lines", lambda _campaign: ["coverage hint"]
+        record_presentation, "_waiver_block_hint_lines", lambda _coverage_record: ["coverage hint"]
     )
-    monkeypatch.setattr(record_presentation, "source_gap_report_lines", lambda _campaign: [])
+    monkeypatch.setattr(
+        record_presentation, "source_gap_report_lines", lambda _coverage_record: []
+    )
 
     one, two = build_test_run("one"), build_test_run("two")
     recorded = _recorded_simulation_record(tmp_path, (one, two))
@@ -260,9 +262,7 @@ def test_authenticated_coverage_resume_keeps_report_counts(tmp_path, monkeypatch
     manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
     execution = NativeExecution()
     if failure:
-        symbol = (
-            "_checkpoint_coverage_campaign" if failure == "retention" else "supersede_progress"
-        )
+        symbol = "_checkpoint_coverage_record" if failure == "retention" else "supersede_progress"
         monkeypatch.setattr(
             "booley.flows.sim.flow_resume." + symbol,
             lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("after completed resume")),
@@ -368,7 +368,7 @@ def _resume_hook_simulation_record(tmp_path, monkeypatch, interrupted, *, extern
     return original, resumed, counters, invocation
 
 
-@pytest.mark.timeout(120)  # the external resume case runs a second full Campaign
+@pytest.mark.timeout(120)  # the external resume case runs a second full Simulation Record
 @pytest.mark.parametrize("external", [False, True])
 @pytest.mark.parametrize("interrupted", [False, True])
 def test_resume_separates_historical_hooks_from_real_new_firings(
@@ -486,7 +486,7 @@ def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counter
 
 
 def _third_invocation_resume(tmp_path, monkeypatch, *, interrupted=False):
-    """Resume an externally resumed Campaign again from a third invocation."""
+    """Resume an externally resumed Simulation Record again from a third invocation."""
     original, _prior, _counters, _invocation = _resume_hook_simulation_record(
         tmp_path, monkeypatch, False, external=True
     )
@@ -510,7 +510,7 @@ def test_production_resume_corruption_uses_simulation_record_integrity_outcome(
     (original.pre_sim_firings[0].path.parents[3] / "result.json").write_text("{}")
     result = flow.run_prepared_simulation(prepared, _admission())
     assert result.exit_code == 2
-    assert "Simulation Campaign integrity failure:" in result.report_text
+    assert "Simulation Record integrity failure:" in result.report_text
     assert "Pre-Sim Commands evidence integrity failure" not in result.report_text
     assert counters["launch"] == 0
 
@@ -581,7 +581,7 @@ def test_simulation_record_scan_error_retains_independently_authenticated_hook_l
     assert result.criterion_met is False
     assert result.detail["pre_sim_lines"] == [line]
     assert result.report_text.count(line) == 1
-    assert "Simulation Campaign integrity failure" in result.report_text
+    assert "Simulation Record integrity failure" in result.report_text
 
 
 def test_production_postscan_corruption_preserves_authenticated_current_evidence(
@@ -611,7 +611,7 @@ def test_production_postscan_corruption_preserves_authenticated_current_evidence
     assert result.detail["pre_sim_current"] == 1
     assert len(result.detail["pre_sim_lines"]) == 1
     assert result.report_text.count("pre_run_commands") == 1
-    assert "Simulation Campaign integrity failure" in result.report_text
+    assert "Simulation Record integrity failure" in result.report_text
 
 
 def _observed_hook_request(tmp_path, observer):
@@ -757,7 +757,7 @@ def test_published_hook_collection_scans_each_simulation_record_once(tmp_path, m
     )
     assert result.detail["pre_sim_total"] == result.detail["pre_sim_current"] == 2
     assert set(result.detail["pre_sim_roles"]) == {"candidate", "cycle_count_baseline"}
-    assert sorted(scans.values()) == [1, 1], "each Campaign is scanned once"
+    assert sorted(scans.values()) == [1, 1], "each Simulation Record is scanned once"
 
 
 def _published_hook_budget_boundary(flow, candidate, roomy):
@@ -894,7 +894,7 @@ def test_corruption_before_endpoint_keeps_final_integrity_policy(tmp_path, monke
     assert "cycles=17" in evidence["endpoint_text"]
     assert "integrity" not in evidence["endpoint_text"]
     assert result.exit_code == 2 and result.criterion_met is False
-    assert "Simulation Campaign integrity failure:" in result.report_text
+    assert "Simulation Record integrity failure:" in result.report_text
     assert flow._simulation_record_outcomes == ()
     assert flow._pending_criteria_set == ()
     assert result.detail["pre_sim_current"] == 2
@@ -916,10 +916,10 @@ def test_resume_count_budget_uses_only_actual_current_hook_keys(
     probe = module._simulation_record_report_lines
     calls = []
 
-    def inspect(outcomes, coverage_campaigns, trailing_lines, **kwargs):
+    def inspect(outcomes, coverage_records, trailing_lines, **kwargs):
         assert outcomes[0].manifest_path == original.manifest_path
         calls.append((frozenset(flow._current_published_pre_sim_keys), trailing_lines))
-        return probe(outcomes, coverage_campaigns, trailing_lines, **kwargs)
+        return probe(outcomes, coverage_records, trailing_lines, **kwargs)
 
     monkeypatch.setattr(module, "_simulation_record_report_lines", inspect)
     result = flow.run_prepared_simulation(prepared, _admission())
@@ -949,7 +949,9 @@ def test_prior_firing_reauthentication_rejects_byte_identical_symlink_attempt(
     copy = tmp_path / "copied-attempt"
     sidecar_bytes = firing.path.read_bytes()
     snapshots = list(directory.rglob("simv"))
-    assert len(snapshots) == 1, "successful campaign must retain one real executable snapshot"
+    assert len(snapshots) == 1, (
+        "successful Simulation Record must retain one real executable snapshot"
+    )
     snapshot = snapshots[0]
     snapshot_relative = snapshot.relative_to(directory)
     snapshot_bytes, snapshot_mode = snapshot.read_bytes(), snapshot.stat().st_mode
@@ -1057,7 +1059,7 @@ def test_projection_rejects_corrupt_record(tmp_path, error):
 
 
 def _two_firing_store(tmp_path):
-    """Run a coverage Campaign whose one attempt holds two failed Pre-Sim firings."""
+    """Run a coverage Simulation Record whose one attempt holds two failed Pre-Sim firings."""
     from booley.flows.sim.execution.contract import PreSimEvidence
     from booley.flows.sim.verilator_coverage import SimulationRunResult
     from tests.flows.sim.simulation_record_test_support import _run_coverage_simulation_record
@@ -1303,9 +1305,9 @@ def test_coverage_report_numbers_are_compact_and_non_scientific(value, expected)
 def test_coverage_report_keeps_nonpassing_status_without_optional_detail(
     collection, evaluation, expected
 ) -> None:
-    campaign = SimpleNamespace(collection=collection, evaluation=evaluation)
+    coverage_record = SimpleNamespace(collection=collection, evaluation=evaluation)
 
-    assert _coverage_report_suffix(campaign) == expected
+    assert _coverage_report_suffix(coverage_record) == expected
 
 
 def test_mcp_simulation_record_details_bound_observations_without_collapsing_axes(
@@ -1370,7 +1372,7 @@ def test_simulation_record_report_preserves_the_failed_simulator_reason(tmp_path
     )
 
     assert _simulation_record_report_lines((outcome,), report_path=tmp_path / "sim.json")[0] == (
-        "sim_fail: FAIL (Simulation Campaign unavailable)\n"
+        "sim_fail: FAIL (Simulation Record unavailable)\n"
         f"  manifest: {(tmp_path / 'record/manifest.json').resolve()}\n"
         f"  report: {(tmp_path / 'sim.json').resolve()}\n"
         "  intentional simulator failure"
@@ -1492,7 +1494,7 @@ def _coverage_card(
     status: str = "complete",
 ) -> list[str]:
     """Render one coverage Target's card block from a stub Coverage Campaign."""
-    campaign = SimpleNamespace(
+    coverage_record = SimpleNamespace(
         collection={"status": status, "diagnostics": ()},
         evaluation={
             "status": "not_requested",
@@ -1512,7 +1514,10 @@ def _coverage_card(
         observations=(),
     )
     return _simulation_record_report_lines(
-        (outcome,), {"sim_soc": campaign}, trailing_lines=None, report_path=tmp_path / "r.json"
+        (outcome,),
+        {"sim_soc": coverage_record},
+        trailing_lines=None,
+        report_path=tmp_path / "r.json",
     )[0].splitlines()
 
 

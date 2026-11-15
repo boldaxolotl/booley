@@ -6,19 +6,19 @@ from pathlib import Path
 
 import pytest
 
-from booley.flows.sim.coverage_campaign import (
-    NO_DECLARED_INPUTS_FINGERPRINT,
-    DurableTargetIdentity,
-)
-from booley.flows.sim.coverage_campaign_store import (
-    load_coverage_campaign,
-)
 from booley.flows.sim.coverage_invocation import (
     CoverageInvocationRequest,
     prepare_coverage_invocation,
 )
 from booley.flows.sim.coverage_json import coverage_mapping_document, freeze_coverage_mapping
 from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
+from booley.flows.sim.coverage_record import (
+    NO_DECLARED_INPUTS_FINGERPRINT,
+    DurableTargetIdentity,
+)
+from booley.flows.sim.coverage_record_store import (
+    load_coverage_record,
+)
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome, run_coverage_target
 from booley.flows.sim.execution.contract import PreSimEvidence
 from booley.flows.sim.record_retention import _coverage_owned_files
@@ -72,7 +72,7 @@ class NativeExecution:
 
 
 def run_target(plan, execution, **options):
-    """Run one Target transaction under the attempt-owned root the Campaign executor uses."""
+    """Run one Target transaction under the attempt-owned root the Simulation Record executor uses."""
     return run_coverage_target(
         plan,
         execution,
@@ -81,7 +81,7 @@ def run_target(plan, execution, **options):
     )
 
 
-def test_ungated_target_persists_valid_campaign_and_independent_simulation(tmp_path: Path):
+def test_ungated_target_persists_valid_coverage_record_and_independent_simulation(tmp_path: Path):
     context = project(tmp_path)
     prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
     plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
@@ -89,24 +89,24 @@ def test_ungated_target_persists_valid_campaign_and_independent_simulation(tmp_p
     outcome = run_target(plan, execution)
     assert outcome.exit_code == 0
     assert len(execution.runs) == 2
-    document = json.loads(outcome.campaign_path.read_text())
+    document = json.loads(outcome.coverage_record_path.read_text())
     assert document["$schema"] == "booley.coverage-record/v1"
     assert document["scoring"] == {"status": "valid", "reason": None}
     assert document["source_rollups"]
     assert "points" not in document
-    campaign = load_coverage_campaign(
-        outcome.campaign_path, DurableTargetIdentity(plan.handle.identity)
-    ).campaign
-    assert campaign.evaluation["status"] == "not_requested"
-    assert campaign.rollups[0].eligible_points == 1
-    assert campaign.points[0].hits_by_run == {"run:001:reset@1": 2, "run:002:wrap@1": 2}
+    coverage_record = load_coverage_record(
+        outcome.coverage_record_path, DurableTargetIdentity(plan.handle.identity)
+    ).coverage_record
+    assert coverage_record.evaluation["status"] == "not_requested"
+    assert coverage_record.rollups[0].eligible_points == 1
+    assert coverage_record.points[0].hits_by_run == {"run:001:reset@1": 2, "run:002:wrap@1": 2}
     simulation = coverage_mapping_document(outcome.detail)
     assert simulation["passed"] is True
     assert simulation["coverage_record"] == "coverage.json"
     assert "coverage_campaign" not in simulation
     assert "source_rollups" not in simulation
     assert "source_rollups" not in outcome.detail
-    assert not (outcome.campaign_path.parent / "simulation.json").exists()
+    assert not (outcome.coverage_record_path.parent / "simulation.json").exists()
 
 
 def test_simulation_projection_preserves_pre_sim_failure_detail(tmp_path: Path):
@@ -182,8 +182,8 @@ def test_missing_input_is_a_design_failure_with_structured_abort_projection(
         "error_tail": "$readmemh: Cannot open memory.hex",
         "simulator_returncode": 3,
     }
-    campaign = json.loads(outcome.campaign_path.read_text())
-    assert campaign["collection"]["status"] == "incomplete"
+    coverage_record = json.loads(outcome.coverage_record_path.read_text())
+    assert coverage_record["collection"]["status"] == "incomplete"
 
 
 @pytest.mark.parametrize(
@@ -219,7 +219,7 @@ def test_invalid_hook_evidence_withholds_scores_but_retains_diagnostics(
 ) -> None:
     plan = _invalid_hook_plan(tmp_path, failure, gated)
     outcome = run_target(plan, InvalidHookExecution(events))
-    _assert_invalid_hook_campaign(outcome, plan, events, expected_finding, gated)
+    _assert_invalid_hook_coverage_record(outcome, plan, events, expected_finding, gated)
     _assert_invalid_hook_consumers(outcome)
 
 
@@ -275,9 +275,9 @@ class InvalidHookExecution(NativeExecution):
         return SimulationRunResult("pass")
 
 
-def _assert_invalid_hook_campaign(outcome, plan, events, expected_finding, gated) -> None:
+def _assert_invalid_hook_coverage_record(outcome, plan, events, expected_finding, gated) -> None:
     assert outcome.exit_code == 2
-    document = json.loads(outcome.campaign_path.read_text(encoding="utf-8"))
+    document = json.loads(outcome.coverage_record_path.read_text(encoding="utf-8"))
     assert document["$schema"] == "booley.coverage-record/v1"
     assert document["collection"]["status"] == "collector_error"
     assert document["scoring"] == {"status": "invalid", "reason": "collector_error"}
@@ -288,13 +288,13 @@ def _assert_invalid_hook_campaign(outcome, plan, events, expected_finding, gated
     if events is not None:
         assert any(item["kind"] == "coverage_hook_evidence" for item in document["artifacts"])
     assert expected_finding in {item["code"] for item in document["findings"]}
-    persisted = load_coverage_campaign(
-        outcome.campaign_path, DurableTargetIdentity(plan.handle.identity)
+    persisted = load_coverage_record(
+        outcome.coverage_record_path, DurableTargetIdentity(plan.handle.identity)
     )
-    loaded = persisted.campaign
+    loaded = persisted.coverage_record
     assert loaded.points
     assert loaded.rollups == ()
-    target_dir = outcome.campaign_path.parent
+    target_dir = outcome.coverage_record_path.parent
     owned = _coverage_owned_files(target_dir, persisted)
     assert all(path.absolute() in owned for path in target_dir.glob("hooks/*.json"))
     if gated:
@@ -339,7 +339,7 @@ def test_gated_verdicts_preserve_independent_truth(
     plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
     outcome = run_target(plan, NativeExecution(verdict=verdict, hits=hits))
     assert outcome.exit_code == expected
-    document = json.loads(outcome.campaign_path.read_text())
+    document = json.loads(outcome.coverage_record_path.read_text())
     assert document["evaluation"]["status"] == evaluation
     assert {run["simulation_verdict"] for run in document["tests"]["runs"]} == {verdict}
 
@@ -361,7 +361,7 @@ def test_threshold_miss_exits_zero_with_valid_coverage(tmp_path):
     outcome = run_target(plan, NativeExecution(hits=0))
 
     assert outcome.exit_code == 0
-    assert json.loads(outcome.campaign_path.read_text())["evaluation"]["status"] == "fail"
+    assert json.loads(outcome.coverage_record_path.read_text())["evaluation"]["status"] == "fail"
 
 
 def test_all_tests_criterion_reports_suite_mismatch_after_configured_skip(tmp_path):
@@ -387,7 +387,7 @@ def test_all_tests_criterion_reports_suite_mismatch_after_configured_skip(tmp_pa
     outcome = run_target(plan, NativeExecution())
 
     assert outcome.exit_code == 2
-    evaluation = json.loads(outcome.campaign_path.read_text())["evaluation"]
+    evaluation = json.loads(outcome.coverage_record_path.read_text())["evaluation"]
     assert evaluation["status"] == "blocked"
     assert [item["code"] for item in evaluation["diagnostics"]] == ["COV_EVAL_SUITE_MISMATCH"]
 
@@ -413,8 +413,8 @@ def test_collector_errors_are_durable_command_errors_without_changing_simulation
 
     outcome = run_target(plan, BrokenNative(missing=missing))
     assert outcome.exit_code == 2
-    document = json.loads(outcome.campaign_path.read_text())
-    load_coverage_campaign(outcome.campaign_path, DurableTargetIdentity(plan.handle.identity))
+    document = json.loads(outcome.coverage_record_path.read_text())
+    load_coverage_record(outcome.coverage_record_path, DurableTargetIdentity(plan.handle.identity))
     assert document["evaluation"]["status"] == "not_requested"
     assert document["findings"]
     assert coverage_mapping_document(outcome.detail)["passed"] is True
@@ -456,7 +456,7 @@ def test_ungated_run_applies_approved_waivers_and_no_waivers_reports_raw(tmp_pat
     context = project(tmp_path)
     _plan, first = _run_with_waivers(tmp_path, None, invocation="1", prepare=lambda: context)
     assert first.exit_code == 0
-    point_id = load_coverage_campaign(first.campaign_path).campaign.points[0].id
+    point_id = load_coverage_record(first.coverage_record_path).coverage_record.points[0].id
     digest = hashlib.sha256((tmp_path / "rtl/counter.sv").read_bytes()).hexdigest()
     waiver_file = tmp_path / "project-data/coverage-waivers/rtl/counter.sv.toml"
     waiver_file.parent.mkdir(parents=True)
@@ -481,12 +481,12 @@ approval_ref = "review:CR-1042"
 
     _plan, second = _run_with_waivers(tmp_path, config, invocation="2", prepare=lambda: context)
     assert second.exit_code == 0
-    loaded = load_coverage_campaign(second.campaign_path)
-    assert loaded.campaign.evaluation["status"] == "not_requested"
-    assert loaded.campaign.points[0].disposition["kind"] == "waived"
-    rollup = loaded.campaign.rollups[0]
+    loaded = load_coverage_record(second.coverage_record_path)
+    assert loaded.coverage_record.evaluation["status"] == "not_requested"
+    assert loaded.coverage_record.points[0].disposition["kind"] == "waived"
+    rollup = loaded.coverage_record.rollups[0]
     assert (rollup.eligible_points, rollup.waived_points, rollup.percent) == (0, 1, None)
-    session = CoverageEvidenceSession(loaded.campaign, None)
+    session = CoverageEvidenceSession(loaded.coverage_record, None)
     matched = session.query({"view": "points", "disposition": "waived"})["matched_points"]
     assert matched == 1
 
@@ -494,7 +494,7 @@ approval_ref = "review:CR-1042"
         tmp_path, config, invocation="3", no_waivers=True, prepare=lambda: context
     )
     assert third.exit_code == 0
-    raw = load_coverage_campaign(third.campaign_path).campaign
+    raw = load_coverage_record(third.coverage_record_path).coverage_record
     assert raw.evaluation["status"] == "not_requested"
     assert raw.points[0].disposition["kind"] == "eligible"
     assert (raw.rollups[0].eligible_points, raw.rollups[0].waived_points) == (1, 0)
@@ -520,7 +520,7 @@ def test_invalid_waivers_block_every_coverage_run(tmp_path, invalid):
             root, config, invocation="1", gated=gated, prepare=lambda context=context: context
         )
         assert outcome.exit_code == 2
-        document = json.loads(outcome.campaign_path.read_text())
+        document = json.loads(outcome.coverage_record_path.read_text())
         assert document["evaluation"]["status"] == "blocked"
         assert document["collection"]["status"] == "complete"
         results[gated] = [
@@ -554,14 +554,14 @@ def test_no_waivers_diagnostic_criterion_skips_invalid_waivers(tmp_path):
     )
     plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
     outcome = run_target(plan, NativeExecution())
-    evaluation = json.loads(outcome.campaign_path.read_text())["evaluation"]
+    evaluation = json.loads(outcome.coverage_record_path.read_text())["evaluation"]
     assert evaluation["status"] != "blocked"
     assert evaluation["approved_waiver_set_digest"] == (
         load_approved_waiver_set(None, tmp_path, ()).digest
     )
 
 
-def test_unknown_native_records_remain_in_canonical_campaign(tmp_path):
+def test_unknown_native_records_remain_in_canonical_coverage_record(tmp_path):
     context = project(tmp_path)
     prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
     plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
@@ -573,7 +573,7 @@ def test_unknown_native_records_remain_in_canonical_campaign(tmp_path):
 
     outcome = run_target(plan, FutureNative())
     assert outcome.exit_code == 0
-    document = json.loads(outcome.campaign_path.read_text())
+    document = json.loads(outcome.coverage_record_path.read_text())
     assert document["normalization"]["status"] == "complete_with_unknown_records"
     records = document["normalization"]["unrecognized_records"]
     assert len(records) == 2
@@ -591,7 +591,7 @@ def test_source_drift_after_preflight_never_runs_with_stale_provenance(tmp_path)
     outcome = run_target(plan, execution)
     assert outcome.exit_code == 2
     assert execution.runs == []
-    assert not outcome.campaign_path.exists()
+    assert not outcome.coverage_record_path.exists()
 
 
 @pytest.mark.parametrize("failure_at", ["merge", "second_run"])
@@ -612,13 +612,13 @@ def test_infrastructure_failure_preserves_completed_simulation_truth(tmp_path, f
     outcome = run_target(plan, Interrupted())
     assert outcome.exit_code == 2
     assert outcome.abort_remaining is True
-    campaign = load_coverage_campaign(
-        outcome.campaign_path, DurableTargetIdentity(plan.handle.identity)
-    ).campaign
+    coverage_record = load_coverage_record(
+        outcome.coverage_record_path, DurableTargetIdentity(plan.handle.identity)
+    ).coverage_record
     expected = ["pass", "pass"] if failure_at == "merge" else ["pass", "inconclusive"]
-    assert [run.simulation_verdict for run in campaign.runs] == expected
-    assert campaign.collection["status"] == "collector_error"
-    assert campaign.evaluation["status"] == "not_requested"
+    assert [run.simulation_verdict for run in coverage_record.runs] == expected
+    assert coverage_record.collection["status"] == "collector_error"
+    assert coverage_record.evaluation["status"] == "not_requested"
     simulation = coverage_mapping_document(outcome.detail)
     assert [run["verdict"] for run in simulation["tests"]] == expected
     assert simulation["passed"] is (failure_at == "merge")
@@ -690,7 +690,7 @@ def test_real_adapter_reports_missing_verilator_provenance_as_shared_failure(tmp
     assert outcome.abort_remaining is True
     assert outcome.detail["simulation"] == "not_run"
     assert outcome.detail["passed"] is None
-    assert outcome.campaign_path.is_file()
+    assert outcome.coverage_record_path.is_file()
 
 
 def test_target_transaction_never_resumes_existing_native_state(tmp_path):
@@ -698,12 +698,12 @@ def test_target_transaction_never_resumes_existing_native_state(tmp_path):
     prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
     plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
     original = run_target(plan, NativeExecution())
-    before = original.campaign_path.read_bytes()
+    before = original.coverage_record_path.read_bytes()
     second = NativeExecution(verdict="fail")
     outcome = run_target(plan, second)
     assert outcome.exit_code == 2
     assert second.runs == []
-    assert original.campaign_path.read_bytes() == before
+    assert original.coverage_record_path.read_bytes() == before
 
 
 def persistence_fault(boundary):
@@ -730,7 +730,7 @@ def persistence_fault(boundary):
 
 
 def gated_plan(tmp_path):
-    """A coverage-gated Target plan whose Campaign publishes under ``reports/sim/1``."""
+    """A coverage-gated Target plan whose Simulation Record publishes under ``reports/sim/1``."""
     context = project(tmp_path)
     criterion = CoverageCriterion(
         DurableTargetIdentity("acme:demo:counter:1#sim_0"),
@@ -800,22 +800,26 @@ def test_direct_publication_preserves_source_gaps(tmp_path):
 
     plan = gap_plan(tmp_path / "gap", criterion=True)
     outcome = run_target(plan, NativeExecution())
-    loaded = load_coverage_campaign(outcome.campaign_path)
-    assert gaps.source_gap_paths(loaded.campaign) == ("rtl/unused.sv",)
-    session = CoverageEvidenceSession(loaded.campaign, None)
+    loaded = load_coverage_record(outcome.coverage_record_path)
+    assert gaps.source_gap_paths(loaded.coverage_record) == ("rtl/unused.sv",)
+    session = CoverageEvidenceSession(loaded.coverage_record, None)
     assert session.query({"view": "zero_point_sources"})["paths"] == ["rtl/unused.sv"]
     # The finding is advisory: exit code, Criterion and verdict match a project without the gap.
     clean = gap_plan(tmp_path / "clean", {}, criterion=True)
     baseline = run_target(clean, NativeExecution())
-    other = load_coverage_campaign(baseline.campaign_path).campaign
+    other = load_coverage_record(baseline.coverage_record_path).coverage_record
     assert not gaps.source_gap_paths(other)
-    assert (outcome.exit_code, loaded.campaign.evaluation, loaded.campaign.rollups) == (
+    assert (
+        outcome.exit_code,
+        loaded.coverage_record.evaluation,
+        loaded.coverage_record.rollups,
+    ) == (
         baseline.exit_code,
         other.evaluation,
         other.rollups,
     )
-    assert loaded.campaign.evaluation["status"] == "pass"
-    assert [r.simulation_verdict for r in loaded.campaign.runs] == [
+    assert loaded.coverage_record.evaluation["status"] == "pass"
+    assert [r.simulation_verdict for r in loaded.coverage_record.runs] == [
         r.simulation_verdict for r in other.runs
     ]
 
@@ -826,9 +830,9 @@ def test_incomplete_collection_never_accuses_module_sources(tmp_path):
     execution = NativeExecution()
     execution.missing = True
     outcome = run_target(gap_plan(tmp_path), execution)
-    campaign = load_coverage_campaign(outcome.campaign_path).campaign
+    coverage_record = load_coverage_record(outcome.coverage_record_path).coverage_record
     assert outcome.exit_code == 2
-    assert not any(f.code == GAP_CODE for f in campaign.findings)
+    assert not any(f.code == GAP_CODE for f in coverage_record.findings)
 
 
 @pytest.mark.parametrize("boundary", ["point_store", "campaign"])
@@ -843,8 +847,8 @@ def test_persistence_boundaries_abort_with_a_truthful_outcome(tmp_path, monkeypa
         outcome = run_target(plan, NativeExecution(verdict="fail", hits=0))
     assert outcome.exit_code == 2
     assert outcome.abort_remaining
-    assert not outcome.campaign_path.exists()
-    assert not (outcome.campaign_path.parent / "simulation.json").exists()
+    assert not outcome.coverage_record_path.exists()
+    assert not (outcome.coverage_record_path.parent / "simulation.json").exists()
     assert outcome.detail["evaluation"] == "blocked"
     assert outcome.detail["simulation"] == "fail"
     assert outcome.detail["passed"] is False
@@ -867,7 +871,7 @@ def test_direct_coverage_outcome_includes_metrics(tmp_path):
         floor, met = (100, True) if gated else (None, None)
         expected = {"line": {"percent": 100.0, "threshold": floor, "met": met}}
         assert outcome.detail["coverage_metrics"] == expected
-        document = json.loads(outcome.campaign_path.read_text())
+        document = json.loads(outcome.coverage_record_path.read_text())
         assert document["evaluation"]["thresholds"] == ({"line": 100} if gated else {})
         assert outcome.detail["evaluation"] == (
             "blocked" if invalid else "pass" if gated else "not_requested"
@@ -885,13 +889,16 @@ def test_direct_coverage_outcome_includes_metrics(tmp_path):
         assert retained.exit_code == 2 and retained.detail["coverage_metrics"] == expected
     from booley.flows.sim.coverage_policy import coverage_metrics
 
-    campaign = load_coverage_campaign(outcome.campaign_path).campaign
+    coverage_record = load_coverage_record(outcome.coverage_record_path).coverage_record
     for covered, eligible, percent, met in ((2, 3, 66.67, False), (0, 0, None, False)):
         rollup = replace(
-            campaign.rollups[0], covered_points=covered, eligible_points=eligible, percent=percent
+            coverage_record.rollups[0],
+            covered_points=covered,
+            eligible_points=eligible,
+            percent=percent,
         )
         edge = replace(
-            campaign,
+            coverage_record,
             rollups=(rollup,),
             evaluation=freeze_coverage_mapping({"thresholds": {"line": 66.67}}),
         )

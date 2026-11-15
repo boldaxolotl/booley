@@ -19,24 +19,24 @@ from fractions import Fraction
 from pathlib import Path
 from types import MappingProxyType
 
-from booley.flows.sim.coverage_campaign import (
-    DurableTargetIdentity,
-    decode_coverage_point_id,
-)
-from booley.flows.sim.coverage_campaign_store import (
-    load_coverage_campaign,
-    publish_coverage_campaign,
-)
 from booley.flows.sim.coverage_policy import (
     ApprovedWaiverSet,
     CoverageCriterion,
     CoverageThreshold,
-    evaluate_coverage_campaign,
+    evaluate_coverage_record,
 )
 from booley.flows.sim.coverage_provenance import coverage_digest
+from booley.flows.sim.coverage_record import (
+    DurableTargetIdentity,
+    decode_coverage_point_id,
+)
+from booley.flows.sim.coverage_record_store import (
+    load_coverage_record,
+    publish_coverage_record,
+)
 from booley.flows.sim.coverage_reference import (
-    CoverageCampaignReference,
-    encode_coverage_campaign_reference,
+    CoverageRecordReference,
+    encode_coverage_record_reference,
 )
 from booley.flows.sim.coverage_waivers import (
     CoverageRepositoryRoots,
@@ -50,9 +50,9 @@ from booley.flows.sim.verilator_coverage import (
     SelectedCoverageRun,
     collect,
 )
-from tests.flows.sim.coverage_campaign_test_support import decode_document
-from tests.flows.sim.test_coverage_campaign import _valid_document
-from tests.flows.sim.test_coverage_policy import _TARGET, _two_metric_campaign
+from tests.flows.sim.coverage_record_test_support import decode_document
+from tests.flows.sim.test_coverage_policy import _TARGET, _two_metric_coverage_record
+from tests.flows.sim.test_coverage_record import _valid_document
 from tests.flows.sim.test_verilator_coverage_collector import _HEADER, _PresenceExecution
 
 GOLDEN_POINT_ID = (
@@ -123,7 +123,7 @@ def test_point_id_golden_is_shared_by_collector_and_codec(tmp_path: Path) -> Non
     assert decode_coverage_point_id(GOLDEN_POINT_ID) == GOLDEN_IDENTITY
 
 
-def _campaign_document() -> dict[str, object]:
+def _coverage_record_document() -> dict[str, object]:
     """The shared valid Campaign with the golden point and a non-ASCII selector."""
     document = _valid_document()
     document["target"]["selector"] = "sim_zähler"  # type: ignore[index]
@@ -132,10 +132,10 @@ def _campaign_document() -> dict[str, object]:
 
 
 def _publish(tmp_path: Path):
-    campaign = decode_document(
-        _campaign_document(), DurableTargetIdentity("acme:demo:counter:1.0#sim_counter")
+    coverage_record = decode_document(
+        _coverage_record_document(), DurableTargetIdentity("acme:demo:counter:1.0#sim_counter")
     )
-    return publish_coverage_campaign(tmp_path / "campaign", campaign)
+    return publish_coverage_record(tmp_path / "campaign", coverage_record)
 
 
 def test_point_store_lines_golden(tmp_path: Path) -> None:
@@ -150,7 +150,7 @@ def test_point_store_lines_golden(tmp_path: Path) -> None:
 
 def test_manifest_golden(tmp_path: Path) -> None:
     paths = _publish(tmp_path)
-    raw = paths.campaign.read_bytes()
+    raw = paths.coverage_record.read_bytes()
     compressed = paths.points.read_bytes()
 
     # zlib builds differ in compressed bytes, so only these two values are normalized.
@@ -168,13 +168,13 @@ def test_manifest_golden(tmp_path: Path) -> None:
         _sha256_hex(normalized)
         == "9472651ded3ee395d84ff35c65558e8fdb7ab2e6050cbb846b70b03ffddbf340"
     )
-    loaded = load_coverage_campaign(paths.campaign)
+    loaded = load_coverage_record(paths.coverage_record)
     assert loaded.summary.manifest_sha256 == f"sha256:{_sha256_hex(raw)}"
 
 
-def test_coverage_campaign_reference_golden() -> None:
+def test_coverage_record_reference_golden() -> None:
     # Keys are deliberately unsorted: the encoder must sort them.
-    reference = CoverageCampaignReference(
+    reference = CoverageRecordReference(
         {
             "target": {"selector": "sim_zähler", "identity": "acme:demo:counter:1.0#sim_counter"},
             "simulation_work_item_id": "item:0000:0123456789abcdef",
@@ -195,7 +195,7 @@ def test_coverage_campaign_reference_golden() -> None:
         }
     )
 
-    raw = encode_coverage_campaign_reference(reference)
+    raw = encode_coverage_record_reference(reference)
 
     assert raw == GOLDEN_REFERENCE_BYTES
     assert _sha256_hex(raw) == "6abaa2cfc585358b9c9eb31abe21e67627d7849e8e46b00a7d1d231df0ec5770"
@@ -258,7 +258,7 @@ def test_criterion_fingerprint_golden() -> None:
         waivers=(),
     )
 
-    evaluated = evaluate_coverage_campaign(_two_metric_campaign(), criterion, waivers)
+    evaluated = evaluate_coverage_record(_two_metric_coverage_record(), criterion, waivers)
 
     assert (
         evaluated.evaluation["criterion_fingerprint"]
@@ -266,7 +266,7 @@ def test_criterion_fingerprint_golden() -> None:
     )
 
 
-def test_coverage_campaign_fingerprint_golden() -> None:
+def test_coverage_record_fingerprint_golden() -> None:
     value = {
         "zähler": MappingProxyType({"b": (1, 2.5), "a": None}),
         "items": ("x", {"y": True, "ä": "ö"}),

@@ -382,7 +382,7 @@ def test_old_simulation_record_names_are_not_aliases(tmp_path: Path) -> None:
     )
     (receipt_path,) = origin.parent.glob("dependency-receipts/*.json")
     _rewrite(receipt_path, _with_old_key(_json(receipt_path)))
-    with pytest.raises(ValueError, match="Malformed Simulation Campaign dependency receipt"):
+    with pytest.raises(ValueError, match="Malformed Simulation Record dependency receipt"):
         read_simulation_record_dependencies(origin)
 
     # A context sidecar is the current one only: schema v1, or v2 with the old key, is not.

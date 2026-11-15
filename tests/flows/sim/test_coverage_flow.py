@@ -10,10 +10,10 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.evidence.acceptance import ResolvedFlowAcceptance
-from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
+from booley.flows.sim.coverage_record_store import load_coverage_record
 from booley.flows.sim.coverage_reference import (
     REFERENCE_SCHEMA,
-    resolve_coverage_campaign_reference,
+    resolve_coverage_record_reference,
 )
 from booley.flows.sim.execution.contract import SimulationOptions
 from booley.flows.sim.flow import SimulateFlow
@@ -163,7 +163,7 @@ def test_console_lifecycle_reports_executed_suite_not_criterion_list(
     } == {"half", "reset", "wrap", "carry", "zero", "gap", "overflow", "underflow", "saturate"}
     for simulation_record in result.outcome.detail["records"].values():
         path = tmp_path / "reports/sim/1" / simulation_record["artifacts"]["coverage"]["path"]
-        evaluation = resolve_coverage_campaign_reference(path).loaded.campaign.evaluation
+        evaluation = resolve_coverage_record_reference(path).loaded.coverage_record.evaluation
         assert evaluation["status"] == "blocked"
         assert evaluation["suite"]["status"] == "mismatch"
 
@@ -240,21 +240,21 @@ def _card_path(block: list[str], label: str) -> Path:
 
 
 def _assert_card_names_run_files(report_text: str, tmp_path: Path) -> None:
-    """The ``sim_0`` card lists its metrics and names the existing run report and Campaign."""
+    """The ``sim_0`` card lists its metrics and names the existing run report and Simulation Record."""
     block = _target_block(report_text, "sim_0")
     assert _card_path(block, "report") == (tmp_path / "reports/sim/1/report.json").resolve()
     assert _card_path(block, "report").is_file()
     assert "  coverage: line 100.0%" in block
-    campaign_file = (tmp_path / "reports/sim/1/targets/sim_0/coverage.json").resolve()
-    assert _card_path(block, "coverage campaign") == campaign_file
-    assert campaign_file.is_file()
+    coverage_record_file = (tmp_path / "reports/sim/1/targets/sim_0/coverage.json").resolve()
+    assert _card_path(block, "coverage campaign") == coverage_record_file
+    assert coverage_record_file.is_file()
 
 
 def _assert_ungated_report(result, tmp_path: Path) -> None:
     simulation_record_id = result.outcome.detail["records"]["sim_0"]["simulation_record_id"]
     expected_headline = (
         "sim_0: simulation PASS · coverage collection COMPLETE · "
-        f"evaluation NOT_REQUESTED (Simulation Campaign {simulation_record_id})"
+        f"evaluation NOT_REQUESTED (Simulation Record {simulation_record_id})"
     )
     assert _target_headline(result.outcome.report_text, "sim_0") == expected_headline
     persisted = json.loads((tmp_path / "reports/sim/1/report.json").read_text())
@@ -313,12 +313,12 @@ def _prepare_atomic_coverage_state(
     return state_path, state_path.read_bytes()
 
 
-def _assert_enclosing_result_is_authenticated(campaign_path, resolved) -> None:
-    from booley.flows.sim.coverage_analysis_input import read_coverage_campaign
+def _assert_enclosing_result_is_authenticated(coverage_record_path, resolved) -> None:
+    from booley.flows.sim.coverage_analysis_input import read_coverage_record
     from booley.flows.sim.record.codec import canonical_json_bytes
     from booley.flows.sim.record.store import SimulationRecordStore
 
-    store = SimulationRecordStore(campaign_path.parent / "record")
+    store = SimulationRecordStore(coverage_record_path.parent / "record")
     work_item_id = resolved.reference.document["simulation_work_item_id"]
     simulation_result = store.work_item_directory(work_item_id) / "result.json"
     result_raw = simulation_result.read_bytes()
@@ -326,8 +326,8 @@ def _assert_enclosing_result_is_authenticated(campaign_path, resolved) -> None:
     hostile["evidence"][0]["sha256"] = "sha256:" + "0" * 64
     simulation_result.chmod(0o600)
     simulation_result.write_bytes(canonical_json_bytes(hostile))
-    with pytest.raises(ValueError, match="enclosing Simulation Campaign"):
-        read_coverage_campaign(campaign_path)
+    with pytest.raises(ValueError, match="enclosing Simulation Record"):
+        read_coverage_record(coverage_record_path)
     simulation_result.write_bytes(result_raw)
     simulation_result.chmod(0o400)
 
@@ -340,21 +340,21 @@ def _assert_simulation_record_report_schema(
     assert report["detail"]["records"]["sim_0"]["artifacts"] == simulation_record["artifacts"]
 
 
-def _assert_projection_tamper_rejected(campaign_path: Path) -> None:
-    from booley.flows.sim.coverage_analysis_input import read_coverage_campaign
+def _assert_projection_tamper_rejected(coverage_record_path: Path) -> None:
+    from booley.flows.sim.coverage_analysis_input import read_coverage_record
 
-    projection_path = campaign_path.with_name("simulation.json")
+    projection_path = coverage_record_path.with_name("simulation.json")
     projection_raw = projection_path.read_bytes()
     projection = json.loads(projection_raw)
     projection["simulation_record_manifest"]["path"] = "other/manifest.json"
     projection_path.write_text(json.dumps(projection))
     with pytest.raises(ValueError, match="not a regular file"):
-        read_coverage_campaign(campaign_path)
+        read_coverage_record(coverage_record_path)
     projection_path.write_bytes(projection_raw)
 
 
 def test_flow_produces_numbered_target_reports_with_public_coverage_input(tmp_path, monkeypatch):
-    from booley.flows.sim.coverage_analysis_input import read_coverage_campaign
+    from booley.flows.sim.coverage_analysis_input import read_coverage_record
     from booley.flows.sim.record_retention import prune_native_payload
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
@@ -375,11 +375,11 @@ def test_flow_produces_numbered_target_reports_with_public_coverage_input(tmp_pa
     target = result.outcome.detail["targets"]["sim_0"]
     coverage_reference = target["coverage_record"]
     assert coverage_reference["path_base"] == "report_invocation"
-    campaign_path = tmp_path / "reports/sim/1" / coverage_reference["path"]
-    assert campaign_path == tmp_path / "reports/sim/1/targets/sim_0/coverage.json"
-    assert json.loads(campaign_path.read_text())["$schema"] == REFERENCE_SCHEMA
-    resolved = resolve_coverage_campaign_reference(campaign_path)
-    assert resolved.loaded.campaign.evaluation["status"] == "not_requested"
+    coverage_record_path = tmp_path / "reports/sim/1" / coverage_reference["path"]
+    assert coverage_record_path == tmp_path / "reports/sim/1/targets/sim_0/coverage.json"
+    assert json.loads(coverage_record_path.read_text())["$schema"] == REFERENCE_SCHEMA
+    resolved = resolve_coverage_record_reference(coverage_record_path)
+    assert resolved.loaded.coverage_record.evaluation["status"] == "not_requested"
     _assert_ungated_report(result, tmp_path)
     simulation_record = result.outcome.detail["records"]["sim_0"]
     assert simulation_record["dependency"] == "local_record"
@@ -396,15 +396,15 @@ def test_flow_produces_numbered_target_reports_with_public_coverage_input(tmp_pa
         "functional": {"pass": 2},
         "assertions": {"clean": 2},
     }
-    reference = campaign_path.read_bytes()
-    assert read_coverage_campaign(campaign_path).campaign.campaign_id
-    _assert_enclosing_result_is_authenticated(campaign_path, resolved)
+    reference = coverage_record_path.read_bytes()
+    assert read_coverage_record(coverage_record_path).coverage_record.coverage_record_id
+    _assert_enclosing_result_is_authenticated(coverage_record_path, resolved)
     prune_native_payload(tmp_path / "reports", 1, "sim_0")
-    assert campaign_path.read_bytes() == reference
-    assert not (resolved.campaign_path.parent / "native").exists()
-    assert (resolved.campaign_path.parent / "availability.json").is_file()
-    assert read_coverage_campaign(campaign_path).campaign.campaign_id
-    _assert_projection_tamper_rejected(campaign_path)
+    assert coverage_record_path.read_bytes() == reference
+    assert not (resolved.coverage_record_path.parent / "native").exists()
+    assert (resolved.coverage_record_path.parent / "availability.json").is_file()
+    assert read_coverage_record(coverage_record_path).coverage_record.coverage_record_id
+    _assert_projection_tamper_rejected(coverage_record_path)
     assert not (tmp_path / "reports/sim_sim_0.json").exists()
     assert flow_schema(flow)["properties"]["coverage"]["type"] == "boolean"
     assert flow_schema(flow)["properties"]["no_waivers"]["type"] == "boolean"
@@ -792,7 +792,7 @@ def test_unreadable_unrelated_directory_does_not_block_coverage(
 def test_copied_complete_invocation_remains_analyzable_and_independently_prunable(
     tmp_path, monkeypatch
 ):
-    from booley.flows.sim.coverage_analysis_input import read_coverage_campaign
+    from booley.flows.sim.coverage_analysis_input import read_coverage_record
     from booley.flows.sim.record_retention import prune_invocation
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
@@ -819,17 +819,17 @@ def test_copied_complete_invocation_remains_analyzable_and_independently_prunabl
     shutil.copytree(original, copied)
     copied_coverage = copied / "targets/sim_0/coverage.json"
 
-    assert read_coverage_campaign(copied_coverage).campaign.campaign_id
+    assert read_coverage_record(copied_coverage).coverage_record.coverage_record_id
     hidden_original = original.with_name(".origin-hidden")
     original.rename(hidden_original)
     try:
-        assert read_coverage_campaign(copied_coverage).campaign.campaign_id
+        assert read_coverage_record(copied_coverage).coverage_record.coverage_record_id
     finally:
         hidden_original.rename(original)
     prune_invocation(copied_reports, 1)
 
     original_coverage = original / "targets/sim_0/coverage.json"
-    assert read_coverage_campaign(original_coverage).campaign.campaign_id
+    assert read_coverage_record(original_coverage).coverage_record.coverage_record_id
     prune_invocation(reports, 1)
 
 
@@ -864,10 +864,10 @@ def test_multi_target_collector_error_preserves_completed_and_later_targets(tmp_
     assert list(result.outcome.detail["records"]) == ["sim_2", "sim_0", "sim_1"]
     assert result.outcome.detail["targets"]["sim_2"]["collection"] == "complete"
     simulation_record_id = result.outcome.detail["records"]["sim_1"]["simulation_record_id"]
-    campaign_path = next(
+    coverage_record_path = next(
         (tmp_path / "reports/sim/1/targets/sim_1").rglob("coverage-record/coverage.json")
     )
-    invalid_manifest = json.loads(campaign_path.read_text())
+    invalid_manifest = json.loads(coverage_record_path.read_text())
     assert invalid_manifest["scoring"] == {
         "status": "invalid",
         "reason": "collector_error",
@@ -883,11 +883,10 @@ def test_multi_target_collector_error_preserves_completed_and_later_targets(tmp_
     assert headline == (
         "sim_1: simulation PASS · coverage collection COLLECTOR_ERROR "
         "(COV_RAW_FILE_MISSING) · evaluation NOT_REQUESTED "
-        f"(Simulation Campaign {simulation_record_id})"
+        f"(Simulation Record {simulation_record_id})"
     )
     assert (
-        f"sim_1: PASS (Simulation Campaign {simulation_record_id})"
-        not in result.outcome.report_text
+        f"sim_1: PASS (Simulation Record {simulation_record_id})" not in result.outcome.report_text
     )
 
 
@@ -934,7 +933,7 @@ def test_unmatched_coverage_failure_lists_completed_simulation_records(tmp_path,
     result = sim_flow._unmatched_coverage_failure([finished], {}, RuntimeError("no such Target"))
 
     assert result.report_text.splitlines() == [
-        "Simulation Campaign coverage execution failed: cannot match failed Target to the "
+        "Simulation Record coverage execution failed: cannot match failed Target to the "
         "prepared Coverage plan (no such Target)",
         f"  coverage campaign: {(tmp_path / 'targets/sim_0/coverage.json').resolve()}",
     ]
@@ -974,7 +973,7 @@ def test_shared_execution_failure_terminalizes_without_losing_completed_reports(
     nested_path = next(
         target_root.glob("record/work-items/*/attempts/*/coverage-record/coverage.json")
     )
-    nested = load_coverage_campaign(nested_path).campaign
+    nested = load_coverage_record(nested_path).coverage_record
     assert outer == nested.evaluation["status"] == "not_requested"
     assert set(result.outcome.detail["records"]) == {"sim_0", "sim_1", "sim_2"}
     assert result.outcome.detail["records"]["sim_1"]["grade"] == "error"
@@ -1008,7 +1007,7 @@ def test_gated_shared_execution_failure_preserves_blocked_evaluation(tmp_path, m
     nested_path = next(
         target_root.glob("record/work-items/*/attempts/*/coverage-record/coverage.json")
     )
-    nested = load_coverage_campaign(nested_path).campaign
+    nested = load_coverage_record(nested_path).coverage_record
     assert detail["passed"] is False
     assert detail["simulation"] == "aborted"
     assert detail["collection"] == "collector_error"
@@ -1219,7 +1218,7 @@ def test_gated_passing_coverage_headline_reports_evaluation_pass(tmp_path, monke
     simulation_record_id = result.outcome.detail["records"]["sim_custom"]["simulation_record_id"]
     assert _target_headline(result.outcome.report_text, "sim_custom") == (
         "sim_custom: simulation PASS · coverage collection COMPLETE · evaluation PASS "
-        f"(Simulation Campaign {simulation_record_id})"
+        f"(Simulation Record {simulation_record_id})"
     )
 
 
@@ -1243,7 +1242,7 @@ def test_gated_suite_mismatch_headline_attaches_diagnostic_to_evaluation(tmp_pat
     simulation_record_id = result.outcome.detail["records"]["sim_custom"]["simulation_record_id"]
     assert _target_headline(result.outcome.report_text, "sim_custom") == (
         "sim_custom: simulation PASS · coverage collection COMPLETE · evaluation BLOCKED "
-        f"(COV_EVAL_SUITE_MISMATCH) (Simulation Campaign {simulation_record_id})"
+        f"(COV_EVAL_SUITE_MISMATCH) (Simulation Record {simulation_record_id})"
     )
 
 
@@ -1678,7 +1677,7 @@ def test_cross_root_resume_dependency_is_registered_and_pruned(tmp_path, monkeyp
 
 
 def test_native_pruning_preserves_live_resume_dependency(tmp_path, monkeypatch):
-    from booley.flows.sim.coverage_analysis_input import read_coverage_campaign
+    from booley.flows.sim.coverage_analysis_input import read_coverage_record
     from booley.flows.sim.record_retention import (
         SimulationRecordRetentionError,
         prune_invocation,
@@ -1694,9 +1693,9 @@ def test_native_pruning_preserves_live_resume_dependency(tmp_path, monkeypatch):
 
     prune_native_payload(reports, 1, "sim_0")
 
-    assert read_coverage_campaign(
+    assert read_coverage_record(
         reports / "sim/1/targets/sim_0/coverage.json"
-    ).campaign.campaign_id
+    ).coverage_record.coverage_record_id
     assert (reports / "sim/2/report.json").is_file()
     with pytest.raises(SimulationRecordRetentionError, match=re.escape(str(reports / "sim/2"))):
         prune_invocation(reports, 1)
@@ -1872,7 +1871,7 @@ def test_resume_retains_explicit_configured_skipped_test(tmp_path, monkeypatch):
     )
     assert result.outcome.report_text == (
         "sim_0: simulation PASS · coverage collection COMPLETE · evaluation NOT_REQUESTED "
-        f"(Simulation Campaign {simulation_record['simulation_record_id']})\n"
+        f"(Simulation Record {simulation_record['simulation_record_id']})\n"
         f"  manifest: {manifest.resolve()}\n"
         f"  report: {(tmp_path / 'resumed/sim/1/report.json').resolve()}\n"
         "  coverage: line 100.0%\n"
@@ -2001,7 +2000,7 @@ def test_resume_refusal_preserves_corrupt_result_integrity_error(tmp_path, monke
     )
 
     assert result.exit_code == 2
-    assert result.outcome.report_text.startswith("Simulation Campaign integrity failure:")
+    assert result.outcome.report_text.startswith("Simulation Record integrity failure:")
 
 
 def _crash_coverage_publication(tmp_path, monkeypatch, boundary, *, no_waivers=False):
@@ -2063,7 +2062,7 @@ def test_coverage_publication_crash_resumes_at_the_aggregate_boundary(
     tmp_path, monkeypatch, boundary, published
 ):
     """A finished collection with unfinished publication resumes without re-running."""
-    from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
+    from booley.flows.sim.coverage_record_store import load_coverage_record
 
     reports, runs, public, execution_factory, interrupted = _crash_coverage_publication(
         tmp_path, monkeypatch, boundary
@@ -2084,12 +2083,15 @@ def test_coverage_publication_crash_resumes_at_the_aggregate_boundary(
 
     assert resumed.exit_code == 0
     assert tuple(runs) == completed_runs
-    assert resolve_coverage_campaign_reference(public).campaign_path.is_file()
-    nested_campaigns = list(
+    assert resolve_coverage_record_reference(public).coverage_record_path.is_file()
+    nested_coverage_records = list(
         public.parent.glob("record/work-items/*/attempts/*/coverage-record/coverage.json")
     )
-    assert len(nested_campaigns) == 1
-    assert all(load_coverage_campaign(path).campaign.campaign_id for path in nested_campaigns)
+    assert len(nested_coverage_records) == 1
+    assert all(
+        load_coverage_record(path).coverage_record.coverage_record_id
+        for path in nested_coverage_records
+    )
 
 
 @pytest.mark.parametrize(
@@ -2200,7 +2202,7 @@ def test_unreadable_publication_evidence_preserves_simulation_truth(
     def unreadable(*_args, **_kwargs):
         raise OSError("nested coverage evidence unreadable")
 
-    monkeypatch.setattr("booley.flows.sim.record_presentation.load_coverage_campaign", unreadable)
+    monkeypatch.setattr("booley.flows.sim.record_presentation.load_coverage_record", unreadable)
     if resumed:
 
         def checkpoint(boundary):
@@ -2240,11 +2242,11 @@ def _run_with_retention_reference_failure(monkeypatch, request, execution=None):
         calls.append(public)
         if len(calls) == 1:
             raise OSError("injected retention reference failure")
-        return resolve_coverage_campaign_reference(public)
+        return resolve_coverage_record_reference(public)
 
     with monkeypatch.context() as patch:
         patch.setattr(
-            "booley.flows.sim.record_presentation.resolve_coverage_campaign_reference", fail_once
+            "booley.flows.sim.record_presentation.resolve_coverage_record_reference", fail_once
         )
         return SimulateFlow(
             coverage_execution=lambda *_args: execution or NativeExecution()
@@ -2405,7 +2407,7 @@ def test_pruning_during_allocation_does_not_reuse_simulation_record_number(tmp_p
     assert (sim / ".pruned-1").is_dir()
 
 
-def test_interactive_collection_then_exact_campaign_analysis(tmp_path, monkeypatch):
+def test_interactive_collection_then_exact_coverage_record_analysis(tmp_path, monkeypatch):
     from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
     from tests.mcp_tools.test_coverage_analyst import Model
 
@@ -2418,12 +2420,12 @@ def test_interactive_collection_then_exact_campaign_analysis(tmp_path, monkeypat
         coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
     ).execute(SimRequest(target="sim_0", work_dir=tmp_path, coverage=True))
     assert result.exit_code == 0
-    campaign = next(tmp_path.rglob("targets/sim_0/coverage.json"))
+    coverage_record = next(tmp_path.rglob("targets/sim_0/coverage.json"))
     model = Model()
     analyst = CoverageAnalystSpecialist(model=model)
-    analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(campaign)])
+    analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(coverage_record)])
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
-    report = analyst.coverage_analyst(campaign).to_dict()
+    report = analyst.coverage_analyst(coverage_record).to_dict()
     assert report["$schema"] == "booley.coverage-analysis/v4"
     assert report["observed_evidence"]["coverage_record_manifest"]["$schema"] == (
         "booley.coverage-record/v1"
@@ -2479,8 +2481,8 @@ def test_interactive_collection_keeps_criteria_unchanged_across_verdicts(
         )
     ).execute(SimRequest(target="sim_0", work_dir=tmp_path, coverage=True))
     assert result.exit_code == exit_code
-    campaign_path = next(tmp_path.rglob("targets/sim_0/coverage.json"))
-    document = resolve_coverage_campaign_reference(campaign_path).loaded.campaign
+    coverage_record_path = next(tmp_path.rglob("targets/sim_0/coverage.json"))
+    document = resolve_coverage_record_reference(coverage_record_path).loaded.coverage_record
     assert document.evaluation["status"] == evaluation
     assert state_path.read_bytes() == before
     saved = DevelopmentState.load(state_path)
@@ -2527,8 +2529,8 @@ def _run_gap_coverage(
 
 
 def _coverage_evaluation(tmp_path: Path) -> dict[str, object]:
-    campaign = next(tmp_path.rglob("targets/sim_custom/coverage.json"))
-    return resolve_coverage_campaign_reference(campaign).loaded.campaign.evaluation
+    coverage_record = next(tmp_path.rglob("targets/sim_custom/coverage.json"))
+    return resolve_coverage_record_reference(coverage_record).loaded.coverage_record.evaluation
 
 
 def test_criterion_test_list_does_not_select_coverage_tests(tmp_path, monkeypatch):
@@ -2616,8 +2618,10 @@ def _configure_missing_waiver_directory(root: Path) -> None:
 
 
 def _coverage_evaluation_status(reports: Path, selector: str) -> str:
-    campaign = next(reports.rglob(f"targets/{selector}/coverage.json"))
-    return resolve_coverage_campaign_reference(campaign).loaded.campaign.evaluation["status"]
+    coverage_record = next(reports.rglob(f"targets/{selector}/coverage.json"))
+    return resolve_coverage_record_reference(coverage_record).loaded.coverage_record.evaluation[
+        "status"
+    ]
 
 
 def _finding_codes(outcome) -> list[str]:
@@ -3151,7 +3155,7 @@ def test_coverage_next_stage_keeps_returned_target_and_coverage_flag(tmp_path: P
 
 
 def test_image_alias_coverage_flow_publishes_authenticated_references(tmp_path, monkeypatch):
-    from booley.flows.sim.coverage_analysis_input import read_coverage_campaign
+    from booley.flows.sim.coverage_analysis_input import read_coverage_record
     from tests.conftest import require_symlinks, symlink_or_skip
     from tests.runtime.test_sandbox_layout import configure_project_alias
 
@@ -3170,8 +3174,8 @@ def test_image_alias_coverage_flow_publishes_authenticated_references(tmp_path, 
     )
     assert result.exit_code == 0, result.outcome.report_text
     path = data / "reports/sim/1/targets/sim_0/coverage.json"
-    loaded = read_coverage_campaign(alias / path.relative_to(data))
-    assert loaded.campaign.target.selector == "sim_0"
+    loaded = read_coverage_record(alias / path.relative_to(data))
+    assert loaded.coverage_record.target.selector == "sim_0"
     projection = json.loads(path.with_name("simulation.json").read_text())
     assert (
         result.outcome.detail["targets"]["sim_0"]["coverage_record"]["path_base"]
@@ -3180,10 +3184,10 @@ def test_image_alias_coverage_flow_publishes_authenticated_references(tmp_path, 
     assert projection["simulation_record_manifest"]["path"]
     (data / "linked").symlink_to(data / "reports", target_is_directory=True)
     with pytest.raises(ValueError, match=r"link|traversal"):
-        read_coverage_campaign(alias / "linked/sim/1/targets/sim_0/coverage.json")
+        read_coverage_record(alias / "linked/sim/1/targets/sim_0/coverage.json")
 
 
-def test_job_report_coverage_metrics_match_campaign(tmp_path, monkeypatch):
+def test_job_report_coverage_metrics_match_coverage_record(tmp_path, monkeypatch):
     from booley.criteria.state import CriterionEntry
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
@@ -3228,15 +3232,15 @@ def test_job_report_coverage_metrics_match_campaign(tmp_path, monkeypatch):
         detail = report["detail"]["targets"][selector]
         assert "coverage_metrics" in detail
         public = reports / f"sim/1/targets/{selector}/coverage.json"
-        campaign = resolve_coverage_campaign_reference(public).loaded.campaign
-        floors = campaign.evaluation["thresholds"]
+        coverage_record = resolve_coverage_record_reference(public).loaded.coverage_record
+        floors = coverage_record.evaluation["thresholds"]
         assert detail["coverage_metrics"] == {
             r.metric: {
                 "percent": r.percent,
                 "threshold": floors.get(r.metric),
                 "met": r.percent == 100 if r.metric in floors else None,
             }
-            for r in campaign.rollups
+            for r in coverage_record.rollups
         }
         assert detail["simulation"] == "pass" and detail["collection"] == "complete"
         assert detail["evaluation"] == ("fail" if selector == "sim_0" else "not_requested")
@@ -3264,7 +3268,7 @@ def _linked_coverage_project(tmp_path, monkeypatch):
 
 
 def test_symlinked_booley_dir_publishes_and_analyses_coverage(tmp_path, monkeypatch):
-    from booley.flows.sim.coverage_analysis_input import read_coverage_campaign
+    from booley.flows.sim.coverage_analysis_input import read_coverage_record
 
     root, reports = _linked_coverage_project(tmp_path, monkeypatch)
 
@@ -3273,10 +3277,13 @@ def test_symlinked_booley_dir_publishes_and_analyses_coverage(tmp_path, monkeypa
     )
 
     assert result.exit_code == 0
-    campaign_path = reports / "sim/1/targets/sim_0/coverage.json"
-    assert json.loads(campaign_path.read_text())["$schema"] == REFERENCE_SCHEMA
-    resolved = resolve_coverage_campaign_reference(campaign_path)
-    assert read_coverage_campaign(campaign_path).campaign == resolved.loaded.campaign
+    coverage_record_path = reports / "sim/1/targets/sim_0/coverage.json"
+    assert json.loads(coverage_record_path.read_text())["$schema"] == REFERENCE_SCHEMA
+    resolved = resolve_coverage_record_reference(coverage_record_path)
+    assert (
+        read_coverage_record(coverage_record_path).coverage_record
+        == resolved.loaded.coverage_record
+    )
 
 
 def test_symlinked_booley_dir_coverage_resume_supersedes_origin_progress(tmp_path, monkeypatch):
@@ -3303,27 +3310,27 @@ def test_symlinked_booley_dir_coverage_resume_supersedes_origin_progress(tmp_pat
     assert progress["superseded_by"]["invocation"] == 2
 
 
-def test_coverage_analysis_refuses_a_campaign_written_by_booley_0_3_0(tmp_path):
+def test_coverage_analysis_refuses_a_coverage_record_written_by_booley_0_3_0(tmp_path):
     from booley.flows.sim.coverage_analysis_input import (
         CoverageAnalysisError,
-        read_coverage_campaign,
+        read_coverage_record,
     )
-    from tests.flows.sim.coverage_campaign_test_support import rewrite_manifest_as_v4
-    from tests.mcp_tools.test_coverage_analyst import persist_campaign
+    from tests.flows.sim.coverage_record_test_support import rewrite_manifest_as_v4
+    from tests.mcp_tools.test_coverage_analyst import persist_coverage_record
 
-    campaign_path = persist_campaign(tmp_path)
-    manifest = json.loads(campaign_path.read_text(encoding="utf-8"))
+    coverage_record_path = persist_coverage_record(tmp_path)
+    manifest = json.loads(coverage_record_path.read_text(encoding="utf-8"))
     rewrite_manifest_as_v4(manifest)
-    campaign_path.write_text(json.dumps(manifest), encoding="utf-8")
+    coverage_record_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(CoverageAnalysisError) as error:
-        read_coverage_campaign(campaign_path)
+        read_coverage_record(coverage_record_path)
 
     # An older Booley's record, not an unreadable one: the invocation to delete is named.
     message = str(error.value)
     assert "was written by an older Booley and is no longer supported" in message
     assert "booley.coverage-campaign/v4" in message
-    assert str(campaign_path.parents[2]) in message
+    assert str(coverage_record_path.parents[2]) in message
     assert "COV_SCHEMA_VERSION_UNSUPPORTED" not in message
     assert not message.startswith("Cannot analyze Campaign")
 
@@ -3396,7 +3403,7 @@ def test_coverage_summary_failure_acceptance(
         hook_results.append(hook(self, outcome))
         return hook_results[-1]
 
-    monkeypatch.setattr("booley.flows.sim.flow._retain_coverage_campaign", fail_last_retention)
+    monkeypatch.setattr("booley.flows.sim.flow._retain_coverage_record", fail_last_retention)
     monkeypatch.setattr(SimulateFlow, "record_flow_owned_acceptance", spy)
     result = SimulateFlow(
         coverage_execution=lambda *_args: _PassingSplitMetricsExecution()
@@ -3420,7 +3427,7 @@ def test_coverage_summary_failure_acceptance(
 
 
 class _SimulationRecordRegisteringAdapter(_AcceptanceAdapter):
-    """Acceptance adapter that records every campaign it is told to register."""
+    """Acceptance adapter that records every record it is told to register."""
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -3561,5 +3568,5 @@ def test_coverage_dry_run_reports_plan_failure_as_error(tmp_path, monkeypatch):
 
     assert result.exit_code == 2
     assert result.outcome.report_text == (
-        "Simulation Campaign coverage preview failed: plan went stale"
+        "Simulation Record coverage preview failed: plan went stale"
     )

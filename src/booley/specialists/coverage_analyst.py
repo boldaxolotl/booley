@@ -23,16 +23,16 @@ from booley.flows.sim.coverage_analysis_input import (
     CoverageAnalysisError,
     CoverageSourceClosure,
     coverage_sources,
-    read_coverage_campaign,
+    read_coverage_record,
     verified_source_snapshot,
 )
-from booley.flows.sim.coverage_campaign import CoverageCampaign
-from booley.flows.sim.coverage_campaign_store import (
-    CoverageCampaignSummary,
-    LoadedCoverageCampaign,
-    publish_coverage_campaign,
-)
 from booley.flows.sim.coverage_evidence import decode_coverage_evidence_audit
+from booley.flows.sim.coverage_record import CoverageRecord
+from booley.flows.sim.coverage_record_store import (
+    CoverageRecordSummary,
+    LoadedCoverageRecord,
+    publish_coverage_record,
+)
 from booley.flows.sim.record_reports import target_report_directory
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpToolResult
 from booley.runtime.agent_errors import (
@@ -113,30 +113,36 @@ class CoverageAnalystSpecialist(Specialist):
             "--record", type=Path, required=True, help="Exact canonical coverage.json path"
         )
 
-    def coverage_analyst(self, campaign: Path, instruction: str = "") -> CoverageAnalysisReport:
-        return self._analyze_path(campaign, instruction)[0]
+    def coverage_analyst(
+        self, coverage_record: Path, instruction: str = ""
+    ) -> CoverageAnalysisReport:
+        return self._analyze_path(coverage_record, instruction)[0]
 
     def _analyze_path(
-        self, campaign: Path, instruction: str
-    ) -> tuple[CoverageAnalysisReport, LoadedCoverageCampaign, Path]:
-        campaign = campaign if campaign.is_absolute() else self.args.work_dir / campaign
+        self, coverage_record: Path, instruction: str
+    ) -> tuple[CoverageAnalysisReport, LoadedCoverageRecord, Path]:
+        coverage_record = (
+            coverage_record
+            if coverage_record.is_absolute()
+            else self.args.work_dir / coverage_record
+        )
         try:
-            campaign = canonical_project_alias_path(campaign.absolute())
+            coverage_record = canonical_project_alias_path(coverage_record.absolute())
         except ValueError as exc:
             raise CoverageAnalysisError(str(exc)) from exc
-        loaded = read_coverage_campaign(campaign)
-        sources = coverage_sources(loaded.campaign, self.args.work_dir)
+        loaded = read_coverage_record(coverage_record)
+        sources = coverage_sources(loaded.coverage_record, self.args.work_dir)
         report = self._analyze_bound(
-            loaded.campaign,
+            loaded.coverage_record,
             sources,
             instruction,
-            campaign,
+            coverage_record,
             summary=loaded.summary,
         )
-        return report, loaded, campaign
+        return report, loaded, coverage_record
 
     def _record_candidates(
-        self, document: dict[str, object], loaded: LoadedCoverageCampaign, campaign: Path
+        self, document: dict[str, object], loaded: LoadedCoverageRecord, coverage_record: Path
     ) -> str | None:
         """Record screened candidates for the Goal Record; return a summary line."""
         context = GoalCandidateContext.from_recorder(self._acceptance_recorder)
@@ -145,9 +151,9 @@ class CoverageAnalystSpecialist(Specialist):
         screened = cast(list[dict[str, object]], document["waiver_candidates"])
         section = record_goal_candidates(
             context,
-            loaded.campaign,
+            loaded.coverage_record,
             loaded.summary,
-            campaign,
+            coverage_record,
             screened,
             invocation_id=str(self._invocation_id),
         )
@@ -156,37 +162,39 @@ class CoverageAnalystSpecialist(Specialist):
 
     def _analyze_bound(
         self,
-        campaign: CoverageCampaign,
+        coverage_record: CoverageRecord,
         sources: CoverageSourceClosure | None,
         instruction: str,
-        campaign_path: Path,
+        coverage_record_path: Path,
         *,
-        summary: CoverageCampaignSummary | None = None,
+        summary: CoverageRecordSummary | None = None,
     ) -> CoverageAnalysisReport:
         """Analyze already validated evidence through one scoped tool binding."""
-        sources = verified_source_snapshot(campaign, sources)
-        self._evidence_campaign_path = campaign_path
+        sources = verified_source_snapshot(coverage_record, sources)
+        self._evidence_coverage_record_path = coverage_record_path
         self._evidence_sources = sources
         try:
-            return CoverageAnalyzer(self._analyze_text).analyze_coverage_campaign(
-                campaign, sources, instruction, summary=summary
+            return CoverageAnalyzer(self._analyze_text).analyze_coverage_record(
+                coverage_record, sources, instruction, summary=summary
             )
         finally:
-            self._evidence_campaign_path = None
+            self._evidence_coverage_record_path = None
             self._evidence_sources = None
 
     def _analyze_text(self, prompt: str) -> object:
         with owned_tempdir("booley-coverage-analysis-") as directory:
-            campaign = getattr(self, "_evidence_campaign_path", None)
-            if campaign is None:
+            coverage_record = getattr(self, "_evidence_coverage_record_path", None)
+            if coverage_record is None:
                 raise CoverageAnalysisError("Coverage evidence session is unavailable")
             audit_path = Path(directory) / "evidence-audit.json"
-            params = self._coverage_agent_params(prompt, Path(directory), campaign, audit_path)
+            params = self._coverage_agent_params(
+                prompt, Path(directory), coverage_record, audit_path
+            )
             result = self._invoke_coverage_model(params)
             return self._coverage_model_result(result, audit_path)
 
     def _coverage_agent_params(
-        self, prompt: str, directory: Path, campaign: Path, audit_path: Path
+        self, prompt: str, directory: Path, coverage_record: Path, audit_path: Path
     ) -> AgentCallParams:
         return AgentCallParams(
             output_format=coverage_analysis_model_schema(),
@@ -195,7 +203,7 @@ class CoverageAnalystSpecialist(Specialist):
             cwd=directory,
             allowed_agent_capabilities=[],
             nested_mcp_tools=["coverage_evidence"],
-            nested_mcp_env=self._evidence_environment(directory, campaign, audit_path),
+            nested_mcp_env=self._evidence_environment(directory, coverage_record, audit_path),
             needs_skills=False,
             text_only=True,
             system_prompt=(
@@ -245,10 +253,10 @@ class CoverageAnalystSpecialist(Specialist):
             raise _CoverageProviderError(provider_exception_message(exc), diagnostic_path) from exc
 
     def _evidence_environment(
-        self, directory: Path, campaign: Path, audit_path: Path
+        self, directory: Path, coverage_record: Path, audit_path: Path
     ) -> dict[str, str]:
         environment = {
-            "BOOLEY_COVERAGE_RECORD": str(campaign),
+            "BOOLEY_COVERAGE_RECORD": str(coverage_record),
             "BOOLEY_COVERAGE_PROJECT": str(self.args.work_dir.absolute()),
             "BOOLEY_COVERAGE_AUDIT": str(audit_path),
         }
@@ -303,7 +311,9 @@ class CoverageAnalystSpecialist(Specialist):
 
     def _run(self) -> McpToolResult:
         try:
-            report, loaded, campaign = self._analyze_path(self.args.record, self.args.instruction)
+            report, loaded, coverage_record = self._analyze_path(
+                self.args.record, self.args.instruction
+            )
         except ContextExhaustedError as exc:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
@@ -325,7 +335,7 @@ class CoverageAnalystSpecialist(Specialist):
         document = report.to_dict()
         summary = f"Coverage advisory: {document['closure_recommendation']} ({document['eligibility']}, {document['source_access']})"
         lines = [summary]
-        candidate_line = self._record_candidates(document, loaded, campaign)
+        candidate_line = self._record_candidates(document, loaded, coverage_record)
         if candidate_line is not None:
             lines.append(candidate_line)
         return McpToolResult(
@@ -342,54 +352,54 @@ class CoverageAnalystSpecialist(Specialist):
         raise NotImplementedError("Coverage analysis validates output in its deep module")
 
 
-def coverage_analyst(campaign: Path, instruction: str = "") -> CoverageAnalysisReport:
+def coverage_analyst(coverage_record: Path, instruction: str = "") -> CoverageAnalysisReport:
     """Analyze an exact canonical Campaign using the configured Specialist role."""
     from booley.flows.cli_selection import CliInvocation
 
     specialist = CoverageAnalystSpecialist()
     specialist._cli_invocation = CliInvocation(transport=True)
-    specialist.parse_args(["--record", str(campaign)])
-    return specialist.coverage_analyst(campaign, instruction)
+    specialist.parse_args(["--record", str(coverage_record)])
+    return specialist.coverage_analyst(coverage_record, instruction)
 
 
-def analyze_coverage_campaign(
-    campaign: CoverageCampaign,
+def analyze_coverage_record(
+    coverage_record: CoverageRecord,
     sources: CoverageSourceClosure | None,
     instruction: str,
 ) -> CoverageAnalysisReport:
     """Default composition of the three-argument analysis seam."""
-    invocation_id = str(campaign.invocation["id"])
+    invocation_id = str(coverage_record.invocation["id"])
     if not invocation_id.isdecimal():
         raise CoverageAnalysisError("Campaign invocation id must be numeric")
     with owned_tempdir("booley-coverage-record-") as directory:
         root = Path(directory)
         invocation_dir = root / "reports" / "sim" / invocation_id
-        target_dir = target_report_directory(invocation_dir, campaign.target.selector)
-        paths = publish_coverage_campaign(target_dir, campaign)
+        target_dir = target_report_directory(invocation_dir, coverage_record.target.selector)
+        paths = publish_coverage_record(target_dir, coverage_record)
         (target_dir / "simulation.json").write_text(
             json.dumps(
                 {
                     "flow": "sim",
                     "complete": True,
-                    "target": campaign.target.selector,
-                    "target_identity": campaign.target.identity,
-                    "collection": campaign.collection["status"],
-                    "evaluation": campaign.evaluation["status"],
+                    "target": coverage_record.target.selector,
+                    "target_identity": coverage_record.target.identity,
+                    "collection": coverage_record.collection["status"],
+                    "evaluation": coverage_record.evaluation["status"],
                 }
             ),
             encoding="utf-8",
         )
-        loaded = read_coverage_campaign(paths.campaign)
+        loaded = read_coverage_record(paths.coverage_record)
         specialist = CoverageAnalystSpecialist()
         from booley.flows.cli_selection import CliInvocation
 
         specialist._cli_invocation = CliInvocation(transport=True)
-        specialist.parse_args(["--work-dir", str(root), "--record", str(paths.campaign)])
+        specialist.parse_args(["--work-dir", str(root), "--record", str(paths.coverage_record)])
         return specialist._analyze_bound(
-            loaded.campaign,
+            loaded.coverage_record,
             sources,
             instruction,
-            paths.campaign,
+            paths.coverage_record,
             summary=loaded.summary,
         )
 

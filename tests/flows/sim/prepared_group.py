@@ -1,11 +1,11 @@
-"""Drive one ordinary Simulation group the way Simulation Campaigns do.
+"""Drive one ordinary Simulation group the way Simulation Records do.
 
 Stdlib + booley only (no pytest) so a plain Docker acceptance script can
 import it.
 
-The helper leaves three campaign steps out on purpose: planning-disclosure
+The helper leaves three record steps out on purpose: planning-disclosure
 authentication, the durable Build Result / bundle / snapshot records, and
-Pre-Sim hooks. Tests of those belong to the campaign layer, not the engine.
+Pre-Sim hooks. Tests of those belong to the record layer, not the engine.
 """
 
 from __future__ import annotations
@@ -30,14 +30,14 @@ def _capture_snapshot(
     *,
     copy_build_root: bool,
 ) -> None:
-    """Copy the image into ``snapshot``, as a campaign's private image capture does.
+    """Copy the image into ``snapshot``, as a record's private image capture does.
 
     A real build authorizes its artifact paths; copy those plus the declared
     runtime inputs, keeping their paths relative to ``build_root``. The
     ``canned_build_session`` fakes authorize nothing (``authorize_fresh_image``
     is stubbed to return ``()``), so only a caller that uses them opts in to
     copying the whole build root. Anywhere else an empty set is an error, as in
-    a campaign.
+    a record.
     """
     if copy_build_root:
         shutil.copytree(build_root, snapshot, symlinks=True)
@@ -59,7 +59,7 @@ def run_prepared_group(
     attempt_root: Path | None = None,
     copy_build_root: bool = False,
 ) -> SimulationTargetOutcome:
-    """Compile one ordinary group and launch a copy of its image, as campaigns do.
+    """Compile one ordinary group and launch a copy of its image, as records do.
 
     The snapshot and the launch's execution evidence live under
     ``attempt_root``, which must be fresh per call. By default it is a new
@@ -84,15 +84,15 @@ def run_prepared_group(
             snapshot,
             copy_build_root=copy_build_root,
         )
-    # Like a campaign, launch from the configured source cwd, not group.work.run_cwd:
+    # Like a record, launch from the configured source cwd, not group.work.run_cwd:
     # under a Doctor fail-path run the latter already names the attempt's view.
     cwd = (handle.project_root / resolve_run_cwd(handle.project_root)).resolve()
-    # Campaign planning declares each copyto destination as its own source path.
+    # Simulation Record planning declares each copyto destination as its own source path.
     declarations = [
         {"declaration_id": name, "source_artifact_path": name, "destination": name}
         for name in runtime_inputs
     ]
-    # Mirror the campaign order: Doctor runtime view outside, inputs inside it.
+    # Mirror the record order: Doctor runtime view outside, inputs inside it.
     with (
         group.runtime_view(cwd, uuid.uuid4().hex) as view,
         materialize_simulation_record_runtime_inputs(

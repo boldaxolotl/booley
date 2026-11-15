@@ -220,10 +220,10 @@ _OLDER_CONTEXT_FIELDS = (_CONTEXT_FIELDS - {"simulation_record_id"}) | {"campaig
 
 
 def child_context_matches(paths: ExecutionPaths, execution_id: ExecutionId) -> bool:
-    """Authenticate an optional immutable campaign-child context sidecar.
+    """Authenticate an optional immutable Simulation Record child context sidecar.
 
     A missing sidecar is an ordinary execution; a present one must carry exactly the
-    campaign-child fields and name this execution. A leftover Project-local child
+    record child fields and name this execution. A leftover Project-local child
     registry from Booley 0.3.0 is ignored.
     """
     if not paths.context.exists():
