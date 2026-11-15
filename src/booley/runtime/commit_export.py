@@ -6,8 +6,7 @@ or ``.git``. Git's built-in checkout machinery writes each blob straight to its 
 path, so no file is held in memory and none is written twice. Git LFS and other
 external filters are refused rather than approximated.
 
-The byte-projection pieces (:class:`BytePolicy`, :func:`shadow_repository`,
-:func:`pinned_attributes`, :func:`materialize_tree`,
+The byte-projection pieces (:func:`shadow_repository`, :func:`pinned_attributes`, :func:`materialize_tree`,
 :func:`configured_submodule_paths`) back :func:`export_commit`, the entry
 point for the measurement environment.
 """
@@ -32,7 +31,6 @@ from booley.runtime.booley_dir import (
     own_booley_dir,
     own_booley_dir_relative,
 )
-from booley.runtime.git_attributes_policy import GITATTRIBUTES_RULE
 from booley.runtime.history_commit import FileCommitError
 from booley.runtime.pinned_history import raw_git, tree_rows, validate_pin
 from booley.runtime.project_repositories import (
@@ -42,7 +40,6 @@ from booley.runtime.project_repositories import (
 )
 
 CHECKOUT_ATTRIBUTES = ("text", "eol", "filter", "working-tree-encoding", "ident", "crlf")
-CHECKOUT_ATTRIBUTES_MARKER = ",".join(CHECKOUT_ATTRIBUTES)
 
 # Blob modes that become regular files; ``120000`` is a symlink, ``160000`` a gitlink.
 _REGULAR_MODES = {b"100644", b"100755"}
@@ -52,28 +49,6 @@ _FILE_TRANSFORM_ATTRIBUTES = ("filter", "working-tree-encoding")
 
 class CommitExportError(ValueError):
     """The commit cannot be exported as a clean checkout."""
-
-
-@dataclass(frozen=True)
-class BytePolicy:
-    """Checkout settings and canonical managed-rule replay applied to exported bytes."""
-
-    autocrlf: str
-    eol: str
-    managed: bool
-
-    def record(self) -> dict[str, str]:
-        return {
-            "checkout_attributes": CHECKOUT_ATTRIBUTES_MARKER,
-            "autocrlf": self.autocrlf,
-            "eol": self.eol,
-            "managed_rule": GITATTRIBUTES_RULE if self.managed else "",
-        }
-
-
-# The measurement export depends only on the commit: committed ``.gitattributes`` and
-# Git built-ins, never repository-local ``core.autocrlf``/``core.eol``/``info/attributes``.
-HERMETIC_POLICY = BytePolicy(autocrlf="false", eol="lf", managed=False)
 
 
 @dataclass(frozen=True)
@@ -96,8 +71,12 @@ class CommitExport:
 
 
 @contextmanager
-def shadow_repository(repository: Path, managed: bool) -> Generator[tuple[Path, dict[str, str]]]:
-    """Object-only scratch repository with only the explicitly captured local policy."""
+def shadow_repository(repository: Path) -> Generator[tuple[Path, dict[str, str]]]:
+    """Object-only scratch repository with no local configuration or attributes.
+
+    The export depends only on the commit: committed ``.gitattributes`` and Git
+    built-ins, never repository-local ``core.autocrlf``/``core.eol``/``info/attributes``.
+    """
     with tempfile.TemporaryDirectory(prefix="booley-pinned-bytes-") as scratch:
         shadow, template = Path(scratch) / "repository", Path(scratch) / "template"
         template.mkdir()
@@ -122,18 +101,14 @@ def shadow_repository(repository: Path, managed: bool) -> Generator[tuple[Path, 
             "GIT_NO_LAZY_FETCH": "1",
             "GIT_ATTR_NOSYSTEM": "1",
         }
-        if managed:
-            info = shadow / ".git/info"
-            info.mkdir()
-            (info / "attributes").write_bytes(GITATTRIBUTES_RULE.encode() + b"\n")
         yield shadow, env
 
 
 def pinned_attributes(
-    repository: Path, commit: str, names: list[bytes], policy: BytePolicy
+    repository: Path, commit: str, names: list[bytes]
 ) -> dict[bytes, dict[str, str]]:
     """Checkout attributes of *names* from the commit's own committed ``.gitattributes``."""
-    with shadow_repository(repository, policy.managed) as (shadow, env):
+    with shadow_repository(repository) as (shadow, env):
         raw_git(shadow, "read-tree", commit, env=env)
         result = raw_git(
             shadow,
@@ -173,7 +148,6 @@ def materialize_tree(
     commit: str,
     destination: Path,
     rows: Mapping[bytes, bytes],
-    policy: BytePolicy,
 ) -> None:
     """Write the commit's blobs under *destination* with Git's built-in conversion.
 
@@ -182,7 +156,7 @@ def materialize_tree(
     back, and gitlinks are left to the caller.
     """
     destination.mkdir(parents=True, exist_ok=True)
-    with shadow_repository(repository, policy.managed) as (shadow, env):
+    with shadow_repository(repository) as (shadow, env):
         raw_git(shadow, "read-tree", commit, env=env)
         regular = b"".join(
             name + b"\0"
@@ -195,9 +169,9 @@ def materialize_tree(
                 "-c",
                 "core.attributesFile=" + os.devnull,
                 "-c",
-                "core.autocrlf=" + policy.autocrlf,
+                "core.autocrlf=false",
                 "-c",
-                "core.eol=" + policy.eol,
+                "core.eol=lf",
                 "--work-tree=" + str(destination),
                 "checkout-index",
                 "--force",
@@ -309,7 +283,7 @@ def _require_new_destination(
 def _populate(
     repository: Path, commit: str, bd_repository: Path | None, root: Path
 ) -> tuple[tuple[SubmoduleDrift, ...], str | None]:
-    rows = _export_repository(repository, commit, root, HERMETIC_POLICY)
+    rows = _export_repository(repository, commit, root)
     try:
         place = root / own_booley_dir_relative(root)
     except BooleyDirOutsideCheckoutError as exc:
@@ -321,7 +295,7 @@ def _populate(
     if bd_repository is not None:
         _require_real_placement(root, place)
         paired_commit = raw_git(bd_repository, "rev-parse", "HEAD").strip().decode("ascii")
-        _export_repository(bd_repository, paired_commit, place, HERMETIC_POLICY)
+        _export_repository(bd_repository, paired_commit, place)
         excluded = frozenset({own_booley_dir_relative(root).as_posix()})
     selected = configured_submodule_paths(resolve_toml(in_checkout_booley_dir(root)))
     drift: list[SubmoduleDrift] = []
@@ -348,20 +322,18 @@ def _require_real_placement(root: Path, place: Path) -> None:
         raise CommitExportError(f"Booley Directory placement {place} escapes the export")
 
 
-def _export_repository(
-    repository: Path, commit: str, destination: Path, policy: BytePolicy
-) -> dict[bytes, bytes]:
+def _export_repository(repository: Path, commit: str, destination: Path) -> dict[bytes, bytes]:
     """One repository's tree at *commit*, refusing collisions and transformations first."""
     rows = tree_rows(repository, commit)
     _refuse_case_collisions(rows)
-    attrs = pinned_attributes(repository, commit, list(rows), policy)
+    attrs = pinned_attributes(repository, commit, list(rows))
     transformed = transformed_path(attrs)
     if transformed is not None:
         raise CommitExportError(
             f"unsupported committed input transformation: {os.fsdecode(transformed)}; "
             "Git LFS and other Git filters or working-tree-encoding attributes are not supported"
         )
-    materialize_tree(repository, commit, destination, rows, policy)
+    materialize_tree(repository, commit, destination, rows)
     return rows
 
 
@@ -406,7 +378,7 @@ def _export_gitlinks(
                 f"submodule objects missing for {shown}: no initialized checkout holds the "
                 f"pinned commit {pinned}; run git submodule update --init"
             )
-        nested = _export_repository(source, pinned, root / relative, HERMETIC_POLICY)
+        nested = _export_repository(source, pinned, root / relative)
         _record_drift(source, shown, pinned, drift)
         _export_gitlinks(source, nested, root / relative, shown, None, frozenset(), drift)
 
