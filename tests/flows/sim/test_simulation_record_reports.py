@@ -948,17 +948,13 @@ def test_prior_firing_reauthentication_rejects_byte_identical_symlink_attempt(
     directory = firing.path.parent.parent
     copy = tmp_path / "copied-attempt"
     sidecar_bytes = firing.path.read_bytes()
-    snapshots = list(directory.rglob("simv"))
-    assert len(snapshots) == 1, (
-        "successful Simulation Record must retain one real executable snapshot"
-    )
-    snapshot = snapshots[0]
-    snapshot_relative = snapshot.relative_to(directory)
-    snapshot_bytes, snapshot_mode = snapshot.read_bytes(), snapshot.stat().st_mode
+    # An attempt directory holds no executable: the record keeps one, read-only,
+    # in its shared bundle.
+    assert not list(directory.rglob("simv"))
+    executables = list(directory.parents[3].rglob("simv"))
+    assert len(executables) == 1, "successful Simulation Record must retain one real executable"
+    assert not executables[0].stat().st_mode & 0o222
     directory.rename(copy)
-    assert (copy / snapshot_relative).read_bytes() == snapshot_bytes
-    assert (copy / snapshot_relative).stat().st_mode == snapshot_mode
-    assert not snapshot_mode & 0o222
     assert (copy / "pre-sim/0001.json").read_bytes() == sidecar_bytes
     symlink_or_skip(directory, copy, target_is_directory=True)
     assert firing.path.read_bytes() == sidecar_bytes
