@@ -1,38 +1,17 @@
-"""Authenticated private Simulator Bundle and executable snapshot operations."""
+"""Verification of a ready Simulator Bundle where its attempts launch it."""
 
 from __future__ import annotations
 
+import os
 import stat
 from collections.abc import Mapping
-from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import cast
 
-from booley.flows.artifact_durability import (
-    durable_copy,
-    durable_create,
-    durable_directory,
-)
-from booley.flows.sim.record_files import document_digest, stream_digest
+from booley.flows.sim.record_files import stream_digest
 
-from .codec import (
-    SimulationRecordIntegrityError,
-    encode_executable_snapshot,
-    validate_relative_path,
-)
-from .model import ExecutableSnapshot, FrozenJson, SimulatorBundle
-
-
-@dataclass(frozen=True, slots=True)
-class SnapshotAttemptIdentity:
-    """Immutable record and attempt identity carried into one snapshot."""
-
-    simulation_record_id: str
-    manifest_sha256: str
-    workload_sha256: str
-    work_item_id: str
-    attempt_id: str
-
+from .codec import SimulationRecordIntegrityError, validate_relative_path
+from .model import BundleBuildResult, SimulatorBundle
 
 _BUNDLE_ARTIFACT_KINDS = frozenset(
     {"simulator_executable", "shared_library", "runtime_data", "runtime_input"}
@@ -42,7 +21,7 @@ _BUNDLE_ARTIFACT_KINDS = frozenset(
 def require_bundle_inventory(bundle: SimulatorBundle) -> None:
     """Refuse an inventory with an unknown kind, a repeated path or no executable.
 
-    The decoder checks no nested member (#1743); snapshot copying relies on these.
+    The decoder checks no nested member (#1743); in-place verification relies on these.
     """
     artifacts = cast(tuple[Mapping[str, object], ...], bundle.document["artifacts"])
     paths = [artifact["path"] for artifact in artifacts]
@@ -54,99 +33,75 @@ def require_bundle_inventory(bundle: SimulatorBundle) -> None:
         raise SimulationRecordIntegrityError("ready bundle requires a simulator executable")
 
 
-def authenticate_bundle_artifacts(bundle: SimulatorBundle, root: Path) -> None:
-    """Verify every declared artifact by type, byte count, and digest."""
+def verify_bundle_in_place(
+    bundle: SimulatorBundle, build_result: BundleBuildResult, root: Path
+) -> str:
+    """Verify the ready bundle at *root* where attempts launch it; return its inventory digest.
+
+    Checks every declared artifact by type, byte count and digest, the bundle
+    manifest and build evidence against their recorded digests, and that the
+    directory holds no other entry. The recorded inventory digest is returned:
+    it names the inventory that passed, not a fresh measurement.
+    """
     require_bundle_inventory(bundle)
     artifacts = cast(tuple[Mapping[str, object], ...], bundle.document["artifacts"])
+    allowed = {"build-attempt.json", "build-result.json"}
     for artifact in artifacts:
-        path = _regular_child(root, cast(str, artifact["path"]))
-        size, digest = stream_digest(path)
-        if size != artifact["bytes"] or digest != artifact["sha256"]:
-            raise SimulationRecordIntegrityError(f"bundle artifact changed: {path}")
-
-
-def create_executable_snapshot(
-    *,
-    bundle: SimulatorBundle,
-    bundle_root: Path,
-    snapshot_root: Path,
-    identity: SnapshotAttemptIdentity,
-    build_result: Mapping[str, object],
-    created_at: str,
-) -> ExecutableSnapshot:
-    """Copy (never hardlink) the executable surface into an attempt directory."""
-    authenticate_bundle_artifacts(bundle, bundle_root)
-    if snapshot_root.exists():
-        raise SimulationRecordIntegrityError("executable snapshot already exists")
-    durable_directory(snapshot_root)
-    snapshot_root.chmod(0o700)
-    copied = _copy_snapshot_artifacts(bundle, bundle_root, snapshot_root)
-    document = _snapshot_document(identity, bundle, build_result, created_at, copied)
-    # _freeze_json checks the values when the document is constructed.
-    value = ExecutableSnapshot(cast(Mapping[str, FrozenJson], document))
-    _create_file(snapshot_root / "snapshot.json", encode_executable_snapshot(value))
-    return value
-
-
-def _copy_snapshot_artifacts(
-    bundle: SimulatorBundle, bundle_root: Path, snapshot_root: Path
-) -> list[dict[str, object]]:
-    copied: list[dict[str, object]] = []
-    artifacts = cast(tuple[Mapping[str, object], ...], bundle.document["artifacts"])
-    for artifact in artifacts:
-        if artifact["kind"] == "runtime_input":
-            continue
-        relative = cast(str, artifact["path"])
-        source = _regular_child(bundle_root, relative)
-        destination = snapshot_root / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        mode = stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH
-        if artifact["kind"] == "simulator_executable":
-            mode |= stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
-        durable_copy(source, destination, mode=mode)
-        if (
-            source.stat(follow_symlinks=False).st_ino
-            == destination.stat(follow_symlinks=False).st_ino
-        ):
-            raise SimulationRecordIntegrityError("snapshot artifact must not be a hardlink")
-        size, digest = stream_digest(destination)
-        if size != artifact["bytes"] or digest != artifact["sha256"]:
-            raise SimulationRecordIntegrityError("snapshot copy authentication failed")
-        copied.append(dict(artifact))
-    return copied
-
-
-def _snapshot_document(
-    identity: SnapshotAttemptIdentity,
-    bundle: SimulatorBundle,
-    build_result: Mapping[str, object],
-    created_at: str,
-    artifacts: list[dict[str, object]],
-) -> dict[str, object]:
-    return {
-        "$schema": "booley.executable-snapshot/v2",
-        "simulation_record_id": identity.simulation_record_id,
-        "manifest_sha256": identity.manifest_sha256,
-        "workload_sha256": identity.workload_sha256,
-        "work_item_id": identity.work_item_id,
-        "attempt_id": identity.attempt_id,
-        "bundle_id": bundle.document["bundle_id"],
-        "build_result": dict(build_result),
-        "created_at": created_at,
-        "artifacts": artifacts,
-        "inventory_sha256": document_digest(artifacts),
+        _verify_file(root, artifact, "bundle artifact")
+        allowed.add(cast(str, artifact["path"]))
+    described = cast(Mapping[str, object], build_result.document["bundle"])
+    manifest = {
+        "path": described["manifest_path"],
+        "bytes": described["manifest_bytes"],
+        "sha256": described["manifest_sha256"],
     }
+    _verify_file(root, manifest, "bundle manifest")
+    allowed.add(cast(str, manifest["path"]))
+    for reference in cast(tuple[Mapping[str, object], ...], build_result.document["evidence"]):
+        _verify_file(root, reference, "bundle evidence")
+        allowed.add(cast(str, reference["path"]))
+    _require_only(root, allowed)
+    return cast(str, bundle.document["inventory_sha256"])
 
 
-def authenticate_executable_snapshot(snapshot: ExecutableSnapshot, snapshot_root: Path) -> str:
-    """Authenticate a snapshot before launch or after process-tree death."""
-    artifacts = cast(tuple[Mapping[str, object], ...], snapshot.document["artifacts"])
-    for artifact in artifacts:
-        path = _regular_child(snapshot_root, cast(str, artifact["path"]))
+def _verify_file(root: Path, declared: Mapping[str, object], label: str) -> None:
+    path = _regular_child(root, cast(str, declared["path"]))
+    if path.lstat().st_nlink != 1:
+        raise SimulationRecordIntegrityError(f"bundle artifact has another hard link: {path}")
+    try:
         size, digest = stream_digest(path)
-        if size != artifact["bytes"] or digest != artifact["sha256"]:
-            raise SimulationRecordIntegrityError(f"executable snapshot changed: {path}")
-    return cast(str, snapshot.document["inventory_sha256"])
+    except OSError as exc:
+        raise SimulationRecordIntegrityError(f"bundle artifact is unreadable: {path}") from exc
+    if size != declared["bytes"] or digest != declared["sha256"]:
+        raise SimulationRecordIntegrityError(f"{label} changed: {path}")
+
+
+def _require_only(root: Path, allowed_files: set[str]) -> None:
+    """Refuse any file, directory or link under *root* that no allowed path explains."""
+    allowed_directories = {
+        parent.as_posix()
+        for relative in allowed_files
+        for parent in PurePosixPath(relative).parents
+        if parent != PurePosixPath(".")
+    }
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        try:
+            with os.scandir(directory) as scan:
+                entries = list(scan)
+        except OSError as exc:
+            raise SimulationRecordIntegrityError(
+                f"bundle directory is unreadable: {directory}"
+            ) from exc
+        for entry in entries:
+            relative = Path(entry.path).relative_to(root).as_posix()
+            if entry.is_symlink():
+                raise SimulationRecordIntegrityError(f"undeclared bundle entry: {entry.path}")
+            if entry.is_dir(follow_symlinks=False) and relative in allowed_directories:
+                pending.append(Path(entry.path))
+            elif not (entry.is_file(follow_symlinks=False) and relative in allowed_files):
+                raise SimulationRecordIntegrityError(f"undeclared bundle entry: {entry.path}")
 
 
 def _regular_child(root: Path, relative: str) -> Path:
@@ -169,14 +124,7 @@ def _regular_child(root: Path, relative: str) -> Path:
     return path
 
 
-def _create_file(path: Path, raw: bytes) -> None:
-    durable_create(path, raw, mode=0o400)
-
-
 __all__ = [
-    "SnapshotAttemptIdentity",
-    "authenticate_bundle_artifacts",
-    "authenticate_executable_snapshot",
-    "create_executable_snapshot",
     "require_bundle_inventory",
+    "verify_bundle_in_place",
 ]

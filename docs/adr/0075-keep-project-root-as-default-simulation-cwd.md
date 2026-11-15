@@ -29,10 +29,10 @@ SHA-256-authenticated copies and expose them in the run directory.
 ## Rejected alternatives
 
 **B: Default to the build `work_root`.** Simulation Campaigns execute from
-per-attempt executable snapshots containing authenticated copies of the
-Simulator Bundle's declared executable artifacts. Those artifact files are
-read-only. Using the snapshot as cwd would mix simulator outputs into this
-authenticated execution surface; using the shared `work_root` would reintroduce
+the record's read-only Simulator Bundle, which every attempt of a build shares
+and which is verified in place before each launch and after exit. Using the
+bundle as cwd would mix simulator outputs into this shared authenticated
+execution surface; using the shared `work_root` would reintroduce
 mutable-bundle execution. Changing the default would also disrupt Projects
 whose testbenches read Project-relative paths or whose Pre-Sim Commands stage
 files into `BOOLEY_RUN_CWD` under the existing directory assumptions.
