@@ -3455,7 +3455,7 @@ def test_image_stale_names_owner_workflow(check, tmp_path, monkeypatch):
         if check in {"base", "custom"}
         else "on the host run `booley init`, then use Dev Containers: Rebuild Container."
     )
-    assert not any(word in warns[0] for word in ("--force", "session refresh"))
+    assert not any(word in warns[0] for word in ("--force", "session refresh", "will not rebuild"))
 
 
 def test_image_stale_without_a_project_lists_both_workflows():

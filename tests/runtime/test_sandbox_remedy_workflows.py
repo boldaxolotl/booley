@@ -10,8 +10,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.core.booley_dir_pin import BooleyDirPinError
 from booley.core.project_identity import project_label_id
-from booley.runtime import runtime_context, session_issuance, session_runtime
+from booley.runtime import image_lifecycle, runtime_context, session_issuance, session_runtime
 from booley.runtime.project_image import project_image_name
 
 VSCODE_INIT = "on the host run `booley init`, then use Dev Containers: Rebuild Container"
@@ -202,3 +203,40 @@ def test_unreachable_docker_asks_for_connectivity(
     monkeypatch.setattr(session_runtime, "resolve_running_sandbox", unreachable)
 
     assert session_runtime.sandbox_remedy(host.root).startswith("restore Docker connectivity")
+
+
+def test_vscode_spec_refusal_keeps_the_external_image_prefix(host: SimpleNamespace) -> None:
+    _write_image(host.root, "registry.example/own:1")
+    error = session_issuance.RuntimeSpecError("stale stamp")
+
+    remedy = session_runtime._spec_refusal_remedy(host.root, error, vscode=True)
+
+    assert remedy == EXTERNAL + VSCODE_SEED
+
+
+def test_vscode_spec_refusal_starts_with_removing_a_misnamed_stamp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "MixedCase"
+    root.mkdir()
+    monkeypatch.setattr(os.path, "normcase", ntpath.normcase)
+    old = session_issuance.stamp_store().paths(str(root.resolve()))[1]
+    old.parent.mkdir(parents=True, exist_ok=True)
+    old.write_bytes(b"{}")
+    error = session_issuance.RuntimeSpecError("misnamed stamp")
+
+    remedy = session_runtime._spec_refusal_remedy(root, error, vscode=True)
+
+    assert remedy == f"remove {old}, then {VSCODE_INIT}"
+
+
+def test_unpinned_booley_link_does_not_break_the_remedy(
+    host: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unpinned(_root: Path) -> bool:
+        raise BooleyDirPinError("link moved", "repin it")
+
+    monkeypatch.setattr(image_lifecycle, "is_externally_managed", unpinned)
+    _place(host, "vscode", "running")
+
+    assert session_runtime.sandbox_remedy(host.root) == VSCODE_INIT

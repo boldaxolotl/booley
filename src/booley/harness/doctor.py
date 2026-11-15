@@ -2192,8 +2192,8 @@ def _check_image_freshness(
 ) -> None:
     """Warn when the built sandbox image predates the Booley Dockerfile.
 
-    ``booley init`` only builds the image when it is missing, so a Dockerfile
-    edit (e.g. the agent-uid fix) is silently ignored until a forced rebuild.
+    A Dockerfile edit (e.g. the agent-uid fix) reaches a Sandbox only once the
+    Sandbox is recreated on the rebuilt image.
     """
     _warn = _warning_sink(
         _warn,
@@ -2215,8 +2215,8 @@ def _check_image_freshness(
         return
     if dockerfile_mtime > created:
         _warn(
-            f"sandbox image '{image}' predates {dockerfile.name}; booley init "
-            f"will not rebuild it; rebuild the image, then {_image_stale_remedy(project)}"
+            f"sandbox image '{image}' predates {dockerfile.name}; "
+            f"recreate the Sandbox: {_image_stale_remedy(project)}"
         )
     else:
         _pass(f"sandbox image '{image}' is newer than {dockerfile.name}")
@@ -2307,8 +2307,8 @@ def _check_custom_image_freshness(
     if dockerfile_mtime > created:
         _warn(
             f"custom sandbox image '{image}' predates {dockerfile}; the container "
-            "runs the old toolchain until you rebuild it (edited Dockerfile, no "
-            f"rebuild); then {_image_stale_remedy(project)}"
+            "runs the old toolchain (edited Dockerfile, no rebuild); "
+            f"{_image_stale_remedy(project)}"
         )
     else:
         _pass(f"custom sandbox image '{image}' is newer than its Dockerfile")

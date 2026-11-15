@@ -1245,7 +1245,7 @@ def _spec_refusal_remedy(workspace: Path, exc: Exception, *, vscode: bool) -> st
     if isinstance(exc, runtime_spec.HostPolicyError):
         return f"fix {exc.path} on the host, then start the Sandbox again"
     if vscode:
-        return apply_steps(Attachment.VSCODE, managed=image_is_managed(workspace))
+        return _owner_steps(workspace, Attachment.VSCODE, refreshable=False)
     return sandbox_remedy(workspace)
 
 
@@ -2597,6 +2597,15 @@ def _misnamed_stamp_prefix(workspace: Path) -> str:
     return ""
 
 
+def _owner_steps(workspace: Path, attachment: Attachment | None, *, refreshable: bool) -> str:
+    """Return the documented steps for *attachment*, with the first-step prefixes."""
+    managed = image_is_managed(workspace)
+    prefix = "" if managed else "rebuild/pull the selected external image, then "
+    if not refreshable:
+        prefix = _misnamed_stamp_prefix(workspace) + prefix
+    return prefix + apply_steps(attachment, managed=managed, refreshable=refreshable)
+
+
 def sandbox_remedy(workspace: Path) -> str:
     """Choose the documented host workflow that recreates the Project's Sandbox."""
     from booley.runtime import session_issuance as runtime_spec
@@ -2617,9 +2626,4 @@ def sandbox_remedy(workspace: Path) -> str:
         return (
             "restore Docker connectivity and inspect Sandbox ownership on the host before repair"
         )
-    managed = image_is_managed(workspace)
-    steps = apply_steps(attachment, managed=managed, refreshable=refreshable)
-    prefix = "" if managed else "rebuild/pull the selected external image, then "
-    if not refreshable:
-        prefix = _misnamed_stamp_prefix(workspace) + prefix
-    return prefix + steps
+    return _owner_steps(workspace, attachment, refreshable=refreshable)

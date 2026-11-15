@@ -12,6 +12,7 @@ import shlex
 from enum import StrEnum
 from pathlib import Path
 
+from booley.core.booley_dir_pin import BooleyDirPinError
 from booley.runtime.docs_links import docs_url
 
 __all__ = [
@@ -21,6 +22,7 @@ __all__ = [
     "Attachment",
     "apply_steps",
     "image_is_managed",
+    "quote_arg",
     "shell_command",
 ]
 
@@ -36,44 +38,51 @@ REBUILD_CONTAINER = "use Dev Containers: Rebuild Container"
 APPLY_DOC_URL = docs_url("SANDBOX.md", "applying-sandbox-changes")
 
 
+def quote_arg(arg: str) -> str:
+    """Quote one argument for the host shell: POSIX ``shlex.quote``, PowerShell on Windows."""
+    if os.name == "nt":
+        return "'" + arg.replace("'", "''") + "'"
+    return shlex.quote(arg)
+
+
 def shell_command(argv: list[str]) -> str:
     """Quote *argv* for the host shell: POSIX ``shlex.join``, PowerShell on Windows."""
     if os.name == "nt":
-        return "& " + " ".join("'" + arg.replace("'", "''") + "'" for arg in argv)
+        return "& " + " ".join(quote_arg(arg) for arg in argv)
     return shlex.join(argv)
 
 
 def image_is_managed(project_root: Path) -> bool:
     """Whether Booley builds the Project's Sandbox Image (the rule refresh uses).
 
-    An invalid ``[sandbox].image`` counts as managed: the remedy is advice, and
-    ``booley init`` reports the invalid setting itself.
+    An invalid ``[sandbox].image`` or an unpinned ``.booley`` link counts as
+    managed: the remedy is advice, and ``booley init`` reports either itself.
     """
     from booley.runtime import image_lifecycle
 
     try:
         return not image_lifecycle.is_externally_managed(project_root)
-    except image_lifecycle.ImageLifecycleError:
+    except (image_lifecycle.ImageLifecycleError, BooleyDirPinError):
         return True
 
 
-def _commands(words: list[list[str]], project: str | None) -> list[str]:
-    extra = ["--project", project] if project is not None else []
-    return [f"`{shell_command(['booley', *word, *extra])}`" for word in words]
+def _command(words: str, project: str | None) -> str:
+    """Return one backticked ``booley`` command; only the Project Root needs quoting."""
+    scope = f" --project {quote_arg(project)}" if project is not None else ""
+    return f"`booley {words}{scope}`"
 
 
 def _vscode(managed: bool, project: str | None) -> str:
-    (init,) = _commands([["init"] if managed else ["init", "--seed"]], project)
+    init = _command("init" if managed else "init --seed", project)
     return f"on the host run {init}, then {REBUILD_CONTAINER}"
 
 
 def _headless(managed: bool, refreshable: bool, project: str | None) -> str:
     if managed and refreshable:
-        (refresh,) = _commands([["session", "refresh"]], project)
-        return f"run {refresh} on the host"
-    down, seed, up = _commands(
-        [["session", "down"], ["init", "--seed"], ["session", "up"]], project
-    )
+        return f"run {_command('session refresh', project)} on the host"
+    down = _command("session down", project)
+    seed = _command("init --seed", project)
+    up = _command("session up", project)
     return f"run {down}, {seed}, and {up} on the host"
 
 

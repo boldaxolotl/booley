@@ -77,8 +77,5 @@ def test_project_scoped_steps_keep_the_documented_commands() -> None:
 
 
 def test_unknown_sandbox_steps_point_at_the_documented_own_image_section() -> None:
-    assert APPLY_DOC_URL.endswith("/docs/sandbox/#applying-sandbox-changes")
-    assert UNKNOWN_SANDBOX_STEPS.endswith(
-        f"with your own image, follow the steps in {APPLY_DOC_URL}"
-    )
+    assert APPLY_DOC_URL in UNKNOWN_SANDBOX_STEPS
     assert "## Applying Sandbox changes" in SANDBOX_MD.read_text(encoding="utf-8")

@@ -447,9 +447,8 @@ You changed
 [`[sandbox] egress`](https://booley.dev/docs/sandbox/#host-configuration-configtoml)
 in the host `config.toml`, and a Sandbox still runs in the other mode. Doctor
 warns with `host.sandbox-egress-mismatch`. Recreate that Sandbox
-[as for a settings change](https://booley.dev/docs/sandbox/#after-changing-sandbox-settings),
-whether it is running or stopped. To keep one Sandbox in the other mode
-on purpose, waive `host.sandbox-egress-mismatch` with `subject` set to its
+[as for a settings change](https://booley.dev/docs/sandbox/#after-changing-sandbox-settings).
+To keep one Sandbox in the other mode on purpose, waive `host.sandbox-egress-mismatch` with `subject` set to its
 Project root; see [Doctor waivers](https://booley.dev/docs/doctor/#doctor-waivers-doctor-waiverstoml).
 
 ### Doctor reports a Session store file named for another Project Root
@@ -493,9 +492,7 @@ Doctor rebuilds the `.devcontainer/devcontainer.json` that `booley init` would
 write now and diffs it against the file on disk. The warning
 (`interactive.devcontainer-drift`) lists each changed key path (the first 20),
 `-` for what is on disk and `+` for what init would write, so you see what a
-reseed changes. Follow the remedy the warning prints; for a VS Code Sandbox
-that is usually `booley init`, then **Dev Containers: Rebuild Container** in
-that Project's window.
+rebuild changes. Follow the remedy the warning prints.
 
 Inside the Sandbox, Doctor compares only what it can see (VS Code settings and
 extensions, the attach hook, and the agent state volumes) and says host
