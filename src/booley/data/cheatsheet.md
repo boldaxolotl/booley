@@ -66,9 +66,9 @@ The `goal_*` names are MCP tools: you type `/booley-goal` and the Developer Agen
 |-----------|---------|
 | `goal_enter` | Translate Goalsets into concrete Goals and create a Goal Branch |
 | `goal_status` | Inspect evidence and freshness; `rules=true` restores working rules |
-| `goal_propose_change` | Add, relax, retarget, or propose a coverage waiver; only the human approves |
+| `goal_propose_change` | Add, relax, retarget, or propose a coverage waiver; only you approve |
 | `goal_finish` | All Goals met at clean committed HEAD plus Session Summary → Review Package |
-| `goal_finish(abandon=true)` | Explicit human instruction only; preserve branch and worktree |
+| `goal_finish(abandon=true)` | Only on your explicit instruction; preserve branch and worktree |
 | `booley goal status` | Inspect local records |
 | `booley dashboard` | Sessions, Goals, and Jobs inside the Sandbox |
 
@@ -80,10 +80,10 @@ omit it), and Project-defined endpoints must declare `work_dir` to run.
 With several Jobs running, it calls `booley_poll` with no `run_id` and handles whichever of its Jobs finishes first, passing a `run_id` only to wait for one specific Job; it never waits with `sleep` loops or log tails.
 Records are never edited by hand: a saved proposal or Finish is resumed by its ID. Protected Input changes block
 Finish until reverted. Open `done` review findings remain visible; Finish does not merge.
-Read Project-owned Goalsets, including `default.md`, from `goalsets/` in the
+Project-owned Goalsets, including `default.md`, live in `goalsets/` in the
 Main Booley Directory (`BOOLEY_DIR` in the Sandbox); a
 Worktree Booley Directory inside `work_dir` is not used. `default.md` applies
-unless the human explicitly skips it with a reason. Initialization seeds four
+unless you explicitly skip it with a reason. Initialization seeds four
 create-only Goalsets and preserves edits.
 
 #### Test Runs
@@ -275,11 +275,11 @@ Deterministic end-to-end orchestration; no LLM:
 | `fpga` | Run FPGA implementation for one or more Targets with optional baseline comparison | `FPGA:{target}` |
 | `mutation` | Deterministic mutation testing: seeded Mutants from fixed Mutation Operators, each built and tested in isolation | `MUTATION:{target}` |
 
-Common controls: repeat `--target` or use comma-separated values; `--target a --target b,c` preserves the order `a`, `b`, `c`, and duplicate resolved Targets are rejected. MCP keeps one comma-separated `target` string. `--dry-run` returns a normalized plan without executing EDA; `booley flow <name> --help` shows the full contract.
+Common controls: repeat `--target` or use comma-separated values; `--target a --target b,c` preserves the order `a`, `b`, `c`, and duplicate resolved Targets are rejected. A Developer Agent's MCP tool call takes one comma-separated `target` string instead. `--dry-run` returns a normalized plan without executing EDA; `booley flow <name> --help` shows the full contract.
 
 Key Flow-specific controls:
 
-- `sim`: `--mode elab-only` compiles, elaborates, and links without running tests; `--mode elab-only-standalone` adds the stronger module sweep. Repeat `--test <test-run>` for an exact ordered suite or use `--tests-file <path>`; a Test Run is `test`, `test+variant`, `test@seed`, `test+variant@seed`, or `test[+variant]@xN` for N drawn seeds, and `--seed <N>|random` sets or draws the seed of every selected Test Run; there is no CLI `--skip`, and configured skips apply only to unfiltered selection. MCP passes the same suite as a `test` array. Resume one exact durable Simulation Record with `--resume-from <exact-manifest.json>` (optionally with `--dry-run`): Cocotb retries the whole batch; a coverage Simulation Record resumes only after its collection finished (otherwise exit 2: start a new `--coverage` run). `--coverage` / `--cov` collects a native Coverage Record, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
+- `sim`: `--mode elab-only` compiles, elaborates, and links without running tests; `--mode elab-only-standalone` adds the stronger module sweep. Repeat `--test <test-run>` for an exact ordered suite or use `--tests-file <path>`; a Test Run is `test`, `test+variant`, `test@seed`, `test+variant@seed`, or `test[+variant]@xN` for N drawn seeds, and `--seed <N>|random` sets or draws the seed of every selected Test Run; there is no CLI `--skip`, and configured skips apply only to unfiltered selection. A Developer Agent's MCP tool call passes the same suite as a `test` array. Resume one exact durable Simulation Record with `--resume-from <exact-manifest.json>` (optionally with `--dry-run`): Cocotb retries the whole batch; a coverage Simulation Record resumes only after its collection finished (otherwise exit 2: start a new `--coverage` run). `--coverage` / `--cov` collects a native Coverage Record, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
 - `lint`: `--scope <file,...>` filters reported findings to selected files
 - `synth`: `--baseline <ref>` compares metrics against a git revision; physical Targets must own an SDC fileset that creates a clock
 - `fpga`: `--baseline <ref>` compares metrics against a git revision; `--ppa-profile compact|balanced|max_frequency` selects portable optimization intent; `--no-cache` forces a fresh implementation
@@ -293,7 +293,7 @@ Specialists running in scoped, isolated workspaces:
 
 Ask your Developer Agent session to invoke a Specialist by name with the arguments below (written as it passes them, `name="value"`; the CLI spells each as a flag, `--name value`). Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--max-turns` and `--timeout` are CLI-only controls.
 
-For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. Common options are `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Model-call minimum budgets apply; seconds-only providers round up. CLI Flow and Specialist runs never record Goal evidence; use the Developer Agent's Goal-bound MCP calls with `work_dir`. A CLI run is also a Standalone Job: it shows in the Dashboard and copies its output to `.interactive_logs/standalone/<run_id>/job.log` in the Project's common Booley Directory (the main checkout's `.booley` from a linked worktree).
+For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. Common options are `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Model-call minimum budgets apply; seconds-only providers round up. CLI Flow and Specialist runs never record Goal evidence; only the Developer Agent's Goal Mode tool calls, which pass `work_dir`, do. A CLI run is also a Standalone Job: it shows in the Dashboard and copies its output to `.interactive_logs/standalone/<run_id>/job.log` in the Project's common Booley Directory (the main checkout's `.booley` from a linked worktree).
 
 | Specialist | Purpose | Sets | Modifies code |
 |------------|---------|------|:-------------:|
@@ -302,7 +302,7 @@ For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl
 
 #### `coverage_analyst`
 
-Ask your Developer Agent to call the `coverage_analyst` Specialist with `record="<exact-coverage.json>"` and optional `instruction="<question>"`. The Analyst explains retained native evidence and proposes advisory next steps; its model only reads evidence. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. In Goal Mode, screened Waiver Candidates support a proposed Goal change, which needs human approval. Finish requires every Goal met; advisory reports do not mark strict coverage met. Verified Target sources are optional; stale sources give report-only analysis.
+Ask your Developer Agent to call the `coverage_analyst` Specialist with `record="<exact-coverage.json>"` and optional `instruction="<question>"`. The Analyst explains retained native evidence and proposes advisory next steps; its model only reads evidence. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. In Goal Mode, screened Waiver Candidates support a proposed Goal change, which needs your approval. Finish requires every Goal met; advisory reports do not mark strict coverage met. Verified Target sources are optional; stale sources give report-only analysis.
 
 #### `reviewer`
 
