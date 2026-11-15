@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -150,3 +151,35 @@ def test_the_latest_form_becomes_the_id_form_the_cli_reads(provider, agent_args,
     assert found is not None
 
     assert _rewritten(provider, found, "c1", agent_args) == expected
+
+
+def test_a_recorded_directory_under_a_former_mount_resumes_under_the_current_one(
+    tmp_path, monkeypatch
+):
+    # Bug caught: a conversation recorded under a former Sandbox mount starting at the worktree
+    # root, or its transcript lookup following the translated directory instead of the one the
+    # CLI filed the conversation under.
+    from booley.runtime.mount_history import MountHistoryError
+    from tests.mount_change_support import simulate_mount_change
+
+    common = tmp_path / "mount"
+    former = Path(simulate_mount_change(monkeypatch, common, tmp_path / "former-mount"))
+    old_cwd = former / "worktrees" / "s1" / "sub"
+    _record(common, "c1", "s1", old_cwd, None)
+    (common / "worktrees" / "s1" / "sub").mkdir()
+    config = tmp_path / "claude-config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    project = config / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(old_cwd))
+    project.mkdir(parents=True)
+    (project / "c1.jsonl").write_bytes(b"{}\n")
+
+    target = resolve(common, "claude", ResumeRequest(None, 0), tmp_path, ["-c"], True)
+
+    assert target.conversation_id == "c1"
+    assert target.agent_args == ("--resume", "c1")
+    assert target.cwd == common / "worktrees" / "s1" / "sub"
+
+    history = common / ".runtime" / "sandbox-mounts.json"
+    history.write_bytes(b"{")
+    with pytest.raises(MountHistoryError, match=r"saved conversation c1.*sandbox-mounts\.json"):
+        resolve(common, "claude", ResumeRequest("c1"), tmp_path, ["--resume", "c1"], False)
