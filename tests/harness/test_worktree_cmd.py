@@ -815,9 +815,7 @@ def test_new_snapshot_passes_the_common_state_check(project):
 
 @_real_script
 def test_ci_driver_creates_pairing_through_user_command(versioned_project, tmp_path, monkeypatch):
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / ".github/scripts"))
-    import goal_mode_driver as driver
-
+    from tests.goals import goal_mode_driver as driver
     from tests.goals.conftest import git
 
     # Exercise the installed CLI entry point from source in a disposable workspace.

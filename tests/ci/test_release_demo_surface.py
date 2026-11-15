@@ -1,7 +1,8 @@
-"""Candidate image identity and Goal round-trip evidence without subprocesses."""
+"""Candidate image identity and Project registration evidence without subprocesses."""
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -28,46 +29,36 @@ def _validate(root: Path) -> dict[str, object]:
     )
 
 
-def test_demo_surface_records_candidate_and_requires_finished_goal(tmp_path, monkeypatch) -> None:
+def test_demo_surface_records_candidate_version_and_registration(tmp_path, monkeypatch) -> None:
     commands = []
-    captured = {}
 
     def run(command, **kwargs):
         commands.append((command, kwargs))
         return "1.2.3"
 
-    def driver(**kwargs):
-        captured.update(kwargs)
-        return _proof()
-
     monkeypatch.setattr(demo_surface, "_run", run)
-    monkeypatch.setattr(demo_surface.goal_mode_driver, "validate", driver)
     result = _validate(tmp_path)
-    assert captured["goals"][0].family.value == "lint"
-    assert captured["goals"][0].target == "lint_core"
-    assert captured["python"] == Path(sys.executable)
     assert commands[-1][0][-1] == "booley.harness.incontainer_register"
     assert result["candidate"] == {"sha": "candidate", "image_digest": "sha256:image"}
-    assert result["checks"][-1] == {"id": "demo.goal-finish", "status": "pass"}
+    assert result["checks"] == [
+        {"id": "demo.version", "status": "pass"},
+        {"id": "demo.registration", "status": "pass"},
+    ]
 
 
-@pytest.mark.parametrize("state", ["active", None])
-def test_demo_surface_refuses_unfinished_driver_result(tmp_path, monkeypatch, state) -> None:
-    monkeypatch.setattr(demo_surface, "_run", lambda *_args, **_kwargs: "1.2.3")
-    monkeypatch.setattr(
-        demo_surface.goal_mode_driver, "validate", lambda **_kwargs: {"state": state}
-    )
-    with pytest.raises(RuntimeError, match="did not finish"):
-        _validate(tmp_path)
+def test_demo_surface_rejects_wrong_installed_version_before_registration(
+    tmp_path, monkeypatch
+) -> None:
+    commands = []
 
+    def run(command, **_kwargs):
+        commands.append(command)
+        return "wrong"
 
-def test_demo_surface_rejects_wrong_installed_version_before_driver(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(demo_surface, "_run", lambda *_args, **_kwargs: "wrong")
-    monkeypatch.setattr(
-        demo_surface.goal_mode_driver, "validate", lambda **_kwargs: pytest.fail("driver ran")
-    )
+    monkeypatch.setattr(demo_surface, "_run", run)
     with pytest.raises(RuntimeError, match="image version differs"):
         _validate(tmp_path)
+    assert len(commands) == 1
 
 
 def test_demo_surface_main_defaults_to_running_python(tmp_path, monkeypatch) -> None:
@@ -98,27 +89,4 @@ def test_demo_surface_main_defaults_to_running_python(tmp_path, monkeypatch) -> 
     )
     assert demo_surface.main() == 0
     assert captured["python"] == Path(sys.executable)
-    assert evidence.is_file()
-
-
-def _proof():
-    return {
-        "state": "finished",
-        "goals": {"lint_clean_lint_core": "met"},
-        "steps": {
-            name: {"status": "pass", "response": f"observed {name}"}
-            for name in ("goal_enter", "lint", "goal_status", "goal_finish")
-        },
-    }
-
-
-@pytest.mark.parametrize("step", ["goal_enter", "lint", "goal_status", "goal_finish"])
-def test_finished_state_without_each_step_proof_is_not_a_passing_surface(
-    tmp_path, monkeypatch, step
-):
-    result = _proof()
-    result["steps"].pop(step)
-    monkeypatch.setattr(demo_surface, "_run", lambda *_args, **_kwargs: "1.2.3")
-    monkeypatch.setattr(demo_surface.goal_mode_driver, "validate", lambda **_kwargs: result)
-    with pytest.raises(ValueError, match=step):
-        _validate(tmp_path)
+    assert json.loads(evidence.read_text()) == {"schema": 1}
