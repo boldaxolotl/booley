@@ -59,7 +59,7 @@ from booley.flows.sim.live_progress import (
 )
 from booley.flows.sim.record_invocation import SimulationRecordInvocation
 from booley.flows.sim.record_layout import RECORD_DIRECTORY
-from booley.flows.sim.record_reports import target_report_directory
+from booley.flows.sim.record_reports import invocation_booley_dir, target_report_directory
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import AuthenticatedSimulationExecutionPort
 from booley.flows.target_test_plan import TargetTestPlan
@@ -363,7 +363,6 @@ class SimulateFlow(
     def _next_invocation_dir(self, report_dir: Path) -> Path:
         """Acquire the Simulation producer lock before publishing its directory."""
         from .record_reports import simulation_record_invocation_lock
-        from .record_retention import invocation_booley_dir
 
         endpoint_dir = report_dir / self.name
         endpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -681,7 +680,6 @@ class SimulateFlow(
     ) -> EndpointOutcome:
         """Attach authentic hook evidence even when no terminal Simulation Record outcome exists."""
         from .record import collect_pre_sim_firings
-        from .record_retention import invocation_booley_dir
 
         invocation = self._reserved_invocation_dir
         if invocation is None:
@@ -715,7 +713,6 @@ class SimulateFlow(
         self, result: EndpointOutcome, error: Exception
     ) -> EndpointOutcome:
         from .record import collect_pre_sim_firings
-        from .record_retention import invocation_booley_dir
 
         firings = tuple(
             firing

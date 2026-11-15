@@ -16,16 +16,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.flow import SimulateFlow
-from booley.flows.sim.record import inspect_retained_simulation_record
 from booley.flows.sim.record.codec import (
     canonical_json_bytes,
     decode_simulation_record_manifest,
 )
 from booley.flows.sim.record.resume import validate_resume_manifest
 from booley.flows.sim.record.store import SimulationRecordStore
-from booley.flows.sim.record_retention import SimulationRecordRetentionError, prune_invocation
 from booley.flows.sim.request import SimRequest
 from booley.targets.catalog import TargetCatalog
 from tests.flows.sim.simulation_record_test_support import (
@@ -39,7 +36,6 @@ from tests.flows.sim.test_simulation_record_manifest_codec import (
 from tests.flows.sim.test_simulation_record_resume_diagnostics import (
     _interrupted_simulation_record,
 )
-from tests.flows.sim.test_simulation_record_retention import _run_retention_cli
 
 _MANIFEST = "booley.simulation-campaign-manifest/"
 _RESULT_V2 = "booley.simulation-result/v2"
@@ -123,17 +119,6 @@ def test_manifest_decoder_refuses_0_3_0_manifests(version: str) -> None:
     _assert_refused(str(excinfo.value), _MANIFEST + version)
 
 
-def test_inspection_refuses_a_0_3_0_manifest_naming_its_invocation(tmp_path) -> None:
-    reports, _project_data, store = _retained_invocation(tmp_path)
-    _as_030_invocation(store, "v1")
-
-    with pytest.raises(ValueError) as excinfo:
-        inspect_retained_simulation_record(store.manifest_path)
-
-    _assert_unsupported_type(excinfo.value)
-    _assert_refused(str(excinfo.value), _MANIFEST + "v1", reports / "sim/1")
-
-
 def test_coverage_analysis_refuses_a_0_3_0_projection_naming_its_invocation(
     tmp_path, monkeypatch
 ) -> None:
@@ -192,30 +177,6 @@ def test_resume_refuses_a_0_3_0_cycle_count_baseline_naming_its_invocation(
     _assert_refused(str(excinfo.value), _MANIFEST + "v1", tmp_path / "reports" / "000001")
 
 
-def test_full_prune_cli_refuses_an_unsupported_nested_coverage_record_naming_its_directory(
-    tmp_path, monkeypatch
-) -> None:
-    """``--full`` reaches the nested Coverage Record before any Simulation Record check."""
-    from tests.flows.sim.coverage_record_test_support import rewrite_manifest_as_v4
-
-    run = coverage_invocation(tmp_path, monkeypatch)
-    nested = json.loads(run.coverage_record_path.read_bytes())
-    rewrite_manifest_as_v4(nested)
-    raw = canonical_json_bytes(nested)
-    _rewrite(run.coverage_record_path, raw)
-    reference = json.loads(run.public.read_bytes())
-    reference["coverage_record"].update(bytes=len(raw), sha256=content_digest(raw))
-    _rewrite(run.public, canonical_json_bytes(reference))
-
-    result = _run_retention_cli("--reports-root", str(run.reports), "--invocation", "1", "--full")
-
-    assert result.returncode == 2
-    _assert_refused(result.stderr, "booley.coverage-campaign/v4", run.reports / "sim" / "1")
-    assert "COV_SCHEMA_VERSION_UNSUPPORTED" not in result.stderr
-    assert "Traceback" not in result.stderr
-    assert run.coverage_record_path.is_file()
-
-
 def test_the_refusal_names_an_older_booley_and_what_to_do(reports: Path) -> None:
     invocation = copy_older_invocation("0.3.0", "complete", reports)
 
@@ -270,25 +231,6 @@ def test_a_0_3_0_result_is_refused_naming_its_invocation(tmp_path) -> None:
 
     _assert_unsupported_type(excinfo.value)
     _assert_refused(str(excinfo.value), _RESULT_V2, reports / "sim/1")
-
-
-def test_a_0_3_0_projection_is_refused_naming_its_invocation(tmp_path) -> None:
-    reports, _project_data, store = _retained_invocation(tmp_path)
-    projection_path = store.root.parent / "simulation.json"
-    projection = json.loads(projection_path.read_bytes())
-    projection.update(
-        {
-            "$schema": _PROJECTION_V2,
-            "simulation_record_id": store.load_manifest().document["simulation_record_id"],
-            "campaign_manifest": {},
-        }
-    )
-    projection_path.write_bytes(canonical_json_bytes(projection))
-
-    with pytest.raises(SimulationRecordRetentionError) as excinfo:
-        prune_invocation(reports, 1)
-
-    _assert_refused(str(excinfo.value), _PROJECTION_V2, reports / "sim/1")
 
 
 def test_resume_ignores_a_leftover_project_child_registry(tmp_path, monkeypatch) -> None:

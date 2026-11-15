@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from booley.flows.sim import acceptance, coverage_analysis_input, record_retention
+from booley.flows.sim import acceptance, coverage_analysis_input
 from booley.flows.sim import flow as sim_flow
 from booley.flows.sim.coverage_analysis_input import CoverageAnalysisError
 from booley.flows.sim.record import flow_planning, inspection, projection, resume, store
@@ -25,7 +25,6 @@ from booley.flows.sim.record.scheduler import (
 )
 from booley.flows.sim.record.store import SimulationRecordIntegrityError
 from booley.flows.sim.record_layout import RECORD_DIRECTORY
-from booley.flows.sim.record_retention import SimulationRecordRetentionError
 
 
 def test_policy_refuses_non_positive_timeouts() -> None:
@@ -237,40 +236,6 @@ def test_reference_projection_refusals(tmp_path: Path, monkeypatch: pytest.Monke
         {"simulation_record_id": "owner"},
         {"target": {}, "simulation_record_id": "other"},
     )
-
-
-def test_retention_refusals(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    target = tmp_path / "a" / "b" / "c"
-    status = SimpleNamespace(
-        simulation_record_id="owner", manifest_path=tmp_path / "elsewhere.json"
-    )
-    monkeypatch.setattr(record_retention, "invocation_booley_dir", lambda _root: None)
-    monkeypatch.setattr(
-        record_retention,
-        "resolve_artifact_reference",
-        lambda *_args, **_kwargs: SimpleNamespace(path=tmp_path / "manifest.json"),
-    )
-    with pytest.raises(SimulationRecordRetentionError, match="projection manifest disagrees"):
-        record_retention._validate_authenticated_projection(
-            target,
-            status,  # type: ignore[arg-type]
-            {"simulation_record_id": "owner"},
-        )
-    record = target / RECORD_DIRECTORY
-    record.mkdir(parents=True)
-    (record / "manifest.json").write_bytes(b"{}")
-    (record / ".lock").write_bytes(b"")
-    inventory = SimpleNamespace(retention_files=[], coverage_directories=[])
-    monkeypatch.setattr(
-        record_retention, "inspect_retained_simulation_record", lambda *_a, **_k: inventory
-    )
-    monkeypatch.setattr(
-        record_retention, "authenticate_retained_simulation_record_inventory", lambda *_a, **_k: {}
-    )
-    monkeypatch.setattr(record_retention, "dependency_receipt_files", lambda _manifest: set())
-    monkeypatch.setattr(record_retention, "_valid_lock_sentinel", lambda _lock: False)
-    with pytest.raises(SimulationRecordRetentionError, match="Simulation Record lock content"):
-        record_retention._target_owned_files(tmp_path, target)
 
 
 def test_flow_refusals(monkeypatch: pytest.MonkeyPatch) -> None:

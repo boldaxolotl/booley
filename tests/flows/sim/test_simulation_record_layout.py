@@ -31,16 +31,12 @@ from booley.flows.sim.record.codec import (
     SimulationRecordIntegrityError,
     linked_manifest_path,
 )
-from booley.flows.sim.record.dependency import read_simulation_record_dependencies
 from booley.flows.sim.record.resume import validate_resume_manifest
-from booley.flows.sim.record_reports import write_simulation_record_json
-from booley.flows.sim.record_retention import SimulationRecordRetentionError, prune_invocation
 from booley.flows.sim.request import SimRequest
 from tests.flows.sim.simulation_record_test_support import coverage_invocation
 from tests.flows.sim.test_simulation_record_resume_diagnostics import (
     _interrupted_simulation_record,
 )
-from tests.flows.sim.test_simulation_record_retention import _run_retention_cli
 from tests.flows.sim.test_simulation_record_unsupported_formats import (
     _assert_refused,
     _assert_unsupported_type,
@@ -150,57 +146,6 @@ def test_a_simulation_record_path_naming_no_directory_is_not_called_an_older_rec
     assert "older Booley" not in str(excinfo.value)
 
 
-# --- AC3: retention and pruning ---------------------------------------------------------
-
-
-def test_full_prune_cli_refuses_an_older_layout(reports: Path) -> None:
-    for kind in ("complete", "interrupted", "coverage"):
-        shutil.rmtree(reports / "sim", ignore_errors=True)
-        invocation = copy_older_invocation("0.4.0", kind, reports)
-
-        result = _run_retention_cli("--reports-root", str(reports), "--invocation", "1", "--full")
-
-        assert result.returncode == 2, kind
-        _assert_refused(result.stderr, _marker(kind), invocation)
-        assert invocation.is_dir()
-
-
-def test_native_prune_cli_refuses_an_older_layout(reports: Path) -> None:
-    invocation = copy_older_invocation("0.4.0", "coverage", reports)
-
-    result = _run_retention_cli(
-        "--reports-root", str(reports), "--invocation", "1", "--native-target", "sim_0"
-    )
-
-    assert result.returncode == 2
-    _assert_refused(result.stderr, _marker("coverage"), invocation)
-    assert invocation.is_dir()
-
-
-def test_dependents_prune_refuses_an_older_layout(reports: Path) -> None:
-    """An interrupted dependents batch is retried from its journal: that refuses too."""
-    for batch in ("fresh", "batch-retry"):
-        shutil.rmtree(reports / "sim", ignore_errors=True)
-        invocation = copy_older_invocation("0.4.0", "complete", reports)
-        if batch == "batch-retry":
-            write_simulation_record_json(
-                invocation / ".prune-batch.json",
-                {
-                    "$schema": "booley.simulation-prune-batch/v1",
-                    "operation": "full-with-dependents",
-                    "origin": str(invocation.absolute()),
-                    "members": [str(invocation.absolute())],
-                },
-            )
-        before = _tree(invocation)
-
-        with pytest.raises(SimulationRecordRetentionError) as excinfo:
-            prune_invocation(reports, 1, include_dependents=True)
-
-        _assert_refused(str(excinfo.value), _marker("complete"), invocation)
-        assert _tree(invocation) == before, batch
-
-
 # --- AC3: the Pre-Sim scan, Coverage analysis and waiver binding --------------------
 
 
@@ -269,10 +214,6 @@ def test_the_old_directory_names_are_not_aliases(reports: Path, tmp_path: Path) 
     with pytest.raises(SimulationRecordIntegrityError) as linked:
         linked_manifest_path(older, {"path": "targets/t/campaign/manifest.json"})
     assert "is not targets/<Target>/record/manifest.json" in str(linked.value)
-
-    # A dependency origin is an exact Record manifest.
-    with pytest.raises(ValueError, match="exact Simulation Record manifest"):
-        read_simulation_record_dependencies(older_manifest)
 
     # Readers of a manifest path refuse the old name as an older Booley's record.
     for read in (

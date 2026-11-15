@@ -7,13 +7,11 @@ import re
 import shlex
 from functools import cache
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from unittest.mock import patch
 
 import pytest
 from tests.shipped_docs_support import rendered_docs_outside_user_docs
 from tests.source_checkout_support import source_checkout_files
 
-from booley.flows.sim import record_retention
 from booley.harness.booley import _build_parser
 from booley.mcp.registry import discover_mcp_tools
 
@@ -130,19 +128,6 @@ def _command_error(tokens: list[str]) -> str | None:
     module = tokens[2]
     if module in _specialist_modules():
         return None
-    if module == "booley.flows.sim.record_retention":
-        # Capture its real parser before parsing or pruning can happen.
-        with (
-            patch.object(
-                argparse.ArgumentParser,
-                "parse_args",
-                autospec=True,
-                side_effect=RuntimeError("capture"),
-            ) as parse_args,
-            pytest.raises(RuntimeError, match="capture"),
-        ):
-            record_retention.main()
-        return _subcommand_error(parse_args.call_args.args[0], tokens[3:])
     return f"undocumented module CLI {module}"
 
 
@@ -181,6 +166,10 @@ def test_documented_command_paths_are_registered_and_allowed() -> None:
         ("booley session prepare", "hidden subcommand session prepare"),
         ("booley board prepare-review", "unknown subcommand board"),
         ("booley flow coverage_analyst --record coverage.json", "unknown Flow coverage_analyst"),
+        (
+            "python -m booley.flows.sim.record_prune --reports-root r --invocation 1 --full",
+            "undocumented module CLI booley.flows.sim.record_prune",
+        ),
     ],
 )
 def test_invalid_documented_commands_fail(command: str, error: str) -> None:
@@ -190,12 +179,12 @@ def test_invalid_documented_commands_fail(command: str, error: str) -> None:
 def test_extracts_inline_fenced_and_substitution_commands() -> None:
     text = """Run `booley board amend "$SLUG" --preview` now.
   booley shell -- echo hi
-CLASSIFIED=$(python -m booley.flows.sim.record_retention --help)
+CLASSIFIED=$(python -m booley.specialists.coverage_analyst --help)
 """
     assert [tokens[:3] for _, tokens in _commands(text)] == [
         ["booley", "board", "amend"],
         ["booley", "shell", "--"],
-        ["python", "-m", "booley.flows.sim.record_retention"],
+        ["python", "-m", "booley.specialists.coverage_analyst"],
     ]
 
 

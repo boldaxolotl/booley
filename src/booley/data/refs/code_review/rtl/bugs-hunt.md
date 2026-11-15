@@ -33,7 +33,9 @@ For each state element and each invariant, build scenarios from these categories
 - Full, empty, and the cycle that wraps a counter or pointer
 - Two or more events in the same cycle (push and pop, request and abort, load and increment, two writers to one register)
 - Minimum and maximum parameter values (width 1, depth 1, depth not a power of two, maximum count)
-- Error, abort, cancel, and timeout paths, and what state they leave behind
+- Error, abort, cancel, and timeout paths, what state they leave behind, and
+  whether each sticky flag or latch that records them is ever cleared for the
+  next request
 - Every reachable FSM edge, including the ones the happy path never takes, and states with no way out
 - Signed versus unsigned operands, width extension, and truncation at the extremes (most negative value, all ones, zero)
 

@@ -21,7 +21,6 @@ from booley.flows.sim.coverage_record_store import (
 )
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome, run_coverage_target
 from booley.flows.sim.execution.contract import PreSimEvidence
-from booley.flows.sim.record_retention import _coverage_owned_files
 from booley.flows.sim.verilator_coverage import (
     PINNED_VERILATOR,
     SimulationBuildResult,
@@ -295,7 +294,7 @@ def _assert_invalid_hook_coverage_record(outcome, plan, events, expected_finding
     assert loaded.points
     assert loaded.rollups == ()
     target_dir = outcome.coverage_record_path.parent
-    owned = _coverage_owned_files(target_dir, persisted)
+    owned = {(target_dir / artifact.path).absolute() for artifact in loaded.artifacts}
     assert all(path.absolute() in owned for path in target_dir.glob("hooks/*.json"))
     if gated:
         assert loaded.evaluation["status"] == "blocked"

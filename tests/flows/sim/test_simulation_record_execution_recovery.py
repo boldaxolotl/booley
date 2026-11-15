@@ -602,7 +602,7 @@ def test_store_follows_only_the_booley_dir_entry(tmp_path, linked):
     assert store.load_manifest().document == manifest.document
     assert store.manifest_sha256() == digest
     store.regenerate_summary()
-    assert store.load_summary()["complete"] is False
+    assert json.loads(store.summary_path.read_text())["complete"] is False
     with store.mutation_lock():
         assert (store.root / ".lock").exists()
 

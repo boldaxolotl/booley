@@ -56,6 +56,7 @@ from booley.flows.eda_failures import (
 )
 from booley.flows.flow_config import expected_count
 from booley.flows.job_resources import SYNTH_PHASES, resolved_source_bytes, resource_phase
+from booley.flows.memory_admission import job_thread_count
 from booley.flows.metric_declarations import (
     Better,
     CostTier,
@@ -83,6 +84,7 @@ from booley.flows.result_table import (
     tty_text,
 )
 from booley.flows.synth import openroad_reuse
+from booley.flows.synth.backends.pipeline import openroad_thread_assignment
 from booley.flows.synth.backends.yosys.core import (
     NAND2_AREA_UM2,
 )
@@ -1495,9 +1497,18 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         return syn_make.configure_synthesis(spec, self._synth_build_dir(target))
 
     def _synth_boundary_cmd(self, plan: Any, stage: str | None = None) -> list[str]:
-        """Return the Sandbox command for a configured plan, or for one Makefile *stage*."""
+        """Return the Sandbox command for a configured plan, or for one Makefile *stage*.
+
+        The ``openroad`` stage also carries the Job's thread share, when it has one.
+        """
         cmd = ["make", "-C", edam.relpath_for_make(plan.build_dir, self.args.work_dir)]
-        return [*cmd, stage] if stage else cmd
+        if not stage:
+            return cmd
+        cmd.append(stage)
+        threads = job_thread_count()
+        if stage == "openroad" and threads is not None:
+            cmd.append(openroad_thread_assignment(threads))
+        return cmd
 
     # -- Single-target run ----------------------------------------------------
 
