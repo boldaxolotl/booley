@@ -199,9 +199,10 @@ def test_scaffold_supplies_doctor_fail_path_fixtures(
         ("verible", False, ["lint_my_ip"]),
     ]
     for lint_eda_tool, style_lint, lint_targets in cases:
-        _check_doctor_fail_path_fixtures(
-            tmp_path / lint_eda_tool, lint_eda_tool, style_lint, lint_targets, monkeypatch
-        )
+        with monkeypatch.context() as case_patch:  # the overlay env must not leak across cases
+            _check_doctor_fail_path_fixtures(
+                tmp_path / lint_eda_tool, lint_eda_tool, style_lint, lint_targets, case_patch
+            )
 
 
 def _check_doctor_fail_path_fixtures(
