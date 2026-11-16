@@ -30,7 +30,7 @@
   </style>
   <rect class="bg" width="1100" height="1085"/>
   <title id="fig2t">Booley architecture</title>
-  <desc id="fig2d">On the host, Booley issues, refreshes, and reaps one Booley devcontainer Sandbox per Project folder, and VS Code attaches to it through Dev Containers. By default all Sandbox egress goes through the host's egress proxy to LLM APIs and allowlisted hosts. Inside the Sandbox, Developer Agent sessions (Claude Code or Codex, one per Sandbox terminal) edit the Project's Git worktrees (the main checkout plus one worktree per concurrent session), which hold the RTL, testbenches, FuseSoC .core Targets, booley.toml, and metrics.toml, and call the one MCP server. The MCP server submits each Measurement, Booley Flow, and Specialist run as a Job. Jobs are admitted against the Memory Budget: excess Jobs queue and none is preempted. Measurement (booley measure) runs the Flows on every Target that declares metrics and checks the results against its Target Metrics. A Booley Flow (sim, lint, synth, fpga, mutation) resolves the Target with FuseSoC, has Edalize or a Booley adapter build the EDA tool command, runs the EDA tools, parses their logs into metrics, and writes report.json. Specialists (the Reviewer and the Coverage Analyst) run an Agent CLI with fresh context. The MCP server calls B-Wave directly, not as a Job: it queries FST traces from simulation, and bwave gui opens them in VaporView. The EDA tools are linters (Verilator, Verible), synthesis (Yosys, OpenROAD), simulators (Verilator, Icarus, with cocotb testbenches), and FPGA implementation (Vivado, installed on the host, granted to the Project, and mounted read-only).</desc>
+  <desc id="fig2d">On the host, Booley issues, refreshes, and reaps one Booley devcontainer Sandbox per Project folder, and VS Code attaches to it through Dev Containers. By default all Sandbox egress goes through the host's egress proxy to LLM APIs and allowlisted hosts. Inside the Sandbox, Developer Agent sessions (Claude Code or Codex, one per Sandbox terminal) edit the Project's Git worktrees (the main checkout plus one worktree per concurrent session), which hold the RTL, testbenches, FuseSoC .core Targets, booley.toml, and metrics.toml, and call the one MCP server. The MCP server submits each Booley Flow or Specialist run as a Job. Jobs are admitted against the Memory Budget: excess Jobs queue and none is preempted. A Booley Flow (sim, lint, synth, fpga, mutation) resolves the Target with FuseSoC, has Edalize or a Booley adapter build the EDA tool command, runs the EDA tools, parses their logs into metrics, and writes report.json. Specialists (the Reviewer and the Coverage Analyst) run an Agent CLI with fresh context. The MCP server calls B-Wave directly, not as a Job: it queries FST traces from simulation, and bwave gui opens them in VaporView. The EDA tools are linters (Verilator, Verible), synthesis (Yosys, OpenROAD), simulators (Verilator, Icarus, with cocotb testbenches), and FPGA implementation (Vivado, installed on the host, granted to the Project, and mounted read-only).</desc>
   <defs>
     <marker id="f2a" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="ah" d="M0 1.5 L10 5 L0 8.5 z"/></marker>
   </defs>
@@ -119,44 +119,28 @@
   <text class="s" x="925" y="697" text-anchor="middle">VS Code extension, in the Sandbox</text>
 
   <!-- row D: what a Job runs -->
-  <path class="ln" d="M140 558 V600" marker-end="url(#f2a)"/>
-  <path class="ln" d="M420 558 V600" marker-end="url(#f2a)"/>
-  <path class="ln" d="M685 558 V600" marker-end="url(#f2a)"/>
+  <path class="ln" d="M240 558 V600" marker-end="url(#f2a)"/>
+  <path class="ln" d="M620 558 V600" marker-end="url(#f2a)"/>
 
-  <rect class="bx" x="50" y="600" width="180" height="180"/>
-  <rect class="hd" x="50" y="600" width="180" height="56"/>
-  <text class="t" x="140" y="624" text-anchor="middle">Measurement</text>
-  <text class="s" x="140" y="645" text-anchor="middle">booley measure</text>
-  <text class="b" x="64" y="682">Runs the Flows of</text>
-  <text class="b" x="64" y="702">every Target with</text>
-  <text class="b" x="64" y="722">metrics; checks</text>
-  <text class="b" x="64" y="742">them against its</text>
-  <text class="b" x="64" y="762">Target Metrics</text>
-  <path class="ln" d="M230 720 H270" marker-end="url(#f2a)"/>
-  <text class="e" x="250" y="711" text-anchor="middle">runs</text>
+  <rect class="bx" x="50" y="600" width="380" height="180"/>
+  <rect class="hd" x="50" y="600" width="380" height="56"/>
+  <text class="t" x="240" y="624" text-anchor="middle">Booley Flows</text>
+  <text class="s" x="240" y="645" text-anchor="middle">sim, lint, synth, fpga, mutation</text>
+  <text class="b" x="64" y="686">• Resolves the Target with FuseSoC; Edalize</text>
+  <text class="b" x="78" y="707">or a Booley adapter builds the command</text>
+  <text class="b" x="64" y="740">• Parses EDA logs into metrics;</text>
+  <text class="b" x="78" y="761">writes report.json</text>
 
-  <rect class="bx" x="270" y="600" width="300" height="180"/>
-  <rect class="hd" x="270" y="600" width="300" height="56"/>
-  <text class="t" x="420" y="624" text-anchor="middle">Booley Flows</text>
-  <text class="s" x="420" y="645" text-anchor="middle">sim, lint, synth, fpga, mutation</text>
-  <text class="b" x="284" y="682">• Resolves the Target with</text>
-  <text class="b" x="298" y="702">FuseSoC; Edalize or a Booley</text>
-  <text class="b" x="298" y="722">adapter builds the command</text>
-  <text class="b" x="284" y="748">• Parses EDA logs into</text>
-  <text class="b" x="298" y="768">metrics; writes report.json</text>
-
-  <rect class="bx" x="600" y="600" width="170" height="180"/>
-  <rect class="hd" x="600" y="600" width="170" height="36"/>
-  <text class="t" x="614" y="624">Specialists</text>
-  <text class="b" x="614" y="664">• Reviewer</text>
-  <text class="b" x="614" y="688">• Coverage Analyst</text>
-  <text class="s" x="614" y="726">Each runs an Agent</text>
-  <text class="s" x="614" y="745">CLI with fresh</text>
-  <text class="s" x="614" y="764">context</text>
+  <rect class="bx" x="470" y="600" width="300" height="120"/>
+  <rect class="hd" x="470" y="600" width="300" height="56"/>
+  <text class="t" x="620" y="624" text-anchor="middle">Specialists</text>
+  <text class="s" x="620" y="645" text-anchor="middle">Reviewer, Coverage Analyst</text>
+  <text class="b" x="484" y="686">Each runs an Agent CLI with</text>
+  <text class="b" x="484" y="707">fresh context</text>
 
   <!-- row E: EDA tools, run by Flows only -->
-  <path class="ln" d="M420 780 V820" marker-end="url(#f2a)"/>
-  <text class="e" x="428" y="805">runs, reads logs</text>
+  <path class="ln" d="M240 780 V820" marker-end="url(#f2a)"/>
+  <text class="e" x="248" y="805">runs, reads logs</text>
   <rect class="grp" x="50" y="820" width="1000" height="120"/>
   <text class="s" x="64" y="842">EDA tools (in the Sandbox Image unless noted)</text>
   <rect class="bx" x="66" y="852" width="235" height="72"/>
