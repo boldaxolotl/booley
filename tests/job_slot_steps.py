@@ -14,6 +14,7 @@ call there should go through ``Path`` methods.
 
 from __future__ import annotations
 
+import dataclasses
 import errno
 import os
 import threading
@@ -21,8 +22,10 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar
+from types import TracebackType
+from typing import IO, Any, ClassVar
 
+from booley.core import file_lock
 from booley.runtime import job_slots
 from booley.runtime.job_slots import SlotStore
 from booley.runtime.pid import DEAD, REUSED, RUNNING, ProcessIdentity, ProcessObservation
@@ -38,8 +41,18 @@ FINISH_STEP_CAP = 300
 # Above the kernel PID limit, so no fake PID can name a host process.
 FIRST_ACTOR_PID = 4_194_401
 
+# Checkpoints where a thread waits for another thread to release a lock. The holder
+# must run before the waiter is granted again, so every loop that grants one worker
+# repeatedly stops at one of these.
+LOCK_WAIT_KINDS = frozenset({"wait", "lock_wait"})
+# The production poll between attempts to take a record lock.
+LOCK_POLL_SECONDS = 0.1
+# The scheduler that owns the calling thread, for code that cannot be handed one.
+_OWNER = threading.local()
+
 READ_KINDS = frozenset(
     {
+        *LOCK_WAIT_KINDS,
         "exists",
         "is_dir",
         "is_symlink",
@@ -100,6 +113,9 @@ class FakeProcessWorld:
     def now(self) -> float:
         return self.clock
 
+    def advance(self, seconds: float) -> None:
+        self.clock += seconds
+
     def capture_identity(self, pid: int) -> ProcessIdentity | None:
         if pid not in self.alive:
             return None
@@ -135,9 +151,10 @@ class Worker:
 
     actor: Actor
     label: str
-    state: str = "running"  # running | parked | done
+    state: str = "running"  # running | parked | idle | done
     pending: tuple[str, str] | None = None  # (kind, file name) of the step it waits to run
     verdict: str = ""  # run | fail | kill, set by the grant
+    command: str | None = None  # what an idle worker was told to do next
     faults: int = 0
     steps: int = 0
     result: Any = None
@@ -209,6 +226,7 @@ class StepScheduler:
 
     def _run(self, worker: Worker, operation: Callable[[], Any]) -> None:
         self._local.worker = worker
+        _OWNER.scheduler = self
         with self._cv:
             self._by_thread[threading.current_thread()] = worker
         try:
@@ -233,6 +251,7 @@ class StepScheduler:
         worker = Worker(parent.actor, f"{parent.label}/background", origin=parent.root)
         worker.thread = threading.current_thread()
         self._local.worker = worker
+        _OWNER.scheduler = self
         with self._cv:
             self.workers.append(worker)
             self._by_thread[threading.current_thread()] = worker
@@ -260,10 +279,7 @@ class StepScheduler:
     def sleep(self, seconds: float) -> None:
         """The stores' injected sleep: a checkpoint that advances the machine clock when granted."""
 
-        def advance() -> None:
-            self.world.clock += seconds
-
-        self.call("sleep", Path(), advance)
+        self.call("sleep", Path(), lambda: self.world.advance(seconds))
 
     def _step(
         self, worker: Worker, kind: str, path: Path, perform: Callable[[], Any], name: str
@@ -293,7 +309,7 @@ class StepScheduler:
             return result
         finally:
             worker.steps += 1
-            self._unsent.append(f"{actor.name} {kind} {name}: {outcome}")
+            self._unsent.append(f"{actor.name}/{worker.label} {kind} {name}: {outcome}")
 
     def _note_access(self, worker: Worker, kind: str, name: str) -> None:
         if name.endswith(".tmp") or not name:
@@ -427,7 +443,7 @@ class StepScheduler:
                     gate.discard(actor)
                     self.stale_judges[name] = set()
             for worker in self.workers:
-                if worker.actor is actor and worker.state == "parked":
+                if worker.actor is actor and worker.state in ("parked", "idle"):
                     worker.verdict = "kill"
                     worker.state = "running"
                     self._current = worker
@@ -460,10 +476,44 @@ class StepScheduler:
         """Run every remaining thread to completion without faults, checks still on."""
         steps = 0
         while waiting := self.parked():
+            # A lock waiter runs only when every parked thread waits for a lock: the holder
+            # (whichever actor it belongs to) must run first or the waiter spins to its timeout.
+            runnable = [w for w in waiting if not _at_lock_wait(w)] or waiting
             # Operations first: a background retry must not spin while the holder it waits for is parked.
-            self.grant(min(waiting, key=lambda w: (w.root is not w, w.actor.index, w.label)))
+            self.grant(min(runnable, key=lambda w: (w.root is not w, w.actor.index, w.label)))
             steps += 1
             assert steps <= DRAIN_STEP_CAP, "drain did not finish"
+
+    # ---------------------------------------------------------- idle workers
+
+    def await_command(self) -> str:
+        """Called on a scheduled thread: wait, not at a step, until ``command`` names what to do.
+
+        An idle worker is never picked by ``parked``, ``advance``, ``drain`` or ``finish``. It
+        ends with ``ActorKilled`` when its actor is killed.
+        """
+        worker: Worker = self._local.worker
+        if worker.actor.killed:
+            raise ActorKilled
+        with self._cv:
+            worker.state = "idle"
+            self._cv.notify_all()
+            self._cv.wait_for(lambda: worker.verdict != "")
+            verdict, worker.verdict = worker.verdict, ""
+        if verdict == "kill":
+            raise ActorKilled
+        name, worker.command = worker.command, None
+        assert name is not None
+        return name
+
+    def command(self, worker: Worker, name: str) -> None:
+        """Hand an idle worker its next command and run it to its next checkpoint."""
+        assert worker.state == "idle", f"{worker.label} is not waiting for a command"
+        worker.command = name
+        before = set(threading.enumerate())
+        self._release(worker, "run")
+        self._wait_quiet(before)
+        self._after_step()
 
     def abort(self) -> None:
         """Cleanup that cannot report a check failure: kill every actor and join every thread."""
@@ -476,6 +526,61 @@ class StepScheduler:
             thread.join(STEP_DEADLINE_SECONDS)
             assert not thread.is_alive(), f"{thread.name} did not end"
         threading.excepthook = self._previous_hook
+
+
+class StepLock:
+    """A mutual-exclusion lock for scheduled threads: a contended attempt waits at a checkpoint.
+
+    A plain ``threading.Lock`` held across a step blocks the next thread outside any
+    checkpoint, which stalls the machine. The wait is not a fault point and does not
+    move the clock.
+    """
+
+    def __init__(self, scheduler: StepScheduler) -> None:
+        self._scheduler = scheduler
+        self._lock = threading.Lock()
+
+    def __enter__(self) -> StepLock:
+        for _ in range(DRAIN_STEP_CAP):
+            if self._lock.acquire(blocking=False):
+                return self
+            self._scheduler.call("wait", Path(), lambda: None)
+        raise AssertionError("a lock was never released: the schedule deadlocked")
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self._lock.release()
+
+
+def stepped_file_lock_wait(handle: IO[Any], *, timeout_s: float, **kwargs: Any) -> None:
+    """``wait_for_file_lock`` whose waits are checkpoints of the scheduler owning the thread.
+
+    Each contended attempt waits at a ``lock_wait`` checkpoint that moves the clock by the
+    production poll, and the wait times out on that clock. A thread no scheduler owns takes
+    the real wait.
+    """
+    scheduler: StepScheduler | None = getattr(_OWNER, "scheduler", None)
+    if scheduler is None:
+        file_lock.wait_for_file_lock(handle, timeout_s=timeout_s, **kwargs)
+        return
+    for _ in range(int(timeout_s / LOCK_POLL_SECONDS) + 1):
+        try:
+            file_lock.acquire_file_lock(
+                handle, preserve_contents=bool(kwargs.get("preserve_contents", False))
+            )
+        except file_lock.LockContentionError:
+            scheduler.call("lock_wait", Path(), lambda: scheduler.world.advance(LOCK_POLL_SECONDS))
+        else:
+            return
+    raise file_lock.LockTimeoutError("file lock stayed contended")
+
+
+def _at_lock_wait(worker: Worker) -> bool:
+    return worker.pending is not None and worker.pending[0] in LOCK_WAIT_KINDS
 
 
 def _is_gate(name: str) -> bool:
@@ -559,9 +664,13 @@ class Actor:
         scheduler: StepScheduler,
         root: Path,
         recover: Callable[[Actor, ProcessIdentity | None], bool],
+        *,
+        name: str | None = None,
+        recovery: job_slots.SlotRecovery | None = None,
     ) -> None:
         self.index = index
-        self.name = "ABC"[index]
+        self.name = name or "ABC"[index]
+        self._base_recovery = recovery or job_slots.SlotRecovery()
         self.pid = FIRST_ACTOR_PID + index
         self.world = world
         self.scheduler = scheduler
@@ -583,7 +692,9 @@ class Actor:
             sleep=self.scheduler.sleep,
             capture_identity=self.world.capture_identity,
             observe_identity=self.world.observe_identity,
-            recovery=job_slots.SlotRecovery(recover_process_owner=self._recover_owner),
+            recovery=dataclasses.replace(
+                self._base_recovery, recover_process_owner=self._recover_owner
+            ),
             getpid=lambda: self.pid,
         )
 
