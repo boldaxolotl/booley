@@ -1,16 +1,17 @@
 # Independent UART evaluator
 
 How the QA operator runs the uart mission's independent evaluator in the
-`evaluate` and `goal-repair` areas. [CONTRACT.md](CONTRACT.md) derives the
+`evaluate` and `repair` areas. [CONTRACT.md](CONTRACT.md) derives the
 public oracles and case IDs; this file covers isolation, inputs, commands and
 limits.
 
 ## Isolation
 
-The evaluator grades the Goal child's RTL, so the child must never see how it
+The evaluator grades the implementing child's RTL, so the child must never see
+how it
 grades. Keep this directory in operator-controlled storage outside the child's
 Project, Sandbox, mounted folders and network reach. Copy only `../spec/` and
-the approved prompts and Goalsets into the Project. Never expose this
+the approved prompts into the Project. Never expose this
 implementation, the generated seed or cases, controls, build logs or raw
 observations to the child. Demonstrate isolation from the run's actual
 filesystems, mounts and network routes; path separation alone does not prove
@@ -47,7 +48,7 @@ repair rerun, pass the entire original manifest unchanged, a new `--output`
 `candidate-inputs.json` contains `root`, the exact accepted `commit`, an
 explicit `sources` list of `{path, sha256}` records, and optional
 `include_files` records for headers. Paths are relative to the root. `root`
-must be a Git checkout whose `HEAD` is exactly `commit`, such as the Goal
+must be a Git checkout whose `HEAD` is exactly `commit`, such as the child's
 worktree or a detached clone at that commit, and must be disjoint from this
 evaluator. The evaluator reads each source's bytes from that commit through
 Git and rejects a working-tree file that differs from it. It also rejects

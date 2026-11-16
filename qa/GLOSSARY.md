@@ -26,8 +26,8 @@ _Avoid_: Scenario Run, Qualification, certification
 
 **Operator**:
 The agent that executes a QA Run from the host. It drives Booley, records
-Findings, and owns the run's cleanup; it starts Goal children but never does
-their design work.
+Findings, and owns the run's cleanup; it starts Developer Agent children but
+never does their design work.
 _Avoid_: tester, driver, QA agent
 
 **Release Smoke List**:

@@ -1,4 +1,4 @@
-# Goalset: observability
+# Request: observability
 
 Strengthen 10G MAC observability using new files only:
 `qa/taxi_eth_mac_10g/test_observability.py` and `.sv`, plus ordinary Project
@@ -16,39 +16,11 @@ Implement five deterministic registered tests:
 - Statistics: distinguish `tuser=0` counters from `tuser=1` string records and
   verify the ID namespace; never count strings as counters.
 
-The new tests must detect at least seven of eight Mutants of
-`taxi_eth_mac_10g.sv`. Do not edit existing Taxi files or weaken upstream tests.
+Do not edit existing Taxi files or weaken upstream tests.
 
-## Goals
-
-```json
-[
-  {
-    "family": "ELAB",
-    "target": "sim_mac_10g_observability",
-    "origin": "observability"
-  },
-  {
-    "family": "SIM",
-    "target": "sim_mac_10g_observability",
-    "origin": "observability"
-  },
-  {
-    "family": "REVIEW",
-    "review": "tb_quality",
-    "verdict": "clean",
-    "origin": "observability",
-    "target": "sim_mac_10g_observability"
-  },
-  {
-    "family": "MUTATION",
-    "target": "sim_mac_10g_observability",
-    "scope": [
-      "src/eth/rtl/taxi_eth_mac_10g.sv"
-    ],
-    "min_detected": 7,
-    "total": 8,
-    "origin": "observability"
-  }
-]
-```
+Before you give me the commit, run `booley flow mutation --target
+sim_mac_10g_observability --scope src/eth/rtl/taxi_eth_mac_10g.sv --count 8
+--min-detected 7` and report its tally (the new tests must detect at least seven
+of eight Mutants), and run a TB-quality Reviewer on the new Target. Adding the
+`[sim_mac_10g_observability.sim]` table to `metrics.toml` needs my approval:
+ask first. Give me a Measured Commit.

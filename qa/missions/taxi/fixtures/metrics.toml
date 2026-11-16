@@ -1,0 +1,15 @@
+[defaults.sim]
+tests_failed_max = 0
+
+[sim_mac_10g.sim]
+track = ["tests_total"]
+
+[lint_mac_10g.lint]
+warnings_max = 0
+errors_max = 0
+
+[synth_mac_10g.synth]
+track = ["cell_count"]
+
+[synth_mac_10g_physical.synth]
+track = ["cell_count", "area_um2"]

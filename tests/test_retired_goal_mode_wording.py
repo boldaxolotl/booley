@@ -2,7 +2,8 @@
 
 Only the code that refuses or reports a leftover ``[goals]`` section or ``goals/`` directory,
 the tests of that code, the documentation sections about it, and history (changelogs, ADRs,
-validation notes, README, the website and QA prose that later issues rewrite) may say so.
+validation notes, README, the website and QA prose, which `tests/qa/test_missions.py`
+scans) may say so.
 """
 
 from __future__ import annotations

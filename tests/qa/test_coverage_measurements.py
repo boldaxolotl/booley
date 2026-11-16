@@ -138,16 +138,6 @@ def test_repetition_does_not_inflate_covered_points():
     assert oracle.verify_known_answer(manifest, points, case)["exact_percent"] == "50"
 
 
-def test_exact_threshold_above_half_fails_even_when_display_is_half():
-    manifest, points, case = half_coverage_record()
-    case["min_pct"] = 50.01
-    manifest["evaluation"] = {"status": "fail"}
-    oracle.verify_known_answer(manifest, points, case)
-    manifest["evaluation"]["status"] = "pass"
-    with pytest.raises(ValueError, match="policy verdict"):
-        oracle.verify_known_answer(manifest, points, case)
-
-
 @pytest.mark.parametrize("bad", [0, -1, True])
 def test_nonpositive_or_boolean_incidence_rejected(bad):
     _, points, _ = half_coverage_record()
@@ -256,9 +246,7 @@ def test_oracle_reads_coverage_record_the_product_publishes(tmp_path):
     assert len(points) == document["point_store"]["point_count"]
 
 
-@pytest.mark.parametrize(
-    "mode", ["positive", "hit-count", "source-grouping", "digest", "rational-verdict"]
-)
+@pytest.mark.parametrize("mode", ["positive", "hit-count", "source-grouping", "digest"])
 def test_oracle_controls_accept_positive_and_detect_negatives(tmp_path, mode):
     """Run the controls as a subprocess so the module name `controls` never enters sys.modules."""
     scratch = tmp_path / "tmp"
