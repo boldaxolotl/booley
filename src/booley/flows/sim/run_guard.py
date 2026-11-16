@@ -638,10 +638,13 @@ def format_sim_time_stall(grace_s: float) -> str:
         f"{SIM_TIME_STALL_MARKER} past 0.00 ns in {grace_s:.0f}s of wall clock. "
         "cocotb is loaded and logging, but no timed callback ever fired — the "
         "usual cause is a cocotb/simulator run-loop version mismatch (a pinned "
-        "cocotb 1.5.x VPI under Verilator 5.x, say). Check the cocotb <-> "
-        "simulator pairing (`cocotb-config --version` vs the simulator's), then "
-        "re-pin one of them. Tune or disable this watchdog with "
-        "[flows.sim].sim_time_grace_s (0 = off)."
+        "cocotb 1.5.x VPI under Verilator 5.x, say). Compare "
+        "`cocotb-config --version` with the simulator's version. Fix it by "
+        "porting the testbench to the image's cocotb 2.x (`cocotb.fork` becomes "
+        "`cocotb.start_soon`, plus a few import moves), or by building a Project "
+        "image with a matching Verilator. If the testbench spends minutes in "
+        "Python setup before the first clock edge, raise "
+        "[flows.sim].sim_time_grace_s; 0 turns this watchdog off."
     )
 
 
