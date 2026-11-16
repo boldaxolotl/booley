@@ -77,8 +77,8 @@ Create `<artifact-root>/gui-check-pr<n>-<UTC yyyymmddThhmmssZ>-<short>/` with
    step 5. Apply reading mode (step 6) right away, unless a check step is about
    default settings; then run that step first.
 4. **Run each step.** Act, take the screenshot (runbook step 9 naming, area
-   `check`, for example `check-02-goal-row.png`), run the oracle, bring the GUI
-   back and wait one refresh, then give the step exactly one result: `pass`,
+   `check`, for example `check-02-measure-line.png`), run the oracle, bring the
+   GUI back and wait one refresh, then give the step exactly one result: `pass`,
    `fail`, or `blocked`. No other result exists, such as a pass with caveats.
    Step 5 can still turn a `pass` into `blocked`. Write what the screenshot
    shows in a sentence.
