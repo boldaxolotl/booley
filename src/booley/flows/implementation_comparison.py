@@ -1,25 +1,18 @@
-"""Canonical Target-pair plans for baseline-relative implementation Criteria."""
+"""Target-pair plans for the implementation Flows' ``--baseline`` comparison."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import InitVar, dataclass
 from pathlib import Path
-from typing import Any
 
-from booley.core.boundary import as_dict, as_str
-from booley.evidence.acceptance import (
-    AcceptanceTargetBinding,
-    ResolvedFlowAcceptance,
-)
-from booley.evidence.fields import BASELINE_TARGET_PARAM
 from booley.fusesoc import fusesoc_registry
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import FuseSocError, TargetHandle, TargetPair
+from booley.targets.domain import FuseSocError, TargetHandle
 
 
 class ImplementationComparisonError(ValueError):
-    """Persisted criterion metadata cannot define an executable Target binding."""
+    """A Target comparison plan cannot be built or executed."""
 
 
 @dataclass(frozen=True)
@@ -36,211 +29,36 @@ _PLAN_FACTORY_KEY = object()
 
 @dataclass(frozen=True)
 class TargetPairPlan:
-    """Validated baseline/candidate execution authority for one Flow."""
+    """Validated baseline/candidate Target references for one Flow."""
 
     flow: str
     baseline: TargetExecutionRef
     candidate: TargetExecutionRef
-    binding: AcceptanceTargetBinding | None
     _factory_key: InitVar[object]
 
     def __post_init__(self, _factory_key: object) -> None:
         if _factory_key is not _PLAN_FACTORY_KEY:
             raise TypeError("TargetPairPlan values are created by the pair-plan factory")
 
-    @property
-    def basis_bound(self) -> bool:
-        """Whether a unique persisted binding is this plan's authority."""
-        return self.binding is not None
 
-    def evidence_pair(self) -> TargetPair:
-        """Return selector compatibility fields for existing report readers."""
-        return TargetPair(self.baseline.selector, self.candidate.selector)
-
-
-def _execution_ref(
-    handle: TargetHandle,
-    *,
-    selector: str | None = None,
-) -> TargetExecutionRef:
-    return TargetExecutionRef(handle.identity, selector or handle.selector, handle.vlnv)
+def _execution_ref(handle: TargetHandle) -> TargetExecutionRef:
+    return TargetExecutionRef(handle.identity, handle.selector, handle.vlnv)
 
 
 def _make_plan(
     flow: str,
     baseline: TargetExecutionRef,
     candidate: TargetExecutionRef,
-    binding: AcceptanceTargetBinding | None,
 ) -> TargetPairPlan:
-    return TargetPairPlan(flow, baseline, candidate, binding, _PLAN_FACTORY_KEY)
-
-
-def _entry_params(entry: object) -> dict[Any, Any] | None:
-    return as_dict(getattr(entry, "params", None))
-
-
-def _state_pair_from_entry(
-    entry: object | None,
-    criterion_key: str,
-    candidate: str,
-) -> TargetPair:
-    params = _entry_params(entry) if entry is not None else None
-    if params is None or BASELINE_TARGET_PARAM not in params:
-        return TargetPair(candidate, candidate)
-    baseline = as_str(params[BASELINE_TARGET_PARAM])
-    if baseline is None or not baseline.strip():
-        raise ImplementationComparisonError(
-            f"Implementation comparison for Target {candidate!r} has invalid baseline Target metadata"
-        )
-    return TargetPair(baseline.strip(), candidate)
-
-
-def _state_pair(criteria: Mapping[str, Any], criterion_prefix: str, candidate: str) -> TargetPair:
-    """Read the persisted pair, preserving standalone equal-Target behavior."""
-    key = f"{criterion_prefix}{candidate}"
-    return _state_pair_from_entry(criteria.get(key), key, candidate)
-
-
-def _criterion_matches_candidate(
-    key: str,
-    entry: object,
-    criterion_prefix: str,
-    candidate: TargetExecutionRef,
-) -> bool:
-    candidate_name = candidate.identity.rsplit("#", maxsplit=1)[-1]
-    if key in {
-        f"{criterion_prefix}{candidate.selector}",
-        f"{criterion_prefix}{candidate.identity}",
-        f"{criterion_prefix}{candidate_name}",
-    }:
-        return True
-    params = _entry_params(entry) or {}
-    basis_selector = as_str(params.get("_target_selector"))
-    authored_target = as_str(params.get("target"))
-    return basis_selector == candidate.selector or authored_target in (
-        candidate.selector,
-        candidate.identity,
-    )
-
-
-def _state_pair_for_candidate(
-    criteria: Mapping[str, Any],
-    criterion_prefix: str,
-    candidate: TargetExecutionRef,
-) -> TargetPair:
-    matches = [
-        (key, entry)
-        for key, entry in criteria.items()
-        if _criterion_matches_candidate(key, entry, criterion_prefix, candidate)
-    ]
-    if not matches:
-        return TargetPair(candidate.selector, candidate.selector)
-    pairs = {_state_pair_from_entry(entry, key, candidate.selector) for key, entry in matches}
-    if len(pairs) != 1:
-        raise ImplementationComparisonError(
-            f"conflicting implementation Target pairs for candidate Target {candidate.identity!r}"
-        )
-    return next(iter(pairs))
-
-
-def _select_execution_ref(
-    project_root: Path | str,
-    target: str,
-    flow: str,
-    *,
-    execution_selector: str | None = None,
-) -> TargetExecutionRef:
-    try:
-        handle = TargetCatalog.build(project_root).select(target, for_flow=flow)
-    except FuseSocError as exc:
-        raise ImplementationComparisonError(str(exc)) from exc
-    if handle.doctor_private:
-        raise ImplementationComparisonError(
-            f"Doctor-private Target {handle.identity!r} cannot enter persisted comparison state"
-        )
-    return _execution_ref(handle, selector=execution_selector)
-
-
-def _binding_for_candidate(
-    basis: ResolvedFlowAcceptance,
-    flow: str,
-    criterion: str,
-    candidate: TargetExecutionRef,
-) -> AcceptanceTargetBinding:
-    matches = tuple(
-        binding
-        for binding in basis.bindings
-        if binding.flow == flow
-        and (
-            binding.criterion_key == criterion or binding.criterion_key.startswith(f"{criterion}_")
-        )
-        and binding.candidate == candidate.identity
-    )
-    if not matches or len(matches) != len(set(matches)):
-        raise ImplementationComparisonError(
-            f"Baseline {flow.upper()}:{candidate.selector} has no unique binding for "
-            f"candidate Target {candidate.selector!r}"
-        )
-    if any(
-        (binding.baseline, binding.baseline_selector, binding.candidate_selector)
-        != (matches[0].baseline, matches[0].baseline_selector, matches[0].candidate_selector)
-        for binding in matches[1:]
-    ):
-        raise ImplementationComparisonError(
-            f"Frozen baseline has conflicting {flow}/{criterion} bindings for "
-            f"candidate Target {candidate.selector!r}"
-        )
-    return matches[0]
-
-
-def _basis_plan(
-    basis: ResolvedFlowAcceptance,
-    project_root: Path | str,
-    flow: str,
-    criterion: str,
-    state_pair: TargetPair,
-    candidate: TargetExecutionRef,
-) -> TargetPairPlan:
-    state_baseline = _select_execution_ref(project_root, state_pair.baseline, flow)
-    binding = _binding_for_candidate(basis, flow, criterion, candidate)
-    if state_baseline.identity != binding.baseline:
-        raise ImplementationComparisonError(
-            f"{flow.upper()}:{state_pair.candidate} baseline Target metadata does not "
-            "match the frozen baseline"
-        )
-    if not binding.baseline_selector.strip() or not binding.candidate_selector.strip():
-        raise ImplementationComparisonError(
-            f"Baseline {flow.upper()}:{candidate.selector} binding for {candidate.identity!r} "
-            "has an empty callable selector"
-        )
-    baseline = _select_execution_ref(
-        project_root,
-        binding.baseline_selector,
-        flow,
-        execution_selector=binding.baseline_selector,
-    )
-    basis_candidate = _select_execution_ref(
-        project_root,
-        binding.candidate_selector,
-        flow,
-        execution_selector=binding.candidate_selector,
-    )
-    if baseline.identity != binding.baseline or basis_candidate.identity != binding.candidate:
-        raise ImplementationComparisonError(
-            f"Baseline {flow.upper()}:{candidate.selector} selectors do not resolve to recorded identities"
-        )
-    return _make_plan(flow, baseline, basis_candidate, binding)
+    return TargetPairPlan(flow, baseline, candidate, _PLAN_FACTORY_KEY)
 
 
 def target_pair_plans_for_handles(
-    criteria: Mapping[str, Any],
-    criterion_prefix: str,
     candidates: Sequence[TargetHandle],
     *,
     flow: str,
-    basis: ResolvedFlowAcceptance | None = None,
 ) -> tuple[TargetPairPlan, ...]:
-    """Build plans from already-normalized public Flow candidates."""
+    """Pair each already-normalized public Flow candidate with itself."""
     plans: list[TargetPairPlan] = []
     seen: set[str] = set()
     for handle in candidates:
@@ -249,104 +67,14 @@ def target_pair_plans_for_handles(
                 f"candidate Target {handle.identity!r} cannot be driven by the {flow!r} Flow"
             )
         candidate = _execution_ref(handle)
-        state_pair = _state_pair_for_candidate(criteria, criterion_prefix, candidate)
-        if basis is not None:
-            if handle.doctor_private:
-                raise ImplementationComparisonError(
-                    f"Doctor-private Target {handle.identity!r} cannot enter a basis-bound plan"
-                )
-            plan = _basis_plan(
-                basis,
-                handle.project_root,
-                flow,
-                criterion_prefix.removesuffix("_"),
-                state_pair,
-                candidate,
-            )
-        else:
-            baseline = (
-                candidate
-                if state_pair.baseline == handle.selector
-                else _select_execution_ref(
-                    handle.project_root,
-                    state_pair.baseline,
-                    flow,
-                )
-            )
-            plan = _make_plan(flow, baseline, candidate, None)
         if candidate.identity in seen:
             raise ImplementationComparisonError(
                 f"candidate Target {handle.selector!r} duplicates canonical identity "
                 f"{candidate.identity!r}"
             )
         seen.add(candidate.identity)
-        plans.append(plan)
+        plans.append(_make_plan(flow, candidate, candidate))
     return tuple(plans)
-
-
-def target_pair_plans_for_candidates(
-    criteria: Mapping[str, Any],
-    criterion_prefix: str,
-    candidates: Sequence[str],
-    *,
-    basis: ResolvedFlowAcceptance | None = None,
-    project_root: Path | str | None = None,
-    flow: str = "",
-) -> tuple[TargetPairPlan, ...]:
-    """Validate the complete requested pair batch before any Flow setup."""
-    plans: list[TargetPairPlan] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        state_pair = _state_pair(criteria, criterion_prefix, candidate)
-        if basis is not None:
-            if project_root is None or not flow:
-                raise ImplementationComparisonError(
-                    "Frozen baseline comparison requires Project Root and flow"
-                )
-            plan = _basis_plan(
-                basis,
-                project_root,
-                flow,
-                criterion_prefix.removesuffix("_"),
-                state_pair,
-                _select_execution_ref(project_root, state_pair.candidate, flow),
-            )
-        elif project_root is not None and flow:
-            candidate_ref = _select_execution_ref(project_root, state_pair.candidate, flow)
-            baseline_ref = _select_execution_ref(project_root, state_pair.baseline, flow)
-            plan = _make_plan(flow, baseline_ref, candidate_ref, None)
-        else:
-            candidate_ref = TargetExecutionRef(state_pair.candidate, state_pair.candidate, "")
-            baseline_ref = TargetExecutionRef(state_pair.baseline, state_pair.baseline, "")
-            plan = _make_plan(flow, baseline_ref, candidate_ref, None)
-        if plan.candidate.identity in seen:
-            raise ImplementationComparisonError(
-                f"candidate Target {candidate!r} duplicates canonical identity "
-                f"{plan.candidate.identity!r}"
-            )
-        seen.add(plan.candidate.identity)
-        plans.append(plan)
-    return tuple(plans)
-
-
-def target_pairs_for_candidates(
-    criteria: Mapping[str, Any],
-    criterion_prefix: str,
-    candidates: Sequence[str],
-    *,
-    basis: ResolvedFlowAcceptance | None = None,
-    project_root: Path | str | None = None,
-    flow: str = "",
-) -> tuple[TargetPairPlan, ...]:
-    """Compatibility name for the canonical pair-plan factory."""
-    return target_pair_plans_for_candidates(
-        criteria,
-        criterion_prefix,
-        candidates,
-        basis=basis,
-        project_root=project_root,
-        flow=flow,
-    )
 
 
 def target_pair_for_candidate(
@@ -366,17 +94,12 @@ def target_plan_for_handle(
     handle: TargetHandle,
     *,
     flow: str,
-    basis_bound: bool,
 ) -> TargetPairPlan:
-    """Look up a canonical plan, defaulting only for standalone execution."""
+    """Look up a canonical plan, defaulting to the Target paired with itself."""
     if plans:
         return target_pair_for_candidate(plans, handle.identity)
-    if basis_bound:
-        raise ImplementationComparisonError(
-            f"basis-bound {flow} execution has no Target comparison plan for {handle.selector!r}"
-        )
     candidate = _execution_ref(handle)
-    return _make_plan(flow, candidate, candidate, None)
+    return _make_plan(flow, candidate, candidate)
 
 
 def selected_target_handle(
