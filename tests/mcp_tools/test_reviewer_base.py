@@ -13,12 +13,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from booley.criteria.state import DevelopmentState
 from booley.mcp.base import McpToolResult
 from booley.specialists.reviewer import ReviewerSpecialist
 from tests.project_runtime_git_support import git
-
-DONE_KEY = "review_rtl_bugs_done"
 
 A_SV = "module a(input logic x);\nendmodule\n"
 B_SV = "module b;\n  a u_a (.x(1'b0));\nendmodule\n"
@@ -71,11 +68,17 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     git(root, "add", ".")
     git(root, "commit", "-qm", "baseline")
     git(root, "checkout", "-q", "-b", "feature")
-    state_file = tmp_path / "state.json"
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
     monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
-    DevelopmentState.load(state_file).save()
     return root
+
+
+def open_findings(detail: dict[str, Any]) -> list[dict[str, Any]]:
+    """The corrective rows of a review detail."""
+    return [
+        row
+        for row in detail["issue_list"]
+        if row["disposition"] == "current" and row.get("origin") != "pre_existing"
+    ]
 
 
 def commit_edit(root: Path, name: str, text: str, message: str) -> None:
@@ -173,13 +176,12 @@ def test_missing_spec_is_refused_even_when_nothing_changed(
     invoke.assert_not_called()
 
 
-def test_base_without_changes_writes_no_state(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    result, reviewer, invoke = review(repo, monkeypatch, ["--scope", "rtl/a.sv", "--base", "main"])
+def test_base_without_changes_makes_no_call(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    result, _, invoke = review(repo, monkeypatch, ["--scope", "rtl/a.sv", "--base", "main"])
 
     assert result.exit_code == 0
     invoke.assert_not_called()
-    assert DONE_KEY not in reviewer.state.criteria
-    assert DONE_KEY not in DevelopmentState.load(Path(reviewer.args.state_file)).criteria
+    assert "audit_evidence" not in result.detail
 
 
 def test_base_ignores_changes_that_reached_base_after_merge_base(
@@ -276,29 +278,6 @@ def test_pre_existing_findings_are_observations(
     assert "Old bug" in after
     assert "Introduced bug" not in after
 
-    # --verify re-checks only the introduced finding and keeps the observation.
-    introduced_id = next(
-        row["finding_id"] for row in result.detail["issue_list"] if row["line"] == 3
-    )
-    reviewer = ReviewerSpecialist()
-    reviewer.parse_args(["--work-dir", str(repo), "--verify"])
-    reviewer.read_state()
-    invoke = MagicMock(
-        return_value=MagicMock(
-            output=json.dumps({"findings": [{"index": 1, "status": "FIXED", "evidence": "gone"}]}),
-            captured_agent_capability_calls={},
-        )
-    )
-    monkeypatch.setattr(reviewer, "_invoke_agent", invoke)
-    verified = reviewer._run()
-
-    prompt = prompt_of(invoke)
-    assert introduced_id in prompt
-    assert "Old bug" not in prompt
-    rows = verified.detail["issue_list"]
-    assert [row["summary"] for row in rows if row.get("origin") == "pre_existing"] == ["Old bug"]
-    assert [row["status"] for row in rows if row["summary"] == "Introduced bug"] == ["fixed"]
-
 
 def test_same_finding_reported_as_introduced_and_pre_existing_stays_open(
     repo: Path, monkeypatch: pytest.MonkeyPatch
@@ -330,7 +309,7 @@ def test_pre_existing_findings_do_not_fail_the_review(
 
     assert result.exit_code == 0
     assert result.criterion_met is True
-    assert ReviewerSpecialist._open_findings(result.detail) == []
+    assert open_findings(result.detail) == []
     assert [row["summary"] for row in result.detail["issue_list"]] == ["Old bug"]
     assert "PRE-EXISTING (non-blocking; present before this change):" in result.report_text
 
@@ -424,6 +403,4 @@ def test_base_gives_every_guide_call_the_same_change_section(
     assert rows["Old bug"]["status"] == "reported"
     assert rows["Old bug"]["guide_kinds"] == ["hunt"]
     assert result.detail["issues"] == 1
-    assert [row["summary"] for row in ReviewerSpecialist._open_findings(result.detail)] == [
-        "Introduced bug"
-    ]
+    assert [row["summary"] for row in open_findings(result.detail)] == ["Introduced bug"]

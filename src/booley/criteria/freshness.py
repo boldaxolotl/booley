@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from booley.core.boundary import as_dict, as_str_list
 from booley.criteria.categories import verification_fingerprint_categories
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 from booley.evidence.review_receipt import (
@@ -20,8 +19,6 @@ from booley.evidence.review_receipt import (
     review_receipt_drift,
 )
 from booley.fusesoc.fusesoc_registry import FuseSocError
-from booley.runtime.shared_infra import _load_rtl_config
-from booley.targets.flow_names import config_section
 
 logger = logging.getLogger(__name__)
 
@@ -77,25 +74,6 @@ def _identity(value: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def review_policy_digest(work_dir: Path, category: str) -> str:
-    """Return the current policy identity used by one Reviewer invocation."""
-    if category != "tb":
-        return _identity({})
-    try:
-        cfg = _load_rtl_config(work_dir)
-    except ImportError:
-        cfg = None
-    flows = as_dict((cfg or {}).get("flows"), default={}) or {}
-    sim = config_section(flows, "sim")
-    return _identity(
-        {
-            "pass_sentinels": as_str_list(sim.get("pass_sentinels")),
-            "fail_sentinels": as_str_list(sim.get("fail_sentinels")),
-            "trace_files": as_str_list(sim.get("trace_files")),
-        }
-    )
-
-
 def _review_freshness(
     detail: Mapping[str, Any],
     *,
@@ -103,13 +81,8 @@ def _review_freshness(
     categories: set[str],
 ) -> VerificationFreshness | None:
     try:
-        contract = detail.get("contract")
-        category = contract.get("category", "") if isinstance(contract, Mapping) else ""
-        policy_digest = review_policy_digest(work_dir, category)
-        changed = review_receipt_drift(detail, work_dir, tb_policy_digest=policy_digest)
-        identity_value = current_review_receipt_identity(
-            detail, work_dir, tb_policy_digest=policy_digest
-        )
+        changed = review_receipt_drift(detail, work_dir)
+        identity_value = current_review_receipt_identity(detail, work_dir)
     except ReviewTicketError as exc:
         reason = str(exc)
         return VerificationFreshness(

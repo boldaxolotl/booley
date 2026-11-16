@@ -1100,7 +1100,8 @@ def _assert_custom_headline(runtime, monkeypatch, endpoint_type, argv, expected)
 
 @pytest.mark.parametrize("binding", ["name", "identity", "named_identity"])
 @pytest.mark.parametrize("ticket", ["none", "single", "plural"])
-@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+# A Specialist keeps no Criterion state (#4301), so only a Flow has a headline to resolve.
+@pytest.mark.parametrize("endpoint_kind", ["flow"])
 @pytest.mark.parametrize("catalog", [True, False])
 @pytest.mark.parametrize("target", ["first", "first,second"])
 def test_declared_custom_flow_prepared_headline(
@@ -1132,7 +1133,7 @@ def test_declared_custom_flow_prepared_headline(
     _assert_custom_headline(runtime, monkeypatch, endpoint_type, ["--target", target], expected)
 
 
-@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+@pytest.mark.parametrize("endpoint_kind", ["flow"])
 @pytest.mark.parametrize("target", ["first", "acme:lib:dut:1#first", "other:lib:x#first"])
 @pytest.mark.parametrize("other_target", ["first", "second"])
 def test_custom_fallback_excludes_only_proven_other_target(
@@ -1155,7 +1156,7 @@ def test_custom_fallback_excludes_only_proven_other_target(
     _assert_custom_headline(runtime, monkeypatch, endpoint_type, ["--target", target], expected)
 
 
-@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+@pytest.mark.parametrize("endpoint_kind", ["flow"])
 @pytest.mark.parametrize("family", ["drc_rules", "cycle_count"])
 @pytest.mark.parametrize("test", ["selected", "other"])
 def test_custom_identity_uncertainty_respects_selected_workload(
@@ -1178,7 +1179,7 @@ def test_custom_identity_uncertainty_respects_selected_workload(
     _assert_custom_headline(runtime, monkeypatch, endpoint_type, argv, expected)
 
 
-@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+@pytest.mark.parametrize("endpoint_kind", ["flow"])
 @pytest.mark.parametrize("binding", ["stored_selector", "legacy"])
 @pytest.mark.parametrize("direction", ["bare_to_qualified", "qualified_to_bare"])
 @pytest.mark.parametrize("name", ["first", "second"])
@@ -1202,7 +1203,7 @@ def test_custom_alternate_selector_keeps_unevaluated_potential(
     _assert_custom_headline(runtime, monkeypatch, endpoint_type, ["--target", target], expected)
 
 
-@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+@pytest.mark.parametrize("endpoint_kind", ["flow"])
 def test_custom_evaluated_uncertain_false_is_a_verdict(
     external_acceptance_owner, runtime, monkeypatch, endpoint_kind
 ):
@@ -1445,7 +1446,7 @@ def test_direct_generic_completion_preserves_empty_criterion_fields():
 
 
 @pytest.mark.parametrize("strict", [False, True])
-@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+@pytest.mark.parametrize("endpoint_kind", ["flow"])
 def test_custom_headline_keeps_same_name_selector_uncertain(
     external_acceptance_owner, runtime, monkeypatch, endpoint_kind, strict
 ):
@@ -1463,7 +1464,7 @@ def test_custom_headline_keeps_same_name_selector_uncertain(
     _assert_custom_headline(runtime, monkeypatch, endpoint_type, ["--target", "first"], ("", None))
 
 
-@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+@pytest.mark.parametrize("endpoint_kind", ["flow"])
 def test_custom_headline_scope_resolves_no_target(
     external_acceptance_owner, runtime, monkeypatch, endpoint_kind
 ):

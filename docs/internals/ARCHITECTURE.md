@@ -250,8 +250,6 @@ its design is in [ADR 0068](../adr/0068-booley-dashboard.md).
 ### Shared execution and evidence
 
 - `runtime.agent_execution` runs the Agent CLI for Specialists and Doctor.
-- `specialists.verification_freshness` refreshes verification evidence for
-  Specialist calls, using the shared Criteria freshness policy.
 - `mcp.unbound_recorder` records evidence for MCP calls.
 
 Evaluation inside this code uses the internal
