@@ -1,9 +1,9 @@
 """Disk handling of the ``bwave-smoke`` job in the ``Tests`` workflow (#2681).
 
 The job builds several images and runs a dozen validations concurrently on one
-hosted runner, so its `/` filesystem can fill up mid-group. This test runs the step that logs
-free space and scratch sizes after the validation group, so an out-of-disk
-failure is attributable even when docker itself fails.
+hosted runner, so its `/` filesystem can fill up mid-group. This test runs the
+step that logs free space and scratch sizes after the validation group, so an
+out-of-disk failure is attributable even when docker itself fails.
 """
 
 from __future__ import annotations
