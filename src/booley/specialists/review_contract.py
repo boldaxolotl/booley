@@ -96,7 +96,7 @@ def resolve_review_scope(
                 if category == "tb"
                 else ""
             )
-            + "; see CLI-REFERENCE.md (host doc, not shipped)."
+            + "; see REVIEWER.md (host doc, not shipped)."
         )
     return ReviewScopeContract(
         frozenset(cocotb), frozenset(hdl), frozenset(support | set(unsupported))

@@ -465,7 +465,7 @@ def _ready_notice(name: str, *, paired: bool) -> str:
     return (
         f"Created worktree {name!r} with a {kind}. "
         f"Remove it later with: booley worktree rm {name} "
-        f"(see {docs_url('CLI-REFERENCE.md', 'worktrees')})"
+        f"(see {docs_url('WORKTREES.md', 'removing-a-worktree')})"
     )
 
 

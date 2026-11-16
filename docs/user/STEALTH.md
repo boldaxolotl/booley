@@ -42,7 +42,7 @@ already has commits.
 | Cores Booley writes | At the repository root, tracked | In `.booley/cores/`, with ignored `.booley-projected-*.core` copies at the root for FuseSoC |
 | Commit messages | Not checked | Checked, see [Commit messages](#commit-messages) |
 | Pushes | Not checked | Checked, see [Push checks](#push-checks) |
-| `.booley/` in a worktree | A Snapshot copy | A Paired Checkout of its last commit ([CLI-REFERENCE.md](CLI-REFERENCE.md#worktrees)) |
+| `.booley/` in a worktree | A Snapshot copy | A Paired Checkout of its last commit ([Worktrees](WORKTREES.md#creating-a-worktree)) |
 | Worktree branch names | `booley/<name>` | `wt/<name>`, so the product name stays out of branches you push |
 | A fresh clone gets | Your RTL and the Booley setup | Your RTL, `.core` files, and constraints; no Booley |
 
