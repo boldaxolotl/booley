@@ -1027,6 +1027,10 @@ class TestIssuedRuntimeDriftFix:
         )
 
         assert "`docker rm active-vscode`" in fix
+        assert (
+            "`docker rm active-vscode` (mounted folders and named volumes survive; "
+            "anything written only inside the container is lost)"
+        ) in fix
         assert "`booley init --seed`" in fix
         assert "for VS Code Sandbox(s)" not in fix
 
@@ -1324,6 +1328,7 @@ class TestInitReconciliation:
             "load_issued_snapshot",
             lambda _root: SimpleNamespace(license_profile=None),
         )
+        monkeypatch.setattr(sr, "sandbox_attachment", lambda _root: Attachment.HEADLESS)
         monkeypatch.setattr(sr, "vscode_session_container", lambda _root: None)
         monkeypatch.setattr(sr.project_image, "project_sandbox_image", lambda _root: "selected")
         monkeypatch.setattr(sr.project_image, "is_managed_sandbox_image", lambda *_args: True)
@@ -1878,16 +1883,29 @@ class TestUp:
             assert sr.up(workspace, rebuild=True, expected_image_id="sha256:fresh") == name
         ensure.assert_called_once_with()
 
-    def test_licensed_refresh_fails_before_parking_existing_runtime(self, wired):
+    @pytest.mark.parametrize(
+        ("managed", "steps"),
+        [
+            (True, "run `booley session refresh` on the host"),
+            (
+                False,
+                "run `booley session down`, `booley init --seed`, "
+                "and `booley session up` on the host",
+            ),
+        ],
+        ids=["booley-image", "own-image"],
+    )
+    def test_licensed_refresh_fails_before_parking_existing_runtime(self, wired, managed, steps):
         workspace, run = wired
         with (
             patch.object(sr.idk, "container_exists", return_value=True),
             patch.object(sr, "_requested_issued_license", return_value=object()),
+            patch.object(sr, "image_is_managed", return_value=managed),
             pytest.raises(
                 sr.SessionError,
                 match=re.escape(
                     "`booley session up --rebuild` cannot preserve a licensed relay topology; "
-                    "run `booley session refresh` instead"
+                    f"instead, {steps}"
                 ),
             ),
         ):

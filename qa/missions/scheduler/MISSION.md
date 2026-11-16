@@ -3,7 +3,8 @@
 Hunt bugs in how Booley admits Jobs against a measured Memory Budget: the
 estimates it keeps, who waits and what the queue says, how reservations shrink,
 what happens when the kernel kills a Job for memory, how a Simulation Record
-admits its items, thread counts, Seat Caps, and the retired Job Slots keys.
+admits its items, how Specialists are admitted beside Flows, thread counts,
+Seat Caps, and the retired `[jobs]` keys.
 These fail under load, which unit tests do not reproduce, so the areas run on
 Caliptra, whose Jobs reserve from 0.1 GB to 22 GB each, and on a small
 Custom Flow, `mem_hog`, for the cases that need exact control. The
@@ -21,10 +22,11 @@ area 1.
   `fixtures/history_edit.py`.
 - Tools/host: Linux x86-64 with cgroup v2, at least 30 GB of RAM, 16 cores
   and 60 GB of free disk; the `booley-sandbox-riscv` image; Vivado 2025.2 on
-  the host for area 9. No agent CLI credentials are needed, except for the
-  one MCP check in area 3, which is skipped without them.
-- Budget: 8 h for the primary run: 460 area minutes plus 20 contingency.
-  Area 11 is an optional follow-up outside this timebox. Areas run in
+  the host for area 10. No agent CLI credentials are needed, except for the
+  MCP check in area 3 and for area 8, which are skipped without them.
+- Budget: 8 h for the primary run: 480 area minutes. Area 8 needs agent
+  credentials; without them its 20 minutes are contingency.
+  Area 12 is an optional follow-up outside this timebox. Areas run in
   priority order; log areas not reached as skipped. Run areas sequentially:
   each one depends on what the Booley Directory holds.
 
@@ -109,7 +111,7 @@ Try:
 - Holder `synth_ecc_fau` (about 16 min); front waiter `synth_caliptra`, too
   big to fit beside it; then `lint_ecc` (seconds, own history). `lint_ecc`
   starts at once and `synth_caliptra` starts when `synth_ecc_fau` ends. Stop
-  `synth_caliptra` once it has started unless area 11 runs next.
+  `synth_caliptra` once it has started unless area 12 runs next.
 - The same with a `mem_hog --hold` longer than the holder's remaining time,
   its `wall_s` set to match with `history_edit.py`: it waits its turn.
 - A small Job whose phase estimate is borrowed (a new `sim_ecc` Variant)
@@ -167,7 +169,25 @@ Try:
 Look for: items running under the Flow's claim after the build, more items in
 parallel than fit, a Record that stalls with free budget.
 
-### 8. sched-threads — Build threads follow cores and running Jobs (~25 min)
+### 8. sched-companions — Specialists admitted by memory (~20 min)
+Intent: a Specialist waits for memory like a Flow but never holds a Flow back,
+as ADR 0087 "companion claims" says.
+Try:
+- With the budget free: `booley specialist reviewer --category rtl --focus
+  bugs --scope rtl` with a short `--timeout`. Its claim in `memory/` is marked
+  `companion`; `booley resources` then shows one Specialist line after the
+  Targets, and no Target's figures change.
+- `small-budget` that fits `sim_caliptra`'s build and little else: start
+  `sim_caliptra` with a forced rebuild, then the Specialist. It waits with a
+  queue reason and starts when the build's reservation shrinks or ends.
+- A run-alone Job (a `mem_hog` with its history deleted) submitted while only
+  the Specialist holds starts at once; a Flow that fits submitted behind a
+  waiting Specialist that does not fit starts without waiting for it.
+Look for: a Specialist that starts over the budget, a Flow held back by a
+Specialist, a Specialist requeued or run alone, Specialist runs changing a
+Target's history.
+
+### 9. sched-threads — Build threads follow cores and running Jobs (~25 min)
 Intent: Verilator's build parallelism is the Job's share of the cores.
 Try:
 - Alone: the `sim_caliptra` build uses `-j<cores>`; compare with `nproc` and
@@ -178,7 +198,7 @@ Try:
 Look for: a thread count above the cores, one that ignores other Jobs, a
 Project `-j` overridden.
 
-### 9. sched-seats — Seat Caps for Vivado (~35 min)
+### 10. sched-seats — Seat Caps for Vivado (~35 min)
 Intent: Vivado needs a Seat Cap, and a capped Job waits for a seat.
 Try:
 - Two `fpga_ecc_top` runs with `vivado = 1`: the second waits for the seat
@@ -191,7 +211,7 @@ Try:
 Look for: a refusal after queueing, a bad value accepted, a seat wait with no
 seat in its reason, a second Vivado run beside the first.
 
-### 10. sched-cutover — Retired Job Slots keys (~25 min)
+### 11. sched-cutover — Retired `[jobs]` keys (~25 min)
 Intent: the retired keys are refused everywhere with one clear fix.
 Try:
 - `retired`: `booley flow sim`, `booley resources` and a Project command over
@@ -199,12 +219,17 @@ Try:
   `booley upgrade` still run and Doctor FAILs with the same fix.
 - Follow the fix hint literally (delete the lines, or run booley-heal); the
   Project runs again.
+- Each of the five keys alone gives its own reason: `max_heavy` and
+  `heavy_memory` (memory admission), `max_light` (Specialists admitted by
+  memory), `queue_max` (no queue limit) and `memory_budget` (set
+  `[sandbox].memory`).
 - Search help, `booley cheat` and the user docs for Job Slots, `max_heavy`,
-  `heavy_memory` or slot counts described as current behavior.
+  `heavy_memory`, `max_light`, `queue_max`, `memory_budget`, a light Job
+  Class, a queue limit or slot counts described as current behavior.
 Look for: a command that runs with retired keys, a hint naming a surface that
 does not exist, docs still describing Job Slots.
 
-### 11. sched-fullchip — Full-chip synthesis against everything else (~60 min, optional follow-up)
+### 12. sched-fullchip — Full-chip synthesis against everything else (~60 min, optional follow-up)
 Intent: the largest Job behaves under a real mix.
 Try:
 - `synth_caliptra` (Yosys about 17.5 GB) with `sim_caliptra` Records and
@@ -213,7 +238,7 @@ Try:
 Look for: a Job admitted over the budget, a stalled queue, host swap or OOM
 outside the Sandbox.
 
-### 12. cleanup — Scheduler cleanup (~20 min)
+### 13. cleanup — Scheduler cleanup (~20 min)
 Stop every Flow and `mem_hog`, confirm `runtime/jobs/slots/memory/` is empty,
 restore `booley.toml`, `history.json`, forced-rebuild edits and
 `[sandbox].memory`, restart the Session if its limit changed, and release the

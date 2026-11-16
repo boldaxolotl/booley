@@ -62,7 +62,7 @@ RETIRED_BOOLEY_TOML_TABLES = {
         "retired — move deterministic settings to [flows.*] and Specialist "
         "settings to [specialists.*]"
     ),
-    "fusesoc": "removed in ADR 0030 — Target scoping now lives in .core files",
+    "fusesoc": "removed in ADR 0030 — Target scoping now lives in .core files; delete this table",
     "sources": (
         "file sources come from the .core description (testbench filesets carry "
         "tags: [tb]); delete this table"

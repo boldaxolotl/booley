@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
+import os
 import shutil
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse
 
 import pytest
 from starlette.testclient import TestClient
@@ -18,6 +21,7 @@ from booley.runtime.memory_budget import resolve_memory_budget
 from booley.runtime.pid import ProcessIdentity
 from tests.conftest import symlink_or_skip
 from tests.git_support import git
+from tests.subprocess_budget import run_bounded_child
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 
@@ -122,7 +126,7 @@ def _job(
     run_id: str,
     work_dir: Path | None,
     *,
-    target: str = "uart",
+    target: str | None = "uart",
     session: str | None = "sess1",
     status: str = "done",
     exit_code: int | None = 0,
@@ -148,7 +152,7 @@ def _job(
             "sim",
             started,
             60,
-            argv=["--target", target],
+            argv=[] if target is None else ["--target", target],
             pid=pid,
             status=status,
             exit_code=exit_code,
@@ -639,3 +643,255 @@ def test_budget_shows_without_jobs_and_unavailable_budget_is_marked(world, monke
     }
     assert marked["memory_budget_bytes"] is None
     assert marked["memory_budget_unavailable"] == "MemTotal is unreadable"
+
+
+PROBE = Path(__file__).with_name("dashboard_page_probe.cjs")
+LIVE_PID = 7001
+
+
+class _References(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.urls: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        self.urls.extend(value for name, value in attrs if name in {"src", "href"} and value)
+
+
+def _page_js(client: TestClient) -> str:
+    response = client.get("/assets/dashboard.js")
+    assert response.status_code == 200
+    return response.text
+
+
+def _reply(client: TestClient, worktree: Path | str) -> dict:
+    """What the page's `fetch` would get: the status and JSON body of one snapshot request."""
+    response = client.get("/api/snapshot", params={"worktree": str(worktree)})
+    return {"status": response.status_code, "body": response.json()}
+
+
+def _run_page(js: str, scenario: dict, tmp_path: Path) -> dict:
+    """Run the served page script in Node's `vm` against the scripted responses."""
+    node = shutil.which("node")
+    if node is None:
+        if os.environ.get("CI"):
+            pytest.fail("CI must run the Dashboard page probe: install Node.js")
+        pytest.skip("Node.js is required for the Dashboard page probe")
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    script = tmp_path / "dashboard.js"
+    script.write_bytes(js.encode())
+    scenario_file = tmp_path / "scenario.json"
+    scenario_file.write_bytes(json.dumps(scenario).encode())
+    done = run_bounded_child([node, str(PROBE), str(script), str(scenario_file)])
+    assert done.returncode == 0, done.stdout + done.stderr
+    return json.loads(done.stdout)
+
+
+def _search(worktree: Path | str) -> str:
+    return "?worktree=" + quote(str(worktree), safe="")
+
+
+def _queued_world(world: World) -> None:
+    """One running and one queued Job of `world.wt`."""
+    _job(
+        world,
+        "run-r",
+        world.wt,
+        target="t_run",
+        status="running",
+        ended=None,
+        pid=LIVE_PID,
+        live=True,
+    )
+    _job(
+        world,
+        "run-q",
+        world.wt,
+        target="t_queued",
+        status="running",
+        ended=None,
+        started="2026-10-08T10:00:15Z",
+        pid=7002,
+        live=True,
+    )
+    for seq, pid, mib in ((1, 7101, 200.0), (2, 7102, 500.0)):
+        _slot(world, "h", seq, pid, {"memory": _claim(mib)})
+    _slot(world, "w", 3, 7002, {"owner_identity": _identity(7002), "memory": _claim(400.0)})
+
+
+def test_page_and_its_assets_are_served_from_this_server(world, monkeypatch):
+    with _client(world, monkeypatch) as client:
+        page = client.get("/", params={"worktree": str(world.wt)})
+        references = _References()
+        references.feed(page.text)
+        assets = {url: client.get(url) for url in references.urls}
+
+    assert page.status_code == 200
+    assert page.headers["content-type"].startswith("text/html")
+    assert page.headers["content-security-policy"] == "default-src 'self'"
+    assert sorted(references.urls) == ["/assets/dashboard.css", "/assets/dashboard.js"]
+    for url, response in assets.items():
+        assert response.status_code == 200, url
+        assert "http://" not in response.text
+        assert "https://" not in response.text
+    assert assets["/assets/dashboard.css"].headers["content-type"].startswith("text/css")
+    assert "javascript" in assets["/assets/dashboard.js"].headers["content-type"]
+    css = assets["/assets/dashboard.css"].text
+    assert "url(" not in css
+    assert "@import" not in css
+
+
+def test_page_renders_the_snapshot_with_results_collapsed_and_polls(world, monkeypatch, tmp_path):
+    _queued_world(world)
+    _job(world, "run-p", world.wt, target="t_pass", report={"criterion_key": "k"})
+    _job(world, "run-f", world.wt, target="<b>x</b>", exit_code=1)
+    _job(world, "run-bare", world.wt, target=None, ended=None)
+    _job(world, "run-leak", world.other, target="leak")
+
+    with _client(world, monkeypatch) as client:
+        first = _reply(client, world.wt)
+        _job(world, "run-new", world.wt, target="t_new", ended="2026-10-08T10:00:10Z")
+        second = _reply(client, world.wt)
+        probe = _run_page(
+            _page_js(client),
+            {"search": _search(world.wt), "responses": [first, second]},
+            tmp_path,
+        )
+
+    assert len(probe["fetches"]) == 2
+    for fetch in probe["fetches"]:
+        url = urlparse(fetch["url"])
+        assert url.path == "/api/snapshot"
+        assert parse_qs(url.query) == {"worktree": [str(world.wt)]}
+    assert probe["delays"] == [3000, 3000]
+    one, two = probe["renders"]
+    report_url = next(j for j in first["body"]["results"]["jobs"] if j["report_url"])["report_url"]
+    for text in (
+        str(world.wt),
+        "booley/wt",
+        "6.0 GiB",
+        "position 1",
+        '<details id="results-section">',
+        "2 passed",
+        "1 failed",
+        f'href="{html.escape(report_url)}"',
+        "&lt;b&gt;x&lt;/b&gt;",
+    ):
+        assert text in one, text
+    assert "<b>x</b>" not in one
+    for bad in ("null", "undefined", "NaN", "1970"):
+        assert bad not in one, bad
+    assert "leak" not in one
+    assert "t_new" not in one
+    assert one.count(' failed"') == 1
+    assert "t_new" in two
+
+
+def test_results_open_state_is_remembered_in_the_browser(world, monkeypatch, tmp_path):
+    _job(world, "run-a", world.wt, target="t_a")
+
+    with _client(world, monkeypatch) as client:
+        first = _reply(client, world.wt)
+        _job(world, "run-b", world.wt, target="t_b", ended="2026-10-08T10:00:10Z")
+        second = _reply(client, world.wt)
+        js = _page_js(client)
+    probes = {
+        storage: _run_page(
+            js,
+            {
+                "search": _search(world.wt),
+                "storage": storage,
+                "toggle_after": 0,
+                "responses": [first, second],
+            },
+            tmp_path / storage,
+        )
+        for storage in ("working", "blocked")
+    }
+
+    for storage, probe in probes.items():
+        one, two = probe["renders"]
+        assert '<details id="results-section">' in one, storage
+        assert '<details id="results-section" open>' in two, storage
+        assert "t_b" in two, storage
+    assert probes["working"]["storage"] == {"booley.dashboard.results-open": "true"}
+    assert probes["blocked"]["storage"] == {}
+
+
+def test_unchanged_results_are_not_rewritten(world, monkeypatch, tmp_path):
+    _job(
+        world, "run-r", world.wt, target="t_run", status="running", ended=None, pid=7001, live=True
+    )
+    _job(world, "run-a", world.wt, target="t_a")
+
+    with _client(world, monkeypatch) as client:
+        first = _reply(client, world.wt)
+        monkeypatch.setattr(_snapshot_module(), "wall_clock", lambda: NOW + 5)
+        second = _reply(client, world.wt)
+        probe = _run_page(
+            _page_js(client),
+            {"search": _search(world.wt), "responses": [first, second]},
+            tmp_path,
+        )
+
+    assert first["body"]["results"] == second["body"]["results"]
+    assert first["body"]["now"] != second["body"]["now"]
+    assert probe["writes"] == {"live": 2, "results": 1}
+
+
+def test_empty_worktree_says_no_jobs_have_run(world, monkeypatch, tmp_path):
+    _job(world, "run-main", world.main, target="elsewhere")
+    (world.cgroup / "memory.max").write_bytes(b"max\n")
+
+    with _client(world, monkeypatch) as client:
+        reply = _reply(client, world.wt)
+        probe = _run_page(
+            _page_js(client),
+            {"search": _search(world.wt), "responses": [reply]},
+            tmp_path,
+        )
+
+    assert reply["body"]["header"]["resources"]["memory_limit_bytes"] is None
+    (render,) = probe["renders"]
+    assert "No Jobs have run in this worktree yet." in render
+    assert "(no limit)" in render
+    assert "<details" not in render
+    for bad in ("NaN", "undefined", "null", "elsewhere"):
+        assert bad not in render
+
+
+def test_page_shows_the_snapshot_error_instead_of_jobs(world, tmp_path, monkeypatch):
+    deleted = tmp_path / "deleted"
+    git(world.main, "worktree", "add", "-q", "-b", "booley/deleted", str(deleted), "HEAD")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    nowhere = tmp_path / "nowhere"
+    for path in (deleted, outside, nowhere):
+        _job(world, f"run-{path.name}", path, target="leak")
+    _job(world, "run-earlier", world.wt, target="earlier")
+
+    with _client(world, monkeypatch) as client:
+        good_wt = _reply(client, world.wt)
+        good_deleted = _reply(client, deleted)
+        shutil.rmtree(deleted)
+        scenarios = {
+            "missing": ("", [_reply(client, "")]),
+            "unknown": (_search(nowhere), [_reply(client, nowhere)]),
+            "outside": (_search(outside), [_reply(client, outside)]),
+            "deleted": (_search(deleted), [good_deleted, _reply(client, deleted)]),
+            "server-gone": (_search(world.wt), [good_wt, {"reject": "connection refused"}]),
+            "not-json": (_search(world.wt), [good_wt, {"status": 500, "text": "oops"}]),
+        }
+        js = _page_js(client)
+    assert scenarios["deleted"][1][-1]["status"] == 404
+
+    for kind, (search, responses) in scenarios.items():
+        probe = _run_page(js, {"search": search, "responses": responses}, tmp_path / kind)
+        last = probe["renders"][-1]
+        expected = {"server-gone": "did not answer", "not-json": "HTTP 500"}.get(
+            kind
+        ) or responses[-1]["body"]["error"]
+        assert expected in last, kind
+        assert 'class="error"' in last, kind
+        for bad in ("leak", "earlier", "<details"):
+            assert bad not in last, (kind, bad)

@@ -20,7 +20,7 @@ from hypothesis.stateful import (
 
 from booley.runtime import job_slots
 from booley.runtime.job_slots import MemoryClaim, SlotStore, SlotToken
-from booley.runtime.pid import DEAD, REUSED, RUNNING, ProcessIdentity, ProcessObservation
+from tests.job_slot_steps import FakeProcessWorld
 
 # Each step touches the real slot store on disk, so input generation slows down
 # on a loaded host; that wall-clock health check and Hypothesis's per-example deadline
@@ -47,50 +47,6 @@ _PRIORITY = {job_slots.ROLE_INTERACTIVE: 0, "background": 1}
 # Equal reservations that fill the budget: exactly two claims hold at once.
 _SLOTS = 2
 _CLAIM = MemoryClaim(budget_mb=2, reservation_mb=1)
-
-
-class FakeProcessWorld:
-    """Clock and durable identities for simulated process owners."""
-
-    def __init__(self) -> None:
-        self.clock = 1_000_000.0
-        self.alive: set[int] = set()
-        self.generations = dict.fromkeys(_PIDS, 0)
-
-    def start(self, pid: int) -> None:
-        if pid not in self.alive:
-            self.generations[pid] += 1
-            self.alive.add(pid)
-
-    def stop(self, pid: int) -> None:
-        self.alive.discard(pid)
-
-    def reuse(self, pid: int) -> None:
-        self.generations[pid] += 1
-        self.alive.add(pid)
-
-    def is_pid_alive(self, pid: int) -> bool:
-        return pid in self.alive
-
-    def read_cmdline(self, pid: int) -> list[str] | None:
-        if pid not in self.alive:
-            return None
-        return ["fake-owner", str(pid), str(self.generations[pid])]
-
-    def now(self) -> float:
-        return self.clock
-
-    def capture_identity(self, pid: int) -> ProcessIdentity | None:
-        if pid not in self.alive:
-            return None
-        return ProcessIdentity(pid, "fake-pid-namespace", self.generations[pid])
-
-    def observe_identity(self, identity: ProcessIdentity) -> ProcessObservation:
-        if identity.pid not in self.alive:
-            return ProcessObservation(DEAD)
-        if self.generations[identity.pid] != identity.start_ticks:
-            return ProcessObservation(REUSED)
-        return ProcessObservation(RUNNING)
 
 
 @dataclass

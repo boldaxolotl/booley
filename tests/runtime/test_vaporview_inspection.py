@@ -7,7 +7,10 @@ session (``runtime_context`` and ``session_runtime``); Doctor is not involved.
 
 from __future__ import annotations
 
+import contextlib
+import dataclasses
 import functools
+import io
 import json
 import os
 import pathlib
@@ -64,6 +67,7 @@ _VERSION_FIX = (
 )
 
 _P, _S, _F = Severity.PASS, Severity.SKIP, Severity.FAIL
+_ROOT = ".vscode-server"
 
 # The patch line follows the version line; `_inspect` hides it.
 _PATCH = f"VaporView {_VERIFIED} carries Booley's Sandbox patch"
@@ -110,27 +114,38 @@ def _bridges(*entries: dict) -> _Reply:
     return _Reply(stdout=json.dumps({"bridges": list(entries)}))
 
 
-def _versions(*versions: str) -> _Reply:
-    return _Reply(stdout=json.dumps(list(versions)))
+def _versions(*versions: str, roots: tuple[str, ...] = (_ROOT,)) -> _Reply:
+    """The versions probe's answer: the same live versions in every attached root."""
+    return _Reply(stdout=json.dumps({root: list(versions) for root in roots}))
+
+
+def _attached(*roots: str, unidentified: int = 0) -> _Reply:
+    """The extension-host probe's answer: hosts in these roots and ``unidentified`` elsewhere."""
+    return _Reply(stdout=json.dumps({"roots": list(roots), "unidentified": unidentified}))
 
 
 @functools.cache
-def _sources() -> dict[str, str]:
+def _sources(roots: tuple[str, ...] = (_ROOT,)) -> dict[str, str]:
     """Probe name -> its source text; the fake process dispatches on the source."""
     return {
         "host": vaporview._VSCODE_EXTENSION_HOST_PROBE_SOURCE,
-        "versions": vaporview._VAPORVIEW_VERSIONS_PROBE_SOURCE,
+        "versions": vaporview._vaporview_versions_probe_source(roots),
         "patch": vaporview._VAPORVIEW_PATCH_PROBE_SOURCE,
         "bridges": vaporview._VIEWER_BRIDGE_PROBE_SOURCE,
         "state": vaporview._VAPORVIEW_STATE_PROBE_SOURCE,
-        "bundled": vaporview._bundled_extensions_probe_source(devcontainer.BUNDLED_EXTENSIONS),
+        "bundled": vaporview._bundled_extensions_probe_source(
+            devcontainer.BUNDLED_EXTENSIONS, roots
+        ),
     }
 
 
-def _bundled(*observations: tuple[list[str] | None, bool]) -> _Reply:
+def _bundled(
+    *observations: tuple[list[str] | None, bool], roots: tuple[str, ...] = (_ROOT,)
+) -> _Reply:
     """The bundled-extension probe's answer: (versions, VSIX present) per extension.
 
-    "=" in a versions list stands for the version the Sandbox Image bundles.
+    "=" in a versions list stands for the version the Sandbox Image bundles;
+    every attached root has the same versions.
     """
     answer = {}
     for extension, (versions, vsix) in zip(
@@ -139,7 +154,10 @@ def _bundled(*observations: tuple[list[str] | None, bool]) -> _Reply:
         shown = (
             None if versions is None else [extension.version if v == "=" else v for v in versions]
         )
-        answer[extension.extension_id] = {"versions": shown, "vsix": vsix}
+        answer[extension.extension_id] = {
+            "versions": dict.fromkeys(roots, shown),
+            "vsix": vsix,
+        }
     return _Reply(stdout=json.dumps(answer))
 
 
@@ -152,7 +170,7 @@ class _Sandbox:
 
     replies: dict[str, _Reply] = field(
         default_factory=lambda: {
-            "host": _Reply(0),
+            "host": _attached(_ROOT),
             "versions": _versions(_VERIFIED),
             "patch": _patch("patched"),
             "bridges": _bridges(_HEALTHY),
@@ -160,6 +178,13 @@ class _Sandbox:
         }
     )
     calls: list[list[str]] = field(default_factory=list)
+    roots: tuple[str, ...] = (_ROOT,)
+
+    def attach(self, *roots: str, unidentified: int = 0) -> None:
+        """Place extension hosts in these roots (and ``unidentified`` elsewhere)."""
+        self.roots = roots
+        self.replies["host"] = _attached(*roots, unidentified=unidentified)
+        self.replies["versions"] = _versions(_VERIFIED, roots=roots)
 
     def run(self, argv, **kwargs):
         """Stand in for ``subprocess.run``; an argv no test planned for fails the test."""
@@ -167,14 +192,14 @@ class _Sandbox:
         self.calls.append(command)
         matches = [
             name
-            for name, source in _sources().items()
+            for name, source in _sources(self.roots).items()
             if command[-3:] == ["python3", "-c", source]
         ]
         if len(matches) != 1:
             pytest.fail(f"unplanned process: {command}")
         assert kwargs["timeout"] == 20
         # Built on demand: it reads the bundled pins, so the fixture stays cheap.
-        reply = self.replies.get(matches[0]) or _bundled(_GOOD, _GOOD)
+        reply = self.replies.get(matches[0]) or _bundled(_GOOD, _GOOD, roots=self.roots)
         if reply.error is not None:
             raise reply.error
         return subprocess.CompletedProcess(command, reply.returncode, reply.stdout, "")
@@ -182,7 +207,7 @@ class _Sandbox:
     def probes(self) -> list[str]:
         """The probes run, in order, by name."""
         return [
-            next(name for name, source in _sources().items() if call[-1] == source)
+            next(name for name, source in _sources(self.roots).items() if call[-1] == source)
             for call in self.calls
         ]
 
@@ -304,7 +329,7 @@ _OUTCOMES = [
         "docker",
         _CONTAINER,
         {"host": _Reply(1)},
-        _PASS_BOTH,
+        [(_S, f"{_VERSION} - extension host probe could not run{_WHERE}", ""), (_P, _BRIDGE, "")],
         id="unknown-extension-host-proceeds",
     ),
     pytest.param(False, "docker", _CONTAINER, {}, _PASS_BOTH, id="verified-and-healthy"),
@@ -625,13 +650,21 @@ def test_extension_host_probe_exit_codes(tmp_path, monkeypatch, sandbox, returnc
 
 
 def _run_extension_host_probe(monkeypatch, tmp_path, cmdlines):
-    """Execute the real probe source against fake /proc cmdline files; return its exit code."""
+    """Execute the real probe source against a fake /proc and home; return (exit code, stdout).
+
+    Each cmdline is a callable taking the fake home, or None for a process
+    that exits between glob and read.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    for name in ("HOME", "USERPROFILE"):  # Path.home() on POSIX and on Windows
+        monkeypatch.setenv(name, str(home))
     fakes = []
     for index, cmdline in enumerate(cmdlines):
-        path = tmp_path / str(index) / "cmdline"
-        if cmdline is not None:  # None = a process that exits between glob and read
-            path.parent.mkdir()
-            path.write_bytes(cmdline)
+        path = tmp_path / "proc" / str(index) / "cmdline"
+        if cmdline is not None:
+            path.parent.mkdir(parents=True)
+            path.write_bytes(cmdline(home))
         fakes.append(path)
     real_glob = pathlib.Path.glob
 
@@ -641,28 +674,69 @@ def _run_extension_host_probe(monkeypatch, tmp_path, cmdlines):
         return real_glob(self, pattern, *args, **kwargs)
 
     monkeypatch.setattr(pathlib.Path, "glob", glob)
-    with pytest.raises(SystemExit) as exited:
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out), pytest.raises(SystemExit) as exited:
         exec(compile(vaporview._VSCODE_EXTENSION_HOST_PROBE_SOURCE, "<probe>", "exec"), {})
-    return exited.value.code
+    return exited.value.code, out.getvalue()
 
 
-_EXTENSION_HOST_CMDLINE = b"/vscode/node\x00/vscode/out/bootstrap-fork\x00--type=extensionHost\x00"
+def _host_cmdline(relative):
+    """The cmdline of an extension host whose bootstrap lives at ``relative`` under the home."""
+
+    def build(home):
+        program = str(home / relative / "out" / "bootstrap-fork").removesuffix("bootstrap-fork")
+        return b"node\x00" + program.encode() + b"bootstrap-fork\x00--type=extensionHost\x00"
+
+    return build
+
+
+_SLEEP = lambda _home: b"/usr/bin/sleep\x00100\x00"  # noqa: E731
+_PTY_HOST = lambda _home: b"/vscode/out/bootstrap-fork\x00--type=ptyHost\x00"  # noqa: E731
+_STABLE_PROC = _host_cmdline(Path(".vscode-server") / "bin" / "abc")
+_INSIDERS_PROC = _host_cmdline(
+    Path(".vscode-server-insiders") / "cli" / "servers" / "I-abc" / "server"
+)
+_ELSEWHERE_PROC = _host_cmdline(Path("agent") / "bin" / "abc")
+# A path that merely starts like a root name is not that root.
+_LOOKALIKE_PROC = _host_cmdline(Path(".vscode-server-other") / "bin" / "abc")
+_OUTSIDE_HOME = lambda _home: b"/vscode/out/bootstrap-fork\x00--type=extensionHost\x00"  # noqa: E731
 
 
 @pytest.mark.parametrize(
     ("cmdlines", "expected"),
     [
-        ([b"/usr/bin/sleep\x00100\x00", None, _EXTENSION_HOST_CMDLINE], 0),
-        ([b"/vscode/out/bootstrap-fork\x00--type=ptyHost\x00", None], 3),
-        ([], 3),
+        ([_SLEEP, None, _STABLE_PROC], (0, {"roots": [_ROOT], "unidentified": 0})),
+        (
+            [_INSIDERS_PROC, _STABLE_PROC, _STABLE_PROC],
+            (0, {"roots": [_ROOT, ".vscode-server-insiders"], "unidentified": 0}),
+        ),
+        ([_ELSEWHERE_PROC], (0, {"roots": [], "unidentified": 1})),
+        ([_LOOKALIKE_PROC, _OUTSIDE_HOME], (0, {"roots": [], "unidentified": 2})),
+        (
+            [_STABLE_PROC, _ELSEWHERE_PROC],
+            (0, {"roots": [_ROOT], "unidentified": 1}),
+        ),
+        ([_PTY_HOST, None], (3, None)),
+        ([], (3, None)),
+    ],
+    ids=[
+        "stable",
+        "stable-and-insiders",
+        "custom-folder",
+        "lookalike-and-outside-home",
+        "mapped-and-unmapped",
+        "pty-host-only",
+        "empty-table",
     ],
 )
-def test_extension_host_probe_source_runs_and_reports_attachment(
+def test_extension_host_probe_source_maps_hosts_to_roots(
     monkeypatch, tmp_path, cmdlines, expected
 ):
-    # The probe runs as `python3 -c` in the Sandbox, so execute the real source:
-    # a syntax error used to exit 1, which read as "no window attached".
-    assert _run_extension_host_probe(monkeypatch, tmp_path, cmdlines) == expected
+    # The probe runs as `python3 -c` in the Sandbox, so execute the real source
+    # against a fake process table and home directory.
+    code, stdout = _run_extension_host_probe(monkeypatch, tmp_path, cmdlines)
+
+    assert (code, json.loads(stdout) if stdout else None) == expected
 
 
 _PROBE_SOURCE_NAMES = sorted(n for n in dir(vaporview) if n.endswith("_PROBE_SOURCE"))
@@ -967,23 +1041,27 @@ _PROBE_FAILURES = [
     pytest.param(_Reply(0, "not json"), id="garbage"),
     pytest.param(_Reply(0, "[]"), id="not-object"),
     pytest.param(
-        _Reply(0, '{"ms-vscode.live-server": {"versions": [], "vsix": true}}'), id="missing-entry"
+        _Reply(0, '{"ms-vscode.live-server": {"versions": {".vscode-server": []}, "vsix": true}}'),
+        id="missing-entry",
     ),
     pytest.param(
         _Reply(
             0,
-            '{"mshr-h.veriloghdl": {"versions": "1.29.0", "vsix": true},'
-            ' "ms-vscode.live-server": {"versions": [], "vsix": true}}',
+            '{"mshr-h.veriloghdl": {"versions": {".vscode-server": "1.29.0"}, "vsix": true},'
+            ' "ms-vscode.live-server": {"versions": {".vscode-server": []}, "vsix": true}}',
         ),
         id="bad-versions",
     ),
     pytest.param(
         _Reply(
             0,
-            '{"mshr-h.veriloghdl": {"versions": [], "vsix": "yes"},'
-            ' "ms-vscode.live-server": {"versions": [], "vsix": true}}',
+            '{"mshr-h.veriloghdl": {"versions": {".vscode-server": []}, "vsix": "yes"},'
+            ' "ms-vscode.live-server": {"versions": {".vscode-server": []}, "vsix": true}}',
         ),
         id="bad-vsix",
+    ),
+    pytest.param(
+        _Reply(0, '{"mshr-h.veriloghdl": {"versions": {}, "vsix": true}}'), id="missing-root"
     ),
     pytest.param(_Reply(error=FileNotFoundError("docker")), id="no-docker"),
     pytest.param(_Reply(error=subprocess.TimeoutExpired("docker", 20)), id="timeout"),
@@ -1031,6 +1109,10 @@ def test_bundled_extensions_probe_source_runs_against_a_real_registry(tmp_path):
     """The probe text runs as `python3 -c`: keys, the registry read and the file test."""
     registry = tmp_path / ".vscode-server" / "extensions"
     registry.mkdir(parents=True)
+    # An Insiders registry of another build is not among the roots asked for.
+    other = tmp_path / ".vscode-server-insiders" / "extensions"
+    other.mkdir(parents=True)
+    (other / "extensions.json").write_text("not read", encoding="utf-8")
     entry = {"identifier": {"id": "mshr-h.veriloghdl"}, "version": "1.29.0"}
     (registry / "extensions.json").write_text(json.dumps([entry]), encoding="utf-8")
     present = tmp_path / "present.vsix"
@@ -1041,7 +1123,8 @@ def test_bundled_extensions_probe_source_runs_against_a_real_registry(tmp_path):
             vaporview.BundledExtension(
                 "B", "ms-vscode.live-server", "0.4.20", str(tmp_path / "absent.vsix")
             ),
-        ]
+        ],
+        (_ROOT, ".vscode-remote"),
     )
     env = {
         **os.environ,
@@ -1054,6 +1137,309 @@ def test_bundled_extensions_probe_source_runs_against_a_real_registry(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {
-        "mshr-h.veriloghdl": {"versions": ["1.29.0"], "vsix": True},
-        "ms-vscode.live-server": {"versions": [], "vsix": False},
+        "mshr-h.veriloghdl": {
+            "versions": {_ROOT: ["1.29.0"], ".vscode-remote": None},
+            "vsix": True,
+        },
+        "ms-vscode.live-server": {"versions": {_ROOT: [], ".vscode-remote": None}, "vsix": False},
     }
+
+
+def _fake_probe_process(monkeypatch, tmp_path, hosts):
+    """A ``subprocess.run`` that runs each probe source in-process against ``tmp_path`` as home.
+
+    ``hosts`` are the extension-host program paths under ``tmp_path``; the
+    fake ``/proc`` holds one cmdline file per host. The bridge probe answers
+    healthy.
+    """
+    for name in ("HOME", "USERPROFILE"):  # Path.home() on POSIX and on Windows
+        monkeypatch.setenv(name, str(tmp_path))
+    fakes = []
+    for index, host in enumerate(hosts):
+        cmdline = tmp_path / "proc" / str(index) / "cmdline"
+        cmdline.parent.mkdir(parents=True)
+        program = str(tmp_path / host).encode()
+        cmdline.write_bytes(b"node\x00" + program + b"\x00--type=extensionHost\x00")
+        fakes.append(cmdline)
+    real_glob = pathlib.Path.glob
+
+    def glob(self, pattern, *args, **kwargs):
+        if self == pathlib.Path("/proc"):
+            return iter(fakes)
+        return real_glob(self, pattern, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "glob", glob)
+
+    def run(argv, **kwargs):
+        source = argv[-1]
+        if "doctor_summary" in source:
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"bridges": [_HEALTHY]}), "")
+        out = io.StringIO()
+        code = 0
+        with contextlib.redirect_stdout(out):
+            try:
+                exec(compile(source, "<probe>", "exec"), {})
+            except SystemExit as exited:
+                code = exited.code
+        return subprocess.CompletedProcess(argv, code, out.getvalue(), "")
+
+    monkeypatch.setattr(vaporview.subprocess, "run", run)
+
+
+def _write_registry(tmp_path, root, installed):
+    """One server root's extensions.json holding ``installed`` (extension ID -> version)."""
+    registry = tmp_path / root / "extensions"
+    registry.mkdir(parents=True)
+    entries = [{"identifier": {"id": ext}, "version": v} for ext, v in installed.items()]
+    (registry / "extensions.json").write_text(json.dumps(entries), encoding="utf-8")
+
+
+_STABLE, _INSIDERS = ".vscode-server", ".vscode-server-insiders"
+_STABLE_HOST = f"{_STABLE}/bin/abc/out/bootstrap-fork"
+_INSIDERS_HOST = f"{_INSIDERS}/cli/servers/Insiders-abc/server/out/bootstrap-fork"
+_OUTSIDE = "VS Code extension host runs outside a known VS Code server root"
+
+
+@pytest.mark.parametrize("case", ["stable-empty-insiders-bundled", "custom-agent-folder", "both"])
+def test_extension_checks_read_only_attached_roots(tmp_path, monkeypatch, case):
+    """The three extension lines judge the roots with a live host, never the union."""
+    _host(monkeypatch, inside=True)
+    hdl, live = devcontainer.BUNDLED_EXTENSIONS
+    vsix = []
+    for extension in (hdl, live):
+        path = tmp_path / f"{extension.name}.vsix"
+        path.write_bytes(b"")
+        vsix.append(dataclasses.replace(extension, vsix=str(path)))
+    hdl, live = vsix
+    monkeypatch.setattr(devcontainer, "BUNDLED_EXTENSIONS", (hdl, live))
+    everything = {
+        vaporview.EXTENSION_ID: _VERIFIED,
+        hdl.extension_id: hdl.version,
+        live.extension_id: live.version,
+    }
+    desc_hdl = f"{hdl.name} extension is the bundled {hdl.version}"
+    desc_live = f"{live.name} extension is the bundled {live.version}"
+    if case == "stable-empty-insiders-bundled":
+        _write_registry(tmp_path, _STABLE, {})
+        _write_registry(tmp_path, _INSIDERS, everything)
+        hosts = [_STABLE_HOST]
+        expected = [
+            (_S, f"{_VERSION} - VaporView not installed", ""),
+            (_F, f"{hdl.name} extension ({hdl.extension_id}) is not installed", _install_fix(hdl)),
+            (
+                _F,
+                f"{live.name} extension ({live.extension_id}) is not installed",
+                _install_fix(live),
+            ),
+        ]
+    elif case == "custom-agent-folder":
+        _write_registry(tmp_path, _STABLE, everything)
+        hosts = ["agent/bin/abc/out/bootstrap-fork"]
+        expected = [
+            (_S, f"{description} - {_OUTSIDE}", "")
+            for description in (_VERSION, desc_hdl, desc_live)
+        ]
+    else:
+        _write_registry(tmp_path, _STABLE, everything)
+        _write_registry(tmp_path, _INSIDERS, {**everything, hdl.extension_id: "9.9.9"})
+        hosts = [_STABLE_HOST, _INSIDERS_HOST]
+        both = f"[{_STABLE}] {{0}}; [{_INSIDERS}] {{0}}"
+        expected = [
+            (_P, both.format(_VERSION), ""),
+            (
+                _F,
+                f"[{_INSIDERS}] {hdl.name} 9.9.9 is installed; the Sandbox Image bundles "
+                f"{hdl.version}; [{_STABLE}] {desc_hdl}",
+                _install_fix(hdl),
+            ),
+            (_P, both.format(desc_live), ""),
+        ]
+    _fake_probe_process(monkeypatch, tmp_path, hosts)
+
+    everything_found = _inspect_all(tmp_path, None)
+    # The patch line appears only once every attached root runs the verified build.
+    patch_lines = [f for f in everything_found if "Sandbox patch" in f[1]]
+    findings = [f for f in everything_found if "Sandbox patch" not in f[1]]
+
+    assert len(patch_lines) == (case == "both")
+    assert [findings[0], *findings[2:]] == expected
+    assert findings[1] == (_P, _BRIDGE, "")
+
+
+def _two_roots(sandbox, versions, bundled=None):
+    """Attach Stable and Insiders; ``versions`` maps root -> VaporView versions."""
+    sandbox.attach(_STABLE, _INSIDERS)
+    sandbox.replies["versions"] = _Reply(stdout=json.dumps(versions))
+    if bundled is not None:
+        sandbox.replies["bundled"] = bundled
+
+
+@pytest.mark.parametrize(
+    ("versions", "expected"),
+    [
+        (
+            {_STABLE: [_VERIFIED], _INSIDERS: ["9.9.9"]},
+            (
+                _F,
+                f"[{_INSIDERS}] VaporView 9.9.9 is installed{_WHERE}; Booley verifies only "
+                f"{_VERIFIED}; [{_STABLE}] {_VERSION}",
+                _VERSION_FIX,
+            ),
+        ),
+        (
+            {_STABLE: [], _INSIDERS: [_VERIFIED]},
+            (
+                _S,
+                f"[{_STABLE}] {_VERSION} - VaporView not installed{_WHERE}; [{_INSIDERS}] {_VERSION}",
+                "",
+            ),
+        ),
+        (
+            {_STABLE: [_VERIFIED], _INSIDERS: None},
+            (
+                _S,
+                f"[{_INSIDERS}] {_VERSION} - version probe could not run{_WHERE}; "
+                f"[{_STABLE}] {_VERSION}",
+                "",
+            ),
+        ),
+        (
+            {_STABLE: [], _INSIDERS: ["9.9.9"]},
+            (
+                _F,
+                f"[{_INSIDERS}] VaporView 9.9.9 is installed{_WHERE}; Booley verifies only "
+                f"{_VERIFIED}; [{_STABLE}] {_VERSION} - VaporView not installed{_WHERE}",
+                _VERSION_FIX,
+            ),
+        ),
+    ],
+    ids=["fail-and-pass", "skip-and-pass", "unreadable-root", "fail-and-skip"],
+)
+def test_version_line_judges_each_attached_root(
+    tmp_path, monkeypatch, sandbox, versions, expected
+):
+    _host(monkeypatch)
+    _two_roots(sandbox, versions)
+
+    assert _inspect(tmp_path)[0] == expected
+
+
+def test_bundled_lines_judge_each_attached_root(tmp_path, monkeypatch, sandbox):
+    _host(monkeypatch)
+    hdl, live = devcontainer.BUNDLED_EXTENSIONS
+    answer = {
+        hdl.extension_id: {"versions": {_STABLE: [hdl.version], _INSIDERS: []}, "vsix": True},
+        live.extension_id: {
+            "versions": {_STABLE: [live.version], _INSIDERS: [live.version]},
+            "vsix": False,
+        },
+    }
+    _two_roots(
+        sandbox, {_STABLE: [_VERIFIED], _INSIDERS: [_VERIFIED]}, _Reply(stdout=json.dumps(answer))
+    )
+
+    assert _inspect_all(tmp_path)[3:] == [
+        (
+            _F,
+            f"[{_INSIDERS}] {hdl.name} extension ({hdl.extension_id}) is not installed{_WHERE}; "
+            f"[{_STABLE}] {hdl.name} extension is the bundled {hdl.version}",
+            _install_fix(hdl),
+        ),
+        (
+            _F,
+            f"[{_STABLE}] {live.name} {live.version} is installed{_WHERE}, but its bundled VSIX "
+            f"is absent; [{_INSIDERS}] {live.name} {live.version} is installed{_WHERE}, but its "
+            "bundled VSIX is absent",
+            _rebuild_fix(live),
+        ),
+    ]
+
+
+def test_probe_failures_with_several_roots_keep_one_skip_line(tmp_path, monkeypatch, sandbox):
+    _host(monkeypatch)
+    sandbox.attach(_STABLE, _INSIDERS)
+    sandbox.replies["versions"] = _Reply(4)
+    sandbox.replies["bundled"] = _Reply(4)
+
+    findings = _inspect_all(tmp_path)
+
+    assert findings[0] == (_S, f"{_VERSION} - version probe could not run{_WHERE}", "")
+    assert [f[1] for f in findings[2:]] == [
+        f"{e.name} extension is the bundled {e.version} - extension probe could not run{_WHERE}"
+        for e in devcontainer.BUNDLED_EXTENSIONS
+    ]
+
+
+def test_version_probe_answer_must_name_every_attached_root(tmp_path, monkeypatch, sandbox):
+    _host(monkeypatch)
+    sandbox.attach(_STABLE, _INSIDERS)
+    sandbox.replies["versions"] = _Reply(stdout=json.dumps({_STABLE: [_VERIFIED]}))
+
+    assert _inspect(tmp_path)[0] == (_S, f"{_VERSION} - version probe could not run{_WHERE}", "")
+
+
+def test_unplaced_host_beside_a_mapped_one_leaves_the_checks_at_skip(
+    tmp_path, monkeypatch, sandbox
+):
+    _host(monkeypatch)
+    sandbox.attach(_STABLE, unidentified=1)
+
+    findings = _inspect_all(tmp_path)
+
+    descriptions = [
+        _VERSION,
+        *(
+            f"{e.name} extension is the bundled {e.version}"
+            for e in devcontainer.BUNDLED_EXTENSIONS
+        ),
+    ]
+    assert [findings[0], *findings[2:]] == [
+        (_S, f"{d} - {_OUTSIDE}{_WHERE}; [{_STABLE}] {d}", "") for d in descriptions
+    ]
+    assert sandbox.probes() == ["host", "versions", "bridges", "bundled"]
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        _Reply(0, "not json"),
+        _Reply(0, "[]"),
+        _Reply(0, '{"roots": [], "unidentified": 0}'),
+        _Reply(0, '{"roots": [".vscode-server"]}'),
+        _Reply(0, '{"roots": [".vscode-server"], "unidentified": true}'),
+        _Reply(0, '{"roots": [".other"], "unidentified": 0}'),
+        _Reply(0, '{"roots": [5], "unidentified": 0}'),
+        _Reply(1, '{"roots": [".vscode-server"], "unidentified": 0}'),
+        _Reply(error=FileNotFoundError("docker")),
+    ],
+    ids=[
+        "garbage",
+        "not-object",
+        "nothing-attached",
+        "missing-count",
+        "bool-count",
+        "unknown-root-name",
+        "root-not-string",
+        "exit-1",
+        "no-docker",
+    ],
+)
+def test_unreadable_host_answer_skips_the_extension_checks(tmp_path, monkeypatch, sandbox, reply):
+    """No registry is read when the roots are unknown; the bridge check still runs."""
+    _host(monkeypatch)
+    sandbox.replies["host"] = reply
+
+    findings = _inspect_all(tmp_path)
+
+    skipped = [
+        _VERSION,
+        *(
+            f"{e.name} extension is the bundled {e.version}"
+            for e in devcontainer.BUNDLED_EXTENSIONS
+        ),
+    ]
+    assert [findings[0], *findings[2:]] == [
+        (_S, f"{d} - extension host probe could not run{_WHERE}", "") for d in skipped
+    ]
+    assert findings[1] == (_P, _BRIDGE, "")
+    assert sandbox.probes() == ["host", "bridges"]

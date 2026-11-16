@@ -13,10 +13,10 @@ from unittest.mock import Mock
 import pytest
 
 from booley.config.host_config import load_host_policy
+from booley.core.host_shell import quote_arg
 from booley.harness import bootstrap, bootstrap_cli
 from booley.runtime import session_admission
 from booley.runtime.image_lifecycle import Intent
-from booley.runtime.sandbox_apply import quote_arg
 from tests.conftest import require_symlinks
 
 _UNPROXIED = b'[sandbox]\negress = "unproxied"\n'

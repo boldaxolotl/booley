@@ -13,6 +13,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from booley.core.booley_dir_pin import BooleyDirPinError
+from booley.core.host_shell import quote_arg
 from booley.runtime.docs_links import docs_url
 
 __all__ = [
@@ -22,7 +23,6 @@ __all__ = [
     "Attachment",
     "apply_steps",
     "image_is_managed",
-    "quote_arg",
     "shell_command",
 ]
 
@@ -36,13 +36,6 @@ class Attachment(StrEnum):
 
 REBUILD_CONTAINER = "use Dev Containers: Rebuild Container"
 APPLY_DOC_URL = docs_url("SANDBOX.md", "applying-sandbox-changes")
-
-
-def quote_arg(arg: str) -> str:
-    """Quote one argument for the host shell: POSIX ``shlex.quote``, PowerShell on Windows."""
-    if os.name == "nt":
-        return "'" + arg.replace("'", "''") + "'"
-    return shlex.quote(arg)
 
 
 def shell_command(argv: list[str]) -> str:
