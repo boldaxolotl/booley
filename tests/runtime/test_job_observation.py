@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 from pathlib import Path
@@ -548,8 +549,17 @@ def test_history_cuts_never_drop_unfinished_records(tmp_path, monkeypatch):
 _UNFINISHED = "booley.runtime.job_observation._unfinished"
 
 
+_AGES = itertools.count(1_000)
+
+
 def _age(root: Path) -> None:
-    os.utime(root, (1_000, 1_000))
+    """Back-date *root* to a mtime unlike any earlier one.
+
+    Windows reports a directory's creation time as its ctime, so only the mtime tells the
+    index that the directory changed; a repeated value would look like no change there.
+    """
+    stamp = next(_AGES)
+    os.utime(root, (stamp, stamp))
 
 
 def test_unfinished_index_sees_new_records_and_retries_unreadable_ones(tmp_path, monkeypatch):

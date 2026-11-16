@@ -31,7 +31,8 @@ class UnfinishedIndex:
     """Which records of a root are unfinished, parsing each record once.
 
     Every record write is a temporary file renamed into place and every removal an unlink,
-    so any change to a root's records changes the directory's mtime and ctime. A root whose
+    so any change to a root's records changes the directory's mtime (and its ctime on POSIX;
+    Windows reports the creation time as ctime). A root whose
     directory key is unchanged is not listed again; a changed root parses only the records
     whose inode or mtime is new. A refresh that raises commits nothing (``begin``/``complete``).
     """
