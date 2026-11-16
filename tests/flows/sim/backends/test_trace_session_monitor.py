@@ -282,6 +282,8 @@ class TestStallKill:
             lambda _proc: pytest.fail("completed process must not be tree-killed"),
         )
 
+        # Private seam: the race needs the process to exit inside incident I/O at the kill
+        # decision, which `start_monitor` cannot schedule.
         session._kill_stalled_pipeline(0, 30.0, proc, Stream())
 
         assert session.stall_killed is False
@@ -411,10 +413,10 @@ def test_spare_simulator_monitor_ignores_idle_pipe(tmp_path, fake_bwave, monkeyp
         # The monitor ends by itself once the simulator is gone, before any stop request.
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and any(
-            "_monitor_stalls" in t.name for t in threading.enumerate()
+            "monitor_stalls" in t.name for t in threading.enumerate()
         ):
             time.sleep(0.02)
-        assert not any("_monitor_stalls" in t.name for t in threading.enumerate())
+        assert not any("monitor_stalls" in t.name for t in threading.enumerate())
     finally:
         _kill_all(sim_proc)
         session.stop_monitor()
