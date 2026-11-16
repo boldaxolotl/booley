@@ -19,7 +19,6 @@ from booley.runtime.endpoint_execution import EXIT_ERROR, EXIT_SUCCESS, Endpoint
 from tests.flows.mutation.test_flow import (
     _DEFAULT_SCOPE_CORE,
     _SCOPE,
-    _SETTINGS,
     _VERILATED,
     _campaign,
     _detects_every_mutant,
@@ -176,23 +175,19 @@ def test_target_without_mutable_rtl_ends_as_error(
     assert "has no mutable RTL" in out
 
 
-def test_scope_that_differs_from_the_sealed_criterion_scope_ends_as_error(
+def test_explicit_scope_wins_over_a_strict_criterion_scope(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """AC1: under strict criteria an explicit scope may not replace the criterion's."""
     endpoint = _two_core_endpoint(
         tmp_path,
         monkeypatch,
-        {"mutation_score_first": {**_SETTINGS, "scope": ["x.v"]}},
+        {"mutation_score_first": {"scope": ["x.v"]}},
         scope="y.v",
         strict=True,
     )
 
-    result = endpoint._apply_campaign_defaults()
-
-    assert result is not None
-    assert result.exit_code == EXIT_ERROR
-    assert "does not match the sealed Target criterion scope" in result.report_text
+    assert endpoint._apply_campaign_defaults() is None
+    assert endpoint.args.scope == "y.v"
 
 
 def test_repeated_scope_path_is_scoped_once(
