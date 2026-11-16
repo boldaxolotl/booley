@@ -13,26 +13,21 @@ import json
 import os
 import re
 import shlex
-import subprocess
-import sys
 import time
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 
 from booley.flows.sim.adapter_transport import (
-    AdapterTestResult,
     AdapterTransportIdentity,
     partial_result_identity,
     read_adapter_result,
 )
 from booley.flows.sim.backends import cocotb as crun
 from booley.flows.sim.backends import cocotb_results
-from booley.flows.sim.backends.cocotb_results import STATE_OK, CocotbResults, CocotbTest
 from booley.flows.sim.backends.shared import RunTermination
+from booley.flows.sim.backends.supervision import SimulatorLaunch
 from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX
 
 # ---------------------------------------------------------------------------
@@ -41,27 +36,17 @@ from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX
 
 
 class TestBuildCocotbTestFilter:
-    def test_plain_names(self):
+    @pytest.mark.parametrize(
+        ("module", "names", "expected"),
+        [
+            ("test_counter", ["a", "b"], r"^test_counter\.(a|b)$"),
+            ("m", ["only"], r"^m\.(only)$"),
+        ],
+    )
+    def test_names_are_anchored_to_the_module(self, module, names, expected):
         # Fully-qualified anchoring (spike S4): cocotb matches the filter
         # against "<module>.<test>", so bare-name anchors match zero tests.
-        assert crun.build_cocotb_test_filter("test_counter", ["a", "b"]) == (
-            r"^test_counter\.(a|b)$"
-        )
-
-    def test_single_test(self):
-        assert crun.build_cocotb_test_filter("m", ["only"]) == r"^m\.(only)$"
-
-    @pytest.mark.parametrize(
-        "tricky",
-        ["t.est", "te+st", "te[a]st", "t(es)t", "te|st"],
-    )
-    def test_metacharacter_names_match_only_themselves(self, tricky: str):
-        # A test named with regex metacharacters must not widen the match.
-        pattern = re.compile(crun.build_cocotb_test_filter("mod", [tricky, "plain"]))
-        assert pattern.match(f"mod.{tricky}")
-        assert pattern.match("mod.plain")
-        assert not pattern.match("mod.tXest")  # '.' escaped, not a wildcard
-        assert not pattern.match(f"other.{tricky}")  # module anchored
+        assert crun.build_cocotb_test_filter(module, names) == expected
 
     def test_module_with_metacharacters_is_escaped(self):
         pattern = re.compile(crun.build_cocotb_test_filter("pkg.mod", ["t"]))
@@ -93,415 +78,235 @@ class TestBuildCocotbTestFilter:
 
 
 # ---------------------------------------------------------------------------
-# G5 — golden argv / env (cocotb-config stubbed)
+# G5 -- golden argv / env through run_cocotb_sim (cocotb-config and vvp stubbed)
 # ---------------------------------------------------------------------------
 
-_CONFIG_ANSWERS = {
-    ("--version",): "2.1.0",
-    ("--libpython",): "/usr/lib/libpython3.13.so",
-    ("--python-bin",): "/usr/bin/python3",
-    ("--lib-name-path", "vpi", "icarus"): "/site/cocotb/libs/libcocotbvpi_icarus.so",
-    ("--pygpi-entry-point",): "/site/cocotb/simulator.so,initialize",
-}
+_LIBPYTHON = "/usr/lib/libpython3.13.so"
+_GPI_BASE = f"{_LIBPYTHON};/site/cocotb/simulator.so,initialize"
+_EXTENSIONLESS_LIB = "/site/cocotb/libs/libcocotbvpi_icarus"
+_SO = f"{_EXTENSIONLESS_LIB}.so"
+_VVP = ["{vvp}", "-n", "-M{build}", "-m"]
+_IMG = "{build}/sim_image"
 
 
-def _stub_cocotb_config(arg_sets):
-    return [_CONFIG_ANSWERS[tuple(args)] for args in arg_sets]
-
-
-def _stub_cocotb_config_v1(arg_sets):
-    """A cocotb-1.9.2 sandbox (project image pinning a legacy stack)."""
-    return [
-        "1.9.2" if tuple(args) == ("--version",) else _CONFIG_ANSWERS[tuple(args)]
-        for args in arg_sets
-    ]
-
-
-def _stub_cocotb_config_v2_0(arg_sets):
-    """Cocotb 2.0 uses an extensionless path that vvp resolves to ``.vpl``."""
-    return [
-        (
-            "2.0.1"
-            if tuple(args) == ("--version",)
-            else "/site/cocotb/libs/libcocotbvpi_icarus"
-            if tuple(args) == ("--lib-name-path", "vpi", "icarus")
-            else _CONFIG_ANSWERS[tuple(args)]
-        )
-        for args in arg_sets
-    ]
-
-
-def _stub_cocotb_config_no_version(arg_sets):
-    """A cocotb-config whose ``--version`` prints nothing parseable."""
-    return [
-        "unknown" if tuple(args) == ("--version",) else _CONFIG_ANSWERS[tuple(args)]
-        for args in arg_sets
-    ]
-
-
-class TestCocotbSeedEnvironment:
-    """One seed variable is set: the one the installed cocotb reads (ADR 0072)."""
-
-    def _env(self, tmp_path: Path, stub, seed: int | None, ambient: dict[str, str]):
-        with (
-            patch.dict(os.environ, ambient, clear=True),
-            patch.object(crun, "_cocotb_config", side_effect=stub),
-        ):
-            return crun._build_cocotb_env(tmp_path, "m", ["a"], tmp_path / "r.xml", seed)
-
-    @pytest.mark.parametrize("seed", [1, 2**31 - 1])
-    def test_cocotb2_sets_cocotb_random_seed(self, tmp_path: Path, seed: int):
-        env = self._env(tmp_path, _stub_cocotb_config, seed, {})
-        assert env["COCOTB_RANDOM_SEED"] == str(seed)
-        assert "RANDOM_SEED" not in env
-
-    @pytest.mark.parametrize("seed", [1, 2**31 - 1])
-    def test_cocotb1_sets_random_seed(self, tmp_path: Path, seed: int):
-        env = self._env(tmp_path, _stub_cocotb_config_v1, seed, {})
-        assert env["RANDOM_SEED"] == str(seed)
-        assert "COCOTB_RANDOM_SEED" not in env
-
-    def test_an_inherited_seed_never_survives_a_seeded_run(self, tmp_path: Path):
-        ambient = {"RANDOM_SEED": "111", "COCOTB_RANDOM_SEED": "222"}
-        env2 = self._env(tmp_path, _stub_cocotb_config, 5, ambient)
-        assert (env2["COCOTB_RANDOM_SEED"], env2.get("RANDOM_SEED")) == ("5", None)
-        env1 = self._env(tmp_path, _stub_cocotb_config_v1, 5, ambient)
-        assert (env1["RANDOM_SEED"], env1.get("COCOTB_RANDOM_SEED")) == ("5", None)
-
-    def test_an_unseeded_run_leaves_the_environment_alone(self, tmp_path: Path):
-        env = self._env(tmp_path, _stub_cocotb_config, None, {"RANDOM_SEED": "111"})
-        assert env["RANDOM_SEED"] == "111"
-        assert "COCOTB_RANDOM_SEED" not in env
-
-    def test_a_failed_version_probe_is_an_error_for_a_seeded_run(self, tmp_path: Path):
-        with pytest.raises(crun.CocotbSeedError) as excinfo:
-            self._env(tmp_path, _stub_cocotb_config_no_version, 5, {})
-        assert str(excinfo.value) == (
-            "cannot seed the Cocotb run with 5: `cocotb-config --version` did not report "
-            "a version, so the seed variable of the installed cocotb is unknown"
-        )
-
-    def test_a_failed_version_probe_keeps_the_fallback_for_an_unseeded_run(self, tmp_path: Path):
-        env = self._env(tmp_path, _stub_cocotb_config_no_version, None, {})
-        assert "COCOTB_TEST_FILTER" in env
-
-    def test_a_failed_probe_is_reported_as_infrastructure_not_a_verdict(
-        self, tmp_path: Path, capsys
+@pytest.fixture(autouse=True)
+def vvp(cocotb_config, tool_stub, monkeypatch) -> Path:
+    """A cocotb 2.1.0 ``cocotb-config`` and a ``vvp`` on PATH; no ambient cocotb variables."""
+    for name in (
+        "GPI_USERS",
+        "BOOLEY_RUNTIME_DIR",
+        "PYTHONPATH",
+        "RANDOM_SEED",
+        "COCOTB_RANDOM_SEED",
     ):
-        with patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config_no_version):
-            prepared = crun._prepare_invocation(
-                build_dir=tmp_path,
-                eda_tool="icarus",
-                cocotb_module="m",
-                tests=["a"],
-                results_file=tmp_path / "r.xml",
-                work_dir=tmp_path,
-                plusargs=[],
-                vcd=False,
-                seed=5,
-            )
-        assert isinstance(prepared, str) and prepared.startswith("cannot seed the Cocotb run")
-        assert "[SIM_INFRA_ERROR]" in capsys.readouterr().out
+        monkeypatch.delenv(name, raising=False)
+    cocotb_config()
+    return tool_stub("vvp", "exit 0")
 
 
-class TestBuildCocotbEnv:
-    def test_env_golden(self, tmp_path: Path):
-        with (
-            patch.dict(os.environ, {}, clear=True),
-            patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config),
-        ):
-            env = crun._build_cocotb_env(
-                tmp_path,
-                "test_counter",
-                ["a", "b"],
-                tmp_path / "results.xml",
-            )
-        assert env["COCOTB_TEST_MODULES"] == "test_counter"
-        assert env["MODULE"] == "test_counter"  # cocotb <2.0 compat
-        assert env["COCOTB_TEST_FILTER"] == r"^test_counter\.(a|b)$"
-        assert env["LIBPYTHON_LOC"] == "/usr/lib/libpython3.13.so"
-        assert env["PYGPI_PYTHON_BIN"] == "/usr/bin/python3"
-        assert env["GPI_USERS"] == (
-            "/usr/lib/libpython3.13.so;/site/cocotb/simulator.so,initialize"
-        )
-        # C1: the results path is explicit — never guessed.
-        assert env["COCOTB_RESULTS_FILE"] == str(tmp_path / "results.xml")
-        # Spike S1: the build dir is pinned on PYTHONPATH so a project
-        # run_cwd cannot break the module import.
-        assert env["PYTHONPATH"].split(os.pathsep)[0] == str(tmp_path)
-        cache_root = tmp_path / "python-artifacts"
-        assert "PYTHONPYCACHEPREFIX" not in env
-        assert env["PYTHONDONTWRITEBYTECODE"] == "1"
-        pytest_cache = Path(shlex.split(env["PYTEST_ADDOPTS"])[-1].removeprefix("cache_dir="))
-        assert pytest_cache.parent == cache_root / "pytest"
-
-    def test_env_reuses_endpoint_runtime_for_pytest(self, tmp_path: Path):
-        runtime = tmp_path / "runtime"
-        with (
-            patch.dict(os.environ, {"BOOLEY_RUNTIME_DIR": str(runtime)}, clear=True),
-            patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config),
-        ):
-            env = crun._build_cocotb_env(
-                tmp_path / "build",
-                "test_counter",
-                ["a"],
-                tmp_path / "attempt" / "results.xml",
-            )
-
-        pytest_cache = Path(shlex.split(env["PYTEST_ADDOPTS"])[-1].removeprefix("cache_dir="))
-        assert pytest_cache.parent == runtime / "python-artifacts" / "pytest"
-        assert str(tmp_path / "attempt") not in str(pytest_cache)
-
-    def test_2x_dialect_sets_no_testcase(self, tmp_path: Path):
-        # cocotb 2.x removed TESTCASE — the 2.x dialect must never set it.
-        with patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config):
-            env = crun._build_cocotb_env(
-                tmp_path,
-                "test_counter",
-                ["a", "b"],
-                tmp_path / "results.xml",
-            )
-        assert "TESTCASE" not in env
-
-    def test_cocotb1_uses_testcase_dialect(self, tmp_path: Path):
-        # A project image pinning cocotb 1.x (legacy TestFactory TBs) selects
-        # via TESTCASE — 1.x silently ignores COCOTB_TEST_FILTER.
-        with patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config_v1):
-            env = crun._build_cocotb_env(
-                tmp_path,
-                "test_counter",
-                ["run_test_001", "run_test_002"],
-                tmp_path / "results.xml",
-            )
-        assert env["TESTCASE"] == "run_test_001,run_test_002"
-        assert "COCOTB_TEST_FILTER" not in env
-        assert env["MODULE"] == "test_counter"  # 1.x module selector
-        assert "GPI_USERS" not in env
-
-    def test_cocotb2_0_retains_libpython_loc_contract(self, tmp_path: Path):
-        with patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config_v2_0):
-            env = crun._build_cocotb_env(
-                tmp_path,
-                "test_counter",
-                ["a"],
-                tmp_path / "results.xml",
-            )
-
-        assert env["LIBPYTHON_LOC"] == "/usr/lib/libpython3.13.so"
-        assert "GPI_USERS" not in env
-
-    def test_version_probe_failure_defaults_to_2x(self, tmp_path: Path):
-        # An old cocotb-config without --version (or any probe hiccup) must
-        # fall back to the base-image 2.x dialect, not crash the run.
-        def _no_version(arg_sets):
-            if any(tuple(args) == ("--version",) for args in arg_sets):
-                raise subprocess.CalledProcessError(2, "cocotb-config")
-            return _stub_cocotb_config(arg_sets)
-
-        with patch.object(crun, "_cocotb_config", side_effect=_no_version):
-            env = crun._build_cocotb_env(
-                tmp_path,
-                "m",
-                ["a"],
-                tmp_path / "results.xml",
-            )
-        assert env["COCOTB_TEST_FILTER"] == r"^m\.(a)$"
-        assert "TESTCASE" not in env
-
-    def test_no_tests_means_no_filter(self, tmp_path: Path):
-        # An empty selection runs the whole module — no COCOTB_TEST_FILTER,
-        # matching "no test list declared" semantics.
-        with patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config):
-            env = crun._build_cocotb_env(
-                tmp_path,
-                "m",
-                [],
-                tmp_path / "results.xml",
-            )
-        assert "COCOTB_TEST_FILTER" not in env
-        assert "TESTCASE" not in env
-
-    def test_existing_pythonpath_preserved(self, tmp_path: Path):
-        with (
-            patch.dict(os.environ, {"PYTHONPATH": "/existing"}),
-            patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config),
-        ):
-            env = crun._build_cocotb_env(tmp_path, "m", [], tmp_path / "r.xml")
-        assert env["PYTHONPATH"] == f"{tmp_path}{os.pathsep}/existing"
-
-    def test_cocotb2_1_preserves_additional_gpi_users(self, tmp_path: Path):
-        with (
-            patch.dict(os.environ, {"GPI_USERS": "/project/custom.so"}),
-            patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config),
-        ):
-            env = crun._build_cocotb_env(tmp_path, "m", [], tmp_path / "r.xml")
-
-        assert env["GPI_USERS"] == (
-            "/usr/lib/libpython3.13.so;/site/cocotb/simulator.so,initialize;/project/custom.so"
-        )
+def _run(tmp_path: Path, eda_tool: str = "icarus", *, image: bool = True, **kwargs) -> int:
+    """``run_cocotb_sim`` over ``tmp_path/build`` (the image exists unless *image* is False)."""
+    build = tmp_path / "build"
+    build.mkdir(exist_ok=True)
+    if image:
+        (build / ("sim_image.scr" if eda_tool == "icarus" else "Vtop")).write_text("")
+    kwargs.setdefault("cocotb_module", "m")
+    return crun.run_cocotb_sim(build_dir=build, eda_tool=eda_tool, **kwargs)
 
 
-class TestBuildRunCmd:
-    def test_icarus_golden_argv(self, tmp_path: Path):
-        (tmp_path / "sim_image.scr").write_text("")
-        with (
-            patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config),
-            patch("shutil.which", return_value="/usr/bin/vvp"),
-        ):
-            cmd = crun._build_run_cmd(
-                eda_tool="icarus",
-                build_dir=tmp_path,
-                plusargs=["verbose", "+already"],
-                vcd=False,
-            )
-        assert cmd == [
-            "/usr/bin/vvp",
-            "-n",
-            f"-M{tmp_path}",
-            "-m",
-            "/site/cocotb/libs/libcocotbvpi_icarus.so",
-            str(tmp_path / "sim_image"),
-            "+verbose",
-            "+already",
-        ]
-
-    def test_icarus_trace_adds_plusarg(self, tmp_path: Path):
-        (tmp_path / "img.scr").write_text("")
-        with (
-            patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config),
-            patch("shutil.which", return_value="vvp"),
-        ):
-            cmd = crun._build_run_cmd(
-                eda_tool="icarus",
-                build_dir=tmp_path,
-                plusargs=[],
-                vcd=True,
-            )
-        assert cmd[-1] == "+trace"
-
-    def test_icarus_cocotb_2_0_extensionless_library_path(self, tmp_path: Path):
-        (tmp_path / "sim_image.scr").write_text("")
-        with (
-            patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config_v2_0),
-            patch("shutil.which", return_value="vvp"),
-        ):
-            cmd = crun._build_run_cmd(
-                eda_tool="icarus",
-                build_dir=tmp_path,
-                plusargs=[],
-                vcd=False,
-            )
-
-        assert cmd is not None
-        assert cmd[cmd.index("-m") + 1] == "/site/cocotb/libs/libcocotbvpi_icarus"
-
-    def test_icarus_missing_image_returns_none(self, tmp_path: Path):
-        with patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config):
-            assert (
-                crun._build_run_cmd(
-                    eda_tool="icarus",
-                    build_dir=tmp_path,
-                    plusargs=[],
-                    vcd=False,
-                )
-                is None
-            )
-
-    def test_verilator_runs_vtop_not_vtoplevel(self, tmp_path: Path):
-        # Edalize forces --prefix Vtop for cocotb builds: the binary is Vtop,
-        # never V<toplevel> (spike exit note).
-        (tmp_path / "Vtop").write_text("")
-        cmd = crun._build_run_cmd(
-            eda_tool="verilator",
-            build_dir=tmp_path,
-            plusargs=["+p"],
-            vcd=False,
-        )
-        assert cmd == [str(tmp_path / "Vtop"), "+p"]
-
-    def test_verilator_trace_uses_cocotb_main_flags(self, tmp_path: Path):
-        # Spike S3: cocotb's verilator.cpp main owns tracing via getopt flags.
-        (tmp_path / "Vtop").write_text("")
-        cmd = crun._build_run_cmd(
-            eda_tool="verilator",
-            build_dir=tmp_path,
-            plusargs=[],
-            vcd=True,
-        )
-        assert cmd[-3:] == ["--trace", "--trace-file", "dump.vcd"]
-
-    def test_verilator_missing_binary_returns_none(self, tmp_path: Path):
-        assert (
-            crun._build_run_cmd(
-                eda_tool="verilator",
-                build_dir=tmp_path,
-                plusargs=[],
-                vcd=False,
-            )
-            is None
-        )
+def _identity(tmp_path: Path, tests=("t",)) -> AdapterTransportIdentity:
+    return AdapterTransportIdentity(
+        "cocotb", "attempt", "acme:lib:dut:1#sim", tuple(tests), tmp_path / "adapter.json"
+    )
 
 
-# ---------------------------------------------------------------------------
-# D3 — stale-image error (cocotb-config absent)
-# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("seed", [1, 2**31 - 1])
+@pytest.mark.parametrize(
+    ("version", "variable", "absent"),
+    [
+        ("2.1.0", "COCOTB_RANDOM_SEED", "RANDOM_SEED"),
+        ("1.9.2", "RANDOM_SEED", "COCOTB_RANDOM_SEED"),
+    ],
+)
+def test_a_seeded_run_sets_only_the_seed_variable_the_installed_cocotb_reads(
+    tmp_path, cocotb_config, fake_launch, monkeypatch, seed, version, variable, absent
+):
+    """ADR 0072: an inherited value of either variable never survives a seeded run."""
+    cocotb_config(version)
+    monkeypatch.setenv("RANDOM_SEED", "111")
+    monkeypatch.setenv("COCOTB_RANDOM_SEED", "222")
+    _run(tmp_path, tests=["a"], seed=seed)
+    env = fake_launch.launches[0].env
+    assert env[variable] == str(seed)
+    assert absent not in env
 
 
-def test_missing_cocotb_config_names_cause_and_fix(tmp_path: Path, capsys):
-    with patch.object(crun, "_cocotb_config", side_effect=FileNotFoundError):
-        rc = crun.run_cocotb_sim(
-            build_dir=tmp_path,
-            eda_tool="icarus",
-            cocotb_module="m",
-        )
-    assert rc == 1
+@pytest.mark.parametrize("version", ["2.1.0", None])
+def test_an_unseeded_run_leaves_the_environment_alone(
+    tmp_path, cocotb_config, fake_launch, monkeypatch, version
+):
+    cocotb_config(version)  # None: a failed probe keeps the fallback dialect
+    monkeypatch.setenv("RANDOM_SEED", "111")
+    _run(tmp_path, tests=["a"])
+    env = fake_launch.launches[0].env
+    assert env["RANDOM_SEED"] == "111"
+    assert "COCOTB_RANDOM_SEED" not in env
+    assert "COCOTB_TEST_FILTER" in env
+
+
+def test_a_failed_version_probe_is_infrastructure_for_a_seeded_run(
+    tmp_path, cocotb_config, fake_launch, capsys
+):
+    cocotb_config("unknown")
+    assert _run(tmp_path, tests=["a"], seed=5) == 1
     out = capsys.readouterr().out
-    assert "sandbox image predates cocotb support" in out
-    assert "booley bootstrap --update" in out
+    assert fake_launch.launches == []
+    assert (
+        "cannot seed the Cocotb run with 5: `cocotb-config --version` did not report "
+        "a version, so the seed variable of the installed cocotb is unknown"
+    ) in out
+    assert "[SIM_INFRA_ERROR]" in out
+
+
+def test_env_golden(tmp_path, fake_launch, monkeypatch):
+    monkeypatch.setenv("PYTHONPATH", "/existing")
+    monkeypatch.setenv("GPI_USERS", "/project/custom.so")
+    _run(tmp_path, tests=["a", "b"], cocotb_module="test_counter")
+    build = (tmp_path / "build").resolve()
+    env = fake_launch.launches[0].env
+    assert env["COCOTB_TEST_MODULES"] == "test_counter"
+    assert env["MODULE"] == "test_counter"  # cocotb <2.0 compat
+    assert env["COCOTB_TEST_FILTER"] == r"^test_counter\.(a|b)$"
+    assert env["LIBPYTHON_LOC"] == _LIBPYTHON
+    assert env["PYGPI_PYTHON_BIN"] == "/usr/bin/python3"
+    assert env["GPI_USERS"] == f"{_GPI_BASE};/project/custom.so"
+    # C1: the results path is explicit, never guessed.
+    assert env["COCOTB_RESULTS_FILE"] == str(build / "results.xml")
+    # Spike S1: the build dir leads PYTHONPATH so a project run_cwd cannot break the import.
+    assert env["PYTHONPATH"] == f"{build}{os.pathsep}/existing"
+    assert "PYTHONPYCACHEPREFIX" not in env
+    assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+    pytest_cache = Path(shlex.split(env["PYTEST_ADDOPTS"])[-1].removeprefix("cache_dir="))
+    assert pytest_cache.parent.parts[-2:] == ("python-artifacts", "pytest")
+
+
+def test_env_reuses_endpoint_runtime_for_pytest(tmp_path, fake_launch, monkeypatch):
+    """#794: the pytest cache lives under the endpoint runtime, not the attempt directory."""
+    runtime = tmp_path / "runtime"
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime))
+    _run(tmp_path, tests=["a"], cocotb_module="test_counter", work_dir=tmp_path / "attempt")
+    env = fake_launch.launches[0].env
+    pytest_cache = Path(shlex.split(env["PYTEST_ADDOPTS"])[-1].removeprefix("cache_dir="))
+    assert pytest_cache.parent == runtime / "python-artifacts" / "pytest"
+    assert str(tmp_path / "attempt") not in str(pytest_cache)
+
+
+@pytest.mark.parametrize(
+    ("version", "libpath", "tests", "present", "absent"),
+    [
+        (
+            "2.1.0",
+            None,
+            ["a", "b"],
+            {"COCOTB_TEST_FILTER": r"^m\.(a|b)$", "GPI_USERS": _GPI_BASE},
+            ("TESTCASE",),  # cocotb 2.x removed TESTCASE
+        ),
+        (
+            "1.9.2",  # 1.x silently ignores COCOTB_TEST_FILTER
+            None,
+            ["run_test_001", "run_test_002"],
+            {"TESTCASE": "run_test_001,run_test_002", "MODULE": "m"},
+            ("COCOTB_TEST_FILTER", "GPI_USERS"),
+        ),
+        ("2.0.1", _EXTENSIONLESS_LIB, ["a"], {"LIBPYTHON_LOC": _LIBPYTHON}, ("GPI_USERS",)),
+        (None, None, ["a"], {"COCOTB_TEST_FILTER": r"^m\.(a)$"}, ("TESTCASE",)),
+        ("2.1.0", None, [], {}, ("COCOTB_TEST_FILTER", "TESTCASE")),  # no tests: whole module
+    ],
+    ids=["2.1", "1.x", "2.0", "probe-failure", "no-tests"],
+)
+def test_selection_dialect_follows_the_installed_cocotb(
+    tmp_path, cocotb_config, fake_launch, version, libpath, tests, present, absent
+):
+    cocotb_config(version, libpath)
+    _run(tmp_path, tests=tests)
+    env = fake_launch.launches[0].env
+    assert {key: env.get(key) for key in present} == present
+    assert not set(absent) & set(env)
+
+
+@pytest.mark.parametrize(
+    ("eda_tool", "libpath", "plusargs", "vcd", "expected"),
+    [
+        (
+            "icarus",
+            None,
+            ["verbose", "+already"],
+            False,
+            [*_VVP, _SO, _IMG, "+verbose", "+already"],
+        ),
+        ("icarus", None, [], True, [*_VVP, _SO, _IMG, "+trace"]),
+        (
+            "icarus",
+            _EXTENSIONLESS_LIB,  # cocotb 2.0: vvp resolves the extension itself
+            [],
+            False,
+            [*_VVP, _EXTENSIONLESS_LIB, _IMG],
+        ),
+        ("verilator", None, ["+p"], False, ["{build}/Vtop", "+p"]),  # Vtop, never V<toplevel>
+        ("verilator", None, [], True, ["{build}/Vtop", "--trace", "--trace-file", "dump.vcd"]),
+    ],
+    ids=["icarus", "icarus-trace", "icarus-2.0", "verilator", "verilator-trace"],
+)
+def test_run_command_golden(
+    tmp_path, cocotb_config, fake_launch, vvp, eda_tool, libpath, plusargs, vcd, expected
+):
+    cocotb_config("2.0.1" if libpath else "2.1.0", libpath)
+    _run(tmp_path, eda_tool, plusargs=plusargs, vcd=vcd, expected_trace_scope="tb")
+    build = (tmp_path / "build").resolve()
+    assert fake_launch.launches[0].command == [
+        part.format(vvp=vvp, build=build) for part in expected
+    ]
+
+
+@pytest.mark.parametrize(
+    ("eda_tool", "path_empty", "messages"),
+    [
+        ("icarus", True, ("sandbox image predates cocotb support", "booley bootstrap --update")),
+        ("icarus", False, ("no built cocotb sim",)),
+        ("verilator", False, ("no built cocotb sim",)),
+    ],
+    ids=["missing-config", "unbuilt-icarus", "unbuilt-verilator"],
+)
+def test_prerun_failures_are_infrastructure_not_a_verdict(
+    tmp_path, monkeypatch, fake_launch, capsys, eda_tool, path_empty, messages
+):
+    """SETUP-F-41b: nothing ran, so the nonzero exit is not a verdict a grader may score."""
+    if path_empty:
+        (tmp_path / "empty").mkdir()
+        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    assert _run(tmp_path, eda_tool, image=path_empty) == 1
+    out = capsys.readouterr().out
+    assert all(message in out for message in messages)
+    assert SIM_INFRA_ERROR_PREFIX in out
+    build = tmp_path / "build"
+    assert SIM_INFRA_ERROR_PREFIX in (build / "run.log").read_text(encoding="utf-8")
     # result.json records the inconclusive verdict (never a silent pass).
-    result = (tmp_path / "result.json").read_text(encoding="utf-8")
+    result = (build / "result.json").read_text(encoding="utf-8")
     assert '"passed": false' in result
     assert '"inconclusive": true' in result
-
-
-def test_unbuilt_dir_fails_with_message(tmp_path: Path, capsys):
-    with patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config):
-        rc = crun.run_cocotb_sim(
-            build_dir=tmp_path,
-            eda_tool="verilator",
-            cocotb_module="m",
-        )
-    assert rc == 1
-    assert "no built cocotb sim" in capsys.readouterr().out
-
-
-@pytest.mark.parametrize("stub", [_stub_cocotb_config, FileNotFoundError])
-def test_prerun_failures_carry_the_infra_marker(tmp_path: Path, capsys, stub):
-    """SETUP-F-41b: nothing ran, so the nonzero exit is not a verdict. Both
-    pre-run abort paths (unbuilt dir, absent cocotb-config) say so explicitly
-    so a grading caller cannot score them as a killed mutant."""
-    side_effect = stub if stub is not FileNotFoundError else FileNotFoundError()
-    with patch.object(crun, "_cocotb_config", side_effect=side_effect):
-        rc = crun.run_cocotb_sim(build_dir=tmp_path, eda_tool="verilator", cocotb_module="m")
-    assert rc == 1
-    out = capsys.readouterr().out
-    assert SIM_INFRA_ERROR_PREFIX in out
-    assert SIM_INFRA_ERROR_PREFIX in (tmp_path / "run.log").read_text(encoding="utf-8")
+    assert fake_launch.launches == []
 
 
 def test_stale_results_xml_removed_before_run(tmp_path: Path):
     # A stale results.xml from a previous run must never feed verdicts: the
     # run-half deletes it before launching (missing binary aborts right after).
-    stale = tmp_path / crun.RESULTS_XML_NAME
+    build = tmp_path / "build"
+    build.mkdir()
+    stale = build / crun.RESULTS_XML_NAME
     stale.write_text("<testsuites/>")
-    stale_json = tmp_path / crun.FULL_RESULTS_JSON_NAME
+    stale_json = build / crun.FULL_RESULTS_JSON_NAME
     stale_json.write_text('{"state":"ok","tests":[{"name":"old_pass"}]}')
-    with patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config):
-        crun.run_cocotb_sim(
-            build_dir=tmp_path,
-            eda_tool="verilator",
-            cocotb_module="m",
-        )
+    _run(tmp_path, "verilator", image=False)
     assert not stale.exists()
     assert not stale_json.exists()
 
@@ -598,12 +403,7 @@ def test_document_fields_reach_run_cocotb_sim(tmp_path: Path, monkeypatch):
     assert seen["tests"] == []
 
 
-# ---------------------------------------------------------------------------
-# F-25 — frozen simulator clock watchdog wiring
-# ---------------------------------------------------------------------------
-
-
-def test_stall_diagnosis_replaces_the_useless_missing_xml_detail(tmp_path: Path, capsys):
+def test_stall_diagnosis_replaces_the_useless_missing_xml_detail(tmp_path, fake_launch, capsys):
     """F-25: a frozen run loop names itself instead of 'results.xml not found'.
 
     The guard killed the sim before cocotb wrote any XML, so the parser can only
@@ -611,45 +411,57 @@ def test_stall_diagnosis_replaces_the_useless_missing_xml_detail(tmp_path: Path,
     """
     from booley.flows.sim.run_guard import format_sim_time_stall
 
-    output = (
-        "     0.00ns INFO     cocotb.regression   running test_ravenoc\n"
-        f"ERROR: {format_sim_time_stall(180)}\n"
-    )
-    combined, passed, _ = crun._evaluate_verdict(
-        output,
-        returncode=0,
-        timed_out=False,
-        work_dir=tmp_path,
-        results_file=tmp_path / "results.xml",
-        tests=["test_ravenoc"],
-    )
-    assert passed is False
-    assert "run-loop version mismatch" in combined
+    fake_launch.output = [
+        "     0.00ns INFO     cocotb.regression   running test_ravenoc\n",
+        f"ERROR: {format_sim_time_stall(180)}\n",
+    ]
+    assert _run(tmp_path, tests=["test_ravenoc"]) == 1
+    out = capsys.readouterr().out
+    assert "run-loop version mismatch" in out
     # The verdict line quotes the promoted detail, not "results.xml not found".
-    assert "results.xml not found" not in capsys.readouterr().out.split("INCONCLUSIVE")[-1]
+    assert "results.xml not found" not in out.split("INCONCLUSIVE")[-1]
+
+
+def test_the_launch_carries_the_command_environment_and_guard_inputs(tmp_path, fake_launch):
+    identity = _identity(tmp_path, ("t1",))
+    _run(
+        tmp_path,
+        "verilator",
+        tests=["t1"],
+        timeout=77,
+        max_rundir_bytes=1234,
+        sim_time_grace_s=9.5,
+        runtime_inputs=("mem.hex",),
+        transport=identity,
+    )
+    (launch,) = fake_launch.launches
+    build = (tmp_path / "build").resolve()
+    assert callable(launch.on_line)
+    assert replace(launch, on_line=None) == SimulatorLaunch(
+        "cocotb", [str(build / "Vtop")], build, launch.env, 77, build, 1234, ("mem.hex",), 9.5
+    )
+    assert launch.env["COCOTB_TEST_FILTER"] == r"^m\.(t1)$"
 
 
 def test_partial_cocotb_abort_preserves_completed_test_and_publishes_termination(
-    tmp_path: Path,
+    tmp_path, fake_launch
 ) -> None:
-    identity = AdapterTransportIdentity(
-        "cocotb", "attempt", "acme:lib:dut:1#sim", ("done", "later"), tmp_path / "adapter.json"
-    )
-    results = CocotbResults(
-        state=STATE_OK, tests=(CocotbTest("done", "test_demo", "pass", elapsed_s=0.1),)
-    )
-    termination = RunTermination(
+    """#838: an abort keeps the test that completed and marks the rest by the abort."""
+    identity = _identity(tmp_path, ("done", "later"))
+
+    def write_results(launch):
+        Path(launch.env["COCOTB_RESULTS_FILE"]).write_text(
+            '<testsuites><testsuite><testcase name="done" classname="test_demo" time="0.1"/>'
+            "</testsuite></testsuites>",
+            encoding="utf-8",
+        )
+
+    fake_launch.during = write_results
+    fake_launch.returncode = -15
+    fake_launch.termination = RunTermination(
         "sim_time_stall", "simulator time did not advance", "infrastructure"
     )
-
-    crun._publish_adapter_result(
-        identity,
-        "",
-        False,
-        results=results,
-        termination=termination,
-        simulator_returncode=-15,
-    )
+    _run(tmp_path, tests=["done", "later"], transport=identity)
 
     result = read_adapter_result(identity)
     assert result.termination == "sim_time_stall"
@@ -662,10 +474,8 @@ def test_partial_cocotb_abort_preserves_completed_test_and_publishes_termination
 
 
 def test_live_exception_log_before_cocotb_child_completes(tmp_path, monkeypatch):
-    """Real streaming writes diagnostics to the evidence root while the child waits."""
-    import sys
+    """#1311: real streaming writes diagnostics to the evidence root while the child waits."""
     from concurrent.futures import ThreadPoolExecutor
-    from threading import Event
 
     from booley.flows.run_log import begin_run_log
     from booley.flows.sim.backends import shared
@@ -674,202 +484,77 @@ def test_live_exception_log_before_cocotb_child_completes(tmp_path, monkeypatch)
     evidence.mkdir()
     cwd = tmp_path / "child"
     cwd.mkdir()
-    log = begin_run_log(evidence, flow="sim", target="cocotb", run="live-test")
-    observed = Event()
-    children = []
-    real_popen = subprocess.Popen
-
-    def spawn(*args, **kwargs):
-        child = real_popen(*args, **kwargs, stdin=subprocess.PIPE)
-        children.append(child)
-        return child
-
-    monkeypatch.setattr(subprocess, "Popen", spawn)
-    monkeypatch.setattr(shared, "RUN_LOG_PROGRESS_INTERVAL_S", 0)
-    monkeypatch.setattr(crun, "_partial_result_publisher", lambda *_: lambda _: observed.set())
-    run = crun._CocotbRun(
-        evidence,
-        cwd,
-        evidence,
-        evidence / "results.xml",
-        ["selected"],
-        os.environ.copy(),
-        [
-            sys.executable,
-            "-u",
-            "-c",
-            "import sys; print('RuntimeError: live failure'); sys.stdin.readline(); print('final diagnostic')",
-        ],
-        None,
+    release = tmp_path / "release"
+    build = tmp_path / "build"
+    build.mkdir()
+    vtop = build / "Vtop"
+    vtop.write_bytes(
+        f'#!/bin/sh\necho "RuntimeError: live failure"\nwhile [ ! -e "{release}" ]; do sleep 0.05; done\n'
+        'echo "final diagnostic"\n'.encode()
     )
+    vtop.chmod(0o755)
+    log = begin_run_log(evidence, flow="sim", target="cocotb", run="live-test")
+    monkeypatch.setattr(shared, "RUN_LOG_PROGRESS_INTERVAL_S", 0)
     with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(crun._execute_cocotb_run, run, 5, 0, 0, None, ())
+        future = executor.submit(
+            _run,
+            tmp_path,
+            "verilator",
+            image=False,
+            work_dir=evidence,
+            run_cwd=cwd,
+            timeout=30,
+            sim_time_grace_s=0,
+        )
         try:
-            assert observed.wait(5), "child output never reached the streaming callback"
-            assert not future.done()
+            deadline = time.monotonic() + 10
+            while (
+                "RuntimeError: live failure" not in log.read_text() and time.monotonic() < deadline
+            ):
+                time.sleep(0.05)
             contents = log.read_text()
             assert "RuntimeError: live failure" in contents
+            assert not future.done()
             assert "run=live-test" in contents and "run in progress" in contents
             assert not (cwd / "run.log").exists()
         finally:
-            if children:
-                children[0].stdin.write("release\n")
-                children[0].stdin.flush()
-                children[0].stdin.close()
-            _lines, proc, termination = future.result(timeout=6)
-    assert proc.returncode == 0
-    assert not termination.aborted
+            release.write_text("go")
+            future.result(timeout=20)
     assert "final diagnostic" in log.read_text()
 
 
-def _child_run(tmp_path: Path, script: str, tests: list[str], env=None) -> crun._CocotbRun:
-    """A `_CocotbRun` whose simulator is a tiny unbuffered Python child running *script*."""
-    command = [sys.executable, "-u", "-c", script]
-    return crun._CocotbRun(
-        *(tmp_path,) * 3, tmp_path / "results.xml", tests, env or os.environ.copy(), command, None
-    )
-
-
-def test_execute_passes_guard_inputs_to_the_runner(tmp_path: Path, monkeypatch) -> None:
-    identity = AdapterTransportIdentity(
-        "cocotb", "a", "acme:lib:dut:1#sim", ("t1",), tmp_path / "r"
-    )
-    run = _child_run(tmp_path, "pass", ["t1"], env={"COCOTB_TEST_FILTER": "t1"})
-    from booley.flows.sim.backends.supervision import SimulatorLaunch
-
-    launches: list[SimulatorLaunch] = []
-    monkeypatch.setattr(crun, "run_supervised", launches.append)
-
-    crun._execute_cocotb_run(run, 77, 1234, 9.5, identity, ("mem.hex",))
-
-    (launch,) = launches
-    assert callable(launch.on_line)
-    assert replace(launch, on_line=None) == SimulatorLaunch(
-        "cocotb", run.command, tmp_path, run.env, 77, tmp_path, 1234, ("mem.hex",), 9.5
-    )
-
-
-def test_printing_cocotb_run_is_stopped_at_the_deadline(
-    tmp_path: Path, never_firing_timer
-) -> None:
-    """Only the per-line deadline check can end this run: the timer never fires."""
-    script = "import time\nfor i in range(1500):\n    print('tick', i, flush=True)\n    time.sleep(0.01)\n"
-
-    started = time.monotonic()
-    _, _, termination = crun._execute_cocotb_run(
-        _child_run(tmp_path, script, ["t"]), 1, 0, 0, None, ()
-    )
-
-    assert termination.kind == "timeout"
-    assert time.monotonic() - started < 20
-    assert "last output" in termination.detail
-
-
-def test_sim_time_stall_ends_cocotb_run_and_beats_timeout(
-    tmp_path: Path, monkeypatch, instant_timer
-) -> None:
-    from booley.flows.sim.backends import supervision
-
-    real_guard = supervision.SimTimeStallGuard
-
-    def tripped_guard(*args):
-        guard = real_guard(*args)
-        guard.tripped = True
-        return guard
-
-    monkeypatch.setattr(supervision, "SimTimeStallGuard", tripped_guard)
-    run = _child_run(tmp_path, "import time; time.sleep(60)", ["t"])
-
-    _, _, termination = crun._execute_cocotb_run(run, 30, 0, 5.0, None, ())
-
-    assert termination.kind == "sim_time_stall"
-    assert termination.failure_kind == "infrastructure"
-
-
-def test_killed_cocotb_run_publishes_partial_results(tmp_path: Path) -> None:
-    """Without the per-line hook only the initial publish runs and every test reads timeout."""
-    identity = AdapterTransportIdentity(
-        "cocotb", "a", "acme:lib:dut:1#sim", ("t1", "t2"), tmp_path / "adapter.json"
-    )
-    script = (
-        "import time\n"
-        "print('0.00ns INFO cocotb.regression running t1 (1/2)', flush=True)\n"
-        "time.sleep(0.3)\n"
-        "print('1.00ns INFO cocotb.regression t1 passed', flush=True)\n"
-        "print('1.00ns INFO cocotb.regression running t2 (2/2)', flush=True)\n"
-        "time.sleep(60)\n"
-    )
-
-    _, _, termination = crun._execute_cocotb_run(
-        _child_run(tmp_path, script, ["t1", "t2"]), 5, 0, 0, identity, ()
-    )
-
-    assert termination.kind == "timeout"
-    partial = read_adapter_result(partial_result_identity(identity))
-    assert [(t.name, t.verdict) for t in partial.test_results] == [
-        ("t1", "pass"),
-        ("t2", "timeout"),
-    ]
-
-
-@pytest.mark.parametrize("eda_tool,backend", [("icarus", "iverilog"), ("verilator", "verilator")])
-def test_traced_cocotb_status_reports_simulator(tmp_path: Path, eda_tool: str, backend: str):
-    build = tmp_path / "build"
-    build.mkdir()
-    (build / ("sim_image.scr" if eda_tool == "icarus" else "Vtop")).write_text("")
-    with (
-        patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config),
-        patch("shutil.which", return_value="/usr/bin/vvp"),
-    ):
-        run = crun._prepare_cocotb_run(
-            build_dir=build,
-            run_cwd=None,
-            work_dir=tmp_path / "work",
-            eda_tool=eda_tool,
-            module="test_counter",
-            tests=["test_count"],
-            plusargs=[],
-            vcd=True,
-            trace_scope="counter",
-        )
-    assert not isinstance(run, str)
-    if eda_tool == "icarus":
-        assert run.command[0] == "/usr/bin/vvp"
-        assert str(build / "sim_image") in run.command
-        assert run.command[-1] == "+trace"
-    else:
-        assert run.command[0] == str(build / "Vtop")
-        assert run.command[-3:] == ["--trace", "--trace-file", "dump.vcd"]
-    assert run.current is not None
-    trace = run.current.session
-    assert not trace.manifest_path.exists()
-    trace.record_attempt("vcd_postprocess", "started")
-    status = json.loads(trace.manifest_path.read_text())
+@pytest.mark.parametrize(
+    ("eda_tool", "backend", "tail"),
+    [
+        ("icarus", "iverilog", ["+trace"]),
+        ("verilator", "verilator", ["--trace", "--trace-file", "dump.vcd"]),
+    ],
+)
+def test_traced_cocotb_status_reports_simulator(tmp_path, fake_launch, eda_tool, backend, tail):
+    """#1435: the trace status names the simulator that ran, not a hard-coded one."""
+    _run(tmp_path, eda_tool, vcd=True, expected_trace_scope="counter", tests=["test_count"])
+    assert fake_launch.launches[0].command[-len(tail) :] == tail
+    # No dump was produced, so finalize_trace wrote the incident status.
+    status = json.loads((tmp_path / "build" / "trace_status.json").read_text())
     assert status["backend"] == backend
     assert status["trace_scope"] == "counter"
 
 
-def test_rtl_fatal_failure_text_names_assertion_fatal_messages(capsys):
+def test_rtl_fatal_failure_text_names_assertion_fatal_messages(tmp_path, fake_launch, capsys):
     """Cocotb failure text counts ``$fatal`` lines as messages, not SVA assertions (#2807)."""
-    (detailed,) = crun._apply_design_evidence((AdapterTestResult("t", "pass"),), 1, "", "")
-    assert detailed.detail == "1 assertion/fatal error message"
-
-    assessment = crun._VerdictAssessment(
-        selected=("t",),
-        verdicts=(("t", "pass", ""),),
-        sva_errors=2,
-        passed=False,
-        inconclusive=False,
-        infrastructure_error="",
+    identity = _identity(tmp_path)
+    fake_launch.during = lambda launch: Path(launch.env["COCOTB_RESULTS_FILE"]).write_text(
+        '<testsuites><testsuite><testcase name="t" classname="m" time="0.1"/></testsuite>'
+        "</testsuites>",
+        encoding="utf-8",
     )
-    # The failure branch never reads the parsed results.
-    crun._print_verdict(
-        assessment, crun.CocotbResults.__new__(crun.CocotbResults), RunTermination(), 0
-    )
-
+    fake_launch.output = ["%Fatal: assertion failed in tb\n"]
+    assert _run(tmp_path, tests=["t"], transport=identity) == 1
     out = capsys.readouterr().out
-    assert "cocotb sim FAILED (0/1 tests failed, 2 assertion/fatal error messages)" in out
+    assert "cocotb sim FAILED (0/1 tests failed, 1 assertion/fatal error message)" in out
     assert "SVA" not in out
+    (test,) = read_adapter_result(identity).test_results
+    assert test.detail == "1 assertion/fatal error message"
 
 
 # --- adapter result and transports are byte-stable (issue #3002) -------------
@@ -983,8 +668,9 @@ _GOLDEN_CASES = {
 }
 
 
+@pytest.mark.parametrize("case", list(_GOLDEN_CASES))
 def test_adapter_result_and_transports_match_pre_refactor_goldens(
-    tmp_path: Path, capsys, monkeypatch
+    tmp_path, fake_launch, capsys, monkeypatch, case
 ) -> None:
     """Adapter result, stdout line and ``cocotb_results.json`` stay byte-stable.
 
@@ -1001,39 +687,105 @@ def test_adapter_result_and_transports_match_pre_refactor_goldens(
     # Patch the defining module and the adapter's own namespace: either call style fails.
     monkeypatch.setattr(cocotb_results, "parse_results_line", forbidden_parse)
     monkeypatch.setattr(crun, "parse_results_line", forbidden_parse, raising=False)
-    for case, (
-        xml,
-        selection,
-        verbosity,
-        line,
-        failure_kind,
-        verdicts,
-        notes,
-    ) in _GOLDEN_CASES.items():
-        work = tmp_path / case
-        work.mkdir()
-        results_file = work / "results.xml"
-        results_file.write_text(xml, encoding="utf-8")
-        identity = AdapterTransportIdentity(
-            "cocotb", "attempt", "acme:lib:dut:1#sim", tuple(selection), work / "adapter.json"
-        )
-        run = crun._CocotbRun(work, work, work, results_file, list(selection), {}, [], None)
+    xml, selection, verbosity, line, failure_kind, verdicts, notes = _GOLDEN_CASES[case]
+    fake_launch.output = []
+    fake_launch.during = lambda launch: Path(launch.env["COCOTB_RESULTS_FILE"]).write_text(
+        xml, encoding="utf-8"
+    )
+    identity = _identity(tmp_path, selection)
+    work = tmp_path / "work"
 
-        crun._complete_cocotb_run(
-            run, [], SimpleNamespace(returncode=0), RunTermination(), verbosity, identity
-        )
+    _run(tmp_path, tests=selection, result_verbosity=verbosity, transport=identity, work_dir=work)
 
-        result = read_adapter_result(identity)
-        flags = (result.passed, result.inconclusive, result.failure_kind)
-        assert flags == (False, True, failure_kind), case
-        assert result.tests == tuple(selection or ("done", "boom", "skip_me")), case
-        assert tuple((t.name, t.verdict, t.detail) for t in result.test_results) == verdicts, case
-        assert result.diagnostics == notes, case
-        stdout_lines = capsys.readouterr().out.splitlines()
-        if line is not None:
-            assert [row for row in stdout_lines if row.startswith("[COCOTB_RESULTS]")] == [line], (
-                case
-            )
-            assert (work / "cocotb_results.json").read_text(encoding="utf-8") == _RESULTS_JSON, (
-                case
-            )
+    result = read_adapter_result(identity)
+    assert (result.passed, result.inconclusive, result.failure_kind) == (False, True, failure_kind)
+    assert result.tests == tuple(selection or ("done", "boom", "skip_me"))
+    assert tuple((t.name, t.verdict, t.detail) for t in result.test_results) == verdicts
+    assert result.diagnostics == notes
+    stdout_lines = capsys.readouterr().out.splitlines()
+    if line is not None:
+        assert [row for row in stdout_lines if row.startswith("[COCOTB_RESULTS]")] == [line]
+        assert (work / "cocotb_results.json").read_text(encoding="utf-8") == _RESULTS_JSON
+
+
+@pytest.mark.parametrize("prefix", ["", "tests.counter."])
+def test_cocotb_transport_preserves_partial_timeout_progress(
+    tmp_path, fake_launch, prefix
+) -> None:
+    """PR #1465: a timed-out run publishes the progress its output reached."""
+    identity = _identity(tmp_path, ("done", "active", "later"))
+    fake_launch.output = [
+        f"0.00ns INFO cocotb.regression running {prefix}done (1/3)\n",
+        f"1.00ns INFO cocotb.regression {prefix}done passed\n",
+        f"1.00ns INFO cocotb.regression running {prefix}active (2/3)\n",
+    ]
+    fake_launch.returncode = -15
+    fake_launch.termination = RunTermination("timeout", "deadline expired", "timeout")
+
+    _run(tmp_path, tests=["done", "active", "later"], transport=identity)
+
+    result = read_adapter_result(partial_result_identity(identity))
+    assert result.failure_kind == "timeout"
+    assert [(item.name, item.verdict) for item in result.test_results] == [
+        ("done", "pass"),
+        ("active", "timeout"),
+        ("later", "timeout"),
+    ]
+
+
+@pytest.mark.parametrize("prefix", ["", "tests.counter."])
+def test_default_cocotb_partial_transport_discovers_current_attempt_names(
+    tmp_path, fake_launch, prefix
+) -> None:
+    """PR #1465: with no selection, the partial names come from the current results.xml."""
+    identity = _identity(tmp_path, ())
+    fake_launch.during = lambda launch: Path(launch.env["COCOTB_RESULTS_FILE"]).write_text(
+        "<testsuite><testcase name='done'/><testcase name='active'>"
+        "<failure message='interrupted'/></testcase>"
+        "<testcase name='later'><skipped/></testcase></testsuite>",
+        encoding="utf-8",
+    )
+    fake_launch.output = [
+        f"0.00ns INFO cocotb.regression running {prefix}done (1/3)\n",
+        f"1.00ns INFO cocotb.regression {prefix}done passed\n",
+        f"1.00ns INFO cocotb.regression running {prefix}active (2/3)\n",
+    ]
+    fake_launch.returncode = -15
+    fake_launch.termination = RunTermination("timeout", "deadline expired", "timeout")
+
+    _run(tmp_path, transport=identity)
+
+    result = read_adapter_result(partial_result_identity(identity))
+    assert result.tests == ("done", "active", "later")
+    assert [test.verdict for test in result.test_results] == ["pass", "timeout", "timeout"]
+
+
+@pytest.mark.parametrize(
+    ("status", "output", "returncode", "verdict", "kind"),
+    [
+        ("pass", [], 0, "inconclusive", "artifact"),
+        ("fail", [], 0, "fail", "design"),
+        ("pass", ["$error assertion\n"], 0, "fail", "design"),
+        ("pass", [], 1, "fail", "design"),
+    ],
+    ids=["pass", "fail", "sva-error", "nonzero-exit"],
+)
+def test_cocotb_trace_incident_preserves_functional_verdicts(
+    tmp_path, fake_launch, status, output, returncode, verdict, kind
+) -> None:
+    """A missing waveform downgrades only a passing test, never a functional failure."""
+    identity = _identity(tmp_path, ("reset",))
+    failure = '<failure message="boom"/>' if status == "fail" else ""
+    fake_launch.during = lambda launch: Path(launch.env["COCOTB_RESULTS_FILE"]).write_text(
+        f'<testsuites><testsuite><testcase name="reset" classname="m" time="0.1">{failure}'
+        "</testcase></testsuite></testsuites>",
+        encoding="utf-8",
+    )
+    fake_launch.output = output
+    fake_launch.returncode = returncode
+
+    _run(tmp_path, vcd=True, expected_trace_scope="tb", tests=["reset"], transport=identity)
+
+    result = read_adapter_result(identity)
+    assert result.test_results[0].verdict == verdict
+    assert result.failure_kind == kind
