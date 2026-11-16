@@ -150,7 +150,7 @@ folder in the container connects VS Code to the Sandbox. `booley chat` (or bare
 `booley`) starts a Developer Agent session in a Sandbox terminal. The first
 session works in the main checkout, and Booley adds a worktree for each further
 concurrent session. See [SETUP.md](../user/SETUP.md) for the lifecycle and
-[USAGE.md](../user/USAGE.md#interactive-mode) for daily use.
+[USAGE.md](../user/USAGE.md#developer-agent-sessions) for daily use.
 
 The MCP surface is the same for every Agent CLI. A Project lists the Agent CLIs
 it may run (Claude Code, Codex, or both) and names a default for agent

@@ -8,7 +8,7 @@ name = "<project>"
 # outputs out of the patterns. Add only with the human's agreement.
 # protected_inputs = ["Makefile", "firmware/**/*.c"]
 
-# Optional identity for Developer Agent commits in Interactive Mode.
+# Optional identity for Developer Agent commits in the Sandbox.
 # Values are applied to each checkout at worktree scope. Missing fields use the
 # neutral defaults `Dev` and `dev@localhost`.
 # [agent.git]

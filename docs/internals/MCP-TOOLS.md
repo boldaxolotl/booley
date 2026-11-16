@@ -395,7 +395,7 @@ Specialists) unless you pass `--report-dir`, and return the usual exit codes.
 
 ### Where its output goes
 
-An Interactive Mode MCP server writes its logs under
+A Developer Agent's MCP server writes its logs under
 `.interactive_logs/<session-id>/` in the Main Booley Directory. Use the paths
 the result returns rather than
 guessing.

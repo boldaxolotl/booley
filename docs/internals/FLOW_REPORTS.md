@@ -17,7 +17,7 @@ Booley picks the report root in this order:
 
 1. `--report-dir`, if given.
 2. `$BOOLEY_RUNTIME_DIR/flow-reports`, when that variable is set. Every MCP
-   endpoint subprocess sets it: an Interactive Mode call uses the server's
+   endpoint subprocess sets it: a Developer Agent call uses the server's
    session runtime
    (`.interactive_logs/<session>/.runtime` in the Booley Directory).
 3. Otherwise, `flow-reports/` in the Booley Directory of the checkout.

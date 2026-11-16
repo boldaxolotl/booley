@@ -8,7 +8,7 @@ and nested actions.
 #### Sandbox-only commands
 
 On the host, bare `booley` prints help and a getting-started hint.
-Inside the Sandbox, for Interactive Mode, we recommend `booley` / `booley chat`, which launches
+Inside the Sandbox, we recommend `booley` / `booley chat`, which launches
 the default Agent CLI (`booley chat --cli <name>` picks another allowed one).
 
 | Command | Purpose |
