@@ -347,7 +347,6 @@ exclude = [
     "src/booley/flows/endpoint_acceptance.py",
     "src/booley/flows/endpoint_admission.py",
     "src/booley/flows/endpoint_events.py",
-    "src/booley/flows/endpoint_report_criteria.py",
     "src/booley/flows/job_resources.py",
     "src/booley/flows/mutation/flow.py",
     "src/booley/flows/review_scope.py",

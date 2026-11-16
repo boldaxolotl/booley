@@ -147,7 +147,6 @@ SIMULATION_PREPARATION_NAMES = frozenset(
 SHARED_PREPARATION_MODULES = (
     "endpoint_session.py",
     "endpoint_admission.py",
-    "endpoint_report_criteria.py",
     "prepared_invocation.py",
     "endpoint_state.py",
 )

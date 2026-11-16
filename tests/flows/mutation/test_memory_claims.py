@@ -22,7 +22,6 @@ from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.job_estimates import JobRequest
 from booley.flows.memory_admission import MemorySizing
 from booley.flows.mutation.flow import MutationFlow
-from booley.flows.prepared_invocation import OrdinaryRunInvocation
 from booley.runtime import job_slots, resource_history
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.runtime.job_records import _proc_cmdline
@@ -369,16 +368,6 @@ def test_a_target_that_cannot_be_sized_runs_alone(
 
     assert flow._build_job_request("anything", tmp_path) is None
     assert flow._unit_job_request("anything", tmp_path, tmp_path, unit, True) is None  # type: ignore[arg-type]
-
-
-def test_the_invocation_reports_the_scope_of_an_ordinary_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    flow = _make_endpoint(tmp_path, monkeypatch)
-    invocation = flow.prepare_endpoint_invocation()
-
-    assert invocation.borrows_admission
-    assert invocation.report_scope(flow) == OrdinaryRunInvocation(flow._run).report_scope(flow)
 
 
 def test_an_item_that_ran_alone_over_budget_warns_in_the_campaign_result(

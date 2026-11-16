@@ -2170,7 +2170,6 @@ def _assert_coverage_headline_results(results, ticket, verdict, state_path):
     for result in results:
         assert result.outcome.detail["targets"]["sim_0"]["evaluation"] == "not_requested"
         assert result.outcome.detail["targets"]["sim_0"]["simulation"] == verdict
-        assert (result.outcome.criterion_key, result.outcome.criterion_met) == ("", None)
         assert result.exit_code == (1 if verdict == "fail" else 0), result.outcome
     if ticket == "undeclared":
         assert DevelopmentState.load(state_path).criteria == {}

@@ -23,7 +23,6 @@ SOURCE_ROOT = GOALS_SOURCE.parent
 _ALLOWED: dict[str, str] = {
     "booley.flows.endpoint_acceptance": "evidence and staleness #3512",
     "booley.flows.endpoint_events": "evidence and staleness #3512",
-    "booley.flows.endpoint_report_criteria": "evidence and staleness #3512",
     "booley.flows.endpoint_state": "evidence and staleness #3512",
     "booley.flows.execution_persistence": "evidence and staleness #3512",
     "booley.mcp.endpoint_validation": "Criteria catalog #3512",
@@ -58,6 +57,7 @@ def test_no_specialist_module_imports_criteria() -> None:
 
 REPO_ROOT = SOURCE_ROOT.parents[1]
 _REMOVED_MODULES = (
+    "booley.flows.endpoint_report_criteria",
     "booley.goals",
     "booley.mcp.goal_tools",
     "booley.mcp.goal_changes",
