@@ -29,6 +29,8 @@ import pytest
 from tests.docker.isolation.container_names import next_ci_container_name
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
+from booley.harness.setup.scaffold import ScaffoldChoices, scaffold_files
+
 _IMAGE = "booley-sandbox"
 
 # One deliberate violation under Verible's default ruleset: a trailing space.
@@ -131,19 +133,27 @@ def _write_fixture(root: Path, *, waived: bool) -> None:
     )
 
 
-def _lint_in_sandbox(project: Path):
+def _lint_in_sandbox(project: Path, target: str = "lint_style"):
     # The production image intentionally runs as UID 1000, while hosted CI
     # runners may own pytest's temporary directory with another UID. Grant the
     # image user access only to this disposable mount root so it can create its
     # FuseSoC work and report directories without changing the image identity.
-    project.chmod(project.stat().st_mode | stat.S_IRWXO)
+    # Scaffolded projects ship nested directories (`.booley/`) the flow writes
+    # runtime state into, so open every directory, not just the root.
+    # Directories an earlier sandbox run created belong to the image user, are
+    # already open to it, and the host user may not chmod them.
+    for directory in [project, *(d for d in project.rglob("*") if d.is_dir())]:
+        try:
+            directory.chmod(directory.stat().st_mode | stat.S_IRWXO)
+        except PermissionError:
+            continue
     return _run_in_sandbox(
         [
             "python3",
             "-m",
             "booley.flows.lint",
             "--target",
-            "lint_style",
+            target,
             "--work-dir",
             "/work",
             "--report-dir",
@@ -177,6 +187,42 @@ def test_verible_violation_warns_then_waiver_passes(tmp_path: Path) -> None:
     report = json.loads((project / "rep" / "lint_report.json").read_text(encoding="utf-8"))
     assert report["passed"] is True
     assert report["total_warnings"] == 0
+
+
+@pytest.mark.slow()
+def test_default_scaffold_lint_targets_pass_and_wall_reports_unused(tmp_path: Path) -> None:
+    choices = ScaffoldChoices("my_ip", "verilator", "sv", "verilator", True, None, style_lint=True)
+    files = scaffold_files(choices)
+    _require_verible_sandbox()
+    project = tmp_path / "proj"
+    for rel, content in files.items():
+        path = project / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content.encode())
+
+    run = _lint_in_sandbox(project, "lint_my_ip,lint_my_ip_style")
+    combined = run.stdout + run.stderr
+    assert run.returncode == 0, f"expected PASS (exit 0), got {run.returncode}:\n{combined}"
+    report = json.loads((project / "rep" / "lint_report.json").read_text(encoding="utf-8"))
+    assert report["passed"] is True
+    assert report["eda_tools"] == {"lint_my_ip": "verilator", "lint_my_ip_style": "verible"}
+
+    # -Wall (only on the Verilator Target) reports a signal nothing uses.
+    rtl = project / "rtl" / "my_ip.sv"
+    source = rtl.read_bytes().decode()
+    assert "localparam logic [WIDTH-1:0] STEP = 1;\n" in source
+    rtl.write_bytes(
+        source.replace(
+            "localparam logic [WIDTH-1:0] STEP = 1;\n",
+            "localparam logic [WIDTH-1:0] STEP = 1;\n  logic spare_q;\n",
+        ).encode()
+    )
+    run = _lint_in_sandbox(project, "lint_my_ip,lint_my_ip_style")
+    combined = run.stdout + run.stderr
+    assert run.returncode == 1, f"expected WARN (exit 1), got {run.returncode}:\n{combined}"
+    report = json.loads((project / "rep" / "lint_report.json").read_text(encoding="utf-8"))
+    unused = [w for w in report["warnings"] if w["rule"] == "UNUSEDSIGNAL"]
+    assert [w["targets"] for w in unused] == [["lint_my_ip"]]
 
 
 def test_sandbox_runs_use_unique_ci_container_names(monkeypatch: pytest.MonkeyPatch) -> None:

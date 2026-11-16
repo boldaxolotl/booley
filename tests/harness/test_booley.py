@@ -141,6 +141,14 @@ def test_init_scaffold_stealth_flag():
     assert parser.parse_args(["init", "--scaffold", "demo"]).stealth is False
 
 
+def test_init_parser_reads_style_lint_flags():
+    parser = tlr._build_parser()
+
+    assert parser.parse_args(["init", "--scaffold", "demo"]).style_lint is None
+    assert parser.parse_args(["init", "--scaffold", "demo", "--no-style-lint"]).style_lint is False
+    assert parser.parse_args(["init", "--scaffold", "demo", "--style-lint"]).style_lint is True
+
+
 def test_init_parser_accepts_skip_credentials():
     args = tlr._build_parser().parse_args(["init", "--skip-credentials"])
 

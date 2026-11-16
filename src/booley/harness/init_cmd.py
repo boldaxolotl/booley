@@ -1717,7 +1717,8 @@ def _setup_step_done(key: str, project_root: Path, data: dict) -> bool:
         return bool(str(name).strip())
     if key == "agents":
         return (project_root / ".booley" / "AGENTS.md").is_file()
-    flows = data.get("flows") if isinstance(data.get("flows"), dict) else {}
+    raw_flows = data.get("flows")
+    flows = raw_flows if isinstance(raw_flows, dict) else {}
     from booley.targets.flow_names import LEGACY_TO_CANONICAL, config_section
 
     section = config_section(flows, key)

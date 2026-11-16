@@ -1,3 +1,5 @@
 # Test runners for jobs that do not install the project: test.yml sidecar-smoke and bwave-smoke (host and container).
+# tomlkit: tests/docker/test_sandbox_verible_e2e.py imports the scaffold on the bare host.
 pytest==9.2.0
 pytest-asyncio==1.4.0
+tomlkit==0.15.2
