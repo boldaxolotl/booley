@@ -106,14 +106,16 @@ _DEVCONTAINER_FOLDER_LABEL = "devcontainer.local_folder"
 
 
 def _docker_stdout(argv: list[str]) -> str | None:
-    """Stripped stdout of *argv*, or None if docker is missing or the call failed.
+    """Stripped stdout of *argv*, or None if docker is missing, the call failed, or it timed out.
 
     Every probe below is advisory — it decides whether to *warn*, never whether
     to proceed — so a host without Docker, or an object that vanished mid-probe,
     must read as "nothing to say" rather than blow up the caller.
     """
+    from booley.runtime import session_admission
+
     try:
-        result = _run(argv)
+        result = _run(argv, timeout=session_admission._DOCKER_TIMEOUT_S)
     except (OSError, subprocess.SubprocessError):
         return None
     return result.stdout.strip() if result.returncode == 0 else None
