@@ -86,7 +86,6 @@ if TYPE_CHECKING:
     from contextlib import ExitStack
 
     from booley.flows.base import SubprocessResult
-    from booley.flows.execution_persistence import AcceptanceRecorder
     from booley.flows.job_estimates import JobRequest
     from booley.flows.sim.request import SimRequest
     from booley.flows.sim.verilator_coverage import AuthenticatedSimulationExecutionPort
@@ -174,7 +173,6 @@ class SimulationRecordResumeMixin:
         publication_resources: ExitStack[bool | None]
         _held_resume_origins: set[Path]
         _simulation_record_publication_checkpoint: Callable[[str], None] | None
-        _acceptance_recorder: AcceptanceRecorder
 
         @property
         def args(self) -> SimRequest: ...
