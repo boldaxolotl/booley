@@ -90,7 +90,7 @@ def test_app_token_reaches_no_update_branch_code() -> None:
     ]
     # `workflow_dispatch` can name any branch: only the main-only Environment keeps the
     # App key from a dispatch on an update branch.
-    assert token_job["environment"] == "renovate"
+    assert token_job.get("environment") == "renovate"
     for step in steps:
         if "actions/checkout" in str(step.get("uses", "")):
             assert step["with"] == {"persist-credentials": False}
