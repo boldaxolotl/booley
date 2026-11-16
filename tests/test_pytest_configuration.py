@@ -1195,6 +1195,7 @@ def test_change_aware_jobs_feed_an_always_running_aggregate() -> None:
     conditional = set(jobs) - {
         "changes",
         "release-semantic",
+        "test-ratio",
         "ci-required",
         "ci-metrics",
     }
@@ -1223,7 +1224,12 @@ def test_change_aware_jobs_feed_an_always_running_aggregate() -> None:
 
     aggregate = jobs["ci-required"]
     assert aggregate["if"] == "always() && needs.changes.result != 'skipped'"
-    assert set(aggregate["needs"]) == {"changes", "release-semantic", *conditional}
+    assert set(aggregate["needs"]) == {
+        "changes",
+        "release-semantic",
+        "test-ratio",
+        *conditional,
+    }
     rendered_aggregate = "\n".join(str(step) for step in aggregate["steps"])
     assert ".github/scripts/ci_required.py" in rendered_aggregate
     assert "toJSON(needs)" in rendered_aggregate
