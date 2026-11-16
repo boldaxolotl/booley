@@ -59,7 +59,6 @@ def _project(tmp_path: Path, monkeypatch) -> None:
 def _run_review(argv: list[str]):
     reviewer = ReviewerSpecialist()
     reviewer.parse_args(argv)
-    reviewer.read_state()
     return reviewer._run()
 
 

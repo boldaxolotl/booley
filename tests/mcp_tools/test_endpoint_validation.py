@@ -41,19 +41,12 @@ def test_project_criteria_extend_known_satisfies_without_importing_code(project,
     assert not any(record.levelno >= logging.WARNING for record in caplog.records)
 
 
-@pytest.mark.parametrize(
-    "satisfies,warning",
-    [
-        ("[]", "satisfies=[]"),
-        ("['missing_gate']", "unknown criterion 'missing_gate'"),
-    ],
-)
-def test_missing_satisfies_warns_without_failing_project(project, caplog, satisfies, warning):
+def test_doctor_ignores_project_endpoint_satisfies(project, caplog):
     root, data = project
-    _endpoint(data, satisfies=satisfies)
-    validate_custom_endpoints_and_criteria(root)
-    assert warning in caplog.text
-    assert "custom.py" in caplog.text
+    for satisfies in ("[]", "['missing_gate']"):
+        _endpoint(data, satisfies=satisfies)
+        assert validate_custom_endpoints_and_criteria(root) == []
+    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
 
 
 @pytest.mark.parametrize(

@@ -35,7 +35,7 @@ def validate_custom_endpoints_and_criteria(project_root: Path) -> list[SkippedEn
 
     Load order: criteria TOML first, then endpoint scan, then cross-validation.
 
-    Per-endpoint errors (checks 1-5, 7, 9) → skip endpoint or log a warning. A
+    Per-endpoint errors (checks 1-5, 7) → skip endpoint or log a warning. A
     file skipped by checks 1, 3 or 4 is returned. Structural errors (checks 6, 8)
     → hard-fail.
     """
@@ -57,7 +57,7 @@ def validate_custom_endpoints_and_criteria(project_root: Path) -> list[SkippedEn
         return []
 
     # --- Load criteria and validate structural integrity ---
-    all_criteria_names = _validate_criteria_structure(project_root)
+    _validate_criteria_structure(project_root)
 
     # --- Load endpoint config and check structural endpoint errors ---
     specialist_config, flow_config = _load_endpoint_config(project_root)
@@ -72,9 +72,7 @@ def validate_custom_endpoints_and_criteria(project_root: Path) -> list[SkippedEn
     for py_file in sorted(custom_mcp_tools_dir.glob("*.py")):
         if py_file.stem.startswith("_"):
             continue
-        outcome = _validate_single_endpoint(
-            py_file, specialist_config, flow_config, builtin_names, all_criteria_names
-        )
+        outcome = _validate_single_endpoint(py_file, specialist_config, flow_config, builtin_names)
         if outcome is not None:
             skipped.append(outcome)
 
@@ -82,8 +80,8 @@ def validate_custom_endpoints_and_criteria(project_root: Path) -> list[SkippedEn
     return skipped
 
 
-def _validate_criteria_structure(project_root: Path) -> set[str]:
-    """Load and cross-validate criteria definitions. Returns all criteria names.
+def _validate_criteria_structure(project_root: Path) -> None:
+    """Load and cross-validate criteria definitions.
 
     Raises EndpointValidationError on criteria conflicts (check 8).
     """
@@ -94,7 +92,6 @@ def _validate_criteria_structure(project_root: Path) -> set[str]:
     )
 
     base_criteria = load_base_criteria()
-    base_criteria_names = {c.name for c in base_criteria}
 
     project_criteria_path = resolve_checkout_booley_dir(project_root) / "criteria.toml"
     project_criteria = load_project_criteria(project_criteria_path)
@@ -103,27 +100,6 @@ def _validate_criteria_structure(project_root: Path) -> set[str]:
     structural_errors = [f"CRITERIA CONFLICT: {e}" for e in merge_errors]
     if structural_errors:
         raise EndpointValidationError(structural_errors)
-
-    return base_criteria_names | {c.name for c in project_criteria}
-
-
-def _check_satisfies_refs(
-    py_file: Path,
-    info: Any,
-    all_criteria_names: set[str],
-) -> None:
-    """Warn when satisfies references unknown criteria names."""
-    if not info.satisfies:
-        return
-    for crit_name in info.satisfies:
-        if crit_name not in all_criteria_names:
-            logger.warning(
-                "CUSTOM MCP ENDPOINT WARNING: %s — satisfies references unknown "
-                "criterion '%s'. Define it in the Project criteria.toml "
-                "or check for typos.",
-                py_file.name,
-                crit_name,
-            )
 
 
 def _warn_retired_sandbox_attr(
@@ -147,7 +123,6 @@ def _validate_single_endpoint(
     specialist_config: dict[str, Any],
     flow_config: dict[str, Any],
     builtin_names: set[str],
-    all_criteria_names: set[str],
 ) -> SkippedEndpoint | None:
     """Validate one custom MCP endpoint file; return it when it is skipped."""
     from booley.mcp.registry import extract_mcp_tool_info
@@ -187,18 +162,7 @@ def _validate_single_endpoint(
             "rename the class's `name` attribute",
         )
 
-    _check_satisfies_refs(py_file, info, all_criteria_names)
     _warn_retired_sandbox_attr(py_file, tree)
-
-    # Check 9: Empty satisfies warning for enabled endpoints.
-    if not info.satisfies:
-        logger.warning(
-            "CUSTOM MCP ENDPOINT WARNING: %s — enabled endpoint '%s' has "
-            "satisfies=[] (no criteria declared). This may be an AST extraction "
-            "limitation if satisfies uses computed values.",
-            py_file.name,
-            info.name,
-        )
     return None
 
 

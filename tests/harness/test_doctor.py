@@ -5051,7 +5051,6 @@ class TestFailPathSelfTest:
         ticket_vars = {
             "BOOLEY_SLUG": "active-ticket",
             "BOOLEY_TICKET_FILE": "/ticket.md",
-            "BOOLEY_STATE_FILE": "/ticket-logs/.runtime/booley_state.json",
             "BOOLEY_LOGS_DIR": "/ticket-logs",
             "BOOLEY_RUNTIME_DIR": "/ticket-logs/.runtime",
             "BOOLEY_EXECUTION_ID": "resume-generation",

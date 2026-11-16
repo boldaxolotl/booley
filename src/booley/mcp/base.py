@@ -7,10 +7,7 @@ Exit code contract:
 
 Every MCP tool:
   - Parses CLI args via argparse
-  - Loads/saves DevelopmentState
   - Writes a structured JSON report to the stage log directory
-  - Classifies post-run git diffs as RTL or TB
-  - Invalidates dependent criteria when code-modifying endpoints change files
 """
 
 from __future__ import annotations
@@ -23,8 +20,6 @@ from booley.runtime.endpoint_execution import (
     EndpointOutcome,
 )
 
-from .flow_execution_selection import select_flow_execution
-
 __all__ = ["EXIT_ERROR", "EXIT_FAILURE", "EXIT_SUCCESS", "McpTool", "McpToolResult"]
 
 # Source-compatible result name for Project-local endpoint extensions.
@@ -33,8 +28,3 @@ McpToolResult = EndpointOutcome
 
 class McpTool(EndpointContext):
     """Legacy MCP endpoint extension; execution services are transport independent."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        selection = select_flow_execution()
-        self._acceptance_recorder = selection.acceptance_recorder()

@@ -16,7 +16,6 @@ from booley.runtime.endpoint_execution import ExecutionResult
 
 if TYPE_CHECKING:
     from booley.flows.base import BuiltinFlow
-    from booley.flows.execution_persistence import FlowExecutionAdapter
 
 
 def build_parser(
@@ -110,24 +109,16 @@ def parse_request(flow: BuiltinFlow, argv: list[str] | None = None) -> FlowReque
     return _parse_cli(flow, argv, CliInvocation.of(flow))[0]
 
 
-def execute_cli(
-    flow: BuiltinFlow,
-    argv: list[str] | None = None,
-    *,
-    adapter: FlowExecutionAdapter | None = None,
-) -> ExecutionResult:
-    from booley.flows.execution_persistence import StandaloneFlowExecution
-
+def execute_cli(flow: BuiltinFlow, argv: list[str] | None = None) -> ExecutionResult:
     invocation = CliInvocation.of(flow)
     request, quiet = _parse_cli(flow, argv, invocation)
-    flow._start_invocation(adapter or StandaloneFlowExecution(), request)
+    flow._start_invocation(request)
     flow._raw_argv = argv if argv is not None else sys.argv[1:]
     flow._console_publication_requested = True
     if (
         quiet
         or invocation.transport
         or os.environ.get("BOOLEY_RUNTIME_DIR")
-        or not isinstance(flow.execution_adapter, StandaloneFlowExecution)
         or getattr(request, "dry_run", False)
     ):
         return flow.execute_prepared()

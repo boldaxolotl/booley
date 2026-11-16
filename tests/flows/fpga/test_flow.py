@@ -17,9 +17,6 @@ import pytest
 from booley.core.boundary import BoundaryError
 from booley.core.build_paths import work_root_for
 from booley.criteria.state import DevelopmentState
-from booley.evidence.fields import (
-    BASELINE_TARGET_PARAM,
-)
 from booley.evidence.timing import ClockTiming, make_clock_timing
 from booley.flows import run_evidence
 from booley.flows.base import SubprocessResult
@@ -124,7 +121,6 @@ def _flow(tmp_path: Path, state_file: Path, *extra_args: str) -> FpgaImplFlow:
             *extra_args,
         ]
     )
-    flow.read_state()
     return flow
 
 
@@ -320,9 +316,7 @@ def test_fpga_run_records_no_criterion(
     assert result.exit_code == exit_code
     if named_state:
         assert state_file.read_bytes() == before
-        assert not flow.state.is_met("fpga_impl_ok_default")
     else:
-        assert flow.state.criteria == {}
         assert list(tmp_path.rglob("state.json")) == []
     assert not (tmp_path / "logs").exists()
     rules = TableRules(
@@ -342,18 +336,14 @@ def test_fpga_run_records_no_criterion(
     assert measure_exit_code(item.verdict for item in judged) == verdict
 
 
-def test_criterion_never_chooses_the_baseline_target(
+def test_baseline_pairs_each_target_with_itself(
     tmp_path: Path,
     state_file: Path,
 ) -> None:
-    """``--baseline`` pairs each Target with itself, whatever a state-file Criterion pins."""
+    """``--baseline`` pairs each Target with itself."""
     from booley.flows.job_estimates import JobRequest
 
     flow = _flow(tmp_path, state_file, "--baseline", "v1.0")
-    flow.state.init_criteria(
-        {"fpga_impl_ok_default": True},
-        criterion_params={"fpga_impl_ok_default": {BASELINE_TARGET_PARAM: "fpga_before"}},
-    )
     handle = _layer_target_handle(tmp_path, "default")
 
     assert flow._prepare_target_pairs((handle,)) is None
@@ -374,7 +364,7 @@ def test_baseline_runs_the_candidate_target_at_the_baseline_revision(
 
     @contextmanager
     def fake_worktree(_project_root, _ref, *, paired_project):
-        assert paired_project is flow._paired_project_baseline
+        assert paired_project == flow._paired_project_baseline
         baseline = tmp_path / ".booley" / ".baseline-wt-test"
         baseline.mkdir(parents=True, exist_ok=True)
         yield baseline
@@ -424,7 +414,7 @@ def test_baseline_plan_restores_candidate_execution_context(
 
     @contextmanager
     def fake_worktree(_project_root, _ref, *, paired_project):
-        assert paired_project is flow._paired_project_baseline
+        assert paired_project == flow._paired_project_baseline
         worktree = tmp_path / ".booley" / ".baseline-plan"
         worktree.mkdir(parents=True)
         yield worktree
@@ -1341,7 +1331,6 @@ class TestTargetRecipeBoundary:
                 str(work_dir),
             ]
         )
-        flow.read_state()
 
         if shutil.which("fusesoc"):
             fusesoc_cmd = list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
@@ -1806,7 +1795,6 @@ def test_completed_target_survives_later_matrix_crash(tmp_path: Path, state_file
             str(tmp_path / "reports"),
         ]
     )
-    flow.read_state()
     flow._target_pairs = ()
     metrics = FpgaMetrics(lut_count=10, ff_count=5)
     calls = 0
@@ -2272,7 +2260,6 @@ def test_invocation_report_records_tools_by_target(tmp_path, state_file, targets
             str(tmp_path / "reports"),
         ]
     )
-    flow.read_state()  # parse_args starts a new invocation
     with patch.object(
         flow,
         "_run_single_target",

@@ -11,7 +11,6 @@ from dataclasses import replace
 import pytest
 
 from booley.flows import endpoint_session
-from booley.flows.execution_persistence import StandaloneFlowExecution
 from booley.flows.sim.test_run_invocation import TestRunInvocation
 from booley.runtime.endpoint_execution import EndpointOutcome
 from tests.flows.invocation_doubles import replace_run
@@ -63,7 +62,7 @@ def test_every_invocation_boundary_starts_the_state_afresh(tmp_path, monkeypatch
     request = replace(flow.args, test=("stress",))
 
     if boundary == "invocation_start":
-        flow._start_invocation(StandaloneFlowExecution(), request)
+        flow._start_invocation(request)
     else:
         flow._args = request
         endpoint_session.prepare_execution(flow)
@@ -116,7 +115,7 @@ def test_simulation_outcomes_belong_to_simulation_flow(tmp_path, monkeypatch):
 
     flow = _flow(tmp_path, monkeypatch, "--test", "stress")
     flow._simulation_record_outcomes = ("stale",)
-    flow._start_invocation(StandaloneFlowExecution())
+    flow._start_invocation()
     assert flow._simulation_record_outcomes == ()
 
 
@@ -151,7 +150,7 @@ def test_flow_state_restarts_with_each_invocation(tmp_path, monkeypatch, name):
     flow = _flow(tmp_path, monkeypatch)
     setattr(flow, name, stale)
 
-    flow._start_invocation(StandaloneFlowExecution())
+    flow._start_invocation()
 
     assert getattr(flow, name) == fresh
 

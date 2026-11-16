@@ -54,7 +54,6 @@ def reviewer(tmp_path, monkeypatch):
             "bugs",
         ]
     )
-    endpoint.read_state()
     monkeypatch.setattr(
         endpoint,
         "_invoke_agent",

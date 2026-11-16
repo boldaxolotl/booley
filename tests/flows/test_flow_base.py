@@ -118,7 +118,6 @@ class TestBooleyFlowExecution:
         flow = EchoFlow()
         with patch.dict(os.environ, env):
             flow.parse_args(["--target", "test", "--message", "hello world"])
-        flow.read_state()
         result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
         assert "hello world" in result.detail.get("output", "")
@@ -149,7 +148,6 @@ class TestBooleyFlowExecution:
         flow = MissingCmdFlow()
         with patch.dict(os.environ, env):
             flow.parse_args(["--target", "test"])
-        flow.read_state()
         result = flow._run()
         assert result.exit_code == EXIT_ERROR
 
@@ -176,7 +174,6 @@ class TestBooleyFlowExecution:
         flow = EmptyFlow()
         with patch.dict(os.environ, env):
             flow.parse_args(["--target", "test"])
-        flow.read_state()
         result = flow._run()
         assert result.exit_code == EXIT_ERROR
 
@@ -401,7 +398,6 @@ class TestTimeoutKillsTheWholeTree:
         flow = HangFlow()
         with patch.dict(os.environ, _env_with_state(state_file)):
             flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
-        flow.read_state()
         return flow
 
     @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
