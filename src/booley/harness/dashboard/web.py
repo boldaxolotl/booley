@@ -1,22 +1,26 @@
-"""``booley dashboard --web``: each worktree's Jobs as JSON on the loopback interface.
+"""``booley dashboard --web``: each worktree's Jobs as a page and JSON on the loopback interface.
 
 ``GET /api/snapshot?worktree=<absolute path>`` answers for the main checkout or one
 registered linked worktree; ``GET /api/report?...`` serves a report the snapshot links to.
-Every error is ``{"error": "<sentence>"}`` and carries no Jobs.
+Every error is ``{"error": "<sentence>"}`` and carries no Jobs. ``GET /`` serves the page
+that polls the snapshot, and its assets come from ``/assets/``.
 """
 
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
-from starlette.routing import Route
+from starlette.responses import FileResponse, JSONResponse, Response
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 
 from booley.core.booley_dir import resolve_common_booley_dir, resolve_main_checkout_root
 from booley.core.booley_layout import BooleyLayoutError, git_common_directory
+from booley.core.resources import package_data_dir
 from booley.harness.dashboard.jobs import JobReader
 from booley.harness.dashboard.resources import ResourceSampler
 from booley.harness.dashboard.web_snapshot import find_report, read_snapshot
@@ -72,6 +76,21 @@ def _accepted_worktree(main: Path, value: str | None) -> tuple[Path, str | None]
     raise _RefusalError(404, "worktree is not the main checkout or a worktree of this Project")
 
 
+def _page(assets: Path) -> Callable[[Request], Response]:
+    """The handler of ``GET /``: the static page, which carries no Jobs.
+
+    It shows the snapshot's own refusal for a bad worktree. The policy makes the browser
+    refuse any load from outside this server.
+    """
+
+    def page(_request: Request) -> Response:
+        return FileResponse(
+            assets / "index.html", headers={"Content-Security-Policy": "default-src 'self'"}
+        )
+
+    return page
+
+
 def create_app(
     main: Path,
     booley_dir: Path,
@@ -79,7 +98,7 @@ def create_app(
     proc_root: Path = Path("/proc"),
     cgroup: Path = Path("/sys/fs/cgroup"),
 ) -> Starlette:
-    """The JSON application of the Project whose main checkout is *main*.
+    """The page and JSON application of the Project whose main checkout is *main*.
 
     Requests run one at a time: the Job reader's artifact cache and the CPU sampler
     keep state between reads.
@@ -117,8 +136,15 @@ def create_app(
             raise _RefusalError(404, "no such report in this worktree")
         return Response(data, media_type="application/json")
 
+    assets = package_data_dir() / "dashboard_web"
+
     return Starlette(
-        routes=[Route("/api/snapshot", snapshot), Route("/api/report", report)],
+        routes=[
+            Route("/", _page(assets)),
+            Mount("/assets", StaticFiles(directory=assets)),
+            Route("/api/snapshot", snapshot),
+            Route("/api/report", report),
+        ],
         exception_handlers={_RefusalError: _refuse},
     )
 
