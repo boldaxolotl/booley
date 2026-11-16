@@ -1,6 +1,6 @@
 """Architecture guard: every Doctor FAIL and WARN names a remedy.
 
-A remedy is what the brief for issue #4252 allows: the fix field, or failing that the message,
+A remedy is: the fix field, or failing that the message,
 holds a backticked command, a single-quoted literal (an apostrophe in a word does not count),
 or a clause that starts with an action verb. The verbs live in one place,
 ``doctor_remedies.REMEDY_VERBS``. The scan reads ``src/booley`` statically, so the reviewed
@@ -122,21 +122,6 @@ _BASELINE: tuple[str, ...] = (
     'fail - runtime/inspection.py::_probe_mounted_vivado "mounted Vivado did not report exact vers"',
     'fail agent.credential-missing harness/doctor.py::_check_cli_credentials "message"',
     'fail agent.credential-missing harness/doctor.py::_check_cli_credentials "message"',
-    'warn - harness/doctor.py::_check_agent_backend_health "worker backend ("',
-    'warn - harness/doctor.py::_check_agent_backend_health "worker backend health check failed:"',
-    'warn - harness/doctor.py::_check_cli_credentials "message"',
-    'warn - harness/doctor.py::_check_cli_credentials "message"',
-    'warn - harness/doctor.py::_check_container_uid "could not probe container uid"',
-    'warn - harness/doctor.py::_check_container_uid "could not probe container uid:"',
-    'warn - harness/doctor.py::_check_container_uid "could not stat"',
-    'warn - harness/doctor.py::_check_container_uid "unexpected container uid output:"',
-    'warn - harness/doctor.py::_check_custom_image_freshness "custom sandbox image \'"',
-    'warn - harness/doctor.py::_check_oauth_token "f\'{label}: stored credential is readable"',
-    'warn - harness/doctor.py::_check_oauth_token "message"',
-    'warn - harness/doctor.py::_check_project_gitignore ".booley/.gitignore is missing"',
-    'warn - harness/doctor.py::_check_project_gitignore ".booley/.gitignore missing; transient Bo"',
-    'warn - harness/doctor.py::_check_project_gitignore "could not read"',
-    'warn - harness/doctor.py::_check_subscription_creds_health "subscription login at"',
     'warn agent.backend-health harness/doctor.py::_check_agent_backend_health "worker backend ("',
     'warn agent.backend-health harness/doctor.py::_check_agent_backend_health "worker backend health check failed:"',
     'warn agent.credential-missing harness/doctor.py::_check_cli_credentials "message"',
@@ -407,3 +392,45 @@ def test_every_sink_value_is_traced(tmp_path: Path) -> None:
     package.mkdir()
     (package / "m.py").write_bytes(source.encode())
     assert scan.untraced_sink_values(package, [package / "m.py"]) == ["m.py:2", "m.py:3"]
+
+
+_KEYWORD_SOURCE = """
+from booley.audit.diagnostic_results import DiagnosticFinding, Severity
+
+
+def checks():
+    return DiagnosticFinding(severity=Severity.FAIL, message="disk broke", fix="")
+"""
+
+
+def test_keyword_severity_is_scanned(tmp_path: Path) -> None:
+    sites = _scan_text(tmp_path, _KEYWORD_SOURCE)
+    assert [(site.key, site.verdict) for site in sites] == [
+        ('fail - m.py::checks "disk broke"', "violation")
+    ]
+
+
+_REBOUND_SOURCE = """
+def check(warn):
+    warn = _warning_sink(warn, "x.id")
+    warn("disk is full")
+"""
+
+
+def test_rebound_sink_parameter_counts_each_call_once(tmp_path: Path) -> None:
+    source = _REBOUND_SOURCE + "\n\ndef run(reporter):\n    check(reporter.warn_)\n"
+    sites = _scan_text(tmp_path, source)
+    assert [site.key for site in sites] == ['warn x.id m.py::check "disk is full"']
+
+
+def test_keyword_callback_to_unknown_callee_is_untraced(tmp_path: Path) -> None:
+    source = (
+        "def f(reporter):\n"
+        "    register(on_fail=reporter.fail_)\n"
+        "    known(fail=reporter.warn_)\n"
+        "\n\ndef known(fail):\n    fail('x')\n"
+    )
+    package = tmp_path / "booley"
+    package.mkdir()
+    (package / "m.py").write_bytes(source.encode())
+    assert scan.untraced_sink_values(package, [package / "m.py"]) == ["m.py:2"]

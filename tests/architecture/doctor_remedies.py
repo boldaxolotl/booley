@@ -394,13 +394,15 @@ class _Analysis:
         scope: _Func | None = func
         while scope is not None:
             found: frozenset[_SinkValue] = _NO_SINKS
-            if expr.id in scope.params:
-                found = frozenset(self.params.get(scope, {}).get(expr.id, ()))
-            elif expr.id not in scope.assigns:
+            if expr.id not in scope.params and expr.id not in scope.assigns:
                 scope = scope.parent
                 continue
             for value in scope.assigns.get(expr.id, ()):
                 found |= self.sink_of(value, scope, depth + 1)
+            if expr.id in scope.params and not found:
+                # A parameter rebound in the body (``_warn = _warning_sink(_warn, ...)``) is
+                # the rebound sink; counting the original too would double every call.
+                found = frozenset(self.params.get(scope, {}).get(expr.id, ()))
             return found
         return self._derived_value(self.callee(expr, func))
 
@@ -435,9 +437,10 @@ class _Analysis:
         return found
 
     def _special_emission(self, call: ast.Call, func: _Func) -> _Emit | None:
-        if not call.args:
+        first = _argument(call, 0, "severity", "status")
+        if first is None:
             return None
-        severity = _severity_member(call.args[0], "Severity")
+        severity = _severity_member(first, "Severity")
         if severity is not None:
             check_id = _argument(call, 3, "check_id")
             return _Emit(
@@ -447,7 +450,7 @@ class _Analysis:
                 _argument(call, 2, "fix"),
                 "ctor",
             )
-        status = _severity_member(call.args[0], "LineStatus")
+        status = _severity_member(first, "LineStatus")
         named = (
             call.func.attr
             if isinstance(call.func, ast.Attribute)
@@ -735,6 +738,8 @@ class _Analysis:
         child, parent = node, parents.get(node)
         while isinstance(parent, (ast.IfExp, ast.BoolOp)):
             child, parent = parent, parents.get(parent)
+        if isinstance(parent, ast.keyword):
+            parent = parents.get(parent)
         if isinstance(parent, ast.Call):
             return not self._followed(child, parent, scope)
         if isinstance(parent, (ast.Assign, ast.AnnAssign)):
