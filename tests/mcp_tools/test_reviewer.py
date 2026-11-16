@@ -1545,7 +1545,46 @@ class TestPromptConstruction:
         assert "is it REALLY necessary" in system
         assert "Size operands and intermediate expressions deliberately" in system
 
-    def test_rtl_optimization_prompt_checks_unused_and_dead_rtl(self, state_file: Path):
+    def test_rtl_bugs_prompt_omits_checks_lint_reports(self, state_file: Path):
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"])
+
+        system = " ".join(endpoint._build_system_prompt("bugs").split())
+
+        for removed in (
+            "**Width mismatches**",
+            "**Undriven / partially driven signals**",
+            "Undriven or partially driven signals",
+            "an output is wrong or undriven",
+            "**Inferred latches**",
+            "**Multi-driven nets**",
+            "multiple procedural drivers",
+            "Missing labels on generate blocks",
+            "casex",
+            "Unbalanced `ifdef`",
+            "include guard",
+            "**Long combinational chains**",
+        ):
+            assert removed not in system, removed
+
+    def test_rtl_bugs_prompt_keeps_checks_lint_cannot_make(self, state_file: Path):
+        from booley.specialists.reviewer import REVIEW_GUIDES
+
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"])
+        prompts = {
+            guide.kind: " ".join(endpoint._build_system_prompt("bugs", (guide,)).split())
+            for guide in REVIEW_GUIDES[("rtl", "bugs")]
+        }
+
+        checklist = prompts["checklist"]
+        assert "**Combinational loops**" in checklist
+        assert "zero-width signals or empty loop ranges at legal parameter values" in checklist
+        assert "reason across every built configuration" in checklist
+        assert "Do not review an `ifdef` configuration that no Target builds" in checklist
+        assert "Do not trace an `ifdef` configuration that no Target builds" in prompts["hunt"]
+
+    def test_rtl_optimization_prompt_checks_functionally_dead_rtl(self, state_file: Path):
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(
             [
@@ -1558,13 +1597,37 @@ class TestPromptConstruction:
             ]
         )
 
-        system = endpoint._build_system_prompt("optimization")
+        system = " ".join(endpoint._build_system_prompt("optimization").split())
 
-        assert "Unused and dead RTL" in system
-        assert "internal signals or registers written but never read" in system
-        assert "Require proof across all legal configurations" in system
-        assert "do not claim silicon savings" in system
-        assert "interface items without complete context" in system
+        for present in (
+            "Functionally dead logic that lint cannot see",
+            "FSM states no legal input sequence reaches",
+            "constant in practice",
+            "Require proof across all legal configurations",
+            "do not claim silicon savings",
+            "interface items without complete context",
+            "Long combinational chains",
+            "limits Fmax",
+        ):
+            assert present in system, present
+        for removed in (
+            "Unused and dead RTL",
+            "written but never read",
+            "unused declarations",
+            "lint cleanliness",
+        ):
+            assert removed not in system, removed
+
+    def test_rtl_style_guide_has_no_bit_range_order_rule(self, state_file: Path):
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(
+            ["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "code_style"]
+        )
+        endpoint.read_state()
+
+        system = endpoint._build_system_prompt("code_style")
+
+        assert "ascending bit ranges" not in system.lower()
 
     def test_rtl_user_prompt_includes_scope(self, state_file: Path):
         endpoint = ReviewerSpecialist()
@@ -2473,16 +2536,6 @@ class TestTbQualityPrompt:
         # `$stop` is wrong on every simulator: its reason names no single one.
         stop = system.index("End simulation with `$finish`, not `$stop`")
         assert "Icarus" not in system[stop : stop + 400]
-
-    def test_rtl_range_rule_is_not_justified_by_cocotb_alone(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            ["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "code_style"]
-        )
-        endpoint.read_state()
-        system = endpoint._build_system_prompt("code_style")
-
-        assert "silent data corruption under cocotb/VPI" not in system
 
     def test_output_instructions_pin_category_to_focus(self):
         output = ReviewerSpecialist._output_instructions("protocol")
