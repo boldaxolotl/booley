@@ -1,1 +1,8 @@
-Replace the scaffold counter with the interface contract and a minimal CTRL reset/read/write implementation. Write an MMIO smoke test covering reset, read/write, strobes, errors and response backpressure. Set up `sim_uart`, `lint_uart`, `lint_uart_verible` (Verible over the same RTL) and `synth_uart`, and get the smoke simulation, both lints, synthesis and Doctor passing. Keep a fresh trace and read it back through B-Wave, commit the clean baseline, and note which sources you read and the MCP calls behind each result. Leave the full UART behavior for the feature Goal that follows.
+Replace the scaffold counter with the interface contract and a minimal CTRL
+reset/read/write implementation. Write an MMIO smoke test covering reset,
+read/write, strobes, errors and response backpressure. Set up `sim_uart`,
+`lint_uart`, `lint_uart_verible` (Verible over the same RTL) and `synth_uart`,
+and get the smoke simulation, both lints, synthesis and Doctor passing. Keep a
+fresh trace and read it back through B-Wave, commit the clean baseline, and
+note which sources you read and the MCP calls behind each result. Leave the
+full UART behavior for the feature request that follows.

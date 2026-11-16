@@ -32,10 +32,9 @@ run.
    `AGENTS.md`. Keep the mission's areas in priority order and its primary
    areas within its budget (8 hours; `gui`: 4 hours); if the addition pushes
    it over, say which area should shrink. Add any new fixture, prompt, or
-   Goalset file next to the mission and reference it by relative path. Ad-hoc
-   Goal lists use `goals/*.json`; shared coverage fixtures belong in
-   `qa/shared/coverage/goals/`.
+   `metrics.toml` file next to the mission and reference it by relative path;
+   shared coverage fixtures belong in `qa/shared/coverage/`.
 4. **Check.** Run `python -m pytest tests/qa/test_missions.py`. It checks
    that every path a mission references exists, that every `AREAS.md` link
-   names a real area with the right `(optional)` mark, and that Goalsets and
-   ad-hoc Goal lists parse. Done when it passes.
+   names a real area with the right `(optional)` mark, and that every
+   `metrics.toml` fixture loads with Booley's parser. Done when it passes.

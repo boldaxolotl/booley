@@ -62,7 +62,6 @@ os.link(p/'source',p/'coverage.json')
         "link",
         "/coverage.json",
         "any",
-        set(),
         20,
     )
     assert code == 0
@@ -89,7 +88,6 @@ for complete in [False,True]:
             "rename",
             "/progress.json",
             "complete",
-            set(),
             20,
         )
         == 0
@@ -149,7 +147,6 @@ for complete in [False,True]:
             "rename",
             "/progress.json",
             "complete",
-            set(),
             20,
         )
         == 0
@@ -168,7 +165,7 @@ def test_should_fail_waits_out_a_source_that_is_still_being_written(tmp_path):
     writer = threading.Thread(target=finish_write)
     writer.start()
     try:
-        assert controller.should_fail(source, "complete", set()) is True
+        assert controller.should_fail(source, "complete") is True
     finally:
         writer.join()
 
@@ -185,16 +182,16 @@ def test_source_mutation_waits_for_published_event_after_snapshot_creation(tmp_p
         snapshot = event.with_suffix(".snapshot")
         snapshot.touch()  # The shim creates this before copying source bytes.
         seen = set()
-        controller.service(control, "complete", set(), seen, os.getpid())
+        controller.service(control, "complete", seen, os.getpid())
         assert source.read_text() == original
         assert not event.with_suffix(".reply").exists()
         snapshot.write_text(original)
         event.touch()  # Event publication can itself be observed before the newline.
-        controller.service(control, "complete", set(), seen, os.getpid())
+        controller.service(control, "complete", seen, os.getpid())
         assert source.read_text() == original
         assert not event.with_suffix(".reply").exists()
         event.write_text(f"rename\t{snapshot}\t{owned / 'progress.json'}\n")
-        controller.service(control, "complete", set(), seen, os.getpid())
+        controller.service(control, "complete", seen, os.getpid())
         assert json.loads(source.read_text()) == {"complete": True}
         assert snapshot.read_text() == original
         assert event.with_suffix(".reply").read_text() == "P"
@@ -225,7 +222,6 @@ finally: os.close(fd)
             "unlink",
             "/payload",
             "any",
-            set(),
             20,
         )
         == 0
@@ -250,17 +246,8 @@ def test_missing_interception_cannot_report_fault_success(tmp_path, library):
             "link",
             "/coverage.json",
             "any",
-            set(),
             10,
         )
-
-
-def test_acceptance_gate_requires_new_transaction(tmp_path):
-    source = tmp_path / "state.tmp"
-    source.write_text(json.dumps({"acceptance_transactions": ["old"]}))
-    assert not controller.should_fail(source, "acceptance", {"old"})
-    source.write_text(json.dumps({"acceptance_transactions": ["old", "new"]}))
-    assert controller.should_fail(source, "acceptance", {"old"})
 
 
 def test_controller_does_not_change_parent_environment(tmp_path, library):
@@ -274,7 +261,6 @@ def test_controller_does_not_change_parent_environment(tmp_path, library):
             "link",
             "/absent",
             "any",
-            set(),
             10,
         )
     assert dict(os.environ) == before
@@ -291,7 +277,6 @@ def test_interrupt_reaps_producer_before_publication(tmp_path, library):
         "link",
         "/coverage.json",
         "interrupt",
-        set(),
         20,
     )
     assert code == -15
@@ -333,7 +318,6 @@ def test_any_gate_preserves_attempted_publication_bytes(tmp_path, library):
             "link",
             "/coverage.json",
             "any",
-            set(),
             20,
         )
         == 0

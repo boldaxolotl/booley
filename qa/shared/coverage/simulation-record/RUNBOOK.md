@@ -1,13 +1,11 @@
 # Coverage aggregate Simulation Record fixture
 
 This runbook gives the QA agent running the coverage mission the exact steps
-for three Simulation Record recovery cases in area 6, `cov-retention`
+for two Simulation Record recovery cases in area 6, `cov-retention`
 ([MISSION.md](../../../missions/coverage/MISSION.md)): refusing to resume an
-unfinished coverage collection, recovering a failed Goal acceptance write, and
-rejecting a corrupt terminal Result. Fixture setup, the `boundary.so` fault
-library and `filesystem.py` live in the [shared coverage
-runbook](../RUNBOOK.md); Goal-child rules live in
-[GOAL-CHILD.md](../../GOAL-CHILD.md). The validators here are independent
+unfinished coverage collection and rejecting a corrupt terminal Result.
+Fixture setup, the `boundary.so` fault library and `filesystem.py` live in the
+[shared coverage runbook](../RUNBOOK.md). The validators here are independent
 cross-checks over saved evidence; only a real run against the candidate tests
 the product.
 
@@ -70,79 +68,17 @@ PYTHONPATH=<asset>/simulation-record python3 -c \
      --native run:001:half@1=<nested>/native/raw/001-half@1.dat
    ```
 
-## Acceptance recovery
-
-The Goal state is written by the Flow process that the container's shared
-HTTP MCP server starts, not by the Codex child: the child reaches that server
-through a URL, so a fault injected into the child never reaches the writer.
-That is why this case wraps the server.
-
-1. Commit the fixture registration and initialized Project files, then create
-   a clean linked worktree. Start a Codex child with `$booley-goal` naming a
-   `sim` Goal on `sim_toggle` with its complete registered suite. Follow
-   GOAL-CHILD.md, including `work_dir` on every MCP call that takes it.
-2. Save the Goal Record and its `logs/acceptance/` evidence. Before any
-   collection, archive the Goal Record's `booley_state.json` (the Development
-   State) and its evidence ledger.
-3. Make sure no other MCP client is attached to the container. With the Goal
-   active and before the first collection call, stop the running server
-   (`python -m booley.mcp.server --transport http`, log
-   `/tmp/booley_mcp_http.log`). Restart the same command under
-   `<asset>/faults/filesystem.py`, with `BOOLEY_MCP_MODE=interactive` and with
-   `BOOLEY_NESTED_AGENT`, `BOOLEY_NESTED_MCP_TOOLS` and `BOOLEY_MCP_TOOLS`
-   unset, as the container start does:
-
-   ```bash
-   python3 <asset>/faults/filesystem.py --operation rename \
-     --suffix /goals/<record-id>/booley_state.json --owned <main-booley-dir> \
-     --gate acceptance --baseline-state <archived-booley_state.json> \
-     --control <new-control-dir> --library <owned>/boundary.so \
-     --timeout <seconds-longer-than-the-sim-call> \
-     -- python -m booley.mcp.server --transport http
-   ```
-
-   `--owned` is the resolved Main Booley Directory and `--control` must not
-   exist yet. Confirm the server answers before the child calls it.
-4. Have the child collect through MCP `sim(work_dir=..., coverage=true)` with
-   the complete suite; CLI Flows bind no Goal evidence. The gate lets earlier
-   state writes pass. The Simulation Record publishes every terminal Result,
-   then the
-   gate fails the state replacement whose temporary JSON adds a new acceptance
-   transaction.
-5. After the failed call, send SIGTERM to the faulted server process only, not
-   to `filesystem.py`, so the wrapper sees it exit, services the last event and
-   checks for the `consumed` marker. Save the paused JSON, the consumed event,
-   the failed response and the wrapper's exit status. A missing `consumed`
-   marker is a fixture failure. A wrapper `TimeoutError` means the server was
-   not stopped: repeat the step.
-6. Archive the failed publication, the evidence-ledger intent, transaction and
-   evidence records, the failed Development State, the attempt inventory, the
-   summary and the incomplete `simulation.json`.
-7. Restart the server with the same command and environment, without
-   `filesystem.py`. Have the child resume the exact printed Manifest through
-   MCP `sim` with its `resume_from` argument, absolute `work_dir`, and the same
-   Goal Record.
-8. Require: the same intent recorded or verified, exactly one matching
-   transaction directory, exactly one selection of its transaction ID in the
-   Development State, no contradictory duplicate records, no new Simulation
-   Attempt, and a final `simulation.json` with `complete: true`.
-9. Call `validate_recovery.validate_acceptance_recovery(manifest,
-   [result_json, ...], intent, transaction, evidence_root, archived_state,
-   failed_state, recovered_state, simulation_json)` on the saved copies. It
-   checks each record's bytes, digest, ordinal, sequence, role, envelope
-   binding and the absence of extra matching evidence.
-
 ## Corrupt terminal rejection
 
 1. Archive a byte-exact valid `result.json`, then change one byte in its live
    copy. Save the valid and corrupt digests, all other terminal records, the
    attempt inventory and a timestamped process sample.
-2. Have the child resume the exact Manifest through MCP `sim` with absolute
-   `work_dir`. It must exit 2 with a diagnostic naming Simulation Result
+2. Resume the exact Manifest with `booley flow sim --resume-from
+   <manifest.json>`. It must exit 2 with a diagnostic naming Simulation Result
    integrity, an unchanged attempt inventory, and no EDA process launch. Save
    the rejected corrupt bytes even when the diagnostic differs.
 3. Restore only the archived Result bytes, check their digest, and resume the
-   same Manifest through MCP again as the valid control. The completed work
+   same Manifest with the same command as the valid control. The completed work
    item must not rerun. Save the final summary and `simulation.json`.
 4. Build the rejection record from the captured exit codes, diagnostic,
    process samples, inventories and digests only; it is an index, not
@@ -156,17 +92,15 @@ That is why this case wraps the server.
 ## Resources and cleanup
 
 Before the first mutation, list in `resources.md` every run-owned report root,
-nested Coverage Record, Goal Record, evidence ledger directory, fault control
-directory, corrupt copy, process group and fixture registration. Recovery
-always saves the observed failure first, restores only owned bytes or paths,
-then runs the valid control in the same run, whether or not the negative case
-behaved as expected.
+nested Coverage Record, fault control directory, corrupt copy, process group and
+fixture registration. Recovery always saves the observed failure first, restores
+only owned bytes or paths, then runs the valid control in the same run, whether
+or not the negative case behaved as expected.
 
-After capture, finish or explicitly abandon the Goal, reap all owned
-producers, and remove only run-owned report and runtime state, Goal Record
-state, injection environment, control directories, corrupt working copies and
-copied fixture registration. Keep the interrupted, failed, corrupt and
-restored evidence copies for findings. Confirm the shared fixture and pinned
-sources are unchanged and mark each `resources.md` row released. The three
-cases reuse one terminal aggregate; if time runs out, log the remaining cases
-as skipped.
+After capture, reap all owned producers, and remove only run-owned report and
+runtime state, injection environment, control directories, corrupt working
+copies and copied fixture registration. Keep the interrupted, failed, corrupt
+and restored evidence copies for findings. Confirm the shared fixture and pinned
+sources are unchanged and mark each `resources.md` row released. The two cases
+reuse one terminal aggregate; if time runs out, log the remaining cases as
+skipped.

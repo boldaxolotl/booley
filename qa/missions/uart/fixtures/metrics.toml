@@ -1,0 +1,16 @@
+[defaults.sim]
+tests_failed_max = 0
+
+[sim_uart.sim]
+track = ["tests_total"]
+
+[lint_uart.lint]
+warnings_max = 0
+errors_max = 0
+
+[lint_uart_verible.lint]
+warnings_max = 0
+errors_max = 0
+
+[synth_uart.synth]
+track = ["cell_count"]
