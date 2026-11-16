@@ -354,47 +354,41 @@ take care to get right.
 
 ## Security & Trust Model
 
-Booley treats Developer Agent behavior as untrusted, whether it comes from
-error or adversarial input. Developer Agents, MCP tools, Flows, and EDA
-processes run inside the Sandbox with no host command channel. The container
-gets the Project Root, its Booley Directory, linked worktrees, and explicitly
-authorized resources; it has no host home directory, SSH keys, Docker socket,
-or host EDA configuration. A real `.ssh` directory holding only a regular
-`authorized_keys` that is not mounted from the host grants inbound access to
-the Sandbox, not host authority; a mounted or symlinked one is host authority,
-and Doctor FAILs on it. The container runs as a non-root user with all
-capabilities dropped, `no-new-privileges`, and a PID limit. A memory limit
-applies only when the Project sets `[sandbox].memory`.
+Booley treats the Developer Agent as untrusted, whether a bad action comes
+from a mistake or from adversarial input. The Sandbox is the boundary: agents,
+MCP tools, Flows, and EDA tools all run inside it, with no command channel to
+the host.
 
-Network egress belongs to the whole Sandbox; there is no per-Flow network
-boundary. By default every process in the Sandbox, EDA tools included, reaches
-only the egress proxy's allowlist: the endpoints the Agent CLIs need, plus any
-hosts in the host `config.toml` `egress_allowlist`. A host may opt into
-[Unproxied Sandboxes](../user/SANDBOX.md#host-configuration-configtoml), whose
-egress Booley does not mediate. Vivado license traffic goes through its own
-fixed-destination relay, not the egress proxy.
+- **Mounts.** The container gets the Project Root, its Booley Directory,
+  linked worktrees, and resources the host explicitly granted. It gets no host
+  home directory, SSH keys, Docker socket, or host EDA configuration. A
+  mounted or symlinked `.ssh` is host authority and fails Doctor; a local one
+  holding only `authorized_keys` just lets someone log in to the Sandbox.
+- **Processes.** A non-root user, all capabilities dropped,
+  `no-new-privileges`, and a PID limit. A memory limit applies only when the
+  Project sets `[sandbox].memory`.
+- **Network.** Egress is per Sandbox, not per Flow. By default every process
+  reaches only the egress proxy's allowlist: the endpoints the Agent CLIs need
+  plus the hosts in the host `config.toml` `egress_allowlist`. An
+  [Unproxied Sandbox](../user/SANDBOX.md#host-configuration-configtoml) skips
+  the proxy.
+- **Host EDA tools.** The host registers an installation and grants it to a
+  Project; Booley mounts it read-only and revalidates the grant before a
+  Sandbox resumes. License traffic goes through a fixed-destination relay,
+  not the proxy. A missing, stale, or revoked grant stops the Sandbox from
+  starting; Booley never falls back to running the tool on the host.
+- **Evidence inputs.** Protected Input checks guard the configuration that
+  produces evidence.
 
-Host-installed EDA tools follow the same boundary. The host registers an
-installation and grants it to a Project; Booley mounts it read-only,
-revalidates the grant before a Sandbox resumes, and limits license traffic to a
-fixed-destination relay. Invalid, stale, or revoked authority fails before the
-Sandbox starts instead of falling back to running anything on the host. This
-keeps dispatch, configuration, execution, and result interpretation on the
-container side of the trust boundary.
-
-Protected Input checks guard the configuration that produces evidence. Git
-keeps committed changes for review and recovery, but the writable Git metadata
-stays subject to the escape hatch below.
-
-**Known escape hatch:** shared Git metadata is writable from the Sandbox. An
+**Known escape hatch:** the Sandbox can write the shared Git metadata. An
 agent can plant Git configuration or hooks that a later Git command on the
-host runs, including Booley's own host-side Git calls. That code runs with the
-host user's authority, without exploiting Docker or the kernel. Doctor does
-not detect or prevent it. The fix is tracked in
-[#1529](https://github.com/boldaxolotl/booley/issues/1529); see the
+host runs, Booley's own host-side Git calls included, with the host user's
+authority and no Docker or kernel exploit. Doctor does not detect it. The fix
+is tracked in [#1529](https://github.com/boldaxolotl/booley/issues/1529); see
+the
 [current precautions](../user/SANDBOX.md#known-sandbox-escape-through-shared-git-metadata).
 
-This removes most of the agent's host authority, but it is not complete
-isolation. The remaining risks are the shared-Git escape hatch, container or
+The Sandbox removes most of the agent's host authority but is not complete
+isolation. Besides the Git escape hatch, the remaining risks are container or
 kernel escape, wrong host provisioning, vendor EDA tool behavior inside the
 Sandbox, and license-server traffic the host approved.
