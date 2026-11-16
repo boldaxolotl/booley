@@ -88,9 +88,8 @@ A Measurement reports edits to them as protected-set changes.
 _Avoid_: frozen file, locked config, Scope
 
 **Session**:
-In the Session Registry, one agent client thread or process that calls Booley
-from a worktree, falling back to the worktree itself when the client cannot be
-told apart. It feeds the Dashboard and the shared-worktree warning.
+One agent client thread working in one checkout: a T3 Code thread, or a
+Claude or Codex conversation. A Job records the Session that started it.
 _Avoid_: connection, tab, MCP session, Sandbox session
 
 **Sandbox Attachment**:
@@ -171,7 +170,7 @@ A linked worktree's **Booley Directory** when the Booley Directory is a **Versio
 _Avoid_: paired Project checkout, paired Project repository, paired copy
 
 **Snapshot**:
-A linked worktree's **Booley Directory** when the Booley Directory is not versioned: a copy of its configuration taken when the worktree is created. Results, logs, and Common Booley State stay in the Main Booley Directory.
+A linked worktree's **Booley Directory** when the Booley Directory is not versioned: a copy of its configuration taken when the worktree is prepared. Results, logs, and Common Booley State stay in the Main Booley Directory.
 _Avoid_: clean snapshot, project copy
 
 **Versioned Booley Directory**:

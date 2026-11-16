@@ -59,15 +59,8 @@ source of truth: it observes state other components own.
 - **The registry is presentational.** It feeds the Dashboard rows and the
   shared-worktree warning. No lifecycle rule reads it, and it never selects a
   Goal Record.
-- **One exception: the caller's checkout routes `work_dir`.** A call that omits
-  `work_dir` targets the linked worktree whose root is the cwd of the calling
-  session process; otherwise the server cwd. An explicit `work_dir` wins. Only
-  linked worktrees of the server's repository route, and ordinary Codex
-  threads never do: a shared daemon's cwd belongs to no tab, and a hand-started
-  CLI cannot be told from a daemon peer. A routed call counts as explicit for
-  Goal binding, and a Project-defined endpoint without a `work_dir` parameter
-  is refused for a routed caller. Both are deliberate: a forgotten `work_dir`
-  must not run silently on the main checkout while the agent edits a worktree.
+- **One exception: the caller's checkout routes `work_dir`.** ADR 0082
+  decides how a call that omits `work_dir` reaches the caller's worktree.
 - **Handles name things for humans.** Sessions are `S<n>` and Jobs are
   `J-<KIND><n>`; full keys and run IDs are not readable as names. Handles are
   reserved at registration or Job creation and persist across Dashboard
