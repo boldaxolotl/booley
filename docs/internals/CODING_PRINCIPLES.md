@@ -267,6 +267,14 @@ plus deletions:
 Tests count toward the total. More than two test lines per changed source line
 means duplicated cases (principle 17).
 
+The `test-ratio` job in the `Tests` workflow, part of `ci-required`, fails a
+pull request whose added test lines exceed twice its changed source lines,
+unless it removes more test lines than it adds. Test lines are `.py` and `.rs`
+files under test directories and inline `#[cfg(test)]` items in Rust; data
+files under test directories (`.vcd`, `.json`) do not count. A maintainer
+exempts a pull request with the `test-ratio-exempt` label; the job reads the
+label each time it is re-run.
+
 A PR that removes more lines than it adds counts only its additions. The caps
 exist to keep new code reviewable; deleting duplicated or obsolete code shrinks
 what reviewers must hold in their heads, so it should not force a split. Check
