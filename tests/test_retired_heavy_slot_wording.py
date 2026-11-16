@@ -122,6 +122,9 @@ _QUEUE_WHOLE_FILES = frozenset(
         "src/booley/data/refs/CHANGELOG.md",
         "changelog.d/3247.md",
         "changelog.d/4066.md",
+        # The scheduler QA mission checks that the retired keys are refused.
+        "qa/missions/scheduler/MISSION.md",
+        "qa/missions/scheduler/RUNBOOK.md",
     }
 )
 _EXPLAINS_QUEUE_RETIREMENT = re.compile(r"retire|delete", re.IGNORECASE)
@@ -154,6 +157,9 @@ _BUDGET_WHOLE_FILES = frozenset(
         "tests/config/test_jobs.py",
         "tests/harness/test_doctor.py",
         "tests/test_retired_heavy_slot_wording.py",
+        # The scheduler QA mission checks that the retired keys are refused.
+        "qa/missions/scheduler/MISSION.md",
+        "qa/missions/scheduler/RUNBOOK.md",
     }
 )
 
