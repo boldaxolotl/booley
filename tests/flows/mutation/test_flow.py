@@ -1301,7 +1301,6 @@ def test_hand_run_mutation_records_no_criterion(
 
     assert result.exit_code == expected_exit, result.report_text
     assert endpoint.state.criteria == {}
-    assert result.criterion_key == ""
     assert list(tmp_path.rglob("acceptance")) == []
     if with_state_file:
         assert state_path.read_bytes() == before

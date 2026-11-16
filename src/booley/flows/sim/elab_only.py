@@ -529,8 +529,6 @@ class ElabOnlyMixin:
             display_lines.append(standalone.display)
         return EndpointOutcome(
             exit_code=exit_code,
-            criterion_key=(f"elab_pass_{targets[0]}" if len(targets) == 1 else ""),
-            criterion_met=len(results) == 1 and results[0].outcome.passed,
             display_lines=display_lines,
             detail=detail,
             report_text=report_text,

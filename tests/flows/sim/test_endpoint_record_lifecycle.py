@@ -176,15 +176,12 @@ def _observed_simulation_record_request(plan, project, invocation, observer):
 def _public_hook_endpoint(flow, invocation):
     import time
 
-    from booley.flows.endpoint_report_criteria import ReportCriteria
-
     endpoint = SimpleNamespace(
         args=SimpleNamespace(report_dir=invocation.parent, slug=""),
         refresh_report_detail=flow.refresh_report_detail,
         name="sim",
         endpoint_kind="flow",
         _acceptance_recorder=flow._acceptance_recorder,
-        _report_criteria=ReportCriteria(frozen=True),
         _reserved_invocation_dir=invocation,
         _start_time=time.monotonic(),
         _selected_target="sim",
@@ -294,7 +291,7 @@ def test_endpoint_reauthentication_never_renders_corrupt_hook_as_authoritative(
     firing = simulation_record.pre_sim_firings[0]
     firing.path.write_bytes(firing.path.read_bytes() + b" ")
     result = flow._attach_published_pre_sim(result)
-    assert result.exit_code == 2 and result.criterion_met is False
+    assert result.exit_code == 2
     assert "pre_run_commands" not in result.report_text
     assert "pre_sim_lines" not in result.detail
     assert "pre_sim_runs" not in result.detail
@@ -306,7 +303,6 @@ def _recording_invocation(*, borrows: bool, events: list[str]):
 
     Its run also appends ``"invoke"`` to *events*, so the lifecycle order stays pinned.
     """
-    from booley.flows.endpoint_report_criteria import ReportScope
     from booley.flows.prepared_invocation import PreparedInvocation
 
     class RecordingInvocation(PreparedInvocation):
@@ -314,9 +310,6 @@ def _recording_invocation(*, borrows: bool, events: list[str]):
 
         def __init__(self) -> None:
             self.received: list[object | None] = []
-
-        def report_scope(self, endpoint: object) -> ReportScope:
-            raise AssertionError("the execution sequence under test never plans a report scope")
 
         def run(self, admission: object | None) -> EndpointOutcome:
             events.append("invoke")
@@ -546,7 +539,6 @@ def test_infrastructure_simulation_record_reaches_persisted_endpoint_reports(
     import json
     import time
 
-    from booley.flows.endpoint_report_criteria import ReportCriteria
     from booley.flows.endpoint_reporting import write_report
     from booley.flows.sim.record.coordinator import (
         NewSimulationRecordRunRequest,
@@ -592,7 +584,6 @@ def test_infrastructure_simulation_record_reaches_persisted_endpoint_reports(
         name="sim",
         endpoint_kind="flow",
         _acceptance_recorder=flow._acceptance_recorder,
-        _report_criteria=ReportCriteria(frozen=True),
         _reserved_invocation_dir=invocation,
         _start_time=time.monotonic(),
         _selected_target="sim",
@@ -1699,7 +1690,7 @@ def test_public_ticket_integrity_downgrade_never_publishes_true(tmp_path, monkey
     )
     report = json.loads((tmp_path / "reports/sim.json").read_bytes())
     assert result.exit_code == (2 if corrupt else 0), result.outcome.report_text
-    assert report["criterion_met"] is None
+    assert "criterion_met" not in report and "criterion_key" not in report
     assert not list((log_dir / "acceptance/transactions").glob("*.json"))
     if corrupt:
         assert "Simulation Record integrity failure" in report["report_text"]

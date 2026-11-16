@@ -121,12 +121,11 @@
     var failed = FAILED.indexOf(job.result) !== -1;
     var passed = job.result.indexOf(PASSED) === 0;
     var cls = failed ? ' failed' : passed ? ' passed' : '';
-    var criterion = job.criterion ? part(job.criterion.text) : '';
     var report = job.report_url ?
       '<a href="' + escapeHtml(job.report_url) + '">Report</a>' : '';
     return '<div class="card' + cls + '"><div class="row"><span class="handle">' +
       escapeHtml(job.handle) + '</span>' + part(job.flow) + part(job.target) + part(job.owner) +
-      '<span class="result">' + escapeHtml(job.result) + '</span>' + criterion +
+      '<span class="result">' + escapeHtml(job.result) + '</span>' +
       part(formatTime(job.ended_at)) + part(formatDuration(job.duration_s)) + report +
       '</div></div>';
   }

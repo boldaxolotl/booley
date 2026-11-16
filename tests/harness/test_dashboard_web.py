@@ -514,15 +514,13 @@ def test_results_are_newest_first_capped_with_counts_and_report_links(world, mon
         "target": "t12",
         "owner": "sess1",
         "result": "PASSED",
-        "criterion": {"text": "k · met", "met": True},
         "ended_at": "2026-10-08T10:00:12Z",
         "duration_s": 12.0,
         "report_url": by_target["t12"]["report_url"],
     }
     assert by_target["t13"]["result"] == "FAILED"
-    assert by_target["t13"]["criterion"] == {"text": "k · not met", "met": False}
+    assert all("criterion" not in row for row in jobs)
     assert by_target["t20"]["report_url"] is None
-    assert "criterion" not in by_target["t20"]
     assert linked.status_code == 200
     assert linked.json() == {"run_id": "run-sa", "criterion_key": "k", "criterion_met": True}
 
@@ -743,7 +741,13 @@ def test_page_and_its_assets_are_served_from_this_server(world, monkeypatch):
 
 def test_page_renders_the_snapshot_with_results_collapsed_and_polls(world, monkeypatch, tmp_path):
     _queued_world(world)
-    _job(world, "run-p", world.wt, target="t_pass", report={"criterion_key": "k"})
+    _job(
+        world,
+        "run-p",
+        world.wt,
+        target="t_pass",
+        report={"criterion_key": "k", "criterion_met": True},
+    )
     _job(world, "run-f", world.wt, target="<b>x</b>", exit_code=1)
     _job(world, "run-bare", world.wt, target=None, ended=None)
     _job(world, "run-leak", world.other, target="leak")
@@ -782,6 +786,7 @@ def test_page_renders_the_snapshot_with_results_collapsed_and_polls(world, monke
     for bad in ("null", "undefined", "NaN", "1970"):
         assert bad not in one, bad
     assert "leak" not in one
+    assert "k · met" not in one
     assert "t_new" not in one
     assert one.count(' failed"') == 1
     assert "t_new" in two

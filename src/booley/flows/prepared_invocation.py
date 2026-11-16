@@ -7,19 +7,17 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
-from booley.flows.endpoint_report_criteria import ReportScope, planned_scope
 from booley.runtime.endpoint_execution import EndpointOutcome
 
 if TYPE_CHECKING:
     from booley.flows.base import BuiltinFlow
-    from booley.flows.endpoint_state import EndpointState
     from booley.flows.job_estimates import JobRequest
     from booley.targets.catalog import PreparedTargetSelection
     from booley.targets.domain import TargetHandle
 
 
 class PreparedInvocation(ABC):
-    """What preparation hands to admission, invocation and report freezing.
+    """What preparation hands to admission and invocation.
 
     An invocation owns no resources: it registers them on the endpoint's
     publication resources, which outlive the final report.
@@ -27,10 +25,6 @@ class PreparedInvocation(ABC):
 
     # True when ``run`` needs the admission context; otherwise it receives ``None``.
     borrows_admission: ClassVar[bool] = False
-
-    @abstractmethod
-    def report_scope(self, endpoint: EndpointState) -> ReportScope:
-        """The Targets and planned Criterion keys this invocation can judge."""
 
     @abstractmethod
     def run(self, admission: object | None) -> EndpointOutcome:
@@ -55,9 +49,6 @@ class OrdinaryRunInvocation(PreparedInvocation):
     def job_requests(self) -> tuple[JobRequest, ...] | None:
         return self.requests
 
-    def report_scope(self, endpoint: EndpointState) -> ReportScope:
-        return planned_scope(endpoint, (), endpoint.report_families(), set())
-
 
 @dataclass(frozen=True)
 class TargetSelectionInvocation(PreparedInvocation):
@@ -76,14 +67,6 @@ class TargetSelectionInvocation(PreparedInvocation):
         if self.selection is not None and self.selection.matches(args.work_dir, args.target):
             return self.selection.handles
         return ()
-
-    def report_scope(self, endpoint: EndpointState) -> ReportScope:
-        return planned_scope(
-            endpoint,
-            self._selected_handles(),
-            self.flow.report_families(),
-            self.flow.conventional_report_families(),
-        )
 
     def job_requests(self) -> tuple[JobRequest, ...] | None:
         handles = self._selected_handles()

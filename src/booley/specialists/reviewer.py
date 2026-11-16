@@ -2454,15 +2454,12 @@ object, even after calling the capability.
         report_text = "\n".join(output_lines)
         print(report_text)
         detail = self._done_detail(done_outcome, elapsed=elapsed)
-        crit_key = self._criterion_key()
         exit_code = self._completed_exit_code(
             [row["severity"] for row in done_outcome.corrective_records]
         )
         self._attach_review_evidence(detail, exit_code)
         return McpToolResult(
             exit_code=exit_code,
-            criterion_key=crit_key,
-            criterion_met=True,
             display_lines=lines,
             detail=detail,
             report_text=report_text,
@@ -2475,11 +2472,8 @@ object, even after calling the capability.
         issues = parse_issues(output)
         counts = count_by_severity(issues)
 
-        crit_key = self._criterion_key()
         return McpToolResult(
             exit_code=EXIT_SUCCESS,
-            criterion_key=crit_key,
-            criterion_met=True,
             detail={"issues": len(issues), **counts},
         )
 
