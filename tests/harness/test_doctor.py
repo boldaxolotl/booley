@@ -1115,7 +1115,7 @@ def test_doctor_backend_hint_matches_mode(tmp_path, monkeypatch, capsys, deep):
 
 
 @pytest.mark.parametrize("row", ["inside", "host", "unresolved"])
-def test_sandbox_mcp_server_check_runs_only_inside_sandbox(row, tmp_path, monkeypatch):
+def test_sandbox_mcp_server_check_runs_only_inside_sandbox(row, tmp_path, monkeypatch, capsys):
     from booley.runtime import incontainer_setup
 
     _runtime_setup(tmp_path, monkeypatch, inside=row != "host")
@@ -1138,6 +1138,7 @@ def test_sandbox_mcp_server_check_runs_only_inside_sandbox(row, tmp_path, monkey
 
     served = [f for f in result.findings if "Sandbox MCP server not serving" in f.message]
     if row == "inside":
+        assert "log tail line" in capsys.readouterr().out
         assert [request.agent_clis for request in requests] == [("codex",)]
         assert [(f.severity, f.fix) for f in served] == [(Severity.FAIL, "rebuild the Sandbox")]
         assert result.exit_code == 1
@@ -3527,6 +3528,13 @@ _STALENESS_ROWS = {
         "silent",
         "bakes current Booley|custom sandbox image|project image",
     ),
+    # A generated image is never judged against the project Dockerfile, even when that file is newer.
+    "derived-skips-dockerfile": (
+        {"base": _NEW, "derived": _NEW},
+        {"dockerfile_mtime": 2e9},
+        "silent",
+        "custom sandbox image",
+    ),
     "bakes-mismatch": ({}, {"bakes": _MISMATCH}, "warn", "revision old -> new"),
     "bakes-match": ({}, {"bakes": _MATCH}, "pass", "bakes current Booley sources"),
     "bakes-unknown": ({}, {"bakes": _UNKNOWN}, "silent", "bakes current Booley|stale code"),
@@ -4405,6 +4413,7 @@ def test_runtime_location(row, tmp_path, monkeypatch):
     skips = _messages(result, Severity.SKIP)
     if row == "inside-marker":
         assert any("BOOLEY_CONTAINER=1 set" in m for m in passes)
+        assert "agent provider-side web access disabled" in passes
         assert any("slot store root writable" in m for m in passes)
         assert any("already inside the Sandbox" in m and "nested Docker" in m for m in skips)
         assert not any("HOST" in m for m in _messages(result))
@@ -6153,6 +6162,7 @@ class TestSubscriptionCredsHealth:
         if seeded:
             seed.write_text(self._VALID)  # valid seed: the seed-expired WARN stays quiet
         _set_venue(monkeypatch, True)
+        # Private: the seeded-vs-unseeded fix text is chosen inside this one check, whose inputs are credential files a whole run cannot vary per case.
         reporter = doctor._Reporter.create()
 
         doctor._check_subscription_creds_health(
@@ -6202,6 +6212,7 @@ class TestSubscriptionCredsHealth:
         for hour, human in ((11, "15:00:00"), (10, "14:00:00")):
             expiry = datetime(2026, 10, 8, hour, tzinfo=UTC).timestamp()
             path.write_text(json.dumps({"claudeAiOauth": {"expiresAt": expiry * 1000}}))
+            # Private: the expiry transcript needs the stubs above, which a whole run cannot isolate.
             reporter = doctor._Reporter.create()
             doctor._run_agent_credential_checks(SimpleNamespace(booley_toml={}), reporter)
             result = reporter.result(0)
@@ -7119,6 +7130,7 @@ def test_missing_pinned_credential_fails_even_without_cli(tmp_path, monkeypatch)
         configs_toml={},
         first_target="",
     )
+    # Private: a Project with no installed Agent CLI is not reachable through a whole run (see the stub above).
     reporter = doctor._Reporter.create()
     doctor._run_agent_credential_checks(audit, reporter)
     assert any(
@@ -7209,6 +7221,7 @@ def test_seed_mount_policy_no_app_does_not_inspect_invalid_policy(tmp_path, monk
         data.parent, "test-image", None, expected_spec=lambda _image: spec
     )
     report = inspection.Findings()
+    # Private: the invalid-policy spec is a devcontainer state `booley init` never writes, so only this check can be shown not to inspect it.
     inspection._check_devcontainer_spec(request, report)
     assert {f.severity.value for f in report.report().findings} == {"pass"}
 

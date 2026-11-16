@@ -2683,11 +2683,6 @@ def _run_container_tool_checks(
         )
 
 
-# RISC-V variant checks fire only when the image bakes this flavour marker
-# (Dockerfile.riscv), so the vanilla base sandbox is never faulted for lacking a
-# cross-toolchain it was never meant to carry.
-
-
 def _check_riscv_toolchain(
     docker_exe: str,
     image: str,
