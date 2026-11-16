@@ -270,8 +270,8 @@ staged Project and its resources in `resources.md`: `booley session down`, then
   execution supervisor. Check whether the candidate still does this once;
   then run every `fpga` step as
   `booley session enter -- /sbin/docker-init -s -- booley flow fpga ...`.
-- The pinned Booley Directory still ships `goalsets/`, so host Doctor shows
-  WARN `goals.leftover` for `.booley/goalsets`. It comes from the pin, not the
+- The pinned Booley Directory still ships a retired directory, so host Doctor
+  shows WARN `goals.leftover` for it. It comes from the pin, not the
   candidate; do not file it. Drop this trap once the pin moves past it.
 - Until booley#4534 is fixed, every `sim_caliptra` Record item reserves the
   whole build estimate (the Project has Pre-Sim Commands), and the first item
