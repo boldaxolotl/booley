@@ -78,6 +78,11 @@ _NO_REMEDY: dict[str, str] = {}
 
 
 _BASELINE: tuple[str, ...] = (
+    'fail - flows/fpga/vivado_startup.py::inspect_vivado_startup "fpga: Vivado batch startup: runtime/prob"',
+    "fail - flows/runtime_reality.py::_check_session_binary \"f'{label} (runtime/probe error: {exc})'\"",
+    'fail - harness/doctor.py::_doctor_flow_command "f\'{label} could not enter the Sandbox: {"',
+    'fail - harness/doctor.py::_prepare_selftest_invocation "f\'{label} could not enter the Sandbox: {"',
+    'warn handles.map-size harness/doctor.py::_check_handle_map_size "job handle map"',
     'fail - audit/agent_schema.py::audit_agent_table "booley.toml [agent] uses retired key(s):"',
     'fail - audit/core_tree_inspection.py::inspect_core_security ".core security ["',
     'fail - audit/host_environment.py::_run_container_probe "container runtime permission denied"',
@@ -186,6 +191,7 @@ _PURGE_COMMAND = "fix is a purge command joined at runtime"
 _SKIPPED_ENDPOINT = "fix is SkippedEndpoint.fix, built at runtime by endpoint validation"
 
 _UNRESOLVED: dict[str, str] = {
+    'fail - runtime/vaporview.py::_report_per_root "message"': "message joins the per-root findings built at runtime",
     'fail - audit/core_tree_inspection.py::_check_schema ".core schema"': _SCHEMA_FINDINGS,
     'fail - audit/flow_schema.py::_flow_shape_findings "message"': _RUNTIME_TUPLE,
     'fail - audit/project_schema.py::_feedback_field_findings "message"': _EXCEPTION_TEXT,
