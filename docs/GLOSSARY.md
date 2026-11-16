@@ -170,7 +170,9 @@ A linked worktree's **Booley Directory** when the Booley Directory is a **Versio
 _Avoid_: paired Project checkout, paired Project repository, paired copy
 
 **Snapshot**:
-A linked worktree's **Booley Directory** when the Booley Directory is not versioned: a copy of its configuration taken when the worktree is prepared. Results, logs, and Common Booley State stay in the Main Booley Directory.
+A linked worktree's **Booley Directory** when the Booley Directory is not
+versioned: a copy of its configuration taken when the worktree is prepared.
+Results, logs, and Common Booley State stay in the Main Booley Directory.
 _Avoid_: clean snapshot, project copy
 
 **Versioned Booley Directory**:
