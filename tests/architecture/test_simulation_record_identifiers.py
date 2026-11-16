@@ -115,14 +115,8 @@ def _defined_names(tree: ast.AST) -> list[tuple[int, str, str]]:
 
 # Coverage Record names kept on purpose: shared QA helpers (#2911 owns QA mission assets) and the
 # persisted waiver keys (#2909 keeps the waiver candidate identity and path fields and the
-# Coverage reference kind in waivers), and the wording guard's test of the campaign grep, whose
-# name states the rule it enforces.
+# Coverage reference kind in waivers).
 _COVERAGE_RECORD_NAMES: dict[str, frozenset[str]] = {
-    "tests/architecture/test_coverage_record_wording.py": frozenset(
-        {
-            "test_campaign_is_said_only_for_kept_names",
-        }
-    ),
     "qa/shared/coverage/evaluator/measurements.py": frozenset(
         {
             "CAMPAIGN_SCHEMA",
