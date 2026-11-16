@@ -358,20 +358,12 @@ def test_selection_notice_is_once_for_quiet_and_normal_calls(quiet, project, exe
     assert captured.err.rstrip().endswith(notice)
 
 
-@pytest.mark.parametrize("failure", ("binding", "simulation", "coverage"))
+@pytest.mark.parametrize("failure", ("simulation", "coverage"))
 def test_selection_notice_survives_preparation_failure(
     failure, project, executed, monkeypatch, capsys
 ):
-    from booley.flows.endpoint_state import EndpointState
-
     write_targets(project, "sim")
-    if failure == "binding":
-        monkeypatch.setattr(
-            EndpointState,
-            "_criterion_binding_gate",
-            lambda self: EndpointOutcome(exit_code=2, report_text="binding refused"),
-        )
-    elif failure == "simulation":
+    if failure == "simulation":
         monkeypatch.setattr(
             SimulateFlow,
             "_validate_prepared_selection",

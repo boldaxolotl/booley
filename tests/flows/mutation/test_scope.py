@@ -28,7 +28,6 @@ from tests.flows.mutation.test_flow import (
     _mutant_keys,
     _prepare_scope_files,
     _run_count_preview,
-    _two_core_endpoint,
     _write_tests_toml,
 )
 
@@ -173,21 +172,6 @@ def test_target_without_mutable_rtl_ends_as_error(
     assert "has no mutable RTL" in dry_out
     _assert_real_report(code, report, "no mutable RTL")
     assert "has no mutable RTL" in out
-
-
-def test_explicit_scope_wins_over_a_strict_criterion_scope(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    endpoint = _two_core_endpoint(
-        tmp_path,
-        monkeypatch,
-        {"mutation_score_first": {"scope": ["x.v"]}},
-        scope="y.v",
-        strict=True,
-    )
-
-    assert endpoint._apply_campaign_defaults() is None
-    assert endpoint.args.scope == "y.v"
 
 
 def test_repeated_scope_path_is_scoped_once(

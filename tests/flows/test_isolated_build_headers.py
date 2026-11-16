@@ -180,7 +180,6 @@ def _fake_vivado_tcl(_flow, edam, work_root) -> None:
 def _fpga_flow(root: Path) -> FpgaImplFlow:
     flow = FpgaImplFlow()
     flow.parse_args(["--target", "fpga", "--work-dir", str(root)])
-    flow.read_state()
     return flow
 
 
@@ -209,7 +208,6 @@ def _lint_incdirs(root: Path) -> tuple[Path, list[Path], str]:
     handle = TargetCatalog.build(root).select("lint", for_flow="lint")
     flow = LintFlow()
     flow.parse_args(["--work-dir", str(root), "--target", "lint"])
-    flow.read_state()
     prepared = flow._prepare_lint_command(handle)
     build_root = Path(prepared.resolved.build_root)
     vc = next(build_root.glob("*.vc")).read_text(encoding="utf-8")
@@ -293,7 +291,6 @@ def test_isolated_synth_include_dirs_hold_only_listed_headers(tmp_path: Path) ->
     root = _write_project(tmp_path / "proj", "isolated")
     flow = AsicSynthesizeFlow()
     flow.parse_args(["--target", "synth", "--work-dir", str(root)])
-    flow.read_state()
     resolved = flow._resolve_synth_target("synth")
     cmd: list[str] = []
     flow._append_rtl_source_args(cmd, resolved, root)
@@ -423,7 +420,6 @@ def test_non_isolated_builds_are_unchanged(tmp_path: Path, variant: str) -> None
     assert incdirs == [_export_inc(lint_root, "lint")]
     synth = AsicSynthesizeFlow()
     synth.parse_args(["--target", "synth", "--work-dir", str(root)])
-    synth.read_state()
     resolved = synth._resolve_synth_target("synth")
     assert [d.resolve() for d in resolved.rtl_include_dirs] == [
         _export_inc(synth._synth_work_root("synth"), "synth")

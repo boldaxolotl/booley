@@ -1030,7 +1030,6 @@ def test_scaffold_logical_request_reaches_synthesis_report(tmp_path, monkeypatch
             str(tmp_path / "reports"),
         ]
     )
-    flow.read_state()
     result = flow._run()
     path = write_report(flow, result)
     report = json.loads(path.read_text())

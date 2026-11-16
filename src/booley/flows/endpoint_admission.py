@@ -43,7 +43,6 @@ from booley.runtime.supervised_execution import no_cancellation_cause
 
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
-    from booley.targets.domain import TargetHandle
 
 
 logger = logging.getLogger(__name__)
@@ -189,28 +188,6 @@ class AdmissionGate:
                 store.release(token)
 
 
-def authorize_targets(
-    endpoint: EndpointState,
-    targets: tuple[TargetHandle, ...],
-) -> EndpointOutcome | None:
-    """Authorize the complete ordered Target tuple without acquiring admission."""
-    if not endpoint.state.strict_criteria or getattr(endpoint.args, "diagnostic", False):
-        return None
-    missing = [
-        target.selector
-        for target in targets
-        if not endpoint._bound_criterion_keys_for_target(target)
-    ]
-    if not missing:
-        return None
-    return EndpointOutcome(
-        exit_code=EXIT_ERROR,
-        report_text=(
-            f"{endpoint.name}: no Criterion is bound for Target(s): " + ", ".join(missing)
-        ),
-    )
-
-
 def _slot_timeout_seconds() -> float | None:
     value = as_float(os.environ.get("BOOLEY_SLOT_TIMEOUT_S"))
     return value if value is not None and value > 0 else None
@@ -253,15 +230,10 @@ def admission(
 ) -> Iterator[AdmissionContext | None]:
     """Gate, then hold one Flow-neutral admission through final reporting.
 
-    The same for every endpoint: a non-Flow endpoint passes its binding gate
-    first; a dry run takes no slot and yields ``None``; every other invocation
-    yields the borrowed ``AdmissionContext``, whose slot (if any) is released
-    when the invocation body ends, however it ends.
+    The same for every endpoint: a dry run takes no slot and yields ``None``;
+    every other invocation yields the borrowed ``AdmissionContext``, whose slot
+    (if any) is released when the invocation body ends, however it ends.
     """
-    if endpoint.endpoint_kind != "flow":
-        rejection = endpoint._criterion_binding_gate()
-        if rejection is not None:
-            raise EndpointRejectedError(rejection)
     if prepared.non_persisting_dry_run:
         yield None
         return

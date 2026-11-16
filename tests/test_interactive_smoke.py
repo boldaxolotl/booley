@@ -266,7 +266,6 @@ targets:
                 "HEAD~1",
             ]
         )
-        tool.read_state()
 
         seen_work_dirs: list[Path] = []
 

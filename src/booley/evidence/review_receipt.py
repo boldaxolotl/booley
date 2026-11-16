@@ -138,20 +138,6 @@ def build_review_contract_detail(invocation: ReviewInvocation) -> dict[str, Any]
     return contract
 
 
-def finalize_review_detail(
-    detail: Mapping[str, Any], source_fingerprint: Mapping[str, Any]
-) -> dict[str, Any]:
-    """Attach one source stamp and derive its receipt ID atomically."""
-    finalized = dict(detail)
-    finalized["_source_fingerprint"] = dict(source_fingerprint)
-    contract = finalized.get("contract")
-    if isinstance(contract, Mapping):
-        finalized["receipt_id"] = _digest(
-            {"contract": dict(contract), "source_fingerprint": dict(source_fingerprint)}
-        )
-    return finalized
-
-
 def review_invocation_changed(
     previous: object,
     current: Mapping[str, Any],

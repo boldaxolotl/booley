@@ -21,13 +21,8 @@ SOURCE_ROOT = GOALS_SOURCE.parent
 # records or reads Criteria state for Interactive evidence. "Criteria catalog": renders
 # or validates the Criteria definitions.
 _ALLOWED: dict[str, str] = {
-    "booley.flows.endpoint_acceptance": "evidence and staleness #3512",
-    "booley.flows.endpoint_events": "evidence and staleness #3512",
-    "booley.flows.endpoint_state": "evidence and staleness #3512",
-    "booley.flows.execution_persistence": "evidence and staleness #3512",
     "booley.mcp.endpoint_validation": "Criteria catalog #3512",
     "booley.mcp.registry": "Criteria catalog #3512",
-    "booley.mcp.unbound_recorder": "evidence and staleness #3512",
 }
 
 

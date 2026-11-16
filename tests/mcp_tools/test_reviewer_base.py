@@ -97,7 +97,6 @@ def review(
     """Run one discovery review with a scripted response; return result, endpoint, mock."""
     reviewer = ReviewerSpecialist()
     reviewer.parse_args(["--work-dir", str(root), "--category", "rtl", "--focus", "bugs", *args])
-    reviewer.read_state()
     invoke = MagicMock(
         return_value=MagicMock(
             output=json.dumps({"issues": issues or []}),
@@ -371,7 +370,6 @@ def test_base_gives_every_guide_call_the_same_change_section(
             *("--scope", "rtl/a.sv", "--base", "main"),
         ]
     )
-    reviewer.read_state()
     answers = {
         "bugs-checklist": [finding(line=3, summary="Introduced bug")],
         "bugs-hunt": [finding(line=1, summary="Old bug", origin="pre_existing")],
