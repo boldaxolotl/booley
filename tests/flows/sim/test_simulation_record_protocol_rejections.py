@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import threading
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -76,15 +75,7 @@ def test_child_records_publish_and_verify_through_the_booley_dir_entry(
 
 
 def _registry(tmp_path: Path) -> child_protocol.ChildExecutionRegistry:
-    # Private seam: ``mark_terminal`` and ``cancel`` need only the project-data root and the
-    # lock table, and building a registry through its constructor needs a stored Simulation
-    # Record that these tests do not exercise.
-    registry = object.__new__(child_protocol.ChildExecutionRegistry)
-    registry._project_data_root = tmp_path
-    registry._booley_dir = None
-    registry._record_locks = {}
-    registry._record_locks_gate = threading.Lock()
-    return registry
+    return child_protocol.ChildExecutionRegistry.from_project_data(_two_item_manifest(), tmp_path)
 
 
 def _prepared(tmp_path: Path) -> child_protocol.PreparedChild:

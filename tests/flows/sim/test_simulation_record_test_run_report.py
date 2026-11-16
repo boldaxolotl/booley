@@ -17,6 +17,7 @@ from booley.flows.sim.record.test_run_report import (
     simulation_record_test_run_rows,
     test_run_report_lines,
 )
+from booley.flows.sim.record_files import canonical_json
 
 # Private seam: the only public path to the structured rows is a full run's report.json, and
 # the 32-row cap needs 33 Test Runs.
@@ -141,7 +142,8 @@ def _hand_edited_fingerprint(tmp_path: Path, outcome):
     """The outcome whose manifest carries a Test Run fingerprint that no longer matches."""
     document = json.loads(outcome.manifest_path.read_text())
     document["work_items"][0]["test_runs"][0]["fingerprint"] = "sha256:" + "0" * 64
-    outcome.manifest_path.write_text(json.dumps(document))
+    # Canonical bytes, so the codec accepts the document and only the fingerprint is wrong.
+    outcome.manifest_path.write_bytes(canonical_json(document))
     return outcome
 
 

@@ -87,9 +87,9 @@ def test_public_resume_cli_summary_detail_and_dry_run_immutability(
 ):
     reports, manifest, executions = _interrupted_simulation_record(tmp_path, monkeypatch)
     (tmp_path / "rtl/counter.sv").write_text("module counter; endmodule\n// change\n")
+    durable_before = _snapshot(manifest.parent)
     _prime_prior_refusal(tmp_path, reports, manifest, executions)
     before = _snapshot(reports)
-    durable_before = _snapshot(manifest.parent)
     argv = [
         "--resume-from",
         str(manifest),

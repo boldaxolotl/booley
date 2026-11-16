@@ -187,6 +187,8 @@ def test_oom_killed_fusesoc_setup_requeues_the_job(
     monkeypatch.setattr(job_resources, "cgroup_oom_kill_count", lambda: next(counter))
     flow = SimulateFlow()
     # What ``execute`` binds before preparing: the Flow reads its flags for the history key.
+    # ``_execute_boundary`` is the ``invoke`` callback ``SimulationExecution`` takes; no public
+    # Flow method hands it out.
     flow._args = SimRequest(
         target="sim", work_dir=flow_project, report_dir=tmp_path / "reports", timeout_ms=30_000
     )

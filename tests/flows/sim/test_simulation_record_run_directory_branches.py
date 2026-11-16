@@ -62,7 +62,7 @@ def test_lock_wait_timeout_closes_handle_and_raises(
     monkeypatch.setattr(rd, "_LOCK_TIMEOUT_S", 0.05)
     with rd.claimed_run_directory(run, identity=identity), pytest.raises(LockTimeoutError):
         rd.cleanup_interrupted_run_directory(run, identity=identity)
-    # The timed-out waiter closed its handle: the released lock is free again.
+    # Once the holder has left, cleanup takes the lock without waiting.
     assert rd.cleanup_interrupted_run_directory(run, identity=identity) is False
 
 

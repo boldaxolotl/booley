@@ -778,7 +778,7 @@ def test_source_diagnostics_align_paths_across_positional_diff(old_sources, new_
     old = _diagnostic_document(sources=old_sources)
     new = _diagnostic_document(sources=new_sources)
     diagnostic = _project_diagnostics(old, new)
-    assert set(diagnostic.mismatch_summary) == set(lines)
+    assert tuple(diagnostic.mismatch_summary) == lines
     assert diagnostic.derived_fingerprint_count == 5
 
 
