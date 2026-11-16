@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
 
+from booley.core import host_shell
 from booley.runtime import devcontainer as dc
 from booley.runtime import (
     platform_paths,
@@ -656,6 +657,7 @@ def test_windows_recovery_commands_quote_powershell_metacharacters(monkeypatch):
     from types import SimpleNamespace
 
     monkeypatch.setattr(sandbox_apply, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(host_shell, "os", SimpleNamespace(name="nt"))
     assert session_admission.shell_command(
         ["booley", "session", "down", "--project", "C:\\Projects\\A&B's $work"]
     ) == ("& 'booley' 'session' 'down' '--project' 'C:\\Projects\\A&B''s $work'")
@@ -669,6 +671,7 @@ def test_capacity_refusal_names_owner_recovery(tmp_path, monkeypatch, vscode, sh
     fake_os = SimpleNamespace(name=shell, path=session_admission.os.path)
     monkeypatch.setattr(session_admission, "os", fake_os)
     monkeypatch.setattr(sandbox_apply, "os", fake_os)
+    monkeypatch.setattr(host_shell, "os", fake_os)
     item = session_admission.Sandbox(
         "id",
         "sandbox",
