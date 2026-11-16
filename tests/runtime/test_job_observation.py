@@ -703,7 +703,8 @@ def test_a_cli_campaign_waiting_for_an_item_claim_is_queued(tmp_path, monkeypatc
         slots, "h", 1, 99, json.loads(own_claim(identity, **execution, memory=companion))
     )
     # The item's claim is unlabelled: it inherits the session's execution ID too.
-    item = {"owner_identity": identity.to_payload(), **execution}
+    wants = job_slots.MemoryClaim(1000.0, reservation_mb=400.0).to_payload()
+    item = {"owner_identity": identity.to_payload(), "memory": wants, **execution}
     _memory_entry(slots, "w", 2, 99, item)
     monkeypatch.setattr(
         _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
@@ -712,3 +713,4 @@ def test_a_cli_campaign_waiting_for_an_item_claim_is_queued(tmp_path, monkeypatc
     view = JobObserver(tmp_path, slots_root=slots.parent).read((root,)).jobs[0]
 
     assert view.state == "queued"
+    assert view.queue_position == 1
