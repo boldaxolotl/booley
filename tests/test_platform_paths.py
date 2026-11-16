@@ -14,7 +14,12 @@ from unittest.mock import patch
 
 import pytest
 
-from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
+from tests.pipe_holding_tree import (
+    describe_heartbeat_tree,
+    heartbeat_tree,
+    parent_argv,
+    wait_until_heartbeat_stops,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from booley.runtime import platform_paths
@@ -338,12 +343,28 @@ def _assert_hung_tree_is_stopped(tmp_path: Path, **mode) -> subprocess.TimeoutEx
     with heartbeat_tree(tmp_path) as paths:
         argv = parent_argv(tmp_path, sys.executable, paths, "live-until-stop")
         started = time.monotonic()
-        with pytest.raises(subprocess.TimeoutExpired) as raised:
-            platform_paths.run_captured_bounded(argv, timeout=2, **mode)
+        expired: subprocess.TimeoutExpired | None = None
+        status = "no status"
+        try:
+            status = f"exit status {platform_paths.run_captured_bounded(argv, timeout=2, **mode).returncode}"
+        except subprocess.TimeoutExpired as raised:
+            expired = raised
+            status = "TimeoutExpired"
+        # Observe at the helper's return, before any wait below changes the picture.
+        elapsed = time.monotonic() - started
+        context = (
+            f"run_captured_bounded returned {status}"
+            f"{' without TimeoutExpired' if expired is None else ''} after {elapsed:.2f} s"
+            f" against a 2 s deadline; at that point the tree {describe_heartbeat_tree(paths)}"
+        )
+        if expired is None:
+            pytest.fail(context)
         # timeout + the helper's 32 s Windows margin, below the tree's 40 s self-exit
-        assert time.monotonic() - started < 38
-        assert wait_until_heartbeat_stops(paths["heartbeat"]), "the descendant was left running"
-    return raised.value
+        assert elapsed < 38, context
+        assert wait_until_heartbeat_stops(paths["heartbeat"]), (
+            f"the descendant was left running; {context}"
+        )
+    return expired
 
 
 def test_run_captured_bounded_stops_a_hung_tree_fed_input(tmp_path: Path):

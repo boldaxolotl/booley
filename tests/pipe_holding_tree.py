@@ -88,3 +88,24 @@ def wait_until_heartbeat_stops(heartbeat: Path, *, window: float = 10) -> bool:
         if heartbeat.stat().st_size == before:
             return True
     return False
+
+
+def _heartbeat_size(heartbeat: Path) -> int:
+    """Size of the heartbeat file; 0 while it does not exist."""
+    try:
+        return heartbeat.stat().st_size
+    except FileNotFoundError:
+        return 0
+
+
+def describe_heartbeat_tree(paths: dict[str, Path]) -> str:
+    """What a heartbeat tree is doing now, for a failure message; polls for up to 1 s."""
+    before = _heartbeat_size(paths["heartbeat"])
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline:
+        time.sleep(0.1)
+        if _heartbeat_size(paths["heartbeat"]) > before:
+            return "was still alive (heartbeat growing)"
+    if paths["done"].exists():
+        return "had exited on its own (done file present, its 40 s limit)"
+    return "showed no heartbeat for 1 s and no done file (killed, or alive but not scheduled)"
