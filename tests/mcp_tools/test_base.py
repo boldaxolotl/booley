@@ -12,7 +12,6 @@ from unittest import mock
 
 import pytest
 
-from booley.core.source_categories import CATEGORY_RTL
 from booley.criteria.state import DevelopmentState
 from booley.flows import endpoint_admission
 from booley.flows.endpoint_admission import _Claim
@@ -40,9 +39,8 @@ class ConcreteMcpTool(McpTool):
     name = "test_endpoint"
     description = "A test endpoint"
 
-    def __init__(self, *, code_modifying: bool = False, modifies_category: str | None = None):
+    def __init__(self, *, code_modifying: bool = False):
         self.code_modifying = code_modifying
-        self.modifies_category = modifies_category
         super().__init__()
 
     def _add_args(self, parser: argparse.ArgumentParser) -> None:
@@ -537,7 +535,7 @@ def test_code_modifying_tool_resets_nothing_and_keeps_change_statistics(tmp_path
     env = _env_with_state(state_file)
     env["BOOLEY_LOGS_DIR"] = str(tmp_path / "logs")
     env["BOOLEY_RUNTIME_DIR"] = str(tmp_path / "runtime")
-    endpoint = CommittingTool(code_modifying=True, modifies_category=CATEGORY_RTL)
+    endpoint = CommittingTool(code_modifying=True)
     with mock.patch.dict(os.environ, env):
         exit_code = endpoint.main(["--work-dir", str(repo)])
 

@@ -43,7 +43,7 @@ def _command(name: str, definition: dict[str, object]) -> list[str]:
 
 
 class TestEndpointCommand:
-    """Command lines equal what the pre-selection ``_endpoint_command`` produced."""
+    """Command lines for the standalone and Specialist endpoint shapes."""
 
     def test_standalone_commands(self, server_env: Path) -> None:
         transcripts = server_env / "rt" / "transcripts" / "reviewer" / "1"

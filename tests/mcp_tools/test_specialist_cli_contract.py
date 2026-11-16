@@ -69,9 +69,7 @@ def sandbox(monkeypatch):
 
 @pytest.mark.parametrize("separator", [[], ["--"]])
 @pytest.mark.parametrize("verdict", [0, 1, 2])
-def test_dispatch_preserves_arguments_and_exit_without_flow_adapter(
-    tmp_path, monkeypatch, separator, verdict
-):
+def test_dispatch_preserves_arguments_and_exit(tmp_path, monkeypatch, separator, verdict):
     from booley.mcp import registry
 
     info = McpToolInfo(
@@ -90,7 +88,6 @@ def test_dispatch_preserves_arguments_and_exit_without_flow_adapter(
         == verdict
     )
     endpoint.main.assert_called_once_with(["--instruction", "two words"])
-    endpoint.configure_flow_execution.assert_not_called()
 
 
 def test_listing_filters_disabled_and_discovers_project_specialist(tmp_path, monkeypatch, capsys):

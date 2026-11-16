@@ -128,7 +128,7 @@ Every endpoint inherits these arguments and adds only its own:
 | `-C`/`--project PATH` | Project Root, on the human CLI; MCP and the internal parser use `work_dir` |
 | `--report-dir` | Where `report.json` lands |
 | `--target` | The Target or Targets to operate on; repeat it or pass a comma-separated list. `self.args.target` always holds one comma-separated string |
-| `--diagnostic` | Run without satisfying Criteria |
+| `--diagnostic` | Run diagnostically: records no evidence |
 
 The MCP schema is generated from the same argparse parser, so a new argument
 reaches both the CLI and MCP without extra code. An endpoint may supply its
@@ -182,7 +182,7 @@ built-in Specialist model of the Project's default Agent CLI.
 
 A direct subclass implements `_add_args` and `_run()` and returns an
 `McpToolResult`. Prefer `BooleyFlow` for a deterministic subprocess: it gets
-the Flow's admission, timeout, and freshness handling for free.
+the Flow's admission and timeout handling for free.
 
 ### `McpToolResult`
 
@@ -199,14 +199,12 @@ it. Keep 1 and 2 apart: 1 says the design failed the check, 2 says the check
 itself could not run, and only 1 may count against the design.
 
 The `Specialist` base fills the token and cost fields, and the base class adds
-`lines_added`/`lines_removed` for code-modifying endpoints. An endpoint that
-still calls `self.set_criterion()` runs as before; the call records nothing.
+`lines_added`/`lines_removed` for code-modifying endpoints.
 
 ### `code_modifying`
 
 The report of a run of an endpoint with `code_modifying = True` carries
-`lines_added` and `lines_removed`, counted from the commits the run made. The
-flag resets no Criterion.
+`lines_added` and `lines_removed`, counted from the commits the run made.
 
 ## Write a custom endpoint
 
@@ -405,7 +403,7 @@ category        = "none"
 | `per_target` | `true`, `false` | Whether it expands to one key per Target |
 | `category` | `rtl`, `tb`, `none` | Which source changes the Criterion depends on |
 
-No endpoint run resets a Criterion after it changes sources. Booley still reads
+Booley still reads
 the key `phase` in place of `workflow_region`, with a warning; rename it.
 
 To add a Project Criterion, pick a name that is not in the base catalog, add its
