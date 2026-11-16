@@ -10,8 +10,7 @@ with AI coding agents to follow it.
 3. [Interactive Mode](#interactive-mode): [first session](#open-your-first-developer-agent-session), [what to ask for](#what-you-can-ask-for), [skills](#booley-skills), [good prompts](#write-a-useful-prompt), [long runs and results](#long-runs-and-results), [dashboard](#the-dashboard), [parallel work](#several-agents-at-once), [reviewing changes](#what-the-developer-agent-is-allowed-to-do), [editing instructions](#editing-project-instructions), [waveforms](#viewing-waveforms)
 4. [Reporting problems and feedback](#when-booley-itself-misbehaves)
 
-Every command, Flow, and Specialist is listed in
-[CLI-REFERENCE.md](CLI-REFERENCE.md).
+Every command is listed in [CLI-REFERENCE.md](CLI-REFERENCE.md).
 
 ## Read this first
 
@@ -163,7 +162,7 @@ kind of run that Project Setup configured, so ask the agent which ones you have.
 | `fpga` | Implements the design for an FPGA and reports resources and timing; needs AMD Vivado installed on a Linux x86-64 host | *"Run FPGA implementation and tell me whether timing is met."* | [FLOW-FPGA.md](FLOW-FPGA.md) |
 | `mutation` | Plants small bugs in your RTL and checks that your tests catch them | *"Check whether the FIFO tests catch injected bugs."* | [FLOW-MUTATION.md](FLOW-MUTATION.md) |
 | `reviewer` | AI code review with one focus: bugs, protocol, spec, security, style, optimization, or testbench quality | *"Run a security review on the control unit module."* | [REVIEWER.md](REVIEWER.md) |
-| `coverage_analyst` | Explains a coverage report and suggests what to test next | *"Explain the coverage gaps from the last run."* | [COVERAGE.md](COVERAGE.md), [CLI-REFERENCE.md](CLI-REFERENCE.md#coverage_analyst) |
+| `coverage_analyst` | Explains a coverage report and suggests what to test next | *"Explain the coverage gaps from the last run."* | [COVERAGE.md](COVERAGE.md#analyzing-a-coverage-record) |
 
 You don't need to know Flow names, flags, or where reports go. Give the agent
 the goal and any limits, and it works out the details. Options and results
@@ -390,7 +389,7 @@ Manage worktrees from a container terminal:
 - `booley worktree gc` removes worktrees idle longer than `[worktree]
   gc_older_than` (default `7d`). `booley chat` runs it at every launch.
 
-See [Worktrees](CLI-REFERENCE.md#worktrees).
+See [Worktrees](WORKTREES.md).
 
 #### Resuming a conversation
 

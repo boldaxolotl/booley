@@ -1,10 +1,10 @@
 # CLI reference
 
-Every `booley` command, plus the Booley Flows and Specialists the Developer
-Agent runs for you. Day to day you rarely type these: ask the Developer Agent
-and it picks the command. Use this page when you prepare a machine or a
-Project, check health, manage worktrees, or run a Flow yourself to reproduce a
-problem. For the everyday workflow, read [Usage](USAGE.md).
+Every `booley` command, where it runs, and the page that explains it. Day to
+day you rarely type these: ask the Developer Agent and it picks the command.
+Use this page when you prepare a machine or a Project, check health, manage
+worktrees, or run a Flow yourself to reproduce a problem. For the everyday
+workflow, read [Usage](USAGE.md).
 
 ## Commands
 
@@ -66,10 +66,6 @@ booley measure --all --json       # evaluate every table after a failure; print 
 booley measure --again            # measure again even when the commit is already Measured
 booley measure --target <name>    # measure one Target's tables only
 booley measure --validate         # check .booley/metrics.toml; measures nothing
-booley worktree new <name>        # a linked worktree for parallel work; see below
-booley worktree list              # each worktree's branch, changes, and use
-booley worktree rm <name>         # remove a worktree, keeping its evidence and branches
-booley worktree gc                # remove idle worktrees (default: a week), where safe
 ```
 
 - Booley's `chat` options are read only before the agent's own arguments.
@@ -90,35 +86,38 @@ booley worktree gc                # remove idle worktrees (default: a week), whe
   Sandbox's CPU, memory, disk and Job admission figures. A missing, relative or
   unknown `worktree` gets a JSON error (status 400 or 404) and no Jobs.
 
-`booley measure [<sha>]` measures one commit (`HEAD` by default, never
-uncommitted work) in a clean checkout, one child Flow per `metrics.toml` table,
-stores the Measurement Run and prints the report. A commit that is already
-Measured (its latest run met every enforced bound) is not measured again: the
-command prints that run, starts no Flow and exits with status 0; `--again`
-measures it again and stores a second run. A commit whose latest run is unmet,
-errored, stopped or cancelled is measured again without `--again`.
-`--target <name>` measures only that Target's tables: it exits with status 2
-and "nothing to measure" when the Target has no table, and a Measured commit
-still shows its stored run unless you add `--again`. A `--target` run is never
-stored and never makes the commit Measured; its report and Flow reports are
-kept in the `measure` Job's directory under
-`.interactive_logs/standalone/<run_id>/`, beside its log. Measuring `HEAD`
-notes on stderr any uncommitted change to a tracked file
-and any submodule whose working tree differs from the commit's pin, because
-neither is measured. It exits with status 0 when
-every enforced bound is met, 1 when one is unmet, and 2 when a Flow errored,
-when `metrics.toml` declares no table, or when the measurement could not run
-(both unmet and errored: 2). Without `--all`, the first unmet or errored table
-stops the run and the later tables are "not evaluated". `--validate` takes no
-other option. Ctrl-C cancels the measurement: a run with a finished Flow is
-stored as cancelled, never as measured, and the command ends with status 130.
+Sessions and parallel work are explained in
+[Several agents at once](USAGE.md#several-agents-at-once), and measuring in
+[Metrics](METRICS.md). The Dashboard opens by itself when you attach to the
+container; see [The dashboard](USAGE.md#the-dashboard).
 
-The Developer Agent can run the same measurement for you. It reports the verdict
-line, the failing rows and the paths of the reports, and cancelling it stops the
-measurement's Flows.
+### Worktrees
 
-The Dashboard opens by itself when you attach to the container; see
-[The dashboard](USAGE.md#the-dashboard).
+```bash
+booley worktree new <name>               # a linked worktree for parallel work
+booley worktree list                     # each worktree's branch, changes, and use
+booley worktree rm <name> [--force]      # remove a worktree, keeping its evidence and branches
+booley worktree gc [--older-than AGE]    # remove idle worktrees (default: a week), where safe
+```
+
+Run them in a container terminal. What each one creates, checks, and keeps is
+in [Worktrees](WORKTREES.md).
+
+### Run a Flow or a Specialist · container
+
+```bash
+booley flow                                  # list the Flows
+booley flow sim --target sim_soc --test reset
+booley flow sim --help                       # every option of one Flow
+booley specialist                            # list the Specialists
+booley specialist reviewer --help            # a Specialist's arguments
+```
+
+Targets, options, exit codes, and results are in
+[Running Flows](FLOW_REFERENCE.md). Specialists are in
+[Specialists](SPECIALISTS.md), [Reviewer](REVIEWER.md), and
+[Analyzing a Coverage Record](COVERAGE.md#analyzing-a-coverage-record). `booley cheat --flows`
+and `booley cheat --specialists` print both lists with their main options.
 
 ### Check and look things up · either
 
@@ -155,33 +154,10 @@ booley projects prune-keepers            # preview images left by earlier forget
 booley projects prune-keepers --confirm <digest>   # remove exactly that preview
 ```
 
-Each successful host `booley init` remembers its Project Root. `booley projects`
-marks each one `present`, `missing`, or `uninitialized`.
-
-`discover` scans only the directories you name and doesn't follow symlinks.
-It stops at each Project it finds, so it doesn't crawl that Project's RTL and
-build trees; to import a Project nested inside another, name its path directly.
-
-`forget` lists what the Project still holds in Docker, with sizes: images,
-agent state volumes (a copy of the agent's login and history), containers, and
-networks. It removes none of them unless you add `--purge`, which removes the
-unused ones, even for a Project already forgotten or deleted. To use a
-forgotten Project again, run `booley init` in it.
-
-<details markdown>
-<summary>With host-installed licensed tools</summary>
-
-`forget` refuses while the Project still has a live Grant (see
-[Commercial EDA](#commercial-eda--host) and
-[Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning)).
-
-</details>
+What each command lists, keeps, and removes is in
+[Projects on this machine](SETUP.md#projects-on-this-machine--host).
 
 ### Commercial EDA · host
-
-Commercial tools installed on your computer, currently Vivado 2025.2 on Linux
-x86-64, reach a Sandbox only through a **Grant**: your permission for one exact
-Project path to use one registered installation or license profile.
 
 ```bash
 booley eda installation register --kind vivado --source <install-dir> <name>
@@ -191,171 +167,10 @@ booley eda grant add --kind vivado --installation <name> <project>
 booley eda grant revoke --kind vivado <project>
 ```
 
-The setup is in [Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning);
+A **Grant** is your permission for one Project to use one registered
+installation or license profile. The setup is in
+[Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning);
 `booley eda <group> --help` lists every subcommand.
-
-### Worktrees
-
-A worktree is a second checkout of your Project where a separate Developer
-Agent can work without touching your files, for example one per
-session. `booley chat` creates one (`s<N>`, on branch `booley/s<N>`) when the
-main checkout is in use; see
-[Several agents at once](USAGE.md#several-agents-at-once). You can also run, in
-a container terminal from the main checkout:
-
-```bash
-booley worktree new <name>
-```
-
-This creates `.booley/worktrees/<name>`, prints its path, and starts it at the
-current commit on a new branch `booley/<name>`. A branch that occupies that
-name (the name itself, a leading path such as `booley`, or a branch below it), or an
-existing destination, is refused and left untouched; the error names the branch in
-the way. So is a name Git cannot use in a branch name (such as `x.lock` or `a..b`).
-After a Sandbox mount point change, a worktree whose checkout is missing also stops
-the command; the error names it. A name of the form
-`<branch>--<description>` checks out the existing branch `<branch>` instead and
-creates no branch. Git submodules are filled in from the main
-checkout, without network access. Then the Project's `post-setup` hook
-(`.booley/hooks/post-setup.sh`, `.py`, or no suffix), if it has one, runs in the
-new worktree. Its output is shown and saved to
-`.booley/worktrees/.logs/<name>.log` in the main Booley Directory. If the
-submodule step or the hook fails, Booley removes the worktree and its
-branch (`booley/<name>`, or `wt/<name>` in Stealth Mode), plus any
-`booley-worktree/<name>` branch, and exits nonzero. A
-branch that already gained commits is kept.
-
-The worktree gets its own Booley Directory (the `.booley/` folder), a
-**Snapshot**: a copy of the Booley Directory's configuration (settings,
-`cores/`, hooks, Ticket history). Build results, reports, logs, and
-evidence stay in the main Booley Directory. A path Booley does not classify is
-not copied, and the command names it.
-
-<details markdown>
-<summary>In stealth mode</summary>
-
-With [Stealth Mode](STEALTH.md), your Booley Directory is its own Git repository, so the worktree gets a
-**Paired Checkout** instead: a checkout of its last commit on branch
-`booley-worktree/<name>`. Uncommitted and untracked files are left out; one
-warning names them (the first 10, then a count). Commit them first if the
-worktree needs them. Booley refuses a repository with no commits or an
-existing branch of that name. Ignored files stay behind. Booley refuses to
-create a worktree from inside a Paired Checkout. The worktree's own branch is
-`wt/<name>` (`wt/s<N>` for `booley chat`) instead of `booley/<name>`, so the
-product name stays out of branch names you may push. A branch named `wt` (or
-`wt/<name>/...`) blocks the name, like `booley` does outside Stealth Mode.
-A worktree keeps the branch it was created with, and `list`, `rm` and `gc` work
-with either prefix.
-
-</details>
-
-**Listing worktrees.** `booley worktree list` shows one row per worktree
-under `.booley/worktrees/`, from the main checkout or from any worktree:
-
-| Column | Meaning |
-|---|---|
-| `NAME` | The worktree name |
-| `BRANCH` | Its branch, or `detached` on a detached HEAD |
-| `BOOLEY DIR` | `Paired Checkout` or `Snapshot` |
-| `UNCOMMITTED` | Changed and untracked entries (an untracked folder counts once), not counting untracked files in the worktree's own `.booley/`. A Paired Checkout reads `N, paired M`, `M` being the same count in its inner checkout |
-| `UNMERGED` | Commits not yet in the main checkout's branch. Commits whose change is already there count as merged, including a branch merged by squash. A Paired Checkout reads `N, paired M` |
-| `SESSION` | Handles of live sessions in the worktree |
-| `LAST USED` | When the worktree was created, a Booley tool call last ran there, `booley chat` was last launched inside it, or the session of a worktree that `booley chat` created ended (a resumed session counts through its tool calls); `never` for a worktree that predates the record |
-
-A worktree whose directory is gone is not listed; a warning names it.
-
-**Removing a worktree** takes one command, run in the Sandbox from the main
-checkout or another worktree (never from inside the one you remove):
-
-```text
-booley worktree rm <name> [--force]
-```
-
-It moves the worktree's evidence aside, removes the worktree, and keeps its
-branch (`booley/<name>`, or `wt/<name>` in Stealth Mode), so commits made in the
-worktree
-stay reachable. A worktree on a detached HEAD, which has no branch, is reported
-as `detached HEAD was <commit>`; save that commit on a branch if you need it.
-
-Without `--force` it refuses, listing every reason, while the worktree has:
-
-- a live Session (an unreadable Session Registry also refuses);
-- uncommitted changes in the worktree, including untracked files in a
-  Snapshot's `.booley/` that are neither evidence nor a copy of the Main
-  Booley Directory's file;
-- commits not yet in the main checkout's branch (a branch merged by squash
-  counts as merged);
-- a populated submodule at a commit the main checkout's submodule lacks;
-- a Git lock (`git worktree lock`);
-- a damaged checkout: registered but its directory is gone, or no working
-  `.git`.
-
-`--force` removes it anyway; the evidence is still kept. Another worktree
-registered inside the one you remove (a `.baseline-wt-*` checkout, a Snapshot's
-own `worktrees/`) is refused even with `--force`: remove it first with
-`booley worktree rm` or `git worktree remove`. So is a worktree whose `.booley/`
-is a link or lies outside it.
-
-Evidence is the worktree's `.booley/` content that Git does not keep (the
-untracked files of a directory Git tracks in part, such as `plans/`, included): Common
-Booley State such as `reviewer-evidence/`, `handoffs/`, the Findings Log
-(`findings.jsonl`), `setup-evidence/`, reports, and logs, plus Flow reports with
-their Trace Artifacts. It moves to
-`.booley/worktrees/.evidence/<name>-<time>/` in the Main Booley Directory, at
-the same relative paths; each attempt gets its own new directory and nothing is
-overwritten. Copy out what you need from there, and keep that archive separate
-from the Project's own Findings Log; don't merge the two. If the move fails, for
-example across file systems, nothing is removed.
-
-If the command is interrupted, run it again: it finishes the removal, and checks
-a worktree that is still intact again, so work added since is never removed
-without the refusal. It never prunes other worktrees' registrations. To reuse
-the name, first delete each branch `rm` listed under `Branches kept` with
-`git -C <absolute-project-root> branch -D <branch>`.
-
-**Cleaning up idle worktrees.** `booley worktree gc` removes every worktree that
-nobody has used for a while, so abandoned ones do not pile up:
-
-```text
-booley worktree gc [--older-than AGE]
-```
-
-A worktree counts as idle when its last use (the `LAST USED` column of
-`booley worktree list`) is older than `AGE`: days, hours, minutes, and seconds
-as `7d`, `36h`, `1d12h`, `90m`, or `30s`. The default is `7d`; set another
-default with `gc_older_than` in the main checkout's `.booley/booley.toml`
-([configuration](CONFIG.md#worktree-settings-worktree)). `--older-than` wins over
-the setting. Run it from the main checkout or another worktree.
-
-`booley chat` runs the same cleanup at the start of every launch, with the same
-age, and prints only the worktrees it removed: it stays silent about the ones it
-keeps and about a failed run (an invalid `gc_older_than`, for instance). Run
-`booley worktree gc` to see why a worktree was kept.
-
-Each idle worktree goes through `booley worktree rm` without `--force`, so
-everything `rm` refuses is kept: a live Session and
-unsaved work (see the list above). A removed worktree prints the same lines as
-`rm`, evidence and branches included. Each worktree that stays prints `Kept
-worktree <name>:` and why, such as that it was used too recently, that the
-worktree you are in cannot be removed from inside, that it predates the
-last-use record (`LAST USED` reads `never`), or `rm`'s refusal reasons. The
-command ends with the totals, and exits 1 if the setting is invalid, the
-worktrees cannot be listed, or a removal failed.
-
-If `booley worktree new` fails and leaves a checkout behind, it prints the
-manual Git steps with the real Sandbox paths; use those, not host paths.
-
-<details markdown>
-<summary>In stealth mode</summary>
-
-`booley worktree rm` removes the Paired Checkout first, then the outer
-worktree, and also keeps the `booley-worktree/<name>` branch. Uncommitted
-changes in the Paired Checkout count toward the refusal too. To reuse the name,
-also delete that branch with
-`git -C <absolute-booley-directory> branch -D booley-worktree/<name>`.
-See [Stealth Mode](STEALTH.md).
-
-</details>
 
 ### Commands for skills
 
@@ -387,96 +202,6 @@ Project accepts it; `bootstrap`, `projects`, and `eda` don't, because they work
 on the whole machine. Inside the Sandbox, `booley -C <path>` picks the Project
 the Developer Agent opens in. The directory must exist; only `booley init`
 accepts one that Booley hasn't set up yet.
-
-## Booley Flows & Specialists
-
-Ask the Developer Agent (*"run the reset test on `sim_lite`"*, *"how much area
-did that cost?"*) and it picks the Flow or Specialist, the Target, and the
-options. The **Sets** column shows which
-evidence each one can produce. The
-EDA tool that runs underneath depends on the Target; see
-[SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md). `booley cheat --flows` and
-`booley cheat --specialists` print the same lists.
-
-<!-- BEGIN GENERATED: flows -->
-**Booley Flows**
-
-Deterministic end-to-end orchestration; no LLM:
-
-| Booley Flow | Purpose |
-|--------|---------|
-| `sim` | Run RTL simulation for one or more Targets |
-| `lint` | Run lint for one or more Targets |
-| `synth` | Run ASIC synthesis for one or more Targets with optional baseline comparison |
-| `fpga` | Run FPGA implementation for one or more Targets with optional baseline comparison |
-| `mutation` | Deterministic mutation testing: seeded Mutants from fixed Mutation Operators, each built and tested in isolation |
-
-Shared Flow options and results are in [FLOW_REFERENCE.md](FLOW_REFERENCE.md), each Flow's own in [FLOW-SIM.md](FLOW-SIM.md), [FLOW-LINT.md](FLOW-LINT.md), [FLOW-SYNTH.md](FLOW-SYNTH.md), [FLOW-FPGA.md](FLOW-FPGA.md), and [FLOW-MUTATION.md](FLOW-MUTATION.md), including the report files each one writes; `booley flow <name> --help` prints the options too.
-
-**Specialists**
-
-Specialists running in scoped, isolated workspaces:
-
-Ask your Developer Agent session to invoke a Specialist by name with the arguments below (written as it passes them, `name="value"`; the CLI spells each as a flag, `--name value`). Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--max-turns` and `--timeout` are CLI-only controls.
-
-For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. Common options are `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Model-call minimum budgets apply; seconds-only providers round up. A CLI run is a Standalone Job: it shows in the Dashboard and copies its output to `.interactive_logs/standalone/<run_id>/job.log` in the Project's common Booley Directory (the main checkout's `.booley` from a linked worktree).
-
-| Specialist | Purpose | Modifies code |
-|------------|---------|:-------------:|
-| `coverage_analyst` | Explain one exact coverage.json Coverage Record and propose advisory next steps | — |
-| `reviewer` | Single-focus code review: reports issues by severity | — |
-
-#### `coverage_analyst`
-
-Ask your Developer Agent to call the `coverage_analyst` Specialist with `record="<exact-coverage.json>"` and optional `instruction="<question>"`. The Analyst explains retained native evidence and proposes advisory next steps; its model only reads evidence. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. Screened Waiver Candidates are advisory and need human approval; advisory reports do not mark strict coverage met. Verified Target sources are optional; stale sources give report-only analysis.
-
-#### `reviewer`
-
-Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. It reviews the selected files using your specification or steering.
-
-Interactive source review accepts Verilog/SystemVerilog (.v, .vh, .sv, .svh), plus Python (.py) and explicitly scoped C/C++ testbench sources and headers (.c, .cc, .cpp, .cxx, .h, .hh, .hpp, .hxx) for category=tb. Sim C/C++ harness inputs count as TB for isolation and cannot be mutation scope. Declared opposite-category sources are refused; unregistered scoped sources retain the registration warning and receive only an exact per-file category grant. Each Reviewer has the opposite category's sources and HDL files no .core fileset declares hidden; all other project files, such as firmware, are readable context, and findings outside the scope are filtered.
-
-The result links saved review evidence, including rejected proposals for inspection. Rejected proposals do not affect Criteria.
-
-Ask your Developer Agent to call the `reviewer` Specialist with `category="<category>"` and `focus="<focus>"`.
-
-| Category | Focus | What it checks |
-|----------|-------|----------------|
-| `rtl` | `bugs` | Functional bug patterns, synthesis hazards, reset/width/signing mistakes, and ifdef/config consistency |
-| `rtl` | `protocol` | Bus/protocol rule compliance, handshake behavior, ordering, and clock-domain crossings (CDC) |
-| `rtl` | `spec` | Spec compliance: the RTL implements what the change request/spec requires, no more and no less |
-| `rtl` | `code_style` | Comments, naming, readability, maintainability, magic values, and assertion/cover-point quality |
-| `rtl` | `optimization` | Unused/dead RTL and strict power/performance/area improvements with no functional or engineering trade-off |
-| `rtl` | `security` | Fault-injection resistance, simple power/timing leakage, secret exposure, and unsafe failure behavior |
-| `tb` | `quality` | False-pass paths in scoped testbench sources, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality |
-
-Also pass `scope="<file,...>"`. Add `spec="<path>"` (required for the `spec` focus) or `spec_text="<text>"` (CLI: `--spec-text`; not with `spec`), or `steer=["<context>"]` for context. A completed review exits 0; pass `fail_on="critical|major|minor"` (CLI: `--fail-on`) to exit 1 when an open finding is at or above that severity. `dry_run=true` previews the call. Each new review replaces the previous findings.
-
-**Changes only:** add `base="<commit>"` (CLI: `--base <commit>`) to review only the `scope` files changed since the merge-base of that commit and HEAD, uncommitted changes included. Unchanged `scope` files that use them are context, the diff and commit messages are given to the Reviewer, and no change in scope exits 0 without a review. Pass every file of the category as the `scope` to give the Reviewer the files that use the changed ones. Findings already present before the change are listed separately as pre-existing and are never open.
-<!-- END GENERATED: flows -->
-
-## Running a Flow yourself
-
-Run a Flow yourself to check your setup or reproduce a problem. In a
-container terminal:
-
-```bash
-booley flow                                  # list the Flows
-booley targets --for sim                     # Targets a Flow can use
-booley flow sim --target sim_soc --test reset
-booley flow sim --help                       # every option
-booley specialist                            # list the Specialists
-booley specialist reviewer --help            # a Specialist's arguments
-```
-
-Without `--target`, a Flow runs when there is exactly one eligible Target,
-and that selection is announced; with zero or multiple eligible Targets it
-stops with exit code 2 and lists them. A resumed simulation (`--resume-from`) keeps the Target of the
-run it resumes.
-
-Options, exit codes, and results are in [FLOW_REFERENCE.md](FLOW_REFERENCE.md);
-Specialists in [SPECIALISTS.md](SPECIALISTS.md);
-coverage runs and the Coverage Analyst in [COVERAGE.md](COVERAGE.md).
 
 If a command misbehaves or this page is wrong, see
 [When Booley itself misbehaves](USAGE.md#when-booley-itself-misbehaves).
