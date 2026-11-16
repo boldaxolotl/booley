@@ -47,7 +47,8 @@ def inspect_vivado_startup(request: FlowRuntimeInspectionRequest) -> DiagnosticR
         return findings.report()
     except (session_runtime.SessionError, subprocess.SubprocessError, OSError) as exc:
         findings.fail(
-            f"{label}: runtime/probe error: {str(exc)[:500]}", "run 'booley init --seed' and retry"
+            f"{label}: runtime/probe error: {str(exc)[:500]}",
+            session_runtime.sandbox_entry_remedy(request.project_root, exc),
         )
         return findings.report()
     if result.returncode == 0 and marker in result.stdout.splitlines():

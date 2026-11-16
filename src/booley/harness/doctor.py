@@ -71,14 +71,17 @@ from booley.config.project_config import (
 from booley.core.booley_layout import DOCTOR_TMP_DIR
 from booley.core.boundary import (
     BoundaryError,
+    as_int,
     require_dict,
     require_int,
     require_list,
     require_str,
 )
+from booley.core.host_shell import quote_arg
 from booley.flows import execution, runtime_reality, target_test_plan_inspection
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.fpga import vivado_startup
+from booley.flows.invocation import default_timeout_ms
 from booley.flows.sim.backends import cocotb_target_checks
 from booley.flows.sim.config import (
     DEFAULT_SIM_BUILD_TIMEOUT_MS,
@@ -150,7 +153,7 @@ from booley.runtime.image_provenance import is_local_image_id
 from booley.runtime.platform_paths import run_captured_bounded
 from booley.runtime.project_gitignore import missing_gitignore_patterns
 from booley.runtime.resource_history import DOCTOR_RUN_ENV
-from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS, Attachment
 from booley.runtime.session_issuance import SANDBOX_IMAGE_ID_ENV
 from booley.runtime.timefmt import format_clock, format_duration, format_human_datetime
 from booley.runtime.worktree_evidence import untracked_common_paths
@@ -178,20 +181,21 @@ _DEEP_TIMEOUTS_S = {
     "sim": 900,
     "lint": 300,
     "synth": 1800,
+    "fpga": default_timeout_ms("fpga") // 1000,
 }
-# The synthesis Flow's timeout is an inner, per-target boundary. Doctor owns
-# an outer subprocess that must leave time for configure work, process-tree
-# cleanup, boundary interpretation, and the eager terminal report write after
-# that inner boundary expires.
-_SYNTH_DEEP_FINALIZE_MARGIN_S = 180
+# The synthesis and FPGA Flows' timeouts are inner, per-work-unit boundaries.
+# Doctor owns an outer subprocess that must leave time for configure work,
+# process-tree cleanup, boundary interpretation, and the eager terminal report
+# write after that inner boundary expires.
+_IMPLEMENTATION_DEEP_FINALIZE_MARGIN_S = 180
 _SIM_DEEP_FINALIZE_MARGIN_S = 30
 
 # The three core Flow tables remain required project configuration. FPGA is an
-# optional axis: plain Doctor covers it when configured or selected by Target
-# metadata, while deep Doctor deliberately stops short of implementation.
+# optional axis: plain and deep Doctor cover it only when it is configured or
+# selected by Target metadata (see _fpga_doctor_applicable).
 _REQUIRED_FLOW_TABLES = ("sim", "lint", "synth")
 _PLAIN_DOCTOR_FLOWS = (*_REQUIRED_FLOW_TABLES, "fpga")
-_DEEP_DOCTOR_FLOWS = _REQUIRED_FLOW_TABLES
+_DEEP_DOCTOR_FLOWS = _PLAIN_DOCTOR_FLOWS
 # --deep fail-path self-test conventions. Simulation runs its normal smoke test
 # against a project-owned bad overlay; lint uses a conventional known-bad
 # ``.core`` Target. See _run_selftest_checks (QA-4/QA-5).
@@ -692,12 +696,12 @@ _LINE_STATUS = {
 
 #: Counts-table rows in display order: (counter key, label).
 _COUNT_LABELS = (
-    ("pass", "passed"),
-    ("warn", "warnings"),
-    ("waived", "waived"),
-    ("note", "notes"),
-    ("skip", "skipped"),
-    ("fail", "failed"),
+    (Severity.PASS, "passed"),
+    (Severity.WARN, "warnings"),
+    (Severity.WAIVED, "waived"),
+    (Severity.NOTE, "notes"),
+    (Severity.SKIP, "skipped"),
+    (Severity.FAIL, "failed"),
 )
 
 
@@ -1708,7 +1712,7 @@ def _check_seat_caps(project: ProjectAudit | None, _pass: Check, _fail: Fail) ->
 def _check_sandbox_memory(
     project: ProjectAudit | None,
     _pass: Check,
-    _warn: Check,
+    _warn: Warn,
     _skip: Check,
 ) -> None:
     """ADR 0087: ``[sandbox].memory`` sizes the Memory Budget Jobs are admitted against.
@@ -2499,7 +2503,7 @@ def _check_current_runtime_dashboard_extension(_pass: Check, _warn: Check) -> No
 
 
 def _check_current_runtime_git_identity(
-    project: ProjectAudit | None, _pass: Check, _warn: Check, _skip: Check
+    project: ProjectAudit | None, _pass: Check, _warn: Warn, _skip: Check
 ) -> None:
     """Check Git would commit as ``[agent.git]`` and no gitconfig competes with it."""
     if project is None:
@@ -3226,11 +3230,11 @@ def _provider_not_installed_reason(provider: str, *, is_default: bool = True) ->
 def _check_agent_auth_token(
     provider: str,
     _pass: Check,
-    _warn: Check,
+    _warn: Warn,
     _skip: Check,
     policy: str = "subscription",
     *,
-    _fail: Check | None = None,
+    _fail: Fail | None = None,
     plan: auth_token.CredentialPlan | None = None,
     missing_fix: str = "",
     is_default: bool = True,
@@ -3328,7 +3332,7 @@ def _host_login_can_rotate(provider: str) -> bool:
 def _check_oauth_token(
     provider: str,
     _pass: Check,
-    _warn: Check,
+    _warn: Warn,
     _skip: Check,
     policy: str = "subscription",
     *,
@@ -3445,7 +3449,7 @@ def _subscription_expiry_message(
 def _check_subscription_creds_health(
     provider: str,
     _pass: Check,
-    _warn: Check,
+    _warn: Warn,
     policy: str = "subscription",
     *,
     plan: auth_token.CredentialPlan | None = None,
@@ -3548,7 +3552,7 @@ def _run_project_checks(
         return
 
     _check_ticket_leftovers(project.common_booley_dir, reporter.warn_)
-    _check_handle_map_size(project.common_booley_dir, reporter.warn_)
+    _check_handle_map_size(project.common_booley_dir, project.project_root, reporter.warn_)
     _check_project_gitignore(project.booley_dir, reporter.pass_, reporter.warn_)
     _check_project_trackability(project.project_root, project.booley_dir, reporter.warn_)
     _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
@@ -3638,7 +3642,38 @@ def _check_leftover_guidance(booley_dir: Path, _warn: Check) -> None:
         warning(f"leftover Ticket guidance in {path}", fix)
 
 
-def _check_handle_map_size(booley_dir: Path, _warn: Check) -> None:
+_HANDLE_MAP_VSCODE = (
+    "stop the Sandbox through Dev Containers, then reopen the folder in the container"
+)
+
+
+def _handle_map_restart(project_root: Path) -> str:
+    """Name the smallest step that restarts the MCP server, which prunes handles at start.
+
+    The server starts from ``postStartCommand``, so stopping and resuming the
+    container restarts it. ``booley session down`` would remove a headless
+    container, and refuses a running VS Code one, so neither owner is told to
+    run it. Inside the Sandbox, or when the owner cannot be found, both steps
+    are named.
+    """
+    attachment = None
+    if not runtime_context.inside_session_runtime():
+        try:
+            attachment = session_runtime.sandbox_attachment(project_root)
+        except session_runtime.SessionError:
+            attachment = None
+    if attachment is Attachment.VSCODE:
+        return _HANDLE_MAP_VSCODE
+    if attachment is Attachment.HEADLESS:
+        name = quote_arg(session_runtime.session_container_name(project_root))
+        return f"run `docker stop {name}`, then `booley session up` on the host"
+    return (
+        f"in VS Code, {_HANDLE_MAP_VSCODE}; headless, stop the Sandbox container "
+        "with `docker stop`, then run `booley session up` on the host"
+    )
+
+
+def _check_handle_map_size(booley_dir: Path, project_root: Path, _warn: Check) -> None:
     """Warn when a display handle map nears the cap past which allocation fails."""
     for jobs in (False, True):
         path = handle_maps.HandleStore(booley_dir, jobs=jobs).path
@@ -3651,12 +3686,12 @@ def _check_handle_map_size(booley_dir: Path, _warn: Check) -> None:
             _warning_sink(_warn, "handles.map-size", subject=subject)(
                 f"{subject} handle map {path} is {size / 2**20:.1f} MiB of its "
                 f"{handle_maps.MAX_MAP_BYTES // 2**20} MiB cap",
-                "run `booley session down`, then `booley session up`: the MCP server "
-                "prunes expired handles at start",
+                "restart the Sandbox so its MCP server prunes expired handles at start: "
+                + _handle_map_restart(project_root),
             )
 
 
-def _check_project_gitignore(booley_dir: Path, _pass: Check, _warn: Check) -> None:
+def _check_project_gitignore(booley_dir: Path, _pass: Check, _warn: Warn) -> None:
     """Warn when ``.booley/.gitignore`` lacks a transient-state pattern ``init`` adds.
 
     A missing ``tickets/board/`` pattern leaves closed Tickets' deletions in
@@ -5298,6 +5333,8 @@ def _run_deep_checks(
         if not _flow_enabled(project, flow_name):
             _skip(f"{flow_name} deep check skipped - disabled")
             continue
+        if flow_name == "fpga" and not _fpga_doctor_applicable(project):
+            continue
         targets = _doctor_targets(project, flow_name)
         if not targets:
             tracker.require(f"{flow_name}.doctor-targets")
@@ -5321,27 +5358,7 @@ def _run_deep_checks(
             )
             _diagnostics(outcome.report)
             tracker.completed(identifier, outcome.completed)
-    _run_fpga_impl_deep_notice(project, _skip)
     _run_selftest_checks(project, flow_runtime, _pass, _warn, _skip, _fail, completeness=tracker)
-
-
-def _run_fpga_impl_deep_notice(project: ProjectAudit, _skip: Check) -> None:
-    """Disclose that ``fpga_impl`` gets no deep smoke (F-15).
-
-    FPGA is deliberately excluded from :data:`_DEEP_DOCTOR_FLOWS` — a full FPGA
-    implementation is far too slow for ``--deep`` — but it was *silently*
-    absent: ``--deep`` produced no line for it at all. Nothing ever smokes it
-    end-to-end, and nothing said so. Emit an
-    explicit SKIP naming the manual command, so the gap is loud, not invisible.
-    """
-    if not _flow_enabled(project, "fpga"):
-        return
-    for target in _doctor_targets(project, "fpga"):
-        _skip(
-            f"fpga deep smoke [{target}] skipped - a full FPGA implementation is too "
-            "slow for --deep; smoke it manually end-to-end: "
-            f"booley flow fpga --target {target}"
-        )
 
 
 @dataclass(frozen=True)
@@ -5373,7 +5390,10 @@ def _warn_unvalidated_selftest(flow_name: str, _warn: Check) -> None:
     _warning_sink(_warn, "flow.fail-path-unvalidated", subject=flow_name)(
         f"{flow_name} fail-path unvalidated - {requirement} so --deep proves a "
         "known-bad grades as a failure (not a false pass). The setup agent authors "
-        f"the known-bad fixture. {_SELFTEST_FOOTPRINT_NOTE[flow_name]}"
+        f"the known-bad fixture. {_SELFTEST_FOOTPRINT_NOTE[flow_name]} "
+        "A waiver stops this warning counting as a problem but doesn't make deep "
+        f"checks current: deep Doctor stays due until {flow_name} has its known-bad "
+        "fixture, so both its good and bad self-tests run."
     )
 
 
@@ -5472,13 +5492,6 @@ def _run_selftest_checks(
         tracker.completed(f"{flow_name}.selftest.bad", completed)
 
 
-def _sandbox_failure_remedy(exc: session_runtime.SessionError) -> str:
-    """Keep admission-control remediation distinct from stale issuance."""
-    if str(exc).startswith("Sandbox start refused:"):
-        return "free Sandbox capacity using the command in the refusal, then retry"
-    return "run 'booley init --seed' and retry"
-
-
 def _prepare_selftest_invocation(
     project: ProjectAudit,
     flow_name: str,
@@ -5510,7 +5523,7 @@ def _prepare_selftest_invocation(
     except session_runtime.SessionError as exc:
         _fail(
             f"{label} could not enter the Sandbox: {exc}",
-            _sandbox_failure_remedy(exc),
+            session_runtime.sandbox_entry_remedy(project.project_root, exc),
         )
         return None
     env = _doctor_subprocess_env(project)
@@ -5764,7 +5777,8 @@ def _deep_timeout_s(project: ProjectAudit, flow_name: str) -> int:
     """Wall-clock budget for a ``--deep`` Flow smoke, in seconds (F5).
 
     The hardcoded :data:`_DEEP_TIMEOUTS_S` floor is a *minimum*, not the
-    authority. Synthesis honors its configured run budget plus finalization.
+    authority. Synthesis and FPGA honor their configured run budget plus
+    finalization.
     Simulation validates and reserves its distinct build, Pre-Sim, run, and
     finalization budgets. Other legacy calculations retain their established
     fallback behavior for unparseable values.
@@ -5775,8 +5789,8 @@ def _deep_timeout_s(project: ProjectAudit, flow_name: str) -> int:
         planned_s = build_s + DEFAULT_TIMEOUT_S + run_s + _SIM_DEEP_FINALIZE_MARGIN_S
         return max(_DEEP_TIMEOUTS_S["sim"], planned_s)
     timeout_s = _configured_timeout_s(project, flow_name, _DEEP_TIMEOUTS_S[flow_name])
-    if flow_name == "synth":
-        timeout_s += _SYNTH_DEEP_FINALIZE_MARGIN_S
+    if flow_name in ("synth", "fpga"):
+        timeout_s += _IMPLEMENTATION_DEEP_FINALIZE_MARGIN_S
     return timeout_s
 
 
@@ -5811,14 +5825,10 @@ def _configured_timeout_s(project: ProjectAudit, flow_name: str, floor: int) -> 
     section = config_section(flows, flow_name) if isinstance(flows, dict) else {}
     if not isinstance(section, dict):
         return floor
-    raw = section.get("timeout_ms")
-    if raw is None:
+    configured_ms = as_int(section.get("timeout_ms"))
+    if configured_ms is None:
         return floor
-    try:
-        configured_s = int(raw) // 1000
-    except (TypeError, ValueError):
-        return floor
-    return max(floor, configured_s)
+    return max(floor, configured_ms // 1000)
 
 
 def _display_report_dir(project: ProjectAudit, report_dir: Path) -> str:
@@ -6044,7 +6054,7 @@ def _doctor_flow_command(
     except session_runtime.SessionError as exc:
         findings.fail(
             f"{label} could not enter the Sandbox: {exc}",
-            _sandbox_failure_remedy(exc),
+            session_runtime.sandbox_entry_remedy(project.project_root, exc),
         )
         return None
 
@@ -6278,6 +6288,10 @@ def _flow_argv(
     ]
     if dry_run:
         argv.extend(["--dry-run", "--timeout-ms", "30000"])
+    if flow_name == "fpga" and not dry_run:
+        # A warm implementation cache returns stored metrics before Vivado
+        # runs, so a deep run must bypass it to prove the tool works.
+        argv.append("--no-cache")
     if flow_name == "sim":
         if test_override is not None:
             argv.extend(["--test", test_override])

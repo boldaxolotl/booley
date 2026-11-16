@@ -59,7 +59,7 @@ booley chat --resume <id>         # Claude: arguments after chat and its options
 booley chat resume --last         # Codex: the same, with its own subcommands
 booley chat -- --help             # the agent CLI's help (Booley's is booley chat --help)
 booley dashboard                  # sessions and Jobs; see Usage
-booley dashboard --web            # serve each worktree's Jobs as JSON (--port PORT, default 8090)
+booley dashboard --web            # serve each worktree's Jobs page and JSON (--port PORT, default 8090)
 booley measure                    # measure HEAD against its committed metrics.toml and store the run
 booley measure <sha> --base <sha> # measure another commit; compare with another Base
 booley measure --all --json       # evaluate every table after a failure; print the report as JSON
@@ -80,8 +80,10 @@ booley worktree gc                # remove idle worktrees (default: a week), whe
 - `--new-worktree` is refused when you run it from inside a linked worktree.
 - If Booley cannot reserve a session handle for a worktree launch, it exits
   with status 2 and suggests `--here`.
-- `booley dashboard --web` serves JSON on `127.0.0.1` until you stop it, on
-  port 8090 unless `--port` names another; `--port` needs `--web`.
+- `booley dashboard --web` serves a page and JSON on `127.0.0.1` until you
+  stop it, on port 8090 unless `--port` names another; `--port` needs `--web`.
+  Open `http://127.0.0.1:<port>/?worktree=<absolute path>` for a worktree's
+  page, which refreshes every 3 s.
   `GET /api/snapshot?worktree=<absolute path>` answers for the main checkout or
   a linked worktree with that worktree's Jobs only: the unfinished Jobs, the
   newest 50 finished Jobs with a `report_url` for each report, and the
@@ -128,7 +130,7 @@ booley coverage uncovered <coverage.json>   # uncovered points of a coverage run
 booley coverage uncovered <coverage.json> --metric branch --source rtl/fifo.sv
 booley doctor                     # check setup and environment health
 booley doctor --concise           # show only problems
-booley doctor --deep              # also run short real simulations, lints, and syntheses
+booley doctor --deep              # also run short real simulations, lints, syntheses, and FPGA implementations
 booley doctor --deep --skip-agent-checks   # skip the agent login and provider checks
 booley targets                    # list Targets
 booley targets --for sim          # only Targets a Flow can use

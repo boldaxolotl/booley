@@ -14,13 +14,11 @@ from booley.flows.sim.record.codec import (
     SimulationRecordIntegrityError,
     canonical_json_bytes,
     decode_bundle_build_attempt,
-    decode_executable_snapshot,
     decode_simulation_attempt,
     decode_simulation_record_manifest,
     decode_simulator_bundle,
     encode_bundle_build_attempt,
     encode_bundle_build_result,
-    encode_executable_snapshot,
     encode_simulation_attempt,
     encode_simulation_record_manifest,
     encode_simulation_result,
@@ -31,7 +29,6 @@ from booley.flows.sim.record.model import (
     AssertionObservation,
     BundleBuildAttempt,
     BundleBuildResult,
-    ExecutableSnapshot,
     ExecutionObservation,
     FailureClass,
     FunctionalObservation,
@@ -111,7 +108,6 @@ def test_encoding_and_planning_never_decode_their_own_output(monkeypatch) -> Non
         ("build-attempt-shared.json", decode_bundle_build_attempt, encode_bundle_build_attempt),
         ("build-attempt-private.json", decode_bundle_build_attempt, encode_bundle_build_attempt),
         ("bundle.json", decode_simulator_bundle, encode_simulator_bundle),
-        ("snapshot.json", decode_executable_snapshot, encode_executable_snapshot),
     ],
 )
 def test_document_encoders_round_trip_validated_values(name, decoder, encoder) -> None:
@@ -133,9 +129,6 @@ def test_document_encoders_round_trip_validated_values(name, decoder, encoder) -
         ),
         pytest.param(SimulationResult, encode_simulation_result, RECORD_MAX_BYTES, id="result"),
         pytest.param(SimulatorBundle, encode_simulator_bundle, MANIFEST_MAX_BYTES, id="bundle"),
-        pytest.param(
-            ExecutableSnapshot, encode_executable_snapshot, MANIFEST_MAX_BYTES, id="snapshot"
-        ),
     ],
 )
 def test_encoders_refuse_documents_over_their_size_ceiling(value_type, encoder, ceiling) -> None:

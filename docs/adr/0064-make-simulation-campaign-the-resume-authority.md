@@ -42,8 +42,9 @@ results, and terminal results precede Criteria publication.
 ## Amendments (2026-10-21)
 
 Recorded while implementing issue #1745. Campaign evidence is authenticated
-when a Simulator Bundle or executable snapshot is
-launched or reused, and trusted on read. A scan decodes each work item's final
-attempt and result and binds them by attempt ID and ordinal. It does not re-read
-the build, bundle or snapshot chain or re-hash evidence files. Retention owns the
-files a completed attempt's result names and its Booley-written build trees.
+when a Simulator Bundle is launched (in place, before launch and after the
+process tree is dead) or reused, and trusted on read. A scan decodes each work
+item's final attempt and result and binds them by attempt ID and ordinal. It
+does not re-read the build or bundle chain or re-hash evidence files.
+Retention owns the files a completed attempt's result names and its
+Booley-written build trees.

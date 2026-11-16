@@ -24,7 +24,8 @@ current attempt's evidence.
   interface; adapters do not duplicate them.
 - A work item reaches the adapter through one execution boundary that
   compiles, launches and returns immutable normalized evidence. The record's
-  executor owns the surrounding attempt, build, snapshot and Pre-Sim sequencing.
+  executor owns the surrounding attempt, build, bundle verification and Pre-Sim
+  sequencing.
 - External callers read a Simulation Record, Coverage Record or retention
   eligibility only through the record package's read capabilities, which
   return immutable typed evidence. Store layout, recovery scanning and summary
@@ -48,8 +49,9 @@ current attempt's evidence.
   all return in the outcome, never rebuilt from output markers.
 - Transport failure is typed infrastructure evidence, except that a wrapper
   timeout keeps its precedence when the child published no result.
-- Record evidence is authenticated when a Simulator Bundle or snapshot is
-  launched or reused, and trusted on read: a scan binds each work item's final
+- Record evidence is authenticated when a Simulator Bundle is launched (in
+  place, before launch and after the process tree is dead) or reused, and
+  trusted on read: a scan binds each work item's final
   attempt and result by attempt ID and ordinal without re-hashing the build
   chain.
 - Project-owned settings (test list, selector, environment, Pre-Sim Commands)

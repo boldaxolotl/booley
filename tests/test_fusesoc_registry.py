@@ -1062,6 +1062,34 @@ class TestResolveTargetMocked:
                 runner=failing,
             )
 
+    def test_setup_failure_names_unprovided_dependency(self, tmp_path: Path):
+        def failing(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+
+        def fail_message(name: str, depend: str) -> str:
+            project = tmp_path / name
+            _write_core(project / "ip", TestSelectableCoreClosure._root("top", depend))
+            _write_core(project / "dep", TestSelectableCoreClosure._leaf("dep"))
+            with pytest.raises(TargetResolutionError) as excinfo:
+                _resolve_target(
+                    "sim",
+                    project_root=project,
+                    build_root=tmp_path / f"build-{name}",
+                    vlnv="acme:lib:top:0",
+                    runner=failing,
+                )
+            return str(excinfo.value)
+
+        missing = fail_message("missing", "acme:lib:dep, '>=::vlog_tb_utils:1.1'")
+        assert missing.endswith(
+            "(exit 1):\nboom\nno Project .core provides '>=::vlog_tb_utils:1.1': the Sandbox "
+            "has no FuseSoC libraries and cannot fetch them; copy it into the repository as "
+            "a .core, or drop the depend: (check first whether the testbench guards its use "
+            "with an `ifdef` or defines the module itself)"
+        )
+        # Provided-but-other-failure: FuseSoC's text stays, no hint is added.
+        assert fail_message("provided", "acme:lib:dep").endswith("(exit 1):\nboom")
+
     def test_missing_fusesoc_binary_raises(self, tmp_path: Path):
         project = tmp_path / "proj"
         _write_core(project / "ip")
@@ -2106,6 +2134,53 @@ class TestSelectableCoreClosure:
         dep = _write_core(tmp_path / "dep", self._leaf("dep"))
         catalog = TargetCatalog.build(tmp_path)
         assert catalog.core_closure([catalog.select("sim")]) == frozenset({top, dep})
+
+    def test_unprovided_dependencies_match_by_identity(self, tmp_path: Path):
+        # A versioned, operator-prefixed depend on a Project core is provided by
+        # identity; an unprovided one is named as written, every spelling of it.
+        _write_core(
+            tmp_path / "top",
+            self._root("top", '(>=acme:lib:dep:1.0), "tool_verilator? (>=::vlog_tb_utils:1.1)"'),
+        )
+        _write_core(
+            tmp_path / "dep",
+            self._leaf("dep").replace(
+                "filesets:\n  rtl:\n    files:",
+                "filesets:\n  rtl:\n    depend: ['::vlog_tb_utils:2.0']\n    files:",
+            ),
+        )
+        catalog = TargetCatalog.build(tmp_path)
+        assert catalog.unprovided_dependencies(catalog.select("sim")) == (
+            "::vlog_tb_utils:2.0",
+            ">=::vlog_tb_utils:1.1",
+        )
+
+    def test_unprovided_dependencies_include_depend_append(self, tmp_path: Path):
+        # FuseSoC merges a fileset's depend_append into depend: both are collected,
+        # directly and through a Project core.
+        _write_core(
+            tmp_path / "top",
+            self._root("top", "acme:lib:dep").replace(
+                "    depend:", "    depend_append: ['::appended:0']\n    depend:"
+            ),
+        )
+        _write_core(
+            tmp_path / "dep",
+            self._leaf("dep").replace(
+                "filesets:\n  rtl:\n    files:",
+                "filesets:\n  rtl:\n    depend_append: ['::deep_appended:0']\n    files:",
+            ),
+        )
+        catalog = TargetCatalog.build(tmp_path)
+        assert catalog.unprovided_dependencies(catalog.select("sim")) == (
+            "::appended:0",
+            "::deep_appended:0",
+        )
+
+    def test_unprovided_dependency_hint_names_each_of_several(self):
+        hint = fusesoc_registry.unprovided_dependency_hint(["::a:0", "::b:0"])
+        assert hint.startswith("no Project .core provides '::a:0', '::b:0': ")
+        assert "copy each into the repository as a .core, or drop its depend:" in hint
 
     def test_unselectable_sibling_target_does_not_widen_closure(self, tmp_path: Path):
         # top's seeded `sim` depends on dep; its *unseeded* `alt` target depends on

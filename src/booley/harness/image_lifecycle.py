@@ -151,6 +151,12 @@ class _LegacyBuildAdapter:
             ) from error
 
 
+def _built_role(node: ImageNode) -> ImageRole:
+    """A built image node always has a role; only legacy-built host nodes lack one."""
+    assert node.role is not None, "a built image node has a role"
+    return node.role
+
+
 def _capacity_request(node: ImageNode, *, output_tag: str | None = None) -> DockerBuildRequest:
     """Project one BUILD node into validated Docker capacity facts."""
     estimate = (
@@ -159,7 +165,7 @@ def _capacity_request(node: ImageNode, *, output_tag: str | None = None) -> Dock
         else BuildEstimateClass.HEAVYWEIGHT
     )
     labels = [
-        (runtime_lifecycle.LABEL_ARTIFACT_ROLE, node.role.value),
+        (runtime_lifecycle.LABEL_ARTIFACT_ROLE, _built_role(node).value),
         (runtime_lifecycle.LABEL_RECIPE_FINGERPRINT, node.build.recipe_fingerprint),
         (runtime_lifecycle.LABEL_EFFECTIVE_INPUTS, node.effective_inputs or ""),
     ]
@@ -422,7 +428,7 @@ class _IncrementalBuildAdapter:
                 build_args=build_args,
                 parent_artifact=parent_id,
                 labels=tuple(self._build_labels(node, parent_id)),
-                build_note=f"preparing {node.role.value}",
+                build_note=f"preparing {_built_role(node).value}",
                 capacity_request=current,
                 capacity_plan=tail,
             )
@@ -430,7 +436,7 @@ class _IncrementalBuildAdapter:
         if result is None:
             return
         if result != 0:
-            context.record("docker_image", "err", f"{node.role.value} build failed")
+            context.record("docker_image", "err", f"{_built_role(node).value} build failed")
             return
         if planned_index is not None:
             self._next_request_index += 1
@@ -473,7 +479,7 @@ class _IncrementalBuildAdapter:
     ) -> list[tuple[str, str]]:
         labels = [
             (runtime_lifecycle.LABEL_SCHEMA, runtime_lifecycle.PROVENANCE_SCHEMA),
-            (runtime_lifecycle.LABEL_ARTIFACT_ROLE, node.role.value),
+            (runtime_lifecycle.LABEL_ARTIFACT_ROLE, _built_role(node).value),
             (runtime_lifecycle.LABEL_EFFECTIVE_INPUTS, node.effective_inputs or ""),
             (runtime_lifecycle.LABEL_RECIPE_FINGERPRINT, node.build.recipe_fingerprint),
             (runtime_lifecycle.LABEL_BUILD_ORIGIN, "local"),

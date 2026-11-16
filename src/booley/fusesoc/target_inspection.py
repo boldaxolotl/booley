@@ -219,8 +219,12 @@ class _TargetSourceInspector:
         except fusesoc_registry.FuseSocError:
             raise
         except (DependencyError, OSError, SyntaxError, RuntimeError, ValueError) as exc:
+            seed = TargetRef(name=str(flags["target"]), vlnv=vlnv, core_file=core_file.resolve())
+            hint = fusesoc_registry.unprovided_dependency_suffix(
+                self.root, [seed], documents=self._documents
+            )
             raise fusesoc_registry.FuseSocError(
-                f"could not inspect Target {identity!r}: {exc}"
+                f"could not inspect Target {identity!r}: {exc}{hint}"
             ) from exc
 
     @staticmethod

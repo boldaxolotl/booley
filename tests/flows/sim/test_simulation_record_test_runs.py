@@ -380,7 +380,7 @@ def _stored_result(tmp_path: Path):
 
 def test_written_results_are_v3_and_name_their_test_run(tmp_path: Path):
     outcome, results = _stored_result(tmp_path)
-    assert [result.document["$schema"] for result in results] == ["booley.simulation-result/v4"]
+    assert [result.document["$schema"] for result in results] == ["booley.simulation-result/v5"]
     observations = results[0].document["observations"]
     assert [(item["test"], item["test_run"]) for item in observations] == [
         ("count", "count"),
@@ -415,7 +415,7 @@ def test_result_v3_round_trips(tmp_path: Path):
 @pytest.mark.parametrize(
     ("alter", "message"),
     [
-        (lambda document: document.update({"$schema": "booley.simulation-result/v5"}), "schema"),
+        (lambda document: document.update({"$schema": "booley.simulation-result/v6"}), "schema"),
     ],
 )
 def test_result_v3_refusals(tmp_path: Path, alter, message):
