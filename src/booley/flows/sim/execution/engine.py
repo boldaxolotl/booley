@@ -86,7 +86,6 @@ from booley.flows.sim.runtime_inputs import (
     preview_runtime_inputs,
 )
 from booley.flows.sim.trace_recipe import TraceMode
-from booley.flows.sim.workload import build_workload_snapshot, capture_workload_inputs
 from booley.flows.simulator_family import normalize_eda_tool
 from booley.flows.target_test_plan import (
     TargetTestPlan,
@@ -256,7 +255,6 @@ class _Attempt:
     pre_sim_commands: tuple[str, ...]
     simulator_environment: tuple[tuple[str, str], ...]
     cycle_sentinels: tuple[str, ...]
-    workload_inputs: tuple[Mapping[str, Any], ...]
     setup_s: float
     log: RunLogIdentity | None = None
     build_inputs: Mapping[str, str] = field(default_factory=dict)
@@ -485,7 +483,6 @@ class PreparedOrdinaryGroup:
         attempt = self._execution._select_generation_for_group(
             self._handle, attempt, self._generation_before
         )
-        attempt = _with_workload_inputs(self._handle, attempt)
         self._attempt = attempt
         if attempt.reused:
             return self._adopt_retained_image(attempt)
@@ -998,7 +995,6 @@ class SimulationExecution:
             pre_sim_commands=tuple(resolve_pre_sim_commands(handle.project_root)),
             simulator_environment=tuple(simulation_target_environment(handle).items()),
             cycle_sentinels=tuple(resolve_cycle_sentinels(handle.project_root)),
-            workload_inputs=(),
             setup_s=time.monotonic() - started,
             test_runs=test_runs,
             history_tests=history_test_names(handle, prepared, work.test_runs),
@@ -1822,7 +1818,6 @@ def _test_outcome(
         build=build,
         artifacts=tuple(item for item in (log, trace) if item is not None),
         run_log_path=log.path if log is not None else "",
-        workload_snapshot=_workload_snapshot(handle, attempt, name),
     )
 
 
@@ -1899,33 +1894,6 @@ def _build_failure_test(
         build=build,
         artifacts=(log,) if log is not None else (),
         run_log_path=log.path if log is not None else "",
-        workload_snapshot=_workload_snapshot(handle, attempt, name),
-    )
-
-
-def _with_workload_inputs(handle: TargetHandle, attempt: _Attempt) -> _Attempt:
-    inputs = capture_workload_inputs(handle.project_root, attempt.prepared.resolved)
-    return replace(attempt, workload_inputs=inputs)
-
-
-def _workload_snapshot(
-    handle: TargetHandle,
-    attempt: _Attempt,
-    name: str,
-) -> Mapping[str, Any]:
-    controls = {
-        "cycle_sentinels": list(attempt.cycle_sentinels),
-        "pre_run_commands": list(attempt.pre_sim_commands),
-        "run_cwd": attempt.work.run_cwd,
-        "environment": dict(_launch_environment(attempt.simulator_environment, attempt.work)),
-    }
-    return build_workload_snapshot(
-        handle.project_root,
-        handle.selector,
-        name,
-        attempt.prepared.resolved,
-        controls=controls,
-        inputs=attempt.workload_inputs,
     )
 
 

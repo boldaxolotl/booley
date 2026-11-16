@@ -538,7 +538,6 @@ def _assert_authoritative_cocotb_outcome(outcome: SimulationTargetOutcome) -> No
         ("count", "fail"),
     ]
     assert outcome.tests[1].cycles == 17
-    assert outcome.tests[1].workload_snapshot is not None
     assert outcome.builds[0].passed is True
     assert sum(a.kind == "live_run_log" for a in outcome.artifacts) == 1
     assert outcome.tests[0].run_log_path == outcome.tests[1].run_log_path
@@ -590,7 +589,7 @@ def test_authenticated_cocotb_result_is_the_per_test_authority(tmp_path: Path) -
     _assert_authoritative_cocotb_outcome(outcome)
 
 
-def test_default_cocotb_selection_snapshots_discovered_test_names(tmp_path: Path) -> None:
+def test_default_cocotb_selection_runs_discovered_test_names(tmp_path: Path) -> None:
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=True)
 
@@ -621,8 +620,6 @@ def test_default_cocotb_selection_snapshots_discovered_test_names(tmp_path: Path
 
     capture_trace_policy.assert_not_called()
     assert [test.name for test in outcome.tests] == ["discovered"]
-    snapshot = outcome.tests[0].workload_snapshot
-    assert snapshot is not None and snapshot["test"] == "discovered"
 
 
 def test_timeout_transport_preserves_completed_active_and_not_run_tests(
@@ -2837,18 +2834,12 @@ def test_trace_declarations_are_frozen_at_planning(tmp_path: Path) -> None:
         canned_at="raw",
     )
 
-    snapshot = outcome.tests[0].workload_snapshot
-    assert snapshot is not None
     assert outcome.verdict == "pass"
     (work,) = (launched_work(command) for command in launches)
     assert work.trace_files == ("../first/*.fst",)
     assert (work.timeout_s, work.trace_convert_timeout_s) == (1, 7)
     # simulation timeout + conversion budget + the fixed 90 s margin
     assert launch_timeouts == [1 + 7 + 90]
-    assert snapshot["controls"]["pre_run_commands"] == ["old"]
-    assert snapshot["controls"]["cycle_sentinels"] == ["[OLD]"]
-    assert snapshot["inputs"][0]["present"] is True
-    assert snapshot["inputs"][0]["bytes"] == len(f"generated{os.linesep}".encode())
     assert outcome.tests[0].cycles == 17
 
 

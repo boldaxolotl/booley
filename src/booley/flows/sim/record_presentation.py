@@ -65,9 +65,6 @@ from .record.coverage_execution import (
 )
 from .record.model import simulation_status_from_observations
 from .record_reports import invocation_booley_dir
-from .test_run_invocation import (
-    BaselineRefusal,
-)
 
 
 def _simulation_record_observation_counts(
@@ -705,16 +702,6 @@ def _simulation_record_recovery_detail(
         "interrupted": list(status.interrupted),
         "pending": list(status.pending),
     }
-
-
-def _baseline_refusal_line(refusal: BaselineRefusal) -> str:
-    """One report line: which Cycle Count comparison is inconclusive, and why."""
-    link = refusal.link
-    run = f" (Test Run {link.run.name})" if link.run is not None else ""
-    return (
-        f"Cycle Count comparison inconclusive for {link.candidate} Test {link.test}{run}: "
-        f"{refusal.reason}"
-    )
 
 
 def _simulation_record_preview_entry(preview: NewSimulationRecordPreview) -> dict[str, object]:

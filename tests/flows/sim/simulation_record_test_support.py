@@ -1942,3 +1942,31 @@ def coverage_invocation(tmp_path, monkeypatch, *, prepare=None) -> CoverageInvoc
         target / "coverage.json"
     ).coverage_record_path.parent
     return CoverageInvocation(reports, target, storage)
+
+
+def prerequisite_documents(plan: Any, manifest_path: Path) -> list[Mapping[str, object]]:
+    """The ``cycle_count_baseline`` prerequisite documents a record of *plan* would be given.
+
+    A record that kept baseline prerequisites still resumes; this builds that format.
+    """
+    raw = encode_simulation_record_manifest(plan.manifest)
+    manifest_ref = {
+        "path_base": "origin_invocation",
+        "path": manifest_path.as_posix(),
+        "bytes": len(raw),
+        "sha256": manifest_digest(plan.manifest),
+        "kind": "simulation_record_manifest",
+        "owner": plan.manifest.document["simulation_record_id"],
+    }
+    baseline_target = dict(cast(Mapping[str, object], plan.manifest.document["target"]))
+    return [
+        {
+            "role": "cycle_count_baseline",
+            "manifest": manifest_ref,
+            "simulation_record_id": plan.manifest.document["simulation_record_id"],
+            "target": baseline_target,
+            "required_observation": "cycle_count",
+            "work_item_id": item["work_item_id"],
+        }
+        for item in cast(tuple[Mapping[str, object], ...], plan.manifest.document["work_items"])
+    ]

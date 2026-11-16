@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
 
-from booley.flows.sim.workload import CONSTRAINT_FILE_TYPES
 from booley.flows.target_test_plan_loading import load_checkout_target_test_plan
 from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.core_projection import (
@@ -305,12 +304,16 @@ def _filesets(handle: TargetHandle) -> tuple[str, ...]:
     return tuple(dict.fromkeys(names))
 
 
+# File types of timing and pin constraints.
+_CONSTRAINT_FILE_TYPES = frozenset({"sdc", "xdc"})
+
+
 def _constraints(catalog: TargetCatalog, handle: TargetHandle) -> tuple[str, ...]:
     """Paths of the selected SDC and XDC inputs."""
     return tuple(
         item.path
         for item in catalog.inspect(handle).inputs
-        if item.file_type.lower() in CONSTRAINT_FILE_TYPES
+        if item.file_type.lower() in _CONSTRAINT_FILE_TYPES
     )
 
 

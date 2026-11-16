@@ -142,39 +142,9 @@ def test_a_prerequisite_must_name_the_recorded_identity(
         resume._walk_prerequisites(node, tmp_path, frozenset(), [], None)  # type: ignore[arg-type]
 
 
-def test_acceptance_refuses_malformed_record_facts(monkeypatch: pytest.MonkeyPatch) -> None:
-    def evidence(document: dict[str, object]) -> Any:
-        return SimpleNamespace(
-            outcome=SimpleNamespace(
-                acceptance_facts=SimpleNamespace(document=document), complete=True
-            )
-        )
-
-    with pytest.raises(TypeError, match="Simulation Record acceptance Target is not a mapping"):
-        acceptance.SimulationAcceptanceCoordinator._derive_changes(
-            evidence({"target": []}),
-            None,  # type: ignore[arg-type]
-        )
-    monkeypatch.setattr(acceptance, "_matching_simulation_keys", lambda *_args: ["key"])
-    given = evidence({"required_suite": []})
-    with pytest.raises(TypeError, match="Simulation Record acceptance suite is malformed"):
-        acceptance._simulation_changes(
-            given.outcome,
-            None,  # type: ignore[arg-type]
-            {"role": "candidate"},
-            "name",
-            given,
-        )
-    endpoint = SimpleNamespace(
-        args=SimpleNamespace(work_dir=None, diagnostic=False),
-        state=SimpleNamespace(_file_path=None, slug="slug"),
-        _acceptance_recorder=SimpleNamespace(acceptance_identity=lambda: None),
-        _invocation_id="invocation",
-        record_report_criteria=lambda: None,
-    )
-    monkeypatch.setattr(acceptance, "_detail_stamper", lambda _endpoint: None)
+def test_projection_publication_refuses_a_foreign_outcome() -> None:
     with pytest.raises(TypeError, match="invalid Simulation Record outcome"):
-        acceptance.record_simulation_record_acceptance(endpoint, (object(),))  # type: ignore[arg-type]
+        acceptance.publish_simulation_record_projections(None, (object(),))
 
 
 def test_reference_projection_refusals(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

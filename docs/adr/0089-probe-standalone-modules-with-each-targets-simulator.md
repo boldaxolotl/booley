@@ -38,7 +38,7 @@ findings.
   interface files of the Targets that contribute its frontend.
 - **Retired key.** `[flows.<flow>].standalone_frontend` is a hard migration
   error for every Flow, like `[flows.elab]`; the message says to delete it.
-- **Reporting.** The criterion key, verdict and exit codes are unchanged.
+- **Reporting.** The verdict and exit codes are unchanged.
   `detail.standalone.frontend` stays a string (the `+`-joined frontends) and a
   `probes` grouping is added; no report schema bump.
 

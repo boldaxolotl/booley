@@ -179,9 +179,7 @@ attempt, and the enclosing Simulation Record together.
 In `report.json`, `detail.targets[<target>]` keeps each Target's results and a
 `coverage_record` reference to the Target-level `coverage.json`.
 `coverage_metrics` maps each native metric to `{percent, threshold, met}`. A
-threshold miss on a run that executed cleanly still exits `0`; with one
-evaluated
-Criterion, `criterion_met` is `false`.
+threshold miss on a run that executed cleanly still exits `0`.
 
 ## `lint`
 

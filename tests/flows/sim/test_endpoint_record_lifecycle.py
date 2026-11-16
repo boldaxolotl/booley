@@ -1053,70 +1053,6 @@ def test_failure_paths_deduplicate_and_start_without_blank_line(tmp_path: Path) 
     assert result.report_text == f"  manifest: {path.resolve()}\n  report: {report}"
 
 
-def test_simulation_record_recording_failure_retains_evaluated_final_report(tmp_path):
-    from booley.flows.sim.acceptance import (
-        AcceptanceContext,
-        SimulationAcceptanceCoordinator,
-        _OutcomeEvidence,
-    )
-    from tests.flows.report_headline import final_report_omits_headline
-    from tests.flows.sim.simulation_record_test_support import _observation, _simulation_outcome
-    from tests.mcp_tools.test_base import unbound_specialist
-
-    tool = unbound_specialist(tmp_path, "--work-dir", str(tmp_path))
-    tool.state._file_path = tmp_path / "state.json"
-    tool.state.init_criteria({"sim_pass_sim": True}, strict=True)
-
-    class FailedRecorder:
-        def acceptance_identity(self):
-            return {}
-
-        def record_or_verify_transaction(self, *_args, **_kwargs):
-            raise OSError("record ledger unavailable")
-
-    outcome = _simulation_outcome(tmp_path, [_observation("smoke")], required=("smoke",))
-    context = AcceptanceContext(
-        "ticket",
-        {},
-        "generation",
-        tool.state,
-        FailedRecorder(),
-        "invocation",
-        observer=tool.record_report_criteria,
-    )
-    with pytest.raises(OSError):
-        SimulationAcceptanceCoordinator().reconcile(_OutcomeEvidence(outcome), context)
-    report = final_report_omits_headline(tool, EndpointOutcome(exit_code=2))
-    assert report["passed"] is False
-    assert tool.state.criteria["sim_pass_sim"].met is False
-
-
-@pytest.mark.parametrize("conclusive", [True, False])
-def test_standalone_simulation_record_has_only_current_conclusive_workload_verdict(
-    tmp_path, conclusive
-):
-    from dataclasses import replace
-
-    from booley.flows.sim.acceptance import _OutcomeEvidence, _record_standalone_simulation_record
-    from tests.flows.report_headline import final_report_omits_headline
-    from tests.flows.sim.simulation_record_test_support import _observation, _simulation_outcome
-    from tests.mcp_tools.test_base import unbound_specialist
-
-    tool = unbound_specialist(tmp_path, "--work-dir", str(tmp_path))
-    outcome = _simulation_outcome(tmp_path, [_observation("smoke")], required=("smoke",))
-    if not conclusive:
-        outcome = replace(outcome, complete=False)
-    _record_standalone_simulation_record(tool, _OutcomeEvidence(outcome))
-    final_report_omits_headline(tool, EndpointOutcome())
-    if conclusive:
-        assert tool.state.criteria["sim_pass_sim"].met is True
-        assert tool.state.criteria["sim_pass_sim"].detail["selected_tests"] == ["smoke"]
-    else:
-        assert "sim_pass_sim" not in tool.state.criteria
-    assert tool.state._file_path is None
-    assert not (tmp_path / "state.json").exists()
-
-
 def _public_cycle_simulation_record(tmp_path, monkeypatch):
     from booley.flows.sim.record.coordinator import (
         NewSimulationRecordRunRequest,
@@ -1240,7 +1176,7 @@ def _cycle_publication_fault(flow, monkeypatch, failure):
     if failure in {"console", "atomic_console"}:
         monkeypatch.setattr(type(flow), "_publish_console_report", fail)
     if failure == "acceptance":
-        monkeypatch.setattr(flow, "record_simulation_record_acceptance", fail)
+        monkeypatch.setattr(module, "publish_simulation_record_projections", fail)
     if failure in {"render", "structured"}:
         # "render" is looked up by the presentation helpers; "structured" by the flow.
         target, name = (
@@ -1265,15 +1201,11 @@ def _cycle_publication_fault(flow, monkeypatch, failure):
         "structured",
     ],
 )
-def test_public_cycle_metadata_preserves_durable_accepted_criterion(
-    tmp_path, monkeypatch, failure
-):
+def test_public_cycle_metadata_survives_publication_faults(tmp_path, monkeypatch, failure):
     import json
 
-    from booley.criteria.state import DevelopmentState
-
     simulation_record = _public_cycle_simulation_record(tmp_path, monkeypatch)
-    path, _state, key, recorder = _cycle_ticket(tmp_path)
+    path, _state, _key, recorder = _cycle_ticket(tmp_path)
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
     flow = _public_cycle_flow(simulation_record, monkeypatch)
     writes = _cycle_publication_fault(flow, monkeypatch, failure)
@@ -1284,9 +1216,6 @@ def test_public_cycle_metadata_preserves_durable_accepted_criterion(
     )
     report = json.loads((reports / "sim.json").read_text())
     assert result.exit_code == (0 if failure in {None, "metadata"} else 2)
-    saved = DevelopmentState.load(path)
-    assert (saved.criteria[key].met is True) == (failure != "acceptance")
-    assert len(saved.acceptance_transactions) == int(failure != "acceptance")
     if failure == "metadata":
         assert report["passed"] is True and report["cycle_counts_error"] == "unavailable"
         assert "cycle_counts" not in report
@@ -1312,7 +1241,6 @@ def test_ordinary_partial_failure_keeps_report_counts_separate(tmp_path, monkeyp
     simulation_record = _public_cycle_simulation_record(tmp_path, monkeypatch)
     monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: tmp_path)
     monkeypatch.setattr(flow, "_write_simulation_record_progress", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(flow, "_plan_simulation_record_baselines", lambda *_args: ([], {}))
     monkeypatch.setattr(flow, "_candidate_simulation_record_requests", lambda *_args: [])
 
     def run(*_args, outcomes, **_kwargs):
@@ -1323,7 +1251,7 @@ def test_ordinary_partial_failure_keeps_report_counts_separate(tmp_path, monkeyp
     monkeypatch.setattr(flow, "_publish_and_run_simulation_record_requests", run)
     result = flow._execute_simulation_record(
         AdmissionContext("unmanaged", None, None, "interactive", "", None, lambda: False),
-        flow._ordinary_simulation_record_run(OrdinarySimulationRecordPlanning((), None, {})),
+        flow._ordinary_simulation_record_run(OrdinarySimulationRecordPlanning((), {})),
     )
     assert result.exit_code != 0
     assert flow._simulation_record_outcomes == ()
@@ -1747,16 +1675,13 @@ def _public_ticket_hook_adapter(tmp_path, project):
 
 
 @pytest.mark.parametrize("corrupt", [False, True])
-def test_public_ticket_integrity_downgrade_never_commits_or_publishes_true(
-    tmp_path, monkeypatch, corrupt
-):
+def test_public_ticket_integrity_downgrade_never_publishes_true(tmp_path, monkeypatch, corrupt):
     import json
 
-    from booley.criteria.state import DevelopmentState
     from booley.flows.sim.request import SimRequest
 
     project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
-    adapter, state_path, log_dir = _public_ticket_hook_adapter(tmp_path, project)
+    adapter, _state_path, log_dir = _public_ticket_hook_adapter(tmp_path, project)
     project_outcome = flow._simulation_record_endpoint_outcome
 
     def corrupt_after_projection(outcomes):
@@ -1772,12 +1697,9 @@ def test_public_ticket_integrity_downgrade_never_commits_or_publishes_true(
         adapter=adapter,
     )
     report = json.loads((tmp_path / "reports/sim.json").read_bytes())
-    state = DevelopmentState.load(state_path)
     assert result.exit_code == (2 if corrupt else 0), result.outcome.report_text
-    assert report["criterion_met"] is (None if corrupt else True)
-    assert state.criteria["sim_pass_sim_a"].met is (not corrupt)
-    assert bool(state.acceptance_transactions) is (not corrupt)
-    assert bool(list((log_dir / "acceptance/transactions").glob("*.json"))) is (not corrupt)
+    assert report["criterion_met"] is None
+    assert not list((log_dir / "acceptance/transactions").glob("*.json"))
     if corrupt:
         assert "Simulation Record integrity failure" in report["report_text"]
         assert report["detail"]["pre_sim_current"] == 2
@@ -1851,7 +1773,7 @@ def test_simulation_record_kinds_refuse_without_admission_before_reserving(
     )
     simulation_records = {
         "ordinary": lambda: flow._ordinary_simulation_record_run(
-            OrdinarySimulationRecordPlanning((), None, {})
+            OrdinarySimulationRecordPlanning((), {})
         ),
         "coverage": flow._coverage_simulation_record_run,
         "resume": lambda: flow._resume_simulation_record_run(SimpleNamespace(), recovery),
@@ -1893,18 +1815,17 @@ def _faulty_simulation_record(flow, tmp_path, monkeypatch, kind, fault):
             lambda *_args, manifest_published, **_kwargs: publishers.append(manifest_published),
         )
 
-        def baselines(*_args):
+        def candidates(*_args):
             work(publishers[0])
-            return [], {}
+            return []
 
         monkeypatch.setattr(flow, "_write_simulation_record_progress", checkpoint)
-        monkeypatch.setattr(flow, "_plan_simulation_record_baselines", baselines)
-        monkeypatch.setattr(flow, "_candidate_simulation_record_requests", lambda *_args: [])
+        monkeypatch.setattr(flow, "_candidate_simulation_record_requests", candidates)
         monkeypatch.setattr(
             flow, "_publish_and_run_simulation_record_requests", lambda *_a, **_k: None
         )
         return flow._ordinary_simulation_record_run(
-            OrdinarySimulationRecordPlanning((), None, {})
+            OrdinarySimulationRecordPlanning((), {})
         ), manifest
     if kind == "coverage":
         progress = SimpleNamespace(targets=("a",), outcomes=[object()], checkpoint=checkpoint)
@@ -2266,12 +2187,11 @@ def _spy_simulation_lifecycle(monkeypatch, events, terminal_phases, *, terminal_
 )
 def test_simulation_final_acceptance_lifecycle_order(tmp_path, monkeypatch, terminal_write_fails):
     """Acceptance follows the terminal result and precedes mutable persistence and refresh."""
-    from booley.criteria.state import DevelopmentState
     from booley.flows.sim.request import SimRequest
     from tests.flows.sim.test_coverage_flow import _AcceptanceAdapter
 
     project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
-    state_path = _strict_sim_a_ticket(tmp_path, monkeypatch)
+    _strict_sim_a_ticket(tmp_path, monkeypatch)
     events: list[str] = []
     terminal_phases: list[str] = []
     _spy_simulation_lifecycle(
@@ -2289,7 +2209,6 @@ def test_simulation_final_acceptance_lifecycle_order(tmp_path, monkeypatch, term
 
     first = {name: events.index(name) for name in dict.fromkeys(events)}
     assert first["terminal"] < first["acceptance:True"] < first["refresh"]
-    assert len(DevelopmentState.load(state_path).acceptance_transactions) == 1
     if terminal_write_fails:
         assert result.exit_code == 2
         operation = result.outcome.detail["completion_error"]["operation"]
