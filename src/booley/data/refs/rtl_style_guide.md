@@ -24,7 +24,6 @@ Project-specific overlays may be supplied by the caller or change-request contex
 | Scope names to their block — a parent module must not reuse a submodule's block-local name unprefixed for its own constant or signal (a top-level `localparam WIDTH` mirroring submodule `fifo`'s `WIDTH` becomes `FIFO_WIDTH`). Bare `WIDTH`, `DEPTH`, `IDX_W` are fine only inside the block they describe | MINOR |
 | No magic numbers — derive constants from existing parameters | MINOR |
 | No redundant localparams that duplicate package constants | MINOR |
-| No ascending bit ranges `[lo:hi]` in ports or signals — use descending `[N-1:0]`. Ascending ranges invert bit order relative to the descending convention used everywhere else, and VPI-based testbenches such as cocotb assume the left index is the MSB when converting an integer | CRITICAL |
 
 ## 3. Ifdef & Conditional Compilation
 

@@ -15,15 +15,15 @@ code and never edits it. For a pass/fail verdict from an EDA tool, use a
 | Code | Focus | What it checks |
 |---|---|---|
 | RTL | `spec` | The RTL does what the spec asks, no more and no less |
-| RTL | `bugs` | Bug patterns, synthesis hazards, reset/width/signing mistakes, `ifdef`/config consistency |
+| RTL | `bugs` | Bug patterns, synthesis hazards, reset/overflow/signing mistakes, `ifdef` consistency across the configurations your Targets build |
 | RTL | `protocol` | Bus/protocol rules, handshakes, ordering, and clock-domain crossings (CDC) |
 | RTL | `security` | Fault-injection resistance, simple power/timing leakage, secret exposure |
-| RTL | `optimization` | Dead RTL and power/performance/area wins with no trade-off |
+| RTL | `optimization` | Functionally dead RTL and power/performance/area wins with no trade-off |
 | RTL | `code_style` | Comments, naming, readability, magic values, assertion quality |
 | Testbench | `quality` | False passes, missing checks and edge cases, coverage gaps, sampling mistakes |
 
-The `bugs` review also flags some problems that [Lint](FLOW-LINT.md) and
-synthesis already report, such as latches and width mismatches.
+The `bugs` review skips problems your [Lint](FLOW-LINT.md) Targets already
+report, so run lint alongside it.
 
 A `bugs`, `protocol`, or `security` review runs two searches side by side: one
 checks the code against a list of known patterns, the other hunts by tracing

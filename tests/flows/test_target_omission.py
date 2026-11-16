@@ -443,7 +443,7 @@ def test_automatic_candidate_selection_is_not_repeated_in_baseline(
     flow.parse_args(["--work-dir", str(project), "--baseline", "old"])
     assert flow.prepare_target_endpoint() is None
     handles = flow._selected_target_handles()
-    pairs = target_pair_plans_for_handles({}, "unused_", handles, flow=name)
+    pairs = target_pair_plans_for_handles(handles, flow=name)
     assert flow.args.target == "chosen"
     flow._target_handles = {h.selector: h for h in handles}
     flow._target_execution_refs = candidate_execution_refs(handles, pairs)

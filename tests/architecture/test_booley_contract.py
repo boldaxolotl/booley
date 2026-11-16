@@ -65,7 +65,6 @@ def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
         ("D5", "booley.runtime.agent", "booley.mcp.base", "seed.py"),
         ("D25", "booley.core.file_lock", "booley.mcp.server", "seed.py"),
         ("D7", "booley.flows.target_campaign", "booley.harness.cli", "seed.py"),
-        ("D7", "booley.flows.target_criteria", "booley.mcp.registry", "seed.py"),
         (
             "D7",
             "booley.flows.target_test_suite",

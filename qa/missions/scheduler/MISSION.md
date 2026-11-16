@@ -158,12 +158,15 @@ first attempt, a kill not recorded in history.
 Intent: a Simulation Record runs its items in parallel only while their
 reservations fit.
 Try:
-- `sim_caliptra` with eight tests from RUNBOOK.md "Record tests": after the
-  shared build, items overlap up to the core count. In `memory/`, the Flow's
-  own claim drops to zero once the build is settled, then each item holds its
-  own.
-- `sim_ecc` with all six Variants under `small-budget` fitting two runs: never
-  more than two at once; results come back in manifest order.
+- `sim_caliptra` with eight tests from RUNBOOK.md "Record tests": the
+  Project's shared `run_cwd` makes items run one at a time, as FLOW-SIM.md
+  says. In `memory/`, the Flow's own claim drops to zero once the build is
+  settled, then each item holds its own.
+- `sim_caliptra` again under `parallel-items`: after the shared build, items
+  overlap up to the core count while their reservations fit.
+- `sim_ecc` with all six Variants under `parallel-items` and `small-budget`
+  fitting two runs: never more than two at once; results come back in
+  manifest order.
 - `synth_ecc_top` started during the `sim_caliptra` Record waits for budget
   between items, not for the whole Record.
 Look for: items running under the Flow's claim after the build, more items in
@@ -174,9 +177,9 @@ Intent: a Specialist waits for memory like a Flow but never holds a Flow back,
 as ADR 0087 "companion claims" says.
 Try:
 - With the budget free: `booley specialist reviewer --category rtl --focus
-  bugs --scope rtl` with a short `--timeout`. Its claim in `memory/` is marked
-  `companion`; `booley resources` then shows one Specialist line after the
-  Targets, and no Target's figures change.
+  bugs --scope src/ecc/rtl/ecc_adder.sv` with a short `--timeout`. Its claim
+  in `memory/` is marked `companion`; `booley resources` then shows one
+  Specialist line after the Targets, and no Target's figures change.
 - `small-budget` that fits `sim_caliptra`'s build and little else: start
   `sim_caliptra` with a forced rebuild, then the Specialist. It waits with a
   queue reason and starts when the build's reservation shrinks or ends.
@@ -193,7 +196,8 @@ Try:
 - Alone: the `sim_caliptra` build uses `-j<cores>`; compare with `nproc` and
   the CPU quota. The history record's `threads` matches.
 - With one other memory holder (`mem_hog --hold 600`), the next forced
-  `sim_ecc` build uses about half; with three holders, a third.
+  `sim_ecc` build uses about half; with three holders, a quarter (the build
+  and the three holders share the cores).
 - A `make_options` with its own `-j`, added on the staged copy, is kept.
 Look for: a thread count above the cores, one that ignores other Jobs, a
 Project `-j` overridden.

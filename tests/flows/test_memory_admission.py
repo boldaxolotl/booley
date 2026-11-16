@@ -15,7 +15,6 @@ from typing import Any
 
 import pytest
 
-from booley.evidence.fields import BASELINE_TARGET_PARAM
 from booley.flows.job_estimates import JobRequest
 from booley.flows.prepared_invocation import OrdinaryRunInvocation, TargetSelectionInvocation
 from booley.flows.sim.flow import PreparedSimulationEndpoint, SimulateFlow
@@ -248,39 +247,17 @@ targets:
 """
 
 
-def _synth_flow(tmp_path: Path, baseline: str | None):
-    """A synth Flow over ``synth_after`` whose Criterion pairs it with *baseline*."""
+def _synth_flow(tmp_path: Path):
+    """A synth Flow and its ``synth_after`` Target handle."""
     (tmp_path / "toy.core").write_text(_PAIR_CORE, encoding="utf-8")
     handle = TargetCatalog.build(tmp_path).select("synth_after", for_flow="synth")
-    params = {} if baseline is None else {BASELINE_TARGET_PARAM: baseline}
-    flow = AsicSynthesizeFlow()
-    flow._state = SimpleNamespace(  # type: ignore[assignment]
-        criteria={"synthesis_ok_synth_after": SimpleNamespace(params=params)}
-    )
-    return flow, handle
+    return AsicSynthesizeFlow(), handle
 
 
-def test_synth_reservation_covers_a_paired_baseline_target(tmp_path: Path) -> None:
-    flow, handle = _synth_flow(tmp_path, "synth_before")
-
-    requests = flow.memory_job_requests((handle,))
-
-    assert requests == _synth("synth_after", "synth_before")
-    # The baseline half is the larger: 2,000 MiB x 1.25, not 400 MiB x 1.25.
-    plan = _plan(requests, _history(("synth_after", 400), ("synth_before", 2000)), 4000.0)
-    assert plan.claim.reservation_mb == 2500.0
-
-
-def test_unpaired_target_is_its_own_baseline_and_requested_once(tmp_path: Path) -> None:
-    flow, handle = _synth_flow(tmp_path, None)
+def test_target_is_requested_once_whatever_baseline_it_runs(tmp_path: Path) -> None:
+    flow, handle = _synth_flow(tmp_path)
 
     assert flow.memory_job_requests((handle,)) == _synth("synth_after")
-
-
-def test_invalid_pairing_makes_the_job_unknown(tmp_path: Path) -> None:
-    flow, handle = _synth_flow(tmp_path, "")
-
-    assert flow.memory_job_requests((handle,)) is None
 
 
 def _selection(handle: Any, *, matches: bool = True) -> Any:
@@ -288,7 +265,7 @@ def _selection(handle: Any, *, matches: bool = True) -> Any:
 
 
 def test_target_selection_invocation_sizes_its_prepared_targets(tmp_path: Path) -> None:
-    flow, handle = _synth_flow(tmp_path, None)
+    flow, handle = _synth_flow(tmp_path)
     flow._args = SimpleNamespace(work_dir=tmp_path, target="synth_after")
 
     def invocation(selection: Any) -> TargetSelectionInvocation:

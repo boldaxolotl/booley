@@ -252,7 +252,7 @@ def parse_verible_warnings(output: str, target: str) -> list[LintWarning]:
 
     ``file:line:col: message [rule]`` lines map into the same
     :class:`LintWarning` shape as Verilator's (``rule`` = the Verible rule
-    name), so dedup keys, scope filtering, criteria, and the report are
+    name), so dedup keys, scope filtering, and the report are
     shared unchanged. Findings arrive with rc 0 (``--parse_fatal
     --lint_fatal=false``); parse errors are the caller's rc!=0 branch.
     """
@@ -304,8 +304,8 @@ def _classify_lint_failure(
     A non-zero make/linter return code is never a clean lint (Verilator: an
     undeclared signal -> ``%Error`` -> rc=2; Verible: a parse failure under
     ``--parse_fatal``). Without recording it the verdict keys only off the
-    parsed warning count, so RTL that fails to elaborate/parse would satisfy
-    ``lint_clean`` — a false green on the gate (QA-7).
+    parsed warning count, so RTL that fails to elaborate/parse would pass
+    — a false green (QA-7).
 
     Whether that grades ERROR or FAIL depends on who failed. A linter that ran
     and rejected the design is the linter working, so it is a design FAIL —
@@ -397,12 +397,6 @@ def filter_by_scope(warnings: list[LintWarning], scope: str) -> list[LintWarning
     if not scope_paths:
         return warnings
     return [w for w in warnings if any(sp in w.file for sp in scope_paths)]
-
-
-def _scoped_warning_count(warnings: list[LintWarning], scope: str) -> int:
-    """Count deduplicated warnings after applying the invocation scope."""
-    unique = deduplicate_warnings(warnings)
-    return len(filter_by_scope(unique, scope)) if scope else len(unique)
 
 
 def _toplevel_declared(
@@ -857,7 +851,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         the Sandbox. Warning parsing is keyed off the resolved Target's
         eda_tool (ADR 0033): Verilator
         ``%Warning`` lines or Verible ``file:line:col: msg [rule]`` findings —
-        everything else (run.log, criteria, report, QA-7 error handling) is
+        everything else (run.log, report, QA-7 error handling) is
         one shared path.
         """
         selector = target.selector
@@ -1109,7 +1103,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         ``warnings_as_errors`` (``[flows.lint].warnings_as_errors``, default
         True) decides whether surviving warnings fail the run: False keeps the
         WARN verdict text but exits 0, so a CI gate can pass on warnings-only
-        while ``lint_clean`` criteria still record the truth.
+        while the report still lists them.
         """
         if unique:
             summary = f"RESULT: WARN ({len(unique)} warnings)"
@@ -1130,8 +1124,6 @@ class LintFlow(BuiltinFlow[LintRequest]):
         ``["lite", "full", "combo"]`` defaults runs lint against configs that
         don't exist.  Refuse explicitly instead.
         """
-        if self._state is not None and self._state._file_path is not None:
-            return None  # Persisted execution state supplies Criterion-based target discovery
         if not getattr(self.args, "target", "").strip():
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
@@ -1177,25 +1169,6 @@ class LintFlow(BuiltinFlow[LintRequest]):
                 block[f"log_{config_result.target}"] = relative_log
         return block
 
-    def _record_design_failures(self, errored: list[LintConfigResult]) -> None:
-        """Record ``lint_clean_<target> = False`` for Targets whose linter rejected the RTL.
-
-        Skips EDA-tool failures (no verdict). Independent of ``--scope``: an
-        error is reported regardless of scope.
-        """
-        for cr in errored:
-            if cr.error_is_eda_tool_failure:
-                continue
-            self.set_criterion(
-                f"lint_clean_{cr.target}",
-                False,
-                detail={
-                    "warnings": _scoped_warning_count(cr.warnings, self.args.scope),
-                    "error": cr.error,
-                },
-                source_target=cr.target,
-            )
-
     def _unmatched_scope_outcome(
         self,
         selectors: list[str],
@@ -1207,10 +1180,9 @@ class LintFlow(BuiltinFlow[LintRequest]):
 
         A scope that matches nothing would otherwise report zero in-scope
         warnings and pass. Like the other no-verdict paths (linter failure,
-        preparation failure) this never records a passing ``lint_clean_*``
-        criterion and writes no ``lint_report.json``, which would claim
-        ``passed: true``. Targets whose linter rejected the design still record
-        their scope-independent ``False``.
+        preparation failure) this writes no ``lint_report.json``, which would claim
+        ``passed: true``. Targets whose linter rejected the design are still
+        named in the summary.
         Returns ``None`` when every entry matches.
         """
         linted_paths = self._linted_paths(prepared, all_warnings)
@@ -1233,9 +1205,6 @@ class LintFlow(BuiltinFlow[LintRequest]):
         errored = [cr for cr in target_results if cr.error]
         if errored:
             summary += "; " + _target_errors_text(errored)
-        # A scope typo hides no design failure: a Target whose linter rejected
-        # the RTL still records its scope-independent False criterion.
-        self._record_design_failures(errored)
         print(f"\n{summary}")
         detail: dict[str, Any] = {
             "targets": selectors,
@@ -1329,18 +1298,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         )
         _echo_warnings(unique, invocation_report)
 
-        # Set per-Target criteria
         errored = [cr for cr in target_results if cr.error]
-        for cr in target_results:
-            if cr.error_is_eda_tool_failure:
-                continue
-            key = f"lint_clean_{cr.target}"
-            warning_count = _scoped_warning_count(cr.warnings, self.args.scope)
-            is_clean = warning_count == 0 and not cr.error
-            detail: dict[str, Any] = {"warnings": warning_count}
-            if cr.error:
-                detail["error"] = cr.error
-            self.set_criterion(key, is_clean, detail=detail, source_target=cr.target)
 
         elapsed = time.monotonic() - overall_start
         report_path = self._write_lint_report(

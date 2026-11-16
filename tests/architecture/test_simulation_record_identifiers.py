@@ -186,12 +186,6 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
             "resolve_target_campaign",
         }
     ),
-    "src/booley/flows/target_criteria.py": frozenset(
-        {
-            "CampaignScopeError",
-            "resolve_campaign_scope",
-        }
-    ),
     "tests/criteria/test_campaign_templates.py": frozenset(
         {
             "campaign",

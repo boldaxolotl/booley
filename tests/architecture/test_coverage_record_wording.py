@@ -28,7 +28,6 @@ _KEPT_TREES: dict[str, str] = {
     "tests/flows/mutation/": "Mutation Tester campaign tests",
     # Target campaign (kept by the brief).
     "src/booley/flows/target_campaign.py": "Target campaign",
-    "src/booley/flows/target_criteria.py": "Target campaign scope",
     "tests/flows/test_target_campaign.py": "Target campaign tests",
     "tests/criteria/test_campaign_templates.py": "Target campaign authoring tests (#3912 kept it)",
     # Goal-side names left to #3045.

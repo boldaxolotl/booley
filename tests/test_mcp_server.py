@@ -8,6 +8,7 @@ import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -584,16 +585,29 @@ class TestMcpToolTimeoutSeconds:
 
         assert timeout == 2 * 3600 + 30
 
-    def test_cycle_count_baseline_uses_same_budget_for_both_revisions(
+    @pytest.mark.parametrize(
+        ("tool", "criterion", "arguments", "default", "expected"),
+        [
+            ("synth", "synthesis_ok_core", {"target": "core", "timeout_ms": 4_000_000}, 600, 4180),
+            ("fpga", "fpga_impl_ok_core", {"target": "core", "timeout_ms": 4_000_000}, 600, 4180),
+            ("sim", "cycle_count_core", {"target": "core", "timeout_ms": 10_000}, 1, 4240),
+        ],
+        ids=["synth", "fpga", "sim"],
+    )
+    def test_criterion_baseline_ref_never_changes_the_budget(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
+        tool: str,
+        criterion: str,
+        arguments: dict[str, Any],
+        default: int,
+        expected: int,
     ):
+        """A baseline revision pinned by a state-file Criterion does not double the budget."""
         state = tmp_path / "state.json"
         state.write_text(
-            json.dumps(
-                {"criteria": {"cycle_count_core": {"params": {"_baseline_ref": "a" * 40}}}}
-            ),
+            json.dumps({"criteria": {criterion: {"params": {"_baseline_ref": "a" * 40}}}}),
             encoding="utf-8",
         )
         monkeypatch.setenv("BOOLEY_STATE_FILE", str(state))
@@ -601,13 +615,9 @@ class TestMcpToolTimeoutSeconds:
             "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
             return_value=1,
         ):
-            timeout = self._mcp_tool_timeout_seconds(
-                "sim",
-                {"target": "core", "timeout_ms": 10_000},
-                {"default_timeout": 1},
-            )
+            timeout = self._mcp_tool_timeout_seconds(tool, arguments, {"default_timeout": default})
 
-        assert timeout == 2 * (3600 + 600 + 10) + 30
+        assert timeout == expected
 
     def test_lint_short_timeout_uses_outer_floor(self):
         timeout = self._mcp_tool_timeout_seconds(
@@ -663,58 +673,6 @@ class TestMcpToolTimeoutSeconds:
             {"default_timeout": 600},
         )
         assert timeout == 4 * 4000 + 4 * 60 + 120
-
-    def test_synth_ticket_baseline_budgets_both_passes(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        state = tmp_path / "state.json"
-        state.write_text(
-            json.dumps(
-                {
-                    "criteria": {
-                        "synthesis_ok_core": {
-                            "params": {"_baseline_ref": "a" * 40},
-                        }
-                    }
-                }
-            ),
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("BOOLEY_STATE_FILE", str(state))
-
-        timeout = self._mcp_tool_timeout_seconds(
-            "synth",
-            {"target": "core", "timeout_ms": 4_000_000},
-            {"default_timeout": 600},
-        )
-
-        assert timeout == 2 * 4000 + 2 * 60 + 120
-
-    def test_fpga_ticket_baseline_budgets_both_passes(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        state = tmp_path / "state.json"
-        state.write_text(
-            json.dumps(
-                {
-                    "criteria": {
-                        "fpga_impl_ok_core": {
-                            "params": {"_baseline_ref": "a" * 40},
-                        }
-                    }
-                }
-            ),
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("BOOLEY_STATE_FILE", str(state))
-
-        timeout = self._mcp_tool_timeout_seconds(
-            "fpga",
-            {"target": "core", "timeout_ms": 4_000_000},
-            {"default_timeout": 7200},
-        )
-
-        assert timeout == 2 * 4000 + 2 * 60 + 120
 
     def test_simulate_no_timeout_arg_honors_config_knob(self, tmp_path: Path):
         """F4: without a call override, the watchdog honors [flows.sim].timeout_ms.
@@ -2041,7 +1999,7 @@ def test_live_sim_checkpoint_survives_mcp_background_responses(
     monkeypatch.setenv("BOOLEY_MCP_JOB_INLINE_WAIT_SECONDS", "0")
 
     monkeypatch.setattr(server, "_prepend_changed_health_alert", lambda result: result)
-    context = CallContext(tmp_path, tmp_path / "jobs", None, None, tmp_path, {}, None)
+    context = CallContext(tmp_path, tmp_path / "jobs", None, tmp_path, {}, None)
     monkeypatch.setattr(server, "job_roots", lambda: [context.jobs_root])
 
     asyncio.run(_live_checkpoint_scenario(server, context, tmp_path, monkeypatch, response_kind))
