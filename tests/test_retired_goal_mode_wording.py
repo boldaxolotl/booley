@@ -115,3 +115,42 @@ def test_the_allowlist_accepts_a_refusal_line_and_rejects_a_live_surface(tmp_pat
         "src/booley/mcp/tool.py:1: goal_status",
         "docs/user/CONFIG.md:9: goalsets/",
     ]
+
+
+_FEATURE_TERMS = (
+    "Goal Mode",
+    "Goalset",
+    "Result Cache",
+    "booley goal",
+    "Sign-off run",
+    "Sign-off Report",
+    "sign-off flow",
+    "signed-off",
+)
+
+
+def _readme_without_what_it_does(text: str) -> str:
+    return re.sub(r"^## What it does\n.*?(?=^## )", "", text, flags=re.M | re.S)
+
+
+def test_no_retired_acceptance_feature_in_user_facing_docs() -> None:
+    """User guides, the README (outside "What it does") and the site pages name no retired feature."""
+    pages = [
+        *sorted((REPOSITORY_ROOT / "docs/user").glob("*.md")),
+        *sorted((REPOSITORY_ROOT / "website/docs/docs").rglob("*.md")),
+        REPOSITORY_ROOT / "README.md",
+    ]
+    found: list[str] = []
+    for path in pages:
+        relative = path.relative_to(REPOSITORY_ROOT).as_posix()
+        text = path.read_text(encoding="utf-8")
+        if relative == "README.md":
+            text = _readme_without_what_it_does(text)
+        heading = ""
+        for number, line in enumerate(text.splitlines(), start=1):
+            if match := _HEADING.match(line):
+                heading = match.group(1)
+            if heading in ALLOWED_SECTIONS.get(relative, frozenset()):
+                continue
+            found.extend(f"{relative}:{number}: {term}" for term in _FEATURE_TERMS if term in line)
+    assert found == []
