@@ -38,6 +38,9 @@ VSIX through :func:`patch_extension_texts` (see
 extension and this hook only verifies it. The hook still patches containers
 from older images and installs that did not come from the bundled VSIX.
 
+Doctor reads :func:`patch_report` to tell a patched install from an unpatched or
+foreign one.
+
 Idempotent and defensive: a no-op if the extension is absent (install may still
 be in flight) or already patched, and it never raises out of :func:`main` — a
 patch failure must not fail the attach hook. VS Code reads the manifest and
@@ -321,6 +324,55 @@ def _installation_is_patched(path: Path) -> bool:
         and not patch_manifest(manifest)
         and _bundle_sha256(bundle) == _PATCHED_BUNDLE_SHA256
     )
+
+
+def patch_report(home: Path) -> dict[str, object]:
+    """Read-only answer for Doctor: each live install's patch state and the hook's activity.
+
+    ``installs`` holds one of ``patched`` (at the fixed point), ``unpatched``
+    (the hook can patch it), ``foreign`` (a manifest or bundle the hook never
+    patches) or ``unreadable`` per live install of the verified version; an
+    unknown install set is one ``unreadable``. Never writes and never takes the
+    watcher's lock, which a watcher starting at that moment would find held and
+    exit for good.
+    """
+    manifests = vaporview.live_manifests(home)
+    states = ["unreadable"] if manifests is None else _install_patch_states(manifests)
+    return {"hook_running": _attach_hook_running(), "installs": states}
+
+
+def _install_patch_states(manifests: Sequence[Path]) -> list[str]:
+    """Classify each install of the verified version; other versions are skipped."""
+    states: list[str] = []
+    for path in manifests:
+        try:
+            manifest_text = path.read_text(encoding="utf-8")
+            bundle_text = (path.parent / _VAPORVIEW_BUNDLE).read_text(encoding="utf-8")
+            version = json.loads(manifest_text).get("version")
+        except (OSError, ValueError, AttributeError):
+            states.append("unreadable")
+            continue
+        if version != vaporview.VERIFIED_VERSION:
+            continue
+        try:
+            patched = patch_extension_texts(manifest_text, bundle_text)
+        except ExtensionPatchError:
+            states.append("foreign")
+        else:
+            states.append("patched" if patched is None else "unpatched")
+    return states
+
+
+def _attach_hook_running() -> bool:
+    """True when this module runs as ``python -m`` (the hook or its watcher) in any process."""
+    marker = b"-m\x00booley.runtime.incontainer_vaporview"
+    for cmdline in Path("/proc").glob("[0-9]*/cmdline"):
+        try:
+            if marker in cmdline.read_bytes():
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def _read_complete_manifest(path: Path) -> tuple[dict | None, str | None]:

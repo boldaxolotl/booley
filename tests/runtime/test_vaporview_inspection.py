@@ -65,6 +65,19 @@ _VERSION_FIX = (
 
 _P, _S, _F = Severity.PASS, Severity.SKIP, Severity.FAIL
 
+# The patch line follows the version line; `_inspect` hides it.
+_PATCH = f"VaporView {_VERIFIED} carries Booley's Sandbox patch"
+_WATCH_LOG = "~/.booley/vaporview-install-watch.log"
+_FOREIGN_FIX = (
+    "in the attached remote window's terminal run "
+    f"`code --install-extension {_VSIX}`, then 'Developer: Reload Window'"
+)
+_UNPATCHED_FIX = (
+    "run 'Developer: Reload Window' in the attached VS Code window; if the error "
+    f"persists, read {_WATCH_LOG} in the Sandbox; for a lasting fix update Booley, "
+    "then refresh the Sandbox so it uses the current Sandbox Image"
+)
+
 # The two bundled-extension lines follow the VaporView lines; `_inspect` hides them.
 _BUNDLED_NAMES = ("Verilog-HDL", "Live Preview")
 _LIVE_PREVIEW_NEEDS = "Live Preview needs VS Code 1.109 or newer"
@@ -89,6 +102,10 @@ class _Reply:
     error: Exception | None = None
 
 
+def _patch(*installs: str, hook: bool = False) -> _Reply:
+    return _Reply(stdout=json.dumps({"hook_running": hook, "installs": list(installs)}))
+
+
 def _bridges(*entries: dict) -> _Reply:
     return _Reply(stdout=json.dumps({"bridges": list(entries)}))
 
@@ -103,6 +120,7 @@ def _sources() -> dict[str, str]:
     return {
         "host": vaporview._VSCODE_EXTENSION_HOST_PROBE_SOURCE,
         "versions": vaporview._VAPORVIEW_VERSIONS_PROBE_SOURCE,
+        "patch": vaporview._VAPORVIEW_PATCH_PROBE_SOURCE,
         "bridges": vaporview._VIEWER_BRIDGE_PROBE_SOURCE,
         "state": vaporview._VAPORVIEW_STATE_PROBE_SOURCE,
         "bundled": vaporview._bundled_extensions_probe_source(devcontainer.BUNDLED_EXTENSIONS),
@@ -136,6 +154,7 @@ class _Sandbox:
         default_factory=lambda: {
             "host": _Reply(0),
             "versions": _versions(_VERIFIED),
+            "patch": _patch("patched"),
             "bridges": _bridges(_HEALTHY),
             "state": _Reply(0),
         }
@@ -194,11 +213,11 @@ def _inspect_all(tmp_path: Path, docker: str | None = "docker") -> list[tuple[Se
 
 
 def _inspect(tmp_path: Path, docker: str | None = "docker") -> list[tuple[Severity, str, str]]:
-    """The VaporView and Viewer Bridge findings: the bundled-extension ones are hidden."""
+    """The VaporView version and Viewer Bridge findings: the patch and bundled ones are hidden."""
     return [
         finding
         for finding in _inspect_all(tmp_path, docker)
-        if not finding[1].startswith(_BUNDLED_NAMES)
+        if not finding[1].startswith((*_BUNDLED_NAMES, _PATCH))
     ]
 
 
@@ -477,7 +496,7 @@ def test_host_probes_run_in_the_vscode_container(tmp_path, monkeypatch, sandbox)
 
     prefix = ["docker", "exec", _CONTAINER, "python3", "-c"]
     assert sandbox.calls == [
-        [*prefix, _sources()[name]] for name in ("host", "versions", "bridges", "bundled")
+        [*prefix, _sources()[name]] for name in ("host", "versions", "patch", "bridges", "bundled")
     ]
 
 
@@ -488,7 +507,8 @@ def test_inside_sandbox_probes_run_locally(tmp_path, monkeypatch, sandbox):
     _inspect(tmp_path, None)
 
     assert sandbox.calls == [
-        ["python3", "-c", _sources()[n]] for n in ("host", "versions", "bridges", "bundled")
+        ["python3", "-c", _sources()[n]]
+        for n in ("host", "versions", "patch", "bridges", "bundled")
     ]
 
 
@@ -653,6 +673,150 @@ def test_every_python_probe_source_compiles(name):
     compile(getattr(vaporview, name), name, "exec")
 
 
+_NO_ATTACH_HOOK = "Booley's attach hook is still patching it"
+_PATCH_OUTCOMES = [
+    pytest.param(_patch("patched"), (_P, _PATCH, ""), id="patched"),
+    pytest.param(_patch("patched", "patched"), (_P, _PATCH, ""), id="several-patched-installs"),
+    pytest.param(
+        _patch("unpatched"),
+        (
+            _F,
+            f"VaporView {_VERIFIED} is installed{_WHERE} without Booley's Sandbox patch, so it "
+            "reports 'Error getting user theme' and shows wrong `bwave gui` colors",
+            _UNPATCHED_FIX,
+        ),
+        id="official-unpatched",
+    ),
+    pytest.param(
+        _patch("foreign"),
+        (
+            _F,
+            f"VaporView {_VERIFIED} is installed{_WHERE}, but not as a build Booley can patch",
+            _FOREIGN_FIX,
+        ),
+        id="unknown-bundle",
+    ),
+    pytest.param(
+        _patch("unpatched", "foreign", hook=True),
+        (
+            _F,
+            f"VaporView {_VERIFIED} is installed{_WHERE}, but not as a build Booley can patch",
+            _FOREIGN_FIX,
+        ),
+        id="unknown-while-hook-runs",
+    ),
+    pytest.param(
+        _patch("unpatched", hook=True),
+        (
+            _S,
+            f"{_PATCH} - {_NO_ATTACH_HOOK}{_WHERE}; run `booley doctor` again shortly, "
+            f"and read {_WATCH_LOG} in the Sandbox if this persists",
+            "",
+        ),
+        id="hook-running",
+    ),
+    pytest.param(_patch("patched", hook=True), (_P, _PATCH, ""), id="hook-running-beside-patched"),
+    pytest.param(
+        _patch("patched", "unreadable"),
+        (_S, f"{_PATCH} - installed files could not be read{_WHERE}", ""),
+        id="unreadable",
+    ),
+    pytest.param(
+        _patch(),
+        (_S, f"{_PATCH} - installed files could not be read{_WHERE}", ""),
+        id="no-install",
+    ),
+]
+
+
+@pytest.mark.parametrize(("reply", "expected"), _PATCH_OUTCOMES)
+def test_patch_outcomes(tmp_path, monkeypatch, sandbox, reply, expected):
+    """The patch line directly follows a passing version line, with its message and fix."""
+    _host(monkeypatch)
+    sandbox.replies["patch"] = reply
+
+    assert _inspect_all(tmp_path)[:2] == [(_P, _VERSION, ""), expected]
+
+
+_PATCH_COULD_NOT_RUN = (_S, f"{_PATCH} - patch probe could not run{_WHERE}", "")
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        _Reply(1, "Traceback (ImportError)"),
+        _Reply(0, "not json"),
+        _Reply(0, "[]"),
+        _Reply(0, '{"hook_running": false}'),
+        _Reply(0, '{"hook_running": false, "installs": ["patched", "weird"]}'),
+        _Reply(0, '{"hook_running": false, "installs": "patched"}'),
+        _Reply(0, '{"hook_running": "no", "installs": ["patched"]}'),
+        _Reply(error=FileNotFoundError("docker")),
+        _Reply(error=subprocess.TimeoutExpired("docker", 20)),
+    ],
+    ids=[
+        "old-booley",
+        "garbage",
+        "not-object",
+        "no-installs",
+        "bad-state",
+        "installs-not-list",
+        "bad-hook",
+        "no-docker",
+        "timeout",
+    ],
+)
+def test_patch_probe_output_is_parsed_not_trusted(tmp_path, monkeypatch, sandbox, reply):
+    _host(monkeypatch)
+    sandbox.replies["patch"] = reply
+
+    assert _inspect_all(tmp_path)[:3] == [
+        (_P, _VERSION, ""),
+        _PATCH_COULD_NOT_RUN,
+        (_P, _BRIDGE, ""),
+    ]
+
+
+@pytest.mark.parametrize(
+    "versions",
+    [_versions("9.9.9"), _versions(), _Reply(4)],
+    ids=["other-version", "not-installed", "version-probe-fails"],
+)
+def test_patch_check_runs_only_for_the_verified_version(tmp_path, monkeypatch, sandbox, versions):
+    """The patch is verified against one build: no other state may reach its probe."""
+    _host(monkeypatch)
+    sandbox.replies["versions"] = versions
+
+    findings = _inspect_all(tmp_path)
+
+    assert "patch" not in sandbox.probes()
+    assert not any(message.startswith(_PATCH) for _sev, message, _fix in findings)
+    assert [f for f in findings if f[1] == _BRIDGE] == [(_P, _BRIDGE, "")]
+
+
+def test_patch_probe_source_runs_against_the_real_module(tmp_path):
+    """The probe text must import and print what the owner parses."""
+    manifest = tmp_path / ".vscode-server" / "extensions" / f"lramseyer.vaporview-{_VERIFIED}"
+    (manifest / "dist").mkdir(parents=True)
+    (manifest / "package.json").write_text(json.dumps({"version": _VERIFIED}), encoding="utf-8")
+    (manifest / "dist" / "extension.js").write_text("another build", encoding="utf-8")
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),
+        "USERPROFILE": str(tmp_path),  # Path.home() on Windows
+        "PYTHONPATH": str(Path(vaporview.__file__).parents[2]),
+    }
+
+    result = run_bounded_child(
+        [sys.executable, "-c", vaporview._VAPORVIEW_PATCH_PROBE_SOURCE], env=env
+    )
+
+    assert result.returncode == 0, result.stderr
+    answer = json.loads(result.stdout)
+    assert answer["installs"] == ["foreign"]
+    assert isinstance(answer["hook_running"], bool)
+
+
 def test_viewer_bridge_probe_source_runs_against_the_real_client(tmp_path):
     """The probe text must import and print what the owner parses."""
     env = {
@@ -794,7 +958,7 @@ def test_bundled_extension_outcomes(
     sandbox.replies["bundled"] = _bundled(hdl, live)
     hdl_ext, live_ext = devcontainer.BUNDLED_EXTENSIONS
 
-    assert _inspect_all(tmp_path)[2:] == [expect_hdl(hdl_ext), expect_live(live_ext)]
+    assert _inspect_all(tmp_path)[3:] == [expect_hdl(hdl_ext), expect_live(live_ext)]
 
 
 _PROBE_FAILURES = [
@@ -839,7 +1003,7 @@ def test_bundled_extension_probe_failure_skips_both(tmp_path, monkeypatch, sandb
         )
         for e in devcontainer.BUNDLED_EXTENSIONS
     ]
-    assert _inspect_all(tmp_path)[2:] == expected
+    assert _inspect_all(tmp_path)[3:] == expected
 
 
 def test_healthy_window_reports_vaporview_then_bundled_extensions(tmp_path, monkeypatch, sandbox):
@@ -847,6 +1011,7 @@ def test_healthy_window_reports_vaporview_then_bundled_extensions(tmp_path, monk
 
     assert _inspect_all(tmp_path) == [
         (_P, _VERSION, ""),
+        (_P, _PATCH, ""),
         (_P, _BRIDGE, ""),
         *(_pass(e) for e in devcontainer.BUNDLED_EXTENSIONS),
     ]

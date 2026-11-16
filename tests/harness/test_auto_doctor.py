@@ -527,6 +527,9 @@ def _publish_with_real_bridge_check(
             return subprocess.CompletedProcess(
                 argv, 0, stdout=json.dumps([vaporview.VERIFIED_VERSION]), stderr=""
             )
+        if command[-1] == vaporview._VAPORVIEW_PATCH_PROBE_SOURCE:
+            patched = {"hook_running": False, "installs": ["patched"]}
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(patched), stderr="")
         if command[-1] == vaporview._bundled_extensions_probe_source(
             devcontainer.BUNDLED_EXTENSIONS
         ):

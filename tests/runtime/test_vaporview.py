@@ -191,6 +191,78 @@ def test_installed_versions_prefers_vscode_registry_after_downgrade(tmp_path):
     assert vaporview.installed_versions(tmp_path) == ["1.5.4"]
 
 
+def _registry(root, *entries):
+    (root / "extensions.json").write_text(json.dumps(list(entries)), encoding="utf-8")
+
+
+def test_live_manifests_follow_the_registry(tmp_path):
+    # An unregistered leftover directory (see the downgrade test above) is never read.
+    root = tmp_path / ".vscode-server" / "extensions"
+    _install(root, "1.6.0")
+    _install(root, "9.9.9")
+    (root / "lramseyer.vaporview-9.9.9" / "package.json").write_text("{corrupt", encoding="utf-8")
+    entry = {
+        "identifier": {"id": "Lramseyer.VaporView"},
+        "version": "1.6.0",
+        "relativeLocation": "lramseyer.vaporview-1.6.0",
+    }
+    other = {"identifier": {"id": "mshr-h.veriloghdl"}, "version": "1"}
+    _registry(root, entry, other)
+
+    assert vaporview.live_manifests(tmp_path) == [
+        root / "lramseyer.vaporview-1.6.0" / "package.json"
+    ]
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"identifier": {"id": "lramseyer.vaporview"}, "version": "1.6.0"},
+        {"identifier": {"id": "lramseyer.vaporview"}, "relativeLocation": 5},
+        {"identifier": {"id": "lramseyer.vaporview"}, "relativeLocation": "../escape"},
+    ],
+    ids=["no-location", "bad-location", "escaping-location"],
+)
+def test_live_manifests_unknown_for_a_malformed_registry_entry(tmp_path, entry):
+    root = tmp_path / ".vscode-server" / "extensions"
+    _install(root, "1.6.0")
+    _registry(root, entry)
+
+    assert vaporview.live_manifests(tmp_path) is None
+
+
+@pytest.mark.parametrize("registry", ["not json", '{"not": "a list"}'], ids=["unparsable", "dict"])
+def test_live_manifests_unknown_for_an_unreadable_registry(tmp_path, registry):
+    root = tmp_path / ".vscode-server" / "extensions"
+    _install(root, "1.6.0")
+    (root / "extensions.json").write_text(registry, encoding="utf-8")
+
+    assert vaporview.live_manifests(tmp_path) is None
+
+
+def test_live_manifests_skip_obsolete_install(tmp_path):
+    first = tmp_path / ".vscode-server" / "extensions"
+    _install(first, "1.5.4")
+    _install(first, "1.6.0")
+    (first / ".obsolete").write_text('{"lramseyer.vaporview-1.5.4": true}', encoding="utf-8")
+    second = tmp_path / ".vscode-remote" / "extensions"
+    _install(second, "1.6.0")
+
+    assert vaporview.live_manifests(tmp_path) == [
+        first / "lramseyer.vaporview-1.6.0" / "package.json",
+        second / "lramseyer.vaporview-1.6.0" / "package.json",
+    ]
+
+
+def test_live_manifests_unknown_without_a_readable_root_or_obsolete_list(tmp_path):
+    assert vaporview.live_manifests(tmp_path) is None
+    root = tmp_path / ".vscode-server" / "extensions"
+    _install(root, "1.6.0")
+    (root / ".obsolete").write_text("not json", encoding="utf-8")
+
+    assert vaporview.live_manifests(tmp_path) is None
+
+
 @pytest.mark.parametrize("layout", ["registry", "directories"])
 def test_installed_versions_reads_the_requested_extension(tmp_path, layout):
     root = tmp_path / ".vscode-server" / "extensions"
