@@ -352,6 +352,10 @@ def _install_patch_states(manifests: Sequence[Path]) -> list[str]:
         except (OSError, ValueError, AttributeError):
             states.append("unreadable")
             continue
+        if not isinstance(version, str):
+            # The registry listed this install as live; a manifest with no version is unknown.
+            states.append("unreadable")
+            continue
         if version != vaporview.VERIFIED_VERSION:
             continue
         try:

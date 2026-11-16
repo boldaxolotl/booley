@@ -913,6 +913,17 @@ class TestPatchReport:
 
         assert iv.patch_report(tmp_path)["installs"] == ["unreadable"]
 
+    def test_live_install_without_a_version_is_unreadable_not_skipped(self, tmp_path):
+        manifest = self._install(tmp_path, _vanilla_manifest())
+        assert iv._patch_file(manifest).complete
+        root = self._extensions(tmp_path)
+        versionless = {
+            key: value for key, value in _vanilla_manifest().items() if key != "version"
+        }
+        _install_at(root / "lramseyer.vaporview-9.9.9", versionless, _VANILLA_BUNDLE)
+
+        assert iv.patch_report(tmp_path)["installs"] == ["patched", "unreadable"]
+
     def test_unreadable_extension_root_is_unreadable(self, tmp_path):
         assert iv.patch_report(tmp_path)["installs"] == ["unreadable"]
 
