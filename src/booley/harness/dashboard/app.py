@@ -219,9 +219,9 @@ def _sentence(text: str) -> str:
 
 
 def activity_label(activity: Activity, now: float) -> str:
-    """Reported session activity and how long it has lasted; unknown is said plainly."""
+    """Reported session activity and how long it has lasted; unknown says why."""
     if activity.state == UNKNOWN:
-        return "activity unknown"
+        return f"activity unknown ({activity.cause})"
     tool = f" ({activity.tool})" if activity.state == WAITING_TOOL and activity.tool else ""
     try:
         elapsed = now - parse_timestamp(activity.since).timestamp()
