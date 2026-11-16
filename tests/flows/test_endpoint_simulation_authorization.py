@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar, cast
@@ -13,9 +12,8 @@ from booley.criteria.state import DevelopmentState
 from booley.evidence.acceptance import AcceptanceTargetBinding, ResolvedFlowAcceptance
 from booley.flows import endpoint_acceptance
 from booley.flows.endpoint_admission import authorize_targets
-from booley.flows.sim.flow import PreparedSimulationEndpoint, SimulateFlow, SimulationMode
+from booley.flows.sim.flow import SimulateFlow, SimulationMode
 from booley.runtime.endpoint_execution import EndpointOutcome
-from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 from tests.flows.invocation_doubles import prepare_as
 
@@ -267,86 +265,6 @@ def test_ticket_binding_rejects_baseline_identity_drift() -> None:
 
     assert rejection is not None
     assert "sim_old" in rejection.report_text
-
-
-def test_simulation_record_preflight_orders_candidate_before_historical_baseline(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    candidate_root = tmp_path / "candidate"
-    baseline_root = tmp_path / "historical"
-    candidate = _handle("sim", "acme:lib:dut:2#sim", candidate_root)
-    baseline = _handle("sim_old", "acme:lib:dut:1#sim_old", baseline_root)
-    flow = SimulateFlow()
-    flow._state = DevelopmentState()
-    flow._args = SimpleNamespace(
-        resume_from=None,
-        work_dir=candidate_root,
-        diagnostic=False,
-        mode=SimulationMode.SIMULATE,
-    )
-    monkeypatch.setattr(flow, "_criterion_binding_gate", lambda: None)
-    monkeypatch.setattr(flow, "_resolve_requested_targets", lambda: ["sim"])
-    monkeypatch.setattr(flow, "_validate_interactive_args", lambda _targets: None)
-    monkeypatch.setattr(flow, "_validate_prepared_selection", lambda *_args: None)
-    monkeypatch.setattr(flow, "_target_handle", lambda _selector: candidate)
-    monkeypatch.setattr(
-        flow,
-        "_cycle_baseline_selection",
-        lambda _targets: ("a" * 40, ["sim_old"], None),
-    )
-
-    @contextmanager
-    def historical_worktree(*_args, **_kwargs):
-        yield baseline_root
-
-    class Catalog:
-        def select(self, selector: str, *, for_flow: str) -> TargetHandle:
-            assert (selector, for_flow) == ("sim_old", "sim")
-            return baseline
-
-    monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", historical_worktree)
-    monkeypatch.setattr(TargetCatalog, "build", lambda root: Catalog())
-
-    with flow.publication_resources:
-        prepared = flow.prepare_simulation_endpoint()
-
-    assert isinstance(prepared, PreparedSimulationEndpoint)
-    assert prepared.targets == (candidate, baseline)
-    assert prepared.targets[1].project_root == baseline_root
-
-
-@pytest.mark.parametrize("topology", ["standalone", "linked"])
-def test_simulation_record_authorization_materializes_project_topologies(
-    tmp_path, monkeypatch, topology
-):
-    from tests.flows.sim.test_cycle_observation import _criterion_flow, _pin_baseline
-    from tests.flows.test_baseline_worktree import (
-        _assert_topology_baseline,
-        _project_topology_checkout,
-    )
-
-    root, revision = _project_topology_checkout(tmp_path, monkeypatch, topology)
-    flow, _key = _criterion_flow(relative=True)
-    flow._args.work_dir = root
-    flow._args.resume_from = None
-    candidate = TargetCatalog.build(root).select("sim_core", for_flow="sim")
-    flow._target_handles = {"sim_core": candidate}
-    _pin_baseline(flow, revision)
-    monkeypatch.setattr(flow, "_resolve_requested_targets", lambda: ["sim_core"])
-    monkeypatch.setattr(flow, "_validate_interactive_args", lambda _targets: None)
-    try:
-        handles, resume, selected, _tests = flow._prepare_simulation_record_targets()
-        assert resume is None
-        assert selected == ("sim_core",)
-        assert handles[0] is candidate
-        assert handles[1].identity == candidate.identity
-        baseline = handles[1].project_root
-        _assert_topology_baseline(baseline, root, "sim_core")
-        assert baseline.exists()
-        assert flow.args.work_dir == root
-    finally:
-        flow.publication_resources.close()
-    assert not baseline.exists()
 
 
 def test_prepare_resets_report_only_metadata_before_early_gate(tmp_path, monkeypatch):

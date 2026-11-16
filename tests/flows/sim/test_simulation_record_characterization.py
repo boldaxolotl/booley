@@ -666,8 +666,7 @@ def test_standalone_simulation_record_final_report_is_run_local(tmp_path, monkey
     flow = run.flow
     with flow.publication_resources:
         final_report_omits_headline(flow, run.result.outcome)
-    assert flow.state.criteria["sim_pass_lite"].met is met
-    assert "elab_pass_lite" not in flow.state.criteria
+    assert flow.state.criteria == {}
     assert flow.state._file_path is None
 
 
