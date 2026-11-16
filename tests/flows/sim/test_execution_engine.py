@@ -2621,8 +2621,8 @@ def test_stale_compatibility_siblings_do_not_cross_execution_boundary(
     for path in stale.values():
         path.write_text("stale", encoding="utf-8")
     (prepared.build_root / "result.json").write_text("stale", encoding="utf-8")
-    # The launched snapshot carries the stale copies; only a rewrite is current.
-    result = handle.project_root / "attempt" / "snapshot" / "result.json"
+    # The launched bundle carries the stale copies; only a rewrite is current.
+    result = handle.project_root / "attempt" / "bundle" / "result.json"
 
     def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
         del timeout
@@ -2649,6 +2649,50 @@ def test_stale_compatibility_siblings_do_not_cross_execution_boundary(
     kinds = {item.kind for item in outcome.artifacts}
     assert "result" in kinds
     assert kinds.isdisjoint(stale)
+
+
+@pytest.mark.parametrize(
+    ("cocotb", "name", "kind", "captured"),
+    [
+        pytest.param(True, "results.xml", "results_xml", True, id="cocotb-evidence-root"),
+        pytest.param(False, "result.json", "result", False, id="native-captures-none"),
+    ],
+)
+def test_bundle_launch_keeps_each_adapters_compatibility_evidence(
+    tmp_path: Path, cocotb: bool, name: str, kind: str, captured: bool
+) -> None:
+    handle = _handle(tmp_path)
+    prepared = _prepared(handle, cocotb=cocotb)
+    # A bundle launch never writes into the bundle: Cocotb writes its
+    # compatibility files to the attempt's evidence root, so that is where they
+    # are captured; a native adapter's files there are not compatibility evidence.
+    written = handle.project_root / "attempt" / "execution-evidence" / name
+
+    def invoke(_command: list[str], *, timeout: int) -> SubprocessResult:
+        del timeout
+        written.write_text("current", encoding="utf-8")
+        _write_transport(
+            handle,
+            prepared,
+            ("smoke",),
+            AdapterResult(
+                True,
+                False,
+                0,
+                ("smoke",),
+                test_results=(AdapterTestResult("smoke", "pass"),),
+            ),
+            adapter="cocotb" if cocotb else "icarus",
+        )
+        return SubprocessResult(
+            returncode=0,
+            stdout="BOOLEY_BUILD_STAGE token=abc123 rc=0\n",
+        )
+
+    outcome = _run_execution(handle, prepared, invoke, ("smoke",), cocotb=cocotb)
+
+    assert (kind in {item.kind for item in outcome.artifacts}) is captured
+    assert not (handle.project_root / "attempt" / "bundle" / name).exists()
 
 
 def test_unchanged_adapter_result_is_stale(tmp_path: Path) -> None:
@@ -2861,7 +2905,7 @@ def test_trace_declarations_are_frozen_at_planning(tmp_path: Path) -> None:
 )
 @pytest.mark.parametrize("observed", [False, True])
 @pytest.mark.parametrize("log_failure", [False, True])
-def test_ordinary_group_builds_before_launching_supplied_snapshot(
+def test_ordinary_group_builds_before_launching_supplied_bundle(
     tmp_path: Path,
     eda_tool: str,
     artifact_names: tuple[str, ...],
@@ -2878,19 +2922,20 @@ def test_ordinary_group_builds_before_launching_supplied_snapshot(
     artifacts = tuple(prepared.build_root / name for name in artifact_names)
     for artifact in artifacts:
         artifact.write_bytes(b"simulator image")
-    snapshot = tmp_path / "attempt" / "snapshot"
-    snapshot.mkdir(parents=True)
+    bundle = tmp_path / "attempt" / "bundle"
+    bundle.mkdir(parents=True)
+    evidence = tmp_path / "attempt" / "execution-evidence"
     for artifact in artifacts:
-        (snapshot / artifact.name).write_bytes(artifact.read_bytes())
+        (bundle / artifact.name).write_bytes(artifact.read_bytes())
     run_cwd = tmp_path / "run"
     run_cwd.mkdir()
     commands: list[list[str]] = []
     timeouts: list[int] = []
-    snapshot_invoke = _snapshot_invoke(commands, eda_tool, handle, snapshot)
+    bundle_invoke = _bundle_invoke(commands, eda_tool, handle, evidence)
 
     def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
         timeouts.append(timeout)
-        return snapshot_invoke(command, timeout=timeout)
+        return bundle_invoke(command, timeout=timeout)
 
     execution = SimulationExecution(
         invoke=invoke,
@@ -2911,14 +2956,14 @@ def test_ordinary_group_builds_before_launching_supplied_snapshot(
             assert build.passed
             assert group.artifact_paths == artifacts
             assert len(commands) == 1
-        sink = LiveProgressSink(tmp_path / "progress.json", tmp_path, "snapshot")
+        sink = LiveProgressSink(tmp_path / "progress.json", tmp_path, "bundle")
         with (
             install_progress(sink) if observed else nullcontext(),
             patch("booley.flows.run_log.begin_run_log", side_effect=OSError("full"))
             if log_failure
             else nullcontext(),
         ):
-            outcome = group.launch_snapshot(snapshot, run_cwd)
+            outcome = group.launch_bundle(bundle, evidence, run_cwd)
 
     assert outcome.passed
     if observed and log_failure:
@@ -2928,13 +2973,13 @@ def test_ordinary_group_builds_before_launching_supplied_snapshot(
     launch = commands[1][-1]
     work = launched_work(launch)
     assert work.adapter == eda_tool
-    assert Path(work.build_dir) == snapshot
+    assert Path(work.build_dir) == bundle
     assert Path(work.run_cwd) == run_cwd
-    assert Path(work.work_dir) == snapshot.parent / "execution-evidence"
+    assert Path(work.work_dir) == evidence
     assert str(prepared.build_root) not in repr(work)
 
 
-def _snapshot_invoke(commands, eda_tool, handle, snapshot):
+def _bundle_invoke(commands, eda_tool, handle, evidence):
     def invoke(command: list[str], *, timeout: int, **kwargs: Any) -> SubprocessResult:
         del timeout
         commands.append(command)
@@ -2945,7 +2990,7 @@ def _snapshot_invoke(commands, eda_tool, handle, snapshot):
             "abc123",
             handle.identity,
             ("smoke",),
-            snapshot.parent / "execution-evidence" / "adapter-abc123.json",
+            evidence / "adapter-abc123.json",
         )
         write_adapter_result(
             identity,
@@ -2962,7 +3007,7 @@ def _snapshot_invoke(commands, eda_tool, handle, snapshot):
     return invoke
 
 
-def test_ordinary_group_refuses_snapshot_launch_until_lease_released(
+def test_ordinary_group_refuses_bundle_launch_until_lease_released(
     tmp_path: Path,
 ) -> None:
     handle = _handle(tmp_path)
@@ -2978,7 +3023,7 @@ def test_ordinary_group_refuses_snapshot_launch_until_lease_released(
         execution.ordinary_group(handle, ("smoke",)) as group,
         pytest.raises(SimulationBuildSlotError, match="leave ordinary_group"),
     ):
-        group.launch_snapshot(tmp_path / "snapshot", tmp_path / "run")
+        group.launch_bundle(tmp_path / "bundle", tmp_path / "evidence", tmp_path / "run")
 
 
 @pytest.mark.parametrize(

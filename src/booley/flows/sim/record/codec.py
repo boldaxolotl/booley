@@ -3,7 +3,7 @@
 This module is deliberately infrastructure-free. It decodes untrusted
 documents into immutable values. Manifests are checked for shape only: planning proved their content and
 published them atomically, so each manifest reader below reads just the members
-its callers use (#2136). Attempt, build attempt, build result, bundle, snapshot and
+its callers use (#2136). Attempt, build attempt, build result, bundle and
 result records get only the boundary check: size, UTF-8 JSON, exact fields, ``$schema``
 and canonical bytes (#1743, #1744).
 """
@@ -15,7 +15,7 @@ import json
 import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import ParamSpec, TypeAlias, TypeVar, cast
+from typing import NoReturn, ParamSpec, TypeAlias, TypeVar, cast
 
 from booley.core.boundary import (
     BoundaryError,
@@ -36,7 +36,6 @@ from booley.runtime.timefmt import parse_timestamp
 from .model import (
     BundleBuildAttempt,
     BundleBuildResult,
-    ExecutableSnapshot,
     SimulationAttempt,
     SimulationRecordDocument,
     SimulationRecordManifest,
@@ -105,6 +104,22 @@ def raise_if_retired(document: Mapping[str, object]) -> None:
     raise_if_retired_schema(document.get("$schema"))
 
 
+def refuse_retired_document(raw: bytes) -> NoReturn:
+    """Refuse *raw*, a document only an older Booley wrote.
+
+    Raises the retired-format refusal when its ``$schema`` is a retired one, and
+    :class:`SimulationRecordIntegrityError` for any other content: the caller
+    found the file where only an older Booley put one.
+    """
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise SimulationRecordIntegrityError(f"document is not valid UTF-8 JSON: {exc}") from exc
+    if isinstance(value, dict):
+        raise_if_retired(cast(Mapping[str, object], value))
+    raise SimulationRecordIntegrityError("document is not a retired Simulation Record format")
+
+
 def canonical_json_bytes(value: object) -> bytes:
     """Encode finite JSON as sorted UTF-8 with one trailing newline."""
     try:
@@ -120,12 +135,16 @@ def canonical_json_bytes(value: object) -> bytes:
 # identities in disclosures. It is the only version written and read.
 MANIFEST_SCHEMA = "booley.simulation-record-manifest/v1"
 
-# v4 = the Simulation Record identity key, on top of v3's required ``test_run`` of every observation: the resolved name of the
-# Test Run it observed (ADR 0072). Observations are unique by Test Run.
-RESULT_SCHEMA = "booley.simulation-result/v4"
+# v5 = the Simulation Record identity key, on top of v3's required ``test_run`` of every observation: the resolved name of the
+# Test Run it observed (ADR 0072), and ``bundle_verification``, the in-place check of the
+# launched bundle. Observations are unique by Test Run.
+RESULT_SCHEMA = "booley.simulation-result/v5"
 
-# Formats Booley 0.4.0 and earlier wrote. They are recognised only to be refused.
+# Formats an older Booley wrote. They are recognised only to be refused.
 _RETIRED_SCHEMAS = {
+    "booley.simulation-result/v4": "Simulation Result",
+    "booley.simulator-bundle/v2": "Simulator bundle",
+    "booley.executable-snapshot/v2": "Executable snapshot",
     "booley.simulation-campaign-manifest/v4": "Simulation Campaign manifest",
     "booley.simulation-result/v3": "Simulation Result",
     "booley.simulation-campaign-dependency/v1": "Simulation Campaign dependency",
@@ -232,7 +251,7 @@ _RESULT_FIELDS = frozenset(
         "bundle_id",
         "finished_at",
         "elapsed_seconds",
-        "executable_snapshot",
+        "bundle_verification",
         "runtime_inputs",
         "observations",
         "grade",
@@ -252,22 +271,6 @@ _BUNDLE_FIELDS = frozenset(
         "sharing",
         "owner",
         "tool_provenance",
-        "created_at",
-        "artifacts",
-        "inventory_sha256",
-        "snapshot_inventory_sha256",
-    }
-)
-_SNAPSHOT_FIELDS = frozenset(
-    {
-        "$schema",
-        "simulation_record_id",
-        "manifest_sha256",
-        "workload_sha256",
-        "work_item_id",
-        "attempt_id",
-        "build_result",
-        "bundle_id",
         "created_at",
         "artifacts",
         "inventory_sha256",
@@ -575,14 +578,8 @@ _DOCUMENT_SPECS: dict[
         None,
     ),
     SimulatorBundle: (
-        "booley.simulator-bundle/v2",
+        "booley.simulator-bundle/v3",
         _BUNDLE_FIELDS,
-        MANIFEST_MAX_BYTES,
-        None,
-    ),
-    ExecutableSnapshot: (
-        "booley.executable-snapshot/v2",
-        _SNAPSHOT_FIELDS,
         MANIFEST_MAX_BYTES,
         None,
     ),
@@ -619,10 +616,6 @@ def decode_simulator_bundle(raw: bytes) -> SimulatorBundle:
     return _decode_registered(raw, SimulatorBundle)
 
 
-def decode_executable_snapshot(raw: bytes) -> ExecutableSnapshot:
-    return _decode_registered(raw, ExecutableSnapshot)
-
-
 def _encode_checked(
     value: SimulationRecordDocument,
     expected_type: type[T],
@@ -657,10 +650,6 @@ def encode_simulation_result(value: SimulationResult) -> bytes:
 
 def encode_simulator_bundle(value: SimulatorBundle) -> bytes:
     return _encode_checked(value, SimulatorBundle)
-
-
-def encode_executable_snapshot(value: ExecutableSnapshot) -> bytes:
-    return _encode_checked(value, ExecutableSnapshot)
 
 
 def encode_simulation_record_document(value: SimulationRecordDocument) -> bytes:

@@ -63,6 +63,7 @@ from .codec import (
     encode_simulation_result,
     linked_manifest_path,
     reads_simulation_record_documents,
+    refuse_retired_document,
     validate_relative_path,
 )
 from .model import (
@@ -596,6 +597,7 @@ class SimulationRecordStore:
         attempts = self._attempt_directories(attempts_root)
         decoded_attempts: list[SimulationAttempt] = []
         for ordinal, attempt_directory in enumerate(attempts, start=1):
+            self._refuse_previous_snapshot(attempt_directory)
             attempt_path = attempt_directory / "attempt.json"
             if not attempt_path.exists() and not is_report_link(attempt_path):
                 continue
@@ -625,6 +627,12 @@ class SimulationRecordStore:
             return WorkItemRecovery(work_item_id, "complete", len(attempts), result)
         state = "interrupted" if attempts else "pending"
         return WorkItemRecovery(work_item_id, state, len(attempts), None)
+
+    def _refuse_previous_snapshot(self, attempt_directory: Path) -> None:
+        """Refuse an attempt that holds an older Booley's executable snapshot."""
+        path = attempt_directory / "snapshot" / "snapshot.json"
+        if path.exists() or is_report_link(path):
+            self._decode_located(refuse_retired_document, path, MANIFEST_MAX_BYTES)
 
     def _scan_result(
         self,

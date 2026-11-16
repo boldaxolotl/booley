@@ -48,9 +48,7 @@ from booley.flows.sim.execution.engine import (
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
 from booley.flows.sim.live_progress import attempt_scope, end_phase
 from booley.flows.sim.record.bundle import (
-    SnapshotAttemptIdentity,
-    authenticate_executable_snapshot,
-    create_executable_snapshot,
+    verify_bundle_in_place,
 )
 from booley.flows.sim.record_files import document_digest
 from booley.flows.sim.runtime_inputs import (
@@ -75,7 +73,6 @@ from .codec import (
     canonical_json_bytes,
     encode_bundle_build_attempt,
     encode_bundle_build_result,
-    encode_executable_snapshot,
     encode_simulator_bundle,
     reads_simulation_record_documents,
 )
@@ -88,7 +85,6 @@ from .model import (
     AssertionObservation,
     BundleBuildAttempt,
     BundleBuildResult,
-    ExecutableSnapshot,
     ExecutionObservation,
     FailureClass,
     FrozenJson,
@@ -106,6 +102,14 @@ from .test_run_binding import observation_test_runs, work_item_test_runs
 
 #: Where a build directory keeps its Simulator Bundle manifest.
 _BUNDLE_MANIFEST_PATH = "evidence/bundle.json"
+# Bundle artifacts are read-only; only the simulator executable stays executable.
+_READ_ONLY = stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH
+_ARTIFACT_MODES = {
+    "simulator_executable": _READ_ONLY | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH,
+    "shared_library": _READ_ONLY,
+    "runtime_data": _READ_ONLY,
+    "runtime_input": _READ_ONLY,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,7 +198,9 @@ class _OrdinaryGroup(Protocol):
     def finish_build_failure(self) -> SimulationTargetOutcome: ...
     def build_recovery_document(self) -> dict[str, object]: ...
     def bind_authenticated_bundle(self, evidence: Mapping[str, object]) -> None: ...
-    def launch_snapshot(self, snapshot_root: Path, run_cwd: Path) -> SimulationTargetOutcome: ...
+    def launch_bundle(
+        self, bundle_root: Path, evidence_root: Path, run_cwd: Path
+    ) -> SimulationTargetOutcome: ...
 
 
 class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
@@ -696,7 +702,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             )
             if failure is not None:
                 return failure
-            return _launch_snapshot(
+            return _launch_bundle(
                 request,
                 build_directory,
                 build_result,
@@ -958,7 +964,7 @@ def _setup_result(
         build_result,
         state="setup_error",
         bundle_id=bundle.document["bundle_id"],
-        snapshot=None,
+        verification=None,
         observations=[observation_document(test, execution="setup_error") for test in tests],
         elapsed=elapsed,
         evidence=[],
@@ -1049,7 +1055,7 @@ def _simulator_bundle(
 ) -> SimulatorBundle:
     attempt = build_attempt.document
     document = {
-        "$schema": "booley.simulator-bundle/v2",
+        "$schema": "booley.simulator-bundle/v3",
         **_common(request, include_work_item=False),
         "build_variant_id": request.work_item["build_variant_id"],
         "build_attempt_id": attempt["build_attempt_id"],
@@ -1060,9 +1066,6 @@ def _simulator_bundle(
         "created_at": _now(),
         "artifacts": artifacts,
         "inventory_sha256": document_digest(artifacts),
-        "snapshot_inventory_sha256": document_digest(
-            [item for item in artifacts if item["kind"] != "runtime_input"]
-        ),
     }
     return SimulatorBundle(document)
 
@@ -1294,7 +1297,7 @@ def blocked_result(
         build_result,
         state="aborted" if infrastructure and not pre_sim_failure else "blocked_by_build",
         bundle_id=None,
-        snapshot=None,
+        verification=None,
         observations=observations,
         elapsed=elapsed,
         evidence=evidence or [],
@@ -1348,14 +1351,14 @@ def _blocked_shared_result(
         if failure.failure_class == FailureClass.INFRASTRUCTURE
         else "blocked_by_build",
         bundle_id=None,
-        snapshot=None,
+        verification=None,
         observations=observations,
         elapsed=elapsed,
         evidence=[],
     )
 
 
-def _launch_snapshot(
+def _launch_bundle(
     request: WorkExecutionRequest,
     build_directory: Path,
     build_result: BundleBuildResult,
@@ -1366,22 +1369,17 @@ def _launch_snapshot(
     started: float,
     publication_checkpoint: Callable[[str], None],
 ) -> SimulationResult:
-    snapshot_root = request.attempt_directory / "snapshot"
-    publication_checkpoint("before:snapshot_manifest")
-    snapshot = create_snapshot(request, build_directory, build_result, bundle, snapshot_root)
-    publication_checkpoint("after:snapshot_manifest")
-    pre_launch = authenticate_executable_snapshot(snapshot, snapshot_root)
-    outcome = group.launch_snapshot(snapshot_root, run_cwd)  # type: ignore[attr-defined]
-    post_exit = authenticate_executable_snapshot(snapshot, snapshot_root)
-    return _snapshot_result(
+    """Launch the record's bundle in place, verifying it before launch and after exit."""
+    pre_launch = verify_bundle_in_place(bundle, build_result, build_directory)
+    evidence_root = request.attempt_directory / "execution-evidence"
+    outcome = group.launch_bundle(build_directory, evidence_root, run_cwd)  # type: ignore[attr-defined]
+    post_exit = verify_bundle_in_place(bundle, build_result, build_directory)
+    return _bundle_result(
         request,
         build_directory,
         build_result,
         bundle,
-        snapshot,
-        snapshot_root,
-        pre_launch,
-        post_exit,
+        bundle_verification(build_result, pre_launch, post_exit),
         outcome,
         bindings,
         started,
@@ -1389,28 +1387,31 @@ def _launch_snapshot(
     )
 
 
-def _snapshot_result(
+def bundle_verification(
+    build_result: BundleBuildResult, pre_launch: str, post_exit: str
+) -> dict[str, object]:
+    """The Result's record of the bundle inventory that passed each check."""
+    return {
+        "bundle_manifest_sha256": cast(Mapping[str, object], build_result.document["bundle"])[
+            "manifest_sha256"
+        ],
+        "pre_launch_sha256": pre_launch,
+        "post_exit_sha256": post_exit,
+        "verified_after_exit": True,
+    }
+
+
+def _bundle_result(
     request,
     build_directory,
     build_result,
     bundle,
-    snapshot,
-    snapshot_root,
-    pre_launch,
-    post_exit,
+    verification,
     outcome,
     bindings,
     started,
     publication_checkpoint,
 ) -> SimulationResult:
-    snapshot_raw = encode_executable_snapshot(snapshot)
-    snapshot_ref = record_reference(
-        snapshot_root / "snapshot.json",
-        request.attempt_directory,
-        snapshot_raw,
-        "executable_snapshot_manifest",
-        request.attempt_id,
-    )
     observations = (
         _infrastructure_observations(request, outcome)
         if outcome.infrastructure_failure is not None
@@ -1426,15 +1427,7 @@ def _snapshot_result(
         build_result,
         state=state,
         bundle_id=bundle.document["bundle_id"],
-        snapshot={
-            "manifest": snapshot_ref,
-            "bundle_manifest_sha256": cast(Mapping[str, object], build_result.document["bundle"])[
-                "manifest_sha256"
-            ],
-            "pre_launch_sha256": pre_launch,
-            "post_exit_sha256": post_exit,
-            "verified_after_exit": True,
-        },
+        verification=verification,
         observations=observations,
         elapsed=time.monotonic() - started,
         evidence=evidence,
@@ -1442,31 +1435,6 @@ def _snapshot_result(
         diagnostics=tuple(
             item for item in outcome.diagnostics if item.startswith("artifact_persistence:")
         ),
-    )
-
-
-def create_snapshot(
-    request: WorkExecutionRequest,
-    build_directory: Path,
-    build_result: BundleBuildResult,
-    bundle: SimulatorBundle,
-    snapshot_root: Path,
-) -> ExecutableSnapshot:
-    """Snapshot the built bundle for one simulation attempt."""
-    fingerprints = cast(Mapping[str, str], request.manifest.document["fingerprints"])
-    return create_executable_snapshot(
-        bundle=bundle,
-        bundle_root=build_directory,
-        snapshot_root=snapshot_root,
-        identity=SnapshotAttemptIdentity(
-            simulation_record_id=cast(str, request.manifest.document["simulation_record_id"]),
-            manifest_sha256=manifest_digest(request.manifest),
-            workload_sha256=fingerprints["workload_sha256"],
-            work_item_id=cast(str, request.work_item["work_item_id"]),
-            attempt_id=request.attempt_id,
-        ),
-        build_result=_build_result_ref(request, build_directory, build_result),
-        created_at=_now(),
     )
 
 
@@ -1488,7 +1456,7 @@ def simulation_result(
     *,
     state: str,
     bundle_id: object,
-    snapshot: object,
+    verification: object,
     observations: list[dict[str, object]],
     elapsed: float,
     evidence: list[dict[str, object]],
@@ -1508,7 +1476,7 @@ def simulation_result(
         "bundle_id": bundle_id,
         "finished_at": _now(),
         "elapsed_seconds": elapsed,
-        "executable_snapshot": snapshot,
+        "bundle_verification": verification,
         "runtime_inputs": runtime_inputs or [],
         "observations": observations,
         "grade": _result_grade(observations),
@@ -1817,7 +1785,7 @@ def capture_private_image(
         authenticated = _regular_child(source_root, source.relative_to(source_root).as_posix())
         target = destination / authenticated.relative_to(source_root)
         target.parent.mkdir(parents=True, exist_ok=True)
-        durable_copy(authenticated, target)
+        durable_copy(authenticated, target, mode=_ARTIFACT_MODES[kind])
         raw = target.read_bytes()
         records.append(
             {
@@ -1988,8 +1956,8 @@ __all__ = [
     "OrdinaryHdlSerialExecutor",
     "blocked_result",
     "bundle_build_attempt",
+    "bundle_verification",
     "capture_private_image",
-    "create_snapshot",
     "observation_document",
     "publish_failed_build_result",
     "publish_ready_build_result",
