@@ -32,10 +32,10 @@ def _simulation_result(state: str) -> bytes:
     )
     build_state = "design_failure" if blocked else "ready"
     bundle_id = "null" if blocked else '"6ba7b810-9dad-41d1-80b4-00c04fd430c8"'
-    snapshot = (
+    verification = (
         "null"
         if state in {"blocked_by_build", "setup_error"}
-        else '{"bundle_manifest_sha256":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","manifest":{"bytes":1,"kind":"executable_snapshot_manifest","owner":"550e8400-e29b-41d4-a716-446655440001","path":"evidence/snapshot.json","sha256":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},"post_exit_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","pre_launch_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","verified_after_exit":true}'
+        else '{"bundle_manifest_sha256":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","post_exit_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","pre_launch_sha256":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","verified_after_exit":true}'
     )
     failure = (
         '"infrastructure"'
@@ -48,9 +48,9 @@ def _simulation_result(state: str) -> bytes:
     assertions = '"clean"' if state == "completed" else '"not_observed"'
     grade = "error" if state == "aborted" else "pass" if state == "completed" else "fail"
     return (
-        f'{{"$schema":"booley.simulation-result/v4","attempt_id":"550e8400-e29b-41d4-a716-446655440001","attempt_ordinal":1,'
+        f'{{"$schema":"booley.simulation-result/v5","attempt_id":"550e8400-e29b-41d4-a716-446655440001","attempt_ordinal":1,'
         f'"build_result":{{"build_attempt_id":"550e8400-e29b-41d4-a716-446655440000","bytes":1,"kind":"bundle_build_result","owner":"550e8400-e29b-41d4-a716-446655440000","path":"build-result.json","sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sharing":"shared_variant","state":"{build_state}"}},'
-        f'"bundle_id":{bundle_id},"diagnostics":[],"elapsed_seconds":1.0,"evidence":[],"executable_snapshot":{snapshot},"finished_at":"2026-09-21T10:00:02Z","grade":"{grade}","manifest_sha256":"sha256:1111111111111111111111111111111111111111111111111111111111111111",'
+        f'"bundle_id":{bundle_id},"bundle_verification":{verification},"diagnostics":[],"elapsed_seconds":1.0,"evidence":[],"finished_at":"2026-09-21T10:00:02Z","grade":"{grade}","manifest_sha256":"sha256:1111111111111111111111111111111111111111111111111111111111111111",'
         f'"observations":[{{"assertion_count":0,"assertions":{assertions},"cycle_count":null,"detail":{{}},"execution":"{execution}","failure_class":{failure},"functional":{functional},"test":"smoke","test_run":"smoke"}}],"producer_invocation_id":1,"runtime_inputs":[],"simulation_record_id":"f47ac10b-58cc-4372-a567-0e02b2c3d479","state":"{state}","work_item_id":"item:0000:0123456789abcdef","workload_sha256":"sha256:2222222222222222222222222222222222222222222222222222222222222222"}}\n'
     ).encode()
 

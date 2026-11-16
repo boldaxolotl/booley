@@ -39,6 +39,8 @@ class NativeExecution:
         self.build_root = Path(tempfile.mkdtemp(prefix="booley-coverage-test-"))
         self.executable = self.build_root / "simv"
         self.executable.write_bytes(b"authenticated simulator image")
+        self.verify_bundle = None
+        self.evidence_root = None
 
     def build(self, request):
         return SimulationBuildResult(True, collector=PINNED_VERILATOR)
@@ -51,6 +53,9 @@ class NativeExecution:
         )
 
     def run(self, request):
+        if self.verify_bundle is not None:
+            # The real execution checks the bundle after Pre-Sim, before its launch.
+            self.verify_bundle()
         self.runs.append(request)
         if not self.missing:
             request.raw_path.parent.mkdir(parents=True, exist_ok=True)
@@ -65,8 +70,10 @@ class NativeExecution:
     def authenticated_image(self):
         return self.build_root, (self.executable,)
 
-    def bind_authenticated_attempt(self, snapshot_root, run_cwd):
-        self.executable = snapshot_root / self.executable.name
+    def bind_authenticated_attempt(self, bundle_root, evidence_root, run_cwd, verify_bundle):
+        self.executable = bundle_root / self.executable.name
+        self.evidence_root = evidence_root
+        self.verify_bundle = verify_bundle
         self.run_cwd = run_cwd
 
 
@@ -255,6 +262,9 @@ class InvalidHookExecution(NativeExecution):
         self.events = events
 
     def run(self, request):
+        if self.verify_bundle is not None:
+            # The real execution checks the bundle after Pre-Sim, before its launch.
+            self.verify_bundle()
         self.runs.append(request)
         request.raw_path.parent.mkdir(parents=True, exist_ok=True)
         request.raw_path.write_text(self.payload(self.hits), encoding="utf-8")

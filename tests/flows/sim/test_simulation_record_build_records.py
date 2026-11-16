@@ -2,7 +2,9 @@
 
 The digests below were recorded from the serial executor at base commit
 574e6e524, before shared and private builds were unified behind one record
-builder. They must not change: records are durable record evidence.
+builder. They must not change: records are durable record evidence. The bundle and
+build-result digests were re-pinned once, for `booley.simulator-bundle/v3` (#4161):
+the bundle document dropped `snapshot_inventory_sha256`. The attempt digests are unchanged.
 It also checks that no builder decodes the record it just built.
 """
 
@@ -37,14 +39,14 @@ _PINNED_RECORDS = {
     "shared": (
         "shared_variant",
         "sha256:c330e3f9de597bfd4d4a08059cc4def12f7dc11041ce94928996f3f4cae51320",
-        "sha256:82abb5be30e22ffccb7e0f4936665d1cc1fbeec11a24d27ecd1b38e6d92f3893",
-        "sha256:6b47e379a0912c30c3204feaa7d75c8fdc4d62769ad0763b1df40c8908dfeac8",
+        "sha256:ef9cca5338b4f7e6f3084cc4ce661694b753689527771fd12b5258a94aa7539f",
+        "sha256:67669837e562778da85b2e1d3f488841206f1acc9781b6871231a3074ee1a3e9",
     ),
     "legacy-per-test": (
         "private_work_item",
         "sha256:27dfcbe924ba12c50bc34cb5f58fe44b20e0147132b9476f282c3de34844cd03",
-        "sha256:5f946b788f5850eefd5c507948e3d8dc1fb2075dc5cd552925caf1f8e422e647",
-        "sha256:4b207ff28237dc23c5ff21170ea39d033e7a7835c02a65ab130afc1d8f092f5a",
+        "sha256:e2064e25174585087b96b6d9192a84fd06105e6de0964b48d9ebb334606da813",
+        "sha256:0b9a04b6ba5bc7c5324a004ac0901dffbbaf80050f7bb3f7561f14fe53809f11",
     ),
 }
 

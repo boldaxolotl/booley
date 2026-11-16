@@ -55,7 +55,9 @@ def validate_environment() -> None:
 def reject_retired_path(path: Path) -> None:
     """An explicit selection cannot bypass the hard cut."""
     if RETIRED_DIR_NAME in path.parts:
-        raise BooleyLayoutError(f"{path} needs migration; run `booley init` from its Project Root")
+        raise BooleyLayoutError(
+            f"{path} needs migration to {BOOLEY_DIR_NAME}; run `booley init` from its Project Root"
+        )
     if any(
         a == BOOLEY_DIR_NAME and b == "project"
         for a, b in zip(path.parts, path.parts[1:], strict=False)

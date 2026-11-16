@@ -35,6 +35,7 @@ SEED = {
     "crates/bwave/docs/public/guide.md": "# Guide\n",
     "README.md": "# Booley\n\nIntro\n",
     "docs/internals/DOCS_PRINCIPLES.md": "# Principles\n",
+    "docs/internals/USER_DOCS_PRINCIPLES.md": "# User docs principles\n",
     "docs/internals/ARCHITECTURE.md": "# Architecture\n\nBody\n",
     "AGENTS.md": "# Agents\n",
     "pkg/AGENTS.md": "# Nested agents\n",
@@ -187,6 +188,10 @@ _PREMERGE_CASES: dict[str, tuple[dict[str, str | None], dict[str, tuple[str, str
     "principles": (
         _append("docs/internals/DOCS_PRINCIPLES.md", "x\n"),
         {"docs/internals/DOCS_PRINCIPLES.md": ("premerge", "principles")},
+    ),
+    "user-docs-principles": (
+        _append("docs/internals/USER_DOCS_PRINCIPLES.md", "x\n"),
+        {"docs/internals/USER_DOCS_PRINCIPLES.md": ("premerge", "principles")},
     ),
     "agents": (_append("AGENTS.md", "x\n"), {"AGENTS.md": ("premerge", "agent-instructions")}),
     "nested-agents": (

@@ -461,7 +461,7 @@ def test_force_does_not_adopt_unrecorded_qa_links(tmp_path, monkeypatch, capsys,
     link.symlink_to(skill, target_is_directory=True)
 
     assert bootstrap_cli.run_bootstrap(SimpleNamespace(force=True)) == 0
-    assert "desired skill name is occupied" in capsys.readouterr().out
+    assert f"`{link}` is not Booley's" in capsys.readouterr().out
     assert link.resolve() == skill.resolve()  # Windows readlink adds a \\?\ prefix
     manifest = json.loads((link.parent / ".booley-qa-skill-links.json").read_text())
     assert "booley-qa-run" not in manifest["links"]
@@ -769,6 +769,45 @@ def test_skill_reconciliation_rejects_noncanonical_install(
 
     assert finding.state is bootstrap.BootstrapState.ERROR
     assert finding.detail == "not canonical"
+
+
+def test_skill_conflicts_name_each_entry_and_fix_in_bootstrap_and_doctor(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from booley.audit.diagnostic_results import Findings, Severity
+    from booley.harness import host_diagnostics
+
+    home = tmp_path / "home"
+    source = tmp_path / "skills"
+    target = home / ".agents" / "skills"
+    for name in ("booley-a", "booley-b"):
+        (source / name).mkdir(parents=True)
+        (source / name / "SKILL.md").write_bytes(b"---\nname: x\n---\n")
+        (target / name).mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setattr(bootstrap, "skills_dir", lambda: source)
+    monkeypatch.setattr(bootstrap, "host_install_error", lambda _source: None)
+
+    def text(name: str) -> str:
+        return (
+            f"`{target / name}` is not Booley's: rename it if it is your own skill, "
+            "delete it if it is a dangling link, then rerun `booley bootstrap`"
+        )
+
+    conflicts = f"{text('booley-a')}; {text('booley-b')}"
+    finding = bootstrap._reconcile_skills(Intent.ENSURE)
+
+    assert finding.state is bootstrap.BootstrapState.ERROR
+    assert finding.detail == f"{target}: {conflicts}"
+    assert bootstrap_cli._inspection_detail(finding) == finding.detail
+
+    report = Findings()
+    result = bootstrap.BootstrapResult(Intent.CHECK, (bootstrap._reconcile_skills(Intent.CHECK),))
+    host_diagnostics._add_bootstrap(result, report)
+    (failure,) = report.report().findings
+    assert failure.severity is Severity.FAIL
+    assert conflicts in failure.message
+    assert failure.fix == conflicts
 
 
 def test_vscode_requires_an_executable_or_installed_application(
@@ -1319,7 +1358,9 @@ def test_skill_reconciliation_reports_missing_pending_changed_and_errors(
     assert bootstrap._reconcile_skills(Intent.CHECK).state is bootstrap.BootstrapState.PENDING
     assert bootstrap._reconcile_skills(Intent.ENSURE).state is bootstrap.BootstrapState.CHANGED
 
-    failed_event = SimpleNamespace(changed=False, failed=True, detail="broken", name="link")
+    failed_event = SimpleNamespace(
+        changed=False, failed=True, detail="broken", name="link", outcome="error"
+    )
     failed_report = SimpleNamespace(
         events=(failed_event,), diagnostics=("diagnostic",), fatal="fatal"
     )
@@ -1331,6 +1372,26 @@ def test_skill_reconciliation_reports_missing_pending_changed_and_errors(
     finding = bootstrap._reconcile_skills(Intent.ENSURE)
     assert finding.state is bootstrap.BootstrapState.ERROR
     assert finding.detail == f"{target}: broken; diagnostic; fatal"
+    assert finding.doctor_fix is None
+    assert finding.remedy is None
+
+    conflict = SimpleNamespace(
+        changed=False, failed=True, detail="`x` is not Booley's", name="x", outcome="conflict"
+    )
+    for report in (
+        SimpleNamespace(events=(conflict, failed_event), diagnostics=(), fatal=None),
+        SimpleNamespace(events=(conflict,), diagnostics=("diagnostic",), fatal=None),
+    ):
+        monkeypatch.setattr(
+            bootstrap,
+            "reconcile_host_skills",
+            lambda *_args, report=report, **_kwargs: (
+                SimpleNamespace(target=target, report=report),
+            ),
+        )
+        mixed = bootstrap._reconcile_skills(Intent.ENSURE)
+        assert mixed.doctor_fix is None
+        assert mixed.remedy is None
 
 
 def test_nangate_reconciliation_covers_current_check_fetch_and_failure(

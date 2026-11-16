@@ -16,6 +16,7 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import io
 import itertools
 import logging
 import os
@@ -61,6 +62,7 @@ if TYPE_CHECKING:
     # of the import path of every `booley` invocation.
     from booley.mcp.registry import McpToolInfo
     from booley.runtime.session_admission import Sandbox
+    from booley.targets.target_surface import TargetDetailPayload
 
 # --- Constants ---
 
@@ -266,8 +268,9 @@ def _force_utf8() -> None:
     """Force UTF-8 for all text I/O — prevents CP1252 encoding errors on Windows."""
     os.environ.setdefault("PYTHONUTF8", "1")
     if sys.stdout.encoding.lower().replace("-", "") != "utf8":
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        for stream in (sys.stdout, sys.stderr):
+            if isinstance(stream, io.TextIOWrapper):
+                stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 def _baked_identity() -> tuple[str, str]:
@@ -678,7 +681,7 @@ def _add_doctor_subparser(sub) -> None:
     doctor_p.add_argument(
         "--deep",
         action="store_true",
-        help="Run real first-config sim/lint/synthesis smoke checks",
+        help="Run real sim/lint/synthesis smoke checks and FPGA implementation",
     )
     doctor_p.add_argument(
         "--skip-agent-checks",
@@ -686,6 +689,28 @@ def _add_doctor_subparser(sub) -> None:
         help=(
             "With --deep, skip agent credential inspection and the live "
             "Specialist provider authorization and memory probe"
+        ),
+    )
+
+
+def _add_init_lint_arguments(init_p) -> None:
+    """Add the scaffold lint Target controls to ``booley init``."""
+    init_p.add_argument(
+        "--lint-eda-tool",
+        choices=("verilator", "verible"),
+        help=(
+            "Scaffold: lint EDA tool of lint_<name> (default verilator, with -Wall; "
+            "verible makes it the only, style, lint Target)"
+        ),
+    )
+    init_p.add_argument(
+        "--style-lint",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        dest="style_lint",
+        help=(
+            "Scaffold: add the Verible style lint Target lint_<name>_style "
+            "(default on with the Verilator lint Target)"
         ),
     )
 
@@ -711,11 +736,7 @@ def _add_init_scaffold_arguments(init_p) -> None:
         choices=("sv", "cocotb"),
         help="Scaffold: testbench style (default sv; cocotb is sandbox-sim only)",
     )
-    init_p.add_argument(
-        "--lint-eda-tool",
-        choices=("verilator", "verible"),
-        help="Scaffold: lint EDA tool (default verilator --lint-only; verible = style lint)",
-    )
+    _add_init_lint_arguments(init_p)
     init_p.add_argument("--lint-tool", action=_RetiredEdaToolOptionAction, help=argparse.SUPPRESS)
     init_p.add_argument(
         "--asic",
@@ -1265,7 +1286,7 @@ def _parse_cli() -> argparse.Namespace:
     if command in RETIRED_COMMAND_POINTERS:
         parser.exit(2, RETIRED_COMMAND_POINTERS[command] + "\n")
     agent_args: list[str] = []
-    if command == "chat":
+    if command == "chat" and command_index is not None:
         argv, agent_args = _split_chat_tail(argv, command_index)
     args = parser.parse_args(argv)
     if args.command == "chat":
@@ -1852,7 +1873,7 @@ def _cmd_specialist(args: argparse.Namespace, project_root: Path) -> int:
 
 def _target_detail_payload(
     project_root: Path, selector: str, *, as_json: bool
-) -> dict[str, object]:
+) -> TargetDetailPayload:
     """Resolve Target detail in-Sandbox, or return actionable host metadata."""
     from booley.targets import target_surface
 
@@ -2074,7 +2095,7 @@ def _cmd_eda(args: argparse.Namespace, project_root: Path) -> int:
 _EARLY_COMMANDS["eda"] = _cmd_eda
 
 
-def _handle_early_exits(args: argparse.Namespace, project_root: Path) -> int | None:
+def _handle_early_exits(args: argparse.Namespace, project_root: Path | None) -> int | None:
     """Dispatch non-run subcommands; returns exit code or None for 'run'."""
     handler = _EARLY_COMMANDS.get(args.command)
     if handler is not None:
@@ -2358,6 +2379,7 @@ def _dispatch_main() -> int:
     """Parse CLI, handle early exits, and dispatch the selected command."""
     args = _parse_cli()
     command = _effective_command(args)
+    assert command is not None, "CLI normalization always supplies a command"
 
     default_chat = getattr(args, "default_chat", False)
     if default_chat:
@@ -2371,6 +2393,7 @@ def _dispatch_main() -> int:
     binding = _command_project_binding(command, args)
     project_root = _selected_project_root(command, args, binding)
     if binding not in {ProjectBinding.INDEPENDENT, ProjectBinding.OPTIONAL}:
+        assert project_root is not None, "a Project-bound command resolves a Project Root"
         source_rejection = _reject_source_project_command(command, project_root)
         if source_rejection is not None:
             return source_rejection
@@ -2379,6 +2402,7 @@ def _dispatch_main() -> int:
         project_root = _host_session_selection(command, args, project_root)
 
     if binding is ProjectBinding.REQUIRED:
+        assert project_root is not None, "a REQUIRED command resolves a Project Root"
         _require_command_project(command, project_root)
     # Doctor reports the retired keys as a FAIL; upgrade is booley-heal's first step.
     exempt = command in {"doctor", "upgrade"} or binding is ProjectBinding.INDEPENDENT
@@ -2442,10 +2466,11 @@ def _dispatch_selected(
     raise AssertionError(f"unhandled command: {command}")
 
 
-def _dispatch_help_candidate(args: argparse.Namespace, project_root: Path) -> int:
+def _dispatch_help_candidate(args: argparse.Namespace, project_root: Path | None) -> int:
     """Keep metadata admission while avoiding execution-path runtime setup."""
     from booley.runtime.layout_consumers import directory_consumer
 
+    assert project_root is not None, "endpoint help applies to Project-bound commands"
     if _outer_endpoint_selection(args):
         args._cli_endpoint_project = project_root
     with directory_consumer(project_root):

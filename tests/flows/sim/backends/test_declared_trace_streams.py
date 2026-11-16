@@ -22,6 +22,7 @@ from booley.bwave import waveform_store
 from booley.flows.sim import trace_session
 from booley.flows.sim.backends import icarus as icarus_adapter
 from booley.flows.sim.backends import verilator as verilator_adapter
+from booley.flows.sim.backends.declared_streams import DeclaredTraceStreams
 from booley.flows.sim.trace_session import TraceArtifact, TraceInspection, TraceSession
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="named pipes need POSIX")
@@ -247,12 +248,45 @@ def test_unlinked_or_replaced_path_falls_back(how, tmp_path, monkeypatch):
     _no_pipe_left(out.dirs.run, "fpu.vcd")
 
 
+_NO_HEADER_TEXT = (
+    "streaming fpu.vcd failed: fake bwave: no VCD header (if the testbench seeks in, "
+    "reads back, or reopens this dump, make it write the dump once, front to back, "
+    "or dump FST instead)"
+)
+
+
+def _finished_streams(tmp_path: Path, budget_s: float) -> DeclaredTraceStreams:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    session = TraceSession(tmp_path / "work")
+    session.start_conversion_budget(budget_s)
+    streams = DeclaredTraceStreams.start(session, ("fpu.vcd",), run_dir)
+    streams.close_inputs()
+    streams.finish()
+    return streams
+
+
+def test_failed_stream_names_the_testbench_fix(tmp_path):
+    streams = _finished_streams(tmp_path, 60)
+
+    assert streams.failures == {"fpu.vcd": _NO_HEADER_TEXT}
+
+
+def test_budget_exhausted_stream_keeps_its_text(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_BWAVE_MODE", "never_read")
+    streams = _finished_streams(tmp_path, 0)
+
+    assert streams.failures == {
+        "fpu.vcd": "streaming fpu.vcd failed: no usable waveform was written"
+    }
+
+
 def test_never_opened_pipe_keeps_verdict_and_reports_incident(tmp_path, monkeypatch):
     out = _run("verilator", tmp_path, monkeypatch, "record:fpu.vcd", ["fpu.vcd"])
 
     assert "[SIM_RESULT] PASSED" in out.output
     assert "TRACE_INCIDENT" in out.output
-    assert "streaming fpu.vcd failed: fake bwave: no VCD header" in out.output
+    assert _NO_HEADER_TEXT in out.output
     _no_pipe_left(out.dirs.run, "fpu.vcd")
 
 

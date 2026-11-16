@@ -484,9 +484,11 @@ class StreamingConversion:
         """Close the input, wait up to *timeout_s* with kill escalation, remove FIFO state."""
         self.close_input()
         events: list[str] = []
+        timed_out = False
         try:
             return_code = self._process.wait(timeout=timeout_s)
         except subprocess.TimeoutExpired:
+            timed_out = True
             self.kill()
             return_code = self._process.wait(timeout=_BWAVE_KILL_TIMEOUT_SECONDS)
             events.append("WARNING: bwave killed (FIFO hung)")
@@ -503,12 +505,17 @@ class StreamingConversion:
             self.store_path,
             (attempt,),
             inspection,
-            failure_kind=(
-                "" if return_code == 0 and inspection.structurally_usable else "conversion_failed"
-            ),
+            failure_kind=_streaming_failure_kind(return_code, inspection, timed_out),
             detail=stderr,
             events=tuple(events),
         )
+
+
+def _streaming_failure_kind(return_code: int, inspection: StoreInspection, timed_out: bool) -> str:
+    """Empty for a usable store, ``timed_out`` when the wait ran out, else ``conversion_failed``."""
+    if return_code == 0 and inspection.structurally_usable:
+        return ""
+    return "timed_out" if timed_out else "conversion_failed"
 
 
 def start_streaming_conversion(
