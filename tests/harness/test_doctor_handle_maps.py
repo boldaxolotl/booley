@@ -2,9 +2,10 @@
 
 import pytest
 
+from booley.core.host_shell import quote_arg
 from booley.harness import doctor
 from booley.runtime import handles, runtime_context, session_runtime
-from booley.runtime.sandbox_apply import Attachment, quote_arg
+from booley.runtime.sandbox_apply import Attachment
 
 THRESHOLD = handles.MAX_MAP_BYTES * 3 // 4
 

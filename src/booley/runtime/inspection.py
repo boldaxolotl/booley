@@ -27,6 +27,7 @@ from booley.commit_policy import stealth_enabled
 from booley.config import agent_app
 from booley.config.eda import EdaConfig
 from booley.core.boundary import require_dict
+from booley.core.host_shell import quote_arg
 from booley.eda.provisioning.licensing.flexnet_docker import (
     RelayDockerError,
     RelayProfile,
@@ -54,7 +55,7 @@ from booley.runtime.devcontainer import devcontainer_path
 from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.git import _git_common_dir, stealth_exclude_names
 from booley.runtime.platform_paths import run_captured_bounded, same_host_path
-from booley.runtime.sandbox_apply import Attachment, quote_arg
+from booley.runtime.sandbox_apply import Attachment
 
 
 @dataclass(frozen=True, slots=True)

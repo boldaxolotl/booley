@@ -23,6 +23,7 @@ from tests.docker_cli_guard import (
 )
 from tests.harness import test_session_runtime as resolution_fixtures
 
+from booley.core.host_shell import quote_arg
 from booley.harness import doctor
 from booley.harness.setup import readiness
 from booley.runtime import (
@@ -34,7 +35,6 @@ from booley.runtime import (
 )
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
-from booley.runtime.sandbox_apply import quote_arg
 
 
 @pytest.fixture(autouse=True)

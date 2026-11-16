@@ -77,6 +77,7 @@ from booley.core.boundary import (
     require_list,
     require_str,
 )
+from booley.core.host_shell import quote_arg
 from booley.flows import execution, runtime_reality, target_test_plan_inspection
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.fpga import vivado_startup
@@ -152,7 +153,7 @@ from booley.runtime.image_provenance import is_local_image_id
 from booley.runtime.platform_paths import run_captured_bounded
 from booley.runtime.project_gitignore import missing_gitignore_patterns
 from booley.runtime.resource_history import DOCTOR_RUN_ENV
-from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS, Attachment, quote_arg
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS, Attachment
 from booley.runtime.session_issuance import SANDBOX_IMAGE_ID_ENV
 from booley.runtime.timefmt import format_clock, format_duration, format_human_datetime
 from booley.runtime.worktree_evidence import untracked_common_paths

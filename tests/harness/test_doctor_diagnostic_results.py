@@ -18,6 +18,7 @@ from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport,
 from booley.audit.doctor_waivers import load_doctor_waivers
 from booley.config.host_config import SandboxHostPolicy
 from booley.config.project_config import normalize_tests_toml
+from booley.core.host_shell import quote_arg
 from booley.harness import doctor, doctor_deep, host_diagnostics
 from booley.harness.setup import readiness
 from booley.runtime import (
@@ -28,7 +29,7 @@ from booley.runtime import (
     session_runtime,
     vaporview,
 )
-from booley.runtime.sandbox_apply import Attachment, quote_arg
+from booley.runtime.sandbox_apply import Attachment
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 from tests.conftest import symlink_or_skip
