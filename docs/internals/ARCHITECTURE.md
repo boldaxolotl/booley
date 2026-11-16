@@ -37,7 +37,7 @@ missing or stale it stops and asks for `booley bootstrap --update`. This keeps
 host-wide changes in one command the user runs deliberately
 ([ADR 0056](../adr/0056-separate-host-bootstrap-from-project-initialization.md)).
 
-![Booley architecture: VS Code opens an agent session (Claude Code or Codex, in Interactive Mode) inside the Booley devcontainer Sandbox. The agent edits the Project Git worktree, and calls the MCP Server (Booley Flows), which drives the EDA tools (linter, simulator, synthesis tool) through Edalize, and calls Specialist Agents. An Egress Proxy Container lets the Sandbox reach the LLM provider only, and a heavy tool installed on the host (Vivado) is mounted read-only.](../user/assets/architecture.svg)
+![Booley architecture: VS Code opens several agent sessions (Claude Code or Codex) in one Sandbox. Each session edits its own Git worktree (RTL, testbenches, FuseSoC .core Targets) and calls the shared MCP server, which exposes B-Wave, Specialists, and Booley Flows. A Flow has FuseSoC build the Target into an EDA tool command and submits it as a Job; it parses the EDA logs into metrics and report.json for the agent. Every Flow or Specialist Job is admitted against the Memory Budget and runs the EDA tools (linters, simulators, synthesis, FPGA implementation with Vivado mounted read-only from the host). bwave gui opens traces in VaporView in VS Code, and all egress goes through the Egress Proxy Container.](../user/assets/architecture.svg)
 
 ### Why an ADE, not an IDE
 
@@ -147,7 +147,8 @@ the run.
 
 The Developer Agent reaches two kinds of capability through one MCP surface,
 never by spawning EDA tools itself. **Booley Flows** deterministically turn a
-structured request into an EDA tool invocation and its result into evidence.
+structured request into an EDA tool command, run it as a Job, and parse the
+EDA tool's logs into metrics and a report.
 **Specialists** are scoped LLM sub-agents for work such as review. Mutation testing is a Flow
 (`booley flow mutation`), not a Specialist: it needs no model. The
 catalog is in

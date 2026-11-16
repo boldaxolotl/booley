@@ -1,8 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" class="arch" viewBox="0 0 1126 600" width="1126" height="600" role="img" aria-labelledby="fig2t fig2d">
+<svg xmlns="http://www.w3.org/2000/svg" class="arch" viewBox="0 0 1250 880" width="1250" height="880" role="img" aria-labelledby="fig2t fig2d">
   <!-- Booley architecture diagram for docs/internals/ARCHITECTURE.md. Source:
        website/illustration/architecture.svg; after editing it, run
        website/illustration/build.py, which embeds the fonts and writes
-       docs/user/assets/architecture.svg. -->
+       docs/user/assets/architecture.svg. Keep the <desc> and the alt text in
+       ARCHITECTURE.md in step with the drawing. -->
   <style>
     /* {{FONTS}} */
     /* Colours: the site's light datasheet tokens. Shown as an image, the diagram cannot
@@ -14,7 +15,7 @@
     .arch .t { font-size: 15px; font-weight: 650; }                  /* box title */
     .arch .s { font-size: 13px; fill: var(--ink-2); }                /* box sub-label */
     .arch .b { font-size: 13.5px; }                                  /* box body line */
-    .arch .b tspan.k { font-weight: 650; }                           /* Specialist name */
+    .arch .b tspan.k { font-weight: 650; }                           /* emphasized name */
     .arch .q { font-size: 13.5px; fill: var(--ink-2); font-style: italic; }  /* example prompt */
     .arch .e { font-size: 12.5px; fill: var(--ink-2); font-style: italic; }  /* edge label */
     .arch .sbl { fill: var(--mask); font-size: 14px; font-weight: 650; font-stretch: 90%; }     /* Sandbox label */
@@ -25,87 +26,146 @@
     .arch .ln { fill: none; stroke: var(--ink); stroke-width: 1.3; }
     .arch .ah { fill: var(--ink); }
   </style>
-  <rect class="bg" width="1126" height="600"/>
+  <rect class="bg" width="1250" height="880"/>
   <title id="fig2t">Booley architecture</title>
-  <desc id="fig2d">VS Code opens an agent session (Claude Code or Codex, in Interactive Mode) inside the Booley devcontainer Sandbox. Example requests: debug the backpressure test failure on the heavy target; compare synth area between commits; run a security review on the control unit module. The agent edits the Project Git worktree (RTL and testbenches) and calls the MCP Server, Booley Flows, which drives EDA tools through the Edalize API: a linter (Verilator), a simulator (Verilator or Icarus Verilog), and a synthesis tool (Yosys); the mutation Flow runs mutation testing on the simulator. The MCP Server calls Specialist Agents: reviewer for single-focus code review and coverage_analyst to explain coverage and suggest next steps. Outside the Sandbox, an Egress Proxy Container lets the agent reach the internet for the LLM provider only, and a heavy tool installed on the host (Vivado) is mounted read-only.</desc>
+  <desc id="fig2d">VS Code opens several agent sessions (Claude Code or Codex, in Interactive Mode, one per tab) inside one Booley devcontainer Sandbox. Each session edits its own Project Git worktree, which holds the RTL, testbenches, and FuseSoC .core files with their Targets, and calls the Sandbox's one MCP server. The MCP server exposes Booley Flows, Specialists, and B-Wave. A Booley Flow (sim, lint, synth, fpga, mutation) reads the worktree, has FuseSoC build the Target into an EDA tool command, and submits it as a Job; it then parses the EDA tool's logs into metrics, writes report.json, and returns a curated result to the agent. Specialists (reviewer, coverage_analyst) are LLM sub-agents that also run as Jobs. Every Job reserves memory and starts only when it fits the Memory Budget; excess Jobs queue. Jobs run the EDA tools: linters (Verilator, Verible), simulators (Verilator, Icarus, Cocotb), synthesis (Yosys, OpenROAD), and FPGA implementation (Vivado, installed on the host and mounted read-only). B-Wave answers queries on FST simulation traces, and bwave gui opens VaporView in VS Code. All Sandbox network traffic goes through an Egress Proxy Container that reaches allowlisted hosts only.</desc>
   <defs>
     <marker id="f2a" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="ah" d="M0 1.5 L10 5 L0 8.5 z"/></marker>
   </defs>
 
-  <!-- outside, left: internet behind the egress proxy -->
-  <rect class="bx" x="10" y="140" width="130" height="36"/>
-  <text class="t" x="75" y="163" text-anchor="middle">The Internet</text>
-  <path class="ln" d="M75 176 V216" marker-start="url(#f2a)" marker-end="url(#f2a)"/>
-  <text class="e" x="83" y="194">LLM provider</text>
-  <text class="e" x="83" y="209">only</text>
-  <rect class="bx" x="10" y="216" width="130" height="48"/>
-  <text class="t" x="75" y="237" text-anchor="middle">Egress Proxy</text>
-  <text class="t" x="75" y="255" text-anchor="middle">Container</text>
-  <path class="ln" d="M140 240 H190" marker-start="url(#f2a)" marker-end="url(#f2a)"/>
-
   <!-- outside, top: VS Code -->
-  <rect class="bx" x="380" y="10" width="120" height="38"/>
-  <text class="t" x="440" y="34" text-anchor="middle">VS Code</text>
-  <path class="ln" d="M440 48 V120" marker-end="url(#f2a)"/>
+  <rect class="bx" x="260" y="10" width="300" height="48"/>
+  <text class="t" x="410" y="31" text-anchor="middle">VS Code</text>
+  <text class="s" x="410" y="49" text-anchor="middle">agent terminals, VaporView waveform viewer</text>
+  <path class="ln" d="M410 58 V108" marker-end="url(#f2a)"/>
+  <text class="e" x="418" y="72">opens</text>
+
+  <!-- outside, left: internet behind the egress proxy -->
+  <rect class="bx" x="10" y="420" width="130" height="36"/>
+  <text class="t" x="75" y="443" text-anchor="middle">The Internet</text>
+  <path class="ln" d="M75 456 V506" marker-start="url(#f2a)" marker-end="url(#f2a)"/>
+  <text class="e" x="83" y="477">allowlisted</text>
+  <text class="e" x="83" y="492">hosts only</text>
+  <rect class="bx" x="10" y="506" width="130" height="48"/>
+  <text class="t" x="75" y="527" text-anchor="middle">Egress Proxy</text>
+  <text class="t" x="75" y="545" text-anchor="middle">Container</text>
+  <path class="ln" d="M140 530 H170" marker-start="url(#f2a)" marker-end="url(#f2a)"/>
+  <text class="e" x="75" y="574" text-anchor="middle">all Sandbox egress</text>
 
   <!-- the Sandbox boundary -->
-  <rect class="sandbox" x="170" y="72" width="750" height="516"/>
-  <text class="sbl" x="186" y="98">Booley devcontainer Sandbox</text>
+  <rect class="sandbox" x="170" y="80" width="900" height="780"/>
+  <text class="sbl" x="1056" y="104" text-anchor="end">Booley devcontainer Sandbox (one per Project folder)</text>
 
-  <!-- agent session -->
-  <rect class="bx" x="190" y="120" width="330" height="150"/>
-  <rect class="hd" x="190" y="120" width="330" height="50"/>
-  <text class="t" x="355" y="142" text-anchor="middle">Agent session (Claude Code or Codex)</text>
-  <text class="s" x="355" y="161" text-anchor="middle">Interactive Mode</text>
-  <text class="s" x="204" y="192">Examples:</text>
-  <text class="q" x="204" y="214">“Debug the backpressure test failure on heavy target”</text>
-  <text class="q" x="204" y="234">“Compare synth area between the following commits: ...”</text>
-  <text class="q" x="204" y="254">“Run security review on the control unit module”</text>
+  <!-- agent sessions: a stack of cards -->
+  <rect class="bx" x="206" y="110" width="370" height="150"/>
+  <rect class="bx" x="198" y="118" width="370" height="150"/>
+  <rect class="bx" x="190" y="126" width="370" height="150"/>
+  <rect class="hd" x="190" y="126" width="370" height="50"/>
+  <text class="t" x="375" y="148" text-anchor="middle">Agent sessions (Claude Code or Codex)</text>
+  <text class="s" x="375" y="167" text-anchor="middle">Interactive Mode, one per VS Code tab</text>
+  <text class="s" x="204" y="196">Examples:</text>
+  <text class="q" x="204" y="218">“Debug the backpressure test failure on heavy target”</text>
+  <text class="q" x="204" y="238">“Compare synth area between these commits: ...”</text>
+  <text class="q" x="204" y="258">“Run security review on the control unit module”</text>
 
-  <!-- worktree and MCP server -->
-  <path class="ln" d="M265 270 V320" marker-end="url(#f2a)"/>
-  <text class="e" x="273" y="300">edits</text>
-  <rect class="bx" x="190" y="320" width="150" height="64"/>
-  <text class="t" x="265" y="347" text-anchor="middle">Project Git worktree</text>
-  <text class="s" x="265" y="367" text-anchor="middle">(RTL, TB)</text>
+  <!-- worktrees -->
+  <path class="ln" d="M576 200 H640" marker-end="url(#f2a)"/>
+  <text class="e" x="608" y="192" text-anchor="middle">edits</text>
+  <rect class="bx" x="640" y="126" width="410" height="150"/>
+  <rect class="hd" x="640" y="126" width="410" height="32"/>
+  <text class="t" x="654" y="147">Project Git worktrees (one per session)</text>
+  <text class="b" x="654" y="182">• RTL and testbenches</text>
+  <text class="b" x="654" y="204">• <tspan class="k">FuseSoC .core</tspan> files: Targets name the sources,</text>
+  <text class="b" x="666" y="222">parameters, and EDA tool options of each build</text>
+  <text class="b" x="654" y="244">• booley.toml, hooks</text>
 
-  <path class="ln" d="M455 270 V320" marker-end="url(#f2a)"/>
-  <text class="e" x="463" y="300">MCP</text>
-  <rect class="bx" x="370" y="320" width="260" height="84"/>
-  <text class="t" x="500" y="347" text-anchor="middle">MCP Server: Booley Flows</text>
-  <text class="s" x="500" y="367" text-anchor="middle">(calls EDA tools using Edalize API)</text>
-  <text class="b" x="384" y="391">• <tspan class="k">mutation:</tspan> mutation testing</text>
+  <!-- MCP server -->
+  <path class="ln" d="M375 276 V330" marker-start="url(#f2a)" marker-end="url(#f2a)"/>
+  <text class="e" x="383" y="300">tool calls,</text>
+  <text class="e" x="383" y="315">results</text>
+  <rect class="bx" x="190" y="330" width="740" height="46"/>
+  <text class="t" x="560" y="350" text-anchor="middle">MCP server</text>
+  <text class="s" x="560" y="368" text-anchor="middle">one per Sandbox, shared by every session; typed tools instead of shell commands</text>
 
+  <!-- worktree read by the Flows -->
+  <path class="ln" d="M1010 276 V420" marker-end="url(#f2a)"/>
+  <text class="e" x="1002" y="352" text-anchor="end">reads</text>
+  <text class="e" x="1002" y="367" text-anchor="end">sources</text>
 
-  <!-- specialist agents -->
-  <path class="ln" d="M630 352 H670" marker-end="url(#f2a)"/>
-  <rect class="bx" x="670" y="320" width="230" height="124"/>
-  <rect class="hd" x="670" y="320" width="230" height="32"/>
-  <text class="t" x="684" y="341">Specialist Agents</text>
-  <text class="b" x="684" y="374">• <tspan class="k">reviewer:</tspan> single-focus code review</text>
-  <text class="s" x="694" y="392">(bugs, spec, protocol, security, ...)</text>
-  <text class="b" x="684" y="413">• <tspan class="k">coverage_analyst:</tspan> explains coverage,</text>
-  <text class="b" x="694" y="430">suggests next steps</text>
+  <!-- B-Wave -->
+  <path class="ln" d="M275 376 V420" marker-end="url(#f2a)"/>
+  <rect class="bx" x="190" y="420" width="170" height="170"/>
+  <rect class="hd" x="190" y="420" width="170" height="32"/>
+  <text class="t" x="204" y="441">B-Wave (bwave)</text>
+  <text class="b" x="204" y="474">Queries FST traces</text>
+  <text class="b" x="204" y="492">from simulation:</text>
+  <text class="b" x="204" y="510">signals, events,</text>
+  <text class="b" x="204" y="528">values, time ranges</text>
+  <text class="s" x="204" y="560"><tspan font-weight="600">bwave gui</tspan> opens the</text>
+  <text class="s" x="204" y="577">signals in VaporView</text>
+  <!-- bwave gui to VS Code, along the Sandbox's left edge -->
+  <path class="ln" d="M190 505 H180 V34 H260" marker-end="url(#f2a)"/>
+  <text class="e" x="186" y="27">bwave gui</text>
+
+  <!-- Specialists -->
+  <path class="ln" d="M470 376 V420" marker-end="url(#f2a)"/>
+  <rect class="bx" x="380" y="420" width="180" height="170"/>
+  <rect class="hd" x="380" y="420" width="180" height="32"/>
+  <text class="t" x="394" y="441">Specialists</text>
+  <text class="b" x="394" y="474">• <tspan class="k">reviewer:</tspan> single-focus</text>
+  <text class="b" x="406" y="492">code review (bugs,</text>
+  <text class="b" x="406" y="510">spec, security, ...)</text>
+  <text class="b" x="394" y="532">• <tspan class="k">coverage_analyst:</tspan></text>
+  <text class="b" x="406" y="550">explains coverage</text>
+  <text class="s" x="394" y="577">LLM sub-agents</text>
+
+  <!-- Booley Flows -->
+  <path class="ln" d="M780 376 V420" marker-end="url(#f2a)"/>
+  <rect class="bx" x="590" y="420" width="460" height="170"/>
+  <rect class="hd" x="590" y="420" width="460" height="50"/>
+  <text class="t" x="820" y="442" text-anchor="middle">Booley Flows</text>
+  <text class="s" x="820" y="461" text-anchor="middle">sim, lint, synth, fpga, mutation</text>
+  <text class="b" x="604" y="494">• <tspan class="k">Request to Job:</tspan> FuseSoC builds the Target into</text>
+  <text class="b" x="616" y="512">an EDA tool command; the Flow submits it as a Job</text>
+  <text class="b" x="604" y="538">• <tspan class="k">Logs to evidence:</tspan> parses the EDA logs into metrics</text>
+  <text class="b" x="616" y="556">(area, timing, cycle counts, coverage), writes</text>
+  <text class="b" x="616" y="574">report.json, returns a curated result to the agent</text>
+
+  <!-- Jobs -->
+  <path class="ln" d="M470 590 V640" marker-end="url(#f2a)"/>
+  <path class="ln" d="M780 590 V640" marker-end="url(#f2a)"/>
+  <text class="e" x="788" y="620">Job</text>
+  <rect class="bx" x="190" y="640" width="740" height="56"/>
+  <text class="t" x="204" y="662">Jobs (admission control)</text>
+  <text class="b" x="204" y="684">Each Flow or Specialist run reserves memory estimated from its history and starts when it fits the Memory Budget</text>
+  <text class="s" x="924" y="662" text-anchor="end">excess Jobs queue; none is preempted</text>
+
+  <!-- EDA logs back up to the Flows -->
+  <path class="ln" d="M1010 740 V590" marker-end="url(#f2a)"/>
+  <text class="e" x="1002" y="660" text-anchor="end">logs,</text>
+  <text class="e" x="1002" y="675" text-anchor="end">traces</text>
 
   <!-- EDA tools row -->
-  <path class="ln" d="M500 404 V484" marker-end="url(#f2a)"/>
-  <rect class="grp" x="370" y="484" width="530" height="84"/>
-  <text class="s" x="384" y="502">EDA tools</text>
-  <rect class="bx" x="390" y="510" width="150" height="46"/>
-  <text class="b" x="465" y="530" text-anchor="middle" font-weight="600">Linter</text>
-  <text class="s" x="465" y="547" text-anchor="middle">(Verilator)</text>
-  <rect class="bx" x="560" y="510" width="150" height="46"/>
-  <text class="b" x="635" y="530" text-anchor="middle" font-weight="600">Simulator</text>
-  <text class="s" x="635" y="547" text-anchor="middle">(Verilator / iverilog)</text>
-  <rect class="bx" x="730" y="510" width="150" height="46"/>
-  <text class="b" x="805" y="530" text-anchor="middle" font-weight="600">Synthesis Tool</text>
-  <text class="s" x="805" y="547" text-anchor="middle">(Yosys)</text>
+  <path class="ln" d="M780 696 V740" marker-end="url(#f2a)"/>
+  <text class="e" x="788" y="723">runs</text>
+  <rect class="grp" x="190" y="740" width="860" height="104"/>
+  <text class="s" x="204" y="758">EDA tools (in the Sandbox Image unless noted)</text>
+  <rect class="bx" x="206" y="768" width="195" height="60"/>
+  <text class="b" x="303" y="792" text-anchor="middle" font-weight="600">Linters</text>
+  <text class="s" x="303" y="812" text-anchor="middle">Verilator, Verible</text>
+  <rect class="bx" x="415" y="768" width="195" height="60"/>
+  <text class="b" x="512" y="792" text-anchor="middle" font-weight="600">Simulators</text>
+  <text class="s" x="512" y="812" text-anchor="middle">Verilator, Icarus, Cocotb</text>
+  <rect class="bx" x="624" y="768" width="195" height="60"/>
+  <text class="b" x="721" y="792" text-anchor="middle" font-weight="600">Synthesis</text>
+  <text class="s" x="721" y="812" text-anchor="middle">Yosys, OpenROAD</text>
+  <rect class="bx" x="833" y="768" width="195" height="60"/>
+  <text class="b" x="930" y="792" text-anchor="middle" font-weight="600">FPGA implementation</text>
+  <text class="s" x="930" y="812" text-anchor="middle">Vivado (host install)</text>
 
   <!-- outside, right: host tool, mounted read-only -->
-  <rect class="bx" x="976" y="500" width="144" height="52"/>
-  <text class="t" x="1048" y="522" text-anchor="middle">Heavy tool installed</text>
-  <text class="t" x="1048" y="541" text-anchor="middle">on Host (Vivado)</text>
-  <path class="ln" d="M976 526 H900" marker-end="url(#f2a)"/>
-  <text class="e" x="948" y="500" text-anchor="middle">Read-only</text>
-  <text class="e" x="948" y="514" text-anchor="middle">Mount</text>
+  <rect class="bx" x="1100" y="770" width="140" height="56"/>
+  <text class="t" x="1170" y="792" text-anchor="middle">Vivado on the host</text>
+  <text class="s" x="1170" y="812" text-anchor="middle">mounted read-only</text>
+  <path class="ln" d="M1100 798 H1028" marker-end="url(#f2a)"/>
 </svg>
