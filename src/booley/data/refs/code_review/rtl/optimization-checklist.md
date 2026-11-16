@@ -1,8 +1,16 @@
 # RTL optimization review
 
-Review SystemVerilog only for timing, area, power, and provably unused or dead RTL. Other Reviewer Specialists cover functional correctness, style, naming, comments, assertions, security, and conditional-compilation defects.
+Review SystemVerilog only for timing, area, power, and functionally dead RTL.
+Other Reviewer Specialists cover functional correctness, style, naming,
+comments, assertions, security, and conditional-compilation defects.
 
-Report only clear PPA wins with small, justified costs, or dead-code removals that cannot change observable behavior. Each finding needs a timing path, width calculation, liveness diagram, fanout trace, or equivalent proof. For PPA findings, judge synthesized hardware, not RTL spelling: if both forms synthesize to the same circuit, there is no PPA finding. Source that synthesis already removes may still be a MINOR dead-code finding for maintainability, simulation cost, and lint cleanliness, but do not claim silicon savings.
+Report only clear PPA wins with small, justified costs, or dead-code removals
+that cannot change observable behavior. Each finding needs a timing path, width
+calculation, liveness diagram, fanout trace, or equivalent proof. For PPA
+findings, judge synthesized hardware, not RTL spelling: if both forms synthesize
+to the same circuit, there is no PPA finding. Source that synthesis already
+removes may still be a MINOR dead-code finding for maintainability and
+simulation cost, but do not claim silicon savings.
 
 MAJOR means a likely critical-path or Fmax improvement (including a mux, decode
 term, or qualifier in front of or ORed onto a deep or late path that can be
@@ -24,9 +32,21 @@ by the reviewer prompt.
 
 - Registers wider than their range. Size operands and intermediate expressions deliberately for the required mathematical range, signedness, overflow, saturation, and rounding. A counter bounded by `max` generally needs only `$clog2(max)+1` bits. `[area, timing, often power]`
 
+- Long combinational chains: deep dependent logic between registers, such as
+  more than four levels of dependent muxes or arithmetic, that likely limits
+  Fmax or makes synthesis upsize cells. Give the path; suggest pipelining or
+  restructuring only where the added latency is acceptable. `[timing, area]`
+
 - Priority encoders. Each priority encoder needs to be verified - is it REALLY necessary? `[timing, sometimes area and power]`
 
-- Unused and dead RTL: internal signals or registers written but never read, unused declarations, calculations with no observable fanout, and unreachable states or branches. Require proof across all legal configurations; ignore reserved/debug/formal/coverage hooks and interface items without complete context. Missing-functionality defects belong to Bugs, Spec, or Protocol. `[maintainability, simulation/lint cost; area/power only if retained]`
+- Functionally dead logic that lint cannot see: FSM states no legal input
+  sequence reaches from reset, branches whose condition is constant in every
+  legal configuration, and outputs or registers that are constant in practice
+  because every driver gives them the same value. Require proof across all legal
+  configurations; ignore reserved/debug/formal/coverage hooks and interface
+  items without complete context. Missing-functionality defects belong to Bugs,
+  Spec, or Protocol. `[maintainability, simulation cost; area/power only if
+  retained]`
 
 - Repeated expressions, duplicate decoders, copies of the same function in mutually exclusive modes, and muxes with constant, unreachable, or equivalent branches. Share or remove them only when the replacement does not add material delay to a critical path. `[area, power, sometimes timing]`
 
