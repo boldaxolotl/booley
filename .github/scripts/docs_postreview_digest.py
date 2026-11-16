@@ -270,7 +270,8 @@ def render(
         "1. For each pull request below, read its doc files and tick `reviewed`.",
         "2. Tick `needed edits` when the docs needed an edit. File a ticket for each "
         "correction and name the pull request in it.",
-        "3. When the same mistake repeats, amend `docs/internals/DOCS_PRINCIPLES.md`.",
+        "3. When the same mistake repeats, amend `docs/internals/DOCS_PRINCIPLES.md`, "
+        "or `docs/internals/USER_DOCS_PRINCIPLES.md` for a rule only user docs follow.",
         "4. Close this issue once every box is settled. Only closed digests feed the "
         "edit rate, so closing is what counts the week.",
         "",
