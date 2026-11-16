@@ -481,6 +481,7 @@ def test_verified_sources_are_available_only_through_scoped_tool(tmp_path):
     assert model.calls[0].nested_mcp_tools == ["coverage_evidence"]
 
 
+# The persisted report format (booley.coverage-analysis/v4) fixes these keys.
 _REPORT_KEYS = {
     "$schema",
     "analysis_scope",
@@ -523,6 +524,21 @@ def test_stealth_analysis_preserves_project_files(tmp_path, ignore_native):
     assert report["$schema"] == "booley.coverage-analysis/v4"
     assert set(report) == _REPORT_KEYS
     assert report["eligibility"] == "eligible"
+
+
+def test_undecodable_configuration_keeps_generic_report_only_limitation(tmp_path):
+    path = source_project(tmp_path)
+    (tmp_path / ".booley").mkdir()
+    (tmp_path / ".booley/booley.toml").write_bytes(b"\xff\xfe")
+    analyst = CoverageAnalystSpecialist(model=Model())
+    analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(path)])
+
+    report = analyst.coverage_analyst(path).to_dict()
+
+    assert report["source_access"] == "report_only"
+    assert report["limitations"] == [
+        "Sources unavailable, unsafe, or stale; analysis uses normalized report evidence only."
+    ]
 
 
 @pytest.mark.parametrize("defect", ["stale", "missing", "core", "closure", "symlink"])

@@ -202,7 +202,12 @@ def stealth_source_limitation(project_root: Path) -> str | None:
     """Return the Stealth Mode reason sources are unavailable, or None outside it."""
     from booley.fusesoc.core_projection import projection_enabled
 
-    return STEALTH_SOURCE_LIMITATION if projection_enabled(project_root) else None
+    try:
+        enabled = projection_enabled(project_root)
+    except ValueError:
+        # An unreadable configuration is a report-only cause coverage_sources already folds in.
+        return None
+    return STEALTH_SOURCE_LIMITATION if enabled else None
 
 
 def coverage_sources(
