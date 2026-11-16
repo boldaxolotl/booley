@@ -1514,8 +1514,15 @@ def test_resume_refuses_unfinished_coverage_collection(tmp_path, monkeypatch, st
     assert result.outcome.detail[state] == list(getattr(observed, state))
 
 
-@pytest.mark.parametrize("no_waivers", [False, True])
-def test_resume_refusal_hint_repeats_no_waivers(tmp_path, monkeypatch, no_waivers):
+def test_resume_refusal_hint_repeats_no_waivers(tmp_path, monkeypatch):
+    _assert_resume_refusal_hint(tmp_path, monkeypatch, no_waivers=True)
+
+
+def test_resume_refusal_hint_omits_no_waivers_by_default(tmp_path, monkeypatch):
+    _assert_resume_refusal_hint(tmp_path, monkeypatch, no_waivers=False)
+
+
+def _assert_resume_refusal_hint(tmp_path, monkeypatch, *, no_waivers):
     reports, _request = _interrupt_coverage_collection(
         tmp_path, monkeypatch, no_waivers=no_waivers
     )
