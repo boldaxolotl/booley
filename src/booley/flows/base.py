@@ -600,10 +600,6 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
             return TargetSelectionInvocation(self, self._prepared_target_selection, self._run)
         return OrdinaryRunInvocation(self._run)
 
-    def conventional_report_families(self) -> set[str]:
-        """Families a non-strict Project may judge under their conventional Criterion names."""
-        return set(self.conventional_families)
-
     def _selected_target_selection(self) -> PreparedTargetSelection:
         """Return the complete selection prepared for this invocation."""
         prepared = getattr(self, "_prepared_target_selection", None)

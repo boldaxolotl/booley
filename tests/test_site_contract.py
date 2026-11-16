@@ -45,7 +45,9 @@ def _site_section(section_id: str) -> str:
 def test_features_match_the_readme_word_for_word():
     """One canonical feature list: the README's "What it does" is the site's Features."""
     readme_section = README.split("## What it does\n", 1)[1].strip().split("\n\n", 1)[0]
-    readme_features = [_plain(line[2:]) for line in readme_section.splitlines()]
+    # Split on bullet starts, not lines, so a bullet may wrap at 80 columns.
+    readme_bullets = re.split(r"^- ", readme_section, flags=re.MULTILINE)
+    readme_features = [_plain(bullet) for bullet in readme_bullets if bullet.strip()]
     site_features = [
         _plain(f"{name}: {text}")
         for name, text in re.findall(
@@ -121,6 +123,9 @@ def test_generated_illustration_is_up_to_date():
     assert build.FIGURE_OUT.read_text(encoding="utf-8") == build.figure_html()
     assert build.CSS_OUT.read_text(encoding="utf-8") == build.css_text()
     assert build.ARCHITECTURE_OUT.read_text(encoding="utf-8") == build.architecture_svg()
+    assert build.ARCHITECTURE_DARK_OUT.read_text(encoding="utf-8") == build.architecture_svg(
+        dark=True
+    )
     assert '--8<-- "ide-figure.html"' in SITE
 
 

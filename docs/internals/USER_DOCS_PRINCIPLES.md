@@ -175,8 +175,8 @@ page.
 
 ### 33. Write the cheatsheet for the user and the agent
 
-You read `booley cheat` at a terminal, and the Developer Agent reads it to
-look up commands, Goal syntax, and the rules it works by. Every entry must
+You read `booley cheat` at a terminal, and the Developer Agent reads it to look
+up commands, MCP tool arguments, and the rules it works by. Every entry must
 make sense to both readers:
 
 - **"You" is the person.** Name the agent by role, "the Developer Agent",
@@ -186,8 +186,8 @@ make sense to both readers:
 - **Every command works as written** for a person typing it and for the agent
   reading it. Give the CLI form beside a tool-call argument
   (`dry_run=true`, CLI: `--dry-run`).
-- **Gloss agent-only terms once** in the section that uses them: say that a
-  `goal_*` name is a Developer Agent tool, not a command, and what `MCP` and
+- **Gloss agent-only terms once** in the section that uses them: say that
+  `booley_poll` is a Developer Agent tool, not a command, and what `MCP` and
   `work_dir` mean.
 
 Bad: "Measure only when the user asks for a Measured Commit." Good: "The

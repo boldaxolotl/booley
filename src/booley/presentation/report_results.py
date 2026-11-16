@@ -1,7 +1,6 @@
 """Pure, bounded human projections of Flow reports and approval evidence.
 
-Execution success is independent of Criterion satisfaction. The same immutable
-presentation can be consumed by detail panes and other observational surfaces.
+The same immutable presentation can be consumed by detail panes and other observational surfaces.
 """
 
 from __future__ import annotations
@@ -36,11 +35,10 @@ class ResultLine:
 
 @dataclass(frozen=True)
 class ReportPresentation:
-    """Independent execution and acceptance results plus compact report facts."""
+    """The execution result plus compact report facts."""
 
     flow_result: ResultLine
     flow_word: ResultLine
-    criterion: ResultLine | None
     execution: ResultLine
     result_rows: tuple[ResultLine, ...]
 
@@ -581,14 +579,6 @@ def present_report(report: Mapping[str, object]) -> ReportPresentation:
     )
     if code == EXIT_SUCCESS:
         word, semantic = _success_result(report)
-    raw_key = report.get("criterion_key")
-    key = literal(raw_key).strip() if isinstance(raw_key, str) else ""
-    met = report.get("criterion_met")
-    criterion = (
-        _row("Criterion", f"{key} · {'met' if met else 'not met'}", "met" if met else "fail")
-        if key and isinstance(met, bool)
-        else None
-    )
     rows.extend(_fields(report, {**_METRICS, "failure_reason": "Failure reason"}))
     if not headline and not rows:
         rows = _fallback(report)
@@ -596,7 +586,6 @@ def present_report(report: Mapping[str, object]) -> ReportPresentation:
     return ReportPresentation(
         flow_result,
         _row("Flow result", word, semantic),
-        criterion,
         _row("Execution", f"exit {code if code is not None else 'unavailable'}"),
         _cap(rows),
     )

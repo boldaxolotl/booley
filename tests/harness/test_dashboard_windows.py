@@ -382,7 +382,6 @@ async def test_list_header_is_set_per_view():
             "Session",
             "State",
             "Result",
-            "Crit",
             "Elapsed",
         ]
 

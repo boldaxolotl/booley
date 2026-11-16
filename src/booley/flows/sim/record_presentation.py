@@ -371,7 +371,6 @@ def _pre_sim_integrity_failure(
     result: EndpointOutcome, error: Exception, *, retain_authenticated: bool = False
 ) -> EndpointOutcome:
     result.exit_code = EXIT_ERROR
-    result.criterion_met = False
     if not retain_authenticated:
         references = [record.get("reference") for record in result.detail.get("pre_sim_runs", ())]
         result.detail = {

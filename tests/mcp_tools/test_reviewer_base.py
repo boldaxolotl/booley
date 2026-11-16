@@ -308,7 +308,6 @@ def test_pre_existing_findings_do_not_fail_the_review(
     )
 
     assert result.exit_code == 0
-    assert result.criterion_met is True
     assert open_findings(result.detail) == []
     assert [row["summary"] for row in result.detail["issue_list"]] == ["Old bug"]
     assert "PRE-EXISTING (non-blocking; present before this change):" in result.report_text

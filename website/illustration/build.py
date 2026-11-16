@@ -16,7 +16,8 @@ It also publishes the architecture diagram of docs/internals/ARCHITECTURE.md:
 
 - architecture.svg: the diagram source. ``/* {{FONTS}} */`` marks where the
   site's fonts are embedded, so the image renders the same on GitHub and the
-  site, which both show it as a plain image.
+  site, which both show it as a plain image. It is written twice, light and
+  dark, because an image cannot follow the page's theme.
 
 Run from anywhere after editing a source, then commit the outputs:
 
@@ -24,7 +25,7 @@ Run from anywhere after editing a source, then commit the outputs:
 
 Outputs: website/snippets/ide-figure.html (spliced into docs/index.md by
 pymdownx.snippets), website/docs/stylesheets/ide.css, and
-docs/user/assets/architecture.svg.
+docs/user/assets/architecture.svg with its architecture-dark.svg twin.
 """
 
 import base64
@@ -36,6 +37,17 @@ WEBSITE = HERE.parent
 FIGURE_OUT = WEBSITE / "snippets" / "ide-figure.html"
 CSS_OUT = WEBSITE / "docs" / "stylesheets" / "ide.css"
 ARCHITECTURE_OUT = WEBSITE.parent / "docs" / "user" / "assets" / "architecture.svg"
+ARCHITECTURE_DARK_OUT = ARCHITECTURE_OUT.with_name("architecture-dark.svg")
+# The dark copy's colour tokens: the site's dark datasheet palette (datasheet.css).
+ARCHITECTURE_DARK_TOKENS = {
+    "paper": "#121619",
+    "ink": "#e4e8eb",
+    "ink-2": "#a7b0b9",
+    "rule": "#5d6873",
+    "fill": "#1e2429",
+    "fill-2": "#181d21",
+    "mask": "#4fbf93",
+}
 FONTS = WEBSITE / "docs" / "assets" / "fonts"
 # (family, weight, stretch, file): the faces the architecture diagram uses.
 ARCHITECTURE_FONTS = (
@@ -183,11 +195,22 @@ def css_text() -> str:
     return f"/* {GENERATED} */\n" + scale_css((HERE / "ide.css").read_text(encoding="utf-8"))
 
 
-def architecture_svg() -> str:
-    """Return the architecture diagram with its fonts embedded as data URIs."""
+def architecture_svg(*, dark: bool = False) -> str:
+    """Return the architecture diagram with its fonts embedded as data URIs.
+
+    ``dark`` swaps each colour token for its ARCHITECTURE_DARK_TOKENS value. An image
+    cannot see the page's theme toggle, so the page shows one copy per theme.
+    """
     source = (HERE / "architecture.svg").read_text(encoding="utf-8")
     if source.count(FONTS_MARKER) != 1:
         raise ValueError(f"architecture.svg must contain {FONTS_MARKER} exactly once")
+    if dark:
+        for token, colour in ARCHITECTURE_DARK_TOKENS.items():
+            source, count = re.subn(
+                rf"(--{re.escape(token)}: )#[0-9a-fA-F]{{6}}", rf"\g<1>{colour}", source
+            )
+            if count != 1:
+                raise ValueError(f"architecture.svg must define --{token} exactly once")
     faces = "\n".join(
         f'    @font-face {{ font-family: "{family}"; font-style: normal; font-weight: {weight};'
         f" font-stretch: {stretch}; src: url(data:font/woff2;base64,"
@@ -203,6 +226,7 @@ def main() -> None:
     FIGURE_OUT.parent.mkdir(exist_ok=True)
     FIGURE_OUT.write_text(figure_html(), encoding="utf-8")
     ARCHITECTURE_OUT.write_text(architecture_svg(), encoding="utf-8")
+    ARCHITECTURE_DARK_OUT.write_text(architecture_svg(dark=True), encoding="utf-8")
 
 
 if __name__ == "__main__":
