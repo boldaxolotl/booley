@@ -207,9 +207,10 @@ def test_kill_reaches_the_whole_process_group(tmp_path: Path):
         "import subprocess, sys, time\n"
         "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
         "print(child.pid, flush=True)\n"
+        f"print({FATAL_LINE!r}, flush=True)\n"  # ends the run once the pid is out, at any load
         "time.sleep(60)\n"
     )
-    lines, _, _ = run_supervised(_launch(tmp_path, script, timeout_s=1))
+    lines, _, _ = run_supervised(_launch(tmp_path, script))
 
     grandchild = int(lines[0])
     deadline = time.monotonic() + KILLED_WITHIN_S
