@@ -126,7 +126,18 @@ Booley includes a mutation testing framework to validate test quality, which mat
 
 ## Lint Triage
 
-The biggest issue with lint EDA tools is signal-to-noise ratio: dangerous warnings get buried under tons of false positives, and engineers respond by ignoring lint altogether. Working through every message is exactly the tedium automation can afford and a human can't; delegating lint-output triage is what makes lint useful in practice. The `lint` Booley Flow runs the linter each lint Target names, normalizes its findings into one format whichever linter produced them, and deduplicates them across Targets so the same issue isn't reported many times. Waivers stay in the linter's own format. During autonomous development, the Developer decides, per finding, whether to fix the RTL, add a justified waiver, or leave it for human attention. The result is a clean lint report instead of noise. See the [supported EDA tools matrix](SUPPORTED-EDA-TOOLS.md#built-in-flows) for the current engines.
+The biggest issue with lint EDA tools is signal-to-noise ratio: dangerous
+warnings get buried under tons of false positives, and engineers respond by
+ignoring lint altogether. Working through every message is exactly the tedium
+automation can afford and a human can't; delegating lint-output triage is what
+makes lint useful in practice. The `lint` Booley Flow runs the linter each lint
+Target names, normalizes its findings into one format whichever linter produced
+them, and deduplicates them across Targets so the same issue isn't reported many
+times. Waivers stay in the linter's own format. When it runs lint, the Developer
+Agent decides, per finding, whether to fix the RTL, add a justified waiver, or
+leave it for human attention. The result is a clean lint report instead of
+noise. See the [supported EDA tools
+matrix](SUPPORTED-EDA-TOOLS.md#built-in-flows) for the current engines.
 
 To attach waivers to a lint Target, see the
 [Verilator](FLOW-LINT.md#verilator-lint-target) and

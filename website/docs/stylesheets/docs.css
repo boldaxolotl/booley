@@ -137,3 +137,10 @@
 .doc-prose details > :not(summary) { margin-left: 16px; margin-right: 16px; font-size: 16.5px; }
 .doc-prose details > summary + * { margin-top: 12px; }
 @media (prefers-reduced-motion: reduce) { .doc-prose summary::before { transition: none; } }
+
+/* Theme-paired images: a doc lists a light and a dark copy, marked with GitHub's
+   #gh-light-mode-only / #gh-dark-mode-only fragments so GitHub shows the one that
+   matches its theme. The site shows the one that matches the header toggle. */
+img[src$="#gh-dark-mode-only"],
+:root[data-theme="dark"] img[src$="#gh-light-mode-only"] { display: none; }
+:root[data-theme="dark"] img[src$="#gh-dark-mode-only"] { display: inline; }

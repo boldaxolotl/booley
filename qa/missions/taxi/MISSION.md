@@ -5,7 +5,8 @@ verification work (exact PFC/FCS/underrun/statistics tests, mutation campaign)
 and a bugfix
 for a seeded PFC fault, each accepted as a Measured Commit the upstream tests
 miss. Also covers Setup with a derived Cocotb
-image, Targets, Doctor, lint, logical/physical synthesis, Interactive Mode, B-Wave, a submodule
+image, Targets, Doctor, lint, logical/physical synthesis, Developer Agent
+sessions, B-Wave, a submodule
 companion, Target Metrics and measurement, and Simulation Records. Taxi's
 interfaces, recursive
 symlink, big
@@ -125,7 +126,7 @@ Try:
   match.
 Look for: `estimated_fmax_mhz` as physical timing, dropped clocks, false paths, forced passes.
 
-### 5. interactive — Interactive Mode, MCP jobs and admission (~25 min)
+### 5. interactive — Developer Agent session, MCP jobs and admission (~25 min)
 Intent: a read-only Interactive child drives everything over MCP and changes nothing.
 Depends on: areas 2–4; if they failed, use what works and log gaps.
 Try:
