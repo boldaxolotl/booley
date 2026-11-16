@@ -10,11 +10,6 @@
         "type": "string",
         "description": "FuseSoC .core Target name(s) this run applies to. The CLI flag may be repeated or its value comma-separated; MCP accepts one comma-separated string. List available Targets with `booley targets`. When omitted, exactly one eligible Target is selected and announced; zero or multiple eligible Targets fail and list the eligible Targets."
       },
-      "diagnostic": {
-        "type": "boolean",
-        "default": false,
-        "description": "Run diagnostically: records no evidence. Use for a Flow/Target combination outside the Project's Criteria."
-      },
       "dry_run": {
         "type": "boolean",
         "default": false,
@@ -44,11 +39,6 @@
         "type": "string",
         "description": "FuseSoC .core Target name(s) this run applies to. The CLI flag may be repeated or its value comma-separated; MCP accepts one comma-separated string. List available Targets with `booley targets`. When omitted, exactly one eligible Target is selected and announced; zero or multiple eligible Targets fail and list the eligible Targets. For sim resume, the manifest owns selection."
       },
-      "diagnostic": {
-        "type": "boolean",
-        "default": false,
-        "description": "Run diagnostically: records no evidence. Use for a Flow/Target combination outside the Project's Criteria."
-      },
       "dry_run": {
         "type": "boolean",
         "default": false,
@@ -67,7 +57,7 @@
       "no_waivers": {
         "type": "boolean",
         "default": false,
-        "description": "With --coverage, report raw coverage without applying approved waivers; with a Coverage Criterion also requires --diagnostic"
+        "description": "With --coverage, report raw coverage without applying approved waivers"
       },
       "mode": {
         "type": "string",
@@ -145,11 +135,6 @@
       "target": {
         "type": "string",
         "description": "FuseSoC .core Target name(s) this run applies to. The CLI flag may be repeated or its value comma-separated; MCP accepts one comma-separated string. List available Targets with `booley targets`. When omitted, exactly one eligible Target is selected and announced; zero or multiple eligible Targets fail and list the eligible Targets."
-      },
-      "diagnostic": {
-        "type": "boolean",
-        "default": false,
-        "description": "Run diagnostically: records no evidence. Use for a Flow/Target combination outside the Project's Criteria."
       },
       "dry_run": {
         "type": "boolean",
@@ -254,11 +239,6 @@
         "type": "string",
         "description": "FuseSoC .core Target name(s) this run applies to. The CLI flag may be repeated or its value comma-separated; MCP accepts one comma-separated string. List available Targets with `booley targets`. When omitted, exactly one eligible Target is selected and announced; zero or multiple eligible Targets fail and list the eligible Targets."
       },
-      "diagnostic": {
-        "type": "boolean",
-        "default": false,
-        "description": "Run diagnostically: records no evidence. Use for a Flow/Target combination outside the Project's Criteria."
-      },
       "dry_run": {
         "type": "boolean",
         "default": false,
@@ -300,11 +280,6 @@
       "target": {
         "type": "string",
         "description": "Exactly one Simulation Target. The CLI accepts one --target value; MCP accepts one Target selector string."
-      },
-      "diagnostic": {
-        "type": "boolean",
-        "default": false,
-        "description": "Run diagnostically: records no evidence. Use for a Flow/Target combination outside the Project's Criteria."
       },
       "dry_run": {
         "type": "boolean",

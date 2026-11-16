@@ -316,13 +316,6 @@ def test_recorded_review_uses_one_evidence_file(reviewer, monkeypatch, late_erro
         assert result.detail["rejected"] == [{"raw": "late error"}]
 
 
-def test_diagnostic_review_keeps_one_file(reviewer, monkeypatch):
-    reviewer.args.diagnostic = True
-    output(reviewer, monkeypatch, {"issues": None})
-    result = reviewer._run()
-    assert_run_evidence(result)
-
-
 @pytest.mark.parametrize(
     "summary",
     [

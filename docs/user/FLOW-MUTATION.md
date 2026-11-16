@@ -45,7 +45,7 @@ refused.
 | `--min-detected <N>` | Detected Mutants needed to pass. Default: 80 % of `--count`, rounded up; when fewer Mutants are scored than `--count` (the candidates ran out or failed to build), 80 % of the Mutants scored, rounded up. |
 | `--dry-run` | Validate the Target and scope and print the count, threshold, and seed. Nothing is built or simulated. |
 
-The shared options (`-C/--project`, `--timeout`, `--report-dir`, `--diagnostic`,
+The shared options (`-C/--project`, `--timeout`, `--report-dir`,
 `-q/--quiet`) work as for every Flow.
 
 ## How a run works

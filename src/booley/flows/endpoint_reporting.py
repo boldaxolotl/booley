@@ -417,9 +417,6 @@ def _finalize_result(endpoint: EndpointState, result: EndpointOutcome) -> None:
     stats for code-modifying endpoints. Specialist overrides this to also
     stamp accumulated token/cost data from sub-agent calls.
     """
-    if getattr(endpoint.args, "diagnostic", False):
-        result.detail = dict(result.detail or {})
-        result.detail["acceptance_effect"] = "diagnostic"
     if endpoint.code_modifying:
         endpoint._stamp_git_diff_stats(result)
 

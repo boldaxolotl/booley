@@ -122,8 +122,7 @@ class SimArguments(BuiltinArguments):
         parser.add_argument(
             "--no-waivers",
             action="store_true",
-            help="With --coverage, report raw coverage without applying approved waivers; "
-            "with a Coverage Criterion also requires --diagnostic",
+            help="With --coverage, report raw coverage without applying approved waivers",
         )
         SimArguments._add_elaboration_args(parser)
         SimArguments._add_test_run_args(parser)
