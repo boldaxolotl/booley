@@ -95,7 +95,9 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     """Durably replace one protocol JSON file with canonical content."""
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    temporary = Path(name)
+    # Beside *path*, named by the destination's path class: a replace and its cleanup are
+    # then calls on *path*'s own type, which a test can schedule step by step.
+    temporary = path.with_name(Path(name).name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             json.dump(payload, stream, sort_keys=True)

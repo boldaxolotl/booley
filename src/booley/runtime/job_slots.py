@@ -815,6 +815,11 @@ class SlotStore:
         self._process_owner: _GateOwner | None = None
         self._break_lock_warned = False
 
+    @property
+    def pid(self) -> int:
+        """This process's PID as the store sees it (the injected ``getpid``)."""
+        return self._getpid()
+
     # ---------------------------------------------------------------- submit
 
     def submit(

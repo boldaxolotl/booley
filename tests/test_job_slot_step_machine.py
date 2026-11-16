@@ -14,7 +14,7 @@ safety instead:
 - I1 at most ``_SLOTS`` holders.
 - I2 an entry that was seen and then absent never reappears.
 - I3 a promotion or lease gate is held by at most one live process.
-- I4 every entry belongs to a live owner's token or is recoverable now.
+- I4 every process-owned entry belongs to a live owner's token or is recoverable now.
 - I5 a renewal that never took the lease gate does not mark an unexpired lease lost.
 - S after the example drains, a gate left by a dead or recycled owner does not
   keep a live waiter out of a free slot.
@@ -51,6 +51,7 @@ from booley.runtime.job_slots import MemoryClaim, SlotToken
 from booley.runtime.pid import ProcessIdentity
 from tests.job_slot_steps import (
     FIRST_ACTOR_PID,
+    LOCK_WAIT_KINDS,
     READ_KINDS,
     Actor,
     ActorKilled,
@@ -117,7 +118,7 @@ def _trace(line: str) -> None:
 class JobSlotStepMachine(RuleBasedStateMachine):
     """Three processes over one slots directory, interleaved one filesystem step at a time."""
 
-    def __init__(self, parent: Path) -> None:
+    def __init__(self, parent: Path, *, recovery: job_slots.SlotRecovery | None = None) -> None:
         super().__init__()
         parent.mkdir(parents=True, exist_ok=True)
         self._temporary = tempfile.TemporaryDirectory(dir=parent)
@@ -127,7 +128,8 @@ class JobSlotStepMachine(RuleBasedStateMachine):
         self.scheduler = StepScheduler(self.world, trace=_trace)
         root = stepped_root(base, self.scheduler)
         self.actors = [
-            Actor(i, self.world, self.scheduler, root, self._recover) for i in range(_ACTORS)
+            Actor(i, self.world, self.scheduler, root, self._recover, recovery=recovery)
+            for i in range(_ACTORS)
         ]
         self.renewals: list[tuple[Worker, SlotToken, Actor]] = []
         self._seen: set[str] = set()
@@ -147,11 +149,15 @@ class JobSlotStepMachine(RuleBasedStateMachine):
             target(float(self.scheduler.replaced_removals), label="removals of a replaced gate")
         try:
             if self.scheduler.violation is None:
-                self.scheduler.drain()
-                self._settle()
+                self._wind_down()
         finally:
             self.scheduler.abort()
             self._temporary.cleanup()
+
+    def _wind_down(self) -> None:
+        """Run every thread to its end, then judge the settled state."""
+        self.scheduler.drain()
+        self._settle()
 
     def _recover(self, caller: Actor, identity: ProcessIdentity | None) -> bool:
         """Recovering an expired holder signals its owner: the owner process ends."""
@@ -379,8 +385,8 @@ class JobSlotStepMachine(RuleBasedStateMachine):
     def _check_entry_owners(self) -> None:
         for name, payload in self._entries().items():
             fields = _fields(name)
-            if payload is None or fields is None:
-                continue
+            if payload is None or fields is None or payload.get("owner_kind") == "execution":
+                continue  # an execution-owned entry is judged by its execution, not a token
             owner = self._owner_of(fields[1])
             if self._recoverable(owner, fields[0], payload) or self._in_use(owner, payload):
                 continue
@@ -446,6 +452,9 @@ class JobSlotStepMachine(RuleBasedStateMachine):
             for _name, actor, token in sorted(waiting, key=lambda item: item[0]):
                 with contextlib.suppress(ActorKilled):  # recovering its own expired lease
                     actor.store.refresh(token)
+        self._check_no_waiter_stuck()
+
+    def _check_no_waiter_stuck(self) -> None:
         entries = self._entries()
         stuck = [
             name
@@ -454,10 +463,14 @@ class JobSlotStepMachine(RuleBasedStateMachine):
             and payload is not None
             and not self._owner_gone(self._owner_of(_pid(name)), payload)
         ]
-        holders = [name for name in entries if name.startswith("h-")]
-        assert not stuck or len(holders) >= _SLOTS, (
-            f"S: live waiters {stuck} are kept out of a free slot ({len(holders)} of {_SLOTS} held)"
+        assert not stuck or self._budget_is_full(entries), (
+            f"S: live waiters {stuck} are kept out of a free slot"
         )
+
+    @staticmethod
+    def _budget_is_full(entries: dict[str, dict[str, Any] | None]) -> bool:
+        """Whether the holders leave a waiter's claim no room."""
+        return sum(name.startswith("h-") for name in entries) >= _SLOTS
 
 
 def _has_waiter(actor: Actor) -> bool:
@@ -468,6 +481,8 @@ def _visible(worker: Worker) -> bool:
     """Whether the thread's next step changes what other processes can see."""
     assert worker.pending is not None
     kind, name = worker.pending
+    if kind in LOCK_WAIT_KINDS or kind == "sleep":
+        return True  # the holder must get its turn, and a poll loop must not run on
     return kind not in READ_KINDS and not name.endswith(".tmp")
 
 
