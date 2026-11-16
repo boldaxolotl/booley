@@ -117,12 +117,16 @@ stack (Verilator, Icarus, Verible, Yosys, OpenROAD, sv2v, `bwave`, Python) ships
 in the image, so the user installs no EDA tools and everyone on a Project runs
 the same pinned versions.
 
-The container costs no measurable EDA runtime. On a 16-core Intel Core
-i7-14650HX workstation, a controlled Ibex comparison ran all four Ibex
-configurations through clean, warm, direct-runtime, and traced Verilator
-simulation, plus Yosys/OpenROAD synthesis, as CPU-pinned container/host pairs
-(190 measured legs). Pooled median differences ranged from -0.13% to +0.20%,
-within ordinary run-to-run variation.
+<details markdown>
+<summary>The container costs no measurable EDA runtime</summary>
+
+On a 16-core Intel Core i7-14650HX workstation, a controlled Ibex comparison ran
+all four Ibex configurations through clean, warm, direct-runtime, and traced
+Verilator simulation, plus Yosys/OpenROAD synthesis, as CPU-pinned
+container/host pairs (190 measured legs). Pooled median differences ranged from
+-0.13% to +0.20%, within ordinary run-to-run variation.
+
+</details>
 
 ### Why one container
 
