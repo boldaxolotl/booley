@@ -247,16 +247,7 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
             "no change in scope exits 0 without a review. Pass every file of the category as "
             "the `scope` to give the Reviewer the files that use the changed ones. Findings "
             "already present before the change are listed separately as pre-existing and are "
-            "never open or verified.",
-            "",
-            "**Verify fixes:** after fixing findings, call `reviewer` with "
-            "`verify=true` (CLI: `--verify`). It rechecks only the latest review's open "
-            "findings and finds nothing new; none remaining open is a pass. To argue a "
-            'finding away, add `waive=[["<finding-id>", "<justification>"]]` (CLI: '
-            '`--waive <finding-id> "<justification>"`, repeatable); the Reviewer accepts '
-            "or rejects each. `fail_on` (CLI: `--fail-on`) is the one other "
-            "argument accepted with verify, and counts the findings still open. After two "
-            "verifies, run a fresh review.",
+            "never open.",
         ]
     )
     return lines

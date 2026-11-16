@@ -937,7 +937,6 @@ def test_riscv_image_input_requests_extended_image_smoke(tmp_path: Path, path: s
         ("src/booley/mcp/unbound_recorder.py", False),
         ("src/booley/mcp/project_flow_loader.py", False),
         ("src/booley/runtime/agent_execution.py", False),
-        ("src/booley/specialists/verification_freshness.py", False),
         ("tests/criteria/test_evidence_ledger.py", False),
         ("tests/criteria/ledger_support.py", False),
         ("tests/golden/test_golden_acceptance_ledger.py", False),

@@ -585,6 +585,27 @@ def test_cli_analysis_never_loads_or_saves_harness_criteria(tmp_path, monkeypatc
     assert result.outcome.criterion_key == ""
 
 
+def test_cli_analysis_writes_no_development_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
+    path = persist_coverage_record(tmp_path)
+    result = CoverageAnalystSpecialist(model=Model()).execute_cli(
+        [
+            "--work-dir",
+            str(tmp_path),
+            "--record",
+            str(path),
+            "--report-dir",
+            str(tmp_path / "analysis-reports"),
+        ]
+    )
+    assert result.exit_code == 0
+    assert list(tmp_path.rglob("state.json")) == []
+    assert not (tmp_path / "reviewer-state").exists()
+    assert not (tmp_path / ".interactive_logs").exists()
+    assert result.outcome.criterion_key == ""
+
+
 @pytest.mark.parametrize("failure", ["timed_out", "max_turns_exhausted"])
 def test_cli_reports_unfinished_model_as_analysis_error(tmp_path, failure):
     path = persist_coverage_record(tmp_path)
