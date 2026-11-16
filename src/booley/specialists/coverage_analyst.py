@@ -17,13 +17,13 @@ from claude_agent_sdk import ClaudeSDKError
 
 from booley.core.boundary import require_dict
 from booley.core.models import AgentCallParams, AgentResult
-from booley.criteria.state import DevelopmentState
 from booley.flows.cli_help import CliHelp
 from booley.flows.sim.coverage_analysis_input import (
     CoverageAnalysisError,
     CoverageSourceClosure,
     coverage_sources,
     read_coverage_record,
+    stealth_source_limitation,
     verified_source_snapshot,
 )
 from booley.flows.sim.coverage_evidence import decode_coverage_evidence_audit
@@ -99,11 +99,6 @@ class CoverageAnalystSpecialist(Specialist):
         self._model = model
         super().__init__()
 
-    def read_state(self) -> DevelopmentState:
-        """Advisory analysis records candidates without setting Criteria."""
-        self._state = DevelopmentState()
-        return self._state
-
     def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
             "--record", type=Path, required=True, help="Exact canonical coverage.json path"
@@ -134,6 +129,7 @@ class CoverageAnalystSpecialist(Specialist):
             instruction,
             coverage_record,
             summary=loaded.summary,
+            source_limitation=stealth_source_limitation(self.args.work_dir),
         )
         return report, loaded, coverage_record
 
@@ -145,6 +141,7 @@ class CoverageAnalystSpecialist(Specialist):
         coverage_record_path: Path,
         *,
         summary: CoverageRecordSummary | None = None,
+        source_limitation: str | None = None,
     ) -> CoverageAnalysisReport:
         """Analyze already validated evidence through one scoped tool binding."""
         sources = verified_source_snapshot(coverage_record, sources)
@@ -152,7 +149,11 @@ class CoverageAnalystSpecialist(Specialist):
         self._evidence_sources = sources
         try:
             return CoverageAnalyzer(self._analyze_text).analyze_coverage_record(
-                coverage_record, sources, instruction, summary=summary
+                coverage_record,
+                sources,
+                instruction,
+                summary=summary,
+                source_limitation=source_limitation,
             )
         finally:
             self._evidence_coverage_record_path = None

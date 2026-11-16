@@ -86,7 +86,6 @@ if TYPE_CHECKING:
     from contextlib import ExitStack
 
     from booley.flows.base import SubprocessResult
-    from booley.flows.execution_persistence import AcceptanceRecorder
     from booley.flows.job_estimates import JobRequest
     from booley.flows.sim.request import SimRequest
     from booley.flows.sim.verilator_coverage import AuthenticatedSimulationExecutionPort
@@ -174,7 +173,6 @@ class SimulationRecordResumeMixin:
         publication_resources: ExitStack[bool | None]
         _held_resume_origins: set[Path]
         _simulation_record_publication_checkpoint: Callable[[str], None] | None
-        _acceptance_recorder: AcceptanceRecorder
 
         @property
         def args(self) -> SimRequest: ...
@@ -663,8 +661,7 @@ class SimulationRecordResumeMixin:
 
     def _resume_coverage_prepared(self, validated: ValidatedResumeManifest) -> Any:
         """Run the shared coverage preflight for the manifest's frozen coverage choice."""
-        from booley.criteria.state import DevelopmentState
-        from booley.flows.sim.coverage_flow_context import coverage_context_for_execution
+        from booley.flows.sim.coverage_flow_context import coverage_project_context
         from booley.flows.sim.coverage_invocation import (
             CoverageInvocationRequest,
             prepare_coverage_invocation,
@@ -675,13 +672,7 @@ class SimulationRecordResumeMixin:
         items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
         names = cast(tuple[str, ...], cast(Mapping[str, object], items[0]["selection"])["names"])
         workload = cast(Mapping[str, object], manifest.document["workload"])
-        context = coverage_context_for_execution(
-            self.args.work_dir,
-            DevelopmentState.load(self.args.state_file)
-            if self.args.state_file
-            else DevelopmentState(),
-            recorder=self._acceptance_recorder,
-        )
+        context = coverage_project_context(self.args.work_dir)
         runs = tuple(
             test_run_from_document(entry)
             for entry in cast(tuple[object, ...], items[0]["test_runs"])

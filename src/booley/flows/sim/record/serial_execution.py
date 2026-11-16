@@ -25,6 +25,8 @@ from booley.flows.artifact_durability import (
     durable_copy,
     durable_create,
     durable_directory,
+    durable_in_place,
+    fsync_directory,
 )
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.sim.backends.cocotb_results import decode_results_payload, reconcile
@@ -34,6 +36,7 @@ from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.execution.contract import (
     PreSimEvidence,
     PreSimScopeStoppedError,
+    SimulationArtifactEvidence,
     SimulationInfrastructureFailure,
     SimulationOptions,
     SimulationTargetOutcome,
@@ -97,7 +100,12 @@ from .model import (
 )
 from .planning import manifest_digest
 from .pre_sim_evidence import publish_pre_sim_firing
-from .run_directory import RunDirectory, claimed_run_directory, expand_run_directory
+from .run_directory import (
+    RunDirectory,
+    claimed_run_directory,
+    expand_run_directory,
+    require_run_directory_outside,
+)
 from .test_run_binding import observation_test_runs, work_item_test_runs
 
 #: Where a build directory keeps its Simulator Bundle manifest.
@@ -340,6 +348,9 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             "work_item_id": cast(str, request.work_item["work_item_id"]),
             "attempt_id": request.attempt_id,
         }
+        require_run_directory_outside(
+            run_directory, request.attempt_directory / "execution-evidence"
+        )
         with claimed_run_directory(run_directory, identity=identity) as run_cwd:
             return self._run_ready_group(
                 request,
@@ -1804,6 +1815,7 @@ def _capture_outcome_evidence(
     evidence_root = request.attempt_directory / "evidence"
     durable_directory(evidence_root)
     evidence_root.chmod(0o700)
+    live_root = request.attempt_directory / "execution-evidence"
     references = []
     seen: set[Path] = set()
     for artifact in outcome.artifacts:
@@ -1811,34 +1823,13 @@ def _capture_outcome_evidence(
         if source in seen or not source.is_file() or source.is_symlink():
             continue
         seen.add(source)
-        destination = evidence_root / f"{len(references) + 1:04d}-{source.name}"
-        source_raw = source.read_bytes()
-        if artifact.kind == "cocotb_results_json":
-            source_observations = _decode_cocotb_source(source_raw, artifact.test_names)
-            raw = canonical_json_bytes(
-                {
-                    "$schema": "booley.cocotb-record-transport/v1",
-                    "source_bytes": len(source_raw),
-                    "source_sha256": content_digest(source_raw),
-                    "source_observations": source_observations,
-                    "observations": (
-                        _infrastructure_observations(request, outcome)
-                        if outcome.infrastructure_failure is not None
-                        else [observation_document(test) for test in outcome.tests]
-                    ),
-                }
-            )
-            _create_immutable(destination, raw)
-        else:
-            durable_copy(source, destination)
-            raw = destination.read_bytes()
         references.append(
-            record_reference(
-                destination,
-                request.attempt_directory,
-                raw,
-                "cocotb_results" if artifact.kind == "cocotb_results_json" else artifact.kind,
-                request.attempt_id,
+            _outcome_artifact_reference(
+                request,
+                outcome,
+                artifact,
+                evidence_root / f"{len(references) + 1:04d}-{source.name}",
+                live_root,
             )
         )
     if outcome.infrastructure_failure is not None and not outcome.tests:
@@ -1868,6 +1859,53 @@ def _capture_outcome_evidence(
             )
         )
     return references
+
+
+def _outcome_artifact_reference(
+    request: WorkExecutionRequest,
+    outcome: SimulationTargetOutcome,
+    artifact: SimulationArtifactEvidence,
+    destination: Path,
+    live_root: Path,
+) -> dict[str, object]:
+    """Make one outcome artifact durable and reference it.
+
+    A file already inside the attempt's ``execution-evidence/`` is referenced
+    where it is, so the attempt keeps one copy; a file outside the attempt is
+    copied to *destination*; a Cocotb transport is rewritten to its derived
+    document at *destination*.
+    """
+    source = Path(artifact.path)
+    source_raw = source.read_bytes()
+    kind = "cocotb_results" if artifact.kind == "cocotb_results_json" else artifact.kind
+    if artifact.kind == "cocotb_results_json":
+        source_observations = _decode_cocotb_source(source_raw, artifact.test_names)
+        raw = canonical_json_bytes(
+            {
+                "$schema": "booley.cocotb-record-transport/v1",
+                "source_bytes": len(source_raw),
+                "source_sha256": content_digest(source_raw),
+                "source_observations": source_observations,
+                "observations": (
+                    _infrastructure_observations(request, outcome)
+                    if outcome.infrastructure_failure is not None
+                    else [observation_document(test) for test in outcome.tests]
+                ),
+            }
+        )
+        _create_immutable(destination, raw)
+    elif source.resolve().is_relative_to(live_root.resolve()):
+        durable_in_place(source)
+        raw = source_raw
+        destination = live_root / source.resolve().relative_to(live_root.resolve())
+        for directory in destination.parents:  # a nested file's new folders, up to the attempt
+            if not directory.is_relative_to(live_root.parent):
+                break
+            fsync_directory(directory)
+    else:
+        durable_copy(source, destination)
+        raw = destination.read_bytes()
+    return record_reference(destination, request.attempt_directory, raw, kind, request.attempt_id)
 
 
 def _decode_cocotb_source(raw: bytes, selected: tuple[str, ...]) -> list[dict[str, str]]:

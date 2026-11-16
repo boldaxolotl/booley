@@ -1,17 +1,16 @@
 """Canonical Booley Flow and Specialist references, rendered from the registry.
 
 Single source of truth: :func:`booley.mcp.registry.discover_mcp_tools`. The
-``booley cheat`` CLI renders this block live, while ``docs/user/CLI-REFERENCE.md`` embeds a
-committed copy between the ``<!-- BEGIN GENERATED: flows -->`` /
-``<!-- END GENERATED: flows -->`` markers that a pytest keeps byte-identical to
-this renderer. The cheatsheet gives Specialists their own flag-addressable
-block. Add, rename, or retire a Flow/Specialist and the lists update everywhere
-from this one place.
+``booley cheat`` CLI renders both blocks live, and ``src/booley/data/cheatsheet.md``
+embeds committed copies between the ``<!-- BEGIN GENERATED: flows -->`` and
+``<!-- BEGIN GENERATED: specialists -->`` marker pairs that a pytest keeps
+byte-identical to this renderer. The user docs link to their own Flow and
+Specialist pages instead of embedding a copy. Add, rename, or retire a
+Flow/Specialist and the cheatsheet lists update from this one place.
 
-Regenerate the committed doc blocks with::
+Regenerate the committed blocks with::
 
-    python -m booley.dev_support.flow_specialist_reference \\
-        docs/user/CLI-REFERENCE.md src/booley/data/cheatsheet.md
+    python -m booley.dev_support.flow_specialist_reference src/booley/data/cheatsheet.md
 """
 
 from __future__ import annotations
@@ -48,17 +47,6 @@ _FLOW_DISPLAY_RANK = {
 
 _BASELINE_CONTROL = "`--baseline <ref>` compares metrics against a git revision"
 
-
-# Docs render: user docs link to the full per-Flow reference instead of
-# repeating the control summaries that `booley cheat` carries.
-_FLOW_REFERENCE_POINTER = (
-    "Shared Flow options and results are in "
-    "[FLOW_REFERENCE.md](FLOW_REFERENCE.md), each Flow's own in "
-    "[FLOW-SIM.md](FLOW-SIM.md), [FLOW-LINT.md](FLOW-LINT.md), "
-    "[FLOW-SYNTH.md](FLOW-SYNTH.md), [FLOW-FPGA.md](FLOW-FPGA.md), and "
-    "[FLOW-MUTATION.md](FLOW-MUTATION.md), including the "
-    "report files each one writes; `booley flow <name> --help` prints the options too."
-)
 
 _FLOW_KEY_CONTROLS: dict[str, str] = {
     "fpga": f"{_BASELINE_CONTROL}; `--ppa-profile compact|balanced|max_frequency` "
@@ -156,25 +144,17 @@ def _summarize(text: str) -> str:
 def render_flow_reference(
     *,
     project_mcp_tools_dir: Path | None = None,
-    execution_column: bool = True,
-    key_controls: bool = True,
 ) -> str:
     """Render the Booley Flows Markdown block from the MCP endpoint registry.
 
-    Purpose cells are always summarized to one line: every consumer of this
-    block (the committed docs, ``booley cheat``) renders for a human, and the
-    full agent-facing description is a paragraph, not a table cell. See
-    :func:`_summarize`.
+    The table is followed by the common and per-Flow control summaries.
+    Purpose cells are always summarized to one line: ``booley cheat`` renders
+    for a human, and the full agent-facing description is a paragraph, not a
+    table cell. See :func:`_summarize`.
 
     Args:
         project_mcp_tools_dir: Optional ``.booley/mcp_tools/`` directory; when
             given, project-specific Flows are discovered and rendered too.
-        execution_column: Retained for compatibility; ignored because all
-            Flows execute inside the Sandbox.
-        key_controls: When true, append the common and per-Flow control
-            summaries (used by ``booley cheat``, which is read in the Sandbox).
-            When false, link to FLOW_REFERENCE.md and the per-Flow pages
-            instead, for the user docs that sit next to them.
     """
     endpoints = discover_mcp_tools(project_mcp_tools_dir=project_mcp_tools_dir)
     flows = sorted(
@@ -191,9 +171,6 @@ def render_flow_reference(
     lines.append("|--------|---------|")
     for t in flows:
         lines.append(f"| `{t.name}` | {_summarize(t.description)} |")
-    if not key_controls:
-        lines.extend(["", _FLOW_REFERENCE_POINTER])
-        return "\n".join(lines)
     controls = [
         f"- `{flow.name}`: {_FLOW_KEY_CONTROLS[flow.name]}"
         for flow in flows
@@ -270,16 +247,7 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
             "no change in scope exits 0 without a review. Pass every file of the category as "
             "the `scope` to give the Reviewer the files that use the changed ones. Findings "
             "already present before the change are listed separately as pre-existing and are "
-            "never open or verified.",
-            "",
-            "**Verify fixes:** after fixing findings, call `reviewer` with "
-            "`verify=true` (CLI: `--verify`). It rechecks only the latest review's open "
-            "findings and finds nothing new; none remaining open is a pass. To argue a "
-            'finding away, add `waive=[["<finding-id>", "<justification>"]]` (CLI: '
-            '`--waive <finding-id> "<justification>"`, repeatable); the Reviewer accepts '
-            "or rejects each. `fail_on` (CLI: `--fail-on`) is the one other "
-            "argument accepted with verify, and counts the findings still open. After two "
-            "verifies, run a fresh review.",
+            "never open.",
         ]
     )
     return lines
@@ -345,21 +313,6 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
     return "\n".join(lines)
 
 
-def render_flow_specialist_reference(
-    *,
-    project_mcp_tools_dir: Path | None = None,
-    execution_column: bool = True,
-) -> str:
-    """Render the combined reference used by the longer documentation."""
-    flows = render_flow_reference(
-        project_mcp_tools_dir=project_mcp_tools_dir,
-        execution_column=execution_column,
-        key_controls=False,
-    )
-    specialists = render_specialists_reference(project_mcp_tools_dir=project_mcp_tools_dir)
-    return f"**Booley Flows**\n\n{flows}\n\n**Specialists**\n\n{specialists}"
-
-
 def _generated_markers(name: str) -> tuple[str, str]:
     """Return the marker pair for one generated reference block."""
     if name == "flows":
@@ -396,36 +349,24 @@ def extract_generated(doc_text: str, *, name: str = "flows") -> str:
 
 
 def _main(argv: list[str] | None = None) -> int:
-    """Regenerate committed blocks in the given files (or print to stdout)."""
+    """Regenerate the committed Flow and Specialist blocks in the given files."""
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Render the canonical Booley Flows & Specialists block.",
+        description="Render the canonical Booley Flows and Specialists blocks.",
     )
     parser.add_argument(
         "paths",
-        nargs="*",
-        help="Markdown files whose generated block should be rewritten in "
-        "place. With no paths, the block is printed to stdout.",
+        nargs="+",
+        help="Markdown files whose generated blocks should be rewritten in place.",
     )
     args = parser.parse_args(argv)
 
-    body = render_flow_specialist_reference()
-    if not args.paths:
-        print(body)
-        return 0
     for path in args.paths:
         pth = Path(path)
         text = pth.read_text(encoding="utf-8")
-        if SPECIALISTS_BEGIN_MARKER in text:
-            text = splice_generated(text, render_flow_reference(), name="flows")
-            text = splice_generated(
-                text,
-                render_specialists_reference(),
-                name="specialists",
-            )
-        else:
-            text = splice_generated(text, body)
+        text = splice_generated(text, render_flow_reference(), name="flows")
+        text = splice_generated(text, render_specialists_reference(), name="specialists")
         pth.write_text(text, encoding="utf-8")
         print(f"updated {pth}")
     return 0

@@ -14,7 +14,6 @@ from pathlib import Path
 
 import pytest
 
-from booley.criteria.state import DevelopmentState
 from booley.flows.sim.coverage_invocation import (
     CoverageInvocationRequest,
     prepare_coverage_invocation,
@@ -31,8 +30,7 @@ from booley.flows.target_test_plan import MAX_TEST_RUNS_PER_REQUEST
 from booley.flows.target_test_plan_loading import load_target_test_plan
 from booley.flows.test_runs import TestRun, build_test_run, test_run_document
 from tests.flows.sim.test_coverage_flow import (
-    _AcceptanceAdapter,
-    _prepare_atomic_coverage_state,
+    _prepare_sim_custom_project,
     _SplitMetricsExecution,
 )
 from tests.flows.sim.test_coverage_invocation import project
@@ -238,14 +236,10 @@ def test_flow_records_every_test_run_in_one_coverage_aggregate(tmp_path, monkeyp
     assert [run["test_run"] for run in nested["tests"]["runs"]] == recorded
 
 
-def _ticket_coverage_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *tests: str):
-    """Run Ticket-backed coverage of ``sim_custom`` (one Test, ``gap``) with *tests*."""
-    state_path, initial_state = _prepare_atomic_coverage_state(tmp_path, monkeypatch)
-    adapter = _AcceptanceAdapter(
-        log_dir=tmp_path / "logs",
-        identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
-    )
-    result = SimulateFlow(
+def _coverage_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *tests: str):
+    """Run coverage of ``sim_custom`` (one Test, ``gap``) with *tests*."""
+    _prepare_sim_custom_project(tmp_path, monkeypatch)
+    return SimulateFlow(
         coverage_execution=lambda _handle, _options, _commands, _access: _SplitMetricsExecution()
     ).execute(
         SimRequest(
@@ -254,19 +248,16 @@ def _ticket_coverage_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *te
             coverage=True,
             report_dir=tmp_path / "reports",
             test=tests or None,
-        ),
-        adapter=adapter,
+        )
     )
-    return result, state_path, initial_state
 
 
 @pytest.mark.parametrize("tests", [(), ("gap",), ("gap@1",)])
 def test_default_coverage_runs_keep_recording_evidence(tmp_path, monkeypatch, tests):
-    result, state_path, initial_state = _ticket_coverage_result(tmp_path, monkeypatch, *tests)
+    result = _coverage_result(tmp_path, monkeypatch, *tests)
 
     assert "diagnostic_test_runs" not in result.outcome.detail
-    assert state_path.read_bytes() != initial_state
-    assert len(DevelopmentState.load(state_path).acceptance_transactions) == 1
+    assert list((tmp_path / "reports").rglob("simulation.json"))
 
 
 def test_flow_fails_when_one_of_several_runs_of_a_test_fails(tmp_path, monkeypatch):

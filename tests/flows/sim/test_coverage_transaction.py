@@ -914,3 +914,36 @@ def test_direct_coverage_outcome_includes_metrics(tmp_path):
         assert coverage_metrics(edge) == {
             "line": {"percent": percent, "threshold": 66.67, "met": met}
         }
+
+
+def test_coverage_per_test_projection_strips_stream_tails_and_preserves_metadata():
+    from types import SimpleNamespace
+
+    from booley.flows.sim.coverage_transaction import _coverage_test_projection
+
+    evidence = {
+        "status": "passed",
+        "returncode": 0,
+        "command_count": 2,
+        "elapsed_s": 0.2,
+        "test_names": ("smoke",),
+        "stdout_tail": "private stdout",
+        "stderr_tail": "private stderr",
+    }
+    run = SimpleNamespace(
+        test="smoke",
+        test_run="smoke+fast@7",
+        variant="fast",
+        seed=7,
+        fingerprint="sha256:" + "0" * 64,
+        simulation_verdict="pass",
+        collection="complete",
+        attributes={"pre_sim": evidence},
+    )
+    projection = _coverage_test_projection(run)
+    assert "stdout_tail" not in projection["pre_sim"]
+    assert "stderr_tail" not in projection["pre_sim"]
+    assert projection["pre_sim"]["returncode"] == 0
+    assert projection["pre_sim"]["command_count"] == 2
+    assert (projection["name"], projection["test_run"]) == ("smoke", "smoke+fast@7")
+    assert (projection["variant"], projection["seed"]) == ("fast", 7)

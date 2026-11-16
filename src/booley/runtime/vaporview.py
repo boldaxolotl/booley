@@ -1,6 +1,7 @@
 """Authoritative VaporView installation-state probes, recovery guidance, and the
-attached-window Viewer Bridge diagnosis, which also checks the bundled Verilog-HDL
-and Live Preview extensions."""
+attached-window Viewer Bridge diagnosis, which also checks that the verified VaporView
+carries Booley's Sandbox patch and that the bundled Verilog-HDL and Live Preview
+extensions are installed."""
 
 from __future__ import annotations
 
@@ -12,13 +13,19 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from booley.audit.diagnostic_results import DiagnosticReport, Findings
+from booley.audit.diagnostic_results import (
+    DiagnosticFinding,
+    DiagnosticReport,
+    Findings,
+    Severity,
+)
 from booley.core.boundary import (
     BoundaryError,
     as_dict,
     is_str_list,
     require_bool_value,
     require_dict,
+    require_int,
     require_list,
     require_opt_str,
 )
@@ -74,28 +81,20 @@ def find_manifests(home: Path) -> list[Path]:
     ]
 
 
-def installed_versions(home: Path, extension_id: str = EXTENSION_ID) -> list[str] | None:
-    """Return the sorted versions of every live install of an extension, or None if unknown.
+def server_root_versions(server_root: Path, extension_id: str = EXTENSION_ID) -> list[str] | None:
+    """Return the sorted live versions of an extension in one server root, or None if unknown.
 
     The extension is VaporView unless ``extension_id`` names another.
 
-    Each extension root's ``extensions.json`` is VS Code's own registry and is
+    The root's ``extensions.json`` is VS Code's own registry and is
     authoritative: after a downgrade the replaced build's directory stays on
-    disk, unmarked, until the next VS Code start. Roots without that file fall
-    back to the directories VS Code has not marked obsolete. Any unreadable
+    disk, unmarked, until the next VS Code start. A root without that file falls
+    back to the directories VS Code has not marked obsolete. An unreadable
     registry or manifest makes the answer unknown rather than partial, as does
-    a home with no VS Code server root at all.
+    a root with no extensions directory.
     """
-    roots = vscode_server.extension_dirs(home)
-    if not roots:
-        return None
-    versions: set[str] = set()
-    for root in roots:
-        root_versions = _registry_versions(root, extension_id)
-        if root_versions is None:
-            return None
-        versions |= root_versions
-    return sorted(versions)
+    versions = _registry_versions(server_root / "extensions", extension_id)
+    return None if versions is None else sorted(versions)
 
 
 def _registry_versions(root: Path, extension_id: str) -> set[str] | None:
@@ -149,6 +148,74 @@ def _directory_versions(root: Path, extension_id: str) -> set[str] | None:
             return None
         versions.add(version)
     return versions
+
+
+def live_manifests(home: Path) -> list[Path] | None:
+    """Return the manifest of every live VaporView install, or None if unknown.
+
+    These are the installs :func:`installed_versions` counts: each root's
+    ``extensions.json`` names its live directories (``relativeLocation``), and a
+    root without one falls back to the directories VS Code has not marked
+    obsolete. A leftover directory the registry no longer names is never
+    returned. An unreadable or malformed registry or obsolete list makes the
+    answer unknown rather than partial.
+    """
+    manifests: list[Path] = []
+    for root in vscode_server.extension_dirs(home):
+        found = _registry_manifests(root)
+        if found is None:
+            return None
+        manifests += found
+    return manifests
+
+
+def _registry_manifests(root: Path) -> list[Path] | None:
+    """Collect the live VaporView manifests of one extension root."""
+    try:
+        source = (root / "extensions.json").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return _directory_manifests(root)
+    except OSError:
+        return None
+    try:
+        entries = json.loads(source)
+    except ValueError:
+        return None
+    if not isinstance(entries, list):
+        return None
+    manifests: list[Path] = []
+    for entry in entries:
+        fields = as_dict(entry) or {}
+        identifier = as_dict(fields.get("identifier")) or {}
+        ext_id = identifier.get("id")
+        if not isinstance(ext_id, str) or ext_id.lower() != EXTENSION_ID:
+            continue
+        location = fields.get("relativeLocation")
+        # The registry names a directory directly under the root, nothing deeper.
+        if (
+            not isinstance(location, str)
+            or location in ("", ".", "..")
+            or Path(location).name != location
+        ):
+            return None
+        manifests.append(root / location / "package.json")
+    return manifests
+
+
+def _directory_manifests(root: Path) -> list[Path] | None:
+    """Collect the manifests of non-obsolete VaporView directories of a root with no registry."""
+    try:
+        entries = sorted(root.iterdir())
+    except OSError:
+        return None
+    obsolete = _obsolete_extensions(root)
+    if obsolete is None:
+        return None
+    return [
+        entry / "package.json"
+        for entry in entries
+        if entry.name.lower().startswith(f"{EXTENSION_ID}-") and entry.name.lower() not in obsolete
+    ]
 
 
 def probe_home(home: Path) -> ExtensionState:
@@ -286,14 +353,28 @@ _VAPORVIEW_STATE_PROBE_SOURCE = (
     "sys.exit(0 if s is ExtensionState.INSTALLED else 3 if s is ExtensionState.MISSING else 4)"
 )
 
-# Prints the live VaporView versions as JSON; exit 4 means the registry could
-# not be read. An older in-container Booley without installed_versions fails the
-# import, which the runner also treats as unknown.
-_VAPORVIEW_VERSIONS_PROBE_SOURCE = (
-    "import json,sys;from pathlib import Path;"
-    "from booley.runtime.vaporview import installed_versions;"
-    "v=installed_versions(Path.home());"
-    "print(json.dumps(v)) if v is not None else sys.exit(4)"
+
+def _vaporview_versions_probe_source(roots: tuple[str, ...]) -> str:
+    """``python3 -c`` source printing the live VaporView versions of each named server root.
+
+    A root whose registry cannot be read prints null. An older in-container
+    Booley without ``server_root_versions`` fails the import, which the runner
+    treats as "probe could not run".
+    """
+    return (
+        "import json;from pathlib import Path;"
+        "from booley.runtime.vaporview import server_root_versions as v;"
+        f"print(json.dumps({{r:v(Path.home()/r) for r in {roots!r}}}))"
+    )
+
+
+# Prints the attach hook's patch report as JSON (see ``patch_report``). An older
+# in-container Booley without it fails the import, which the runner treats as
+# "probe could not run".
+_VAPORVIEW_PATCH_PROBE_SOURCE = (
+    "import json;from pathlib import Path;"
+    "from booley.runtime.incontainer_vaporview import patch_report;"
+    "print(json.dumps(patch_report(Path.home())))"
 )
 
 # Prints every live bridge's VaporView report as JSON. An in-container Booley
@@ -304,24 +385,54 @@ _VIEWER_BRIDGE_PROBE_SOURCE = (
     "print(json.dumps(doctor_summary()))"
 )
 
-# Exit 0 when a VS Code extension host process runs, 3 when none does. Any
-# other exit (an interpreter error, a missing python3) stays "unknown", so a
-# broken probe can never pass for "no window attached".
+# Exit 3 when no VS Code extension host process runs; else exit 0 printing the
+# server roots (under the home directory) whose hosts run and how many hosts
+# run elsewhere. Any other exit (an interpreter error, a missing python3) stays
+# "unknown", so a broken probe can never pass for "no window attached". It is
+# stdlib-only so an in-container Booley of any age can run it.
 _VSCODE_EXTENSION_HOST_PROBE_SOURCE = """\
+import json
 import sys
 from pathlib import Path
 
 marker = b"bootstrap-fork\\x00--type=extensionHost"
+names = __ROOT_NAMES__
+home = Path.home()
+roots = set()
+unidentified = 0
 attached = False
 for cmdline in Path("/proc").glob("[0-9]*/cmdline"):
     try:
-        attached = marker in cmdline.read_bytes()
+        head, found, _ = cmdline.read_bytes().partition(marker)
     except OSError:
         continue
-    if attached:
-        break
+    if not found:
+        continue
+    attached = True
+    program = head.rsplit(b"\\x00", 1)[-1].decode("utf-8", "replace")
+    try:
+        root = Path(program).relative_to(home).parts[0]
+    except (ValueError, IndexError):
+        root = ""
+    if root in names:
+        roots.add(root)
+    else:
+        unidentified += 1
+if attached:
+    print(json.dumps({"roots": sorted(roots), "unidentified": unidentified}))
 sys.exit(0 if attached else 3)
-"""
+""".replace("__ROOT_NAMES__", repr(vscode_server.ROOT_NAMES))
+
+_HOST_PROBE_FAILED = "extension host probe could not run"
+_HOST_OUTSIDE_ROOTS = "VS Code extension host runs outside a known VS Code server root"
+
+
+@dataclass(frozen=True, slots=True)
+class _Attachment:
+    """The server roots with a live extension host, and why any other host is unplaced."""
+
+    roots: tuple[str, ...]
+    unknown: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -389,12 +500,15 @@ def inspect_viewer_bridge(request: ViewerBridgeRequest) -> DiagnosticReport:
         prefix = [request.docker_exe, "exec", container]
         where = f" in '{container}'"
         absent = f"{description} - no VS Code extension host attached in '{container}'"
-    if _extension_host_running(prefix) is False:
+    attachment = _attachment(prefix)
+    if attachment is None:
         report.skip(absent)
         return report.report()
-    _check_version(prefix, where, report)
+    verified = _check_version(prefix, where, attachment, report)
+    if verified:
+        _check_patch(prefix, where, report)
     _check_bridges(prefix, where, report)
-    _check_bundled_extensions(prefix, where, report)
+    _check_bundled_extensions(prefix, where, attachment, report)
     return report.report()
 
 
@@ -410,12 +524,29 @@ def _run_probe(prefix: list[str], source: str) -> subprocess.CompletedProcess[st
         return None
 
 
-def _extension_host_running(prefix: list[str]) -> bool | None:
-    """True/False when a live VS Code extension host can be detected, else None."""
+def _attachment(prefix: list[str]) -> _Attachment | None:
+    """The attached server roots; None when no extension host runs.
+
+    An answer that cannot be read is an attachment without roots whose reason
+    says so: the extension checks then skip instead of reading every root.
+    """
+    unreadable = _Attachment((), _HOST_PROBE_FAILED)
     result = _run_probe(prefix, _VSCODE_EXTENSION_HOST_PROBE_SOURCE)
     if result is None or result.returncode not in (0, 3):
+        return unreadable
+    if result.returncode == 3:
         return None
-    return result.returncode == 0
+    try:
+        answer = require_dict(json.loads(result.stdout), field="extension host probe")
+        names = require_list(answer.get("roots"), field="extension host roots")
+        unidentified = require_int(answer.get("unidentified"), field="unidentified")
+    except (ValueError, BoundaryError):
+        return unreadable
+    if not is_str_list(names) or not set(names) <= set(vscode_server.ROOT_NAMES):
+        return unreadable
+    if not names and unidentified < 1:
+        return unreadable
+    return _Attachment(tuple(names), _HOST_OUTSIDE_ROOTS if unidentified > 0 else "")
 
 
 def _extension_state(prefix: list[str]) -> ExtensionState:
@@ -428,39 +559,134 @@ def _extension_state(prefix: list[str]) -> ExtensionState:
     return ExtensionState.UNKNOWN
 
 
-def _remote_versions(prefix: list[str]) -> list[str] | None:
-    """Live VaporView versions in the remote registry, or None when unknown."""
-    result = _run_probe(prefix, _VAPORVIEW_VERSIONS_PROBE_SOURCE)
+def _remote_versions(
+    prefix: list[str], roots: tuple[str, ...]
+) -> dict[str, list[str] | None] | None:
+    """Live VaporView versions per server root (None: unreadable), or None without an answer."""
+    result = _run_probe(prefix, _vaporview_versions_probe_source(roots))
     if result is None or result.returncode != 0:
         return None
     try:
-        versions = json.loads(result.stdout)
-    except ValueError:
+        answer = require_dict(json.loads(result.stdout), field="version probe")
+    except (ValueError, BoundaryError):
         return None
-    return versions if is_str_list(versions) else None
+    versions: dict[str, list[str] | None] = {}
+    for root in roots:
+        found = answer.get(root, False)
+        if found is not None and not is_str_list(found):
+            return None
+        versions[root] = found
+    return versions
 
 
-def _check_version(prefix: list[str], where: str, report: Findings) -> None:
-    """Report whether the attached window runs the VaporView build Booley verified.
+_PATCH_STATES = frozenset({"patched", "unpatched", "foreign", "unreadable"})
+_WATCH_LOG_PATH = "~/.booley/vaporview-install-watch.log"
+
+
+def _remote_patch(prefix: list[str]) -> tuple[bool, list[str]] | None:
+    """Whether the attach hook runs and each live install's patch state, or None when unknown."""
+    result = _run_probe(prefix, _VAPORVIEW_PATCH_PROBE_SOURCE)
+    if result is None or result.returncode != 0:
+        return None
+    try:
+        answer = require_dict(json.loads(result.stdout), field="patch probe")
+        hook_running = require_bool_value(answer.get("hook_running"), field="hook_running")
+        installs = answer.get("installs")
+    except (ValueError, BoundaryError):
+        return None
+    if not is_str_list(installs) or not _PATCH_STATES.issuperset(installs):
+        return None
+    return hook_running, installs
+
+
+def _check_patch(prefix: list[str], where: str, report: Findings) -> None:
+    """Report whether the verified VaporView carries Booley's Sandbox patch.
+
+    Only called for the verified build, the one the patch is verified against.
+    A foreign bundle fails even while the attach hook runs: its watcher polls
+    until every install is patched, which a build it cannot patch never is.
+    """
+    description = f"VaporView {VERIFIED_VERSION} carries Booley's Sandbox patch"
+    answer = _remote_patch(prefix)
+    if answer is None:
+        report.skip(f"{description} - patch probe could not run{where}")
+        return
+    hook_running, installs = answer
+    if "foreign" in installs:
+        report.fail(
+            f"VaporView {VERIFIED_VERSION} is installed{where}, but not as a build Booley can patch",
+            "in the attached remote window's terminal run "
+            f"`code --install-extension {BUNDLED_VSIX}`, then 'Developer: Reload Window'",
+        )
+    elif "unpatched" in installs and hook_running:
+        report.skip(
+            f"{description} - Booley's attach hook is still patching it{where}; "
+            f"run `booley doctor` again shortly, and read {_WATCH_LOG_PATH} in the "
+            "Sandbox if this persists"
+        )
+    elif "unpatched" in installs:
+        report.fail(
+            f"VaporView {VERIFIED_VERSION} is installed{where} without Booley's Sandbox "
+            "patch, so it reports 'Error getting user theme' and shows wrong "
+            "`bwave gui` colors",
+            "run 'Developer: Reload Window' in the attached VS Code window; if the error "
+            f"persists, read {_WATCH_LOG_PATH} in the Sandbox; for a lasting fix update "
+            "Booley, then refresh the Sandbox so it uses the current Sandbox Image",
+        )
+    elif "unreadable" in installs or not installs:
+        report.skip(f"{description} - installed files could not be read{where}")
+    else:
+        report.pass_(description)
+
+
+def _check_version(
+    prefix: list[str], where: str, attachment: _Attachment, report: Findings
+) -> bool:
+    """Report whether each attached window runs the VaporView build Booley verified.
+
+    True only when every attached root's live installs are that build.
 
     The bridge answers for any VaporView build, but Booley's compatibility
     patch and its readback rules are verified against exactly one; only the
     installed version separates them.
     """
     description = f"VaporView version is the verified {VERIFIED_VERSION}"
-    versions = _remote_versions(prefix)
+    versions: dict[str, list[str] | None] = {}
+    if attachment.roots:
+        probed = _remote_versions(prefix, attachment.roots)
+        if probed is None:
+            report.skip(f"{description} - version probe could not run{where}")
+            return False
+        versions = probed
+    _report_per_root(
+        report,
+        description,
+        where,
+        attachment,
+        lambda root: _version_finding(description, versions[root], where),
+    )
+    return not attachment.unknown and all(
+        found and all(version == VERIFIED_VERSION for version in found)
+        for found in versions.values()
+    )
+
+
+def _version_finding(
+    description: str, versions: list[str] | None, where: str
+) -> DiagnosticFinding:
+    """Judge one root's live VaporView versions."""
     if versions is None:
-        report.skip(f"{description} - version probe could not run{where}")
-        return
+        return DiagnosticFinding(
+            Severity.SKIP, f"{description} - version probe could not run{where}"
+        )
     if not versions:
         # Absence is reported by the bridge check with install guidance.
-        report.skip(f"{description} - VaporView not installed{where}")
-        return
+        return DiagnosticFinding(Severity.SKIP, f"{description} - VaporView not installed{where}")
     other = [version for version in versions if version != VERIFIED_VERSION]
     if not other:
-        report.pass_(description)
-        return
-    report.fail(
+        return DiagnosticFinding(Severity.PASS, description)
+    return DiagnosticFinding(
+        Severity.FAIL,
         f"VaporView {', '.join(other)} is installed{where}; Booley verifies only "
         f"{VERIFIED_VERSION}",
         "in the attached remote window's terminal run "
@@ -468,6 +694,39 @@ def _check_version(prefix: list[str], where: str, report: Findings) -> None:
         "'Developer: Reload Window'; for a lasting fix refresh the Sandbox so "
         "its generated spec installs the bundled verified build",
     )
+
+
+_SEVERITY_RANK = {Severity.FAIL: 0, Severity.SKIP: 1, Severity.PASS: 2}
+
+
+def _report_per_root(
+    report: Findings,
+    description: str,
+    where: str,
+    attachment: _Attachment,
+    judge: Callable[[str], DiagnosticFinding],
+) -> None:
+    """Record one line judging every attached root on its own.
+
+    A single result is recorded as is. Several become one line: the worst
+    severity, every result worst first with its root named, and the worst
+    result's remedy. A host outside the known roots adds a SKIP result.
+    """
+    results = [(f"[{root}] ", judge(root)) for root in attachment.roots]
+    if attachment.unknown:
+        skipped = f"{description} - {attachment.unknown}{where}"
+        results.append(("", DiagnosticFinding(Severity.SKIP, skipped)))
+    results.sort(key=lambda item: _SEVERITY_RANK[item[1].severity])
+    worst = results[0][1]
+    message = worst.message
+    if len(results) > 1:
+        message = "; ".join(f"{name}{finding.message}" for name, finding in results)
+    if worst.severity is Severity.PASS:
+        report.pass_(message)
+    elif worst.severity is Severity.SKIP:
+        report.skip(message)
+    else:
+        report.fail(message, worst.fix)
 
 
 def _remote_bridges(prefix: list[str]) -> list[dict] | None:
@@ -551,37 +810,43 @@ def _report_waiting_for_trust(windows: int, waiting: int, where: str, report: Fi
         )
 
 
-def _bundled_extensions_probe_source(extensions: Iterable[BundledExtension]) -> str:
-    """``python3 -c`` source printing, per extension ID, its live versions and VSIX presence.
+def _bundled_extensions_probe_source(
+    extensions: Iterable[BundledExtension], roots: tuple[str, ...]
+) -> str:
+    """``python3 -c`` source printing, per extension ID, its live versions per root and VSIX presence.
 
-    An in-container Booley whose ``installed_versions`` takes no extension ID
-    raises ``TypeError``, and one without it fails the import: both exit 1,
+    An in-container Booley without ``server_root_versions`` fails the import,
     which reads as "probe could not run".
     """
     pairs = tuple((item.extension_id, item.vsix) for item in extensions)
     return (
         "import json,os;from pathlib import Path;"
-        "from booley.runtime.vaporview import installed_versions as v;"
-        "print(json.dumps({i:{'versions':v(Path.home(),i),'vsix':os.path.isfile(f)} "
-        f"for i,f in {pairs!r}}}))"
+        "from booley.runtime.vaporview import server_root_versions as v;"
+        "h=Path.home();"
+        f"print(json.dumps({{i:{{'versions':{{r:v(h/r,i) for r in {roots!r}}},"
+        f"'vsix':os.path.isfile(f)}} for i,f in {pairs!r}}}))"
     )
 
 
 def _remote_bundled(
-    prefix: list[str], extensions: tuple[BundledExtension, ...]
-) -> dict[str, tuple[list[str] | None, bool]] | None:
-    """Per extension ID: (live versions or None when unknown, VSIX present); None if no answer."""
-    result = _run_probe(prefix, _bundled_extensions_probe_source(extensions))
+    prefix: list[str], extensions: tuple[BundledExtension, ...], roots: tuple[str, ...]
+) -> dict[str, tuple[dict[str, list[str] | None], bool]] | None:
+    """Per extension ID: (live versions per root, VSIX present); None if no answer."""
+    result = _run_probe(prefix, _bundled_extensions_probe_source(extensions, roots))
     if result is None or result.returncode != 0:
         return None
     try:
         answer = require_dict(json.loads(result.stdout), field="bundled extension probe")
-        observed: dict[str, tuple[list[str] | None, bool]] = {}
+        observed: dict[str, tuple[dict[str, list[str] | None], bool]] = {}
         for item in extensions:
             entry = require_dict(answer.get(item.extension_id), field=item.extension_id)
-            versions = entry.get("versions")
-            if versions is not None and not is_str_list(versions):
-                raise BoundaryError("versions must be a list of strings or null")
+            by_root = require_dict(entry.get("versions"), field="versions")
+            versions: dict[str, list[str] | None] = {}
+            for root in roots:
+                found = by_root.get(root, False)
+                if found is not None and not is_str_list(found):
+                    raise BoundaryError("versions must be a list of strings or null")
+                versions[root] = found
             observed[item.extension_id] = (
                 versions,
                 require_bool_value(entry.get("vsix"), field="vsix"),
@@ -591,33 +856,46 @@ def _remote_bundled(
         return None
 
 
-def _check_bundled_extensions(prefix: list[str], where: str, report: Findings) -> None:
-    """Report each bundled extension besides VaporView, from one probe of the window."""
+def _check_bundled_extensions(
+    prefix: list[str], where: str, attachment: _Attachment, report: Findings
+) -> None:
+    """Report each bundled extension besides VaporView, from one probe of the attached roots."""
     # Deferred: devcontainer imports this module.
     from booley.runtime.devcontainer import BUNDLED_EXTENSIONS
 
-    observed = _remote_bundled(prefix, BUNDLED_EXTENSIONS)
+    observed: dict[str, tuple[dict[str, list[str] | None], bool]] = {}
+    if attachment.roots:
+        probed = _remote_bundled(prefix, BUNDLED_EXTENSIONS, attachment.roots)
+        if probed is None:
+            for extension in BUNDLED_EXTENSIONS:
+                description = f"{extension.name} extension is the bundled {extension.version}"
+                report.skip(f"{description} - extension probe could not run{where}")
+            return
+        observed = probed
     for extension in BUNDLED_EXTENSIONS:
-        observation = None if observed is None else observed[extension.extension_id]
-        _report_bundled(extension, observation, where, report)
+        description = f"{extension.name} extension is the bundled {extension.version}"
+        versions, vsix_present = observed.get(extension.extension_id, ({}, False))
+        _report_per_root(
+            report,
+            description,
+            where,
+            attachment,
+            lambda root, extension=extension, versions=versions, vsix_present=vsix_present: (
+                _bundled_finding(extension, versions[root], vsix_present, where)
+            ),
+        )
 
 
-def _report_bundled(
-    extension: BundledExtension,
-    observation: tuple[list[str] | None, bool] | None,
-    where: str,
-    report: Findings,
-) -> None:
-    """Pass, skip or fail one bundled extension against what the window has."""
+def _bundled_finding(
+    extension: BundledExtension, versions: list[str] | None, vsix_present: bool, where: str
+) -> DiagnosticFinding:
+    """Judge one bundled extension against what one root has."""
     name, version = extension.name, extension.version
     description = f"{name} extension is the bundled {version}"
-    if observation is None:
-        report.skip(f"{description} - extension probe could not run{where}")
-        return
-    versions, vsix_present = observation
     if versions is None:
-        report.skip(f"{description} - extension registry could not be read{where}")
-        return
+        return DiagnosticFinding(
+            Severity.SKIP, f"{description} - extension registry could not be read{where}"
+        )
     other = [found for found in versions if found != version]
     if not versions:
         message = f"{name} extension ({extension.extension_id}) is not installed{where}"
@@ -628,9 +906,8 @@ def _report_bundled(
     elif not vsix_present:
         message = f"{name} {version} is installed{where}, but its bundled VSIX is absent"
     else:
-        report.pass_(description)
-        return
-    report.fail(message, _bundled_fix(extension, vsix_present))
+        return DiagnosticFinding(Severity.PASS, description)
+    return DiagnosticFinding(Severity.FAIL, message, _bundled_fix(extension, vsix_present))
 
 
 def _bundled_fix(extension: BundledExtension, vsix_present: bool) -> str:

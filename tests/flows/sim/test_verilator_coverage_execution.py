@@ -59,6 +59,7 @@ from booley.flows.sim.verilator_coverage_execution import (
 )
 from booley.flows.target_test_plan_loading import load_target_test_plan
 from booley.fusesoc.fusesoc_registry import ResolvedFile, core_target_coverage_errors
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 from booley.targets.catalog import TargetCatalog
 from tests.flows.sim.simulation_record_test_support import _admission
 from tests.flows.sim.test_simulation_record_manifest_codec import _manifest, _sha
@@ -723,10 +724,11 @@ def test_build_reports_unpinned_collector_version(tmp_path: Path, monkeypatch) -
     expected = (
         "Verilator 5.050 is not the pinned coverage collector "
         f"(expected {PINNED_VERILATOR.tag} @ {PINNED_VERILATOR.commit}); "
-        "rebuild the Sandbox image (booley session refresh)"
+        f"recreate the Sandbox on a rebuilt Sandbox Image: {UNKNOWN_SANDBOX_STEPS}"
     )
     assert build.success is False
     assert expected in build.output
+    assert "(booley session refresh)" not in build.output
 
 
 def test_build_reports_when_collector_version_cannot_be_determined(
@@ -740,6 +742,7 @@ def test_build_reports_when_collector_version_cannot_be_determined(
     assert build.success is False
     assert "Verilator coverage collector version could not be determined" in build.output
     assert f"expected {PINNED_VERILATOR.tag} @ {PINNED_VERILATOR.commit}" in build.output
+    assert UNKNOWN_SANDBOX_STEPS in build.output
 
 
 def test_build_reports_collector_provenance_mismatch(tmp_path: Path, monkeypatch) -> None:

@@ -26,20 +26,9 @@ _ALLOWED: dict[str, str] = {
     "booley.flows.endpoint_report_criteria": "evidence and staleness #3512",
     "booley.flows.endpoint_state": "evidence and staleness #3512",
     "booley.flows.execution_persistence": "evidence and staleness #3512",
-    "booley.flows.sim.acceptance": "evidence and staleness #3512",
-    "booley.flows.sim.coverage_flow_context": "evidence and staleness #3512",
-    "booley.flows.sim.coverage_projection": "evidence and staleness #3512",
-    "booley.flows.sim.elab_only": "evidence and staleness #3512",
-    "booley.flows.sim.flow": "evidence and staleness #3512",
-    "booley.flows.sim.flow_resume": "evidence and staleness #3512",
-    "booley.flows.sim.standalone": "evidence and staleness #3512",
-    "booley.flows.sim.workload": "evidence and staleness #3512",
     "booley.mcp.endpoint_validation": "Criteria catalog #3512",
     "booley.mcp.registry": "Criteria catalog #3512",
     "booley.mcp.unbound_recorder": "evidence and staleness #3512",
-    "booley.specialists.coverage_analyst": "evidence and staleness #3512",
-    "booley.specialists.reviewer": "evidence and staleness #3512",
-    "booley.specialists.verification_freshness": "evidence and staleness #3512",
 }
 
 
@@ -60,6 +49,11 @@ def _criteria_importers() -> frozenset[str]:
 def test_only_criteria_consumers_import_criteria() -> None:
     """New importers and stale rows both fail."""
     assert _criteria_importers() == frozenset(_ALLOWED)
+
+
+def test_no_specialist_module_imports_criteria() -> None:
+    """Specialists read and write no Criterion evidence (#4301)."""
+    assert {m for m in _criteria_importers() if _is_inside(m, "booley.specialists")} == set()
 
 
 REPO_ROOT = SOURCE_ROOT.parents[1]

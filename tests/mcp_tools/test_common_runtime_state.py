@@ -63,7 +63,8 @@ def test_servers_of_different_checkouts_keep_separate_logs(worktree, monkeypatch
 
 
 @pytest.mark.parametrize("sandbox_like", [False, True], ids=["host", "sandbox"])
-def test_reviewer_state_and_evidence_share_main(worktree, monkeypatch, sandbox_like):
+def test_reviewer_writes_evidence_to_main_and_no_review_state(worktree, monkeypatch, sandbox_like):
+    from booley.runtime import runtime_context
     from booley.specialists.reviewer import ReviewerSpecialist
 
     main, tree = worktree
@@ -73,23 +74,43 @@ def test_reviewer_state_and_evidence_share_main(worktree, monkeypatch, sandbox_l
     monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
     (tree / "rtl").mkdir()
     (tree / "rtl/dut.sv").write_text("module dut; endmodule\n")
-    endpoint = ReviewerSpecialist()
-    endpoint.parse_args(
-        ["--work-dir", str(tree), "--scope", "rtl/dut.sv", "--category", "rtl", "--focus", "bugs"]
-    )
-    endpoint.read_state()
-    state_file = Path(endpoint.args.state_file)
-    assert state_file.is_relative_to(main / "reviewer-state")
-
+    issue = {
+        "severity": "MAJOR",
+        "confidence": "HIGH",
+        "category": "bugs",
+        "file": "rtl/dut.sv",
+        "line": 1,
+        "summary": "Wrong reset value",
+        "kind": "code_defect",
+        "disposition": "current",
+        "ticket_clause": "Reset clears output",
+    }
+    argv = [
+        "--work-dir",
+        str(tree),
+        "--scope",
+        "rtl/dut.sv",
+        "--category",
+        "rtl",
+        "--focus",
+        "bugs",
+    ]
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
     monkeypatch.setattr(
-        endpoint,
+        ReviewerSpecialist,
         "_invoke_agent",
-        lambda _params: MagicMock(
-            output=json.dumps({"issues": []}), captured_agent_capability_calls={}
+        lambda _self, _params: MagicMock(
+            output=json.dumps({"issues": [issue]}), captured_agent_capability_calls={}
         ),
     )
-    result = endpoint._run()
-    assert Path(result.detail["audit_evidence"]).is_relative_to(main / "reviewer-evidence")
+    for _ in range(2):
+        endpoint = ReviewerSpecialist()
+        result = endpoint.execute_cli(argv)
+        assert result.exit_code == 0, result.outcome.report_text
+        assert "RESULT: REVIEWED WITH FINDINGS" in result.outcome.report_text
+    evidence = sorted((main / "reviewer-evidence").glob("*.json"))
+    assert len(evidence) == 2
+    assert not (main / "reviewer-state").exists()
 
 
 def test_session_registry_and_prune_use_main(worktree, monkeypatch):
@@ -160,7 +181,9 @@ def test_doctor_reads_session_state_from_main(worktree, monkeypatch):
 
     main, tree = worktree
     handle_maps: list[Path] = []
-    monkeypatch.setattr(doctor, "_check_handle_map_size", lambda d, _warn: handle_maps.append(d))
+    monkeypatch.setattr(
+        doctor, "_check_handle_map_size", lambda d, _root, _warn: handle_maps.append(d)
+    )
     for name in (
         "_check_ticket_leftovers",
         "_check_project_gitignore",

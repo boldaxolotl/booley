@@ -1,6 +1,6 @@
 """Hand-run Reviewer: inline spec text, opt-in failing exit, unscoped-file findings (issues #3269, #4052).
 
-Every test drives a real Interactive Reviewer (real ``reviewer-state``, no Goal recorder)
+Every test drives a real Interactive Reviewer (no review state, no Goal recorder)
 with the agent call mocked to return canned findings.
 """
 
@@ -19,6 +19,7 @@ import pytest
 from booley.criteria.presentation import CriterionPresentation
 from booley.criteria.state import DevelopmentState
 from booley.evidence.review_receipt import review_receipt_drift
+from booley.evidence.review_vocabulary import ORIGIN_PRE_EXISTING
 from booley.flows.execution_persistence import NoAcceptanceRecorder, ReviewInputs
 from booley.mcp.base import McpToolResult
 from booley.specialists.reviewer import ReviewerSpecialist
@@ -49,33 +50,12 @@ def finding(
     }
 
 
-def waiver_verdicts(count: int) -> dict[str, Any]:
-    """A verify answer accepting the waiver proposed for each of *count* findings."""
-    return {
-        "findings": [
-            {"index": index, "status": "WAIVED", "justification": "Accepted as designed"}
-            for index in range(1, count + 1)
-        ]
-    }
-
-
-def verdicts(*statuses: str) -> dict[str, Any]:
-    """A verify answer; FIXED rows cite evidence so they are not demoted."""
-    return {
-        "findings": [
-            {"index": index, "status": status, "evidence": "rtl/dut.sv:1 corrected"}
-            for index, status in enumerate(statuses, 1)
-        ]
-    }
-
-
 def build_project(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A project with RTL, testbench and firmware files and its own Reviewer state file."""
+    """A project with RTL, testbench and firmware files ."""
     for name in ("rtl/dut.sv", "tb/tb.sv", "fw/start.c"):
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("// authored\n")
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(root / "state.json"))
     monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
     return root
 
@@ -105,11 +85,20 @@ def review(
     return reviewer._run(), invoke
 
 
+def open_findings(detail: dict[str, Any]) -> list[dict[str, Any]]:
+    """The corrective rows of a review detail."""
+    return [
+        row
+        for row in detail["issue_list"]
+        if row["disposition"] == "current" and row.get("origin") != ORIGIN_PRE_EXISTING
+    ]
+
+
 def prompt_of(invoke: MagicMock) -> str:
     return invoke.call_args.args[0].prompt
 
 
-def test_spec_text_is_reviewed_reported_and_reused_by_verify(
+def test_spec_text_is_reviewed_and_reported(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     text = "Reset drives q low.\nEnable is active high."
@@ -123,11 +112,6 @@ def test_spec_text_is_reviewed_reported_and_reused_by_verify(
     assert f"## Specification (source: inline text)\n\n{text}" in prompt_of(invoke)
     assert f"Spec (inline text):\n{text}" in result.report_text
     assert review_receipt_drift(result.detail, project) == []
-
-    verifier, invoke = review(project, monkeypatch, ["--verify"], verdicts("STILL_PRESENT"))
-    assert verifier.exit_code == 0, verifier.report_text
-    assert text in prompt_of(invoke)
-    assert f"Spec (inline text):\n{text}" in verifier.report_text
 
 
 def test_spec_and_spec_text_together_is_a_usage_error(
@@ -161,23 +145,12 @@ def test_missing_spec_file_fails_while_same_words_as_spec_text_review(
     assert "missing.md" in prompt_of(invoke)
 
 
-def test_completed_review_and_verify_exit_zero_without_fail_on(
+def test_completed_review_exits_zero_without_fail_on(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     result, _ = review(project, monkeypatch, BASE_ARGS, {"issues": [finding("MAJOR")]})
     assert result.exit_code == 0, result.report_text
-    assert len(ReviewerSpecialist._open_findings(result.detail)) == 1
-
-    for _attempt in range(2):
-        result, _ = review(project, monkeypatch, ["--verify"], verdicts("STILL_PRESENT"))
-        assert result.exit_code == 0, result.report_text
-        assert len(result.detail["pending"]) == 1
-
-    # The verify budget is a refusal, not a finding: exit 1 stays reserved for --fail-on.
-    result, invoke = review(project, monkeypatch, ["--verify"])
-    assert result.exit_code == 2
-    assert "verify attempts exhausted" in result.report_text
-    invoke.assert_not_called()
+    assert len(open_findings(result.detail)) == 1
 
 
 @pytest.mark.parametrize(
@@ -198,33 +171,6 @@ def test_fail_on_threshold(
         project, monkeypatch, [*BASE_ARGS, "--fail-on", fail_on], {"issues": [finding(severity)]}
     )
     assert result.exit_code == expected, result.report_text
-
-
-def test_verify_fail_on_counts_findings_still_open(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    review(
-        project,
-        monkeypatch,
-        BASE_ARGS,
-        {"issues": [finding("MAJOR"), finding("MINOR", summary="Style nit", line=4)]},
-    )
-    result, _ = review(
-        project,
-        monkeypatch,
-        ["--verify", "--fail-on", "major"],
-        verdicts("STILL_PRESENT", "STILL_PRESENT"),
-    )
-    assert result.exit_code == 1, result.report_text
-    # Only the minor finding stays open; a major threshold no longer fails.
-    result, _ = review(
-        project,
-        monkeypatch,
-        ["--verify", "--fail-on", "major"],
-        verdicts("FIXED", "STILL_PRESENT"),
-    )
-    assert result.exit_code == 0, result.report_text
-    assert len(result.detail["pending"]) == 1
 
 
 @pytest.mark.parametrize("args", [BASE_ARGS, TB_ARGS], ids=["rtl", "tb"])
@@ -252,7 +198,7 @@ def test_unscoped_file_findings_are_filtered_as_source_scope(
         },
     )
     assert result.exit_code == 0, result.report_text
-    assert [row["file"] for row in ReviewerSpecialist._open_findings(result.detail)] == [in_scope]
+    assert [row["file"] for row in open_findings(result.detail)] == [in_scope]
     assert [row["file"] for row in result.detail["issue_list"]] == [in_scope]
     assert sorted((row["file"], row["reason"]) for row in result.detail["filtered"]) == sorted(
         (str(path), "source_scope")
@@ -581,7 +527,7 @@ def test_duplicates_never_merge_across_open_finding_and_observation(
     )
     rows = result.detail["issue_list"]
     assert sorted(row["status"] for row in rows) == ["advisory", "current"]
-    assert len(ReviewerSpecialist._open_findings(result.detail)) == 1
+    assert len(open_findings(result.detail)) == 1
 
 
 def test_findings_record_guide_kinds_and_gating_ignores_them(
@@ -636,7 +582,6 @@ def _assert_failing_guide_is_error(
     broken = broken_answers()
     healthy = {"issues": [finding("MAJOR", summary="Healthy call finding", line=7)]}
     answers = {guide: (broken[failure] if guide == failing else healthy) for guide in BUGS_GUIDES}
-    key = "review_rtl_bugs_done"
     transcripts = project / "transcripts"
     result, calls = review_by_guide(
         project, monkeypatch, [*BASE_ARGS, "--transcript-dir", str(transcripts)], answers
@@ -652,10 +597,9 @@ def _assert_failing_guide_is_error(
     assert f"ERROR: {other} call failed" not in result.report_text
     assert "issue_list" not in result.detail
     assert "pending" not in result.detail
-    # The healthy call's finding is published nowhere: not in the report, detail or state.
+    # The healthy call's finding is published nowhere: not in the report or detail.
     assert "Healthy call finding" not in result.report_text
     assert "Healthy call finding" not in json.dumps(result.detail, default=str)
-    assert "Healthy call finding" not in (project / "state.json").read_text()
     assert result.detail["review_error"] is True
     status = {c["guides"][0]: c["status"] for c in result.detail["guide_calls"]}
     assert status == {failing: "error", other: "ok"}
@@ -664,11 +608,6 @@ def _assert_failing_guide_is_error(
     (first_try,) = failing_call["failed_attempts"]
     assert first_try["status"] == "error"
     assert first_try["attempt_id"] != failing_call["attempt_id"]
-    state = DevelopmentState.load(project / "state.json")
-    assert state.is_met(key) is False
-    # A failed discovery leaves nothing to verify.
-    verifier, _ = review(project, monkeypatch, ["--verify"], verdicts())
-    assert verifier.exit_code == 2
 
 
 @pytest.mark.parametrize("failure", ["raises", "no_json", "all_rejected", "mirror_disagrees"])
@@ -695,7 +634,7 @@ def test_failed_guide_call_is_retried_once_and_the_review_succeeds(
     assert [guide_of(c) for c in calls].count(other) == 1
     assert f"INFO: {failing} call failed; retrying it once" in result.report_text
     assert "the review is incomplete" not in result.report_text
-    summaries = {row["summary"] for row in ReviewerSpecialist._open_findings(result.detail)}
+    summaries = {row["summary"] for row in open_findings(result.detail)}
     assert summaries == {"Other call finding", "Retried call finding"}
     rows = {c["guides"][0]: c for c in result.detail["guide_calls"]}
     assert {c["status"] for c in rows.values()} == {"ok"}
@@ -739,9 +678,6 @@ def test_goal_shaped_recorder_leaves_hand_run_inputs(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A Goal-shaped recorder neither supplies inputs nor restricts options (#3276)."""
-    state = DevelopmentState.load(project / "state.json")
-    state.set_criterion("review_rtl_bugs_clean", met=False)
-    state.save()
     reviewer = goal_shaped_reviewer(
         project, [*BASE_ARGS, "--spec-text", "words", "--fail-on", "major"]
     )
@@ -758,14 +694,6 @@ def test_goal_shaped_recorder_leaves_hand_run_inputs(
     assert len(calls) == 2
     assert result.detail["contract"]["mode"] == "done"
     assert "goal_target_surface" not in result.detail["contract"]
-    assert "review_rtl_bugs_done" in DevelopmentState.load(project / "state.json").criteria
-
-    verifier = goal_shaped_reviewer(project, ["--verify", "--fail-on", "major"])
-    invoke = MagicMock(return_value=agent_result(verdicts("STILL_PRESENT")))
-    monkeypatch.setattr(verifier, "_invoke_agent", invoke)
-    verified = verifier._run()
-    assert verified.exit_code == 1, verified.report_text
-    assert invoke.call_count == 1
 
 
 def test_goal_shaped_recorder_still_refuses_support_only_scope(
@@ -783,57 +711,6 @@ def test_goal_shaped_recorder_still_refuses_support_only_scope(
     assert "Goal" not in result.report_text
     assert "tb/notes.txt" in result.report_text
     invoke.assert_not_called()
-
-
-def test_goal_shaped_recorder_verify_limit_is_an_error(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    reviewer = goal_shaped_reviewer(project, BASE_ARGS)
-    answers = {"bugs-checklist": {"issues": [finding("MAJOR")]}, "bugs-hunt": {"issues": []}}
-    monkeypatch.setattr(
-        reviewer, "_invoke_agent", lambda params: agent_result(answers[guide_of(params)])
-    )
-    assert reviewer._run().exit_code == 0
-    for _ in range(2):
-        verifier = goal_shaped_reviewer(project, ["--verify"])
-        monkeypatch.setattr(
-            verifier,
-            "_invoke_agent",
-            lambda params, **_kwargs: agent_result(verdicts("STILL_PRESENT")),
-        )
-        assert verifier._run().exit_code == 0
-    third = goal_shaped_reviewer(project, ["--verify"])
-    result = third._run()
-    assert result.exit_code == 2, result.report_text
-    assert result.report_text.startswith("review_rtl_bugs_done: 2 verify attempts exhausted")
-
-
-def test_verify_after_two_guide_review_is_one_call_and_waives_either_guide(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    checklist = finding("MAJOR", summary="Checklist finding")
-    hunt = finding("MAJOR", summary="Hunt finding", line=8)
-    result, _ = review_by_guide(
-        project,
-        monkeypatch,
-        BASE_ARGS,
-        {"bugs-checklist": {"issues": [checklist]}, "bugs-hunt": {"issues": [hunt]}},
-    )
-    by_summary = {
-        row["summary"]: row["finding_id"]
-        for row in ReviewerSpecialist._open_findings(result.detail)
-    }
-    assert set(by_summary) == {"Checklist finding", "Hunt finding"}
-
-    verify_args = ["--verify"]
-    for summary in ("Hunt finding", "Checklist finding"):
-        verify_args += ["--waive", by_summary[summary], "Accepted as designed"]
-    verifier, invoke = review(project, monkeypatch, verify_args, waiver_verdicts(2))
-    assert invoke.call_count == 1  # verify never fans out
-    assert "## Review guide" not in invoke.call_args.args[0].system_prompt
-    assert verifier.exit_code == 0, verifier.report_text
-    assert {row["status"] for row in verifier.detail["resolved"]} == {"waived"}
-    assert verifier.detail["pending"] == []
 
 
 def test_single_guide_focus_makes_one_call_as_before(
@@ -910,7 +787,6 @@ def _assert_guide_edit_stales_receipt(
     import shutil
 
     from booley.runtime.paths import refs_dir
-    from booley.specialists.verification_freshness import refresh_verification_freshness
 
     shutil.copytree(refs_dir() / "code_review", package_data / "refs/code_review")
     monkeypatch.setattr("booley.runtime.paths.package_data_dir", lambda: package_data)
@@ -922,18 +798,12 @@ def _assert_guide_edit_stales_receipt(
         {"bugs-checklist": {"issues": []}, "bugs-hunt": {"issues": []}},
     )
     assert review_receipt_drift(result.detail, project) == []
-    state = DevelopmentState.load(project / "state.json")
-    assert state.is_met("review_rtl_bugs_done") is True
 
     with (package_data / "refs/code_review/rtl" / f"{guide}.md").open(
         "a", encoding="utf-8", newline="\n"
     ) as f:
         f.write("\nOne more rule.\n")
     assert review_receipt_drift(result.detail, project) == ["guides"]
-    refresh_verification_freshness(state, work_dir=project)
-    entry = state.criteria["review_rtl_bugs_done"]
-    assert entry.met is False
-    assert entry.detail["stale_review_dimensions"] == ["guides"]
 
 
 # --- TB quality: language checklists and one hunt call (issue #4021) ---

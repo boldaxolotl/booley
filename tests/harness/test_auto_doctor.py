@@ -516,6 +516,13 @@ def _publish_with_real_bridge_check(
 ) -> dict:
     """Run the real Viewer Bridge owner inside ``auto_doctor._execute``."""
     real_run = subprocess.run
+    roots = (".vscode-server",)
+    answers = {
+        vaporview._vaporview_versions_probe_source(roots): {
+            root: [vaporview.VERIFIED_VERSION] for root in roots
+        },
+        vaporview._VAPORVIEW_PATCH_PROBE_SOURCE: {"hook_running": False, "installs": ["patched"]},
+    }
 
     def probe_run(argv, **kwargs):
         """Serve the owner's in-Sandbox probes: bridges are real, the rest is attached."""
@@ -523,22 +530,22 @@ def _publish_with_real_bridge_check(
         if command[-1] == vaporview._VIEWER_BRIDGE_PROBE_SOURCE:
             summary = vaporview_bridge.doctor_summary(home)
             return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(summary), stderr="")
-        if command[-1] == vaporview._VAPORVIEW_VERSIONS_PROBE_SOURCE:
+        if command[-1] in answers:
             return subprocess.CompletedProcess(
-                argv, 0, stdout=json.dumps([vaporview.VERIFIED_VERSION]), stderr=""
+                argv, 0, stdout=json.dumps(answers[command[-1]]), stderr=""
             )
         if command[-1] == vaporview._bundled_extensions_probe_source(
-            devcontainer.BUNDLED_EXTENSIONS
+            devcontainer.BUNDLED_EXTENSIONS, roots
         ):
             installed = {
-                e.extension_id: {"versions": [e.version], "vsix": True}
+                e.extension_id: {"versions": {root: [e.version] for root in roots}, "vsix": True}
                 for e in devcontainer.BUNDLED_EXTENSIONS
             }
             return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(installed), stderr="")
-        if command[-1] in (
-            vaporview._VSCODE_EXTENSION_HOST_PROBE_SOURCE,
-            vaporview._VAPORVIEW_STATE_PROBE_SOURCE,
-        ):
+        if command[-1] == vaporview._VSCODE_EXTENSION_HOST_PROBE_SOURCE:
+            attached = {"roots": list(roots), "unidentified": 0}
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(attached), stderr="")
+        if command[-1] == vaporview._VAPORVIEW_STATE_PROBE_SOURCE:
             return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
         return real_run(argv, **kwargs)
 

@@ -32,23 +32,16 @@ def _make_flow(
     tmp_path: Path,
     *,
     config: str = "",
-    criterion_met: bool = False,
     standalone: bool = True,
 ) -> SimulateFlow:
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir(exist_ok=True)
     if config:
         (booley_dir / "booley.toml").write_text(config, encoding="utf-8")
-    state_file = tmp_path / "state.json"
-    state = DevelopmentState.load(state_file)
-    state.init_criteria({"elaborate_standalone": True})
-    state.criteria["elaborate_standalone"].met = criterion_met
-    state.save()
     env = os.environ.copy()
     env.update(
         BOOLEY_DIR=str(booley_dir),
         BOOLEY_SLUG="standalone-test",
-        BOOLEY_STATE_FILE=str(state_file),
     )
     flow = SimulateFlow()
     with patch.dict(os.environ, env):
@@ -171,13 +164,7 @@ class TestDeclarationScan:
 
 
 class TestStandaloneSweep:
-    def test_declared_criterion_does_not_implicitly_enable_sweep(self, tmp_path: Path) -> None:
-        flow = _make_flow(tmp_path, standalone=False)
-
-        assert flow.state.has_criterion("elaborate_standalone")
-        assert flow._standalone_requested() is False
-
-    def test_success_probes_each_declaring_file_and_records_pass(
+    def test_success_probes_each_declaring_file_and_passes(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -198,10 +185,7 @@ class TestStandaloneSweep:
             outcome = flow._run_standalone_check(["sim_dut"])
 
         assert outcome.passed
-        assert flow.state.criteria["elaborate_standalone"].met is True
-        assert flow.state.criteria["elaborate_standalone"].detail["mode"] == (
-            "elab_only_standalone"
-        )
+        assert flow.state.criteria == {}
         assert outcome.detail["mode"] == "elab_only_standalone"
         assert outcome.detail["modules_checked"] == 2
         assert outcome.detail["frontend"] == "iverilog"
@@ -220,6 +204,35 @@ class TestStandaloneSweep:
         assert [arg for arg in by_module["alu"] if arg.endswith(".sv")] == ["rtl/alu.sv"]
         assert [arg for arg in by_module["top"] if arg.endswith(".sv")] == ["rtl/top.sv"]
         assert all(not arg.startswith("-P") for arg in by_module["alu"])
+
+    def test_declared_target_set_does_not_restrict_the_sweep(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _write_sources(
+            tmp_path,
+            {
+                "rtl/alu.sv": "module alu; endmodule\n",
+                "rtl/top.sv": "module top; endmodule\n",
+            },
+        )
+        _stub_sources(monkeypatch, ["rtl/alu.sv", "rtl/top.sv"])
+        flow = _make_flow(tmp_path)
+        state = DevelopmentState()
+        state.init_criteria(
+            {"elaborate_standalone": True},
+            criterion_params={"elaborate_standalone": {"targets": ["acme:other:1#x"]}},
+        )
+        flow._state = state
+        flow._record_eda_tool("sim_dut", "icarus")
+        _stub_probes(monkeypatch, flow)
+
+        with flow.publication_resources:
+            outcome = flow._run_standalone_check(["sim_dut"])
+
+        assert outcome.passed
+        assert outcome.detail["modules_checked"] == 2
 
     def test_complete_sweep_shares_one_deadline(
         self,
@@ -327,7 +340,7 @@ class TestStandaloneSweep:
     ) -> None:
         _write_sources(tmp_path, {"rtl/top.sv": "module top; endmodule\n"})
         _stub_sources(monkeypatch, ["rtl/top.sv"])
-        flow = _make_flow(tmp_path, criterion_met=True)
+        flow = _make_flow(tmp_path)
         flow._record_eda_tool("sim_dut", "icarus")
         _stub_probes(
             monkeypatch,
@@ -345,7 +358,6 @@ class TestStandaloneSweep:
 
         assert not outcome.passed
         assert not outcome.eda_tool_failed
-        assert flow.state.criteria["elaborate_standalone"].met is False
         assert outcome.detail["failures"][0]["module"] == "top"
         assert "top (rtl/top.sv) via iverilog" in "\n".join(outcome.lines)
         assert outcome.detail["failures"][0]["frontend"] == "iverilog"
@@ -397,7 +409,7 @@ class TestStandaloneSweep:
             ),
         ],
     )
-    def test_infrastructure_error_preserves_prior_criterion(
+    def test_infrastructure_error_is_no_verdict(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -408,7 +420,7 @@ class TestStandaloneSweep:
         if sources:
             _write_sources(tmp_path, {sources[0]: "module alu; endmodule\n"})
         _stub_sources(monkeypatch, sources)
-        flow = _make_flow(tmp_path, criterion_met=True)
+        flow = _make_flow(tmp_path)
         flow._record_eda_tool("sim_dut", "icarus")
         _stub_probes(monkeypatch, flow, {"alu": probe} if probe else None)
 
@@ -417,9 +429,8 @@ class TestStandaloneSweep:
 
         assert outcome.eda_tool_failed
         assert message in "\n".join(outcome.lines)
-        assert flow.state.criteria["elaborate_standalone"].met is True
 
-    def test_parse_gap_is_no_verdict_and_preserves_prior_criterion(
+    def test_parse_gap_is_no_verdict(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -427,7 +438,7 @@ class TestStandaloneSweep:
         _write_sources(tmp_path, {"rtl/alu.sv": "module alu; endmodule\n"})
         _stub_sources(monkeypatch, ["rtl/alu.sv"], eda_tool="xcelium")
         _stub_which(monkeypatch, True)
-        flow = _make_flow(tmp_path, criterion_met=True)
+        flow = _make_flow(tmp_path)
         flow._record_eda_tool("sim_dut", "xcelium")
         _stub_probes(
             monkeypatch,
@@ -442,7 +453,6 @@ class TestStandaloneSweep:
         assert outcome.detail["unparsed"][0]["module"] == "alu"
         assert outcome.detail["unparsed"][0]["fallback"] is True
         assert "not a design defect" in "\n".join(outcome.lines)
-        assert flow.state.criteria["elaborate_standalone"].met is True
 
     def test_real_failure_and_parse_gap_are_both_retained(
         self,
@@ -458,7 +468,7 @@ class TestStandaloneSweep:
         )
         _stub_sources(monkeypatch, ["rtl/gapped.sv", "rtl/broken.sv"], eda_tool="xcelium")
         _stub_which(monkeypatch, True)
-        flow = _make_flow(tmp_path, criterion_met=True)
+        flow = _make_flow(tmp_path)
         flow._record_eda_tool("sim_dut", "xcelium")
         _stub_probes(
             monkeypatch,
@@ -480,7 +490,6 @@ class TestStandaloneSweep:
 
         assert [item["module"] for item in outcome.detail["failures"]] == ["broken"]
         assert [item["module"] for item in outcome.detail["unparsed"]] == ["gapped"]
-        assert flow.state.criteria["elaborate_standalone"].met is False
         assert "ungraded" in "\n".join(outcome.lines)
 
 
@@ -607,7 +616,6 @@ class TestProbeFrontendSelection:
 
         assert not outcome.passed
         assert not outcome.eda_tool_failed
-        assert flow.state.criteria["elaborate_standalone"].met is False
         assert [f["frontend"] for f in outcome.detail["failures"]] == [failing]
         assert f"via {failing}" in "\n".join(outcome.lines)
 
@@ -676,7 +684,7 @@ class TestProbeFrontendSelection:
         _write_sources(tmp_path, {"rtl/alu.sv": "module alu; endmodule\n"})
         _stub_sources(monkeypatch, ["rtl/alu.sv"], eda_tool="xcelium")
         _stub_which(monkeypatch, verilator_on_path)
-        flow = _make_flow(tmp_path, criterion_met=True)
+        flow = _make_flow(tmp_path)
         commands = _stub_probes(monkeypatch, flow, {"alu": _SYNTAX})
 
         outcome = _run_sweep(flow, ["sim_dut"], primary_ok=primary_ok)
@@ -687,7 +695,6 @@ class TestProbeFrontendSelection:
         if primary_ok:
             assert outcome.eda_tool_failed
             assert outcome.detail["unparsed"][0]["fallback"] is True
-            assert flow.state.criteria["elaborate_standalone"].met is True
         else:
             # The Target build itself failed: a syntax error is a finding.
             assert not outcome.eda_tool_failed
@@ -1044,12 +1051,11 @@ class TestProbeDialectFlags:
 def test_optional_standalone_exit_codes_for_single_simulator_project(
     tmp_path, monkeypatch, kind, expected_exit
 ) -> None:
-    """Icarus-only project with Verilator on PATH: verdict, exit code, key unchanged."""
+    """Icarus-only project with Verilator on PATH: verdict and exit code unchanged."""
     _write_sources(tmp_path, {"rtl/alu.sv": "module alu; endmodule\n"})
     _stub_sources(monkeypatch, ["rtl/alu.sv"])
     _stub_which(monkeypatch, True)
-    # Start met so the tool-error case proves prior state is kept, not reset.
-    flow = _make_flow(tmp_path, criterion_met=True)
+    flow = _make_flow(tmp_path)
     results = {
         "pass": SubprocessResult(returncode=0),
         "design": _SYNTAX,
@@ -1062,10 +1068,7 @@ def test_optional_standalone_exit_codes_for_single_simulator_project(
 
     assert exit_code == expected_exit
     assert outcome is not None
-    if kind == "tool":
-        assert flow.state.criteria["elaborate_standalone"].met is True
-    else:
-        assert flow.state.criteria["elaborate_standalone"].met is (kind == "pass")
+    assert flow.state.criteria == {}
 
 
 @pytest.mark.parametrize("met", [True, False])
@@ -1089,7 +1092,7 @@ def test_memory_only_module_sweep_final_headline(tmp_path, monkeypatch, met):
         outcome = flow._run_standalone_check(["sim_dut"])
     result = EndpointOutcome(exit_code=0 if outcome.passed else 1, detail=outcome.detail)
     final_report_omits_headline(flow, result)
-    assert flow.state.criteria["elaborate_standalone"].met is met
+    assert flow.state.criteria == {}
     assert flow.state._file_path is None
 
 

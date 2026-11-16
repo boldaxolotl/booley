@@ -8,7 +8,6 @@ from typing import Any
 
 import pytest
 
-from booley.criteria.state import DevelopmentState
 from booley.flows.base import SubprocessResult
 from booley.flows.test_runs import DEFAULT_SEED, build_test_run, test_run_document
 from booley.runtime.endpoint_execution import EXIT_FAILURE, EXIT_SUCCESS
@@ -17,8 +16,6 @@ from tests.flows.sim.simulation_record_boundary import (
     SimulationRecordSimRun,
     run_simulation_record_sim,
 )
-from tests.flows.sim.test_coverage_flow import _AcceptanceAdapter
-from tests.flows.sim.test_flow import _ticket_state
 
 _TESTS_HEAD = '[lite]\ntests = ["smoke", "stress"]\nselect = "+test={name}"\n'
 _TESTS_VARIANTS = (
@@ -114,28 +111,6 @@ def test_simulation_record_report_lists_rows_and_a_rerun_command_per_failed_run(
         "  Rerun a failed Test Run with the same seed:",
         "    booley flow sim --target lite --test=stress+soak@7",
     ]
-
-
-def test_simulation_record_criterion_detail_carries_the_rows(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    """In Ticket mode the Criterion's record detail carries the same rows."""
-    state_path = _ticket_state(tmp_path, monkeypatch, ["sim_pass_lite"])
-    recorder = _AcceptanceAdapter(
-        log_dir=tmp_path / "logs",
-        identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
-    )
-    _, report = _run(tmp_path, monkeypatch, failing="test=stress", adapter=recorder)
-    detail = DevelopmentState.load(state_path).criteria["sim_pass_lite"].detail
-
-    assert detail["selected_tests"] == ["smoke", "stress"]
-    assert detail["failed_tests"] == ["stress"]
-    assert [
-        {key: value for key, value in row.items() if key != "functional_failure"}
-        for row in detail["test_runs"]
-    ] == report["test_runs"]
-    assert detail["test_runs"][-1]["functional_failure"] is True
-    assert [row["grade"] for row in detail["test_runs"]] == ["pass", "fail"]
 
 
 def _coverage_run(test_run, verdict: str, **attributes):

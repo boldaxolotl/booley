@@ -113,14 +113,11 @@ def test_simulation_outcomes_belong_to_simulation_flow(tmp_path, monkeypatch):
 
     lint = LintFlow()
     assert not hasattr(lint, "_simulation_record_outcomes")
-    assert not hasattr(lint, "_simulation_acceptance_outcomes")
 
     flow = _flow(tmp_path, monkeypatch, "--test", "stress")
     flow._simulation_record_outcomes = ("stale",)
-    flow._simulation_acceptance_outcomes = ("stale",)
     flow._start_invocation(StandaloneFlowExecution())
     assert flow._simulation_record_outcomes == ()
-    assert flow._simulation_acceptance_outcomes == ()
 
 
 def test_build_timeout_is_resolved_again_for_the_next_invocation(tmp_path, monkeypatch):
@@ -167,7 +164,6 @@ def test_requeued_attempt_keeps_drawn_seeds_and_drops_simulation_record_outcomes
     drawn = flow._resolve_test_runs("sim", _MAP)
     # Stand-ins for what the killed attempt left behind.
     flow._simulation_record_outcomes = ("record-outcome",)
-    flow._simulation_acceptance_outcomes = ("acceptance-outcome",)
     flow._current_published_pre_sim_keys = {"pre-sim-key"}
     flow.cycle_report_json = '{"cycle": 1}'
     flow._reserved_invocation_dir = tmp_path / "reports" / "sim" / "1"
@@ -176,7 +172,6 @@ def test_requeued_attempt_keeps_drawn_seeds_and_drops_simulation_record_outcomes
 
     assert flow._resolve_test_runs("sim", _MAP) is drawn
     assert flow._simulation_record_outcomes == ()
-    assert flow._simulation_acceptance_outcomes == ()
     assert flow._current_published_pre_sim_keys == set()
     assert flow.cycle_report_json is None
     assert flow._reserved_invocation_dir is None

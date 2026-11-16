@@ -114,13 +114,15 @@ class CoverageAnalyzer:
         instruction: str,
         *,
         summary: CoverageRecordSummary | None = None,
+        source_limitation: str | None = None,
     ) -> CoverageAnalysisReport:
         envelope, target = _analysis_envelope(coverage_record, summary)
         eligibility, limitations = _eligibility(coverage_record)
         sources = verified_source_snapshot(coverage_record, sources)
         if sources is None:
             limitations.append(
-                "Sources unavailable, unsafe, or stale; analysis uses normalized report evidence only."
+                source_limitation
+                or "Sources unavailable, unsafe, or stale; analysis uses normalized report evidence only."
             )
         response, analysis_scope = _model_response(
             self._model(_analysis_prompt(envelope, sources, instruction)), coverage_record
