@@ -27,7 +27,6 @@ _ALLOWED_PATHS = frozenset(
         "src/booley/flows/target_campaign.py",
         "tests/flows/test_target_campaign.py",
         "tests/mcp_tools/test_target_campaign_aggregation.py",
-        "tests/criteria/test_campaign_templates.py",
         # Goal freshness "campaign" category (#3045).
         "tests/flows/test_source_fingerprint_campaign.py",
     }

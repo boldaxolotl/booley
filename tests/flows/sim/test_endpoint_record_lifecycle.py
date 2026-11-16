@@ -1087,25 +1087,6 @@ def _public_cycle_simulation_record(tmp_path, monkeypatch):
         )
 
 
-def _cycle_ticket(tmp_path):
-    from booley.criteria.state import DevelopmentState
-
-    path = tmp_path / "state.json"
-    state = DevelopmentState.load(path)
-    state.slug, state.ticket_type = "ticket", "implementation"
-    key = "sim_pass_sim_smoke"
-    params = {
-        "target": "acme:lib:dut:1#sim",
-        "_target_selector": "sim",
-        "test_selector": "smoke",
-        "required_tests": ["smoke"],
-        "minimum_total": 1,
-    }
-    state.init_criteria({key: True}, criterion_params={key: params}, strict=True)
-    state.save()
-    return path, state, key
-
-
 def _public_cycle_flow(simulation_record, monkeypatch):
     from contextlib import nullcontext
 
@@ -1188,8 +1169,6 @@ def test_public_cycle_metadata_survives_publication_faults(tmp_path, monkeypatch
     import json
 
     simulation_record = _public_cycle_simulation_record(tmp_path, monkeypatch)
-    path, _state, _key = _cycle_ticket(tmp_path)
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
     flow = _public_cycle_flow(simulation_record, monkeypatch)
     writes = _cycle_publication_fault(flow, monkeypatch, failure)
     reports = tmp_path / "reports"
@@ -1300,17 +1279,14 @@ def _assert_partial_acceptance_policy(flow, result, tmp_path, simulation_record)
     from booley.flows.prepared_invocation import OrdinaryRunInvocation
     from booley.flows.sim.request import SimRequest
 
-    path, _state, _key = _cycle_ticket(tmp_path)
     flow._args = SimRequest(target="sim", work_dir=tmp_path, report_dir=tmp_path / "reports")
     context = flow
-    before = path.read_bytes()
     projections = {p: p.read_bytes() for p in tmp_path.rglob("simulation.json")}
 
     context.publish_records(
         PreparedExecution(None, None, False, False, OrdinaryRunInvocation(EndpointOutcome)),
         result,
     )
-    assert path.read_bytes() == before
     assert {p: p.read_bytes() for p in tmp_path.rglob("simulation.json")} == projections
     with context.publication_resources:
         context._finalize_result(result)

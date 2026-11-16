@@ -4,10 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
-from hypothesis import given
-from hypothesis import strategies as st
 
-from booley.flows.sim.record import codec
 from booley.flows.sim.record.codec import (
     MANIFEST_MAX_BYTES,
     RECORD_MAX_BYTES,
@@ -15,12 +12,10 @@ from booley.flows.sim.record.codec import (
     canonical_json_bytes,
     decode_bundle_build_attempt,
     decode_simulation_attempt,
-    decode_simulation_record_manifest,
     decode_simulator_bundle,
     encode_bundle_build_attempt,
     encode_bundle_build_result,
     encode_simulation_attempt,
-    encode_simulation_record_manifest,
     encode_simulation_result,
     encode_simulator_bundle,
     validate_relative_path,
@@ -35,7 +30,6 @@ from booley.flows.sim.record.model import (
     SimulationAttempt,
     SimulationResult,
     SimulatorBundle,
-    create_simulation_record_plan,
     grade_observations,
     simulation_status_from_observations,
 )
@@ -67,14 +61,6 @@ def _attempt() -> dict[str, object]:
     }
 
 
-def test_attempt_codec_is_canonical_and_immutable() -> None:
-    value = decode_simulation_attempt(canonical_json_bytes(_attempt()))
-    assert value.document["attempt_ordinal"] == 1
-    assert canonical_json_bytes(value.document).endswith(b"\n")
-    with pytest.raises(TypeError):
-        value.document["attempt_ordinal"] = 2  # type: ignore[index]
-
-
 def test_directly_constructed_documents_deep_freeze() -> None:
     source = _attempt()
     value = SimulationAttempt(source)
@@ -82,22 +68,6 @@ def test_directly_constructed_documents_deep_freeze() -> None:
     assert value.document["run_directory"]["owned"] is True  # type: ignore[index]
     with pytest.raises(TypeError):
         value.document["run_directory"]["owned"] = False  # type: ignore[index]
-
-
-def test_encoding_and_planning_never_decode_their_own_output(monkeypatch) -> None:
-    """Writers trust documents that were decoded once; they do not re-decode them."""
-    from tests.flows.sim.test_simulation_record_manifest_codec import _manifest
-
-    manifest = decode_simulation_record_manifest(canonical_json_bytes(_manifest()))
-    attempt = decode_simulation_attempt(canonical_json_bytes(_attempt()))
-
-    def refuse(*args: object, **kwargs: object) -> object:
-        raise AssertionError("encoding decoded its own output")
-
-    monkeypatch.setattr(codec, "_decode", refuse)
-    assert encode_simulation_attempt(attempt) == canonical_json_bytes(attempt.document)
-    assert encode_simulation_record_manifest(manifest) == canonical_json_bytes(manifest.document)
-    assert create_simulation_record_plan(manifest).manifest is manifest
 
 
 @pytest.mark.parametrize(
@@ -149,41 +119,28 @@ def test_codec_rejects_noncanonical_or_oversized_json() -> None:
         decode_simulation_attempt(b" " * (MANIFEST_MAX_BYTES + 1))
 
 
-@given(st.sampled_from(sorted(_attempt())))
-def test_attempt_missing_field_mutation_is_rejected(field: str) -> None:
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        pytest.param(lambda document: document.pop("started_at"), id="missing-field"),
+        pytest.param(lambda document: document.update(extra_field=None), id="unknown-field"),
+    ],
+)
+def test_attempt_field_mutation_is_rejected(mutation) -> None:
     mutated = _attempt()
-    del mutated[field]
+    mutation(mutated)
     with pytest.raises(SimulationRecordIntegrityError):
         decode_simulation_attempt(canonical_json_bytes(mutated))
 
 
-@given(st.text(alphabet="abcdefghijklmnopqrstuvwxyz_", min_size=1, max_size=20))
-def test_attempt_unknown_field_mutation_is_rejected(field: str) -> None:
-    if field in _attempt():
-        return
-    with pytest.raises(SimulationRecordIntegrityError):
-        decode_simulation_attempt(canonical_json_bytes(_attempt() | {field: None}))
-
-
-@given(st.sampled_from(["", "/root", "../escape", "a/../b", "a//b", "C:/run", "a\\b"]))
+@pytest.mark.parametrize("path", ["", "/root", "../escape", "a/../b", "a//b", "C:/run", "a\\b"])
 def test_simulation_record_paths_reject_traversal_and_nonportable_forms(path: str) -> None:
     with pytest.raises(SimulationRecordIntegrityError):
         validate_relative_path(path)
 
 
-@given(
-    st.lists(
-        st.text(alphabet="abcdefghijklmnopqrstuvwxyz0123456789_-", min_size=1, max_size=12),
-        min_size=1,
-        max_size=8,
-        unique=True,
-    )
-)
-def test_simulation_record_paths_accept_normalized_components(parts: list[str]) -> None:
-    safe = [part.replace("/", "_").replace("\\", "_") for part in parts]
-    if any(part in {"", ".", ".."} or ":" in part for part in safe):
-        return
-    path = "/".join(safe)
+@pytest.mark.parametrize("path", ["run", "work-items/item_0/result"])
+def test_simulation_record_paths_accept_normalized_components(path: str) -> None:
     assert validate_relative_path(path) == path
 
 

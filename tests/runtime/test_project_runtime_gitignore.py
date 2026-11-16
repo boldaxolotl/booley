@@ -178,12 +178,9 @@ def _publish_bookkeeping(root, data, repo):
 
 def _publish_ticket(root, data, repo):
     """Retained Ticket state: a local owner."""
-    from booley.criteria.state import DevelopmentState
-
     ticket = data / "tickets/state/audit.json"
-    state = DevelopmentState.load(ticket)
-    state.init_criteria({"lint_clean": True})
-    state.save()
+    ticket.parent.mkdir(parents=True, exist_ok=True)
+    ticket.write_bytes(b'{"schema_version": 1}\n')
     return (ticket,)
 
 
@@ -468,3 +465,25 @@ def test_retained_ticket_storage_families_keep_project_clean(versioned_project):
         assert atomic_write_once(record_dir / name, b"{}\n", mode=0o644)
         assert (record_dir / name).is_file()
     assert_clean(repo)
+
+
+def test_stealth_exclude_names_cover_default_and_relocated(tmp_path):
+    from booley.runtime.booley_dir import reset_cache
+    from booley.runtime.git import stealth_exclude_names
+
+    # Default Project: exactly the default spelling, no duplicate.
+    reset_cache()
+    assert stealth_exclude_names(tmp_path) == (".booley",)
+
+    # Relocated Project: `.booley` (full init still works there) plus the own directory.
+    (tmp_path / "booley.toml").write_bytes(b'[project]\ndir = "tools/booley"\n')
+    (tmp_path / "tools/booley").mkdir(parents=True)
+    reset_cache()
+    assert stealth_exclude_names(tmp_path) == (".booley", "tools/booley")
+
+    # Project-authored text that a gitignore pattern would read differently is not excluded.
+    for unsafe in ("*", "x[1]", "trailing ", "a\\nb"):
+        (tmp_path / "booley.toml").write_text(f'[project]\ndir = "{unsafe}"\n', encoding="utf-8")
+        reset_cache()
+        assert stealth_exclude_names(tmp_path) == (".booley",), unsafe
+    reset_cache()

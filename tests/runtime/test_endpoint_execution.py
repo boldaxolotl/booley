@@ -241,14 +241,10 @@ class _CommandEndpoint(_Endpoint):
 def test_job_outcome_records_only_its_own_oom_kill(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from tests.flows.test_flow_base import EchoFlow, _env_with_state
+    from tests.flows.test_flow_base import EchoFlow, _flow_env
 
-    from booley.criteria.state import DevelopmentState
-
-    state_file = tmp_path / "state.json"
-    DevelopmentState.load(state_file).save()
     flow = EchoFlow()
-    with patch.dict(os.environ, _env_with_state(state_file)):
+    with patch.dict(os.environ, _flow_env()):
         flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
     # The container's OOM-kill counter moves during both Jobs' commands.
     counts = iter([0, 1, 1, 2])

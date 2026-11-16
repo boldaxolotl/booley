@@ -8,7 +8,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from booley.criteria.freshness import evaluate_verification_freshness
 from booley.evidence.review_dispositions import (
     collect_review_dispositions,
 )
@@ -171,35 +170,6 @@ def test_explicit_disposition_survives_deferred_headings(reviewer, monkeypatch, 
     assert bool(open_rows(result.detail)) == (disposition == "current")
     assert result.detail["issue_list"][0]["disposition"] == disposition
     assert result.detail["filtered"] == []
-
-
-@pytest.mark.parametrize("version", [None, 3, 4])
-def test_read_only_acceptance_rejects_old_semantics_with_unchanged_source(reviewer, version):
-    contract = reviewer._review_contract_detail()
-    contract.pop("filtering_semantics_revision")
-    detail = {
-        "review_detail_version": version,
-        "contract": contract,
-        "_source_fingerprint": {"categories": ["rtl"], "fingerprint": {"rtl": {"digest": "same"}}},
-    }
-    result = evaluate_verification_freshness(
-        "review_rtl_bugs_done",
-        {"met": True, "detail": detail},
-        work_dir=Path(reviewer.args.work_dir),
-        fingerprint_provider=lambda *_args, **_kwargs: {"rtl": {"digest": "same"}},
-    )
-    assert result.stale is True
-    assert result.review_dimensions == ("filtering_semantics",)
-    detail.pop("contract")
-    assert (
-        evaluate_verification_freshness(
-            "review_rtl_bugs_done",
-            {"met": True, "detail": detail},
-            work_dir=Path(reviewer.args.work_dir),
-            fingerprint_provider=lambda *_args, **_kwargs: {},
-        ).stale
-        is True
-    )
 
 
 def test_parser_preserves_canonical_ordinal_without_changing_identity():

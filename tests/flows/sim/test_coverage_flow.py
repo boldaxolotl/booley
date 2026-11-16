@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.criteria.state import DevelopmentState
 from booley.flows.sim.coverage_progress import CoverageProgress
 from booley.flows.sim.coverage_record_store import load_coverage_record
 from booley.flows.sim.coverage_reference import (
@@ -1939,56 +1938,6 @@ def test_interactive_collection_then_exact_coverage_record_analysis(tmp_path, mo
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
 
 
-@pytest.mark.parametrize(
-    "verdict,hits,missing,exit_code",
-    [
-        ("pass", 2, False, 0),
-        ("fail", 2, False, 1),
-        ("pass", 0, False, 0),
-        ("fail", 0, False, 1),
-        ("pass", 2, True, 2),
-    ],
-    ids=["pass", "fail", "pass-no-hits", "fail-no-hits", "missing-counters"],
-)
-def test_declared_coverage_criterion_leaves_the_plain_coverage_result(
-    tmp_path, monkeypatch, verdict, hits, missing, exit_code
-):
-    from booley.criteria.state import CriterionEntry, DevelopmentState
-
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    project(tmp_path)
-    data = tmp_path / ".booley"
-    data.mkdir()
-    (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
-    state_path = tmp_path / "state.json"
-    state = DevelopmentState.load(state_path)
-    state.strict_criteria = True
-    state.criteria = {
-        "coverage_sim_0": CriterionEntry(
-            params={"target": "sim_0", "tests": "all", "metrics": {"line": {"min_pct": 100}}}
-        ),
-        "sim_pass_sim_0": CriterionEntry(params={"target": "sim_0"}),
-    }
-    state.save()
-    before = state_path.read_bytes()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
-    result = SimulateFlow(
-        coverage_execution=lambda handle, options, _commands, _access: NativeExecution(
-            verdict=verdict, hits=hits, missing=missing
-        )
-    ).execute(SimRequest(target="sim_0", work_dir=tmp_path, coverage=True))
-    assert result.exit_code == exit_code
-    coverage_record_path = next(tmp_path.rglob("targets/sim_0/coverage.json"))
-    document = resolve_coverage_record_reference(coverage_record_path).loaded.coverage_record
-    # The declared Criterion supplies no policy: the plain run's result stands.
-    assert document.evaluation["status"] == "not_requested"
-    assert state_path.read_bytes() == before
-    saved = DevelopmentState.load(state_path)
-    assert saved.criteria["coverage_sim_0"].met is False
-    assert saved.criteria["sim_pass_sim_0"].met is False
-
-
 def test_default_coverage_selection_applies_skips(tmp_path, monkeypatch):
     _prepare_sim_custom_project(tmp_path, monkeypatch)
     (tmp_path / ".booley/tests.toml").write_text(
@@ -2154,43 +2103,11 @@ def test_no_waivers_resume_of_ungated_manifest_does_not_rerun_tests(tmp_path, mo
     assert tuple(runs) == completed_runs
 
 
-def _coverage_headline_state(tmp_path, monkeypatch, ticket):
-    state_path = tmp_path / "state.json"
-    if ticket == "none":
-        return state_path
-    state = DevelopmentState.load(state_path)
-    state.slug = "headline-ticket"
-    state.save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
-    return state_path
-
-
-def _assert_coverage_headline_results(results, ticket, verdict, state_path):
-    for result in results:
-        assert result.outcome.detail["targets"]["sim_0"]["evaluation"] == "not_requested"
-        assert result.outcome.detail["targets"]["sim_0"]["simulation"] == verdict
-        assert result.exit_code == (1 if verdict == "fail" else 0), result.outcome
-    if ticket == "undeclared":
-        assert DevelopmentState.load(state_path).criteria == {}
-    elif ticket == "none":
-        assert not state_path.exists()
-
-
-@pytest.mark.parametrize(
-    "ticket,verdict",
-    [
-        ("none", "pass"),
-        ("none", "fail"),
-        ("undeclared", "pass"),
-    ],
-)
+@pytest.mark.parametrize("verdict", ["pass", "fail"])
 def test_public_coverage_simulation_record_headline_fresh_and_resume(
-    tmp_path, monkeypatch, ticket, verdict
+    tmp_path, monkeypatch, verdict
 ):
-    monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
     reports = _prepare_coverage_origin(tmp_path, monkeypatch)
-    state_path = _coverage_headline_state(tmp_path, monkeypatch, ticket)
     runs = []
 
     class Counted(NativeExecution):
@@ -2211,10 +2128,13 @@ def test_public_coverage_simulation_record_headline_fresh_and_resume(
     manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
     resumed = invoke(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports))
     assert tuple(runs) == completed
-    _assert_coverage_headline_results((fresh, resumed), ticket, verdict, state_path)
-    if ticket == "none":
-        report = json.loads((reports / "sim.json").read_text())
-        assert "criterion_key" not in report and "criterion_met" not in report
+    for result in (fresh, resumed):
+        assert result.outcome.detail["targets"]["sim_0"]["evaluation"] == "not_requested"
+        assert result.outcome.detail["targets"]["sim_0"]["simulation"] == verdict
+        assert result.exit_code == (1 if verdict == "fail" else 0), result.outcome
+    assert not (tmp_path / "state.json").exists()
+    report = json.loads((reports / "sim.json").read_text())
+    assert "criterion_key" not in report and "criterion_met" not in report
 
 
 @pytest.mark.parametrize("dry_run", [False, True])

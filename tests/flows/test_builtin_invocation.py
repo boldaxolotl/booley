@@ -11,7 +11,6 @@ from unittest import mock
 import pytest
 
 from booley.core.boundary import BoundaryError
-from booley.criteria.state import DevelopmentState
 from booley.flows.base import BooleyFlow, BuiltinFlow, SubprocessResult
 from booley.flows.builtin_cli import parse_request
 from booley.flows.endpoint_cli import normalize_target_arg
@@ -398,9 +397,6 @@ def test_state_backed_flow_success_reaches_stdout_once(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    state_file = tmp_path / "state.json"
-    DevelopmentState.load(state_file).save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
     flow = _VerdictLifecycleFlow(EndpointOutcome(report_text="Simulation verdict: PASS"))
 
     execution = flow.execute_cli(["--target", "demo", "--work-dir", str(tmp_path)])
@@ -416,9 +412,6 @@ def test_state_backed_flow_failure_reaches_stderr_once(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    state_file = tmp_path / "state.json"
-    DevelopmentState.load(state_file).save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
     flow = _VerdictLifecycleFlow(
         EndpointOutcome(exit_code=EXIT_ERROR, report_text="Simulation verdict: ERROR")
     )
@@ -467,9 +460,6 @@ def test_state_backed_simulation_coverage_verdict_reaches_stdout(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    state_file = tmp_path / "state.json"
-    DevelopmentState.load(state_file).save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
     flow = SimulateFlow()
     prepared_simulation_record = PreparedSimulationEndpoint((), None, (), {})
     monkeypatch.setattr(flow, "_pre_state_gate", lambda: None)
@@ -501,7 +491,7 @@ def test_builtin_dry_run_skips_admission_and_normal_persistence(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     state_file = tmp_path / "state.json"
-    DevelopmentState.load(state_file).save()
+    state_file.write_bytes(b'{"opaque": true}\n')
     state_before = state_file.read_bytes()
     logs_dir = tmp_path / "logs"
     report_dir = tmp_path / "reports"
@@ -565,9 +555,6 @@ def test_direct_dry_run_uses_project_data_default_without_numbering(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    state_file = tmp_path / "state.json"
-    DevelopmentState.load(state_file).save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
     monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
     flow = _DryLifecycleFlow()
 
@@ -587,7 +574,7 @@ def test_failed_builtin_dry_run_keeps_json_stdout_and_reason_stderr(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     state_file = tmp_path / "state.json"
-    DevelopmentState.load(state_file).save()
+    state_file.write_bytes(b'{"opaque": true}\n')
     state_before = state_file.read_bytes()
     report_dir = tmp_path / "reports"
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))

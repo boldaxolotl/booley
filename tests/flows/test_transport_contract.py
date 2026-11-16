@@ -165,13 +165,10 @@ def test_uninitialized_flow_fails_before_execution(runtime, monkeypatch):
 
 def test_hand_set_state_file_neither_refuses_nor_records(runtime, monkeypatch):
     """A state file naming only another Target is neither read, refused on, nor written."""
-    from booley.criteria.state import DevelopmentState
     from booley.runtime.endpoint_execution import EndpointOutcome
 
     path = runtime / "state.json"
-    state = DevelopmentState.load(path)
-    state.init_criteria({"lint_clean_other": True}, strict=True)
-    state.save()
+    path.write_bytes(b'{"opaque": true}\n')
     before = path.read_bytes()
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(runtime / "logs"))

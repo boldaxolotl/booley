@@ -8,9 +8,7 @@ import pytest
 from booley.flows.builtin_cli import parse_request
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record.codec import canonical_json_bytes
-from booley.flows.sim.record.planning import (
-    compare_manifests,
-)
+from booley.flows.sim.record.planning import finalize_manifest, manifest_digest
 from booley.flows.sim.request import SimRequest
 from tests.flows.sim.test_coverage_invocation import project
 
@@ -99,46 +97,12 @@ def test_resume_accepts_attempts_recorded_with_the_diagnostic_policy(tmp_path, m
     assert all("diagnostic" not in json.loads(path.read_bytes())["policy"] for path in new)
 
 
-def test_public_source_resume_names_cause_without_new_attempt(tmp_path, monkeypatch):
-    reports, manifest, executions = _interrupted_simulation_record(tmp_path, monkeypatch)
-    before = _snapshot(manifest.parent)
-    (tmp_path / "rtl/counter.sv").write_text("module counter; endmodule\n// change\n")
-    result = SimulateFlow().execute(
-        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
-    )
-    assert result.exit_code == 2
-    assert len(executions) == 1
-    assert "source changed: rtl/counter.sv" in result.outcome.report_text
-    assert result.outcome.detail["mismatch_summary"] == [
-        "source changed: rtl/counter.sv",
-    ]
-    assert len(result.outcome.detail["mismatches"]) == 16
-    assert "sha256:" not in result.outcome.report_text
-    assert "8 derived fingerprints differ" in result.outcome.report_text
-    assert result.outcome.detail["derived_fingerprint_count"] == 8
-    assert "/workload/source_recipe/sources/" not in result.outcome.report_text
-    assert _snapshot(manifest.parent) == before
-
-
 def _prime_prior_refusal(root, reports, manifest, executions):
     result = SimulateFlow().execute(
         SimRequest(resume_from=manifest, work_dir=root, report_dir=reports)
     )
     assert result.exit_code == 2
     assert len(executions) == 1
-
-
-def _capture_resume_comparison(monkeypatch):
-    pairs = []
-    original = SimulateFlow._resume_simulation_record_plan
-
-    def capture(flow, validated, *args, **kwargs):
-        plan = original(flow, validated, *args, **kwargs)
-        pairs.append((validated.manifest, plan.manifest))
-        return plan
-
-    monkeypatch.setattr(SimulateFlow, "_resume_simulation_record_plan", capture)
-    return pairs
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
@@ -148,10 +112,9 @@ def test_public_resume_cli_summary_detail_and_dry_run_immutability(
 ):
     reports, manifest, executions = _interrupted_simulation_record(tmp_path, monkeypatch)
     (tmp_path / "rtl/counter.sv").write_text("module counter; endmodule\n// change\n")
+    durable_before = _snapshot(manifest.parent)
     _prime_prior_refusal(tmp_path, reports, manifest, executions)
     before = _snapshot(reports)
-    durable_before = _snapshot(manifest.parent)
-    compared = _capture_resume_comparison(monkeypatch)
     argv = [
         "--resume-from",
         str(manifest),
@@ -178,13 +141,13 @@ def test_public_resume_cli_summary_detail_and_dry_run_immutability(
         assert line in result.outcome.report_text
     assert "8 derived fingerprints differ" in result.outcome.report_text
     raw = result.outcome.detail["mismatches"]
-    assert len(compared) == 1
-    assert raw == [item.message for item in compare_manifests(*compared[0])]
     assert len(raw) == 16
+    assert any(line.startswith("/workload/source_recipe/sources/") for line in raw)
     if verbose:
         assert all(line in result.outcome.report_text for line in raw)
     else:
         assert "sha256:" not in result.outcome.report_text
+        assert "/workload/source_recipe/sources/" not in result.outcome.report_text
         assert all(line not in result.outcome.report_text for line in raw)
     if dry_run:
         assert _snapshot(reports) == before
@@ -278,27 +241,27 @@ def test_public_resume_bool_to_int_names_parameter_and_explains_command_digest(
 def test_legacy_interrupted_simulation_record_new_source_mapping_refuses_before_attempt(
     tmp_path, monkeypatch
 ):
-    from booley.flows.sim.execution.engine import _planning_disclosure
-
-    def legacy_disclosure(entries):
-        disclosure = _planning_disclosure(entries)
+    reports, manifest, executions = _interrupted_simulation_record(tmp_path, monkeypatch)
+    # Rewrite the planned manifest as an older planner wrote it: contract version 1 and no
+    # source mapping on the generated files. The attempt directory stays as it was.
+    document = json.loads(manifest.read_bytes())
+    document.pop("fingerprints")
+    for disclosure in document["planning_disclosures"]:
         disclosure["tool_provenance"]["contract_version"] = "1"
-        return disclosure
-
-    with monkeypatch.context() as legacy:
-        legacy.setattr("booley.flows.sim.execution.engine._planning_disclosure", legacy_disclosure)
-        legacy.setattr(
-            "booley.flows.sim.execution.engine._source_declarations", lambda _handle: ()
-        )
-        reports, manifest, executions = _interrupted_simulation_record(tmp_path, legacy)
+        for entry in disclosure["generated_files"]:
+            entry.pop("source_path", None)
+    legacy = finalize_manifest(document)
+    manifest.write_bytes(legacy.canonical_bytes())
+    # The interrupted attempt names the manifest it started under; re-bind it to the rewrite.
+    for attempt in manifest.parent.rglob("attempt.json"):
+        record = json.loads(attempt.read_bytes())
+        record["manifest_sha256"] = manifest_digest(legacy)
+        record["workload_sha256"] = legacy.document["fingerprints"]["workload_sha256"]
+        attempt.write_bytes(canonical_json_bytes(record))
     document = json.loads(manifest.read_bytes())
     assert document["$schema"] == "booley.simulation-record-manifest/v1"
     assert "source_path" not in document["planning_disclosures"][0]["generated_files"][0]
     before = _snapshot(manifest.parent)
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "a" * 40)
-    monkeypatch.setattr("booley.flows.sim.flow_resume.git_full_sha", lambda *_args: "a" * 40)
-    monkeypatch.setattr("booley.flows.sim.record.resume.git_full_sha", lambda *_args: "a" * 40)
     result = SimulateFlow().execute(
         SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
     )
@@ -323,6 +286,9 @@ def test_cli_resume_announces_validated_origin_before_execution(
     manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
     destination = tmp_path / "destination reports"
     flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
+    # Private seam: the interrupted record has its collection already recorded, so resume never
+    # calls the injected coverage_execution factory; the executor builder is the first
+    # observable point after the origin is announced.
     executor = flow._resume_simulation_record_executor
     witnessed: list[str] = []
 

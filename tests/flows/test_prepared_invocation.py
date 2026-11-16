@@ -18,13 +18,6 @@ from tests.flows.report_headline import assert_paired_headline
 from tests.memory_budget_support import pin_budget
 from tests.oom_priority_support import FakeProc
 
-# The Criterion key each kind records through the acceptance owner.
-PLANNED_KEYS = {
-    "ordinary": "echo_ok",
-    "target_selection": "lint_clean_chosen",
-    "simulation_record": "sim_pass_chosen",
-}
-
 
 @pytest.fixture
 def runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
@@ -45,15 +38,8 @@ def runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _bind_strict_state(runtime: Path, monkeypatch: pytest.MonkeyPatch, key: str) -> None:
-    """Write a strict state whose only Criterion is *key* and point the run at it."""
-    from booley.criteria.state import DevelopmentState
-
-    path = runtime / "state.json"
-    state = DevelopmentState.load(path)
-    state.init_criteria({key: True}, strict=True)
-    state.save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
+def _bind_logs(runtime: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the run's log directory under *runtime*."""
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(runtime / "logs"))
 
 
@@ -66,13 +52,11 @@ def _ordinary(runtime: Path) -> tuple[Any, Any]:
     class EchoOkFlow(BooleyFlow):
         name = "echo_ok_flow"
         description = "Custom Flow judging echo_ok"
-        satisfies = ["echo_ok"]  # noqa: RUF012 -- mirrors the declared ClassVar shape
 
         def _add_args(self, parser: argparse.ArgumentParser) -> None:
             """This Flow takes no options of its own."""
 
         def _run(self) -> EndpointOutcome:
-            self.set_criterion("echo_ok", True)
             return EndpointOutcome()
 
     return EchoOkFlow(), [
@@ -166,8 +150,7 @@ def test_prepared_invocation_kind_drives_lifecycle(
         "target_selection": TargetSelectionInvocation,
         "simulation_record": SimulationRecordInvocation,
     }[kind]
-    key = PLANNED_KEYS[kind]
-    _bind_strict_state(runtime, monkeypatch, key)
+    _bind_logs(runtime, monkeypatch)
 
     simulation_record_admissions: list[object] = []
     if kind == "ordinary":
@@ -220,8 +203,7 @@ def _assert_holds_reservation_through_run(
     monkeypatch.setattr("booley.runtime.oom_priority.PROC", FakeProc())
     monkeypatch.delenv("BOOLEY_SLOTS_DIR", raising=False)
     monkeypatch.setattr(endpoint_admission, "resolve_common_booley_dir", lambda: booley_dir)
-    key = PLANNED_KEYS[kind]
-    _bind_strict_state(runtime, monkeypatch, key)
+    _bind_logs(runtime, monkeypatch)
     if kind == "ordinary":
         flow, request = _ordinary(runtime)
     else:

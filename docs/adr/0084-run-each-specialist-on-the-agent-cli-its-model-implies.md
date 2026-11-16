@@ -119,8 +119,7 @@ back.
   with its reason (not logged in, not in `clis`, refused by the provider).
 - **Recording.** Every Specialist result carries the model that ran. A
   fallback adds the first choice and each passed-over entry with its reason to
-  the result detail, a line to the report, and the Criterion evidence, so the
-  Review Package shows it.
+  the result detail, a line to the report, so the Review Package shows it.
 - **Deep Doctor.** It walks each list with the launch rules: PASS when the
   first entry works, WARN naming the skipped or refused entries and the model
   chosen, FAIL when none works.

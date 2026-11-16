@@ -1222,7 +1222,6 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
     # Minimum outer MCP kill budget (seconds). mcp_server scales this floor by
     # per-target timeout, matrix width, and baseline/current pass count.
     default_timeout: ClassVar[int] = 7200
-    satisfies: ClassVar[list[str]] = ["synthesis_ok"]
 
     # The built-in flow is make-driven: run_yosys_syn renders the build tree,
     # then results are interpreted from files under that same directory.

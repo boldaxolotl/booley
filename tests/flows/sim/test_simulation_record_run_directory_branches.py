@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from booley.flows.sim.record import run_directory as rd
-from booley.flows.sim.record.codec import SimulationRecordIntegrityError
+from booley.flows.sim.record.codec import SimulationRecordIntegrityError, canonical_json_bytes
 from booley.runtime.file_lock import LockTimeoutError
 from tests.conftest import symlink_or_skip
 from tests.fusesoc_test_support import symlinked_booley_dir
@@ -39,141 +39,160 @@ def _make_marked_parent(root: Path) -> Path:
 
 
 def test_template_root_of_a_literal_path_is_none(tmp_path: Path) -> None:
-    assert rd._template_root("literal/dir", tmp_path / "literal/dir") is None
+    """A restored owned document without placeholders has no template root to keep."""
+    path = tmp_path.resolve() / "literal/dir"
+    document = {
+        "configured": "literal/dir",
+        "resolved": str(path),
+        "collision_key": os.path.normcase(str(path)),
+        "owned": True,
+    }
+
+    run = rd.restore_run_directory_from_project_data(document, project_data=tmp_path.resolve())
+
+    assert run.template_root is None
 
 
 def test_lock_wait_timeout_closes_handle_and_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    lock_path = tmp_path / "locks" / "x.lock"
-    held = rd._acquire_current_lock(lock_path)
+    run, identity = _run(tmp_path)
+    # Private seam: the production wait is 60 s; only a lowered timeout lets a
+    # held lock expire inside a test.
     monkeypatch.setattr(rd, "_LOCK_TIMEOUT_S", 0.05)
-    try:
-        with pytest.raises(LockTimeoutError):
-            rd._acquire_current_lock(lock_path)
-    finally:
-        held.close()
+    with rd.claimed_run_directory(run, identity=identity), pytest.raises(LockTimeoutError):
+        rd.cleanup_interrupted_run_directory(run, identity=identity)
+    # Once the holder has left, cleanup takes the lock without waiting.
+    assert rd.cleanup_interrupted_run_directory(run, identity=identity) is False
 
 
 def test_lock_that_never_stays_current_times_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    run, identity = _run(tmp_path)
+    # Private seams: the timeout is lowered for speed, and every retry must see
+    # a replaced lock file, which no real filesystem produces on demand.
     monkeypatch.setattr(rd, "_LOCK_TIMEOUT_S", 0.05)
     monkeypatch.setattr(rd, "_lock_is_current", lambda lock, path: False)
-    with pytest.raises(LockTimeoutError, match="timed out waiting"):
-        rd._acquire_current_lock(tmp_path / "x.lock")
+    with (
+        pytest.raises(LockTimeoutError, match="timed out waiting"),
+        rd.claimed_run_directory(run, identity=identity),
+    ):
+        pytest.fail("body must not run")
 
 
 def test_windows_discard_unlinks_after_close_and_keeps_a_busy_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(rd, "sys", types.SimpleNamespace(platform="win32"))
-    lock_path = tmp_path / "x.lock"
-    with rd._held_path_lock(lock_path, discard=True):
-        pass
-    assert not lock_path.exists()
+    run, identity = _run(tmp_path)
+    assert rd.cleanup_interrupted_run_directory(run, identity=identity) is False
+    assert not run.lock_path.exists()
 
     real_unlink = Path.unlink
 
     def busy(self: Path, missing_ok: bool = False) -> None:
-        if self == lock_path:
+        if self == run.lock_path:
             raise PermissionError("in use")
         real_unlink(self, missing_ok=missing_ok)
 
     monkeypatch.setattr(Path, "unlink", busy)
-    with rd._held_path_lock(lock_path, discard=True):
-        pass
-    assert lock_path.exists()
+    assert rd.cleanup_interrupted_run_directory(run, identity=identity) is False
+    assert run.lock_path.exists()
 
 
 def test_run_without_template_root_creates_and_cleans_only_the_attempt(tmp_path: Path) -> None:
     run, identity = _run(tmp_path)
     run = dataclasses.replace(run, template_root=None)
+    # A marked, otherwise empty parent: only a template root lets cleanup remove it.
+    marked = tmp_path / "work/c/t"
+    marked.mkdir(parents=True)
+    (marked / PARENT_MARKER).write_text("{}", encoding="utf-8")
     with rd.claimed_run_directory(run, identity=identity) as directory:
         assert (directory / ".booley-simulation-attempt.json").is_file()
     assert not run.path.exists()
-    assert (tmp_path / "work/c/t").is_dir()  # unrecorded parents stay
+    assert (marked / PARENT_MARKER).is_file()  # unrecorded parents stay
 
 
-def test_cleanup_without_template_root_leaves_parents(tmp_path: Path) -> None:
-    run, _ = _run(tmp_path)
-    parent = _make_marked_parent(tmp_path)
-    rd._remove_booley_parents(dataclasses.replace(run, template_root=None))
-    assert parent.is_dir()
+def _vanishing_mkdir(monkeypatch: pytest.MonkeyPatch, root: Path, times: int) -> list[Path]:
+    """Make ``root.mkdir`` raise FileNotFoundError ``times`` times; return every call."""
+    real_mkdir = Path.mkdir
+    calls: list[Path] = []
+
+    def mkdir(self: Path, *args: object, **kwargs: object) -> None:
+        if self == root:
+            calls.append(self)
+            if len(calls) <= times:
+                raise FileNotFoundError("vanished")
+        real_mkdir(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+    return calls
 
 
-def test_creation_restarts_when_an_ancestor_vanishes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(("vanishings", "calls_made"), [(1, 2), (99, 3)])
+def test_creation_restarts_when_an_ancestor_vanishes_then_gives_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, vanishings: int, calls_made: int
 ) -> None:
     run, identity = _run(tmp_path)
-    real = rd._create_marked_chain
-    calls: list[int] = []
-
-    def flaky(*args: object) -> None:
-        calls.append(1)
-        if len(calls) == 1:
-            raise FileNotFoundError("vanished")
-        real(*args)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(rd, "_create_marked_chain", flaky)
-    with rd.claimed_run_directory(run, identity=identity) as directory:
-        assert directory.is_dir()
-    assert len(calls) == 2
-
-
-def test_creation_gives_up_after_repeated_vanishing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    run, identity = _run(tmp_path)
-
-    def always_vanishes(*args: object) -> None:
-        raise FileNotFoundError("vanished")
-
-    monkeypatch.setattr(rd, "_create_marked_chain", always_vanishes)
-    with (
-        pytest.raises(SimulationRecordIntegrityError, match="could not be created"),
-        rd.claimed_run_directory(run, identity=identity),
-    ):
-        pytest.fail("body must not run")
+    calls = _vanishing_mkdir(monkeypatch, tmp_path / "work", times=vanishings)
+    if vanishings == 1:
+        with rd.claimed_run_directory(run, identity=identity) as directory:
+            assert directory.is_dir()
+    else:
+        with (
+            pytest.raises(SimulationRecordIntegrityError, match="could not be created"),
+            rd.claimed_run_directory(run, identity=identity),
+        ):
+            pytest.fail("body must not run")
+    assert len(calls) == calls_made
 
 
 def test_linked_parent_is_never_removed(tmp_path: Path) -> None:
-    run, _ = _run(tmp_path)
+    run, identity = _run(tmp_path)
     target = tmp_path / "elsewhere"
     target.mkdir()
     (target / PARENT_MARKER).write_text("{}", encoding="utf-8")
     (tmp_path / "work").mkdir()
     (tmp_path / "work/c").symlink_to(target, target_is_directory=True)
-    rd._remove_booley_parents(run)
+    rd.cleanup_interrupted_run_directory(run, identity=identity)
     assert (target / PARENT_MARKER).is_file()
 
 
 def test_parent_with_non_file_marker_is_kept(tmp_path: Path) -> None:
-    run, _ = _run(tmp_path)
+    run, identity = _run(tmp_path)
     parent = tmp_path / "work/c"
     (parent / PARENT_MARKER).mkdir(parents=True)
-    rd._remove_booley_parents(run)
+    rd.cleanup_interrupted_run_directory(run, identity=identity)
     assert (parent / PARENT_MARKER).is_dir()
 
 
 def test_parent_removal_stops_when_rmdir_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    run, _ = _run(tmp_path)
+    run, identity = _run(tmp_path)
     parent = _make_marked_parent(tmp_path)
 
     def refuse(self: Path) -> None:
         raise OSError("busy")
 
     monkeypatch.setattr(Path, "rmdir", refuse)
-    rd._remove_booley_parents(run)
+    rd.cleanup_interrupted_run_directory(run, identity=identity)
     assert parent.is_dir()
 
 
 def test_interrupted_cleanup_ignores_an_unowned_run(tmp_path: Path) -> None:
     run, identity = _run(tmp_path)
-    literal = dataclasses.replace(run, owned=False, template_root=None)
-    assert rd.cleanup_interrupted_run_directory(literal, identity=identity) is False
+    literal = tmp_path / "literal"
+    literal.mkdir()
+    marker = literal / ".booley-simulation-attempt.json"
+    marker.write_bytes(
+        canonical_json_bytes(identity)
+    )  # a matching marker would be removed if owned
+    unowned = dataclasses.replace(run, path=literal, owned=False, template_root=None)
+
+    assert rd.cleanup_interrupted_run_directory(unowned, identity=identity) is False
+    assert marker.is_file()
 
 
 @pytest.mark.parametrize("linked", ["entry", "below"])
@@ -225,29 +244,24 @@ def _former_mount_document(root: Path, monkeypatch: pytest.MonkeyPatch) -> dict[
     }
 
 
-def test_run_directory_recorded_under_a_former_mount_restores_under_the_current_one(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("foreign_key", [False, True], ids=["restores", "foreign-key-refused"])
+def test_run_directory_recorded_under_a_former_mount(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, foreign_key: bool
 ) -> None:
     root = tmp_path.resolve()
     document = _former_mount_document(root, monkeypatch)
+    if foreign_key:
+        document["collision_key"] = os.path.normcase(
+            str(root.parent / f"{root.name}-former-mount/elsewhere")
+        )
+        with pytest.raises(SimulationRecordIntegrityError, match="collision key disagrees"):
+            rd.restore_run_directory_from_project_data(document, project_data=root)
+        return
 
     run = rd.restore_run_directory_from_project_data(document, project_data=root)
 
     assert run.path == root / "work/c/t/a1"
     assert run.collision_key == os.path.normcase(str(root / "work/c/t/a1"))
-
-
-def test_run_directory_under_a_former_mount_with_a_foreign_collision_key_is_refused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = tmp_path.resolve()
-    document = _former_mount_document(root, monkeypatch)
-    document["collision_key"] = os.path.normcase(
-        str(root.parent / f"{root.name}-former-mount/elsewhere")
-    )
-
-    with pytest.raises(SimulationRecordIntegrityError, match="collision key disagrees"):
-        rd.restore_run_directory_from_project_data(document, project_data=root)
 
 
 def test_run_directory_inside_the_evidence_folder_is_refused(tmp_path: Path) -> None:

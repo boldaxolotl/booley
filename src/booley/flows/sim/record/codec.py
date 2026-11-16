@@ -24,7 +24,6 @@ from booley.core.boundary import (
     require_finite_number,
     require_int,
     require_list,
-    require_sha256_digest,
     require_str_value,
     require_uuid4,
 )
@@ -378,14 +377,6 @@ def _validate_json(value: object, *, depth: int = 0) -> None:
             require_str_value(key, field="object key", allow_empty=True)
             _validate_json(item, depth=depth + 1)
         return
-    raise SimulationRecordIntegrityError(f"unsupported JSON type {type(value).__name__}")
-
-
-def _require_digest(value: object, field: str) -> str:
-    try:
-        return require_sha256_digest(value, field=field)
-    except BoundaryError as exc:
-        raise SimulationRecordIntegrityError(f"{field} must be a sha256 digest") from exc
 
 
 def _require_uuid(value: object, field: str) -> str:
@@ -433,10 +424,6 @@ def _validate_common(value: Mapping[str, object]) -> None:
     simulation_record_id = value.get("simulation_record_id")
     if simulation_record_id is not None:
         _require_uuid(simulation_record_id, "simulation_record_id")
-    for key in ("manifest_sha256", "workload_sha256"):
-        digest = value.get(key)
-        if digest is not None:
-            _require_digest(digest, key)
     for key in ("created_at", "started_at", "finished_at"):
         timestamp = value.get(key)
         if timestamp is not None:

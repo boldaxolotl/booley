@@ -11,16 +11,6 @@ from typing import cast
 from booley.targets import target_naming
 
 TARGET_AWARE_FLOWS: tuple[str, ...] = ("synth", "fpga", "lint", "sim")
-TARGET_IDENTITY_PARAM = "target"
-TARGET_SELECTOR_PARAM = "_target_selector"
-
-
-@dataclass(frozen=True)
-class TargetPair:
-    """One frozen baseline/candidate Target relationship for a relative Criterion."""
-
-    baseline: str
-    candidate: str
 
 
 _SIM_EDA_TOOLS = frozenset({"verilator", "icarus", "iverilog"})
@@ -208,19 +198,6 @@ def _immutable_value(value: object) -> object:
     return value
 
 
-def criterion_matches_target(
-    params: Mapping[str, object],
-    *,
-    identity: str,
-    selector: str,
-) -> bool:
-    """Match criterion metadata to one canonical Target identity/selector pair."""
-    expected_identity = params.get(TARGET_IDENTITY_PARAM)
-    if TARGET_SELECTOR_PARAM in params:
-        return expected_identity == identity and params.get(TARGET_SELECTOR_PARAM) == selector
-    return expected_identity in {identity, selector}
-
-
 def flow_can_drive(flow: str, target: TargetRef | TargetHandle) -> bool:
     """Return whether a Booley Flow can drive a declared Target."""
     from booley.targets.flow_names import canonical
@@ -249,8 +226,6 @@ def flow_can_drive(flow: str, target: TargetRef | TargetHandle) -> bool:
 __all__ = [
     "LINT_EDA_TOOL_FAMILIES",
     "TARGET_AWARE_FLOWS",
-    "TARGET_IDENTITY_PARAM",
-    "TARGET_SELECTOR_PARAM",
     "AmbiguousTargetError",
     "CoreCollisionError",
     "CoreSources",
@@ -266,7 +241,6 @@ __all__ = [
     "TargetRef",
     "TargetResolutionError",
     "UnknownTargetError",
-    "criterion_matches_target",
     "flow_can_drive",
     "immutable_mapping",
     "partition_target_inputs",

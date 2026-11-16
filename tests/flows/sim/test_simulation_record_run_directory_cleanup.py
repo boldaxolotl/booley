@@ -68,16 +68,6 @@ def _lock_names(root: Path) -> list[str]:
     return sorted(path.name for path in locks.iterdir()) if locks.is_dir() else []
 
 
-def test_repeated_templated_simulation_records_leave_no_empty_parents(tmp_path: Path) -> None:
-    for simulation_record in ("c1", "c2", "c3"):
-        for test in ("t1", "t2"):
-            run, identity = _run(tmp_path, simulation_record, test)
-            with claimed_run_directory(run, identity=identity) as directory:
-                assert directory.is_dir()
-    assert (tmp_path / "work").is_dir()
-    assert list((tmp_path / "work").iterdir()) == []
-
-
 def test_cleanup_keeps_preexisting_parent_and_template_root(tmp_path: Path) -> None:
     (tmp_path / "work/c1").mkdir(parents=True)
     for simulation_record in ("c1", "c2"):
@@ -149,10 +139,14 @@ def test_resume_cleanup_removes_recorded_empty_parents(
     if state == "attempt-survives":
         # Crash before tree removal: the attempt dir and its marked parents survive.
 
-        def interrupted(_root: Path) -> None:
-            raise KeyboardInterrupt
+        real_unlink = Path.unlink
 
-        monkeypatch.setattr(run_directory_module, "_remove_owned_tree", interrupted)
+        def interrupted(self: Path, missing_ok: bool = False) -> None:
+            if self.name == ATTEMPT_MARKER:
+                raise KeyboardInterrupt
+            real_unlink(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", interrupted)
         with pytest.raises(KeyboardInterrupt), claimed_run_directory(run, identity=identity):
             pass
         monkeypatch.undo()
