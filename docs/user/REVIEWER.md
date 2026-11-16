@@ -22,9 +22,8 @@ code and never edits it. For a pass/fail verdict from an EDA tool, use a
 | RTL | `code_style` | Comments, naming, readability, magic values, assertion quality |
 | Testbench | `quality` | False passes, missing checks and edge cases, coverage gaps, sampling mistakes |
 
-The `bugs` review leaves problems that [Lint](FLOW-LINT.md) reports for
-certain, such as latches, width mismatches, and undriven nets, to your lint
-Targets.
+The `bugs` review skips problems your [Lint](FLOW-LINT.md) Targets already
+report, so run lint alongside it.
 
 A `bugs`, `protocol`, or `security` review runs two searches side by side: one
 checks the code against a list of known patterns, the other hunts by tracing
