@@ -86,7 +86,7 @@ Everything else is in the run's numbered directory (`synth/3/` above; see
 
 | File | What it holds |
 |---|---|
-| `targets/<target>.json` | The Target's results. `area_kge` and `cells`; `per_clock`, one entry per clock with its `period_ns`, setup slack `wns_ns`, hold slack `whs_ns`, `critical_path_ps` and `fmax_mhz`; `reg2reg_fmax_mhz`; `conditions` with the latch, combinational-loop and multi-driven counts; `total_warnings` and `warning_summary`, the warnings grouped with a few sample messages. With `--baseline`: `baseline` (the same metrics at that revision), and `delta_pct` (area) and `timing_delta_pct` (critical path) in percent. A logical-mode run has `estimated_fmax_mhz` instead of clock timing. |
+| `targets/<target>.json` | The Target's results. `area_kge` and `cell_count`; `per_clock`, one entry per clock with its `period_ns`, setup slack `wns_ns`, hold slack `whs_ns`, `critical_path_ps` and `fmax_mhz`; `reg2reg_fmax_mhz`; `conditions` with the latch, combinational-loop and multi-driven counts; `total_warnings` and `warning_summary`, the warnings grouped with a few sample messages. With `--baseline`: `baseline` (the same metrics at that revision), and `delta_pct` (area) and `timing_delta_pct` (critical path) in percent. A logical-mode run has `estimated_fmax_mhz` instead of clock timing. |
 | `artifacts/synth_<target>/run.log` | The full Yosys and OpenROAD output: every warning and error. |
 | `artifacts/synth_<target>/timing/` | The STA reports, physical mode only (see [`timing_report_paths`](#configuration-flowssynth)). |
 | `artifacts/synth_<target>/baseline_timing/` | With `--baseline`: the baseline run's STA reports. |

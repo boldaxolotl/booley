@@ -1950,7 +1950,9 @@ class TestSingleConfigRun:
         assert data["area_source"] == "yosys_mapped"
         assert "mapped_area_um2" not in data
         assert "post_opt_area_um2" not in data
-        assert data["cells"] == 100
+        assert data["cell_count"] == 100
+        assert "cells" not in data
+        assert data["implementation"]["metrics"]["cell_count"] == 100
         assert data["conditions"]["has_critical"] is False
         assert data["implementation"]["schema_version"] == 1
         assert data["implementation"]["status"]["grade"] == "pass"
@@ -2065,7 +2067,7 @@ class TestSingleConfigRun:
         assert data["timed_out"] is False
         assert data["has_metrics"] is False
         assert data["area_kge"] is None
-        assert data["cells"] is None
+        assert data["cell_count"] is None
         assert "frontend rejected converted Verilog" in data["failure_output"]
 
 
@@ -2762,6 +2764,11 @@ class TestBaselineFlow:
         assert "baseline" in data
         assert data["baseline"]["ref"] == "abc1234"
         assert data["delta_pct"] == pytest.approx(2.5, rel=0.1)
+        assert data["cell_count"] == 110
+        assert data["baseline"]["cell_count"] == 100
+        assert "cells" not in data["baseline"]
+        deltas = data["implementation"]["comparison"]["deltas"]
+        assert deltas["cell_count"]["delta_pct"] == pytest.approx(10.0)
 
     def test_criterion_never_chooses_the_baseline_target(
         self, state_file: Path, tmp_path: Path
@@ -4736,8 +4743,8 @@ class TestAggregateDetailIsSelfContained:
         detail = _aggregate_detail(["asic_a", "asic_b"], cur)
         assert detail["targets"] == ["asic_a", "asic_b"]
         assert detail["passed"] is True
-        assert detail["asic_a"]["cells"] == 1200
-        assert detail["asic_b"]["cells"] == 99
+        assert detail["asic_a"]["cell_count"] == 1200
+        assert detail["asic_b"]["cell_count"] == 99
         assert detail["asic_a"]["per_clock"]["clk"]["fmax_mhz"] == 800.0
         assert detail["asic_a"]["wns_ns"] == 0.25
 
@@ -4753,7 +4760,7 @@ class TestAggregateDetailIsSelfContained:
         base = {"asic_a": self._metrics(cells=1000)}
         detail = _aggregate_detail(["asic_a"], cur, base, "deadbee")
         assert detail["baseline_ref"] == "deadbee"
-        assert detail["asic_a"]["baseline_metrics"]["cells"] == 1000
+        assert detail["asic_a"]["baseline_metrics"]["cell_count"] == 1000
 
     def test_result_from_aggregate_carries_it(self, tmp_path: Path):
         flow = AsicSynthesizeFlow()

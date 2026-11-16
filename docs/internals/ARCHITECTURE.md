@@ -156,9 +156,9 @@ never by spawning EDA tools itself. **Booley Flows** deterministically turn a
 structured request into an EDA tool invocation and its result into evidence.
 **Specialists** are scoped LLM sub-agents for work such as review. Mutation testing is a Flow
 (`booley flow mutation`), not a Specialist: it needs no model. The
-catalog is in
-[CLI-REFERENCE.md](../user/CLI-REFERENCE.md#booley-flows--specialists), the
-Flow code in `src/booley/flows/`, and the MCP extension model in
+catalogs are in [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and
+[SPECIALISTS.md](../user/SPECIALISTS.md), the Flow code in
+`src/booley/flows/`, and the MCP extension model in
 [MCP-TOOLS.md](MCP-TOOLS.md).
 
 A built-in Flow that drives interchangeable EDA tools keeps one adapter per

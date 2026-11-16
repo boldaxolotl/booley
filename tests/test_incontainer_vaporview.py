@@ -866,3 +866,109 @@ class TestPatchVsix:
         assert not notice.exists()
         assert source.read_text(encoding="utf-8") == before
         assert str(path) in capsys.readouterr().err
+
+
+class TestPatchReport:
+    """What Doctor reads: each live install's patch state and whether the hook runs."""
+
+    @staticmethod
+    def _extensions(home: Path) -> Path:
+        return home / ".vscode-server" / "extensions"
+
+    def _install(self, home, manifest: dict, bundle: str | None = _VANILLA_BUNDLE) -> Path:
+        return _install_at(
+            self._extensions(home) / f"lramseyer.vaporview-{_VERSION}", manifest, bundle
+        )
+
+    def test_patched_install(self, tmp_path):
+        manifest = self._install(tmp_path, _vanilla_manifest())
+        assert iv._patch_file(manifest).complete
+
+        assert iv.patch_report(tmp_path)["installs"] == ["patched"]
+
+    def test_official_install_is_unpatched(self, tmp_path):
+        self._install(tmp_path, _vanilla_manifest())
+
+        assert iv.patch_report(tmp_path)["installs"] == ["unpatched"]
+
+    def test_patched_bundle_beside_unpatched_manifest_is_unpatched(self, tmp_path):
+        patched_bundle, _changed, _problem = iv._prepare_theme_source(_VANILLA_BUNDLE)
+        self._install(tmp_path, _vanilla_manifest(), patched_bundle)
+
+        assert iv.patch_report(tmp_path)["installs"] == ["unpatched"]
+
+    def test_other_bundle_is_foreign(self, tmp_path):
+        self._install(tmp_path, _vanilla_manifest(), "console.log('another build')")
+
+        assert iv.patch_report(tmp_path)["installs"] == ["foreign"]
+
+    def test_missing_bundle_is_unreadable(self, tmp_path):
+        self._install(tmp_path, _vanilla_manifest(), None)
+
+        assert iv.patch_report(tmp_path)["installs"] == ["unreadable"]
+
+    def test_unparsable_manifest_is_unreadable(self, tmp_path):
+        manifest = self._install(tmp_path, _vanilla_manifest())
+        manifest.write_text("{not json", encoding="utf-8")
+
+        assert iv.patch_report(tmp_path)["installs"] == ["unreadable"]
+
+    def test_live_install_without_a_version_is_unreadable_not_skipped(self, tmp_path):
+        manifest = self._install(tmp_path, _vanilla_manifest())
+        assert iv._patch_file(manifest).complete
+        root = self._extensions(tmp_path)
+        versionless = {
+            key: value for key, value in _vanilla_manifest().items() if key != "version"
+        }
+        _install_at(root / "lramseyer.vaporview-9.9.9", versionless, _VANILLA_BUNDLE)
+
+        assert iv.patch_report(tmp_path)["installs"] == ["patched", "unreadable"]
+
+    def test_unreadable_extension_root_is_unreadable(self, tmp_path):
+        assert iv.patch_report(tmp_path)["installs"] == ["unreadable"]
+
+    def test_obsolete_and_other_version_installs_are_ignored(self, tmp_path):
+        manifest = self._install(tmp_path, _vanilla_manifest())
+        assert iv._patch_file(manifest).complete
+        root = self._extensions(tmp_path)
+        _install_at(root / "lramseyer.vaporview-1.5.4", _vanilla_manifest(), "foreign build")
+        old = {**_vanilla_manifest(), "version": "9.9.9"}
+        _install_at(root / "lramseyer.vaporview-9.9.9", old, "other build")
+        obsolete = {"lramseyer.vaporview-1.5.4": True}
+        (root / ".obsolete").write_text(json.dumps(obsolete), encoding="utf-8")
+
+        assert iv.patch_report(tmp_path)["installs"] == ["patched"]
+
+    @pytest.mark.parametrize(
+        ("cmdline", "running"),
+        [
+            (
+                b"python\x00-m\x00booley.runtime.incontainer_vaporview\x00--watch-for-install\x00",
+                True,
+            ),
+            (b"/usr/bin/python3\x00-m\x00booley.runtime.incontainer_vaporview\x00", True),
+            (b"sh\x00-c\x00python -m booley.runtime.incontainer_vaporview\x00", False),
+            (
+                b"python3\x00-c\x00from booley.runtime.incontainer_vaporview import patch_report\x00",
+                False,
+            ),
+            (b"/usr/bin/sleep\x00100\x00", False),
+            (None, False),
+        ],
+        ids=["watcher", "foreground", "shell-wrapper", "probe", "unrelated", "vanished"],
+    )
+    def test_attach_hook_process_is_detected(self, tmp_path, monkeypatch, cmdline, running):
+        fake = tmp_path / "proc" / "1" / "cmdline"
+        if cmdline is not None:  # None = a process that exits between glob and read
+            fake.parent.mkdir(parents=True)
+            fake.write_bytes(cmdline)
+        real_glob = Path.glob
+
+        def glob(self, pattern, *args, **kwargs):
+            if self == Path("/proc"):
+                return iter([fake])
+            return real_glob(self, pattern, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "glob", glob)
+
+        assert iv.patch_report(tmp_path)["hook_running"] is running
