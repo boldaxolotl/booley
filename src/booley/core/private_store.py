@@ -10,7 +10,7 @@ import shlex
 import stat
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -238,12 +238,12 @@ class ProjectStore:
 
     Every file's name is the SHA-256 of the case-normalised Project Root it
     holds, so lookups and scans agree on one identity rule. `repair` is the
-    caller's sentence for fixing a misnamed file; it may use the `{path}` and
-    `{root}` placeholders, keeping runtime policy out of this module.
+    caller's function from the misnamed file's path and the Project Root it
+    holds to the sentence for fixing it, keeping runtime policy out of this module.
     """
 
     private: PrivateStore
-    repair: str
+    repair: Callable[[Path, str], str]
 
     def filename(self, project_root: str) -> str:
         """Name the file for a Project Root; case folds only where the OS folds paths."""
@@ -317,7 +317,7 @@ class ProjectStore:
         return ProjectStoreEntry(path, project_root, document)
 
     def _mismatch(self, path: Path, project_root: str) -> RuntimeError:
-        repair = self.repair.format(path=path, root=project_root)
+        repair = self.repair(path, project_root)
         return self.private.error_type(
             f"{self.private.subject} identity mismatch: {path} is not named for the "
             f"Project Root it holds ({project_root}); {repair}"

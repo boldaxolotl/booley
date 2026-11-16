@@ -39,7 +39,7 @@ from booley.runtime.platform_paths import (
     run_captured_bounded,
     same_host_path,
 )
-from booley.runtime.private_store import SESSION_STORE_REPAIR
+from booley.runtime.private_store import session_store_repair
 from booley.runtime.sandbox_apply import (
     Attachment,
     apply_steps,
@@ -689,7 +689,7 @@ def claim_store() -> ProjectStore:
         "Sandbox admission claim",
         AdmissionError,
     )
-    return ProjectStore(private, SESSION_STORE_REPAIR)
+    return ProjectStore(private, session_store_repair)
 
 
 def _canonical_root(project_root: Path) -> str:

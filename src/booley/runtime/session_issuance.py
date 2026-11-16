@@ -67,7 +67,7 @@ from booley.runtime.incontainer_git_identity import (
     load_git_identity,
 )
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
-from booley.runtime.private_store import SESSION_STORE_REPAIR
+from booley.runtime.private_store import session_store_repair
 from booley.runtime.sandbox_layout import DEVCONTAINER_TARGET
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
@@ -339,7 +339,7 @@ def stamp_store() -> ProjectStore:
         "host-issued Sandbox spec",
         RuntimeSpecError,
     )
-    return ProjectStore(private, SESSION_STORE_REPAIR)
+    return ProjectStore(private, session_store_repair)
 
 
 def validate_auth_reseed_storage(project_root: Path) -> None:
