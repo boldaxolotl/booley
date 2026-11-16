@@ -18,6 +18,7 @@ from pathlib import Path
 from booley.core.boundary import BoundaryError
 from booley.flows.sim.config import resolve_compiler_cache_settings
 from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 
 logger = logging.getLogger(__name__)
 # Build variables Booley manages; Verilator build reuse keeps them out of its key.
@@ -116,7 +117,7 @@ def warn_make_option_overrides(target: str, tokens: Sequence[str], *, cache_acti
 def _cache_blocker(policy: CompilerCachePolicy, search_path: str | None) -> str:
     """Return why an enabled cache cannot serve this build, creating its root if it can."""
     if policy.root is None:
-        return f"{COMPILER_CACHE_ROOT_ENV} is unset; run booley session refresh on the host"
+        return f"{COMPILER_CACHE_ROOT_ENV} is unset; recreate the Sandbox: {UNKNOWN_SANDBOX_STEPS}"
     if shutil.which("ccache", path=search_path) is None:
         return "ccache is missing from the build PATH"
     try:
