@@ -1080,10 +1080,12 @@ def inspect_refreshable_runtime_image(project_root: Path) -> None:
     """Reject a user-managed Sandbox Image before refresh causes downtime."""
     lifecycle_plan = image_lifecycle.plan(ProjectImageScope(project_root))
     if lifecycle_plan.nodes[0].role is ImageRole.EXTERNAL:
+        # Deferred import: session_runtime imports back into init_cmd.
+        from booley.runtime import session_runtime as sr
+
         raise RuntimeError(
-            "the selected Sandbox Image cannot use managed refresh: it is externally managed. "
-            "Rebuild/pull it explicitly, then on the host run `booley session down`, "
-            "`booley init --seed`, and `booley session up`."
+            "the selected Sandbox Image cannot use managed refresh: it is externally managed; "
+            + sr.sandbox_remedy(project_root)
         )
 
 
@@ -1717,7 +1719,8 @@ def _setup_step_done(key: str, project_root: Path, data: dict) -> bool:
         return bool(str(name).strip())
     if key == "agents":
         return (project_root / ".booley" / "AGENTS.md").is_file()
-    flows = data.get("flows") if isinstance(data.get("flows"), dict) else {}
+    raw_flows = data.get("flows")
+    flows = raw_flows if isinstance(raw_flows, dict) else {}
     from booley.targets.flow_names import LEGACY_TO_CANONICAL, config_section
 
     section = config_section(flows, key)

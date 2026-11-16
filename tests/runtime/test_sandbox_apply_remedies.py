@@ -88,3 +88,50 @@ def test_stale_image_advice_for_headless_and_vscode_containers(tmp_path: Path) -
         session_runtime.stale_image_advice(tmp_path, "vsc-editor")
         == "use Dev Containers: Rebuild Container"
     )
+
+
+def _host_attachment(monkeypatch: pytest.MonkeyPatch, attachment: object) -> None:
+    from booley.runtime import runtime_context
+
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _root: attachment)
+
+
+def test_sandbox_entry_remedy_keeps_the_capacity_advice(tmp_path: Path) -> None:
+    error = session_runtime.SessionError("Sandbox start refused: host is at capacity")
+
+    assert session_runtime.sandbox_entry_remedy(tmp_path, error) == (
+        "free Sandbox capacity using the command in the refusal, then retry"
+    )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [session_runtime.SessionError("bad issuance"), FileNotFoundError("docker"), OSError("boom")],
+)
+def test_sandbox_entry_remedy_names_the_owner_workflow_then_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    _host_attachment(monkeypatch, sandbox_apply.Attachment.VSCODE)
+
+    remedy = session_runtime.sandbox_entry_remedy(tmp_path, error)
+
+    assert remedy == (
+        "on the host run `booley init`, then use Dev Containers: Rebuild Container, then retry"
+    )
+
+
+def test_sandbox_entry_remedy_survives_a_missing_docker_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.runtime import runtime_context
+
+    def no_docker(*_args: object, **_kwargs: object) -> object:
+        raise FileNotFoundError("docker")
+
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(session_runtime, "_run", no_docker)
+
+    remedy = session_runtime.sandbox_entry_remedy(tmp_path, session_runtime.SessionError("x"))
+
+    assert remedy.endswith(", then retry")

@@ -824,7 +824,7 @@ def _run_up_transaction(
     if replacing and request.profile is not None:
         raise SessionError(
             "`booley session up --rebuild` cannot preserve a licensed relay topology; "
-            "run `booley session refresh` instead"
+            "instead, " + apply_steps(Attachment.HEADLESS, managed=image_is_managed(workspace))
         )
     parked = _park_session_for_rebuild(request.name) if replacing else None
     exists = idk.container_exists(request.name)
@@ -2628,3 +2628,16 @@ def sandbox_remedy(workspace: Path) -> str:
             "restore Docker connectivity and inspect Sandbox ownership on the host before repair"
         )
     return _owner_steps(workspace, attachment, refreshable=refreshable)
+
+
+def sandbox_entry_remedy(workspace: Path, exc: Exception) -> str:
+    """Advise on a failure to enter the Project's Sandbox for a diagnostic probe.
+
+    A capacity refusal is cleared by freeing capacity. Anything else (a running
+    Sandbox on an older issuance, a Docker failure) needs the Sandbox recreated:
+    ``booley init --seed`` alone reissues the spec but never replaces that
+    container, so the retry would fail the same way.
+    """
+    if isinstance(exc, SessionError) and str(exc).startswith("Sandbox start refused:"):
+        return "free Sandbox capacity using the command in the refusal, then retry"
+    return f"{sandbox_remedy(workspace)}, then retry"

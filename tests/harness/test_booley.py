@@ -19,6 +19,7 @@ from booley.harness import booley as tlr
 from booley.harness import bootstrap_cli
 from booley.runtime import health
 from booley.runtime.booley_dir import reset_cache
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 from tests.subprocess_budget import run_bounded_child
 
 TICKETS_REL = Path(".booley") / "tickets"
@@ -139,6 +140,14 @@ def test_init_scaffold_stealth_flag():
 
     assert parser.parse_args(["init", "--scaffold", "demo", "--stealth"]).stealth is True
     assert parser.parse_args(["init", "--scaffold", "demo"]).stealth is False
+
+
+def test_init_parser_reads_style_lint_flags():
+    parser = tlr._build_parser()
+
+    assert parser.parse_args(["init", "--scaffold", "demo"]).style_lint is None
+    assert parser.parse_args(["init", "--scaffold", "demo", "--no-style-lint"]).style_lint is False
+    assert parser.parse_args(["init", "--scaffold", "demo", "--style-lint"]).style_lint is True
 
 
 def test_init_parser_accepts_skip_credentials():
@@ -1938,7 +1947,7 @@ def test_auth_token_stdin_outside_project_stores_and_explains_pickup(
     assert result == 0, "auth incorrectly requires a Project"
     assert auth_token.token_path().read_text().strip() == "sk-ant-oat01-synthetic-cli"
     output = capsys.readouterr().out
-    assert "session up" in output and "init --seed" in output
+    assert " ".join(output.split()).count(UNKNOWN_SANDBOX_STEPS) == 1
     init.assert_not_called()
 
 

@@ -434,6 +434,17 @@ def _job_cells(job: JobView, now: float, handles: Mapping[str, str] | None) -> t
     )
 
 
+def _text_cells(rows: list[tuple[object, ...]]) -> list[tuple[Text, ...]]:
+    """Jobs rows are built from ``Text`` cells; refuse any other cell."""
+    text_rows: list[tuple[Text, ...]] = []
+    for row in rows:
+        cells = tuple(cell for cell in row if isinstance(cell, Text))
+        if len(cells) != len(row):
+            raise TypeError("a Jobs row holds only Text cells")
+        text_rows.append(cells)
+    return text_rows
+
+
 def _fit_job_widths(available: int, rows: list[tuple[Text, ...]]) -> tuple[int, ...]:
     """Column widths (each but the last includes a one-column gap) for the Jobs list.
 
@@ -927,7 +938,7 @@ class DashboardApp(App[None]):
 
     def _content_at_top(self) -> bool:
         """True when up has nowhere to go inside the focused content."""
-        table = self.query_one(DataTable)
+        table = self.query_one(SessionList)
         if table.display:
             return self.focused is table and (
                 table.row_count == 0 or table.cursor_row <= table.first_selectable_row()
@@ -1071,6 +1082,11 @@ class DashboardApp(App[None]):
         """The session's orientation header as plain text."""
         return self._session_header().plain
 
+    def _open_session_key(self) -> str:
+        """The open session's key; the empty string when no session is open."""
+        session = self.navigation.session
+        return session if isinstance(session, str) else ""
+
     def _session_row(self) -> tuple[SessionRow | None, bool]:
         """The open detail's session row and whether it is connected.
 
@@ -1082,20 +1098,20 @@ class DashboardApp(App[None]):
             (
                 row
                 for row in self.snapshot.sessions
-                if row.attribution.key == self.navigation.session
+                if row.attribution.key == self._open_session_key()
             ),
             None,
         )
         if live is not None:
             return live, True
-        return self._known_sessions.get(self.navigation.session or ""), False
+        return self._known_sessions.get(self._open_session_key()), False
 
     def _session_header(self) -> Text:
         """The session's orientation header, styled fact by fact."""
         row, connected = self._session_row()
         attention = SEMANTIC_STYLE["attention"]
         if row is None:
-            title = self._session_title(self.navigation.session or "")
+            title = self._session_title(self._open_session_key())
             return _join(
                 (f"{title} ", "bold " + _ACCENT),
                 ("disconnected", attention),
@@ -1332,7 +1348,7 @@ class DashboardApp(App[None]):
         activities.extend(
             ("job:" + json.dumps(job.key), _activity_row("Running Job", self._job_line(job)))
             for job in self.snapshot.jobs.jobs
-            if self._owned_by(job, self.navigation.session)
+            if self._owned_by(job, self._open_session_key())
             and job.state not in TERMINAL_JOB_STATES
         )
         if session:
@@ -1573,10 +1589,11 @@ class DashboardApp(App[None]):
         job_widths: tuple[int, ...] | None = None
         if self.navigation.view == "jobs":
             self._jobs_fit_width = table.size.width
+            job_cells = _text_cells(rows)
             job_widths = _fit_job_widths(
-                self._jobs_fit_width - table.styles.scrollbar_size_vertical, rows
+                self._jobs_fit_width - table.styles.scrollbar_size_vertical, job_cells
             )
-            rows = _truncate_job_rows(rows, job_widths)
+            rows = list(_truncate_job_rows(job_cells, job_widths))
         columns = self._list_columns(job_widths)
         if columns != self._list_columns_shown:
             table.clear(columns=True)

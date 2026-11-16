@@ -21,7 +21,15 @@ from booley.config.project_config import normalize_tests_toml
 from booley.core.host_shell import quote_arg
 from booley.harness import doctor, doctor_deep, host_diagnostics
 from booley.harness.setup import readiness
-from booley.runtime import doctor_stamp, inspection, platform_paths, vaporview
+from booley.runtime import (
+    doctor_stamp,
+    inspection,
+    platform_paths,
+    runtime_context,
+    session_runtime,
+    vaporview,
+)
+from booley.runtime.sandbox_apply import Attachment
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 from tests.conftest import symlink_or_skip
@@ -34,6 +42,7 @@ from tests.harness.test_doctor import (
     _patch_environment,
     _write_project,
 )
+from tests.runtime.test_sandbox_remedy_workflows import VSCODE_INIT
 from tests.subprocess_budget import run_bounded_child
 
 
@@ -1328,7 +1337,7 @@ _RUNTIME_ROWS = {
     "binary missing": [
         "  ✓  lint executes in the Sandbox",
         "  ✗  lint: 'verilator' is not on the issued Sandbox PATH",
-        "     → bake verilator into the Sandbox Image and rebuild (booley init --force)",
+        "     → bake verilator into the Sandbox Image, then recreate the Sandbox: " + VSCODE_INIT,
         "  ✓  lint dry-run passed",
     ],
     "runtime unavailable": [
@@ -1356,6 +1365,8 @@ def test_flow_runtime_rows_render_unchanged(tmp_path, monkeypatch, capsys):
         root = tmp_path / name.replace(" ", "-")
         root.mkdir()
         with monkeypatch.context() as patch:
+            patch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+            patch.setattr(session_runtime, "sandbox_attachment", lambda _root: Attachment.VSCODE)
             rows, code, ran = _run_runtime_scenario(root, patch, capsys, **options)
         assert rows == _RUNTIME_ROWS[name], name
         assert code == exit_code, name
