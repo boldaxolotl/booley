@@ -4,8 +4,9 @@ Only lines the branch adds or changes are checked (against the newest merge
 base with ``main``, or ``--base``), so existing long lines never fail. A line
 is not prose, and never fails, inside a fenced code block, as a table row
 (Markdown or HTML), an ATX heading, YAML front matter or a generated block;
-when it is only a link, URL or link reference definition; or when the only
-text past column 80 is one URL or code span. The rule and its exemptions are
+when it is only a link (a linked image included), URL or link reference
+definition; or when the only text past column 80 is one URL or code span. The
+rule and its exemptions are
 ``docs/internals/DOCS_PRINCIPLES.md`` principle 17.
 
 The module depends only on the standard library and on
@@ -42,7 +43,9 @@ _FENCE = re.compile(r"^(`{3,}|~{3,})(.*)$")
 _HEADING = re.compile(r"^#{1,6}(?: |$)")
 _LIST_MARKER = re.compile(r"^(?:[-*+]|\d+[.)])\s+")
 _LINK_ONLY = re.compile(
-    r"^(?:<https?://[^>\s]+>|https?://\S+|!?\[[^\]]*\]\([^)\s]+\)|\[[^\]]*\]\[[^\]]*\])[.,;:]?$"
+    r"^(?:<https?://[^>\s]+>|https?://\S+|!?\[[^\]]*\]\([^)\s]+\)|\[[^\]]*\]\[[^\]]*\]"
+    # a linked image, [![alt](image)](target), is still only a link
+    r"|\[!\[[^\]]*\]\([^)\s]+\)\]\([^)\s]+\))[.,;:]?$"
 )
 _LINK_DEFINITION = re.compile(r"^ {0,3}\[[^\]]+\]:\s*\S")
 _TOKEN = re.compile(r"(`+)(?:(?!\1).)+?\1|https?://\S+")
