@@ -51,11 +51,22 @@ are first-class.
 for coding agents, is built the same way: it runs Claude Code and Codex
 threads side by side and manages their git worktrees.
 
-Hardware changes what an ADE has to supply. A software ADE can trust the
-compiler and test runner it finds in the repository. An RTL agent needs a
-pinned, sandboxed EDA stack, typed Booley Flows instead of hand-run Tcl,
-waveforms it can query, and acceptance it can't fake: area, timing, cycle
-counts, and coverage checked by Booley against fresh results.
+Booley differs from a software ADE in four ways:
+
+1. **Sandboxed.** The agent and every command it runs stay inside the
+   [Sandbox](#the-host-and-the-sandbox) container, with no host command
+   channel and, by default, network access only through the egress proxy.
+2. **EDA tools included.** The Sandbox Image ships the open-source EDA stack;
+   a vendor tool such as Vivado is installed on the host and mounted into the
+   Sandbox read-only.
+3. **Deterministic checks.** Hardware tolerates far fewer bugs than software,
+   so Booley accepts work on deterministic checks and measured metrics, not on
+   the agent's word: [Booley Flows](#booley-flows) report area, timing, cycle
+   counts, and coverage from fresh runs, and [Measurement](#measurement)
+   checks them against the Project's Target Metrics.
+4. **Hardware-specific tools.** [B-Wave](#b-wave) answers queries about
+   simulation waveforms, and the Mutation Flow (`booley flow mutation`)
+   measures how well a Target's tests catch injected RTL bugs.
 
 The framing also decides where product work goes: into supervising agents
 (several sessions at once, Job progress, fast review), not into editor
