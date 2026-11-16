@@ -10,6 +10,10 @@ supervised process, shrink, renew, close), and a supervisor that runs one
 ``reap`` is the independent reaper, recovering with the real ``recover_execution`` (its
 ``/proc`` scan finds no process with a fresh marker, so it proves every lane tree empty).
 Lock waits are scheduling points too: the record's file lock and the registry's lock.
+A supervisor pass is one ``recover_lost_children`` or ``cancel_waiters`` call: the machine does
+not model the production loop stopping the pool after a failed recovery pass.
+Execution recovery scans Linux ``/proc``, so the module runs on Linux only; its fake PIDs are
+above the kernel's PID limit, so no cancellation signal reaches a real process.
 
 Checks after every step, besides the base machine's I2, I3 and I5:
 
@@ -30,6 +34,7 @@ import contextlib
 import functools
 import json
 import os
+import sys
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -52,6 +57,7 @@ from booley.runtime import execution_records, job_slots
 from booley.runtime.execution_records import (
     ExecutionId,
     execution_paths,
+    read_json,
     request_cancellation,
 )
 from booley.runtime.execution_recovery import recover_execution
@@ -80,6 +86,10 @@ from tests.test_job_slot_step_machine import (
     JobSlotStepMachine,
     _fields,
     _step_until,
+)
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != "linux", reason="execution recovery scans Linux /proc"
 )
 
 LANE_PR_SETTINGS = settings(PR_SETTINGS, max_examples=20)
@@ -618,12 +628,6 @@ class LaneStepMachine(JobSlotStepMachine):
         assert not left, f"S2: execution-owned entries survive two reaps: {left}"
 
 
-def _fields_pid(name: str) -> int:
-    fields = _fields(name)
-    assert fields is not None
-    return fields[1]
-
-
 # ------------------------------------------------------------------ fixtures
 
 
@@ -775,6 +779,7 @@ def test_unregister_cannot_replace_recovery_terminal_record(
     final = machine._payload(record)
     assert final is not None
     assert final["state"] == "terminal"
+    assert final["terminal_cause"] == "orphan_recovered"
     assert reaper.oserror is None
 
 
@@ -808,3 +813,15 @@ def test_interleaved_lane_schedules(tmp_path: Path) -> None:
         else LANE_PR_SETTINGS
     )
     run_state_machine_as_test(lambda: LaneStepMachine(tmp_path), settings=selected)
+
+
+def test_atomic_write_json_keeps_its_temporary_file_beside_the_named_directory(
+    tmp_path: Path,
+) -> None:
+    real = tmp_path / "real" / "sub"
+    real.mkdir(parents=True)
+    (tmp_path / "link").symlink_to(real, target_is_directory=True)
+    target = tmp_path / "link" / ".." / "record.json"
+    execution_records.atomic_write_json(target, {"state": "waiting"})
+    assert read_json(target) == {"state": "waiting"}
+    assert [path.name for path in tmp_path.rglob(".record.json.*")] == []
