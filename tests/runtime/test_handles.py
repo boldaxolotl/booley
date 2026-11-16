@@ -106,9 +106,7 @@ def test_job_creation_before_registry_migration_preserves_existing_handle(
     registry = SessionRegistry(tmp_path)
     registry.upsert(old, "sim", "completed", now=100)
     monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda: tmp_path)
-    context = CallContext(
-        work_dir, tmp_path / "jobs", None, None, None, {}, session_key=canonical.key
-    )
+    context = CallContext(work_dir, tmp_path / "jobs", None, None, {}, session_key=canonical.key)
     JobLifecycle._stamp_context(job_records.JobRecord("new-job", "sim", STAMP, 60), context)
     registry.upsert(canonical, "sim", "completed", now=101)
     labels = handles.HandleStore(tmp_path).load().labels()

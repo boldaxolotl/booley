@@ -247,7 +247,6 @@ async def test_public_job_cancel_preserves_dirty_scope(
     context = CallContext(
         dirty_worktree,
         runtime / "jobs",
-        None,
         tmp_path / "logs",
         runtime,
         overrides,

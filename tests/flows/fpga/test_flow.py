@@ -6,7 +6,6 @@ import dataclasses
 import io
 import json
 import os
-import subprocess
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,10 +18,7 @@ from booley.core.boundary import BoundaryError
 from booley.core.build_paths import work_root_for
 from booley.criteria.state import DevelopmentState
 from booley.evidence.fields import (
-    BASELINE_REF_PARAM,
     BASELINE_TARGET_PARAM,
-    RECIPE_FINGERPRINT_PARAM,
-    RECIPE_SNAPSHOT_PARAM,
 )
 from booley.evidence.timing import ClockTiming, make_clock_timing
 from booley.flows import run_evidence
@@ -261,39 +257,114 @@ def test_fpga_label_carries_target_source_bytes(tmp_path: Path, state_file: Path
     assert expected_bytes > 0
 
 
-def test_criteria_baseline_pin_does_not_override_the_baseline_flag(
-    tmp_path: Path, state_file: Path
+@pytest.mark.parametrize("named_state", [True, False], ids=["state-file", "no-state-file"])
+@pytest.mark.parametrize(
+    ("wns_ns", "returncode", "exit_code", "verdict"),
+    [(0.2, 0, EXIT_SUCCESS, 0), (-0.01, 0, EXIT_FAILURE, 0), (0.2, 1, EXIT_ERROR, 2)],
+    ids=["pass", "fail", "crash"],
+)
+def test_fpga_run_records_no_criterion(
+    tmp_path: Path,
+    state_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    wns_ns: float,
+    returncode: int,
+    exit_code: int,
+    verdict: int,
+    named_state: bool,
 ) -> None:
-    """A Criterion's pinned baseline never replaces ``--baseline``."""
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
-    shas = []
-    for text in ("one", "two"):
-        (tmp_path / "rtl.v").write_text(f"module {text}; endmodule\n", encoding="utf-8")
-        subprocess.run(["git", "add", "rtl.v"], cwd=tmp_path, check=True)
-        subprocess.run(["git", "commit", "-qm", text], cwd=tmp_path, check=True)
-        shas.append(
-            subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=tmp_path,
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
-        )
-    pinned, requested = shas
-    flow = _flow(tmp_path, state_file, "--baseline", requested)
-    flow.state.init_criteria(
-        {"fpga_impl_ok_default": True},
-        criterion_params={"fpga_impl_ok_default": {BASELINE_REF_PARAM: pinned}},
+    """A hand-run FPGA Flow keeps its exit status and metric verdict, records no
+    Criterion and writes no development-state or evidence file."""
+    from booley.flows.metric_declarations import FlowMetricValues
+    from booley.measurement.flow_metrics import report_metric_values
+    from booley.measurement.metrics_file import Bound, TableRules
+    from booley.measurement.verdicts import (
+        FlowFailed,
+        FlowValues,
+        evaluate_table,
+        measure_exit_code,
     )
 
-    assert flow._prepare_target_pairs((_layer_target_handle(tmp_path, "default"),)) is None
-    assert flow.args.baseline == requested
+    if named_state:
+        before = state_file.read_bytes()
+    else:
+        monkeypatch.delenv("BOOLEY_STATE_FILE")
+        state_file.unlink()
+    _write_project_config(tmp_path)
+    flow = _flow(tmp_path, state_file)
+    parsed = {
+        "status": "pass",
+        "lut_count": 1200,
+        "ff_count": 700,
+        "wns_ns": wns_ns,
+        "whs_ns": 0.1,
+    }
+    if returncode:  # a crash before routing leaves no report to parse
+        parsed = {}
+    with (
+        patch.object(
+            FpgaImplFlow,
+            "_prepare_fpga_command",
+            return_value=_PreparedFpgaCommand(["make", "-C", "x"], tmp_path, "", False, None),
+        ),
+        patch.object(flow, "_route_evidence", return_value=(returncode == 0, "")),
+        patch("booley.flows.fpga.backends.vivado.edam.parse_fpga_reports", return_value=parsed),
+        patch.object(
+            flow,
+            "_execute_boundary",
+            return_value=SubprocessResult(returncode=returncode, stdout="routed\n"),
+        ),
+    ):
+        result = flow._run()
+
+    assert result.exit_code == exit_code
+    if named_state:
+        assert state_file.read_bytes() == before
+        assert not flow.state.is_met("fpga_impl_ok_default")
+    else:
+        assert flow.state.criteria == {}
+        assert list(tmp_path.rglob("state.json")) == []
+    assert not (tmp_path / "logs").exists()
+    rules = TableRules(
+        "t",
+        "vlnv:x#t",
+        "fpga",
+        (Bound("lut_count_max", "lut_count", "max", 1500, None, None, None),),
+        (),
+    )
+    values = report_metric_values("fpga", result.detail).get("default")
+    outcome = (
+        FlowValues(values, values.clocks)
+        if isinstance(values, FlowMetricValues)
+        else FlowFailed("fpga returned no values")
+    )
+    judged = evaluate_table(rules, outcome)
+    assert measure_exit_code(item.verdict for item in judged) == verdict
 
 
-def test_paired_baseline_runs_baseline_target_and_keys_candidate(
+def test_criterion_never_chooses_the_baseline_target(
+    tmp_path: Path,
+    state_file: Path,
+) -> None:
+    """``--baseline`` pairs each Target with itself, whatever a state-file Criterion pins."""
+    from booley.flows.job_estimates import JobRequest
+
+    flow = _flow(tmp_path, state_file, "--baseline", "v1.0")
+    flow.state.init_criteria(
+        {"fpga_impl_ok_default": True},
+        criterion_params={"fpga_impl_ok_default": {BASELINE_TARGET_PARAM: "fpga_before"}},
+    )
+    handle = _layer_target_handle(tmp_path, "default")
+
+    assert flow._prepare_target_pairs((handle,)) is None
+
+    assert [(plan.baseline.selector, plan.candidate.selector) for plan in flow._target_pairs] == [
+        ("default", "default")
+    ]
+    assert flow.memory_job_requests((handle,)) == (JobRequest("fpga", "default"),)
+
+
+def test_baseline_runs_the_candidate_target_at_the_baseline_revision(
     tmp_path: Path,
     state_file: Path,
 ) -> None:
@@ -308,6 +379,8 @@ def test_paired_baseline_runs_baseline_target_and_keys_candidate(
         baseline.mkdir(parents=True, exist_ok=True)
         yield baseline
 
+    candidate = _layer_target_handle(tmp_path, "fpga_after")
+    assert flow._prepare_target_pairs((candidate,)) is None
     with (
         patch("booley.flows.fpga.flow.baseline_worktree", fake_worktree),
         patch("booley.flows.fpga.flow.git_short_sha", return_value="abc1234"),
@@ -317,21 +390,10 @@ def test_paired_baseline_runs_baseline_target_and_keys_candidate(
             side_effect=lambda target: calls.append(target) or metrics,
         ),
     ):
-        candidate = _layer_target_handle(tmp_path, "fpga_after")
-        plans = target_pair_plans_for_handles(
-            {
-                "fpga_impl_ok_fpga_after": SimpleNamespace(
-                    params={BASELINE_TARGET_PARAM: "fpga_before"}
-                )
-            },
-            "fpga_impl_ok_",
-            (candidate,),
-            flow="fpga",
-        )
         flow._target_handles = {candidate.selector: candidate}
-        results, short_sha = flow._run_baseline_configs(plans)
+        results, short_sha = flow._run_baseline_configs(flow._target_pairs)
 
-    assert calls == ["fpga_before"]
+    assert calls == ["fpga_after"]
     assert short_sha == "abc1234"
     assert list(results) == ["fpga_after"]
 
@@ -389,63 +451,6 @@ def test_baseline_plan_restores_candidate_execution_context(
     assert flow.args.work_dir == tmp_path
     assert flow._target_handles is candidate_handles
     assert flow._target_execution_refs is candidate_refs
-
-
-def test_changed_fpga_recipe_is_evidence_not_a_rejection(
-    tmp_path: Path,
-    state_file: Path,
-) -> None:
-    flow = _flow(tmp_path, state_file)
-    baseline_ref = "a" * 40
-    baseline_snapshot = {
-        "flow": "fpga",
-        "target": "default",
-        "flow_options": {"part": "old"},
-        "constraints": [],
-    }
-    current_snapshot = {
-        "flow": "fpga",
-        "target": "default",
-        "flow_options": {"part": "new"},
-        "constraints": [],
-    }
-    flow.state.init_criteria(
-        {"fpga_impl_ok_default": True},
-        criterion_params={
-            "fpga_impl_ok_default": {
-                "lut_count_increase_at_most": 10,
-                BASELINE_REF_PARAM: baseline_ref,
-                RECIPE_FINGERPRINT_PARAM: "baseline-recipe",
-                RECIPE_SNAPSHOT_PARAM: baseline_snapshot,
-            }
-        },
-    )
-    flow._baseline_full_sha = baseline_ref
-    base = FpgaMetrics(
-        lut_count=100,
-        ff_count=50,
-        wns_ns=0.2,
-        whs_ns=0.1,
-        recipe_snapshot=baseline_snapshot,
-        recipe_fingerprint="baseline-recipe",
-    )
-    cur = FpgaMetrics(
-        lut_count=105,
-        ff_count=52,
-        wns_ns=0.2,
-        whs_ns=0.1,
-        recipe_snapshot=current_snapshot,
-        recipe_fingerprint="current-recipe",
-    )
-
-    flow._set_config_criterion("default", cur, base, baseline_ref[:12])
-
-    entry = flow.state.criteria["fpga_impl_ok_default"]
-    assert entry.met is True
-    assert entry.detail["recipe_comparison"]["flow"] == "fpga"
-    assert entry.detail["recipe_comparison"]["changes"] == [
-        {"path": "flow_options.part", "before": "old", "after": "new"}
-    ]
 
 
 def _collect_flow(work_dir: Path) -> FpgaImplFlow:
@@ -728,11 +733,11 @@ def test_dry_run_and_real_setup_reject_same_source_inspection_fault(
     assert "source inspection rejected" in (real_run.infra_error or "")
 
 
-def test_negative_wns_fails_fpga_criterion(
+def test_negative_wns_fails_the_run(
     tmp_path: Path,
     state_file: Path,
 ) -> None:
-    """A routed design that misses timing (negative WNS) fails the criterion.
+    """A routed design that misses timing (negative WNS) fails the run.
 
     Decoupled from a live Edalize ``configure()``: the project materialization
     seam (``_prepare_fpga_command``) is stubbed and ``parse_fpga_reports`` is
@@ -766,10 +771,9 @@ def test_negative_wns_fails_fpga_criterion(
         result = flow._run()
 
     assert result.exit_code == EXIT_FAILURE
-    state = DevelopmentState.load(state_file)
-    entry = state.criteria["fpga_impl_ok_default"]
-    assert entry.met is False
-    assert entry.detail["timing_met"] is False
+    report = json.loads((tmp_path / "reports" / "fpga_default.json").read_text(encoding="utf-8"))
+    assert report["passed"] is False
+    assert report["implementation"]["status"]["grade"] == "fail"
 
 
 def _run_structural_case(
@@ -828,7 +832,7 @@ def _check_structural_allowance(
     assert conditions[key] == 2
     assert conditions[unexpected_key] == 0
     assert conditions["has_critical"] is False
-    assert DevelopmentState.load(state_file).is_met("fpga_impl_ok_default")
+    assert report["passed"] is True
 
     over_dir = tmp_path / "over"
     over_dir.mkdir()
@@ -1280,8 +1284,6 @@ class TestTargetRecipeBoundary:
 
         assert result.exit_code == EXIT_ERROR
         assert "infrastructure error" in result.report_text
-        state = DevelopmentState.load(state_file)
-        assert state.criteria["fpga_impl_ok_default"].met is False
 
     def test_real_fusesoc_fpga_setup(self, state_file: Path, tmp_path: Path) -> None:  # noqa: PLR0915 — end-to-end test with many sequential setup steps and assertions
         """End-to-end: a real `fusesoc run --setup` leaves a resolved vivado EDAM.
@@ -2227,7 +2229,7 @@ def test_fpga_baseline_materializes_project_topologies(tmp_path, monkeypatch, to
     handle = TargetCatalog.build(root).select("fpga_core", for_flow="fpga")
     flow._target_handles = {handle.selector: handle}
     flow._target_execution_refs = {}
-    flow._target_pairs = target_pair_plans_for_handles({}, "fpga_impl_ok_", (handle,), flow="fpga")
+    flow._target_pairs = target_pair_plans_for_handles((handle,), flow="fpga")
     candidate_handles = flow._target_handles
     roots = []
 
