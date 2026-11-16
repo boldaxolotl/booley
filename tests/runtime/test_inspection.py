@@ -516,6 +516,7 @@ class TestStateVolumeCheck:
         assert "booley-codex-state-someoldproject" in capsys.readouterr().out
 
 
+@pytest.mark.usefixtures("fake_sandbox_attachment")
 class TestDevcontainerSpecStaleness:
     """_check_devcontainer_spec must surface a spec that loses history on rebuild."""
 
@@ -541,9 +542,6 @@ class TestDevcontainerSpecStaleness:
         monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
         on_disk = dc.devcontainer_path(root)
         monkeypatch.setattr(idk, "image_id", lambda image: image)
-        # The remedy text inventories Docker for the Sandbox's owner; a host without a
-        # reachable engine (the Windows runners) would name connectivity instead.
-        monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _workspace: None)
         rec = _Rec()
         _record_report(
             inspection.inspect_runtime(

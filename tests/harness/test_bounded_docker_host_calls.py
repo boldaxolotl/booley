@@ -572,9 +572,6 @@ def _check_site(
         patch.setattr(site.module, "run_captured_bounded", bounded, raising=False)
         patch.setattr(subprocess, "run", unbounded)
         patch.setattr(shutil, "which", lambda name: name)
-        # The remedy text a failing probe attaches inventories Docker through its own untimed
-        # call; that inventory is not the call under audit, so the owner is fixed instead.
-        patch.setattr(session_runtime, "sandbox_attachment", lambda _root: None)
         shown = _observe(lambda: site.drive(tmp_path))
     if shown != site.expected[outcome]:
         problems.append(
@@ -602,6 +599,7 @@ def _observe(drive: Callable[[], Any]) -> str:
     return f"returned:{value!r}"
 
 
+@pytest.mark.usefixtures("fake_sandbox_attachment")
 def test_every_timed_docker_call_uses_the_bounded_helper(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

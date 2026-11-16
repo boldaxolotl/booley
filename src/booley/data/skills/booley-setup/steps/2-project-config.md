@@ -744,7 +744,7 @@ What goes here:
   explicit `default` (older Projects: `provider`) and `auth` values. Carry them forward unchanged; for a
   Project with a missing field, write only the missing field settled during planning. Preserve
   an existing `[agent.git]` identity unchanged; it controls the default author
-  and committer for Interactive Mode checkouts.
+  and committer for Developer Agent checkouts.
 - **Feedback redaction — preserve it when present.** Booley never transmits
   feedback. Keep any user-supplied `redact_extra = ["…"]` and
   `redact_identifiers` settings; they affect only an explicit local export. See

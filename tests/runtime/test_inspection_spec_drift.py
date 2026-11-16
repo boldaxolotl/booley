@@ -47,7 +47,9 @@ def no_docker_process(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 @pytest.fixture
-def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_sandbox_attachment: object
+) -> Path:
     """A Project root on a disposable host: isolated home and config, logins, trusted launcher."""
     home = tmp_path / "home"
     home.mkdir()
@@ -80,8 +82,6 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # ... no Sandbox is running (the one lookup the remedy chain and the active-Sandbox
     # inspection share) ...
     monkeypatch.setattr(session_runtime, "resolve_running_sandbox", lambda *_args, **_kwargs: None)
-    # ... the remedy finds no container to take an owner from ...
-    monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda *_args, **_kwargs: None)
     # ... and there is no Sandbox container to reconcile.
     monkeypatch.setattr(
         session_runtime,

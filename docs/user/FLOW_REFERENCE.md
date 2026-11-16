@@ -218,7 +218,7 @@ deletes them:
 
 | Run started by | Reports | Cleaned up |
 |---|---|---|
-| The agent in Interactive Mode | `.interactive_logs/<session>/` in the main checkout's Booley Directory, from any checkout | Not automatically; see below. |
+| The Developer Agent | `.interactive_logs/<session>/` in the main checkout's Booley Directory, from any checkout | Not automatically; see below. |
 | You, from the CLI | `flow-reports/` in the Booley Directory of the checkout you run in, or `--report-dir` | With the worktree, for a run in a linked worktree. |
 
 In the main checkout nothing removes them, and coverage runs in particular

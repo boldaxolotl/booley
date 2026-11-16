@@ -880,7 +880,6 @@ def _revoke_issued_project(project: Path, monkeypatch: pytest.MonkeyPatch) -> Mo
     )
     cleanup = Mock(return_value=())
     monkeypatch.setattr(flexnet_docker, "cleanup_project_resources_for_identity", cleanup)
-    monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _root: None)
     docker = Mock(side_effect=AssertionError("Docker must not run after withdrawn issuance"))
     monkeypatch.setattr("booley.runtime.interactive_docker._run_docker", docker)
     monkeypatch.setattr(session_runtime, "_run", docker)
@@ -894,6 +893,7 @@ def _revoke_issued_project(project: Path, monkeypatch: pytest.MonkeyPatch) -> Mo
     return docker
 
 
+@pytest.mark.usefixtures("fake_sandbox_attachment")
 @pytest.mark.parametrize("boundary", ["up", "ensure", "enter", "cli"])
 def test_real_revoke_reports_withdrawal_at_enter_and_cli(
     issued, monkeypatch, capsys, boundary

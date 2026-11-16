@@ -56,11 +56,10 @@ commands. Add an acceptance criterion that every place the audit finds is
 fixed.
 
 ## Review
-
-By default the pipeline reviews a plan and its pull request once each, with
-its standard reviewer models. Add `**Review:**` when a wrong result would be
-hard to detect after merge, so the work needs a stronger reviewer and repeated
-review: for example, a cache whose hits count as Goal evidence, where a wrong
+ By default the pipeline reviews a plan and its pull request once each, with its
+standard reviewer models. Add `**Review:**` when a wrong result would be hard to
+detect after merge, so the work needs a stronger reviewer and repeated review:
+for example, a cache whose hits count as Measurement evidence, where a wrong
 hit looks like a pass.
 
 The value is one line of `key=value` pairs, split with shell quoting rules:

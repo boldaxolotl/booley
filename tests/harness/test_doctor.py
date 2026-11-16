@@ -91,7 +91,7 @@ def _docker_helper_uses_subprocess_run(monkeypatch):
     route_docker_helper_through_subprocess_run(monkeypatch)
 
 
-pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
+pytestmark = pytest.mark.usefixtures("isolated_git_attributes", "fake_sandbox_attachment")
 
 
 project_sandbox_resolution = resolution_fixtures.project_sandbox_resolution
@@ -3438,12 +3438,6 @@ def _derived_project_audit(root: Path) -> doctor.ProjectAudit:
         configs_toml={},
         first_target="",
     )
-
-
-@pytest.fixture(autouse=True)
-def _no_docker_for_stale_image_remedy(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the image-stale remedy's owner lookup off the host's Docker daemon."""
-    monkeypatch.setattr(doctor.session_runtime, "sandbox_attachment", lambda _root: None)
 
 
 _OLD = "2000-01-01T00:00:00Z"
@@ -8059,7 +8053,9 @@ _FLOW_CHECK_CASES = {
 
 
 @pytest.mark.parametrize("case_id", list(_FLOW_CHECK_CASES))
-def test_flow_check_report_grades_each_outcome(tmp_path, monkeypatch, case_id):
+def test_flow_check_report_grades_each_outcome(
+    tmp_path, monkeypatch, fake_sandbox_attachment, case_id
+):
     """Every grading outcome lands in the returned report, details and run facts included."""
     case = _FLOW_CHECK_CASES[case_id]
 
@@ -8080,9 +8076,7 @@ def test_flow_check_report_grades_each_outcome(tmp_path, monkeypatch, case_id):
             doctor.session_runtime, "up", lambda _root: (_ for _ in ()).throw(error)
         )
         monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-        monkeypatch.setattr(
-            doctor.session_runtime, "sandbox_attachment", lambda _root: Attachment.VSCODE
-        )
+        fake_sandbox_attachment(Attachment.VSCODE)
 
     outcome = doctor._run_flow_check(
         project,

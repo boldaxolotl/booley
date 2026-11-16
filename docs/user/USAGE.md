@@ -7,7 +7,15 @@ with AI coding agents to follow it.
 
 1. [Read this first](#read-this-first)
 2. [First, verify your setup](#first-verify-your-setup)
-3. [Interactive Mode](#interactive-mode): [first session](#open-your-first-developer-agent-session), [what to ask for](#what-you-can-ask-for), [skills](#booley-skills), [good prompts](#write-a-useful-prompt), [long runs and results](#long-runs-and-results), [dashboard](#the-dashboard), [parallel work](#several-agents-at-once), [reviewing changes](#what-the-developer-agent-is-allowed-to-do), [editing instructions](#editing-project-instructions), [waveforms](#viewing-waveforms)
+3. [Developer Agent sessions](#developer-agent-sessions):
+    [first session](#open-your-first-developer-agent-session),
+    [what to ask for](#what-you-can-ask-for), [skills](#booley-skills),
+    [good prompts](#write-a-useful-prompt),
+    [long runs and results](#long-runs-and-results),
+    [dashboard](#the-dashboard), [parallel work](#several-agents-at-once),
+    [reviewing changes](#what-the-developer-agent-is-allowed-to-do),
+    [editing instructions](#editing-project-instructions),
+    [waveforms](#viewing-waveforms)
 4. [Reporting problems and feedback](#when-booley-itself-misbehaves)
 
 Every command is listed in [CLI-REFERENCE.md](CLI-REFERENCE.md).
@@ -83,7 +91,7 @@ Don't continue until `booley doctor` shows no failures or warnings.
   Booley or Sandbox Image update), run `booley doctor --deep`. See
   [DOCTOR.md](DOCTOR.md#automatic-checks).
 
-## Interactive Mode
+## Developer Agent sessions
 
 ### Open your first Developer Agent session
 
@@ -135,7 +143,7 @@ Don't continue until `booley doctor` shows no failures or warnings.
 
 4. Type this first request into the chat:
 
-    > Check whether Booley Interactive Mode is ready. List the available
+    > Check whether Booley is ready in this session. List the available
     > Targets and explain what each one is for.
 
     The agent asks Booley for this and summarizes what it found.
