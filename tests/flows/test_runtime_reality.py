@@ -13,11 +13,24 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from booley.audit.diagnostic_results import DiagnosticReport, Severity
-from booley.runtime import session_runtime
-from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
+import pytest
 
-_BAKE_FIX = "bake verilator into the Sandbox Image and rebuild (booley init --force)"
+from booley.audit.diagnostic_results import DiagnosticReport, Severity
+from booley.runtime import runtime_context, session_runtime
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS, Attachment
+from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
+from tests.runtime.test_sandbox_remedy_workflows import VSCODE_INIT
+
+_BAKE = "bake verilator into the Sandbox Image, then recreate the Sandbox: "
+_BAKE_FIX_INSIDE = _BAKE + UNKNOWN_SANDBOX_STEPS
+_BAKE_FIX_VSCODE = _BAKE + VSCODE_INIT
+
+
+@pytest.fixture
+def vscode_owner(monkeypatch):
+    """The Project's Sandbox is a VS Code container on the host."""
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _root: Attachment.VSCODE)
 
 
 def _owner() -> Any:
@@ -101,20 +114,20 @@ def test_present_binary_passes(tmp_path, monkeypatch):
     assert _summary(inside) == expected
 
 
-def test_missing_binary_fails(tmp_path, monkeypatch):
+def test_missing_binary_fails(tmp_path, monkeypatch, vscode_owner):
     """An absent binary FAILs with the host or in-Sandbox wording and the bake fix."""
     _write_lint_core(tmp_path, {"lint_style": "verilator"})
 
     probe = _HostProbe(monkeypatch, returncode=1)
     report = _owner().inspect_flow_runtime_reality(_request(tmp_path, command=probe.command))
     assert _summary(report) == [
-        (Severity.FAIL, "lint: 'verilator' is not on the issued Sandbox PATH", _BAKE_FIX)
+        (Severity.FAIL, "lint: 'verilator' is not on the issued Sandbox PATH", _BAKE_FIX_VSCODE)
     ]
 
     monkeypatch.setattr(_owner().shutil, "which", lambda binary: None)
     inside = _owner().inspect_flow_runtime_reality(_request(tmp_path, inside=True))
     assert _summary(inside) == [
-        (Severity.FAIL, "lint: 'verilator' is not on this container's PATH", _BAKE_FIX)
+        (Severity.FAIL, "lint: 'verilator' is not on this container's PATH", _BAKE_FIX_INSIDE)
     ]
 
 
@@ -138,10 +151,10 @@ def test_unavailable_runtime_skips(tmp_path, monkeypatch):
     assert probe.run_calls == []
 
 
-def test_probe_error_fails(tmp_path, monkeypatch):
+def test_probe_error_fails(tmp_path, monkeypatch, vscode_owner):
     """A Sandbox start failure or a missing runtime executable is a probe-error FAIL."""
     _write_lint_core(tmp_path, {"lint_style": "verilator"})
-    fix = "run 'booley init --seed' and retry"
+    fix = VSCODE_INIT + ", then retry"
     for error in (
         session_runtime.SessionError("sandbox did not start"),
         FileNotFoundError("docker"),

@@ -1080,10 +1080,11 @@ def inspect_refreshable_runtime_image(project_root: Path) -> None:
     """Reject a user-managed Sandbox Image before refresh causes downtime."""
     lifecycle_plan = image_lifecycle.plan(ProjectImageScope(project_root))
     if lifecycle_plan.nodes[0].role is ImageRole.EXTERNAL:
+        from booley.runtime import session_runtime as sr
+
         raise RuntimeError(
-            "the selected Sandbox Image cannot use managed refresh: it is externally managed. "
-            "Rebuild/pull it explicitly, then on the host run `booley session down`, "
-            "`booley init --seed`, and `booley session up`."
+            "the selected Sandbox Image cannot use managed refresh: it is externally managed; "
+            + sr.sandbox_remedy(project_root)
         )
 
 

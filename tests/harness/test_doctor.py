@@ -67,6 +67,12 @@ from tests.docker_cli_guard import (
 )
 from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.harness import test_session_runtime as resolution_fixtures
+from tests.runtime.test_sandbox_remedy_workflows import (
+    EXTERNAL,
+    HEADLESS_REFRESH,
+    VSCODE_INIT,
+    VSCODE_SEED,
+)
 from tests.subprocess_budget import run_bounded_child
 
 
@@ -3482,6 +3488,28 @@ def test_image_stale_names_owner_workflow(check, tmp_path, monkeypatch):
         else "on the host run `booley init`, then use Dev Containers: Rebuild Container."
     )
     assert not any(word in warns[0] for word in ("--force", "session refresh", "will not rebuild"))
+
+
+@pytest.mark.parametrize(
+    ("owner", "managed", "steps"),
+    [
+        (Attachment.VSCODE, True, VSCODE_INIT),
+        (Attachment.HEADLESS, True, HEADLESS_REFRESH),
+        (Attachment.VSCODE, False, EXTERNAL + VSCODE_SEED),
+    ],
+    ids=["vscode", "headless", "own-image"],
+)
+def test_image_stale_names_each_owner_workflow(owner, managed, steps, tmp_path, monkeypatch):
+    run, _image = _stale_image_case("derived", tmp_path, monkeypatch)
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(doctor.session_runtime, "sandbox_attachment", lambda _root: owner)
+    monkeypatch.setattr(doctor.session_runtime, "image_is_managed", lambda _root: managed)
+    warns: list[str] = []
+
+    run(lambda _msg: None, warns.append)
+
+    (warning,) = warns
+    assert warning.endswith(steps + ".")
 
 
 def test_image_stale_without_a_project_lists_both_workflows():
@@ -8516,7 +8544,7 @@ _FLOW_CHECK_CASES = {
             (
                 Severity.FAIL,
                 "sim deep check [fast] could not enter the Sandbox: bad issuance",
-                "run 'booley init --seed' and retry",
+                VSCODE_INIT + ", then retry",
                 None,
                 None,
             )
@@ -8549,6 +8577,10 @@ def test_flow_check_report_grades_each_outcome(tmp_path, monkeypatch, case_id):
         error = doctor.session_runtime.SessionError(case.session_error)
         monkeypatch.setattr(
             doctor.session_runtime, "up", lambda _root: (_ for _ in ()).throw(error)
+        )
+        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+        monkeypatch.setattr(
+            doctor.session_runtime, "sandbox_attachment", lambda _root: Attachment.VSCODE
         )
 
     outcome = doctor._run_flow_check(

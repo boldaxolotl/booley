@@ -368,6 +368,9 @@ def _plan_recorded(
         event = _event(desired.name, "unchanged", target_dir, desired, entry)
         return _Action(event, "none", entry, _record_for(desired), record)
     if not allow_retarget:
+        # ``--force`` stays in the hint: harness/setup/skills.py passes
+        # ``allow_retarget=ctx.force``, so it is the authority to retarget a
+        # managed link. It is not a Sandbox Image rebuild.
         event = _event(
             desired.name,
             "conflict",

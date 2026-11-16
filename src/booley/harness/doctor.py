@@ -150,7 +150,7 @@ from booley.runtime.image_provenance import is_local_image_id
 from booley.runtime.platform_paths import run_captured_bounded
 from booley.runtime.project_gitignore import missing_gitignore_patterns
 from booley.runtime.resource_history import DOCTOR_RUN_ENV
-from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS, Attachment, quote_arg
 from booley.runtime.session_issuance import SANDBOX_IMAGE_ID_ENV
 from booley.runtime.timefmt import format_clock, format_duration, format_human_datetime
 from booley.runtime.worktree_evidence import untracked_common_paths
@@ -3548,7 +3548,7 @@ def _run_project_checks(
         return
 
     _check_ticket_leftovers(project.common_booley_dir, reporter.warn_)
-    _check_handle_map_size(project.common_booley_dir, reporter.warn_)
+    _check_handle_map_size(project.common_booley_dir, project.project_root, reporter.warn_)
     _check_project_gitignore(project.booley_dir, reporter.pass_, reporter.warn_)
     _check_project_trackability(project.project_root, project.booley_dir, reporter.warn_)
     _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
@@ -3638,7 +3638,38 @@ def _check_leftover_guidance(booley_dir: Path, _warn: Check) -> None:
         warning(f"leftover Ticket guidance in {path}", fix)
 
 
-def _check_handle_map_size(booley_dir: Path, _warn: Check) -> None:
+_HANDLE_MAP_VSCODE = (
+    "stop the Sandbox through Dev Containers, then reopen the folder in the container"
+)
+
+
+def _handle_map_restart(project_root: Path) -> str:
+    """Name the smallest step that restarts the MCP server, which prunes handles at start.
+
+    The server starts from ``postStartCommand``, so stopping and resuming the
+    container restarts it. ``booley session down`` would remove a headless
+    container, and refuses a running VS Code one, so neither owner is told to
+    run it. Inside the Sandbox, or when the owner cannot be found, both steps
+    are named.
+    """
+    attachment = None
+    if not runtime_context.inside_session_runtime():
+        try:
+            attachment = session_runtime.sandbox_attachment(project_root)
+        except session_runtime.SessionError:
+            attachment = None
+    if attachment is Attachment.VSCODE:
+        return _HANDLE_MAP_VSCODE
+    if attachment is Attachment.HEADLESS:
+        name = quote_arg(session_runtime.session_container_name(project_root))
+        return f"run `docker stop {name}`, then `booley session up` on the host"
+    return (
+        f"in VS Code, {_HANDLE_MAP_VSCODE}; headless, stop the Sandbox container "
+        "with `docker stop`, then run `booley session up` on the host"
+    )
+
+
+def _check_handle_map_size(booley_dir: Path, project_root: Path, _warn: Check) -> None:
     """Warn when a display handle map nears the cap past which allocation fails."""
     for jobs in (False, True):
         path = handle_maps.HandleStore(booley_dir, jobs=jobs).path
@@ -3651,8 +3682,8 @@ def _check_handle_map_size(booley_dir: Path, _warn: Check) -> None:
             _warning_sink(_warn, "handles.map-size", subject=subject)(
                 f"{subject} handle map {path} is {size / 2**20:.1f} MiB of its "
                 f"{handle_maps.MAX_MAP_BYTES // 2**20} MiB cap",
-                "run `booley session down`, then `booley session up`: the MCP server "
-                "prunes expired handles at start",
+                "restart the Sandbox so its MCP server prunes expired handles at start: "
+                + _handle_map_restart(project_root),
             )
 
 
@@ -5472,13 +5503,6 @@ def _run_selftest_checks(
         tracker.completed(f"{flow_name}.selftest.bad", completed)
 
 
-def _sandbox_failure_remedy(exc: session_runtime.SessionError) -> str:
-    """Keep admission-control remediation distinct from stale issuance."""
-    if str(exc).startswith("Sandbox start refused:"):
-        return "free Sandbox capacity using the command in the refusal, then retry"
-    return "run 'booley init --seed' and retry"
-
-
 def _prepare_selftest_invocation(
     project: ProjectAudit,
     flow_name: str,
@@ -5510,7 +5534,7 @@ def _prepare_selftest_invocation(
     except session_runtime.SessionError as exc:
         _fail(
             f"{label} could not enter the Sandbox: {exc}",
-            _sandbox_failure_remedy(exc),
+            session_runtime.sandbox_entry_remedy(project.project_root, exc),
         )
         return None
     env = _doctor_subprocess_env(project)
@@ -6044,7 +6068,7 @@ def _doctor_flow_command(
     except session_runtime.SessionError as exc:
         findings.fail(
             f"{label} could not enter the Sandbox: {exc}",
-            _sandbox_failure_remedy(exc),
+            session_runtime.sandbox_entry_remedy(project.project_root, exc),
         )
         return None
 

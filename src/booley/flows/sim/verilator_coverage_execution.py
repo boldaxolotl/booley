@@ -84,6 +84,7 @@ from booley.fusesoc.fusesoc_registry import (
     mirrored_export_name,
     native_cores_ignored,
 )
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 from booley.targets.catalog import TargetCatalog, TargetCompileSurface
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
 
@@ -514,7 +515,7 @@ class VerilatorCoverageExecution:
         output = version.stdout + ("\n" + version.stderr if version.stderr else "")
         match = _VERSION_RE.search(output)
         expected = f"{PINNED_VERILATOR.tag} @ {PINNED_VERILATOR.commit}"
-        guidance = "rebuild the Sandbox image (booley session refresh)"
+        guidance = f"recreate the Sandbox on a rebuilt Sandbox Image: {UNKNOWN_SANDBOX_STEPS}"
         if version.returncode != 0 or version.timed_out or match is None:
             message = (
                 "Verilator coverage collector version could not be determined "

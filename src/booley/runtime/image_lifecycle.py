@@ -747,7 +747,7 @@ def _expected_image_build_contracts() -> ImageBuildContracts:
         raise InstalledImageContractError(
             "installed Booley distribution lacks valid Sandbox Image compatibility "
             "metadata; install a current published booley-rtl wheel (or rebuild it "
-            "through Booley's stamped wheel path), then retry `booley session refresh`"
+            "through Booley's stamped wheel path), then run the command again"
         ) from exc
 
 
