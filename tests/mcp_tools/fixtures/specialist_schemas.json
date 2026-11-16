@@ -83,24 +83,6 @@
         },
         "type": "array"
       },
-      "verify": {
-        "default": false,
-        "description": "Verify only the latest review call's open findings; no discovery",
-        "type": "boolean"
-      },
-      "waive": {
-        "default": [],
-        "description": "Propose a waiver during --verify; repeatable",
-        "items": {
-          "items": {
-            "type": "string"
-          },
-          "maxItems": 2,
-          "minItems": 2,
-          "type": "array"
-        },
-        "type": "array"
-      },
       "work_dir": {
         "description": "Run the endpoint against this checkout instead of the session workspace. Must be the root of a linked git worktree of the workspace repo \u2014 create one under .booley/worktrees/ with `booley worktree new <name>`. Omit to use the current workspace.",
         "type": "string"
