@@ -169,6 +169,7 @@ def test_a_failed_version_probe_is_infrastructure_for_a_seeded_run(
 
 
 def test_env_golden(tmp_path, fake_launch, monkeypatch):
+    monkeypatch.delenv("BOOLEY_DIR")  # no runtime root: artifacts stay beside the results file
     monkeypatch.setenv("PYTHONPATH", "/existing")
     monkeypatch.setenv("GPI_USERS", "/project/custom.so")
     _run(tmp_path, tests=["a", "b"], cocotb_module="test_counter")
@@ -187,7 +188,7 @@ def test_env_golden(tmp_path, fake_launch, monkeypatch):
     assert "PYTHONPYCACHEPREFIX" not in env
     assert env["PYTHONDONTWRITEBYTECODE"] == "1"
     pytest_cache = Path(shlex.split(env["PYTEST_ADDOPTS"])[-1].removeprefix("cache_dir="))
-    assert pytest_cache.parent.parts[-2:] == ("python-artifacts", "pytest")
+    assert pytest_cache.parent == build / "python-artifacts" / "pytest"
 
 
 def test_env_reuses_endpoint_runtime_for_pytest(tmp_path, fake_launch, monkeypatch):

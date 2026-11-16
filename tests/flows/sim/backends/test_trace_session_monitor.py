@@ -406,9 +406,17 @@ def test_spare_simulator_monitor_ignores_idle_pipe(tmp_path, fake_bwave, monkeyp
         time.sleep(1.0)  # ten stall windows with nothing written
         assert conversion.poll() is None
         assert sim_proc.poll() is None
-    finally:
         sim_proc.kill()
         sim_proc.wait(timeout=5)
+        # The monitor ends by itself once the simulator is gone, before any stop request.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and any(
+            "_monitor_stalls" in t.name for t in threading.enumerate()
+        ):
+            time.sleep(0.02)
+        assert not any("_monitor_stalls" in t.name for t in threading.enumerate())
+    finally:
+        _kill_all(sim_proc)
         session.stop_monitor()
         conversion.kill()
         conversion.finish(timeout_s=5)
