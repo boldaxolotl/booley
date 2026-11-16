@@ -6,9 +6,9 @@ of those files must know. The JSON is self-describing: read a report to see its
 fields. User docs ([FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and the
 per-Flow pages) say how to run each Flow and read its verdict.
 
-The reports are evidence that resume and the Coverage
-Analyst read later, often in another process. So every run gets its own
-numbered directory, and files point at each other by relative path plus size and
+The reports are evidence that resume and the Coverage Analyst
+read later, often in another process. So every run gets its own numbered
+directory, and files point at each other by relative path plus size and
 SHA-256.
 
 ## Where reports go

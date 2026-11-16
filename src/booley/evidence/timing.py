@@ -1,4 +1,4 @@
-"""Per-clock timing values shared by implementation Flows and Criteria."""
+"""Per-clock timing values shared by implementation Flows."""
 
 from __future__ import annotations
 

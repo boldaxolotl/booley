@@ -219,8 +219,7 @@ not a CAPI2 composition mechanism, and YAML anchors do not cross files.
 Use this split only when there are at least two real adapters. For one core,
 local shared filesets keep the interface smaller. When refactoring an existing
 Project, preserve both parts of every selectable Target's durable identity: the
-declaring core's VLNV and the Target name. Criteria and durable evidence bind to
-that pair.
+declaring core's VLNV and the Target name. Durable evidence binds to that pair.
 
 Authoring rules:
 
@@ -248,7 +247,7 @@ Authoring rules:
 - **Per-Target Flow families:** the `fpga` name axis is authoritative:
   `fpga_*` ⇒ `FPGA:{target}`, regardless of the resolution tool. The
   FPGA Flow rebuilds those resolved inputs for its fixed Vivado backend, so an
-  FPGA-axis Target does not also carry sim/lint/synth Criteria. Unprefixed
+  FPGA-axis Target does not also carry sim/lint/synth inputs. Unprefixed
   vendored Targets retain `tool: vivado` as a compatibility fallback. Other
   families follow their declared flow/tool: Verilator or Icarus simulation ⇒
   `SIM:{target}`; Verilator or Verible lint ⇒ `LINT:{target}`; Yosys synthesis ⇒

@@ -831,6 +831,26 @@ def test_pre_sim_evidence_killed_mid_write_resumes(
     )
 
 
+@_needs_fork
+def test_compatibility_projection_killed_mid_write_is_retryable(tmp_path: Path) -> None:
+    """Guard: the projection is replaced atomically, so a kill mid-write leaves no partial file."""
+    path = tmp_path / "simulation.json"
+    side_file = tmp_path / "side.txt"
+    kill = _KillAtWrite("compatibility_projection", "mid-write", side_file)
+
+    def write() -> None:
+        write_compatibility_projection(
+            path, {"target": "sim"}, acceptance_committed=True, publication_checkpoint=kill
+        )
+
+    _run_killed(write, tmp_path / "trace.txt")
+    _assert_killed_inside_the_write(side_file, "mid-write", tmp_path, staging=(".tmp",))
+    assert not path.exists()
+    write()
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {"complete": True, "target": "sim"}
+
+
 @pytest.mark.parametrize(
     "crash_point",
     ["before:compatibility_projection", "after:compatibility_projection"],
