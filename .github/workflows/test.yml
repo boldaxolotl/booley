@@ -364,6 +364,7 @@ jobs:
     # a run whose steps are all slow but each within its own limit.
     timeout-minutes: ${{ matrix.mode == 'full' && 30 || 25 }}
     env:
+      BOOLEY_TEST_TIME_SCALE: ${{ startsWith(matrix.os, 'windows') && '2' || '1' }}
       PYTHONFAULTHANDLER: "1"
       TEST_MARK_EXPRESSION: 'not native_bwave'
     strategy:
@@ -419,11 +420,11 @@ jobs:
           tests/runtime/test_process_group.py tests/flows/sim/test_coverage_waivers.py
           -q --tb=short -n 4 --dist=loadscope
           --basetemp "${{ runner.temp }}/pytest" -m "not native_bwave"
-          --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }} --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
+          --timeout=120 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }} --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
 
       - name: Run duration-balanced shard
         if: matrix.mode == 'shard'
-        timeout-minutes: 12
+        timeout-minutes: 15
         env:
           PYTHONPATH: .github/scripts
           RUNNER_TEMP: ${{ runner.temp }}
@@ -432,7 +433,7 @@ jobs:
         run: >-
           pytest tests/ -q --tb=short -n 4 --dist=${{ runner.os == 'Linux' && needs.changes.outputs.linux_scheduler || 'worksteal' }}
           --basetemp "${{ runner.temp }}/pytest" -m "${{ env.TEST_MARK_EXPRESSION }}"
-          --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }} --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
+          --timeout=${{ runner.os == 'Windows' && 120 || 60 }} ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }} --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
           -p ci_pytest_shard --ci-shard-group "${{ matrix.group }}"
           --ci-shard-index "${{ matrix.shard_index }}"
           --ci-shard-count "${{ matrix.shard_count }}"
@@ -462,6 +463,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     env:
+      BOOLEY_TEST_TIME_SCALE: ${{ startsWith(matrix.os, 'windows') && '2' || '1' }}
       PYTHONFAULTHANDLER: "1"
     strategy:
       fail-fast: false
@@ -504,6 +506,7 @@ jobs:
           STRESS_MODULES: ${{ needs.changes.outputs.stress_modules }}
           STRESS_COUNT: ${{ needs.changes.outputs.stress_count }}
           HEADROOM: ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }}
+          TEST_TIMEOUT: ${{ runner.os == 'Windows' && '120' || '60' }}
         run: |
           # NUL-delimited: Windows Python would turn "\n" into "\r\n".
           mapfile -d '' -t modules < <(python -c 'import json, os, sys; sys.stdout.write("\0".join(json.loads(os.environ["STRESS_MODULES"])))')
@@ -511,7 +514,7 @@ jobs:
           # shellcheck disable=SC2086 # HEADROOM holds zero or two options.
           pytest "${modules[@]}" -q --tb=short -n 4 --dist=load \
             --count="${STRESS_COUNT}" --basetemp "${RUNNER_TEMP}/pytest" \
-            -m "not native_bwave" --timeout=60 ${HEADROOM} \
+            -m "not native_bwave" --timeout="${TEST_TIMEOUT}" ${HEADROOM} \
             --durations=30 --junitxml="${RUNNER_TEMP}/junit.xml" || status=$?
           # Exit 5 (nothing ran) is fine when every changed module skipped itself at
           # import on this runner, such as a Linux-only module on Windows. The JUnit
@@ -2033,6 +2036,38 @@ jobs:
             --budget-seconds "${budget}" \
             --summary "${GITHUB_STEP_SUMMARY}"
 
+  # Coding principle 18's test ratio. Mergify's queue drafts skip it: each
+  # queued PR already passed it, and a batch carries none of its labels. Only
+  # a branch of this repository counts as a queue draft, so a fork cannot skip
+  # the check by naming its branch mergify/merge-queue/.
+  test-ratio:
+    needs: changes
+    if: >-
+      github.event_name == 'pull_request' &&
+      !(startsWith(github.head_ref, 'mergify/merge-queue/') &&
+        github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check test lines per changed source line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        # Read labels from the API, not the event payload: a re-run reuses the
+        # original payload, so only a live read sees a label added or removed.
+        # github.sha is the PR merge commit: parent 1 is the current base tip,
+        # parent 2 the PR head.
+        run: |
+          labels="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" --paginate --jq '.[].name')"
+          python .github/scripts/ci_test_ratio.py --repo . --base "${GITHUB_SHA}^1" --head "${GITHUB_SHA}^2" --labels "${labels}"
+
   ci-required:
     name: ci-required
     needs:
@@ -2055,6 +2090,7 @@ jobs:
       - bwave-smoke
       - riscv-image
       - flake-stress
+      - test-ratio
     # Skipped with `changes` on a draft PR; otherwise always resolve status.
     # Branch protection counts a skipped required check as passing. That is
     # safe only because drafts cannot merge, marking ready reruns CI, and

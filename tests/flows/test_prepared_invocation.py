@@ -18,7 +18,7 @@ from tests.flows.report_headline import assert_paired_headline
 from tests.memory_budget_support import pin_budget
 from tests.oom_priority_support import FakeProc
 
-# The Criterion key each kind judges, planned before the run and reported after it.
+# The Criterion key each kind records through the acceptance owner.
 PLANNED_KEYS = {
     "ordinary": "echo_ok",
     "target_selection": "lint_clean_chosen",
@@ -220,8 +220,9 @@ def test_prepared_invocation_kind_drives_lifecycle(
         assert simulation_record_admissions == entered
         assert simulation_record_admissions[0] is not None
     assert recorded == [key]
-    assert (result.outcome.criterion_key, result.outcome.criterion_met) == (key, True)
-    assert_paired_headline(runtime / "reports", flow.name, (key, True))
+    assert not hasattr(result.outcome, "criterion_key")
+    assert not hasattr(result.outcome, "criterion_met")
+    assert_paired_headline(runtime / "reports", flow.name)
 
 
 def test_lint_and_custom_flow_hold_a_memory_reservation_through_the_run(runtime: Path) -> None:

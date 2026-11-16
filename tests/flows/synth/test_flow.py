@@ -10,10 +10,8 @@ import logging
 import os
 import re
 import shutil
-import subprocess
 import time
 import tomllib
-from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
@@ -57,7 +55,6 @@ from booley.flows.synth.flow import (
 )
 from booley.flows.synth.mode import SynthMode
 from booley.flows.synth.recipe import (
-    BASELINE_REF_PARAM,
     default_recipe_args,
     resolve_synth_mode,
     synthesis_recipe_changes,
@@ -393,51 +390,6 @@ def flow_and_state(state_file: Path, tmp_path: Path):
     )
     flow.read_state()
     return flow, state_file
-
-
-def test_criteria_baseline_pin_does_not_override_the_baseline_flag(
-    state_file: Path, tmp_path: Path
-) -> None:
-    """A Criterion's pinned baseline never replaces ``--baseline``."""
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
-    shas = []
-    for text in ("one", "two"):
-        (tmp_path / "rtl.v").write_text(f"module {text}; endmodule\n", encoding="utf-8")
-        subprocess.run(["git", "add", "rtl.v"], cwd=tmp_path, check=True)
-        subprocess.run(["git", "commit", "-qm", text], cwd=tmp_path, check=True)
-        shas.append(
-            subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=tmp_path,
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
-        )
-    pinned, requested = shas
-    flow = AsicSynthesizeFlow()
-    flow.parse_args(
-        [
-            "--target",
-            "lite",
-            "--work-dir",
-            str(tmp_path),
-            "--report-dir",
-            str(tmp_path / "reports"),
-            "--baseline",
-            requested,
-        ]
-    )
-    flow.read_state()
-    flow.state.init_criteria(
-        {"synthesis_ok_lite": True},
-        criterion_params={"synthesis_ok_lite": {BASELINE_REF_PARAM: pinned}},
-    )
-
-    assert flow._prepare_target_pairs((_layer_target_handle(tmp_path, "lite"),)) is None
-    assert flow.args.baseline == requested
 
 
 def _write_execution_config(tmp_path: Path, body: str) -> None:
@@ -1718,7 +1670,7 @@ class TestSingleConfigRun:
         assert "failed to render synthesis build dir: disk full" in output
 
     def test_pass_no_baseline(self, flow_and_state, tmp_path: Path):
-        flow, state_file = flow_and_state
+        flow, _ = flow_and_state
         synth_output = (
             "Chip area for top module '\\design_top': 52480.0\n"
             "Number of cells: 12345\n"
@@ -1743,10 +1695,6 @@ class TestSingleConfigRun:
         # QoR numbers must be surfaced on a passing run, not buried in files.
         assert "Area" in result.report_text
         assert "12,345 cells" in result.report_text
-
-        # Verify criterion was set
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("synthesis_ok_lite")
 
     def test_concurrent_dry_run_cannot_delete_live_target_workspace(
         self,
@@ -1892,7 +1840,7 @@ class TestSingleConfigRun:
     def test_violated_slack_warns_but_stays_exit_success(self, flow_and_state):
         # Negative worst slack == timing VIOLATED. syn_core does not fail synth
         # on timing, so exit stays 0 — but it must WARN loudly, never be silent.
-        flow, state_file = flow_and_state
+        flow, _ = flow_and_state
         synth_output = (
             "Chip area for top module '\\design_top': 52480.0\n"
             "Number of cells: 12345\n"
@@ -1911,17 +1859,15 @@ class TestSingleConfigRun:
         ):
             result = flow._run()
 
-        # Structural pass keeps exit success and a met criterion...
+        # Structural pass keeps exit success...
         assert result.exit_code == EXIT_SUCCESS
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("synthesis_ok_lite")
         # ...but the VIOLATED timing is loudly surfaced, not swallowed.
         assert "RESULT: WARN" in result.report_text
         assert "VIOLATED" in result.report_text
         assert "-1.250 ns" in result.report_text
 
     def test_violated_hold_slack_warns_but_stays_exit_success(self, flow_and_state):
-        flow, state_file = flow_and_state
+        flow, _ = flow_and_state
         synth_output = (
             "Chip area for top module '\\design_top': 52480.0\n"
             "Number of cells: 12345\n"
@@ -1940,12 +1886,11 @@ class TestSingleConfigRun:
             result = flow._run()
 
         assert result.exit_code == EXIT_SUCCESS
-        assert DevelopmentState.load(state_file).is_met("synthesis_ok_lite")
         assert "RESULT: WARN" in result.report_text
         assert "hold slack -0.125 ns" in result.report_text
 
     def test_fail_on_latches(self, flow_and_state):
-        flow, state_file = flow_and_state
+        flow, _ = flow_and_state
         synth_output = (
             "Chip area for top module '\\t': 52480.0\n"
             "$dlatch cell A\n$dlatch cell B\n"
@@ -1968,10 +1913,6 @@ class TestSingleConfigRun:
         assert "CRITICAL" in result.report_text
         assert "2 latches" in result.report_text
         assert "1 comb loop" in result.report_text
-
-        # Criterion should be unmet
-        st = DevelopmentState.load(state_file)
-        assert not st.is_met("synthesis_ok_lite")
 
     def test_report_json_written(self, flow_and_state, tmp_path: Path):
         flow, _ = flow_and_state
@@ -2009,7 +1950,9 @@ class TestSingleConfigRun:
         assert data["area_source"] == "yosys_mapped"
         assert "mapped_area_um2" not in data
         assert "post_opt_area_um2" not in data
-        assert data["cells"] == 100
+        assert data["cell_count"] == 100
+        assert "cells" not in data
+        assert data["implementation"]["metrics"]["cell_count"] == 100
         assert data["conditions"]["has_critical"] is False
         assert data["implementation"]["schema_version"] == 1
         assert data["implementation"]["status"]["grade"] == "pass"
@@ -2097,7 +2040,7 @@ class TestSingleConfigRun:
         flow_and_state,
         tmp_path: Path,
     ):
-        flow, state_file = flow_and_state
+        flow, _ = flow_and_state
         with patch.object(
             flow,
             "_execute",
@@ -2124,11 +2067,99 @@ class TestSingleConfigRun:
         assert data["timed_out"] is False
         assert data["has_metrics"] is False
         assert data["area_kge"] is None
-        assert data["cells"] is None
+        assert data["cell_count"] is None
         assert "frontend rejected converted Verilog" in data["failure_output"]
 
-        st = DevelopmentState.load(state_file)
-        assert not st.is_met("synthesis_ok_lite")
+
+_RUN_PASS = SubprocessResult(
+    returncode=0,
+    stdout="Chip area for top module '\\t': 52480.0\nNumber of cells: 100\n",
+    stderr="",
+    duration_s=1.0,
+)
+_RUN_LATCH = SubprocessResult(
+    returncode=0,
+    stdout="Chip area for top module '\\t': 52480.0\n$dlatch cell A\nCombinational loop detected\n",
+    stderr="",
+    duration_s=1.0,
+)
+_RUN_CRASH = SubprocessResult(returncode=1, stdout="", stderr="yosys crashed", duration_s=1.0)
+
+
+@pytest.mark.parametrize("named_state", [True, False], ids=["state-file", "no-state-file"])
+@pytest.mark.parametrize(
+    ("process", "exit_code", "verdict"),
+    [(_RUN_PASS, EXIT_SUCCESS, 0), (_RUN_LATCH, EXIT_FAILURE, 0), (_RUN_CRASH, EXIT_ERROR, 2)],
+    ids=["pass", "fail", "crash"],
+)
+def test_synthesis_run_records_no_criterion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    process: SubprocessResult,
+    exit_code: int,
+    verdict: int,
+    named_state: bool,
+) -> None:
+    """A hand-run Synthesis keeps its exit status and metric verdict, records no
+    Criterion and writes no development-state or evidence file."""
+    from booley.flows.metric_declarations import FlowMetricValues
+    from booley.measurement.flow_metrics import report_metric_values
+    from booley.measurement.metrics_file import Bound, TableRules
+    from booley.measurement.verdicts import (
+        FlowFailed,
+        FlowValues,
+        evaluate_table,
+        measure_exit_code,
+    )
+
+    state_path = tmp_path / "state.json"
+    monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
+    if named_state:
+        state = DevelopmentState.load(state_path)
+        state.slug = "test-ticket"
+        state.init_criteria({"synthesis_ok_lite": True})
+        state.save()
+        monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+        before = state_path.read_bytes()
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(
+        [
+            "--target",
+            "lite",
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+        ]
+    )
+    flow.read_state()
+
+    with patch.object(flow, "_execute", return_value=process):
+        result = flow._run()
+
+    assert result.exit_code == exit_code
+    if named_state:
+        assert state_path.read_bytes() == before
+        assert not flow.state.is_met("synthesis_ok_lite")
+    else:
+        assert flow.state.criteria == {}
+        assert list(tmp_path.rglob("state.json")) == []
+    assert not (tmp_path / "logs").exists()
+    rules = TableRules(
+        "t",
+        "vlnv:x#t",
+        "synth",
+        (Bound("area_um2_max", "area_um2", "max", 60000, None, None, None),),
+        (),
+    )
+    values = report_metric_values("synth", result.detail).get("lite")
+    outcome = (
+        FlowValues(values, values.clocks)
+        if isinstance(values, FlowMetricValues)
+        else FlowFailed("synthesis returned no values")
+    )
+    judged = evaluate_table(rules, outcome)
+    assert measure_exit_code(item.verdict for item in judged) == verdict
 
 
 # ===========================================================================
@@ -2234,7 +2265,7 @@ class TestFileBasedInterpretation:
     def test_metrics_parsed_from_fresh_stage_files(self, flow_and_state, tmp_path: Path):
         """A make run that leaves its results as FILES (empty stdout) still
         yields full metrics — the interpret half reads the stage logs."""
-        flow, state_file = flow_and_state
+        flow, _ = flow_and_state
         build_dir = self._build_dir(tmp_path)
 
         def mock_execute(cmd, **_kwargs):
@@ -2265,11 +2296,9 @@ class TestFileBasedInterpretation:
 
         assert result.exit_code == EXIT_SUCCESS
         assert "12,345 cells" in result.report_text
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("synthesis_ok_lite")
 
     def test_unknown_area_failure_preserves_latch_conditions(self, flow_and_state, tmp_path: Path):
-        flow, state_file = flow_and_state
+        flow, _ = flow_and_state
         build_dir = self._build_dir(tmp_path)
         stat_output = (
             "13. Printing statistics.\n"
@@ -2311,16 +2340,12 @@ class TestFileBasedInterpretation:
         assert conditions["latches"] == 1
         assert conditions["unexpected_latches"] == 1
         assert conditions["has_critical"] is True
-        criterion = DevelopmentState.load(state_file).criteria["synthesis_ok_lite"]
-        assert criterion.met is False
-        assert criterion.detail["latches"] == 1
-        assert criterion.detail["has_critical"] is True
 
     @pytest.mark.parametrize("returncode", [0, 2])
     def test_final_check_structural_findings_fail_and_reach_every_report_surface(
         self, flow_and_state, tmp_path: Path, returncode
     ):
-        flow, state_file = flow_and_state
+        flow, _ = flow_and_state
         build_dir = self._build_dir(tmp_path)
 
         def mock_execute(cmd, **_kwargs):
@@ -2348,13 +2373,9 @@ class TestFileBasedInterpretation:
             assert "RESULT: ERROR" in result.report_text
         assert report["total_warnings"] == 2
         assert report["implementation"]["conditions"]["warning_summary"]["total_warnings"] == 2
-        if not returncode:
-            criterion = DevelopmentState.load(state_file).criteria["synthesis_ok_lite"]
-            assert criterion.met is False
-            assert criterion.detail["total_warnings"] == 2
 
     def test_earlier_loop_warns_when_final_check_is_clean(self, flow_and_state, tmp_path: Path):
-        flow, state_file = flow_and_state
+        flow, _ = flow_and_state
         build_dir = self._build_dir(tmp_path)
 
         def mock_execute(cmd, **_kwargs):
@@ -2403,14 +2424,11 @@ class TestFileBasedInterpretation:
         assert report["structural_checks_complete"] is True
         assert report["implementation"]["status"]["grade"] == "warn"
         assert report["implementation"]["conditions"]["has_critical"] is False
-        criterion = DevelopmentState.load(state_file).criteria["synthesis_ok_lite"]
-        assert criterion.met is True
-        assert criterion.detail["comb_loops"] == 0
 
     def test_advisory_warning_yields_warn_grade_without_failing(
         self, flow_and_state, tmp_path: Path
     ):
-        flow, state_file = flow_and_state
+        flow, _ = flow_and_state
         build_dir = self._build_dir(tmp_path)
 
         def mock_execute(cmd, **_kwargs):
@@ -2445,12 +2463,11 @@ class TestFileBasedInterpretation:
         assert report["passed"] is True
         assert report["total_warnings"] == 1
         assert report["implementation"]["status"]["grade"] == "warn"
-        assert DevelopmentState.load(state_file).is_met("synthesis_ok_lite")
 
     def test_missing_final_check_cannot_be_a_clean_file_based_pass(
         self, flow_and_state, tmp_path: Path
     ):
-        flow, state_file = flow_and_state
+        flow, _ = flow_and_state
         build_dir = self._build_dir(tmp_path)
 
         def mock_execute(cmd, **_kwargs):
@@ -2470,14 +2487,13 @@ class TestFileBasedInterpretation:
 
         assert result.exit_code == EXIT_FAILURE
         assert result.detail["lite"]["structural_checks_complete"] is False
-        assert not DevelopmentState.load(state_file).is_met("synthesis_ok_lite")
 
     def test_stale_artifacts_are_not_parsed(self, flow_and_state, tmp_path: Path):
         """A leftover log predating the dispatch must never read as a fresh
         result (ADR 0037 contract clause d)."""
         import time as _time
 
-        flow, state_file = flow_and_state
+        flow, _ = flow_and_state
         build_dir = self._build_dir(tmp_path)
         build_dir.mkdir(parents=True, exist_ok=True)
         leftover = build_dir / "yosys.log"
@@ -2499,13 +2515,11 @@ class TestFileBasedInterpretation:
         assert "12,345" not in result.report_text
         assert result.exit_code == EXIT_FAILURE
         assert "no metrics" in result.report_text
-        st = DevelopmentState.load(state_file)
-        assert not st.is_met("synthesis_ok_lite")
 
     def test_error_in_log_despite_exit_0_fails(self, flow_and_state, tmp_path: Path):
         """False-pass guard parity: yosys/ABC can emit ERROR: lines yet exit 0;
         the interpret half's log scan downgrades the run to a failure."""
-        flow, state_file = flow_and_state
+        flow, _ = flow_and_state
         build_dir = self._build_dir(tmp_path)
 
         def mock_execute(cmd, **_kwargs):
@@ -2529,8 +2543,6 @@ class TestFileBasedInterpretation:
         # itself carries the bounded rc-based summary, as on the legacy path).
         run_log = tmp_path / ".booley" / ".runtime" / "edalize" / "synth" / "lite" / "run.log"
         assert "despite exit 0" in run_log.read_text(encoding="utf-8")
-        st = DevelopmentState.load(state_file)
-        assert not st.is_met("synthesis_ok_lite")
 
     def test_timing_markers_rederived_from_openroad_log(self, flow_and_state, tmp_path: Path):
         """The Python-derived Fmax/critical-path markers (legacy in-process
@@ -2580,7 +2592,7 @@ class TestFileBasedInterpretation:
 
     def test_physical_all_na_clock_row_is_incomplete(self, flow_and_state, tmp_path: Path):
         """A clock label without numeric setup/hold evidence cannot complete PPA."""
-        flow, state_file = flow_and_state
+        flow, _ = flow_and_state
         build_dir = self._build_dir(tmp_path)
 
         def mock_execute(cmd, **_kwargs):
@@ -2613,7 +2625,6 @@ class TestFileBasedInterpretation:
         assert "PARTIAL" in result.report_text
         assert result.detail["lite"]["timing_complete"] is False
         assert result.detail["lite"]["ppa_complete"] is False
-        assert not DevelopmentState.load(state_file).is_met("synthesis_ok_lite")
 
 
 # ===========================================================================
@@ -2657,11 +2668,6 @@ class TestMultiConfig:
         assert result.exit_code == EXIT_SUCCESS
         assert "PASS" in result.report_text
         assert call_count == 2
-
-        # Both criteria set
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("synthesis_ok_lite")
-        assert st.is_met("synthesis_ok_full")
 
 
 # ===========================================================================
@@ -2758,6 +2764,44 @@ class TestBaselineFlow:
         assert "baseline" in data
         assert data["baseline"]["ref"] == "abc1234"
         assert data["delta_pct"] == pytest.approx(2.5, rel=0.1)
+        assert data["cell_count"] == 110
+        assert data["baseline"]["cell_count"] == 100
+        assert "cells" not in data["baseline"]
+        deltas = data["implementation"]["comparison"]["deltas"]
+        assert deltas["cell_count"]["delta_pct"] == pytest.approx(10.0)
+
+    def test_criterion_never_chooses_the_baseline_target(
+        self, state_file: Path, tmp_path: Path
+    ) -> None:
+        """``--baseline`` pairs each Target with itself, whatever a state-file Criterion pins."""
+        from booley.flows.job_estimates import JobRequest
+
+        flow = AsicSynthesizeFlow()
+        flow.parse_args(
+            [
+                "--target",
+                "lite",
+                "--work-dir",
+                str(tmp_path),
+                "--baseline",
+                "v1.0",
+                "--report-dir",
+                str(tmp_path / "reports"),
+            ]
+        )
+        flow.read_state()
+        flow.state.init_criteria(
+            {"synthesis_ok_lite": True},
+            criterion_params={"synthesis_ok_lite": {BASELINE_TARGET_PARAM: "synth_before"}},
+        )
+        handle = _layer_target_handle(tmp_path, "lite")
+
+        assert flow._prepare_target_pairs((handle,)) is None
+
+        assert [
+            (plan.baseline.selector, plan.candidate.selector) for plan in flow._target_pairs
+        ] == [("lite", "lite")]
+        assert flow.memory_job_requests((handle,)) == (JobRequest("synth", "lite"),)
 
     def test_worktree_setup_failure_rejected(self, state_file: Path, tmp_path: Path):
         """A worktree that cannot be created (bad ref, not a repo) is surfaced
@@ -2812,10 +2856,6 @@ class TestBaselineFlow:
             ]
         )
         flow.read_state()
-        flow.state.init_criteria(
-            {"synthesis_ok_lite": True},
-            criterion_params={"synthesis_ok_lite": {BASELINE_TARGET_PARAM: "synth_before"}},
-        )
         infra_metrics = SynthMetrics(
             returncode=2,
             infra_error="FuseSoC could not resolve submodule source vendor/ip/top.sv",
@@ -2825,13 +2865,14 @@ class TestBaselineFlow:
             structural_checks_complete=False,
             ppa_complete=False,
         )
-        calls: list[str] = []
+        calls: list[tuple[str, str]] = []
 
         current_metrics = SynthMetrics(area_kge=12.0, cells=100, wns_ns=0.2)
 
         def run_one(target: str):
-            calls.append(target)
-            if target == "synth_before":
+            role = flow._execution_role
+            calls.append((role, target))
+            if role == "baseline":
                 return infra_metrics, "resolution failed"
             return current_metrics, "current complete"
 
@@ -2845,7 +2886,7 @@ class TestBaselineFlow:
         assert result.exit_code == EXIT_ERROR
         assert "baseline lite: ERROR" in result.report_text
         assert "FuseSoC could not resolve submodule source" in result.report_text
-        assert calls == ["synth_before", "lite"]
+        assert calls == [("baseline", "lite"), ("candidate", "lite")]
         report = json.loads((flow.args.report_dir / "synth_lite.json").read_text(encoding="utf-8"))
         assert report["implementation"]["status"]["grade"] == "error"
         progress = json.loads(
@@ -2853,14 +2894,13 @@ class TestBaselineFlow:
         )
         assert progress["complete"] is True
 
-    def _paired_baseline_flow(
-        self, tmp_path: Path, candidates: Sequence[str] = ("lite",)
-    ) -> AsicSynthesizeFlow:
-        """A flow for *candidates*, each paired with baseline selector ``synth_before``."""
+    def _paired_baseline_flow(self, tmp_path: Path) -> AsicSynthesizeFlow:
+        """A flow for Target ``lite`` run again at the baseline revision."""
         flow = AsicSynthesizeFlow()
         flow.parse_args(
             [
-                *(arg for candidate in candidates for arg in ("--target", candidate)),
+                "--target",
+                "lite",
                 "--work-dir",
                 str(tmp_path),
                 "--baseline",
@@ -2870,13 +2910,6 @@ class TestBaselineFlow:
             ]
         )
         flow.read_state()
-        flow.state.init_criteria(
-            {f"synthesis_ok_{candidate}": True for candidate in candidates},
-            criterion_params={
-                f"synthesis_ok_{candidate}": {BASELINE_TARGET_PARAM: "synth_before"}
-                for candidate in candidates
-            },
-        )
         return flow
 
     def _run_paired_baseline(
@@ -2903,7 +2936,7 @@ class TestBaselineFlow:
 
         def run_one(target: str):
             metrics = SynthMetrics(area_kge=12.0, cells=100, wns_ns=0.2)
-            text = baseline_timing if target == "synth_before" else "candidate timing"
+            text = baseline_timing if flow._execution_role == "baseline" else "candidate timing"
             if text is not None:
                 timing_dir = flow._synth_build_dir(target) / "reports" / "timing"
                 timing_dir.mkdir(parents=True, exist_ok=True)
@@ -2942,24 +2975,6 @@ class TestBaselineFlow:
         assert pointer == "reports/synth/1/artifacts/synth_lite/baseline_timing"
         assert (tmp_path / pointer).is_dir()
         assert "timing_unavailable" not in report["baseline"]
-
-    def test_shared_baseline_timing_is_published_for_every_paired_candidate(
-        self, state_file: Path, tmp_path: Path
-    ):
-        flow = self._paired_baseline_flow(tmp_path, candidates=("lite", "heavy"))
-
-        result = self._run_paired_baseline(flow, baseline_timing="baseline timing")
-
-        assert result.exit_code == EXIT_SUCCESS
-        for candidate in ("lite", "heavy"):
-            report = json.loads(
-                (flow.args.report_dir / f"synth_{candidate}.json").read_text(encoding="utf-8")
-            )
-            pointer = report["artifacts"]["baseline_timing"]
-            assert pointer == f"reports/synth/1/artifacts/synth_{candidate}/baseline_timing"
-            assert (tmp_path / pointer / "overall.rpt").read_text(
-                encoding="utf-8"
-            ) == "baseline timing"
 
     def test_baseline_without_timing_reports_says_so_and_keeps_verdict(
         self, state_file: Path, tmp_path: Path
@@ -3086,43 +3101,6 @@ class TestBaselineFlow:
         # execution uses a fresh checkout. Both contexts must clean up.
         assert exited == [True, True]
         assert Path(flow.args.work_dir) == tmp_path
-
-
-# ===========================================================================
-# Criterion key pattern
-# ===========================================================================
-
-
-class TestCriterionKey:
-    def test_criterion_key_per_config(self, state_file: Path, tmp_path: Path):
-        """Each config should set synthesis_ok_<config>."""
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(
-            [
-                "--target",
-                "lite,full,combo",
-                "--work-dir",
-                str(tmp_path),
-            ]
-        )
-        flow.read_state()
-
-        with patch.object(
-            flow,
-            "_execute",
-            return_value=SubprocessResult(
-                returncode=0,
-                stdout="Chip area for top module '\\t': 6400.0\n",
-                stderr="",
-                duration_s=1.0,
-            ),
-        ):
-            flow._run()
-
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("synthesis_ok_lite")
-        assert st.is_met("synthesis_ok_full")
-        assert st.is_met("synthesis_ok_combo")
 
 
 # ===========================================================================
@@ -4038,7 +4016,7 @@ class TestTimingReportPaths:
         assert "timing_report_paths" in message
 
     def test_knob_leaves_recipe_fingerprint_unchanged(self, state_file: Path, tmp_path: Path):
-        """Report size is not a recipe input: Criteria pin the fingerprint."""
+        """Report size is not a recipe input: it leaves the recipe fingerprint unchanged."""
         default = self._flow(tmp_path, "")
         self._resolve(default, tmp_path)
         custom = self._flow(tmp_path, "timing_report_paths = 3\n")
@@ -4181,53 +4159,6 @@ class TestProcessCountCritical:
 
 
 # ===========================================================================
-# Detail dict completeness
-# ===========================================================================
-
-
-class TestDetailDict:
-    def test_all_metrics_in_detail(self, flow_and_state, tmp_path: Path):
-        flow, state_file = flow_and_state
-        synth_output = (
-            "Chip area for top module '\\t': 6400.0\n"
-            "Number of cells: 100\n"
-            "Number of wires:   200\n"
-            "Number of processes:      0\n" + _perclock_marker("clk", 1.0, 0.5, 0.1)
-            # period 1.0 ns, wns 0.5 ns -> crit path 500 ps -> Fmax 2000 MHz.
-        )
-        with patch.object(
-            flow,
-            "_execute",
-            return_value=SubprocessResult(
-                returncode=0,
-                stdout=synth_output,
-                stderr="",
-                duration_s=2.0,
-            ),
-        ):
-            flow._run()
-
-        st = DevelopmentState.load(state_file)
-        entry = st.criteria.get("synthesis_ok_lite")
-        assert entry is not None
-        d = entry.detail
-        assert d["area_um2"] == 6400.0
-        assert d["area_kge"] == pytest.approx(8.02005)
-        assert d["cells"] == 100
-        assert d["wire_count"] == 200
-        assert d["process_count"] == 0
-        # Critical path / Fmax live per-clock in the detail now.
-        assert set(d["per_clock"]) == {"clk"}
-        assert d["per_clock"]["clk"]["critical_path_ps"] == pytest.approx(500.0)
-        assert d["per_clock"]["clk"]["fmax_mhz"] == pytest.approx(2000.0)
-        assert d["per_clock"]["clk"]["period_ns"] == pytest.approx(1.0)
-        assert d["per_clock"]["clk"]["wns_ns"] == pytest.approx(0.5)
-        assert d["wns_ns"] is None
-        assert d["has_critical"] is False
-        assert d["latches"] == 0
-
-
-# ===========================================================================
 # Typed-parameter mapping (vlogdefine/vlogparam -> run_yosys_syn CLI)
 # ===========================================================================
 
@@ -4331,7 +4262,7 @@ class TestSynthResolution:
 
     def test_setup_failure_recorded_as_infra_error(self, flow_and_state):
         """Through the full _run, a resolution failure becomes EXIT_ERROR, not a crash."""
-        flow, state_file = flow_and_state
+        flow, _ = flow_and_state
         with patch.object(
             fusesoc_registry,
             "_resolve_target",
@@ -4340,9 +4271,6 @@ class TestSynthResolution:
             result = flow._run()
         assert result.exit_code == EXIT_ERROR
         assert "infrastructure error" in result.report_text
-        # An infra error must not set the synthesis_ok criterion.
-        st = DevelopmentState.load(state_file)
-        assert not st.is_met("synthesis_ok_lite")
 
     def test_resolution_forwards_target_and_isolated_build_root(
         self,
@@ -4739,8 +4667,8 @@ class TestFailOnTimingViolation:
         assert "fail_on_timing_violation = true" in result.report_text
         assert "-2.633" in result.report_text
 
-    def test_fatal_timing_is_consistent_in_report_and_criterion(self, flow_and_state):
-        flow, state_file = flow_and_state
+    def test_fatal_timing_is_consistent_in_report(self, flow_and_state):
+        flow, _ = flow_and_state
         flow._timing_violation_is_fatal = True
         flow._implementation_reports = {}
         metrics = SynthMetrics(area_kge=1.0, cells=10, wns_ns=-0.25)
@@ -4750,9 +4678,6 @@ class TestFailOnTimingViolation:
         report = json.loads((flow.args.report_dir / "synth_lite.json").read_text(encoding="utf-8"))
         assert report["passed"] is False
         assert report["implementation"]["status"]["grade"] == "fail"
-        entry = DevelopmentState.load(state_file).criteria["synthesis_ok_lite"]
-        assert entry.met is False
-        assert entry.detail["implementation"]["status"]["grade"] == "fail"
 
     def test_clean_timing_is_unaffected_by_the_knob(self, flow_and_state):
         flow, _ = flow_and_state
@@ -4798,9 +4723,8 @@ class TestResultLine:
 class TestAggregateDetailIsSelfContained:
     """The flat asic_synthesize.json used to carry ``detail: {}`` (SETUP-F-29b).
 
-    Every number lived only in the per-target ``synthesis_ok_<tgt>`` criteria,
-    so a consumer reading the Flow's own report saw a verdict with nothing
-    behind it.
+    A consumer reading the Flow's own report sees each target's numbers
+    behind the verdict.
     """
 
     def _metrics(self, **kw) -> SynthMetrics:
@@ -4819,8 +4743,8 @@ class TestAggregateDetailIsSelfContained:
         detail = _aggregate_detail(["asic_a", "asic_b"], cur)
         assert detail["targets"] == ["asic_a", "asic_b"]
         assert detail["passed"] is True
-        assert detail["asic_a"]["cells"] == 1200
-        assert detail["asic_b"]["cells"] == 99
+        assert detail["asic_a"]["cell_count"] == 1200
+        assert detail["asic_b"]["cell_count"] == 99
         assert detail["asic_a"]["per_clock"]["clk"]["fmax_mhz"] == 800.0
         assert detail["asic_a"]["wns_ns"] == 0.25
 
@@ -4836,14 +4760,13 @@ class TestAggregateDetailIsSelfContained:
         base = {"asic_a": self._metrics(cells=1000)}
         detail = _aggregate_detail(["asic_a"], cur, base, "deadbee")
         assert detail["baseline_ref"] == "deadbee"
-        assert detail["asic_a"]["baseline_metrics"]["cells"] == 1000
+        assert detail["asic_a"]["baseline_metrics"]["cell_count"] == 1000
 
     def test_result_from_aggregate_carries_it(self, tmp_path: Path):
         flow = AsicSynthesizeFlow()
         flow.parse_args(["--work-dir", str(tmp_path), "--target", "asic_a"])
         flow.read_state()
-        with patch.object(AsicSynthesizeFlow, "_set_config_criterion"):
-            result = flow._aggregate_results(["asic_a"], {"asic_a": self._metrics()}, {}, None)
+        result = flow._aggregate_results(["asic_a"], {"asic_a": self._metrics()}, {}, None)
         assert result.detail["targets"] == ["asic_a"]
         assert result.detail["asic_a"]["area_um2"] == 500.0
 
@@ -5184,7 +5107,6 @@ def test_public_flow_modern_latch_design_failure(flow_and_state, tmp_path, mode,
     assert "$_DLATCH_P_" in report["implementation"]["status"]["diagnostic_excerpt"]
     assert "8 latches" in result.report_text
     assert report["yosys_complete"] is True
-    assert not DevelopmentState.load(flow_and_state[1]).is_met("synthesis_ok_lite")
     if mode == "physical":
         assert report["timing_complete"] is False
         assert report["ppa_complete"] is False
@@ -5407,7 +5329,7 @@ def test_captured_mapped_latch_physical_report(flow_and_state, tmp_path, expecte
     assert conditions["has_critical"] is (not expected)
     assert report["yosys_complete"] is True
     assert report["structural_checks_complete"] is True
-    assert DevelopmentState.load(flow_and_state[1]).is_met("synthesis_ok_lite") is bool(expected)
+    assert report["passed"] is bool(expected)
     if expected:
         assert report["timing_complete"] is True
         assert report["ppa_complete"] is True
@@ -5420,7 +5342,6 @@ def test_public_latch_allowance_clean_logical_pass(flow_and_state, tmp_path, exp
     assert report["implementation"]["conditions"]["latches"] == 8
     assert report["implementation"]["conditions"]["unexpected_latches"] == 0
     assert report["implementation"]["conditions"]["has_critical"] is False
-    assert DevelopmentState.load(flow_and_state[1]).is_met("synthesis_ok_lite")
 
 
 def test_public_latch_allowance_excess_is_design_failure(flow_and_state, tmp_path):
@@ -5751,7 +5672,6 @@ def test_public_generated_make_latch_failure(
     assert report["timing_complete"] is False
     assert "actual=8, expected=0, excess=8" in result.report_text
     assert "$_DLATCH_P_" in report["implementation"]["status"]["diagnostic_excerpt"]
-    assert not DevelopmentState.load(flow_and_state[1]).is_met("synthesis_ok_lite")
 
 
 @pytest.mark.parametrize(
@@ -6082,9 +6002,7 @@ def test_synth_baseline_materializes_project_topologies(tmp_path, monkeypatch, t
     handle = TargetCatalog.build(root).select("synth_core", for_flow="synth")
     flow._target_handles = {handle.selector: handle}
     flow._target_execution_refs = {}
-    flow._target_pairs = target_pair_plans_for_handles(
-        {}, "synthesis_ok_", (handle,), flow="synth"
-    )
+    flow._target_pairs = target_pair_plans_for_handles((handle,), flow="synth")
     candidate_handles = flow._target_handles
     roots = []
 
@@ -6667,7 +6585,7 @@ def _loop_check_artifacts(loops: int) -> dict[str, str]:
 
 def test_declared_comb_loop_allowance_passes_and_excess_fails(flow_and_state, tmp_path):
     """``expected_comb_loops = N`` passes N loops; N + 1 fails naming the excess."""
-    _flow, state_file = flow_and_state
+    _flow, _ = flow_and_state
     result, report = _run_latch_case(
         flow_and_state,
         tmp_path,
@@ -6684,7 +6602,6 @@ def test_declared_comb_loop_allowance_passes_and_excess_fails(flow_and_state, tm
     assert conditions["expected_comb_loops"] == 2
     assert conditions["unexpected_comb_loops"] == 0
     assert conditions["has_critical"] is False
-    assert DevelopmentState.load(state_file).is_met("synthesis_ok_lite")
     # A declared loop still emits the Yosys warning, so the run grades WARN.
     assert report["implementation"]["status"]["grade"] == "warn"
 

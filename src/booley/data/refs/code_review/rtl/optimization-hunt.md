@@ -8,7 +8,11 @@ Project-specific overlays may be supplied by the caller or change-request contex
 
 ## Scope Boundaries
 
-- **Functional correctness, undriven or missing functionality, conditional-compilation defects**: missing-functionality defects belong to the Reviewer Specialists for Bugs, Spec, or Protocol. Code that is unused because required functionality is missing is not dead logic
+- **Functional correctness, missing functionality, conditional-compilation
+  defects**: missing-functionality defects belong to the Reviewer Specialists
+  for Bugs, Spec, or Protocol. Code that is unused because required
+  functionality is missing is not dead logic. Signals lint reports as unused or
+  undriven belong to the project's lint Targets
 - **Handshake protocol and clock-domain crossings**: defer to the Reviewer Specialist for Protocol/CDC
 - **Spec conformance**: defer to the Reviewer Specialist for Spec
 - **Security**: defer to the Reviewer Specialist for Security

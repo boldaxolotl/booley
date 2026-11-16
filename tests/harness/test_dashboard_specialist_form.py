@@ -52,8 +52,6 @@ HIDDEN: dict[str, dict[str, str]] = {
         "--report-dir": "the Job writes to its default report directory",
         "--diagnostic": "a Standalone Job never records Criterion evidence",
         "--transcript-dir": "the Job worker sets it beside job.log",
-        "--verify": "continues the Developer Agent's own review loop, not a first review",
-        "--waive": "continues the Developer Agent's own review loop, not a first review",
         "--dry-run": "a Job is a real run; Review already checks the command",
         "--base": "not on the form yet: a later ticket can add it",
         "--steer": "not on the form yet: a later ticket can add it",
@@ -172,9 +170,9 @@ def test_spec_path_row_shows_only_for_the_spec_focus():
 # --- AC5 -------------------------------------------------------------------------------------------
 
 
-def test_verify_waive_and_dry_run_cannot_be_set_from_the_form():
+def test_dry_run_and_transcript_dir_cannot_be_set_from_the_form():
     form = reviewer_form()
-    forbidden = {"--verify", "--waive", "--dry-run", "--transcript-dir"}
+    forbidden = {"--dry-run", "--transcript-dir"}
     flags = {field.flag for field in form.fields(FULLEST)}
     assert flags.isdisjoint(forbidden)
     assert form.argv(FULLEST) == (
@@ -194,7 +192,7 @@ def test_verify_waive_and_dry_run_cannot_be_set_from_the_form():
         "45m",
     )
     # A value starting with a dash is one value, never an option.
-    assert "--instruction=--verify" in form.argv({**FULLEST, "instruction": "--verify"})
+    assert "--instruction=--dry-run" in form.argv({**FULLEST, "instruction": "--dry-run"})
 
 
 # --- AC7 -------------------------------------------------------------------------------------------

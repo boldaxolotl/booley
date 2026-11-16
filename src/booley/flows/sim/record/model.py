@@ -159,11 +159,6 @@ class SimulatorBundle(SimulationRecordDocument):
     pass
 
 
-@dataclass(frozen=True)
-class ExecutableSnapshot(SimulationRecordDocument):
-    pass
-
-
 @dataclass(frozen=True, init=False)
 class SimulationRecordPlan:
     """A validated manifest paired with its immutable scheduled work-item order."""

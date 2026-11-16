@@ -45,7 +45,9 @@ def _site_section(section_id: str) -> str:
 def test_features_match_the_readme_word_for_word():
     """One canonical feature list: the README's "What it does" is the site's Features."""
     readme_section = README.split("## What it does\n", 1)[1].strip().split("\n\n", 1)[0]
-    readme_features = [_plain(line[2:]) for line in readme_section.splitlines()]
+    # Split on bullet starts, not lines, so a bullet may wrap at 80 columns.
+    readme_bullets = re.split(r"^- ", readme_section, flags=re.MULTILINE)
+    readme_features = [_plain(bullet) for bullet in readme_bullets if bullet.strip()]
     site_features = [
         _plain(f"{name}: {text}")
         for name, text in re.findall(
@@ -121,6 +123,9 @@ def test_generated_illustration_is_up_to_date():
     assert build.FIGURE_OUT.read_text(encoding="utf-8") == build.figure_html()
     assert build.CSS_OUT.read_text(encoding="utf-8") == build.css_text()
     assert build.ARCHITECTURE_OUT.read_text(encoding="utf-8") == build.architecture_svg()
+    assert build.ARCHITECTURE_DARK_OUT.read_text(encoding="utf-8") == build.architecture_svg(
+        dark=True
+    )
     assert '--8<-- "ide-figure.html"' in SITE
 
 
@@ -316,3 +321,15 @@ def test_demo_page_keeps_the_gateway_bring_your_own_key_anchor():
     """The demo gateway's notice and errors link to booley.dev/demo#bring-your-own-key."""
     page = (WEBSITE / "docs/demo.md").read_text(encoding="utf-8")
     assert 'id="bring-your-own-key"' in page
+
+
+def test_goal_mode_url_redirects_to_the_metric_driven_development_guide():
+    """The retired /docs/goal-mode/ URL still resolves: a static page sends readers to the guide."""
+    from booley.runtime.docs_links import SITE_DOCS, docs_url
+
+    redirect = (WEBSITE / "docs/docs/goal-mode/index.html").read_text(encoding="utf-8")
+    assert '<meta http-equiv="refresh" content="0; url=../metric-driven-development/">' in redirect
+    canonical = docs_url("METRIC-DRIVEN-DEVELOPMENT.md")
+    assert f'<link rel="canonical" href="{canonical}">' in redirect
+    assert "metric-driven-development" in {doc.slug for doc in SITE_DOCS}
+    assert "goal-mode" not in {doc.slug for doc in SITE_DOCS}

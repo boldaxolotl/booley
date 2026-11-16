@@ -30,6 +30,7 @@ from booley.runtime.filesystem_utils import safe_rmtree
 from tests.criteria.ledger_support import FixtureRecorder
 from tests.flows.sim.test_coverage_invocation import project
 from tests.flows.sim.test_coverage_transaction import NativeExecution
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 
 class _AcceptanceAdapter(FixtureRecorder):
@@ -97,9 +98,7 @@ def _configure_custom_main_coverage(root: Path) -> None:
     )
 
 
-def _prepare_console_scope_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    from booley.criteria.state import CriterionEntry
-
+def _prepare_console_scope_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path, ("verilator", "verilator"))
     project_data = tmp_path / ".booley"
@@ -108,31 +107,9 @@ def _prepare_console_scope_project(tmp_path: Path, monkeypatch: pytest.MonkeyPat
         '[sim_0]\ntests = ["half", "reset", "wrap", "carry", "zero"]\n'
         '[sim_1]\ntests = ["gap", "overflow", "underflow", "saturate"]\n'
     )
-    state_path = tmp_path / "state.json"
-    state = DevelopmentState.load(state_path)
-    state.criteria = {
-        "coverage_sim_0": CriterionEntry(
-            params={
-                "target": "sim_0",
-                "tests": ["half"],
-                "metrics": {"line": {"min_pct": 1}},
-            }
-        ),
-        "coverage_sim_1": CriterionEntry(
-            params={
-                "target": "sim_1",
-                "tests": ["gap"],
-                "metrics": {"line": {"min_pct": 1}},
-            }
-        ),
-    }
-    state.save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
-    return state_path
 
 
-def test_console_lifecycle_reports_executed_suite_not_criterion_list(
+def test_console_lifecycle_reports_executed_suite(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _prepare_console_scope_project(tmp_path, monkeypatch)
@@ -152,7 +129,7 @@ def test_console_lifecycle_reports_executed_suite_not_criterion_list(
     )
 
     lifecycle = [event for event in events if event["type"] in {"endpoint_start", "endpoint_end"}]
-    assert result.exit_code == 2, result.outcome
+    assert result.exit_code == 0, result.outcome
     assert [event["display_label"] for event in lifecycle] == [
         "2 targets · 9 tests",
         "2 targets · 9 tests",
@@ -165,8 +142,7 @@ def test_console_lifecycle_reports_executed_suite_not_criterion_list(
     for simulation_record in result.outcome.detail["records"].values():
         path = tmp_path / "reports/sim/1" / simulation_record["artifacts"]["coverage"]["path"]
         evaluation = resolve_coverage_record_reference(path).loaded.coverage_record.evaluation
-        assert evaluation["status"] == "blocked"
-        assert evaluation["suite"]["status"] == "mismatch"
+        assert evaluation["status"] == "not_requested"
 
 
 def test_pre_outcome_coverage_failure_keeps_prepared_console_scope(
@@ -262,35 +238,7 @@ def _assert_ungated_report(result, tmp_path: Path) -> None:
     assert persisted["report_text"] == result.outcome.report_text
 
 
-def _atomic_coverage_projection():
-    # Resolved criteria are inputs to Flow grading; Ticket authoring is retired.
-    metrics = {"line": 70, "expression": 66, "branch": 51}
-    keys = {metric: f"coverage_sim_custom_{metric}" for metric in metrics}
-    return SimpleNamespace(
-        required={keys[m]: m != "branch" for m in metrics},
-        params={
-            keys[m]: {
-                "target": "acme:demo:counter:1#sim_custom",
-                "_target_selector": "sim_custom",
-                "tests": ["gap"],
-                "metrics": {m: {"min_pct": floor}},
-            }
-            for m, floor in metrics.items()
-        },
-        aliases={"coverage_sim_custom": list(keys.values())},
-    )
-
-
-def _ledger_json(log_dir: Path) -> dict[Path, bytes]:
-    return {
-        path.relative_to(log_dir): path.read_bytes()
-        for path in (log_dir / "acceptance").rglob("*.json")
-    }
-
-
-def _prepare_atomic_coverage_state(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> tuple[Path, bytes]:
+def _prepare_sim_custom_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
     core = tmp_path / "counter.core"
@@ -298,20 +246,6 @@ def _prepare_atomic_coverage_state(
     project_data = tmp_path / ".booley"
     project_data.mkdir()
     (project_data / "tests.toml").write_text('[sim_custom]\ntests = ["gap"]\n')
-    projection = _atomic_coverage_projection()
-    state_path = tmp_path / "state.json"
-    state = DevelopmentState.load(state_path)
-    state.slug = "ticket"
-    state.ticket_type = "verification"
-    state.init_criteria(
-        {**projection.required, "_report_submitted": True},
-        flow_key_aliases=projection.aliases,
-        criterion_params={**projection.params, "_report_submitted": {}},
-        strict=True,
-    )
-    state.save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
-    return state_path, state_path.read_bytes()
 
 
 def _assert_enclosing_result_is_authenticated(coverage_record_path, resolved) -> None:
@@ -447,7 +381,7 @@ def _frozen_hook_execution(tmp_path, data, received):
                 test_names=(request.test.name,),
                 build_root=tmp_path / "build",
                 eda_tool="verilator",
-                timeout_s=5,
+                timeout_s=SUBPROCESS_TIMEOUT_S,
                 commands=received[-1][1],
             )
             return SimulationRunResult(result.verdict, result.output, evidence)
@@ -515,7 +449,7 @@ def _publish_real_hook_series(request, handle, commands, count):
             test_names=("alpha",),
             build_root=request.attempt_directory / "build",
             eda_tool="icarus",
-            timeout_s=5,
+            timeout_s=SUBPROCESS_TIMEOUT_S,
             commands=commands,
             run_cwd=".",
         )
@@ -973,8 +907,8 @@ def test_shared_execution_failure_terminalizes_without_losing_completed_reports(
     assert list((target_root / "record").glob("work-items/*/result.json"))
 
 
-def test_gated_shared_execution_failure_preserves_blocked_evaluation(tmp_path, monkeypatch):
-    _state_path, _before = _prepare_atomic_coverage_state(tmp_path, monkeypatch)
+def test_shared_execution_failure_keeps_the_plain_evaluation(tmp_path, monkeypatch):
+    _prepare_sim_custom_project(tmp_path, monkeypatch)
 
     class Unavailable(NativeExecution):
         def build(self, request):
@@ -1001,26 +935,18 @@ def test_gated_shared_execution_failure_preserves_blocked_evaluation(tmp_path, m
     assert detail["passed"] is False
     assert detail["simulation"] == "aborted"
     assert detail["collection"] == "collector_error"
-    assert detail["evaluation"] == nested.evaluation["status"] == "blocked"
+    assert detail["evaluation"] == nested.evaluation["status"] == "not_requested"
     assert "completion_error" not in result.outcome.detail
     assert result.outcome.detail["pending_targets"] == []
 
 
-@pytest.mark.parametrize(
-    ("gated", "target", "expected"),
-    [(False, "sim_0", "not_requested"), (True, "sim_custom", "blocked")],
-)
-def test_pre_outcome_coverage_failure_uses_prepared_policy(
-    tmp_path, monkeypatch, gated, target, expected
-):
-    if gated:
-        _prepare_atomic_coverage_state(tmp_path, monkeypatch)
-    else:
-        monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-        project(tmp_path)
-        project_data = tmp_path / ".booley"
-        project_data.mkdir()
-        (project_data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
+def test_pre_outcome_coverage_failure_uses_prepared_policy(tmp_path, monkeypatch):
+    target, expected = "sim_0", "not_requested"
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path)
+    project_data = tmp_path / ".booley"
+    project_data.mkdir()
+    (project_data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
 
     def fail_before_outcome(_simulation_record, _request):
         raise RuntimeError("failed before nested outcome")
@@ -1040,7 +966,7 @@ def test_pre_outcome_coverage_failure_uses_prepared_policy(
 
 
 def test_nested_coverage_publication_failure_preserves_simulation_truth(tmp_path, monkeypatch):
-    _prepare_atomic_coverage_state(tmp_path, monkeypatch)
+    _prepare_sim_custom_project(tmp_path, monkeypatch)
 
     def checkpoint(boundary):
         if boundary == "before:coverage_record":
@@ -1063,7 +989,7 @@ def test_nested_coverage_publication_failure_preserves_simulation_truth(tmp_path
     assert detail["passed"] is True
     assert detail["simulation"] == "pass"
     assert detail["collection"] == "infrastructure_error"
-    assert detail["evaluation"] == "blocked"
+    assert detail["evaluation"] == "not_requested"
 
 
 def test_atomic_preflight_creates_no_report_or_build_path(tmp_path, monkeypatch):
@@ -1113,46 +1039,10 @@ def test_explicit_coverage_selection_executes_configured_skips(
     assert [request.test.name for request in execution.runs] == expected_runs
 
 
-def test_interactive_coverage_criterion_does_not_mutate_or_save_state(tmp_path, monkeypatch):
-    from booley.criteria.state import CriterionEntry, DevelopmentState
-
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    project(tmp_path)
-    data = tmp_path / ".booley"
-    data.mkdir()
-    (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
-    state = DevelopmentState.load(tmp_path / "state.json")
-    state.strict_criteria = True
-    state.criteria = {
-        "coverage_sim_0": CriterionEntry(
-            params={"target": "sim_0", "tests": "all", "metrics": {"line": {"min_pct": 100}}}
-        )
-    }
-    state.save()
-    state_path = tmp_path / "state.json"
-    before_bytes = state_path.read_bytes()
-    before_mtime = state_path.stat().st_mtime_ns
-    save_calls: list[Path | None] = []
-    monkeypatch.setattr(
-        DevelopmentState, "save", lambda current: save_calls.append(current._file_path)
-    )
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
-    result = SimulateFlow(
-        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
-    ).execute(SimRequest(target="sim_0", work_dir=tmp_path, coverage=True))
-    assert result.exit_code == 0, result.outcome
-    assert save_calls == []
-    assert state_path.read_bytes() == before_bytes
-    assert state_path.stat().st_mtime_ns == before_mtime
-
-
 def test_projection_publication_failure_returns_structured_report_with_target_facts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    state_path, initial_state = _prepare_atomic_coverage_state(tmp_path, monkeypatch)
-    identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
-    adapter = _AcceptanceAdapter(log_dir=tmp_path / "logs", identity=identity)
+    _prepare_sim_custom_project(tmp_path, monkeypatch)
 
     def fail_projection(*_args, **_kwargs) -> None:
         raise OSError(5, "injected projection publication failure")
@@ -1168,8 +1058,7 @@ def test_projection_publication_failure_returns_structured_report_with_target_fa
             work_dir=tmp_path,
             coverage=True,
             report_dir=tmp_path / "reports",
-        ),
-        adapter=adapter,
+        )
     )
 
     assert result.exit_code == 2
@@ -1177,20 +1066,15 @@ def test_projection_publication_failure_returns_structured_report_with_target_fa
     assert result.outcome.detail["completion_error"]["operation"] == (
         "record acceptance and projections"
     )
-    acceptance = result.outcome.detail["acceptance"]
-    assert acceptance["status"] == "partial"
-    assert acceptance["targets"][0]["committed"] is True
-    assert acceptance["targets"][0]["transaction_id"]
+    assert "acceptance" not in result.outcome.detail
     report = json.loads((tmp_path / "reports/sim/1/report.json").read_text())
     assert report["detail"] == result.outcome.detail
-    assert state_path.read_bytes() != initial_state
-    assert len(DevelopmentState.load(state_path).acceptance_transactions) == 1
     assert not (tmp_path / "reports/sim/1/targets/sim_custom/simulation.json").exists()
     assert "Traceback" not in capsys.readouterr().err
 
 
-def test_gated_passing_coverage_headline_reports_evaluation_pass(tmp_path, monkeypatch):
-    _prepare_atomic_coverage_state(tmp_path, monkeypatch)
+def test_plain_coverage_headline_reports_evaluation_not_requested(tmp_path, monkeypatch):
+    _prepare_sim_custom_project(tmp_path, monkeypatch)
     result = SimulateFlow(
         coverage_execution=lambda _handle, _options, _commands, _access: (
             _PassingSplitMetricsExecution()
@@ -1207,13 +1091,13 @@ def test_gated_passing_coverage_headline_reports_evaluation_pass(tmp_path, monke
     assert result.exit_code == 0
     simulation_record_id = result.outcome.detail["records"]["sim_custom"]["simulation_record_id"]
     assert _target_headline(result.outcome.report_text, "sim_custom") == (
-        "sim_custom: simulation PASS · coverage collection COMPLETE · evaluation PASS "
+        "sim_custom: simulation PASS · coverage collection COMPLETE · evaluation NOT_REQUESTED "
         f"(Simulation Record {simulation_record_id})"
     )
 
 
-def test_gated_suite_mismatch_headline_attaches_diagnostic_to_evaluation(tmp_path, monkeypatch):
-    _prepare_atomic_coverage_state(tmp_path, monkeypatch)
+def test_plain_coverage_with_other_tests_reports_no_suite_diagnostic(tmp_path, monkeypatch):
+    _prepare_sim_custom_project(tmp_path, monkeypatch)
     tests_path = tmp_path / ".booley/tests.toml"
     tests_path.write_text('[sim_custom]\ntests = ["gap", "other"]\n')
     result = SimulateFlow(
@@ -1228,11 +1112,11 @@ def test_gated_suite_mismatch_headline_attaches_diagnostic_to_evaluation(tmp_pat
         )
     )
 
-    assert result.exit_code == 2
+    assert result.exit_code == 0
     simulation_record_id = result.outcome.detail["records"]["sim_custom"]["simulation_record_id"]
     assert _target_headline(result.outcome.report_text, "sim_custom") == (
-        "sim_custom: simulation PASS · coverage collection COMPLETE · evaluation BLOCKED "
-        f"(COV_EVAL_SUITE_MISMATCH) (Simulation Record {simulation_record_id})"
+        "sim_custom: simulation PASS · coverage collection COMPLETE · evaluation NOT_REQUESTED "
+        f"(Simulation Record {simulation_record_id})"
     )
 
 
@@ -2056,17 +1940,18 @@ def test_interactive_collection_then_exact_coverage_record_analysis(tmp_path, mo
 
 
 @pytest.mark.parametrize(
-    "verdict,hits,missing,evaluation,exit_code",
+    "verdict,hits,missing,exit_code",
     [
-        ("pass", 2, False, "pass", 0),
-        ("fail", 2, False, "pass", 1),
-        ("pass", 0, False, "fail", 0),
-        ("fail", 0, False, "fail", 1),
-        ("pass", 2, True, "blocked", 2),
+        ("pass", 2, False, 0),
+        ("fail", 2, False, 1),
+        ("pass", 0, False, 0),
+        ("fail", 0, False, 1),
+        ("pass", 2, True, 2),
     ],
+    ids=["pass", "fail", "pass-no-hits", "fail-no-hits", "missing-counters"],
 )
-def test_interactive_collection_keeps_criteria_unchanged_across_verdicts(
-    tmp_path, monkeypatch, verdict, hits, missing, evaluation, exit_code
+def test_declared_coverage_criterion_leaves_the_plain_coverage_result(
+    tmp_path, monkeypatch, verdict, hits, missing, exit_code
 ):
     from booley.criteria.state import CriterionEntry, DevelopmentState
 
@@ -2096,36 +1981,19 @@ def test_interactive_collection_keeps_criteria_unchanged_across_verdicts(
     assert result.exit_code == exit_code
     coverage_record_path = next(tmp_path.rglob("targets/sim_0/coverage.json"))
     document = resolve_coverage_record_reference(coverage_record_path).loaded.coverage_record
-    assert document.evaluation["status"] == evaluation
+    # The declared Criterion supplies no policy: the plain run's result stands.
+    assert document.evaluation["status"] == "not_requested"
     assert state_path.read_bytes() == before
     saved = DevelopmentState.load(state_path)
     assert saved.criteria["coverage_sim_0"].met is False
     assert saved.criteria["sim_pass_sim_0"].met is False
 
 
-def _run_gap_coverage(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    registered: tuple[str, ...],
-    skip: tuple[str, ...] = (),
-    criterion_tests: tuple[str, ...] = ("gap",),
-    tests: tuple[str, ...] = (),
-    ticket: bool = True,
-):
-    """Run sim_custom coverage against a Criterion listing *criterion_tests*."""
-    state_path, _initial = _prepare_atomic_coverage_state(tmp_path, monkeypatch)
-    listing = ", ".join(f'"{name}"' for name in registered)
-    skipped = ", ".join(f'"{name}"' for name in skip)
-    skipping = f"skip = [{skipped}]\n" if skip else ""
-    (tmp_path / ".booley/tests.toml").write_text(f"[sim_custom]\ntests = [{listing}]\n{skipping}")
-    state = DevelopmentState.load(state_path)
-    for entry in state.criteria.values():
-        if "tests" in entry.params:
-            entry.params["tests"] = list(criterion_tests)
-    state.save()
-    if not ticket:
-        monkeypatch.delenv("BOOLEY_STATE_FILE")
+def test_default_coverage_selection_applies_skips(tmp_path, monkeypatch):
+    _prepare_sim_custom_project(tmp_path, monkeypatch)
+    (tmp_path / ".booley/tests.toml").write_text(
+        '[sim_custom]\ntests = ["gap", "other"]\nskip = ["other"]\n'
+    )
     execution = NativeExecution()
     result = SimulateFlow(
         coverage_execution=lambda _handle, _options, _commands, _access: execution
@@ -2134,68 +2002,12 @@ def _run_gap_coverage(
             target="sim_custom",
             work_dir=tmp_path,
             coverage=True,
-            test=tests or None,
             report_dir=tmp_path / "reports",
         )
     )
-    return result, [run.test.name for run in execution.runs]
 
-
-def _coverage_evaluation(tmp_path: Path) -> dict[str, object]:
-    coverage_record = next(tmp_path.rglob("targets/sim_custom/coverage.json"))
-    return resolve_coverage_record_reference(coverage_record).loaded.coverage_record.evaluation
-
-
-def test_criterion_test_list_does_not_select_coverage_tests(tmp_path, monkeypatch):
-    result, ran = _run_gap_coverage(tmp_path, monkeypatch, registered=("gap", "other"))
-
-    assert sorted(ran) == ["gap", "other"]
-    assert result.exit_code == 2
-    evaluation = _coverage_evaluation(tmp_path)
-    assert evaluation["status"] == "blocked"
-    assert evaluation["suite"]["status"] == "mismatch"
-    assert list(evaluation["suite"]["required"]) == ["gap"]
-
-
-def test_criterion_test_list_is_satisfied_by_explicit_tests(tmp_path, monkeypatch):
-    result, ran = _run_gap_coverage(
-        tmp_path, monkeypatch, registered=("gap", "other"), tests=("gap",)
-    )
-
-    assert ran == ["gap"]
-    evaluation = _coverage_evaluation(tmp_path)
-    assert evaluation["suite"]["status"] == "match"
-    # Blocked only by the plain execution's missing branch/expression support.
-    assert "COV_EVAL_SUITE_MISMATCH" not in {item["code"] for item in evaluation["diagnostics"]}
-    assert result.exit_code == 2
-
-
-def test_default_coverage_selection_applies_skips_with_a_criterion(tmp_path, monkeypatch):
-    result, ran = _run_gap_coverage(
-        tmp_path,
-        monkeypatch,
-        registered=("gap", "other"),
-        skip=("other",),
-        criterion_tests=("gap", "other"),
-    )
-
-    assert ran == ["gap"]
-    assert result.exit_code == 2
-    evaluation = _coverage_evaluation(tmp_path)
-    assert evaluation["status"] == "blocked"
-    assert evaluation["suite"]["status"] == "mismatch"
-
-
-def test_bound_and_interactive_coverage_select_the_same_tests(tmp_path_factory, monkeypatch):
-    ticket = tmp_path_factory.mktemp("ticket")
-    interactive = tmp_path_factory.mktemp("interactive")
-
-    _result, ticket_ran = _run_gap_coverage(ticket, monkeypatch, registered=("gap", "other"))
-    _result, interactive_ran = _run_gap_coverage(
-        interactive, monkeypatch, registered=("gap", "other"), ticket=False
-    )
-
-    assert sorted(ticket_ran) == sorted(interactive_ran) == ["gap", "other"]
+    assert [run.test.name for run in execution.runs] == ["gap"]
+    assert result.exit_code == 0
 
 
 def test_failed_test_exit_code_is_recorded_per_target_in_progress(tmp_path, monkeypatch):
@@ -2246,40 +2058,9 @@ def _workload(reports: Path, selector: str) -> dict[str, object]:
     return json.loads(manifest.read_text())["workload"]
 
 
-@pytest.mark.parametrize("dry_run", [False, True])
-def test_gated_no_waivers_is_refused_before_any_build(tmp_path, monkeypatch, dry_run):
-    state_path, initial_state = _prepare_atomic_coverage_state(tmp_path, monkeypatch)
+def test_no_waivers_diagnostic_reports_raw(tmp_path, monkeypatch):
+    _prepare_sim_custom_project(tmp_path, monkeypatch)
     _configure_missing_waiver_directory(tmp_path)
-    factory_calls = []
-
-    def execution_factory(*_args):
-        factory_calls.append(_args)
-        return _PassingSplitMetricsExecution()
-
-    result = SimulateFlow(coverage_execution=execution_factory).execute(
-        SimRequest(
-            target="sim_custom",
-            work_dir=tmp_path,
-            coverage=True,
-            no_waivers=True,
-            dry_run=dry_run,
-            report_dir=tmp_path / "reports",
-        )
-    )
-
-    assert result.exit_code == 2
-    assert _finding_codes(result.outcome) == ["COV_NO_WAIVERS_CRITERION"]
-    assert "--diagnostic" in result.outcome.report_text
-    assert factory_calls == []
-    assert not (tmp_path / "reports/sim/1").exists()
-    assert state_path.read_bytes() == initial_state
-
-
-def test_gated_no_waivers_diagnostic_reports_raw_and_records_nothing(tmp_path, monkeypatch):
-    state_path, _initial_state = _prepare_atomic_coverage_state(tmp_path, monkeypatch)
-    _configure_missing_waiver_directory(tmp_path)
-    identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
-    adapter = _AcceptanceAdapter(log_dir=tmp_path / "logs", identity=identity)
 
     def run(name: str, **options):
         SimulateFlow(coverage_execution=lambda *_args: _PassingSplitMetricsExecution()).execute(
@@ -2290,8 +2071,7 @@ def test_gated_no_waivers_diagnostic_reports_raw_and_records_nothing(tmp_path, m
                 diagnostic=True,
                 report_dir=tmp_path / name,
                 **options,
-            ),
-            adapter=adapter,
+            )
         )
 
     # Control: the same run with waivers applied is blocked by the missing directory.
@@ -2301,11 +2081,6 @@ def test_gated_no_waivers_diagnostic_reports_raw_and_records_nothing(tmp_path, m
     assert _coverage_evaluation_status(tmp_path / "raw", "sim_custom") != "blocked"
     assert _workload(tmp_path / "raw", "sim_custom")["no_waivers"] is True
     assert "no_waivers" not in _workload(tmp_path / "control", "sim_custom")
-    # Run history (timeline) may change; Criteria and acceptance must not.
-    recorded = DevelopmentState.load(state_path)
-    assert all(entry.met is False for entry in recorded.criteria.values())
-    assert recorded.acceptance_transactions == []
-    assert _ledger_json(tmp_path / "logs") == {}
 
 
 def test_default_coverage_manifest_omits_no_waivers(tmp_path, monkeypatch):
@@ -2362,24 +2137,6 @@ def test_ungated_invalid_waivers_exit_2_with_no_waivers_hint(tmp_path, monkeypat
     assert _coverage_evaluation_status(tmp_path / "raw", "sim_0") == "not_requested"
 
 
-def _install_coverage_criterion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Install a ``coverage_sim_0`` Criterion whose suite (``all``) matches reset/wrap."""
-    from booley.criteria.state import CriterionEntry
-
-    state_path = tmp_path / "state.json"
-    state = DevelopmentState.load(state_path)
-    state.strict_criteria = True
-    state.criteria = {
-        "coverage_sim_0": CriterionEntry(
-            params={"target": "sim_0", "tests": "all", "metrics": {"line": {"min_pct": 1}}}
-        )
-    }
-    state.save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
-    return state_path
-
-
 def test_no_waivers_resume_of_ungated_manifest_does_not_rerun_tests(tmp_path, monkeypatch):
     reports, runs, public, execution_factory, _interrupted = _crash_coverage_publication(
         tmp_path, monkeypatch, "after:simulation_result", no_waivers=True
@@ -2398,55 +2155,11 @@ def test_no_waivers_resume_of_ungated_manifest_does_not_rerun_tests(tmp_path, mo
     assert tuple(runs) == completed_runs
 
 
-def test_no_waivers_resume_with_criterion_needs_diagnostic(tmp_path, monkeypatch):
-    reports, _runs, public, execution_factory, _interrupted = _crash_coverage_publication(
-        tmp_path, monkeypatch, "after:simulation_result", no_waivers=True
-    )
-    state_path = _install_coverage_criterion(tmp_path, monkeypatch)
-    before = state_path.read_bytes()
-    manifest = public.parent / "record/manifest.json"
-    flow = SimulateFlow(coverage_execution=execution_factory)
-
-    refused = flow.execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports))
-
-    assert refused.exit_code == 2
-    assert _finding_codes(refused.outcome) == ["COV_NO_WAIVERS_CRITERION"]
-    assert "--diagnostic" in refused.outcome.report_text
-    assert sorted(path.name for path in (reports / "sim").iterdir() if path.is_dir()) == ["1"]
-    assert state_path.read_bytes() == before
-
-    diagnostic = SimulateFlow(coverage_execution=execution_factory).execute(
-        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports, diagnostic=True)
-    )
-
-    assert diagnostic.exit_code == 0, diagnostic.outcome
-    assert state_path.read_bytes() == before
-
-
 def _coverage_headline_state(tmp_path, monkeypatch, ticket):
-    from booley.criteria.state import CriterionEntry
-
     state_path = tmp_path / "state.json"
     if ticket == "none":
         return state_path
     state = DevelopmentState.load(state_path)
-    if ticket in {"coverage", "coverage_only"}:
-        state.strict_criteria = True
-        state.criteria = {
-            "coverage_sim_0": CriterionEntry(
-                params={
-                    "target": "acme:demo:counter:1#sim_0",
-                    "_target_selector": "sim_0",
-                    "tests": "all",
-                    "metrics": {"line": {"min_pct": 100}},
-                }
-            ),
-            "sim_pass_sim_0": CriterionEntry(
-                params={"target": "acme:demo:counter:1#sim_0", "_target_selector": "sim_0"}
-            ),
-        }
-    if ticket == "coverage_only":
-        del state.criteria["sim_pass_sim_0"]
     state.slug = "headline-ticket"
     state.save()
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
@@ -2455,20 +2168,12 @@ def _coverage_headline_state(tmp_path, monkeypatch, ticket):
 
 
 def _assert_coverage_headline_results(results, ticket, verdict, state_path):
-    expected = ("coverage_sim_0", False) if ticket == "coverage_only" else ("", None)
-    evaluation = "fail" if ticket in {"coverage", "coverage_only"} else "not_requested"
     for result in results:
-        assert result.outcome.detail["targets"]["sim_0"]["evaluation"] == evaluation
+        assert result.outcome.detail["targets"]["sim_0"]["evaluation"] == "not_requested"
         assert result.outcome.detail["targets"]["sim_0"]["simulation"] == verdict
-        assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
         assert result.exit_code == (1 if verdict == "fail" else 0), result.outcome
     if ticket == "undeclared":
         assert DevelopmentState.load(state_path).criteria == {}
-    if ticket in {"coverage", "coverage_only"}:
-        saved = DevelopmentState.load(state_path)
-        if ticket == "coverage":
-            assert saved.criteria["sim_pass_sim_0"].met is True
-        assert saved.criteria["coverage_sim_0"].met is False
     elif ticket == "none":
         assert not state_path.exists()
 
@@ -2479,8 +2184,6 @@ def _assert_coverage_headline_results(results, ticket, verdict, state_path):
         ("none", "pass"),
         ("none", "fail"),
         ("undeclared", "pass"),
-        ("coverage", "pass"),
-        ("coverage_only", "pass"),
     ],
 )
 def test_public_coverage_simulation_record_headline_fresh_and_resume(
@@ -2497,17 +2200,9 @@ def test_public_coverage_simulation_record_headline_fresh_and_resume(
             return super().run(request)
 
     def invoke(request):
-        adapter = (
-            _AcceptanceAdapter(
-                log_dir=tmp_path / "logs",
-                identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
-            )
-            if ticket in {"coverage", "coverage_only"}
-            else None
-        )
         return SimulateFlow(
             coverage_execution=lambda *_args: Counted(hits=0, verdict=verdict)
-        ).execute(request, adapter=adapter)
+        ).execute(request)
 
     fresh = invoke(
         SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports)
@@ -2799,42 +2494,21 @@ def test_image_alias_coverage_flow_publishes_authenticated_references(tmp_path, 
 
 
 def test_job_report_coverage_metrics_match_coverage_record(tmp_path, monkeypatch):
-    from booley.criteria.state import CriterionEntry
-
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path, ("verilator", "verilator"))
     data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n[sim_1]\ntests = ["reset"]\n')
-    state_path = tmp_path / "state.json"
-    state = DevelopmentState.load(state_path)
-    state.criteria = {
-        "coverage_sim_0": CriterionEntry(
-            params={
-                "target": "sim_0",
-                "tests": ["reset"],
-                "metrics": {"line": {"min_pct": 100}, "branch": {"min_pct": 100}},
-            }
-        )
-    }
-    state.save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
     reports = tmp_path / "reports"
     result = SimulateFlow(coverage_execution=lambda *_args: _SplitMetricsExecution()).execute(
         SimRequest(target="sim_0,sim_1", work_dir=tmp_path, coverage=True, report_dir=reports)
     )
     assert result.exit_code == 0, result.outcome.report_text
     report = json.loads((reports / "sim/1/report.json").read_text())
-    floored = _target_block(result.outcome.report_text, "sim_0")
-    assert (
-        "  coverage: line 100.0% (min 100%, met) · branch 0.0% (min 100%, missed) · "
-        "expression 100.0%"
-    ) in floored
-    assert "  coverage: line 100.0% · branch 0.0% · expression 100.0%" in _target_block(
-        result.outcome.report_text, "sim_1"
-    )
     for selector in ("sim_0", "sim_1"):
+        assert "  coverage: line 100.0% · branch 0.0% · expression 100.0%" in _target_block(
+            result.outcome.report_text, selector
+        )
         public_path = _card_path(
             _target_block(result.outcome.report_text, selector), "Coverage Record"
         )
@@ -2854,10 +2528,10 @@ def test_job_report_coverage_metrics_match_coverage_record(tmp_path, monkeypatch
             for r in coverage_record.rollups
         }
         assert detail["simulation"] == "pass" and detail["collection"] == "complete"
-        assert detail["evaluation"] == ("fail" if selector == "sim_0" else "not_requested")
+        assert detail["evaluation"] == "not_requested"
         assert detail["target"] == selector and detail["abort_remaining"] is False
         assert detail["coverage_record"] and "coverage_overall" not in detail
-    assert report["detail"]["targets"]["sim_0"]["coverage_metrics"]["line"]["met"] is True
+    assert report["detail"]["targets"]["sim_0"]["coverage_metrics"]["line"]["met"] is None
 
 
 def _linked_coverage_project(tmp_path, monkeypatch):
@@ -2946,66 +2620,16 @@ def test_coverage_analysis_refuses_a_coverage_record_written_by_booley_0_3_0(tmp
     assert not message.startswith("Cannot analyze Coverage Record")
 
 
-def _add_second_coverage_target(tmp_path: Path, state_path: Path) -> None:
-    """Add a gated ``sim_second`` coverage Target beside ``sim_custom``."""
-    core = tmp_path / "counter.core"
-    block = core.read_text().split("targets:\n", 1)[1]
-    core.write_text(core.read_text() + block.replace("sim_custom:", "sim_second:"))
-    (tmp_path / ".booley/tests.toml").write_text(
-        '[sim_custom]\ntests = ["gap"]\n[sim_second]\ntests = ["gap"]\n'
-    )
-    projection = _atomic_coverage_projection()
-    required = dict(projection.required)
-    params = dict(projection.params)
-    for key, value in projection.params.items():
-        second_key = key.replace("sim_custom", "sim_second")
-        required[second_key] = projection.required[key]
-        params[second_key] = {
-            **value,
-            "target": "acme:demo:counter:1#sim_second",
-            "_target_selector": "sim_second",
-        }
-    state = DevelopmentState.load(state_path)
-    state.init_criteria(
-        {**required, "_report_submitted": True},
-        flow_key_aliases={
-            **projection.aliases,
-            "coverage_sim_second": [k for k in required if "sim_second" in k],
-        },
-        criterion_params={**params, "_report_submitted": {}},
-        strict=True,
-    )
-    state.save()
-
-
-@pytest.mark.parametrize(
-    ("targets", "handled", "transactions"),
-    [
-        pytest.param("sim_custom", False, 0, id="one_target"),
-        pytest.param("sim_custom,sim_second", True, 1, id="two_targets"),
-    ],
-)
-def test_coverage_summary_failure_acceptance(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    targets: str,
-    handled: bool,
-    transactions: int,
+def test_coverage_summary_failure_publishes_no_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A failed last-Target publication accepts only Targets that completed before it."""
-    state_path, _initial = _prepare_atomic_coverage_state(tmp_path, monkeypatch)
-    if "," in targets:
-        _add_second_coverage_target(tmp_path, state_path)
-    adapter = _AcceptanceAdapter(
-        log_dir=tmp_path / "logs",
-        identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
-    )
+    """A failed last-Target publication leaves the Flow's projection hook unhandled."""
+    _prepare_sim_custom_project(tmp_path, monkeypatch)
     retained: list[object] = []
 
     def fail_last_retention(_progress, outcome) -> None:
         retained.append(outcome)
-        if len(retained) == len(targets.split(",")):
-            raise OSError("injected Coverage Record summary publication failure")
+        raise OSError("injected Coverage Record summary publication failure")
 
     hook_results: list[bool] = []
     hook = SimulateFlow.record_flow_owned_acceptance
@@ -3020,21 +2644,16 @@ def test_coverage_summary_failure_acceptance(
         coverage_execution=lambda *_args: _PassingSplitMetricsExecution()
     ).execute(
         SimRequest(
-            target=targets, work_dir=tmp_path, coverage=True, report_dir=tmp_path / "reports"
-        ),
-        adapter=adapter,
+            target="sim_custom",
+            work_dir=tmp_path,
+            coverage=True,
+            report_dir=tmp_path / "reports",
+        )
     )
 
     assert result.exit_code == 2
-    assert hook_results == [handled]
-    saved = DevelopmentState.load(state_path)
-    assert len(saved.acceptance_transactions) == transactions
-    accepted = {key for key, entry in saved.criteria.items() if entry.met}
-    assert accepted == (
-        {key for key in saved.criteria if key.startswith("coverage_sim_custom_")}
-        if handled
-        else set()
-    )
+    assert hook_results == [False]
+    assert not list(tmp_path.rglob("simulation.json"))
 
 
 class _SimulationRecordRegisteringAdapter(_AcceptanceAdapter):

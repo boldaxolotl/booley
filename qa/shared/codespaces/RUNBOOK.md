@@ -289,9 +289,8 @@ mismatch.
 | Dashboard resource line (CPU, Memory, Free disk) | No Booley command: `booley resources --json` shows historical peaks per Target, not this line. Compare with `nproc`, `cat /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.max` and `df -h /workspaces`; CPU % only roughly, against `top -bn1 \| head -5`. |
 | Notices (upgrade review) | `booley upgrade status --json` |
 | Sessions overview, preview pane, session detail | No CLI. Check against what you started: which agent sessions, their branch and work dir (`git worktree list`), and the last Booley call you made in each. Each call shows as two rows (started, completed), and the detail stays on an ended session until `Escape`. Without a signed-in agent, make sessions with the scripted MCP client below. |
-| Goal rows and Goal detail | `booley goal status --long`, run in that Goal's worktree |
-| Jobs window, Job detail | No CLI (agents see Jobs through the `booley_status` MCP tool). Read the Job records: `for f in /workspaces/picorv32/.booley/{,goals/*/,logs/,logs/*/,.interactive_logs/*/,runtime/sessions/*/}.runtime/jobs/*.json; do jq -c '{run_id,endpoint,status,exit_code,owner,work_dir}' "$f"; done 2>/dev/null`, plus `ps -eo pid,etime,args` for running ones. A record says `running` until its server notices the end, so check the PID before calling a status mismatch. For Flows you started yourself, their terminal output is also an oracle. |
-| Proposal detail | No CLI; compare with the proposal text in the agent chat. |
+| Session measurement line (`Measured <sha>`, `last Measured … · latest …`, `measuring k/n`) and the report it opens | The run's own document, found by its run ID: the report `Enter` opens is `<run_id>.md`, and the `measure` Job record carries `run_id`; then `find /workspaces/picorv32/.booley/measurements -name '<run_id>.json'` (layout `measurements/<project_tree>/<run_id>.json`) read with `jq .`, and compare its commit with `git -C <worktree> rev-parse HEAD`. While measuring, the `measure` Job's `progress.json` beside its `job.log`. Never pick a run by directory order, and never run `booley measure` as an oracle on a commit that is not Measured: it starts a measurement. |
+| Jobs window, Job detail | No CLI (agents see Jobs through the `booley_status` MCP tool). Read the Job records: `for f in /workspaces/picorv32/.booley/{,logs/,logs/*/,.interactive_logs/*/,runtime/sessions/*/}.runtime/jobs/*.json; do jq -c '{run_id,endpoint,status,exit_code,owner,work_dir}' "$f"; done 2>/dev/null`, plus `ps -eo pid,etime,args` for running ones. A record says `running` until its server notices the end, so check the PID before calling a status mismatch. For Flows you started yourself, their terminal output is also an oracle. |
 | VaporView scoped view (`bwave gui ... -s ... -g ...`) | The command's own report: it prints the signal and group tree VaporView reports back (`getViewerState`), the viewport and the marker times, and warns on stderr about signals the viewer didn't show. Compare the screenshot with that report, and the report with what you asked for. `--time`/`--cursor` without `-s` re-reports the rows, but it moves the markers. |
 
 **Scripted MCP client.** Sessions without an agent: in a command terminal,
@@ -300,9 +299,7 @@ Booley MCP server that `~/.codex/config.toml` names
 (by default `http://127.0.0.1:8814/mcp`). That `mcp` version's API is
 `mcp.client.streamable_http.streamable_http_client`, and results carry
 `is_error` (not `streamablehttp_client` and `isError`). Calling `booley_status`
-creates an Interactive session. `goal_enter` with `work_dir` set to a fresh
-`git worktree add --detach` directory, a `slug`, and
-`goals=[{"family": "LINT", "target": "lint_core"}]` creates a Goal session.
+creates a Developer Agent session.
 Keep the client connected (a long sleep) while you check, and Ctrl+C it to
 disconnect.
 

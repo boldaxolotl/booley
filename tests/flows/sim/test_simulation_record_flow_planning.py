@@ -4,20 +4,12 @@ import dataclasses
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import MagicMock
 
 import pytest
 
 from booley.flows.sim.execution.contract import SimulationPreview
-from booley.flows.sim.flow import (
-    OrdinarySimulationRecordPlanning,
-    PlannedBaselines,
-    PlannedTarget,
-    SimulateFlow,
-)
 from booley.flows.sim.record.codec import SimulationRecordIntegrityError
 from booley.flows.sim.record.flow_planning import plan_ordinary_hdl_simulation_record
-from booley.flows.sim.test_run_invocation import decide_baseline_runs
 from booley.flows.test_runs import build_test_run
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
 from tests.conftest import symlink_or_skip
@@ -162,79 +154,6 @@ def test_source_recipe_ignores_flow_options_defines(tmp_path):
         assert document["workload"]["source_recipe"]["defines"] == ()
         # The opaque whole-mapping identity still covers every flow_options key.
         assert document["workload"]["build_recipe"]["command_model_sha256"] != baseline_command
-
-
-def _planning_with_baseline(
-    tmp_path: Path,
-) -> tuple[SimulateFlow, OrdinarySimulationRecordPlanning]:
-    """A planned candidate and one planned baseline Target in its own checkout."""
-    from tests.flows.sim.test_cycle_observation import _criterion_flow, _pin_baseline
-
-    flow, _key = _criterion_flow(relative=True)
-    _pin_baseline(flow)
-    baselines = PlannedBaselines(
-        "a" * 40,
-        tmp_path / "baseline",
-        (PlannedTarget("sim_core", flow._target_handles["sim_core"], MagicMock()),),
-    )
-    candidate = PlannedTarget("sim_core", flow._target_handles["sim_core"], MagicMock())
-    tests = {"sim_core": ["coremark"]}
-    flow._test_runs.baseline = decide_baseline_runs(
-        flow._baseline_links(["sim_core"], tests), flow._target_test_plan, "a" * 40
-    )
-    return flow, OrdinarySimulationRecordPlanning((candidate,), baselines, tests)
-
-
-def test_simulation_record_baseline_planning_builds_requests_in_the_baseline_checkout(tmp_path):
-    flow, planning = _planning_with_baseline(tmp_path)
-    candidate_checkout = Path(flow.args.work_dir)
-    assert planning.baselines is not None
-    request = SimpleNamespace(revision="a" * 40)
-    prerequisite = {"revision": "a" * 40, "target_identity": "sim_core"}
-
-    def plan(planned, baselines, tests, invocation, admission):
-        assert planned.selector == "sim_core"
-        assert baselines is planning.baselines
-        assert tests == {"sim_core": ["coremark"]}
-        assert invocation == tmp_path / "invocation"
-        assert admission is None
-        assert flow.args.work_dir == baselines.worktree
-        return request, {"coremark@1": prerequisite}
-
-    flow._planned_baseline_request = plan
-    requests, prerequisites = flow._plan_simulation_record_baselines(
-        tmp_path / "invocation", None, planning
-    )
-
-    assert requests == [request]
-    assert prerequisites == {"sim_core": [prerequisite]}
-    assert flow.args.work_dir == candidate_checkout
-
-
-def test_simulation_record_baseline_preview_runs_in_the_baseline_checkout(tmp_path):
-    flow, planning = _planning_with_baseline(tmp_path)
-    candidate_checkout = Path(flow.args.work_dir)
-    assert planning.baselines is not None
-    simulation_record = object()
-    prerequisite = {"revision": "a" * 40, "target_identity": "sim_core"}
-    preview = {"target": "sim_core"}
-
-    def inspect(owner, planned, baselines, tests):
-        assert owner is simulation_record
-        assert planned.selector == "sim_core"
-        assert baselines is planning.baselines
-        assert tests == {"sim_core": ["coremark"]}
-        assert flow.args.work_dir == baselines.worktree
-        return preview, {"coremark@1": prerequisite}
-
-    flow._preview_one_simulation_record_baseline = inspect
-    prerequisites, previews = flow._preview_simulation_record_baselines(
-        simulation_record, planning
-    )
-
-    assert previews == [preview]
-    assert prerequisites == {"sim_core": [prerequisite]}
-    assert flow.args.work_dir == candidate_checkout
 
 
 @pytest.mark.parametrize("mapping", [False, True])

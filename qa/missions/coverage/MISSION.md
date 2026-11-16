@@ -1,8 +1,8 @@
 # Native coverage on a fixed fixture Project
 
-Hunt native-coverage bugs end to end: collection, exact arithmetic, Goal
-policy, waivers, Coverage Record storage, recovery, a coverage Goal, and the
-Coverage Analyst. The areas don't use a real design: they run on a fixed
+Hunt native-coverage bugs end to end: collection, exact arithmetic, coverage
+bounds, waivers, Coverage Record storage, recovery, a measured test-gap closure,
+and the Coverage Analyst. The areas don't use a real design: they run on a fixed
 fixture Project whose counts are known by construction, so every mismatch is a
 finding rather than a judgment call. The `booley-qa-run` skill runs this
 mission; fault-tool recipes live in `../../shared/coverage/RUNBOOK.md`, so skim
@@ -19,23 +19,26 @@ it before area 1.
   large `sim_scale` Coverage Record; a Codex or Claude client for the Analyst.
 - Budget: 8 h total: 405 area minutes plus 75 contingency. Areas run in
   priority order; log areas not reached as skipped. Run areas sequentially;
-  Interactive children never overlap an active Goal in the same Project.
+  a child's measured work and Interactive children never share a worktree.
   Rerun with the other client or on Windows only when asked.
 
 ## Staging the coverage fixture
-- Create a fresh disposable Project (add it to `resources.md`): copy `../../shared/coverage/project/` as its
-  source, initialize it through the documented public route, and install `project-data/tests.toml` into the
+- Create a fresh disposable Project (add it to `resources.md`): copy
+  `../../shared/coverage/project/` as its source, initialize it through the
+  documented public route, and install `project-data/tests.toml` into the
   resolved Booley Directory (never assume `.booley`). Keep the rest of
-  initialization's config. Commit fixture and initialized Project files, including seeded Goalsets and
-  managed `.gitignore`, before creating a Goal worktree.
+  initialization's config. Commit fixture and initialized Project files,
+  including the managed `.gitignore`, before creating a worktree.
 - Native builds run only in the Sandbox. `sim_scale` (4,096 instances) wants ~8 GiB RAM and ~20 GiB
   free disk; if absent, log it and skip only the large-record items.
 - Build the syscall fault library into a run-owned dir and inject it only into the one command under test
   (never `/etc/ld.so.preload`, never a shared shell):
   `gcc -shared -fPIC -O2 -Wall -Wextra -o <owned>/boundary.so ../../shared/coverage/faults/boundary.c -ldl`
-- Sanity-check the independent oracle first: `python3 ../../shared/coverage/evaluator/controls.py <mode>`
-  for `positive`, `hit-count`, `source-grouping`, `digest`, `rational-verdict` (positive accepts, each
-  negative rejects). A broken oracle is a `qa-bug`; judge numbers by hand from `expected.json`.
+- Sanity-check the independent oracle first: `python3
+  ../../shared/coverage/evaluator/controls.py <mode>` for `positive`,
+  `hit-count`, `source-grouping`, `digest` (positive accepts, each negative
+  rejects). A broken oracle is a `qa-bug`; judge numbers by hand from
+  `expected.json`.
 - Coverage Record paths: the Flow's `targets/<t>/coverage.json` is a reference,
   not the Coverage Record. The Analyst takes
   it as-is; `measurements.py` and `approvals.py` take the nested Coverage Record
@@ -57,8 +60,8 @@ it before area 1.
   never count as a live-model result.
 - Analyst calls: ~3 min each. Provider pipe fixture is Linux-runtime only. Rerun with the other client
   (Codex vs Claude) for host coverage if time allows.
-- Follow the shared [Goal-child operating rules](../../shared/GOAL-CHILD.md)
-  for every Goal area.
+- Follow the shared [Developer Agent child
+  rules](../../shared/DEVELOPER-CHILD.md) for area 7.
 
 ## Areas
 
@@ -69,16 +72,15 @@ and reject unsupported combos atomically.
 Try:
 - Read `booley flow sim --help` and the MCP `sim` schema: `--coverage` and alias `--cov`, default false;
   `coverage_analyst` needs an exact Coverage Record path.
-- `--coverage` vs `--cov` on `sim_generated` (equivalent, fresh invocation numbers); MCP `sim` with
-  `coverage: true`, then with string `"true"` (schema rejection before simulation); omit collection while a
-  coverage Goal exists → plain sim, no Coverage Record, no coverage acceptance.
+- `--coverage` vs `--cov` on `sim_generated` (equivalent, fresh invocation
+  numbers); MCP `sim` with `coverage: true`, then with string `"true"` (schema
+  rejection before simulation); a `[<t>.coverage]` table does not make a plain
+  `booley flow sim` collect: no Coverage Record.
 - Harness kinds: `sim_generated` (two selected tests), `sim_custom` (C++ main), `sim_hdl` (tagged HDL TB),
   `sim_cocotb` (one process/database per test, verdicts from XML). Reverse the Target/test order → stable
   order, no cross-Target merge.
-- Suite choice: no Goal/selection → full registered suite minus default-skipped; explicit skipped test
-  runs; sealed policy suite never selects: no filter → registered suite minus skips, and a sealed list
-  that differs is a gated suite mismatch, rc2; explicit different suite → collected but gated result
-  blocked, rc2; skipping a required test → visible mismatch, not a smaller denominator.
+- Suite choice: no selection → registered suite minus default-skipped; explicit
+  skipped test runs.
 - Rejections before any build/report dir: `sim_icarus` with coverage; Verilator + Icarus together (valid
   Target rejected too); elab-only and elab-only-standalone; a process-local `verilator` wrapper reporting
   5.050 on `--version` (`../../shared/coverage/faults/native_tool.py`).
@@ -95,14 +97,16 @@ Intent: numbers must match `expected.json` exactly; windows and hooks must be en
 must never become points.
 Try:
 - For each `expected.json` case run its Target/tests with `--coverage`, then
-  check the nested Coverage Record manifest
-  (one `--native` per run, ids and paths per RUNBOOK.md "Coverage Record
-  paths"):
-  `python3 ../../shared/coverage/evaluator/measurements.py <nested>/coverage.json --expected ../../shared/coverage/expected.json --case <case> --native run:001:<test>@1=<record-dir>/native/raw/001-<test>@1.dat`
-  Cases: zero 0/8,
-  quarter 2/8, half 4/8, rise (one direction) 4/8, full 8/8, repeat 4/8 with higher hit counts, union 4+4 →
-  8/8, overlap → 4/8, properties4 half 2/4 and full 4/4, properties16 half 2/16 (12.5%), threshold 50 pass
-  vs 50.01 fail at 4/8, reset window 4/8 not 8/8.
+  check the nested Coverage Record manifest (one `--native` per run, ids and
+  paths per RUNBOOK.md "Coverage Record paths"): `python3
+  ../../shared/coverage/evaluator/measurements.py <nested>/coverage.json
+  --expected ../../shared/coverage/expected.json --case <case> --native
+  run:001:<test>@1=<record-dir>/native/raw/001-<test>@1.dat` Cases: zero 0/8,
+  quarter 2/8, half 4/8, rise (one direction) 4/8, full 8/8, repeat 4/8 with
+  higher hit counts, union 4+4 → 8/8, overlap → 4/8, properties4 half 2/4 and
+  full 4/4, properties16 half 2/16 (12.5%), threshold-equal and threshold-above
+  (4/8 numbers only; their verdicts, bound 50 met and 50.01 unmet, are measured
+  in area 3), reset window 4/8 not 8/8.
 - Window: default includes reset; `reset_included = false` + one start call excludes it; custom write hook
   fires once on pass and fail paths.
 - Config negatives (preflight rejection): non-boolean `reset_included`, unknown hook, duplicate hook,
@@ -119,46 +123,45 @@ Look for: averaged per-test percentages, reset-inflated counts, float rounding, 
 accepted, a zero that looks like "blocked".
 Depends on: baseline.native, baseline.custom.
 
-### 3. cov-policy — Goal policy, verdict matrix and eligibility (~55 min)
-Intent: sealed coverage Goals must gate on exact rationals and keep simulation and coverage truths
-separate.
+### 3. cov-metrics — Coverage bounds: exact verdicts, `error`s and eligibility (~55 min)
+Intent: coverage bounds must judge exact rationals and keep simulation and
+coverage truths separate; a number that cannot be produced is an `error`, never
+a vacuous met.
 Try:
-- Translate each `policies.json` case into a coverage Goal and have a Codex child
-  enter its own disposable record in a linked worktree; collect through MCP with
-  `work_dir`, coverage enabled and the case's exact test suite: line 5/7 @70, branch 2/4 @50,
-  expression 2/3 @66 (three short-circuit points, not four), toggle 4/8 @50, cover_property 2/3 @66; AND of
-  line 70 + branch 51 → fail; 2/3 @66.67 → fail, @66 → pass; one record naming two Targets → two
-  Target-bound Goals. One coverage Goal per Target per record; duplicate same-key
-  Goals merge to the stricter floor, while differing test selections are refused.
-  Abandon each policy record explicitly after retaining its evidence; use a new
-  unique slug/worktree for the next case.
-- Verdicts on `sim_custom` `[gap]`/`[fail]` at 66/100: pass/pass and pass/fail rc0 (pass/fail records the
-  Goal unmet and names the missed metric), fail/pass and fail/fail rc1;
-  invalid collector → sim pass, gated blocked, rc2; ungated → `not_requested` rc0. Multi-Target `sim_pass`,
-  `sim_miss`, `sim_collector_error` → rc2 with each Target's truths distinct.
-- Eligibility: only RTL-closure points count. TB points unscored; `sim_custom` tests `native-generated` /
-  `native-foreign` add out-of-closure records → unscored, RTL denominator unchanged. `native-fsm`,
-  `native-covergroup`, `native-unknown` → kept, never silently scored. Zero-eligible metric and unavailable
-  metric → blocked, not vacuous pass.
-- Authoring negatives: ask the Goal child to attempt `goal_enter` with one
-  invalid field per request and save each public refusal: empty tests/metrics,
-  floor 0, -1, 100.01,
-  true, NaN, inf, `"90"`, unknown metric, and `coverage_*` as family or metric
-  are refused. Non-finite JSON values may be refused by the public client/schema
-  before reaching entry; retain that diagnostic. An unregistered test is not an entry refusal: enter then expect
-  failure at collection and explicitly abandon. There is no empty-target-list probe.
-Look for: rounding-to-display passing 66.67, AND treated as OR, TB points in the denominator, rc precedence
-errors.
+- `booley cheat --metrics` lists the five coverage metrics. Write each
+  `policies.json` case as a `[<target>.coverage]` table per RUNBOOK.md "Coverage
+  bounds", commit it and measure with `--all`: line 5/7 >=70, branch 2/4 >=50,
+  expression 2/3 >=66 (three short-circuit points, not four), toggle 4/8 >=50,
+  cover_property 2/3 >=66 are met; 2/3 against 66.67 is unmet; line 70 + branch
+  51 → only branch unmet; two Targets' tables in one commit stay two rows.
+- Verdict combinations on `sim_custom` `[gap]`/`[fail]` at 66/100 and the
+  `sim_pass`, `sim_miss`, `sim_collector_error` precedence per RUNBOOK.md: with
+  `--all` the verdicts are met, unmet or `error`, exit 2 for an `error`. Without
+  `--all` the first unmet or `error` verdict withdraws only the children still
+  waiting for admission, whose tables read "not evaluated", while children
+  already running finish and keep their verdicts
+  (`src/booley/harness/measure_children.py` module docstring), so a table is
+  "not evaluated" only if its child never started.
+- Eligibility with plain coverage runs: only RTL-closure points count. TB points
+  unscored; `sim_custom` tests `native-generated` / `native-foreign` add
+  out-of-closure records → unscored, RTL denominator unchanged. `native-fsm`,
+  `native-covergroup`, `native-unknown` → kept, never silently scored. A
+  zero-eligible or unavailable metric bound → `error`, never a vacuous met.
+- `booley measure --validate` negatives per RUNBOOK.md "Coverage bounds".
+Look for: 66.67 rounded to met, AND read as OR, TB points in the denominator, a
+collector error read as met or unmet.
 Depends on: baseline.policy, baseline.custom.
 
 ### 4. cov-waivers — Approved waivers and formal proof (~35 min)
 Intent: only exact, pre-approved, Target-bound waivers apply; any bad entry blocks the whole set.
 Try:
-- Run `yosys -s ../../shared/coverage/proof/parity.ys` from the Project Root (must prove induction), copy
-  the log to `<approved-dir>/proof/parity.log`, then bind (repeat with `excluded` on the `sim_properties4`
-  half Coverage Record):
-  `python3 ../../shared/coverage/faults/approvals.py unreachable <nested>/coverage.json --project <p> --directory <approved-dir> --inputs ../../shared/coverage/approval-inputs.json`
-  Gated `sim_waiver` `[run]` toggle @1 → two bit-zero points waived with provenance.
+- Run `yosys -s ../../shared/coverage/proof/parity.ys` from the Project Root
+  (must prove induction), copy the log to `<approved-dir>/proof/parity.log`,
+  then bind (repeat with `excluded` on the `sim_properties4` half Coverage
+  Record): `python3 ../../shared/coverage/faults/approvals.py unreachable
+  <nested>/coverage.json --project <p> --directory <approved-dir> --inputs
+  ../../shared/coverage/approval-inputs.json` A measured `[sim_waiver.coverage]`
+  toggle bound on `[run]` (area 7) → two bit-zero points waived with provenance.
 - Anchors `rtl_repository` and `project_data_repository` (use a separately initialized Booley Directory repo);
   approval digest change → new set digest, old Coverage Record unchanged;
   approval for one Target never leaks to
@@ -190,71 +193,59 @@ Try:
   fresh run gets a new number, no resume.
 - Rerun and re-analyze while keeping an old Coverage Record → old bytes
   identical, no `latest` alias.
-Look for: accepted evidence without a Coverage Record, lost prior acceptance, a
-corrupt copy reaching the model,
-stale lock after interrupt.
-Depends on: baseline.analysis, baseline.policy, baseline.multi.
+Look for: accepted evidence without a Coverage Record, a lost prior Coverage
+Record, a corrupt copy reaching the model, stale lock after interrupt. Depends
+on: baseline.analysis, baseline.policy, baseline.multi.
 
 ### 6. cov-retention — Simulation Record recovery (~40 min)
 Intent: resume and recovery never duplicate or lose evidence.
 Try:
-- Follow `../../shared/coverage/simulation-record/RUNBOOK.md`: interrupt `sim_toggle half --coverage`
-  mid-collection; resume and `--dry-run` from the Manifest → rc2 before any EDA launch naming a new
-  `--coverage` run, attempt inventory unchanged; the fresh run is the control;
-  fail the Goal state rename with `faults/filesystem.py --operation rename`
-  on the captured `goals/<id>/booley_state.json` path and `--gate acceptance`;
-  remove the injection and resume through the child's MCP `sim` with absolute
-  `work_dir` (one transaction, no new attempt). CLI Flows bind no Goal evidence.
-  Flip one byte in a terminal `result.json` → rc2 before any EDA launch, restore → resume
-  without rerun. Cross-check with `../../shared/coverage/simulation-record/validate_aggregate.py`.
-Look for: number reuse, double-committed transactions.
+- Follow `../../shared/coverage/simulation-record/RUNBOOK.md`: interrupt
+  `sim_toggle half --coverage` mid-collection; resume and `--dry-run` from the
+  Manifest → rc2 before any EDA launch naming a new `--coverage` run, attempt
+  inventory unchanged; the fresh run is the control; flip one byte in a terminal
+  `result.json` → rc2 before any EDA launch, restore → `booley flow sim
+  --resume-from <manifest>` without rerun. Cross-check with
+  `../../shared/coverage/simulation-record/validate_aggregate.py`.
+Look for: number reuse, a restored work item that reruns.
 Depends on: baseline.retention.
 
-### 7. cov-goal — TB gap closure and separate waiver decisions (~65 min)
-Intent: only fresh strict coverage evidence meets a Goal; an approval cannot replace collection.
-Depends on: area 1's working collection; read
-`docs/user/COVERAGE.md#coverage-waivers` before proposals.
+### 7. cov-closure — Test-gap closure as a Measured Commit; waivers decided by the operator (~65 min)
+Intent: only fresh strict coverage evidence meets a bound; an approval cannot
+replace collection.
+Depends on: area 1's working collection; area 4's proof; read
+`docs/user/COVERAGE.md#coverage-waivers` before approvals.
 Try:
-- Before entry, install `../../shared/coverage/goals/tests.toml` (`sim_generated`
-  = `[gap]` only), copy `../../shared/coverage/goals/close-test-gap.md` to
-  Project `goalsets/`, configure `[coverage.waivers]` with an approval directory
-  outside Protected Inputs, and commit all setup. Create a clean linked worktree.
-- Send a Codex child `$booley-goal` plus that Goalset. Collect via MCP with
-  `work_dir`: sim passes but `cover_property` misses 100; `goal_status` remains
-  unmet and Finish refuses. Ask the Analyst about the exact Coverage Record. A
-  plain
-  sim produces no coverage evidence.
-- Child adds decoder choice 2 in TB only, leaving RTL/core/registry/policy intact.
-  Recollect to 100 and inspect exact Coverage Record/Simulation pointers. Save
-  passing
-  evidence, edit a relevant TB comment in the active worktree, require stale
-  evidence, recollect and commit. Finish and inspect the clean TB-only diff/package;
-  the operator integrates the printed branches using the shared rules.
-  Post-Finish edits need a new Goal.
-- In a separate disposable Project/Goal using `../../shared/coverage/goals/waiver.json`,
-  use the fixed eligible zero-hit parity points and real proof from area 4.
-  Configure and commit waiver settings before entry, then collect and have the
-  Analyst screen `waiver-candidates.json`. `sim_waiver` counts its clock points,
-  so record the observed toggle numerator/denominator instead of expecting
-  `sim_toggle`'s 8-point figures. The Goal stays unmet until both bit-zero
-  points are waived.
-- Create exact `waiver` proposals by `goal_key`/`candidate_id` for both bit-zero
-  points. The operator approves one with a reason (form or quoted chat): commit
-  its installed files and recollect; the Goal is still unmet. Approve the second,
-  commit and recollect: only now is the floor met. Preserve Change Log
-  provenance for both decisions.
-- Rejection probe, in its own disposable Goal record: create a proposal for one
-  bit-zero point and reject it with a reason. Re-screen the next Coverage
-  Record: the
-  rejected point is filtered by rejection, and a new proposal for it is refused
-  in this record. That is the designed durable rejection, not a defect. Abandon
-  the record.
-- Approval installs bound waiver/proof files; commit those before Finish.
-  Rerun coverage for fresh strict evidence: approval alone cannot meet the Goal.
-  Finish or explicitly abandon each disposable record. Never waive the decoder
-  gap in the main Goal; its completion requires the TB change.
-Look for: stale evidence honored, Analyst self-approval, candidates treated as
-strict evidence, protected config edits during active work or uncommitted approvals.
+- Install `../../shared/coverage/closure/tests.toml` (`sim_generated` = `[gap]`
+  only) and `../../shared/coverage/closure/metrics.toml`, configure
+  `[coverage.waivers]` with an approval directory, and commit. `booley measure`:
+  unmet, exit 1, sim passes, `cover_property` below 100, failing rows first.
+- Start a child per the [Developer Agent child
+  rules](../../shared/DEVELOPER-CHILD.md) with
+  `../../shared/coverage/closure/close-test-gap.md`: it asks the Analyst about
+  the first Coverage Record, adds decoder choice 2 in the TB only, leaving
+  RTL/core/registry/`metrics.toml` intact, and returns a Measured Commit: green
+  header, no "tests changed" or "rules loosened", TB-only diff. Integrate.
+- Same tree, new message: amend the message only → still Measured; edit a TB
+  comment and commit → a new tree, not Measured until measured again.
+- Loosened rule: in a disposable commit lower the bound to 50 with a `notes`
+  entry and measure with `--base <the commit that installed the closure rules>`
+  (the fixture Project's default branch gives its own commits no Base) → met but
+  amber "rules loosened" with the note; without the note "(no note)".
+- Waivers, in a separate disposable Project: `[sim_waiver.coverage]
+  toggle_coverage_min = 100` with area 4's proof; collect, the Analyst screens
+  `waiver-candidates.json` (record `sim_waiver`'s observed toggle
+  numerator/denominator, not `sim_toggle`'s 8-point figures); measure → unmet.
+  `faults/approvals.py` binds both bit-zero points at once and refuses an
+  existing output file (`qa/shared/coverage/faults/approvals.py::select`
+  requires exactly two, `bind` opens with `"x"`), so stage it: bind into an
+  owned staging directory, install a copy of the TOML keeping only the first
+  `[[approval]]` table (with its `[approval.proof]`) plus the proof log, commit,
+  measure → still unmet; install the full file, commit, measure → Measured.
+  Candidates never become waivers by themselves, and never waive the decoder gap
+  in the main closure.
+Look for: Analyst self-approval, candidates treated as waivers, a stale Measured
+verdict on a changed tree, a loosening shown green.
 
 ### 8. cov-analyst — Coverage Analyst and its evidence boundary (~50 min)
 Intent: the Analyst binds one exact Coverage Record, sees only
@@ -262,15 +253,15 @@ Intent: the Analyst binds one exact Coverage Record, sees only
 outputs are validated.
 Try:
 - CLI and MCP on fresh Coverage Records; ask the gap question from RUNBOOK.md.
-  Verdict classes: pass
-  `coverage_ready`, fail `coverage_not_ready`, blocked `coverage_evidence_blocked`, ungated
-  `ungated_no_recommendation`, sim-fail still reports. Ask it to simulate/read waveforms/approve waivers →
-  refused, state hashes unchanged. Stealth Project → report-only. Stray `coverage_waivers.json` → ignored.
-  Instruction-like source comment → data.
+  Verdict classes: ungated `ungated_no_recommendation`, blocked
+  `coverage_evidence_blocked`, sim-fail still reports. Ask it to simulate/read
+  waveforms/approve waivers → refused, state hashes unchanged. Stealth Project →
+  report-only. Stray `coverage_waivers.json` → ignored. Instruction-like source
+  comment → data.
 - Source trust: full closure → verified excerpts; missing RTL, changed RTL/TB/`rtl/constants.svh`/core,
   unsafe symlink → whole report downgraded.
 - Input rejects before model: no `--record`, Target name, `latest`, point store gz, VCD,
-  `coverage_report.json`, wrong Target/invocation path, per-call policy or waiver dir,
+  `coverage_report.json`, wrong Target/invocation path, per-call waiver dir,
   missing/incomplete/other-Target `simulation.json`. Completed Target analyzable while sibling still runs.
 - Isolation: Codex/Claude sessions expose only `coverage_evidence`, empty cwd, no Project skills; missing
   Codex model metadata fails early, refresh fixes; interrupted Claude Analyst leaves no nested server.
@@ -290,7 +281,7 @@ Depends on: baseline.analysis, baseline.scale, area 4 for waived points.
 ### 9. cleanup — Coverage cleanup (~20 min)
 Reap simulators, Analyst clients, nested MCP servers and fault controllers; remove wrappers, `boundary.so`,
 redirection env, altered permissions, approval-dir copies; undo `tests.toml`/config swaps; release the
-fixture Project, Goal worktrees and branches in `resources.md`.
+fixture Project, child worktrees and branches in `resources.md`.
 
 ## Known traps
 - Only `sim_toggle` has the clean 8-point toggle denominator; other Targets include clock/reset/helper

@@ -559,18 +559,12 @@ def test_matrix_enforces_the_ci_duration_budget() -> None:
     assert test_job["timeout-minutes"] == "${{ matrix.mode == 'full' && 30 || 25 }}"
     assert _workflow("full-python-matrix.yml")["jobs"]["test"]["timeout-minutes"] == 30
 
-    pytest_steps = [step for step in test_job["steps"] if "pytest " in str(step.get("run", ""))]
-    assert pytest_steps
-    assert all("--timeout=60" in step["run"] for step in pytest_steps)
-
 
 def test_test_job_bounds_setup_and_pytest_steps() -> None:
-    """Setup steps get 5/5/6 minutes in every mode; shard and compatibility pytest get 12."""
+    """Setup steps get 5/5/6 minutes in every mode; `full` has no step limit."""
     job = _test_workflow()["jobs"]["test"]
 
     assert _setup_step_limits(job) == [5, 5, 6]
-    for name in ("Run focused Windows compatibility suite", "Run duration-balanced shard"):
-        assert _named_step(job, name).get("timeout-minutes") == 12
     # `full` keeps the job-level 30-minute bound instead of a step limit.
     assert "timeout-minutes" not in _named_step(job, "Run full compatibility suite")
 
@@ -596,7 +590,6 @@ def test_flake_stress_repeats_changed_modules_on_linux_and_windows() -> None:
     assert '"${modules[@]}"' in command
     assert '--count="${STRESS_COUNT}"' in command
     assert "-n 4 --dist=load " in command
-    assert "--timeout=60" in command
     # Only exit 5 (every module skipped itself, e.g. Linux-only on Windows) is tolerated.
     assert '-ne 0 ] && [ "${status}" -ne 5 ]' in command
     assert stress["env"]["HEADROOM"] in shard["run"]  # same Windows headroom gate
@@ -1195,6 +1188,7 @@ def test_change_aware_jobs_feed_an_always_running_aggregate() -> None:
     conditional = set(jobs) - {
         "changes",
         "release-semantic",
+        "test-ratio",
         "ci-required",
         "ci-metrics",
     }
@@ -1223,7 +1217,12 @@ def test_change_aware_jobs_feed_an_always_running_aggregate() -> None:
 
     aggregate = jobs["ci-required"]
     assert aggregate["if"] == "always() && needs.changes.result != 'skipped'"
-    assert set(aggregate["needs"]) == {"changes", "release-semantic", *conditional}
+    assert set(aggregate["needs"]) == {
+        "changes",
+        "release-semantic",
+        "test-ratio",
+        *conditional,
+    }
     rendered_aggregate = "\n".join(str(step) for step in aggregate["steps"])
     assert ".github/scripts/ci_required.py" in rendered_aggregate
     assert "toJSON(needs)" in rendered_aggregate
@@ -1366,7 +1365,9 @@ def test_suite_default_timeout_preserves_explicit_settings(
 ) -> None:
     """The 120 s fallback must preserve explicit CLI, environment, and ini settings."""
     environment = {
-        name: value for name, value in os.environ.items() if not name.startswith("PYTEST_")
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("PYTEST_") and name != "BOOLEY_TEST_TIME_SCALE"
     }
     if environment_timeout is not None:
         environment["PYTEST_TIMEOUT"] = environment_timeout
@@ -1391,6 +1392,78 @@ def test_suite_default_timeout_preserves_explicit_settings(
         assert "\ntimeout:" not in result.stdout
     else:
         assert f"\ntimeout: {expected}\n" in result.stdout
+
+
+def _collect_with_time_scale(scale: str, *options: str) -> subprocess.CompletedProcess[str]:
+    """Start a nested collect-only session under *scale*, ignoring the outer environment."""
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("PYTEST_") and name != "BOOLEY_TEST_TIME_SCALE"
+    }
+    environment["BOOLEY_TEST_TIME_SCALE"] = scale
+    return run_bounded_child(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-p",
+            "no:cacheprovider",
+            "tests/test_timeout_headroom.py::test_guard_is_off_without_the_option",
+            *options,
+        ],
+        cwd=REPOSITORY_ROOT,
+        env=environment,
+        timeout=SUBPROCESS_TIMEOUT_S,
+    )
+
+
+@pytest.mark.parametrize(
+    ("scale", "options", "returncode", "expected"),
+    [
+        pytest.param(
+            "abc",
+            [],
+            4,
+            "BOOLEY_TEST_TIME_SCALE='abc' is not a positive finite number",
+            id="invalid-scale",
+        ),
+        pytest.param(
+            "2",
+            ["--timeout=60"],
+            4,
+            "--timeout=60 is below twice the hang guard (60 s",
+            id="timeout-below-hang-guard",
+        ),
+        pytest.param(
+            "0.01",
+            ["--timeout=30"],
+            4,
+            "--timeout=30 is below",
+            id="fractional-scale-keeps-60s-floor",
+        ),
+        pytest.param(
+            "2", ["--help", "--timeout=60"], 0, "--timeout-headroom", id="help-is-never-refused"
+        ),
+    ],
+)
+def test_session_refuses_an_unsafe_time_budget(
+    scale: str, options: list[str], returncode: int, expected: str
+) -> None:
+    """A session whose per-test limit cannot outlast the hang guard fails at startup."""
+    result = _collect_with_time_scale(scale, *options)
+
+    assert result.returncode == returncode, result.stdout + result.stderr
+    assert expected in result.stdout + result.stderr
+
+
+def test_scaled_session_default_timeout() -> None:
+    """The default per-test limit rises to the minimum instead of refusing itself."""
+    result = _collect_with_time_scale("3")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "\ntimeout: 180s\n" in result.stdout
 
 
 def test_verilator_image_acceptance_declares_its_tool_sized_ceiling() -> None:

@@ -1,6 +1,8 @@
 ### Dhrystone negative guard
 
-After the continuity Goal finishes and the outer branch and any printed Paired Checkout branch are integrated, use a disposable checkout of the Project at that source. The operator commits the negative seed; a Goal child
+After the continuity work is Measured and its worktree branches are integrated,
+use a disposable checkout of the Project at that source. The operator commits
+the negative seed; an Interactive child
 collects evidence in a linked worktree.
 
 Try:
@@ -11,8 +13,8 @@ Try:
   original/replacement span and value.
 - Rebuild and rerun with unchanged iteration count and testbench. Require a
   deterministic mismatch/trap, no success magic and no cycle record.
-- Restore the exact original bytes, rebuild and require pass. Explicitly abandon
-  the disposable Goal, then discard its owned branches.
+- Restore the exact original bytes, rebuild and require pass. Remove
+  the disposable worktree, then discard its owned branches.
 - If no explicit guard operand exists, its verifier must expose the equivalent
   deterministic expected-result assertion as reviewable fixture input before
   mutation. Do not guess or weaken the guard. Adapt to generated syntax while

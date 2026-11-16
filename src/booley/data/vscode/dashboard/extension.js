@@ -19,6 +19,7 @@ const LIFECYCLE_PREFIX = 'Codespaces: ';
 // Look once more when it will have gone unseen (`UNSEEN_AFTER`, view_probe.py: 15 s).
 const RECHECK_MS = 16000;
 const ALREADY_OPEN_REASON = 'The Dashboard is already open in this Sandbox.';
+const SKIP_NOTICES_KEY = 'autoOpenSkipNotices';
 
 // A Codespaces lifecycle-command terminal: Codespaces may send its command as
 // text, which VS Code also counts as interaction, so it never means the user
@@ -93,7 +94,9 @@ class AttachController {
                 : `Dashboard auto-open skipped: remote '${remote}' is not a Sandbox remote.` };
         }
         if (!vscode.workspace.isTrusted) {
-            return { reason: explicit
+            // Trusting changes nothing while the attach protocol is off, so say nothing then.
+            const protocolOn = vscode.workspace.getConfiguration().get(PROTOCOL) === 1;
+            return { notify: protocolOn, reason: explicit
                 ? 'Booley: Open Dashboard needs a trusted window; trust this workspace first.'
                 : 'Dashboard auto-open waits for workspace trust; this window is untrusted.' };
         }
@@ -103,16 +106,16 @@ class AttachController {
             }
             const permission = vscode.workspace.getConfiguration('task').inspect('allowAutomaticTasks');
             if (permission?.globalValue === 'off') {
-                return { reason: 'Dashboard attach disabled by your automatic-task preference.' };
+                return { notify: true, reason: 'Dashboard attach disabled by your automatic-task preference.' };
             }
         }
         const folders = vscode.workspace.workspaceFolders || [];
         if (folders.length !== 1) {
-            return { reason: 'Dashboard attach requires one opened Sandbox Project folder.' };
+            return { notify: true, reason: 'Dashboard attach requires one opened Sandbox Project folder.' };
         }
         const root = folders[0].uri;
         if (!fs.existsSync(path.join(root.fsPath, '.git'))) {
-            return { reason: explicit ? 'The Dashboard requires a Git Project Root.'
+            return { notify: true, reason: explicit ? 'The Dashboard requires a Git Project Root.'
                 : 'Dashboard auto-open requires a Git Project Root.' };
         }
         return { root };
@@ -121,7 +124,20 @@ class AttachController {
     eligibleRoot() {
         const found = this.rootOrReason(false);
         if (found.reason && !found.quiet) { this.output.appendLine(found.reason); }
+        if (found.notify) { this.notifySkip(found.reason); }
         return found.root;
+    }
+
+    // Tell the person once per window why auto-open skipped, for a reason they can
+    // change. Workspace state, like the attach attempts, so an extension-host
+    // restart does not repeat it; a window reload is a new window and may.
+    notifySkip(reason) {
+        const window = vscode.env.sessionId;
+        const noted = this.context.workspaceState.get(SKIP_NOTICES_KEY, {});
+        const reasons = noted.window === window ? noted.reasons : [];
+        if (reasons.includes(reason)) { return; }
+        void this.context.workspaceState.update(SKIP_NOTICES_KEY, { window, reasons: [...reasons, reason] });
+        void Promise.resolve(vscode.window.showInformationMessage(reason)).then(() => {}, () => {});
     }
 
     async open() {

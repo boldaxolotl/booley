@@ -54,12 +54,12 @@ class MutationArguments(BuiltinArguments):
                 ),
                 HelpOption(
                     "count",
-                    "When omitted, use the criterion's count, else 10.",
+                    "Default: 10.",
                     "Number of Mutants: a positive integer or 'auto'",
                 ),
                 HelpOption(
                     "min_detected",
-                    "When omitted, use the criterion's threshold, else ceil(0.8 x --count).",
+                    "Default: ceil(0.8 x --count).",
                     "Pass threshold: minimum Mutants that must be detected (some "
                     "survivors may be equivalent Mutants). Raise it to demand more, "
                     "lower it to accept less",

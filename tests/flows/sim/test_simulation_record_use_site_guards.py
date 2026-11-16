@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from booley.flows.sim.config import parse_run_cwd_template
-from booley.flows.sim.record.bundle import authenticate_bundle_artifacts
+from booley.flows.sim.record.bundle import verify_bundle_in_place
 from booley.flows.sim.record.codec import (
     SimulationRecordIntegrityError,
     canonical_json_bytes,
@@ -22,6 +22,7 @@ from booley.flows.sim.record.flow_planning import plan_ordinary_hdl_simulation_r
 from booley.flows.sim.record.inspection import (
     read_durable_results,
 )
+from booley.flows.sim.record.model import BundleBuildResult
 from booley.flows.sim.record.planning import manifest_digest
 from tests.flows.sim.simulation_record_test_support import (
     _completed,
@@ -105,7 +106,7 @@ def test_a_bundle_artifact_path_outside_its_root_is_refused_before_use(tmp_path:
     bundle = decode_simulator_bundle(canonical_json_bytes(document))
 
     with pytest.raises(SimulationRecordIntegrityError, match="contained"):
-        authenticate_bundle_artifacts(bundle, bundle_root)
+        verify_bundle_in_place(bundle, BundleBuildResult({}), bundle_root)
 
 
 @pytest.mark.parametrize(

@@ -8,7 +8,7 @@ and nested actions.
 #### Sandbox-only commands
 
 On the host, bare `booley` prints help and a getting-started hint.
-Inside the Sandbox, for Interactive Mode, we recommend `booley` / `booley chat`, which launches
+Inside the Sandbox, we recommend `booley` / `booley chat`, which launches
 the default Agent CLI (`booley chat --cli <name>` picks another allowed one).
 
 | Command | Purpose |
@@ -153,19 +153,17 @@ Ask your Developer Agent to call the `reviewer` Specialist with `category="<cate
 
 | Category | Focus | What it checks |
 |----------|-------|----------------|
-| `rtl` | `bugs` | Functional bug patterns, synthesis hazards, reset/width/signing mistakes, and ifdef/config consistency |
+| `rtl` | `bugs` | Functional bug patterns, synthesis hazards, reset/overflow/signing mistakes, and ifdef consistency across built Targets |
 | `rtl` | `protocol` | Bus/protocol rule compliance, handshake behavior, ordering, and clock-domain crossings (CDC) |
 | `rtl` | `spec` | Spec compliance: the RTL implements what the change request/spec requires, no more and no less |
 | `rtl` | `code_style` | Comments, naming, readability, maintainability, magic values, and assertion/cover-point quality |
-| `rtl` | `optimization` | Unused/dead RTL and strict power/performance/area improvements with no functional or engineering trade-off |
+| `rtl` | `optimization` | Functionally dead RTL and strict power/performance/area improvements with no functional or engineering trade-off |
 | `rtl` | `security` | Fault-injection resistance, simple power/timing leakage, secret exposure, and unsafe failure behavior |
 | `tb` | `quality` | False-pass paths in scoped testbench sources, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality |
 
 Also pass `scope="<file,...>"`. Add `spec="<path>"` (required for the `spec` focus) or `spec_text="<text>"` (CLI: `--spec-text`; not with `spec`), or `steer=["<context>"]` for context. A completed review exits 0; pass `fail_on="critical|major|minor"` (CLI: `--fail-on`) to exit 1 when an open finding is at or above that severity. `dry_run=true` previews the call. Each new review replaces the previous findings.
 
-**Changes only:** add `base="<commit>"` (CLI: `--base <commit>`) to review only the `scope` files changed since the merge-base of that commit and HEAD, uncommitted changes included. Unchanged `scope` files that use them are context, the diff and commit messages are given to the Reviewer, and no change in scope exits 0 without a review. Pass every file of the category as the `scope` to give the Reviewer the files that use the changed ones. Findings already present before the change are listed separately as pre-existing and are never open or verified.
-
-**Verify fixes:** after fixing findings, call `reviewer` with `verify=true` (CLI: `--verify`). It rechecks only the latest review's open findings and finds nothing new; none remaining open is a pass. To argue a finding away, add `waive=[["<finding-id>", "<justification>"]]` (CLI: `--waive <finding-id> "<justification>"`, repeatable); the Reviewer accepts or rejects each. `fail_on` (CLI: `--fail-on`) is the one other argument accepted with verify, and counts the findings still open. After two verifies, run a fresh review.
+**Changes only:** add `base="<commit>"` (CLI: `--base <commit>`) to review only the `scope` files changed since the merge-base of that commit and HEAD, uncommitted changes included. Unchanged `scope` files that use them are context, the diff and commit messages are given to the Reviewer, and no change in scope exits 0 without a review. Pass every file of the category as the `scope` to give the Reviewer the files that use the changed ones. Findings already present before the change are listed separately as pre-existing and are never open.
 <!-- END GENERATED: specialists -->
 
 Booley validates exact replacements and compiles each in isolation. It emits a

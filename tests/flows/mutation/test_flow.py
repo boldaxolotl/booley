@@ -126,13 +126,16 @@ def _make_endpoint(
     dut_top_module: str = "design_top",
     dut_files: tuple[str, ...] = ("rtl/design_top.sv",),
     extra_args: list[str] | None = None,
+    state_file: bool = True,
 ) -> MutationFlow:
     """Build a endpoint with parsed args and loaded state.
+
+    ``state_file=False`` names no ``BOOLEY_STATE_FILE`` and creates none.
 
     When *monkeypatch* is supplied, the BOOLEY_LOGS_DIR env var is set for
     the lifetime of the test so the run's scratch files land in tmp_path.
     """
-    state_file = _make_state(tmp_path)
+    state_path = _make_state(tmp_path) if state_file else tmp_path / "state.json"
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir(exist_ok=True)
     report_dir = tmp_path / "reports"
@@ -154,10 +157,14 @@ def _make_endpoint(
         argv.extend(["--seed", str(seed)])
     if extra_args:
         argv.extend(extra_args)
-    env = _env_with_state(state_file, logs_dir)
+    env = _env_with_state(state_path, logs_dir)
+    if not state_file:
+        del env["BOOLEY_STATE_FILE"]
     if monkeypatch is not None:
         for k, v in env.items():
             monkeypatch.setenv(k, v)
+        if not state_file:
+            monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
     endpoint = MutationFlow()
     with patch.dict(os.environ, env):
         endpoint.parse_args(argv)
@@ -219,7 +226,6 @@ def test_two_keys_for_one_target_refuse_naming_both(tmp_path: Path, monkeypatch)
     assert "[vendor:b:y#sim] and [y#sim]" in result.report_text
 
 
-_SETTINGS = {"scope": ["x.v"], "total": 7, "min_detected": 5}
 _CORE_A_FIRST = "vendor:a:x:1.0#first"
 _TWO_CORE_TESTS = (
     f'["{_CORE_A_FIRST}"]\ntests = ["one"]\n["vendor:b:y:1.0#first"]\ntests = ["one"]\n'
@@ -242,76 +248,6 @@ def _two_core_endpoint(
         dict.fromkeys(criteria, False), criterion_params=criteria, strict=strict
     )
     return endpoint
-
-
-@pytest.mark.parametrize("scope", ["x.v", None], ids=["explicit-scope", "criterion-scope"])
-def test_qualified_target_applies_criterion_settings(
-    tmp_path: Path, monkeypatch, scope: str | None
-) -> None:
-    """``--target vlnv#name`` reads the Target-name criterion, not a core-bound sibling."""
-    endpoint = _two_core_endpoint(
-        tmp_path,
-        monkeypatch,
-        {
-            "mutation_score_first": dict(_SETTINGS),
-            "mutation_score_otherfirst": {
-                "target": "vendor:b:y:1.0#first",
-                "scope": ["y.v"],
-                "total": 3,
-            },
-        },
-        scope=scope,
-    )
-
-    assert endpoint._apply_campaign_defaults() is None
-    assert (endpoint.args.scope, endpoint.args.count, endpoint.args.min_detected) == (
-        "x.v",
-        7,
-        5,
-    )
-
-
-@pytest.mark.parametrize("case", ["exact-key", "other-core-binding"])
-def test_qualified_target_criterion_resolution_guards(
-    tmp_path: Path, monkeypatch, case: str
-) -> None:
-    """The exact spelling still wins; a criterion bound to another core is skipped."""
-    if case == "exact-key":
-        endpoint = _two_core_endpoint(
-            tmp_path,
-            monkeypatch,
-            {
-                f"mutation_score_{_CORE_A_FIRST}": {"target": "same", **_SETTINGS},
-                "mutation_score_first": {"scope": ["x.v"], "total": 3},
-            },
-            strict=True,
-        )
-        expected = ("x.v", 7, 5)
-    else:
-        endpoint = _two_core_endpoint(
-            tmp_path,
-            monkeypatch,
-            {"mutation_score_first": {"target": _CORE_A_FIRST, **_SETTINGS}},
-            target="vendor:b:y:1.0#first",
-            scope="y.v",
-            strict=True,
-        )
-        expected = ("y.v", 10, None)
-
-    assert endpoint._apply_campaign_defaults() is None
-    assert (endpoint.args.scope, endpoint.args.count, endpoint.args.min_detected) == expected
-
-
-def test_qualified_target_without_any_scope_defaults_to_its_own_rtl(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """A criterion that declares no scope leaves the scope to the Target's own RTL."""
-    endpoint = _two_core_endpoint(
-        tmp_path, monkeypatch, {"mutation_score_first": {"total": 7}}, scope=None
-    )
-
-    assert endpoint._apply_campaign_defaults() is None
-    assert (endpoint.args.scope, endpoint.args.count) == ("x.v", 7)
 
 
 def _eighty_percent(count: int) -> int:
@@ -386,11 +322,10 @@ def test_dry_run_does_not_generate_or_build_anything(
     build_or_run.assert_not_called()
 
 
-def _run_count_preview(endpoint, monkeypatch, *, params=None):
+def _run_count_preview(endpoint, monkeypatch):
     """Use real count resolution while isolating Target discovery and execution."""
     campaign = SimpleNamespace(
         scope_arg=endpoint.args.scope,
-        params_for=lambda _name: params or {},
         execution_units=lambda: (),
     )
     monkeypatch.setattr(
@@ -1335,6 +1270,54 @@ def _detects_every_mutant(index: int | None) -> subprocess.CompletedProcess:
     return _fake_proc(rc=0 if index is None else 1, stdout="[sim] run")
 
 
+_MUTATION_RUNS: dict[str, tuple[dict[str, Any], int]] = {
+    "pass": ({"run": _detects_every_mutant}, EXIT_SUCCESS),
+    "survivors": ({}, EXIT_FAILURE),
+    "failing-test": (
+        {"run": lambda index: _fake_proc(rc=1 if index is None else 0, stdout="[sim] failed")},
+        EXIT_ERROR,
+    ),
+    "crash": (
+        {"build": lambda index: _fake_proc(rc=1 if index is None else 0, stdout="[elab] boom")},
+        EXIT_ERROR,
+    ),
+}
+
+
+@pytest.mark.parametrize("with_state_file", [True, False], ids=["state-file", "no-state-file"])
+@pytest.mark.parametrize("outcome", list(_MUTATION_RUNS))
+def test_hand_run_mutation_records_no_criterion(
+    outcome: str, with_state_file: bool, tmp_path: Path, monkeypatch
+) -> None:
+    """A hand run records no Criterion and writes no state file; the exit status is unchanged."""
+    fakes, expected_exit = _MUTATION_RUNS[outcome]
+    state_path = tmp_path / "state.json"
+    if with_state_file:
+        _make_state(tmp_path)
+        before = state_path.read_bytes()
+    endpoint, result, _ = _campaign(
+        tmp_path, monkeypatch, count=2, state_file=with_state_file, **fakes
+    )
+
+    assert result.exit_code == expected_exit, result.report_text
+    assert endpoint.state.criteria == {}
+    assert list(tmp_path.rglob("acceptance")) == []
+    if with_state_file:
+        assert state_path.read_bytes() == before
+    else:
+        assert list(tmp_path.rglob("state.json")) == []
+
+
+def test_mutation_run_reads_no_development_state(tmp_path: Path, monkeypatch) -> None:
+    """The Flow body never touches development state."""
+    _prepare_scope_files(tmp_path, [_SCOPE])
+    _patch_fake_simulation(monkeypatch, run=_detects_every_mutant)
+    endpoint = _make_endpoint(tmp_path, monkeypatch, scope=_SCOPE, count=2)
+    endpoint._state = None
+
+    assert endpoint._run().exit_code == EXIT_SUCCESS
+
+
 def _results_markdown(tmp_path: Path, result: EndpointOutcome) -> str:
     return (tmp_path / result.detail["artifacts"]["results"]).read_text(encoding="utf-8")
 
@@ -1505,15 +1488,20 @@ def test_omitted_scope_defaults_to_the_targets_own_rtl(tmp_path: Path, monkeypat
     assert endpoint._validate_scope_against_target(endpoint._scope_files()) is None
 
 
-def test_omitted_scope_with_a_declared_criterion_scope_uses_the_criterion(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_omitted_scope_ignores_a_criterion_in_state(tmp_path: Path, monkeypatch) -> None:
     endpoint = _two_core_endpoint(
-        tmp_path, monkeypatch, {"mutation_score_first": {"scope": ["y.v"], "total": 3}}, scope=None
+        tmp_path,
+        monkeypatch,
+        {"mutation_score_first": {"scope": ["y.v"], "total": 3, "min_detected": 2}},
+        scope=None,
     )
 
     assert endpoint._apply_campaign_defaults() is None
-    assert endpoint.args.scope == "y.v"
+    assert (endpoint.args.scope, endpoint.args.count, endpoint.args.min_detected) == (
+        "x.v",
+        10,
+        None,
+    )
 
 
 @pytest.mark.parametrize("count, expected", [(10, 8), (15, 12), (5, 4)])
@@ -1535,13 +1523,9 @@ def test_explicit_min_detected_overrides_the_default(tmp_path: Path, monkeypatch
     from_cli = _make_endpoint(
         tmp_path, monkeypatch, count=10, min_detected=3, extra_args=["--dry-run"]
     )
-    from_criterion = _make_endpoint(tmp_path, monkeypatch, count=None, extra_args=["--dry-run"])
 
     default_result, _ = _run_count_preview(omitted, monkeypatch)
     cli_result, _ = _run_count_preview(from_cli, monkeypatch)
-    criterion_result, _ = _run_count_preview(
-        from_criterion, monkeypatch, params={"total": 7, "min_detected": 5}
-    )
 
     assert default_result.detail["min_detected"] == 8  # what the overrides replace
     rebase_line = (
@@ -1551,9 +1535,7 @@ def test_explicit_min_detected_overrides_the_default(tmp_path: Path, monkeypatch
     assert rebase_line in default_result.display_lines[:-1]  # before the summary line
     assert default_result.display_lines[-1].startswith("mutation dry-run:")
     assert rebase_line not in cli_result.display_lines
-    assert rebase_line not in criterion_result.display_lines
     assert cli_result.detail["min_detected"] == 3
-    assert (criterion_result.detail["count"], criterion_result.detail["min_detected"]) == (7, 5)
 
 
 def test_survivors_are_not_detected_with_one_equivalence_note(tmp_path: Path, monkeypatch) -> None:
@@ -2025,10 +2007,10 @@ def test_baseline_that_times_out_is_inconclusive(tmp_path: Path, monkeypatch) ->
     assert fake.runs == [None]  # no Mutant ran
 
 
-def test_identity_is_in_results_and_criterion_detail(tmp_path: Path, monkeypatch) -> None:
+def test_identity_is_in_results_and_manifest(tmp_path: Path, monkeypatch) -> None:
     from booley.flows.mutation.generator import GENERATOR_VERSION
 
-    endpoint, result, _ = _campaign(tmp_path, monkeypatch, count=2, min_detected=0, seed=5)
+    _, result, _ = _campaign(tmp_path, monkeypatch, count=2, min_detected=0, seed=5)
 
     assert result.exit_code == EXIT_SUCCESS, result.report_text
     digest = "sha256:" + hashlib.sha256((tmp_path / _SCOPE).read_bytes()).hexdigest()
@@ -2041,13 +2023,12 @@ def test_identity_is_in_results_and_criterion_detail(tmp_path: Path, monkeypatch
         "verilator_version": _VERILATOR_VERSION,  # a Verilator Target records its version
         "elaboration": "per-file",  # the scope file alone does not elaborate: undeclared names
     }
-    criterion = endpoint.state.criteria[result.criterion_key].detail
     manifest = json.loads((tmp_path / result.detail["artifacts"]["manifest"]).read_text("utf-8"))
     identity = dict(result.detail["identity"])
     reason = identity.pop("elaboration_fallback")
     assert reason.startswith(f"{_SCOPE}:")
     assert identity == expected
-    assert criterion["identity"] == manifest["identity"] == result.detail["identity"]
+    assert manifest["identity"] == result.detail["identity"]
     markdown = _results_markdown(tmp_path, result)
     for line in (
         "- Seed: 5",
@@ -2156,7 +2137,6 @@ def test_happy_path_publishes_campaign_artifacts(tmp_path: Path, monkeypatch) ->
     assert all((tmp_path / row["path"]).is_file() for row in variants)
     _assert_durable_campaign(tmp_path, result)
     assert "mutation variant: reports/mutation/1/campaign/variants/" in result.report_text
-    assert result.criterion_key == "mutation_score_lite"
 
 
 def test_mutant_logs_of_an_earlier_run_do_not_survive_a_smaller_run(

@@ -29,6 +29,7 @@ here to look up what a setting means and what its default is.
 | `.core` files | [TARGETS.md](TARGETS.md) |
 | Cocotb Targets | [Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches) |
 | `tests.toml` | [TESTS.md](TESTS.md) |
+| `metrics.toml` | [Metric-Driven Development](METRIC-DRIVEN-DEVELOPMENT.md#write-metricstoml) |
 | `.booley/doctor-waivers.toml` | [Doctor waivers](DOCTOR.md#doctor-waivers-doctor-waiverstoml) |
 
 ## booley.toml
@@ -328,7 +329,7 @@ linked worktree, `booley chat` starts there whatever this says. See
 `"7d"`). Every `booley chat` launch runs the same cleanup with this age.
 `gc_older_than` is read from the main checkout's `.booley/booley.toml`; a
 worktree's own copy is ignored. `booley worktree gc --older-than AGE` overrides
-it. See [Cleaning up idle worktrees](CLI-REFERENCE.md#worktrees).
+it. See [Cleaning up idle worktrees](WORKTREES.md#cleaning-up-idle-worktrees).
 
 ### Worktree setup hooks (`.booley/hooks/`)
 

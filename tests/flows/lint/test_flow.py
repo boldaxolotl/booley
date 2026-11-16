@@ -24,6 +24,7 @@ from booley.flows.lint.flow import (
     parse_verible_warnings,
     parse_warnings,
 )
+from booley.flows.lint.request import LintRequest
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.targets.catalog import TargetCatalog
@@ -743,6 +744,29 @@ class TestDryRun:
         assert "bad.core" in error
         assert "filesetz" in error
 
+    def test_dry_run_names_unprovided_dependency(self, tmp_path: Path) -> None:
+        """A lint Target depending on a core no Project core provides names it."""
+        (tmp_path / "top.core").write_bytes(
+            b"CAPI=2:\nname: acme:ip:top:0\nfilesets:\n  rtl:\n"
+            b"    depend: ['>=::vlog_tb_utils:1.1']\n"
+            b"targets:\n  lite:\n    flow: lint\n    flow_options: {tool: verilator}\n"
+            b"    filesets: [rtl]\n"
+        )
+        handle = TargetCatalog.build(tmp_path).select("lite")
+        flow = LintFlow()
+        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+
+        plan = flow._plan_lint((handle,))
+
+        assert len(plan.aggregate_errors) == 1
+        assert plan.aggregate_errors[0].endswith(
+            "\n"
+            "no Project .core provides '>=::vlog_tb_utils:1.1': the Sandbox has no FuseSoC libraries "
+            "and cannot fetch them; copy it into the repository as a .core, or drop the depend: "
+            "(check first whether the testbench guards its use with an `ifdef` or defines the module "
+            "itself)"
+        )
+
     def test_plan_rejects_error_command(self, tmp_path: Path, monkeypatch) -> None:
         target = _target_handle("broken", project_root=tmp_path)
         target.core_file.write_text("CAPI=2:\nname: ::broken:0\n", encoding="utf-8")
@@ -842,64 +866,6 @@ class TestCriterionSetting:
         "_prepare_lint_command",
         return_value=(["verilator", "--lint-only"], _stub_resolved()),
     )
-    def test_sets_criterion_per_config(self, mock_cmd, mock_exec, state_file: Path):
-        """Criterion lint_clean_<config> is set per config."""
-        # No warnings => clean
-        mock_exec.return_value = MagicMock(
-            returncode=0,
-            stdout="",
-            stderr="",
-            timed_out=False,
-            duration_s=1.0,
-        )
-        flow = LintFlow()
-        flow.parse_args(
-            [
-                "--target",
-                "lite,full",
-            ]
-        )
-        flow.read_state()
-        flow._run()
-
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("lint_clean_lite") is True
-        assert st.is_met("lint_clean_full") is True
-
-    @patch.object(LintFlow, "_execute")
-    @patch.object(
-        LintFlow,
-        "_prepare_lint_command",
-        return_value=(["verilator", "--lint-only"], _stub_resolved()),
-    )
-    def test_criterion_false_when_warnings(self, mock_cmd, mock_exec, state_file: Path):
-        """Criterion is False when config has warnings."""
-        mock_exec.return_value = MagicMock(
-            returncode=0,
-            stdout="%Warning-UNUSEDSIGNAL: f.sv:1:1: unused\n",
-            stderr="",
-            timed_out=False,
-            duration_s=1.0,
-        )
-        flow = LintFlow()
-        flow.parse_args(
-            [
-                "--target",
-                "lite",
-            ]
-        )
-        flow.read_state()
-        flow._run()
-
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("lint_clean_lite") is False
-
-    @patch.object(LintFlow, "_execute")
-    @patch.object(
-        LintFlow,
-        "_prepare_lint_command",
-        return_value=(["verilator", "--lint-only"], _stub_resolved()),
-    )
     def test_hard_error_is_not_clean_pass(self, mock_cmd, mock_exec, state_file: Path, capsys):
         """QA-7: a non-zero rc (Verilator ``%Error``) must fail the gate.
 
@@ -932,8 +898,72 @@ class TestCriterionSetting:
         assert "RESULT: FAIL" in captured.out
         assert "RESULT: PASS" not in captured.out
         assert "missing_operand_zzz" in captured.out
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("lint_clean_lite") is False
+
+
+_LINT_PROCESSES: dict[str, tuple[int, str, str, int]] = {
+    "pass": (0, "", "", EXIT_SUCCESS),
+    "finding": (0, "%Warning-UNUSEDSIGNAL: f.sv:1:1: unused\n", "", EXIT_FAILURE),
+    "design-fail": (
+        2,
+        "",
+        "%Error: f.sv:1:1: syntax error\n%Error: Exiting due to 1 error(s)\n",
+        EXIT_FAILURE,
+    ),
+    "crash": (2, "", "make: verilator: No such file or directory\n", EXIT_ERROR),
+}
+
+
+@pytest.mark.parametrize("with_state_file", [True, False], ids=["state-file", "no-state-file"])
+@pytest.mark.parametrize("outcome", list(_LINT_PROCESSES))
+def test_hand_run_lint_records_no_criterion(
+    outcome: str, with_state_file: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hand run records no Criterion and writes no state file; the exit status is unchanged."""
+    monkeypatch.setattr(LintFlow, "_pre_state_gate", lambda _self: None)
+    monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
+    monkeypatch.delenv("BOOLEY_SLUG", raising=False)
+    state_path = tmp_path / "state.json"
+    if with_state_file:
+        monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    returncode, stdout, stderr, expected_exit = _LINT_PROCESSES[outcome]
+    process = MagicMock(
+        returncode=returncode, stdout=stdout, stderr=stderr, timed_out=False, duration_s=0.1
+    )
+    flow = LintFlow()
+    flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+    with (
+        patch.object(LintFlow, "_execute", return_value=process),
+        patch.object(
+            LintFlow,
+            "_prepare_lint_command",
+            return_value=(["make", "-C", "x"], _stub_resolved("verilator")),
+        ),
+    ):
+        result = flow.execute(
+            LintRequest(target="lite", work_dir=tmp_path, report_dir=tmp_path / "reports")
+        )
+
+    assert result.exit_code == expected_exit
+    assert flow.state.criteria == {}
+    assert not state_path.exists()
+    assert list(tmp_path.rglob("acceptance")) == []
+
+
+def test_lint_run_reads_no_development_state(tmp_path: Path) -> None:
+    """The Flow body never touches development state (no ``read_state()`` here)."""
+    process = MagicMock(returncode=0, stdout="", stderr="", timed_out=False, duration_s=0.1)
+    flow = LintFlow()
+    flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+    with (
+        patch.object(LintFlow, "_execute", return_value=process),
+        patch.object(
+            LintFlow,
+            "_prepare_lint_command",
+            return_value=(["make", "-C", "x"], _stub_resolved("verilator")),
+        ),
+    ):
+        result = flow._run()
+    assert result.exit_code == EXIT_SUCCESS
 
 
 class TestWarningsOnlyFatalExit:
@@ -978,9 +1008,6 @@ class TestWarningsOnlyFatalExit:
         assert result.exit_code == EXIT_SUCCESS
         captured = capsys.readouterr()
         assert "non-blocking" in captured.out
-        # The criterion still records the truth: warnings mean not clean.
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("lint_clean_lite") is False
 
     @patch.object(LintFlow, "_execute")
     @patch.object(
@@ -1119,34 +1146,9 @@ class TestErrorVsFailTaxonomy:
             flow.read_state()
             result = flow._run()
         assert result.exit_code == EXIT_ERROR
-        assert "lint_clean_lite" not in flow.state.criteria
         run_log = tmp_path / ".booley/.runtime/edalize/lint/lite/run.log"
         assert "partial lint output" in run_log.read_text(encoding="utf-8")
         assert "partial timeout diagnostic" in run_log.read_text(encoding="utf-8")
-
-    def test_missing_linter_leaves_criterion_unset(self, tmp_path: Path, state_file: Path) -> None:
-        with (
-            patch.object(LintFlow, "_execute") as mock_exec,
-            patch.object(
-                LintFlow,
-                "_prepare_lint_command",
-                return_value=(["make", "-C", "x"], _stub_resolved("verilator")),
-            ),
-        ):
-            mock_exec.return_value = MagicMock(
-                returncode=2,
-                stdout="",
-                stderr="make: verilator: No such file or directory\n",
-                timed_out=False,
-                duration_s=0.1,
-            )
-            flow = LintFlow()
-            flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-            flow.read_state()
-            result = flow._run()
-
-        assert result.exit_code == EXIT_ERROR
-        assert "lint_clean_lite" not in flow.state.criteria
 
     def test_hard_fail_without_report_dir_omits_live_log_pointer(
         self, tmp_path: Path, state_file: Path
@@ -1181,9 +1183,7 @@ class TestErrorVsFailTaxonomy:
         log_text = (tmp_path / pointer).read_text(encoding="utf-8")
         assert "second diagnostic" in log_text
 
-    def test_hard_fail_criterion_cites_numbered_log(
-        self, tmp_path: Path, state_file: Path
-    ) -> None:
+    def test_hard_fail_result_cites_numbered_log(self, tmp_path: Path, state_file: Path) -> None:
         with (
             patch.object(
                 LintFlow,
@@ -1214,10 +1214,9 @@ class TestErrorVsFailTaxonomy:
                 ]
             )
             flow.read_state()
-            flow._run()
+            result = flow._run()
 
-        detail = DevelopmentState.load(state_file).criteria["lint_clean_lite"].detail
-        assert "reports/lint/1/artifacts/lite/run.log" in detail["error"]
+        assert "reports/lint/1/artifacts/lite/run.log" in result.report_text
 
     def test_previous_runs_log_is_erased_before_the_run(self, tmp_path: Path, state_file: Path):
         """F-26: lint's run.log is only written at the END of a run, so it is
@@ -1296,11 +1295,10 @@ class TestErrorVsFailTaxonomy:
                 ]
             )
             flow.read_state()
-            flow._run()
+            result = flow._run()
 
-        error = DevelopmentState.load(state_file).criteria["lint_clean_lite"].detail["error"]
-        assert error.startswith("%Error: rtl/x.v:1:1")
-        assert "full log:" not in error
+        assert "%Error: rtl/x.v:1:1" in result.report_text
+        assert "full log:" not in result.report_text
 
 
 # ---------------------------------------------------------------------------
@@ -1548,7 +1546,7 @@ class TestFullRun:
             _stub_resolved(files=("rtl/ticket.sv", "rtl/baseline.sv")),
         ),
     )
-    def test_scope_filtering_sets_clean_criterion(
+    def test_out_of_scope_warnings_pass_a_scoped_run(
         self, mock_cmd, mock_exec, state_file: Path, capsys
     ):
         """Out-of-scope baseline warnings must not keep a scoped ticket dirty."""
@@ -1567,8 +1565,6 @@ class TestFullRun:
 
         assert result.exit_code == EXIT_SUCCESS
         assert "0 unique in-scope warnings" in capsys.readouterr().out
-        state = DevelopmentState.load(state_file)
-        assert state.is_met("lint_clean_lite") is True
 
 
 class TestUnmatchedScope:
@@ -1615,7 +1611,6 @@ class TestUnmatchedScope:
         assert "RESULT: PASS" not in out
         assert "'nonexistent/'" in out
         assert "rtl/mod_b.sv" in out  # example from the file list only, no warning there
-        assert "lint_clean_lite" not in DevelopmentState.load(state_file).criteria
 
     def test_mixed_scope_is_error(self, state_file: Path, capsys):
         with (
@@ -1662,8 +1657,8 @@ class TestUnmatchedScope:
         assert outcome.exit_code == EXIT_ERROR
         assert "nonexistent/" in outcome.outcome.report_text
 
-    def test_unmatched_scope_still_records_design_failure(self, state_file: Path, capsys):
-        """A scope typo must not hide a design FAIL: its False criterion is recorded."""
+    def test_unmatched_scope_still_reports_design_failure(self, state_file: Path, capsys):
+        """A scope typo must not hide a design FAIL: the errored Target is reported."""
         failing = MagicMock(
             returncode=1,
             stdout="%Error: rtl/mod_a.sv:3:1: syntax error\n",
@@ -1682,7 +1677,7 @@ class TestUnmatchedScope:
             code = LintFlow().main(["--target", "lite", "--scope", "nonexistent/"])
 
         assert code == EXIT_ERROR
-        assert DevelopmentState.load(state_file).is_met("lint_clean_lite") is False
+        assert "lite: %Error: rtl/mod_a.sv:3:1: syntax error" in capsys.readouterr().out
 
     def test_unmatched_scope_entries(self):
         from booley.flows.lint.flow import unmatched_scope_entries
@@ -1978,9 +1973,14 @@ class TestConfigDiscovery:
         assert result.exit_code == EXIT_ERROR
         assert "Eligible Targets: (none)" in result.outcome.report_text
 
-    def test_run_refuses_an_explicit_empty_target(self, tmp_path):
+    @pytest.mark.parametrize("with_state_file", [False, True], ids=["no-state-file", "state-file"])
+    def test_run_refuses_an_explicit_empty_target(self, tmp_path, request, with_state_file):
+        if with_state_file:
+            request.getfixturevalue("state_file")
         flow = LintFlow()
         flow.parse_args(["--target", "", "--work-dir", str(tmp_path)])
+        if with_state_file:
+            flow.read_state()
         result = flow._run()
         assert result.exit_code == EXIT_ERROR
         assert "--target is required" in result.report_text
@@ -2095,7 +2095,7 @@ class TestVeribleTargets:
         capsys,
     ):
         """--parse_fatal without --lint_fatal: findings arrive with rc 0 and
-        must score WARN with the criterion unmet (ADR 0033 decision 5)."""
+        must score WARN (ADR 0033 decision 5)."""
         mock_exec.return_value = MagicMock(
             returncode=0,
             stdout=SAMPLE_VERIBLE_OUTPUT,
@@ -2107,8 +2107,6 @@ class TestVeribleTargets:
         result = flow._run()
         assert result.exit_code == EXIT_FAILURE
         assert "RESULT: WARN" in capsys.readouterr().out
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("lint_clean_lint_style") is False
 
     @patch.object(LintFlow, "_execute")
     @patch.object(
@@ -2135,8 +2133,6 @@ class TestVeribleTargets:
         result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
         assert "RESULT: PASS" in capsys.readouterr().out
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("lint_clean_lint_style") is True
 
     @patch.object(LintFlow, "_execute")
     @patch.object(
@@ -2172,8 +2168,6 @@ class TestVeribleTargets:
         assert "RESULT: FAIL" in out
         assert "RESULT: PASS" not in out
         assert "syntax error" in out
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("lint_clean_lint_style") is False
 
     @patch.object(LintFlow, "_execute")
     @patch.object(
@@ -2420,9 +2414,6 @@ class TestLintObservability:
         assert "vacuous" in out
         # The lint make never ran — its verdict would be untrustworthy.
         mock_exec.assert_not_called()
-        # The gate records the truth: not clean.
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("lint_clean_lite") is False
 
     @patch.object(LintFlow, "_execute")
     def test_toplevel_in_fileset_stays_silent(
@@ -2524,7 +2515,7 @@ class TestLintObservability:
         capsys,
     ):
         """End-to-end: the knob turns a warnings-only run into exit 0, while
-        the lint_clean criterion still records the warning truthfully."""
+        the run still reports the warning."""
         from booley.flows.lint import flow as lint_mod
 
         monkeypatch.setattr(lint_mod, "_lint_warnings_as_errors", lambda _wd: False)
@@ -2541,8 +2532,6 @@ class TestLintObservability:
         result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
         assert "RESULT: WARN" in capsys.readouterr().out
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("lint_clean_lite") is False
 
 
 @pytest.mark.parametrize(

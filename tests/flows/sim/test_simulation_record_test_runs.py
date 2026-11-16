@@ -319,37 +319,6 @@ def test_an_observation_without_a_test_run_in_its_work_item_is_refused():
         observation_test_runs(item, ({"test": "count"}, {"test": "count"}))
 
 
-def test_acceptance_indexes_by_test_run_and_never_lets_one_run_stand_for_another(
-    tmp_path: Path,
-):
-    from booley.flows.sim.acceptance import (
-        _candidate_cycle_observations,
-        _candidate_observations,
-        _candidate_simulation_observations,
-    )
-
-    runs = (build_test_run("reset", seed=1), _SOAK, _FAULT)
-    outcome = _run_simulation_record(tmp_path, _hdl_plan(tmp_path, tuple((run,) for run in runs)))
-    facts = outcome.acceptance_facts.document
-
-    by_run = _candidate_observations(facts, outcome.target)
-    assert list(by_run) == ["reset@1", "count+soak@42", "count+fault@42"]
-    assert [item["test"] for item in by_run.values()] == ["reset", "count", "count"]
-    # A Criterion names a Test: the Test with several Test Runs has no single
-    # observation and is left out, so no run stands in for another.
-    for indexer in (_candidate_simulation_observations, _candidate_cycle_observations):
-        assert list(indexer(facts, outcome.target)) == ["reset"]
-
-
-def test_acceptance_keeps_indexing_one_test_run_per_test_by_test(tmp_path: Path):
-    from booley.flows.sim.acceptance import _candidate_simulation_observations
-
-    runs = (build_test_run("reset", seed=1), build_test_run("count", seed=1))
-    outcome = _run_simulation_record(tmp_path, _hdl_plan(tmp_path, tuple((run,) for run in runs)))
-    indexed = _candidate_simulation_observations(outcome.acceptance_facts.document, outcome.target)
-    assert list(indexed) == ["reset", "count"]
-
-
 def _stored_result(tmp_path: Path):
     """Run a Cocotb batch record through the real result writer."""
     from booley.flows.sim.record import (
@@ -380,7 +349,7 @@ def _stored_result(tmp_path: Path):
 
 def test_written_results_are_v3_and_name_their_test_run(tmp_path: Path):
     outcome, results = _stored_result(tmp_path)
-    assert [result.document["$schema"] for result in results] == ["booley.simulation-result/v4"]
+    assert [result.document["$schema"] for result in results] == ["booley.simulation-result/v5"]
     observations = results[0].document["observations"]
     assert [(item["test"], item["test_run"]) for item in observations] == [
         ("count", "count"),
@@ -415,7 +384,7 @@ def test_result_v3_round_trips(tmp_path: Path):
 @pytest.mark.parametrize(
     ("alter", "message"),
     [
-        (lambda document: document.update({"$schema": "booley.simulation-result/v5"}), "schema"),
+        (lambda document: document.update({"$schema": "booley.simulation-result/v6"}), "schema"),
     ],
 )
 def test_result_v3_refusals(tmp_path: Path, alter, message):

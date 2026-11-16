@@ -20,6 +20,7 @@ from booley.harness import booley as tlr
 from booley.runtime import auth_token, issuance_invalidation, runtime_context, session_runtime
 from booley.runtime import devcontainer as dc
 from booley.runtime.platform_paths import docker_mount_path
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 from tests.devcontainer_spec_support import build_spec
 from tests.subprocess_budget import run_bounded_child
 
@@ -889,9 +890,13 @@ class TestClaudeMintLocation:
         assert auth_cmd._acquire(credential, False, tmp_path) == _TOKEN
         mint.assert_called_once_with(credential, tmp_path)
 
-    def test_non_project_reseed_is_a_successful_noop(self, tmp_path, monkeypatch):
+    def test_non_project_reseed_is_a_successful_noop(self, tmp_path, monkeypatch, capsys):
 
         assert auth_cmd._reseed_spec(None)
+
+        notice = " ".join(capsys.readouterr().out.split())
+        assert f"once their Sandbox is recreated: {UNKNOWN_SANDBOX_STEPS}" in notice
+        assert "pick it up on `booley session up`" not in notice
 
     def test_project_reseed_reports_narrow_reseed_result(self, tmp_path, monkeypatch):
         from booley.harness import init_cmd
@@ -1413,7 +1418,7 @@ class TestAuthStorageAdmission:
     def test_store_only_names_policy_and_future_pickup(self, home, monkeypatch, capsys):
         assert _auth_stdin(monkeypatch, None) == 0
         output = capsys.readouterr().out
-        assert "session up" in output and "init --seed" in output
+        assert " ".join(output.split()).count(UNKNOWN_SANDBOX_STEPS) == 1
         assert "claude" in output and "auth=subscription" in output
 
     @pytest.mark.parametrize("present", [False, True])

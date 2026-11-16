@@ -11,7 +11,6 @@ from booley.commit_policy import stealth_choice_unset
 from booley.runtime import platform_paths, runtime_context
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.git import stealth_exclude_names
-from booley.runtime.git_attributes_policy import has_managed_attributes
 from booley.runtime.git_environment import inherited_git_environment
 from booley.runtime.project_gitignore import project_transient_pattern
 from booley.runtime.project_repositories import is_git_worktree_root, run_git
@@ -241,15 +240,6 @@ def _discover_owner(directory: Path, owners: set[Path], errors: list[str]) -> bo
     return True
 
 
-def _managed_attributes(owner: Path, errors: list[str]) -> list[Path]:
-    path = owner / ".gitattributes"
-    try:
-        return [path] if path.is_file() and has_managed_attributes(path.read_bytes()) else []
-    except OSError as exc:
-        errors.append(f"trackability inspection incomplete at {path}: {exc}")
-        return []
-
-
 def _candidates(selected: Path, owners: set[Path], errors: list[str]) -> list[Path]:
     paths = [selected / name for name in _SEEDS]
     paths.extend(
@@ -362,8 +352,6 @@ def inspect_project_trackability(
         paths = _candidates(selected, owners, errors)
         rtl_owner = _owner(root)
         owners.add(rtl_owner)
-        for owner in tuple(owners):
-            paths.extend(_managed_attributes(owner, errors))
         embedded = primary == rtl_owner
         batches: dict[Path, list[str]] = {owner: [] for owner in sorted(owners)}
         for path in sorted(set(paths)):

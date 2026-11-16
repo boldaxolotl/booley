@@ -599,6 +599,7 @@ def _observe(drive: Callable[[], Any]) -> str:
     return f"returned:{value!r}"
 
 
+@pytest.mark.usefixtures("fake_sandbox_attachment")
 def test_every_timed_docker_call_uses_the_bounded_helper(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

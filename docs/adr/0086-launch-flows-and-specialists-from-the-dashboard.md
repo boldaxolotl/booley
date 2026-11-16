@@ -42,8 +42,7 @@ it cannot host a run that must outlive the Dashboard.
   offer only compatible Targets and the Target's Tests and Test Variants.
 - **Specialist forms are hand-made**, because a person starts a review with a
   category, focus and scope, not with every parser option. They have no
-  free-form arguments field. `--verify` and `--waive` are omitted: they
-  continue the Developer Agent's own review loop.
+  free-form arguments field.
 - A test requires every Specialist option to appear on its form or on a hidden
   list with a reason, so a new option fails CI until someone places it.
 

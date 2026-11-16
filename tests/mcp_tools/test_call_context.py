@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import collections
-import json
 from pathlib import Path
 from types import MappingProxyType
 
@@ -105,7 +104,6 @@ class TestEnvironmentFacts:
         context = resolve_call_context({})
 
         assert context.jobs_root is None
-        assert context.state_path is None
         assert context.logs_dir is None
         assert context.runtime_dir is None
 
@@ -117,7 +115,7 @@ class TestEnvironmentFacts:
 
         context = resolve_call_context({})
 
-        assert (context.jobs_root, context.state_path) == (None, None)
+        assert context.jobs_root is None
         assert (context.logs_dir, context.runtime_dir) == (None, None)
 
     def test_logs_dir_alone_derives_the_jobs_root(
@@ -134,15 +132,13 @@ class TestEnvironmentFacts:
         assert context.runtime_dir is None
 
     def test_every_variable_set(self, bare_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        logs, runtime, state = bare_env / "logs", bare_env / "rt", bare_env / "state.json"
+        logs, runtime = bare_env / "logs", bare_env / "rt"
         monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
         monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime))
-        monkeypatch.setenv("BOOLEY_STATE_FILE", str(state))
 
         context = resolve_call_context({"work_dir": str(bare_env)})
 
         assert context.jobs_root == runtime / "jobs"
-        assert context.state_path == state
         assert (context.logs_dir, context.runtime_dir) == (logs, runtime)
         assert context.work_dir == bare_env
 
@@ -210,23 +206,6 @@ class TestLocateJob:
 
 
 class TestServerConsumers:
-    def test_baseline_check_reads_the_context_state_path(
-        self, bare_env: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        state = bare_env / "state.json"
-        state.write_text(
-            json.dumps(
-                {"criteria": {"synthesis_ok_core": {"params": {"_baseline_ref": "a" * 40}}}}
-            ),
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("BOOLEY_STATE_FILE", str(state))
-        state_path = resolve_call_context({}).state_path
-
-        assert mcp_server._baseline_required("synthesis_ok_", state_path) is True
-        assert mcp_server._baseline_required("fpga_impl_ok_", state_path) is False
-        assert mcp_server._baseline_required("synthesis_ok_", None) is False
-
     def test_subprocess_env_layers_context_then_per_run_overrides(
         self, bare_env: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -235,7 +214,6 @@ class TestServerConsumers:
         context = CallContext(
             explicit_work_dir=base.explicit_work_dir,
             jobs_root=base.jobs_root,
-            state_path=base.state_path,
             logs_dir=base.logs_dir,
             runtime_dir=base.runtime_dir,
             subprocess_env_overrides=MappingProxyType(

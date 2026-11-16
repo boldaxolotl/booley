@@ -126,7 +126,6 @@ _ACCENT = f"color({PALETTE_DODGER_BLUE})"
 _CHROME = f"color({PALETTE_MAUVE})"
 SEMANTIC_STYLE = {
     "pass": "green",
-    "met": "green",
     "warn": "yellow",
     "fail": "bold red",
     "running": _ACCENT,
@@ -146,8 +145,8 @@ DEDICATED_VIEWS = frozenset({"job", "help", "target"})
 WINDOW_ORDER = ("sessions", "jobs", "targets")
 # Terminal columns from which a detail (Jobs) or preview (Sessions) sits beside the list.
 WIDE_COLUMNS = 120
-# Jobs list columns, left to right. Crit repeats the detail's Criterion line as a mark.
-JOB_COLUMNS = ("Job", "Target", "Session", "State", "Result", "Crit", "Elapsed")
+# Jobs list columns, left to right.
+JOB_COLUMNS = ("Job", "Target", "Session", "State", "Result", "Elapsed")
 _TARGET, _RESULT = JOB_COLUMNS.index("Target"), JOB_COLUMNS.index("Result")
 # A Target is cut to this many columns before a Result word is: six name characters,
 # the ellipsis and the gap. The Job detail beside the list shows both in full.
@@ -219,9 +218,9 @@ def _sentence(text: str) -> str:
 
 
 def activity_label(activity: Activity, now: float) -> str:
-    """Reported session activity and how long it has lasted; unknown is said plainly."""
+    """Reported session activity and how long it has lasted; unknown says why."""
     if activity.state == UNKNOWN:
-        return "activity unknown"
+        return f"activity unknown ({activity.cause})"
     tool = f" ({activity.tool})" if activity.state == WAITING_TOOL and activity.tool else ""
     try:
         elapsed = now - parse_timestamp(activity.since).timestamp()
@@ -412,26 +411,27 @@ def _job_cells(job: JobView, now: float, handles: Mapping[str, str] | None) -> t
             presentation.flow_word.value,
             style=SEMANTIC_STYLE.get(presentation.flow_word.semantic, ""),
         )
-        criterion = presentation.criterion
-        crit = (
-            Text(
-                "✓" if criterion.semantic == "met" else "✗",
-                style=SEMANTIC_STYLE[criterion.semantic],
-            )
-            if criterion is not None
-            else Text()
-        )
     else:
-        result, crit = Text(_ELLIPSIS, style="dim"), Text()
+        result = Text(_ELLIPSIS, style="dim")
     return (
         Text(_job_label(job)),
         Text(target) if target else Text(_ABSENT, style="dim"),
         Text(owner) if owner else Text(_ABSENT, style="dim"),
         Text(job.state),
         result,
-        crit,
         Text(format_duration(elapsed) if elapsed is not None else "unavailable"),
     )
+
+
+def _text_cells(rows: list[tuple[object, ...]]) -> list[tuple[Text, ...]]:
+    """Jobs rows are built from ``Text`` cells; refuse any other cell."""
+    text_rows: list[tuple[Text, ...]] = []
+    for row in rows:
+        cells = tuple(cell for cell in row if isinstance(cell, Text))
+        if len(cells) != len(row):
+            raise TypeError("a Jobs row holds only Text cells")
+        text_rows.append(cells)
+    return text_rows
 
 
 def _fit_job_widths(available: int, rows: list[tuple[Text, ...]]) -> tuple[int, ...]:
@@ -490,11 +490,9 @@ def _line_text(rows: tuple[ResultLine, ...] | list[ResultLine]) -> str:
 
 
 def _job_rows(job: JobView, *, now: float | None = None) -> list[ResultLine]:
-    """Compact result, independent acceptance, execution and published artifacts."""
+    """Compact result, execution and published artifacts."""
     result = _job_presentation(job)
     rows = [result.flow_result]
-    if result.criterion is not None:
-        rows.append(result.criterion)
     elapsed = job_elapsed_seconds(job, now)
     duration = format_duration(elapsed) if elapsed is not None else "unavailable"
     rows.append(
@@ -927,7 +925,7 @@ class DashboardApp(App[None]):
 
     def _content_at_top(self) -> bool:
         """True when up has nowhere to go inside the focused content."""
-        table = self.query_one(DataTable)
+        table = self.query_one(SessionList)
         if table.display:
             return self.focused is table and (
                 table.row_count == 0 or table.cursor_row <= table.first_selectable_row()
@@ -1071,6 +1069,11 @@ class DashboardApp(App[None]):
         """The session's orientation header as plain text."""
         return self._session_header().plain
 
+    def _open_session_key(self) -> str:
+        """The open session's key; the empty string when no session is open."""
+        session = self.navigation.session
+        return session if isinstance(session, str) else ""
+
     def _session_row(self) -> tuple[SessionRow | None, bool]:
         """The open detail's session row and whether it is connected.
 
@@ -1082,20 +1085,20 @@ class DashboardApp(App[None]):
             (
                 row
                 for row in self.snapshot.sessions
-                if row.attribution.key == self.navigation.session
+                if row.attribution.key == self._open_session_key()
             ),
             None,
         )
         if live is not None:
             return live, True
-        return self._known_sessions.get(self.navigation.session or ""), False
+        return self._known_sessions.get(self._open_session_key()), False
 
     def _session_header(self) -> Text:
         """The session's orientation header, styled fact by fact."""
         row, connected = self._session_row()
         attention = SEMANTIC_STYLE["attention"]
         if row is None:
-            title = self._session_title(self.navigation.session or "")
+            title = self._session_title(self._open_session_key())
             return _join(
                 (f"{title} ", "bold " + _ACCENT),
                 ("disconnected", attention),
@@ -1332,7 +1335,7 @@ class DashboardApp(App[None]):
         activities.extend(
             ("job:" + json.dumps(job.key), _activity_row("Running Job", self._job_line(job)))
             for job in self.snapshot.jobs.jobs
-            if self._owned_by(job, self.navigation.session)
+            if self._owned_by(job, self._open_session_key())
             and job.state not in TERMINAL_JOB_STATES
         )
         if session:
@@ -1573,10 +1576,11 @@ class DashboardApp(App[None]):
         job_widths: tuple[int, ...] | None = None
         if self.navigation.view == "jobs":
             self._jobs_fit_width = table.size.width
+            job_cells = _text_cells(rows)
             job_widths = _fit_job_widths(
-                self._jobs_fit_width - table.styles.scrollbar_size_vertical, rows
+                self._jobs_fit_width - table.styles.scrollbar_size_vertical, job_cells
             )
-            rows = _truncate_job_rows(rows, job_widths)
+            rows = list(_truncate_job_rows(job_cells, job_widths))
         columns = self._list_columns(job_widths)
         if columns != self._list_columns_shown:
             table.clear(columns=True)

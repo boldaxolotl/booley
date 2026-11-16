@@ -10,6 +10,13 @@ import pytest
 from booley.core import booley_dir_pin
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
+from booley.runtime.sandbox_apply import Attachment
+from tests.runtime.test_sandbox_remedy_workflows import (
+    EXTERNAL,
+    HEADLESS_REFRESH,
+    VSCODE_INIT,
+    VSCODE_SEED,
+)
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="directory symlink requires privilege")
 
@@ -58,15 +65,29 @@ def test_init_pins_an_unpinned_linked_entry(project: Path) -> None:
     assert booley_dir_pin.read_pin(project).target == str((project / ".booley").resolve())
 
 
+@pytest.mark.parametrize(
+    ("owner", "managed", "steps"),
+    [
+        (Attachment.VSCODE, True, VSCODE_INIT),
+        (Attachment.HEADLESS, True, HEADLESS_REFRESH),
+        (Attachment.VSCODE, False, EXTERNAL + VSCODE_SEED),
+    ],
+    ids=["vscode", "headless", "own-image"],
+)
 def test_init_repins_only_with_flag(
     project: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    owner: Attachment,
+    managed: bool,
+    steps: str,
 ) -> None:
-    from booley.runtime import session_runtime
+    from booley.runtime import runtime_context, session_runtime
 
-    monkeypatch.setattr(session_runtime, "sandbox_remedy", lambda _root: "recreate it somehow")
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _root: owner)
+    monkeypatch.setattr(session_runtime, "image_is_managed", lambda _root: managed)
     _reconcile(project)
     new = _new_target(tmp_path, "ext-b")
     _retarget(project, new)
@@ -74,7 +95,7 @@ def test_init_repins_only_with_flag(
     proceed, _ctx = _reconcile(project, repin_booley_dir=True)
 
     assert proceed
-    assert "to recreate a running Sandbox, recreate it somehow" in capsys.readouterr().out
+    assert f"to recreate a running Sandbox, {steps}" in " ".join(capsys.readouterr().out.split())
     assert booley_dir_pin.read_pin(project).target == str(new.resolve())
     booley_dir_pin.require_pinned_entry(project)
 

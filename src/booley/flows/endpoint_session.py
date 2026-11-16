@@ -12,7 +12,6 @@ from booley.flows.endpoint_events import (
     _endpoint_start_event,
     _write_display_event,
 )
-from booley.flows.endpoint_report_criteria import ReportCriteria, freeze, project
 from booley.flows.endpoint_reporting import _StdoutWitness, report_discarded_evidence
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
@@ -104,17 +103,12 @@ def prepare_execution(
 ) -> PreparedExecution | EndpointOutcome:
     """Adapt CLI arguments into one prepared execution request."""
     endpoint.reset_report_metadata()
-    endpoint._report_criteria = ReportCriteria()
     endpoint.reset_evidence_discard()
     endpoint._requeue_cleanup_errors.clear()
     endpoint._stdout_witness = None
     if (early_outcome := endpoint._apply_pre_state_gate()) is not None:
-        if endpoint.endpoint_kind in {"flow", "specialist"}:
-            endpoint._report_criteria.project(early_outcome)
         return early_outcome
     if (early_outcome := _prepare_endpoint_report_root(endpoint)) is not None:
-        if endpoint.endpoint_kind in {"flow", "specialist"}:
-            endpoint._report_criteria.project(early_outcome)
         return early_outcome
     endpoint.read_state()
     endpoint._default_target_args()
@@ -123,10 +117,7 @@ def prepare_execution(
     invocation = endpoint.prepare_endpoint_invocation()
     if isinstance(invocation, EndpointOutcome):
         endpoint._publish_console_report(invocation)
-        endpoint._report_criteria.project(invocation)
         return invocation
-    if endpoint.endpoint_kind in {"flow", "specialist"}:
-        freeze(endpoint, invocation)
     return _prepared_execution(endpoint, invocation)
 
 
@@ -143,7 +134,6 @@ def _prepare_target_and_binding(endpoint: EndpointState) -> EndpointOutcome | No
         binding_error = endpoint._criterion_binding_gate()
         if binding_error is not None:
             endpoint._publish_console_report(binding_error)
-            endpoint._report_criteria.project(binding_error)
             return binding_error
     if not implicit_target:
         target_error = endpoint.prepare_target_endpoint()
@@ -267,7 +257,6 @@ def finish_execution(
         normalize_completion_error(outcome, cleanup_error, "retire the killed attempt's progress")
     endpoint._requeue_cleanup_errors.clear()
     report_discarded_evidence(endpoint, outcome)
-    project(endpoint, outcome)
     exit_code = endpoint._finish_main(
         outcome,
         prepared.display_target,

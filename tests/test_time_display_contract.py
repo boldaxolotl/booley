@@ -122,7 +122,7 @@ def _protected_outputs(root, monkeypatch):
 
 def _protected_simulation_record(root, monkeypatch):
     """Simulation Record report lines and ``simulation.json`` test entries for a fixed passing record."""
-    from booley.flows.sim.acceptance import _OutcomeEvidence, _simulation_record_projection
+    from booley.flows.sim.acceptance import _simulation_record_projection
     from tests.flows.sim.test_endpoint_record_lifecycle import _public_cycle_simulation_record
 
     # These budgets size the cycle lines, so the golden must not depend on the host.
@@ -138,7 +138,7 @@ def _protected_simulation_record(root, monkeypatch):
         line.replace(manifest, "<manifest>")
         for line in record_presentation._simulation_record_report_lines((outcome,))
     ]
-    return [lines, _simulation_record_projection(_OutcomeEvidence(outcome))["tests"]]
+    return [lines, _simulation_record_projection(outcome)["tests"]]
 
 
 def _protected_transport():

@@ -13,7 +13,6 @@ from tests.subprocess_budget import run_bounded_child
 from booley.runtime import project_trackability as pt
 from booley.runtime import runtime_context
 from booley.runtime.booley_dir import reset_cache
-from booley.runtime.git_attributes_policy import GITATTRIBUTES_RULE
 
 
 def git(root: Path, *args: str) -> str:
@@ -152,7 +151,7 @@ def test_audited_inputs_and_transient_pruning(project, monkeypatch):
 
 
 @pytest.mark.parametrize("linked", [False, True])
-def test_independent_owner_inputs_histories_and_attributes(project, linked):
+def test_independent_owner_inputs_and_histories(project, linked):
     root, selected = project
     selected.rename(root.parent / "seed")
     owner = root.parent / "data" if linked else selected
@@ -169,14 +168,12 @@ def test_independent_owner_inputs_histories_and_attributes(project, linked):
     assert not pt.inspect_project_trackability(root, selected).ignored
     (selected / "cores").mkdir(parents=True)
     (selected / "cores/a.core").write_text("input")
-    (selected / ".gitattributes").write_text("* text=auto eol=lf\n")
-    (selected / ".gitignore").write_text("booley.toml\ncores/\n.gitattributes\n")
+    (selected / ".gitignore").write_text("booley.toml\ncores/\n")
     result = pt.inspect_project_trackability(root, selected)
     assert not result.errors
     assert {p for g in result.ignored for p in g.paths} == {
         "booley.toml",
         "cores/a.core",
-        ".gitattributes",
     }
     assert all(not g.history and g.owner == selected for g in result.ignored)
 
@@ -306,11 +303,11 @@ def test_registered_submodule_is_inspected_in_its_own_repository(project):
     }
 
 
-def test_managed_root_attributes_are_candidates(project):
+def test_root_attributes_are_not_input_candidates(project):
     root, selected = project
-    (root / ".gitattributes").write_bytes(GITATTRIBUTES_RULE.encode() + b"\n")
+    (root / ".gitattributes").write_bytes(b"* text=auto eol=lf\n")
     (root / ".gitignore").write_text(".gitattributes\n")
-    assert pt.inspect_project_trackability(root, selected).ignored[0].paths == (".gitattributes",)
+    assert pt.inspect_project_trackability(root, selected) == pt.TrackabilityInspection((), ())
 
 
 def test_unavailable_indexed_input_owner_does_not_hide_other_inputs(project):
