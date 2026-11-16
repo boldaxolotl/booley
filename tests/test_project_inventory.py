@@ -293,3 +293,46 @@ def test_purge_uses_the_stored_spelling_of_a_case_folded_root(
     with pytest.raises(project_inventory.ProjectInventoryError, match="live Project Grant"):
         project_inventory.forget_project(variant, allow_forgotten=True)
     assert project_inventory.project_inventory()[0].remembered
+
+
+@pytest.mark.parametrize("folder", ["present", "deleted"])
+def test_live_grant_refusal_names_the_revoke_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, folder: str
+) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    project = tmp_path / "My Project"
+    (project / ".booley").mkdir(parents=True)
+    project_inventory.remember_project(project)
+    stored = str(project.resolve())
+    if folder == "deleted":
+        shutil.rmtree(project)
+    grant = SimpleNamespace(
+        project_root=stored, kind="vivado", installation=None, license_profile=None
+    )
+    monkeypatch.setattr(project_inventory, "_authority_grants", lambda: (grant,))
+
+    with pytest.raises(project_inventory.ProjectInventoryError) as caught:
+        project_inventory.forget_project(project)
+
+    assert str(caught.value) == (
+        f"cannot forget {stored}: revoke its live Project Grant first with "
+        f"`booley eda grant revoke --kind vivado '{stored}'`"
+    )
+
+
+def test_unremembered_root_refusal_names_both_fixes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    path = tmp_path / "never"
+
+    with pytest.raises(project_inventory.ProjectInventoryError) as caught:
+        project_inventory.forget_project(path)
+
+    assert str(caught.value) == (
+        f"Project Root is not remembered: {path}; copy the exact path from `booley projects`, "
+        "or for a deleted folder pass the exact absolute root to "
+        "`booley projects forget --purge`"
+    )

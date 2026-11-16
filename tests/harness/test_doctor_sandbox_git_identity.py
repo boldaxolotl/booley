@@ -16,6 +16,7 @@ from booley.audit.diagnostic_results import Severity
 from booley.audit.doctor_waivers import load_doctor_waivers
 from booley.harness import activity_hooks, doctor, web_isolation
 from booley.runtime import dashboard_extension, runtime_context
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 from tests.subprocess_budget import run_bounded_child
 
 OVERRIDE_ID = "sandbox.git-identity-override"
@@ -135,6 +136,11 @@ def test_missing_override_warns_with_check_id(sandbox_git, capsys):
     assert finding.subject is None
     assert "Visitor" in finding.message
     assert "global" in finding.message
+    assert (
+        f"recreate the Sandbox so it picks up the current [agent.git] ({UNKNOWN_SANDBOX_STEPS})"
+        in finding.fix
+    )
+    assert "refresh and recreate" not in finding.fix
     assert OVERRIDE_ID in capsys.readouterr().out
 
 

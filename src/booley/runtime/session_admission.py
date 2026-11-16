@@ -29,6 +29,7 @@ from booley.core.boundary import (
     require_str_value,
 )
 from booley.core.egress_modes import declared_egress
+from booley.core.host_shell import quote_arg
 from booley.core.private_store import PrivateStore, ProjectStore
 from booley.core.project_identity import matches_project_label
 from booley.core.user_paths import config_dir
@@ -44,7 +45,6 @@ from booley.runtime.sandbox_apply import (
     Attachment,
     apply_steps,
     image_is_managed,
-    quote_arg,
     shell_command,
 )
 from booley.runtime.timefmt import format_age, parse_timestamp, rfc3339_from_datetime
