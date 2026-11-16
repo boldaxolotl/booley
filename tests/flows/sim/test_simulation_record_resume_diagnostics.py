@@ -7,6 +7,7 @@ import pytest
 
 from booley.flows.builtin_cli import parse_request
 from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.record.codec import canonical_json_bytes
 from booley.flows.sim.record.planning import (
     compare_manifests,
 )
@@ -73,6 +74,31 @@ def _interrupted_simulation_record(
     return reports, manifest, executions
 
 
+def test_resume_accepts_attempts_recorded_with_the_diagnostic_policy(tmp_path, monkeypatch):
+    reports, manifest, _executions = _interrupted_simulation_record(tmp_path, monkeypatch)
+    old = sorted(manifest.parent.rglob("attempt.json"))
+    for path in old:  # the policy shape every Booley before this change wrote
+        document = json.loads(path.read_bytes())
+        document["policy"]["diagnostic"] = True
+        path.write_bytes(canonical_json_bytes(document))
+    before = {path: path.read_bytes() for path in old}
+
+    def resumed(executor, request):
+        executor.prepare_attempt(request)
+        raise KeyboardInterrupt("resume reached execution")
+
+    monkeypatch.setattr("booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor.execute", resumed)
+    with pytest.raises(KeyboardInterrupt, match="resume reached execution"):
+        SimulateFlow().execute(
+            SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
+        )
+
+    assert {path: path.read_bytes() for path in old} == before
+    new = [path for path in manifest.parent.rglob("attempt.json") if path not in before]
+    assert new
+    assert all("diagnostic" not in json.loads(path.read_bytes())["policy"] for path in new)
+
+
 def test_public_source_resume_names_cause_without_new_attempt(tmp_path, monkeypatch):
     reports, manifest, executions = _interrupted_simulation_record(tmp_path, monkeypatch)
     before = _snapshot(manifest.parent)
@@ -91,11 +117,7 @@ def test_public_source_resume_names_cause_without_new_attempt(tmp_path, monkeypa
     assert "8 derived fingerprints differ" in result.outcome.report_text
     assert result.outcome.detail["derived_fingerprint_count"] == 8
     assert "/workload/source_recipe/sources/" not in result.outcome.report_text
-    assert {
-        key: value
-        for key, value in _snapshot(manifest.parent).items()
-        if not key.startswith("dependency-receipts/")
-    } == before
+    assert _snapshot(manifest.parent) == before
 
 
 def _prime_prior_refusal(root, reports, manifest, executions):
@@ -104,7 +126,6 @@ def _prime_prior_refusal(root, reports, manifest, executions):
     )
     assert result.exit_code == 2
     assert len(executions) == 1
-    assert len(list((manifest.parent / "dependency-receipts").glob("*.json"))) == 1
 
 
 def _capture_resume_comparison(monkeypatch):
@@ -118,25 +139,6 @@ def _capture_resume_comparison(monkeypatch):
 
     monkeypatch.setattr(SimulateFlow, "_resume_simulation_record_plan", capture)
     return pairs
-
-
-def _assert_durable_evidence_with_one_new_receipt(before, after):
-    existing = {
-        key: value for key, value in before.items() if key.startswith("dependency-receipts/")
-    }
-    observed = {
-        key: value for key, value in after.items() if key.startswith("dependency-receipts/")
-    }
-    assert existing.items() <= observed.items()
-    assert len(observed) == len(existing) + 1
-    assert {key: value for key, value in before.items() if key not in existing} == {
-        key: value for key, value in after.items() if key not in observed
-    }
-    added = observed.keys() - existing.keys()
-    receipt = json.loads(observed[added.pop()])
-    dependent = Path(receipt["dependent_invocation"])
-    assert dependent.is_dir()
-    assert int(dependent.name) == receipt["dependent_invocation_id"]
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
@@ -187,7 +189,7 @@ def test_public_resume_cli_summary_detail_and_dry_run_immutability(
     if dry_run:
         assert _snapshot(reports) == before
     else:
-        _assert_durable_evidence_with_one_new_receipt(durable_before, _snapshot(manifest.parent))
+        assert _snapshot(manifest.parent) == durable_before
 
 
 @pytest.mark.parametrize(
@@ -220,11 +222,7 @@ def test_public_resume_parameters_suite_content_and_opaque_options(
     assert result.exit_code == 2
     assert any(root.startswith(line) for root in result.outcome.detail["mismatch_summary"])
     assert len(executions) == 1
-    assert {
-        key: value
-        for key, value in _snapshot(manifest.parent).items()
-        if not key.startswith("dependency-receipts/")
-    } == before
+    assert _snapshot(manifest.parent) == before
 
 
 @pytest.mark.parametrize("removed", ["source", "suite"])
@@ -274,11 +272,7 @@ def test_public_resume_bool_to_int_names_parameter_and_explains_command_digest(
     assert not any(line.startswith("/workload/source_recipe/parameters/") for line in raw)
     assert result.outcome.detail["derived_fingerprint_count"] == 9
     assert len(executions) == 1
-    assert {
-        key: value
-        for key, value in _snapshot(manifest.parent).items()
-        if not key.startswith("dependency-receipts/")
-    } == before
+    assert _snapshot(manifest.parent) == before
 
 
 def test_legacy_interrupted_simulation_record_new_source_mapping_refuses_before_attempt(
@@ -311,11 +305,7 @@ def test_legacy_interrupted_simulation_record_new_source_mapping_refuses_before_
     assert result.exit_code == 2
     assert len(executions) == 1
     assert any("source_path" in line for line in result.outcome.detail["mismatch_summary"])
-    assert {
-        key: value
-        for key, value in _snapshot(manifest.parent).items()
-        if not key.startswith("dependency-receipts/")
-    } == before
+    assert _snapshot(manifest.parent) == before
 
 
 _WORK_DIR_NOTICE = "booley: --work-dir is deprecated; use --project instead (removal after one compatibility release)\n"

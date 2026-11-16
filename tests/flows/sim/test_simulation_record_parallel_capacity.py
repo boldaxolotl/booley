@@ -19,6 +19,7 @@ import pytest
 from booley.flows.base import FlowMechanics
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.record.capacity import (
+    LeaseLostError,
     SimulationRecordCapacity,
     SimulationRecordCapacityError,
 )
@@ -60,7 +61,10 @@ from booley.runtime.job_slots import (
     ROLE_INTERACTIVE,
     ClaimAbortedError,
     MemoryClaim,
+    SlotRecovery,
     SlotStore,
+    SlotToken,
+    TokenState,
 )
 from booley.runtime.supervised_execution import (
     SupervisedExecutionScope,
@@ -244,19 +248,148 @@ def test_real_child_process_is_terminated_immediately_on_lease_loss(
     assert registry.is_terminal(lane_ids[0])
 
 
-def test_child_permit_checks_lease_loss_before_return(tmp_path: Path) -> None:
+@pytest.mark.parametrize("cancel_after", [False, True])
+def test_child_permit_checks_lease_loss_before_return(tmp_path: Path, cancel_after: bool) -> None:
     store = SlotStore(tmp_path / "slots")
     outer = _outer_claim(store)
     capacity = _capacity(_managed(store, outer), tmp_path)
     try:
         with (
             capacity.outer_permit(),
-            pytest.raises(SimulationRecordCapacityError, match="lease lost"),
+            pytest.raises(LeaseLostError, match="lease lost"),
             _child_permit(capacity) as permit,
         ):
-            _remove_slot_entry(store, permit.token)
+            _remove_slot_entry(store, permit.token)  # lost to a reaper, not to the cancel
+            if cancel_after:
+                capacity.cancel_waiters("test cancellation")
     finally:
         store.release(outer)
+
+
+def test_cancel_while_a_lane_holds_its_slot_aborts_instead_of_losing_its_lease(
+    tmp_path: Path,
+) -> None:
+    """A cancel retires a held lane as an abort and leaves its lease healthy."""
+    store = SlotStore(tmp_path / "slots")
+    outer = _outer_claim(store)
+    capacity = _capacity(_managed(store, outer), tmp_path)
+    try:
+        with (
+            capacity.outer_permit(),
+            pytest.raises(ClaimAbortedError, match="cancellation"),
+            _child_permit(capacity) as permit,
+        ):
+            capacity.cancel_waiters("test cancellation")
+    finally:
+        store.release(outer)
+    assert not permit.lease_health.lost.is_set()
+    record = read_json(
+        execution_paths(permit.child_execution_id, booley_dir=capacity._lanes.project_data).record
+    )
+    assert record is not None
+    assert record["terminal_cause"] == "orphan_recovered"
+    assert store.snapshot(CLASS_MEMORY) == ([], [])
+
+
+def test_a_cancelled_lane_whose_claim_is_reaped_still_aborts(tmp_path: Path) -> None:
+    """The cancelled execution's claim, reaped by any store scan, is the cancel's loss."""
+    terminal: list[bool] = []
+    store = SlotStore(
+        tmp_path / "slots",
+        recovery=SlotRecovery(execution_is_terminal=lambda _execution_id: bool(terminal)),
+    )
+    outer = _outer_claim(store)
+    capacity = _capacity(_managed(store, outer), tmp_path)
+    try:
+        with (
+            capacity.outer_permit(),
+            pytest.raises(ClaimAbortedError, match="cancellation"),
+            _child_permit(capacity) as permit,
+        ):
+            capacity.cancel_waiters("test cancellation")
+            terminal.append(True)  # the cancel ended the execution; a scan reaps its claim
+            store.snapshot(CLASS_MEMORY)
+            assert store.token_absent(permit.token)
+    finally:
+        store.release(outer)
+
+
+@pytest.mark.parametrize("lost_first", [False, True])
+def test_a_waiter_promoted_after_the_cancel_snapshot_still_aborts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lost_first: bool
+) -> None:
+    """A claim promoted between the cancel's snapshot and its withdrawal aborts.
+
+    One an independent recovery already took (``lost_first``) stays a lost lease.
+    """
+    store = SlotStore(tmp_path / "slots")
+    outer = _outer_claim(store)
+    blocker = store.acquire(CLASS_MEMORY, pid=os.getpid(), memory=_holder_claim(1))
+    capacity = _capacity(_managed(store, outer, holders=1), tmp_path, lanes=1)
+    refresh, withdraw = store.refresh, store.cancel_waiter_token
+    queued: list[SlotToken] = []
+    states: list[str] = []
+
+    def cancel_on_first_poll(token: SlotToken):
+        if queued:
+            return refresh(token)
+        queued.append(token)
+        capacity.cancel_waiters("test cancellation")  # snapshots the still-queued token
+        return TokenState(HOLDING)  # the state the promotion left, as the lane sees it
+
+    def promote_then_withdraw(token: SlotToken) -> bool:
+        store.release(blocker)
+        states.append(refresh(token).state)  # the owner promotes the token first
+        if lost_first:
+            store.begin_token_recovery(token)  # another cause, before the cancel's recovery
+        return withdraw(token)
+
+    monkeypatch.setattr(store, "refresh", cancel_on_first_poll)
+    monkeypatch.setattr(store, "cancel_waiter_token", promote_then_withdraw)
+    started: list[bool] = []
+    try:
+        with (
+            capacity.outer_permit(),
+            pytest.raises(LeaseLostError if lost_first else ClaimAbortedError),
+            _child_permit(capacity),
+        ):
+            started.append(True)
+    finally:
+        store.release(outer)
+    assert started == []
+    assert states == [HOLDING]
+    assert queued[0].lease_health.lost.is_set()
+    assert store.snapshot(CLASS_MEMORY) == ([], [])
+
+
+def test_a_lease_lost_before_the_items_start_and_cancel_stays_lost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A recovery the cancel did not start is a lost lease, not an abort."""
+    store = SlotStore(tmp_path / "slots")
+    outer = _outer_claim(store)
+    capacity = _capacity(_managed(store, outer), tmp_path)
+    acquire_child = capacity._acquire_child
+
+    def acquire_lose_then_cancel(*args, **kwargs):
+        token = acquire_child(*args, **kwargs)
+        store.begin_token_recovery(token)  # another cause, before the cancel
+        capacity.cancel_waiters("test cancellation")
+        return token
+
+    monkeypatch.setattr(capacity, "_acquire_child", acquire_lose_then_cancel)
+    started: list[bool] = []
+    try:
+        with (
+            capacity.outer_permit(),
+            pytest.raises(LeaseLostError, match="lease lost"),
+            _child_permit(capacity),
+        ):
+            started.append(True)
+    finally:
+        store.release(outer)
+    assert started == []
+    assert store.snapshot(CLASS_MEMORY) == ([], [])
 
 
 def test_child_permit_never_yields_a_claim_admitted_after_cancellation(
@@ -540,12 +673,15 @@ def test_shutdown_deadline_returns_bounded_but_retains_outer_until_worker_exits(
         scheduler.run(manifest.document["work_items"][:1])
     assert time.monotonic() - started < 0.5
     slots.release(outer)  # endpoint AdmissionGate finally must be deferred
-    assert [token.lease_id for token in slots.snapshot(CLASS_MEMORY)[0]] == [outer.lease_id]
+    # The hung lane keeps its own claim until its thread exits and retires it.
+    holders = slots.snapshot(CLASS_MEMORY)[0]
+    assert len(holders) == 2
+    assert outer.lease_id in {token.lease_id for token in holders}
     assert simulation_record_store.scan().interrupted == (
         str(manifest.document["work_items"][0]["work_item_id"]),
     )
     release_worker.set()
-    _wait_until(lambda: slots.token_absent(outer))
+    _wait_until(lambda: slots.snapshot(CLASS_MEMORY) == ([], []))
     trigger.join(timeout=1)
 
 

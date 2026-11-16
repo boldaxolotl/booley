@@ -6,7 +6,6 @@ import os
 import time
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from tests.booley_checkouts_support import isolate_git, main_project
@@ -107,9 +106,7 @@ def test_job_creation_before_registry_migration_preserves_existing_handle(
     registry = SessionRegistry(tmp_path)
     registry.upsert(old, "sim", "completed", now=100)
     monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda: tmp_path)
-    context = CallContext(
-        work_dir, tmp_path / "jobs", None, None, None, {}, session_key=canonical.key
-    )
+    context = CallContext(work_dir, tmp_path / "jobs", None, None, {}, session_key=canonical.key)
     JobLifecycle._stamp_context(job_records.JobRecord("new-job", "sim", STAMP, 60), context)
     registry.upsert(canonical, "sim", "completed", now=101)
     labels = handles.HandleStore(tmp_path).load().labels()
@@ -291,44 +288,6 @@ def test_job_allocation_failure_is_advisory(tmp_path, monkeypatch, caplog):
     )
     handles.register_job(tmp_path / "unwritable", "job", "sim", None)
     assert "disk" in caplog.text
-
-
-@pytest.mark.parametrize("broken", [False, True])
-def test_baseline_allocates_before_launch_and_broken_maps_do_not_block_it(
-    tmp_path, monkeypatch, broken
-):
-    from booley.mcp import sim_baseline_jobs
-    from booley.runtime import detached_job
-
-    store = handles.HandleStore(tmp_path, jobs=True)
-    if broken:
-        store.root.mkdir(parents=True)
-        store.path.write_text("broken")
-    launched = []
-
-    def launch(*args, **kwargs):
-        if not broken:
-            assert store.load().entries == {"baseline-one": "J-SIM1"}
-        launched.append(args[0])
-        return SimpleNamespace()
-
-    monkeypatch.setattr(detached_job.subprocess, "Popen", launch)
-    monkeypatch.setattr(
-        detached_job.threading,
-        "Thread",
-        lambda **_kwargs: SimpleNamespace(start=lambda: None),
-    )
-    request = {
-        "job_id": "baseline-one",
-        "booley_dir": str(tmp_path),
-        "jobs_root": str(tmp_path / "jobs"),
-        "record": {"worktree_path": "/work", "session_key": "codex:one"},
-    }
-    # The scheduler publishes the Job record (and its handle) before launching.
-    sim_baseline_jobs._publish_job_record(tmp_path / "request.json", request)
-    sim_baseline_jobs.launch_baseline(tmp_path / "request.json", request)
-    assert len(launched) == 1
-    assert job_records.read_record("baseline-one", tmp_path / "jobs") is not None
 
 
 def test_full_dashboard_reader_keeps_maps_and_registry_bytes_unchanged(

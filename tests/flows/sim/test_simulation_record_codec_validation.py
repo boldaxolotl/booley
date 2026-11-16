@@ -8,6 +8,7 @@ import pytest
 
 from booley.flows.sim.record import codec
 from booley.flows.sim.record.codec import SimulationRecordIntegrityError
+from booley.flows.sim.record.store import SimulationRecordStore
 from tests.flows.sim.test_simulation_record_codec_golden import (
     _BUILD_READY,
     _simulation_result,
@@ -125,11 +126,6 @@ def _tamper_result(document: dict[str, object]) -> None:
     document["diagnostics"] = [{}]
 
 
-def _tamper_snapshot(document: dict[str, object]) -> None:
-    document["inventory_sha256"] = "sha256:" + "f" * 64
-    document["artifacts"][0]["kind"] = "runtime_input"  # type: ignore[index]
-
-
 @pytest.mark.parametrize(
     ("decode", "make_document", "tamper"),
     [
@@ -146,17 +142,12 @@ def _tamper_snapshot(document: dict[str, object]) -> None:
             _tamper_bundle,
         ),
         (
-            codec.decode_executable_snapshot,
-            lambda: _fixture_document("snapshot.json"),
-            _tamper_snapshot,
-        ),
-        (
             codec.decode_simulation_result,
             lambda: json.loads(_simulation_result("completed")),
             _tamper_result,
         ),
     ],
-    ids=["attempt", "build_attempt", "build_result", "bundle", "snapshot", "result"],
+    ids=["attempt", "build_attempt", "build_result", "bundle", "result"],
 )
 def test_record_decoders_do_not_revalidate_nested_fields(decode, make_document, tamper) -> None:
     """These records get only the boundary check; their consumers guard what they use (#1743)."""
@@ -169,7 +160,7 @@ def test_record_decoders_do_not_revalidate_nested_fields(decode, make_document, 
 @pytest.mark.parametrize("error", ["truncated", "schema", "missing"])
 @pytest.mark.parametrize(
     "reader",
-    ["manifest", "attempt", "build_attempt", "build_result", "bundle", "snapshot", "result"],
+    ["manifest", "attempt", "build_attempt", "build_result", "bundle", "result"],
 )
 def test_reader_rejects_corrupt_record(tmp_path, reader, error):
     from pathlib import Path
@@ -188,10 +179,6 @@ def test_reader_rejects_corrupt_record(tmp_path, reader, error):
         "bundle": (
             codec.decode_simulator_bundle,
             lambda: json.loads((files / "bundle.json").read_bytes()),
-        ),
-        "snapshot": (
-            codec.decode_executable_snapshot,
-            lambda: json.loads((files / "snapshot.json").read_bytes()),
         ),
         "result": (codec.decode_simulation_result, lambda: _result_document(tmp_path)),
     }
@@ -270,8 +257,6 @@ def _prerequisite_entry() -> dict[str, object]:
     ids=["workload-run-cwd", "target-selector", "work-item-kind", "prerequisite-manifest-path"],
 )
 def test_manifest_reader_rejects_a_missing_nested_field(tmp_path, path, field) -> None:
-    from booley.flows.sim.record.inspection import inspect_retained_simulation_record
-
     document = _manifest()
     document["prerequisites"] = [_prerequisite_entry()]
     parent: object = document
@@ -285,4 +270,4 @@ def test_manifest_reader_rejects_a_missing_nested_field(tmp_path, path, field) -
     manifest.parent.mkdir()
     manifest.write_bytes(raw)
     with pytest.raises(SimulationRecordIntegrityError, match=field):
-        inspect_retained_simulation_record(manifest)
+        SimulationRecordStore(manifest.parent).load_manifest()

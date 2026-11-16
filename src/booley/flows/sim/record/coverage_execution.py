@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import cast
 
 from booley.flows.artifact_durability import durable_directory
+from booley.flows.sim.backends.shared import RunTerminationKind, SimulationFailureKind
 from booley.flows.sim.coverage_invocation import CoverageTargetPlan
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome, run_coverage_target
 from booley.flows.sim.execution.contract import (
@@ -17,15 +18,17 @@ from booley.flows.sim.execution.contract import (
     SimulationOptions,
     SimulationTargetOutcome,
     SimulationTestOutcome,
+    SimulationVerdict,
 )
 from booley.flows.sim.live_progress import attempt_scope
-from booley.flows.sim.record.bundle import authenticate_executable_snapshot
+from booley.flows.sim.record.bundle import verify_bundle_in_place
 from booley.flows.sim.record_layout import COVERAGE_RECORD_DIRECTORY
 from booley.flows.sim.runtime_inputs import (
     RuntimeInputBinding,
     materialize_simulation_record_runtime_inputs,
 )
 from booley.flows.sim.verilator_coverage import (
+    AuthenticatedSimulationExecutionPort,
     SimulationBuildRequest,
     SimulationBuildResult,
     SimulationCommandRequest,
@@ -36,7 +39,7 @@ from booley.flows.sim.verilator_coverage import (
 )
 from booley.runtime.timefmt import utc_now_rfc3339
 
-from .codec import SimulationRecordIntegrityError, encode_executable_snapshot
+from .codec import SimulationRecordIntegrityError
 from .coordinator import (
     SerialWorkExecutor,
     WorkExecutionRequest,
@@ -45,17 +48,17 @@ from .coordinator import (
 from .model import (
     BundleBuildAttempt,
     BundleBuildResult,
-    ExecutableSnapshot,
     SimulationResult,
     SimulatorBundle,
+    frozen_pre_sim_commands,
 )
 from .run_directory import RunDirectory, claimed_run_directory
 from .serial_execution import (
     BuildScope,
     blocked_result,
     bundle_build_attempt,
+    bundle_verification,
     capture_private_image,
-    create_snapshot,
     observation_document,
     publish_failed_build_result,
     publish_ready_build_result,
@@ -99,9 +102,6 @@ class _CapturedBuild:
     directory: Path
     result: BundleBuildResult
     bundle: SimulatorBundle
-    snapshot_root: Path
-    snapshot: ExecutableSnapshot
-    snapshot_reference: dict[str, object]
     pre_launch_sha256: str
 
 
@@ -136,8 +136,11 @@ class _CapturingExecution:
         self.build_elapsed = time.monotonic() - started
         self.build_result = result
         if result.success:
-            self.captured = self._ready(self.build_elapsed)
-            self.bindings = self._staged(self.captured)
+            try:
+                self.captured = self._ready(self.build_elapsed)
+                self.bindings = self._staged(self.captured)
+            except SimulationRecordIntegrityError as exc:
+                raise _RecordIntegrityCarrierError(str(exc)) from exc
         return result
 
     def run(self, request: SimulationRunRequest) -> SimulationRunResult:
@@ -168,8 +171,11 @@ def _raise_if_coverage_aborted(
     )
 
 
-class _HookPublicationError(Exception):
-    """Carry integrity failure through compatibility collectors without recategorizing it."""
+class _RecordIntegrityCarrierError(Exception):
+    """Carry integrity failure through compatibility collectors without recategorizing it.
+
+    Collection catches ``ValueError``, which :class:`SimulationRecordIntegrityError` is.
+    """
 
 
 def _raise_if_pre_sim_scope_stopped(request: WorkExecutionRequest) -> None:
@@ -177,8 +183,7 @@ def _raise_if_pre_sim_scope_stopped(request: WorkExecutionRequest) -> None:
     from booley.runtime.supervised_execution import current_supervised_execution
 
     scope = current_supervised_execution()
-    commands = request.manifest.document["workload"]["source_recipe"]["pre_sim_commands"]
-    if commands and scope is not None and scope.cancelled():
+    if frozen_pre_sim_commands(request.manifest) and scope is not None and scope.cancelled():
         raise PreSimScopeStoppedError("execution scope stopped before Pre-Sim Commands")
 
 
@@ -188,7 +193,7 @@ def _publish_hook(request, evidence, ordinal, checkpoint) -> None:
     try:
         publish_pre_sim_firing(request, evidence, ordinal=ordinal, checkpoint=checkpoint)
     except SimulationRecordIntegrityError as exc:
-        raise _HookPublicationError(str(exc)) from exc
+        raise _RecordIntegrityCarrierError(str(exc)) from exc
 
 
 class CoverageAggregateExecutor(SerialWorkExecutor):
@@ -200,7 +205,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
         plans: Mapping[str, CoverageTargetPlan],
         execution_factory: Callable[
             [CoverageTargetPlan, SimulationOptions, tuple[str, ...], str],
-            SimulationExecutionPort,
+            AuthenticatedSimulationExecutionPort,
         ],
         publication_checkpoint: Callable[[str], None] | None = None,
     ) -> None:
@@ -319,11 +324,11 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
                 embedded_root=request.attempt_directory / COVERAGE_RECORD_DIRECTORY,
                 publication_checkpoint=self._publication_checkpoint,
             )
-        except _HookPublicationError as exc:
+        except _RecordIntegrityCarrierError as exc:
             assert isinstance(exc.__cause__, SimulationRecordIntegrityError)
             raise exc.__cause__ from None
 
-    def _execution(self, request: WorkExecutionRequest) -> SimulationExecutionPort:
+    def _execution(self, request: WorkExecutionRequest) -> AuthenticatedSimulationExecutionPort:
         target = cast(Mapping[str, str], request.manifest.document["target"])
         identity = f"{target['vlnv']}#{target['name']}"
         try:
@@ -332,13 +337,12 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
             raise SimulationRecordIntegrityError(
                 "coverage plan is missing for record Target"
             ) from exc
-        options = simulation_options_from_policy(
-            request.policy,
-            trace=cast(bool, request.manifest.document["workload"]["trace"]),
-        )
         workload = cast(Mapping[str, object], request.manifest.document["workload"])
-        source_recipe = cast(Mapping[str, object], workload["source_recipe"])
-        commands = tuple(cast(tuple[str, ...], source_recipe["pre_sim_commands"]))
+        # The codec's _read_workload proves workload.trace is a bool.
+        options = simulation_options_from_policy(
+            request.policy, trace=cast(bool, workload["trace"])
+        )
+        commands = frozen_pre_sim_commands(request.manifest)
         access = cast(str, workload["pre_sim_build_access"])
         execution = self._execution_factory(plan, options, commands, access)
         sink_setter = getattr(execution, "set_pre_sim_evidence_sink", None)
@@ -358,7 +362,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
         request: WorkExecutionRequest,
         directory: Path,
         attempt: BundleBuildAttempt,
-        execution: SimulationExecutionPort,
+        execution: AuthenticatedSimulationExecutionPort,
         elapsed: float,
     ) -> _CapturedBuild:
         source_root, paths = execution.authenticated_image()
@@ -368,26 +372,14 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
         result, bundle = publish_ready_build_result(
             request, directory, attempt, artifacts, None, elapsed
         )
-        snapshot_root = request.attempt_directory / "snapshot"
-        snapshot = create_snapshot(request, directory, result, bundle, snapshot_root)
-        raw = encode_executable_snapshot(snapshot)
-        reference = record_reference(
-            snapshot_root / "snapshot.json",
-            request.attempt_directory,
-            raw,
-            "executable_snapshot_manifest",
-            request.attempt_id,
-        )
-        pre_launch = authenticate_executable_snapshot(snapshot, snapshot_root)
-        return _CapturedBuild(
-            directory, result, bundle, snapshot_root, snapshot, reference, pre_launch
-        )
+        pre_launch = verify_bundle_in_place(bundle, result, directory)
+        return _CapturedBuild(directory, result, bundle, pre_launch)
 
     def _stage_attempt(
         self,
         request: WorkExecutionRequest,
         captured: _CapturedBuild,
-        execution: SimulationExecutionPort,
+        execution: AuthenticatedSimulationExecutionPort,
         run_directory: RunDirectory,
         run_cwd: Path,
         stack: ExitStack,
@@ -404,15 +396,31 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
                 owned_run_directory=run_directory.owned,
             )
         )
-        execution.bind_authenticated_attempt(captured.snapshot_root, run_cwd)
+        evidence_root = request.attempt_directory / "execution-evidence"
+        evidence_root.mkdir(mode=0o700, exist_ok=True)
+        execution.bind_authenticated_attempt(
+            captured.directory,
+            evidence_root,
+            run_cwd,
+            lambda: _verify_or_carry(captured),
+        )
         self._publication_checkpoint("after:runtime_inputs")
         return bindings
 
 
-def _attempt_identity(request: WorkExecutionRequest) -> dict[str, object]:
+def _verify_or_carry(captured: _CapturedBuild) -> None:
+    """Verify the bundle in place, carrying a failure through collection."""
+    try:
+        verify_bundle_in_place(captured.bundle, captured.result, captured.directory)
+    except SimulationRecordIntegrityError as exc:
+        raise _RecordIntegrityCarrierError(str(exc)) from exc
+
+
+def _attempt_identity(request: WorkExecutionRequest) -> dict[str, str]:
+    # The codec's _read_manifest proves the record id and every work item id are strings.
     return {
-        "simulation_record_id": request.manifest.document["simulation_record_id"],
-        "work_item_id": request.work_item["work_item_id"],
+        "simulation_record_id": cast(str, request.manifest.document["simulation_record_id"]),
+        "work_item_id": cast(str, request.work_item["work_item_id"]),
         "attempt_id": request.attempt_id,
     }
 
@@ -424,8 +432,7 @@ def _completed_result(
     bindings: tuple[RuntimeInputBinding, ...],
     started: float,
 ) -> SimulationResult:
-    post_exit = authenticate_executable_snapshot(captured.snapshot, captured.snapshot_root)
-    bundle = cast(Mapping[str, object], captured.result.document["bundle"])
+    post_exit = verify_bundle_in_place(captured.bundle, captured.result, captured.directory)
     observations = [_coverage_observation(item) for item in _coverage_tests(outcome)]
     return simulation_result(
         request,
@@ -433,13 +440,7 @@ def _completed_result(
         captured.result,
         state=settled_state(observations),
         bundle_id=captured.bundle.document["bundle_id"],
-        snapshot={
-            "manifest": captured.snapshot_reference,
-            "bundle_manifest_sha256": bundle["manifest_sha256"],
-            "pre_launch_sha256": captured.pre_launch_sha256,
-            "post_exit_sha256": post_exit,
-            "verified_after_exit": True,
-        },
+        verification=bundle_verification(captured.result, captured.pre_launch_sha256, post_exit),
         observations=observations,
         elapsed=time.monotonic() - started,
         evidence=_coverage_evidence(request, outcome),
@@ -539,17 +540,19 @@ def _coverage_test_outcome(item: Mapping[str, object]) -> SimulationTestOutcome:
     error_tail = item.get("error_tail")
     if not isinstance(error_tail, str):
         error_tail = "" if verdict == "pass" else f"coverage simulation {verdict}"
+    # The verdict is checked against the literal set above; the termination and failure kind
+    # are written by this package's collector and are not re-checked on read.
     test = SimulationTestOutcome(
         name=name,
-        verdict=cast(str, verdict),  # type: ignore[arg-type]
+        verdict=cast(SimulationVerdict, verdict),
         passed=verdict == "pass",
         timed_out=verdict == "timeout",
         crashed=verdict == "crash",
         elab_failed=verdict == "elab_error",
         inconclusive=verdict == "inconclusive",
         error_tail=error_tail,
-        termination=cast(str, item.get("termination", "completed")),  # type: ignore[arg-type]
-        failure_kind=cast(str, item.get("failure_kind", "")),
+        termination=cast(RunTerminationKind, item.get("termination", "completed")),
+        failure_kind=cast(SimulationFailureKind, item.get("failure_kind", "")),
     )
     return test
 

@@ -5,7 +5,7 @@ the design-description, ``build_fpga_edam`` + Edalize ``configure()`` materializ
 the Vivado project + Tcl in the Sandbox, and the resolved ``make``
 command runs there via ``BooleyFlow._execute_boundary``. Interpretation
 stays in Booley: report collection, metric parsing
-(:func:`fpga_edam.parse_fpga_reports`), Criteria, and baseline comparison.
+(:func:`fpga_edam.parse_fpga_reports`), and baseline comparison.
 
 There is one builder (the built-in Flow) and no execution-location knob. The
 FPGA Flow owns its fixed Vivado backend; the resolved Target's EDA-selection
@@ -14,7 +14,7 @@ field controls FuseSoC resolution inputs, not the implementation backend.
 ``--baseline <ref>`` re-implements the design at a past commit in a throwaway
 ``git worktree`` (see :mod:`booley.flows.baseline_worktree`) rather than checking the ref
 out in place, so it never disturbs the caller's tree and works in Interactive
-and Goal Mode (ADR 0012).
+Mode (ADR 0012).
 """
 
 from __future__ import annotations
@@ -38,15 +38,6 @@ from booley.core.boundary import (
     require_bool,
 )
 from booley.core.build_paths import work_root_for
-from booley.evidence.fields import (
-    BASELINE_RECIPE_FINGERPRINT_DETAIL,
-    BASELINE_RECIPE_SNAPSHOT_DETAIL,
-    BASELINE_REF_DETAIL,
-    BASELINE_TARGET_DETAIL,
-    CANDIDATE_TARGET_DETAIL,
-    RECIPE_FINGERPRINT_DETAIL,
-    RECIPE_SNAPSHOT_DETAIL,
-)
 from booley.evidence.timing import per_clock_from_json, worst_clock
 from booley.flows.cli_help import CliHelp
 from booley.flows.eda_failures import (
@@ -97,7 +88,6 @@ from ..baseline_worktree import (
     baseline_worktree,
     git_full_sha,
     git_short_sha,
-    resolve_ticket_baseline,
 )
 from ..implementation_comparison import (
     ImplementationComparisonError,
@@ -124,10 +114,6 @@ from ..implementation_report import (
 )
 from ..invocation import resolve_timeout_ms
 from ..progress_lifecycle import ProgressPublicationError
-from ..run_evidence import (
-    BASELINE_RUN_EVIDENCE_DETAIL,
-    RUN_EVIDENCE_DETAIL,
-)
 from .backends.vivado import cache as fpga_cache
 from .backends.vivado import edam as fpga_edam
 from .backends.vivado.edam import validate_vivado_parameter_types
@@ -173,24 +159,6 @@ class _PreparedFpgaCommand:
         """Keep the historical ``run_cmd, work_root = ...`` test/API shape."""
         yield self.run_cmd
         yield self.work_root
-
-
-_FPGA_METRIC_MAP: dict[str, str] = {
-    "lut_count": "lut_count",
-    "ff_count": "ff_count",
-    "bram_count": "bram_count",
-    "dsp_count": "dsp_count",
-    # Aggregate-timing + per-clock sub-metrics. Fmax/critical-path are addressed
-    # per clock as "<clock>.<metric>_min|_max" (the threshold engine resolves the
-    # dotted prefix into detail["per_clock"][clock]); wns_ns/whs_ns are also the
-    # honest aggregate worst-case, addressable flat. One spelling table serves
-    # both flat and per-clock lookups.
-    "wns_ns": "wns_ns",
-    "whs_ns": "whs_ns",
-    "critical_path_ps": "critical_path_ps",
-    "fmax_mhz": "fmax_mhz",
-    "period_ns": "period_ns",
-}
 
 
 def _resolve_fpga_timeout_ms(work_dir: Path | None, requested: Any = None) -> int:
@@ -240,7 +208,6 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
     announce_success_report: bool = True
     satisfies: ClassVar[list[str]] = ["fpga_impl_ok"]
     conventional_families: ClassVar[frozenset[str]] = frozenset({"fpga_impl_ok"})
-    _PAIR_CRITERION_PREFIX = "fpga_impl_ok_"
 
     # FPGA implementation is memory-admitted as a Sandbox job.
     def _resolve_job_class(self) -> str:
@@ -368,39 +335,15 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         return current_results
 
     def _prepare_target_pairs(self, handles: tuple[TargetHandle, ...]) -> EndpointOutcome | None:
-        baseline_error = self._apply_ticket_baseline(handles)
         comparison_error: str | None = None
         try:
-            self._target_pairs = target_pair_plans_for_handles(
-                self.state.criteria,
-                "fpga_impl_ok_",
-                handles,
-                basis=self.flow_acceptance if self.flow_acceptance.basis_bound else None,
-                flow="fpga",
-            )
+            self._target_pairs = target_pair_plans_for_handles(handles, flow="fpga")
             self._target_execution_refs = candidate_execution_refs(handles, self._target_pairs)
         except ImplementationComparisonError as exc:
             comparison_error = f"fpga: {exc}"
-        if baseline_error is not None or comparison_error is not None:
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=baseline_error or comparison_error or "fpga comparison error",
-            )
+        if comparison_error is not None:
+            return EndpointOutcome(exit_code=EXIT_ERROR, report_text=comparison_error)
         return None
-
-    def _apply_ticket_baseline(self, targets: tuple[TargetHandle, ...]) -> str | None:
-        """Default relative Criteria to their immutable baseline SHA."""
-        baseline, full_sha, error = resolve_ticket_baseline(
-            self.state.criteria,
-            "fpga_impl_ok_",
-            targets,
-            self.args.baseline,
-            Path(self.args.work_dir),
-            "fpga",
-        )
-        self.args.baseline = baseline
-        self._baseline_full_sha = full_sha
-        return error
 
     def _fpga_work_unit(
         self,
@@ -659,7 +602,6 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             getattr(self, "_target_pairs", ()),
             self._target_handle(target),
             flow="fpga",
-            basis_bound=self.flow_acceptance.basis_bound,
         )
 
     def _prepare_fpga_command(
@@ -1379,17 +1321,6 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             target, current, baseline, baseline_ref, implementation=implementation
         )
         self._implementation_reports[target] = implementation
-        if implementation.grade == "error":
-            return
-        self._set_config_criterion(
-            target,
-            current,
-            baseline,
-            baseline_ref,
-            implementation=implementation,
-        )
-        if self.state._file_path is not None:
-            self.state.save()
 
     @staticmethod
     def _baseline_error_lines(
@@ -1703,52 +1634,6 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             **({"live_dirs": dict(cur.dirs)} if cur.dirs else {}),
         }
         return report
-
-    def _set_config_criterion(
-        self,
-        cfg: str,
-        cur: FpgaMetrics,
-        base: FpgaMetrics | None,
-        baseline_ref: str | None,
-        *,
-        implementation: ImplementationReport | None = None,
-    ) -> None:
-        plan = self._target_plan(cfg)
-        detail = {
-            **(_metrics_detail(cur) or {}),
-            "has_primary_metrics": cur.has_primary_metrics,
-            "timing_met": cur.timing_met,
-            "has_critical": cur.has_critical,
-            "returncode": cur.returncode,
-            "timed_out": cur.timed_out,
-            "passed": cur.passed,
-            RECIPE_FINGERPRINT_DETAIL: cur.recipe_fingerprint or None,
-            RECIPE_SNAPSHOT_DETAIL: cur.recipe_snapshot or None,
-            RUN_EVIDENCE_DETAIL: cur.run_evidence or None,
-            BASELINE_TARGET_DETAIL: plan.baseline.selector,
-            CANDIDATE_TARGET_DETAIL: plan.candidate.selector,
-            "_baseline_target_identity": plan.baseline.identity,
-            "_candidate_target_identity": plan.candidate.identity,
-            "_cache_consumer_run_id": cur.cache_consumer_run_id or None,
-            "_metric_map": dict(_FPGA_METRIC_MAP),
-            "_min_allowed": ["fmax_mhz", "wns_ns", "whs_ns"],
-        }
-        if base:
-            detail["baseline_metrics"] = _metrics_detail(base, baseline=True)
-            detail[BASELINE_RECIPE_FINGERPRINT_DETAIL] = base.recipe_fingerprint or None
-            detail[BASELINE_RECIPE_SNAPSHOT_DETAIL] = base.recipe_snapshot or None
-            detail[BASELINE_RUN_EVIDENCE_DETAIL] = base.run_evidence or None
-        if baseline_ref:
-            detail[BASELINE_REF_DETAIL] = getattr(self, "_baseline_full_sha", None) or baseline_ref
-        implementation = implementation or self._implementation_report(
-            cfg, cur, base, baseline_ref
-        )
-        self.set_criterion(
-            f"fpga_impl_ok_{cfg}",
-            implementation.passed,
-            detail=implementation.envelope(detail),
-            source_target=cfg,
-        )
 
 
 if __name__ == "__main__":

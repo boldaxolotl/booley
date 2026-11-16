@@ -12,12 +12,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from booley.flows.endpoint_events import (
-    _emit_criteria_update,
     _endpoint_end_event,
     _endpoint_progress_event,
     _write_display_event,
 )
-from booley.flows.execution_persistence import EvidenceDiscarded, NoAcceptanceRecorder
 from booley.presentation.colors import strip_ansi
 from booley.runtime.endpoint_execution import (
     EXIT_SUCCESS,
@@ -233,8 +231,7 @@ def _next_invocation_dir(endpoint: EndpointState, report_dir: Path) -> Path:
     endpoint_dir = report_dir / endpoint.name
     endpoint_dir.mkdir(parents=True, exist_ok=True)
     while True:
-        # Count observed names even if pruning renames a directory during this scan.
-        # Rechecking is_dir() would discard the old name before seeing its tombstone.
+        # `.pruned-<N>` directories keep their number reserved.
         existing = (
             int(d.name.removeprefix(".pruned-"))
             for d in endpoint_dir.iterdir()
@@ -273,16 +270,12 @@ def write_report(endpoint: EndpointState, result: EndpointOutcome) -> Path | Non
     Also writes a flat ``{endpoint_name}.json`` copy for backward compatibility
     (developer prompt rule 11, MCP ``_try_read_report``).
     """
-    from booley.flows.endpoint_report_criteria import project
-
-    project(endpoint, result)
     report_dir = endpoint.args.report_dir
     if report_dir is None:
         return None
     report_dir.mkdir(parents=True, exist_ok=True)
     if not endpoint._skip_report_detail_refresh:
         endpoint.refresh_report_detail(result)
-    project(endpoint, result)
     report = _report_document(endpoint, result)
     inv_dir = endpoint._reserved_invocation_dir
     if inv_dir is None:
@@ -325,19 +318,11 @@ def _report_document(endpoint: EndpointState, result: EndpointOutcome) -> dict[s
         "slug": endpoint.args.slug or "",
         "target": endpoint._selected_target,
         "exit_code": result.exit_code,
-        "criterion_key": result.criterion_key,
-        "criterion_met": result.criterion_met,
         "detail": result.detail,
         "timestamp": utc_now_rfc3339(),
         "elapsed_s": elapsed_s,
         "passed": passed,
     }
-    if (
-        endpoint.endpoint_kind in {"flow", "specialist"}
-        and not endpoint._acceptance_recorder.acceptance_identity()
-    ):
-        del report["criterion_key"]
-        del report["criterion_met"]
     if endpoint.report_schema is not None:
         report["$schema"] = endpoint.report_schema
     mode = result.detail.get("mode")
@@ -432,9 +417,6 @@ def _finalize_result(endpoint: EndpointState, result: EndpointOutcome) -> None:
     stats for code-modifying endpoints. Specialist overrides this to also
     stamp accumulated token/cost data from sub-agent calls.
     """
-    if getattr(endpoint.args, "diagnostic", False):
-        result.detail = dict(result.detail or {})
-        result.detail["acceptance_effect"] = "diagnostic"
     if endpoint.code_modifying:
         endpoint._stamp_git_diff_stats(result)
 
@@ -479,17 +461,6 @@ def _resolve_display_label(endpoint: EndpointState) -> str | None:
     return None
 
 
-def _post_run(endpoint: EndpointState, result: EndpointOutcome, duration: float) -> None:
-    """Persist mutable run state after final acceptance.
-
-    The execution coordinator calls ``record_acceptance`` first. That step
-    also runs ``_pre_save_hook`` so this timeline sees the final rather than
-    provisional outcome before saving mutable state.
-    """
-    criteria_set = list(endpoint._pending_criteria_set or ())
-    _persist_run_state(endpoint, result, duration, criteria_set)
-
-
 def _publish_report(endpoint: EndpointState, result: EndpointOutcome) -> None:
     if endpoint.write_report(result) is None:
         endpoint._warn_no_report_artifact()
@@ -527,58 +498,6 @@ def _publish_console_verdict(endpoint: EndpointState, result: EndpointOutcome) -
         print(result.report_text, flush=True)
 
 
-def _persist_run_state(
-    endpoint: EndpointState,
-    result: EndpointOutcome,
-    duration: float,
-    criteria_set: list[str],
-) -> None:
-    if isinstance(endpoint._acceptance_recorder, NoAcceptanceRecorder):
-        return
-    if endpoint.evidence_discarded is not None:
-        return  # a discarded invocation writes nothing, not even its timeline entry
-    endpoint.state.record_mcp_tool_run(
-        endpoint.name,
-        result.exit_code,
-        endpoint_kind=endpoint.endpoint_kind,
-        duration_s=duration,
-        criteria_set=criteria_set or None,
-        cost_usd=result.cost_usd if result.cost_usd else None,
-        args=_endpoint_timeline_args(endpoint),
-    )
-    if endpoint._state is not None and endpoint._state.file_path is not None:
-        try:
-            endpoint.state.save()
-        except EvidenceDiscarded as exc:
-            # First discovered here when the run set no Criterion (B1).
-            endpoint.discard_evidence(exc)
-            report_discarded_evidence(endpoint, result)
-            return
-        _emit_criteria_update(endpoint.state, endpoint._acceptance_recorder)
-
-
-def report_discarded_evidence(endpoint: EndpointState, outcome: EndpointOutcome) -> None:
-    """Prefix the run's own outcome with why its evidence was discarded (B1); idempotent."""
-    reason = endpoint.evidence_discarded
-    if reason is None or "evidence_discarded" in outcome.detail:
-        return
-    prefix = f"evidence discarded: {reason}"
-    outcome.report_text = f"{prefix}\n{outcome.report_text}" if outcome.report_text else prefix
-    outcome.summary = f"{prefix}; {outcome.summary}" if outcome.summary else prefix
-    outcome.detail = {**outcome.detail, "evidence_discarded": reason}
-
-
-def _endpoint_timeline_args(endpoint: EndpointState) -> dict[str, Any] | None:
-    if not endpoint._args:
-        return None
-    values = {
-        attr: value
-        for attr in ("category", "config", "reason", "dry_run")
-        if (value := getattr(endpoint._args, attr, None))
-    }
-    return values or None
-
-
 def _finish_main(
     endpoint: EndpointState,
     result: EndpointOutcome,
@@ -586,7 +505,7 @@ def _finish_main(
     display_label: str | None,
     started: float | None,
     *,
-    acceptance_recorded: bool,
+    records_published: bool,
     dry_run: bool,
     non_persisting_dry_run: bool,
 ) -> int:
@@ -594,7 +513,7 @@ def _finish_main(
     duration = (time.monotonic() - started) if started is not None else 0.0
     try:
         if not non_persisting_dry_run:
-            _finish_publication(endpoint, result, duration, acceptance_recorded)
+            _finish_publication(endpoint, result, records_published)
     finally:
         try:
             try:
@@ -610,7 +529,6 @@ def _finish_main(
                 normalize_completion_error(result, exc, "publish console diagnosis")
                 _recover_report_publication(endpoint, result)
         finally:
-            endpoint._pending_criteria_set = None
             try:
                 _write_display_event(
                     _endpoint_end_event(
@@ -621,10 +539,6 @@ def _finish_main(
                         display_label=display_label,
                         dry_run=dry_run,
                         identity=endpoint._display_identity,
-                        include_criterion=(
-                            endpoint.endpoint_kind not in {"flow", "specialist"}
-                            or bool(endpoint._acceptance_recorder.acceptance_identity())
-                        ),
                     ),
                 )
             except Exception:
@@ -638,20 +552,9 @@ def _finish_main(
 def _finish_publication(
     endpoint: EndpointState,
     result: EndpointOutcome,
-    duration: float,
-    acceptance_recorded: bool,
+    records_published: bool,
 ) -> None:
-    if not acceptance_recorded:
-        _publish_report_with_recovery(endpoint, result, refresh_detail=False)
-        return
-    try:
-        endpoint._post_run(result, duration)
-    except Exception as exc:
-        logger.debug("Endpoint completion persistence failed", exc_info=True)
-        normalize_completion_error(result, exc, "persist endpoint completion")
-        _recover_report_publication(endpoint, result)
-        return
-    _publish_report_with_recovery(endpoint, result)
+    _publish_report_with_recovery(endpoint, result, refresh_detail=records_published)
 
 
 def _publish_report_with_recovery(

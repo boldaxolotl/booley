@@ -383,7 +383,7 @@ def _bundle_tracking_detail(locations: _Locations) -> str | None:
     command = shlex.join(["git", "-C", str(owner), "rm", "--cached", "--", relative])
     return (
         f"Generated Project Git-hook bundle is already tracked; untrack it with: {command}. "
-        "Commit the intentional removal and changed ignore policy yourself outside active Goal Mode; "
+        "Commit the intentional removal and changed ignore policy yourself; "
         "rerun init in other checkouts if removal deletes their local bundle."
     )
 

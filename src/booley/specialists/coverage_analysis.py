@@ -114,13 +114,15 @@ class CoverageAnalyzer:
         instruction: str,
         *,
         summary: CoverageRecordSummary | None = None,
+        source_limitation: str | None = None,
     ) -> CoverageAnalysisReport:
         envelope, target = _analysis_envelope(coverage_record, summary)
         eligibility, limitations = _eligibility(coverage_record)
         sources = verified_source_snapshot(coverage_record, sources)
         if sources is None:
             limitations.append(
-                "Sources unavailable, unsafe, or stale; analysis uses normalized report evidence only."
+                source_limitation
+                or "Sources unavailable, unsafe, or stale; analysis uses normalized report evidence only."
             )
         response, analysis_scope = _model_response(
             self._model(_analysis_prompt(envelope, sources, instruction)), coverage_record
@@ -500,5 +502,5 @@ def _candidate_screen(item, point, rtl, sources) -> tuple[str, str]:
         return "investigate", "Unreachability is contradicted by observed hits"
     return (
         "ready_for_human_review",
-        "A human must accept or reject this candidate through a Goal Change Proposal",
+        "A human must accept or reject this candidate",
     )

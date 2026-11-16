@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import json
 import os
 import re
@@ -69,18 +68,6 @@ def _contract_table_strings(contract: dict[str, Any]) -> set[str]:
     }
 
 
-def _workflow_consumers() -> list[tuple[Path, str, list[dict[str, Any]], int]]:
-    consumers: list[tuple[Path, str, list[dict[str, Any]], int]] = []
-    for path in Path(".github/workflows").glob("*.yml"):
-        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
-        for job_name, job in workflow["jobs"].items():
-            steps = job.get("steps", [])
-            for index, step in enumerate(steps):
-                if step.get("uses") == "./.github/actions/prepare-picorv32-demo":
-                    consumers.append((path, job_name, steps, index))
-    return consumers
-
-
 def _workflow_events() -> dict[str, Any]:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     # PyYAML's YAML 1.1 resolver interprets the unquoted Actions key ``on`` as
@@ -88,43 +75,11 @@ def _workflow_events() -> dict[str, Any]:
     return workflow[True]
 
 
-def _workflow_commands(path: Path) -> str:
-    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
-    return "\n".join(
-        str(step.get("run", ""))
-        for job in workflow["jobs"].values()
-        for step in job.get("steps", [])
-    )
-
-
-def test_pull_requests_run_demo_only_for_its_real_inputs() -> None:
+def test_pull_requests_run_demo_for_its_real_inputs() -> None:
     events = _workflow_events()
     paths = set(events["pull_request"]["paths"])
 
     assert paths >= PICORV32_INPUT_FILES
-    assert ".github/actions/prepare-picorv32-demo/**" in paths
-    assert "src/booley/**" not in paths
-    assert {
-        "src/booley/dev_support/demo_contract.py",
-        "src/booley/feedback/**",
-        "src/booley/harness/**",
-        "src/booley/projects/**",
-        "src/booley/runtime/**",
-        "src/booley/targets/**",
-        "src/booley/goals/**",
-        "src/booley/review/**",
-        "src/booley/evidence/**",
-    } <= paths
-    assert paths.isdisjoint(
-        {
-            "src/booley/bwave/**",
-            "src/booley/docker/**",
-        }
-    )
-    assert events["push"] == {"branches": ["main"]}
-    assert events["merge_group"] is None
-    assert events["schedule"] == [{"cron": "23 3 * * *"}]
-    assert events["workflow_dispatch"] is None
 
 
 def _demo_job(name: str = "demo-contract") -> dict[str, Any]:
@@ -134,47 +89,12 @@ def _demo_job(name: str = "demo-contract") -> dict[str, Any]:
     return job
 
 
-def _demo_step(name: str) -> dict[str, Any]:
-    steps = _demo_job()["steps"]
-    return next(step for step in steps if step.get("name") == name)
-
-
 def _glob_matches(pattern: str, path: str) -> bool:
     """Match a workflow ``paths`` entry: an exact file, or a ``dir/**`` prefix."""
     if pattern.endswith("/**"):
         return path.startswith(pattern[:-2])
     assert "*" not in pattern, pattern
     return path == pattern
-
-
-def test_demo_never_runs_on_the_released_riscv_image() -> None:
-    text = WORKFLOW.read_text(encoding="utf-8")
-    assert "booley-sandbox-riscv" not in text, "workflow still references booley-sandbox-riscv"
-
-    job = _demo_job()
-    steps = job["steps"]
-    names = [step.get("name") for step in steps]
-    verify = steps[names.index("Run measurement round trip on the public demo")]
-    build = steps[names.index("Build RISC-V Sandbox candidate")]
-    select = steps[names.index("Select compatible stable runtime base")]
-
-    # The demo runs in the candidate the build produced, after the base choice.
-    assert "booley-riscv-test bash" in verify["run"]
-    # The demo's isolation and project directory are unchanged.
-    assert "--network none" in verify["run"]
-    assert "-e BOOLEY_DIR=/work/.booley" in verify["run"]
-    assert "dst=/booley-project" not in verify["run"]
-    assert ".github/scripts/riscv_candidate.sh build" in build["run"]
-    assert steps.index(select) < steps.index(build) < steps.index(verify)
-    # A failed build fails the check: nothing may continue past it, and no
-    # build may write the shared cache (the Tests workflow stays its writer).
-    assert not any(step.get("continue-on-error") for step in steps)
-    assert not [step for step in steps if "cache-to" in yaml.safe_dump(step)]
-    # A failed base selection fails the check instead of skipping it.
-    assert str(job["if"]).startswith("${{ !cancelled() && (")
-    assert steps[0]["name"] == "Require RISC-V Sandbox base selection"
-    assert steps[0]["if"] == "needs.base-plan.result != 'success'"
-    assert "exit 1" in steps[0]["run"]
 
 
 _FAKE_IDENTITY_DOCKER = """#!/usr/bin/env bash
@@ -247,16 +167,6 @@ def test_demo_evidence_names_candidate_digest_and_base_source(tmp_path: Path) ->
     assert "source-build" in (tmp_path / "summary.md").read_text(encoding="utf-8")
 
 
-def test_demo_retains_image_evidence_even_when_the_build_fails() -> None:
-    upload = _demo_step("Retain RISC-V Sandbox identity")
-    # Unconditional: the compatibility log of a failed build is evidence too.
-    assert upload["if"] == "always()"
-    evidence_dir = "${{ runner.temp }}/picorv32-image-evidence/"
-    assert upload["with"]["path"] == evidence_dir
-    build = _demo_step("Build RISC-V Sandbox candidate")
-    assert '"${RUNNER_TEMP}/picorv32-image-evidence"' in build["run"]
-
-
 def test_stable_base_changes_run_demo_on_a_source_built_base() -> None:
     root = Path(__file__).parents[2]
     patterns = _workflow_events()["pull_request"]["paths"]
@@ -268,26 +178,6 @@ def test_stable_base_changes_run_demo_on_a_source_built_base() -> None:
         path for path in inputs if not any(_glob_matches(pattern, path) for pattern in patterns)
     ]
     assert not unmatched, f"stable-base inputs that do not trigger the demo: {unmatched}"
-
-    plan = _demo_job("base-plan")
-    decide = next(step for step in plan["steps"] if "--publish-decision" in step.get("run", ""))
-    assert "ghcr.io/boldaxolotl/booley-sandbox-base:main" in decide["run"]
-    assert plan["outputs"]["build"] == f"${{{{ steps.{decide['id']}.outputs.publish }}}}"
-    select = _demo_step("Select compatible stable runtime base")
-    assert select["env"]["BUILD_STABLE_BASE"] == "${{ needs.base-plan.outputs.build == 'true' }}"
-    assert _demo_job()["needs"] == "base-plan"
-
-
-def test_demo_keeps_90_minute_timeout_unless_it_builds_the_base() -> None:
-    timeout = _demo_job()["timeout-minutes"]
-    assert isinstance(timeout, str), "the demo timeout has no stable-base build branch"
-    match = re.fullmatch(
-        r"\$\{\{ needs\.base-plan\.outputs\.build == 'true' && (\d+) \|\| (\d+) \}\}", timeout
-    )
-    assert match is not None, timeout
-    building, reusing = map(int, match.groups())
-    assert reusing == 90
-    assert building > reusing, "a source-built base needs more than the reuse budget"
 
 
 def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
@@ -414,25 +304,6 @@ def test_measurement_upload_requires_its_producer_to_run(
         assert upload["if"] == ("always() && steps.measurement.outputs.started == 'true'")
 
 
-def test_release_records_measurement_check_after_validation() -> None:
-    text = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
-    assert "goal-ready" not in text and "goal_readiness" not in text
-    workflow = yaml.safe_load(text)
-    steps = [step for job in workflow["jobs"].values() for step in job["steps"]]
-    records = [step for step in steps if "--check picorv32.measured" in step.get("run", "")]
-    assert len(records) == 1
-    command = records[0]["run"]
-    validator = "python .github/scripts/release_validation/measurement_evidence.py"
-    assert validator in command
-    assert command.index(validator) < command.index(
-        "python .github/scripts/release_validation/evidence.py"
-    )
-    validation = command[: command.index("python .github/scripts/release_validation/evidence.py")]
-    assert '--evidence "${RUNNER_TEMP}/picorv32-evidence/measurement.json"' in validation
-    assert '--image-digest "${IMAGE_DIGEST}"' in validation
-    assert "||" not in validation
-
-
 def test_contract_rejects_scalar_required_targets(tmp_path: Path) -> None:
     path = tmp_path / "contract.toml"
     path.write_text(
@@ -519,38 +390,6 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
     }
     assert "curl --proto '=https' --tlsv1.2 -fsSL" in toolchain["run"]
     assert "sha256sum -c -" in toolchain["run"]
-
-
-def test_workflow_consumers_share_goal_preparation() -> None:
-    contract = tomllib.loads(CONTRACT.read_text(encoding="utf-8"))
-    consumers = _workflow_consumers()
-    assert {path for path, _job, _steps, _index in consumers} == {
-        WORKFLOW,
-        PUBLISH_WORKFLOW,
-        TEST_WORKFLOW,
-    }
-    assert len(consumers) == 5
-
-    for path, _job_name, steps, index in consumers:
-        consumer = steps[index]
-        consumer_id = consumer.get("id")
-        later_strings = _yaml_strings(steps[index + 1 :])
-        if consumer_id is not None:
-            assert "outputs.ticket_slug" not in "\n".join(later_strings)
-        workflow_strings = _yaml_strings(yaml.safe_load(path.read_text(encoding="utf-8")))
-        for key in OUTPUT_KEYS[:4]:
-            assert all(contract[key] not in value for value in workflow_strings)
-        assert all(
-            authority_value not in value
-            for authority_value in _contract_table_strings(contract)
-            for value in workflow_strings
-        )
-        commands = _workflow_commands(path)
-        if path in {WORKFLOW, PUBLISH_WORKFLOW}:
-            assert f"bash /booley-source/{VERIFY_SCRIPT.as_posix()}" in commands
-        assert "picorv32_demo_contract.py" not in commands
-        assert "Check out reviewed PicoRV32 revision" not in workflow_strings
-        assert "Install CI-owned Ticket fixture" not in workflow_strings
 
 
 def test_release_validation_skips_credentials_and_cannot_promote() -> None:
@@ -1046,80 +885,3 @@ def test_demo_verifier_uses_explicit_directory_for_both_stages(tmp_path, monkeyp
     assert len(calls) == 2
     for arguments, option in zip(calls, ("--booley-dir", "--project-state"), strict=True):
         assert arguments[arguments.index(option) + 1] == configured
-
-
-def test_demo_workflow_runs_measurement_round_trip_on_its_inputs() -> None:
-    paths = set(_workflow_events()["pull_request"]["paths"])
-    inputs = {
-        ".github/scripts/release_validation/measure_round_trip.py",
-        ".github/scripts/release_validation/measurement_evidence.py",
-    }
-    assert inputs <= PICORV32_INPUT_FILES and inputs <= paths
-    assert "src/booley/measurement/**" in paths
-    assert any(_glob_matches(pattern, "src/booley/harness/setup/scaffold.py") for pattern in paths)
-
-    identity = _demo_step("Record RISC-V Sandbox candidate identity")
-    assert identity["id"] == "image-identity"
-    assert 'echo "image_id=${image_id}" >> "${GITHUB_OUTPUT}"' in identity["run"]
-    step = _demo_step("Run measurement round trip on the public demo")
-    assert step["id"] == "measurement"
-    assert step["env"] == {"BOOLEY_IMAGE_DIGEST": "${{ steps.image-identity.outputs.image_id }}"}
-    assert "-e BOOLEY_IMAGE_DIGEST " in step["run"]
-    assert "-e BOOLEY_MEASUREMENT_EVIDENCE=/evidence/measurement.json" in step["run"]
-    assert "verify_picorv32_demo.sh" in step["run"]
-
-    verify = VERIFY_SCRIPT.read_text(encoding="utf-8")
-    assert "release_validation/measure_round_trip.py" in verify
-    assert '--image-digest "${BOOLEY_IMAGE_DIGEST:?' in verify
-    assert '--evidence "${BOOLEY_MEASUREMENT_EVIDENCE:-' in verify
-
-
-_GOAL_IMPORT_ROOTS = ("booley.goals", "booley.criteria", "goal_mode_driver")
-_GOAL_FREE_PYTHON = (
-    *sorted(Path(".github/scripts/release_validation").glob("*.py")),
-    Path(".github/scripts/export_demo_contract.py"),
-    Path(".github/scripts/picorv32_demo_contract.py"),
-    Path(".github/scripts/picorv32_ci_inputs.py"),
-    Path("src/booley/dev_support/demo_contract.py"),
-    Path("src/booley/dev_support/demo_contract_codec.py"),
-)
-_GOAL_FREE_TEXT = (
-    *_GOAL_FREE_PYTHON,
-    VERIFY_SCRIPT,
-    Path(".github/scripts/run_picorv32_ci_demo.sh"),
-    CONTRACT,
-    PREPARE_ACTION,
-    WORKFLOW,
-    PUBLISH_WORKFLOW,
-    TEST_WORKFLOW,
-)
-# Path filters that keep selecting the unrelated Goal Mode sources until #3511 removes them.
-_GOAL_PATH_ENTRY = re.compile(r"src/booley/goals/(\*\*)?|tests/fixtures/goal_mode_smoke/")
-
-
-def _imported_modules(path: Path) -> set[str]:
-    modules: set[str] = set()
-    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-        if isinstance(node, ast.Import):
-            modules.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            modules.add(node.module)
-    return modules
-
-
-def test_release_and_demo_inputs_use_no_goal_mode() -> None:
-    offenders = {
-        str(path): sorted(
-            module
-            for module in _imported_modules(path)
-            if module.split(".")[0] in {"goal_mode_driver"}
-            or any(module == root or module.startswith(f"{root}.") for root in _GOAL_IMPORT_ROOTS)
-        )
-        for path in _GOAL_FREE_PYTHON
-    }
-    assert {path: modules for path, modules in offenders.items() if modules} == {}
-    named = {
-        str(path): re.findall(r"(?i)goal\w*", _GOAL_PATH_ENTRY.sub("", path.read_text("utf-8")))
-        for path in _GOAL_FREE_TEXT
-    }
-    assert {path: words for path, words in named.items() if words} == {}

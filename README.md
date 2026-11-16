@@ -13,7 +13,9 @@ Booley is an agentic development environment (ADE) for hardware: you direct Clau
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="https://booley.dev/docs/assets/booley-screenshot-light.png">
-  <img alt="Booley in VS Code with two Developer Agent sessions, the Booley Dashboard with Goal progress, and waveform inspection" src="https://booley.dev/docs/assets/booley-screenshot.png">
+  <img alt="Booley in VS Code with two Developer Agent sessions, the Booley
+  Dashboard, and waveform inspection"
+  src="https://booley.dev/docs/assets/booley-screenshot.png">
 </picture>
 
 ## What it does
@@ -21,8 +23,13 @@ Booley is an agentic development environment (ADE) for hardware: you direct Clau
 - **Typed EDA Flows:** `sim`, `lint`, `synth`, and `fpga` replace per-repo glue Tcl scripts. Each Flow runs an EDA job end to end and returns a structured result: pass/fail plus metrics such as area, timing, or cycle counts, not just raw logs. Flows are built on FuseSoC, and the interface stays the same across tools and projects: `sim` stays `sim` whether it runs Verilator today or Xcelium tomorrow.
 - **Reproducible team environment:** Configure the project once, and its Docker environment supplies the same pinned EDA stack, agent tooling, and system dependencies to everyone on the project ([why Docker](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/ARCHITECTURE.md#why-docker)).
 - **One window for all your agents:** RTL work is usually scattered across editors, tool-specific commands, build environments, logs, and waveform viewers. Booley puts your Developer Agent sessions, RTL, terminals, EDA runs, waveforms, and the Booley Dashboard side by side in one VS Code window, so you can direct several agents at once and see what each one is doing.
-- **Sandboxed Developer Agent:** Booley treats the agent like a talented junior engineer. It can write RTL and testbenches, but it is inexperienced with EDA tools, prone to questionable design decisions, and too risky to give unrestricted host access. So the agent and every command it runs stay inside a Docker container with restricted mounts and network access, and its work goes through explicit specifications, automated checks, and human review. That lets it work unattended.
-- **Goal Mode:** You set mandatory Goals up front, such as `SYNTH:synth_fifo (area increase ≤ 10%)` or `COVERAGE:sim_fifo (line ≥ 90%, tests all)`. Goals cover passing tests, lint, area, timing, cycle counts, coverage, mutation testing, and code review. Booley checks each one in deterministic code against fresh recorded Flow results, not against the agent's claim of success ([details](https://booley.dev/docs/goal-mode/#goal-mode)).
+- **Sandboxed Developer Agent:** Booley treats the agent like a talented junior
+  engineer. It can write RTL and testbenches, but it is inexperienced with EDA
+  tools, prone to questionable design decisions, and too risky to give
+  unrestricted host access. So the agent and every command it runs stay inside a
+  Docker container with restricted mounts and network access, and its work goes
+  through explicit specifications, automated checks, and human review. That lets
+  you leave it running while you work on something else.
 - **Waveform queries:** `bwave` lets the agent find, sample, snapshot, and measure real simulation traces. Ask "When did `data_o` equal `0xDEADBEEF`?" and it answers from simulation data instead of guessing from RTL.
 
 The [Features page](https://booley.dev/docs/features/) is the complete feature reference.
@@ -96,6 +103,7 @@ Support for additional commercial EDA tools is coming soon; see the
 - [Architecture](https://booley.dev/docs/architecture/)
 - [Setup](https://booley.dev/docs/setup/)
 - [Usage](https://booley.dev/docs/usage/)
+- [Metric-Driven Development](https://booley.dev/docs/metric-driven-development/)
 - [Flow reference](https://booley.dev/docs/flow-reference/)
 - [Supported EDA tools](https://booley.dev/docs/supported-eda-tools/)
 - [Limitations](https://booley.dev/#limitations)

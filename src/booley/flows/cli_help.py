@@ -98,8 +98,7 @@ EXPERT_GUIDANCE = (
 )
 BASELINE_HELP = HelpOption(
     "baseline",
-    "When omitted, use the baseline pinned at Goal entry for relative criteria; "
-    "otherwise run without baseline comparison.",
+    "Git ref to compare against. When omitted, run without baseline comparison.",
 )
 PPA_HELP = HelpOption(
     "ppa_profile",
@@ -149,7 +148,6 @@ def shared_help(flow_name: str, *, target_required: bool) -> tuple[HelpGroup, ..
                     "work_dir", "When omitted, discover the Project from the current directory."
                 ),
                 HelpOption("target", target),
-                HelpOption("diagnostic", "Default: off."),
                 HelpOption("dry_run", "Default: off."),
                 HelpOption(
                     "timeout_ms",

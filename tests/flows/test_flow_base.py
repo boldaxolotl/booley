@@ -47,11 +47,9 @@ class EchoFlow(BooleyFlow):
         if result.returncode == 0:
             return McpToolResult(
                 exit_code=EXIT_SUCCESS,
-                criterion_key="echo_pass",
-                criterion_met=True,
                 detail={"output": result.stdout.strip()},
             )
-        return McpToolResult(exit_code=EXIT_FAILURE, criterion_met=False)
+        return McpToolResult(exit_code=EXIT_FAILURE)
 
 
 class TestBooleyFlowExecution:
@@ -120,10 +118,8 @@ class TestBooleyFlowExecution:
         flow = EchoFlow()
         with patch.dict(os.environ, env):
             flow.parse_args(["--target", "test", "--message", "hello world"])
-        flow.read_state()
         result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
-        assert result.criterion_met is True
         assert "hello world" in result.detail.get("output", "")
 
     def test_command_not_found(self, tmp_path: Path):
@@ -152,7 +148,6 @@ class TestBooleyFlowExecution:
         flow = MissingCmdFlow()
         with patch.dict(os.environ, env):
             flow.parse_args(["--target", "test"])
-        flow.read_state()
         result = flow._run()
         assert result.exit_code == EXIT_ERROR
 
@@ -179,7 +174,6 @@ class TestBooleyFlowExecution:
         flow = EmptyFlow()
         with patch.dict(os.environ, env):
             flow.parse_args(["--target", "test"])
-        flow.read_state()
         result = flow._run()
         assert result.exit_code == EXIT_ERROR
 
@@ -404,7 +398,6 @@ class TestTimeoutKillsTheWholeTree:
         flow = HangFlow()
         with patch.dict(os.environ, _env_with_state(state_file)):
             flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
-        flow.read_state()
         return flow
 
     @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")

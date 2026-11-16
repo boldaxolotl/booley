@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 from tests.conftest import symlink_or_skip
-from tests.goals.conftest import git
+from tests.git_support import git
 
 from booley.runtime.git_ignore import ignored_paths
 

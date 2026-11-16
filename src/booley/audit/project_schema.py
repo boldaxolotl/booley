@@ -13,7 +13,7 @@ from booley.audit.config_common import (
     fail_finding,
     failure,
 )
-from booley.config.goals import parse_dashboard
+from booley.config.sandbox import parse_dashboard
 from booley.core.boundary import (
     BoundaryError,
     as_dict,
@@ -35,7 +35,6 @@ KNOWN_BOOLEY_TOML_TABLES = frozenset(
         "jobs",
         "interactive",
         "feedback",
-        "goals",
         "eda",
         "stealth",
         "submodules",
@@ -63,7 +62,7 @@ RETIRED_BOOLEY_TOML_TABLES = {
         "retired — move deterministic settings to [flows.*] and Specialist "
         "settings to [specialists.*]"
     ),
-    "fusesoc": "removed in ADR 0030 — Target scoping now lives in .core files",
+    "fusesoc": "removed in ADR 0030 — Target scoping now lives in .core files; delete this table",
     "sources": (
         "file sources come from the .core description (testbench filesets carry "
         "tags: [tb]); delete this table"
@@ -76,6 +75,8 @@ def audit_known_tables(data: Mapping[str, Any]) -> ConfigTableAudit:
     findings: list[ConfigFinding] = []
     for key in data:
         if key in KNOWN_BOOLEY_TOML_TABLES or key in IGNORED_BOOLEY_TOML_TABLES:
+            continue
+        if key == "goals":  # a retired section: audit_retired_goals_section reports it
             continue
         if key == "mcp_tools":
             findings.append(
@@ -445,12 +446,25 @@ def audit_retired_jobs_keys(path: Path) -> ConfigTableAudit:
     )
 
 
-def audit_goals_table(data: Mapping[str, Any]) -> ConfigTableAudit:
-    """Validate Goal presentation knobs without inferring client lifecycle."""
-    from booley.config.goals import parse_quiet_after
+def audit_retired_goals_section(path: Path) -> ConfigTableAudit:
+    """One FAIL when the ``booley.toml`` at *path* still has a ``[goals]`` section (Goal Mode is gone)."""
+    from booley.config.retired import (
+        goals_section_fix,
+        goals_section_location,
+        goals_section_spans,
+        has_goals_section,
+    )
 
-    try:
-        parse_quiet_after(data)
-    except ValueError as exc:
-        return failure(str(exc), "set [goals].quiet_after to 60..604800 seconds")
-    return ConfigTableAudit()
+    spans = goals_section_spans(path)
+    if not has_goals_section(path):
+        return ConfigTableAudit()
+    return ConfigTableAudit(
+        (
+            ConfigFinding(
+                ConfigFindingSeverity.FAIL,
+                f"booley.toml has a [goals] section{goals_section_location(spans)}; Goal Mode was removed",
+                goals_section_fix(path, spans),
+                check_id="config.retired-goals",
+            ),
+        )
+    )

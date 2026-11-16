@@ -2,7 +2,7 @@
 
 Bug-hunt Booley's GUI surfaces in a browser Codespace on the published PicoRV32
 demo: onboarding, the Dashboard, the B-Wave Waveform Viewer (VaporView), the
-terminal, the Review Package preview, Live Preview and the docs site. The main
+terminal, the Measurement Report, Live Preview and the docs site. The main
 bug class is **the GUI disagrees with the CLI**: every GUI claim gets checked
 against a CLI oracle, or the missing oracle is logged as a gap. The
 `booley-qa-run` skill runs this mission; to check one PR's GUI change, use
@@ -22,13 +22,16 @@ against a CLI oracle, or the missing oracle is logged as a gap. The
   signed into GitHub as the maintainer, and `gh` with the `codespace` scope.
   Deleting a candidate image this run dispatched also needs `read:packages` and
   `delete:packages`.
-- Agent: the demo's own sign-in (START-HERE step 1); the Zbb Goal uses about
-  half an hour of that allowance. Run at most one Goal at a time.
-- Budget: 4 h: 230 area minutes plus 10 contingency, one 4-core Codespace
-  (about 4 h of the Free plan's ~30 h). Areas are in priority order. Area 5
-  needs area 3's Goal still running, and the Goal (about 30 min) usually ends
-  inside area 3's hour: once the Goal has run about 10 min and the Flow
-  comparisons are done, do area 5, then finish area 3. Log the order.
+- Agent: the demo's own sign-in (START-HERE step 1); area 3's Zbb request uses
+  about half an hour of that allowance and area 4's reviewer run a few
+  minutes. Run at most one such request at a time.
+- Budget: 4 h 35 min: 265 area minutes plus 10 contingency, one 4-core
+  Codespace (about 4.6 h of the Free plan's ~30 h). Areas are in priority
+  order. Areas 4 (its warnings item) and 6 need area 3's child or its
+  measurement still running, and that work (about 30 min) usually ends inside
+  area 3's hour: once it has run about 10 min and the Flow comparisons are
+  done, do area 6 and area 4's warnings item, then finish area 3. Log the
+  order.
 
 ## Mission-specific rules
 - **Allowed external actions.** This mission needs some writes that the run
@@ -40,9 +43,10 @@ against a CLI oracle, or the missing oracle is logged as a gap. The
 - **Run skill adjustments.** The candidate runs in the Codespace, not on the
   host: skip the run skill's host-install check (its step 2) and record the
   candidate `<sha>` and image tag in the `log.md` identity header instead.
-  Its step-5 Goal Record copy can't be done here (the Codespace has no sshd):
-  save `booley goal status --long` output instead, and if a Goal finding needs
-  the full record, keep the Codespace stopped under the runbook's live-repro
+  Its step-5 copy of the Main Booley Directory's `measurements/` can't be done
+  here (the Codespace has no sshd): save the stored run documents and reports
+  through the terminal instead, and if a measurement finding needs the whole
+  store, keep the Codespace stopped under the runbook's live-repro
   exception rather than deleting it.
 - **Runbook hard rules apply throughout**: no clipboard, no typing into Monaco,
   only your own tab, no changes to the maintainer's VS Code settings, no reload
@@ -70,7 +74,7 @@ against a CLI oracle, or the missing oracle is logged as a gap. The
 Intent: a new user gets from "Open in Codespaces" to a working Booley without help.
 Try:
 - Runbook steps 1-5 with `<sha>` = the candidate. In the first command
-  terminal, run `touch /tmp/qa-start` (area 8 uses it). It lives in the
+  terminal, run `touch /tmp/qa-start` (area 9 uses it). It lives in the
   Codespace, not on the host, so the run skill's no-`/tmp` rule doesn't apply. Record in `log.md`: click on
   "Create codespace", state `Available`, trust prompt, Dashboard visible,
   `booley --version` correct, first Flow passing.
@@ -112,19 +116,23 @@ panel height, glyphs that don't render, a window that disagrees with the CLI.
 Evidence: `dashboard-default-*` screenshots; the switch entry in `log.md`.
 
 ### 3. dashboard-live — Dashboard under real work (~60 min)
-Intent: with a Goal and Flows running, every Dashboard view matches the CLI.
+Intent: with a child, a measurement and Flows running, every Dashboard view
+matches the CLI.
 Try:
-- In one terminal start `booley` and send the demo README's Goal prompt
-  ("Create a new zbb worktree and use /booley-goal with the zbb Goalset to
-  implement the design described in .booley/specs/zbb-design.md"). Confirm the
-  Goals when it asks, and note the worktree and session handle.
-- While the Goal runs, start two overlapping Flows from a second command
+- From a command terminal, write
+  [`../picorv32/fixtures/metrics.toml`](../picorv32/fixtures/metrics.toml) into
+  `.booley/metrics.toml` and commit it in the Booley Directory's repository.
+- In one terminal start `booley` and send "Create a new zbb worktree and
+  implement the design described in .booley/specs/zbb-design.md. Then give me a
+  Measured Commit." Approve a `metrics.toml` change when asked, and note the
+  worktree and session handle.
+- While the child works, start two overlapping Flows from a second command
   terminal: `booley flow sim --target sim_core` and
   `booley flow synth --target synth_core`.
 - Compare against the oracles: the Sessions overview and preview pane (which
   sessions, branch, work dir, last call; `git worktree list`), session detail,
-  Goal rows and Goal detail (`booley goal status --long` in
-  `.booley/worktrees/zbb`), the Jobs window and Job detail (Job records and
+  the session's measurement line against the stored run and the `measure` Job
+  (runbook step 8), the Jobs window and Job detail (Job records and
   `ps`; the shell Flows are Standalone Jobs and appear there too), and the
   Targets window (`booley targets`). Check that a worktree session (ADR 0082)
   shows its own worktree and that NEEDS YOU and `Sessions N◆` appear when the
@@ -145,17 +153,52 @@ Try:
 - Reload recovery, last: Developer: Reload Window, then the documented way
   back to the Dashboard. #2857 (the Dashboard orphaned after reload) is
   known; record what you saw, not a new finding, unless it differs.
-- Dashboard Run (ADR 0086): start one Flow from the top bar's Run item, check
-  the equivalent shell command it shows, and compare the resulting Job with
-  the same CLI run.
 Look for: Jobs missing or duplicated, stale status after a run ends, wrong
-session attribution between the Goal and the shell, counts that disagree with
-`booley goal status`, keys that do nothing or do something the footer doesn't
+session attribution between the child and the shell, a measurement line that
+disagrees with
+the stored run, keys that do nothing or do something the footer doesn't
 say.
 Evidence: `dashboard-live-*` screenshot plus oracle pairs for each view; one
 pair per mismatch.
 
-### 4. bwave-gui — Scoped waveform views (~35 min)
+### 4. run-wizard — Launch from the Dashboard's Run wizard (~35 min)
+Intent: every launch from the top bar's Run item (ADR 0086) starts the same
+Standalone Job as the shell command its review screen shows.
+Try:
+- Flow: from `↑` into the top bar, open Run, pick the main worktree, a built-in
+  Flow and a Target from the picker (`sim` on `sim_core`). Check the Target and
+  Test Run pickers against `booley targets`. On the review screen, compare the
+  shown command with the form, the queue line ("Runs now" or "Admitted by
+  memory") with the Flow, and the timeout line with the Flow's settings. Submit,
+  then run the shown command in a terminal and compare the two Jobs (runbook
+  step 8).
+- Warnings: open Run again while area 3's child is connected and a Flow is
+  running, with one uncommitted file in the worktree. The review screen warns
+  about the session, the running Job and the change, and still lets you
+  submit. Back out with `Escape` from each stage; nothing starts.
+- Reviewer Specialist: launch `reviewer` on `picorv32.v`. The review screen
+  shows the model and Agent CLI, says it uses model tokens on that CLI's
+  credential with its `auth` setting, and gives the per-call timeout. Check
+  each line against `booley specialist reviewer --help` and the `[agent]`
+  settings. Submit once; compare the finished report with the CLI's. Don't
+  sign out to reach the no-credential warning or refusal; log it as a gap.
+- Mutation Flow: launch `mutation` on `sim_core` with a small `--count` (5).
+  The form offers only Targets the sim Flow can run. Compare the Job and its
+  report with the same `booley flow mutation` command.
+- `coverage_analyst`: with no Coverage Record the picker says how to make one;
+  check that text. Run `booley flow sim --coverage --target sim_core`, then
+  launch `coverage_analyst` on the new record from the picker. If the demo's
+  simulator can't record coverage, log the refusal and skip the launch.
+- Copy command: for one Flow and one Specialist, use Copy command instead of
+  Submit and check that nothing started.
+Look for: a shown command that differs from what ran, a Job that starts with
+different options or a different worktree, a missing or wrong warning, a model
+or `auth` line that disagrees with the settings, a Submit that starts twice, a
+back-out that leaves a Job behind.
+Evidence: `run-wizard-*` review-screen screenshots, each with its Job record
+and the CLI run's record.
+
+### 5. bwave-gui — Scoped waveform views (~35 min)
 Intent: what VaporView shows is what `bwave gui` asked for and what it reported back.
 Try:
 - Register a fresh trace from area 1's or 3's `sim_core` run. Run scoped views
@@ -182,24 +225,26 @@ markers in the wrong place, a silent fallback, a view sent to the wrong tab.
 Evidence: `bwave-gui-*` screenshots, each with the command and its report as
 `.txt`.
 
-### 5. stop-resume — Stop and resume the Codespace mid-Goal (~15 min)
+### 6. stop-resume — Stop and resume the Codespace mid-measurement (~15 min)
 Intent: Booley state survives a Codespace stop, and the GUI comes back to it.
-Depends on: area 3's Goal still running; run it inside area 3 (see the
-budget note).
+Depends on: area 3's child or measurement still running; run it inside area 3
+(see the budget note).
 Try:
-- Note `booley goal status --long`, the Job records and the Dashboard. Stop
+- Note the Job records, the Dashboard and its measurement line. Stop
   the Codespace with `gh codespace stop --codespace <name>` and time it.
 - Reopen it in your tab (`https://<name>.github.dev`), trust again if asked,
   and time the way back to the Dashboard.
 - After resume: the Dashboard reattaches by itself; finished Jobs and their
-  results are still listed; the Goal shows its true state. Resume the Goal the
-  documented way (start `booley`, `/booley-goal start`) and check that it picks
-  up where it stopped.
-Look for: Jobs reported running forever, lost results, a Goal that can't
-resume, a Dashboard that needs manual restarting.
+  results are still listed; an interrupted measurement is never shown Measured.
+  Resume the
+  agent session (`booley chat --resume <id>` for Claude, `booley chat resume
+  --last` for Codex) and ask it to continue; measuring again needs no
+  `--again`.
+Look for: Jobs reported running forever, lost results, a cancelled run shown
+Measured, a Dashboard that needs manual restarting.
 Evidence: `stop-resume-*` before/after pairs with oracle output.
 
-### 6. terminal-output — CLI rendering in the browser terminal (~15 min)
+### 7. terminal-output — CLI rendering in the browser terminal (~15 min)
 Intent: Booley's CLI output reads as well in the browser as in a desktop terminal.
 Try:
 - Glyphs and colors in `booley doctor`, `booley targets` and `booley help`;
@@ -214,28 +259,30 @@ Look for: mojibake, colors unreadable on the theme, links that open the wrong
 file or line, progress that floods the scrollback.
 Evidence: `terminal-output-*` screenshots.
 
-### 7. goal-finish — Review Package in the editor (~15 min)
-Intent: a user can read the finished Goal's Review Package inside the Codespace.
-Depends on: area 3's Goal finishing; if it didn't, use the last state and say so.
+### 8. measure-report — Measurement Report in the editor (~15 min)
+Intent: a user can read a Measurement Report inside the Codespace.
+Depends on: area 3's measurement; if none finished, run `booley measure` in
+that worktree.
 Try:
-- Open the Review Package path that Finish printed (also in
-  `booley goal status`) in the Markdown preview. Check headings, tables,
-  diffs, and that every relative link and image resolves.
-- Compare its Goal list and verdicts with `booley goal status --long`.
-Look for: broken links, raw Markdown where a table should be, a package that
-disagrees with the CLI.
-Evidence: `goal-finish-*` screenshots and the status output.
+- Press `Enter` on the measurement line to open the Markdown report. In the
+  Markdown preview check the verdict line, the header, failing rows first, the
+  metric table, the Δ column when a base run exists, red and amber as words,
+  and that every link resolves.
+- Compare it with the stored run document (runbook step 8).
+Look for: broken links, raw Markdown where a table should be, a report that
+disagrees with the stored run.
+Evidence: `measure-report-*` screenshots and the run document.
 
-### 8. live-preview — HTML reports in Live Preview (~10 min)
+### 9. live-preview — HTML reports in Live Preview (~10 min)
 Intent: HTML reports open through the bundled Live Preview extension.
 Try: find the HTML reports this run produced
-(`find /workspaces/picorv32 -name '*.html' -newer /tmp/qa-start`), including
-any `explanation.html` from area 7, and open each with Live Preview. Check the
+(`find /workspaces/picorv32 -name '*.html' -newer /tmp/qa-start`), and open each
+with Live Preview. Check the
 preview loads and its links work.
 Look for: a blank preview (dead port tunnel), missing styles, broken links.
 Evidence: `live-preview-*` screenshots.
 
-### 9. matrix — Viewport and theme matrix (~15 min)
+### 10. matrix — Viewport and theme matrix (~15 min)
 Intent: the main views still work at other sizes and themes.
 Try: the main run is 1440×900, dark. Do a short pass over the Dashboard
 Sessions window and one scoped VaporView view at 1024 wide, then `Light 2026`,
@@ -246,7 +293,7 @@ Look for: status shown by color alone (it never may be), text that vanishes
 on a theme, layout that breaks at 1024.
 Evidence: `matrix-*` screenshots named by size and theme.
 
-### 10. docs-site — Docs site and demo links (~10 min)
+### 11. docs-site — Docs site and demo links (~10 min)
 Intent: the public docs render and the demo's links lead somewhere real.
 Try: open https://booley.dev/ in your tab. Check the pages the demo README
 and START-HERE link to, their rendering, code blocks and images, and every
@@ -254,7 +301,7 @@ link from those two files.
 Look for: dead links, a docs page that contradicts what the Codespace did.
 Evidence: `docs-site-*` screenshots and the list of links checked.
 
-### 11. cleanup — Runbook cleanup (~10 min)
+### 12. cleanup — Runbook cleanup (~10 min)
 Try: runbook step 10. Delete the candidate image versions only under the
 rule above. Then release every `resources.md` row.
 Look for: anything the runbook's checks still list, a Codespace that won't
@@ -263,9 +310,10 @@ delete.
 ## Known traps
 - The Sessions preview pane appears only when the terminal is at least 120
   columns wide; at the default panel width its absence is not a finding.
-- Area 3's Goal runs about half an hour. Start it as soon as area 3 begins,
+- Area 3's request runs about half an hour. Start it as soon as area 3 begins,
   and do the keyboard and resize items while it works.
-- The demo's own `zbb` Goalset is the one to use here, unlike the picorv32
-  mission, which brings its own.
+- The demo's README still describes a removed feature in its main event and
+  ships its records, so Doctor warns `goals.leftover`; both are known, not
+  findings. Use area 3's request instead.
 - A Codespace opens light or dark at random across runs, and a reload can flip
   it; runbook step 6 pins it, so areas 1-2 note the theme they got.

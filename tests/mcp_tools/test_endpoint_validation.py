@@ -36,24 +36,17 @@ def test_project_criteria_extend_known_satisfies_without_importing_code(project,
     (data / "criteria.toml").write_text('[custom_gate]\ndescription = "Project gate"\n')
     _endpoint(data, satisfies="['lint_clean', 'custom_gate']")
     with caplog.at_level(logging.DEBUG, logger="booley.mcp.endpoint_validation"):
-        validate_custom_endpoints_and_criteria(root)
+        assert validate_custom_endpoints_and_criteria(root) == []
     assert "validation complete" in caplog.text
     assert not any(record.levelno >= logging.WARNING for record in caplog.records)
 
 
-@pytest.mark.parametrize(
-    "satisfies,warning",
-    [
-        ("[]", "satisfies=[]"),
-        ("['missing_gate']", "unknown criterion 'missing_gate'"),
-    ],
-)
-def test_missing_satisfies_warns_without_failing_project(project, caplog, satisfies, warning):
+def test_doctor_ignores_project_endpoint_satisfies(project, caplog):
     root, data = project
-    _endpoint(data, satisfies=satisfies)
-    validate_custom_endpoints_and_criteria(root)
-    assert warning in caplog.text
-    assert "custom.py" in caplog.text
+    for satisfies in ("[]", "['missing_gate']"):
+        _endpoint(data, satisfies=satisfies)
+        assert validate_custom_endpoints_and_criteria(root) == []
+    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
 
 
 @pytest.mark.parametrize(
@@ -76,36 +69,64 @@ def test_sandbox_metadata_warning_only_for_a_literal_string(project, caplog, dec
         assert "endpoints run in the Sandbox" in caplog.text
 
 
-@pytest.mark.parametrize(
-    "source,warning",
-    [
-        ("class Invalid(:\n", "Python syntax error"),
-        ("class Ordinary:\n    name = 'ordinary'\n", "no McpTool/BooleyFlow/Specialist"),
-        ("class Custom(McpTool):\n    name = 'missing_description'\n", "missing name/description"),
-    ],
+_NO_SUBCLASS_REASON = (
+    "no McpTool, BooleyFlow or Specialist subclass with plain string literal name and description"
 )
-def test_bad_endpoint_is_skipped_with_a_filename(project, caplog, source, warning):
+_NO_SUBCLASS_FIX = (
+    "make `name` and `description` plain string literals on an McpTool, "
+    "BooleyFlow or Specialist subclass"
+)
+
+
+@pytest.mark.parametrize(
+    "source,reason,fix",
+    [
+        (
+            "x = 1\nclass Invalid(:\n",
+            "Python syntax error on line 2: invalid syntax",
+            "fix the syntax error",
+        ),
+        (
+            "class Ordinary:\n    name = 'ordinary'\n",
+            _NO_SUBCLASS_REASON,
+            _NO_SUBCLASS_FIX,
+        ),
+        (
+            "class Custom(McpTool):\n    name = 'missing_description'\n",
+            _NO_SUBCLASS_REASON,
+            _NO_SUBCLASS_FIX,
+        ),
+        (
+            None,
+            "name 'lint' collides with the built-in endpoint 'lint'",
+            "rename the class's `name` attribute",
+        ),
+    ],
+    ids=["syntax-error", "no-subclass", "missing-description", "builtin-collision"],
+)
+def test_skipped_endpoint_is_returned_with_reason_and_fix(project, source, reason, fix):
     root, data = project
-    (data / "mcp_tools/custom.py").write_text(source)
-    validate_custom_endpoints_and_criteria(root)
-    assert warning in caplog.text
-    assert "custom.py" in caplog.text
+    if source is None:
+        _endpoint(data, name="lint", satisfies="['missing_gate']")
+    else:
+        (data / "mcp_tools/custom.py").write_text(source, encoding="utf-8")
+    skipped = validate_custom_endpoints_and_criteria(root)
+    assert [(s.file, s.reason, s.fix) for s in skipped] == [("custom.py", reason, fix)]
 
 
 def test_builtin_name_collision_is_skipped_before_satisfies_validation(project, caplog):
     root, data = project
     _endpoint(data, name="lint", satisfies="['missing_gate']")
     validate_custom_endpoints_and_criteria(root)
-    assert "conflicts with a built-in endpoint" in caplog.text
     assert "missing_gate" not in caplog.text
 
 
 def test_disabled_flow_and_private_files_are_not_validated(project, caplog):
     root, data = project
-    _endpoint(data, base="BooleyFlow", satisfies="['missing_gate']")
-    (data / "booley.toml").write_text("[flows.custom_check]\nenabled = false\n")
+    _endpoint(data, base="BooleyFlow", name="lint", satisfies="['missing_gate']")
+    (data / "booley.toml").write_text("[flows.lint]\nenabled = false\n")
     (data / "mcp_tools/_ignored.py").write_text("invalid syntax !")
-    validate_custom_endpoints_and_criteria(root)
+    assert validate_custom_endpoints_and_criteria(root) == []
     assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
 
 
@@ -153,10 +174,46 @@ def test_doctor_source_checkout_validation_is_failure_not_traceback():
     doctor._check_custom_endpoints_and_criteria(
         Path(doctor.__file__).resolve().parents[3],
         lambda _: pytest.fail("Source Checkout was accepted as a Project"),
+        lambda *_a: pytest.fail("Source Checkout produced a warning"),
         lambda message, fix="": outcomes.append(message),
     )
     assert len(outcomes) == 1
     assert "Source Checkout cannot be initialized or used as a Project" in outcomes[0]
+
+
+def test_doctor_warns_once_per_skipped_file_without_pass_line(project):
+    from booley.harness import doctor
+
+    root, data = project
+    (data / "mcp_tools/broken.py").write_text("x = 1\nclass Invalid(:\n", encoding="utf-8")
+    (data / "mcp_tools/ordinary.py").write_text(
+        "class Ordinary:\n    name = 'ordinary'\n", encoding="utf-8"
+    )
+    outcomes = []
+    doctor._check_custom_endpoints_and_criteria(
+        root,
+        lambda message: outcomes.append(("pass", message)),
+        lambda finding, fix="": outcomes.append(
+            ("warn", finding.check_id, finding.subject, str(finding), fix)
+        ),
+        lambda message, fix="": outcomes.append(("fail", message)),
+    )
+    assert outcomes == [
+        (
+            "warn",
+            "project.custom-endpoint-skipped",
+            "broken.py",
+            "custom endpoint broken.py skipped: Python syntax error on line 2: invalid syntax",
+            "fix the syntax error",
+        ),
+        (
+            "warn",
+            "project.custom-endpoint-skipped",
+            "ordinary.py",
+            f"custom endpoint ordinary.py skipped: {_NO_SUBCLASS_REASON}",
+            _NO_SUBCLASS_FIX,
+        ),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -197,6 +254,7 @@ def test_external_booley_directory_has_doctor_preflight_parity(tmp_path, monkeyp
     doctor._check_custom_endpoints_and_criteria(
         root,
         lambda message: outcomes.append(("pass", message)),
+        lambda message, fix="": outcomes.append(("warn", message)),
         lambda message, fix="": outcomes.append(("fail", message)),
     )
     if conflict:

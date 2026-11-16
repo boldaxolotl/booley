@@ -237,7 +237,7 @@ class _Facts(Protocol):
 def evidence_test_run_rows(outcome: _EvidenceOutcome) -> list[dict[str, object]]:
     """The rows of :func:`simulation_record_test_run_rows`, authenticated for evidence.
 
-    A record that later matches Goal evidence on a Test Run's ``name`` and
+    A record that later matches evidence on a Test Run's ``name`` and
     ``fingerprint`` must not take them from a file that merely sits where the
     manifest should be. The manifest read here must be the one the acceptance
     facts name by digest, and every row must carry the fingerprint its

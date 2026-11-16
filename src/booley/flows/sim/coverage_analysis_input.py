@@ -192,6 +192,24 @@ def _reference_projection(
         raise CoverageAnalysisError("Simulation Record manifest disagrees with reference")
 
 
+STEALTH_SOURCE_LIMITATION = (
+    "Stealth Mode: Booley does not inspect sources, so analysis uses normalized "
+    "report evidence only and no Waiver Candidate is ready for human review."
+)
+
+
+def stealth_source_limitation(project_root: Path) -> str | None:
+    """Return the Stealth Mode reason sources are unavailable, or None outside it."""
+    from booley.fusesoc.core_projection import projection_enabled
+
+    try:
+        enabled = projection_enabled(project_root)
+    except ValueError:
+        # An unreadable configuration is a report-only cause coverage_sources already folds in.
+        return None
+    return STEALTH_SOURCE_LIMITATION if enabled else None
+
+
 def coverage_sources(
     coverage_record: CoverageRecord, project_root: Path
 ) -> CoverageSourceClosure | None:

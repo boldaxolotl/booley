@@ -1,10 +1,11 @@
 """Shared time budget for subprocesses that test helpers launch.
 
-CI runs every test under ``--timeout=60`` (``.github/workflows/test.yml``) and
-the Windows lanes add ``--timeout-headroom=0.8`` (48 s of useful work).  A
-helper that waits on a child process must therefore give up well inside that
-budget, so a hung child fails one test with a message naming the command
-instead of freezing a pytest-xdist worker until the whole job is killed.
+A helper that waits on a child process must give up well inside the per-test
+limit, so a hung child fails one test with a message naming the command instead
+of freezing a pytest-xdist worker until the whole job is killed. The budget is
+the scaled hang guard of ``tests/time_budget.py``; the policy, and why the
+per-test limit stays at least twice the guard, are in
+``.github/ci/README.md#test-time-budgets``.
 
 Shared helpers start such a child through ``run_bounded_child``: plain
 ``subprocess.run(timeout=...)`` kills only the direct child and, on Windows,
@@ -21,10 +22,11 @@ from collections.abc import Mapping
 import pytest
 
 from booley.runtime.platform_paths import run_captured_bounded
+from tests.time_budget import hang_guard_s
 
 #: Seconds a test helper may wait for a script or external tool (git, bash, ...).
-#: Half of the 60 s per-test budget and under the 48 s Windows headroom limit.
-SUBPROCESS_TIMEOUT_S = 30
+#: The scaled hang guard: 30 s, times ``BOOLEY_TEST_TIME_SCALE``.
+SUBPROCESS_TIMEOUT_S = hang_guard_s()
 
 
 def _captured(stream: str | bytes | None) -> str:

@@ -47,7 +47,9 @@ def no_docker_process(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 @pytest.fixture
-def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_sandbox_attachment: object
+) -> Path:
     """A Project root on a disposable host: isolated home and config, logins, trusted launcher."""
     home = tmp_path / "home"
     home.mkdir()

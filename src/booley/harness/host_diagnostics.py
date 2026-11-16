@@ -22,10 +22,12 @@ from booley.runtime import (
     session_issuance,
 )
 from booley.runtime.host_install import (
+    SHADOWED_INSTALL_FIX,
     HostInstallationError,
     current_host_installation,
     host_identity_differences,
     load_host_installation,
+    shadowing_installs,
 )
 from booley.runtime.image_lifecycle import Intent
 from booley.runtime.paths import skills_dir
@@ -101,9 +103,10 @@ def _inspect_session_stores(report: Findings) -> None:
             # The message carries its own repair (reissue, chmod, or the stray path).
             report.fail(
                 f"Session store check: {exc}",
-                "apply the repair in the message (a misnamed file: remove it and reissue with "
-                "`booley init --seed`) or remove the file it names, then rerun `booley doctor`; "
-                "Doctor names one file per store, so rerun until it passes",
+                "apply the repair in the message, in order (a misnamed file: run any Docker "
+                "commands it names, then remove the file and reissue with `booley init --seed`); "
+                "when the message names no repair, remove the file it names; then rerun "
+                "`booley doctor`; Doctor names one file per store, so rerun until it passes",
             )
             healthy = False
     if healthy:
@@ -194,11 +197,15 @@ def _inspect_host_installation(report: Findings) -> None:
         report.fail(str(exc), "booley bootstrap")
         return
     if actual != identity:
-        report.fail(
+        message = (
             "current Booley process does not match the canonical host installation "
-            f"({host_identity_differences(identity, actual)})",
-            "booley bootstrap --update",
+            f"({host_identity_differences(identity, actual)})"
         )
+        listing = shadowing_installs(identity, actual)
+        if listing:
+            report.fail(f"{message}; {listing}", SHADOWED_INSTALL_FIX)
+        else:
+            report.fail(message, "booley bootstrap --update")
         return
     report.pass_(
         "canonical Booley host installation "
@@ -236,7 +243,7 @@ def _add_bootstrap(result: bootstrap.BootstrapResult, report: Findings) -> None:
     for finding in result.findings:
         message = f"Host Bootstrap {finding.resource}: {finding.detail}"
         if finding.state is bootstrap.BootstrapState.ERROR:
-            report.fail(message, "booley bootstrap")
+            report.fail(message, finding.doctor_fix or "booley bootstrap")
         elif finding.state is bootstrap.BootstrapState.PENDING:
             report.warn(
                 f"{message} — run booley bootstrap",

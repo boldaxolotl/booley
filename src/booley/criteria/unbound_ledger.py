@@ -1,4 +1,4 @@
-"""V1 evidence composition for Interactive calls without a Goal binding."""
+"""V1 evidence composition for Interactive calls."""
 
 from __future__ import annotations
 

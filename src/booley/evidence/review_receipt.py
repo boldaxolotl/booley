@@ -42,7 +42,6 @@ class ReviewInvocation:
     spec_path: Path | None = None
     spec_text: str | None = None
     steering: str = ""
-    tb_policy_digest: str = ""
     # Every guide the review runs, so editing one makes the receipt stale.
     guides: tuple[ReviewGuide, ...] = ()
 
@@ -117,7 +116,6 @@ def build_review_contract_detail(invocation: ReviewInvocation) -> dict[str, Any]
         "ticket_digest": _document_digest(ticket),
         "spec_source": str(spec.resolve()) if spec else "",
         "spec_digest": _document_digest(spec),
-        "tb_policy_digest": invocation.tb_policy_digest,
         "steering_digest": _digest(invocation.steering),
         "guides": [
             {
@@ -131,27 +129,13 @@ def build_review_contract_detail(invocation: ReviewInvocation) -> dict[str, Any]
         "declared_guides": declared_guide_names(invocation.category, invocation.focus),
     }
     if invocation.spec_text is not None:
-        # Inline text has no file: the contract carries it, so --verify and freshness reuse it.
+        # Inline text has no file: so the contract carries the reviewed text and freshness can reuse it.
         contract.update(
             spec_text=invocation.spec_text,
             spec_source="",
             spec_digest=_text_digest(invocation.spec_text),
         )
     return contract
-
-
-def finalize_review_detail(
-    detail: Mapping[str, Any], source_fingerprint: Mapping[str, Any]
-) -> dict[str, Any]:
-    """Attach one source stamp and derive its receipt ID atomically."""
-    finalized = dict(detail)
-    finalized["_source_fingerprint"] = dict(source_fingerprint)
-    contract = finalized.get("contract")
-    if isinstance(contract, Mapping):
-        finalized["receipt_id"] = _digest(
-            {"contract": dict(contract), "source_fingerprint": dict(source_fingerprint)}
-        )
-    return finalized
 
 
 def review_invocation_changed(
@@ -225,8 +209,6 @@ def _guides_changed(contract: Mapping[str, Any]) -> bool:
 def review_receipt_drift(
     detail: Mapping[str, Any],
     work_dir: Path,
-    *,
-    tb_policy_digest: str | None = None,
 ) -> list[str]:
     """Return changed dimensions for a persisted source-scoped receipt."""
     contract = detail.get("contract")
@@ -260,14 +242,6 @@ def review_receipt_drift(
     )
     if contract.get("scope_hashes") != _scope_hashes(work_dir, scope):
         changed.append("scope")
-    category = contract.get("category")
-    category = category if isinstance(category, str) else ""
-    if (
-        category == "tb"
-        and tb_policy_digest is not None
-        and (contract.get("tb_policy_digest") != tb_policy_digest)
-    ):
-        changed.append("tb_policy")
     if _guides_changed(contract):
         changed.append("guides")
     return changed
@@ -289,8 +263,6 @@ def _current_guides_identity(contract: Mapping[str, Any]) -> dict[str, Any]:
 def current_review_receipt_identity(
     detail: Mapping[str, Any],
     work_dir: Path,
-    *,
-    tb_policy_digest: str | None = None,
 ) -> dict[str, Any]:
     """Return the current read-only inputs used by receipt freshness."""
     contract = detail.get("contract")
@@ -310,6 +282,5 @@ def current_review_receipt_identity(
         "filtering_semantics_revision": FILTERING_SEMANTICS_REVISION,
         "documents": documents,
         "scope_hashes": _scope_hashes(work_dir, scope),
-        "tb_policy_digest": tb_policy_digest,
         "guides": _current_guides_identity(contract),
     }

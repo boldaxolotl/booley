@@ -1,7 +1,6 @@
 """One Flow object, several invocations: Test Run decisions never carry over (ADR 0072).
 
-Resolved Test Runs (drawn seeds included), the baseline runs and the Goals'
-frozen Test Runs belong to one request. They restart wherever an invocation starts: a
+Resolved Test Runs (drawn seeds included) and the baseline runs belong to one request. They restart wherever an invocation starts: a
 new invocation, a newly parsed request, and the preparation of an execution.
 """
 
@@ -12,7 +11,6 @@ from dataclasses import replace
 import pytest
 
 from booley.flows import endpoint_session
-from booley.flows.execution_persistence import StandaloneFlowExecution
 from booley.flows.sim.test_run_invocation import TestRunInvocation
 from booley.runtime.endpoint_execution import EndpointOutcome
 from tests.flows.invocation_doubles import replace_run
@@ -23,23 +21,14 @@ def _names(flow) -> list[str]:
     return [run.name for run in flow._resolve_test_runs("sim", _MAP)]
 
 
-def _decide(flow) -> tuple[str, ...]:
-    """Read the Goals' frozen Test Runs, as an invocation does once (none: no Goal Mode)."""
-    assert flow._frozen_test_runs() is None
-    return tuple(flow._test_runs.fresh_seed_selectors)
-
-
 def test_a_newly_parsed_request_resolves_its_own_test_runs(tmp_path, monkeypatch):
     flow = _flow(tmp_path, monkeypatch, "--test", "stress+soak@9")
     assert _names(flow) == ["stress+soak@9"]
-    assert _decide(flow) == ()
-    assert flow._test_runs.frozen == (None,)  # read once: nothing is frozen outside Goal Mode
 
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim", "--test", "stress"])
 
     assert flow._test_runs == TestRunInvocation()
     assert _names(flow) == ["stress+short@1"]
-    assert _decide(flow) == ()
 
 
 def test_random_seeds_are_drawn_again_for_the_next_invocation(tmp_path, monkeypatch):
@@ -69,12 +58,11 @@ def test_random_seeds_are_drawn_again_for_the_next_invocation(tmp_path, monkeypa
 def test_every_invocation_boundary_starts_the_state_afresh(tmp_path, monkeypatch, boundary):
     flow = _flow(tmp_path, monkeypatch, "--test", "stress+soak@9")
     _names(flow)
-    _decide(flow)
     stale = flow._test_runs
     request = replace(flow.args, test=("stress",))
 
     if boundary == "invocation_start":
-        flow._start_invocation(StandaloneFlowExecution(), request)
+        flow._start_invocation(request)
     else:
         flow._args = request
         endpoint_session.prepare_execution(flow)
@@ -82,7 +70,6 @@ def test_every_invocation_boundary_starts_the_state_afresh(tmp_path, monkeypatch
     assert flow._test_runs is not stale
     assert flow._test_runs == TestRunInvocation()
     assert _names(flow) == ["stress+short@1"]
-    assert _decide(flow) == ()
 
 
 def test_executing_one_flow_object_twice_uses_each_requests_own_test_runs(tmp_path, monkeypatch):
@@ -97,11 +84,11 @@ def test_executing_one_flow_object_twice_uses_each_requests_own_test_runs(tmp_pa
     replace_run(monkeypatch, flow, run)
     # The host/Sandbox location gate is not what this test is about.
     monkeypatch.setattr(flow, "_pre_state_gate", lambda: None)
-    base = replace(flow.args, report_dir=tmp_path / "reports", diagnostic=True)
+    base = replace(flow.args, report_dir=tmp_path / "reports")
 
     flow.execute(replace(base, test=("stress+soak@9",)))
     flow.execute(replace(base, test=("stress@7", "reset")))
-    flow.execute(replace(base, test=("stress",), diagnostic=False))
+    flow.execute(replace(base, test=("stress",)))
 
     assert seen == [
         ["stress+soak@9"],
@@ -125,14 +112,11 @@ def test_simulation_outcomes_belong_to_simulation_flow(tmp_path, monkeypatch):
 
     lint = LintFlow()
     assert not hasattr(lint, "_simulation_record_outcomes")
-    assert not hasattr(lint, "_simulation_acceptance_outcomes")
 
     flow = _flow(tmp_path, monkeypatch, "--test", "stress")
     flow._simulation_record_outcomes = ("stale",)
-    flow._simulation_acceptance_outcomes = ("stale",)
-    flow._start_invocation(StandaloneFlowExecution())
+    flow._start_invocation()
     assert flow._simulation_record_outcomes == ()
-    assert flow._simulation_acceptance_outcomes == ()
 
 
 def test_build_timeout_is_resolved_again_for_the_next_invocation(tmp_path, monkeypatch):
@@ -166,7 +150,7 @@ def test_flow_state_restarts_with_each_invocation(tmp_path, monkeypatch, name):
     flow = _flow(tmp_path, monkeypatch)
     setattr(flow, name, stale)
 
-    flow._start_invocation(StandaloneFlowExecution())
+    flow._start_invocation()
 
     assert getattr(flow, name) == fresh
 
@@ -179,7 +163,6 @@ def test_requeued_attempt_keeps_drawn_seeds_and_drops_simulation_record_outcomes
     drawn = flow._resolve_test_runs("sim", _MAP)
     # Stand-ins for what the killed attempt left behind.
     flow._simulation_record_outcomes = ("record-outcome",)
-    flow._simulation_acceptance_outcomes = ("acceptance-outcome",)
     flow._current_published_pre_sim_keys = {"pre-sim-key"}
     flow.cycle_report_json = '{"cycle": 1}'
     flow._reserved_invocation_dir = tmp_path / "reports" / "sim" / "1"
@@ -188,7 +171,6 @@ def test_requeued_attempt_keeps_drawn_seeds_and_drops_simulation_record_outcomes
 
     assert flow._resolve_test_runs("sim", _MAP) is drawn
     assert flow._simulation_record_outcomes == ()
-    assert flow._simulation_acceptance_outcomes == ()
     assert flow._current_published_pre_sim_keys == set()
     assert flow.cycle_report_json is None
     assert flow._reserved_invocation_dir is None

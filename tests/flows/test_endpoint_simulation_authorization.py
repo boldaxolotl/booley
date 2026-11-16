@@ -1,21 +1,16 @@
-"""Strict Ticket authorization for prepared Simulation Record Targets."""
+"""Preflight ordering for prepared Simulation Record Targets."""
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import ClassVar, cast
+from typing import cast
 
 import pytest
 
 from booley.criteria.state import DevelopmentState
-from booley.evidence.acceptance import AcceptanceTargetBinding, ResolvedFlowAcceptance
-from booley.flows import endpoint_acceptance
-from booley.flows.endpoint_admission import authorize_targets
-from booley.flows.sim.flow import PreparedSimulationEndpoint, SimulateFlow, SimulationMode
+from booley.flows.sim.flow import SimulateFlow, SimulationMode
 from booley.runtime.endpoint_execution import EndpointOutcome
-from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 from tests.flows.invocation_doubles import prepare_as
 
@@ -32,59 +27,12 @@ def _handle(selector: str, identity: str, root: Path) -> TargetHandle:
     )
 
 
-class _StrictEndpoint:
-    name = "sim"
-
-    def __init__(self, authorized: set[str]) -> None:
-        self.state = SimpleNamespace(strict_criteria=True)
-        self.args = SimpleNamespace(diagnostic=False)
-        self.authorized = authorized
-        self.observed: list[TargetHandle] = []
-
-    def _bound_criterion_keys_for_target(self, target: TargetHandle) -> list[str]:
-        self.observed.append(target)
-        return ["criterion"] if target.identity in self.authorized else []
-
-
-class _BoundEndpoint:
-    name = "sim"
-    satisfies: ClassVar[list[str]] = ["cycle_count"]
-
-    def __init__(self, binding: AcceptanceTargetBinding) -> None:
-        self.state = SimpleNamespace(
-            strict_criteria=True,
-            criteria={},
-            flow_key_aliases={},
-        )
-        self.args = SimpleNamespace(diagnostic=False, test=None)
-        self.flow_acceptance = ResolvedFlowAcceptance(
-            bindings=(binding,),
-            ticket_backed=True,
-        )
-
-    def _bound_criterion_keys_for_target(self, target: TargetHandle) -> list[str]:
-        return endpoint_acceptance._bound_criterion_keys_for_target(self, target)  # type: ignore[arg-type]
-
-
-def test_strict_authorization_preserves_candidate_then_historical_baseline() -> None:
-    candidate = _handle("sim", "acme:lib:dut:2#sim", Path("/candidate"))
-    baseline = _handle("sim_old", "acme:lib:dut:1#sim_old", Path("/baseline"))
-    endpoint = _StrictEndpoint({candidate.identity, baseline.identity})
-
-    rejection = authorize_targets(endpoint, (candidate, baseline))  # type: ignore[arg-type]
-
-    assert rejection is None
-    assert endpoint.observed == [candidate, baseline]
-
-
-def test_selection_rejection_precedes_target_authorization(
+def test_selection_rejection_precedes_build_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     handle = _handle("sim", "acme:lib:dut:1#sim", tmp_path)
     flow = SimulateFlow()
-    flow._state = DevelopmentState()
     flow._args = SimpleNamespace(mode=SimulationMode.SIMULATE)
-    monkeypatch.setattr(flow, "_criterion_binding_gate", lambda: None)
     monkeypatch.setattr(
         flow,
         "_prepare_simulation_record_targets",
@@ -98,14 +46,8 @@ def test_selection_rejection_precedes_target_authorization(
         "_effective_build_timeout_ms",
         lambda: build_timeout_resolutions.append(object()),
     )
-    authorized: list[tuple[TargetHandle, ...]] = []
-    monkeypatch.setattr(
-        "booley.flows.endpoint_admission.authorize_targets",
-        lambda _context, targets: authorized.append(targets),
-    )
 
     assert flow.prepare_simulation_endpoint() is rejected
-    assert authorized == []
     assert build_timeout_resolutions == []
 
 
@@ -114,7 +56,7 @@ def test_selection_rejection_precedes_target_authorization(
     ['"make -C tests build"', '["make", 3]'],
     ids=["bare-string", "non-string-entry"],
 )
-def test_invalid_pre_run_commands_refuse_before_authorization(
+def test_invalid_pre_run_commands_refuse_in_preflight(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:
     """A malformed Pre-Sim Commands knob fails the preflight with Doctor's message."""
@@ -126,11 +68,9 @@ def test_invalid_pre_run_commands_refuse_before_authorization(
     )
     handle = _handle("sim", "acme:lib:dut:1#sim", tmp_path)
     flow = SimulateFlow()
-    flow._state = DevelopmentState()
     flow._args = SimpleNamespace(
         mode=SimulationMode.SIMULATE, work_dir=tmp_path, coverage=False, resume_from=None
     )
-    monkeypatch.setattr(flow, "_criterion_binding_gate", lambda: None)
     monkeypatch.setattr(
         flow,
         "_prepare_simulation_record_targets",
@@ -138,11 +78,6 @@ def test_invalid_pre_run_commands_refuse_before_authorization(
     )
     monkeypatch.setattr(flow, "_validate_prepared_selection", lambda *_args: None)
     monkeypatch.setattr(flow, "_effective_build_timeout_ms", lambda: 1000)
-    authorized: list[tuple[TargetHandle, ...]] = []
-    monkeypatch.setattr(
-        "booley.flows.endpoint_admission.authorize_targets",
-        lambda _context, targets: authorized.append(targets),
-    )
     audit = audit_flow_tables({"flows": {"sim": {"pre_run_commands": "x"}}}, ())
     (doctor_finding,) = audit.findings
 
@@ -152,17 +87,14 @@ def test_invalid_pre_run_commands_refuse_before_authorization(
     assert outcome.exit_code == 2
     assert doctor_finding.message in outcome.report_text
     assert doctor_finding.fix in outcome.report_text
-    assert authorized == []
 
 
-def test_unfinished_coverage_refusal_precedes_target_authorization(
+def test_unfinished_coverage_refusal_precedes_build_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     handle = _handle("sim", "acme:lib:dut:1#sim", tmp_path)
     flow = SimulateFlow()
-    flow._state = DevelopmentState()
     flow._args = SimpleNamespace(mode=SimulationMode.SIMULATE)
-    monkeypatch.setattr(flow, "_criterion_binding_gate", lambda: None)
     resume = SimpleNamespace()
     monkeypatch.setattr(
         flow,
@@ -177,14 +109,8 @@ def test_unfinished_coverage_refusal_precedes_target_authorization(
         "_effective_build_timeout_ms",
         lambda: build_timeout_resolutions.append(object()),
     )
-    authorized: list[tuple[TargetHandle, ...]] = []
-    monkeypatch.setattr(
-        "booley.flows.endpoint_admission.authorize_targets",
-        lambda _context, targets: authorized.append(targets),
-    )
 
     assert flow.prepare_simulation_endpoint() is refused
-    assert authorized == []
     assert build_timeout_resolutions == []
 
 
@@ -219,134 +145,6 @@ def test_state_backed_simulation_preflight_rejection_reaches_stderr(
     assert execution.exit_code == 2
     assert captured.err.count("Simulation preflight rejected") == 1
     assert captured.out == ""
-
-
-def test_strict_authorization_rejects_unbound_distinct_baseline() -> None:
-    candidate = _handle("sim", "acme:lib:dut:2#sim", Path("/candidate"))
-    baseline = _handle("sim_old", "acme:lib:dut:1#sim_old", Path("/baseline"))
-    endpoint = _StrictEndpoint({candidate.identity})
-
-    rejection = authorize_targets(endpoint, (candidate, baseline))  # type: ignore[arg-type]
-
-    assert rejection is not None
-    assert rejection.exit_code == 2
-    assert "sim_old" in rejection.report_text
-    assert endpoint.observed == [candidate, baseline]
-
-
-def test_ticket_binding_authorizes_exact_historical_baseline_identity() -> None:
-    binding = AcceptanceTargetBinding(
-        flow="sim",
-        criterion="criteria.mandatory.cycle_count",
-        baseline="acme:lib:dut:1#sim_old",
-        candidate="acme:lib:dut:2#sim",
-        baseline_selector="sim_old",
-        candidate_selector="sim",
-    )
-    endpoint = _BoundEndpoint(binding)
-    candidate = _handle("sim", binding.candidate, Path("/candidate"))
-    baseline = _handle("sim_old", binding.baseline, Path("/historical-baseline"))
-
-    assert authorize_targets(endpoint, (candidate, baseline)) is None  # type: ignore[arg-type]
-
-
-def test_ticket_binding_rejects_baseline_identity_drift() -> None:
-    binding = AcceptanceTargetBinding(
-        flow="sim",
-        criterion="criteria.mandatory.cycle_count",
-        baseline="acme:lib:dut:1#sim_old",
-        candidate="acme:lib:dut:2#sim",
-        baseline_selector="sim_old",
-        candidate_selector="sim",
-    )
-    endpoint = _BoundEndpoint(binding)
-    candidate = _handle("sim", binding.candidate, Path("/candidate"))
-    drifted = _handle("sim_old", "acme:lib:other:1#sim_old", Path("/baseline"))
-
-    rejection = authorize_targets(endpoint, (candidate, drifted))  # type: ignore[arg-type]
-
-    assert rejection is not None
-    assert "sim_old" in rejection.report_text
-
-
-def test_simulation_record_preflight_orders_candidate_before_historical_baseline(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    candidate_root = tmp_path / "candidate"
-    baseline_root = tmp_path / "historical"
-    candidate = _handle("sim", "acme:lib:dut:2#sim", candidate_root)
-    baseline = _handle("sim_old", "acme:lib:dut:1#sim_old", baseline_root)
-    flow = SimulateFlow()
-    flow._state = DevelopmentState()
-    flow._args = SimpleNamespace(
-        resume_from=None,
-        work_dir=candidate_root,
-        diagnostic=False,
-        mode=SimulationMode.SIMULATE,
-    )
-    monkeypatch.setattr(flow, "_criterion_binding_gate", lambda: None)
-    monkeypatch.setattr(flow, "_resolve_requested_targets", lambda: ["sim"])
-    monkeypatch.setattr(flow, "_validate_interactive_args", lambda _targets: None)
-    monkeypatch.setattr(flow, "_validate_prepared_selection", lambda *_args: None)
-    monkeypatch.setattr(flow, "_target_handle", lambda _selector: candidate)
-    monkeypatch.setattr(
-        flow,
-        "_cycle_baseline_selection",
-        lambda _targets: ("a" * 40, ["sim_old"], None),
-    )
-
-    @contextmanager
-    def historical_worktree(*_args, **_kwargs):
-        yield baseline_root
-
-    class Catalog:
-        def select(self, selector: str, *, for_flow: str) -> TargetHandle:
-            assert (selector, for_flow) == ("sim_old", "sim")
-            return baseline
-
-    monkeypatch.setattr("booley.flows.sim.flow.baseline_worktree", historical_worktree)
-    monkeypatch.setattr(TargetCatalog, "build", lambda root: Catalog())
-
-    with flow.publication_resources:
-        prepared = flow.prepare_simulation_endpoint()
-
-    assert isinstance(prepared, PreparedSimulationEndpoint)
-    assert prepared.targets == (candidate, baseline)
-    assert prepared.targets[1].project_root == baseline_root
-
-
-@pytest.mark.parametrize("topology", ["standalone", "linked"])
-def test_simulation_record_authorization_materializes_project_topologies(
-    tmp_path, monkeypatch, topology
-):
-    from tests.flows.sim.test_cycle_observation import _criterion_flow, _pin_baseline
-    from tests.flows.test_baseline_worktree import (
-        _assert_topology_baseline,
-        _project_topology_checkout,
-    )
-
-    root, revision = _project_topology_checkout(tmp_path, monkeypatch, topology)
-    flow, _key = _criterion_flow(relative=True)
-    flow._args.work_dir = root
-    flow._args.resume_from = None
-    candidate = TargetCatalog.build(root).select("sim_core", for_flow="sim")
-    flow._target_handles = {"sim_core": candidate}
-    _pin_baseline(flow, revision)
-    monkeypatch.setattr(flow, "_resolve_requested_targets", lambda: ["sim_core"])
-    monkeypatch.setattr(flow, "_validate_interactive_args", lambda _targets: None)
-    try:
-        handles, resume, selected, _tests = flow._prepare_simulation_record_targets()
-        assert resume is None
-        assert selected == ("sim_core",)
-        assert handles[0] is candidate
-        assert handles[1].identity == candidate.identity
-        baseline = handles[1].project_root
-        _assert_topology_baseline(baseline, root, "sim_core")
-        assert baseline.exists()
-        assert flow.args.work_dir == root
-    finally:
-        flow.publication_resources.close()
-    assert not baseline.exists()
 
 
 def test_prepare_resets_report_only_metadata_before_early_gate(tmp_path, monkeypatch):
@@ -393,15 +191,3 @@ def test_prepare_early_gate_keeps_unresolved_report_target_cardinality(monkeypat
 
     monkeypatch.setattr(context, "_apply_pre_state_gate", gate)
     assert prepare_execution(context) is rejected
-
-
-def test_target_authorization_names_running_flow() -> None:
-    """The refusal text names the Flow that asked, not a fixed Flow."""
-    candidate = _handle("sim", "acme:lib:dut:2#sim", Path("/candidate"))
-    endpoint = _StrictEndpoint(set())
-    endpoint.name = "lint"
-
-    rejection = authorize_targets(endpoint, (candidate,))  # type: ignore[arg-type]
-
-    assert rejection is not None
-    assert rejection.report_text.startswith("lint: Goal Mode has no authorized Criterion binding")

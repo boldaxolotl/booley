@@ -30,11 +30,6 @@ from booley.flows.cli_selection import CliInvocation
 from booley.flows.display import format_flow_display_label
 from booley.flows.endpoint_context import EndpointContext
 from booley.flows.endpoint_state import EndpointState
-from booley.flows.execution_persistence import FlowExecutionAdapter, StandaloneFlowExecution
-from booley.flows.implementation_comparison import (
-    ImplementationComparisonError,
-    target_pair_plans_for_handles,
-)
 from booley.flows.invocation import resolve_timeout_ms
 from booley.flows.job_estimates import JobRequest
 from booley.flows.job_resources import JobResourceMonitor
@@ -257,10 +252,6 @@ class FlowMechanics:
             execution.flow_enabled(self.name, Path(self.args.work_dir))
         except execution.FlowConfigError as exc:
             return EndpointOutcome(exit_code=EXIT_ERROR, report_text=str(exc))
-        resolved = self.execution_adapter.validate_and_resolve(self.args)
-        if isinstance(resolved, EndpointOutcome):
-            return resolved
-        self.flow_acceptance = resolved
         return None
 
     def _run(self) -> EndpointOutcome:
@@ -497,9 +488,7 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
 
     The Flow is the single owner of its per-invocation state; every entry point
     starts an invocation through ``_start_invocation``. Built-ins never inherit
-    ``EndpointContext``; only Custom Flows (``BooleyFlow``) do. Whether Goal
-    evidence is recorded depends on the execution adapter, not on the Flow:
-    ``StandaloneFlowExecution`` records none, ``GoalFlowExecution`` does.
+    ``EndpointContext``; only Custom Flows (``BooleyFlow``) do.
     """
 
     request_type: ClassVar[type[FlowRequest]] = FlowRequest
@@ -509,9 +498,6 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
 
     # Families a non-strict Project may judge under conventional names (lint_clean, ...).
     conventional_families: ClassVar[frozenset[str]] = frozenset()
-
-    # The Criterion family whose baseline Targets this Flow also runs (``None``: no pairs).
-    _PAIR_CRITERION_PREFIX: ClassVar[str | None] = None
 
     target_required: bool = False
     target_help: str = SurfaceHelp(
@@ -527,14 +513,11 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
     )
 
     def __init__(self) -> None:
-        self._start_invocation(StandaloneFlowExecution())
+        self._start_invocation()
 
-    def _start_invocation(
-        self, adapter: FlowExecutionAdapter, request: FlowRequest | None = None
-    ) -> None:
-        """Start one invocation: fresh EndpointState fields, adapter, request and Flow extras."""
-        EndpointState.__init__(self)  # new invocation id, display identity, Criteria ledger, ...
-        self.configure_flow_execution(adapter)
+    def _start_invocation(self, request: FlowRequest | None = None) -> None:
+        """Start one invocation: fresh EndpointState fields, request and Flow extras."""
+        EndpointState.__init__(self)  # new invocation id, display identity, ...
         self._args = request
         self.publication_resources = contextlib.ExitStack()
         # Baseline worktrees held open in `publication_resources`, by revision; each
@@ -607,10 +590,6 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
             return TargetSelectionInvocation(self, self._prepared_target_selection, self._run)
         return OrdinaryRunInvocation(self._run)
 
-    def conventional_report_families(self) -> set[str]:
-        """Families a non-strict Project may judge under their conventional Criterion names."""
-        return set(self.conventional_families)
-
     def _selected_target_selection(self) -> PreparedTargetSelection:
         """Return the complete selection prepared for this invocation."""
         prepared = getattr(self, "_prepared_target_selection", None)
@@ -631,33 +610,20 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
     ) -> tuple[JobRequest, ...] | None:
         """The Resource History requests of a Job over *handles* (``None`` when unknown).
 
-        A Flow that pairs each Target with a baseline Target also runs the
-        baseline Target, so its footprint counts toward the Job's reservation.
-        The pairs are built again in ``_run``, which refuses a bad pairing.
+        One request per selected Target. A ``--baseline`` run runs the same
+        Target at the baseline revision, so it adds no further request.
         """
-        selectors = [handle.selector for handle in handles]
-        if self._PAIR_CRITERION_PREFIX is not None:
-            try:
-                pairs = target_pair_plans_for_handles(
-                    self.state.criteria,
-                    self._PAIR_CRITERION_PREFIX,
-                    handles,
-                    basis=self.flow_acceptance if self.flow_acceptance.basis_bound else None,
-                    flow=self.name,
-                )
-            except ImplementationComparisonError:
-                return None
-            selectors.extend(pair.baseline.selector for pair in pairs)
-        return tuple(JobRequest(self.name, selector) for selector in dict.fromkeys(selectors))
+        selectors = dict.fromkeys(handle.selector for handle in handles)
+        return tuple(JobRequest(self.name, selector) for selector in selectors)
 
     @property
     def _paired_project_baseline(self) -> PairedProjectBaseline:
-        return self.flow_acceptance.paired_project
+        return PairedProjectBaseline.standalone()
 
     def parse_args(self, argv: list[str] | None = None) -> RequestT:
         from booley.flows.builtin_cli import parse_request
 
-        self._start_invocation(self.execution_adapter, parse_request(self, argv))
+        self._start_invocation(parse_request(self, argv))
         return self.args
 
     def begin_invocation(self) -> None:
@@ -669,12 +635,7 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
         one Flow object never answers a request from another request's state.
         """
 
-    def execute(
-        self,
-        request: RequestT,
-        *,
-        adapter: FlowExecutionAdapter | None = None,
-    ) -> ExecutionResult:
+    def execute(self, request: RequestT) -> ExecutionResult:
         """Execute typed input through a fresh, transport-independent invocation."""
         from dataclasses import replace
 
@@ -682,27 +643,17 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
 
         if not isinstance(request, self.request_type):
             raise TypeError(f"{self.name} requires {self.request_type.__name__}")
-        self._start_invocation(adapter or StandaloneFlowExecution(), replace(request))
+        self._start_invocation(replace(request))
         apply_environment(self._args, self.endpoint_kind)
         return self.execute_prepared()
 
-    def execute_cli(
-        self,
-        argv: list[str] | None = None,
-        *,
-        adapter: FlowExecutionAdapter | None = None,
-    ) -> ExecutionResult:
+    def execute_cli(self, argv: list[str] | None = None) -> ExecutionResult:
         from booley.flows.builtin_cli import execute_cli
 
-        return execute_cli(self, argv, adapter=adapter)
+        return execute_cli(self, argv)
 
-    def main(
-        self,
-        argv: list[str] | None = None,
-        *,
-        adapter: FlowExecutionAdapter | None = None,
-    ) -> int:
-        return self.execute_cli(argv, adapter=adapter).exit_code
+    def main(self, argv: list[str] | None = None) -> int:
+        return self.execute_cli(argv).exit_code
 
     def cli(self) -> None:
         from booley.flows.endpoint_cli import cli

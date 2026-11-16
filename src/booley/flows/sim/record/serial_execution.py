@@ -14,17 +14,19 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 from booley.core.boundary import BoundaryError
 from booley.flows.artifact_durability import (
     durable_copy,
     durable_create,
     durable_directory,
+    durable_in_place,
+    fsync_directory,
 )
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.sim.backends.cocotb_results import decode_results_payload, reconcile
@@ -34,6 +36,7 @@ from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.execution.contract import (
     PreSimEvidence,
     PreSimScopeStoppedError,
+    SimulationArtifactEvidence,
     SimulationInfrastructureFailure,
     SimulationOptions,
     SimulationTargetOutcome,
@@ -48,9 +51,7 @@ from booley.flows.sim.execution.engine import (
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
 from booley.flows.sim.live_progress import attempt_scope, end_phase
 from booley.flows.sim.record.bundle import (
-    SnapshotAttemptIdentity,
-    authenticate_executable_snapshot,
-    create_executable_snapshot,
+    verify_bundle_in_place,
 )
 from booley.flows.sim.record_files import document_digest
 from booley.flows.sim.runtime_inputs import (
@@ -63,6 +64,7 @@ from booley.flows.test_runs import TestRun
 from booley.runtime.endpoint_execution import work_item_attempt_requeues
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import TargetHandle
 
 from ..build import build_output_tail
 from .codec import (
@@ -74,7 +76,6 @@ from .codec import (
     canonical_json_bytes,
     encode_bundle_build_attempt,
     encode_bundle_build_result,
-    encode_executable_snapshot,
     encode_simulator_bundle,
     reads_simulation_record_documents,
 )
@@ -87,22 +88,36 @@ from .model import (
     AssertionObservation,
     BundleBuildAttempt,
     BundleBuildResult,
-    ExecutableSnapshot,
     ExecutionObservation,
     FailureClass,
+    FrozenJson,
     FunctionalObservation,
     SimulationAttempt,
     SimulationResult,
     SimulatorBundle,
+    frozen_pre_sim_commands,
     grade_observations,
 )
 from .planning import manifest_digest
 from .pre_sim_evidence import publish_pre_sim_firing
-from .run_directory import RunDirectory, claimed_run_directory, expand_run_directory
+from .run_directory import (
+    RunDirectory,
+    claimed_run_directory,
+    expand_run_directory,
+    require_run_directory_outside,
+)
 from .test_run_binding import observation_test_runs, work_item_test_runs
 
 #: Where a build directory keeps its Simulator Bundle manifest.
 _BUNDLE_MANIFEST_PATH = "evidence/bundle.json"
+# Bundle artifacts are read-only; only the simulator executable stays executable.
+_READ_ONLY = stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH
+_ARTIFACT_MODES = {
+    "simulator_executable": _READ_ONLY | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH,
+    "shared_library": _READ_ONLY,
+    "runtime_data": _READ_ONLY,
+    "runtime_input": _READ_ONLY,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,7 +145,7 @@ class _SharedFailure:
 
 @dataclass(frozen=True, slots=True)
 class _GroupInputs:
-    handle: object
+    handle: TargetHandle
     names: tuple[str, ...]
     #: The work item's concrete Test Runs; ``None`` for a manifest older than v4.
     test_runs: tuple[TestRun, ...] | None
@@ -181,15 +196,19 @@ class BuildScope:
 
 
 class _OrdinaryGroup(Protocol):
-    build_root: Path
-    artifact_paths: tuple[Path, ...]
+    @property
+    def build_root(self) -> Path: ...
+    @property
+    def artifact_paths(self) -> tuple[Path, ...]: ...
 
     def planning_disclosure(self) -> dict[str, object]: ...
     def compile(self) -> BuildOutcome: ...
     def finish_build_failure(self) -> SimulationTargetOutcome: ...
     def build_recovery_document(self) -> dict[str, object]: ...
     def bind_authenticated_bundle(self, evidence: Mapping[str, object]) -> None: ...
-    def launch_snapshot(self, snapshot_root: Path, run_cwd: Path) -> SimulationTargetOutcome: ...
+    def launch_bundle(
+        self, bundle_root: Path, evidence_root: Path, run_cwd: Path
+    ) -> SimulationTargetOutcome: ...
 
 
 class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
@@ -233,7 +252,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
 
     def _execute_observed(self, request: WorkExecutionRequest) -> SimulationResult:
         scope = current_supervised_execution()
-        if _frozen_hook_commands(request) and scope is not None and scope.cancelled():
+        if frozen_pre_sim_commands(request.manifest) and scope is not None and scope.cancelled():
             raise PreSimScopeStoppedError("execution scope stopped before Pre-Sim Commands")
         item = request.work_item
         if item["kind"] not in {"ordinary_hdl", "cocotb_batch"}:
@@ -292,7 +311,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         finally:
             # The shared build is settled (built, reused, recovered or failed). Pre-Sim
             # Commands run unmeasured after it, so their Jobs keep the build estimate.
-            if not _frozen_hook_commands(request):
+            if not frozen_pre_sim_commands(request.manifest):
                 end_phase(handle.selector, "sim_build")
         return self._launch_shared(
             request,
@@ -329,6 +348,9 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             "work_item_id": cast(str, request.work_item["work_item_id"]),
             "attempt_id": request.attempt_id,
         }
+        require_run_directory_outside(
+            run_directory, request.attempt_directory / "execution-evidence"
+        )
         with claimed_run_directory(run_directory, identity=identity) as run_cwd:
             return self._run_ready_group(
                 request,
@@ -584,7 +606,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             options,
             None,
             True,
-            commands=_frozen_hook_commands(request),
+            commands=frozen_pre_sim_commands(request.manifest),
             test_runs=work_item_test_runs(request.work_item),
         )
         if pre_sim is not None:
@@ -646,8 +668,11 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         ready: _ReadyLaunch,
     ) -> SimulationResult:
         token = request.attempt_id.replace("-", "")
-        runtime_view = getattr(ready.build[2], "runtime_view", None)
-        view = runtime_view(run_cwd, token) if callable(runtime_view) else nullcontext(run_cwd)
+        # Only a group that owns a runtime view has this method (the engine's PreparedOrdinaryGroup).
+        runtime_view: Callable[[Path, str], AbstractContextManager[Path]] | None = getattr(
+            ready.build[2], "runtime_view", None
+        )
+        view = runtime_view(run_cwd, token) if runtime_view is not None else nullcontext(run_cwd)
         with view as effective_cwd:
             return self._run_ready_group_in_view(request, build_directory, effective_cwd, ready)
 
@@ -688,7 +713,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             )
             if failure is not None:
                 return failure
-            return _launch_snapshot(
+            return _launch_bundle(
                 request,
                 build_directory,
                 build_result,
@@ -742,7 +767,7 @@ def _immutable_hook_failure(
         options,
         run_cwd,
         False,
-        commands=_frozen_hook_commands(request),
+        commands=frozen_pre_sim_commands(request.manifest),
         test_runs=work_item_test_runs(request.work_item),
     )
     if pre_sim is not None:
@@ -807,17 +832,10 @@ def simulation_attempt(request: WorkExecutionRequest) -> tuple[SimulationAttempt
                 else None
             ),
             "no_kill": request.policy.no_kill,
-            "diagnostic": request.policy.diagnostic,
         },
         "started_at": _now(),
     }
     return SimulationAttempt(document), run
-
-
-def _frozen_hook_commands(request: WorkExecutionRequest) -> tuple[str, ...]:
-    workload = cast(Mapping[str, object], request.manifest.document["workload"])
-    recipe = cast(Mapping[str, object], workload["source_recipe"])
-    return tuple(cast(tuple[str, ...], recipe["pre_sim_commands"]))
 
 
 def _run_hook(
@@ -937,11 +955,9 @@ def _setup_result(
     elapsed: float,
 ) -> SimulationResult:
     selection = cast(Mapping[str, object], request.work_item["selection"])
-    fallback = (
-        ""
-        if selection["kind"] == "unfiltered"
-        else cast(str, request.manifest.document["target"]["selector"])
-    )
+    # The codec's _read_strings proves target.selector is a string.
+    target = cast(Mapping[str, str], request.manifest.document["target"])
+    fallback = "" if selection["kind"] == "unfiltered" else target["selector"]
     tests = tuple(
         SimulationTestOutcome(
             name=name,
@@ -958,7 +974,7 @@ def _setup_result(
         build_result,
         state="setup_error",
         bundle_id=bundle.document["bundle_id"],
-        snapshot=None,
+        verification=None,
         observations=[observation_document(test, execution="setup_error") for test in tests],
         elapsed=elapsed,
         evidence=[],
@@ -1036,7 +1052,8 @@ def publish_ready_build_result(
     document = _ready_result_document(
         request, build_directory, build_attempt, bundle, bundle_raw, execution_ref, elapsed
     )
-    result = BundleBuildResult(document)
+    # _freeze_json checks the values when the document is constructed.
+    result = BundleBuildResult(cast(Mapping[str, FrozenJson], document))
     request.store.publish_build_result(build_directory, result)
     return result, bundle
 
@@ -1048,7 +1065,7 @@ def _simulator_bundle(
 ) -> SimulatorBundle:
     attempt = build_attempt.document
     document = {
-        "$schema": "booley.simulator-bundle/v2",
+        "$schema": "booley.simulator-bundle/v3",
         **_common(request, include_work_item=False),
         "build_variant_id": request.work_item["build_variant_id"],
         "build_attempt_id": attempt["build_attempt_id"],
@@ -1059,9 +1076,6 @@ def _simulator_bundle(
         "created_at": _now(),
         "artifacts": artifacts,
         "inventory_sha256": document_digest(artifacts),
-        "snapshot_inventory_sha256": document_digest(
-            [item for item in artifacts if item["kind"] != "runtime_input"]
-        ),
     }
     return SimulatorBundle(document)
 
@@ -1076,6 +1090,8 @@ def _ready_result_document(
     elapsed: float,
 ) -> dict[str, object]:
     build_id = cast(str, build_attempt.document["build_attempt_id"])
+    # _simulator_bundle built the artifacts list in this process.
+    bundle_artifacts = cast(tuple[Mapping[str, FrozenJson], ...], bundle.document["artifacts"])
     return {
         "$schema": "booley.bundle-build-result/v2",
         **_common(request, include_work_item=False),
@@ -1098,7 +1114,7 @@ def _ready_result_document(
             "manifest_bytes": len(bundle_raw),
             "manifest_sha256": content_digest(bundle_raw),
             "sharing": bundle.document["sharing"],
-            "artifacts": [dict(item) for item in bundle.document["artifacts"]],
+            "artifacts": [dict(item) for item in bundle_artifacts],
         },
         "observation": None,
         "evidence": [execution_ref] if execution_ref is not None else [],
@@ -1291,7 +1307,7 @@ def blocked_result(
         build_result,
         state="aborted" if infrastructure and not pre_sim_failure else "blocked_by_build",
         bundle_id=None,
-        snapshot=None,
+        verification=None,
         observations=observations,
         elapsed=elapsed,
         evidence=evidence or [],
@@ -1311,9 +1327,8 @@ def _blocked_shared_result(
         identities = names
     else:
         # The default selection's name is the Target selector; Test Run binding
-        # (discovered_test_run) maps it back to the unnamed invocation.
-        target = cast(Mapping[str, object], request.manifest.document["target"])
-        identities = (cast(str, target["selector"]),)
+        # (discovered_test_run) maps it back to the unnamed invocation; the codec proves it a str.
+        identities = (cast(Mapping[str, str], request.manifest.document["target"])["selector"],)
     observations = []
     for index, identity in enumerate(identities):
         test = SimulationTestOutcome(
@@ -1331,8 +1346,9 @@ def _blocked_shared_result(
         )
         if failure.failure_class == FailureClass.INFRASTRUCTURE:
             observation["functional"] = observation["assertions"] = "not_observed"
+            # The persisted build detail object has open-ended keys, so `Any` is the honest type.
             observation["detail"] = _compact_build_detail(
-                cast(Mapping[str, object], failure.result.document["observation"])["detail"],
+                cast(Mapping[str, Any], failure.result.document["observation"])["detail"],
                 1 if index == 0 else len(identities),
             )
         observation["failure_class"] = failure.failure_class.value
@@ -1345,14 +1361,14 @@ def _blocked_shared_result(
         if failure.failure_class == FailureClass.INFRASTRUCTURE
         else "blocked_by_build",
         bundle_id=None,
-        snapshot=None,
+        verification=None,
         observations=observations,
         elapsed=elapsed,
         evidence=[],
     )
 
 
-def _launch_snapshot(
+def _launch_bundle(
     request: WorkExecutionRequest,
     build_directory: Path,
     build_result: BundleBuildResult,
@@ -1363,22 +1379,17 @@ def _launch_snapshot(
     started: float,
     publication_checkpoint: Callable[[str], None],
 ) -> SimulationResult:
-    snapshot_root = request.attempt_directory / "snapshot"
-    publication_checkpoint("before:snapshot_manifest")
-    snapshot = create_snapshot(request, build_directory, build_result, bundle, snapshot_root)
-    publication_checkpoint("after:snapshot_manifest")
-    pre_launch = authenticate_executable_snapshot(snapshot, snapshot_root)
-    outcome = group.launch_snapshot(snapshot_root, run_cwd)  # type: ignore[attr-defined]
-    post_exit = authenticate_executable_snapshot(snapshot, snapshot_root)
-    return _snapshot_result(
+    """Launch the record's bundle in place, verifying it before launch and after exit."""
+    pre_launch = verify_bundle_in_place(bundle, build_result, build_directory)
+    evidence_root = request.attempt_directory / "execution-evidence"
+    outcome = group.launch_bundle(build_directory, evidence_root, run_cwd)  # type: ignore[attr-defined]
+    post_exit = verify_bundle_in_place(bundle, build_result, build_directory)
+    return _bundle_result(
         request,
         build_directory,
         build_result,
         bundle,
-        snapshot,
-        snapshot_root,
-        pre_launch,
-        post_exit,
+        bundle_verification(build_result, pre_launch, post_exit),
         outcome,
         bindings,
         started,
@@ -1386,28 +1397,31 @@ def _launch_snapshot(
     )
 
 
-def _snapshot_result(
+def bundle_verification(
+    build_result: BundleBuildResult, pre_launch: str, post_exit: str
+) -> dict[str, object]:
+    """The Result's record of the bundle inventory that passed each check."""
+    return {
+        "bundle_manifest_sha256": cast(Mapping[str, object], build_result.document["bundle"])[
+            "manifest_sha256"
+        ],
+        "pre_launch_sha256": pre_launch,
+        "post_exit_sha256": post_exit,
+        "verified_after_exit": True,
+    }
+
+
+def _bundle_result(
     request,
     build_directory,
     build_result,
     bundle,
-    snapshot,
-    snapshot_root,
-    pre_launch,
-    post_exit,
+    verification,
     outcome,
     bindings,
     started,
     publication_checkpoint,
 ) -> SimulationResult:
-    snapshot_raw = encode_executable_snapshot(snapshot)
-    snapshot_ref = record_reference(
-        snapshot_root / "snapshot.json",
-        request.attempt_directory,
-        snapshot_raw,
-        "executable_snapshot_manifest",
-        request.attempt_id,
-    )
     observations = (
         _infrastructure_observations(request, outcome)
         if outcome.infrastructure_failure is not None
@@ -1423,15 +1437,7 @@ def _snapshot_result(
         build_result,
         state=state,
         bundle_id=bundle.document["bundle_id"],
-        snapshot={
-            "manifest": snapshot_ref,
-            "bundle_manifest_sha256": cast(Mapping[str, object], build_result.document["bundle"])[
-                "manifest_sha256"
-            ],
-            "pre_launch_sha256": pre_launch,
-            "post_exit_sha256": post_exit,
-            "verified_after_exit": True,
-        },
+        verification=verification,
         observations=observations,
         elapsed=time.monotonic() - started,
         evidence=evidence,
@@ -1439,31 +1445,6 @@ def _snapshot_result(
         diagnostics=tuple(
             item for item in outcome.diagnostics if item.startswith("artifact_persistence:")
         ),
-    )
-
-
-def create_snapshot(
-    request: WorkExecutionRequest,
-    build_directory: Path,
-    build_result: BundleBuildResult,
-    bundle: SimulatorBundle,
-    snapshot_root: Path,
-) -> ExecutableSnapshot:
-    """Snapshot the built bundle for one simulation attempt."""
-    fingerprints = cast(Mapping[str, str], request.manifest.document["fingerprints"])
-    return create_executable_snapshot(
-        bundle=bundle,
-        bundle_root=build_directory,
-        snapshot_root=snapshot_root,
-        identity=SnapshotAttemptIdentity(
-            simulation_record_id=cast(str, request.manifest.document["simulation_record_id"]),
-            manifest_sha256=manifest_digest(request.manifest),
-            workload_sha256=fingerprints["workload_sha256"],
-            work_item_id=cast(str, request.work_item["work_item_id"]),
-            attempt_id=request.attempt_id,
-        ),
-        build_result=_build_result_ref(request, build_directory, build_result),
-        created_at=_now(),
     )
 
 
@@ -1485,7 +1466,7 @@ def simulation_result(
     *,
     state: str,
     bundle_id: object,
-    snapshot: object,
+    verification: object,
     observations: list[dict[str, object]],
     elapsed: float,
     evidence: list[dict[str, object]],
@@ -1505,7 +1486,7 @@ def simulation_result(
         "bundle_id": bundle_id,
         "finished_at": _now(),
         "elapsed_seconds": elapsed,
-        "executable_snapshot": snapshot,
+        "bundle_verification": verification,
         "runtime_inputs": runtime_inputs or [],
         "observations": observations,
         "grade": _result_grade(observations),
@@ -1814,7 +1795,7 @@ def capture_private_image(
         authenticated = _regular_child(source_root, source.relative_to(source_root).as_posix())
         target = destination / authenticated.relative_to(source_root)
         target.parent.mkdir(parents=True, exist_ok=True)
-        durable_copy(authenticated, target)
+        durable_copy(authenticated, target, mode=_ARTIFACT_MODES[kind])
         raw = target.read_bytes()
         records.append(
             {
@@ -1833,6 +1814,7 @@ def _capture_outcome_evidence(
     evidence_root = request.attempt_directory / "evidence"
     durable_directory(evidence_root)
     evidence_root.chmod(0o700)
+    live_root = request.attempt_directory / "execution-evidence"
     references = []
     seen: set[Path] = set()
     for artifact in outcome.artifacts:
@@ -1840,34 +1822,13 @@ def _capture_outcome_evidence(
         if source in seen or not source.is_file() or source.is_symlink():
             continue
         seen.add(source)
-        destination = evidence_root / f"{len(references) + 1:04d}-{source.name}"
-        source_raw = source.read_bytes()
-        if artifact.kind == "cocotb_results_json":
-            source_observations = _decode_cocotb_source(source_raw, artifact.test_names)
-            raw = canonical_json_bytes(
-                {
-                    "$schema": "booley.cocotb-record-transport/v1",
-                    "source_bytes": len(source_raw),
-                    "source_sha256": content_digest(source_raw),
-                    "source_observations": source_observations,
-                    "observations": (
-                        _infrastructure_observations(request, outcome)
-                        if outcome.infrastructure_failure is not None
-                        else [observation_document(test) for test in outcome.tests]
-                    ),
-                }
-            )
-            _create_immutable(destination, raw)
-        else:
-            durable_copy(source, destination)
-            raw = destination.read_bytes()
         references.append(
-            record_reference(
-                destination,
-                request.attempt_directory,
-                raw,
-                "cocotb_results" if artifact.kind == "cocotb_results_json" else artifact.kind,
-                request.attempt_id,
+            _outcome_artifact_reference(
+                request,
+                outcome,
+                artifact,
+                evidence_root / f"{len(references) + 1:04d}-{source.name}",
+                live_root,
             )
         )
     if outcome.infrastructure_failure is not None and not outcome.tests:
@@ -1897,6 +1858,53 @@ def _capture_outcome_evidence(
             )
         )
     return references
+
+
+def _outcome_artifact_reference(
+    request: WorkExecutionRequest,
+    outcome: SimulationTargetOutcome,
+    artifact: SimulationArtifactEvidence,
+    destination: Path,
+    live_root: Path,
+) -> dict[str, object]:
+    """Make one outcome artifact durable and reference it.
+
+    A file already inside the attempt's ``execution-evidence/`` is referenced
+    where it is, so the attempt keeps one copy; a file outside the attempt is
+    copied to *destination*; a Cocotb transport is rewritten to its derived
+    document at *destination*.
+    """
+    source = Path(artifact.path)
+    source_raw = source.read_bytes()
+    kind = "cocotb_results" if artifact.kind == "cocotb_results_json" else artifact.kind
+    if artifact.kind == "cocotb_results_json":
+        source_observations = _decode_cocotb_source(source_raw, artifact.test_names)
+        raw = canonical_json_bytes(
+            {
+                "$schema": "booley.cocotb-record-transport/v1",
+                "source_bytes": len(source_raw),
+                "source_sha256": content_digest(source_raw),
+                "source_observations": source_observations,
+                "observations": (
+                    _infrastructure_observations(request, outcome)
+                    if outcome.infrastructure_failure is not None
+                    else [observation_document(test) for test in outcome.tests]
+                ),
+            }
+        )
+        _create_immutable(destination, raw)
+    elif source.resolve().is_relative_to(live_root.resolve()):
+        durable_in_place(source)
+        raw = source_raw
+        destination = live_root / source.resolve().relative_to(live_root.resolve())
+        for directory in destination.parents:  # a nested file's new folders, up to the attempt
+            if not directory.is_relative_to(live_root.parent):
+                break
+            fsync_directory(directory)
+    else:
+        durable_copy(source, destination)
+        raw = destination.read_bytes()
+    return record_reference(destination, request.attempt_directory, raw, kind, request.attempt_id)
 
 
 def _decode_cocotb_source(raw: bytes, selected: tuple[str, ...]) -> list[dict[str, str]]:
@@ -1985,8 +1993,8 @@ __all__ = [
     "OrdinaryHdlSerialExecutor",
     "blocked_result",
     "bundle_build_attempt",
+    "bundle_verification",
     "capture_private_image",
-    "create_snapshot",
     "observation_document",
     "publish_failed_build_result",
     "publish_ready_build_result",

@@ -23,6 +23,7 @@ from tests.docker_cli_guard import (
 )
 from tests.harness import test_session_runtime as resolution_fixtures
 
+from booley.core.host_shell import quote_arg
 from booley.harness import doctor
 from booley.harness.setup import readiness
 from booley.runtime import (
@@ -214,7 +215,7 @@ def test_host_doctor_rejects_full_live_runtime_state_drift(tmp_path, monkeypatch
     assert any("state differs from current host issuance" in message for message in rec.fails())
 
 
-def test_host_doctor_names_stop_first_repair_for_running_old_vscode(
+def test_host_doctor_names_rebuild_repair_for_running_old_vscode(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -235,7 +236,7 @@ def test_host_doctor_names_stop_first_repair_for_running_old_vscode(
     # Current, pinned Booley Directory mounts: the editor is stale, not outdated.
     state["Mounts"] += [
         {"Destination": target, "Source": str(booley_dir), "Type": "bind", "RW": True}
-        for target in ("/booley-project", "/work/.booley")
+        for target in ("/booley", "/work/.booley")
     ]
     spec_path = tmp_path / ".devcontainer" / "devcontainer.json"
     spec_path.parent.mkdir()
@@ -267,7 +268,12 @@ def test_host_doctor_names_stop_first_repair_for_running_old_vscode(
         failed=rec.f,
     )
 
-    assert any("stop" in fix and "runtime-1" in fix for fix in rec.fix_hints)
+    assert any(
+        fix.startswith("for VS Code Sandbox(s) 'runtime-1', on the host run `booley init`, then ")
+        and "Dev Containers: Rebuild Container" in fix
+        and "stop" not in fix
+        for fix in rec.fix_hints
+    )
     inventory = next(argv for argv in calls if argv[1:3] == ["ps", "-aq"])
     assert inventory[-2:] == ["--format", "{{.Names}}"]
 
@@ -278,7 +284,7 @@ def test_host_doctor_accepts_vscode_managed_runtime_state(tmp_path, monkeypatch)
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
     issuance, spec, labels, state = _issued_runtime_state(tmp_path)
-    spec["remoteEnv"] = {"BOOLEY_DIR": "/booley-project"}
+    spec["remoteEnv"] = {"BOOLEY_DIR": "/booley"}
     labels["devcontainer.local_folder"] = str(tmp_path)
     state["Config"]["Labels"] = labels
     state["Mounts"].extend(
@@ -510,6 +516,7 @@ class TestStateVolumeCheck:
         assert "booley-codex-state-someoldproject" in capsys.readouterr().out
 
 
+@pytest.mark.usefixtures("fake_sandbox_attachment")
 class TestDevcontainerSpecStaleness:
     """_check_devcontainer_spec must surface a spec that loses history on rebuild."""
 
@@ -944,3 +951,69 @@ def test_lasting_spec_sharing_error_fails_issuance_check(tmp_path, monkeypatch):
         "host issuance is invalid" in item.message and "cannot access" in item.message
         for item in report.report().findings
     )
+
+
+class _RelayReport:
+    def __init__(self) -> None:
+        self.failed: list[tuple[str, str]] = []
+
+    def fail(self, message: str, fix: str) -> None:
+        self.failed.append((message, fix))
+
+    def pass_(self, _message: str) -> None:
+        pass
+
+
+_RELAY_HEADLESS = "run `booley session down`, then `booley session up --rebuild` on the host"
+_RELAY_VSCODE = (
+    f"close VS Code, then on the host run `docker stop {quote_arg('box')}` "
+    f"and `docker rm {quote_arg('box')}`, "
+    "run `booley session down` to remove the relay topology, "
+    "and reopen the folder in the container"
+)
+
+
+@pytest.mark.parametrize(
+    ("case", "owner", "expected"),
+    [
+        ("missing", "headless", _RELAY_HEADLESS),
+        ("missing", "vscode", _RELAY_VSCODE),
+        ("missing", None, f"in VS Code, {_RELAY_VSCODE}; headless, {_RELAY_HEADLESS}"),
+        ("differs", "vscode", _RELAY_VSCODE),
+        ("differs", "docker-down", f"in VS Code, {_RELAY_VSCODE}; headless, {_RELAY_HEADLESS}"),
+    ],
+)
+def test_relay_repair_names_owner_workflow(tmp_path, monkeypatch, case, owner, expected) -> None:
+    from types import SimpleNamespace
+
+    from booley.eda.provisioning.licensing.flexnet_docker import RelayDockerError
+    from booley.runtime import session_issuance as runtime_spec
+    from booley.runtime.sandbox_apply import Attachment
+
+    profile = SimpleNamespace(
+        server_ipv4="10.0.0.1", server_hostid="h", lmgrd_port=1, vendor_port=2
+    )
+    monkeypatch.setattr(runtime_spec, "requested_license", lambda _root: profile)
+    monkeypatch.setattr(runtime_spec, "labels", lambda _issuance: {})
+    monkeypatch.setattr(session_runtime, "_relay_objects_exist", lambda _relay: case == "differs")
+
+    def differs(*_args, **_kwargs) -> None:
+        raise RelayDockerError("labels differ")
+
+    monkeypatch.setattr(inspection, "validate_relay", differs)
+
+    def attachment(_root):
+        if owner == "docker-down":
+            raise session_runtime.SessionError("docker unavailable")
+        return {"vscode": Attachment.VSCODE, "headless": Attachment.HEADLESS}.get(owner)
+
+    monkeypatch.setattr(session_runtime, "sandbox_attachment", attachment)
+    request = SimpleNamespace(project_root=tmp_path, remedy="remedy")
+    report = _RelayReport()
+
+    inspection._check_issued_license_relay(
+        request, ["box"], SimpleNamespace(relay_image_id="sha256:relay"), report
+    )
+
+    ((_message, fix),) = report.failed
+    assert fix == expected

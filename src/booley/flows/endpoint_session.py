@@ -12,8 +12,7 @@ from booley.flows.endpoint_events import (
     _endpoint_start_event,
     _write_display_event,
 )
-from booley.flows.endpoint_report_criteria import ReportCriteria, freeze, project
-from booley.flows.endpoint_reporting import _StdoutWitness, report_discarded_evidence
+from booley.flows.endpoint_reporting import _StdoutWitness
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     EndpointOutcome,
@@ -104,54 +103,29 @@ def prepare_execution(
 ) -> PreparedExecution | EndpointOutcome:
     """Adapt CLI arguments into one prepared execution request."""
     endpoint.reset_report_metadata()
-    endpoint._report_criteria = ReportCriteria()
-    endpoint.reset_evidence_discard()
     endpoint._requeue_cleanup_errors.clear()
     endpoint._stdout_witness = None
     if (early_outcome := endpoint._apply_pre_state_gate()) is not None:
-        if endpoint.endpoint_kind in {"flow", "specialist"}:
-            endpoint._report_criteria.project(early_outcome)
         return early_outcome
     if (early_outcome := _prepare_endpoint_report_root(endpoint)) is not None:
-        if endpoint.endpoint_kind in {"flow", "specialist"}:
-            endpoint._report_criteria.project(early_outcome)
         return early_outcome
-    endpoint.read_state()
     endpoint._default_target_args()
-    if (selection_error := _prepare_target_and_binding(endpoint)) is not None:
+    if (selection_error := _prepare_target(endpoint)) is not None:
         return selection_error
     invocation = endpoint.prepare_endpoint_invocation()
     if isinstance(invocation, EndpointOutcome):
         endpoint._publish_console_report(invocation)
-        endpoint._report_criteria.project(invocation)
         return invocation
-    if endpoint.endpoint_kind in {"flow", "specialist"}:
-        freeze(endpoint, invocation)
     return _prepared_execution(endpoint, invocation)
 
 
-def _prepare_target_and_binding(endpoint: EndpointState) -> EndpointOutcome | None:
-    """Resolve omission before binding while preserving explicit rejection order."""
-    implicit_target = not endpoint._selected_target and not endpoint.manifest_names_targets()
-    if implicit_target:
-        target_error = endpoint.prepare_target_endpoint()
-        if target_error is not None:
-            endpoint.write_report(target_error)
-            endpoint._publish_console_report(target_error)
-            return target_error
-    if endpoint.endpoint_kind == "flow":
-        binding_error = endpoint._criterion_binding_gate()
-        if binding_error is not None:
-            endpoint._publish_console_report(binding_error)
-            endpoint._report_criteria.project(binding_error)
-            return binding_error
-    if not implicit_target:
-        target_error = endpoint.prepare_target_endpoint()
-        if target_error is not None:
-            endpoint.write_report(target_error)
-            endpoint._publish_console_report(target_error)
-            return target_error
-    return None
+def _prepare_target(endpoint: EndpointState) -> EndpointOutcome | None:
+    """Resolve the Target selection, publishing a refusal."""
+    target_error = endpoint.prepare_target_endpoint()
+    if target_error is not None:
+        endpoint.write_report(target_error)
+        endpoint._publish_console_report(target_error)
+    return target_error
 
 
 def _prepared_execution(
@@ -260,20 +234,18 @@ def finish_execution(
     outcome: EndpointOutcome,
     *,
     started: float | None,
-    acceptance_recorded: bool,
+    records_published: bool,
 ) -> ExecutionResult:
-    """Publish completion, persisting only after acceptance succeeds."""
+    """Publish completion; the report refreshes its detail once records are published."""
     for cleanup_error in endpoint._requeue_cleanup_errors:
         normalize_completion_error(outcome, cleanup_error, "retire the killed attempt's progress")
     endpoint._requeue_cleanup_errors.clear()
-    report_discarded_evidence(endpoint, outcome)
-    project(endpoint, outcome)
     exit_code = endpoint._finish_main(
         outcome,
         prepared.display_target,
         outcome.display_label or prepared.display_label,
         started=started,
-        acceptance_recorded=acceptance_recorded,
+        records_published=records_published,
         dry_run=prepared.dry_run,
         non_persisting_dry_run=prepared.non_persisting_dry_run,
     )

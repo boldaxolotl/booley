@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Any
 
 from booley.runtime import sandbox_layout
@@ -24,7 +24,7 @@ class MountHistoryError(RuntimeError):
     """The mount history cannot be read or extended.
 
     A ``RuntimeError`` on purpose: ``ValueError`` from a record parse reads as an
-    absent record, which would hide an existing Job or Goal.
+    absent record, which would hide an existing Job.
     """
 
 
@@ -78,13 +78,22 @@ def _former(record: str) -> tuple[str, ...]:
 
 
 def translate_stored_path(value: str, *, record: str) -> str:
-    """Rebase *value* from a former mount point onto the current one."""
-    current = Path(sandbox_layout.BOOLEY_DIR_TARGET)
-    path = Path(value)
+    """Rebase *value* from a former mount point onto the current one.
+
+    Stored paths are POSIX Sandbox paths, so they are compared as such. A current mount that
+    is not POSIX-absolute (a native host path, as the tests use) is compared natively.
+    """
+    target = sandbox_layout.BOOLEY_DIR_TARGET
+    flavor: type[PurePath] = PurePosixPath if PurePosixPath(target).is_absolute() else PurePath
+    current = flavor(target)
+    path = flavor(value)
     if not path.is_absolute() or path.is_relative_to(current):
         return value
-    rebased = rebase(path, _former(record))
-    return value if rebased is None else str(rebased)
+    for mount in _former(record):
+        former = flavor(mount)
+        if path.is_relative_to(former):
+            return str(current / path.relative_to(former))
+    return value
 
 
 def former_spellings(value: str, *, record: str) -> tuple[str, ...]:
@@ -146,3 +155,23 @@ def record_former_mount(
         atomic_replace_bytes(path, json.dumps(payload, indent=2).encode("utf-8") + b"\n")
     except OSError as exc:
         raise MountHistoryError(f"cannot record the former mount in {path}: {exc}") from exc
+
+
+def recorded_former_mounts(source: Path, spec_file: Path) -> tuple[str, ...]:
+    """The former mounts a host-side reader can know: the history and the issued spec.
+
+    The history lists the mounts earlier issuances replaced. The spec at *spec_file* is
+    the issuance that has not been replaced yet, so its mount is a former one when it
+    differs from the current mount. Order is kept and duplicates dropped. Raises
+    ``MountHistoryError`` when the history or the spec cannot be read.
+    """
+    mounts = _read(source / MOUNT_HISTORY)
+    try:
+        issued = _former_mount_of(spec_file.read_bytes())
+    except FileNotFoundError:
+        issued = None
+    except OSError as exc:
+        raise MountHistoryError(f"cannot read {spec_file}: {exc}") from exc
+    if issued is not None and issued != sandbox_layout.BOOLEY_DIR_TARGET:
+        mounts.append(issued)
+    return tuple(dict.fromkeys(mounts))

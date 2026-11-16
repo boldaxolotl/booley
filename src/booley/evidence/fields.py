@@ -1,9 +1,6 @@
 """Persisted field names shared by evidence producers and Criteria policy."""
 
 SOURCE_FINGERPRINT_DETAIL_KEY = "_source_fingerprint"
-#: Reason of a change that unmeets a Criterion because its sources changed:
-#: its detail describes the old evidence, not a new observation.
-SOURCE_INVALIDATED_REASON = "source-invalidated"
 #: Reason of a Goal verdict recorded unmet because its Test Runs are not resolved yet.
 GOAL_TEST_RUN_PENDING_REASON = "goal-test-run-pending"
 #: Reason of a Goal verdict recorded unmet because the change did not measure the

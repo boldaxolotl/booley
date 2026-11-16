@@ -9,12 +9,15 @@ import tempfile
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import ExitStack
 from pathlib import Path, PureWindowsPath
-from typing import Any, BinaryIO
+from typing import TYPE_CHECKING, Any, BinaryIO
 
 import pytest
 
 from tests.memory_budget_support import budget_of, pin_budget
 from tests.python_command_support import interpreter_first_path, python_path_entry
+
+if TYPE_CHECKING:
+    from booley.runtime.sandbox_apply import Attachment
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[1]
 
@@ -27,13 +30,6 @@ pytest_plugins = [
     "tests.sandbox_only",
     "tests.thread_leak_guard",
 ]
-
-# Temporary (#3329): a bare ``pytest tests/`` skips the Goal Mode unit tests; the
-# coverage omit for ``src/booley/goals`` (pyproject.toml) and the classifier
-# exemption (.github/scripts/ci_goal_tests.py) go with it. Remove all three when
-# Goal Mode is removed (#3511), or when metrics-driven development fully replaces
-# it. Naming the path still collects them: ``pytest tests/goals``.
-collect_ignore = ["goals"]
 
 
 @pytest.fixture(autouse=True)
@@ -254,7 +250,9 @@ def require_symlinks(tmp_path: Path) -> None:
 
 # Generous per-test ceiling: only true hangs (a wedged subprocess or an
 # unbounded stall loop) exceed it, so it never flakes a healthy test.
-# CI passes --timeout=60 instead; raise one test's budget with
+# CI passes --timeout=60 instead, or 120 on Windows where
+# BOOLEY_TEST_TIME_SCALE is 2 (see ``tests/time_budget.py`` and
+# ``.github/ci/README.md#test-time-budgets``); raise one test's budget with
 # ``@pytest.mark.timeout(N)``. On Windows an expired budget kills the whole xdist
 # worker with no traceback, so size N by the rule in ``tests/timeout_headroom.py``
 # (3x the slowest Windows CI duration, from the ``time`` values in the
@@ -408,11 +406,40 @@ def pytest_configure(config: pytest.Config) -> None:
     from tests.timeout_headroom import timeout_plugin_loaded
 
     _isolate_xdist_worker_temp()
-    if timeout_plugin_loaded(config):
-        from pytest_timeout import get_env_settings
+    _configure_time_budgets(config, timeout_plugin_loaded(config))
 
-        if get_env_settings(config).timeout is None:
-            config.option.timeout = _DEFAULT_TEST_TIMEOUT_S
+
+def _configure_time_budgets(config: pytest.Config, timeout_loaded: bool) -> None:
+    """Validate the time scale and keep the per-test limit above the hang guard.
+
+    A hung child can outlive its own deadline by the fixed kill-and-drain time,
+    so the per-test limit must be at least twice the hang guard (and at least
+    60 s, today's CI value, whatever the factor). Runs that execute no test
+    (``--help``) are never refused.
+    """
+    if config.option.help:
+        return
+    from tests.time_budget import TimeScaleError, hang_guard_s, time_scale
+
+    try:
+        time_scale()
+        minimum = max(2 * hang_guard_s(), 60)
+    except TimeScaleError as exc:
+        raise pytest.UsageError(str(exc)) from exc
+    if not timeout_loaded:
+        return
+    from pytest_timeout import get_env_settings
+
+    timeout = get_env_settings(config).timeout
+    if timeout is None:
+        timeout = config.option.timeout = max(_DEFAULT_TEST_TIMEOUT_S, minimum)
+    if 0 < timeout < minimum:
+        raise pytest.UsageError(
+            f"--timeout={timeout:g} is below twice the hang guard ({hang_guard_s()} s at "
+            f"BOOLEY_TEST_TIME_SCALE={time_scale():g}); a hung child would outlive the "
+            "per-test limit and kill the worker without naming the test. "
+            f"Pass --timeout={minimum} or more."
+        )
 
 
 def prune_orphan_basetemps(config: pytest.Config) -> None:
@@ -702,21 +729,6 @@ def write_activity_signal(booley_dir: Path, key: str, state: str, at: str, tool:
     return path
 
 
-@pytest.fixture(autouse=True)
-def _inline_ended_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep cleanup deterministic; worker tests explicitly restore the process launcher."""
-    from booley.goals import ended_records
-    from booley.goals.store import GoalStore
-
-    monkeypatch.setattr(
-        ended_records,
-        "_launch_cleanup",
-        lambda booley_dir, repo_dir: ended_records.sweep_ended_records(
-            GoalStore(booley_dir), repo_dir
-        ),
-    )
-
-
 _FAKE_BWAVE = '''#!{python}
 """Stand-in for ``bwave build``: modes come from FAKE_BWAVE_MODE."""
 import os
@@ -758,3 +770,21 @@ def fake_bwave(tmp_path, monkeypatch):
     script.chmod(0o755)
     monkeypatch.setattr(waveform_store, "native_bwave_binary", lambda: str(script))
     return script
+
+
+@pytest.fixture
+def fake_sandbox_attachment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Callable[[Attachment | None], None]:
+    """Fake the Sandbox owner inventory so remedy text never asks the host's Docker.
+
+    The owner starts unknown (``None``); call the returned function with an
+    ``Attachment`` to give the Sandbox one.
+    """
+    from booley.runtime import session_runtime
+
+    def attach(owner: Attachment | None) -> None:
+        monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _root: owner)
+
+    attach(None)
+    return attach

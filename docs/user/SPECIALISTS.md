@@ -14,7 +14,8 @@ Booley ships two:
 - **[Reviewer](REVIEWER.md)** reviews RTL or testbench code for one concern at
   a time, such as bugs, protocol, or spec compliance.
 - **Coverage Analyst** explains a coverage report and suggests what to test
-  next. See [Analyzing a Campaign](COVERAGE.md#analyzing-a-campaign).
+  next. See [Analyzing a Coverage
+  Record](COVERAGE.md#analyzing-a-coverage-record).
 
 ## Running a Specialist
 
@@ -31,13 +32,13 @@ booley specialist                             # list the Specialists
 booley specialist reviewer --help             # its options
 ```
 
-Runs you start yourself never count as Goal evidence.
-
-Specialists accept `-C/--project`, `--report-dir`, `--diagnostic`, and, where
+Specialists accept `-C/--project`, `--report-dir`, and, where
 it applies, `--target`. Two options exist only on the command line:
 
 - `--max-turns N` caps the conversation length.
-- `--timeout DURATION` limits each model call, not the whole run.
+- `--timeout DURATION` limits each model call, not the whole run, in the
+  format of a Flow's [`--timeout`](FLOW_REFERENCE.md#common-options). A value
+  below the Specialist's minimum of 10 minutes is raised to it.
 
 Reports go to `mcp-tool-reports/` in the Booley Directory, or under
 `--report-dir`.
@@ -48,9 +49,6 @@ Reports go to `mcp-tool-reports/` in the Booley Directory, or under
   [`[models]`](CONFIG.md#model-selection-models).
 - Turn one off with
   [`enabled = false`](CONFIG.md#flow-and-specialist-availability-enabled).
-
-[CLI-REFERENCE.md](CLI-REFERENCE.md#booley-flows--specialists) lists each
-Specialist's arguments and the Goals it can satisfy.
 
 If a Specialist misbehaves, report it as described in
 [When Booley itself misbehaves](USAGE.md#when-booley-itself-misbehaves).

@@ -8,7 +8,7 @@ to it. The terminal output is unchanged and the process exits exactly as before.
 
 Liveness of these records is judged by ``process_identity`` (Dashboard, directory
 migration). ``derive_status`` and ``is_active``, which compare ``argv`` with
-``/proc``, only ever read MCP, Goal and baseline roots, never this one, so the
+``/proc``, only ever read MCP roots, never this one, so the
 human ``argv`` stored here is for display and never matched against a process.
 """
 

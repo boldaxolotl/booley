@@ -47,7 +47,6 @@ on:
       - "src/booley/dev_support/validate_commit_msg.py"
       - "src/booley/eda/**"
       - "src/booley/evidence/**"
-      - "src/booley/goals/**"
       - "src/booley/review/**"
       - "src/booley/feedback/**"
       - "src/booley/flows/**"
@@ -202,7 +201,7 @@ jobs:
         run: .github/scripts/riscv_candidate.sh resolve-tooling "${RUNNER_TEMP}/picorv32-image-evidence/tooling-source.json"
 
       # The standard-substrate steps below mirror the Tests workflow's
-      # riscv-image job; tests/sandbox_image_contract.py checks both.
+      # riscv-image job.
       - name: Compute stable-base compatibility contract
         id: base-contract
         shell: bash

@@ -36,8 +36,7 @@ pip install -e ".[dev]"     # editable install plus test and lint tools (pytest,
 pytest                      # tests/ serially; pass a path or -k for a fast subset
 ```
 
-A bare `pytest` skips `tests/goals/` until Goal Mode is removed (#3511); run
-those with `pytest tests/goals`. Tests that need the native B-Wave binary skip
+Tests that need the native B-Wave binary skip
 until you build it (see [Agent source-development checks](#agent-source-development-checks)).
 
 CI installs with `-c .github/ci/constraints.txt`, a committed file that pins
@@ -86,8 +85,7 @@ installed in a persistent environment qualifies: editable installs and
 packages under the system temporary directory, `.worktrees`, `.runtime`, or
 `qa-runs` never do. To make your development wheel the host installation on
 purpose, install it in a persistent environment and run
-`booley bootstrap --update` from it; see
-[The wrong `booley` runs](../user/TROUBLESHOOTING.md#the-wrong-booley-runs).
+`booley bootstrap --update` from it.
 
 ### Agent source-development checks
 

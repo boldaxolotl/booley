@@ -11,9 +11,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# Directory, inside the Booley Directory, that holds every Goalset.
-GOALSETS_DIR = "goalsets"
-
 
 def resolve_toml(directory: Path) -> Path:
     """Resolve ``booley.toml`` in *directory*, falling back to ``pipeline.toml``.

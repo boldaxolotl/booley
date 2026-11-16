@@ -48,6 +48,7 @@ from booley.runtime import interactive_docker as idk
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.platform_paths import docker_mount_path
+from booley.runtime.sandbox_apply import Attachment
 
 # Issuance fixtures replace PATH with a synthetic launcher directory.
 _HOST_PATH = os.environ.get("PATH", os.defpath)
@@ -827,7 +828,7 @@ def test_doctor_names_repair_for_rejected_pre_030_issuance(
 ) -> None:
     """Doctor FAILs a rejected pre-0.3.0 issuance and names the repair that applies."""
     project, _spec, _path, _stamp = issued
-    monkeypatch.setattr(session_runtime, "vscode_session_container", lambda _root: None)
+    monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _root: Attachment.HEADLESS)
     damage(project)
     request = inspection.RuntimeInspectionRequest(project, "sha256:" + "a" * 64, None)
     failures = [
@@ -879,7 +880,6 @@ def _revoke_issued_project(project: Path, monkeypatch: pytest.MonkeyPatch) -> Mo
     )
     cleanup = Mock(return_value=())
     monkeypatch.setattr(flexnet_docker, "cleanup_project_resources_for_identity", cleanup)
-    monkeypatch.setattr(session_runtime, "vscode_session_container", lambda _root: None)
     docker = Mock(side_effect=AssertionError("Docker must not run after withdrawn issuance"))
     monkeypatch.setattr("booley.runtime.interactive_docker._run_docker", docker)
     monkeypatch.setattr(session_runtime, "_run", docker)
@@ -893,6 +893,7 @@ def _revoke_issued_project(project: Path, monkeypatch: pytest.MonkeyPatch) -> Mo
     return docker
 
 
+@pytest.mark.usefixtures("fake_sandbox_attachment")
 @pytest.mark.parametrize("boundary", ["up", "ensure", "enter", "cli"])
 def test_real_revoke_reports_withdrawal_at_enter_and_cli(
     issued, monkeypatch, capsys, boundary
@@ -1288,7 +1289,7 @@ def test_missing_project_data_bind_names_source_and_target(issued_preview, opera
 
     message = str(caught.value)
     assert docker_mount_path(source) in message
-    assert "/booley-project" in message
+    assert "/booley" in message
     assert "unavailable" in message
 
 
@@ -2210,7 +2211,7 @@ def test_seal_pins_absolute_host_executable_and_canonical_mount(issued) -> None:
     expected_source = str((project / ".booley").resolve())
     assert stamp.project_data_source == expected_source
     expected_mount_source = docker_mount_path(Path(expected_source))
-    assert f"source={expected_mount_source},target=/booley-project,type=bind" in spec["mounts"]
+    assert f"source={expected_mount_source},target=/booley,type=bind" in spec["mounts"]
     assert spec["mounts"][1] == (f"source={expected_mount_source},target=/work/.booley,type=bind")
     assert spec["mounts"][-1] == runtime_spec.expected_devcontainer_mount(project)
 
@@ -2578,10 +2579,7 @@ def test_extracted_image_contract_requires_en_us_locale(tmp_path: Path) -> None:
 @pytest.mark.parametrize("section", ["remoteEnv", "containerEnv"])
 def test_compiler_cache_identity_is_fixed_and_old_specs_need_refresh(issued, section):
     project, spec, path, _stamp = issued
-    assert (
-        spec[section]["BOOLEY_COMPILER_CACHE_ROOT"]
-        == "/booley-project/.runtime/compiler-cache/ccache"
-    )
+    assert spec[section]["BOOLEY_COMPILER_CACHE_ROOT"] == "/booley/.runtime/compiler-cache/ccache"
     spec[section].pop("BOOLEY_COMPILER_CACHE_ROOT")
     with pytest.raises(runtime_spec.RuntimeSpecError):
         runtime_spec.validate(project, spec, path)
@@ -2594,9 +2592,9 @@ def test_compiler_cache_identity_is_fixed_and_old_specs_need_refresh(issued, sec
 @pytest.mark.parametrize(
     "target",
     [
-        "/booley-project/hidden",
-        "//booley-project/hidden",
-        "/booley-project/../booley-project/hidden",
+        "/booley/hidden",
+        "//booley/hidden",
+        "/booley/../booley/hidden",
     ],
 )
 def test_canonical_alias_seal_keeps_shadow_and_rejects_alias_subtree_drift(
@@ -2608,7 +2606,7 @@ def test_canonical_alias_seal_keeps_shadow_and_rejects_alias_subtree_drift(
     monkeypatch.setattr(project_image, "project_data_alias_capable", lambda _image: True)
     prepared, path, stamp = issue_built(project, plain_builder(project), monkeypatch)
     spec = prepared.spec
-    assert not any("target=/booley-project," in mount for mount in spec["mounts"])
+    assert not any("target=/booley," in mount for mount in spec["mounts"])
     expected_source = docker_mount_path(project / ".booley")
     assert f"source={expected_source},target=/work/.booley,type=bind" in spec["mounts"]
     assert stamp.project_data_layout == "canonical-alias"
@@ -2671,7 +2669,7 @@ def test_canonical_alias_rejects_nonbind_mount_destination_synonyms(issued, monk
     prepared = runtime_spec.preview(project, plain_builder(project))
 
     def add_tmpfs_alias_mount(spec: dict) -> None:
-        spec["mounts"].append(f"type=tmpfs,{key}=//booley-project/hidden")
+        spec["mounts"].append(f"type=tmpfs,{key}=//booley/hidden")
 
     stub_keeper(monkeypatch)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="alias-subtree"):
@@ -2711,9 +2709,9 @@ def test_validation_alias_probe_failure_is_a_runtime_spec_error(issued, monkeypa
 @pytest.mark.parametrize(
     "mount",
     [
-        "type=tmpfs,Target=/booley-project/hidden",
-        'type=tmpfs,"dst=/booley-project/hidden"',
-        "type=tmpfs,target=/safe,dst=/booley-project/hidden",
+        "type=tmpfs,Target=/booley/hidden",
+        'type=tmpfs,"dst=/booley/hidden"',
+        "type=tmpfs,target=/safe,dst=/booley/hidden",
     ],
 )
 def test_mount_parser_rejects_noncanonical_or_conflicting_destination_authority(mount):
@@ -3038,7 +3036,7 @@ def test_seal_refuses_missing_or_duplicate_directory_authority(issued, count):
         protected_devcontainer_source=str(project / ".devcontainer"),
     )
     mounts = spec["mounts"]
-    selected = [raw for raw in mounts if runtime_spec._mount_target(raw) == "/booley-project"]
+    selected = [raw for raw in mounts if runtime_spec._mount_target(raw) == "/booley"]
     assert len(selected) == 1
     spec["mounts"] = [raw for raw in mounts if raw not in selected] + selected * count
     with pytest.raises(runtime_spec.RuntimeSpecError, match="one exact writable bind"):
@@ -3088,7 +3086,7 @@ def test_canonical_alias_rejects_external_directory_authority(issued, tmp_path):
 def test_runtime_directory_mount_refuses_inexact_host_bind(issued, damage):
     project, _spec, _path, _stamp = issued
     source = project / ".booley"
-    mount = f"source={docker_mount_path(source)},target=/booley-project,type=bind"
+    mount = f"source={docker_mount_path(source)},target=/booley,type=bind"
     mounts = {"missing": [], "duplicate": [mount, mount], "readonly": [mount + ",readonly"]}[
         damage
     ]
@@ -3128,7 +3126,9 @@ def test_policy_change_requires_refresh_even_when_shell_exports_change(issued, m
         monkeypatch.setenv(key, "SYNTHETIC")
     runtime_spec.validate(project, spec, path)
     (project / ".booley" / "booley.toml").write_text('[agent]\nauth="api_key"\n')
-    with pytest.raises(runtime_spec.RuntimeSpecError, match=r"credential policy/schema.*refresh"):
+    with pytest.raises(
+        runtime_spec.RuntimeSpecError, match=r"credential policy/schema has drifted$"
+    ):
         runtime_spec.validate(project, spec, path)
 
 
@@ -3939,9 +3939,28 @@ def test_default_change_without_clis_requires_refresh(issued, monkeypatch, reque
     _set_toml(project, request, '[agent]\ndefault = "codex"\n')
     with pytest.raises(
         runtime_spec.RuntimeSpecError,
-        match=r"without \[agent\] clis only \[agent\] default.*booley session refresh",
+        match=r"without \[agent\] clis only \[agent\] default is allowed\)$",
     ):
         runtime_spec.validate(project, issued_spec, path)
+
+
+def test_vscode_prepare_agent_cli_refusal_names_vscode_steps(issued, monkeypatch, request):
+    project, spec, _ = _multi_cli_project(
+        issued, monkeypatch, request, '[agent]\ndefault = "claude"\n'
+    )
+    issued_spec, path = _issue_spec(project, spec, monkeypatch)
+    runtime_spec.validate(project, issued_spec, path)
+    _set_toml(project, request, '[agent]\ndefault = "codex"\n')
+    monkeypatch.setattr(session_runtime, "_refuse_outdated_vscode_containers", lambda *_: None)
+
+    with pytest.raises(session_runtime.SessionError) as caught:
+        session_runtime._refuse_then_validate(project, issued_spec)
+
+    message = str(caught.value)
+    assert message.endswith(
+        "on the host run `booley init`, then use Dev Containers: Rebuild Container"
+    )
+    assert "session refresh" not in message
 
 
 def test_cli_set_change_requires_refresh(issued, monkeypatch, request):
@@ -3951,7 +3970,9 @@ def test_cli_set_change_requires_refresh(issued, monkeypatch, request):
     issued_spec, path = _issue_spec(project, spec, monkeypatch)
     runtime_spec.validate(project, issued_spec, path)
     _set_toml(project, request, _CLAUDE_AND_CODEX)
-    with pytest.raises(runtime_spec.RuntimeSpecError, match=r"Agent CLIs.*differ.*refresh"):
+    with pytest.raises(
+        runtime_spec.RuntimeSpecError, match=r"Agent CLIs.*differ from \[agent\] clis.*"
+    ):
         runtime_spec.validate(project, issued_spec, path)
 
 
@@ -4102,6 +4123,52 @@ def test_reissue_keeps_former_mount_for_unannotated_records(
     record = job_records.read_record("run-1", jobs)
     assert record is not None
     assert record.work_dir == str(source / "worktrees" / "wt")
+
+
+def test_reissue_rebases_former_mount_records_onto_booley(
+    issued_preview, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.runtime import mount_history
+
+    project, prepared, path, _stamp = issued_preview
+    _with_previous_mount(path, "/former-mount")
+
+    runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+
+    issued_spec = json.loads(path.read_text(encoding="utf-8"))
+    assert issued_spec["remoteEnv"]["BOOLEY_DIR"] == "/booley"
+    source = runtime_spec.authorized_project_data_source(project)
+    history = json.loads((source / mount_history.MOUNT_HISTORY).read_bytes())
+    assert history == {"schema": 1, "mounts": ["/former-mount"]}
+    monkeypatch.setattr(
+        mount_history, "_history_path", lambda: source / mount_history.MOUNT_HISTORY
+    )
+    rebased = mount_history.translate_stored_path("/former-mount/worktrees/wt", record="a Job")
+    assert rebased == "/booley/worktrees/wt"
+
+
+def test_issuance_refuses_external_image_without_booley_mount_point(
+    issued, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An image built for an older Booley (and one the user manages) has no /booley."""
+    from booley.runtime import project_image
+
+    project, _spec, path, _stamp = issued
+    project_image.project_data_alias_capable.cache_clear()
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:" + "c" * 64)
+    monkeypatch.setattr(
+        project_image,
+        "run_captured_bounded",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, "absent\n", ""),
+    )
+    before = path.read_bytes()
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="booley init --seed") as caught:
+        runtime_spec.preview(project, plain_builder(project))
+    project_image.project_data_alias_capable.cache_clear()
+
+    assert "rebuild or pull" in str(caught.value)
+    assert path.read_bytes() == before
 
 
 def test_reissue_refuses_former_mount_overlapping_workspace(issued_preview) -> None:

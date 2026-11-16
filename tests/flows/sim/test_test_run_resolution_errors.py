@@ -11,7 +11,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.flows.sim.test_run_invocation import BaselineLink
 from booley.flows.test_runs import UnseededTargetError, build_test_run
 from booley.fusesoc import fusesoc_registry
 from tests.flows.sim.test_flow_test_run_resolution import _MAP, _flow
@@ -68,23 +67,6 @@ def test_coverage_reports_a_request_the_target_cannot_run(tmp_path, monkeypatch)
     outcome = flow._prepare_coverage()
     assert outcome is not None and outcome.exit_code == 2
     assert outcome.report_text.startswith("Coverage Preflight: Target 'sim' is unseeded")
-
-
-def test_a_candidate_that_does_not_resolve_has_no_test_run_to_compare(tmp_path, monkeypatch):
-    flow = _flow(tmp_path, monkeypatch)
-    _unresolvable(flow, monkeypatch)
-    monkeypatch.setattr(
-        flow,
-        "_simulation_record_baseline_requirements",
-        lambda _targets: (("sim", "ref", "stress"),),
-    )
-
-    links = flow._baseline_links(["sim"], _MAP)
-
-    assert links == (BaselineLink("sim", "ref", "stress", None),)
-    with flow._baseline_checkout(tmp_path / "baseline", links, "a" * 40) as baseline:
-        assert baseline.runs_of("ref") == ()
-    assert ("sim", "stress") in baseline.refusals
 
 
 def test_a_resume_hint_names_every_frozen_run_when_the_plan_cannot_be_built(tmp_path, monkeypatch):

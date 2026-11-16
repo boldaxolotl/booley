@@ -12,7 +12,7 @@ import shlex
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.progress_lifecycle import (
@@ -80,6 +80,19 @@ from .record_presentation import (
     _simulation_record_recovery_detail,
 )
 from .record_scaffold import _group_disclosures, _SimulationRecordRun, _SimulationRecordSteps
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from contextlib import ExitStack
+
+    from booley.flows.base import SubprocessResult
+    from booley.flows.job_estimates import JobRequest
+    from booley.flows.sim.request import SimRequest
+    from booley.flows.sim.verilator_coverage import AuthenticatedSimulationExecutionPort
+    from booley.flows.target_test_plan import TargetTestPlan
+
+    from .execution import SimulationExecution, SimulationOptions
+    from .record import SimulationRecordPolicy
 
 
 def _manifest_no_waivers(manifest: SimulationRecordManifest) -> bool:
@@ -155,6 +168,50 @@ def _checkpoint_coverage_record(
 class SimulationRecordResumeMixin:
     """Simulation Record resume paths for `SimulateFlow`."""
 
+    if TYPE_CHECKING:
+        # Host members SimulateFlow provides; Pyright checks them against the host.
+        publication_resources: ExitStack[bool | None]
+        _held_resume_origins: set[Path]
+        _simulation_record_publication_checkpoint: Callable[[str], None] | None
+
+        @property
+        def args(self) -> SimRequest: ...
+        def _target_test_plan(self, target: str) -> TargetTestPlan: ...
+        def _record_simulation_record_tool(self, manifest: SimulationRecordManifest) -> None: ...
+        def _simulation_record_policy(self) -> SimulationRecordPolicy: ...
+        @staticmethod
+        def _simulation_record_cancelled_outcome(
+            error: SimulationRecordCancellationError,
+            detail: Mapping[str, object] | None = None,
+        ) -> EndpointOutcome: ...
+        def _capture_cycle_report(self, outcomes: Sequence[SimulationRecordOutcome]) -> None: ...
+        def _write_simulation_record_progress(
+            self,
+            targets: Sequence[str],
+            outcomes: Sequence[SimulationRecordOutcome],
+            *,
+            phase: str,
+            complete: bool,
+        ) -> None: ...
+        def _simulation_record_endpoint_outcome(
+            self, outcomes: list[SimulationRecordOutcome]
+        ) -> EndpointOutcome: ...
+        def work_item_job_request(
+            self, selector: str, runs: Sequence[TestRun], flags: tuple[str, ...]
+        ) -> JobRequest | None: ...
+        def _record_pre_sim_firing(self, key: tuple[str, str, str, int]) -> None: ...
+        def _execute_boundary(
+            self, cmd: list[str], *, timeout: int | None = None, cwd: Path | None = None
+        ) -> SubprocessResult: ...
+        def _coverage_simulation_record_execution(
+            self,
+            plan: CoverageTargetPlan,
+            options: SimulationOptions,
+            pre_sim_commands: tuple[str, ...],
+            pre_sim_build_access: str,
+        ) -> AuthenticatedSimulationExecutionPort: ...
+        def _simulation_execution(self) -> SimulationExecution: ...
+
     def _refuse_unfinished_coverage_resume(
         self, validated: ValidatedResumeManifest
     ) -> EndpointOutcome | None:
@@ -182,8 +239,7 @@ class SimulationRecordResumeMixin:
         selector = cast(Mapping[str, str], manifest.document["target"])["selector"]
         workload = cast(Mapping[str, object], manifest.document["workload"])
         trace = " --trace" if workload["trace"] is True else ""
-        # A raw-coverage run of a gated Target is refused without --diagnostic.
-        no_waivers = " --no-waivers --diagnostic" if _manifest_no_waivers(manifest) else ""
+        no_waivers = " --no-waivers" if _manifest_no_waivers(manifest) else ""
         tests = self._frozen_test_run_options(manifest, selector)
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
@@ -297,11 +353,9 @@ class SimulationRecordResumeMixin:
             invocation: Path,
             manifest_published: Callable[[Path], None],
         ) -> _SimulationRecordSteps | EndpointOutcome:
-            dependency_error = self._prepare_simulation_record_resume_dependency(
-                validated, invocation, observed
-            )
-            if dependency_error is not None:
-                return dependency_error
+            lock_error = self._lock_simulation_record_resume_origin(validated, observed)
+            if lock_error is not None:
+                return lock_error
             coverage_plan = (
                 self._resume_coverage_target_plan(validated)
                 if _is_coverage_manifest(validated.manifest)
@@ -325,10 +379,9 @@ class SimulationRecordResumeMixin:
             ),
         )
 
-    def _prepare_simulation_record_resume_dependency(
+    def _lock_simulation_record_resume_origin(
         self,
         validated: ValidatedResumeManifest,
-        invocation: Path,
         observed: SimulationRecordRecoveryStatus,
     ) -> EndpointOutcome | None:
         from .record_reports import simulation_record_invocation_lock
@@ -349,23 +402,6 @@ class SimulationRecordResumeMixin:
                     detail=_simulation_record_recovery_detail(observed),
                 )
             self._held_resume_origins.add(origin)
-        try:
-            from .record.dependency import register_simulation_record_dependency
-
-            register_simulation_record_dependency(
-                validated.path,
-                simulation_record_id=cast(
-                    str, validated.manifest.document["simulation_record_id"]
-                ),
-                manifest_sha256=validated.sha256,
-                dependent_invocation=invocation,
-            )
-        except (OSError, ValueError) as exc:
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=f"Simulation Record resume dependency failed: {exc}",
-                detail=_simulation_record_recovery_detail(observed),
-            )
         return None
 
     def _simulation_record_resume_failure(
@@ -624,8 +660,7 @@ class SimulationRecordResumeMixin:
 
     def _resume_coverage_prepared(self, validated: ValidatedResumeManifest) -> Any:
         """Run the shared coverage preflight for the manifest's frozen coverage choice."""
-        from booley.criteria.state import DevelopmentState
-        from booley.flows.sim.coverage_flow_context import coverage_context_for_execution
+        from booley.flows.sim.coverage_flow_context import coverage_project_context
         from booley.flows.sim.coverage_invocation import (
             CoverageInvocationRequest,
             prepare_coverage_invocation,
@@ -636,13 +671,7 @@ class SimulationRecordResumeMixin:
         items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
         names = cast(tuple[str, ...], cast(Mapping[str, object], items[0]["selection"])["names"])
         workload = cast(Mapping[str, object], manifest.document["workload"])
-        context = coverage_context_for_execution(
-            self.args.work_dir,
-            DevelopmentState.load(self.args.state_file)
-            if self.args.state_file
-            else DevelopmentState(),
-            recorder=self._acceptance_recorder,
-        )
+        context = coverage_project_context(self.args.work_dir)
         runs = tuple(
             test_run_from_document(entry)
             for entry in cast(tuple[object, ...], items[0]["test_runs"])
@@ -655,7 +684,6 @@ class SimulationRecordResumeMixin:
                 test_runs={target["selector"]: runs},
                 trace=cast(bool, workload["trace"]),
                 no_waivers=_manifest_no_waivers(manifest),
-                diagnostic=self.args.diagnostic,
             ),
             context,
         )

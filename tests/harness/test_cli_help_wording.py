@@ -47,24 +47,6 @@ EXPECTED_ENDPOINTS = {
 }
 
 
-# These exact recovery contracts intentionally name the protocol required by #1549.
-ALLOWED.update(
-    {
-        (
-            f"booley {kind} {name}",
-            "CLI runs never record Goal evidence; use Goal-bound MCP calls with work_dir.",
-        ): "Goal recording recovery must name the supported MCP call and work_dir"
-        for kind, name in EXPECTED_ENDPOINTS
-    }
-)
-ALLOWED[
-    (
-        "booley specialist coverage_analyst",
-        "Only Goal-bound MCP calls record proposed coverage waivers for your review.",
-    )
-] = "CLI coverage advice must not promise recording Goal waiver candidates"
-
-
 def _endpoints() -> dict[str, object]:
     """Instantiate every built-in Flow and Specialist reachable from the CLI."""
     found = {}
@@ -266,7 +248,7 @@ def test_extension_without_cli_wording_keeps_its_description() -> None:
 @pytest.mark.parametrize("command", sorted(ENDPOINTS))
 @pytest.mark.parametrize("inside", [False, True])
 @pytest.mark.parametrize("flag", ["-h", "--help"])
-@pytest.mark.parametrize("prefix", [[], ["--diagnostic"], ["--"]])
+@pytest.mark.parametrize("prefix", [[], ["--report-dir", "reports"], ["--"]])
 def test_help_from_the_booley_entry_point(
     command: str,
     inside: bool,

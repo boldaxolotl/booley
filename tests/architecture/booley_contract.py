@@ -33,10 +33,6 @@ a rule blocks an import, put the shared piece in the owner named here, not behin
 - Flows (D8-D11, D16, D38): `booley.evidence` holds the values that cross from an evidence
   producer into Criteria, so both depend downward. Source scanning and fingerprints stay in Flows
   (`flows.source_fingerprint`).
-- Goal Mode (D35, D38): `flows.execution_persistence` defines the recording interface
-  (`AcceptanceRecorder`); `goals.flow_execution` and `mcp.unbound_recorder` supply adapters.
-  `mcp.call_context` and `mcp.goal_flow_runner` bind a call to its Goal Record and pick the
-  concrete Flow, so Flows never import Goals and Goals never import a concrete Flow.
 - Doctor (D26): each diagnostic owner takes a request and returns a complete report, so Doctor,
   MCP, and the Dashboard read the same observations. See the comment at the D26 rule for how to
   add an owner.
@@ -67,7 +63,7 @@ to a PR that moves a boundary.
   that removes it; remove it with the fix.
 - Cycles: when a change splits the approved group, shrink `APPROVED_LEGACY_SCCS` in the same
   change. Never approve a new cycle across packages; fix the imports.
-- Importing `booley.goals` or `booley.criteria` from a new module: add the module and its reason
+- Importing `booley.criteria` from a new module: add the module and its reason
   to `_ALLOWED` in `test_goal_mode_boundaries.py`.
 """
 
@@ -161,7 +157,6 @@ DIRECTION_RULES = (
             prefix("booley.harness"),
             prefix("booley.mcp"),
             prefix("booley.runtime"),
-            prefix("booley.goals"),
             prefix("booley.flows"),
         ),
         "shared presentation primitives stay beneath every composition and execution owner",
@@ -172,13 +167,6 @@ DIRECTION_RULES = (
         (prefix("booley.harness"),),
         "Flows run under any composition; the Harness command layer supplies human CLI "
         "concerns through the invocation, never by Flow import",
-    ),
-    DirectionRule(
-        "D36",
-        (prefix("booley.runtime"),),
-        (prefix("booley.goals"),),
-        "Runtime consumes explicit execution inputs; Goal history and binding interpretation "
-        "belong to higher-level composition",
     ),
     DirectionRule(
         "D37",
@@ -192,24 +180,6 @@ DIRECTION_RULES = (
         (prefix("booley.flows"),),
         "Runtime owns Sandbox and Job mechanisms; it reads Flow progress shape through "
         "booley.core and never imports a Flow",
-    ),
-    DirectionRule(
-        "D38",
-        (prefix("booley.flows"), prefix("booley.specialists")),
-        (prefix("booley.goals"),),
-        "evidence producers receive Goal presentation and candidate paths through neutral execution interfaces",
-    ),
-    DirectionRule(
-        "D35",
-        (prefix("booley.goals"),),
-        (
-            prefix("booley.harness"),
-            prefix("booley.mcp"),
-            prefix("booley.specialists"),
-            *_FLOW_PREFIXES,
-        ),
-        "Goal Mode policy and records are composed by MCP and command entry points; they do "
-        "not depend on those entry points, Specialists, or concrete Flows",
     ),
     DirectionRule(
         "D34",
@@ -294,7 +264,6 @@ DIRECTION_RULES = (
                 "feedback",
                 "flows",
                 "fusesoc",
-                "goals",
                 "harness",
                 "mcp",
                 "presentation",
@@ -440,7 +409,6 @@ DIRECTION_RULES = (
             exact(name)
             for name in (
                 "booley.flows.target_campaign",
-                "booley.flows.target_criteria",
                 "booley.flows.target_test_suite",
             )
         ),

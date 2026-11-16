@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from booley.config.goals import parse_dashboard
+from booley.config.sandbox import parse_dashboard
 from booley.core.boundary import require_dict
 from booley.core.file_lock import nonblocking_file_lock
 from booley.runtime import platform_paths, runtime_context

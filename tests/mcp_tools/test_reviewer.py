@@ -11,9 +11,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from booley.criteria.state import (
-    DevelopmentState,
-)
 from booley.specialists.reviewer import (
     RTL_FOCUS_CATEGORIES,
     SEVERITY_CRITICAL,
@@ -24,7 +21,6 @@ from booley.specialists.reviewer import (
     ReviewerSpecialist,
     ReviewIssue,
     _finding_record,
-    _validate_finding_dict,
     _validate_issue_dict,
     check_gate,
     count_by_severity,
@@ -55,47 +51,6 @@ def _skip_workspace_snapshot_for_mocked_agents(monkeypatch: pytest.MonkeyPatch) 
     )
 
 
-def test_verify_statuses_compatibility_view() -> None:
-    output = json.dumps(
-        {
-            "findings": [
-                {"index": 1, "status": "STILL_PRESENT"},
-                {"index": 2, "status": "FIXED", "evidence": "removed"},
-            ]
-        }
-    )
-
-    assert ReviewerSpecialist._extract_verify_statuses(output) == {
-        1: "STILL_PRESENT",
-        2: "FIXED",
-    }
-
-
-def test_reviewer_criterion_binding_is_source_scoped(state_file: Path) -> None:
-    state = DevelopmentState.load(state_file)
-    state.init_criteria(
-        {"review_tb_quality_done": True},
-        criterion_params={"review_tb_quality_done": {"scope": ["tb/uart_tb.sv"]}},
-        strict=True,
-    )
-    state.save()
-    endpoint = ReviewerSpecialist()
-    endpoint.parse_args(
-        [
-            "--scope",
-            "tb/uart_tb.sv",
-            "--category",
-            "tb",
-            "--focus",
-            "quality",
-        ]
-    )
-    endpoint.read_state()
-
-    assert not hasattr(endpoint.args, "target")
-    assert endpoint._criterion_binding_gate() is None
-
-
 def test_reviewer_rejects_removed_target_option(state_file: Path) -> None:
     endpoint = ReviewerSpecialist()
     with pytest.raises(SystemExit):
@@ -114,15 +69,9 @@ def test_reviewer_rejects_removed_target_option(state_file: Path) -> None:
 
 
 @pytest.fixture()
-def state_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Create a minimal state file and set env vars."""
-    sf = tmp_path / "state.json"
-    st = DevelopmentState.load(sf)
-    st.slug = "test-review"
-    st.save()
-    monkeypatch.setenv("BOOLEY_SLUG", "test-review")
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(sf))
-    return sf
+def state_file(tmp_path: Path) -> Path:
+    """A path where no review state is written: a Reviewer run keeps none."""
+    return tmp_path / "state.json"
 
 
 @pytest.fixture()
@@ -159,28 +108,6 @@ def _make_issue_dict(
     }
 
 
-def _stamp_current_review_contract(endpoint: ReviewerSpecialist, state_file: Path) -> None:
-    """Upgrade fixture state so verification tests exercise v4 in-flight state."""
-    state = DevelopmentState.load(state_file)
-    entry = state.criteria[endpoint._criterion_key()]
-    entry.detail = {
-        **(entry.detail or {}),
-        "review_detail_version": 4,
-        "contract": endpoint._review_contract_detail(),
-    }
-    state.save()
-    endpoint.read_state()
-
-
-def _read_current_review_contract(endpoint: ReviewerSpecialist, state_file: Path) -> None:
-    """Load fixture state and upgrade it to the current receipt contract."""
-    endpoint.read_state()
-    _stamp_current_review_contract(endpoint, state_file)
-    if endpoint._open_findings(endpoint._get_prior_detail(endpoint._criterion_key()) or {}):
-        root = endpoint.args.work_dir
-        endpoint.parse_args(["--work-dir", str(root), "--verify"])
-
-
 def test_dry_run_does_not_invoke_agent_or_update_receipts(
     state_file: Path,
     tmp_path: Path,
@@ -202,19 +129,13 @@ def test_dry_run_does_not_invoke_agent_or_update_receipts(
             "--dry-run",
         ]
     )
-    endpoint.read_state()
-    before = state_file.read_text(encoding="utf-8")
-    with (
-        patch.object(endpoint, "_run_single_review") as review,
-        patch("booley.specialists.reviewer.refresh_verification_freshness") as refresh,
-    ):
+    with patch.object(endpoint, "_run_single_review") as review:
         result = endpoint._run()
 
     assert result.exit_code == 0
     assert result.detail["mode"] == "dry_run"
-    assert state_file.read_text(encoding="utf-8") == before
+    assert not state_file.exists()
     review.assert_not_called()
-    refresh.assert_not_called()
 
 
 def test_review_findings_outside_explicit_source_scope_are_dropped(
@@ -554,59 +475,6 @@ class TestIssueSchema:
 # ---------------------------------------------------------------------------
 
 
-class TestFindingSchema:
-    """Strict per-finding schema rejection for the verify pass."""
-
-    def test_valid_fixed_with_evidence(self):
-        d = {"index": 1, "status": "FIXED", "evidence": "a.sv:1 — fix"}
-        assert _validate_finding_dict(d) == []
-
-    def test_valid_still_present(self):
-        assert (
-            _validate_finding_dict(
-                {"index": 2, "status": "STILL_PRESENT"},
-            )
-            == []
-        )
-
-    def test_fixed_without_evidence_rejected(self):
-        d = {"index": 1, "status": "FIXED"}
-        errs = _validate_finding_dict(d)
-        assert len(errs) == 1
-        assert "evidence" in errs[0]
-
-    def test_fixed_with_blank_evidence_rejected(self):
-        d = {"index": 1, "status": "FIXED", "evidence": "   "}
-        errs = _validate_finding_dict(d)
-        assert any("evidence" in e for e in errs)
-
-    def test_waived_requires_non_blank_justification(self):
-        assert (
-            _validate_finding_dict(
-                {"index": 1, "status": "WAIVED", "justification": "intentional tradeoff"}
-            )
-            == []
-        )
-        errs = _validate_finding_dict({"index": 1, "status": "WAIVED"})
-        assert any("justification" in error for error in errs)
-
-    def test_zero_index_rejected(self):
-        errs = _validate_finding_dict({"index": 0, "status": "STILL_PRESENT"})
-        assert any("index" in e for e in errs)
-
-    def test_string_index_rejected(self):
-        errs = _validate_finding_dict({"index": "1", "status": "STILL_PRESENT"})
-        assert any("index" in e for e in errs)
-
-    def test_unknown_status_rejected(self):
-        errs = _validate_finding_dict({"index": 1, "status": "MAYBE"})
-        assert any("status" in e for e in errs)
-
-    def test_non_dict_rejected(self):
-        assert _validate_finding_dict("FIXED") != []
-        assert _validate_finding_dict(None) != []
-
-
 # ---------------------------------------------------------------------------
 # Upstream rejection: _run_single_review fails loud on missing JSON wrapper
 # ---------------------------------------------------------------------------
@@ -672,11 +540,9 @@ class TestReportFindingsCapture:
                 "bugs",
             ]
         )
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 2
-        assert not DevelopmentState.load(state_file).is_met("review_rtl_bugs_done")
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_empty_report_is_clean_pass(self, mock_agent, state_file: Path):
@@ -698,13 +564,10 @@ class TestReportFindingsCapture:
                 "bugs",
             ]
         )
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 0
         assert result.detail["issues"] == 0
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("review_rtl_bugs_done")
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_plausible_finding_needs_canonical_metadata(self, mock_agent, state_file: Path):
@@ -729,11 +592,9 @@ class TestReportFindingsCapture:
                 "bugs",
             ]
         )
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 2
-        assert not DevelopmentState.load(state_file).is_met("review_rtl_bugs_done")
 
 
 _CRITICAL_TEXT_ISSUE = {
@@ -772,15 +633,11 @@ class TestChannelDisagreement:
         )
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 0
-        assert result.criterion_met is True
         assert result.detail["issues"] == 1
         assert result.detail[SEVERITY_CRITICAL] == 1
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("review_rtl_bugs_done")
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_empty_endpoint_call_and_prose_only_is_endpoint_error(
@@ -793,12 +650,9 @@ class TestChannelDisagreement:
         )
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 2
-        st = DevelopmentState.load(state_file)
-        assert not st.is_met("review_rtl_bugs_done")
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_endpoint_findings_without_metadata_mirror_are_rejected(
@@ -813,11 +667,9 @@ class TestChannelDisagreement:
         )
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 2
-        assert not DevelopmentState.load(state_file).is_met("review_rtl_bugs_done")
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_tied_channels_preserve_canonical_ticket_metadata(
@@ -839,7 +691,6 @@ class TestChannelDisagreement:
         )
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
 
         result = endpoint._run()
 
@@ -861,7 +712,6 @@ class TestChannelDisagreement:
         )
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 0
@@ -881,11 +731,9 @@ class TestChannelDisagreement:
         )
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 2
-        assert not DevelopmentState.load(state_file).is_met("review_rtl_bugs_done")
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_all_issues_rejected_is_not_a_clean_pass(self, mock_agent, state_file: Path):
@@ -909,12 +757,9 @@ class TestChannelDisagreement:
         )
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 2
-        st = DevelopmentState.load(state_file)
-        assert not st.is_met("review_rtl_bugs_done")
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_advisory_endpoint_call_cannot_outvote_a_rejected_text_channel(
@@ -950,13 +795,10 @@ class TestChannelDisagreement:
         )
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 2  # Specialist error, NOT gate_passed: true
         assert result.detail.get("gate_passed") is not True
-        st = DevelopmentState.load(state_file)
-        assert not st.is_met("review_rtl_bugs_done")
         # And the output must not contradict itself.
         assert "gate_passed: true" not in capsys.readouterr().out.lower()
 
@@ -986,11 +828,9 @@ class TestChannelDisagreement:
         )
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 2
-        assert not DevelopmentState.load(state_file).is_met("review_rtl_bugs_done")
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_rejected_text_channel_with_empty_endpoint_call_is_a_endpoint_error(
@@ -1006,12 +846,9 @@ class TestChannelDisagreement:
         )
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 2
-        st = DevelopmentState.load(state_file)
-        assert not st.is_met("review_rtl_bugs_done")
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_partial_rejection_still_reviews_normally(self, mock_agent, state_file: Path):
@@ -1039,7 +876,6 @@ class TestChannelDisagreement:
         )
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 0
@@ -1066,7 +902,6 @@ def _run_mirror_review(calls: list[list[dict]], canonical: list[dict]) -> int:
         )
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         return endpoint._run().exit_code
 
 
@@ -1091,7 +926,6 @@ class TestMirrorAgreement:
         ]
 
         assert _run_mirror_review([mirror, mirror], canonical) == 0
-        assert DevelopmentState.load(state_file).is_met("review_rtl_bugs_done")
 
     def test_confirmed_finding_rated_minor_agrees(self, state_file: Path):
         mirror = [{"file": "rtl/mod_a.sv", "line": 42, "summary": "x", "verdict": "CONFIRMED"}]
@@ -1112,7 +946,6 @@ class TestMirrorAgreement:
         mirror = [{"file": "rtl/mod_a.sv", "line": 42, "summary": "x", "severity": "CRITICAL"}]
 
         assert _run_mirror_review([mirror], [_make_issue_dict("MAJOR")]) == 2
-        assert not DevelopmentState.load(state_file).is_met("review_rtl_bugs_done")
 
     def test_mirror_finding_missing_beside_a_more_severe_canonical_issue_fails(
         self, state_file: Path
@@ -1121,7 +954,6 @@ class TestMirrorAgreement:
         mirror = [{"file": "rtl/mod_a.sv", "line": 7, "summary": "x", "verdict": "PLAUSIBLE"}]
 
         assert _run_mirror_review([mirror], [_make_issue_dict("CRITICAL")]) == 2
-        assert not DevelopmentState.load(state_file).is_met("review_rtl_bugs_done")
 
 
 class TestReadOnlyEnforcement:
@@ -1132,7 +964,6 @@ class TestReadOnlyEnforcement:
         mock_agent.return_value = _make_report_findings_result([], output='{"issues": []}')
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         endpoint._run()
 
         params = mock_agent.call_args[0][0]
@@ -1157,7 +988,6 @@ class TestNoReportDirNotice:
         mock_agent.return_value = _make_report_findings_result([], output='{"issues": []}')
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         result = endpoint._run()
 
         assert "no --report-dir" not in result.report_text
@@ -1167,7 +997,6 @@ class TestNoReportDirNotice:
         mock_agent.return_value = _make_report_findings_result([], output='{"issues": []}')
         endpoint = ReviewerSpecialist()
         endpoint.parse_args([*_review_args(), "--report-dir", str(tmp_path / "rep")])
-        endpoint.read_state()
         result = endpoint._run()
 
         assert "no --report-dir" not in result.report_text
@@ -1198,7 +1027,6 @@ class TestUpstreamReviewRejection:
                 "bugs",
             ]
         )
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 2  # EXIT_ERROR
@@ -1207,8 +1035,6 @@ class TestUpstreamReviewRejection:
             "no parseable" in result.report_text.lower()
             or "invocation failed" in result.report_text.lower()
         )
-        st = DevelopmentState.load(state_file)
-        assert not st.is_met("review_rtl_bugs_done")
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_malformed_entries_dropped_but_review_still_completes(
@@ -1246,7 +1072,6 @@ class TestUpstreamReviewRejection:
                 "bugs",
             ]
         )
-        endpoint.read_state()
         result = endpoint._run()
 
         # Only the valid CRITICAL is counted; _done completion is independent
@@ -1405,7 +1230,6 @@ class TestReviewerToolArgs:
     def test_focus_required(self, state_file: Path):
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl"])
-        endpoint.read_state()
         result = endpoint._run()
         assert result.exit_code == 2
         assert "--focus" in result.report_text
@@ -1698,7 +1522,46 @@ class TestPromptConstruction:
         assert "is it REALLY necessary" in system
         assert "Size operands and intermediate expressions deliberately" in system
 
-    def test_rtl_optimization_prompt_checks_unused_and_dead_rtl(self, state_file: Path):
+    def test_rtl_bugs_prompt_omits_checks_lint_reports(self, state_file: Path):
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"])
+
+        system = " ".join(endpoint._build_system_prompt("bugs").split())
+
+        for removed in (
+            "**Width mismatches**",
+            "**Undriven / partially driven signals**",
+            "Undriven or partially driven signals",
+            "an output is wrong or undriven",
+            "**Inferred latches**",
+            "**Multi-driven nets**",
+            "multiple procedural drivers",
+            "Missing labels on generate blocks",
+            "casex",
+            "Unbalanced `ifdef`",
+            "include guard",
+            "**Long combinational chains**",
+        ):
+            assert removed not in system, removed
+
+    def test_rtl_bugs_prompt_keeps_checks_lint_cannot_make(self, state_file: Path):
+        from booley.specialists.reviewer import REVIEW_GUIDES
+
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"])
+        prompts = {
+            guide.kind: " ".join(endpoint._build_system_prompt("bugs", (guide,)).split())
+            for guide in REVIEW_GUIDES[("rtl", "bugs")]
+        }
+
+        checklist = prompts["checklist"]
+        assert "**Combinational loops**" in checklist
+        assert "zero-width signals or empty loop ranges at legal parameter values" in checklist
+        assert "reason across every built configuration" in checklist
+        assert "Do not review an `ifdef` configuration that no Target builds" in checklist
+        assert "Do not trace an `ifdef` configuration that no Target builds" in prompts["hunt"]
+
+    def test_rtl_optimization_prompt_checks_functionally_dead_rtl(self, state_file: Path):
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(
             [
@@ -1711,13 +1574,36 @@ class TestPromptConstruction:
             ]
         )
 
-        system = endpoint._build_system_prompt("optimization")
+        system = " ".join(endpoint._build_system_prompt("optimization").split())
 
-        assert "Unused and dead RTL" in system
-        assert "internal signals or registers written but never read" in system
-        assert "Require proof across all legal configurations" in system
-        assert "do not claim silicon savings" in system
-        assert "interface items without complete context" in system
+        for present in (
+            "Functionally dead logic that lint cannot see",
+            "FSM states no legal input sequence reaches",
+            "constant in practice",
+            "Require proof across all legal configurations",
+            "do not claim silicon savings",
+            "interface items without complete context",
+            "Long combinational chains",
+            "limits Fmax",
+        ):
+            assert present in system, present
+        for removed in (
+            "Unused and dead RTL",
+            "written but never read",
+            "unused declarations",
+            "lint cleanliness",
+        ):
+            assert removed not in system, removed
+
+    def test_rtl_style_guide_has_no_bit_range_order_rule(self, state_file: Path):
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(
+            ["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "code_style"]
+        )
+
+        system = endpoint._build_system_prompt("code_style")
+
+        assert "ascending bit ranges" not in system.lower()
 
     def test_rtl_user_prompt_includes_scope(self, state_file: Path):
         endpoint = ReviewerSpecialist()
@@ -2071,13 +1957,8 @@ class TestFullRtlReview:
                 "bugs",
             ]
         )
-        endpoint.read_state()
         result = endpoint._run()
         assert result.exit_code == 0
-        assert result.criterion_met is True
-        assert result.criterion_key == "review_rtl_bugs_done"
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("review_rtl_bugs_done") is True
         captured = capsys.readouterr()
         assert "RESULT: REVIEWED — NO FINDINGS" in captured.out
 
@@ -2111,7 +1992,6 @@ class TestFullRtlReview:
                 str(spec),
             ]
         )
-        endpoint.read_state()
 
         result = endpoint._run()
 
@@ -2144,7 +2024,6 @@ class TestFullRtlReview:
                 str(tmp_path),
             ]
         )
-        endpoint.read_state()
 
         system = endpoint._build_system_prompt("bugs")
         assert "Anchor each finding in a Goal, supplied specification, accepted decision" in system
@@ -2175,14 +2054,8 @@ class TestFullRtlReview:
                 "bugs",
             ]
         )
-        endpoint.read_state()
         result = endpoint._run()
         assert result.exit_code == 0
-        assert result.criterion_met is True
-        assert result.criterion_key == "review_rtl_bugs_done"
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("review_rtl_bugs_done") is True
-        assert st.criteria["review_rtl_bugs_done"].detail["gate_passed"] is True
         captured = capsys.readouterr()
         assert "RESULT: REVIEWED WITH FINDINGS" in captured.out
         assert "critical" in captured.out
@@ -2196,17 +2069,13 @@ class TestFullRtlReview:
         mock_agent.return_value = _make_agent_result([_make_issue_dict("CRITICAL")])
         t1 = ReviewerSpecialist()
         t1.parse_args(common)
-        t1.read_state()
         first = t1._run()
         assert first.exit_code == 0
-        assert first.criterion_met is True
 
         t2 = ReviewerSpecialist()
         t2.parse_args(common)
-        t2.read_state()
         rerun = t2._run()
         assert rerun.exit_code == 0
-        assert rerun.criterion_met is True
         assert "RESULT: REVIEWED WITH FINDINGS" in rerun.report_text
         # Each bugs review makes two calls (checklist and hunt guides).
         assert mock_agent.call_count == 4
@@ -2223,13 +2092,11 @@ class TestFullRtlReview:
 
         t1 = ReviewerSpecialist()
         t1.parse_args(common)
-        t1.read_state()
         t1._run()
 
         mock_agent.return_value = _make_agent_result([])
         t2 = ReviewerSpecialist()
         t2.parse_args([*common, "--steer", "attempt 1"])
-        t2.read_state()
         rerun = t2._run()
         assert rerun.exit_code == 0
         assert rerun.detail["issues"] == 0
@@ -2257,15 +2124,13 @@ class TestFullRtlReview:
                 "bugs",
             ]
         )
-        endpoint.read_state()
         result = endpoint._run()
         assert result.exit_code == 0
-        assert result.criterion_met is True
         assert result.detail["gate_passed"] is True
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_single_focus_security(self, mock_agent, state_file: Path, capsys):
-        """Single focus runs one agent call per guide kind, criterion key reflects focus."""
+        """Single focus runs one agent call per guide kind, one run per focus."""
         mock_agent.return_value = _make_agent_result([])
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(
@@ -2278,31 +2143,9 @@ class TestFullRtlReview:
                 "security",
             ]
         )
-        endpoint.read_state()
         result = endpoint._run()
         assert result.exit_code == 0
-        assert result.criterion_key == "review_rtl_security_done"
         assert mock_agent.call_count == 2  # security declares a checklist and a hunt guide
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_criterion_set_rtl_spec(self, mock_agent, state_file: Path):
-        """_done criterion is set on completion."""
-        mock_agent.return_value = _make_agent_result([])
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        endpoint.read_state()
-        endpoint._run()
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("review_rtl_bugs_done") is True
 
 
 # ---------------------------------------------------------------------------
@@ -2326,31 +2169,10 @@ class TestFullTbReview:
                 "quality",
             ]
         )
-        endpoint.read_state()
         result = endpoint._run()
         assert result.exit_code == 0
         captured = capsys.readouterr()
         assert "RESULT: REVIEWED — NO FINDINGS" in captured.out
-
-    @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("tb/", "tb\\"))
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_tb_criterion_set(self, mock_agent, _mock_tb, state_file: Path):
-        mock_agent.return_value = _make_agent_result([])
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "tb/mod_a_tb.sv",
-                "--category",
-                "tb",
-                "--focus",
-                "quality",
-            ]
-        )
-        endpoint.read_state()
-        endpoint._run()
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("review_tb_quality_done") is True
 
 
 # ---------------------------------------------------------------------------
@@ -2378,14 +2200,12 @@ class TestAgentFailure:
                 str(transcript_dir),
             ]
         )
-        endpoint.read_state()
         result = endpoint._run()
         assert result.exit_code == 2
 
 
-@pytest.mark.parametrize("seam", ["initial", "verify"])
 def test_provider_failure_keeps_reviewer_outcome_and_persists_traceback(
-    seam, tmp_path: Path, state_file: Path, capsys, caplog
+    tmp_path: Path, state_file: Path, capsys, caplog
 ) -> None:
     endpoint = ReviewerSpecialist()
     endpoint.parse_args(
@@ -2404,23 +2224,10 @@ def test_provider_failure_keeps_reviewer_outcome_and_persists_traceback(
             str(tmp_path / "transcripts"),
         ]
     )
-    endpoint.read_state()
     caplog.set_level("DEBUG")
 
-    if seam == "initial":
-        with patch.object(endpoint, "_invoke_agent", side_effect=RuntimeError("boom")):
-            issues, output_lines = endpoint._run_single_review()
-    else:
-        with patch.object(
-            endpoint,
-            "_invoke_agent_with_resume",
-            side_effect=RuntimeError("boom"),
-        ):
-            issues, output_lines, remaining, dispositions = endpoint._run_verify_review(
-                {"pending": []}
-            )
-        assert remaining == set()
-        assert dispositions == {}
+    with patch.object(endpoint, "_invoke_agent", side_effect=RuntimeError("boom")):
+        issues, output_lines = endpoint._run_single_review()
 
     assert issues is None
     assert output_lines[0].startswith("[review")
@@ -2458,8 +2265,6 @@ class TestInterpretOutput:
         output = json.dumps({"issues": []})
         result = endpoint._interpret_output(output, None)
         assert result.exit_code == 0
-        assert result.criterion_met is True
-        assert result.criterion_key == "review_rtl_bugs_done"
 
     def test_interpret_with_critical(self, state_file: Path):
         endpoint = ReviewerSpecialist()
@@ -2476,8 +2281,6 @@ class TestInterpretOutput:
         output = json.dumps({"issues": [_make_issue_dict("CRITICAL")]})
         result = endpoint._interpret_output(output, None)
         assert result.exit_code == 0
-        assert result.criterion_met is True
-        assert result.criterion_key == "review_rtl_security_done"
 
 
 # ---------------------------------------------------------------------------
@@ -2571,7 +2374,6 @@ class TestRtlSpecFocus:
         if ticket is not None:
             argv += ["--spec", str(ticket)]
         endpoint.parse_args(argv)
-        endpoint.read_state()
         return endpoint
 
     def test_system_prompt_includes_spec_guide(self, state_file: Path, ticket_md: Path):
@@ -2609,19 +2411,6 @@ class TestRtlSpecFocus:
         assert result.exit_code == 2
         assert "spec" in result.report_text.lower()
 
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_clean_spec_review_sets_criterion(
-        self,
-        mock_agent,
-        state_file: Path,
-        ticket_md: Path,
-    ):
-        mock_agent.return_value = _make_agent_result([])
-        endpoint = self._spec_endpoint(ticket_md)
-        endpoint._run()
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("review_rtl_spec_done") is True
-
 
 class TestTbQualityPrompt:
     @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("tb/", "tb\\"))
@@ -2645,7 +2434,6 @@ class TestTbQualityPrompt:
                 "quality",
             ]
         )
-        endpoint.read_state()
         system = endpoint._build_system_prompt("quality")
         assert "Review methodology" in system
 
@@ -2665,7 +2453,6 @@ class TestTbQualityPrompt:
                 "quality",
             ]
         )
-        endpoint.read_state()
         system = endpoint._build_system_prompt("quality")
         assert "Ternary string expression in display/sentinel calls" in system
         assert "$display((total_failed == 0) ?" in system
@@ -2677,7 +2464,6 @@ class TestTbQualityPrompt:
         endpoint.parse_args(
             ["--scope", "tb/mod_a_tb.sv", "--category", "tb", "--focus", "quality"]
         )
-        endpoint.read_state()
         system = endpoint._build_system_prompt("quality")
 
         assert "[Icarus only]" in system
@@ -2698,16 +2484,6 @@ class TestTbQualityPrompt:
         stop = system.index("End simulation with `$finish`, not `$stop`")
         assert "Icarus" not in system[stop : stop + 400]
 
-    def test_rtl_range_rule_is_not_justified_by_cocotb_alone(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            ["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "code_style"]
-        )
-        endpoint.read_state()
-        system = endpoint._build_system_prompt("code_style")
-
-        assert "silent data corruption under cocotb/VPI" not in system
-
     def test_output_instructions_pin_category_to_focus(self):
         output = ReviewerSpecialist._output_instructions("protocol")
 
@@ -2721,752 +2497,14 @@ class TestTbQualityPrompt:
 # ---------------------------------------------------------------------------
 
 
-class TestCleanModeVerify:
-    """Verify of the latest review's open findings."""
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_justified_waiver_resolves_finding_and_is_persisted(
-        self,
-        mock_agent,
-        state_file: Path,
-    ):
-        mock_agent.return_value = MagicMock(
-            output=json.dumps(
-                {
-                    "findings": [
-                        {
-                            "index": 1,
-                            "status": "WAIVED",
-                            "justification": "The ticket requires this observable latency.",
-                        }
-                    ]
-                }
-            ),
-            structured=None,
-        )
-        st = DevelopmentState.load(state_file)
-        st.set_criterion(
-            "review_rtl_bugs_done",
-            met=True,
-            detail={
-                "issues": 1,
-                "pending": [_make_issue_dict("MINOR")],
-                "resolved": [],
-                "verify_attempts": 0,
-                "original_issues": 1,
-            },
-        )
-        st.save()
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args([*_review_args(), "--steer", "Waive finding 1: required latency"])
-        _read_current_review_contract(endpoint, state_file)
-        endpoint.args.waive = [
-            [
-                _finding_record(ReviewIssue.from_dict(_make_issue_dict("MINOR")))["finding_id"],
-                "Required observable latency",
-            ]
-        ]
-        result = endpoint._run()
-
-        assert result.exit_code == 0
-        assert result.criterion_met is True
-        waiver = result.detail["resolved"][0]
-        assert waiver["status"] == "waived"
-        assert waiver["justification"] == "The ticket requires this observable latency."
-        assert "WAIVED MINOR" in "\n".join(result.display_lines)
-        assert "ACCEPTED WAIVERS (user-visible)" in result.report_text
-        assert "Justification: The ticket requires this observable latency." in result.report_text
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_verify_all_fixed_becomes_met(
-        self,
-        mock_agent,
-        state_file: Path,
-        capsys,
-    ):
-        """All findings fixed (with evidence) => gate passes, criterion met."""
-        mock_agent.return_value = MagicMock(
-            output=json.dumps(
-                {
-                    "findings": [
-                        {
-                            "index": 1,
-                            "status": "FIXED",
-                            "evidence": "rtl/mod_a.sv:5 — renamed clk_i to clk",
-                        },
-                        {
-                            "index": 2,
-                            "status": "FIXED",
-                            "evidence": "rtl/mod_a.sv:42 — added rst_n reset block",
-                        },
-                    ]
-                }
-            ),
-            structured=None,
-        )
-        st = DevelopmentState.load(state_file)
-        st.set_criterion(
-            "review_rtl_bugs_done",
-            met=True,
-            detail={
-                "issues": 2,
-                "pending": [
-                    _make_issue_dict("CRITICAL"),
-                    _make_issue_dict("MAJOR", summary="Missing reset"),
-                ],
-                "resolved": [],
-                "CRITICAL": 1,
-                "MAJOR": 1,
-                "MINOR": 0,
-                "verify_attempts": 0,
-                "original_issues": 2,
-                "elapsed_s": 30.0,
-            },
-        )
-        st.save()
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        _read_current_review_contract(endpoint, state_file)
-        result = endpoint._run()
-
-        assert result.exit_code == 0
-        assert result.criterion_met is True
-        assert result.detail["verify_attempts"] == 1
-        assert result.detail["issues"] == 0
-        assert result.detail["pending"] == []
-        assert len(result.detail["resolved"]) == 2
-        assert all(r["status"] == "fixed" for r in result.detail["resolved"])
-        st = DevelopmentState.load(state_file)
-        assert st.is_met("review_rtl_bugs_done") is True
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_verify_some_still_present(
-        self,
-        mock_agent,
-        state_file: Path,
-        capsys,
-    ):
-        """Some findings remain => criterion still unmet, attempts incremented."""
-        mock_agent.return_value = MagicMock(
-            output=json.dumps(
-                {
-                    "findings": [
-                        {
-                            "index": 1,
-                            "status": "FIXED",
-                            "evidence": "rtl/mod_a.sv:5 — clk renamed",
-                        },
-                        {"index": 2, "status": "STILL_PRESENT"},
-                    ]
-                }
-            ),
-            structured=None,
-        )
-        st = DevelopmentState.load(state_file)
-        st.set_criterion(
-            "review_rtl_bugs_done",
-            met=True,
-            detail={
-                "issues": 2,
-                "pending": [
-                    _make_issue_dict("CRITICAL"),
-                    _make_issue_dict("MAJOR", summary="Missing reset"),
-                ],
-                "resolved": [],
-                "CRITICAL": 1,
-                "MAJOR": 1,
-                "MINOR": 0,
-                "verify_attempts": 0,
-                "original_issues": 2,
-                "elapsed_s": 30.0,
-            },
-        )
-        st.save()
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        _read_current_review_contract(endpoint, state_file)
-        result = endpoint._run()
-
-        assert result.exit_code == 0
-        assert result.criterion_met is False
-        assert result.detail["verify_attempts"] == 1
-        assert result.detail["issues"] == 1
-        assert result.detail["original_issues"] == 2
-        # Split into open vs closed
-        assert len(result.detail["pending"]) == 1
-        assert result.detail["pending"][0]["status"] == "still_present"
-        assert len(result.detail["resolved"]) == 1
-        assert result.detail["resolved"][0]["status"] == "fixed"
-
-    @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("verif/", "verif\\"))
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_verify_stale_dump_call_finding_checks_current_source(
-        self,
-        mock_agent,
-        _mock_tb_prefixes,
-        state_file: Path,
-        tmp_path: Path,
-    ):
-        """STILL_PRESENT remains pending even when no literal dump call exists."""
-        tb_path = tmp_path / "verif" / "lane1" / "tb_aes_encrypt.sv"
-        tb_path.parent.mkdir(parents=True)
-        tb_path.write_text(
-            "module tb_aes_encrypt;\n"
-            "  initial swap_index = i + ($urandom(seed) % 8);\n"
-            "endmodule\n",
-            encoding="utf-8",
-        )
-        mock_agent.return_value = MagicMock(
-            output=json.dumps(
-                {
-                    "findings": [
-                        {"index": 1, "status": "STILL_PRESENT"},
-                    ]
-                }
-            ),
-            structured=None,
-        )
-        st = DevelopmentState.load(state_file)
-        st.set_criterion(
-            "review_tb_quality_done",
-            met=True,
-            detail={
-                "issues": 1,
-                "pending": [
-                    _make_issue_dict(
-                        "CRITICAL",
-                        category="quality",
-                        file="verif/lane1/tb_aes_encrypt.sv",
-                        line=2,
-                        summary=(
-                            "Testbench contains user-authored $dumpfile/$dumpvars "
-                            "calls that override harness tracing"
-                        ),
-                    )
-                ],
-                "resolved": [],
-                "CRITICAL": 1,
-                "MAJOR": 0,
-                "MINOR": 0,
-                "verify_attempts": 0,
-                "original_issues": 1,
-                "elapsed_s": 30.0,
-            },
-        )
-        st.save()
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--work-dir",
-                str(tmp_path),
-                "--scope",
-                "verif/lane1/tb_aes_encrypt.sv",
-                "--category",
-                "tb",
-                "--focus",
-                "quality",
-            ]
-        )
-        _read_current_review_contract(endpoint, state_file)
-        result = endpoint._run()
-
-        assert result.exit_code == 0
-        assert result.criterion_met is False
-        assert result.detail["pending"][0]["status"] == "still_present"
-        assert result.detail["resolved"] == []
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_verify_attempts_exhausted(
-        self,
-        mock_agent,
-        state_file: Path,
-    ):
-        """Two verify attempts already done => exit error, no agent call."""
-        st = DevelopmentState.load(state_file)
-        st.set_criterion(
-            "review_rtl_bugs_done",
-            met=True,
-            detail={
-                "issues": 1,
-                "issue_list": [_make_issue_dict("CRITICAL")],
-                "CRITICAL": 1,
-                "MAJOR": 0,
-                "MINOR": 0,
-                "verify_attempts": 2,
-                "original_issues": 1,
-                "elapsed_s": 30.0,
-            },
-        )
-        st.save()
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        _read_current_review_contract(endpoint, state_file)
-        result = endpoint._run()
-
-        assert result.exit_code == 2
-        assert mock_agent.call_count == 0
-        assert "2 verify attempts exhausted" in result.report_text
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_verify_malformed_json_conservative(
-        self,
-        mock_agent,
-        state_file: Path,
-    ):
-        """Malformed verify JSON => all issues treated as still_present."""
-        mock_agent.return_value = MagicMock(
-            output="I couldn't parse the code properly, here are my thoughts...",
-            structured=None,
-        )
-        st = DevelopmentState.load(state_file)
-        st.set_criterion(
-            "review_rtl_bugs_done",
-            met=True,
-            detail={
-                "issues": 2,
-                "issue_list": [
-                    _make_issue_dict("CRITICAL"),
-                    _make_issue_dict("MAJOR", summary="Missing reset"),
-                ],
-                "CRITICAL": 1,
-                "MAJOR": 1,
-                "MINOR": 0,
-                "verify_attempts": 0,
-                "original_issues": 2,
-                "elapsed_s": 30.0,
-            },
-        )
-        st.save()
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        _read_current_review_contract(endpoint, state_file)
-        result = endpoint._run()
-
-        assert result.exit_code == 0
-        assert result.criterion_met is False
-        assert result.detail["issues"] == 2
-        assert result.detail["verify_attempts"] == 1
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_verify_fixed_without_evidence_is_demoted(
-        self,
-        mock_agent,
-        state_file: Path,
-    ):
-        """FIXED claims without ``evidence`` are demoted to STILL_PRESENT.
-
-        Blocks the rubber-stamp pattern where the agent reads the file
-        once and emits ``status: FIXED`` for every original finding
-        without anchoring to the actual code change.
-        """
-        mock_agent.return_value = MagicMock(
-            # Three FIXED claims, none with evidence — should all demote.
-            output=json.dumps(
-                {
-                    "findings": [
-                        {"index": 1, "status": "FIXED"},
-                        {"index": 2, "status": "FIXED", "evidence": ""},
-                        {"index": 3, "status": "FIXED", "evidence": "   "},
-                    ]
-                }
-            ),
-            structured=None,
-        )
-        st = DevelopmentState.load(state_file)
-        st.set_criterion(
-            "review_rtl_bugs_done",
-            met=True,
-            detail={
-                "issues": 3,
-                "pending": [
-                    _make_issue_dict("CRITICAL"),
-                    _make_issue_dict("MAJOR", summary="Reset missing"),
-                    _make_issue_dict("MAJOR", summary="Writeback timing"),
-                ],
-                "resolved": [],
-                "CRITICAL": 1,
-                "MAJOR": 2,
-                "MINOR": 0,
-                "verify_attempts": 0,
-                "original_issues": 3,
-                "elapsed_s": 30.0,
-            },
-        )
-        st.save()
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        _read_current_review_contract(endpoint, state_file)
-        result = endpoint._run()
-
-        # All three demoted to still_present → gate fails, met=False.
-        assert result.criterion_met is False
-        assert result.exit_code == 0
-        assert len(result.detail["pending"]) == 3
-        assert result.detail["resolved"] == []
-        assert all(p["status"] == "still_present" for p in result.detail["pending"])
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_verify_fixed_with_evidence_is_accepted(
-        self,
-        mock_agent,
-        state_file: Path,
-    ):
-        """FIXED with a non-blank ``evidence`` string is accepted as fixed."""
-        mock_agent.return_value = MagicMock(
-            output=json.dumps(
-                {
-                    "findings": [
-                        {
-                            "index": 1,
-                            "status": "FIXED",
-                            "evidence": "rtl/mod_a.sv:5 — port renamed clk_i→clk",
-                        },
-                    ]
-                }
-            ),
-            structured=None,
-        )
-        st = DevelopmentState.load(state_file)
-        st.set_criterion(
-            "review_rtl_bugs_done",
-            met=True,
-            detail={
-                "issues": 1,
-                "pending": [_make_issue_dict("CRITICAL")],
-                "resolved": [],
-                "CRITICAL": 1,
-                "MAJOR": 0,
-                "MINOR": 0,
-                "verify_attempts": 0,
-                "original_issues": 1,
-                "elapsed_s": 30.0,
-            },
-        )
-        st.save()
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        _read_current_review_contract(endpoint, state_file)
-        result = endpoint._run()
-
-        assert result.criterion_met is True
-        assert result.detail["pending"] == []
-        assert len(result.detail["resolved"]) == 1
-
-
-class TestCleanReviewImpasse:
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_impasse_never_creates_automatic_waiver(self, mock_agent, state_file: Path):
-        st = DevelopmentState.load(state_file)
-        finding = _make_issue_dict("MAJOR", summary="Still unresolved")
-        st.set_criterion(
-            "review_rtl_bugs_done",
-            met=True,
-            detail={
-                "issues": 1,
-                "pending": [finding],
-                "resolved": [],
-                "total_verify_cycles": 3,
-            },
-        )
-        st.save()
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(_review_args())
-        _read_current_review_contract(endpoint, state_file)
-        result = endpoint._run()
-
-        assert result.exit_code == 2
-        assert "without creating an automatic waiver" in result.report_text
-        assert mock_agent.call_count == 0
-        detail = DevelopmentState.load(state_file).criteria["review_rtl_bugs_done"].detail
-        assert detail["pending"] == [finding]
-        assert detail["resolved"] == []
-
-
 # ---------------------------------------------------------------------------
 # Finding identity: index-based matching
 # ---------------------------------------------------------------------------
 
 
-class TestFindingIdentityByIndex:
-    """Verify that status annotation uses issue_list index, not (file, line, summary) tuple."""
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_line_shift_does_not_lose_fix_status(
-        self,
-        mock_agent,
-        state_file: Path,
-    ):
-        """If coder inserts lines, shifting the issue's line number,
-        index-based matching still marks it correctly."""
-        # Agent says index 1 is fixed (the CRITICAL at original line 42)
-        mock_agent.return_value = MagicMock(
-            output=json.dumps(
-                {
-                    "findings": [
-                        {
-                            "index": 1,
-                            "status": "FIXED",
-                            "evidence": "rtl/mod_a.sv:42 — off-by-one corrected",
-                        },
-                        {"index": 2, "status": "STILL_PRESENT"},
-                    ]
-                }
-            ),
-            structured=None,
-        )
-        st = DevelopmentState.load(state_file)
-        st.set_criterion(
-            "review_rtl_bugs_done",
-            met=True,
-            detail={
-                "issues": 2,
-                "pending": [
-                    _make_issue_dict(
-                        "CRITICAL", file="rtl/mod_a.sv", line=42, summary="Off by one"
-                    ),
-                    _make_issue_dict(
-                        "MAJOR", file="rtl/mod_a.sv", line=50, summary="Missing reset"
-                    ),
-                ],
-                "resolved": [],
-                "CRITICAL": 1,
-                "MAJOR": 1,
-                "MINOR": 0,
-                "verify_attempts": 0,
-                "original_issues": 2,
-                "elapsed_s": 30.0,
-            },
-        )
-        st.save()
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        _read_current_review_contract(endpoint, state_file)
-        result = endpoint._run()
-
-        assert result.criterion_met is False
-        assert len(result.detail["resolved"]) == 1
-        assert result.detail["resolved"][0]["summary"] == "Off by one"
-        assert result.detail["resolved"][0]["status"] == "fixed"
-        assert len(result.detail["pending"]) == 1
-        assert result.detail["pending"][0]["summary"] == "Missing reset"
-        assert result.detail["pending"][0]["status"] == "still_present"
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_summary_rephrase_does_not_affect_matching(
-        self,
-        mock_agent,
-        state_file: Path,
-    ):
-        """Even if summaries differ between original and verify, index wins."""
-        mock_agent.return_value = MagicMock(
-            output=json.dumps(
-                {
-                    "findings": [
-                        {
-                            "index": 1,
-                            "status": "FIXED",
-                            "evidence": "rtl/mod_a.sv:10 — addressed by recent edit",
-                        },
-                    ]
-                }
-            ),
-            structured=None,
-        )
-        st = DevelopmentState.load(state_file)
-        st.set_criterion(
-            "review_rtl_bugs_done",
-            met=True,
-            detail={
-                "issues": 1,
-                "pending": [
-                    _make_issue_dict("MAJOR", summary="Original wording of the bug"),
-                ],
-                "resolved": [],
-                "CRITICAL": 0,
-                "MAJOR": 1,
-                "MINOR": 0,
-                "verify_attempts": 0,
-                "original_issues": 1,
-                "elapsed_s": 30.0,
-            },
-        )
-        st.save()
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        _read_current_review_contract(endpoint, state_file)
-        result = endpoint._run()
-
-        assert result.criterion_met is True
-        assert result.detail["pending"] == []
-        assert result.detail["resolved"][0]["status"] == "fixed"
-
-
 # ---------------------------------------------------------------------------
 # Previously-fixed findings: persistence and regression
 # ---------------------------------------------------------------------------
-
-
-class TestVerifyFixedPersistence:
-    """Test that previously-fixed findings keep their status across verify passes."""
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_previously_fixed_stays_fixed_when_unmentioned(
-        self,
-        mock_agent,
-        state_file: Path,
-    ):
-        """Model doesn't mention issue 1 (prior status=fixed) => stays fixed.
-
-        Setup uses the legacy ``issue_list`` field to exercise the
-        backward-compat fallback path for in-flight tickets that
-        predate the pending/resolved split.
-        """
-        # Only mentions issue 2 as still present; omits issue 1
-        mock_agent.return_value = MagicMock(
-            output=json.dumps(
-                {
-                    "findings": [
-                        {"index": 1, "status": "STILL_PRESENT"},
-                    ]
-                }
-            ),
-            structured=None,
-        )
-        st = DevelopmentState.load(state_file)
-        st.set_criterion(
-            "review_rtl_bugs_done",
-            met=True,
-            detail={
-                "issues": 2,
-                "issue_list": [
-                    {**_make_issue_dict("MAJOR", summary="Bug A"), "status": "fixed"},
-                    {**_make_issue_dict("MAJOR", summary="Bug B"), "status": "still_present"},
-                ],
-                "CRITICAL": 0,
-                "MAJOR": 1,
-                "MINOR": 0,
-                "verify_attempts": 0,
-                "original_issues": 2,
-                "elapsed_s": 30.0,
-            },
-        )
-        st.save()
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        _read_current_review_contract(endpoint, state_file)
-        result = endpoint._run()
-
-        # Bug A (prior status=fixed, unmentioned) → stays fixed → resolved
-        # Bug B (explicitly STILL_PRESENT) → stays in pending
-        assert len(result.detail["resolved"]) == 1
-        assert result.detail["resolved"][0]["summary"] == "Bug A"
-        assert result.detail["resolved"][0]["status"] == "fixed"
-        assert len(result.detail["pending"]) == 1
-        assert result.detail["pending"][0]["summary"] == "Bug B"
-        assert result.detail["pending"][0]["status"] == "still_present"
-
-    def test_fixed_findings_are_not_rechecked(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(_review_args())
-        prior = {"issue_list": [{**_make_issue_dict("MAJOR"), "status": "fixed"}]}
-        assert endpoint._open_findings(prior) == []
-        remaining, indices, _ = endpoint._parse_verify_output(
-            json.dumps({"findings": [{"index": 1, "status": "STILL_PRESENT"}]}), prior
-        )
-        assert remaining == [] and indices == set()
 
 
 # ---------------------------------------------------------------------------
@@ -3565,14 +2603,6 @@ class TestTbSimulationContext:
         ]
         assert file_lines == ["- tb/tb_counter.sv: Icarus"]
 
-    def test_verify_prompt_carries_simulation_context(self, tmp_path: Path, state_file: Path):
-        project = _sim_project(tmp_path)
-        endpoint = _tb_endpoint(project, "tb/tb_counter.sv")
-
-        prompt = endpoint._build_verify_prompt("quality", {"issues": []})
-
-        assert "tb/tb_counter.sv: Verilator" in _simulation_context(prompt)
-
     def test_rtl_prompt_has_no_simulation_context(self, tmp_path: Path, state_file: Path):
         project = _sim_project(tmp_path)
         endpoint = ReviewerSpecialist()
@@ -3648,12 +2678,10 @@ class TestDeadEndMessagesNameARealAction:
 
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(common)
-        endpoint.read_state()
         endpoint._run()
 
         endpoint = ReviewerSpecialist()
         endpoint.parse_args([*common, "--steer", "fixed finding"])
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 0
@@ -3791,22 +2819,18 @@ def test_unbound_done_findings_do_not_claim_goal_approval(
         assert "RESULT: REVIEWED WITH FINDINGS" in result.outcome.report_text
         report = json.loads((endpoint.args.report_dir / "reviewer.json").read_text())
         assert "criterion_key" not in report and "criterion_met" not in report
-    assert DevelopmentState.load(state_file).criteria["review_rtl_bugs_done"].detail["issue_list"]
+    assert not (directory / "reviewer-state").exists()
 
 
 @patch("booley.specialists.specialist._call_agent_sync")
 def test_standalone_done_findings_print_no_approval_notice(
     mock_agent, state_file: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """A standalone recorder gets the same `done` report as an interactive run."""
-    from booley.flows.execution_persistence import StandaloneFlowExecution
-
+    """A standalone run gets the same `done` report as an interactive run."""
     monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
     endpoint = ReviewerSpecialist()
-    endpoint.configure_flow_execution(StandaloneFlowExecution())
     endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"])
     mock_agent.return_value = _make_agent_result([_make_issue_dict("CRITICAL")])
-    endpoint.read_state()
     result = endpoint._run()
     assert "RESULT: REVIEWED WITH FINDINGS" in result.report_text
     assert "explicit human approval" not in result.report_text
@@ -3846,9 +2870,8 @@ def test_cpp_opposite_role_refuses_before_provider(tmp_path, name):
     endpoint.parse_args(
         ["--work-dir", str(tmp_path), "--scope", name, "--category", "tb", "--focus", "quality"]
     )
-    endpoint.read_state()
     with patch("booley.specialists.specialist._call_agent_sync") as provider:
-        result = endpoint._run_review()
+        result = endpoint._run()
     assert result.exit_code == 2
     assert name in result.report_text
     assert "tags:[tb]" in result.report_text

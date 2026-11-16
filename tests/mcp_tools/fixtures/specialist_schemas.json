@@ -2,18 +2,13 @@
   "coverage_analyst": {
     "additionalProperties": false,
     "properties": {
-      "record": {
-        "description": "Exact canonical coverage.json path",
-        "type": "string"
-      },
-      "diagnostic": {
-        "default": false,
-        "description": "Run without satisfying Goals. Use for a Flow/Target combination outside the active Goal definition.",
-        "type": "boolean"
-      },
       "instruction": {
         "default": "",
         "description": "Freeform instruction for the Specialist (e.g. distilled plan)",
+        "type": "string"
+      },
+      "record": {
+        "description": "Exact canonical coverage.json path",
         "type": "string"
       },
       "work_dir": {
@@ -40,11 +35,6 @@
           "tb"
         ],
         "type": "string"
-      },
-      "diagnostic": {
-        "default": false,
-        "description": "Run without satisfying Goals. Use for a Flow/Target combination outside the active Goal definition.",
-        "type": "boolean"
       },
       "dry_run": {
         "default": false,
@@ -80,24 +70,6 @@
         "description": "Developer Agent context and steering instructions. Repeatable; over MCP pass an array of strings, not a bare string.",
         "items": {
           "type": "string"
-        },
-        "type": "array"
-      },
-      "verify": {
-        "default": false,
-        "description": "Verify only the latest review call's open findings; no discovery",
-        "type": "boolean"
-      },
-      "waive": {
-        "default": [],
-        "description": "Propose a waiver during --verify; repeatable",
-        "items": {
-          "items": {
-            "type": "string"
-          },
-          "maxItems": 2,
-          "minItems": 2,
-          "type": "array"
         },
         "type": "array"
       },

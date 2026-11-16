@@ -651,12 +651,11 @@ def test_interactive_cpp_review_uses_real_snapshot(tmp_path, monkeypatch, catego
             ",".join(scope),
         ]
     )
-    endpoint.read_state()
     with (
         patch("booley.specialists.specialist._call_agent_sync", side_effect=fake_call),
         patch("booley.specialists.specialist.parent_death_watchdog", return_value=nullcontext()),
     ):
-        result = endpoint._run_review()
+        result = endpoint._run()
     assert calls, result.report_text
     assert result.exit_code != 2, result.report_text
     assert "header finding" in result.report_text

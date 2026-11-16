@@ -35,7 +35,6 @@ def project(root: Path, tools: tuple[str, ...] = ("verilator",)) -> CoverageProj
 
 
 def test_coverage_context_prefers_checkout_local_project_data(tmp_path, monkeypatch):
-    from booley.criteria.state import DevelopmentState
     from booley.flows.sim import coverage_flow_context
     from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
 
@@ -47,14 +46,13 @@ def test_coverage_context_prefers_checkout_local_project_data(tmp_path, monkeypa
     monkeypatch.setenv("BOOLEY_DIR", str(unrelated))
     reset_cache()
     assert resolve_booley_dir() == unrelated.resolve()
-    monkeypatch.setattr(coverage_flow_context, "_coverage_policies", lambda *_args: {})
     monkeypatch.setattr(
         coverage_flow_context,
         "load_test_configuration_field",
         lambda *_args: {},
     )
 
-    context = coverage_flow_context.coverage_project_context(checkout, DevelopmentState())
+    context = coverage_flow_context.coverage_project_context(checkout)
 
     assert context.project_data_repository == local_project_data
 
@@ -259,19 +257,12 @@ def _gated_context(tmp_path: Path) -> CoverageProjectContext:
     )
 
 
-def test_no_waivers_with_criterion_is_refused_without_diagnostic(tmp_path: Path) -> None:
-    result = prepare_coverage_invocation(
-        CoverageInvocationRequest(("sim_0",), no_waivers=True), _gated_context(tmp_path)
-    )
-    assert result.plan is None
-    assert [finding.code for finding in result.findings] == ["COV_NO_WAIVERS_CRITERION"]
-
-
-def test_no_waivers_diagnostic_keeps_criterion_and_drops_waiver_config(tmp_path: Path) -> None:
+def test_no_waivers_with_criterion_drops_waiver_config(tmp_path: Path) -> None:
     context = _gated_context(tmp_path)
     result = prepare_coverage_invocation(
-        CoverageInvocationRequest(("sim_0",), no_waivers=True, diagnostic=True), context
+        CoverageInvocationRequest(("sim_0",), no_waivers=True), context
     )
+    assert result.findings == ()
     target = result.plan.targets[0]
     assert target.criterion is not None
     assert target.waiver_config is None

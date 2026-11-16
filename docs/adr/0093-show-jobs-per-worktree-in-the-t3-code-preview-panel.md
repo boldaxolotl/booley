@@ -31,8 +31,8 @@ worktree.
 ## Decision
 
 - **One Dashboard per worktree.** The Dashboard shows only Jobs whose
-  `work_dir` is its worktree. There is no Sandbox-wide view: Jobs in the main
-  checkout or in a deleted worktree appear in no worktree's Dashboard.
+  `work_dir` is its worktree. The main checkout counts as a worktree. There
+  is no Sandbox-wide view: Jobs of a deleted worktree appear in no Dashboard.
 - **A web page in the preview panel.** One server in the Sandbox serves
   every worktree's Dashboard; the worktree is a URL parameter
   (`?worktree=<path>`). A `t3.json` script opens it. Headless Chrome ships in
@@ -43,8 +43,12 @@ worktree.
   the top bar opens the Run form in place; the form ends on ADR 0086's
   review screen with the equivalent CLI command. The header shows the
   worktree, Sandbox resources and Job slots.
-- **Owner is a thread.** A Job's owner shows the name of the T3 thread that
-  started it, or that a human started it from Run.
+- **Owner is a thread.** A Job records the agent client and thread id that
+  started it: T3's thread id for Claude, read from the caller's environment,
+  and Codex's own thread id for Codex. The owner shows the T3 thread's name
+  when Booley can resolve it, otherwise the client and a short thread id, or
+  that a human started it from Run. T3 offers no supported way to map a Codex
+  thread id to its T3 thread.
 - **Result links per Flow.** Every result card links its report. Each Flow
   declares any further links (logs, coverage, netlists) it wants on the card.
   Waveform opening is out of scope until waveform viewing has a home in T3
@@ -67,13 +71,9 @@ worktree.
 
 ## Consequences
 
-- Codex B-Tool calls still target `/work` unless routed (ADR 0068,
-  2026-11-08 amendment). Until Codex calls route into T3 Code worktrees, a
-  Codex thread's Jobs appear in no Dashboard.
-- Job records need the starting thread's name, which today's session keys do
-  not carry.
-- The session registry, session-activity hooks and handle allocation lose
-  their Dashboard consumer. Removing or keeping them is decided with ADR
-  0082's routing changes, not here.
+- A Job lands in a worktree's Dashboard only when its call was routed there
+  (ADR 0082); a Codex call refused for lack of a workspace starts no Job.
+- The Session Registry, session-activity hooks and session handles have no
+  consumer left and are retired (ADR 0082).
 - The glossary's **Booley Dashboard** entry changes when this ships: a web
   page per worktree of Jobs and Run, without sessions, Goals or health.

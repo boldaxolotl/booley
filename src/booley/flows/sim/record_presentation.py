@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
 from typing import Any, cast
 
-from booley.flows.frozen_test_runs import FrozenTestRuns
 from booley.flows.metric_declarations import metrics_document
 from booley.flows.sim.coverage_json import FrozenJson
 from booley.flows.sim.coverage_policy import coverage_metrics
@@ -65,9 +64,7 @@ from .record.coverage_execution import (
     _failure_test,
 )
 from .record.model import simulation_status_from_observations
-from .test_run_invocation import (
-    BaselineRefusal,
-)
+from .record_reports import invocation_booley_dir
 
 
 def _simulation_record_observation_counts(
@@ -374,7 +371,6 @@ def _pre_sim_integrity_failure(
     result: EndpointOutcome, error: Exception, *, retain_authenticated: bool = False
 ) -> EndpointOutcome:
     result.exit_code = EXIT_ERROR
-    result.criterion_met = False
     if not retain_authenticated:
         references = [record.get("reference") for record in result.detail.get("pre_sim_runs", ())]
         result.detail = {
@@ -586,105 +582,6 @@ def _simulation_record_report_detail(
     return detail
 
 
-def _diagnostic_test_runs(
-    detail: Mapping[str, object],
-    frozen: FrozenTestRuns,
-    names: Callable[[str], Collection[str]],
-) -> tuple[list[str], list[str]]:
-    """Test Runs of *detail*'s records no Goal requires, and the failed ones among them.
-
-    Both as ``target: test run``. *names* gives every name of a record's
-    Target (selector and identity): a Goal may be written with either.
-    """
-    simulation_records = detail.get("records")
-    if not isinstance(simulation_records, Mapping):
-        return [], []
-    diagnostic: list[str] = []
-    failures: list[str] = []
-    for selector, simulation_record in simulation_records.items():
-        rows = (
-            simulation_record.get("test_runs", ())
-            if isinstance(simulation_record, Mapping)
-            else ()
-        )
-        goals = frozen.of_target(names(str(selector)))
-        for row in rows:
-            if not isinstance(row, Mapping) or any(
-                goal.requires(row.get("name"), row.get("fingerprint")) for goal in goals
-            ):
-                continue
-            diagnostic.append(f"{selector}: {row['name']}")
-            if row.get("grade") == "fail":
-                failures.append(f"{selector}: {row['name']}")
-    return diagnostic, failures
-
-
-def _with_frozen_runs_of_a_diagnostic_run(
-    result: EndpointOutcome,
-    frozen: FrozenTestRuns,
-    names: Callable[[str], Collection[str]],
-    goal_name: Callable[[str], str],
-) -> EndpointOutcome:
-    """Say which Goals' frozen Test Runs a ``--diagnostic`` run executed, and which failed.
-
-    The run records nothing; the report must not let that pass unnoticed
-    when what ran is exactly what a Goal is judged by. The report names each
-    Goal as *goal_name* presents its key; ``detail`` keeps the keys.
-    """
-    simulation_records = result.detail.get("records")
-    ran: dict[str, list[str]] = {}
-    failed: dict[str, list[str]] = {}
-    for selector, simulation_record in (
-        simulation_records.items() if isinstance(simulation_records, Mapping) else ()
-    ):
-        rows = (
-            simulation_record.get("test_runs", ())
-            if isinstance(simulation_record, Mapping)
-            else ()
-        )
-        for goal in frozen.of_target(names(str(selector))):
-            for row in goal.matching([row for row in rows if isinstance(row, Mapping)]):
-                ran.setdefault(goal.key, []).append(str(row["name"]))
-                if row.get("grade") == "fail":
-                    failed.setdefault(goal.key, []).append(str(row["name"]))
-    if not ran:
-        return result
-    result.detail["diagnostic_test_runs"] = {"goal_frozen_runs": ran, "goal_failures": failed}
-    lines = ["Diagnostic run: these frozen Test Runs of Goals ran and nothing was recorded:"]
-    lines += [f"  {goal_name(key)}: {', '.join(runs)}" for key, runs in ran.items()]
-    if failed:
-        lines.append("Diagnostic failures of Goals' frozen Test Runs (not recorded):")
-        lines += [f"  {goal_name(key)}: {', '.join(runs)}" for key, runs in failed.items()]
-    note = "\n".join(lines)
-    result.report_text = f"{result.report_text}\n{note}" if result.report_text else note
-    return result
-
-
-def _diagnostic_test_run_notes(
-    fresh: Sequence[str], diagnostic: Sequence[str], failures: Sequence[str]
-) -> list[str]:
-    """The report lines about Test Runs that are evidence for no Goal."""
-    notes: list[str] = []
-    if fresh:
-        notes.append(
-            "Diagnostic: no Goal names these multi-seed Test Runs with this seed count "
-            f"({', '.join(fresh[:8])}); their seeds are new and they record no Goal evidence."
-        )
-    if diagnostic:
-        shown = ", ".join(diagnostic[:8])
-        more = f", and {len(diagnostic) - 8} more" if len(diagnostic) > 8 else ""
-        notes.append(
-            f"Diagnostic: these Test Runs match no Goal and record no Goal evidence ({shown}{more})."
-        )
-    if failures:
-        # These failures block no Goal: say so apart from the Target lines.
-        notes.append("Diagnostic failures (they block no Goal):")
-        notes.extend(f"  {name}" for name in failures[:TEST_RUN_ROW_LIMIT])
-        if len(failures) > TEST_RUN_ROW_LIMIT:
-            notes.append(f"  ... and {len(failures) - TEST_RUN_ROW_LIMIT} more")
-    return notes
-
-
 def _simulation_record_test_runs(outcome: SimulationRecordOutcome) -> list[dict[str, object]]:
     """Per-Test-Run rows of *outcome*; empty for an object that has no manifest."""
     if not isinstance(getattr(outcome, "manifest_path", None), Path):
@@ -782,9 +679,6 @@ def _report_artifact_reference(
         base_name, base = "external_origin_target", external_origin_target
     else:
         return None
-    # Imported here: retention pulls in the whole pruning stack the flow rarely needs.
-    from .record_retention import invocation_booley_dir
-
     reference = build_artifact_reference(
         path,
         base_name=base_name,
@@ -807,16 +701,6 @@ def _simulation_record_recovery_detail(
         "interrupted": list(status.interrupted),
         "pending": list(status.pending),
     }
-
-
-def _baseline_refusal_line(refusal: BaselineRefusal) -> str:
-    """One report line: which Cycle Count comparison is inconclusive, and why."""
-    link = refusal.link
-    run = f" (Test Run {link.run.name})" if link.run is not None else ""
-    return (
-        f"Cycle Count comparison inconclusive for {link.candidate} Test {link.test}{run}: "
-        f"{refusal.reason}"
-    )
 
 
 def _simulation_record_preview_entry(preview: NewSimulationRecordPreview) -> dict[str, object]:

@@ -6,7 +6,8 @@ number; amended 2026-11-11: reviews are declared in `reviews.toml`; amended
 2026-11-14: firmware has no special handling, see Amendments)
 
 Supersedes ADR 0074's Goal-owned review contract once Goal Mode is removed
-(0.5.0). ADR 0074's `--verify` and `--waive` mechanics stay. Decided in the
+(0.5.0). ADR 0074's verification and waiver rules carry over to
+`booley review --verify`. Decided in the
 triage of [#3064](https://github.com/boldaxolotl/booley/issues/3064), which
 builds on Metric-Driven Development
 ([#3045](https://github.com/boldaxolotl/booley/issues/3045),
@@ -59,7 +60,8 @@ Reviews are declared per Target, in a file of their own beside
   included. Findings in files outside the review never count.
 - **Hand-run reviews stay** for mid-work checks. `booley specialist reviewer`
   takes the spec as `--spec <path>` or `--spec-text "<text>"` and exits nonzero
-  only with `--fail-on`. It never makes a commit Reviewed.
+  only with `--fail-on`. It keeps no review history, so it has no `--verify`.
+  It never makes a commit Reviewed.
 
 ## Considered Options
 

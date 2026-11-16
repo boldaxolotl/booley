@@ -168,7 +168,8 @@ How it differs from an SV Target:
 ## Reading results
 
 The run ends with a block per Target: its verdict (`PASS`, `FAIL`, `ERROR` or
-`INCONCLUSIVE`, see below), the paths to its Campaign manifest and the report,
+`INCONCLUSIVE`, see below), the paths to its Simulation Record manifest and the
+report,
 and for a failure the end of the simulator output. The Test Runs are listed
 when there is more to say than "everything passed at the Default Seed" (a
 failure, another seed or Variant, a Test that ran more than once, or a
@@ -179,14 +180,14 @@ not pass names its log.
 Example (Verilator):
 
 ```text
-sim_soc: FAIL (Simulation Campaign 3f2a9c1e-…)
-  manifest: /work/.booley/flow-reports/sim/12/targets/sim_soc/campaign/manifest.json
+sim_soc: FAIL (Simulation Record 3f2a9c1e-…)
+  manifest: /work/.booley/flow-reports/sim/12/targets/sim_soc/record/manifest.json
   report: /work/.booley/flow-reports/sim/12/report.json
   <end of the failed test's simulator output>
   Test Runs: 3 (2 passed, 1 failed)
     PASS         stress+soak@1804289383
     FAIL         stress+soak@846930886
-      log: /work/.booley/flow-reports/sim/12/targets/sim_soc/campaign/work-items/0002-…/attempts/0001-…/evidence/0001-run.log
+      log: /work/.booley/flow-reports/sim/12/targets/sim_soc/record/work-items/0002-…/attempts/0001-…/execution-evidence/run.log
     PASS         stress+soak@1681692777
   Rerun a failed Test Run with the same seed:
     booley flow sim --target sim_soc --test=stress+soak@846930886
@@ -213,12 +214,12 @@ even when all of them passed.
 Example (Verilator):
 
 ```text
-sim_dma: PASS (Simulation Campaign 7b1c44d0-…)
-  manifest: /work/.booley/flow-reports/sim/12/targets/sim_dma/campaign/manifest.json
+sim_dma: PASS (Simulation Record 7b1c44d0-…)
+  manifest: /work/.booley/flow-reports/sim/12/targets/sim_dma/record/manifest.json
   report: /work/.booley/flow-reports/sim/12/report.json
   Test Runs: 1 (1 passed)
     PASS         irq@1
-      waveform: /work/.booley/flow-reports/sim/12/targets/sim_dma/campaign/work-items/0001-…/attempts/0001-…/evidence/0003-trace.fst
+      waveform: /work/.booley/flow-reports/sim/12/targets/sim_dma/record/work-items/0001-…/attempts/0001-…/execution-evidence/trace.fst
 ```
 
 The paths:
@@ -275,14 +276,8 @@ test, and so does a nonzero simulator exit code.
 
 </details>
 
-If every Test Run comes back inconclusive, see
-[Every simulation test comes back INCONCLUSIVE](TROUBLESHOOTING.md#every-simulation-test-comes-back-inconclusive).
-
-**Goals.** In [Goal Mode](GOAL-MODE.md), a `sim` run that the agent makes in
-the Goal's worktree records evidence for `SIM`, `ELAB`, `CYCLE_COUNT` and
-`COVERAGE` Goals. Runs you start from the CLI never do. Which Test Runs a
-Goal needs, and how seeds are frozen, is in
-[Simulation, Cycle Count, and coverage Goals](GOAL-MODE.md#simulation-cycle-count-and-coverage-goals).
+If every Test Run comes back inconclusive, the testbench prints no
+[sentinel](#passfail-sentinels-and-cycle-counts) that Booley looks for.
 
 ## Pass/fail sentinels and cycle counts
 
@@ -330,15 +325,10 @@ same test. The simulator can't tell Booley that number, because only the
 testbench knows which cycles count (say, from the benchmark's start to its
 end, not the reset sequence). So the testbench reports it by printing
 `[SIM_CYCLES] <test> <count>`, for example `[SIM_CYCLES] coremark 12345`.
-Without it, Booley has no cycle count for the test, and a `CYCLE_COUNT` Goal
-on it stays unmet.
+Without it, Booley has no cycle count for the test.
 `cycle_sentinels` replaces that prefix with one your testbench already prints,
 such as `["CoreMark completed in:"]` for `CoreMark completed in: coremark 12345`.
-Counts appear as `cycles=N` on the verdict card and in the report. They are
-informational unless a `CYCLE_COUNT` Goal sets
-[thresholds](GOAL-MODE.md#thresholds) on them, such as "at most 12,000
-cycles" or "cycle count drops at least 8%" against the code the Goal started
-from.
+Counts appear as `cycles=N` on the verdict card and in the report.
 
 <details markdown>
 <summary>With a cocotb testbench</summary>
@@ -465,8 +455,7 @@ define along with it.
 
 `--mode elab-only` compiles, elaborates and links the simulator without running
 any tests: a fast "does it still build?" check. A later full run can reuse the
-build. A successful build meets an `ELAB` Goal, and so does the build step of a
-normal run, even if a test then fails.
+build.
 
 `--mode elab-only-standalone` also elaborates each reusable RTL module on its
 own. This catches a module that compiles only thanks to a define or include
@@ -487,8 +476,9 @@ RTL exits `1`; a tool, setup or timeout problem exits `2`.
 For a long run, such as a multi-hour regression, resuming saves re-running the
 tests that already finished. For a short run, just start it again.
 
-Every run records its plan and results in a Simulation Campaign, one per
-Target. The CLI prints each Campaign's `manifest.json` path before it starts,
+Every run records its plan and results in a Simulation Record, one per
+Target. The CLI prints each Simulation Record's `manifest.json` path before it
+starts,
 and the verdict card repeats it. Ask the agent to resume the run, or:
 
 ```bash
@@ -509,7 +499,8 @@ booley flow sim --resume-from <manifest.json>
 - A test with a recorded result is finished, even if it failed. Resume never
   re-runs failures; start a new run for that.
 - Resume refuses when the Target's sources, Tests or simulation settings have
-  changed since the original run. Don't edit Campaign files by hand: resume
+  changed since the original run. Don't edit Simulation Record files by hand:
+  resume
   checks that they are intact.
 
 <details markdown>
@@ -604,7 +595,7 @@ Commit a placeholder file such as `.gitkeep` so it does. Tests that share it run
 one at a time. If the directory only receives per-run output, add the
 `{attempt}` placeholder instead (`run_cwd = "runs/{attempt}"`): Booley then
 creates a private directory for each attempt and removes it afterwards, and
-tests can run in parallel. `{target}`, `{test}` and `{campaign}` are also
+tests can run in parallel. `{target}`, `{test}` and `{record}` are also
 available.
 
 ## Build reuse
@@ -644,17 +635,16 @@ the Job runs alone, fewer when other Jobs run beside it
 **Compiler cache.** The C++ compilation uses ccache, so a rebuild after a
 small change is quicker. The cache is kept in the Project's Booley Directory,
 so it survives Sandbox rebuilds and is shared by every checkout of the Project
-in the Sandbox, including Goal worktrees. To inspect or empty it, run inside
+in the Sandbox, including worktrees. To inspect or empty it, run inside
 the Sandbox:
 
 ```sh
-CCACHE_DIR=/booley-project/.runtime/compiler-cache/ccache ccache --show-stats
-CCACHE_DIR=/booley-project/.runtime/compiler-cache/ccache ccache --clear
+CCACHE_DIR=/booley/.runtime/compiler-cache/ccache ccache --show-stats
+CCACHE_DIR=/booley/.runtime/compiler-cache/ccache ccache --clear
 ```
 
 If ccache isn't available, the build prints a warning and compiles without it.
-Booley's ccache settings override your shell and the Target's `env`; see
-[ccache settings are ignored or rebuilds miss the cache](TROUBLESHOOTING.md#ccache-settings-are-ignored-or-rebuilds-miss-the-cache).
+Booley's ccache settings override your shell and the Target's `env`.
 
 ## Configuration (`[flows.sim]`)
 
@@ -710,7 +700,6 @@ time is still zero that many seconds after cocotb starts, which usually means
 the cocotb version doesn't match the simulator; see
 [Python dependencies](SANDBOX.md#python-dependencies-sandboxpip_requirements).
 Raise it if your testbench spends minutes in Python setup before the first
-clock edge. For the stop's message and fix, see
-[Simulation stalls at time zero](TROUBLESHOOTING.md#simulation-stalls-at-time-zero-without-results).
+clock edge.
 
 </details>

@@ -40,7 +40,7 @@ from typing import Any, ClassVar, Literal
 from urllib.parse import quote
 
 from booley.config.project_config import load_test_configuration_field, lookup_target_section
-from booley.core.boundary import BoundaryError, as_int
+from booley.core.boundary import BoundaryError
 from booley.flows import artifacts as _artifacts
 from booley.flows.base import BuiltinFlow, SubprocessResult
 from booley.flows.cli_help import CliHelp, SurfaceHelp
@@ -97,6 +97,7 @@ from booley.flows.sim.config import (
     literal_run_cwd_problem,
     resolve_run_cwd,
     resolve_sim_sentinels,
+    resolve_trace_files,
 )
 from booley.flows.sim.execution.composition import prepare_adapter_invocation
 from booley.flows.sim.execution.engine import (
@@ -123,7 +124,6 @@ from booley.flows.target_campaign import (
     describe_target_campaign,
     resolve_target_campaign,
 )
-from booley.flows.target_criteria import CampaignScopeError
 from booley.flows.target_parameters import sv_byte_string_literal, vlogparam_specs
 from booley.flows.target_test_plan import TargetTestPlan, TestRunLaunch, batch_test_runs
 from booley.flows.target_test_suite import (
@@ -295,6 +295,7 @@ def _mutant_work(
         adapter=adapter,
         build_dir=pinned.rel,
         run_cwd=resolve_run_cwd(work_dir),
+        trace_files=tuple(resolve_trace_files(work_dir)),
         timeout_s=timeout,
         plusargs=tuple(plusargs),
         runtime_inputs=pinned.runtime_inputs,
@@ -712,11 +713,11 @@ class MutationRunPlan:
     formula_count: int
     source_size_budget: dict | None
     seed: int = 0
-    #: ``min_detected`` came from the caller or the criterion, so a generator
+    #: ``min_detected`` came from the caller, so a generator
     #: shortfall does not recompute it.
     explicit_min_detected: bool = True
-    #: The scope is the Target's own RTL because neither ``--scope`` nor a criterion named
-    #: one, so only then does "pass --scope" fit a failure.
+    #: The scope is the Target's own RTL because ``--scope`` was omitted,
+    #: so only then does "pass --scope" fit a failure.
     scope_defaulted: bool = False
 
     def auto_count_fields(self, scored: int) -> dict[str, Any]:
@@ -872,7 +873,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     ) -> MemoryAdmissionPlan:
         return measure_coordinator_claim()
 
-    #: Set by ``_apply_campaign_defaults``: no ``--scope`` and no criterion scope was given.
+    #: Set by ``_apply_campaign_defaults``: ``--scope`` was omitted.
     _scope_defaulted: bool = False
     #: What admits each build and simulation; unmanaged (no claims) outside a managed run.
     _claims: CampaignClaims = CampaignClaims()
@@ -903,26 +904,13 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             )
         )
 
-    def _resolve_campaign(self, scope: str | None) -> TargetCampaign | EndpointOutcome | None:
-        """Resolve this Target's campaign for *scope*; ``None`` when no scope is known."""
+    def _resolve_campaign(self, scope: str) -> TargetCampaign | EndpointOutcome:
+        """Resolve this Target's campaign for *scope*."""
         try:
             return resolve_target_campaign(
                 self.args.target,
-                self.satisfies,
-                self.state.criteria,
-                explicit_scope=scope,
+                scope,
                 **self._registered_tests(self.args.target),
-                enforce_scope_match=(
-                    self.state.strict_criteria and not getattr(self.args, "diagnostic", False)
-                ),
-            )
-        except CampaignScopeError as exc:
-            if exc.reason == "missing":
-                return None
-            return _error_outcome(
-                "scope",
-                "--scope does not match the sealed Target criterion scope",
-                report_text="mutation: --scope does not match the sealed Target criterion scope",
             )
         except UnsupportedSimTargetError as exc:
             return _error_outcome("target", str(exc), report_text=str(exc))
@@ -930,9 +918,9 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             return _error_outcome("target", str(exc), report_text=f"mutation: {exc}")
 
     def _apply_campaign_defaults(self) -> EndpointOutcome | None:
-        """Default mutation controls from this Target's criterion parameters.
+        """Default the mutation controls: ``--count`` 10, and a Target's own RTL as the scope.
 
-        With neither ``--scope`` nor a criterion scope, the scope is the Target's own RTL.
+        With no ``--scope``, the scope is the Target's own RTL.
         """
         if self.args.scope is not None and not any(
             entry.strip() for entry in self.args.scope.split(",")
@@ -942,9 +930,9 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 "or omit --scope to mutate the Target's own RTL"
             )
             return _error_outcome("scope", message, report_text=f"mutation: {message}")
-        campaign = self._resolve_campaign(self.args.scope)
-        self._scope_defaulted = campaign is None
-        if campaign is None:
+        self._scope_defaulted = self.args.scope is None
+        scope = self.args.scope
+        if scope is None:
             default_scope = self._default_scope()
             if not default_scope:
                 message = (
@@ -953,20 +941,14 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                     "pass --scope."
                 )
                 return _error_outcome("scope", message, report_text=f"mutation: {message}")
-            campaign = self._resolve_campaign(",".join(default_scope))
+            scope = ",".join(default_scope)
+        campaign = self._resolve_campaign(scope)
         if isinstance(campaign, EndpointOutcome):
             return campaign
-        assert campaign is not None, "an explicit scope is never missing"
         self._target_campaign = campaign
         self.args.scope = campaign.scope_arg
-        params = campaign.params_for("mutation_score")
         if self.args.count is None:
-            if params.get("auto") is True:
-                self.args.count = "auto"
-            else:
-                self.args.count = params.get("total", 10)
-        if self.args.min_detected is None and params.get("min_detected") is not None:
-            self.args.min_detected = as_int(params.get("min_detected"))
+            self.args.count = 10
         return None
 
     def _default_scope(self) -> list[str]:
@@ -1963,16 +1945,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         campaign = getattr(self, "_target_campaign", None)
         if campaign is not None and campaign.target == target:
             return campaign
-        try:
-            criteria = self.state.criteria
-        except RuntimeError:
-            criteria = {}
-        return describe_target_campaign(
-            target,
-            criterion_keys=self.satisfies,
-            criteria=criteria,
-            **self._registered_tests(target),
-        )
+        return describe_target_campaign(target, **self._registered_tests(target))
 
     def _default_test_plan(
         self, target: str, work_dir: Path, adapter: str
@@ -2663,14 +2636,6 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
 
         self._attach_campaign_artifacts(plan, inputs, detail)
 
-        criterion_key = f"mutation_score_{target}"
-        self.set_criterion(
-            criterion_key,
-            passed,
-            detail=detail,
-            source_target=target,
-        )
-
         # Display lines. Both formatters read straight off (plan, inputs) and
         # recompute valid_count internally, so the explicit arg fan-out is gone.
         display = self._format_display_line(plan, inputs)
@@ -2681,8 +2646,6 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
 
         return EndpointOutcome(
             exit_code=EXIT_SUCCESS if passed else EXIT_FAILURE,
-            criterion_key=criterion_key,
-            criterion_met=passed,
             detail=detail,
             report_text=report_text,
             display_lines=[display, *artifact_lines],

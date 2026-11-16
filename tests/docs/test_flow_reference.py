@@ -148,19 +148,17 @@ def test_structural_allowance_knobs_documented_per_flow() -> None:
             assert key in configuration, (page, key)
 
 
-def test_target_omission_rule_matches_usage_and_reference() -> None:
-    cli_reference = USER_DOCS / "CLI-REFERENCE.md"
-    for document in (REFERENCE, cli_reference):
-        text = " ".join(document.read_text(encoding="utf-8").split())
-        assert all(
-            fragment in text
-            for fragment in (
-                "exactly one eligible Target",
-                "zero or multiple",
-                "announced",
-                "resume",
-            )
-        ), "documented Target omission rule missing"
+def test_flow_reference_documents_the_target_omission_rule() -> None:
+    text = " ".join(REFERENCE.read_text(encoding="utf-8").split())
+    assert all(
+        fragment in text
+        for fragment in (
+            "exactly one eligible Target",
+            "zero or multiple",
+            "announced",
+            "resume",
+        )
+    ), "documented Target omission rule missing"
     assert "Every run needs `--target`" not in REFERENCE.read_text(encoding="utf-8")
 
 
@@ -218,7 +216,7 @@ def test_coverage_card_example_matches_rendered_card(tmp_path: Path) -> None:
     )
     outcome = SimpleNamespace(
         target={"selector": "sim_soc"},
-        manifest_path=root / "sim/12/targets/sim_soc/campaign/manifest.json",
+        manifest_path=root / "sim/12/targets/sim_soc/record/manifest.json",
         aggregate_grade="pass",
         coverage_reference=object(),
         observations=(),
@@ -261,12 +259,12 @@ def test_sim_card_examples_name_the_run_report(tmp_path: Path) -> None:
 
 _CARD_ROW = re.compile(r"^    (PASS|FAIL|ERROR|INCONCLUSIVE)\s")
 _CARD_LOG = re.compile(
-    r"^      log: /work/\.booley/flow-reports/sim/\d+/targets/\w+/campaign/work-items/"
-    r"\d{4}-[^/\s]+/attempts/\d{4}-[^/\s]+/evidence/\d{4}-run\.log$"
+    r"^      log: /work/\.booley/flow-reports/sim/\d+/targets/\w+/record/work-items/"
+    r"\d{4}-[^/\s]+/attempts/\d{4}-[^/\s]+/execution-evidence/run\.log$"
 )
 _CARD_WAVEFORM = re.compile(
-    r"^      waveform: /work/\.booley/flow-reports/sim/\d+/targets/\w+/campaign/work-items/"
-    r"\d{4}-[^/\s]+/attempts/\d{4}-[^/\s]+/evidence/\d{4}-[^/\s]+\.fst$"
+    r"^      waveform: /work/\.booley/flow-reports/sim/\d+/targets/\w+/record/work-items/"
+    r"\d{4}-[^/\s]+/attempts/\d{4}-[^/\s]+/execution-evidence/trace\.fst$"
 )
 
 

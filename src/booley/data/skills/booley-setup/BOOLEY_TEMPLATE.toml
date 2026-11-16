@@ -3,12 +3,12 @@
 
 [project]
 name = "<project>"
-# Extra files Goal Mode freezes: recipes and stimulus sources that hooks or
+# Extra files whose edits Booley flags: recipes and stimulus sources that hooks or
 # generators consume. Paths are relative to the Project Root; keep generated
 # outputs out of the patterns. Add only with the human's agreement.
 # protected_inputs = ["Makefile", "firmware/**/*.c"]
 
-# Optional identity for Developer Agent commits in Interactive and Goal Mode.
+# Optional identity for Developer Agent commits in the Sandbox.
 # Values are applied to each checkout at worktree scope. Missing fields use the
 # neutral defaults `Dev` and `dev@localhost`.
 # [agent.git]
@@ -74,7 +74,3 @@ enabled = false              # synthesis recipe belongs in Target flow_options
 # Dashboard opens on VS Code folder attachment; false removes the owned task.
 # [sandbox]
 # dashboard = true
-
-# Quiet attributable presence expires after this many seconds (60..604800).
-# [goals]
-# quiet_after = 7200

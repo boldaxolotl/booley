@@ -14,7 +14,7 @@ from booley.audit.diagnostic_results import Findings
 from booley.harness import booley as tlr
 from booley.harness import worktree_cmd
 from booley.harness.setup import readiness
-from tests.goals.conftest import git
+from tests.git_support import git
 from tests.harness.test_worktree_rm import _add, _commit, _pin_namespace, _session, _versioned
 from tests.shipped_docs_support import rendered_shipped_docs
 
@@ -196,25 +196,19 @@ def test_gc_reports_an_errored_removal_and_continues(
     assert first.is_dir() and not second.exists()
 
 
-def test_gc_keeps_an_idle_worktree_with_a_live_session_or_active_goal(
+def test_gc_keeps_an_idle_worktree_with_a_live_session(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from booley.goals.store import GoalStore
-    from tests.goals.test_store import _enter
-
     _pin_namespace(monkeypatch)
     with_session = _idle(repo, "s1", 10)
-    with_goal = _idle(repo, "s2", 10)
     _session(repo, with_session)
-    _enter(GoalStore(repo / ".booley"), with_goal, "fix-20261006T101500Z")
 
     assert _gc(repo) == 0
 
     out = capsys.readouterr().out
     assert "live Session" in out
-    assert "active Goal Record fix-20261006T101500Z" in out
-    assert out.endswith("Removed 0 worktree(s); kept 2.\n")
-    assert with_session.is_dir() and with_goal.is_dir()
+    assert out.endswith("Removed 0 worktree(s); kept 1.\n")
+    assert with_session.is_dir()
 
 
 def test_gc_keeps_a_worktree_that_contains_another_worktree(
@@ -355,8 +349,8 @@ def test_parse_age_grammar() -> None:
             parse_age(bad)
 
 
-def test_cli_reference_and_config_document_gc() -> None:
-    cli = (REPO_ROOT / "docs/user/CLI-REFERENCE.md").read_text(encoding="utf-8")
+def test_worktrees_page_and_config_document_gc() -> None:
+    cli = (REPO_ROOT / "docs/user/WORKTREES.md").read_text(encoding="utf-8")
     config = (REPO_ROOT / "docs/user/CONFIG.md").read_text(encoding="utf-8")
 
     assert "booley worktree gc [--older-than AGE]" in cli

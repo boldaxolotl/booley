@@ -456,8 +456,7 @@ def _require_simulation_record_fits(
         raise TestRunLimitError(
             f"Target {selector} plans {len(run_groups)} work items and {test_runs} Test Runs; "
             f"a record holds at most {MAX_WORK_ITEMS} work items and "
-            f"{MAX_OBSERVATIONS} Test Runs. Select fewer Tests or seeds, or in Goal Mode "
-            "fewer whole-suite Goals freeze runs of this Target"
+            f"{MAX_OBSERVATIONS} Test Runs. Select fewer Tests or seeds"
         )
 
 

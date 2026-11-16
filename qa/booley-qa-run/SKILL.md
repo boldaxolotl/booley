@@ -64,11 +64,16 @@ to pass to automatic triage.
   `origin/main` path; that replacement stays installed after the run and is not
   a `resources.md` row.
 - Baseline IP and Project pins stay fixed; change designs only through the
-  mission's prompts and Goal children; keep hidden faults and evaluator inputs
-  with the operator.
+  mission's prompts and the children they go to; keep hidden faults and
+  evaluator inputs with the operator.
 - Before creating anything outside the run dir (container, image, worktree,
   branch, registration, grant, remote, mount, background process, file or
   directory), append it to `resources.md`. Cleanup releases exactly those rows.
+  `booley init` on a staged Project is one such step: it registers the Project
+  and creates its issued Session image tag and agent-state volume. Give it one
+  row, released by `booley session down` and then
+  `booley projects forget --purge <project>` before the Project directory is
+  deleted.
 - Write scratch files, backups and probe scripts under `<run-dir>/scratch/<area>/`,
   never `/tmp`. Anything that must live elsewhere gets its row first.
 
@@ -116,17 +121,17 @@ Write each finding the moment you observe it, before any workaround or retry.
 3. **Smoke** (when requested). Walk `qa/SMOKE.md` from the derived source root and put its table in
    `log.md`.
 4. **Mission.** Read `qa/missions/<mission>/MISSION.md` and apply
-   `qa/shared/GOAL-CHILD.md` for its Goal areas. Work the areas in priority order
+   `qa/shared/DEVELOPER-CHILD.md` for its areas that hand design work to a
+   child. Work the areas in priority order
    under the principles above. Keep `log.md` current after each area:
    `done`, `partial`, or `skipped`, with the reason.
 5. **Cleanup.** Run the mission's cleanup area (Booley's own cleanup is under
    test), then release every remaining `resources.md` row and mark it. Keep the
    run dir. A release you cannot complete is marked `failed` with a note, and
-   is reported to the user. Before deleting a Project directory, copy each Goal
-   Record's `record.json`, `booley_state.json`, `operations/` and
-   `logs/acceptance/` into `evidence/cleanup/`; triage needs them to diagnose
-   Goal state findings. Last, list `/tmp/qa-*` and other run-named paths
-   outside the run dir; report any leftover without a row as a `qa-bug`.
+   is reported to the user. Before deleting a Project directory, copy the Main
+   Booley Directory's `measurements/` into `evidence/cleanup/`; triage needs it
+   to diagnose measurement findings. Last, list `/tmp/qa-*` and other run-named
+   paths outside the run dir; report any leftover without a row as a `qa-bug`.
 6. **Triage.** Make sure `findings.md` and `log.md` are complete. Unless the
    user passed `no-triage`, read `booley-qa-triage/SKILL.md` under the derived
    `qa/` directory and run its automatic mode on this run directory,

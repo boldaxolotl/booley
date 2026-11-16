@@ -14,9 +14,7 @@ needs its own mechanism:
 
 - a Claude Code `PostToolUse` hook, which is Claude-only and fires only on
   the agent's next tool call
-- a "Job finished" message that Booley injects when it drives the loop
-  (Goal Mode, Ticket Mode), which does nothing for Interactive Mode
-- something else again for Codex
+- a different mechanism for Codex
 
 Polling all owned Jobs at once already removes the reported failure: a
 finished result sitting unread while the agent blocks on another Job. The

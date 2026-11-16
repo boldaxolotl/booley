@@ -43,9 +43,9 @@ def context(tmp_path, monkeypatch):
     }
     for key, value in overrides.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setattr(job_results, "project_goal_store", lambda: None)
+    monkeypatch.setattr(job_results, "project_booley_dir", lambda: None)
     monkeypatch.delenv("BOOLEY_MCP_NESTED", raising=False)
-    return CallContext(tmp_path, runtime / "jobs", None, tmp_path / "logs", runtime, overrides)
+    return CallContext(tmp_path, runtime / "jobs", tmp_path / "logs", runtime, overrides)
 
 
 class Activity:
@@ -159,21 +159,6 @@ async def test_job_creation_allocates_handles_and_broken_maps_do_not_gate_execut
         assert tuple(store.load().entries.values()) == ("J-LINT1",)
 
 
-def test_goal_job_handle_uses_bound_project_directory(context, tmp_path, monkeypatch):
-    from dataclasses import replace
-
-    project = tmp_path / "bound-project"
-    monkeypatch.setattr(
-        "booley.runtime.booley_dir.resolve_common_booley_dir",
-        lambda: pytest.fail("Goal handle must use its admitted binding"),
-    )
-    binding = SimpleNamespace(booley_dir=project, to_json=lambda: {})
-    bound = replace(context, binding=binding)
-    rec = job_records.JobRecord("goal-run", "sim", utc_now_rfc3339(), JOB_TIMEOUT)
-    JobLifecycle._stamp_context(rec, bound)
-    assert HandleStore(project, jobs=True).load().entries == {"goal-run": "J-SIM1"}
-
-
 def test_job_progress_follows_symlinked_booley_dir_entry(context, tmp_path, monkeypatch):
     """Progress behind a Job report is read and repaired through the linked entry."""
     real = tmp_path / "real-booley-dir"
@@ -184,10 +169,8 @@ def test_job_progress_follows_symlinked_booley_dir_entry(context, tmp_path, monk
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(entry / "runtime"))
     monkeypatch.setattr(
         job_results,
-        "project_goal_store",
-        lambda: SimpleNamespace(
-            booley_dir=entry, list_records=lambda: SimpleNamespace(records=())
-        ),
+        "project_booley_dir",
+        lambda: entry,
     )
     rec = job_records.JobRecord("run-1", "sim", utc_now_rfc3339(), JOB_TIMEOUT)
     job_records.write_record(rec, root=entry / "runtime" / "jobs")
@@ -454,7 +437,7 @@ def test_import_and_execution_work_when_sdk_and_adapter_imports_are_blocked(cont
         from booley.mcp.job_lifecycle import JobLifecycle
         from booley.mcp.report_encoding import ReportEncoder
         root = Path({str(context.runtime_dir)!r})
-        context = CallContext(None, root / 'jobs', None, None, root, {{}})
+        context = CallContext(None, root / 'jobs', None, root, {{}})
         async def run():
             jobs = JobLifecycle()
             run_id = jobs.submit('lint', [sys.executable, '-c', 'print("ok")'], {JOB_TIMEOUT}, context=context)

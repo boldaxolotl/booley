@@ -1,8 +1,7 @@
 """Development state — criteria-based progress tracking for developer runs.
 
 Each criterion is either unmet (absent/false) or met (true). The developer
-agent invokes Flows and Specialists that set criteria; the harness reads the state file on exit
-to decide Goal disposition.
+agent invokes Flows and Specialists that set criteria; the harness reads the state file to report progress.
 
 Atomic writes use .tmp -> os.replace() for crash safety.
 """
@@ -454,7 +453,7 @@ class DevelopmentState:
     # Never serialized or compared; a deepcopy shares it (see __deepcopy__).
     _persistence: StatePersistence | None = field(default=None, repr=False, compare=False)
     # The state as its strategy last read or wrote it, for strategies that merge
-    # a save with the file on disk (Goal Mode). The default strategy leaves it
+    # a save with the file on disk. The default strategy leaves it
     # ``None``. Never serialized or compared; a deepcopy copies it, so a shadow
     # saves against the baseline of the instance it was copied from.
     persistence_baseline: dict[str, Any] | None = field(
@@ -703,7 +702,7 @@ class DevelopmentState:
 
         if self.strict_criteria:
             logger.error(
-                "Rejecting undeclared criterion %r for Goal Mode %r",
+                "Rejecting undeclared criterion %r for %r",
                 key,
                 self.slug,
             )

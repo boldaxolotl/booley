@@ -10,7 +10,7 @@ defaults.
 
 Project Initialization is the location-neutral part: :func:`initialize_project`
 reconciles every Project file (Booley Directory, ``[agent]``, core projections,
-Goalsets, Git integration, line endings, guidance links) with no Docker, host
+Git integration, line endings, guidance links) with no Docker, host
 credentials or Sandbox Issuance (ADR 0085). Host ``booley init`` runs it and then
 the host-only steps; ``booley session refresh`` runs it through
 :func:`reinitialize_project` without rewriting tracked files.
@@ -22,7 +22,6 @@ contiguous; identity lives in the ``record`` key, not the number.
     - Host bootstrap preflight (git, Docker, VS Code); unavailable Docker aborts
     - Scaffold a new IP from scratch (``--scaffold`` only)
     - Booley Directory (.booley/ with config skeletons)
-    - Project Goalsets
     - Agent authentication setup
     - Skill deployment (system-level ~/.agents/ or ~/.claude/)
     - Pinned Nangate45 download into the per-user cache
@@ -80,7 +79,6 @@ from booley.fusesoc.core_projection import (
     projection_issues,
     reconcile_projected_cores,
 )
-from booley.goals.goalsets import seed_goalsets
 
 # --- Re-exported for backward compatibility (Single Responsibility split) ---
 # These symbols were relocated into sibling init_* modules so this file is just
@@ -563,27 +561,6 @@ def _step_core_projections(ctx: InitContext) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Init step: Goalsets (record key: goalsets)
-# ---------------------------------------------------------------------------
-
-
-def _step_goalsets(ctx: InitContext) -> None:
-    """Reconcile the four create-only Project Goalsets."""
-    ctx.step_banner("Goalsets")
-    outcomes = seed_goalsets(booley_dir_for_init(ctx.project_root), dry_run=ctx.check_only)
-    added = sum(outcome is WriteOutcome.WRITTEN for _, outcome in outcomes)
-    if not added:
-        current("Goalsets already present")
-        ctx.record("goalsets", "current", "already present")
-    elif ctx.check_only:
-        warn(f"{added} missing Goalsets (would create)")
-        ctx.record("goalsets", "warn", f"{added} files missing")
-    else:
-        ok(f"created {added} Goalsets")
-        ctx.record("goalsets", "ok", "created")
-
-
-# ---------------------------------------------------------------------------
 # Init step: agent authentication (record key: auth)
 # ---------------------------------------------------------------------------
 
@@ -1017,9 +994,7 @@ def _warn_on_live_session_on_old_image(ctx: InitContext, image: str) -> None:
         warn(
             f"the running Sandbox '{name}' was created from the previous "
             f"{image} image and keeps serving it — this rebuild is invisible inside "
-            "it. Run `booley session down && booley session up` to restart the "
-            "session on the image just built (in VS Code: Reopen in Container / "
-            "Rebuild Container)."
+            f"it. To restart it on the image just built, {sr.stale_image_advice(ctx.project_root, name)}."
         )
 
 
@@ -1105,10 +1080,12 @@ def inspect_refreshable_runtime_image(project_root: Path) -> None:
     """Reject a user-managed Sandbox Image before refresh causes downtime."""
     lifecycle_plan = image_lifecycle.plan(ProjectImageScope(project_root))
     if lifecycle_plan.nodes[0].role is ImageRole.EXTERNAL:
+        # Deferred import: session_runtime imports back into init_cmd.
+        from booley.runtime import session_runtime as sr
+
         raise RuntimeError(
-            "the selected Sandbox Image cannot use managed refresh: it is externally managed. "
-            "Rebuild/pull it explicitly, then on the host run `booley session down`, "
-            "`booley init --seed`, and `booley session up`."
+            "the selected Sandbox Image cannot use managed refresh: it is externally managed; "
+            + sr.sandbox_remedy(project_root)
         )
 
 
@@ -1223,7 +1200,7 @@ def _report_seeded_mounts(
         ok(
             f"masking {len(mask_paths)} path(s) from the container: "
             f"{', '.join(mask_paths)} (read-only empty binds over /work — and "
-            "over /booley-project for .booley subtrees)"
+            f"over {dc.BOOLEY_DIR_TARGET} for .booley subtrees)"
         )
 
 
@@ -1742,7 +1719,8 @@ def _setup_step_done(key: str, project_root: Path, data: dict) -> bool:
         return bool(str(name).strip())
     if key == "agents":
         return (project_root / ".booley" / "AGENTS.md").is_file()
-    flows = data.get("flows") if isinstance(data.get("flows"), dict) else {}
+    raw_flows = data.get("flows")
+    flows = raw_flows if isinstance(raw_flows, dict) else {}
     from booley.targets.flow_names import LEGACY_TO_CANONICAL, config_section
 
     section = config_section(flows, key)
@@ -1818,8 +1796,8 @@ _PUBLISHED_PROJECT_ORIGIN_PREFIX = "github.com/boldaxolotl/booley-prj-"
 
 #: Paths (relative to the Booley Directory) where a new untracked file changes
 #: the published setup — an added core is a new Target. Untracked files
-#: elsewhere are ignored on purpose: init writes its own (``.managed/``,
-#: ``goalsets/``) and ordinary use leaves reports and notes behind, so counting
+#: elsewhere are ignored on purpose: init writes its own (``.managed/``)
+#: and ordinary use leaves reports and notes behind, so counting
 #: them would flip the send-off on the first re-run.
 _PUBLISHED_PROJECT_SETUP_PATHS = ("tests.toml", "AGENTS.md", "cores")
 
@@ -2228,7 +2206,7 @@ BOOLEY_MASCOT = r"""
 def _step_guidance_links(ctx: InitContext, planned: InitPlan | None = None) -> None:
     """Create/repair the root AGENTS.md & CLAUDE.md links, host-side (F-13).
 
-    The Booley Directory lives at ``/booley-project`` inside the Sandbox, so
+    The Booley Directory lives at ``/booley`` inside the Sandbox, so
     a link written relative to that mount dangles on the host. A host-side
     editor or agent then reads no guidance at all. ``ensure_guidance_links``
     targets a repo-local path valid on both host and runtime and falls back to a
@@ -2600,7 +2578,6 @@ def initialize_project(ctx: InitContext, request: ProjectInitialization) -> bool
     if not _initialize_project_configuration(ctx, request.agent, request.agent_config_path):
         return False
     _step_core_projections(ctx)
-    _step_goalsets(ctx)
     facts = request.host_facts()
     _step_git_hooks(ctx)
     _step_project_git_hooks(ctx)
@@ -2816,9 +2793,11 @@ def _write_pin_with_consent(
     if not has_pin:
         ok(f"pinned {BOOLEY_DIR_NAME} -> {current.target}")
     else:
+        from booley.runtime import session_runtime as sr
+
         ok(
             f"re-pinned {BOOLEY_DIR_NAME}: {old_target} -> {current.target}; "
-            "restart a running Sandbox with `booley session refresh`"
+            f"to recreate a running Sandbox, {sr.sandbox_remedy(root)}"
         )
     ctx.record("booley_dir_pin", "ok", current.target)
     return True

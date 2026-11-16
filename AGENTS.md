@@ -2,7 +2,7 @@
 
 Booley is an agentic development environment (ADE) for RTL design and verification,
 written in Python: engineers direct sandboxed Developer Agents through
-simulation, synthesis, linting, and Goal workflows.
+simulation, synthesis, linting, and measurement workflows.
 
 ## Repository Rules
 
@@ -43,7 +43,8 @@ simulation, synthesis, linting, and Goal workflows.
   and its GitHub branch.
 - Read `docs/internals/CODING_PRINCIPLES.md` before writing Python code.
 - Read `docs/internals/DOCS_PRINCIPLES.md` before writing, editing, or
-  reviewing docs; Part 2 adds the rules for user-facing docs.
+  reviewing docs. For a user doc or the cheatsheet, also read
+  `docs/internals/USER_DOCS_PRINCIPLES.md`; its Scope lists those files.
 - Ruff findings are repository work: during Python work, fix every finding
   reported for `src/` or `tests/`, including pre-existing or unrelated
   findings. Before committing, run the complete Ruff command reported by
@@ -65,7 +66,9 @@ simulation, synthesis, linting, and Goal workflows.
 - **Agent Briefs:** `ready-for-agent` issues need one. See
   `docs/internals/agents/agent-brief.md`.
 - **Domain docs:** Read `GLOSSARY-MAP.md`, then the glossary for each context the
-  work touches. ADR history lives under `docs/adr/`. See
-  `docs/internals/agents/domain.md`.
+  work touches and the ADRs under `docs/adr/` that cover the area. Name
+  concepts as the owning glossary does and leave out each entry's `_Avoid_`
+  words; report a missing term instead of coining one. Name any ADR the work
+  contradicts. ADR rules: `docs/adr/README.md`.
 - **Dependency updates:** Renovate opens update and security PRs. See
   `docs/internals/agents/dependency-updates.md`.

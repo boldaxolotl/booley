@@ -1,9 +1,8 @@
-"""Compose Goal/session inactivity policy with the runtime's filesystem migrator."""
+"""Compose session and Job inactivity policy with the runtime's filesystem migrator."""
 
 from pathlib import Path
 
 from booley.core.booley_layout import BooleyLayoutError
-from booley.goals.store import GoalStore
 from booley.harness.setup.directory_migration_jobs import observe_jobs
 from booley.mcp.session_registry import SessionRegistry
 from booley.runtime.booley_dir_migration import Migration
@@ -13,21 +12,7 @@ from booley.runtime.pid import DEAD_PROCESS_STATES, observe_process
 
 
 def observe_directory(directory: Path) -> None:
-    """Refuse every occupying/corrupt record and live/unprovable session before writes."""
-    scan = GoalStore(directory).list_active()
-    if scan.corrupt:
-        raise BooleyLayoutError(
-            "cannot prove Goal inactivity: "
-            + "; ".join(f"{entry.path}: {entry.reason}" for entry in scan.corrupt)
-        )
-    if scan.records:
-        raise BooleyLayoutError(
-            "migration refused; occupying Goal Records: "
-            + "; ".join(
-                f"{record.id} ({record.worktree_path}, {record.state.value})"
-                for record in scan.records
-            )
-        )
+    """Refuse every live or unprovable Job and session before writes."""
     require_quiescent(directory.parent)
     observe_jobs(directory)
     if not (directory / "runtime" / "sessions").exists():

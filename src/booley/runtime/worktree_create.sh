@@ -520,8 +520,8 @@ if [ "$(git -C "$CWD" config --bool --get worktree.useRelativePaths 2>/dev/null 
     fi
 fi
 
-# Apply the same validated [agent.git] policy used by Interactive Mode, read from
-# the checkout's own Booley Directory (the ambient BOOLEY_DIR was checked to be
+# Apply the same validated [agent.git] policy used by Developer Agent checkouts,
+# read from the checkout's own Booley Directory (the ambient BOOLEY_DIR was checked to be
 # that directory, or unset, before anything was created). pipeline.toml is never read.
 PYTHONPATH="$BOOLEY_PACKAGE_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
     BOOLEY_DIR="$BOOLEY_DIR_PATH" BOOLEY_GIT_CHECKOUT="$WORKTREE_DIR" \

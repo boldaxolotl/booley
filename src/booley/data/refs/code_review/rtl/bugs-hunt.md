@@ -9,7 +9,10 @@ Project-specific overlays may be supplied by the caller or change-request contex
 ## Scope Boundaries
 
 - **Handshake protocol analysis at module ports** (ready/valid, req/ack rules, clock-domain crossings): defer to the Reviewer Specialist for Protocol/CDC. A deadlock or lost beat caused by an internal state machine or counter stays here
-- **Unused/dead RTL**: provably behavior-neutral logic belongs to the Reviewer Specialist for Optimization. Undriven or partially driven signals and code that is unused because required functionality is missing remain correctness issues here
+- **Unused/dead RTL**: provably behavior-neutral logic belongs to the Reviewer
+  Specialist for Optimization, and signals lint reports as unused or undriven
+  belong to the project's lint Targets. Code that is unused because required
+  functionality is missing remains a correctness issue here
 - **Optimizations** (timing, area, power): not your responsibility
 
 ## Method
@@ -21,7 +24,9 @@ Read all target files and the package/include files they depend on. For each mod
 - **Interfaces**: every input and output, its width, and when it is meaningful
 - **State elements**: every register, counter, pointer, FSM state, and memory, with its reset value and every place it is written
 - **Invariants**: what must hold at every cycle -- for example "the write pointer never passes the read pointer by more than DEPTH", "exactly one FSM state is active", "a valid output never changes while stalled", "a counter never exceeds its bound"
-- **Configuration**: parameters and macros, and which combinations are legal
+- **Configuration**: parameters and macros, which parameter values are legal,
+  and which macro combinations the project's Targets (FuseSoC `.core` build
+  targets) build. Do not trace an `ifdef` configuration that no Target builds
 
 ### 2. Enumerate scenarios
 
@@ -33,13 +38,20 @@ For each state element and each invariant, build scenarios from these categories
 - Full, empty, and the cycle that wraps a counter or pointer
 - Two or more events in the same cycle (push and pop, request and abort, load and increment, two writers to one register)
 - Minimum and maximum parameter values (width 1, depth 1, depth not a power of two, maximum count)
-- Error, abort, cancel, and timeout paths, and what state they leave behind
+- Error, abort, cancel, and timeout paths, what state they leave behind, and
+  whether each sticky flag or latch that records them is ever cleared for the
+  next request
 - Every reachable FSM edge, including the ones the happy path never takes, and states with no way out
 - Signed versus unsigned operands, width extension, and truncation at the extremes (most negative value, all ones, zero)
 
 ### 3. Trace each scenario
 
-Follow the scenario through the code cycle by cycle. Use Grep to find every driver and consumer of each signal involved, and to check each `ifdef`/`ifndef` branch the scenario can reach. State what each register holds after each cycle. A scenario breaks the design when an invariant fails, a value is lost or duplicated, an output is wrong or undriven, or the design cannot leave a state.
+Follow the scenario through the code cycle by cycle. Use Grep to find every
+driver and consumer of each signal involved, and to check each `ifdef`/`ifndef`
+branch the scenario can reach in a configuration a Target builds. State what
+each register holds after each cycle. A scenario breaks the design when an
+invariant fails, a value is lost or duplicated, an output is wrong, or the
+design cannot leave a state.
 
 ### 4. Confirm before reporting
 

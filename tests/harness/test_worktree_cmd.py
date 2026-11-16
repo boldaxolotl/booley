@@ -114,7 +114,7 @@ def _write(path: Path, text: str) -> None:
 
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch) -> Path:
-    """A Git Project with a committed Goal history file and live Goal/session state."""
+    """A Git Project with a tracked README and untracked configuration and session state."""
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     root = tmp_path / "repo"
     root.mkdir()
@@ -126,23 +126,14 @@ def project(tmp_path: Path, monkeypatch) -> Path:
         assert _git(root, *args).returncode == 0
     data = root / ".booley"
     _write(root / "README.md", "hello\n")
-    # Committed Goal history reaches a worktree through Git checkout (-f: an
-    # ambient global excludes file may ignore .booley/).
-    _write(data / "goals" / "history" / "old-20260101T000000Z.md", "committed summary\n")
-    assert _git(root, "add", "-f", "README.md", ".booley/goals/history").returncode == 0
+    assert _git(root, "add", "README.md").returncode == 0
     assert _git(root, "commit", "-m", "init").returncode == 0
     # Untracked files in the Booley Directory: configuration that must be copied ...
     _write(data / "booley.toml", "[submodules]\npaths = []\n")
-    # ... and live Goal / session state that must stay behind.
-    goal_dir = data / "goals" / "axi-20261006T120000Z"
-    _write(goal_dir / "record.json", "{}\n")
-    _write(goal_dir / "lock", "")
-    _write(goal_dir / "logs" / "receipt.json", "{}\n")
-    _write(data / "goals" / "locks" / "worktree-abc.lock", "")
-    _write(data / "goals" / "history" / "untracked-20261006T000000Z.md", "local only\n")
+    # ... and live session state that must stay behind.
     _write(data / "runtime" / "sessions" / "s1" / "state.json", "{}\n")
     # Nested directories that merely share those names are ordinary contents of the Booley Directory.
-    _write(data / "cores" / "goals" / "goals.core", "CAPI=2:\n")
+    _write(data / "cores" / "runtime" / "local.core", "CAPI=2:\n")
     _write(data / "mcp_tools" / "runtime" / "sessions" / "helper.py", "# helper\n")
     return root
 
@@ -171,7 +162,7 @@ def test_creates_a_worktree_on_its_own_branch_and_prints_its_path(
         "Filling git submodules from the main checkout...\n"
         "Created worktree 'goal-entry' with a Snapshot. "
         "Remove it later with: booley worktree rm goal-entry "
-        "(see https://booley.dev/docs/cli-reference/#worktrees)\n"
+        "(see https://booley.dev/docs/worktrees/#removing-a-worktree)\n"
     )
     # The Snapshot steps still exist for failures; their commands must work.
     steps = worktree_cmd.worktree_removal_instructions(
@@ -181,7 +172,7 @@ def test_creates_a_worktree_on_its_own_branch_and_prints_its_path(
     assert command in steps, "Snapshot removal instructions missing"
     assert "Snapshot" in steps and "same Sandbox" in steps and "Sandbox paths" in steps
     assert "WARNING" not in steps
-    assert "preserve" in steps and "CLI-REFERENCE.md (host doc, not shipped)" in steps
+    assert "preserve" in steps and "WORKTREES.md (host doc, not shipped)" in steps
     assert steps.count("git -C") == 2 and "booley-worktree/" not in steps
     assert shlex.join(["git", "-C", str(project), "branch", "-D", "booley/goal-entry"]) in steps
     assert "populated submodules" in steps and "--force" in steps
@@ -355,29 +346,20 @@ def test_new_resets_the_last_used_stamp(project: Path) -> None:
 
 
 @_real_script
-def test_copied_booley_dir_leaves_goal_and_session_state_behind(project: Path) -> None:
+def test_copied_booley_dir_leaves_session_state_behind(project: Path) -> None:
     assert _new("snapshot", project) == 0
 
     copied = project / ".booley" / "worktrees" / "snapshot" / ".booley"
     assert (copied / "booley.toml").is_file()
-    # goals/history/ is versioned with the RTL (tracked or not); no other Goal state is copied.
-    goals = copied / "goals"
-    assert sorted(p.relative_to(goals).as_posix() for p in goals.rglob("*")) == [
-        "history",
-        "history/old-20260101T000000Z.md",
-        "history/untracked-20261006T000000Z.md",
-    ]
-    assert not list(goals.rglob("record.json"))
-    assert not (goals / "locks").exists()
     assert not (copied / "runtime" / "sessions").exists()
 
 
 @_real_script
-def test_only_the_top_level_goal_and_session_directories_stay_behind(project: Path) -> None:
+def test_only_the_top_level_session_directory_stays_behind(project: Path) -> None:
     assert _new("nested", project) == 0
 
     copied = project / ".booley" / "worktrees" / "nested" / ".booley"
-    assert (copied / "cores" / "goals" / "goals.core").is_file()
+    assert (copied / "cores" / "runtime" / "local.core").is_file()
     assert (copied / "mcp_tools" / "runtime" / "sessions" / "helper.py").is_file()
 
 
@@ -426,7 +408,7 @@ def test_refuses_a_registered_worktree_whose_directory_is_gone(project: Path, ca
 
 
 def test_help_never_names_the_preview_surface(capsys) -> None:
-    """`worktree new` is released; its help must not mention hidden Goal Mode state."""
+    """`worktree new` is released; its help must not mention hidden state."""
     with pytest.raises(SystemExit):
         tlr._build_parser().parse_args(["worktree", "new", "--help"])
 
@@ -437,8 +419,7 @@ def test_help_never_names_the_preview_surface(capsys) -> None:
 def versioned_project(tmp_path):
     """A clean Stealth outer repository with a Versioned Booley Directory at its HEAD."""
     from booley.runtime.project_gitignore import PROJECT_GITIGNORE
-    from tests.goals.conftest import git
-    from tests.goals.stealth_support import CORE
+    from tests.git_support import CORE, git
 
     root = tmp_path / "paired user's" / "main"
     root.mkdir(parents=True)
@@ -465,7 +446,7 @@ def versioned_project(tmp_path):
 @pytest.fixture
 def python_outer(monkeypatch):
     """Exercise Python pairing on every OS without depending on a POSIX script."""
-    from tests.goals.conftest import git
+    from tests.git_support import git
 
     def create(name, root, *, paired_project, new_branch=None):
         destination = worktree_cmd.worktree_path(root, name)
@@ -488,7 +469,7 @@ def python_outer(monkeypatch):
 
 @_real_script
 def test_user_command_pairs_committed_project_and_prints_removal(versioned_project, capsys):
-    from tests.goals.conftest import git
+    from tests.git_support import git
 
     root = versioned_project
     source = root / ".booley"
@@ -515,7 +496,7 @@ def test_user_command_pairs_committed_project_and_prints_removal(versioned_proje
         .splitlines()[-1]
         .startswith("Created worktree 'real-paired' with a Paired Checkout.")
     )
-    assert "#worktrees" in output.err and "git -C" not in output.err
+    assert "#removing-a-worktree" in output.err and "git -C" not in output.err
     assert _new("real-paired", root) == 1
     error = capsys.readouterr().err
     assert "same Sandbox" in error and "Remove the Paired Checkout first" in error
@@ -542,7 +523,7 @@ def test_user_command_pairs_committed_project_and_prints_removal(versioned_proje
 
 
 def test_python_pairing_accepts_detached_project_head(versioned_project, python_outer):
-    from tests.goals.conftest import git
+    from tests.git_support import git
 
     root = versioned_project
     source = root / ".booley"
@@ -558,7 +539,7 @@ def test_python_pairing_accepts_detached_project_head(versioned_project, python_
 
 @pytest.mark.parametrize("dirty", ["tracked", "untracked"])
 def test_dirty_project_pairs_head_and_warns(versioned_project, python_outer, capsys, dirty):
-    from tests.goals.conftest import git
+    from tests.git_support import git
 
     root = versioned_project
     source = root / ".booley"
@@ -583,7 +564,7 @@ def test_dirty_project_pairs_head_and_warns(versioned_project, python_outer, cap
 
 
 def _assert_creation_absent(root, name):
-    from tests.goals.conftest import git
+    from tests.git_support import git
 
     worktree = worktree_cmd.worktree_path(root, name)
     assert not worktree.exists()
@@ -603,7 +584,7 @@ def _assert_creation_absent(root, name):
 
 
 def test_unborn_project_refuses_and_rolls_back(tmp_path, python_outer, capsys):
-    from tests.goals.conftest import git
+    from tests.git_support import git
 
     root = tmp_path / "unborn"
     root.mkdir()
@@ -623,7 +604,7 @@ def test_unborn_project_refuses_and_rolls_back(tmp_path, python_outer, capsys):
 def test_project_branch_collision_preserves_existing_branch(
     versioned_project, python_outer, capsys
 ):
-    from tests.goals.conftest import git
+    from tests.git_support import git
 
     root = versioned_project
     source = root / ".booley"
@@ -813,30 +794,12 @@ def test_new_snapshot_passes_the_common_state_check(project):
     assert len(severities) == 1
 
 
-@_real_script
-def test_ci_driver_creates_pairing_through_user_command(versioned_project, tmp_path, monkeypatch):
-    from tests.goals import goal_mode_driver as driver
-    from tests.goals.conftest import git
-
-    # Exercise the installed CLI entry point from source in a disposable workspace.
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[2] / "src"))
-    workspace = driver.create_workspace(versioned_project, versioned_project / ".booley", tmp_path)
-    paired = workspace.worktree / ".booley"
-    assert (paired / ".git").is_file()
-    assert git(paired, "symbolic-ref", "--short", "HEAD") == "booley-worktree/ci-demo"
-    assert git(paired, "rev-parse", "HEAD") == git(workspace.booley_dir, "rev-parse", "HEAD")
-
-
 def test_canonical_transient_classifier_matches_git_including_reincludes(versioned_project):
     from booley.runtime.project_gitignore import is_project_transient_path
 
     paths = [
         *NEW_RUNTIME_PATHS,
         *(f"{prefix}/{path}" for prefix in ("cores", "selftest") for path in NEW_RUNTIME_PATHS),
-        "goals/g1/record.json",
-        "goals/history/kept.md",
-        "goals/history/tmp/state.json",
         "flow-reports/report.json",
         "cores/flow-reports/report.json",
         "logs/log",
@@ -856,7 +819,7 @@ def test_canonical_transient_classifier_matches_git_including_reincludes(version
 
 @pytest.mark.parametrize("problem", ["collision", "unborn"])
 def test_precheck_refuses_before_outer_creation(versioned_project, monkeypatch, problem):
-    from tests.goals.conftest import git
+    from tests.git_support import git
 
     source = versioned_project / ".booley"
     if problem == "collision":
@@ -925,7 +888,7 @@ def test_failed_configuration_keeps_idempotent_repository_capability(
     versioned_project, python_outer, monkeypatch
 ):
     from booley.runtime import project_worktree_pairing as pairing
-    from tests.goals.conftest import git
+    from tests.git_support import git
 
     source = versioned_project / ".booley"
     original = pairing.apply_git_identity
@@ -952,41 +915,6 @@ def test_script_refusal_has_one_error_prefix(project, capsys):
     error = capsys.readouterr().err
     assert "ERROR: destination" in error or "ERROR: worktree destination" in error
     assert "ERROR: ERROR:" not in error
-
-
-@_real_script
-def test_goal_entry_and_finish_use_real_user_worktree(versioned_project, monkeypatch):
-    from types import SimpleNamespace
-
-    from booley.fusesoc.core_projection import reconcile_projected_cores
-    from booley.goals.entry import EntryEnvironment, EntryRequest, enter_goal_mode
-    from booley.goals.finish import finish_goal
-    from booley.goals.model import parse_goal_args
-    from booley.runtime.booley_dir import reset_cache
-    from tests.goals.conftest import git
-    from tests.goals.test_finish import environment, request
-    from tests.goals.test_status import publish
-
-    root = versioned_project
-    control = root / ".booley"
-    monkeypatch.setenv("BOOLEY_DIR", str(control))
-    reset_cache()
-    try:
-        assert _new("user-goal", root) == 0
-        worktree = worktree_cmd.worktree_path(root, "user-goal")
-        reconcile_projected_cores(worktree)
-        record = enter_goal_mode(
-            EntryRequest(
-                worktree, "user-goal", parse_goal_args([{"family": "LINT", "target": "top"}])
-            ),
-            EntryEnvironment(control, routing_guidance="Explicit test routing guidance."),
-        ).record
-        assert record.paired_project_base_sha == git(control, "rev-parse", "HEAD")
-        layout = SimpleNamespace(main=root, control=control, worktree=worktree, record=record)
-        publish(layout)
-        assert finish_goal(request(layout), environment(layout))["status"] == "finished"
-    finally:
-        reset_cache()
 
 
 def test_pairing_source_is_discovered_once_and_left_out_files_are_read_under_the_lock(
@@ -1025,7 +953,7 @@ print("hook says hi")
 
 def _commit_hook(source: Path, body: str) -> None:
     """Commit a ``post-setup.py`` hook into the Versioned Booley Directory."""
-    from tests.goals.conftest import git
+    from tests.git_support import git
 
     _write(source / "hooks/post-setup.py", body)
     git(source, "add", "hooks/post-setup.py")
@@ -1162,7 +1090,7 @@ def test_user_worktree_standalone_baseline_pins_pairing_base(
 ):
     from booley.evidence.acceptance import PairedProjectBaseline
     from booley.flows.baseline_worktree import baseline_worktree
-    from tests.goals.conftest import git
+    from tests.git_support import git
 
     root = versioned_project
     source = root / ".booley"
@@ -1192,7 +1120,7 @@ def test_pairing_rollback_preserves_other_missing_registrations_and_removes_lock
     versioned_project, python_outer, monkeypatch, missing_path
 ):
     from booley.runtime import project_worktree_pairing as pairing
-    from tests.goals.conftest import git
+    from tests.git_support import git
 
     root = versioned_project
     source = root / ".booley"
@@ -1237,7 +1165,7 @@ def test_failed_add_preserves_a_moved_branch_it_did_not_create(
     versioned_project, python_outer, monkeypatch
 ):
     from booley.runtime import project_worktree_pairing as pairing
-    from tests.goals.conftest import git
+    from tests.git_support import git
 
     source = versioned_project / ".booley"
     original = pairing._require_git
@@ -1283,7 +1211,7 @@ def test_invalid_project_branch_is_refused_before_build(
 def test_refused_destination_does_not_print_teardown_for_another_branch(
     versioned_project, python_outer, monkeypatch, capsys, branch
 ):
-    from tests.goals.conftest import git
+    from tests.git_support import git
 
     root = versioned_project
     assert _new("occupied", root) == 0
@@ -1314,7 +1242,7 @@ def test_unreadable_project_git_directory_is_refused(tmp_path, monkeypatch, caps
 
 
 def test_corrupt_project_git_directory_inside_workspace_is_refused(tmp_path, monkeypatch, capsys):
-    from tests.goals.conftest import git
+    from tests.git_support import git
 
     # Git skips the empty .git directory and would otherwise resolve the outer one.
     git(tmp_path, "init", "-q", "-b", "main")
@@ -1329,7 +1257,7 @@ def test_corrupt_project_git_directory_inside_workspace_is_refused(tmp_path, mon
 def test_existing_project_registration_is_refused_and_preserved(
     versioned_project, python_outer, capsys
 ):
-    from tests.goals.conftest import git
+    from tests.git_support import git
 
     root = versioned_project
     source = root / ".booley"
@@ -1476,7 +1404,7 @@ def test_tracked_bundle_manual_remedy_preserves_copy_and_allows_pairing(
 
 
 # ---------------------------------------------------------------------------
-# Git submodules in a created worktree and in Goal entry (#1960)
+# Git submodules in a created worktree (#1960)
 # ---------------------------------------------------------------------------
 
 
@@ -1612,19 +1540,8 @@ def test_worktree_new_invalid_submodule_source_rolls_back(
     )
 
 
-def _enter_goal(worktree: Path, control: Path, on_boundary=None, slug: str = "sub-goal"):
-    from booley.goals.entry import EntryEnvironment, EntryRequest, enter_goal_mode
-    from booley.goals.model import parse_goal_args
-
-    request = EntryRequest(worktree, slug, parse_goal_args([{"family": "LINT", "target": "top"}]))
-    environment = EntryEnvironment(
-        control, routing_guidance="Explicit test routing guidance.", on_boundary=on_boundary
-    )
-    return enter_goal_mode(request, environment)
-
-
 @pytest.fixture
-def goal_project(submodule_project, monkeypatch):
+def submodule_worktree_project(submodule_project, monkeypatch):
     """The submodule Project with the real worktree script and its Booley Directory selected."""
     from booley.runtime.booley_dir import reset_cache
 
@@ -1635,72 +1552,15 @@ def goal_project(submodule_project, monkeypatch):
     reset_cache()
 
 
-def _new_goal_worktree(root: Path) -> Path:
+@_real_script
+def test_worktree_baseline_finds_submodules(submodule_worktree_project):
+    from booley.flows.baseline_worktree import baseline_worktree
     from booley.fusesoc.core_projection import reconcile_projected_cores
 
-    assert _new("sub-goal", root) == 0
-    worktree = worktree_cmd.worktree_path(root, "sub-goal")
+    root = submodule_worktree_project
+    assert _new("sub-baseline", root) == 0
+    worktree = worktree_cmd.worktree_path(root, "sub-baseline")
     reconcile_projected_cores(worktree)
-    return worktree
-
-
-def _empty(directory: Path) -> None:
-    shutil.rmtree(directory)
-    directory.mkdir()
-
-
-@_real_script
-def test_goal_entry_populates_empty_submodules_idempotently(goal_project):
-    root, control = goal_project, goal_project / ".booley"
-    worktree = _new_goal_worktree(root)
-    _empty(worktree / "vendor/ip")
-
-    class Interrupted(BaseException):
-        pass
-
-    def interrupt(boundary: str) -> None:
-        if boundary == "created":
-            raise Interrupted
-
-    with pytest.raises(Interrupted):
-        _enter_goal(worktree, control, interrupt)
-    assert _head(worktree / "vendor/ip") == _pin(root)
-    populated = ((worktree / "vendor/ip/.git").stat().st_ino, _head(worktree / "vendor/ip"))
-    status = _sub_git(worktree, "status", "--porcelain", "--ignore-submodules=none")
-
-    _enter_goal(worktree, control, slug="sub-goal-resumed")
-
-    assert (
-        (worktree / "vendor/ip/.git").stat().st_ino,
-        _head(worktree / "vendor/ip"),
-    ) == populated
-    assert _sub_git(worktree, "status", "--porcelain", "--ignore-submodules=none") == status
-
-
-@_real_script
-def test_goal_entry_invalid_submodule_source_leaves_no_partial_state(goal_project):
-    from booley.goals.entry import GoalEntryError
-
-    root, control = goal_project, goal_project / ".booley"
-    worktree = _new_goal_worktree(root)
-    _empty(worktree / "vendor/ip")
-    _empty(worktree / ".booley/vendor/paired")
-    _write(root / ".booley/vendor/paired/scratch.txt", "untracked\n")
-
-    with pytest.raises(GoalEntryError, match=r"Submodule setup failed offline:.*is dirty"):
-        _enter_goal(worktree, control)
-
-    assert not any((worktree / "vendor/ip").iterdir())
-    assert not any((worktree / ".booley/vendor/paired").iterdir())
-
-
-@_real_script
-def test_goal_worktree_baseline_finds_submodules(goal_project):
-    from booley.flows.baseline_worktree import baseline_worktree
-
-    root, control = goal_project, goal_project / ".booley"
-    worktree = _new_goal_worktree(root)
-    _enter_goal(worktree, control)
 
     with baseline_worktree(worktree, "HEAD") as baseline:
         assert (baseline / "vendor/ip/source.sv").read_text(encoding="utf-8") == "old\n"
@@ -1846,7 +1706,7 @@ def test_booley_dir_ambient_matching_own_directory_is_accepted(
     """A Sandbox's ``BOOLEY_DIR`` is an alias of the checkout's own directory."""
     root = _configured_project(tmp_path, monkeypatch, "state")
     _write(root / "state" / "booley.toml", "[submodules]\npaths = []\n")
-    alias = tmp_path / "booley-project"
+    alias = tmp_path / "booley"
     alias.symlink_to(root / "state", target_is_directory=True)
     monkeypatch.setenv("BOOLEY_DIR", str(alias))
 
@@ -1888,8 +1748,7 @@ def test_new_worktree_resolves_its_own_booley_dir(tmp_path, monkeypatch, capsys)
 def relocated_versioned_project(tmp_path, monkeypatch):
     """A Stealth outer repository whose Versioned Booley Directory lives at ``state``."""
     from booley.runtime.project_gitignore import PROJECT_GITIGNORE
-    from tests.goals.conftest import git
-    from tests.goals.stealth_support import CORE
+    from tests.git_support import CORE, git
 
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     root = tmp_path / "relocated" / "main"
@@ -1917,7 +1776,7 @@ def relocated_versioned_project(tmp_path, monkeypatch):
 def test_relocated_versioned_booley_dir_pairs_inside_worktree(
     relocated_versioned_project, capsys
 ) -> None:
-    from tests.goals.conftest import git
+    from tests.git_support import git
 
     root = relocated_versioned_project
     assert _new("demo", root) == 0
@@ -1935,7 +1794,7 @@ def test_relocated_pairing_failure_rolls_back_both_repositories(
     relocated_versioned_project, monkeypatch, capsys
 ) -> None:
     from booley.runtime import project_worktree_pairing as pairing
-    from tests.goals.conftest import git
+    from tests.git_support import git
 
     root = relocated_versioned_project
 

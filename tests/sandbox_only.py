@@ -1,7 +1,7 @@
 """Registry of Sandbox-only tests, skipped on Windows.
 
 Booley runs on a Windows host only for ``HOST`` and ``EITHER`` commands (see
-``COMMAND_LOCATIONS`` in ``booley.harness.booley``); Goal Mode, Booley Flows, Specialists, MCP
+``COMMAND_LOCATIONS`` in ``booley.harness.booley``); Booley Flows, Specialists, MCP
 tools, the Dashboard, chat, and worktree code run inside the Sandbox, a Linux container.
 Windows CI therefore skips tests whose subject only runs there, and Linux CI runs them all.
 
@@ -25,8 +25,6 @@ SKIP_REASON = (
 
 # Repository-relative test directories (trailing "/") and test modules that are Sandbox-only.
 SANDBOX_ONLY_PATHS: tuple[str, ...] = (
-    # Goal Mode (`booley goal` is a Sandbox command). WINDOWS_HOST_TESTS lists the exceptions.
-    "tests/goals/",
     # Mutation Flow runtime (generation, variant builds, interruption handling): Sandbox-only.
     "tests/flows/mutation/test_runtime_inputs.py",
     "tests/flows/mutation/test_variant_flow.py",
@@ -44,10 +42,6 @@ SANDBOX_ONLY_PATHS: tuple[str, ...] = (
     "tests/flows/sim/backends/test_verilator_run.py",
     "tests/flows/sim/test_build_failure_reporting.py",
     "tests/flows/sim/test_cocotb.py",
-    "tests/flows/sim/test_cycle_baseline_record_cwd.py",
-    "tests/flows/sim/test_cycle_baseline_test_runs.py",
-    "tests/flows/sim/test_cycle_baseline_two_revisions.py",
-    "tests/flows/sim/test_cycle_observation.py",
     "tests/flows/sim/test_defensive_contracts.py",
     "tests/flows/sim/test_direct_test_run_rows.py",
     "tests/flows/sim/test_elab_only.py",
@@ -82,28 +76,25 @@ SANDBOX_ONLY_PATHS: tuple[str, ...] = (
     "tests/flows/sim/test_test_run_resolution_errors.py",
     "tests/flows/sim/test_verilator_build_reuse_engine.py",
     "tests/flows/sim/test_verilator_build_reuse_record.py",
-    # Other built-in Flow tests whose subject is MCP adapter, Goal, or Sandbox-tool plumbing.
+    # Other built-in Flow tests whose subject is MCP adapter or Sandbox-tool plumbing.
     "tests/flows/lint/test_adapters.py",
-    "tests/flows/test_baseline_pins.py",
     "tests/flows/test_string_parameter_eda.py",
     "tests/flows/test_transport_contract.py",
     # MCP server tools and Specialist internals: the MCP server runs only in the Sandbox.
     "tests/mcp_tools/test_application.py",
-    "tests/mcp_tools/test_goal_tools.py",
     "tests/mcp_tools/test_job_lifecycle.py",
     "tests/mcp_tools/test_live_catalog.py",
     "tests/mcp_tools/test_mcp_dispatch.py",
     "tests/mcp_tools/test_nested_session_presence.py",
     "tests/mcp_tools/test_owned_job_poll.py",
     "tests/mcp_tools/test_peer_checkout.py",
-    "tests/mcp_tools/test_project_flow_loader.py",
     "tests/mcp_tools/test_report_encoding.py",
     "tests/mcp_tools/test_schema_extractor.py",
     "tests/mcp_tools/test_session_attribution.py",
     "tests/mcp_tools/test_session_requests.py",
     "tests/mcp_tools/test_sim_seed_dispatch.py",
     "tests/mcp_tools/test_unread_job_notice.py",
-    # Dashboard, chat, Goal status, and MCP probe commands: Sandbox commands.
+    # Dashboard, chat, and MCP probe commands: Sandbox commands.
     "tests/harness/test_chat_terminal.py",
     "tests/harness/test_dashboard.py",
     "tests/harness/test_dashboard_cli.py",
@@ -120,7 +111,6 @@ SANDBOX_ONLY_PATHS: tuple[str, ...] = (
     "tests/harness/test_dashboard_view_owner.py",
     "tests/harness/test_dashboard_view_probe.py",
     "tests/harness/test_dashboard_windows.py",
-    "tests/harness/test_goal_cli.py",
     "tests/harness/test_mcp_probe.py",
     # In-Sandbox registrars, heartbeat, and MCP transport tests (root and runtime directories).
     "tests/runtime/test_incontainer_gateway_provider.py",
@@ -134,24 +124,7 @@ SANDBOX_ONLY_PATHS: tuple[str, ...] = (
 
 # Test modules inside a SANDBOX_ONLY_PATHS directory that stay on Windows because they cover
 # host-reachable source: the module, and the host root that reaches it (or why it is kept).
-WINDOWS_HOST_TESTS: tuple[str, ...] = (
-    "tests/goals/test_binding.py",  # goals.binding (host: harness.booley)
-    "tests/goals/test_changes.py",  # goals.changes (host: harness.booley)
-    "tests/goals/test_declared_inputs.py",  # goals.protected_inputs, goals.entry (host)
-    "tests/goals/test_freshness.py",  # criteria.freshness (host: specialists.reviewer)
-    "tests/goals/test_model.py",  # goals.model (host: harness.booley)
-    "tests/goals/test_naming.py",  # goals.naming (host: harness.booley)
-    "tests/goals/test_paths.py",  # goals.paths (host: harness.booley)
-    "tests/goals/test_presentation.py",  # goals.presentation (host: harness.booley)
-    "tests/goals/test_proposals.py",  # goals.proposals (host: harness.booley)
-    "tests/goals/test_protected_inputs.py",  # goals.protected_inputs (host: harness.booley)
-    "tests/goals/test_session_key.py",  # goals.session_key (host: harness.booley)
-    "tests/goals/test_store.py",  # goals.store (host: harness.booley)
-    "tests/goals/test_symlinked_booley_dir.py",  # only Windows test of goals.proposal_errors
-    "tests/goals/test_test_run_freezing.py",  # goals.test_run_freezing (host: harness.booley)
-    "tests/goals/test_translate.py",  # goals.translate (host: harness.booley)
-    "tests/goals/test_waiver_binding.py",  # goals.waiver_binding (host: harness.booley)
-)
+WINDOWS_HOST_TESTS: tuple[str, ...] = ()
 
 
 def is_sandbox_only(relative_path: str) -> bool:

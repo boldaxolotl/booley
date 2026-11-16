@@ -12,6 +12,10 @@ points. The mission says what to exercise; this file says exactly how.
    `resources.md`): clone Caliptra at the RTL pin with submodules, clone the
    Project pin as `.booley`, apply `.booley/patches/*.patch` on a `booley`
    branch, and `booley init`. A step the README gets wrong is a finding.
+   Add a `resources.md` row for the Project registration `booley init`
+   creates (its issued Session image tag and agent-state volume), released by
+   `booley session down` then `booley projects forget --purge <project>`
+   before the staged directory is deleted.
 2. Copy `<asset>/fixtures/mem_hog.py` to `.booley/mcp_tools/mem_hog.py` and
    commit it in the Booley Directory.
 3. Run every command through `booley session enter -- ...` from the host.
@@ -75,7 +79,8 @@ step ends.
 | Name | Fragment | Use |
 |---|---|---|
 | `small-budget` | `[sandbox]` `memory = "<size>"`: the wanted budget plus the reserve (the measured agent, MCP server and Dashboard memory, plus 2 GB); restart the Session as `docs/user/SANDBOX.md` says, read the resulting `budget_mb` in a claim file, and set it back afterwards | Fit one Job and not two, or a set number of Record items |
-| `retired` | `[jobs]` `max_heavy = 2` and `heavy_memory = "22g"` | Retired keys, refused with a fix hint |
+| `parallel-items` | `[flows.sim]` `run_cwd = ".booley/runs/sim/{attempt}"`, so each Record item runs in its own directory | Let Record items run in parallel |
+| `retired` | `[jobs]` `max_heavy = 2`, `heavy_memory = "22g"`, `max_light = 4`, `queue_max = 8` and `memory_budget = "20g"`; for the one-key-at-a-time step, one of them | Retired keys, refused with a fix hint |
 | `seats` | Remove `[jobs.seats]`; then `vivado = 0`, `vivado = "x"`, `unknown_tool = 1` under `[jobs.seats]`, and `[jobs] seats = 1` | Seat Cap values, good and bad |
 | `sandbox-oom` | `[sandbox]` `memory = "12g"`; restart the Session as `docs/user/SANDBOX.md` says, and set it back to `"28g"` after area 6 | Real OOM kills without squeezing the host |
 
@@ -84,13 +89,13 @@ step ends.
 | What | Where |
 |---|---|
 | Resource History | `booley resources` and `booley resources --json`; the file `.booley/runtime/resources/history.json` |
-| Memory claims, holders and waiters | `.booley/runtime/jobs/slots/memory/`: `h-*.json` (running) and `w-*.json` (waiting), each with a `memory` object (`budget_mb`, `reservation_mb`, `run_alone`, `seats`, `wall_s`) and `queue_reason`. Copy them while a Job waits or runs; a small loop that copies the directory every few seconds into `evidence/` catches shrinks |
+| Memory claims, holders and waiters | `.booley/runtime/jobs/slots/memory/`: `h-*.json` (running) and `w-*.json` (waiting), each with a `memory` object (`budget_mb`, `reservation_mb`, `run_alone`, `seats`, `wall_s`, `companion`); only a claim requeued after an out-of-memory kill also has `queue_reason`. An ordinary waiter's reason is on the CLI `[slot]` line and in `booley_poll`. Copy them while a Job waits or runs; a small loop that copies the directory every few seconds into `evidence/` catches shrinks |
 | Queue text on the CLI | stderr of the waiting `booley flow` run: a `[slot]` line about every 30 seconds |
 | OOM priority | `cat /proc/<pid>/oom_score_adj` in the Sandbox for each tool process and its coordinator |
 | OOM kills | `/sys/fs/cgroup/memory.events` in the Sandbox (`oom_kill` counter); the Flow's `[requeue]` line and its result |
 | Verilator parallelism | The build log, or `ps` during the build: the `make` command line's `-j<N>` |
 | Cores | `nproc` in the Sandbox, and `/sys/fs/cgroup/cpu.max` |
-| Host health | `free -g` and `vmstat 5` on the host during areas 3, 6 and 11 |
+| Host health | `free -g` and `vmstat 5` on the host during areas 3, 6 and 12 |
 
 Record times in UTC and keep every copied claim file and log under the run
 directory's `evidence/`.

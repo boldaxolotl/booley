@@ -56,7 +56,12 @@ USER_DOCS = (
     UserDoc("INSTALL.md", "install", "Install", "Get started"),
     UserDoc("SETUP.md", "setup", "Setup", "Get started"),
     UserDoc("USAGE.md", "usage", "Usage", "Get started"),
-    UserDoc("GOAL-MODE.md", "goal-mode", "Goal Mode", "Get started"),
+    UserDoc(
+        "METRIC-DRIVEN-DEVELOPMENT.md",
+        "metric-driven-development",
+        "Metric-Driven Development",
+        "Get started",
+    ),
     UserDoc("FLOW_REFERENCE.md", "flow-reference", "Running Flows", "Flows & Specialists"),
     UserDoc("FLOW-SIM.md", "flow-sim", "Simulation", "Flows & Specialists"),
     UserDoc("COVERAGE.md", "coverage", "Coverage", "Flows & Specialists", parent="FLOW-SIM.md"),
@@ -71,11 +76,11 @@ USER_DOCS = (
     UserDoc("TESTS.md", "tests", "tests.toml", "Reference"),
     UserDoc("SANDBOX.md", "sandbox", "Sandbox", "Reference"),
     UserDoc("STEALTH.md", "stealth", "Stealth Mode", "Reference"),
+    UserDoc("WORKTREES.md", "worktrees", "Worktrees", "Reference"),
     UserDoc("CLI-REFERENCE.md", "cli-reference", "CLI reference", "Reference"),
     UserDoc("SUPPORTED-EDA-TOOLS.md", "supported-eda-tools", "Supported EDA tools", "Reference"),
     UserDoc("DOCTOR.md", "doctor", "Doctor", "Help"),
     UserDoc("TROUBLESHOOTING.md", "troubleshooting", "Troubleshooting", "Help"),
-    UserDoc("WINDOWS.md", "windows", "Windows", "Help"),
 )
 # Contributor docs the site also publishes, after the user docs. They stay in
 # docs/internals/ for contributors and agents, and Booley never prints links

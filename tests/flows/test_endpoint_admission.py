@@ -95,13 +95,11 @@ class _Harness:
     run_prepared: list[object] = field(default_factory=list[object])
     # Prepares the Flow's real invocation kind; runs once, when the test first executes.
     prepare: Callable[[], None] = lambda: None
-    # The execution adapter the Flow runs under; ``None`` is the Standalone one.
-    adapter: Any = None
 
     def execute(self) -> ExecutionResult:
         self.prepare()
         self.prepare = lambda: None
-        return self.flow.execute(self.request, adapter=self.adapter)
+        return self.flow.execute(self.request)
 
 
 @pytest.fixture(params=("sim", "synth"))
@@ -372,9 +370,6 @@ class _StubEndpoint:
     def _get_head_sha(self) -> str | None:
         return None
 
-    def _criterion_binding_gate(self) -> EndpointOutcome | None:
-        return None
-
 
 @pytest.mark.usefixtures("runtime")
 @pytest.mark.parametrize("case", ("unclassed", "inherited", "no_runtime"))
@@ -439,27 +434,6 @@ def test_admission_ignores_endpoint_name(name: str, monkeypatch: pytest.MonkeyPa
     assert rejected.value.outcome.report_text == (
         f"CANCELLED: this queued '{name}' run was withdrawn (booley_cancel) before it started."
     )
-
-
-def test_binding_gate_rejects_before_slot_for_non_flow_endpoints(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    endpoint = _StubEndpoint("custom", job_slots.CLASS_MEMORY)
-    endpoint.endpoint_kind = "specialist"
-    rejection = EndpointOutcome(exit_code=EXIT_ERROR, report_text="no authorized binding")
-    monkeypatch.setattr(endpoint, "_criterion_binding_gate", lambda: rejection)
-    monkeypatch.setattr(
-        endpoint_admission,
-        "_acquire_memory_reservation",
-        lambda *_args, **_kwargs: pytest.fail("binding gate runs before the slot"),
-    )
-
-    with (
-        pytest.raises(EndpointRejectedError) as rejected,
-        endpoint_admission.admission(endpoint, _prepared()),  # type: ignore[arg-type]
-    ):
-        pytest.fail("a rejected endpoint must not be admitted")
-    assert rejected.value.outcome is rejection
 
 
 @pytest.mark.usefixtures("runtime")
@@ -546,53 +520,6 @@ def test_publication_resources_outlive_final_report(
     assert store.released == [claim]
 
 
-def test_target_authorization_precedes_job_admission(
-    runtime: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Simulation refuses an unauthorized prepared Target before taking a Job Slot."""
-    from booley.criteria.state import DevelopmentState
-    from tests.target_test_support import make_target_handle
-
-    state_path = runtime / "state.json"
-    state = DevelopmentState.load(state_path)
-    # Binds the requested token ``demo`` (so the generic gate passes), nothing else.
-    state.init_criteria({"sim_pass_demo": True}, strict=True)
-    state.save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
-    # Real preparation reaches the real ``authorize_targets`` with a Target no Criterion binds.
-    stub = make_target_handle(runtime, "other")
-    monkeypatch.setattr(SimulateFlow, "prepare_target_endpoint", lambda _self: None)
-    monkeypatch.setattr(
-        SimulateFlow,
-        "_prepare_simulation_record_targets",
-        lambda _self: ((stub,), None, ("other",), {}),
-    )
-    monkeypatch.setattr(SimulateFlow, "_validate_prepared_selection", lambda *_args: None)
-    monkeypatch.setattr(
-        "booley.flows.endpoint_admission._acquire_memory_reservation",
-        lambda *_args, **_kwargs: pytest.fail("an unauthorized Target must not reach admission"),
-    )
-    ran: list[object] = []
-    monkeypatch.setattr(
-        SimulateFlow, "run_prepared_simulation", lambda *_args: ran.append(object())
-    )
-    flow = SimulateFlow()
-
-    result = flow.execute(
-        flow.request_type(target="demo", work_dir=runtime, report_dir=runtime / "reports")
-    )
-
-    assert result.exit_code == EXIT_ERROR
-    assert result.outcome.report_text == (
-        "sim: Goal Mode has no authorized Criterion binding for Target(s): other"
-    )
-    assert ran == []
-    # Preparation itself returns the refusal, so no prepared invocation reaches admission.
-    refusal = flow.prepare_endpoint_invocation()
-    assert isinstance(refusal, EndpointOutcome)
-    assert refusal.report_text == result.outcome.report_text
-
-
 # --- memory admission (#3701) ---------------------
 
 
@@ -640,7 +567,6 @@ def _selection_prepared(flow: AsicSynthesizeFlow, work_dir: Path) -> PreparedExe
     from tests.target_test_support import make_target_handle
 
     handle = make_target_handle(work_dir, "a", drivable_by=("synth",))
-    flow._state = SimpleNamespace(criteria={})  # type: ignore[assignment]
     flow._args = SimpleNamespace(work_dir=work_dir, target="a")
     selection = SimpleNamespace(handles=(handle,), matches=lambda *_args: True)
     return PreparedExecution(
@@ -956,7 +882,6 @@ def _lint_prepared(work_dir: Path) -> tuple[Any, PreparedExecution]:
 
     flow = LintFlow()
     handles = tuple(make_target_handle(work_dir, name, drivable_by=("lint",)) for name in "ab")
-    flow._state = SimpleNamespace(criteria={})  # type: ignore[assignment]
     flow._args = SimpleNamespace(work_dir=work_dir, target="a,b")
     selection = SimpleNamespace(handles=handles, matches=lambda *_args: True)
     invocation = TargetSelectionInvocation(flow, selection, flow._run)  # type: ignore[arg-type]
@@ -1088,7 +1013,6 @@ def _fpga_prepared(work_dir: Path, monkeypatch: pytest.MonkeyPatch, *, enabled: 
 
     flow = FpgaImplFlow()
     handle = make_target_handle(work_dir, "a", drivable_by=("fpga",))
-    flow._state = SimpleNamespace(criteria={})  # type: ignore[assignment]
     flow._args = SimpleNamespace(work_dir=work_dir, target="a")
     monkeypatch.setattr(FpgaImplFlow, "_flow_enabled", lambda _self: enabled)
     selection = SimpleNamespace(handles=(handle,), matches=lambda *_args: True)
@@ -1244,7 +1168,6 @@ def _two_target_synth_prepared(flow: AsicSynthesizeFlow, work_dir: Path) -> Prep
     from tests.target_test_support import make_target_handle
 
     handles = tuple(make_target_handle(work_dir, name, drivable_by=("synth",)) for name in "ab")
-    flow._state = SimpleNamespace(criteria={})  # type: ignore[assignment]
     flow._args = SimpleNamespace(work_dir=work_dir, target="a,b")
     selection = SimpleNamespace(handles=handles, matches=lambda *_args: True)
     return _prepared_for(TargetSelectionInvocation(flow, selection, flow._run))  # type: ignore[arg-type]
@@ -1554,50 +1477,6 @@ def test_killed_attempt_runs_no_command_after_its_oom_kill(
 
     assert len(harness.invocations) == 2
     assert marker.read_text(encoding="utf-8").splitlines() == ["attempt 2"]
-
-
-def _goal_bound(harness: _Harness) -> None:
-    """Bind *harness*'s Flow to a Goal: its recorder names an acceptance identity."""
-    from booley.flows.execution_persistence import StandaloneFlowExecution
-
-    class GoalExecution(StandaloneFlowExecution):
-        def acceptance_identity(self) -> dict[str, Any]:
-            return {"goal": "g", "criteria_set": "c"}
-
-    harness.adapter = GoalExecution()
-
-
-def test_goal_bound_job_is_not_requeued_after_an_oom_kill(
-    memory_runtime: Path, runtime: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # The contrast first (a harness patches the Flow class, so one runs at a time).
-    standalone = _requeue_harness("synth", memory_runtime, runtime, monkeypatch)
-    assert _attempts_of(standalone, memory_runtime, _killed) == 2
-
-    bound = _requeue_harness("synth", memory_runtime, runtime, monkeypatch)
-    _per_attempt(bound, memory_runtime, _killed)
-    _goal_bound(bound)
-    result = bound.execute()
-
-    assert len(bound.invocations) == 1
-    assert result.exit_code == 1
-    assert "oom_requeue" not in result.outcome.detail
-
-
-def test_unreadable_goal_identity_counts_as_bound(memory_runtime: Path, runtime: Path) -> None:
-    from booley.flows.execution_persistence import AcceptanceRecordingError
-
-    class UnreadableIdentity:
-        def acceptance_identity(self) -> dict[str, Any]:
-            raise AcceptanceRecordingError("the Goal binding cannot be read")
-
-    flow = AsicSynthesizeFlow()
-    prepared = _selection_prepared(flow, runtime)
-
-    with AdmissionGate(flow, prepared).enter() as context:
-        assert flow.may_requeue_after_oom(prepared, context)
-        flow._acceptance_recorder = UnreadableIdentity()  # type: ignore[assignment]
-        assert not flow.may_requeue_after_oom(prepared, context)
 
 
 # --- progress of a requeued Job (#3763) ----------------------------------------------

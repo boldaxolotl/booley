@@ -49,7 +49,7 @@ class _Endpoint:
         reject_gate: bool = False,
         reject_admission: bool = False,
         unexpected_failure: bool = False,
-        acceptance_failure: bool = False,
+        publication_failure: bool = False,
         requeue_after_oom: bool = False,
     ) -> None:
         self.events: list[str] = []
@@ -58,7 +58,7 @@ class _Endpoint:
         self.reject_gate = reject_gate
         self.reject_admission = reject_admission
         self.unexpected_failure = unexpected_failure
-        self.acceptance_failure = acceptance_failure
+        self.publication_failure = publication_failure
         self.borrowed = object()
 
     def admission(
@@ -98,8 +98,6 @@ class _Endpoint:
             return EndpointOutcome(exit_code=EXIT_ERROR)
         return EndpointOutcome(
             exit_code=EXIT_SUCCESS,
-            criterion_key="sim_pass_demo" if self.acceptance_failure else "",
-            criterion_met=self.acceptance_failure,
             report_text="ok",
         )
 
@@ -109,22 +107,22 @@ class _Endpoint:
         outcome: EndpointOutcome,
         *,
         started: float | None,
-        acceptance_recorded: bool,
+        records_published: bool,
     ) -> ExecutionResult:
         assert prepared == "prepared"
         if not outcome.report_text.startswith(("admission refused", "unbound target")):
             assert started is not None
-        self.events.append(f"finish:{outcome.exit_code}:{acceptance_recorded}")
+        self.events.append(f"finish:{outcome.exit_code}:{records_published}")
         return ExecutionResult(exit_code=outcome.exit_code, outcome=outcome)
 
-    def record_acceptance(self, prepared: object, outcome: EndpointOutcome) -> None:
+    def publish_records(self, prepared: object, outcome: EndpointOutcome) -> None:
         assert prepared == "prepared"
-        self.events.append(f"acceptance:{outcome.exit_code}")
-        if self.acceptance_failure:
-            raise RuntimeError("acceptance failed")
+        self.events.append(f"publish:{outcome.exit_code}")
+        if self.publication_failure:
+            raise RuntimeError("publication failed")
 
 
-def test_execute_endpoint_owns_admit_invoke_acceptance_finish_order() -> None:
+def test_execute_endpoint_owns_admit_invoke_publish_finish_order() -> None:
     endpoint = _Endpoint()
 
     result = execute_endpoint(endpoint, "prepared")
@@ -135,7 +133,7 @@ def test_execute_endpoint_owns_admit_invoke_acceptance_finish_order() -> None:
     assert endpoint.events == [
         "admit",
         "invoke",
-        "acceptance:0",
+        "publish:0",
         "finish:0:True",
         "release",
     ]
@@ -152,7 +150,7 @@ def test_execute_endpoint_normalizes_failure_and_releases_admission() -> None:
         "admit",
         "invoke",
         "normalize-error",
-        "acceptance:2",
+        "publish:2",
         "finish:2:True",
         "release",
     ]
@@ -177,7 +175,7 @@ def test_admission_rejection_finishes_without_invoking_endpoint() -> None:
     assert result.outcome.report_text == "admission refused"
     assert endpoint.events == [
         "admission-rejected",
-        "acceptance:2",
+        "publish:2",
         "finish:2:True",
     ]
 
@@ -191,27 +189,25 @@ def test_unexpected_adapter_failure_propagates_and_releases_admission() -> None:
     assert endpoint.events == ["admit", "invoke", "release"]
 
 
-def test_acceptance_failure_runs_non_persisting_finish_and_releases_admission() -> None:
-    endpoint = _Endpoint(acceptance_failure=True)
+def test_publication_failure_runs_non_persisting_finish_and_releases_admission() -> None:
+    endpoint = _Endpoint(publication_failure=True)
 
     result = execute_endpoint(endpoint, "prepared")
 
     assert result.exit_code == EXIT_ERROR
-    assert result.outcome.criterion_key == "sim_pass_demo"
-    assert result.outcome.criterion_met is True
     assert result.outcome.detail["completion_error"] == {
-        "operation": "record acceptance and projections",
+        "operation": "publish Simulation Record projections",
         "type": "RuntimeError",
-        "message": "acceptance failed",
+        "message": "publication failed",
     }
     assert result.outcome.report_text == (
-        "ok\nCompletion failure (record acceptance and projections): "
-        "RuntimeError: acceptance failed"
+        "ok\nCompletion failure (publish Simulation Record projections): "
+        "RuntimeError: publication failed"
     )
     assert endpoint.events == [
         "admit",
         "invoke",
-        "acceptance:0",
+        "publish:0",
         "finish:2:False",
         "release",
     ]
@@ -224,7 +220,7 @@ def test_gate_rejection_finishes_before_admission() -> None:
 
     assert result.exit_code == EXIT_ERROR
     assert result.outcome.report_text == "unbound target"
-    assert endpoint.events == ["gate-rejected", "acceptance:2", "finish:2:True"]
+    assert endpoint.events == ["gate-rejected", "publish:2", "finish:2:True"]
 
 
 class _CommandEndpoint(_Endpoint):
@@ -309,7 +305,7 @@ def test_requeue_releases_the_claim_before_publishing_the_final_attempt() -> Non
 
     result = execute_endpoint(endpoint, "prepared")
 
-    # The killed attempt publishes nothing: acceptance and finish see attempt 2 only.
+    # The killed attempt publishes nothing: publication and finish see attempt 2 only.
     assert endpoint.events == [
         "admit",
         "invoke",
@@ -317,7 +313,7 @@ def test_requeue_releases_the_claim_before_publishing_the_final_attempt() -> Non
         "release",
         "admit(requeued)",
         "invoke",
-        "acceptance:0",
+        "publish:0",
         "finish:0:True",
         "release",
     ]
@@ -355,7 +351,7 @@ def test_requeued_job_rejected_at_its_second_admission_names_the_requeue() -> No
         "invoke",
         "begin-requeued-attempt",
         "release",
-        "acceptance:2",
+        "publish:2",
         "finish:2:True",
     ]
     assert result.outcome.report_text == (

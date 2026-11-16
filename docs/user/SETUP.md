@@ -30,7 +30,8 @@ host (`/booley-setup new` for a new IP). They differ only in the skill mode:
 
 Both paths begin with host-side Project Initialization, then use their own skill mode.
 [Project files](#project-files) lists the files setup writes and where each is
-documented. See also
+documented, and [Projects on this machine](#projects-on-this-machine--host)
+covers listing and forgetting Projects. See also
 [FLOW-SIM.md](FLOW-SIM.md#passfail-sentinels-and-cycle-counts)
 for sentinels (the log-pattern strings that decide a simulation's pass/fail
 verdict) and [SANDBOX.md](SANDBOX.md#commercial-eda-provisioning) for EDA
@@ -76,8 +77,11 @@ is best).
 <summary>On Windows</summary>
 
 If the checkout has CRLF line endings, which is common with Git for Windows,
-init converts them to LF, and it refuses to do that on a dirty tree.
-See [Windows](WINDOWS.md#every-file-shows-as-modified-inside-the-container).
+the Linux container sees every file as modified. Init converts them to LF and
+turns off Git's line-ending conversion for the repository
+(`core.autocrlf=false`, `core.eol=lf`); it refuses to convert on a dirty tree.
+Don't fix it by hand: `git checkout -- .` keeps the CRLF endings. See
+[Windows support](FEATURES.md#windows-support).
 
 </details>
 
@@ -162,16 +166,12 @@ Where each credential comes from:
 - **Subscription:** usage counts against your plan. When you hit a Claude
   rate limit, Booley waits and retries a Specialist call within its retry and
   timeout budgets; a Codex call stops and must be invoked again after the
-  limit resets. Resume an interrupted Goal session with
-  `goal_status(rules=true)`.
+  limit resets.
 - **API key:** you pay per token.
-
-Both work in Interactive Mode and Goal Mode.
 
 **For long runs, run `booley auth`.** The normal login renews itself
 periodically, and a renewal can sign out every running Developer Agent or
-Specialist in the middle of a run
-([details](TROUBLESHOOTING.md#developer-agents-and-specialists-turn-into-not-logged-in-partway-through-an-unattended-run)).
+Specialist in the middle of a run.
 `booley auth` saves a login that doesn't need renewing:
 
 | App | Login that doesn't expire | How |
@@ -200,7 +200,7 @@ skill tells you which defaults it used:
 | --- | --- |
 | Simulator EDA tool | Verilator (default) / Icarus |
 | Testbench style | SystemVerilog (default) / cocotb |
-| Lint EDA tool | Verilator (default) / Verible |
+| Lint | Verilator with all warnings (`-Wall`) and Verible style lint (default both) / either one alone |
 | Flows to enable | ASIC synthesis (default on), FPGA (default off, give the part) |
 | ASIC synthesis mode | `physical` (default) / `logical` |
 | Keep Booley out of git history | off (default) / on |
@@ -215,8 +215,9 @@ What lands, wired together and ready to run:
 - `rtl/my_ip.sv`: a small parameterized counter standing in for your design
 - `tb/tb_my_ip.sv` (or `tb/test_my_ip.py` for cocotb): a self-checking
   testbench with two tests, following the shipped TB style guides
-- `my_ip.core`: one Target per enabled flow (`sim_my_ip`, `lint_my_ip`, and
-  optionally `synth_my_ip` (plus SDC in physical mode), `fpga_my_ip` + XDC)
+- `my_ip.core`: one Target per enabled flow (`sim_my_ip`, `lint_my_ip` with
+  Verilator and `-Wall`, `lint_my_ip_style` with Verible, and optionally
+  `synth_my_ip` (plus SDC in physical mode), `fpga_my_ip` + XDC)
 - `.booley/booley.toml` and [`tests.toml`](TESTS.md), populated rather than
   skeletons
 
@@ -292,7 +293,8 @@ and cleanup. The skill stops for your approval only once, after Step 0.
 - **4 · Doctor.** `booley doctor` is Booley's built-in health check: it audits
   your config, `.core` Targets, toolchain, and sandbox and reports on each
   check, with a fix hint for each failure. `--deep` goes further and
-  runs live sim/lint/synthesis smoke tests against the real EDA tools. Fix every
+  runs live sim/lint/synthesis smoke tests and FPGA implementations against the
+  real EDA tools. Fix every
   `FAIL`, then run `--deep` and fix those too. Setup is done when both pass.
 - **5 · Parity · optional.** Cross-check Booley against the native build system
   when the approved plan selects one.
@@ -308,15 +310,14 @@ Each step is also a standalone how-to file in the skill's `steps/` directory if
 you'd rather write it by hand.
 
 Once `booley doctor` (and `--deep`) is green, you're set up. Head to
-[GOAL-MODE.md](GOAL-MODE.md) to set up your first Goal Mode with `/booley-goal` and run it
-with `/booley-goal start`, or start an
-[Interactive Mode](USAGE.md#interactive-mode) session.
+[Developer Agent sessions](USAGE.md#developer-agent-sessions) to start your
+first session.
 
 ### A new IP: greenfield mode
 
 After `booley init`, run `/booley-setup new` on the host, in your Claude Code or
 Codex chat at the Project Root. It asks the design choices in one batched round
-(IP name, simulator, testbench style, lint tool, flows, synthesis mode, and
+(IP name, simulator, testbench style, lint Targets, flows, synthesis mode, and
 whether to keep Booley out of git history, each with a recommended answer),
 then writes a working,
 green-by-construction project. So there's no feasibility triage and no config
@@ -344,10 +345,46 @@ testbench, keeping the generated wiring as the pattern. Refresh
 to match the current interface, keeping it buildable and behaviorally failing
 the selected smoke Test. Re-run the Doctor check
 whenever the shape of the project changes (new Target, new flow, new
-constraints). From there, drive development the normal way: see
-[GOAL-MODE.md](GOAL-MODE.md) to set up your first Goal Mode with `/booley-goal` and run it
-with `/booley-goal start`, or start an
-[Interactive Mode](USAGE.md#interactive-mode) session.
+constraints). From there, drive development the normal way: start a
+[Developer Agent session](USAGE.md#open-your-first-developer-agent-session).
+
+## Projects on this machine · host
+
+`booley projects` manages the list of Projects Booley knows on this computer,
+and what each one holds in Docker:
+
+```bash
+booley projects                          # list known Projects and their EDA Grants
+booley projects discover <dir>...        # find existing Projects under these directories
+booley projects forget <project>         # forget a Project and list what it still holds in Docker
+booley projects forget --purge <project> # also remove its unused images and state volumes
+```
+
+Each successful host `booley init` remembers its Project Root. `booley projects`
+marks each one `present`, `missing`, or `uninitialized`.
+
+`discover` scans only the directories you name and doesn't follow symlinks.
+It stops at each Project it finds, so it doesn't crawl that Project's RTL and
+build trees; to import a Project nested inside another, name its path directly.
+
+`forget` lists what the Project still holds in Docker, with sizes: images,
+agent state volumes (a copy of the agent's login and history), containers, and
+networks. It removes none of them unless you add `--purge`, which removes the
+unused ones, even for a Project already forgotten or deleted. To use a
+forgotten Project again, run `booley init` in it.
+
+<details markdown>
+<summary>With host-installed licensed tools</summary>
+
+`forget` refuses while the Project still has a live Grant (see
+[Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning)).
+
+</details>
+
+For images left over from earlier forgets, run `booley projects prune-keepers`,
+then rerun it with the `--confirm <digest>` it prints. Images marked
+`unrecorded` are kept; remove one with `docker image rm <id>` once no other
+Project uses it.
 
 ## Project files
 
@@ -378,7 +415,7 @@ repository.
 - [SANDBOX.md](SANDBOX.md): custom Sandbox image and commercial EDA tools.
 - [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md): which EDA tools Booley drives, at
   which boundary. The reference the skill's plan step checks against.
-- [USAGE.md](USAGE.md): day-to-day use and Interactive Mode.
+- [USAGE.md](USAGE.md): day-to-day use and Developer Agent sessions.
 - [CLI-REFERENCE.md](CLI-REFERENCE.md): CLI reference.
-- [GOAL-MODE.md](GOAL-MODE.md): Goal Mode.
-- [TROUBLESHOOTING.md](TROUBLESHOOTING.md): symptoms and their fixes when something misbehaves.
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md): the few problems Booley can't
+  report by itself.

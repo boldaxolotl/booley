@@ -1,6 +1,6 @@
 # pyright: reportIncompatibleMethodOverride=true, reportIncompatibleVariableOverride=true
 # The directive makes a mismatch between SimulateFlow and the host declarations in
-# elab_only.py, standalone.py and test_selection.py a type error; keep it.
+# elab_only.py, flow_resume.py, standalone.py and test_selection.py a type error; keep it.
 """SimulateFlow — BooleyFlow for running RTL simulation.
 
 Runs RTL simulation for one or more configs via the Edalize sim flow + a
@@ -15,8 +15,8 @@ import json
 import logging
 import os
 import sys
-from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import ExitStack, contextmanager, suppress
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import ExitStack, suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, ClassVar, cast
@@ -24,17 +24,9 @@ from typing import Any, ClassVar, cast
 from booley.config.project_config import (
     lookup_target_section,
 )
-from booley.criteria.thresholds import has_relative_threshold
-from booley.evidence.fields import BASELINE_TARGET_PARAM
 from booley.flows.cli_help import CliHelp
 from booley.flows.display import format_flow_display_label
 from booley.flows.endpoint_admission import AdmissionContext
-from booley.flows.execution_persistence import (
-    EvidenceDiscarded,
-    FlowExecutionAdapter,
-    register_simulation_record_for,
-    wants_simulation_records,
-)
 from booley.flows.job_estimates import JobRequest, sim_job_request
 from booley.flows.prepared_invocation import PreparedInvocation
 from booley.flows.progress_lifecycle import (
@@ -43,6 +35,7 @@ from booley.flows.progress_lifecycle import (
     progress_document,
 )
 from booley.flows.request import FlowRequest
+from booley.flows.sim.acceptance import publish_simulation_record_projections
 from booley.flows.sim.bwave_registration import register_trace_sessions
 from booley.flows.sim.cli import SimArguments
 from booley.flows.sim.config import (
@@ -54,16 +47,15 @@ from booley.flows.sim.coverage_invocation import CoverageTargetPlan
 from booley.flows.sim.coverage_progress import CoverageProgress
 from booley.flows.sim.live_progress import (
     LiveProgressSink,
-    attempt_scope,
     current_progress,
     install_progress,
     publish_checkpoint,
 )
 from booley.flows.sim.record_invocation import SimulationRecordInvocation
 from booley.flows.sim.record_layout import RECORD_DIRECTORY
-from booley.flows.sim.record_reports import target_report_directory
+from booley.flows.sim.record_reports import invocation_booley_dir
 from booley.flows.sim.request import SimRequest
-from booley.flows.sim.verilator_coverage import SimulationExecutionPort
+from booley.flows.sim.verilator_coverage import AuthenticatedSimulationExecutionPort
 from booley.flows.target_test_plan import TargetTestPlan
 from booley.flows.target_test_suite import (
     resolve_target_test_suite,
@@ -84,12 +76,10 @@ from booley.runtime.file_lock import LockContentionError
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import (
     TargetHandle,
-    criterion_matches_target,
 )
 
 from ..base import BuiltinFlow, SubprocessResult
 from ..baseline_worktree import (
-    BaselineWorktreeError,
     baseline_worktree,
     git_full_sha,
 )
@@ -104,7 +94,6 @@ from .execution import (
     SimulationExecution,
     SimulationOptions,
     SimulationPreview,
-    SimulationSelection,
 )
 from .execution.engine import TRACE_CLEANUP_MARGIN_S
 from .flow_resume import SimulationRecordResumeMixin
@@ -120,8 +109,6 @@ from .record import (
     SimulationRecordPlan,
     SimulationRecordPolicy,
     ValidatedResumeManifest,
-    encode_simulation_record_manifest,
-    started_simulation_record,
     validate_resume_manifest,
 )
 from .record.coverage_execution import (
@@ -132,13 +119,9 @@ from .record.flow_planning import (
     plan_coarse_simulation_record,
     plan_ordinary_hdl_simulation_record,
 )
-from .record.planning import (
-    manifest_digest,
-)
 from .record.serial_execution import OrdinaryHdlSerialExecutor
 from .record_presentation import (
     _append_missing_report_lines,
-    _baseline_refusal_line,
     _build_infrastructure_detail,
     _coverage_compatibility_targets,
     _coverage_failed_target,
@@ -166,10 +149,7 @@ from .record_presentation import (
 from .record_scaffold import _group_disclosures, _SimulationRecordRun, _SimulationRecordSteps
 from .standalone import StandaloneMixin
 from .test_run_invocation import (
-    BaselineLink,
-    BaselineRuns,
     TestRunInvocation,
-    decide_baseline_runs,
 )
 from .test_selection import SimulationTestSelectionMixin, _get_test_names, _get_test_skips
 
@@ -196,72 +176,14 @@ class PlannedTarget:
 
 
 @dataclass(frozen=True, slots=True)
-class PlannedBaselines:
-    """The Cycle Count baseline Targets that run, decided once in their shared checkout."""
-
-    revision: str
-    worktree: Path
-    targets: tuple[PlannedTarget, ...]
-
-
-@dataclass(frozen=True, slots=True)
 class OrdinarySimulationRecordPlanning:
     """What an ordinary run resolved before reserving anything; its run and dry run reuse it."""
 
     candidates: tuple[PlannedTarget, ...]
-    baselines: PlannedBaselines | None
     test_names_map: dict[str, list[str]]
 
 
-@dataclass(frozen=True, slots=True)
-class ReportTarget:
-    """Candidate identity of a resume that has no catalog binding."""
-
-    identity: str
-    selector: str
-    name: str
-
-    @classmethod
-    def from_document(cls, document: Mapping[str, Any]) -> ReportTarget:
-        """The Target a record manifest records."""
-        target = document["target"]
-        return cls(
-            f"{target['vlnv']}#{target['name']}", str(target["selector"]), str(target["name"])
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class CandidateWorkload:
-    """One prepared candidate's Tests and the sim_pass Criteria they can judge."""
-
-    handle: TargetHandle | ReportTarget
-    selected: frozenset[str]
-    eligible: frozenset[str]
-
-
 _DEFAULT_TIMEOUT_MS = default_timeout_ms("sim")
-
-
-def _link_baseline_prerequisites(
-    prerequisites: dict[str, list[Mapping[str, object]]],
-    links: Sequence[BaselineLink],
-    by_run: Mapping[str, Mapping[str, object]],
-) -> None:
-    """Give each candidate the baseline observation of its own Test Run.
-
-    Two Test Runs of one candidate cannot read the same baseline work item (one
-    Cocotb batch holds several): a record links each work item once.
-    """
-    for link in links:
-        assert link.run is not None, "an accepted baseline link has a Test Run"
-        document = by_run[link.run.name]
-        if document in prerequisites[link.candidate]:
-            raise ValueError(
-                f"Cycle Count comparison of {link.candidate} Test Run {link.run.name} would "
-                f"read a baseline work item of {link.baseline} that another of its Test Runs "
-                "already reads; compare these Tests in separate runs"
-            )
-        prerequisites[link.candidate].append(document)
 
 
 def _prepared_coverage_display_label(plans: Sequence[CoverageTargetPlan]) -> str | None:
@@ -285,7 +207,7 @@ class SimulateFlow(
         *,
         coverage_execution: Callable[
             [TargetHandle, SimulationOptions, tuple[str, ...], str],
-            SimulationExecutionPort,
+            AuthenticatedSimulationExecutionPort,
         ]
         | None = None,
         simulation_record_publication_checkpoint: Callable[[str], None] | None = None,
@@ -294,21 +216,17 @@ class SimulateFlow(
         self._coverage_execution_factory = coverage_execution
         self._simulation_record_publication_checkpoint = simulation_record_publication_checkpoint
 
-    def _start_invocation(
-        self, adapter: FlowExecutionAdapter, request: FlowRequest | None = None
-    ) -> None:
+    def _start_invocation(self, request: FlowRequest | None = None) -> None:
         """Start an invocation with no Simulation Record outcomes: only this Flow keeps them."""
-        super()._start_invocation(adapter, request)
+        super()._start_invocation(request)
         self._simulation_record_outcomes: tuple[Any, ...] = ()
-        self._simulation_acceptance_outcomes: tuple[Any, ...] = ()
         # Resumed origins this invocation's `publication_resources` already lock (see flow_resume).
         self._held_resume_origins: set[Path] = set()
 
     def begin_invocation(self) -> None:
         """Start this invocation's Test Run decisions afresh.
 
-        Resolved Test Runs (drawn seeds included), baseline
-        runs and the Goals' frozen Test Runs belong to one request. A reused Flow
+        Resolved Test Runs (drawn seeds included) belong to one request. A reused Flow
         object must resolve the next request itself, never reuse these. The
         Flow's other per-request state restarts here too, so no invocation reads
         what an earlier one prepared.
@@ -326,7 +244,6 @@ class SimulateFlow(
         """Drop the killed attempt's outcomes; keep its Test Runs, seeds and build settings."""
         super().begin_requeued_attempt()
         self._simulation_record_outcomes = ()
-        self._simulation_acceptance_outcomes = ()
         self._current_published_pre_sim_keys = set()
 
     request_type = SimRequest
@@ -366,7 +283,6 @@ class SimulateFlow(
     def _next_invocation_dir(self, report_dir: Path) -> Path:
         """Acquire the Simulation producer lock before publishing its directory."""
         from .record_reports import simulation_record_invocation_lock
-        from .record_retention import invocation_booley_dir
 
         endpoint_dir = report_dir / self.name
         endpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -397,42 +313,15 @@ class SimulateFlow(
                 return invocation
         raise RuntimeError("Simulation invocation reservation ceiling exceeded")
 
-    def record_flow_owned_acceptance(self, outcome: EndpointOutcome) -> bool:
-        """Record acceptance of a Simulation Record; no outcomes means not handled."""
-        from .acceptance import retain_partial_simulation_record_acceptance
-
+    def publish_flow_records(self, outcome: EndpointOutcome) -> None:
+        """Publish each Simulation Record's ``simulation.json``; no outcomes publish nothing."""
         outcomes = self._simulation_record_outcomes
         if not outcomes:
-            return False
-        try:
-            self.record_simulation_record_acceptance(outcomes)
-        except EvidenceDiscarded:
-            raise
-        except Exception:
-            retain_partial_simulation_record_acceptance(
-                outcome, outcomes, self._simulation_acceptance_outcomes
-            )
-            raise
-        # After acceptance, in this process. ``work_dir`` is the candidate checkout again
-        # (``_in_checkout`` restored it): never a baseline worktree, the cwd or BOOLEY_DIR.
+            return
+        publish_simulation_record_projections(Path(self.args.work_dir), outcomes)
+        # In this process, after publication. ``work_dir`` is the candidate checkout, never the
+        # cwd or BOOLEY_DIR.
         register_trace_sessions(outcomes, Path(self.args.work_dir))
-        return True
-
-    def generic_binding_gate_applies(self) -> bool:
-        """A coverage run is authorized by its own preparation, not the generic gate.
-
-        Explicit native collection also supports ungated Targets (#213); in
-        simulate mode coverage preparation authorizes the complete selection.
-        """
-        return not self.args.coverage
-
-    def record_simulation_record_acceptance(self, outcomes: tuple[object, ...]) -> None:
-        """Own record-specific reconciliation behind the generic endpoint hook."""
-        from .acceptance import record_simulation_record_acceptance
-
-        record_simulation_record_acceptance(
-            self, outcomes, baseline_refusals=self._test_runs.baseline.refusals
-        )
 
     def _capture_cycle_report(self, outcomes: Sequence[SimulationRecordOutcome]) -> None:
         if self.cycle_report_json is not None:
@@ -457,62 +346,6 @@ class SimulateFlow(
         if outcomes and invocation is not None:
             result.detail["records"] = _simulation_record_structured_details(outcomes, invocation)
 
-    def report_candidate_workloads(
-        self, prepared: PreparedSimulationEndpoint
-    ) -> tuple[tuple[CandidateWorkload, ...], bool]:
-        """Prepared candidates and their workloads; baseline prerequisites are not candidates."""
-        if prepared.resume is None:
-            handles = prepared.targets[: len(prepared.selected_targets)]
-            coverage = bool(getattr(self.args, "coverage", False))
-            # A coverage manifest records the declared suite; any other keeps skips removed.
-            skips = {} if coverage else _get_test_skips(self.args.work_dir)
-            workloads = tuple(
-                self._candidate_workload(
-                    handle,
-                    {
-                        test
-                        for test in resolve_target_test_suite(
-                            handle.selector,
-                            identity=handle.identity,
-                            test_names=prepared.test_names_map,
-                            test_skips=skips,
-                        ).tests
-                        if test is not None
-                    },
-                    {
-                        "default" if test is None else test
-                        for test in self._resolve_tests_to_run(
-                            handle.selector, prepared.test_names_map
-                        )
-                    },
-                )
-                for handle in handles
-            )
-            return workloads, coverage
-        manifest = prepared.resume.candidate.manifest
-        document: Any = manifest.document
-        binding = prepared.resume.binding_for(manifest)
-        handle = binding.handle if binding is not None else ReportTarget.from_document(document)
-        suite, items = document["required_suite"], document["work_items"]
-        registered = set(suite["names"])
-        selected = set().union(
-            *(set(item["selection"]["names"]) for item in items if item["role"] == "candidate")
-        ) or ({"default"} if suite["default_invocation"] else registered)
-        coverage = bool(items) and items[0].get("kind") == "coverage_aggregate"
-        return (self._candidate_workload(handle, registered, selected),), coverage
-
-    def _candidate_workload(
-        self, handle: TargetHandle | ReportTarget, registered: set[str], selected: set[str]
-    ) -> CandidateWorkload:
-        """Fill an empty selection like the manifest does and attach acceptance eligibility."""
-        from .acceptance import eligible_simulation_keys
-
-        selected = selected or ({"default"} if not registered else set())
-        eligible = eligible_simulation_keys(
-            self.state, handle.identity, handle.selector, handle.name, registered, selected
-        )
-        return CandidateWorkload(handle, frozenset(selected), frozenset(eligible))
-
     def prepare_endpoint_invocation(self) -> PreparedInvocation | EndpointOutcome:
         """Prepare a Simulation Record; elaboration-only modes keep the Target-selection invocation."""
         if self._mode.elaborates_only:
@@ -534,15 +367,9 @@ class SimulateFlow(
     ) -> tuple[JobRequest, ...] | None:
         """What a prepared Simulation Record runs; ``None`` when that is not known yet.
 
-        A resume, and a Cycle Count baseline on another Target, have no Test
-        Runs resolved before admission. A baseline on a selected Target re-runs
-        that Target's keys at another revision, so it adds no request.
+        A resume has no Test Runs resolved before admission.
         """
-        selected = set(prepared.selected_targets)
-        if prepared.resume is not None or any(
-            handle.selector not in selected
-            for handle in prepared.targets[len(prepared.selected_targets) :]
-        ):
+        if prepared.resume is not None:
             return None
         flags = self._resource_flags()
         try:
@@ -576,34 +403,10 @@ class SimulateFlow(
         """An explicit resume reads its Targets from the manifest."""
         return self.args.resume_from is not None
 
-    def report_families(self) -> set[str]:
-        """Criterion families the selected mode can judge."""
-        mode = self._mode
-        if mode is SimulationMode.ELAB_ONLY_STANDALONE:
-            return {"elab_pass", "elaborate_standalone"}
-        if mode is SimulationMode.ELAB_ONLY:
-            return {"elab_pass"}
-        families = {"sim_pass", "cycle_count"}
-        if getattr(self.args, "coverage", False):
-            families.add("coverage")
-        if self.state._file_path is not None:
-            families.add("elab_pass")
-        return families
-
-    def conventional_report_families(self) -> set[str]:
-        """Families a non-strict Project may judge under their conventional names."""
-        if self._mode.elaborates_only:
-            return {"elab_pass"}
-        if self.state._file_path is None:
-            return {"sim_pass"}
-        return {"sim_pass", "elab_pass"}
-
     def prepare_simulation_endpoint(  # noqa: PLR0911 -- ordered pre-admission rejections
         self,
     ) -> PreparedSimulationEndpoint | EndpointOutcome:
-        """Resolve and authorize every Target before reservation or admission."""
-        from booley.flows.endpoint_admission import authorize_targets
-
+        """Resolve every Target before reservation or admission."""
         try:
             prepared = self._prepare_simulation_record_targets()
             if isinstance(prepared, EndpointOutcome):
@@ -630,20 +433,17 @@ class SimulateFlow(
             # A malformed conversion budget must refuse before any spawn too.
             resolve_sim_trace_convert_timeout_ms(self.args.work_dir)
             # A malformed Pre-Sim Commands knob must refuse here, before any
-            # authorization, admission, build or Pre-Sim spawn.
+            # admission, build or Pre-Sim spawn.
             resolve_pre_sim_commands(self.args.work_dir)
             if resume is None and getattr(self.args, "coverage", False):
                 coverage_error = self._prepare_coverage()
                 if coverage_error is not None:
                     return coverage_error
-            rejection = authorize_targets(self, targets)
         except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"sim Simulation Record preflight failed: {exc}",
             )
-        if rejection is not None:
-            return rejection
         return PreparedSimulationEndpoint(targets, resume, selected_targets, test_names_map)
 
     def run_prepared_simulation(
@@ -671,12 +471,9 @@ class SimulateFlow(
             )
         )
         if prepared.resume is not None:
-            result = self._with_diagnostic_test_run_note(result)
             return self._attach_published_pre_sim(result, prepared.resume.path)
         result.detail["mode"] = self._mode.value
-        return self._attach_published_pre_sim(
-            self._with_baseline_refusal_note(self._with_diagnostic_test_run_note(result))
-        )
+        return self._attach_published_pre_sim(result)
 
     def _record_pre_sim_firing(self, key: tuple[str, str, str, int]) -> None:
         """Record only authenticated firings durably published by this execution."""
@@ -687,7 +484,6 @@ class SimulateFlow(
     ) -> EndpointOutcome:
         """Attach authentic hook evidence even when no terminal Simulation Record outcome exists."""
         from .record import collect_pre_sim_firings
-        from .record_retention import invocation_booley_dir
 
         invocation = self._reserved_invocation_dir
         if invocation is None:
@@ -721,7 +517,6 @@ class SimulateFlow(
         self, result: EndpointOutcome, error: Exception
     ) -> EndpointOutcome:
         from .record import collect_pre_sim_firings
-        from .record_retention import invocation_booley_dir
 
         firings = tuple(
             firing
@@ -746,9 +541,6 @@ class SimulateFlow(
             except (OSError, ValueError):
                 pass
         self._simulation_record_outcomes = ()
-        self._pending_criteria_set = ()
-        self._report_criteria.evaluated.clear()
-        self._report_criteria.known = False
         return _pre_sim_integrity_failure(result, error, retain_authenticated=retained)
 
     def _prepare_simulation_record_targets(
@@ -781,32 +573,16 @@ class SimulateFlow(
         if (missing := self._validate_interactive_args(requested)) is not None:
             return missing
         selected = [self._target_handle(target) for target in requested]
-        baseline_ref, baseline_targets, baseline_error = self._cycle_baseline_selection(requested)
-        if baseline_error is not None:
-            return EndpointOutcome(exit_code=EXIT_ERROR, report_text=baseline_error)
-        baselines = self._simulation_record_authorization_baselines(baseline_ref, baseline_targets)
-        return (*selected, *baselines), None, tuple(requested), _get_test_names(self.args.work_dir)
-
-    def _simulation_record_authorization_baselines(
-        self, revision: str | None, selectors: Sequence[str]
-    ) -> tuple[TargetHandle, ...]:
-        """Resolve Criterion baselines from their historical checkout."""
-        if revision is None or not selectors:
-            return ()
-        catalog = TargetCatalog.build(self._shared_baseline_worktree(revision))
-        return tuple(catalog.select(selector, for_flow="sim") for selector in selectors)
+        return tuple(selected), None, tuple(requested), _get_test_names(self.args.work_dir)
 
     def _shared_baseline_worktree(self, revision: str) -> Path:
         """This invocation's one checkout of *revision*, open until publication ends.
 
-        Simulation Record authorization and Cycle Count planning open the baseline
-        revision; record preview and execution reuse the planned path
-        (``PlannedBaselines.worktree``). The scratch path depends
-        only on the process and revision, so a second opening while the first
-        is held fails in ``git worktree add`` (#1959); they share this one.
-        Consumers run in that order and only execution writes (build output),
-        so sharing never shows a consumer another's changes. Call from the
-        candidate checkout: ``self.args.work_dir`` is the Project Root.
+        Resuming a record that kept baseline prerequisites opens their revision. The
+        scratch path depends only on the process and revision, so a second opening
+        while the first is held fails in ``git worktree add`` (#1959); callers share
+        this one. Call from the candidate checkout: ``self.args.work_dir`` is the
+        Project Root.
         """
         worktrees = self.baseline_worktrees
         if revision not in worktrees:
@@ -988,30 +764,22 @@ class SimulateFlow(
         targets: list[str],
         test_names_map: dict[str, list[str]],
     ) -> OrdinarySimulationRecordPlanning | EndpointOutcome:
-        """Preview every Target and decide the baseline before anything is reserved."""
-        baselines, baseline_errors = self._plan_baseline_targets(targets, test_names_map)
-        candidates, candidate_errors = self._preview_targets(targets, test_names_map)
-        errors = [*baseline_errors, *candidate_errors]
+        """Preview every Target before anything is reserved."""
+        candidates, errors = self._preview_targets(targets, test_names_map)
         if errors:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="sim planning failed: " + "; ".join(errors),
                 detail={"mode": self._mode.value},
             )
-        return OrdinarySimulationRecordPlanning(tuple(candidates), baselines, test_names_map)
+        return OrdinarySimulationRecordPlanning(tuple(candidates), test_names_map)
 
     def _preview_targets(
         self,
         targets: list[str],
         test_names_map: dict[str, list[str]],
-        selections: Mapping[str, SimulationSelection] | None = None,
     ) -> tuple[list[PlannedTarget], list[str]]:
-        """Preview one checkout's selected Simulation Targets, once each.
-
-        *selections* gives a Target the exact selection to preview instead of
-        the request's own (a Cycle Count baseline runs the candidate's Test
-        Runs, not what its checkout would resolve).
-        """
+        """Preview one checkout's selected Simulation Targets, once each."""
         planned: list[PlannedTarget] = []
         errors: list[str] = []
         execution = self._simulation_execution()
@@ -1019,10 +787,7 @@ class SimulateFlow(
             try:
                 handle = self._target_handle(target)
                 preview = execution.preview(
-                    handle,
-                    selections[target]
-                    if selections is not None
-                    else self._test_run_selection(target, test_names_map),
+                    handle, self._test_run_selection(target, test_names_map)
                 )
             except (
                 fusesoc_registry.FuseSocError,
@@ -1035,116 +800,6 @@ class SimulateFlow(
             planned.append(PlannedTarget(target, handle, preview))
         return planned, errors
 
-    def _plan_baseline_targets(
-        self,
-        targets: list[str],
-        test_names_map: dict[str, list[str]],
-    ) -> tuple[PlannedBaselines | None, list[str]]:
-        """Decide the baseline Test Runs once and preview them in the baseline checkout."""
-        baseline_ref, baseline_targets, error = self._cycle_baseline_selection(targets)
-        if error is not None:
-            return None, [error]
-        if baseline_ref is None:
-            return None, []
-        expected = {target: self._target_handle(target).identity for target in baseline_targets}
-        links = self._baseline_links(targets, test_names_map)
-        try:
-            worktree = self._shared_baseline_worktree(baseline_ref)
-            with self._baseline_checkout(worktree, links, baseline_ref) as baseline:
-                runnable = [target for target in baseline_targets if baseline.runs_of(target)]
-                planned, errors = self._preview_targets(
-                    runnable,
-                    test_names_map,
-                    {target: SelectedTestRuns(baseline.runs_of(target)) for target in runnable},
-                )
-                mismatches = [
-                    f"{item.selector}: baseline resolves to {item.preview.target_identity!r}, "
-                    f"expected {expected[item.selector]!r}"
-                    for item in planned
-                    if item.preview.target_identity != expected[item.selector]
-                ]
-                return (
-                    PlannedBaselines(baseline_ref, worktree, tuple(planned)),
-                    [*errors, *mismatches],
-                )
-        except (BaselineWorktreeError, fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
-            return None, [f"sim: Cycle Count baseline planning failed: {exc}"]
-
-    def _baseline_links(
-        self, targets: Sequence[str], test_names_map: Mapping[str, list[str]]
-    ) -> tuple[BaselineLink, ...]:
-        """Every relative Cycle Count comparison of *targets*, with its Test Run.
-
-        A relative Cycle Count compares one Test Run on two revisions, so each
-        link carries one concrete candidate Test Run (the same Test Variant
-        arguments, environment and seed) for the baseline to run. A Test the
-        candidate runs several times (``test@x3``, two Test Variants) gets a
-        link per Test Run, so each has its own baseline run or its own named
-        refusal. Call in the candidate checkout.
-        """
-        links: list[BaselineLink] = []
-        for candidate, baseline, test in self._simulation_record_baseline_requirements(targets):
-            runs = self._candidate_test_runs(candidate, test, test_names_map)
-            # One link per candidate Test Run; without any, one that is refused by name.
-            links.extend(BaselineLink(candidate, baseline, test, run) for run in runs or (None,))
-        return tuple(links)
-
-    def _candidate_test_runs(
-        self, candidate: str, test: str, test_names_map: Mapping[str, list[str]]
-    ) -> tuple[TestRun, ...]:
-        """Every Test Run of *test* this invocation runs on *candidate*."""
-        try:
-            runs = self._resolve_test_runs(candidate, test_names_map)
-        except (fusesoc_registry.FuseSocError, ValueError):
-            # Nothing to compare: the link is refused by name and no baseline
-            # runs for it (test_test_run_resolution_errors).
-            return ()
-        return tuple(run for run in runs if run.test == test)
-
-    @contextmanager
-    def _in_checkout(self, worktree: Path) -> Iterator[None]:
-        """Work in *worktree*, and restore the candidate checkout on exit."""
-        project_root = Path(self.args.work_dir)
-        self.args.work_dir = worktree
-        try:
-            yield
-        finally:
-            self.args.work_dir = project_root
-
-    @contextmanager
-    def _baseline_checkout(
-        self, worktree: Path, links: Sequence[BaselineLink], revision: str
-    ) -> Iterator[BaselineRuns]:
-        """Work in the baseline checkout with the candidate Test Runs it can run.
-
-        Decides there which comparisons the baseline revision can run, keeps
-        the decision for the rest of the invocation, and restores the
-        candidate checkout on exit.
-        """
-        with self._in_checkout(worktree):
-            self._test_runs.baseline = decide_baseline_runs(
-                links, self._target_test_plan, revision
-            )
-            yield self._test_runs.baseline
-
-    def _with_baseline_refusal_note(self, result: EndpointOutcome) -> EndpointOutcome:
-        """Say which Cycle Count comparisons are inconclusive, and why."""
-        refused = self._test_runs.baseline.refused
-        if not refused:
-            return result
-        result.detail["cycle_count_baseline_inconclusive"] = [
-            {
-                "target": item.link.candidate,
-                "test": item.link.test,
-                **({"test_run": item.link.run.name} if item.link.run is not None else {}),
-                "reason": item.reason,
-            }
-            for item in refused
-        ]
-        note = "\n".join(_baseline_refusal_line(item) for item in refused)
-        result.report_text = f"{result.report_text}\n{note}" if result.report_text else note
-        return result
-
     def _run(self) -> EndpointOutcome:
         """Run an elaboration-only mode; simulate mode always runs a prepared Simulation Record."""
         # prepare_endpoint_invocation sends every simulate-mode coverage run to
@@ -1155,14 +810,13 @@ class SimulateFlow(
             else self._validate_mode_args() or self._run_elab_only()
         )
         result.detail["mode"] = self._mode.value
-        return self._with_baseline_refusal_note(self._with_diagnostic_test_run_note(result))
+        return result
 
     def _pre_state_gate(self) -> EndpointOutcome | None:
         return super()._pre_state_gate()
 
     def _prepare_coverage(self) -> EndpointOutcome | None:
-        from booley.criteria.state import DevelopmentState
-        from booley.flows.sim.coverage_flow_context import coverage_context_for_execution
+        from booley.flows.sim.coverage_flow_context import coverage_project_context
         from booley.flows.sim.coverage_invocation import (
             CoverageInvocationRequest,
             prepare_coverage_invocation,
@@ -1171,15 +825,7 @@ class SimulateFlow(
         if not self._flow_enabled():
             return EndpointOutcome(exit_code=2, report_text="sim is disabled")
         try:
-            context = coverage_context_for_execution(
-                self.args.work_dir,
-                (
-                    DevelopmentState.load(self.args.state_file)
-                    if self.args.state_file
-                    else DevelopmentState()
-                ),
-                recorder=self._acceptance_recorder,
-            )
+            context = coverage_project_context(self.args.work_dir)
             selection = self._selected_target_selection()
             prepared = prepare_coverage_invocation(
                 CoverageInvocationRequest(
@@ -1188,7 +834,6 @@ class SimulateFlow(
                     test_runs=self._coverage_test_runs(selection.handles),
                     trace=self.args.trace,
                     no_waivers=self.args.no_waivers,
-                    diagnostic=self.args.diagnostic,
                 ),
                 context,
                 selection=selection,
@@ -1447,7 +1092,7 @@ class SimulateFlow(
         options: SimulationOptions,
         pre_sim_commands: tuple[str, ...],
         pre_sim_build_access: str,
-    ) -> SimulationExecutionPort:
+    ) -> AuthenticatedSimulationExecutionPort:
         from booley.flows.sim.verilator_coverage_execution import VerilatorCoverageExecution
 
         return (
@@ -1581,12 +1226,6 @@ class SimulateFlow(
             if path in published:
                 return
             published.append(path)
-            adapter = self.execution_adapter
-            diagnostic = getattr(self._args, "diagnostic", False)
-            if wants_simulation_records(adapter) and diagnostic is not True:
-                # Before any of its work runs: a record that never returns an
-                # outcome still leaves results its Goals must account for.
-                register_simulation_record_for(adapter, started_simulation_record(path))
             if self._console_publication_requested:
                 with suppress(OSError, ValueError):
                     print(
@@ -1650,15 +1289,11 @@ class SimulateFlow(
                 self._write_simulation_record_progress(
                     targets, outcomes, phase="starting", complete=False
                 )
-                baseline_requests, prerequisites = self._plan_simulation_record_baselines(
-                    invocation, admission, planning
-                )
                 candidate_requests = self._candidate_simulation_record_requests(
-                    planning, prerequisites, invocation, admission
+                    planning, invocation, admission
                 )
                 self._publish_and_run_simulation_record_requests(
                     simulation_record,
-                    baseline_requests,
                     candidate_requests,
                     outcomes=outcomes,
                     checkpoint=lambda: self._write_simulation_record_progress(
@@ -1716,7 +1351,6 @@ class SimulateFlow(
     def _candidate_simulation_record_requests(
         self,
         planning: OrdinarySimulationRecordPlanning,
-        prerequisites: Mapping[str, Sequence[Mapping[str, object]]],
         invocation: Path,
         admission: AdmissionContext,
     ) -> list[NewSimulationRecordRunRequest]:
@@ -1728,7 +1362,6 @@ class SimulateFlow(
                 planning.test_names_map,
                 invocation_id=int(invocation.name),
                 execution_id=execution_id,
-                prerequisite_documents=prerequisites.get(planned.selector, ()),
             )
             self._record_simulation_record_tool(plan.manifest)
             requests.append(
@@ -1747,29 +1380,17 @@ class SimulateFlow(
     @staticmethod
     def _publish_and_run_simulation_record_requests(
         simulation_record: SimulationRecord,
-        baselines: Sequence[NewSimulationRecordRunRequest],
         candidates: Sequence[NewSimulationRecordRunRequest],
         *,
         outcomes: list[SimulationRecordOutcome] | None = None,
         checkpoint: Callable[[], None] | None = None,
     ) -> list[SimulationRecordOutcome]:
         completed = outcomes if outcomes is not None else []
-        # Reject an unusable literal run_cwd before anything is published or built,
-        # including Cycle Count baselines that would otherwise build first.
-        for request in (*baselines, *candidates):
+        # Reject an unusable literal run_cwd before anything is published or built.
+        for request in candidates:
             simulation_record.preflight(request)
-        for request in (*baselines, *candidates):
+        for request in candidates:
             simulation_record.publish_new(request)
-        for request in baselines:
-            target = cast(Mapping[str, object], request.plan.manifest.document["target"])
-            with attempt_scope(
-                str(target["selector"]),
-                identity=f"{target['vlnv']}#{target['name']}",
-                role="baseline",
-                revision=str(target["revision"]),
-                ephemeral_root=request.project_root,
-            ):
-                simulation_record.run(request)
         for request in candidates:
             completed.append(simulation_record.run(request))
             if checkpoint is not None:
@@ -1801,129 +1422,6 @@ class SimulateFlow(
             raise ValueError("Simulation Record progress complete and phase disagree")
         publish_checkpoint(invocation / "progress.json", payload)
 
-    def _plan_simulation_record_baselines(
-        self,
-        invocation: Path,
-        admission: Any,
-        planning: OrdinarySimulationRecordPlanning,
-    ) -> tuple[list[NewSimulationRecordRunRequest], dict[str, list[Mapping[str, object]]]]:
-        """Build the planned baselines' requests without starting any record work."""
-        baselines = planning.baselines
-        if baselines is None:
-            return [], {}
-        prerequisites: dict[str, list[Mapping[str, object]]] = {
-            planned.selector: [] for planned in planning.candidates
-        }
-        requests: list[NewSimulationRecordRunRequest] = []
-        with self._in_checkout(baselines.worktree):
-            for planned in baselines.targets:
-                request, by_run = self._planned_baseline_request(
-                    planned, baselines, planning.test_names_map, invocation, admission
-                )
-                requests.append(request)
-                _link_baseline_prerequisites(
-                    prerequisites, self._test_runs.baseline.links_of(planned.selector), by_run
-                )
-        return requests, prerequisites
-
-    def _planned_baseline_request(
-        self,
-        planned: PlannedTarget,
-        baselines: PlannedBaselines,
-        test_names_map: dict[str, list[str]],
-        invocation: Path,
-        admission: Any,
-    ) -> tuple[NewSimulationRecordRunRequest, dict[str, Mapping[str, object]]]:
-        plan = self._ordinary_simulation_record_plan(
-            planned,
-            test_names_map,
-            invocation_id=int(invocation.name),
-            execution_id=str(admission.execution_id or ""),
-            role="cycle_count_baseline",
-            revision=baselines.revision,
-        )
-        request = NewSimulationRecordRunRequest(
-            plan,
-            baselines.worktree,
-            self.args.report_dir,
-            self._simulation_record_policy(),
-            invocation,
-            admission,
-            pre_sim_firing_published=self._record_pre_sim_firing,
-        )
-        return request, self._baseline_prerequisites_by_run(planned.selector, plan)
-
-    def _baseline_prerequisites_by_run(
-        self, target: str, plan: SimulationRecordPlan
-    ) -> dict[str, Mapping[str, object]]:
-        """The prerequisite document of each baseline work item, by Test Run name."""
-        target_document = cast(Mapping[str, str], plan.manifest.document["target"])
-        relative = (
-            target_report_directory(
-                Path(), f"{target}@baseline-{target_document['revision'][:12]}"
-            )
-            / RECORD_DIRECTORY
-            / "manifest.json"
-        )
-        documents = self._simulation_record_prerequisite_documents(plan, relative)
-        items = cast(tuple[Mapping[str, object], ...], plan.manifest.document["work_items"])
-        return {
-            str(run["name"]): document
-            for item, document in zip(items, documents, strict=True)
-            for run in cast(Sequence[Mapping[str, object]], item["test_runs"])
-        }
-
-    def _simulation_record_baseline_requirements(
-        self, targets: Sequence[str]
-    ) -> tuple[tuple[str, str, str], ...]:
-        """Return candidate/baseline/test links required by relative criteria."""
-        handles = {target: self._target_handle(target) for target in targets}
-        links: list[tuple[str, str, str]] = []
-        for key, entry in self.state.criteria.items():
-            params = entry.params or {}
-            candidate = self._matching_cycle_target(handles, params)
-            test = params.get("test")
-            if (
-                not key.startswith("cycle_count_")
-                or candidate is None
-                or not has_relative_threshold(params)
-                or not isinstance(test, str)
-                or not test
-            ):
-                continue
-            baseline = params.get(BASELINE_TARGET_PARAM, candidate)
-            if isinstance(baseline, str) and baseline:
-                links.append((candidate, baseline, test))
-        return tuple(dict.fromkeys(links))
-
-    @staticmethod
-    def _simulation_record_prerequisite_documents(
-        plan: SimulationRecordPlan, manifest_path: Path
-    ) -> list[Mapping[str, object]]:
-        raw = encode_simulation_record_manifest(plan.manifest)
-        manifest_ref = {
-            "path_base": "origin_invocation",
-            "path": manifest_path.as_posix(),
-            "bytes": len(raw),
-            "sha256": manifest_digest(plan.manifest),
-            "kind": "simulation_record_manifest",
-            "owner": plan.manifest.document["simulation_record_id"],
-        }
-        baseline_target = dict(cast(Mapping[str, object], plan.manifest.document["target"]))
-        return [
-            {
-                "role": "cycle_count_baseline",
-                "manifest": manifest_ref,
-                "simulation_record_id": plan.manifest.document["simulation_record_id"],
-                "target": baseline_target,
-                "required_observation": "cycle_count",
-                "work_item_id": item["work_item_id"],
-            }
-            for item in cast(
-                tuple[Mapping[str, object], ...], plan.manifest.document["work_items"]
-            )
-        ]
-
     def _preview_ordinary_simulation_records(
         self, planning: OrdinarySimulationRecordPlanning
     ) -> EndpointOutcome:
@@ -1931,17 +1429,12 @@ class SimulateFlow(
         previews = []
         simulation_record = SimulationRecord()
         try:
-            prerequisites, baseline_previews = self._preview_simulation_record_baselines(
-                simulation_record, planning
-            )
-            previews.extend(baseline_previews)
             for planned in planning.candidates:
                 plan = self._ordinary_simulation_record_plan(
                     planned,
                     planning.test_names_map,
                     invocation_id=1,
                     execution_id="",
-                    prerequisite_documents=prerequisites.get(planned.selector, ()),
                 )
                 preview = simulation_record.preview(
                     NewSimulationRecordPreviewRequest(
@@ -1959,61 +1452,6 @@ class SimulateFlow(
             )
         return _simulation_record_preview_outcome(previews)
 
-    def _preview_simulation_record_baselines(
-        self,
-        simulation_record: SimulationRecord,
-        planning: OrdinarySimulationRecordPlanning,
-    ) -> tuple[dict[str, list[Mapping[str, object]]], list[dict[str, object]]]:
-        """Preview linked baselines through the record seam without publication."""
-        baselines = planning.baselines
-        if baselines is None:
-            return {}, []
-        prerequisites: dict[str, list[Mapping[str, object]]] = {
-            planned.selector: [] for planned in planning.candidates
-        }
-        previews: list[dict[str, object]] = []
-        with self._in_checkout(baselines.worktree):
-            for planned in baselines.targets:
-                preview, by_run = self._preview_one_simulation_record_baseline(
-                    simulation_record, planned, baselines, planning.test_names_map
-                )
-                previews.append(preview)
-                _link_baseline_prerequisites(
-                    prerequisites, self._test_runs.baseline.links_of(planned.selector), by_run
-                )
-        return prerequisites, previews
-
-    def _preview_one_simulation_record_baseline(
-        self,
-        simulation_record: SimulationRecord,
-        planned: PlannedTarget,
-        baselines: PlannedBaselines,
-        test_names_map: dict[str, list[str]],
-    ) -> tuple[dict[str, object], dict[str, Mapping[str, object]]]:
-        plan = self._ordinary_simulation_record_plan(
-            planned,
-            test_names_map,
-            invocation_id=1,
-            execution_id="",
-            role="cycle_count_baseline",
-            revision=baselines.revision,
-        )
-        preview = simulation_record.preview(
-            NewSimulationRecordPreviewRequest(
-                plan,
-                baselines.worktree,
-                self.args.report_dir,
-                self._simulation_record_policy(),
-            )
-        )
-        summary = {
-            "target": dict(preview.target),
-            "work_items": len(preview.work_items),
-            "build_variants": len(preview.build_variants),
-            "prerequisites": 0,
-        }
-        return summary, self._baseline_prerequisites_by_run(planned.selector, plan)
-
     def _ordinary_simulation_record_plan(
         self,
         planned: PlannedTarget,
@@ -2021,9 +1459,6 @@ class SimulateFlow(
         *,
         invocation_id: int,
         execution_id: str,
-        prerequisite_documents: Sequence[Mapping[str, object]] = (),
-        role: str = "candidate",
-        revision: str | None = None,
     ) -> SimulationRecordPlan:
         """Turn one planned Target into the same exact plan used by preview and run."""
         handle = planned.handle
@@ -2034,7 +1469,6 @@ class SimulateFlow(
                 inputs[0],
                 inputs[1],
                 inputs[3],
-                revision,
                 invocation_id,
                 execution_id,
                 inputs[2],
@@ -2046,13 +1480,11 @@ class SimulateFlow(
             preview=inputs[1],
             groups=inputs[1].groups,
             required_suite=inputs[3],
-            revision=revision or git_full_sha("HEAD", Path(self.args.work_dir)) or "unversioned",
+            revision=git_full_sha("HEAD", Path(self.args.work_dir)) or "unversioned",
             invocation_id=invocation_id,
             execution_id=execution_id,
             trace=self.args.trace,
-            prerequisite_documents=prerequisite_documents,
             planning_disclosures=inputs[2],
-            role=role,
             required_suite_catalog_backed=inputs[4],
         )
 
@@ -2077,7 +1509,6 @@ class SimulateFlow(
         inspection,
         preview,
         required,
-        revision,
         invocation_id,
         execution_id,
         planning_disclosures,
@@ -2090,7 +1521,7 @@ class SimulateFlow(
             preview=preview,
             selected_tests=selected,
             required_suite=required,
-            revision=revision or git_full_sha("HEAD", Path(self.args.work_dir)) or "unversioned",
+            revision=git_full_sha("HEAD", Path(self.args.work_dir)) or "unversioned",
             invocation_id=invocation_id,
             execution_id=execution_id,
             trace=self.args.trace,
@@ -2112,7 +1543,6 @@ class SimulateFlow(
             timeout_seconds=self._effective_timeout_ms() / 1000,
             build_timeout_seconds=self._effective_build_timeout_ms() / 1000,
             no_kill=self.args.no_kill,
-            diagnostic=self.args.diagnostic,
             result_verbosity=self.args.result_verbosity,
         )
 
@@ -2125,10 +1555,6 @@ class SimulateFlow(
         grades = [outcome.aggregate_grade for outcome in outcomes]
         exit_code = _coverage_record_exit_code(outcomes, coverage_records) or max(
             (_grade_exit_code(grade) for grade in grades), default=EXIT_SUCCESS
-        )
-        threshold_missed = any(
-            coverage_record.evaluation["status"] == "fail"
-            for coverage_record in coverage_records.values()
         )
         report: dict[str, Any] = {
             "report_path": self._report_destination(),
@@ -2157,7 +1583,6 @@ class SimulateFlow(
         return EndpointOutcome(
             exit_code=exit_code,
             cycle_report_json=self.cycle_report_json or "{}",
-            criterion_met=exit_code == EXIT_SUCCESS and not threshold_missed,
             detail=detail,
             report_text="\n".join(lines),
             display_label=self._simulation_record_completed_display_label(outcomes),
@@ -2200,60 +1625,6 @@ class SimulateFlow(
                     ),
                 )
         return None
-
-    def _cycle_baseline_selection(
-        self, targets: list[str]
-    ) -> tuple[str | None, list[str], str | None]:
-        """Return the pinned ref and selected Targets needing relative evidence."""
-        from booley.evidence.fields import BASELINE_REF_PARAM
-
-        refs: set[str] = set()
-        selected: list[str] = []
-        handles = {target: self._target_handle(target) for target in targets}
-        for key, entry in self.state.criteria.items():
-            params = entry.params or {}
-            target = self._matching_cycle_target(handles, params)
-            if not key.startswith("cycle_count_") or target is None:
-                continue
-            ref = params.get(BASELINE_REF_PARAM)
-            if not has_relative_threshold(params) or not isinstance(ref, str) or not ref:
-                continue
-            refs.add(ref)
-            baseline = params.get(BASELINE_TARGET_PARAM, target)
-            if not isinstance(baseline, str) or not baseline:
-                return None, selected, "sim: Cycle Count baseline Target is invalid"
-            if baseline not in selected:
-                selected.append(baseline)
-        if not refs:
-            return None, [], None
-        if len(refs) != 1:
-            return (
-                None,
-                selected,
-                "sim: selected Cycle Count criteria carry conflicting baseline refs",
-            )
-        ref = next(iter(refs))
-        resolved = git_full_sha(ref, Path(self.args.work_dir))
-        if resolved is None:
-            return (
-                ref,
-                selected,
-                "sim: Cycle Count pinned baseline ref cannot be resolved to a commit",
-            )
-        return resolved, selected, None
-
-    @staticmethod
-    def _matching_cycle_target(handles: dict[str, Any], params: dict[str, Any]) -> str | None:
-        return next(
-            (
-                selector
-                for selector, handle in handles.items()
-                if criterion_matches_target(
-                    params, identity=handle.identity, selector=handle.selector
-                )
-            ),
-            None,
-        )
 
     def _resolve_requested_targets(self) -> list[str] | EndpointOutcome:
         handles = self._selected_target_handles()

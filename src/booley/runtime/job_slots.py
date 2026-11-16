@@ -69,6 +69,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from booley.core.boundary import as_int, require_finite_number
+from booley.core.file_lock import LockContentionError, acquire_file_lock, release_file_lock
 from booley.runtime.execution_records import (
     RUNTIME_EXECUTION_ENV,
     ExecutionId,
@@ -86,9 +87,7 @@ from booley.runtime.job_records import (
     parse_stamp,
 )
 from booley.runtime.pid import (
-    DEAD,
-    REUSED,
-    ZOMBIE,
+    DEAD_PROCESS_STATES,
     ProcessIdentity,
     ProcessObservation,
     capture_process_identity,
@@ -146,13 +145,22 @@ _MEMORY_VIEW_ATTEMPTS = 3
 # Bound on waiting for an in-flight renewal in ``release``: lease gate, read and
 # replace each spend up to ~1.1 s of shared sharing-error backoff.
 _RENEWAL_JOIN_SECONDS = 5.0
+# A release that cannot take the lease gate retries in the background for about
+# 90 x (1 s + the gate's own attempts), longer than the 60 s after which a
+# gate without a recorded owner (an older release's, or junk) counts as stale.
+_RELEASE_RETRY_ATTEMPTS = 90
+_RELEASE_RETRY_SECONDS = 1.0
 _ENTRY_CREATE_ATTEMPTS = 20
 
 # Ranking and waiter->holder promotion must be one serialized decision. Without
 # a gate, two processes can each observe themselves in the last free rank before
-# either rename becomes visible, then both promote. O_EXCL creation is atomic on
-# the local filesystems supported by the Sandbox and Windows CI.
+# either rename becomes visible, then both promote. A gate appears with its
+# owner already written (hard link of a complete tmp), atomically on the local
+# filesystems supported by the Sandbox and Windows CI.
 _PROMOTION_GATE_NAME = ".promotion.lock"
+# Breaking a stale gate happens under this per-class OS lock, which the kernel
+# drops when its holder dies, so the lock itself can never go stale.
+_GATE_BREAK_LOCK_NAME = ".gate-break.lock"
 
 # Versioned holder identity + renewable recovery lease. Work budgets remain a
 # separate field: an endpoint may legitimately have no work timeout, but
@@ -620,7 +628,7 @@ class SlotToken:
 
     @property
     def is_holder(self) -> bool:
-        return self.path.name.startswith(f"{_HOLDER}-")
+        return _is_holder_path(self.path)
 
 
 @dataclass(frozen=True)
@@ -703,6 +711,18 @@ def _default_inherited_execution_verifier(
 
 
 @dataclass(frozen=True)
+class _GateOwner:
+    """The process a promotion or lease gate names as its holder."""
+
+    pid: int
+    identity: ProcessIdentity | None
+
+    def to_text(self) -> str:
+        identity = self.identity.to_payload() if self.identity is not None else None
+        return json.dumps({"pid": self.pid, "owner_identity": identity}) + "\n"
+
+
+@dataclass(frozen=True)
 class SlotRecovery:
     """Injected recovery boundary for durable execution and process owners."""
 
@@ -718,6 +738,10 @@ def _entry_name(state: str, priority: int, seq: int, pid: int, n: int) -> str:
     # Fixed-width priority/sequence/PID fields preserve admission precedence;
     # the lease-derived suffix gives otherwise equal entries a stable total order.
     return f"{state}-p{priority}-s{seq:010d}-{pid:010d}-{n:04d}.json"
+
+
+def _is_holder_path(path: Path) -> bool:
+    return path.name.startswith(f"{_HOLDER}-")
 
 
 def _parse_entry_name(name: str) -> tuple[str, int, int, int, int] | None:
@@ -753,8 +777,9 @@ _default_pid_alive = is_pid_alive
 class SlotStore:
     """Claim/queue/release over one slots directory. Safe across processes.
 
-    All clock/PID/proc access is injected so tests can simulate multi-process
-    interleavings deterministically; production callers use the defaults.
+    All clock/PID/proc access, including this process's own PID, is injected so
+    tests can simulate multi-process interleavings deterministically; production
+    callers use the defaults.
     """
 
     def __init__(
@@ -768,6 +793,7 @@ class SlotStore:
         capture_identity: Callable[[int], ProcessIdentity | None] = capture_process_identity,
         observe_identity: Callable[[ProcessIdentity], ProcessObservation] = observe_process,
         recovery: SlotRecovery | None = None,
+        getpid: Callable[[], int] = os.getpid,
         inherited_execution_verifier: Callable[
             [object, Path, int], ExecutionId | None
         ] = _default_inherited_execution_verifier,
@@ -780,11 +806,19 @@ class SlotStore:
         self._capture_identity = capture_identity
         self._observe_identity = observe_identity
         self._recovery = recovery or SlotRecovery()
+        self._getpid = getpid
         self._inherited_execution_verifier = inherited_execution_verifier
         self._auto_renew = now is time.time and sleep is time.sleep
         self._renewals: dict[str, tuple[threading.Event, threading.Thread]] = {}
         self._deferred_releases: dict[str, threading.Event] = {}
         self._deferred_gate = threading.Lock()
+        self._process_owner: _GateOwner | None = None
+        self._break_lock_warned = False
+
+    @property
+    def pid(self) -> int:
+        """This process's PID as the store sees it (the injected ``getpid``)."""
+        return self._getpid()
 
     # ---------------------------------------------------------------- submit
 
@@ -916,7 +950,7 @@ class SlotStore:
             tmp = request.cls_dir / f".{name}.{lease_id}.tmp"
             try:
                 tmp.write_text(json.dumps(payload) + "\n", encoding="utf-8")
-                os.link(tmp, path)
+                path.hardlink_to(tmp)
             except FileExistsError:
                 continue
             finally:
@@ -1034,67 +1068,37 @@ class SlotStore:
         """Rename one eligible waiter while its class promotion gate is held."""
         if token.memory is not None:
             token.admitted = self._next_admission_ordinal()
-        if not self._stamp_promoted(token):
-            return TokenState(QUEUED, position=0)
         holder_path = token.path.with_name(
             _entry_name(_HOLDER, token.priority, token.seq, token.pid, token.n)
         )
-        if not self._rename_entry(token.path, holder_path):
-            # A Windows sharing violation is not cancellation. If the
-            # waiter still exists, leave it queued and retry next poll.
-            return TokenState(QUEUED, position=0) if token.path.exists() else TokenState(LOST)
-        token.path = holder_path
-        return TokenState(HOLDING)
+        # The lease gate spans the stamp and the rename, so a cancel or a
+        # recovery claim either lands before the stamp (which then sees it)
+        # or meets the promotion in progress and is refused.
+        with self._lease_gate(token) as acquired:
+            if not acquired:
+                return TokenState(QUEUED, position=0)
+            refused = self._stamp_promoted(token)
+            if refused is not None:
+                return refused
+            if not self._rename_entry(token.path, holder_path):
+                # A Windows sharing violation is not cancellation. If the
+                # waiter still exists, leave it queued and retry next poll.
+                return TokenState(QUEUED, position=0) if token.path.exists() else TokenState(LOST)
+            token.path = holder_path
+            return TokenState(HOLDING)
 
     def _next_admission_ordinal(self) -> int:
         """One more than the largest ordinal among memory holders (1 when none)."""
         holders, _waiters = self.observe(CLASS_MEMORY)
         return 1 + max((holder.admitted or 0 for holder in holders), default=0)
 
-    @contextlib.contextmanager
-    def _promotion_gate(self, token: SlotToken) -> Iterator[bool]:
-        """Best-effort cross-process gate around the promotion decision."""
-        gate = token.path.parent / _PROMOTION_GATE_NAME
-        fd: int | None = None
-        for attempt in range(_ENTRY_IO_ATTEMPTS):
-            try:
-                fd = os.open(gate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            except FileExistsError:
-                if self._promotion_gate_is_stale(gate):
-                    self._unlink_entry(gate)
-                elif attempt + 1 < _ENTRY_IO_ATTEMPTS:
-                    self._sleep(_ENTRY_IO_RETRY_SECONDS)
-            except OSError:
-                break
-            else:
-                try:
-                    os.write(fd, f"{token.pid}\n".encode())
-                except OSError:
-                    os.close(fd)
-                    fd = None
-                    self._unlink_entry(gate)
-                break
+    def _promotion_gate(self, token: SlotToken) -> contextlib.AbstractContextManager[bool]:
+        """Cross-process gate around the promotion decision, owned by the promoting process.
 
-        acquired = fd is not None
-        try:
-            yield acquired
-        finally:
-            if fd is not None:
-                os.close(fd)
-                self._unlink_entry(gate)
-
-    def _promotion_gate_is_stale(self, gate: Path) -> bool:
-        """Return True only for an old gate whose owner is provably dead."""
-        try:
-            if self._now() - gate.stat().st_mtime <= _UNREADABLE_REAP_AGE_SECONDS:
-                return False
-        except OSError:
-            return False
-        try:
-            pid = int(gate.read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):
-            return True
-        return not self._is_pid_alive(pid)
+        Only a token's owner promotes it, so the token's own PID and identity name the gate.
+        """
+        owner = _GateOwner(token.pid, token.owner_identity)
+        return self._gate(token.path.parent / _PROMOTION_GATE_NAME, owner)
 
     def _rename_entry(self, source: Path, target: Path) -> bool:
         """Promote an entry through transient Windows sharing violations."""
@@ -1155,7 +1159,21 @@ class SlotStore:
         return payload
 
     def _rewrite_token(self, token: SlotToken) -> bool:
-        tmp = token.path.with_name(f".{token.path.name}.{os.getpid()}.rewrite.tmp")
+        """Replace *token*'s entry file with its current payload.
+
+        Rule for every caller: hold the entry's lease gate and have just
+        reread the entry under it, refusing unless it is still an ``active``
+        entry of the expected lease at that path. That is the caller's own
+        lease for promotion, renewal, and shrinking; for
+        ``_begin_execution_recovery``, a third party, the path itself fixes
+        the lease because an entry name embeds it (``entry_number =
+        int(lease_id, 16)`` in ``_create_entry``). Every unlink of a live
+        entry (release, withdrawal) holds the same gate, so the exists check
+        below fails the rewrite once a gated unlink won, and no unlink can
+        land between that check and the replace. Reap is the one ungated
+        unlinker; see the comment in ``reap``.
+        """
+        tmp = token.path.with_name(f".{token.path.name}.{self._getpid()}.rewrite.tmp")
         try:
             tmp.write_text(json.dumps(self._token_payload(token)) + "\n", encoding="utf-8")
             if not token.path.exists():
@@ -1168,8 +1186,15 @@ class SlotStore:
             return False
         return True
 
-    def _stamp_promoted(self, token: SlotToken) -> bool:
+    def _stamp_promoted(self, token: SlotToken) -> TokenState | None:
         """Stamp complete holder metadata before the waiter→holder rename.
+
+        Returns ``None`` once stamped, else the state promotion must report:
+        LOST when the entry is gone or corrupt (a cancel won; ``acquire``'s
+        release removes the junk), QUEUED when it is unreadable, not ``active``
+        (recovery claimed it; reap removes it), or could not be rewritten. The caller holds the lease gate and the entry
+        is reread under it; the name embeds the lease, so the file at
+        ``token.path`` can only carry this owner's lease.
 
         The holder deadline (``_is_stale``) anchors at promotion, not entry
         creation — an entry can legitimately queue for longer than its own run
@@ -1178,9 +1203,17 @@ class SlotStore:
         waiter or a fully described holder, never an immortal half-promotion.
         """
         promoted = self._now()
+        try:
+            current = self._load_token(token.path)
+        except OSError:
+            return TokenState(QUEUED, position=0)
+        if current is None:
+            return TokenState(LOST)
+        if current.lease_state != LEASE_ACTIVE:
+            return TokenState(QUEUED, position=0)
         token.promoted_at = _utc_stamp(promoted)
         token.lease_expires_at = _utc_stamp(promoted + LEASE_DURATION_SECONDS)
-        return self._rewrite_token(token)
+        return None if self._rewrite_token(token) else TokenState(QUEUED, position=0)
 
     def acquire(
         self,
@@ -1278,25 +1311,67 @@ class SlotStore:
             stop.set()
             if thread is not threading.current_thread():
                 thread.join(timeout=_RENEWAL_JOIN_SECONDS)
+        if self._release_entry(token):
+            return
+        logger.warning(
+            "Release of slot entry %s deferred: it could not take its lease gate. Retrying in the "
+            "background; if this process exits first, the entry keeps its reservation "
+            "until reap removes it",
+            token.path.name,
+        )
+        try:
+            threading.Thread(
+                target=self._retry_release,
+                args=(token,),
+                name=f"booley-slot-release-{token.lease_id[:8]}",
+                daemon=True,
+            ).start()
+        except RuntimeError:
+            self._warn_release_gave_up(token)
+
+    def _release_entry(self, token: SlotToken) -> bool:
+        """Release under the lease gate: False only when the gate could not be taken.
+
+        True also covers a gate that could not be taken because the entry is
+        already gone (nothing is left to release). False means the gate could
+        not be taken while the entry still exists.
+        """
         with self._lease_gate(token) as acquired:
             if not acquired:
-                return
+                return not token.path.exists()
             try:
                 current = self._load_token(token.path)
             except OSError:
                 current = None  # unreadable: still our own entry to release
             if current is None:
                 self._unlink_entry(token.path)
-                return
+                return True
             if current.lease_id and current.lease_id != token.lease_id:
-                return
+                return True
             if (
                 current.lease_state == LEASE_CANCELLING
                 and current.execution_id is not None
                 and not self._recovery.execution_is_terminal(current.execution_id)
             ):
-                return
+                return True
             self._unlink_entry(token.path)
+            return True
+
+    def _retry_release(self, token: SlotToken) -> None:
+        """Bounded background retry of a release whose lease gate was busy."""
+        for _attempt in range(_RELEASE_RETRY_ATTEMPTS):
+            self._sleep(_RELEASE_RETRY_SECONDS)
+            if self._release_entry(token):
+                return
+        self._warn_release_gave_up(token)
+
+    @staticmethod
+    def _warn_release_gave_up(token: SlotToken) -> None:
+        logger.warning(
+            "Could not release slot entry %s: it could not take its lease gate; "
+            "the entry keeps its reservation until reaped",
+            token.path.name,
+        )
 
     def defer_release_until(self, token: SlotToken, terminal: threading.Event) -> None:
         """Keep one holder unavailable until its escaped owner actually exits."""
@@ -1318,10 +1393,23 @@ class SlotStore:
         self.release(token)
 
     def renew(self, token: SlotToken) -> bool:
-        """Extend one active holder lease; refuse after recovery has claimed it."""
+        """Extend one active holder lease; True only when this call extended it.
+
+        Refuses after recovery claimed the lease or once it expired, and then sets
+        ``lease_health.lost``. A lease gate held elsewhere refuses without
+        setting it: the lease still holds until it expires, so the renewal
+        thread keeps retrying until then (two consecutive missed attempts are
+        survived at the current lease and interval lengths; the third finds the
+        lease expired).
+        """
         with self._lease_gate(token) as acquired:
             if not acquired:
-                token.lease_health.lost.set()
+                # Another process holds the gate (a reaper, or this holder's own
+                # release or shrink), or the gate could not be created at all: the
+                # lease is untouched, so the next renewal retries. It is lost
+                # only once it has expired, whichever the cause.
+                if self._lease_expired(token):
+                    token.lease_health.lost.set()
                 return False
             try:
                 current = self._load_token(token.path)
@@ -1332,6 +1420,7 @@ class SlotStore:
                 or not current.is_holder
                 or current.lease_id != token.lease_id
                 or current.lease_state != LEASE_ACTIVE
+                or self._lease_expired(current)
             ):
                 token.lease_health.lost.set()
                 return False
@@ -1392,8 +1481,8 @@ class SlotStore:
 
         def maintain() -> None:
             while not stop.wait(LEASE_RENEW_INTERVAL_SECONDS):
-                if not self.renew(token):
-                    token.lease_health.lost.set()
+                self.renew(token)
+                if token.lease_health.lost.is_set():
                     return
 
         thread = threading.Thread(target=maintain, name=f"booley-lease-{token.lease_id[:8]}")
@@ -1406,33 +1495,133 @@ class SlotStore:
         if not token.lease_id:
             yield True  # legacy entries never race renewal
             return
+        # Any process takes a lease's gate (its holder, a releaser, a reaper), so
+        # the gate names this process rather than the token's owner.
         gate = token.path.parent / f".{token.lease_id}.lease.lock"
+        with self._gate(gate, self._gate_owner()) as acquired:
+            yield acquired
+
+    def _gate_owner(self) -> _GateOwner:
+        """This process as a gate owner; recaptured after a fork or a failed capture."""
+        pid = self._getpid()
+        owner = self._process_owner
+        if owner is None or owner.pid != pid or owner.identity is None:
+            owner = _GateOwner(pid, self._capture_identity(pid))
+            self._process_owner = owner
+        return owner
+
+    @contextlib.contextmanager
+    def _gate(self, gate: Path, owner: _GateOwner) -> Iterator[bool]:
+        """Hold *gate* for *owner* within the entry-I/O bound; yield whether it was taken."""
         acquired = False
         for attempt in range(_ENTRY_IO_ATTEMPTS):
             try:
-                gate.mkdir()
-            except FileExistsError:
-                if self._is_old_junk(gate):
-                    with contextlib.suppress(OSError):
-                        gate.rmdir()
-                elif attempt + 1 < _ENTRY_IO_ATTEMPTS:
-                    self._sleep(_ENTRY_IO_RETRY_SECONDS)
-            except PermissionError:
-                # Windows denies mkdir while the previous gate's rmdir is
-                # still pending; failing here would mark a live lease lost.
-                if attempt + 1 < _ENTRY_IO_ATTEMPTS:
-                    self._sleep(_ENTRY_IO_RETRY_SECONDS)
+                acquired = self._create_gate(gate, owner)
             except OSError:
                 break
-            else:
-                acquired = True
+            if acquired:
                 break
+            if not self._break_stale_gate(gate) and attempt + 1 < _ENTRY_IO_ATTEMPTS:
+                self._sleep(_ENTRY_IO_RETRY_SECONDS)
         try:
             yield acquired
         finally:
             if acquired:
+                # Never another process's gate: a gate is broken only once its
+                # owner is gone, and this owner is alive to release it. The
+                # shared sharing-error backoff (~1.1 s) keeps a reader on
+                # Windows from leaking a gate this process would then wait on.
+                with contextlib.suppress(OSError):
+                    unlink_file(gate, missing_ok=True, sleep=self._sleep)
+
+    @staticmethod
+    def _create_gate(gate: Path, owner: _GateOwner) -> bool:
+        """Publish *gate* with *owner* already written; False when another gate holds the name.
+
+        Windows denies the link while a released gate's delete is still
+        pending; that gate is busy too, not an error. A crash, or on Windows a
+        scanner holding the tmp, between the write and the unlink leaves an
+        orphaned tmp: accepted, like an entry tmp, because ``observe`` ignores
+        it and it is one small file.
+        """
+        tmp = gate.with_name(f".{gate.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            tmp.write_text(owner.to_text(), encoding="utf-8")
+            try:
+                gate.hardlink_to(tmp)
+            except (FileExistsError, PermissionError):
+                return False
+        finally:
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+        return True
+
+    def _break_stale_gate(self, gate: Path) -> bool:
+        """Remove *gate* if its owner is provably gone; True when this call removed it.
+
+        The judgement is repeated under the class's break lock, and the gate is
+        removed only there. Two breakers that judged the same gate stale would
+        otherwise both remove "the gate", and the later removal would hit the
+        fresh gate the first breaker had taken meanwhile. Under the lock the
+        gate cannot change between judgement and removal: other breakers wait,
+        new gates are created only while the name is free, and only a gate's
+        owner releases it, which a stale gate's owner cannot do.
+        """
+        if not self._gate_is_stale(gate):
+            return False
+        with self._gate_break_lock(gate.parent) as locked:
+            if not locked or not self._gate_is_stale(gate):
+                return False
+            if gate.is_dir():  # a lease gate made by mkdir before gates named their owner
                 with contextlib.suppress(OSError):
                     gate.rmdir()
+                return not gate.exists()
+            return self._unlink_entry(gate)
+
+    @contextlib.contextmanager
+    def _gate_break_lock(self, directory: Path) -> Iterator[bool]:
+        """Try the class's break lock; an OS lock, so a breaker that dies holding it releases it."""
+        path = directory / _GATE_BREAK_LOCK_NAME
+        with contextlib.ExitStack() as stack:
+            try:
+                handle = stack.enter_context(path.open("a+b"))
+                acquire_file_lock(handle)
+                stack.callback(release_file_lock, handle)
+                locked = True
+            except LockContentionError:  # another breaker is judging
+                locked = False
+            except OSError as exc:  # no stale gate in this class can be broken
+                locked = False
+                if not self._break_lock_warned:
+                    self._break_lock_warned = True
+                    logger.warning("Cannot take the gate break lock %s: %s", path, exc)
+            yield locked
+
+    def _gate_is_stale(self, gate: Path) -> bool:
+        """True only when *gate*'s owner is provably gone: dead, a zombie, or its PID recycled.
+
+        Uses holder reaping's process check, with no age rule: a gate appears
+        with its owner written, so a dead owner's gate is broken at once. A
+        gate without an owner (a bare PID or a lease-gate directory from an
+        older release, or junk) is stale once old. An unreadable gate is not
+        stale: its owner may be alive (#1905). A gate whose owner captured no
+        identity degrades to PID liveness (the gate has no argv to compare), so
+        a recycled PID keeps such a gate alive until that process exits.
+        """
+        if gate.is_dir():
+            return self._is_old_junk(gate)
+        try:
+            data = gate.read_bytes()
+        except OSError:
+            return False
+        try:
+            payload = json.loads(data.decode("utf-8"))
+        except ValueError:  # not UTF-8 or not JSON: junk, like a bare PID
+            payload = None
+        if isinstance(payload, dict) and type(payload.get("pid")) is int:
+            identity = ProcessIdentity.from_payload(payload.get("owner_identity"))
+            return self._process_is_gone(payload["pid"], identity)
+        return self._is_old_junk(gate)
 
     def _unlink_entry(self, path: Path) -> bool:
         """Remove an entry, retrying transient Windows sharing violations."""
@@ -1546,31 +1735,34 @@ class SlotStore:
         The unlink is the cancellation claim: it can only succeed while the
         entry still has its waiter name — promotion renames the file, so a
         child that became a holder in the meantime makes this fail (False)
-        and the cancel must be refused. A Windows sharing error is retried
-        and, if it persists, refuses the withdrawal (False, logged). The
-        cancelled child's ``acquire`` then sees LOST and raises instead of
+        and the cancel must be refused. The unlink happens under the entry's
+        lease gate, so a cancel either removes the waiter before any rewrite
+        (which then fails) or returns False. A Windows sharing error is
+        retried and, if it persists, refuses the withdrawal (False, logged).
+        The cancelled child's ``acquire`` then sees LOST and raises instead of
         re-queueing.
         """
         _holders, waiters = self.snapshot(CLASS_MEMORY)
         for tok in waiters:
             if tok.pid == pid:
-                return self._withdraw_waiter_entry(tok.path)
+                return self._withdraw_waiter(tok, tok.path)
         return False
 
     def cancel_waiter_token(self, token: SlotToken) -> bool:
         """Withdraw exactly *token* while it is still queued."""
-        if token.is_holder:
+        # Read the path once: the owner's promotion reassigns ``token.path`` to
+        # the holder name, and a cancel that waited for the gate must not then
+        # withdraw the new holder.
+        path = token.path
+        if _is_holder_path(path):
             return False
-        try:
-            current = self._load_token(token.path)
-        except OSError:
-            return False
-        if current is None or current.lease_id != token.lease_id:
-            return False
-        return self._withdraw_waiter_entry(token.path)
+        return self._withdraw_waiter(token, path)
 
-    def _withdraw_waiter_entry(self, path: Path) -> bool:
-        """Unlink a queued entry: True when withdrawn, False when refused or lost.
+    def _withdraw_waiter(self, token: SlotToken, path: Path) -> bool:
+        """Unlink a queued entry under its lease gate: True when withdrawn.
+
+        False when refused or lost, including a gate held by a promotion or a
+        recovery claim in progress.
 
         Uses the shared winerror-filtered retry rather than ``_unlink_entry``'s
         any-``PermissionError`` loop on purpose: the error class decides the
@@ -1578,14 +1770,23 @@ class SlotStore:
         any other failure refuses the withdrawal and is logged, never mistaken
         for promotion.
         """
-        try:
-            unlink_file(path, sleep=self._sleep)
-        except FileNotFoundError:
-            return False  # promoted (renamed) or already removed: the race is lost
-        except OSError as exc:
-            logger.warning("Refusing to withdraw queued slot entry %s: %s", path.name, exc)
-            return False
-        return True
+        with self._lease_gate(token) as acquired:
+            if not acquired:
+                return False
+            try:
+                current = self._load_token(path)
+            except OSError:
+                return False
+            if current is None or current.lease_id != token.lease_id:
+                return False
+            try:
+                unlink_file(path, sleep=self._sleep)
+            except FileNotFoundError:
+                return False  # promoted (renamed) or already removed: the race is lost
+            except OSError as exc:
+                logger.warning("Refusing to withdraw queued slot entry %s: %s", path.name, exc)
+                return False
+            return True
 
     def begin_token_recovery(self, token: SlotToken) -> bool:
         """Claim exact-token cancellation without releasing reusable capacity."""
@@ -1653,6 +1854,13 @@ class SlotStore:
         cls_dir = self.root / job_class
         if not cls_dir.is_dir():
             return []
+        # Reap unlinks without the lease gate; no rewrite can undo that. A
+        # process-owned entry is reaped only once its owner is dead or reused
+        # (or recover_process_owner stopped it), so no owner is left to
+        # promote, renew, or shrink it, and recovery rewrites only
+        # execution-owned entries. An execution-owned entry is reaped only
+        # once ``cancelling`` is on disk, written under the lease gate, and
+        # every gated rewrite refuses a ``cancelling`` entry.
         reaped: list[str] = []
         for path in list(cls_dir.glob("*.json")):
             if self._is_stale(path) and self._unlink_entry(path):
@@ -1759,9 +1967,15 @@ class SlotStore:
         return bool(deadline_reached and self._recovery.recover_process_owner(owner))
 
     def _owner_is_stale(self, tok: SlotToken) -> bool:
-        if tok.owner_identity is not None:
-            return self._observe_identity(tok.owner_identity).state in {DEAD, REUSED, ZOMBIE}
-        return not self._is_pid_alive(tok.pid) or self._argv_was_reused(tok)
+        if self._process_is_gone(tok.pid, tok.owner_identity):
+            return True
+        return tok.owner_identity is None and self._argv_was_reused(tok)
+
+    def _process_is_gone(self, pid: int, identity: ProcessIdentity | None) -> bool:
+        """Dead, a zombie, or (with a captured identity) its PID now another process."""
+        if identity is not None:
+            return self._observe_identity(identity).state in DEAD_PROCESS_STATES
+        return not self._is_pid_alive(pid)
 
     def _argv_was_reused(self, tok: SlotToken) -> bool:
         if not tok.argv:
@@ -1770,6 +1984,15 @@ class SlotStore:
         return cmdline is not None and cmdline != tok.argv
 
     def _lease_expired(self, tok: SlotToken) -> bool:
+        """True once *tok*'s lease ran out; an expired lease is lost by contract.
+
+        Reaping signals the owner process, or claims recovery of the owning
+        execution, of an expired lease even while the owner is alive: an owner
+        stalled by a host suspend or container pause cannot be told apart from
+        a hung one. The holder keeps to the same contract: ``renew`` refuses an
+        expired lease and sets ``lease_health.lost``, so a holder that resumes
+        after expiry stops instead of extending a lease a reaper may act on.
+        """
         deadline = parse_stamp(tok.lease_expires_at)
         if deadline is None:
             anchor = parse_stamp(tok.promoted_at) or parse_stamp(tok.created_at)

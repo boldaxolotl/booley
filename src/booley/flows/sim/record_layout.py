@@ -27,16 +27,6 @@ def _refusal(label: str, where: str, invocation: Path | None) -> Exception:
     return UnsupportedSimulationRecordFormatError(label, where, invocation)
 
 
-def refuse_older_layout(invocation: Path) -> None:
-    """Refuse an invocation directory holding a ``targets/<Target>/campaign`` directory."""
-    for candidate in sorted((invocation / "targets").glob(f"*/{_OLDER_RECORD_DIRECTORY}")):
-        raise _refusal(
-            "Simulation Campaign directory",
-            f"targets/{candidate.parent.name}/{_OLDER_RECORD_DIRECTORY}",
-            invocation,
-        )
-
-
 def refuse_older_manifest_path(path: Path) -> None:
     """Refuse ``<invocation>/targets/<Target>/campaign/manifest.json``; ignore any other path.
 

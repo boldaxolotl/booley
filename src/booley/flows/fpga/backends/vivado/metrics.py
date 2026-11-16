@@ -24,8 +24,8 @@ from booley.flows.metric_declarations import (
     metric_values,
 )
 
-# Metrics the FPGA implementation Flow declares; names are the ones Goal thresholds are built from.
-# Per-clock wns_ns/whs_ns cover intra-clock paths only, unlike the design-wide Goal fields.
+# Metrics the FPGA implementation Flow declares; names are the ones ``metrics.toml`` bounds use.
+# Per-clock wns_ns/whs_ns cover intra-clock paths only, unlike the design-wide fields.
 _FPGA_COST_TIER = CostTier.HIGH
 FPGA_METRIC_DECLARATIONS: tuple[MetricDeclaration, ...] = (
     MetricDeclaration("lut_count", "LUTs", Better.LOWER, _FPGA_COST_TIER, MetricKind.PLAIN),

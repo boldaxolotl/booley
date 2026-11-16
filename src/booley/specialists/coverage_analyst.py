@@ -1,7 +1,7 @@
 """Coverage Analyst for one exact, persisted native Coverage Record.
 
-The model only reads evidence. In Goal Mode, deterministic code records the
-screened Waiver Candidates for the Goal Record (ADR 0066).
+The model only reads evidence. Deterministic code screens its Waiver
+Candidates (ADR 0066); nothing is recorded.
 """
 
 from __future__ import annotations
@@ -11,19 +11,19 @@ import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
-from typing import ClassVar, cast
+from typing import ClassVar
 
 from claude_agent_sdk import ClaudeSDKError
 
 from booley.core.boundary import require_dict
 from booley.core.models import AgentCallParams, AgentResult
-from booley.criteria.state import DevelopmentState
 from booley.flows.cli_help import CliHelp
 from booley.flows.sim.coverage_analysis_input import (
     CoverageAnalysisError,
     CoverageSourceClosure,
     coverage_sources,
     read_coverage_record,
+    stealth_source_limitation,
     verified_source_snapshot,
 )
 from booley.flows.sim.coverage_evidence import decode_coverage_evidence_audit
@@ -55,11 +55,6 @@ from .coverage_analysis import (
     CoverageModelResult,
 )
 from .coverage_analysis_schema import coverage_analysis_model_schema
-from .coverage_candidate_recording import (
-    GoalCandidateContext,
-    candidate_summary_line,
-    record_goal_candidates,
-)
 from .specialist import Specialist
 
 logger = logging.getLogger(__name__)
@@ -85,8 +80,7 @@ class CoverageAnalystSpecialist(Specialist):
             "Explain the results of one Coverage Record: which coverage holes remain "
             "and what to try next. Use it after `booley flow sim --coverage` leaves "
             "coverage short of where you want it. The suggestions are advisory and "
-            "your RTL and testbench sources are not changed. Only Goal-bound MCP calls "
-            "record proposed coverage waivers for your review."
+            "your RTL and testbench sources are not changed."
         ),
         example=(
             "booley specialist coverage_analyst "
@@ -96,7 +90,6 @@ class CoverageAnalystSpecialist(Specialist):
     code_modifying: bool = False
     accepts_target: bool = False
     config_aware: bool = False
-    satisfies: ClassVar[list[str]] = []
     agent_capabilities: ClassVar[list[str]] = []
     default_timeout: int = 1200
     announce_success_report: bool = True
@@ -104,11 +97,6 @@ class CoverageAnalystSpecialist(Specialist):
     def __init__(self, *, model: Callable[[AgentCallParams], AgentResult] | None = None) -> None:
         self._model = model
         super().__init__()
-
-    def read_state(self) -> DevelopmentState:
-        """Advisory analysis records candidates without setting Criteria."""
-        self._state = DevelopmentState()
-        return self._state
 
     def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
@@ -140,27 +128,9 @@ class CoverageAnalystSpecialist(Specialist):
             instruction,
             coverage_record,
             summary=loaded.summary,
+            source_limitation=stealth_source_limitation(self.args.work_dir),
         )
         return report, loaded, coverage_record
-
-    def _record_candidates(
-        self, document: dict[str, object], loaded: LoadedCoverageRecord, coverage_record: Path
-    ) -> str | None:
-        """Record screened candidates for the Goal Record; return a summary line."""
-        context = GoalCandidateContext.from_recorder(self._acceptance_recorder)
-        if context is None:
-            return None
-        screened = cast(list[dict[str, object]], document["waiver_candidates"])
-        section = record_goal_candidates(
-            context,
-            loaded.coverage_record,
-            loaded.summary,
-            coverage_record,
-            screened,
-            invocation_id=str(self._invocation_id),
-        )
-        document["waiver_candidate_record"] = section
-        return candidate_summary_line(section)
 
     def _analyze_bound(
         self,
@@ -170,6 +140,7 @@ class CoverageAnalystSpecialist(Specialist):
         coverage_record_path: Path,
         *,
         summary: CoverageRecordSummary | None = None,
+        source_limitation: str | None = None,
     ) -> CoverageAnalysisReport:
         """Analyze already validated evidence through one scoped tool binding."""
         sources = verified_source_snapshot(coverage_record, sources)
@@ -177,7 +148,11 @@ class CoverageAnalystSpecialist(Specialist):
         self._evidence_sources = sources
         try:
             return CoverageAnalyzer(self._analyze_text).analyze_coverage_record(
-                coverage_record, sources, instruction, summary=summary
+                coverage_record,
+                sources,
+                instruction,
+                summary=summary,
+                source_limitation=source_limitation,
             )
         finally:
             self._evidence_coverage_record_path = None
@@ -313,7 +288,7 @@ class CoverageAnalystSpecialist(Specialist):
 
     def _run(self) -> McpToolResult:
         try:
-            report, loaded, coverage_record = self._analyze_path(
+            report, _loaded, _record_path = self._analyze_path(
                 self.args.record, self.args.instruction
             )
         except ContextExhaustedError as exc:
@@ -337,9 +312,6 @@ class CoverageAnalystSpecialist(Specialist):
         document = report.to_dict()
         summary = f"Coverage advisory: {document['closure_recommendation']} ({document['eligibility']}, {document['source_access']})"
         lines = [summary]
-        candidate_line = self._record_candidates(document, loaded, coverage_record)
-        if candidate_line is not None:
-            lines.append(candidate_line)
         return McpToolResult(
             exit_code=EXIT_SUCCESS,
             detail=document,

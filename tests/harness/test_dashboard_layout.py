@@ -17,7 +17,7 @@ from booley.harness.dashboard.app import NO_SESSIONS, DashboardApp
 from booley.harness.dashboard.jobs import JobSnapshot
 from tests.harness.test_dashboard import choose_in_bar, open_session, snapshot
 from tests.harness.test_dashboard_sessions import standalone_job
-from tests.harness.test_dashboard_windows import PROPOSAL_ROW, open_row, world
+from tests.harness.test_dashboard_windows import world
 
 NARROW = (90, 24)
 WIDE = (160, 30)
@@ -32,18 +32,6 @@ def _generous_first_read_budget(monkeypatch):
 async def _open_help(app, pilot):
     await choose_in_bar(app, pilot, "Help")
     assert app.navigation.view == "help"
-
-
-async def _open_goal(app, pilot):
-    await open_session(app, pilot, "codex:00")
-    await pilot.press("enter")
-    assert app.navigation.view == "goal"
-
-
-async def _open_proposal(app, pilot):
-    await open_session(app, pilot, "codex:00")
-    await open_row(app, pilot, PROPOSAL_ROW)
-    assert app.navigation.view == "proposal"
 
 
 async def _open_jobs_job(app, pilot):
@@ -75,9 +63,7 @@ CASES = {
     "jobs-narrow": (NARROW, world(), _open_jobs, "jobs"),
     "jobs-wide-detail": (WIDE, world(), _open_jobs, "jobs"),
     "help": (NARROW, world(), _open_help, "help"),
-    "goal": (NARROW, world(), _open_goal, "goal"),
     "job-narrow": (NARROW, world(), _open_jobs_job, "job"),
-    "proposal": (NARROW, world(), _open_proposal, "proposal"),
     # Here `#empty` correctly shows text, so only the panel itself is checked.
     "jobs-empty-wide": (
         WIDE,

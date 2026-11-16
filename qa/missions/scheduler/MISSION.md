@@ -3,7 +3,8 @@
 Hunt bugs in how Booley admits Jobs against a measured Memory Budget: the
 estimates it keeps, who waits and what the queue says, how reservations shrink,
 what happens when the kernel kills a Job for memory, how a Simulation Record
-admits its items, thread counts, Seat Caps, and the retired Job Slots keys.
+admits its items, how Specialists are admitted beside Flows, thread counts,
+Seat Caps, and the retired `[jobs]` keys.
 These fail under load, which unit tests do not reproduce, so the areas run on
 Caliptra, whose Jobs reserve from 0.1 GB to 22 GB each, and on a small
 Custom Flow, `mem_hog`, for the cases that need exact control. The
@@ -15,23 +16,24 @@ area 1.
 - Upstream RTL (outer repo): https://github.com/chipsalliance/caliptra-rtl @
   `e379800c5467379386f96a9a51a539bd662b608a`, with submodules.
 - Booley Directory: https://github.com/boldaxolotl/booley-prj-caliptra @
-  `6acf3bd2d2612e54f43fba4f88ba71ced795b75f`, cloned as `.booley` inside the upstream checkout, with its
-  `patches/` applied as its README says.
+  `ca574a315dbcd5f297a93020f8b33f78db2b0f1f`,
+  cloned as `.booley` inside the upstream checkout, with its `patches/`
+  applied as its README says.
 - Mission fixtures: the Custom Flow `fixtures/mem_hog.py` and the helper
   `fixtures/history_edit.py`.
 - Tools/host: Linux x86-64 with cgroup v2, at least 30 GB of RAM, 16 cores
   and 60 GB of free disk; the `booley-sandbox-riscv` image; Vivado 2025.2 on
-  the host for area 9. No agent CLI credentials are needed, except for the
-  one MCP check in area 3, which is skipped without them.
-- Budget: 8 h for the primary run: 460 area minutes plus 20 contingency.
-  Area 11 is an optional follow-up outside this timebox. Areas run in
+  the host for area 10. No agent CLI credentials are needed, except for the
+  MCP check in area 3 and for area 8, which are skipped without them.
+- Budget: 8 h for the primary run: 480 area minutes. Area 8 needs agent
+  credentials; without them its 20 minutes are contingency.
+  Area 12 is an optional follow-up outside this timebox. Areas run in
   priority order; log areas not reached as skipped. Run areas sequentially:
   each one depends on what the Booley Directory holds.
 
 ## Mission-specific rules
 - The docs are the oracle: `docs/user/CONFIG.md` ("Jobs and concurrency",
-  "Job resource history"), `docs/user/TROUBLESHOOTING.md` (deleted `[jobs]`
-  keys, Job killed out of memory, missing Seat Cap), `docs/user/FLOW-SIM.md`,
+  "Job resource history"), `docs/user/FLOW-SIM.md`,
   `docs/user/FLOW-FPGA.md` and ADR 0087
   (`docs/adr/0087-admit-jobs-against-a-measured-memory-budget.md`). When the
   run and a doc disagree, that is the finding; say which you believe.
@@ -108,9 +110,13 @@ Intent: a later Job jumps the queue only when it surely finishes before the
 front Job could start.
 Try:
 - Holder `synth_ecc_fau` (about 16 min); front waiter `synth_caliptra`, too
-  big to fit beside it; then `lint_ecc` (seconds, own history). `lint_ecc`
+  big to fit beside it; then `lint_ecc` (seconds, own history). A
+  `synth_caliptra` with no `synth` record of its own borrows a smaller
+  Target's estimate and starts at once (booley#4536): then make the front
+  waiter a `mem_hog` whose recorded estimate, set with `history_edit.py`, is
+  above the free budget, and say so in the log. `lint_ecc`
   starts at once and `synth_caliptra` starts when `synth_ecc_fau` ends. Stop
-  `synth_caliptra` once it has started unless area 11 runs next.
+  `synth_caliptra` once it has started unless area 12 runs next.
 - The same with a `mem_hog --hold` longer than the holder's remaining time,
   its `wall_s` set to match with `history_edit.py`: it waits its turn.
 - A small Job whose phase estimate is borrowed (a new `sim_ecc` Variant)
@@ -148,7 +154,7 @@ Try:
   untouched. History records `oom_kill`, which raises the estimate.
 - Exactly controlled: `mem_hog --mb` above the container limit is killed
   twice and fails with an out-of-memory reason; it is not requeued again.
-- Compare with TROUBLESHOOTING.md "Job killed out of memory".
+- Compare with `docs/user/CONFIG.md` "Jobs and concurrency".
 Look for: the older Job killed first, the agent or MCP server killed, a second
 requeue, a compiler kill reported as a compile error, a result that hides the
 first attempt, a kill not recorded in history.
@@ -157,29 +163,51 @@ first attempt, a kill not recorded in history.
 Intent: a Simulation Record runs its items in parallel only while their
 reservations fit.
 Try:
-- `sim_caliptra` with eight tests from RUNBOOK.md "Record tests": after the
-  shared build, items overlap up to the core count. In `memory/`, the Flow's
-  own claim drops to zero once the build is settled, then each item holds its
-  own.
-- `sim_ecc` with all six Variants under `small-budget` fitting two runs: never
-  more than two at once; results come back in manifest order.
+- `sim_caliptra` with eight tests from RUNBOOK.md "Record tests": the
+  Project's shared `run_cwd` makes items run one at a time, as FLOW-SIM.md
+  says. In `memory/`, the Flow's own claim drops to zero once the build is
+  settled, then each item holds its own.
+- `sim_caliptra` again under `parallel-items`: after the shared build, items
+  overlap up to the core count while their reservations fit.
+- `sim_ecc` with all six Variants under `parallel-items` and `small-budget`
+  fitting two runs: never more than two at once; results come back in
+  manifest order.
 - `synth_ecc_top` started during the `sim_caliptra` Record waits for budget
   between items, not for the whole Record.
 Look for: items running under the Flow's claim after the build, more items in
 parallel than fit, a Record that stalls with free budget.
 
-### 8. sched-threads — Build threads follow cores and running Jobs (~25 min)
+### 8. sched-companions — Specialists admitted by memory (~20 min)
+Intent: a Specialist waits for memory like a Flow but never holds a Flow back,
+as ADR 0087 "companion claims" says.
+Try:
+- With the budget free: `booley specialist reviewer --category rtl --focus
+  bugs --scope src/ecc/rtl/ecc_adder.sv` with a short `--timeout`. Its claim
+  in `memory/` is marked `companion`; `booley resources` then shows one
+  Specialist line after the Targets, and no Target's figures change.
+- `small-budget` that fits `sim_caliptra`'s build and little else: start
+  `sim_caliptra` with a forced rebuild, then the Specialist. It waits with a
+  queue reason and starts when the build's reservation shrinks or ends.
+- A run-alone Job (a `mem_hog` with its history deleted) submitted while only
+  the Specialist holds starts at once; a Flow that fits submitted behind a
+  waiting Specialist that does not fit starts without waiting for it.
+Look for: a Specialist that starts over the budget, a Flow held back by a
+Specialist, a Specialist requeued or run alone, Specialist runs changing a
+Target's history.
+
+### 9. sched-threads — Build threads follow cores and running Jobs (~25 min)
 Intent: Verilator's build parallelism is the Job's share of the cores.
 Try:
 - Alone: the `sim_caliptra` build uses `-j<cores>`; compare with `nproc` and
   the CPU quota. The history record's `threads` matches.
 - With one other memory holder (`mem_hog --hold 600`), the next forced
-  `sim_ecc` build uses about half; with three holders, a third.
+  `sim_ecc` build uses about half; with three holders, a quarter (the build
+  and the three holders share the cores).
 - A `make_options` with its own `-j`, added on the staged copy, is kept.
 Look for: a thread count above the cores, one that ignores other Jobs, a
 Project `-j` overridden.
 
-### 9. sched-seats — Seat Caps for Vivado (~35 min)
+### 10. sched-seats — Seat Caps for Vivado (~35 min)
 Intent: Vivado needs a Seat Cap, and a capped Job waits for a seat.
 Try:
 - Two `fpga_ecc_top` runs with `vivado = 1`: the second waits for the seat
@@ -192,7 +220,7 @@ Try:
 Look for: a refusal after queueing, a bad value accepted, a seat wait with no
 seat in its reason, a second Vivado run beside the first.
 
-### 10. sched-cutover — Retired Job Slots keys (~25 min)
+### 11. sched-cutover — Retired `[jobs]` keys (~25 min)
 Intent: the retired keys are refused everywhere with one clear fix.
 Try:
 - `retired`: `booley flow sim`, `booley resources` and a Project command over
@@ -200,12 +228,17 @@ Try:
   `booley upgrade` still run and Doctor FAILs with the same fix.
 - Follow the fix hint literally (delete the lines, or run booley-heal); the
   Project runs again.
+- Each of the five keys alone gives its own reason: `max_heavy` and
+  `heavy_memory` (memory admission), `max_light` (Specialists admitted by
+  memory), `queue_max` (no queue limit) and `memory_budget` (set
+  `[sandbox].memory`).
 - Search help, `booley cheat` and the user docs for Job Slots, `max_heavy`,
-  `heavy_memory` or slot counts described as current behavior.
+  `heavy_memory`, `max_light`, `queue_max`, `memory_budget`, a light Job
+  Class, a queue limit or slot counts described as current behavior.
 Look for: a command that runs with retired keys, a hint naming a surface that
 does not exist, docs still describing Job Slots.
 
-### 11. sched-fullchip — Full-chip synthesis against everything else (~60 min, optional follow-up)
+### 12. sched-fullchip — Full-chip synthesis against everything else (~60 min, optional follow-up)
 Intent: the largest Job behaves under a real mix.
 Try:
 - `synth_caliptra` (Yosys about 17.5 GB) with `sim_caliptra` Records and
@@ -214,11 +247,12 @@ Try:
 Look for: a Job admitted over the budget, a stalled queue, host swap or OOM
 outside the Sandbox.
 
-### 12. cleanup — Scheduler cleanup (~20 min)
+### 13. cleanup — Scheduler cleanup (~20 min)
 Stop every Flow and `mem_hog`, confirm `runtime/jobs/slots/memory/` is empty,
 restore `booley.toml`, `history.json`, forced-rebuild edits and
 `[sandbox].memory`, restart the Session if its limit changed, and release the
-staged Project and its resources in `resources.md`.
+staged Project and its resources in `resources.md`: `booley session down`, then
+`booley projects forget --purge <project>`, then delete the staged directory.
 
 ## Known traps
 - There is no `booley jobs` command and `booley_status` shows no queue: read
@@ -231,12 +265,14 @@ staged Project and its resources in `resources.md`.
   step depends on the build phase.
 - Every run records new peaks: lower or restore the history before each step
   that depends on a given estimate.
-- A Job bound to a Goal is never requeued after OOM. This mission runs none.
 - Until booley#4048 is fixed, a plain `fpga` run stalls after Vivado's
   "Synthesis finished" with `[vivado] <defunct>` processes under the
   execution supervisor. Check whether the candidate still does this once;
   then run every `fpga` step as
   `booley session enter -- /sbin/docker-init -s -- booley flow fpga ...`.
+- Until booley#4534 is fixed, every `sim_caliptra` Record item reserves the
+  whole build estimate (the Project has Pre-Sim Commands), and the first item
+  runs under the Flow's claim. Do not file either again.
 - Stealth Mode is on in this Project: a commit message that contains
   "booley" is refused.
 - Parallel sub-agents share the host Sandbox cap (`[sandbox] max_sessions`,

@@ -7,12 +7,14 @@ import time
 from collections.abc import Callable, Sequence
 from itertools import islice
 from pathlib import Path
+from time import time_ns
 from typing import Any
 
 from booley.runtime import job_records, job_slots
 from booley.runtime.artifact_paths import available_paths
 from booley.runtime.job_observation._artifacts import JobArtifactCache
 from booley.runtime.job_observation._model import JobObservation, ObservationSnapshot
+from booley.runtime.job_observation._unfinished import UnfinishedIndex
 from booley.runtime.pid import ProcessIdentity, ProcessState, observe_process
 from booley.runtime.timefmt import parse_timestamp
 
@@ -42,21 +44,42 @@ class JobObserver:
         self._proc_root = proc_root
         self._validate_record = validate_record
         self._artifacts = JobArtifactCache(booley_dir)
+        self._unfinished = UnfinishedIndex()
 
-    def read(self, roots: Sequence[Path]) -> ObservationSnapshot:
-        """Never poll, reconcile status, adopt, repair or invoke a reaper."""
+    def read(
+        self,
+        roots: Sequence[Path],
+        *,
+        unfinished_roots: Sequence[Path] = (),
+        artifact_roots: Sequence[Path] = (),
+    ) -> ObservationSnapshot:
+        """Never poll, reconcile status, adopt, repair or invoke a reaper.
+
+        Records of *roots* are history: bounded to the newest ``MAX_JOBS``. From
+        *unfinished_roots* only unfinished Jobs are listed, and an unfinished Job of *roots*
+        that the bound cuts is listed too. Reports are read under the Booley Directory and
+        under *artifact_roots*.
+        """
         cache = self._artifacts
-        cache.begin()
+        cache.begin(artifact_roots)
+        self._unfinished.begin(time_ns())
         tokens, memory = self._observe_slots()
-        records, diagnostics = _snapshot_records(roots, self._validate_record)
-        rows = [
-            _project_job(root, rec, tokens, memory, self._proc_root, cache, self._validate_record)
-            for root, rec in records
-        ]
+        records, diagnostics = _snapshot_records(
+            roots, unfinished_roots, self._unfinished, self._validate_record
+        )
+        rows = []
+        for root, rec, exempt in records:
+            row = _project_job(
+                root, rec, tokens, memory, self._proc_root, cache, self._validate_record
+            )
+            # Only the newest MAX_JOBS records may yield a finished row.
+            if not exempt or (row.state != "orphaned" and row.record.status == "running"):
+                rows.append(row)
         diagnostics.extend(cache.diagnostics)
         diagnostics.extend(_ambiguous_ids(rows))
         snapshot = ObservationSnapshot(tuple(rows), tuple(diagnostics))
         cache.complete()
+        self._unfinished.complete()
         return snapshot
 
     def _observe_slots(
@@ -130,9 +153,15 @@ def _with_item_claims(matched: list[job_slots.SlotToken]) -> list[job_slots.Slot
 
 
 def _snapshot_records(
-    roots: Sequence[Path], validate_record: RecordValidator | None
-) -> tuple[list[tuple[Path, job_records.JobRecord]], list[str]]:
-    """Parse only the newest bounded set of records, and say so when history is cut."""
+    roots: Sequence[Path],
+    unfinished_roots: Sequence[Path],
+    index: UnfinishedIndex,
+    validate_record: RecordValidator | None,
+) -> tuple[list[tuple[Path, job_records.JobRecord, bool]], list[str]]:
+    """Parse the newest bounded set of records plus every unfinished one, saying what is cut.
+
+    The third item is true for a record outside the bound (to be dropped once finished).
+    """
     records, diagnostics = [], []
     candidates = _record_candidates(roots, diagnostics)
     if len(candidates) > MAX_JOBS:
@@ -141,23 +170,50 @@ def _snapshot_records(
         newest = sorted(candidates, key=lambda item: item[0], reverse=True)[:MAX_JOBS]
         kept = {(root, path) for _, root, path in newest}
         candidates = [item for item in candidates if (item[1], item[2]) in kept]
-    for _, root, path in candidates:
+    chosen = [(root, path, False) for _, root, path in candidates]
+    taken = {(root, path) for root, path, _ in chosen}
+    unfinished = _unfinished_paths(roots, unfinished_roots, index, validate_record, diagnostics)
+    chosen.extend((root, path, True) for root, path in unfinished if (root, path) not in taken)
+    for root, path, exempt in chosen:
         rec = _read_job(path, validate_record)
         if rec is None:
             diagnostics.append(f"Job record unavailable: {path}")
             continue
-        records.append((root, rec))
+        records.append((root, rec, exempt))
     return records, diagnostics
 
 
+def _unfinished_paths(
+    roots: Sequence[Path],
+    unfinished_roots: Sequence[Path],
+    index: UnfinishedIndex,
+    validate_record: RecordValidator | None,
+    diagnostics: list[str],
+) -> list[tuple[Path, Path]]:
+    """(root, path) of every record whose on-disk status is running, in every root."""
+
+    def is_unfinished(path: Path) -> bool:
+        rec = _validated(_parse_job(path), validate_record)
+        return rec is not None and rec.status == job_records.STATUS_RUNNING
+
+    found: list[tuple[Path, Path]] = []
+    for root in dict.fromkeys((*roots, *unfinished_roots)):
+        if root.is_symlink():
+            if root not in roots:
+                diagnostics.append(f"Job root unavailable: {root}")
+            continue
+        found.extend((root, path) for path in index.paths(root, is_unfinished))
+    return found
+
+
 def _truncation_notice(examined: int) -> str:
-    """Say what was cut; past the scan bound the oldest interactive sessions go unexamined."""
+    """Say what was cut; past the scan bound finished Jobs of older sessions go unlisted."""
     notice = f"Job history truncated: showing the newest {MAX_JOBS} of {examined} records"
     if examined < MAX_SCANNED_JOBS:
         return notice
     return (
         f"Job history truncated: showing the newest {MAX_JOBS} of the first "
-        f"{examined} records examined; older interactive sessions were not examined"
+        f"{examined} records examined; finished Jobs of older interactive sessions are not shown"
     )
 
 
@@ -179,6 +235,27 @@ def _record_candidates(
 
 
 def _read_job(path: Path, validate_record: RecordValidator | None) -> job_records.JobRecord | None:
+    try:
+        rec = _parse_job(path)
+    except OSError:
+        return None
+    return _validated(rec, validate_record)
+
+
+def _validated(
+    rec: job_records.JobRecord | None, validate_record: RecordValidator | None
+) -> job_records.JobRecord | None:
+    """*rec* unless the caller's validator rejects it; other validator errors propagate."""
+    if rec is not None and validate_record is not None:
+        try:
+            validate_record(rec)
+        except ValueError:
+            return None
+    return rec
+
+
+def _parse_job(path: Path) -> job_records.JobRecord | None:
+    """The well-formed record at *path*, or ``None``; ``OSError`` propagates."""
     try:
         if path.is_symlink() or path.stat().st_size > 2 * 1024 * 1024:
             return None
@@ -205,13 +282,8 @@ def _read_job(path: Path, validate_record: RecordValidator | None) -> job_record
             parse_timestamp(rec.run_started_at)
         if rec.pid is not None and (type(rec.pid) is not int or rec.pid <= 0):
             return None
-    except (OSError, ValueError, job_records.JobRecordError):
+    except (ValueError, job_records.JobRecordError):
         return None
-    if validate_record is not None:
-        try:
-            validate_record(rec)
-        except ValueError:
-            rec = None
     return rec
 
 
@@ -242,6 +314,7 @@ def _project_job(
         report or {},
         (reports_parent or root.parent, Path(rec.work_dir) if rec.work_dir else root),
     )
+    wait = _queue_wait(rec, state, memory)
     return JobObservation(
         root,
         rec,
@@ -250,25 +323,25 @@ def _project_job(
         report_path,
         stage,
         artifacts=artifacts,
-        queue=_queue_detail(rec, state, memory),
+        queue="" if wait is None else f"position {wait.position}: {wait.describe()}",
+        queue_position=None if wait is None else wait.position,
     )
 
 
-def _queue_detail(
+def _queue_wait(
     rec: job_records.JobRecord,
     state: str,
     memory: tuple[list[job_slots.SlotToken], list[job_slots.SlotToken]],
-) -> str:
-    """What the Job's queued memory claim waits for; empty unless it is such a waiter."""
+) -> job_slots.MemoryWait | None:
+    """What the Job's queued memory claim waits for; ``None`` unless it is such a waiter."""
     if state != "queued":
-        return ""
+        return None
     identity = ProcessIdentity.from_payload(rec.process_identity)
     holders, waiters = memory
     for waiter in waiters:
         if waiter.owner_identity == identity:
-            wait = job_slots.memory_wait(waiter, holders, waiters, time.time())
-            return "" if wait is None else f"position {wait.position}: {wait.describe()}"
-    return ""
+            return job_slots.memory_wait(waiter, holders, waiters, time.time())
+    return None
 
 
 def _reported_stage(progress: dict[str, Any] | None) -> str:

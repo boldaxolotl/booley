@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -262,12 +262,25 @@ class SimulationExecutionPort(Protocol):
 
     def command(self, request: SimulationCommandRequest) -> SimulationCommandResult: ...
 
+
+class AuthenticatedSimulationExecutionPort(SimulationExecutionPort, Protocol):
+    """A Simulation execution seam that also binds one authenticated build image."""
+
     def authenticated_image(self) -> tuple[Path, tuple[Path, ...]]:
         """Return the exact authorized simulator image used by subsequent runs."""
         ...
 
-    def bind_authenticated_attempt(self, snapshot_root: Path, run_cwd: Path) -> None:
-        """Bind subsequent runs to one authenticated snapshot and run directory."""
+    def bind_authenticated_attempt(
+        self,
+        bundle_root: Path,
+        evidence_root: Path,
+        run_cwd: Path,
+        verify_bundle: Callable[[], None],
+    ) -> None:
+        """Bind subsequent runs to one authenticated bundle and run directory.
+
+        Runs write only under *evidence_root* and call *verify_bundle* before each launch.
+        """
         ...
 
 

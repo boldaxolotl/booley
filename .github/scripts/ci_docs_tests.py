@@ -25,12 +25,10 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from ci_changes import DOCUMENTATION_CATEGORIES, classify
-from ci_goal_tests import GOAL_TESTS_PREFIX
 
 # Content tests the derivation must always find. Losing one means a rename or a
 # rule change silently removed a named guard, so the script fails loudly.
 REQUIRED_CONTENT_TESTS = (
-    "tests/test_readme_contract.py",
     "tests/test_site_contract.py",
     "tests/docs/test_links.py",
     "tests/docs/test_current_version_docs.py",
@@ -38,16 +36,12 @@ REQUIRED_CONTENT_TESTS = (
     # Found only through documentation paths they name; pinned so that a
     # tighter reader rule cannot silently drop the docs/user guards.
     "tests/runtime/test_docs_links.py",
-    # The shipped-doc link-form cross-check and the retired-wording scan of rendered
-    # shipped docs: a documentation-only change must still run both.
+    # The shipped-doc link-form cross-check: a documentation-only change must still run it.
     "tests/docs/test_shipped_doc_link_forms.py",
-    "tests/test_retired_ticket_wording.py",
 )
 # Conftests that write documentation into temporary projects instead of
 # reading this repository's documentation, with the reason each is exempt.
-_SYNTHETIC_CONFTESTS = {
-    "tests/goals/conftest.py": "writes docs/spec.md into a temporary Goal project",
-}
+_SYNTHETIC_CONFTESTS: dict[str, str] = {}
 _SOURCE_PREFIX = "src/"
 _TESTS_PREFIX = "tests/"
 
@@ -279,7 +273,6 @@ def derive(repo: Path) -> list[str]:
         path
         for path in modules
         if _is_test_module(path)
-        and not path.startswith(GOAL_TESTS_PREFIX)  # CI never runs Goal Mode unit tests (#3329)
         and (
             path.startswith("tests/docs/")
             or path in readers

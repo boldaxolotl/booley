@@ -19,32 +19,17 @@ from each side:
   `booley session enter`): the same configuration plus the tools, MCP server,
   and agent setup inside the Sandbox.
 
-Doctor fails when an Agent CLI listed in `[agent] clis` has no `auth` recorded in
-`.booley/booley.toml`, or has `auth = "auto"` (only `subscription` and
-`api_key` pass). The failure names the CLI and the
-value `booley init` would record from your credentials (`subscription` when you
-have a login, `api_key` when you have only a key). Set that value as the message
-says, or re-run `booley init`.
-
-Doctor checks the sign-in of every Agent CLI listed in `[agent] clis`. A missing
-sign-in for the default CLI is a failure. For another listed CLI it is a
-warning that names that CLI's login command; when `[models]` runs a Specialist on
-that CLI it is a failure, whatever `[agent] auth` says. The Sandbox receives the
-sign-in of every listed CLI (see
-[Agent CLI logins in the Sandbox](SANDBOX.md#agent-cli-logins-in-the-sandbox)).
-Warning IDs end in the CLI, for
-example `agent.credential-missing:codex`, so you can waive each one separately.
-
 Run plain `booley doctor` for everyday checks. It checks configuration and
-prepares each Flow without running an EDA tool.
+prepares each Flow without running a simulation, lint, or synthesis.
 
 Run `booley doctor --deep` in the Sandbox when Doctor says deep validation is
 due (see [Deep checks](#deep-checks)). It runs real short simulations, lints,
-and syntheses, and can take minutes or tens of minutes.
+and syntheses and, when the Project uses the FPGA Flow, an FPGA implementation.
+It can take minutes or tens of minutes, and longer with an FPGA implementation.
 
 | Option | Effect |
 |---|---|
-| `--concise` | Show only problems and the final counts |
+| `--concise` | Hide passed checks |
 | `--verbose`, `-v` | Show extra detail, including waivers that matched no warning |
 | `--deep` | Also run the real EDA checks described under [Deep checks](#deep-checks) |
 | `--skip-agent-checks` | With `--deep`, skip the agent credential check and the model-provider probes |
@@ -79,19 +64,20 @@ renewing a license, it hands to you with exact instructions. It asks before it
 waives a warning, and it doesn't change your RTL or testbench unless you ask it
 to.
 
-To fix a specific message yourself, look it up in
-[Troubleshooting](TROUBLESHOOTING.md).
+To fix a problem yourself, follow the `→` hint under it.
+
+### Goal Mode leftovers
+
+| Check ID | Level | Meaning and fix |
+|---|---|---|
+| `config.retired-goals` | `✗` | `booley.toml` has a `[goals]` section. Delete its tables, or ask the Developer Agent to run `/booley-heal`. |
+| `goals.leftover` | `!` | A `goals/` or `goalsets/` directory is still there. Booley does not read or delete it; delete it once you do not need its records. |
 
 ## Automatic checks
 
 Booley runs plain Doctor in the background when the Sandbox starts, if the
-last result is out of date:
-
-- a clean result older than 7 days;
-- a result with problems older than 1 day;
-- or a change since the last run to `booley.toml`, `tests.toml`,
-  `configs.toml`, `doctor-waivers.toml`, `devcontainer.json`, `AGENTS.md`,
-  `CLAUDE.md`, a `.core` file, or the Booley version.
+last result is older than 7 days (1 day if it found problems) or older than a
+change to the Project's configuration or the Booley version.
 
 It never blocks work. New problems show up in the output of
 `booley session up`, at the top of the next Flow result the agent receives,
@@ -102,54 +88,35 @@ and on the Dashboard. The full output of the last run is in
 
 `booley doctor --deep` adds checks that run real tools:
 
-- one short, paid call on your default Agent CLI, which proves the credentials
-  work in this Sandbox and measures the agent's memory use, plus one more short
-  call for each model a Specialist runs on, made through that model's Agent CLI
-  (a model Codex reaches through a gateway makes no extra call). A model the
-  provider refuses fails Doctor and names the `[models]` entry to change,
-  instead of failing a Goal later (skip these calls with
-  `--skip-agent-checks`);
-- a short simulation, lint, and ASIC synthesis on each Target marked for Doctor
-  (see [Marking Targets for Doctor](TARGETS.md#marking-targets-for-doctor));
-- the simulation and lint [self-tests](#self-test-fixtures);
-- FuseSoC resolution of every core.
-
-FPGA implementation is too slow for these checks. For each FPGA Target, deep
-Doctor prints the command to run it yourself, for example
-`booley flow fpga --target fpga_arty`.
+- one short, paid call on your default Agent CLI and one on each model a
+  Specialist runs on, which proves the credentials work in this Sandbox. A
+  model the provider refuses fails Doctor and names the `[models]` entry to
+  change, instead of failing a run later. `--skip-agent-checks` skips these
+  calls;
+- a short simulation, lint, and ASIC synthesis, and an FPGA implementation when
+  the Project uses the FPGA Flow, on each Target marked for Doctor (see
+  [Marking Targets for Doctor](TARGETS.md#marking-targets-for-doctor)). An FPGA
+  implementation runs for as long as the [FPGA Flow](FLOW-FPGA.md)'s time limit
+  allows;
+- the simulation and lint [self-tests](#self-test-fixtures).
 
 ### When deep checks are due
 
 Plain Doctor and `booley session up` each print one line about deep checks:
 
-- **current**: the last deep run passed on this Booley version and this
-  Sandbox Image. It doesn't expire with time.
-- **due**: there is no passing deep run since Booley was updated or the
-  Sandbox Image was replaced. Editing configuration, RTL, or tests doesn't make
-  deep checks due; plain Doctor and your Flow runs cover those changes.
+- **current**: the last deep run qualified, on this Booley version and this
+  Sandbox Image. It doesn't expire with time, and editing configuration, RTL,
+  or tests doesn't change it; plain Doctor and your Flow runs cover those.
+- **due**: the last deep run didn't qualify, or Booley was updated or the
+  Sandbox Image replaced since. The line says why.
+
+A deep run qualifies when it runs in the Sandbox without `--skip-agent-checks`,
+every check that applies actually ran, and it reports no failures and no
+warnings except `upgrade.review-pending`. A waived warning doesn't count as a
+check that ran.
 
 Doctor never starts deep checks on its own, and a due status doesn't count as a
 warning.
-
-A deep run makes deep checks current only if it has no failures, no warnings
-except `upgrade.review-pending`, and every check that applies actually ran.
-Waiving a warning doesn't count as running the check. These runs never
-qualify:
-
-- a run on the host, because the model-provider probes run only in the
-  Sandbox;
-- a run with `--skip-agent-checks`.
-
-When the last attempt didn't qualify, the due line says why:
-
-- `latest deep attempt failed (...)` lists up to eight IDs of the checks that
-  blocked it.
-- `applicable deep checks incomplete (...)` lists the checks that didn't run.
-- `cannot verify Sandbox Image identity`: on the host, start the Sandbox with
-  `booley session up`. If the message stays, run `booley session refresh` to
-  replace the Sandbox.
-
-A cancelled deep run leaves the previous status unchanged.
 
 ## Self-test fixtures
 
@@ -158,33 +125,19 @@ A check that never fails proves nothing. With self-test fixtures,
 a good one, and fails if the bad input passes. Without them, Doctor warns
 `flow.fail-path-unvalidated`.
 
-Ask the agent to add them; Project Setup normally does. Each fixture puts a
-deliberately broken file in your repository:
+Ask the agent to add them; Project Setup normally does. They put deliberately
+broken files under `.booley/selftest/` and in a lint Target that
+`booley targets` hides. Only deep Doctor uses them.
 
-- **Simulation:** a replacement file under `.booley/selftest/sim/bad-overlay/`,
-  at the same relative path as the file it replaces, for example
-  `.booley/selftest/sim/bad-overlay/firmware/firmware.hex`. Deep Doctor applies
-  it only to its own build of the first test of the first Target marked for
-  Doctor simulation. Ordinary simulation never uses it.
-- **Lint:** a Target named `lint_selftest_bad` in its own committed `.core` file, with
-  `flow_options: {booley: {doctor_selftest: true}}`, next to a small source
-  file that should fail lint. `booley targets` and normal Target selection
-  hide it.
-
-If you don't want broken files in the repository, waive the warning instead.
+Without them, deep checks can't become current, even if you waive the warning.
 
 ## Upgrade review
 
 After a Booley update, Doctor warns `upgrade.review-pending` until someone
 checks what the new release changes for this Project. Type `/booley-heal` in a
 Claude Code or Codex chat. The agent reads the release notes since your last
-reviewed version, applies the changes the Project needs, and verifies with
-plain and deep Doctor in the Sandbox and plain Doctor on the host (it asks you
-to run any step it can't reach). Once everything is clean, it marks the review
-done. `booley upgrade status` shows where the review stands.
-
-If Doctor instead warns `upgrade.runtime-stale`, the Sandbox still runs an
-older Booley. Run `booley session refresh` on the host first.
+reviewed version, applies the changes the Project needs, verifies them with
+Doctor, and marks the review done. It asks you to run any step it can't reach.
 
 ## Doctor waivers (`doctor-waivers.toml`)
 

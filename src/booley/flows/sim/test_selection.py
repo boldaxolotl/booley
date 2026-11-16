@@ -11,11 +11,6 @@ from booley.config.project_config import (
     load_test_configuration_field,
     lookup_target_section,
 )
-from booley.flows.execution_persistence import (
-    execution_goal_name,
-    frozen_test_runs_for,
-)
-from booley.flows.frozen_test_runs import FrozenTestRuns, resolve_goal_test_runs
 from booley.flows.target_test_plan import (
     TargetTestPlan,
 )
@@ -41,14 +36,8 @@ from .execution import (
     SelectedTestRuns,
 )
 from .execution.engine import simulation_adapter_kind, target_test_plan
-from .record_presentation import (
-    _diagnostic_test_run_notes,
-    _diagnostic_test_runs,
-    _with_frozen_runs_of_a_diagnostic_run,
-)
 
 if TYPE_CHECKING:
-    from booley.flows.execution_persistence import FlowExecutionAdapter
     from booley.flows.sim.request import SimRequest
     from booley.flows.sim.test_run_invocation import TestRunInvocation
     from booley.targets.domain import TargetHandle
@@ -92,7 +81,6 @@ class SimulationTestSelectionMixin:
 
     if TYPE_CHECKING:
         # Host members SimulateFlow provides; Pyright checks them against the host.
-        execution_adapter: FlowExecutionAdapter
         _test_runs: TestRunInvocation
 
         @property
@@ -222,48 +210,6 @@ class SimulationTestSelectionMixin:
                 return EndpointOutcome(exit_code=EXIT_ERROR, report_text=f"sim: {exc}")
         return None
 
-    def _frozen_test_runs(self) -> FrozenTestRuns | None:
-        """The Test Runs this run's Goals are frozen to; ``None`` outside Goal Mode.
-
-        Read once per invocation: what the invocation runs and what its
-        report calls diagnostic come from one reading.
-        """
-        if not self._test_runs.frozen:
-            self._test_runs.frozen = (frozen_test_runs_for(self.execution_adapter),)
-        return self._test_runs.frozen[0]
-
-    def _with_diagnostic_test_run_note(self, result: EndpointOutcome) -> EndpointOutcome:
-        """Name the Test Runs of this invocation that are evidence for no Goal (ADR 0072).
-
-        Inside Goal Mode a Test Run is evidence only by matching a frozen Test
-        Run of a Goal. Every other Test Run is diagnostic: it is reported, and
-        a failing one prominently, but it blocks no Goal.
-        """
-        frozen = self._frozen_test_runs()
-        if frozen is None:
-            return result
-        if self.args.diagnostic:
-            adapter = self.execution_adapter
-            return _with_frozen_runs_of_a_diagnostic_run(
-                result, frozen, self._target_names, lambda key: execution_goal_name(adapter, key)
-            )
-        fresh = [
-            f"{target}: {selector}"
-            for target, selectors in self._test_runs.fresh_seed_selectors.items()
-            for selector in selectors
-        ]
-        diagnostic, failures = _diagnostic_test_runs(result.detail, frozen, self._target_names)
-        if not (fresh or diagnostic):
-            return result
-        result.detail["diagnostic_test_runs"] = {
-            "test_runs": diagnostic,
-            "failures": failures,
-            "fresh_seed_selectors": fresh,
-        }
-        note = "\n".join(_diagnostic_test_run_notes(fresh, diagnostic, failures))
-        result.report_text = f"{result.report_text}\n{note}" if result.report_text else note
-        return result
-
     def _validate_runnable_tests(
         self,
         targets: list[str],
@@ -353,30 +299,9 @@ class SimulationTestSelectionMixin:
         return cache[key]
 
     def _plan_test_runs(self, plan: TargetTestPlan, target: str) -> tuple[TestRun, ...]:
-        """Resolve this request on *plan*; inside Goal Mode from the frozen Test Runs.
-
-        A request with ``--seed`` names its own seeds and always resolves from
-        the current ``tests.toml``. Without it, a Target run without ``--test``
-        runs the frozen Test Runs of its Target Goal, and ``test@xN`` runs the
-        frozen seeds of the Goal with that Target, Test Variant and N; a
-        ``test@xN`` no Goal names draws new seeds and is reported diagnostic.
-        """
+        """Resolve this request on *plan* from the current ``tests.toml``."""
         selectors = tuple(self.args.test) if self.args.test else None
-        seed = getattr(self.args, "seed", None)
-        frozen = self._frozen_test_runs()
-        if frozen is None or seed is not None:
-            return plan.resolve(selectors, seed=seed)
-        runs, fresh = resolve_goal_test_runs(plan, selectors, frozen, self._target_names(target))
-        if fresh:
-            self._test_runs.fresh_seed_selectors[target] = fresh
-        return runs
-
-    def _target_names(self, target: str) -> set[str]:
-        """What a Goal may call *target*: its selector, and its identity when it resolves."""
-        try:
-            return {target, self._target_handle(target).identity}
-        except fusesoc_registry.FuseSocError:
-            return {target}
+        return plan.resolve(selectors, seed=getattr(self.args, "seed", None))
 
     def _registered_test_plan(
         self, target: str, test_names_map: Mapping[str, list[str]]

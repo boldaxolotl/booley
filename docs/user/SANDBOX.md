@@ -83,7 +83,7 @@ memory = "8g"                                  # container memory limit; unset =
 
 `memory` sets the [Memory Budget](CONFIG.md#jobs--concurrency-jobs) that
 admits Jobs; `booley doctor` warns while it is unset. `[sandbox] dashboard` is
-covered in [CONFIG.md](CONFIG.md#dashboard-and-quiet-goal-presence-goals).
+covered in [CONFIG.md](CONFIG.md#dashboard-sandboxdashboard).
 Every `[sandbox]` change takes effect when you
 [apply it](#after-changing-sandbox-settings).
 
@@ -179,8 +179,7 @@ The base image checks its own cocotb at build time, not yours, so the first
 `booley flow sim` after the rebuild is your test of the combination. A pin
 can't fix a cocotb version that doesn't work with the image's Verilator: the
 imports succeed but simulation hangs. See
-[Simulation stalls at time zero](TROUBLESHOOTING.md#simulation-stalls-at-time-zero-without-results)
-and [Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches).
+[Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches).
 
 </details>
 
@@ -250,9 +249,7 @@ It adds to the base Sandbox:
 Booley downloads the image that matches your Booley version; a failed
 download is an error. Exact versions are in
 [SUPPORTED-EDA-TOOLS](SUPPORTED-EDA-TOOLS.md#versions-in-the-sandbox-image),
-disk space in [INSTALL](INSTALL.md#host-bootstrap). If older firmware won't
-assemble with this GCC, see
-[TROUBLESHOOTING](TROUBLESHOOTING.md#risc-v-firmware-wont-assemble-against-the-sandbox-gcc).
+disk space in [INSTALL](INSTALL.md#host-bootstrap).
 
 </details>
 
@@ -294,8 +291,7 @@ Run these commands on the host, outside the Sandbox:
 5. [Apply the change](#after-changing-sandbox-settings).
 
 `booley projects` lists every Project on this machine with its Grants. If
-Vivado will not start, see
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md#host-provisioned-vivado-will-not-start).
+Vivado will not start, run `booley doctor` on the host.
 Flow options and optimization profiles are in [FLOW-FPGA.md](FLOW-FPGA.md).
 
 **Floating licenses are experimental.** `booley eda license register` records a
@@ -340,7 +336,7 @@ unknown key or an invalid value.
 After editing the file, run `booley bootstrap`. A changed `egress` also needs
 [each Project's Sandbox recreated](#after-changing-sandbox-settings); until
 then a running Sandbox keeps its previous mode and host-side Doctor
-[warns about it](TROUBLESHOOTING.md#doctor-reports-a-sandbox-whose-egress-mode-differs-from-the-host).
+warns about it.
 
 To switch `egress` without editing the file, run
 `booley bootstrap --egress unproxied` (or `proxy`). It records the mode,

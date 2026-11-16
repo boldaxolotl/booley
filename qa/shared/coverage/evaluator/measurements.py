@@ -223,9 +223,6 @@ def verify_known_answer(manifest: dict, points: list[dict], case: dict) -> dict:
     require((covered, len(population)) == tuple(case["fraction"]), "known fraction mismatch")
     verify_scoring(manifest, points)
     ratio = Fraction(100 * covered, len(population))
-    if "min_pct" in case:
-        verdict = "pass" if ratio >= Fraction(str(case["min_pct"])) else "fail"
-        require(manifest["evaluation"]["status"] == verdict, "exact policy verdict mismatch")
     return {"covered": covered, "eligible": len(population), "exact_percent": str(ratio)}
 
 

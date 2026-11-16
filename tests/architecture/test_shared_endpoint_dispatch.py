@@ -21,8 +21,7 @@ DECLARED_NAMES = frozenset(
         "_eda_tools",
         "prepare_target_endpoint",
         "_skip_report_detail_refresh",
-        "record_flow_owned_acceptance",
-        "generic_binding_gate_applies",
+        "publish_flow_records",
         "prepare_endpoint_invocation",
         "manifest_names_targets",
     }
@@ -106,18 +105,12 @@ def test_shared_endpoint_code_calls_declared_hooks():
 SIMULATION_ACCEPTANCE_NAMES = frozenset(
     {
         "_simulation_record_outcomes",
-        "_simulation_acceptance_outcomes",
-        "record_simulation_record_acceptance",
-        "committed",
-        "transaction_id",
+        "publish_simulation_record_projections",
     }
 )
 
 
 def test_shared_acceptance_code_has_no_simulation_branches():
-    comparisons = _compares_with_sim(_parse(FLOWS / "endpoint_acceptance.py"))
-    assert comparisons == [], f"endpoint_acceptance.py compares a name with 'sim': {comparisons}"
-
     lookups = sorted(
         f"{path.name}:{node.lineno} {node.func.id}({node.args[1].value!r})"
         for path in FLOWS.glob("endpoint_*.py")
@@ -138,7 +131,6 @@ SIMULATION_PREPARATION_NAMES = frozenset(
     {
         "prepare_simulation_endpoint",
         "run_prepared_simulation",
-        "report_candidate_workloads",
         "_prepared_target_selection",
         "resume_from",
         "mode",
@@ -151,7 +143,6 @@ SIMULATION_PREPARATION_NAMES = frozenset(
 SHARED_PREPARATION_MODULES = (
     "endpoint_session.py",
     "endpoint_admission.py",
-    "endpoint_report_criteria.py",
     "prepared_invocation.py",
     "endpoint_state.py",
 )

@@ -63,7 +63,8 @@ def test_servers_of_different_checkouts_keep_separate_logs(worktree, monkeypatch
 
 
 @pytest.mark.parametrize("sandbox_like", [False, True], ids=["host", "sandbox"])
-def test_reviewer_state_and_evidence_share_main(worktree, monkeypatch, sandbox_like):
+def test_reviewer_writes_evidence_to_main_and_no_review_state(worktree, monkeypatch, sandbox_like):
+    from booley.runtime import runtime_context
     from booley.specialists.reviewer import ReviewerSpecialist
 
     main, tree = worktree
@@ -73,23 +74,43 @@ def test_reviewer_state_and_evidence_share_main(worktree, monkeypatch, sandbox_l
     monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
     (tree / "rtl").mkdir()
     (tree / "rtl/dut.sv").write_text("module dut; endmodule\n")
-    endpoint = ReviewerSpecialist()
-    endpoint.parse_args(
-        ["--work-dir", str(tree), "--scope", "rtl/dut.sv", "--category", "rtl", "--focus", "bugs"]
-    )
-    endpoint.read_state()
-    state_file = Path(endpoint.args.state_file)
-    assert state_file.is_relative_to(main / "reviewer-state")
-
+    issue = {
+        "severity": "MAJOR",
+        "confidence": "HIGH",
+        "category": "bugs",
+        "file": "rtl/dut.sv",
+        "line": 1,
+        "summary": "Wrong reset value",
+        "kind": "code_defect",
+        "disposition": "current",
+        "ticket_clause": "Reset clears output",
+    }
+    argv = [
+        "--work-dir",
+        str(tree),
+        "--scope",
+        "rtl/dut.sv",
+        "--category",
+        "rtl",
+        "--focus",
+        "bugs",
+    ]
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
     monkeypatch.setattr(
-        endpoint,
+        ReviewerSpecialist,
         "_invoke_agent",
-        lambda _params: MagicMock(
-            output=json.dumps({"issues": []}), captured_agent_capability_calls={}
+        lambda _self, _params: MagicMock(
+            output=json.dumps({"issues": [issue]}), captured_agent_capability_calls={}
         ),
     )
-    result = endpoint._run()
-    assert Path(result.detail["audit_evidence"]).is_relative_to(main / "reviewer-evidence")
+    for _ in range(2):
+        endpoint = ReviewerSpecialist()
+        result = endpoint.execute_cli(argv)
+        assert result.exit_code == 0, result.outcome.report_text
+        assert "RESULT: REVIEWED WITH FINDINGS" in result.outcome.report_text
+    evidence = sorted((main / "reviewer-evidence").glob("*.json"))
+    assert len(evidence) == 2
+    assert not (main / "reviewer-state").exists()
 
 
 def test_session_registry_and_prune_use_main(worktree, monkeypatch):
@@ -117,9 +138,7 @@ def test_unbound_job_handle_registers_in_main(worktree, monkeypatch):
     monkeypatch.setattr(
         job_lifecycle, "register_job", lambda project, *_args, **_kw: registered.append(project)
     )
-    context = SimpleNamespace(
-        work_dir=None, binding=None, explicit_work_dir=None, session_key="pid:k"
-    )
+    context = SimpleNamespace(work_dir=None, explicit_work_dir=None, session_key="pid:k")
     record = job_records.JobRecord("run-1", "sim", rfc3339_from_epoch(1_800_000_000.0), 60)
     job_lifecycle.JobLifecycle._stamp_context(record, context)
     assert registered == [main]
@@ -159,24 +178,15 @@ def test_dashboard_and_chat_handles_use_main(worktree, monkeypatch):
 
 def test_doctor_reads_session_state_from_main(worktree, monkeypatch):
     from booley.harness import doctor
-    from booley.harness.dashboard import doctor as dashboard_doctor
 
     main, tree = worktree
-    presence: list[Path] = []
     handle_maps: list[Path] = []
     monkeypatch.setattr(
-        dashboard_doctor,
-        "inspect_presence",
-        lambda _root, directory, **_kw: (
-            presence.append(directory) or SimpleNamespace(unavailable="", warnings=[])
-        ),
+        doctor, "_check_handle_map_size", lambda d, _root, _warn: handle_maps.append(d)
     )
-    monkeypatch.setattr(doctor, "_check_handle_map_size", lambda d, _warn: handle_maps.append(d))
-    doctor._check_goal_presence(tree, tree / ".booley", doctor._Reporter.create())
     for name in (
         "_check_ticket_leftovers",
         "_check_project_gitignore",
-        "_check_goal_history_ignored",
         "_check_project_trackability",
         "_check_git_state",
         "_check_repo_footprint",
@@ -190,7 +200,6 @@ def test_doctor_reads_session_state_from_main(worktree, monkeypatch):
     reporter = doctor._Reporter.create()
     reporter.agent_check_enabled = lambda _name: False
     doctor._run_project_checks(project, reporter)
-    assert presence == [main]
     assert handle_maps == [main]
 
 

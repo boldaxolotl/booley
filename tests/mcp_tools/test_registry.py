@@ -529,6 +529,20 @@ def test_typed_builtin_base_preserves_import_free_metadata(tmp_path, base):
     assert (info.name, info.kind, info.satisfies) == ("lint", "flow", ("lint_clean",))
 
 
+def test_project_endpoint_satisfies_is_not_read(tmp_path):
+    source = tmp_path / "custom.py"
+    source.write_text(
+        "class Custom(McpTool):\n"
+        '    name = "custom"\n'
+        '    description = "Check"\n'
+        '    satisfies = ["x"]\n'
+        '    satisfies_args = {"x": "custom --target {target}"}\n'
+    )
+    info = extract_mcp_tool_info(source, builtin=False)
+    assert info is not None
+    assert (info.name, info.satisfies, info.satisfies_args) == ("custom", (), None)
+
+
 def test_mutation_is_a_builtin_flow():
     assert "mutation" in BUILTIN_FLOW_PACKAGES
     info = next(item for item in discover_mcp_tools() if item.name == "mutation")
@@ -541,7 +555,7 @@ def test_no_mutation_tester_endpoint():
     assert "mutation_tester" not in {item.name for item in discover_mcp_tools()}
 
 
-def test_interactive_catalog_includes_exactly_four_goal_tools(monkeypatch):
+def test_interactive_catalog_offers_no_goal_tool(monkeypatch):
     monkeypatch.setattr(catalog, "_BWAVE_MCP_TOOLS", [])
 
     for name in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_COVERAGE_RECORD"):
@@ -555,13 +569,8 @@ def test_interactive_catalog_includes_exactly_four_goal_tools(monkeypatch):
             catalog.Exposure.from_mapping(os.environ), builtins
         )
     }
-    assert len(names) == 11
-    assert {name for name in names if name.startswith("goal_")} == {
-        "goal_enter",
-        "goal_status",
-        "goal_propose_change",
-        "goal_finish",
-    }
+    assert len(names) == 7
+    assert not {name for name in names if name.startswith("goal_")}
 
 
 @pytest.mark.parametrize("disabled", [None, "flow", "specialist", "mcp_tool"])
@@ -648,7 +657,7 @@ def test_schema_worker_excludes_job_report_and_transport_owners(tmp_path):
     path.write_text(
         "import sys\n"
         "for module in ('booley.mcp.server', 'booley.mcp.job_lifecycle', "
-        "'booley.mcp.job_results', 'booley.mcp.report_encoding', 'booley.mcp.sim_baseline_jobs'):\n"
+        "'booley.mcp.job_results', 'booley.mcp.report_encoding'):\n"
         "    assert module not in sys.modules, module\n"
         "from booley.mcp.base import McpTool\n"
         "class Local(McpTool):\n"

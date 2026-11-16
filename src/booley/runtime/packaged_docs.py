@@ -42,6 +42,7 @@ PACKAGED_DOCS_RELATIVE_DIR = "src/booley/data/docs"
 
 # The one allowlist: repo-relative sources copied into the flat packaged directory.
 SHIPPED_DOCS: tuple[str, ...] = (
+    "docs/user/METRIC-DRIVEN-DEVELOPMENT.md",
     "docs/user/CONFIG.md",
     "docs/user/TARGETS.md",
     "docs/user/TESTS.md",
@@ -65,12 +66,11 @@ PLAIN_TEXT_TARGETS: frozenset[str] = frozenset(
         "docs/user/USAGE.md",
         "docs/user/DOCTOR.md",
         "docs/user/STEALTH.md",
-        "docs/user/GOAL-MODE.md",
         "docs/user/SPECIALISTS.md",
         "docs/user/REVIEWER.md",
         "docs/user/CLI-REFERENCE.md",
+        "docs/user/WORKTREES.md",
         "docs/user/INSTALL.md",
-        "docs/user/WINDOWS.md",
         "docs/internals/GATEWAY.md",
         "docs/internals/MCP-TOOLS.md",
         "docs/internals/ROADMAP.md",

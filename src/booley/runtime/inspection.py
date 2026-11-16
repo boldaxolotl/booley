@@ -27,6 +27,7 @@ from booley.commit_policy import stealth_enabled
 from booley.config import agent_app
 from booley.config.eda import EdaConfig
 from booley.core.boundary import require_dict
+from booley.core.host_shell import quote_arg
 from booley.eda.provisioning.licensing.flexnet_docker import (
     RelayDockerError,
     RelayProfile,
@@ -54,6 +55,7 @@ from booley.runtime.devcontainer import devcontainer_path
 from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.git import _git_common_dir, stealth_exclude_names
 from booley.runtime.platform_paths import run_captured_bounded, same_host_path
+from booley.runtime.sandbox_apply import Attachment
 
 
 @dataclass(frozen=True, slots=True)
@@ -551,7 +553,7 @@ def _check_runtime_booley_version(
 def _accepted_booley_dir(value: str, project_root: Path) -> bool:
     """Return whether ``value`` is an accepted in-Sandbox ``BOOLEY_DIR`` spelling (ADR 0073).
 
-    Accepted spellings are the image alias ``/booley-project`` and the ``.booley``
+    Accepted spellings are the image alias ``/booley`` and the ``.booley``
     entry directly under the inspected Project Root, either one resolving to an
     existing directory. The entry may be a symlink; its parent must be the same
     location as the Project Root, so aliased Project Root spellings are tolerated. Paths alone
@@ -657,6 +659,35 @@ def _runtime_path_exposed(path: Path) -> bool:
         return False
 
 
+def _relay_repair(project_root: Path, containers: list[str]) -> str:
+    """Name the repair that rebuilds the licensed relay topology for the Sandbox's owner.
+
+    ``booley session down`` removes the relay topology, but refuses a running
+    VS Code Sandbox, and VS Code's ``booley session prepare`` provisions only a
+    missing relay. A VS Code owner therefore removes its container first, runs
+    ``session down`` for the relay, and reopens the folder. A headless owner
+    follows ``session down`` with ``session up --rebuild``.
+    """
+    try:
+        attachment = session_runtime.sandbox_attachment(project_root)
+    except session_runtime.SessionError:
+        attachment = None
+    headless = "run `booley session down`, then `booley session up --rebuild` on the host"
+    remove = ""
+    if containers:
+        names = " ".join(quote_arg(name) for name in containers)
+        remove = f"`docker stop {names}` and `docker rm {names}`, "
+    vscode = (
+        f"close VS Code, then on the host run {remove}run `booley session down` "
+        "to remove the relay topology, and reopen the folder in the container"
+    )
+    if attachment is Attachment.VSCODE:
+        return vscode
+    if attachment is Attachment.HEADLESS:
+        return headless
+    return f"in VS Code, {vscode}; headless, {headless}"
+
+
 def _check_issued_license_relay(
     request: RuntimeInspectionRequest,
     containers: list[str],
@@ -686,7 +717,7 @@ def _check_issued_license_relay(
         if containers:
             report.fail(
                 "licensed Sandbox has no relay topology",
-                "run `booley session down`, then `booley session up --rebuild`",
+                _relay_repair(project_root, containers),
             )
         return
     try:
@@ -706,7 +737,7 @@ def _check_issued_license_relay(
     except RelayDockerError as exc:
         report.fail(
             f"live FlexNet relay topology differs from host issuance: {exc}",
-            "run `booley session down`, then `booley session up --rebuild`",
+            _relay_repair(project_root, containers),
         )
         return
     report.pass_("live FlexNet relay bytes, hardening, endpoints, and aliases verified")

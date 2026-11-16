@@ -266,7 +266,6 @@ targets:
                 "HEAD~1",
             ]
         )
-        tool.read_state()
 
         seen_work_dirs: list[Path] = []
 
@@ -277,7 +276,7 @@ targets:
 
         with patch.object(tool, "_run_single_config", side_effect=fake_single):
             handle = TargetCatalog.build(repo).select("synth_default", for_flow="synth")
-            plans = target_pair_plans_for_handles({}, "synthesis_ok_", (handle,), flow="synth")
+            plans = target_pair_plans_for_handles((handle,), flow="synth")
             results, short_sha = tool._run_baseline_configs(plans)
 
         # It succeeded and resolved the baseline ref; retain actionable failures.
@@ -418,7 +417,6 @@ def _stub_full_init_dependencies(
 ) -> None:
     for name in (
         "_step_core_projections",
-        "_step_goalsets",
         "_step_auth",
         "_step_git_hooks",
         "_step_project_git_hooks",
@@ -581,7 +579,7 @@ class TestInitInteractive:
 
     def test_seeds_mask_mounts_from_sandbox_knob(self, tmp_path, monkeypatch):
         # [sandbox].mask_paths: each entry becomes a read-only empty bind over
-        # its /work view — and over the /booley-project view for a
+        # its /work view — and over the /booley view for a
         # .booley subtree — and init creates the empty source dir the
         # binds need (docker --mount refuses a missing bind source).
         import subprocess
@@ -609,9 +607,7 @@ class TestInitInteractive:
         source = init_cmd.docker_mount_path(empty)
         assert f"source={source},target=/work/secret/oracle,type=bind,readonly" in spec["mounts"]
         assert f"source={source},target=/work/.booley/lanes/b,type=bind,readonly" in spec["mounts"]
-        assert (
-            f"source={source},target=/booley-project/lanes/b,type=bind,readonly" in spec["mounts"]
-        )
+        assert f"source={source},target=/booley/lanes/b,type=bind,readonly" in spec["mounts"]
 
     def test_invalid_mask_paths_reported_and_ignored(self, tmp_path, monkeypatch, capsys):
         # Whole-knob rejection (mirrors passthrough_env): a partially applied

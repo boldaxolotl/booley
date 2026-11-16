@@ -1,4 +1,4 @@
-"""Goal Mode keeps one format per artifact (issue #2407); only allowed modules import its packages (#3506)."""
+"""Goal Mode is removed (#3511); only allowed modules import Criteria (#3506)."""
 
 from __future__ import annotations
 
@@ -9,124 +9,20 @@ from pathlib import Path
 from tests.architecture.import_graph import analyze_imports
 
 GOALS_SOURCE = Path(__file__).resolve().parents[2] / "src" / "booley" / "goals"
-MIGRATION = "booley.runtime.booley_dir_migration"
 
 
 def test_legacy_goal_presentation_module_is_gone() -> None:
     assert importlib.util.find_spec("booley.review.goal_presentation_v1") is None
 
 
-def _migration_imports(path: Path) -> list[str]:
-    """Every statement in *path*, lazy ones included, that imports the Directory migration."""
-    found: list[str] = []
-    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-        if isinstance(node, ast.Import):
-            found += [alias.name for alias in node.names if alias.name == MIGRATION]
-        elif isinstance(node, ast.ImportFrom) and node.module is not None:
-            package, _, leaf = MIGRATION.rpartition(".")
-            if node.module == MIGRATION or (
-                node.module == package and any(alias.name == leaf for alias in node.names)
-            ):
-                found.append(node.module)
-    return found
-
-
-def test_goal_code_does_not_consult_the_directory_migration() -> None:
-    sources = sorted(GOALS_SOURCE.rglob("*.py"))
-    assert sources, "the Goal source tree moved; update this test"
-    offenders = {
-        str(path.relative_to(GOALS_SOURCE)): imports
-        for path in sources
-        if (imports := _migration_imports(path))
-    }
-    assert offenders == {}
-
-
 SOURCE_ROOT = GOALS_SOURCE.parent
-_GOAL_PACKAGES = ("goals", "criteria")
-# Every module outside ``booley.goals`` and ``booley.criteria`` that may still import
-# them, the packages it imports, and the issue that removes the dependency (issue #3506).
-# "Goal-only": acts only when a Goal Record or binding exists. "Evidence and staleness":
+# Every module outside ``booley.criteria`` that may still import it, and the issue that
+# removes the dependency (issue #3506). "Evidence and staleness":
 # records or reads Criteria state for Interactive evidence. "Criteria catalog": renders
 # or validates the Criteria definitions.
-_ALLOWED: dict[str, tuple[frozenset[str], str]] = {
-    "booley.dev_support.criteria_reference": (
-        frozenset({"criteria", "goals"}),
-        "Criteria catalog #3512",
-    ),
-    "booley.dev_support.flow_specialist_reference": (frozenset({"goals"}), "Goal-only #3511"),
-    "booley.flows.baseline_pins": (frozenset({"criteria"}), "Goal-only #3511"),
-    "booley.flows.endpoint_acceptance": (frozenset({"criteria"}), "evidence and staleness #3512"),
-    "booley.flows.endpoint_events": (frozenset({"criteria"}), "evidence and staleness #3512"),
-    "booley.flows.endpoint_report_criteria": (
-        frozenset({"criteria"}),
-        "evidence and staleness #3512",
-    ),
-    "booley.flows.endpoint_state": (frozenset({"criteria"}), "evidence and staleness #3512"),
-    "booley.flows.execution_persistence": (
-        frozenset({"criteria"}),
-        "evidence and staleness #3512",
-    ),
-    "booley.flows.sim.acceptance": (frozenset({"criteria"}), "evidence and staleness #3512"),
-    "booley.flows.sim.coverage_flow_context": (
-        frozenset({"criteria"}),
-        "evidence and staleness #3512",
-    ),
-    "booley.flows.sim.coverage_projection": (
-        frozenset({"criteria"}),
-        "evidence and staleness #3512",
-    ),
-    "booley.flows.sim.elab_only": (frozenset({"criteria"}), "evidence and staleness #3512"),
-    "booley.flows.sim.flow": (frozenset({"criteria"}), "evidence and staleness #3512"),
-    "booley.flows.sim.flow_resume": (frozenset({"criteria"}), "evidence and staleness #3512"),
-    "booley.flows.sim.standalone": (frozenset({"criteria"}), "evidence and staleness #3512"),
-    "booley.flows.sim.workload": (frozenset({"criteria"}), "evidence and staleness #3512"),
-    "booley.harness.booley": (
-        frozenset({"criteria", "goals"}),
-        "Goal-only #3511; criteria sections Criteria catalog #3512",
-    ),
-    "booley.harness.cli_goal_notice": (frozenset({"goals"}), "Goal-only #3511"),
-    "booley.harness.dashboard.app": (frozenset({"goals"}), "Goal-only #3511"),
-    "booley.harness.dashboard.doctor": (frozenset({"goals"}), "Goal-only #3511"),
-    "booley.harness.dashboard.jobs": (frozenset({"goals"}), "Goal-only #3511"),
-    "booley.harness.dashboard.specialist_form": (
-        frozenset({"goals"}),
-        "Goal-only #3511; spec prefill and review focuses read the Goal model and store",
-    ),
-    "booley.harness.dashboard.model": (frozenset({"criteria", "goals"}), "Goal-only #3511"),
-    "booley.harness.goal_status_view": (frozenset({"goals"}), "Goal-only #3511"),
-    "booley.harness.init_cmd": (frozenset({"goals"}), "Goal-only #3511"),
-    "booley.harness.setup.directory_migration": (frozenset({"goals"}), "Goal-only #3511"),
-    "booley.harness.worktree_list": (frozenset({"goals"}), "Goal-only #3511"),
-    "booley.harness.worktree_rm": (frozenset({"goals"}), "Goal-only #3511"),
-    "booley.mcp.call_context": (frozenset({"goals"}), "Goal-only #3511"),
-    "booley.mcp.catalog": (frozenset({"goals"}), "Goal-only #3511"),
-    "booley.mcp.endpoint_validation": (frozenset({"criteria"}), "Criteria catalog #3512"),
-    "booley.mcp.flow_execution_selection": (frozenset({"goals"}), "Goal-only #3511"),
-    "booley.mcp.goal_changes": (frozenset({"goals"}), "Goal-only #3511"),
-    "booley.mcp.goal_completion": (frozenset({"goals"}), "Goal-only #3511"),
-    "booley.mcp.goal_flow_runner": (frozenset({"goals"}), "Goal-only #3511"),
-    "booley.mcp.goal_freshness": (frozenset({"goals"}), "Goal-only #3511"),
-    "booley.mcp.goal_generated_inputs": (frozenset({"criteria", "goals"}), "Goal-only #3511"),
-    "booley.mcp.goal_tools": (frozenset({"criteria", "goals"}), "Goal-only #3511"),
-    "booley.mcp.goal_waivers": (frozenset({"criteria", "goals"}), "Goal-only #3511"),
-    "booley.mcp.job_lifecycle": (frozenset({"goals"}), "Goal-only #3511"),
-    "booley.mcp.job_results": (frozenset({"goals"}), "Goal-only #3511"),
-    "booley.mcp.registry": (frozenset({"criteria"}), "Criteria catalog #3512"),
-    "booley.mcp.server": (frozenset({"goals"}), "Goal-only #3511"),
-    "booley.mcp.sim_baseline_execution": (frozenset({"goals"}), "Goal-only #3511"),
-    "booley.mcp.sim_baseline_jobs": (frozenset({"goals"}), "Goal-only #3511"),
-    "booley.mcp.synth_baseline_execution": (frozenset({"goals"}), "Goal-only #3511"),
-    "booley.mcp.unbound_recorder": (frozenset({"criteria"}), "evidence and staleness #3512"),
-    "booley.specialists.coverage_analyst": (
-        frozenset({"criteria"}),
-        "evidence and staleness #3512",
-    ),
-    "booley.specialists.reviewer": (frozenset({"criteria"}), "evidence and staleness #3512"),
-    "booley.specialists.verification_freshness": (
-        frozenset({"criteria"}),
-        "evidence and staleness #3512",
-    ),
+_ALLOWED: dict[str, str] = {
+    "booley.mcp.endpoint_validation": "Criteria catalog #3512",
+    "booley.mcp.registry": "Criteria catalog #3512",
 }
 
 
@@ -134,19 +30,98 @@ def _is_inside(module: str, package: str) -> bool:
     return module == package or module.startswith(f"{package}.")
 
 
-def _goal_package_importers() -> dict[str, frozenset[str]]:
-    """Packages of ``booley.goals``/``booley.criteria`` imported by modules outside them."""
-    imported: dict[str, set[str]] = {}
-    for dependency in analyze_imports(SOURCE_ROOT):
-        if any(_is_inside(dependency.source, f"booley.{name}") for name in _GOAL_PACKAGES):
-            continue
-        for name in _GOAL_PACKAGES:
-            if _is_inside(dependency.target, f"booley.{name}"):
-                imported.setdefault(dependency.source, set()).add(name)
-    return {source: frozenset(names) for source, names in imported.items()}
+def _criteria_importers() -> frozenset[str]:
+    """Modules outside ``booley.criteria`` that import it."""
+    return frozenset(
+        dependency.source
+        for dependency in analyze_imports(SOURCE_ROOT)
+        if _is_inside(dependency.target, "booley.criteria")
+        and not _is_inside(dependency.source, "booley.criteria")
+    )
 
 
-def test_only_goal_mode_and_evidence_consumers_import_goals_or_criteria() -> None:
-    """New importers, new packages for allowed importers, and stale rows all fail."""
-    allowed = {module: packages for module, (packages, _reason) in _ALLOWED.items()}
-    assert _goal_package_importers() == allowed
+def test_only_criteria_consumers_import_criteria() -> None:
+    """New importers and stale rows both fail."""
+    assert _criteria_importers() == frozenset(_ALLOWED)
+
+
+def test_no_specialist_module_imports_criteria() -> None:
+    """Specialists read and write no Criterion evidence (#4301)."""
+    assert {m for m in _criteria_importers() if _is_inside(m, "booley.specialists")} == set()
+
+
+REPO_ROOT = SOURCE_ROOT.parents[1]
+_REMOVED_MODULES = (
+    "booley.flows.endpoint_report_criteria",
+    "booley.goals",
+    "booley.mcp.goal_tools",
+    "booley.mcp.goal_changes",
+    "booley.mcp.goal_completion",
+    "booley.mcp.goal_flow_runner",
+    "booley.mcp.goal_freshness",
+    "booley.mcp.goal_generated_inputs",
+    "booley.mcp.goal_waivers",
+    "booley.mcp.sim_baseline_execution",
+    "booley.mcp.sim_baseline_jobs",
+    "booley.mcp.synth_baseline_execution",
+    "booley.mcp.baseline_preparation",
+    "booley.mcp.project_flow_loader",
+    "booley.config.goals",
+    "booley.review.goal_package",
+    "booley.harness.cli_goal_notice",
+    "booley.harness.goal_status_view",
+    "booley.harness.dashboard.doctor",
+    "booley.targets.goal_diff",
+    "booley.targets.surface_diff",
+    "booley.flows.frozen_test_runs",
+    "booley.flows.baseline_pins",
+    "booley.flows.review_scope",
+    "booley.flows.sim.coverage_waiver_promotion",
+    "booley.flows.sim.waiver_candidates",
+    "booley.specialists.coverage_candidate_recording",
+    "booley.runtime.job_wait",
+    "booley.dev_support.criteria_reference",
+)
+
+
+def _package_of(path: Path) -> list[str]:
+    """The dotted package a ``.py`` file under ``src/``, ``tests/`` or ``.github/scripts/`` is in."""
+    for root in (REPO_ROOT / "src", REPO_ROOT):
+        if path.is_relative_to(root):
+            parts = list(path.relative_to(root).parent.parts)
+            return parts
+    return []  # pragma: no cover - every scanned file is under REPO_ROOT
+
+
+def _imported_names(path: Path) -> list[str]:
+    """Every dotted name *path* imports, relative imports resolved, lazy ones included."""
+    package = _package_of(path)
+    names: list[str] = []
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            names += [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            base = package[: len(package) - node.level + 1] if node.level else []
+            module = ".".join([*base, *([node.module] if node.module else [])])
+            names.append(module)
+            names += [f"{module}.{alias.name}" for alias in node.names]
+    return names
+
+
+def test_goal_mode_package_is_gone_and_nothing_imports_it() -> None:
+    """Goal Mode is removed; a raw walk of every import catches names ``analyze_imports`` drops."""
+    assert importlib.util.find_spec("booley.goals") is None
+    assert not GOALS_SOURCE.exists()
+    offenders: dict[str, list[str]] = {}
+    for root in ("src", "tests", ".github/scripts"):
+        for path in sorted((REPO_ROOT / root).rglob("*.py")):
+            if path == Path(__file__).resolve():
+                continue
+            hits = [
+                name
+                for name in _imported_names(path)
+                if any(name == gone or name.startswith(f"{gone}.") for gone in _REMOVED_MODULES)
+            ]
+            if hits:
+                offenders[str(path.relative_to(REPO_ROOT))] = sorted(set(hits))
+    assert offenders == {}

@@ -142,8 +142,7 @@ booley = [
     "data/**/*",
     # Runtime resources resolved relative to the installed package (__file__),
     # not just present in the dev tree — omitting these ships a wheel/image that
-    # blocks at runtime: runtime/worktree_create.sh (Goal setup and
-    # `booley worktree new`) and pre-commit-ruff.sh (git hook).
+    # blocks at runtime: runtime/worktree_create.sh (`booley worktree new`) and pre-commit-ruff.sh (git hook).
     "dev_support/*.sh",
     "runtime/*.sh",
 ]
@@ -296,8 +295,7 @@ filterwarnings = [
 # ---------------------------------------------------------------------------
 [tool.coverage.run]
 source = ["booley"]
-# Goal Mode source is not measured while its tests are not collected: see tests/conftest.py.
-omit = ["tests/*", "*/booley/goals/*"]
+omit = ["tests/*"]
 branch = true
 # Raw shard artifacts are reported from a different runner. Canonical relative
 # paths also fold subprocess imports from temporary source checkouts back onto
@@ -346,53 +344,17 @@ exclude = [
     "src/booley/flows/cli_arguments.py",
     "src/booley/flows/cli_selection.py",
     "src/booley/flows/eda_failures.py",
-    "src/booley/flows/endpoint_acceptance.py",
     "src/booley/flows/endpoint_admission.py",
     "src/booley/flows/endpoint_events.py",
-    "src/booley/flows/endpoint_report_criteria.py",
     "src/booley/flows/job_resources.py",
     "src/booley/flows/mutation/flow.py",
     "src/booley/flows/review_scope.py",
-    "src/booley/flows/sim/acceptance.py",
-    "src/booley/flows/sim/adapter_transport.py",
-    "src/booley/flows/sim/backends/cocotb.py",
-    "src/booley/flows/sim/backends/icarus.py",
-    "src/booley/flows/sim/backends/shared.py",
-    "src/booley/flows/sim/config.py",
-    "src/booley/flows/sim/coverage_policy.py",
-    "src/booley/flows/sim/coverage_record.py",
-    "src/booley/flows/sim/coverage_waiver_files.py",
-    "src/booley/flows/sim/execution/engine.py",
-    "src/booley/flows/sim/execution/pre_sim.py",
-    "src/booley/flows/sim/execution/pre_sim_reporting.py",
-    "src/booley/flows/sim/flow_resume.py",
-    "src/booley/flows/sim/live_progress.py",
-    "src/booley/flows/sim/record/bundle.py",
-    "src/booley/flows/sim/record/coordinator.py",
-    "src/booley/flows/sim/record/coverage_execution.py",
-    "src/booley/flows/sim/record/planning.py",
-    "src/booley/flows/sim/record/pre_sim_evidence.py",
-    "src/booley/flows/sim/record/serial_execution.py",
-    "src/booley/flows/sim/record/store.py",
-    "src/booley/flows/sim/record_invocation.py",
-    "src/booley/flows/sim/record_retention.py",
-    "src/booley/harness/booley.py",
-    "src/booley/harness/bootstrap.py",
-    "src/booley/harness/dashboard/app.py",
-    "src/booley/harness/dashboard/model.py",
-    "src/booley/harness/doctor.py",
-    "src/booley/harness/endpoint_help.py",
-    "src/booley/harness/image_lifecycle.py",
-    "src/booley/harness/incontainer_register.py",
-    "src/booley/harness/init_cmd.py",
-    "src/booley/harness/setup/scaffold.py",
     "src/booley/mcp/application.py",
     "src/booley/mcp/flow_adapter.py",
     "src/booley/mcp/job_lifecycle.py",
     "src/booley/mcp/schema_extractor.py",
     "src/booley/mcp/server.py",
     "src/booley/mcp/session_registry.py",
-    "src/booley/mcp/sim_baseline_execution.py",
 ]
 strict = [
     # External-input coercion and the Booley Directory trust boundary.
@@ -406,15 +368,7 @@ strict = [
     "src/booley/flows/test_runs.py",
     "src/booley/flows/target_test_plan.py",
     "src/booley/flows/target_test_plan_loading.py",
-    "src/booley/flows/frozen_test_runs.py",
     "src/booley/flows/simulator_family.py",
-    "src/booley/goals",
-    "src/booley/mcp/goal_changes.py",
-    "src/booley/mcp/goal_waivers.py",
-    "src/booley/mcp/goal_freshness.py",
-    "src/booley/mcp/goal_completion.py",
-    "src/booley/mcp/goal_generated_inputs.py",
-    "src/booley/review/goal_package.py",
     "src/booley/runtime/publication_ownership.py",
     "src/booley/runtime/pinned_history.py",
 ]

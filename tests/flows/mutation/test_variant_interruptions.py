@@ -242,12 +242,11 @@ async def test_public_job_cancel_preserves_dirty_scope(
     overrides = _environment(tmp_path)
     for key, value in overrides.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setattr(job_results, "project_goal_store", lambda: None)
+    monkeypatch.setattr(job_results, "project_booley_dir", lambda: None)
     runtime = tmp_path / "runtime"
     context = CallContext(
         dirty_worktree,
         runtime / "jobs",
-        None,
         tmp_path / "logs",
         runtime,
         overrides,

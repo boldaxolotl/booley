@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -8,6 +9,14 @@ import pytest
 
 from booley.runtime import host_install
 from booley.runtime.host_install import HostInstallationError, HostInstallationIdentity
+
+
+@pytest.fixture(autouse=True)
+def _empty_path(tmp_path: Path, monkeypatch) -> None:
+    """Keep mismatch messages from scanning the developer's real PATH."""
+    empty = tmp_path / "empty-path"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
 
 
 def _identity(root: str = "/opt/python/lib/python3.14/site-packages") -> HostInstallationIdentity:
@@ -451,3 +460,160 @@ def test_read_only_installation_contains_unreadable_candidate(tmp_path, monkeypa
     assert not result.pending
     assert str(tmp_path) in result.error
     assert "restore package read access" in result.error
+
+
+_POSIX_ONLY = pytest.mark.skipif(
+    os.name == "nt", reason="POSIX shell-script and link stand-ins for booley"
+)
+_ONE_INSTALL_TEXT = (
+    "this Booley process does not match the canonical host installation "
+    "(revision abc123 -> def456); run the canonical host `booley bootstrap "
+    "--update` if this upgrade is intentional"
+)
+
+
+def _fake_booley(directory: Path, body: str) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    script = directory / "booley"
+    script.write_bytes(f"#!/bin/sh\n{body}\n".encode())
+    script.chmod(0o755)
+    return script.resolve()
+
+
+def _two_installs(tmp_path: Path, monkeypatch, old_body: str) -> tuple[Path, Path, Path]:
+    old = _fake_booley(tmp_path / "old", old_body)
+    new = _fake_booley(tmp_path / "new", "echo 'booley 1.2.3 (def456, 2026-02-02)'")
+    monkeypatch.setenv("PATH", os.pathsep.join([str(old.parent), str(new.parent)]))
+    state = tmp_path / "host-installation.json"
+    _write(state, replace(_identity(), executable=str(old), version="0.9.0"))
+    running = replace(_identity(), executable=str(new), revision="def456")
+    monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: None)
+    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: running)
+    monkeypatch.setattr(host_install, "host_installation_path", lambda: state)
+    return old, new, state
+
+
+def _refusal(entry: str, source: Path, state: Path) -> str | None:
+    if entry == "refusal":
+        return host_install.host_install_error(source, path=state)
+    if entry == "inspection":
+        return host_install.inspect_host_installation(source).error
+    with pytest.raises(HostInstallationError) as caught:
+        host_install.register_host_installation(source, path=state)
+    return str(caught.value)
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("entry", ["refusal", "inspection", "registration"])
+def test_mismatch_lists_shadowing_older_install(tmp_path, monkeypatch, entry):
+    old, new, state = _two_installs(tmp_path, monkeypatch, "echo 'booley 0.9.0 (abc1234, x)'")
+
+    message = _refusal(entry, tmp_path, state)
+
+    assert message is not None
+    assert message.endswith(
+        f"; `booley` executables on PATH, first one runs: {old} (v0.9.0, recorded), "
+        f"{new} (v1.2.3, running); remove or upgrade the installs listed before the one "
+        "you want, or run `booley bootstrap --update` to record the running one"
+    )
+
+
+@_POSIX_ONLY
+def test_mismatch_message_unchanged_with_one_distinct_install(tmp_path, monkeypatch):
+    real = _fake_booley(tmp_path / "dir", "echo 'booley 1.2.3'")
+    (tmp_path / "link_dir").mkdir()
+    (tmp_path / "link_dir" / "booley").symlink_to(real)
+    (tmp_path / "hard_dir").mkdir()
+    os.link(real, tmp_path / "hard_dir" / "booley")
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    entries = [locked, real.parent, real.parent, tmp_path / "link_dir", tmp_path / "hard_dir"]
+    monkeypatch.setenv("PATH", os.pathsep.join(str(item) for item in entries))
+    state = tmp_path / "host-installation.json"
+    _write(state, _identity())
+    monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: None)
+    monkeypatch.setattr(
+        host_install,
+        "current_host_installation",
+        lambda _source: replace(_identity(), revision="def456"),
+    )
+    locked.chmod(0)
+    try:
+        message = host_install.host_install_error(tmp_path, path=state)
+    finally:
+        locked.chmod(0o755)
+
+    assert message == _ONE_INSTALL_TEXT
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("probe", ["failing", "hanging"])
+def test_mismatch_lists_unreadable_version_as_unknown(tmp_path, monkeypatch, probe):
+    started = tmp_path / "probe-started"
+    hang = f": > '{started}'; exec '{sys.executable}' -c 'import time; time.sleep(60)'"
+    body = "exit 3" if probe == "failing" else hang
+    monkeypatch.setattr(host_install, "_VERSION_TIMEOUT_S", 1.0)
+    old, _new, state = _two_installs(tmp_path, monkeypatch, body)
+
+    message = host_install.host_install_error(tmp_path, path=state)
+
+    assert message is not None
+    assert started.exists() == (probe == "hanging")
+    assert f"{old} (version unknown, recorded)" in message
+
+
+@pytest.mark.parametrize("output", ["other 1.0\n", "booley\n"])
+def test_executable_version_rejects_unexpected_output(tmp_path, output):
+    script = _fake_booley(tmp_path / "odd", f"printf '{output}'")
+    if os.name == "nt":
+        pytest.skip("POSIX shell-script stand-in for booley")
+
+    assert host_install._executable_version(script) is None
+
+
+def test_mismatch_lists_platform_executable_name(tmp_path, monkeypatch):
+    name = "booley.exe" if os.name == "nt" else "booley"
+    decoy_name = "booley" if os.name == "nt" else "booley.exe"
+    paths: dict[str, Path] = {}
+    for directory, file_name in (("decoy", decoy_name), ("first", name), ("second", name)):
+        (tmp_path / directory).mkdir()
+        candidate = tmp_path / directory / file_name
+        candidate.write_bytes(b"")
+        candidate.chmod(0o755)
+        paths[directory] = candidate.resolve()
+    monkeypatch.setenv(
+        "PATH", os.pathsep.join(str(tmp_path / part) for part in ("decoy", "first", "second"))
+    )
+    state = tmp_path / "host-installation.json"
+    _write(state, replace(_identity(), executable=str(paths["first"])))
+    running = replace(_identity(), executable=str(paths["second"]), revision="def456")
+    monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: None)
+    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: running)
+
+    message = host_install.host_install_error(tmp_path, path=state)
+
+    assert message is not None
+    assert message.endswith(
+        f"; `booley` executables on PATH, first one runs: {paths['first']} "
+        f"(version unknown, recorded), {paths['second']} (v1.2.3, running); "
+        "remove or upgrade the installs listed before the one you want, or run "
+        "`booley bootstrap --update` to record the running one"
+    )
+
+
+def test_mismatch_marks_launcher_whose_identity_lacks_exe(tmp_path, monkeypatch):
+    for directory in ("first", "second"):
+        (tmp_path / directory).mkdir()
+        (tmp_path / directory / "booley.exe").write_bytes(b"")
+        (tmp_path / directory / "booley.exe").chmod(0o755)
+    first, second = ((tmp_path / part / "booley.exe").resolve() for part in ("first", "second"))
+    monkeypatch.setattr(host_install, "_path_executables", lambda: [first, second])
+    monkeypatch.setattr(host_install, "_executable_version", lambda _exe: None)
+    recorded = replace(_identity(), executable=str(first.with_suffix("")))
+    running = replace(_identity(), executable=str(second.with_suffix("")), revision="def456")
+
+    listing = host_install.shadowing_installs(recorded, running)
+
+    assert listing is not None
+    assert f"{first} (version unknown, recorded)" in listing
+    assert f"{second} (v1.2.3, running)" in listing

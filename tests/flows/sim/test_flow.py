@@ -289,7 +289,6 @@ def _make_flow(
     flow = SimulateFlow()
     with patch.dict(os.environ, env):
         flow.parse_args(argv)
-    flow.read_state()
     return flow
 
 
@@ -695,60 +694,83 @@ def test_simulation_record_verdict_sets_exit_code(
         assert "INCONCLUSIVE" in outcome.report_text
 
 
-def _ticket_state(tmp_path: Path, monkeypatch, keys: list[str]) -> Path:
-    """Save a strict Ticket state declaring *keys*, and name it as the state file."""
-    state_path = tmp_path / "state.json"
-    state = DevelopmentState.load(state_path)
-    state.slug, state.ticket_type = "ticket", "implementation"
-    state.init_criteria(dict.fromkeys(keys, True), strict=True)
-    state.save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
-    return state_path
+CRASH_PROCESS = SubprocessResult(returncode=-11, stdout="[SIM_CYCLES] 12\n", duration_s=1.0)
 
 
 @pytest.mark.parametrize(
-    ("process", "ticket", "expected"),
+    ("process", "exit_code", "plain", "per_test", "verdicts"),
     [
-        (_lite_passes_full_fails, True, {"sim_pass_lite": True, "sim_pass_full": False}),
-        (INCONCLUSIVE_PROCESS, True, {"sim_pass_lite": False, "sim_pass_full": False}),
-        (PASS_PROCESS, False, {"sim_pass_lite": True}),
-        (FAIL_PROCESS, False, {"sim_pass_lite": False}),
-        (INCONCLUSIVE_PROCESS, False, {}),
+        (PASS_PROCESS, EXIT_SUCCESS, {"tests_failed": 0, "tests_total": 1}, {"smoke@1": 2561}, 0),
+        (FAIL_PROCESS, EXIT_FAILURE, {"tests_failed": 1, "tests_total": 1}, None, 1),
+        (CRASH_PROCESS, EXIT_FAILURE, {"tests_failed": 1, "tests_total": 1}, None, 1),
     ],
-    ids=[
-        "ticket-mixed",
-        "ticket-inconclusive",
-        "standalone-pass",
-        "standalone-fail",
-        "standalone-inconclusive",
-    ],
+    ids=["pass", "fail", "crash"],
 )
-def test_simulation_record_records_criteria(
-    tmp_path: Path, monkeypatch, process, ticket: bool, expected: dict[str, bool]
+def test_simulation_run_records_no_criterion(
+    tmp_path: Path,
+    monkeypatch,
+    process: SubprocessResult,
+    exit_code: int,
+    plain: dict[str, int],
+    per_test: dict[str, int] | None,
+    verdicts: int,
 ):
-    """Ticket Mode reconciles every declared Criterion through the acceptance
-    coordinator; a standalone run records pass and fail but nothing when inconclusive."""
-    from tests.flows.sim.test_coverage_flow import _AcceptanceAdapter
+    """A hand-run ``sim`` keeps its verdict, exit status and metric values, derives no
+    Criterion and writes no development-state or evidence file."""
+    from booley.measurement.flow_metrics import report_metric_values
+    from booley.measurement.metrics_file import Bound, TableRules
+    from booley.measurement.verdicts import FlowValues, evaluate_table, measure_exit_code
 
-    targets = {"lite": ["smoke"], "full": ["smoke"]} if ticket else {"lite": ["smoke"]}
-    if not ticket:
-        monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
-        run = run_simulation_record_sim(tmp_path, monkeypatch, targets, process, target="lite")
-        criteria = run.flow.state.criteria
-        assert {key: criterion.met for key, criterion in criteria.items()} == expected
-        return
-    state_path = _ticket_state(tmp_path, monkeypatch, list(expected))
-    recorder = _AcceptanceAdapter(
-        log_dir=tmp_path / "logs",
-        identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
+    monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
+    run = run_simulation_record_sim(
+        tmp_path, monkeypatch, {"lite": ["smoke"]}, process, target="lite"
     )
-    run_simulation_record_sim(
-        tmp_path, monkeypatch, targets, process, target="lite,full", adapter=recorder
+
+    assert run.result.exit_code == exit_code
+    assert list(tmp_path.rglob("state.json")) == []
+    assert not (tmp_path / "logs").exists()
+    report = json.loads((tmp_path / "reports/sim/1/report.json").read_text(encoding="utf-8"))
+    values = report_metric_values("sim", report["detail"])["lite"]
+    assert values.plain == plain
+    assert values.per_test == ({"cycle_count": per_test} if per_test else {})
+    rules = TableRules(
+        "t",
+        "vlnv:x#t",
+        "sim",
+        (Bound("tests_failed_max", "tests_failed", "max", 0, None, None, None),),
+        (),
     )
-    saved = DevelopmentState.load(state_path)
-    assert {key: saved.is_met(key) for key in expected} == expected
-    # One acceptance transaction per declared Criterion: the coordinator recorded them.
-    assert len(saved.acceptance_transactions) == len(expected)
+    judged = evaluate_table(rules, FlowValues(values, values.clocks))
+    assert measure_exit_code(result.verdict for result in judged) == verdicts
+
+
+def test_simulation_run_leaves_declared_criteria_untouched(tmp_path: Path, monkeypatch):
+    """Criteria declared in a state file are neither evaluated, baselined nor recorded."""
+    state_path = tmp_path / "state.json"
+    state = DevelopmentState.load(state_path)
+    state.slug, state.ticket_type = "ticket", "implementation"
+    state.init_criteria(
+        {"sim_pass_lite": True, "cycle_count_lite_smoke": True},
+        criterion_params={
+            "cycle_count_lite_smoke": {
+                "target": "lite",
+                "test": "smoke",
+                "cycle_count_increase_at_most": "50%",
+                "_baseline_ref": "f" * 40,
+            }
+        },
+        strict=True,
+    )
+    state.save()
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    before = state_path.read_bytes()
+    run = run_simulation_record_sim(
+        tmp_path, monkeypatch, {"lite": ["smoke"]}, PASS_PROCESS, target="lite"
+    )
+
+    assert run.result.exit_code == EXIT_SUCCESS, run.result.outcome.report_text
+    assert run.launched == [("lite", ("smoke",))]
+    assert state_path.read_bytes() == before
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX unreadable-directory regression")
@@ -1073,33 +1095,6 @@ class TestMissingExecutableIsEdaToolError:
 # ---------------------------------------------------------------------------
 # Selector round trip: producer argv -> run-half argparse (F-12 family)
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("met", [True, False, None])
-def test_standalone_elab_only_final_headline(tmp_path, met):
-    from booley.flows.sim.build import BuildOutcome
-    from booley.flows.sim.elab_only import ElabOnlyTargetResult
-    from booley.runtime.endpoint_execution import EndpointOutcome
-    from tests.flows.report_headline import final_report_omits_headline
-
-    flow = _make_flow(tmp_path, config="lite", extra_args=["--mode", "elab-only"])
-    flow.args.state_file = None
-    flow.read_state()
-    build = BuildOutcome(
-        True,
-        None if met is None else ("pass" if met else "fail"),
-        "infrastructure" if met is None else (None if met else "design"),
-    )
-    flow._record_elab_only_criterion(ElabOnlyTargetResult("lite", outcome=build))
-    result = EndpointOutcome(exit_code=2 if met is None else (0 if met else 1))
-    with flow.publication_resources:
-        report = final_report_omits_headline(flow, result)
-    assert report["exit_code"] == result.exit_code
-    if met is None:
-        assert "elab_pass_lite" not in flow.state.criteria
-    else:
-        assert flow.state.criteria["elab_pass_lite"].met is met
-    assert flow.state._file_path is None
 
 
 def test_target_report_write_survives_transient_replace_sharing_error(

@@ -18,7 +18,7 @@ from tests.flows.report_headline import assert_paired_headline
 from tests.memory_budget_support import pin_budget
 from tests.oom_priority_support import FakeProc
 
-# The Criterion key each kind judges, planned before the run and reported after it.
+# The Criterion key each kind records through the acceptance owner.
 PLANNED_KEYS = {
     "ordinary": "echo_ok",
     "target_selection": "lint_clean_chosen",
@@ -131,34 +131,6 @@ def _simulation_record(
     )
 
 
-def _install_acceptance_owner(runtime: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Install an external acceptance owner with identity; return the keys it records.
-
-    Mirrors ``external_acceptance_owner`` in test_transport_contract. A Custom Flow
-    configures its owner when constructed, so call this before building any Flow.
-    """
-    from tests.criteria.ledger_support import FixtureRecorder
-
-    recorded: list[str] = []
-
-    class KeyRecorder(FixtureRecorder):
-        def record_changes(self, state: Any, changes: Any, **kwargs: Any) -> Any:
-            recorded.extend(change.key for change in changes)
-            return super().record_changes(state, changes, **kwargs)
-
-    recorder = KeyRecorder(
-        log_dir=runtime / "logs", identity={"generation": "d" * 32, "authored_sha256": "e" * 64}
-    )
-    configure = EndpointState.configure_flow_execution
-
-    def configure_external(endpoint: EndpointState, adapter: Any) -> None:
-        configure(endpoint, adapter)
-        endpoint._acceptance_recorder = recorder
-
-    monkeypatch.setattr(EndpointState, "configure_flow_execution", configure_external)
-    return recorded
-
-
 def _spy_lifecycle(monkeypatch: pytest.MonkeyPatch) -> tuple[list[object], list[object]]:
     """Return the invocations handed to ``invoke_endpoint`` and the admissions entered."""
     invocations: list[object] = []
@@ -196,7 +168,6 @@ def test_prepared_invocation_kind_drives_lifecycle(
     }[kind]
     key = PLANNED_KEYS[kind]
     _bind_strict_state(runtime, monkeypatch, key)
-    recorded = _install_acceptance_owner(runtime, monkeypatch)
 
     simulation_record_admissions: list[object] = []
     if kind == "ordinary":
@@ -219,9 +190,9 @@ def test_prepared_invocation_kind_drives_lifecycle(
     if kind == "simulation_record":
         assert simulation_record_admissions == entered
         assert simulation_record_admissions[0] is not None
-    assert recorded == [key]
-    assert (result.outcome.criterion_key, result.outcome.criterion_met) == (key, True)
-    assert_paired_headline(runtime / "reports", flow.name, (key, True))
+    assert not hasattr(result.outcome, "criterion_key")
+    assert not hasattr(result.outcome, "criterion_met")
+    assert_paired_headline(runtime / "reports", flow.name)
 
 
 def test_lint_and_custom_flow_hold_a_memory_reservation_through_the_run(runtime: Path) -> None:
@@ -251,7 +222,6 @@ def _assert_holds_reservation_through_run(
     monkeypatch.setattr(endpoint_admission, "resolve_common_booley_dir", lambda: booley_dir)
     key = PLANNED_KEYS[kind]
     _bind_strict_state(runtime, monkeypatch, key)
-    _install_acceptance_owner(runtime, monkeypatch)
     if kind == "ordinary":
         flow, request = _ordinary(runtime)
     else:

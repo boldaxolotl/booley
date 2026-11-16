@@ -72,22 +72,6 @@ def project(tmp_path, monkeypatch):
     return tmp_path
 
 
-@pytest.fixture
-def goal_mode(tmp_path, monkeypatch):
-    # Import these helpers during execution: importing another directory's
-    # conftest at collection time bypasses pytest's conftest registration.
-    from types import SimpleNamespace
-
-    from tests.goals.conftest import enter_goals, layout
-
-    lifetime = layout.__wrapped__(tmp_path, monkeypatch)
-    project = next(lifetime)
-    try:
-        yield SimpleNamespace(**vars(project), record=enter_goals(project))
-    finally:
-        lifetime.close()
-
-
 # The expensive preparation/EDA leaves use deterministic spies. Public _run,
 # Target preparation, simulation preparation and catalog discovery remain real.
 @pytest.fixture
@@ -374,20 +358,12 @@ def test_selection_notice_is_once_for_quiet_and_normal_calls(quiet, project, exe
     assert captured.err.rstrip().endswith(notice)
 
 
-@pytest.mark.parametrize("failure", ("binding", "simulation", "coverage"))
+@pytest.mark.parametrize("failure", ("simulation", "coverage"))
 def test_selection_notice_survives_preparation_failure(
     failure, project, executed, monkeypatch, capsys
 ):
-    from booley.flows.endpoint_state import EndpointState
-
     write_targets(project, "sim")
-    if failure == "binding":
-        monkeypatch.setattr(
-            EndpointState,
-            "_criterion_binding_gate",
-            lambda self: EndpointOutcome(exit_code=2, report_text="binding refused"),
-        )
-    elif failure == "simulation":
+    if failure == "simulation":
         monkeypatch.setattr(
             SimulateFlow,
             "_validate_prepared_selection",
@@ -459,7 +435,7 @@ def test_automatic_candidate_selection_is_not_repeated_in_baseline(
     flow.parse_args(["--work-dir", str(project), "--baseline", "old"])
     assert flow.prepare_target_endpoint() is None
     handles = flow._selected_target_handles()
-    pairs = target_pair_plans_for_handles({}, "unused_", handles, flow=name)
+    pairs = target_pair_plans_for_handles(handles, flow=name)
     assert flow.args.target == "chosen"
     flow._target_handles = {h.selector: h for h in handles}
     flow._target_execution_refs = candidate_execution_refs(handles, pairs)
@@ -491,42 +467,6 @@ def test_automatic_candidate_selection_is_not_repeated_in_baseline(
     assert result == {} and sha == "old"
     assert seen == [handles[0].identity]
     assert flow.args.work_dir == project
-
-
-def test_auto_selected_target_still_requires_goal_binding(goal_mode, monkeypatch, executed):
-    from booley.goals.flow_execution import GoalFlowExecution
-    from booley.runtime import runtime_context
-    from tests.goals.conftest import bind
-
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
-    project = goal_mode.worktree
-    monkeypatch.chdir(project)
-    write_targets(project, "lint")
-    flow = LintFlow()
-    unbound = flow.execute(
-        flow.request_type(target="", work_dir=project),
-        adapter=GoalFlowExecution(bind(goal_mode, "unbound")),
-    )
-    assert unbound.exit_code == 2 and executed == []
-    assert unbound.outcome.detail["acceptance_effect"] == "rejected_unbound"
-    assert unbound.outcome.detail["unbound_targets"] == ["chosen"]
-    core = project / "demo.core"
-    core.write_text(
-        core.read_text().replace("acme:lib:demo:1", "::top:0").replace("chosen", "top")
-    )
-    accepted = LintFlow().execute(
-        LintFlow.request_type(target="", work_dir=project),
-        adapter=GoalFlowExecution(bind(goal_mode, "bound")),
-    )
-    assert accepted.exit_code == 0
-    assert executed == ["::top:0#top"]
-    executed.clear()
-    core.write_text(core.read_text().replace("top:", "chosen:"))
-    diagnostic = LintFlow().execute(
-        LintFlow.request_type(target="", work_dir=project, diagnostic=True),
-        adapter=GoalFlowExecution(bind(goal_mode, "diagnostic")),
-    )
-    assert diagnostic.exit_code == 0 and executed
 
 
 @pytest.mark.parametrize("count", (0, 1, 2))

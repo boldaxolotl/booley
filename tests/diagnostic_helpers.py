@@ -214,7 +214,7 @@ def _issued_runtime_state(tmp_path: Path):
 
 
 def _isolate_runtime_files(monkeypatch):
-    monkeypatch.setenv("BOOLEY_DIR", "/booley-project")
+    monkeypatch.setenv("BOOLEY_DIR", "/booley")
     is_dir = Path.is_dir
     exists = Path.exists
     lstat = Path.lstat
@@ -229,9 +229,7 @@ def _isolate_runtime_files(monkeypatch):
             "/home/agent/.config/booley/eda",
         )
     }
-    monkeypatch.setattr(
-        Path, "is_dir", lambda p: True if p == Path("/booley-project") else is_dir(p)
-    )
+    monkeypatch.setattr(Path, "is_dir", lambda p: True if p == Path("/booley") else is_dir(p))
     monkeypatch.setattr(Path, "exists", lambda p: False if p in hidden else exists(p))
 
     ssh_dirs = {Path("/root/.ssh"), Path("/home/agent/.ssh")}

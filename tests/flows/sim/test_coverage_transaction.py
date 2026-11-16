@@ -21,7 +21,6 @@ from booley.flows.sim.coverage_record_store import (
 )
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome, run_coverage_target
 from booley.flows.sim.execution.contract import PreSimEvidence
-from booley.flows.sim.record_retention import _coverage_owned_files
 from booley.flows.sim.verilator_coverage import (
     PINNED_VERILATOR,
     SimulationBuildResult,
@@ -40,6 +39,8 @@ class NativeExecution:
         self.build_root = Path(tempfile.mkdtemp(prefix="booley-coverage-test-"))
         self.executable = self.build_root / "simv"
         self.executable.write_bytes(b"authenticated simulator image")
+        self.verify_bundle = None
+        self.evidence_root = None
 
     def build(self, request):
         return SimulationBuildResult(True, collector=PINNED_VERILATOR)
@@ -52,6 +53,9 @@ class NativeExecution:
         )
 
     def run(self, request):
+        if self.verify_bundle is not None:
+            # The real execution checks the bundle after Pre-Sim, before its launch.
+            self.verify_bundle()
         self.runs.append(request)
         if not self.missing:
             request.raw_path.parent.mkdir(parents=True, exist_ok=True)
@@ -66,8 +70,10 @@ class NativeExecution:
     def authenticated_image(self):
         return self.build_root, (self.executable,)
 
-    def bind_authenticated_attempt(self, snapshot_root, run_cwd):
-        self.executable = snapshot_root / self.executable.name
+    def bind_authenticated_attempt(self, bundle_root, evidence_root, run_cwd, verify_bundle):
+        self.executable = bundle_root / self.executable.name
+        self.evidence_root = evidence_root
+        self.verify_bundle = verify_bundle
         self.run_cwd = run_cwd
 
 
@@ -256,6 +262,9 @@ class InvalidHookExecution(NativeExecution):
         self.events = events
 
     def run(self, request):
+        if self.verify_bundle is not None:
+            # The real execution checks the bundle after Pre-Sim, before its launch.
+            self.verify_bundle()
         self.runs.append(request)
         request.raw_path.parent.mkdir(parents=True, exist_ok=True)
         request.raw_path.write_text(self.payload(self.hits), encoding="utf-8")
@@ -295,7 +304,7 @@ def _assert_invalid_hook_coverage_record(outcome, plan, events, expected_finding
     assert loaded.points
     assert loaded.rollups == ()
     target_dir = outcome.coverage_record_path.parent
-    owned = _coverage_owned_files(target_dir, persisted)
+    owned = {(target_dir / artifact.path).absolute() for artifact in loaded.artifacts}
     assert all(path.absolute() in owned for path in target_dir.glob("hooks/*.json"))
     if gated:
         assert loaded.evaluation["status"] == "blocked"
@@ -441,7 +450,7 @@ def _run_with_waivers(
         criteria={"coverage_sim_0": criterion} if gated else {},
         waiver_config=waiver_config,
     )
-    request = CoverageInvocationRequest(("sim_0",), no_waivers=no_waivers, diagnostic=no_waivers)
+    request = CoverageInvocationRequest(("sim_0",), no_waivers=no_waivers)
     prepared = prepare_coverage_invocation(request, context)
     plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim" / invocation)
     return plan, run_target(plan, NativeExecution())
@@ -532,7 +541,7 @@ def test_invalid_waivers_block_every_coverage_run(tmp_path, invalid):
         assert results[False][0][0] == "COV_WAIVER_DIRECTORY_UNSAFE"
 
 
-def test_no_waivers_diagnostic_criterion_skips_invalid_waivers(tmp_path):
+def test_no_waivers_criterion_skips_invalid_waivers(tmp_path):
     from fractions import Fraction
 
     from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
@@ -550,7 +559,7 @@ def test_no_waivers_diagnostic_criterion_skips_invalid_waivers(tmp_path):
         waiver_config=CoverageWaiverConfig("rtl_repository", "../unsafe"),
     )
     prepared = prepare_coverage_invocation(
-        CoverageInvocationRequest(("sim_0",), no_waivers=True, diagnostic=True), context
+        CoverageInvocationRequest(("sim_0",), no_waivers=True), context
     )
     plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
     outcome = run_target(plan, NativeExecution())
@@ -905,3 +914,36 @@ def test_direct_coverage_outcome_includes_metrics(tmp_path):
         assert coverage_metrics(edge) == {
             "line": {"percent": percent, "threshold": 66.67, "met": met}
         }
+
+
+def test_coverage_per_test_projection_strips_stream_tails_and_preserves_metadata():
+    from types import SimpleNamespace
+
+    from booley.flows.sim.coverage_transaction import _coverage_test_projection
+
+    evidence = {
+        "status": "passed",
+        "returncode": 0,
+        "command_count": 2,
+        "elapsed_s": 0.2,
+        "test_names": ("smoke",),
+        "stdout_tail": "private stdout",
+        "stderr_tail": "private stderr",
+    }
+    run = SimpleNamespace(
+        test="smoke",
+        test_run="smoke+fast@7",
+        variant="fast",
+        seed=7,
+        fingerprint="sha256:" + "0" * 64,
+        simulation_verdict="pass",
+        collection="complete",
+        attributes={"pre_sim": evidence},
+    )
+    projection = _coverage_test_projection(run)
+    assert "stdout_tail" not in projection["pre_sim"]
+    assert "stderr_tail" not in projection["pre_sim"]
+    assert projection["pre_sim"]["returncode"] == 0
+    assert projection["pre_sim"]["command_count"] == 2
+    assert (projection["name"], projection["test_run"]) == ("smoke", "smoke+fast@7")
+    assert (projection["variant"], projection["seed"]) == ("fast", 7)

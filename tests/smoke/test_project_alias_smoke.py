@@ -69,7 +69,7 @@ def _assert_trace_reference(root: Path, alias: Path) -> None:
 
 def test_image_project_alias_good_bad_coverage_and_user_links() -> None:
     root = Path("/work")
-    alias = Path("/booley-project")
+    alias = Path("/booley")
     data = root / ".booley"
     assert shutil.which("verilator") and shutil.which("verilator_coverage")
     assert alias.is_symlink() and alias.readlink() == data

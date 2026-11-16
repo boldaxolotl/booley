@@ -1,24 +1,22 @@
 """Canonical Booley Flow and Specialist references, rendered from the registry.
 
 Single source of truth: :func:`booley.mcp.registry.discover_mcp_tools`. The
-``booley cheat`` CLI renders this block live, while ``docs/user/CLI-REFERENCE.md`` embeds a
-committed copy between the ``<!-- BEGIN GENERATED: flows -->`` /
-``<!-- END GENERATED: flows -->`` markers that a pytest keeps byte-identical to
-this renderer. The cheatsheet gives Specialists their own flag-addressable
-block. Add, rename, or retire a Flow/Specialist and the lists update everywhere
-from this one place.
+``booley cheat`` CLI renders both blocks live, and ``src/booley/data/cheatsheet.md``
+embeds committed copies between the ``<!-- BEGIN GENERATED: flows -->`` and
+``<!-- BEGIN GENERATED: specialists -->`` marker pairs that a pytest keeps
+byte-identical to this renderer. The user docs link to their own Flow and
+Specialist pages instead of embedding a copy. Add, rename, or retire a
+Flow/Specialist and the cheatsheet lists update from this one place.
 
-Regenerate the committed doc blocks with::
+Regenerate the committed blocks with::
 
-    python -m booley.dev_support.flow_specialist_reference \\
-        docs/user/CLI-REFERENCE.md src/booley/data/cheatsheet.md
+    python -m booley.dev_support.flow_specialist_reference src/booley/data/cheatsheet.md
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from booley.goals.capabilities import evidence_goal_name
 from booley.mcp.registry import discover_mcp_tools
 
 BEGIN_MARKER = "<!-- BEGIN GENERATED: flows -->"
@@ -33,7 +31,7 @@ EXCLUDED_MCP_TOOLS = frozenset()
 
 
 # Backstop on the Purpose cell: a full multi-sentence description produced a
-# ~700-char-wide column that overflowed every terminal and truncated the Sets
+# ~700-char-wide column that overflowed every terminal and truncated the next
 # column mid-token (QA_REPORT A3). It bounds that wall rather than fitting 80
 # columns — the table is wider than a terminal either way. Keep it above the
 # longest first sentence in the registry, so the common case reads as a whole
@@ -50,17 +48,6 @@ _FLOW_DISPLAY_RANK = {
 _BASELINE_CONTROL = "`--baseline <ref>` compares metrics against a git revision"
 
 
-# Docs render: user docs link to the full per-Flow reference instead of
-# repeating the control summaries that `booley cheat` carries.
-_FLOW_REFERENCE_POINTER = (
-    "Shared Flow options and results are in "
-    "[FLOW_REFERENCE.md](FLOW_REFERENCE.md), each Flow's own in "
-    "[FLOW-SIM.md](FLOW-SIM.md), [FLOW-LINT.md](FLOW-LINT.md), "
-    "[FLOW-SYNTH.md](FLOW-SYNTH.md), [FLOW-FPGA.md](FLOW-FPGA.md), and "
-    "[FLOW-MUTATION.md](FLOW-MUTATION.md), including the "
-    "report files each one writes; `booley flow <name> --help` prints the options too."
-)
-
 _FLOW_KEY_CONTROLS: dict[str, str] = {
     "fpga": f"{_BASELINE_CONTROL}; `--ppa-profile compact|balanced|max_frequency` "
     "selects portable optimization intent; `--no-cache` forces a fresh implementation",
@@ -74,9 +61,8 @@ _FLOW_KEY_CONTROLS: dict[str, str] = {
         "scored when fewer run); `--seed <N>` "
         "(default 0) picks another reproducible Mutant set; `--dry-run` previews the count "
         "without running a simulator. A Mutant that fails to build is dropped and the next "
-        "candidate takes its place; a timed-out Mutant counts as `detected (timeout)`. A `MUTATION:{target}` Goal "
-        "sets the same campaign with `total: N`, `min_detected: K`, or `auto: true` "
-        "(default: 10 Mutants, 8 detected)"
+        "candidate takes its place; a timed-out Mutant counts as `detected (timeout)`; "
+        "the default is 10 Mutants with 8 detected"
     ),
     "sim": (
         "`--mode elab-only` compiles, elaborates, and links without running tests; "
@@ -108,8 +94,8 @@ _FLOW_KEY_CONTROLS: dict[str, str] = {
 # silently appear as an unexplained row.
 _REVIEW_FOCUS_DESCRIPTIONS: dict[str, str] = {
     "review_rtl_bugs": (
-        "Functional bug patterns, synthesis hazards, reset/width/signing mistakes, "
-        "and ifdef/config consistency"
+        "Functional bug patterns, synthesis hazards, reset/overflow/signing mistakes, "
+        "and ifdef consistency across built Targets"
     ),
     "review_rtl_protocol": (
         "Bus/protocol rule compliance, handshake behavior, ordering, and "
@@ -123,7 +109,7 @@ _REVIEW_FOCUS_DESCRIPTIONS: dict[str, str] = {
         "assertion/cover-point quality"
     ),
     "review_rtl_optimization": (
-        "Unused/dead RTL and strict power/performance/area improvements with no "
+        "Functionally dead RTL and strict power/performance/area improvements with no "
         "functional or engineering trade-off"
     ),
     "review_rtl_security": (
@@ -155,34 +141,20 @@ def _summarize(text: str) -> str:
     return cleaned.replace("|", "\\|")
 
 
-def _format_satisfies(satisfies: tuple[str, ...]) -> str:
-    """Present only supported Goal names, keeping producer metadata internal."""
-    names = dict.fromkeys(name for key in satisfies if (name := evidence_goal_name(key)))
-    return ", ".join(f"`{name}`" for name in names) or "—"
-
-
 def render_flow_reference(
     *,
     project_mcp_tools_dir: Path | None = None,
-    execution_column: bool = True,
-    key_controls: bool = True,
 ) -> str:
     """Render the Booley Flows Markdown block from the MCP endpoint registry.
 
-    Purpose cells are always summarized to one line: every consumer of this
-    block (the committed docs, ``booley cheat``) renders for a human, and the
-    full agent-facing description is a paragraph, not a table cell. See
-    :func:`_summarize`.
+    The table is followed by the common and per-Flow control summaries.
+    Purpose cells are always summarized to one line: ``booley cheat`` renders
+    for a human, and the full agent-facing description is a paragraph, not a
+    table cell. See :func:`_summarize`.
 
     Args:
         project_mcp_tools_dir: Optional ``.booley/mcp_tools/`` directory; when
             given, project-specific Flows are discovered and rendered too.
-        execution_column: Retained for compatibility; ignored because all
-            Flows execute inside the Sandbox.
-        key_controls: When true, append the common and per-Flow control
-            summaries (used by ``booley cheat``, which is read in the Sandbox).
-            When false, link to FLOW_REFERENCE.md and the per-Flow pages
-            instead, for the user docs that sit next to them.
     """
     endpoints = discover_mcp_tools(project_mcp_tools_dir=project_mcp_tools_dir)
     flows = sorted(
@@ -195,15 +167,10 @@ def render_flow_reference(
     lines: list[str] = []
     lines.append("Deterministic end-to-end orchestration; no LLM:")
     lines.append("")
-    lines.append("| Booley Flow | Purpose | Sets |")
-    lines.append("|--------|---------|------|")
+    lines.append("| Booley Flow | Purpose |")
+    lines.append("|--------|---------|")
     for t in flows:
-        lines.append(
-            f"| `{t.name}` | {_summarize(t.description)} | {_format_satisfies(t.satisfies)} |"
-        )
-    if not key_controls:
-        lines.extend(["", _FLOW_REFERENCE_POINTER])
-        return "\n".join(lines)
+        lines.append(f"| `{t.name}` | {_summarize(t.description)} |")
     controls = [
         f"- `{flow.name}`: {_FLOW_KEY_CONTROLS[flow.name]}"
         for flow in flows
@@ -280,16 +247,7 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
             "no change in scope exits 0 without a review. Pass every file of the category as "
             "the `scope` to give the Reviewer the files that use the changed ones. Findings "
             "already present before the change are listed separately as pre-existing and are "
-            "never open or verified.",
-            "",
-            "**Verify fixes:** after fixing findings, call `reviewer` with "
-            "`verify=true` (CLI: `--verify`). It rechecks only the latest review's open "
-            "findings and finds nothing new; none remaining open is a pass. To argue a "
-            'finding away, add `waive=[["<finding-id>", "<justification>"]]` (CLI: '
-            '`--waive <finding-id> "<justification>"`, repeatable); the Reviewer accepts '
-            "or rejects each. `fail_on` (CLI: `--fail-on`) is the one other "
-            "argument accepted with verify, and counts the findings still open. After two "
-            "verifies, run a fresh review.",
+            "never open.",
         ]
     )
     return lines
@@ -304,8 +262,7 @@ def _render_coverage_analyst_reference() -> list[str]:
         'and optional `instruction="<question>"`. The Analyst explains retained '
         "native evidence and proposes advisory next steps; its model only reads evidence. "
         "It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. "
-        "In Goal Mode, screened Waiver Candidates support a proposed Goal change, "
-        "which needs your approval. Finish requires every Goal met; advisory "
+        "Screened Waiver Candidates are advisory and need human approval; advisory "
         "reports do not mark strict coverage met. "
         "Verified Target sources are optional; stale sources give report-only analysis.",
     ]
@@ -333,24 +290,20 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
         "",
         "For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. "
         "Common options are `-C/--project PATH`, `--report-dir`, "
-        "`--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive "
+        "and `--target` where supported. `--timeout DURATION` accepts positive "
         "seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). "
         "Model-call minimum budgets apply; seconds-only providers round up. "
-        "CLI Flow and Specialist runs never record Goal evidence; only the Developer Agent's "
-        "Goal Mode tool calls, which pass `work_dir`, do. A CLI run is also a Standalone Job: it shows in "
+        "A CLI run is a Standalone Job: it shows in "
         "the Dashboard and copies its output to `.interactive_logs/standalone/<run_id>/job.log` "
         "in the Project's common Booley Directory (the main checkout's `.booley` from a linked "
         "worktree).",
         "",
-        "| Specialist | Purpose | Sets | Modifies code |",
-        "|------------|---------|------|:-------------:|",
+        "| Specialist | Purpose | Modifies code |",
+        "|------------|---------|:-------------:|",
     ]
     for t in specialists:
         modifies = "yes" if t.code_modifying else "—"
-        lines.append(
-            f"| `{t.name}` | {_summarize(t.description)} "
-            f"| {_format_satisfies(t.satisfies)} | {modifies} |"
-        )
+        lines.append(f"| `{t.name}` | {_summarize(t.description)} | {modifies} |")
     reviewer = next((t for t in specialists if t.name == "reviewer"), None)
     coverage_analyst = next((t for t in specialists if t.name == "coverage_analyst"), None)
     if coverage_analyst is not None:
@@ -358,21 +311,6 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
     if reviewer is not None:
         lines.extend(["", *_render_reviewer_reference(reviewer.satisfies_args)])
     return "\n".join(lines)
-
-
-def render_flow_specialist_reference(
-    *,
-    project_mcp_tools_dir: Path | None = None,
-    execution_column: bool = True,
-) -> str:
-    """Render the combined reference used by the longer documentation."""
-    flows = render_flow_reference(
-        project_mcp_tools_dir=project_mcp_tools_dir,
-        execution_column=execution_column,
-        key_controls=False,
-    )
-    specialists = render_specialists_reference(project_mcp_tools_dir=project_mcp_tools_dir)
-    return f"**Booley Flows**\n\n{flows}\n\n**Specialists**\n\n{specialists}"
 
 
 def _generated_markers(name: str) -> tuple[str, str]:
@@ -411,36 +349,24 @@ def extract_generated(doc_text: str, *, name: str = "flows") -> str:
 
 
 def _main(argv: list[str] | None = None) -> int:
-    """Regenerate committed blocks in the given files (or print to stdout)."""
+    """Regenerate the committed Flow and Specialist blocks in the given files."""
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Render the canonical Booley Flows & Specialists block.",
+        description="Render the canonical Booley Flows and Specialists blocks.",
     )
     parser.add_argument(
         "paths",
-        nargs="*",
-        help="Markdown files whose generated block should be rewritten in "
-        "place. With no paths, the block is printed to stdout.",
+        nargs="+",
+        help="Markdown files whose generated blocks should be rewritten in place.",
     )
     args = parser.parse_args(argv)
 
-    body = render_flow_specialist_reference()
-    if not args.paths:
-        print(body)
-        return 0
     for path in args.paths:
         pth = Path(path)
         text = pth.read_text(encoding="utf-8")
-        if SPECIALISTS_BEGIN_MARKER in text:
-            text = splice_generated(text, render_flow_reference(), name="flows")
-            text = splice_generated(
-                text,
-                render_specialists_reference(),
-                name="specialists",
-            )
-        else:
-            text = splice_generated(text, body)
+        text = splice_generated(text, render_flow_reference(), name="flows")
+        text = splice_generated(text, render_specialists_reference(), name="specialists")
         pth.write_text(text, encoding="utf-8")
         print(f"updated {pth}")
     return 0

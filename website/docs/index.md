@@ -53,11 +53,14 @@ document: Booley product datasheet
       <div class="feat__col">
         <div>
           <h3>Sandboxed Developer Agent</h3>
-          <p>Booley treats the agent like a talented junior engineer. It can write RTL and testbenches, but it is inexperienced with EDA tools, prone to questionable design decisions, and too risky to give unrestricted host access. So the agent and every command it runs stay inside a Docker container with restricted mounts and network access, and its work goes through explicit specifications, automated checks, and human review. That lets it work unattended.</p>
-        </div>
-        <div>
-          <h3>Goal Mode</h3>
-          <p>You set mandatory Goals up front, such as <code>SYNTH:synth_fifo (area increase ≤ 10%)</code> or <code>COVERAGE:sim_fifo (line ≥ 90%, tests all)</code>. Goals cover passing tests, lint, area, timing, cycle counts, coverage, mutation testing, and code review. Booley checks each one in deterministic code against fresh recorded Flow results, not against the agent’s claim of success (<a href="https://github.com/boldaxolotl/Booley/blob/main/docs/user/GOAL-MODE.md#goal-mode">details</a>).</p>
+          <p>Booley treats the agent like a talented junior engineer. It can
+          write RTL and testbenches, but it is inexperienced with EDA tools,
+          prone to questionable design decisions, and too risky to give
+          unrestricted host access. So the agent and every command it runs stay
+          inside a Docker container with restricted mounts and network access,
+          and its work goes through explicit specifications, automated checks,
+          and human review. That lets you leave it running while you work on
+          something else.</p>
         </div>
         <div>
           <h3>Waveform queries</h3>

@@ -8,7 +8,9 @@ card's row budget is checked on rows and files built directly.
 
 from __future__ import annotations
 
+import hashlib
 import json
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -16,6 +18,7 @@ from typing import Any
 import pytest
 
 from booley.flows.base import SubprocessResult
+from booley.flows.run_log import write_run_log_progress
 from booley.flows.sim.record.test_run_report import (
     informative_test_run_lines,
     test_run_report_lines,
@@ -34,12 +37,31 @@ _WAVEFORM = "      waveform: "
 _NO_FILES = SimpleNamespace(log=None, trace=None)
 
 
-def _simulate(launch: Launch, *, failing: frozenset[str], traced: bool) -> SubprocessResult:
-    """The fake simulator: fails the Tests in *failing*; when *traced* it dumps a waveform."""
+def _simulate(
+    launch: Launch,
+    *,
+    failing: frozenset[str],
+    traced: bool,
+    trace_in_work_dir: bool = False,
+    trace_subdir: str = "",
+    on_live: Callable[[Launch], None] | None = None,
+) -> SubprocessResult:
+    """The fake simulator: fails the Tests in *failing*; when *traced* it dumps a waveform.
+
+    *trace_in_work_dir* writes the waveform where the real wrapper does
+    (``TraceSession.work_bwave_path``) instead of the run directory.
+    """
+    if on_live is not None:
+        on_live(launch)
     failed = bool(failing & set(launch.tests))
     output = f"[SIM_RESULT] {'FAILED' if failed else 'PASSED'}\n"
     if traced:
-        dump = launch.cwd / f"{'+'.join(launch.tests)}.fst"
+        dump = (
+            Path(launch.work.work_dir) / trace_subdir / "trace.fst"
+            if trace_in_work_dir
+            else launch.cwd / f"{'+'.join(launch.tests)}.fst"
+        )
+        dump.parent.mkdir(parents=True, exist_ok=True)
         dump.write_bytes(b"waveform")
         output += f"TRACE_OK: {dump}\n"
     return SubprocessResult(returncode=int(failed), stdout=output, duration_s=0.1)
@@ -52,6 +74,9 @@ def _run(
     *,
     failing: tuple[str, ...] = (),
     traced: bool = False,
+    trace_in_work_dir: bool = False,
+    trace_subdir: str = "",
+    on_live: Callable[[Launch], None] | None = None,
     **kwargs: Any,
 ) -> tuple[SimulationRecordSimRun, dict[str, Any]]:
     """Run Target ``lite`` over *tests*; return the run and its ``simulation.json``."""
@@ -59,7 +84,14 @@ def _run(
         tmp_path,
         monkeypatch,
         {"lite": tests},
-        lambda launch: _simulate(launch, failing=frozenset(failing), traced=traced),
+        lambda launch: _simulate(
+            launch,
+            failing=frozenset(failing),
+            traced=traced,
+            trace_in_work_dir=trace_in_work_dir,
+            trace_subdir=trace_subdir,
+            on_live=on_live,
+        ),
         target="lite",
         trace=traced,
         **kwargs,
@@ -94,12 +126,117 @@ def test_failed_test_run_shows_its_log(tmp_path: Path, monkeypatch: pytest.Monke
     assert card[1:3] == ["    PASS         ok@1", "    FAIL         bad@1"]
     log = _path(card[3], _LOG)
     assert log.is_file()
-    assert log.name.endswith("-run.log")
+    assert log.name == "run.log"
     # The rerun block follows straight after: the log line is the only addition.
     assert card[4] == "  Rerun a failed Test Run with the same seed:"
     # The card prints the resolved path; simulation.json holds it relative.
     bad = simulation["tests"][1]
     assert (_target_directory(tmp_path) / bad["log"]).resolve() == log.resolve()
+
+
+def _only_work_item(tmp_path: Path) -> tuple[Path, dict[str, Any], Path]:
+    """The one result of the record under *tmp_path*: its path, document and attempt directory."""
+    (result,) = (_target_directory(tmp_path) / "record").glob("work-items/*/result.json")
+    document = json.loads(result.read_text("utf-8"))
+    attempt = (
+        result.parent / "attempts" / f"{document['attempt_ordinal']:04d}-{document['attempt_id']}"
+    )
+    return result, document, attempt
+
+
+def test_traced_attempt_keeps_one_copy_of_each_evidence_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _run(tmp_path, monkeypatch, ["bad"], failing=("bad",), traced=True, trace_in_work_dir=True)
+    _, _, attempt = _only_work_item(tmp_path)
+
+    names = [
+        path.name.split("-", 1)[1] if path.name[:4].isdigit() else path.name
+        for path in attempt.rglob("*")
+        if path.is_file()
+    ]
+    assert sum(name.endswith("run.log") for name in names) == 1
+    assert sum(name.endswith(".fst") for name in names) == 1
+    assert sum(name.startswith("adapter-") for name in names) == 1
+
+
+def test_nested_trace_is_kept_in_place_with_every_new_folder_synced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from booley.flows.sim.record import serial_execution
+
+    synced: list[Path] = []
+    real = serial_execution.fsync_directory
+    monkeypatch.setattr(
+        serial_execution,
+        "fsync_directory",
+        lambda path: (synced.append(Path(path).resolve()), real(path))[1],
+    )
+    _run(
+        tmp_path,
+        monkeypatch,
+        ["bad"],
+        failing=("bad",),
+        traced=True,
+        trace_in_work_dir=True,
+        trace_subdir="wave/dump",
+    )
+    _, document, attempt = _only_work_item(tmp_path)
+
+    (trace,) = [item for item in document["evidence"] if item["kind"] == "trace"]
+    assert trace["path"] == "execution-evidence/wave/dump/trace.fst"
+    for directory in (
+        "execution-evidence/wave/dump",
+        "execution-evidence/wave",
+        "execution-evidence",
+    ):
+        assert (attempt / directory).resolve() in synced
+    assert attempt.resolve() in synced
+
+
+def test_references_and_projection_name_the_kept_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    run, simulation = _run(
+        tmp_path, monkeypatch, ["bad"], failing=("bad",), traced=True, trace_in_work_dir=True
+    )
+    _, document, attempt = _only_work_item(tmp_path)
+
+    for reference in document["evidence"]:
+        kept = (attempt / reference["path"]).read_bytes()
+        assert len(kept) == reference["bytes"]
+        assert hashlib.sha256(kept).hexdigest() == reference["sha256"].removeprefix("sha256:")
+    paths = {item["kind"]: item["path"] for item in document["evidence"]}
+    assert paths["live_run_log"] == "execution-evidence/run.log"
+    assert paths["trace"] == "execution-evidence/trace.fst"
+    card = _card(run)
+    failed = card.index("    FAIL         bad@1")
+    log = _path(card[failed + 1], _LOG)
+    waveform = _path(card[failed + 2], _WAVEFORM)
+    assert log.resolve() == (attempt / "execution-evidence/run.log").resolve()
+    assert waveform.resolve() == (attempt / "execution-evidence/trace.fst").resolve()
+    row = simulation["tests"][0]
+    assert (_target_directory(tmp_path) / row["log"]).resolve() == log.resolve()
+    assert (_target_directory(tmp_path) / row["trace"]).resolve() == waveform.resolve()
+
+
+def test_live_log_is_the_log_the_result_keeps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    seen: dict[str, Any] = {}
+
+    def live(launch: Launch) -> None:
+        write_run_log_progress(launch.work.work_dir, "LIVE_MARKER\n", elapsed_s=0.0, line_count=1)
+        progress = json.loads((tmp_path / "reports/sim/1/progress.json").read_text("utf-8"))
+        seen["log"] = progress["active"][0]["log"]
+        seen["text"] = (tmp_path / seen["log"]["path"]).read_text("utf-8")
+
+    _run(tmp_path, monkeypatch, ["bad"], failing=("bad",), on_live=live)
+    _, document, attempt = _only_work_item(tmp_path)
+
+    assert seen["log"]["live"] is True
+    assert "LIVE_MARKER" in seen["text"]
+    (kept,) = [item for item in document["evidence"] if item["kind"] == "live_run_log"]
+    assert (tmp_path / seen["log"]["path"]).resolve() == (attempt / kept["path"]).resolve()
+    assert "[SIM_RESULT] FAILED" in (attempt / kept["path"]).read_text("utf-8")
 
 
 @pytest.mark.parametrize("traced", [True, False], ids=["traced", "untraced"])

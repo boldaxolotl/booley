@@ -46,8 +46,6 @@ class EndpointOutcome:
     """Verdict and evidence returned by an endpoint implementation."""
 
     exit_code: int = EXIT_SUCCESS
-    criterion_key: str = ""
-    criterion_met: bool | None = False
     detail: dict[str, Any] = field(default_factory=dict)
     report_text: str = ""
     input_tokens: int = 0
@@ -122,16 +120,16 @@ def normalize_completion_error(
 Prepared_contra = TypeVar("Prepared_contra", contravariant=True)
 
 
-class AcceptanceRecorder(Protocol[Prepared_contra]):
-    """Record immutable Criterion evidence for one prepared request."""
+class RecordPublisher(Protocol[Prepared_contra]):
+    """Publish the records of one prepared request."""
 
-    def record_acceptance(self, prepared: Prepared_contra, outcome: EndpointOutcome) -> None:
-        """Record evidence before mutable persistence begins."""
+    def publish_records(self, prepared: Prepared_contra, outcome: EndpointOutcome) -> None:
+        """Publish records before the report is written."""
         ...
 
 
 class ExecutableEndpoint(
-    AcceptanceRecorder[Prepared_contra],
+    RecordPublisher[Prepared_contra],
     Protocol[Prepared_contra],
 ):
     """Internal adapter interface consumed by :func:`execute_endpoint`.
@@ -174,31 +172,31 @@ class ExecutableEndpoint(
         outcome: EndpointOutcome,
         *,
         started: float | None,
-        acceptance_recorded: bool,
+        records_published: bool,
     ) -> ExecutionResult:
-        """Publish completion, persisting mutable state only after acceptance."""
+        """Publish completion; the report refreshes its detail once records are published."""
         ...
 
 
-def _record_and_finish(
+def _publish_and_finish(
     endpoint: ExecutableEndpoint[Prepared_contra],
     prepared: Prepared_contra,
     outcome: EndpointOutcome,
     *,
     started: float | None,
 ) -> ExecutionResult:
-    acceptance_recorded = False
+    records_published = False
     try:
-        endpoint.record_acceptance(prepared, outcome)
-        acceptance_recorded = True
+        endpoint.publish_records(prepared, outcome)
+        records_published = True
     except Exception as exc:
-        logger.debug("Endpoint acceptance failed", exc_info=True)
-        normalize_completion_error(outcome, exc, "record acceptance and projections")
+        logger.debug("Endpoint record publication failed", exc_info=True)
+        normalize_completion_error(outcome, exc, "publish Simulation Record projections")
     return endpoint.finish_execution(
         prepared,
         outcome,
         started=started,
-        acceptance_recorded=acceptance_recorded,
+        records_published=records_published,
     )
 
 
@@ -306,9 +304,9 @@ def _attempt_endpoint(
 ) -> ExecutionResult | None:
     """Admit and run one attempt; ``None`` after releasing its claim to requeue the Job.
 
-    Once admitted, the claim stays held through acceptance recording and
-    mutable persistence/reporting. A first attempt that is requeued publishes
-    nothing: its acceptance, report and display end never happen, and its
+    Once admitted, the claim stays held through record publication and
+    reporting. A first attempt that is requeued publishes
+    nothing: its records, report and display end never happen, and its
     progress document is retired so no caller reads it for the Job.
     """
     admission = ExitStack()
@@ -317,7 +315,7 @@ def _attempt_endpoint(
     except EndpointRejectedError as exc:
         if requeued:
             _name_requeue(exc.outcome, started_again=False)
-        return _record_and_finish(endpoint, request, exc.outcome, started=None)
+        return _publish_and_finish(endpoint, request, exc.outcome, started=None)
     with admission:
         started = time.monotonic()
         # The requeued attempt is the last one: it is never armed.
@@ -330,7 +328,7 @@ def _attempt_endpoint(
             return None
         if requeued:
             _name_requeue(outcome, started_again=True)
-        return _record_and_finish(endpoint, request, outcome, started=started)
+        return _publish_and_finish(endpoint, request, outcome, started=started)
 
 
 def execute_endpoint(

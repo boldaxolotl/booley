@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from booley.flows.sim import acceptance, coverage_analysis_input, record_retention
+from booley.flows.sim import acceptance, coverage_analysis_input
 from booley.flows.sim import flow as sim_flow
 from booley.flows.sim.coverage_analysis_input import CoverageAnalysisError
 from booley.flows.sim.record import flow_planning, inspection, projection, resume, store
@@ -25,9 +25,6 @@ from booley.flows.sim.record.scheduler import (
 )
 from booley.flows.sim.record.store import SimulationRecordIntegrityError
 from booley.flows.sim.record_layout import RECORD_DIRECTORY
-from booley.flows.sim.record_retention import SimulationRecordRetentionError
-from booley.mcp import goal_generated_inputs
-from booley.mcp.goal_generated_inputs import LifecycleError
 
 
 def test_policy_refuses_non_positive_timeouts() -> None:
@@ -145,39 +142,9 @@ def test_a_prerequisite_must_name_the_recorded_identity(
         resume._walk_prerequisites(node, tmp_path, frozenset(), [], None)  # type: ignore[arg-type]
 
 
-def test_acceptance_refuses_malformed_record_facts(monkeypatch: pytest.MonkeyPatch) -> None:
-    def evidence(document: dict[str, object]) -> Any:
-        return SimpleNamespace(
-            outcome=SimpleNamespace(
-                acceptance_facts=SimpleNamespace(document=document), complete=True
-            )
-        )
-
-    with pytest.raises(TypeError, match="Simulation Record acceptance Target is not a mapping"):
-        acceptance.SimulationAcceptanceCoordinator._derive_changes(
-            evidence({"target": []}),
-            None,  # type: ignore[arg-type]
-        )
-    monkeypatch.setattr(acceptance, "_matching_simulation_keys", lambda *_args: ["key"])
-    given = evidence({"required_suite": []})
-    with pytest.raises(TypeError, match="Simulation Record acceptance suite is malformed"):
-        acceptance._simulation_changes(
-            given.outcome,
-            None,  # type: ignore[arg-type]
-            {"role": "candidate"},
-            "name",
-            given,
-        )
-    endpoint = SimpleNamespace(
-        args=SimpleNamespace(work_dir=None, diagnostic=False),
-        state=SimpleNamespace(_file_path=None, slug="slug"),
-        _acceptance_recorder=SimpleNamespace(acceptance_identity=lambda: None),
-        _invocation_id="invocation",
-        record_report_criteria=lambda: None,
-    )
-    monkeypatch.setattr(acceptance, "_detail_stamper", lambda _endpoint: None)
+def test_projection_publication_refuses_a_foreign_outcome() -> None:
     with pytest.raises(TypeError, match="invalid Simulation Record outcome"):
-        acceptance.record_simulation_record_acceptance(endpoint, (object(),))  # type: ignore[arg-type]
+        acceptance.publish_simulation_record_projections(None, (object(),))
 
 
 def test_reference_projection_refusals(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -241,40 +208,6 @@ def test_reference_projection_refusals(tmp_path: Path, monkeypatch: pytest.Monke
     )
 
 
-def test_retention_refusals(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    target = tmp_path / "a" / "b" / "c"
-    status = SimpleNamespace(
-        simulation_record_id="owner", manifest_path=tmp_path / "elsewhere.json"
-    )
-    monkeypatch.setattr(record_retention, "invocation_booley_dir", lambda _root: None)
-    monkeypatch.setattr(
-        record_retention,
-        "resolve_artifact_reference",
-        lambda *_args, **_kwargs: SimpleNamespace(path=tmp_path / "manifest.json"),
-    )
-    with pytest.raises(SimulationRecordRetentionError, match="projection manifest disagrees"):
-        record_retention._validate_authenticated_projection(
-            target,
-            status,  # type: ignore[arg-type]
-            {"simulation_record_id": "owner"},
-        )
-    record = target / RECORD_DIRECTORY
-    record.mkdir(parents=True)
-    (record / "manifest.json").write_bytes(b"{}")
-    (record / ".lock").write_bytes(b"")
-    inventory = SimpleNamespace(retention_files=[], coverage_directories=[])
-    monkeypatch.setattr(
-        record_retention, "inspect_retained_simulation_record", lambda *_a, **_k: inventory
-    )
-    monkeypatch.setattr(
-        record_retention, "authenticate_retained_simulation_record_inventory", lambda *_a, **_k: {}
-    )
-    monkeypatch.setattr(record_retention, "dependency_receipt_files", lambda _manifest: set())
-    monkeypatch.setattr(record_retention, "_valid_lock_sentinel", lambda _lock: False)
-    with pytest.raises(SimulationRecordRetentionError, match="Simulation Record lock content"):
-        record_retention._target_owned_files(tmp_path, target)
-
-
 def test_flow_refusals(monkeypatch: pytest.MonkeyPatch) -> None:
     class Many:
         def glob(self, _pattern: str) -> list[Path]:
@@ -304,31 +237,3 @@ def test_flow_refusals(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     with pytest.raises(ValueError, match="Simulation Record progress complete and phase"):
         flow._write_simulation_record_progress([], [], phase="running", complete=False)
-
-
-def test_generated_input_producer_refusals(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import hashlib
-
-    raw = b"{}\n"
-    reports = tmp_path / "flow-reports"
-    for name in ("one", "two"):
-        (reports / name).mkdir(parents=True)
-        (reports / name / "manifest.json").write_bytes(raw)
-    envelope = {
-        "manifest_sha256": "sha256:" + hashlib.sha256(raw.rstrip(b"\n")).hexdigest(),
-        "campaign_id": "owner",
-        "origin": "origin",
-    }
-    producer = {"simulation_record_id": "owner", "origin": "origin"}
-    monkeypatch.setattr(
-        goal_generated_inputs,
-        "decode_simulation_record_manifest",
-        lambda _raw: SimpleNamespace(document=producer),
-    )
-    with pytest.raises(LifecycleError, match="ambiguous duplicate Simulation Record manifests"):
-        goal_generated_inputs._producer_manifest(tmp_path, envelope)
-    producer["origin"] = "foreign"
-    with pytest.raises(LifecycleError, match="foreign producer identity"):
-        goal_generated_inputs._producer_manifest(tmp_path, envelope)

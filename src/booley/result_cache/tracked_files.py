@@ -8,7 +8,6 @@ import stat
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
-from booley.core.config_paths import GOALSETS_DIR
 from booley.result_cache._canonical import frame
 from booley.runtime.pinned_history import raw_git
 from booley.runtime.project_repositories import is_git_worktree_root, run_git
@@ -45,9 +44,8 @@ def relative_posix(path: Path, root: Path) -> str | None:
 def is_configuration_file(relative: str, booley_relative: str | None, config_name: str) -> bool:
     """Whether *relative* (participant-relative) is a file the configuration key covers.
 
-    Those are the resolved config file, ``tests.toml``, ``criteria.toml`` and the
-    Goalsets (direct children ``goalsets/<name>.md``) of the Booley Directory
-    at *booley_relative*; the tracked-files digest leaves them out.
+    Those are the resolved config file, ``tests.toml`` and ``criteria.toml`` of the
+    Booley Directory at *booley_relative*; the tracked-files digest leaves them out.
     """
     if booley_relative is None:
         return False
@@ -55,8 +53,6 @@ def is_configuration_file(relative: str, booley_relative: str | None, config_nam
     if not relative.startswith(prefix):
         return False
     inside = PurePosixPath(relative[len(prefix) :])
-    if inside.parts[:1] == (GOALSETS_DIR,):
-        return len(inside.parts) == 2 and inside.suffix == ".md"
     return str(inside) in {config_name, "tests.toml", "criteria.toml"}
 
 

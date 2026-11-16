@@ -849,7 +849,7 @@ def test_external_standalone_project_baseline_copies_cores(tmp_path, monkeypatch
 
 
 def _paired_checkout_without_upstream(tmp_path: Path) -> tuple[Path, Path, str]:
-    """An outer worktree whose Paired Checkout branch has no upstream (a Goal worktree).
+    """An outer worktree whose Paired Checkout branch has no upstream (a linked worktree).
 
     Returns the outer worktree, its Paired Checkout, and the paired
     commit recorded at entry, which a later commit then moves past.
@@ -877,7 +877,7 @@ def _paired_checkout_without_upstream(tmp_path: Path) -> tuple[Path, Path, str]:
 
 
 def test_entry_pinned_paired_project_needs_no_upstream(tmp_path: Path) -> None:
-    """A Goal pins the paired revision it recorded; no upstream fork point is guessed."""
+    """A caller pins the paired revision; no upstream fork point is guessed."""
     from booley.evidence.acceptance import PairedProjectBaseline
 
     goal, paired, entry_sha = _paired_checkout_without_upstream(tmp_path)

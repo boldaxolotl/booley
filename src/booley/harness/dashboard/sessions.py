@@ -61,16 +61,15 @@ class SessionFacts:
     handle: str
     #: What the row shows: ``S3 · uart-fix`` for a named session, else the handle.
     title: str
-    #: ``Interactive``, ``Goal m/n``, or ``Goal`` when Goal status is unavailable.
+    #: The session mode; always ``Interactive``.
     mode: str
     branch: str
     work_dir: str
     started: str
     activity: Activity
-    proposals: int
     #: Running-Job summaries such as ``▶ J-SIM3 sim fifo 1m 12s``.
     jobs: tuple[str, ...] = ()
-    #: Shared-worktree warning, shared-attribution notice and Goal diagnostic.
+    #: Shared-worktree warning and shared-attribution notice.
     notices: tuple[str, ...] = ()
     #: The measurement line shown under the row, and the report Enter on it opens.
     measurement: str = ""
@@ -111,8 +110,8 @@ def session_key_label(key: str) -> str:
 
 
 def group_of(facts: SessionFacts) -> str:
-    """A pending proposal needs the human whatever the session is doing."""
-    if facts.activity.state == WAITING_USER or facts.proposals > 0:
+    """A session waiting for the human needs them; a working one is working."""
+    if facts.activity.state == WAITING_USER:
         return NEEDS_YOU
     if facts.activity.state in {WORKING, WAITING_TOOL}:
         return WORKING_GROUP
@@ -130,9 +129,9 @@ def order_key(facts: SessionFacts) -> tuple[bool, float, float, str]:
 
 
 def _short_activity(activity: Activity, now: float) -> str:
-    """The activity with how long it has lasted; unknown is said plainly."""
+    """The activity with how long it has lasted; unknown says why."""
     if activity.state == UNKNOWN:
-        return "unknown"
+        return f"unknown ({activity.cause})"
     try:
         lasted = " " + format_duration(now - parse_timestamp(activity.since).timestamp())
     except ValueError:
@@ -143,15 +142,9 @@ def _short_activity(activity: Activity, now: float) -> str:
 
 
 def last_column(facts: SessionFacts, now: float) -> str:
-    """Activity, or the running Jobs of a working session, then proposals and notices."""
+    """Activity, or the running Jobs of a working session, then notices."""
     activity = _short_activity(facts.activity, now)
-    proposals = (
-        f"{facts.proposals} proposal{'s' * (facts.proposals != 1)}" if facts.proposals else ""
-    )
-    # Waiting leads with the wait; a session needing the human only by proposal leads with it.
-    parts = (
-        [activity, proposals] if facts.activity.state == WAITING_USER else [proposals, activity]
-    )
+    parts = [activity]
     jobs_replace_activity = group_of(facts) == WORKING_GROUP and facts.jobs
     parts = list(facts.jobs) if jobs_replace_activity else [*parts, *facts.jobs]
     return " · ".join(part for part in [*parts, *facts.notices] if part)

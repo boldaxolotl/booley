@@ -86,7 +86,7 @@ AGENT_HOME = "/home/agent"  # non-root ``agent`` user (see data/docker/Dockerfil
 # the whole workspace binds at /work (so ``.booley/x`` shows up at
 # ``/work/.booley/x``) AND the Booley Directory itself binds again at
 # BOOLEY_DIR_TARGET — masking only the /work view would leave the same bytes
-# readable at ``/booley-project/x``.
+# readable at ``/booley/x``.
 BOOLEY_DIR_BASENAME = ".booley"
 
 # Default mount source for ``.booley``: the co-located common case.
@@ -125,6 +125,19 @@ HDL_VSIX = f"/usr/local/libexec/booley/veriloghdl-{_HDL_VERSION}.vsix"
 # by path, like the HDL extension above.
 _LIVE_PREVIEW_VERSION = "0.4.20"
 LIVE_PREVIEW_VSIX = f"/usr/local/libexec/booley/live-server-{_LIVE_PREVIEW_VERSION}.vsix"
+
+# The bundled extensions besides VaporView, as Doctor checks them in the
+# attached window: built from the same pins the spec installs.
+BUNDLED_EXTENSIONS = (
+    _vaporview.BundledExtension("Verilog-HDL", "mshr-h.veriloghdl", _HDL_VERSION, HDL_VSIX),
+    _vaporview.BundledExtension(
+        "Live Preview",
+        "ms-vscode.live-server",
+        _LIVE_PREVIEW_VERSION,
+        LIVE_PREVIEW_VSIX,
+        requirement="Live Preview needs VS Code 1.109 or newer",
+    ),
+)
 
 # Live Preview exposes its in-container HTTP/WebSocket servers through VS
 # Code's remote-port tunnel. VS Code's long-lived local process can retain a
@@ -499,8 +512,8 @@ def mask_paths_error(value: object) -> str | None:
     subpaths are accepted: an absolute path would mask an arbitrary container
     path and a ``..`` segment would walk the mask outside the workspace mount —
     either turns a privacy knob into a container-layout editor. Masking
-    ``.booley`` itself is rejected too: the session reads its config,
-    Goal Records, and worktrees through that mount (``BOOLEY_DIR``), so
+    ``.booley`` itself is rejected too: the session reads its config
+    and worktrees through that mount (``BOOLEY_DIR``), so
     hiding the whole dir bricks the runtime — mask *subtrees* of it instead.
     """
     if value is None:
@@ -553,7 +566,7 @@ def _mask_mounts(mask_paths: Sequence[str], mask_source: str) -> list[str]:
       a masked subtree would otherwise scribble into the shared empty dir.
 
     An entry under ``.booley/`` is masked a SECOND time under
-    ``/booley-project/<rest>``: the Booley Directory is bind-mounted twice (the
+    ``/booley/<rest>``: the Booley Directory is bind-mounted twice (the
     workspace mount at /work plus its own mount at BOOLEY_DIR_TARGET), and
     masking only one view leaves the same bytes readable through the other.
 
@@ -923,7 +936,7 @@ def build_devcontainer_spec(
             ``[sandbox] mask_paths`` to HIDE from the Sandbox. Each is
             rendered as a read-only bind of *mask_source* over
             ``/work/<rel>`` — and, for a path under ``.booley/``, a
-            second bind over ``/booley-project/<rest>``, because that tree is
+            second bind over ``/booley/<rest>``, because that tree is
             visible through both mounts (see :func:`_mask_mounts`). Callers
             validate via :func:`mask_paths_error` first. Empty (the default)
             masks nothing and leaves the spec byte-identical to before the

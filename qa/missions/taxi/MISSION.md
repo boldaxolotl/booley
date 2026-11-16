@@ -1,10 +1,15 @@
 # Taxi 10G MAC port and evolution
 
 Port pinned upstream Taxi to Booley from a direct clone, then evolve `taxi_eth_mac_10g` through a
-verification Goal (exact PFC/FCS/underrun/statistics tests, mutation campaign) and a bugfix
-Goal for a seeded PFC fault the upstream tests miss. Also covers Setup with a derived Cocotb
-image, Targets, Doctor, lint, logical/physical synthesis, Interactive Mode, B-Wave, a submodule
-companion, Goal operations and Simulation Campaigns. Taxi's interfaces, recursive symlink, big
+verification work (exact PFC/FCS/underrun/statistics tests, mutation campaign)
+and a bugfix
+for a seeded PFC fault, each accepted as a Measured Commit the upstream tests
+miss. Also covers Setup with a derived Cocotb
+image, Targets, Doctor, lint, logical/physical synthesis, Developer Agent
+sessions, B-Wave, a submodule
+companion, Target Metrics and measurement, and Simulation Records. Taxi's
+interfaces, recursive
+symlink, big
 Python stack and five clocks surface stale caches, skipped tests and dropped clocks.
 The operator runs it through [`booley-qa-run`](../../booley-qa-run/SKILL.md), which owns the run
 directory, findings format, and cleanup bookkeeping; this file says where to look.
@@ -21,18 +26,20 @@ directory, findings format, and cleanup bookkeeping; this file says where to loo
 - Budget: 8 h for the primary run: 460 area minutes plus 20 contingency.
   Areas 8 and 14 are optional follow-up work outside this timebox (75 minutes
   total). Log them as skipped unless a follow-up is requested. Run primary areas sequentially;
-  Interactive children never overlap an active Goal in the same Project.
+  a child's measured work and Interactive children never share a worktree.
   Rerun on the other host/client only when asked.
 
 ## Mission-specific rules
-- Taxi baseline is immutable: only Setup, Goal children and the area-10
+- Taxi baseline is immutable: only Setup, the children of areas 10-11 and the
+  area-11
   operator seed change it. Preserve the `.f` manifest and `src/eth/lib/taxi`
   symlink. Inject faults on disposable copies/branches, save failures and restore.
 - Send `prompts/setup.md` and `prompts/interactive.md` verbatim. The repair
   child gets the failing assertion, expected/observed classes, upstream-test
   contrast, affected file and evidence pointers; hide seed location and fix.
-- Follow the shared [Goal-child operating rules](../../shared/GOAL-CHILD.md)
-  for every Goal area.
+- Follow the shared [Developer Agent child
+  rules](../../shared/DEVELOPER-CHILD.md)
+  for areas 10 and 11.
 
 ## Areas
 
@@ -48,7 +55,7 @@ Try:
   explicit `[stealth] enabled = false`; `fixtures/taxi_mac_10g.sdc` as Project-owned config.
 - Copy the full text of `prompts/setup.md` into outer `docs/taxi-contract.md`
   and verify the bytes match: the spec reviewer inlines this file, not linked
-  documents. Commit it as the immutable visible spec for later Goal review.
+  documents. Commit it as the immutable visible spec for the later spec reviews.
 - Nothing installs at runtime; the TB import works in the Sandbox; pins (pytest 8.3.4 … scapy 2.6.1)
   match `prompts/setup.md`.
 - Compare config/cores/guidance with the plan (every deviation stated). Run the Setup findings
@@ -57,7 +64,8 @@ Try:
   symlink (Windows). Rerun plain `booley init`: no drift. Another run with the other provider:
   issued auth/client policy follows.
 - Image faults: changed dependency pin → stale image rebuilt; bounded post-setup hook in a new
-  linked Goal workspace runs once; status/resume does not rerun it; nonzero hook blocks, fix + documented retry; opted-in
+  new worktree (`booley worktree new`) runs once; status/resume does not rerun
+  it; nonzero hook blocks, fix + documented retry; opted-in
   disposable host skill is read-only.
 Look for: re-approval requests, Taxi edits, missing `cocotb_test`/`pytest` (imported at TB module
 scope), implicit stealth, symlink loops, stale Session Runtime after `init` rebuilds the image.
@@ -113,11 +121,12 @@ Try:
   `ppa_profile: balanced`, `flatten: true`; the SDC puts four 6.4 ns clocks and 8 ns
   `ptp_sample_clk` on exact ports. A fresh baseline run gives timing/structural/PPA artifacts,
   per-clock coverage for each surviving clock (a missing clock proven optimized out) and reported
-  unconstrained I/O and paths. Record image/tool/library/recipe identity; areas 10 and 13 must
+  unconstrained I/O and paths. Record image/tool/library/recipe identity; areas
+  11 and 13 must
   match.
 Look for: `estimated_fmax_mhz` as physical timing, dropped clocks, false paths, forced passes.
 
-### 5. interactive — Interactive Mode, MCP jobs and admission (~25 min)
+### 5. interactive — Developer Agent session, MCP jobs and admission (~25 min)
 Intent: a read-only Interactive child drives everything over MCP and changes nothing.
 Depends on: areas 2–4; if they failed, use what works and log gaps.
 Try:
@@ -129,7 +138,8 @@ Try:
 - MCP jobs: cancelling queued and running jobs reports "cancelled", not failure, and a new job still
   runs; a detached job returns `run_id` and polling gives its terminal result; after an inline
   client timeout, report lookup returns the latest durable report.
-- Admission: two read-only Interactive jobs plus Goal child work respect admission caps;
+- Admission: two read-only Interactive jobs plus a running measurement respect
+  admission caps;
   jobs queued behind an active one are not preempted, peers FIFO; two edits in a disposable
   shared-tree fixture collide visibly.
 - Compare Flow and Specialist names across help, cheat sheet, MCP and skills; log the public route
@@ -186,8 +196,10 @@ Try:
   `deps/data` with nested `deps/data/nested/leaf`, `deps/unselected`, and a paired `.booley`
   pinning `deps/control`. Init it at B as a separate Project (same build/image), set `.gitmodules`
   URLs to unreachable `example.invalid` SSH, keep default-deny egress.
-- Positive: a child enters a tiny verification Goal in a linked worktree at B,
-  naming the sim Target; its base and evidence name B and the paired repo; `sim_submodule_fixture_b` passes fresh (DATA 16'h2468, LEAF 8'h34);
+- Positive: in a linked worktree at B, `sim_submodule_fixture_b` passes fresh
+  (DATA 16'h2468, LEAF 8'h34),
+  and `booley measure` of B with a `[sim_submodule_fixture_b.sim]` table runs it
+  in a clean checkout at B's pins;
   baseline-relative `synth_submodule_transport` A→B uses A, leaf A, control A for the baseline,
   never the newer checkout; materialized repos are detached, standalone (own `.git`, no
   remotes/alternates) and offline-built.
@@ -203,81 +215,111 @@ Try:
   a matching destination is accepted. Restore for a fresh pass; the real Taxi Project is unchanged.
 Look for: stale-cache passes, silent fetches, newer checkout as baseline, half-created repos.
 
-### 9. goal-observability — Verification Goal and mutation campaign (~60 min)
-Intent: a verification Goal yields exact observability tests and a real mutation score.
-Depends on: clean Setup state and committed Project configuration/Goalsets.
+### 9. metrics — Target Metrics and measuring the baseline (~60 min)
+Intent: Target Metrics declared from the docs alone load, measure the baseline,
+and fail closed when a number cannot be produced.
+Depends on: areas 3-4.
 Try:
-- Create a linked worktree, start a Codex child and send `$booley-goal` with
-  `goals/observability.md`. The new files are
-  `qa/taxi_eth_mac_10g/test_observability.{py,sv}` and the ordinary Target
-  `sim_mac_10g_observability`; existing Taxi source/tests must stay unchanged.
+- `booley cheat --metrics`; merge `fixtures/metrics.toml` into
+  `.booley/metrics.toml`; `booley measure --validate` is clean. Negatives, one
+  file listing all at once: an unquoted `rx_clk.fmax_mhz_min` (a `write
+  instead:` line), a relative bound, an unknown metric (lists the Flow's
+  metrics), a table with no metric; `[defaults.synth]` alone measures nothing.
+  Restore.
+- Commit, `booley measure --base <the commit that registered the tests>` (the
+  default Base is the upstream pin, so the registry would read as "tests
+  changed"): one child Flow per table in a clean checkout, a stored Measurement
+  Run, green header, exit 0; the Dashboard session line reads `Measured <sha>`.
+  Again: the stored run, no Flow, exit 0. `--again` stores a second run;
+  `--again --target synth_mac_10g` is never stored or Measured (reports under
+  `.interactive_logs/standalone/<run_id>/`); `--json` matches the Markdown
+  report.
+- Turn the physical tracked numbers into bounds with slack outside the observed
+  values, per-clock keys quoted and only for clocks the report lists; commit;
+  Measured.
+- `error` verdicts, each in a disposable commit: a per-clock bound naming a
+  clock the report does not list (misspelled or optimized out) is `error`, exit
+  2, never judged against another clock; a Pre-Sim Command or hook that calls
+  `git` fails in the measurement checkout (no `.git`); measuring `HEAD` with a
+  dirty tracked file notes it and measures only the commit.
+Look for: a bound judged on the wrong clock, an `error` row shown as met or
+unmet, uncommitted work measured, a `--target` run that makes a commit Measured.
+
+### 10. observability — Verification work as a Measured Commit, and a mutation campaign (~60 min)
+Intent: a child's verification work yields exact observability tests, a real
+mutation tally and a Measured Commit.
+Depends on: area 9's Measured baseline.
+Try:
+- Start a child per the shared child rules with `prompts/observability.md`. The
+  new files are `qa/taxi_eth_mac_10g/test_observability.{py,sv}` and the
+  ordinary Target `sim_mac_10g_observability`; existing Taxi source/tests must
+  stay unchanged.
 - Tests check bad RX FCS (`tuser`, bad-FCS flag, counter 34); all 8 PFC classes
   with quanta 10…80 (exact TX/RX bitmap and quanta, counters 25/57); four-cycle
   underrun (XGMII error termination, counter 3); 16-bit completion tags and
   timestamp vs SFD; `tuser=0` counters vs `tuser=1` strings. Elab, full sim and
-  clean TB-quality evidence must bind to the intended Goal/Target.
+  clean TB-quality evidence must bind to the new Target.
+- The child asks before adding the `[sim_mac_10g_observability.sim]` table:
+  approve with a reason. The Measured Commit's report, measured with `--base`
+  the commit the child started from, shows the new table with every bound met
+  and an amber "tests changed" for the approved registry addition.
 - Mutation on `src/eth/rtl/taxi_eth_mac_10g.sv` has explicit total 8/min 7. The
-  report shows a pristine baseline, 8 Mutants each built and tested in isolation,
-  each detected Mutant's first killing test, and an unchanged source tree afterward.
-- Finish with fresh evidence at a clean committed HEAD; inspect package and
-  non-Stealth history commit, then the operator integrates the printed branches using the shared rules.
-  The new Target stays selectable for the repair Goal.
-Look for: weakened upstream tests, a source tree changed by mutation, incorrect
-evidence binding or a Target lost during integration.
+  report shows a pristine baseline, 8 Mutants each built and tested in
+  isolation, each detected Mutant's first killing test, and an unchanged source
+  tree afterward.
+- Integrate the worktree's branch using the shared rules. The new Target stays
+  selectable for the repair.
+Look for: weakened upstream tests, a source tree changed by mutation, a table
+added without approval, a Target lost during integration.
 
-### 10. goal-repair — Seeded PFC fault and bugfix Goal (~60 min)
-Intent: the new oracle catches what upstream misses; a blind Goal child restores upstream bytes.
-Depends on: area 9 finished and the printed branches integrated. If it failed, log and skip repair;
-the operator does not author replacement tests.
+### 11. repair — Seeded PFC fault: unmet bound, base run and measured repair (~60 min)
+Intent: the new oracle catches what upstream misses; a blind child restores
+upstream bytes and the repair is Measured against its Base.
+Depends on: area 10 integrated; if it failed, log and skip repair; the operator
+does not author replacement tests.
 Try:
-- Rerun both sims on integrated RTL. Apply `fixtures/pfc-fault.md` in a disposable
-  copy and commit: upstream PFC still passes, new test fails with class 0 seen
-  as class 1 and fresh FST shows the rotation. Save the failure before repair.
-  Without that split, restore and skip this Goal.
-- Cut a linked worktree from the seed commit; start a new Codex child with
-  `$booley-goal` plus `goals/repair.md` and only bounded visible diagnostics.
-  Require the child's fresh reproduction before editing and evidence-based diagnosis.
-- Repair must be byte-identical to upstream; both full sims and elaborations
-  pass, `lint_mac_10g` is clean, logical cells +0%, physical cells/critical path +0% with
-  identical SDC/library/recipe. RTL bugs review is clean; protocol/spec reviews done.
-- Finish, save package/history and integrate the printed branches using the shared rules. On failure explicitly
-  abandon, keep checkpoint/report/diff in evidence and restore post-observability state.
-Look for: child edits to tests/config, unqualified timing changes or stale Goal evidence.
+- Rerun both sims on integrated RTL. Apply `fixtures/pfc-fault.md` in a
+  disposable copy and commit: upstream PFC still passes, new test fails with
+  class 0 seen as class 1 and fresh FST shows the rotation. Save the failure
+  before repair. `booley measure` on the seed: the observability table's
+  `tests_failed` is unmet, exit 1, red header, failing rows first; the upstream
+  table stays met. Without that split, restore and skip.
+- Base run: the integrated observability commit is the Base and is already
+  Measured, so its stored run is the base run. `--base` naming a commit with no
+  stored run prints `booley measure --all <base>`; the verdict never depends on
+  a base run.
+- Cut a linked worktree from the seed commit; start a new child with
+  `prompts/repair.md` and only bounded visible diagnostics. Require the child's
+  fresh reproduction before editing and evidence-based diagnosis.
+- Repair must be byte-identical to upstream and Measured with `--base` at the
+  observability commit: both full sims and elaborations pass, `lint_mac_10g` is
+  clean, logical cells +0%, physical cells/critical path +0% (Δ 0) with
+  identical SDC/library/recipe. RTL bugs review is clean; protocol/spec reviews
+  done; keep the review reports.
+- Message-only amend: amend the Measured repair commit's message; `booley
+  measure` prints the stored run, starts no Flow, exits 0, and the Dashboard
+  reads `Measured <new sha>`. Amend with a one-byte content change: measured
+  again.
+- Loosened rules, each in a disposable commit with and without a `notes` entry,
+  measured with `--base <the commit holding area 9's final rules>` (the default
+  Base on this run-owned branch is the upstream pin, which has no
+  `metrics.toml`, so rules would read as additions): raise a `_max`, lower a
+  `_min`, `off = [...]`, move a bound to `track`, delete a table → amber "rules
+  loosened" with the note or "(no note)"; a `tests.toml` edit → "tests changed";
+  a `booley.toml` edit appears as a protected-set change. Restore byte-exactly.
+- Integrate the repair using the shared rules; on failure keep its branch,
+  report and diff, and restore the post-observability state.
+Look for: Δ against the wrong base, a base run deciding a verdict, a
+message-only amend measured again or a content amend kept Measured, a loosening
+shown green.
 
-### 11. goal-operations — Concurrent children, Dashboard and warnings (~60 min)
-Intent: separate worktrees isolate Goal evidence and expose operator diagnostics without changing policy.
-Try:
-- Start two Codex children in two clean linked worktrees with distinct slugs
-  and `goals/operations.json`. Every MCP call that accepts `work_dir` (listed in
-  `qa/shared/GOAL-CHILD.md`) includes it, including independent calls against
-  the primary checkout. Evidence and artifacts cannot
-  cross records. Check the Sandbox admission cap and cancellation of waiting jobs.
-- Run `booley session enter -- booley dashboard` and `booley goal status --short`
-  and `--long`; sessions, Goals and Jobs agree with each child's durable record.
-- In disposable copies run `booley session enter -- booley doctor` (Doctor's Goal
-  checks don't run on the host). Provoke `goals.worktree-missing` with an owned
-  workspace moved aside and restored; provoke quiet-session warnings by waiting
-  the reported threshold or setting it before entry. Quiet never clears a record.
-- Finish or explicitly abandon both concurrent records. Only then enter a third
-  disposable Goal for the Project-wide Protected Input probe: change
-  `booley.toml`, observe warnings, discarded evidence and blocked Finish, restore
-  byte-exactly and rerun. Never contaminate concurrent Goals with this probe.
-- Entry refuses the main checkout, a dirty tree and an existing same-day Goal Branch, each
-  probed alone. With a disposable `default.md` committed in the primary checkout's goalsets,
-  entry asks to include or skip it. Retrying `goal_finish` with the same operation ID returns
-  the same completion.
-- Test wrong worktree identity and occupied-worktree entry refusals, fresh evidence
-  after relevant edits, unmet mandatory Goal blocking Finish, and explicit abandon
-  preserving branch/worktree. Save diagnostics and resolve all records before cleanup.
-Look for: cross-record evidence, missing work_dir accepted during active work
-by a call that takes it, auto-abandon or a protected-input edit silently
-accepted.
-
-### 12. campaign — Simulation Campaigns (~25 min)
+### 12. sim-record — Simulation Records (~25 min)
 Intent: one shared build, memory-admitted parallel attempts, isolated attempts, resumable batches.
 Try:
-- Copy `fixtures/simulation-campaign/` in, register `campaign.core`, merge `tests.toml` into the
-  test catalog. `first` + `second` in one campaign → exactly one ready `shared_variant` bundle for
+- Copy `fixtures/simulation-record/` in, register `campaign.core`, merge
+  `tests.toml` into the
+  test catalog. `first` + `second` in one Simulation Record → exactly one ready
+  `shared_variant` bundle for
   both attempts, bytes unchanged (cross-check `validate_bundle.py`).
 - Run each slow item once first: an item with no Resource History runs alone. Apply
   `parallel.toml`, and set a `[sandbox].memory` whose Memory Budget fits several of the items but
@@ -291,14 +333,15 @@ Try:
   defines.
 - Kill the owned producer mid Taxi Cocotb multi-test batch and copy the interrupted attempt's
   `attempt.json`; resume from the manifest → one new attempt rerunning the whole batch
-  (cross-check `validate_phase5.py` with the Campaign directory and that copy). The same ordered
+  (cross-check `validate_phase5.py` with the Simulation Record directory and
+  that copy). The same ordered
   `test` array over MCP → authenticated artifact references, ≤32 observations, exact truncation
   metadata, same exit code; keep the MCP run's report invocation directory and pass it to
   `validate_phase5.py`.
 Look for: per-test rebuilds, cap overshoot, cross-attempt files, fail-fast omissions.
 
 ### 13. final-regression — Final state (~20 min)
-Depends on: area 10 merged; else use the latest trustworthy state and say which.
+Depends on: area 11 merged; else use the latest trustworthy state and say which.
 Try:
 - Rerun plain/deep Doctor, both sims, `lint_mac_10g` (clean), `lint_mac_10g_verible` (the
   expected syntax error), logical and fresh physical synthesis, B-Wave PFC checks. Pre-existing Taxi bytes match the pin; only `qa/taxi_eth_mac_10g/` and the ordinary
@@ -328,7 +371,8 @@ results passed off as fresh.
 
 ### 15. cleanup — Product cleanup (~20 min)
 - Save a git bundle of accepted/seed/repair history and the physical reports in `evidence/`.
-- With Booley's own commands, release Sandboxes (`booley session down`), processes, Goal worktrees
+- With Booley's own commands, release Sandboxes (`booley session down`),
+  processes, child worktrees
   and branches, Project inventory entries, run-owned Grants, EDA registrations and License
   Profiles, derived images, volumes and mounts; no owned process or
   container may remain.
@@ -336,7 +380,7 @@ results passed off as fresh.
   `resources.md` rows. Credentials, base images, caches and remotes are unchanged; nothing pushed.
 
 ## Known traps
-- Integrate the Goal Branch, and the Booley Directory branch when `booley worktree new` printed a Paired Checkout, before starting repair.
+- Integrate the observability worktree's branch before starting repair.
 - Gearbox off follows the pinned pytest driver, not the Makefile default; RX/TX keep IFG 12 and 0.
 - `src/*/lib/taxi` symlinks point to the Project Root (infinite walks); use `FUSESOC_IGNORE` or real
   paths, not `.f` hops.
