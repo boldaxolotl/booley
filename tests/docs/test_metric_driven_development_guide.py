@@ -13,6 +13,8 @@ from tests.measurement.metrics_project_support import write_metrics_project
 GUIDE = Path(__file__).parents[2] / "docs/user/METRIC-DRIVEN-DEVELOPMENT.md"
 PROJECT_TARGETS = frozenset({"synth_core", "sim_core", "sim_fifo", "sim_two"})
 HEADINGS = [
+    "Why track metrics",
+    "How it works",
     "Adopt it in stages",
     "Write `metrics.toml`",
     "Check the file",

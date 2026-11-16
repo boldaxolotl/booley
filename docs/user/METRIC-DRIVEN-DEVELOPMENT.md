@@ -1,25 +1,64 @@
 # Metric-Driven Development
 
-Metric-Driven Development is how Booley accepts work: it measures a commit
-against the Target Metrics your Project declares, and the work is accepted
-when that commit is Measured and the report header is green. Use it to decide
-whether a finished piece of work is acceptable. Do not use it while you
-iterate; there, plain `booley flow` runs are the loop, and each one is faster
-and shows more.
+Metric-Driven Development tracks the numbers that matter most for your RTL
+design, its Target Metrics, at every commit as the design evolves. Use it to
+accept a finished piece of work. Do not use it while you iterate; there,
+plain `booley flow` runs are the loop, and each one is faster and shows more.
+
+A metric is a number a Flow reports for one Target:
+
+- **Lint:** warnings and errors.
+- **Simulation:** failing tests, total tests, and the cycle count of each test.
+- **Coverage:** line, branch, expression, toggle and cover-property coverage.
+- **ASIC synthesis:** area in μm² and kGE, cell count, and per clock the
+    Fmax, critical path, worst negative slack and worst hold slack.
+- **FPGA implementation:** LUTs, flip-flops, BRAM tiles, DSPs, and the same
+    per-clock timing as ASIC synthesis.
 
 Adoption is optional and happens in stages. A Project that declares no
 Target Metrics is never measured and nothing here applies to it.
 
 **Contents**
 
-1. [Adopt it in stages](#adopt-it-in-stages)
-2. [Write `metrics.toml`](#write-metricstoml)
-3. [Check the file](#check-the-file)
-4. [Measure a commit](#measure-a-commit)
-5. [Give the Developer Agent a relative target](#give-the-developer-agent-a-relative-target)
-6. [Read the Measurement Report](#read-the-measurement-report)
-7. [Base runs](#base-runs)
-8. [Limits](#limits)
+1. [Why track metrics](#why-track-metrics)
+2. [How it works](#how-it-works)
+3. [Adopt it in stages](#adopt-it-in-stages)
+4. [Write `metrics.toml`](#write-metricstoml)
+5. [Check the file](#check-the-file)
+6. [Measure a commit](#measure-a-commit)
+7. [Give the Developer Agent a relative target](#give-the-developer-agent-a-relative-target)
+8. [Read the Measurement Report](#read-the-measurement-report)
+9. [Base runs](#base-runs)
+10. [Limits](#limits)
+
+## Why track metrics
+
+- **No silent regressions.** The Developer Agent cuts area, and Fmax drops
+    by half. Without a bound on Fmax nobody notices until much later; with
+    one, the measurement fails and the agent has to fix it.
+- **The design's history in numbers.** Every Measured Commit records its
+    metrics, so you see how area, timing and coverage moved over time and can
+    weigh one trade-off against another.
+- **Hard numbers suit agents.** A Developer Agent iterates well against a
+    bound it can check, such as `area_kge_max = 60`, and poorly against
+    "make it smaller".
+
+## How it works
+
+1. **You choose the metrics.** For each Target, write the ones worth
+    tracking in `.booley/metrics.toml`, once. You don't repeat them in each
+    request.
+2. **You ask for a Measured Commit.** End the request with "give me a
+    Measured Commit".
+3. **The Developer Agent finishes the work and runs `booley measure`.**
+    Booley's own code runs the measurement, not the agent: every Flow named
+    in `metrics.toml`, in a clean checkout of the commit, the same way each
+    time. Numbers from two commits are therefore safe to compare.
+4. **An unmet bound sends the agent back to work.** It fixes the design,
+    commits and measures again, up to 3 times. It may not loosen
+    `metrics.toml` without your approval.
+5. **You read the Measurement Report.** A green header means every bound is
+    met; see [Read the Measurement Report](#read-the-measurement-report).
 
 ## Adopt it in stages
 
