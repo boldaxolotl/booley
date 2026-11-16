@@ -1,6 +1,7 @@
 """Authoritative VaporView installation-state probes, recovery guidance, and the
-attached-window Viewer Bridge diagnosis, which also checks the bundled Verilog-HDL
-and Live Preview extensions."""
+attached-window Viewer Bridge diagnosis, which also checks that the verified VaporView
+carries Booley's Sandbox patch and that the bundled Verilog-HDL and Live Preview
+extensions are installed."""
 
 from __future__ import annotations
 
@@ -147,6 +148,74 @@ def _directory_versions(root: Path, extension_id: str) -> set[str] | None:
             return None
         versions.add(version)
     return versions
+
+
+def live_manifests(home: Path) -> list[Path] | None:
+    """Return the manifest of every live VaporView install, or None if unknown.
+
+    These are the installs :func:`installed_versions` counts: each root's
+    ``extensions.json`` names its live directories (``relativeLocation``), and a
+    root without one falls back to the directories VS Code has not marked
+    obsolete. A leftover directory the registry no longer names is never
+    returned. An unreadable or malformed registry or obsolete list makes the
+    answer unknown rather than partial.
+    """
+    manifests: list[Path] = []
+    for root in vscode_server.extension_dirs(home):
+        found = _registry_manifests(root)
+        if found is None:
+            return None
+        manifests += found
+    return manifests
+
+
+def _registry_manifests(root: Path) -> list[Path] | None:
+    """Collect the live VaporView manifests of one extension root."""
+    try:
+        source = (root / "extensions.json").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return _directory_manifests(root)
+    except OSError:
+        return None
+    try:
+        entries = json.loads(source)
+    except ValueError:
+        return None
+    if not isinstance(entries, list):
+        return None
+    manifests: list[Path] = []
+    for entry in entries:
+        fields = as_dict(entry) or {}
+        identifier = as_dict(fields.get("identifier")) or {}
+        ext_id = identifier.get("id")
+        if not isinstance(ext_id, str) or ext_id.lower() != EXTENSION_ID:
+            continue
+        location = fields.get("relativeLocation")
+        # The registry names a directory directly under the root, nothing deeper.
+        if (
+            not isinstance(location, str)
+            or location in ("", ".", "..")
+            or Path(location).name != location
+        ):
+            return None
+        manifests.append(root / location / "package.json")
+    return manifests
+
+
+def _directory_manifests(root: Path) -> list[Path] | None:
+    """Collect the manifests of non-obsolete VaporView directories of a root with no registry."""
+    try:
+        entries = sorted(root.iterdir())
+    except OSError:
+        return None
+    obsolete = _obsolete_extensions(root)
+    if obsolete is None:
+        return None
+    return [
+        entry / "package.json"
+        for entry in entries
+        if entry.name.lower().startswith(f"{EXTENSION_ID}-") and entry.name.lower() not in obsolete
+    ]
 
 
 def probe_home(home: Path) -> ExtensionState:
@@ -299,6 +368,15 @@ def _vaporview_versions_probe_source(roots: tuple[str, ...]) -> str:
     )
 
 
+# Prints the attach hook's patch report as JSON (see ``patch_report``). An older
+# in-container Booley without it fails the import, which the runner treats as
+# "probe could not run".
+_VAPORVIEW_PATCH_PROBE_SOURCE = (
+    "import json;from pathlib import Path;"
+    "from booley.runtime.incontainer_vaporview import patch_report;"
+    "print(json.dumps(patch_report(Path.home())))"
+)
+
 # Prints every live bridge's VaporView report as JSON. An in-container Booley
 # without the bridge client fails the import, which the runner treats as
 # "probe could not run" rather than as a dark window.
@@ -426,7 +504,9 @@ def inspect_viewer_bridge(request: ViewerBridgeRequest) -> DiagnosticReport:
     if attachment is None:
         report.skip(absent)
         return report.report()
-    _check_version(prefix, where, attachment, report)
+    verified = _check_version(prefix, where, attachment, report)
+    if verified:
+        _check_patch(prefix, where, report)
     _check_bridges(prefix, where, report)
     _check_bundled_extensions(prefix, where, attachment, report)
     return report.report()
@@ -499,10 +579,72 @@ def _remote_versions(
     return versions
 
 
+_PATCH_STATES = frozenset({"patched", "unpatched", "foreign", "unreadable"})
+_WATCH_LOG_PATH = "~/.booley/vaporview-install-watch.log"
+
+
+def _remote_patch(prefix: list[str]) -> tuple[bool, list[str]] | None:
+    """Whether the attach hook runs and each live install's patch state, or None when unknown."""
+    result = _run_probe(prefix, _VAPORVIEW_PATCH_PROBE_SOURCE)
+    if result is None or result.returncode != 0:
+        return None
+    try:
+        answer = require_dict(json.loads(result.stdout), field="patch probe")
+        hook_running = require_bool_value(answer.get("hook_running"), field="hook_running")
+        installs = answer.get("installs")
+    except (ValueError, BoundaryError):
+        return None
+    if not is_str_list(installs) or not _PATCH_STATES.issuperset(installs):
+        return None
+    return hook_running, installs
+
+
+def _check_patch(prefix: list[str], where: str, report: Findings) -> None:
+    """Report whether the verified VaporView carries Booley's Sandbox patch.
+
+    Only called for the verified build, the one the patch is verified against.
+    A foreign bundle fails even while the attach hook runs: its watcher polls
+    until every install is patched, which a build it cannot patch never is.
+    """
+    description = f"VaporView {VERIFIED_VERSION} carries Booley's Sandbox patch"
+    answer = _remote_patch(prefix)
+    if answer is None:
+        report.skip(f"{description} - patch probe could not run{where}")
+        return
+    hook_running, installs = answer
+    if "foreign" in installs:
+        report.fail(
+            f"VaporView {VERIFIED_VERSION} is installed{where}, but not as a build Booley can patch",
+            "in the attached remote window's terminal run "
+            f"`code --install-extension {BUNDLED_VSIX}`, then 'Developer: Reload Window'",
+        )
+    elif "unpatched" in installs and hook_running:
+        report.skip(
+            f"{description} - Booley's attach hook is still patching it{where}; "
+            f"run `booley doctor` again shortly, and read {_WATCH_LOG_PATH} in the "
+            "Sandbox if this persists"
+        )
+    elif "unpatched" in installs:
+        report.fail(
+            f"VaporView {VERIFIED_VERSION} is installed{where} without Booley's Sandbox "
+            "patch, so it reports 'Error getting user theme' and shows wrong "
+            "`bwave gui` colors",
+            "run 'Developer: Reload Window' in the attached VS Code window; if the error "
+            f"persists, read {_WATCH_LOG_PATH} in the Sandbox; for a lasting fix update "
+            "Booley, then refresh the Sandbox so it uses the current Sandbox Image",
+        )
+    elif "unreadable" in installs or not installs:
+        report.skip(f"{description} - installed files could not be read{where}")
+    else:
+        report.pass_(description)
+
+
 def _check_version(
     prefix: list[str], where: str, attachment: _Attachment, report: Findings
-) -> None:
+) -> bool:
     """Report whether each attached window runs the VaporView build Booley verified.
+
+    True only when every attached root's live installs are that build.
 
     The bridge answers for any VaporView build, but Booley's compatibility
     patch and its readback rules are verified against exactly one; only the
@@ -514,7 +656,7 @@ def _check_version(
         probed = _remote_versions(prefix, attachment.roots)
         if probed is None:
             report.skip(f"{description} - version probe could not run{where}")
-            return
+            return False
         versions = probed
     _report_per_root(
         report,
@@ -522,6 +664,10 @@ def _check_version(
         where,
         attachment,
         lambda root: _version_finding(description, versions[root], where),
+    )
+    return not attachment.unknown and all(
+        found and all(version == VERIFIED_VERSION for version in found)
+        for found in versions.values()
     )
 
 
