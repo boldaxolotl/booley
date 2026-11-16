@@ -310,7 +310,8 @@ Each step is also a standalone how-to file in the skill's `steps/` directory if
 you'd rather write it by hand.
 
 Once `booley doctor` (and `--deep`) is green, you're set up. Head to
-[Interactive Mode](USAGE.md#interactive-mode) to start your first session.
+[Developer Agent sessions](USAGE.md#developer-agent-sessions) to start your
+first session.
 
 ### A new IP: greenfield mode
 
@@ -344,8 +345,8 @@ testbench, keeping the generated wiring as the pattern. Refresh
 to match the current interface, keeping it buildable and behaviorally failing
 the selected smoke Test. Re-run the Doctor check
 whenever the shape of the project changes (new Target, new flow, new
-constraints). From there, drive development the normal way: start an
-[Interactive Mode](USAGE.md#interactive-mode) session.
+constraints). From there, drive development the normal way: start a
+[Developer Agent session](USAGE.md#open-your-first-developer-agent-session).
 
 ## Projects on this machine · host
 
@@ -414,7 +415,7 @@ repository.
 - [SANDBOX.md](SANDBOX.md): custom Sandbox image and commercial EDA tools.
 - [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md): which EDA tools Booley drives, at
   which boundary. The reference the skill's plan step checks against.
-- [USAGE.md](USAGE.md): day-to-day use and Interactive Mode.
+- [USAGE.md](USAGE.md): day-to-day use and Developer Agent sessions.
 - [CLI-REFERENCE.md](CLI-REFERENCE.md): CLI reference.
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md): the few problems Booley can't
   report by itself.

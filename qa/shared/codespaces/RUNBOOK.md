@@ -300,9 +300,7 @@ Booley MCP server that `~/.codex/config.toml` names
 (by default `http://127.0.0.1:8814/mcp`). That `mcp` version's API is
 `mcp.client.streamable_http.streamable_http_client`, and results carry
 `is_error` (not `streamablehttp_client` and `isError`). Calling `booley_status`
-creates an Interactive session. `goal_enter` with `work_dir` set to a fresh
-`git worktree add --detach` directory, a `slug`, and
-`goals=[{"family": "LINT", "target": "lint_core"}]` creates a Goal session.
+creates a Developer Agent session.
 Keep the client connected (a long sleep) while you check, and Ctrl+C it to
 disconnect.
 

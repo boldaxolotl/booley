@@ -3,9 +3,9 @@
 Port pinned upstream Taxi to Booley from a direct clone, then evolve `taxi_eth_mac_10g` through a
 verification Goal (exact PFC/FCS/underrun/statistics tests, mutation campaign) and a bugfix
 Goal for a seeded PFC fault the upstream tests miss. Also covers Setup with a derived Cocotb
-image, Targets, Doctor, lint, logical/physical synthesis, Interactive Mode, B-Wave, a submodule
-companion, Goal operations and Simulation Records. Taxi's interfaces, recursive
-symlink, big
+image, Targets, Doctor, lint, logical/physical synthesis, Developer Agent
+sessions, B-Wave, a submodule companion, Goal operations and Simulation
+Records. Taxi's interfaces, recursive symlink, big
 Python stack and five clocks surface stale caches, skipped tests and dropped clocks.
 The operator runs it through [`booley-qa-run`](../../booley-qa-run/SKILL.md), which owns the run
 directory, findings format, and cleanup bookkeeping; this file says where to look.
@@ -118,7 +118,7 @@ Try:
   match.
 Look for: `estimated_fmax_mhz` as physical timing, dropped clocks, false paths, forced passes.
 
-### 5. interactive — Interactive Mode, MCP jobs and admission (~25 min)
+### 5. interactive — Developer Agent session, MCP jobs and admission (~25 min)
 Intent: a read-only Interactive child drives everything over MCP and changes nothing.
 Depends on: areas 2–4; if they failed, use what works and log gaps.
 Try:

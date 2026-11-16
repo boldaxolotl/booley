@@ -265,7 +265,7 @@ def test_shared_glossary_defines_developer_agent_outside_retired_terms() -> None
     text = (ROOT / "docs/GLOSSARY.md").read_text(encoding="utf-8")
     active, retired = text.split("## Retired and ambiguous terminology", maxsplit=1)
     definition = active.split("**Developer Agent**:\n", maxsplit=1)[1].split("\n\n", 1)[0]
-    for term in ("Sandbox", "Interactive Mode", "Booley Flows", "Specialists"):
+    for term in ("Sandbox", "Booley Flows", "Specialists"):
         assert term in definition
     assert "_Avoid_: coding agent, host agent, main agent, outer agent" in definition
     assert "Developer Agent** →" not in retired

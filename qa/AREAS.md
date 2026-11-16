@@ -37,7 +37,7 @@ optional is not covered by a primary run.
 | RISC-V toolchain | [picorv32/baseline](missions/picorv32/MISSION.md) |
 | Vendored core discovery | [taxi/submodules](missions/taxi/MISSION.md) (optional), [taxi/targets-doctor](missions/taxi/MISSION.md) |
 | Custom Flow extensions | [scheduler/setup](missions/scheduler/MISSION.md), [uart/interactive-surface](missions/uart/MISSION.md) |
-| Interactive Mode | [gui/dashboard-live](missions/gui/MISSION.md), [taxi/bwave](missions/taxi/MISSION.md), [taxi/interactive](missions/taxi/MISSION.md), [uart/interactive-surface](missions/uart/MISSION.md), [uart/setup-interactive](missions/uart/MISSION.md) |
+| Developer Agent sessions | [gui/dashboard-live](missions/gui/MISSION.md), [taxi/bwave](missions/taxi/MISSION.md), [taxi/interactive](missions/taxi/MISSION.md), [uart/interactive-surface](missions/uart/MISSION.md), [uart/setup-interactive](missions/uart/MISSION.md) |
 | MCP job control | [taxi/bwave](missions/taxi/MISSION.md), [taxi/interactive](missions/taxi/MISSION.md) |
 | Mode-specific MCP surface | [uart/interactive-surface](missions/uart/MISSION.md) |
 | Job admission control | [scheduler/sched-admission](missions/scheduler/MISSION.md), [scheduler/sched-companions](missions/scheduler/MISSION.md), [scheduler/sched-fullchip](missions/scheduler/MISSION.md) (optional), [scheduler/sched-jump](missions/scheduler/MISSION.md), [scheduler/sched-records](missions/scheduler/MISSION.md), [taxi/sim-record](missions/taxi/MISSION.md), [taxi/interactive](missions/taxi/MISSION.md) |

@@ -226,7 +226,7 @@ so a reopened session reconnects on its own. Through it the Developer Agent
 reaches Flows, read-only Specialists, B-Wave, and runtime status.
 `BOOLEY_MCP_TOOLS` and nested allowlists control which MCP tools are listed. See
 [SETUP.md](../user/SETUP.md) for the lifecycle and
-[USAGE.md](../user/USAGE.md#interactive-mode) for daily use.
+[USAGE.md](../user/USAGE.md#developer-agent-sessions) for daily use.
 
 ### Why VS Code
 

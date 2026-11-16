@@ -10,8 +10,8 @@ owns, such as B-Wave.
 
 Booley is an **agentic development environment (ADE)** for RTL design and
 verification: the working environment where an engineer directs and supervises
-Developer Agents doing RTL work, whether hands-on or unattended. **Interactive
-Mode** runs in an isolated **Sandbox** with Booley Flows and Specialists.
+Developer Agents doing RTL work, whether hands-on or unattended. The Developer
+Agent runs in an isolated **Sandbox** with Booley Flows and Specialists.
 _Avoid_ (for the product itself): IDE, agentic RTL IDE, framework, system, library, platform, toolkit, package, harness
 
 The glossary also records words to _avoid_. Booley's concepts collide with
@@ -45,14 +45,14 @@ _Avoid_: Project Initialization, onboarding, porting
 
 ### Execution
 
-How and where Booley work runs. The **Sandbox** is the execution environment;
-**Interactive Mode** is the execution mode; the remaining entries are the
-machinery inside.
+How and where Booley work runs. The **Sandbox** is the execution
+environment; the remaining entries are the machinery inside.
 
 **Developer Agent**:
 The agent of an agent session (Claude Code or Codex) in a **Sandbox**. It
-authors code and chooses which **Booley Flows** and **Specialists** to use. It
-works in **Interactive Mode** with a human steering.
+authors code and chooses which **Booley Flows** and **Specialists** to use. A
+human steers it through its CLI in a Sandbox terminal. Commits are accepted by
+[Metric-Driven Development](#metric-driven-development-and-reviews).
 _Avoid_: coding agent, host agent, main agent, outer agent
 
 **Agent CLI**:
@@ -78,12 +78,6 @@ _Avoid_: Runtime Image, Session Image, sandbox tag, container, Dockerfile
 **Sandbox Issuance**:
 The host-owned act of sealing and vouching for one exact Sandbox specification, including its immutable image, trusted mounts, network policy, and granted provisioning inputs. It is distinct from **EDA Provisioning**, which decides where EDA installation files originate.
 _Avoid_: Session Runtime Issuance, EDA runtime spec, provisioning issuance
-
-**Interactive Mode**:
-Execution mode in which a human steers the Developer Agent inside a Sandbox,
-using the Developer Agent's CLI in a Sandbox terminal. Commits are accepted by
-[Metric-Driven Development](#metric-driven-development-and-reviews).
-_Avoid_: MCP Mode, Standalone Mode, Tab Mode, Booley Interactive
 
 **Protected Input**:
 A file that decides how evidence is produced and is therefore a protected input:
@@ -393,6 +387,8 @@ You will not need these unless you are reading older work records, code, or docs
   was never finished, and [ADR
   0092](adr/0092-measure-commits-against-target-metrics.md) measures commits
   instead.
+- **Interactive Mode** → **none**: Booley has one way of working; say
+  "Developer Agent session" or "Sandbox" where a noun is needed.
 - **TB Coder** → **none**: the Developer Agent writes testbenches itself.
 
 - **"tool"**: Overloaded across Booley, agent clients, MCP, and EDA. Never use the bare word in Booley prose or identifiers: say **Booley Flow** for deterministic orchestration, **EDA tool** for the external program a Flow drives, and **MCP tool** only for the protocol-level invocation mechanism.

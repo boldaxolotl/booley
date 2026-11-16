@@ -89,7 +89,7 @@ Try:
   counter, skills, image and Stealth state, then set `[stealth] enabled = false`.
 - Init flags: `--check-only` on stale disposable state reports work and changes nothing;
   `--force` restores owned generated state and keeps a user sentinel file; `--seed` writes only
-  the folder's Interactive Mode devcontainer; `--skip-credentials` touches no credentials; the
+  the folder's devcontainer; `--skip-credentials` touches no credentials; the
   `--provider`/`--auth` choice matches the issued auth and client policy. `init` inside a
   Booley-issued Sandbox gets an actionable refusal.
 - Break a run-owned managed resource and force-repair it: caches and sentinel survive, then
@@ -99,7 +99,8 @@ Try:
 Look for: check-only runs that change state, init overwriting user files, vague refusals.
 
 ### 3. setup-interactive — Setup and Interactive MMIO baseline (~45 min)
-Intent: packaged Setup plus an Interactive session give a green, committed baseline.
+Intent: packaged Setup plus an Interactive child session give a green,
+committed baseline.
 Try:
 - On the host, run `/booley-setup new` with `prompts/setup.md` supplied up front, then
   continue in the Sandbox. Plain, deep (`--deep` runs the scaffold counter) and plain Doctor
