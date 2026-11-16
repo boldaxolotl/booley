@@ -30,9 +30,11 @@ def run_cli(monkeypatch: pytest.MonkeyPatch, project: Path, *arguments: str) -> 
 
 
 def listing_lines(output: str) -> list[str]:
-    """The raw ``metrics.toml`` lines of the output: the headers, keys and comments."""
+    """The raw ``metrics.toml`` lines of the output: the headers, keys, settings and comments."""
     return [
-        line for line in output.splitlines() if line.startswith(("[", "# ")) or " =  #" in line
+        line
+        for line in output.splitlines()
+        if line.startswith(("[", "# ")) or " =  #" in line or "  # setting: " in line
     ]
 
 
@@ -47,6 +49,7 @@ def test_cheat_metrics_prints_the_listing_in_a_project(
     assert "\nMetric-Driven Development\n" in out or out.startswith("Metric-Driven Development\n")
     assert "[sim_core.sim]\ntests_failed_max =  # tests, plain\n" in out
     assert "[synth_core.synth]\n" in out
+    assert "[sim_core.mutation]\nmutation_score_min =  # %, plain\n" in out
     assert FALLBACK not in out
     assert "\nBooley Flows\n" not in out  # only the requested section
 
@@ -59,6 +62,8 @@ def test_printed_listing_with_numbers_passes_measure_validate(
     printed = listing_lines(capsys.readouterr().out)
     headers = [line for line in printed if line.startswith("[")]
     assert len(headers) >= 8
+    assert "[sim_core.mutation]" in headers
+    assert "count = 10  # setting: Mutants to score" in printed
 
     (project / ".booley" / "metrics.toml").write_bytes(fill_listing("\n".join(printed)).encode())
     assert run_cli(monkeypatch, project, "measure", "--validate") == 0

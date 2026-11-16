@@ -59,6 +59,11 @@ _EXPECTED_DECLARATIONS: dict[str, dict[str, tuple[str, str, str]]] = {
         "warnings": ("warnings", "lower", "plain"),
         "errors": ("errors", "lower", "plain"),
     },
+    "mutation": {
+        "mutation_score": ("%", "higher", "plain"),
+        "mutants_detected": ("Mutants", "higher", "plain"),
+        "mutants_survived": ("Mutants", "lower", "plain"),
+    },
 }
 
 # Cost tier of every declaration of a Flow: lint < sim < coverage <= synth, FPGA.
@@ -68,6 +73,7 @@ _EXPECTED_TIERS = {
     "sim": "MEDIUM",
     "coverage": "HIGH",
     "lint": "LOW",
+    "mutation": "HIGH",
 }
 
 # Vivado "Clock Summary" + "Intra Clock Table" for two clocks.
@@ -141,6 +147,13 @@ def _lint_values(_tmp_path: Path, _monkeypatch: pytest.MonkeyPatch) -> Any:
     ).flow_metrics()
 
 
+def _mutation_values() -> Any:
+    """Mutation values of a run that scored four valid Mutants and detected three."""
+    from booley.flows.mutation.metrics import mutation_metric_values
+
+    return mutation_metric_values(3, 1)
+
+
 # Flows with no report reader of their own: ``coverage`` has no Flow, the ``sim`` reader serves it.
 _FLOWS_WITHOUT_REPORT_READER = {"coverage"}
 
@@ -151,6 +164,7 @@ _SAMPLE_RUNS: dict[str, Callable[[Path, pytest.MonkeyPatch], Any]] = {
     "sim": _sim_values,
     "coverage": _coverage_values,
     "lint": _lint_values,
+    "mutation": lambda _tmp, _mp: _mutation_values(),
 }
 
 

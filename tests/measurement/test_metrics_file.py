@@ -102,6 +102,42 @@ LOAD_ERRORS = {
         "bogus",
         "unknown metric",
     ),
+    "mutation-count-auto": (
+        '[sim_core.mutation]\nmutation_score_min = 50\ncount = "auto"\n',
+        "[sim_core.mutation]",
+        "count",
+        "must be an integer",
+    ),
+    "mutation-count-zero": (
+        "[sim_core.mutation]\nmutation_score_min = 50\ncount = 0\n",
+        "[sim_core.mutation]",
+        "count",
+        "at least 1",
+    ),
+    "mutation-count-float": (
+        "[sim_core.mutation]\nmutation_score_min = 50\ncount = 2.5\n",
+        "[sim_core.mutation]",
+        "count",
+        "must be an integer",
+    ),
+    "mutation-seed-negative": (
+        "[sim_core.mutation]\nmutation_score_min = 50\nseed = -1\n",
+        "[sim_core.mutation]",
+        "seed",
+        "at least 0",
+    ),
+    "mutation-unknown-key": (
+        "[sim_core.mutation]\nmutation_score_min = 50\nmin_detected = 3\n",
+        "[sim_core.mutation]",
+        "min_detected",
+        "settings: count, seed",
+    ),
+    "mutation-default-count-auto": (
+        '[defaults.mutation]\ncount = "auto"\n',
+        "[defaults.mutation]",
+        "count",
+        "must be an integer",
+    ),
     "not-a-bound": (
         "[sim_core.sim]\ntests_failed = 0\n",
         "[sim_core.sim]",
@@ -265,6 +301,43 @@ def test_load_error_names_table_and_key(tmp_path: Path) -> None:
         assert error.render().startswith(f"{table} " if table else ""), case
         if key is not None:
             assert key in error.render(), case
+
+
+_MUTATION_SETTINGS_TOML = """\
+[defaults.mutation]
+count = 20
+seed = 5
+mutation_score_min = 60
+
+[sim_core.mutation]
+seed = 7
+mutants_survived_max = 2
+
+[sim_fifo.mutation]
+track = ["mutants_detected"]
+"""
+
+
+def test_mutation_table_takes_count_and_seed_over_the_defaults(tmp_path: Path) -> None:
+    """AC2: a table's settings override the defaults, which override the built-in ones."""
+    from booley.measurement.metrics_file import parse_metrics_as_written
+
+    rules = _load(tmp_path, _MUTATION_SETTINGS_TOML)
+
+    core, fifo = _table(rules, "sim_core", "mutation"), _table(rules, "sim_fifo", "mutation")
+    assert core.settings == {"count": 20, "seed": 7}
+    assert fifo.settings == {"count": 20, "seed": 5}
+    assert _bounds(core) == {"mutation_score_min": 60, "mutants_survived_max": 2}
+    written = parse_metrics_as_written(_MUTATION_SETTINGS_TOML.encode())
+    assert [table.settings for table in written.tables] == [
+        {"count": 20, "seed": 7},
+        {"count": 20, "seed": 5},
+    ]
+
+    plain = _load(tmp_path, "[sim_core.mutation]\nmutation_score_min = 50\n")
+    assert _table(plain, "sim_core", "mutation").settings == {"count": 10, "seed": 0}
+    other = _load(tmp_path, "[sim_core.sim]\ntests_failed_max = 0\n")
+    assert _table(other, "sim_core", "sim").settings == {}
 
 
 def test_unquoted_prefix_shows_quoted_line(tmp_path: Path) -> None:

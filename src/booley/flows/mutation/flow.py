@@ -63,6 +63,7 @@ from booley.flows.mutation.generator import (
     parser_version,
 )
 from booley.flows.mutation.memory_claims import CampaignClaims, MutationInvocation
+from booley.flows.mutation.metrics import mutation_metrics_detail
 from booley.flows.mutation.operators import (
     MutantGeneratorError,
     SourceParseError,
@@ -1452,12 +1453,14 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             )
             identity.update(self._elaboration_identity(design, selection.fallback))
             if not selection.mutants:
-                return self._generation_failure(
+                outcome = self._generation_failure(
                     plan,
                     "generation",
                     "no Mutation Operator site in the scope files",
                     _no_site_hint(plan),
                 )
+                outcome.detail["metrics"] = mutation_metrics_detail(plan.target, 0, 0)
+                return outcome
             specs = [
                 _spec_of(index, mutant) for index, mutant in enumerate(selection.mutants, start=1)
             ]
@@ -1651,6 +1654,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         )
         detail["equivalent_dropped"] = sweep.equivalent_dropped
         detail["invalid_dropped"] = sweep.invalid_dropped
+        detail["metrics"] = mutation_metrics_detail(plan.target, 0, 0)
         hint = (
             f"none of the Mutants of {', '.join(plan.scope_files)} changes what Target "
             f"'{plan.target}' builds; scope files whose modules '{plan.tb_top}' elaborates"
@@ -2601,8 +2605,6 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         auto_mode, source_size_budget = plan.auto_mode, plan.source_size_budget
         summary, count = inputs.summary, inputs.count
 
-        passed = summary.detected_count >= min_detected
-
         detail = _mutation_detail(summary, min_detected, plan.count)
         detail.update(
             {
@@ -2611,6 +2613,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 "seed": plan.seed,
                 "identity": inputs.identity,
                 "detected_timeout": summary.detected_timeout_count,
+                "metrics": _summary_metrics(target, summary),
             }
         )
         if inputs.shortfall:
@@ -2645,7 +2648,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             report_text += "\n\nArtifacts:\n" + "\n".join(f"  {line}" for line in artifact_lines)
 
         return EndpointOutcome(
-            exit_code=EXIT_SUCCESS if passed else EXIT_FAILURE,
+            exit_code=EXIT_SUCCESS if summary.detected_count >= min_detected else EXIT_FAILURE,
             detail=detail,
             report_text=report_text,
             display_lines=[display, *artifact_lines],
@@ -3076,6 +3079,11 @@ def _spec_of(index: int, mutant: Mutant) -> MutationSpec:
         mutant.mutated_code,
         mutant.id,
     )
+
+
+def _summary_metrics(target: str, summary: MutationSummary) -> dict[str, dict[str, object]]:
+    """The report's ``detail.metrics`` of a scored run: its valid Mutants, detected or not."""
+    return mutation_metrics_detail(target, summary.detected_count, summary.not_detected_count)
 
 
 def _mutation_detail(

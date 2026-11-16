@@ -88,7 +88,7 @@ lines (`[defaults.sim]` and `[defaults.coverage]`, each with
 
 `metrics.toml` sits in the Booley Directory, `.booley/` at the top of your
 repository. It holds one table per Target and Flow, `[<target>.<flow>]`, for
-these Flows: `lint`, `sim`, `coverage`, `synth` and `fpga`.
+these Flows: `lint`, `sim`, `coverage`, `synth`, `fpga` and `mutation`.
 
 Inside a table:
 
@@ -98,6 +98,8 @@ Inside a table:
   or `<test>.<metric>`. Booley splits a key on its last dot, and the whole key
   must be quoted: `"clk_i.fmax_mhz_min" = 400`. Unquoted, TOML reads the dot
   as a nested table, which `metrics.toml` rejects as a load error.
+- A `mutation` table also takes the integer settings `count` and `seed`; see
+  [Measuring the mutation score](FLOW-MUTATION.md#measuring-the-mutation-score).
 - `track = ["cell_count"]` reports a metric in every measurement without a
   bound, so you see its value over time.
 - `off = ["tests_failed_max"]` removes a bound that `[defaults.<flow>]` would
@@ -260,8 +262,6 @@ has no Base; name an earlier commit with `--base`.
   possible. A run in CI is the trusted one.
 - Heavy generated artifacts, such as a Linux image or a large firmware build,
   are out of scope.
-- `mutation_score` is not a metric, because the mutation Flow has no
-  `metrics.toml` table.
 
 If Booley itself misbehaves, see
 [When Booley itself misbehaves](USAGE.md#when-booley-itself-misbehaves).

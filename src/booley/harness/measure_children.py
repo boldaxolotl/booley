@@ -408,6 +408,7 @@ def _request_for(
         target=table.target,
         timeout_s=timeout_s,
         coverage=is_coverage,
+        settings=table.settings,
     )
 
 

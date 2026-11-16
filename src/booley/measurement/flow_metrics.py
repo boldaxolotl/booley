@@ -7,12 +7,15 @@ from typing import Any
 
 from booley.flows.fpga.backends.vivado.metrics import FPGA_METRIC_DECLARATIONS
 from booley.flows.fpga.backends.vivado.metrics import report_metric_values as _fpga_values
-from booley.flows.lint.flow import LINT_METRIC_DECLARATIONS, lint_report_metric_values
+from booley.flows.lint.flow import LINT_METRIC_DECLARATIONS
 from booley.flows.metric_declarations import (
     FlowMetricValues,
+    FlowSetting,
     MetricDeclaration,
     MetricsUnavailable,
+    metrics_by_target,
 )
+from booley.flows.mutation.metrics import MUTATION_METRIC_DECLARATIONS, MUTATION_SETTINGS
 from booley.flows.sim.metrics import (
     COVERAGE_METRIC_DECLARATIONS,
     SIM_METRIC_DECLARATIONS,
@@ -28,22 +31,31 @@ _DECLARATIONS_BY_FLOW: dict[str, tuple[MetricDeclaration, ...]] = {
     "coverage": COVERAGE_METRIC_DECLARATIONS,
     "synth": SYNTH_METRIC_DECLARATIONS,
     "fpga": FPGA_METRIC_DECLARATIONS,
+    "mutation": MUTATION_METRIC_DECLARATIONS,
 }
+# The Flow's integer settings a ``metrics.toml`` table may set.
+_SETTINGS_BY_FLOW: dict[str, tuple[FlowSetting, ...]] = {"mutation": MUTATION_SETTINGS}
 # Booley Flow name -> reader of its typed values from a report's ``detail``. The ``coverage``
 # table has no Flow of its own: the ``sim`` reader returns a coverage run's values too.
 _READERS_BY_FLOW: dict[
     str, Callable[[dict[str, Any]], Mapping[str, FlowMetricValues | MetricsUnavailable]]
 ] = {
     "sim": simulation_report_metric_values,
-    "lint": lint_report_metric_values,
+    "lint": metrics_by_target,
     "synth": _synth_values,
     "fpga": _fpga_values,
+    "mutation": metrics_by_target,
 }
 
 
 def flows_with_metric_declarations() -> tuple[str, ...]:
     """Names of the Flows that declare metrics."""
     return tuple(_DECLARATIONS_BY_FLOW)
+
+
+def flow_settings(flow: str) -> tuple[FlowSetting, ...]:
+    """The integer settings a *flow* table takes besides its bounds; ``()`` for a Flow with none."""
+    return _SETTINGS_BY_FLOW.get(flow, ())
 
 
 def metric_declarations(flow: str) -> tuple[MetricDeclaration, ...]:
