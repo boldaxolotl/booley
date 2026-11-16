@@ -323,8 +323,11 @@ step.
   at an `.fst` path. Rewriting half of that setup could make the Verilator
   flags disagree with the harness, and converting through VCD would add work
   without adding evidence.
-- **Otherwise Booley adds VCD tracing**, which Verilator and Icarus both
-  support. For a Verilator Target, when the native `bwave` binary is present,
+- **Otherwise Booley adds VCD tracing and converts the VCD to FST.** The
+  converter is not specific to Icarus or Verilator: VCD is the one trace
+  format every simulator writes, commercial ones included, so one VCD-to-FST
+  converter covers every simulator Booley drives today and any it adds later.
+  For a Verilator Target, when the native `bwave` binary is present,
   the simulator writes VCD into a named pipe while `bwave` converts it in
   parallel, so the large VCD never reaches disk and conversion overlaps the
   run. Otherwise, and for Cocotb and Icarus Targets, Booley converts after the
