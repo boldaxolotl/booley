@@ -129,9 +129,9 @@ def order_key(facts: SessionFacts) -> tuple[bool, float, float, str]:
 
 
 def _short_activity(activity: Activity, now: float) -> str:
-    """The activity with how long it has lasted; unknown is said plainly."""
+    """The activity with how long it has lasted; unknown says why."""
     if activity.state == UNKNOWN:
-        return "unknown"
+        return f"unknown ({activity.cause})"
     try:
         lasted = " " + format_duration(now - parse_timestamp(activity.since).timestamp())
     except ValueError:
