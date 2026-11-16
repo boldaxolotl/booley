@@ -1,8 +1,8 @@
 # Architecture
 
 This page is for contributors and agents changing Booley. It explains how
-Booley's parts fit together and why the load-bearing ones are built the way
-they are; read it before changing the Sandbox, the MCP server, a Booley Flow,
+Booley's parts fit together and why the main ones are built the way they are;
+read it before changing the Sandbox, the MCP server, a Booley Flow,
 or Job admission. It is not a usage guide: how to use Booley is in
 [USAGE.md](../user/USAGE.md) and [CLI-REFERENCE.md](../user/CLI-REFERENCE.md).
 Terms such as Booley Flow, Target, Specialist, and Sandbox are defined in the
@@ -102,15 +102,15 @@ names its step and rerunning refresh converges.
 ### Why Docker
 
 Booley runs LLM agents that execute real EDA flows against the user's RTL,
-which is exactly what nobody wants loose on their machine. Docker gives the
+and those agents should not run loose on the user's machine. Docker gives the
 Sandbox boundary: the agent has no host command channel and no unmediated
 network. A misbehaving or hijacked agent can still damage the working copy it
 was handed, so review stays essential.
 
-The container pays for itself a second time as a shared development
-environment. The whole open-source stack (Verilator, Icarus, Verible, Yosys,
-OpenROAD, sv2v, `bwave`, Python) ships in the image, so the user installs no
-EDA tools and everyone on a Project runs the same pinned versions.
+The container is also a shared development environment. The whole open-source
+stack (Verilator, Icarus, Verible, Yosys, OpenROAD, sv2v, `bwave`, Python) ships
+in the image, so the user installs no EDA tools and everyone on a Project runs
+the same pinned versions.
 
 The container costs no measurable EDA runtime. On a 16-core Intel Core
 i7-14650HX workstation, a controlled Ibex comparison ran all four Ibex
@@ -129,9 +129,9 @@ session-to-container plumbing the extension lacks. Every session shares one
 MCP server, one EDA stack, and one configuration, so another parallel session
 is just another tab.
 
-The cost: every session draws on one container's memory and CPU, which makes
-[Job admission](#jobs) mandatory, and every worktree in the container shares
-one trust domain.
+The downside is that every session draws on one container's memory and CPU,
+which makes [Job admission](#jobs) mandatory, and every worktree in the
+container shares one trust domain.
 
 ## Agent sessions
 
@@ -158,15 +158,12 @@ Sandbox's sessions and Jobs and can start Booley Flows as Standalone Jobs
 
 ### Why VS Code
 
-VS Code covers three needs in one program:
-
-- **One editor for both Agent CLIs.** Claude Code and Codex share the editor
-  and the Sandbox.
-- **Sandbox sessions for free.** The Dev Containers extension makes "open this
-  repository inside the Booley container" a built-in operation, so Booley
-  didn't have to build it.
-- **A good editor.** Hardware work is not pure delegation: the user reads and
-  edits RTL between agent turns in the same workspace.
+Claude Code and Codex both run in VS Code terminals, so both Agent CLIs share
+one editor and the Sandbox. The Dev Containers extension makes "open this
+repository inside the Booley container" a built-in operation, so Booley didn't
+have to build it. And the editor itself matters: hardware work is not pure
+delegation, and the user reads and edits RTL between agent turns in the same
+workspace.
 
 ## The MCP server
 
@@ -200,10 +197,10 @@ it cost about 40 times the tokens. The MCP surface also gives Booley:
   prompt doc can fall out of date. `bwave` is the exception: its parser uses
   `REMAINDER`, so its schema is written by hand in `mcp/catalog.py`.
 - **Curated results.** `mcp/report_encoding.py` returns the exit code, the
-  tail of stdout (12,000 characters by default) and stderr, and the key
+  tail of stdout (12,000 characters by default) and stderr, and the main
   `report.json` fields; the full report travels as structured content. Through
   a shell the agent gets raw output and has to remember to read the report.
-- **Visibility that really hides.** `BOOLEY_MCP_TOOLS`, the nested-agent
+- **Hidden tools stay hidden.** `BOOLEY_MCP_TOOLS`, the nested-agent
   allowlists, and the mode rules in `mcp/catalog.py` remove MCP tools from the
   list the agent sees. With a CLI, the same restriction is only a request in
   the prompt.
@@ -395,7 +392,7 @@ not detect or prevent it. The fix is tracked in
 [#1529](https://github.com/boldaxolotl/booley/issues/1529); see the
 [current precautions](../user/SANDBOX.md#known-sandbox-escape-through-shared-git-metadata).
 
-This reduces the agent's authority a lot but is not complete isolation. The
-remaining risks are the shared-Git escape hatch, container or kernel escape,
-wrong host provisioning, vendor EDA tool behavior inside the Sandbox, and
-license-server traffic the host approved.
+This removes most of the agent's host authority, but it is not complete
+isolation. The remaining risks are the shared-Git escape hatch, container or
+kernel escape, wrong host provisioning, vendor EDA tool behavior inside the
+Sandbox, and license-server traffic the host approved.
