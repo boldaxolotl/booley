@@ -189,7 +189,7 @@ def test_overlapping_lanes_show_each_pre_sim_line_once_under_its_own_lane(
 
     # Freeze the writer so every observation is consumed at the final drain (ending the
     # last command), after the lanes have moved on to other stages.
-    with patch.object(sink, "_run"):
+    with patch.object(sink, "_run"):  # Private: freezes the writer thread; no public pause
         _run_two_lanes(
             tmp_path, sink, {"alpha": alpha, "beta": beta}, labels, finish=sink.end_command
         )
@@ -257,11 +257,11 @@ def test_one_lane_command_start_keeps_other_lane_tail(
     def beta() -> None:
         announce_unit("simulation: beta")
         _child(tmp_path, "print('beta tail line')")
-        sink._poll()
+        sink._poll()  # Private: the frozen writer needs one explicit poll
         beta_ready.set()
         _wait(alpha_done)
 
-    with patch.object(sink, "_run"):
+    with patch.object(sink, "_run"):  # Private: freezes the writer thread; no public pause
         _run_two_lanes(tmp_path, sink, {"alpha": alpha, "beta": beta}, labels)
 
     assert "beta tail line" in frame[0], "alpha's command start cleared beta's tail"
@@ -285,7 +285,7 @@ def test_closed_lane_output_is_not_dropped_before_the_final_drain(tmp_path: Path
             sink.observe("stdout:1", b"alpha last, no newline")
         with progress_lane("beta/2"):
             now[0] += 6  # the heartbeat fires while alpha's lane is already closed
-            sink._poll()
+            sink._poll()  # Private: the heartbeat poll has no public trigger
             sink.end_command()  # no command is open: drains the final backlog
     text = "\n".join(_records(sink))
     assert "alpha line 599" in text

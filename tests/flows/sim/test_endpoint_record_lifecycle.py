@@ -202,10 +202,10 @@ def test_downstream_integrity_failure_retains_authenticated_current_hook(
             monkeypatch,
             "immutable",
             mutate_bundle="changed_artifact",
-            observer=flow._record_pre_sim_firing,
+            observer=flow._record_pre_sim_firing,  # Private seam: the corruption lands before attach
         )
     flow._reserved_invocation_dir = tmp_path / "reports/1"
-    result = flow._attach_published_pre_sim(
+    result = flow._attach_published_pre_sim(  # Private seam: no public run stops between them
         EndpointOutcome(exit_code=2, report_text="integrity error")
     )
     assert len(result.detail["pre_sim_lines"]) == 1
@@ -807,11 +807,12 @@ def _cycle_publication_fault(flow, monkeypatch, failure):
     monkeypatch.setattr(json, "dumps", encode)
     monkeypatch.setattr(endpoint_reporting, "atomic_write_json", write)
     if failure in {"console", "atomic_console"}:
+        # Private: the console writer has no public fault seam.
         monkeypatch.setattr(type(flow), "_publish_console_report", fail)
     if failure == "acceptance":
         monkeypatch.setattr(module, "publish_simulation_record_projections", fail)
     if failure in {"render", "structured"}:
-        # "render" is looked up by the presentation helpers; "structured" by the flow.
+        # Private: "render" is looked up by the presentation helpers, "structured" by the flow; no public fault seam.
         target, name = (
             (record_presentation, "_simulation_record_test_run_lines")
             if failure == "render"

@@ -18,6 +18,7 @@ import pytest
 
 from booley.flows.base import FlowMechanics
 from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.memory_admission import job_threads_at_start
 from booley.flows.sim.record.capacity import (
     LeaseLostError,
     SimulationRecordCapacity,
@@ -384,20 +385,24 @@ def test_a_claim_granted_before_its_item_starts_aborts_unless_a_recovery_took_it
     managed_capacity, monkeypatch: pytest.MonkeyPatch, lost_first: bool
 ) -> None:
     """A claim granted as the record is cancelled never starts its item (#3846).
-
-    A recovery the cancel did not start (``lost_first``) is a lost lease, not an abort (#4492).
-    """
+    A recovery the cancel did not start (``lost_first``) is a lost lease, not an abort (#4492)."""
     store, capacity = managed_capacity
     acquire = store.acquire
 
-    def acquire_then_end(*args, **kwargs):
+    def acquire_then_recover(*args, **kwargs):
         token = acquire(*args, **kwargs)
         if lost_first:
             store.begin_token_recovery(token)  # another cause, before the cancel
-        capacity.cancel_waiters("test cancellation")  # lands while the claim was granted
         return token
 
-    monkeypatch.setattr(store, "acquire", acquire_then_end)
+    def threads_then_cancel(*args, **kwargs):
+        capacity.cancel_waiters("test cancellation")  # the claim is already granted
+        return job_threads_at_start(*args, **kwargs)
+
+    monkeypatch.setattr(store, "acquire", acquire_then_recover)
+    monkeypatch.setattr(
+        "booley.flows.sim.record.capacity.job_threads_at_start", threads_then_cancel
+    )
     started: list[bool] = []
     with (
         capacity.outer_permit(),

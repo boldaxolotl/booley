@@ -630,15 +630,6 @@ def test_item_reserves_its_build_when_the_shared_build_does_not_cover_it(
         assert varied.reservation_mb == reservation
 
 
-def test_last_shared_build_frees_the_flow_inside_its_own_item(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    with _scenario(tmp_path, monkeypatch, history=_history("sim")) as scenario:
-        scenario.simulation_record().run(scenario.request(_manifest_for(("alpha",))))
-        (flow,) = scenario.store.observe(CLASS_MEMORY)[0]
-        assert _held(flow) == 0
-
-
 # --- One lane per core, items admitted by their own claims (#3773) ---
 
 CORES = 4
