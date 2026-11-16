@@ -264,8 +264,8 @@ def reconcile_bootstrap(  # noqa: PLR0911 - fixed-order failures stop dependent 
         findings.append(BootstrapFinding("host-install", BootstrapState.ERROR, error))
         return BootstrapResult(intent, tuple(findings), policy)
 
-    if qa_opt_out:
-        findings.append(_reconcile_qa_skills(intent, opt_out=True))
+    if qa_opt_out and (qa_finding := _reconcile_qa_skills(intent, opt_out=True)):
+        findings.append(qa_finding)
 
     prerequisites = _prerequisite_findings()
     findings.extend(prerequisites)
@@ -419,7 +419,8 @@ def parse_git_version(line: str) -> tuple[int, int, int] | None:
     match = _GIT_VERSION_LINE.fullmatch(line.strip())
     if match is None or _GIT_PRERELEASE_SUFFIX.search(match.group("suffix")):
         return None
-    return tuple(int(match.group(name)) for name in ("major", "minor", "patch"))
+    major, minor, patch = (int(match.group(name)) for name in ("major", "minor", "patch"))
+    return major, minor, patch
 
 
 def _tool_finding(name: str, version_arg: str) -> BootstrapFinding:

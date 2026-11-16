@@ -49,6 +49,7 @@ from booley.core.boundary import (
     require_int,
     require_list,
 )
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 
 # Verdict vocabulary for a reconciled test — a strict subset of simulate's
 # per-test verdict enum: "pass" / "fail" map directly, "inconclusive" marks
@@ -129,8 +130,8 @@ def find_import_failure(output: str) -> str:
             f" — '{missing.group('name')}' is not installed in the sandbox image. "
             "Bake the project's FULL pinned test stack (not just the imports the "
             "testbench appears to use at run time) via [sandbox].pip_requirements, "
-            "re-run `booley init`, then `booley session down && booley session up` "
-            "so the live session picks up the new image."
+            "then recreate the Sandbox so it runs the new image: "
+            f"{UNKNOWN_SANDBOX_STEPS}."
         )
     return detail
 

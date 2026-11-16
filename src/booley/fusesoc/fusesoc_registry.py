@@ -2215,7 +2215,9 @@ def source_dirs_from_core(
     )
 
 
-def explicit_target_sources(project_root: Path | str, ref: TargetRef) -> CoreSources:
+def explicit_target_sources(
+    project_root: Path | str, ref: TargetRef | TargetHandle
+) -> CoreSources:
     """Raw tag inventory for Doctor; inferred harness roles are not explicit tags."""
     rtl: list[str] = []
     tb: list[str] = []

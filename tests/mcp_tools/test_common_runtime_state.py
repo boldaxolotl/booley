@@ -160,7 +160,9 @@ def test_doctor_reads_session_state_from_main(worktree, monkeypatch):
 
     main, tree = worktree
     handle_maps: list[Path] = []
-    monkeypatch.setattr(doctor, "_check_handle_map_size", lambda d, _warn: handle_maps.append(d))
+    monkeypatch.setattr(
+        doctor, "_check_handle_map_size", lambda d, _root, _warn: handle_maps.append(d)
+    )
     for name in (
         "_check_ticket_leftovers",
         "_check_project_gitignore",
