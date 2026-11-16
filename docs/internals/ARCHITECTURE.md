@@ -43,12 +43,13 @@ The diagram reads from the outside in, and so does this page:
 
 An IDE is built around a person typing code. In Booley the Developer Agent
 writes the RTL and testbenches and drives the EDA tools; the engineer decides
-what to build, answers the agent's questions, and judges the evidence. Tools
-built that way call themselves agentic development environments:
+what to build, answers the agent's questions, and judges the evidence.
 [Warp](https://www.warp.dev/articles/what-is-an-agentic-development-environment)
-coined the term for a terminal where agents are first-class, and
-[Orca](https://www.onorca.dev/) runs a fleet of coding agents, each in its own
-git worktree.
+coined the term agentic development environment for a terminal where agents
+are first-class.
+[T3 Code](https://github.com/pingdotgg/t3code), an open-source control plane
+for coding agents, is built the same way: it runs Claude Code and Codex
+threads side by side and manages their git worktrees.
 
 Hardware changes what an ADE has to supply. A software ADE can trust the
 compiler and test runner it finds in the repository. An RTL agent needs a
