@@ -1018,6 +1018,9 @@ def _assert_coverage_fault(fault, result, reports, returned, terminal_phases):
         assert all(row[0]["cycle_count"] is None for row in report["cycle_counts"].values())
         coverage_record = (returned[0].manifest_path.parents[1] / "coverage.json").resolve()
         assert f"  Coverage Record: {coverage_record}" in result.outcome.report_text.splitlines()
+    if fault in ("retention", "run"):
+        # Retaining the failed Target would make its projection fail with a completion error.
+        assert "completion_error" not in detail
     if fault != "cancel":
         assert report["detail"]["pending_targets"] == (
             [] if fault == "terminal_progress" else ["sim_1", "sim_2"]
@@ -1351,6 +1354,29 @@ def test_coverage_failure_without_a_prepared_target_reports_the_unmatched_target
 
     assert result.exit_code == 2
     assert "cannot match failed Target to the prepared Coverage plan (boom)" in result.report_text
+
+
+@pytest.mark.parametrize("borrows", [True, False])
+def test_invoke_endpoint_hands_the_admission_only_to_an_invocation_that_borrows_it(
+    borrows: bool,
+) -> None:
+    from booley.flows.endpoint_session import invoke_endpoint
+
+    class Invocation:
+        borrows_admission = borrows
+        received: object = "unset"
+
+        def run(self, admission: object | None) -> EndpointOutcome:
+            self.received = admission
+            return EndpointOutcome(report_text="ok")
+
+    admission, invocation = object(), Invocation()
+    endpoint = SimpleNamespace(name="sim", _finalize_result=lambda _outcome: None)
+    invoke_endpoint(
+        endpoint, SimpleNamespace(invocation=invocation), admission=admission, started=0.0
+    )  # type: ignore[arg-type]
+
+    assert invocation.received is (admission if borrows else None)
 
 
 def _kind_request(tmp_path, monkeypatch, kind):
