@@ -75,7 +75,7 @@ class MeasuredSpecialist(Specialist):
 
     def _interpret_output(self, output: str, structured: dict | None) -> McpToolResult:
         ok = bool(structured and structured.get("approved"))
-        return McpToolResult(exit_code=EXIT_SUCCESS if ok else EXIT_FAILURE, criterion_met=ok)
+        return McpToolResult(exit_code=EXIT_SUCCESS if ok else EXIT_FAILURE)
 
 
 class RefusingSpecialist(MeasuredSpecialist):

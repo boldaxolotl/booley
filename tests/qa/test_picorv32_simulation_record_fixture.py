@@ -200,7 +200,7 @@ def test_validator_cli_exposes_every_check(tmp_path: Path) -> None:
     assert "rejection created an attempt" in rejection.stderr
 
 
-def test_validator_checks_resume_rejection_and_criteria_journal(tmp_path: Path) -> None:
+def test_validator_checks_resume_and_rejection(tmp_path: Path) -> None:
     before = tmp_path / "before-result.json"
     after = tmp_path / "after-result.json"
     before.write_bytes(b'{"grade":"pass"}\n')
@@ -220,18 +220,6 @@ def test_validator_checks_resume_rejection_and_criteria_journal(tmp_path: Path) 
         attempts_after=["0001"],
         simulator_started=False,
         diagnostic="duplicate test quick",
-    )
-    validator.validate_criteria_journal(
-        required_suite=["quick", "slow", "tail"],
-        observed_tests=["quick"],
-        transaction_ids_before=[],
-        transaction_ids_after=[],
-    )
-    validator.validate_criteria_journal(
-        required_suite=["quick", "slow", "tail"],
-        observed_tests=["quick", "slow", "tail"],
-        transaction_ids_before=[],
-        transaction_ids_after=["transaction"],
     )
     with pytest.raises(ValueError, match="rejection created an attempt"):
         validator.validate_rejection(

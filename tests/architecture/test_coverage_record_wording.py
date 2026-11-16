@@ -28,7 +28,6 @@ _KEPT_TREES: dict[str, str] = {
     "tests/flows/mutation/": "Mutation Tester campaign tests",
     # Target campaign (kept by the brief).
     "src/booley/flows/target_campaign.py": "Target campaign",
-    "src/booley/flows/target_criteria.py": "Target campaign scope",
     "tests/flows/test_target_campaign.py": "Target campaign tests",
     "tests/criteria/test_campaign_templates.py": "Target campaign authoring tests (#3912 kept it)",
     # Goal-side names left to #3045.
@@ -88,7 +87,6 @@ _KEPT_SPELLINGS: dict[str, tuple[str, ...]] = {
     ),
     "tests/dev_support/test_mutation_variants.py": ('"campaign/variants"',),
     "tests/dev_support/test_mutation_workspace.py": ('"campaign"',),
-    "tests/flows/test_transport_contract.py": ("run_campaign", "_run_campaign"),
     "tests/mcp_tools/test_specialist_workspace.py": ("mutation/campaign/variants",),
     # Target campaign: the paired-campaign Criteria and the vacuous-suite refusal.
     "src/booley/criteria/templates.py": (

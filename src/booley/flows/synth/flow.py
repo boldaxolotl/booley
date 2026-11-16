@@ -40,7 +40,6 @@ from booley.core.boundary import (
     require_positive_int,
 )
 from booley.core.build_paths import work_root_for
-from booley.evidence.fields import BASELINE_TARGET_DETAIL, CANDIDATE_TARGET_DETAIL
 from booley.evidence.timing import (
     ClockTiming,
     make_clock_timing,
@@ -147,8 +146,6 @@ from ..implementation_report import (
 from ..invocation import resolve_timeout_ms
 from ..progress_lifecycle import ProgressPublicationError
 from ..run_evidence import (
-    BASELINE_RUN_EVIDENCE_DETAIL,
-    RUN_EVIDENCE_DETAIL,
     build_flow_run_evidence,
 )
 from ..source_fingerprint import compute_source_fingerprint
@@ -158,11 +155,6 @@ from .implementation_report import (
     build_synth_implementation_report,
 )
 from .recipe import (
-    BASELINE_RECIPE_FINGERPRINT_DETAIL,
-    BASELINE_RECIPE_SNAPSHOT_DETAIL,
-    BASELINE_REF_DETAIL,
-    RECIPE_FINGERPRINT_DETAIL,
-    RECIPE_SNAPSHOT_DETAIL,
     resolve_synth_mode,
     synthesis_recipe_args,
     synthesis_recipe_snapshot,
@@ -262,8 +254,8 @@ def _timing_report_paths(work_dir: Path) -> int | None:
 
     ``None`` when unset, so the backend default applies and the configure argv
     stays unchanged. The count is a report-size policy, not a recipe input: it
-    must not enter the recipe fingerprint (Criteria pin it), which is why
-    it lives here and not in a Target's ``advanced_settings_openroad``.
+    must not enter the recipe fingerprint, which is why it lives here and not in
+    a Target's ``advanced_settings_openroad``.
 
     Raises ``BoundaryError`` on anything but an integer of at least 1.
     """
@@ -283,7 +275,7 @@ KGE_DIVISOR = NAND2_AREA_UM2 * 1000.0
 # ---------------------------------------------------------------------------
 
 
-# Metrics the synthesis Flow declares; names are the ones Criterion thresholds are built from.
+# Metrics the synthesis Flow declares; names are the ones ``metrics.toml`` bounds use.
 # area_um2/area_kge are the mapped area in logical mode and the placed area in OpenROAD modes.
 _SYNTH_COST_TIER = CostTier.HIGH
 SYNTH_METRIC_DECLARATIONS: tuple[MetricDeclaration, ...] = (
@@ -904,21 +896,6 @@ _REPORT_BASELINE_FIELDS = (
     "per_clock",
     "estimated_fmax_mhz",
 )
-_CRITERION_METRIC_MAP = {
-    "area": "area_um2",
-    "area_um2": "area_um2",
-    "area_kge": "area_kge",
-    "cell_count": "cell_count",
-    "wire_count": "wire_count",
-    "critical_path_ps": "critical_path_ps",
-    "fmax_mhz": "fmax_mhz",
-    "wns_ns": "wns_ns",
-    "whs_ns": "whs_ns",
-    "period_ns": "period_ns",
-    "reg2reg_fmax_mhz": "reg2reg_fmax_mhz",
-    "reg2reg_slack_ns": "reg2reg_slack_ns",
-}
-_CRITERION_MIN_ALLOWED = ["fmax_mhz", "reg2reg_fmax_mhz", "wns_ns", "whs_ns"]
 
 
 def _select_present(detail: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
@@ -968,20 +945,6 @@ def _add_report_deltas(
         report["timing_delta_pct"] = round(timing_delta, 1)
 
 
-def _add_baseline_criterion_detail(detail: dict[str, Any], baseline: SynthMetrics) -> None:
-    """Attach baseline QoR and recipe evidence to criterion detail."""
-    detail["baseline_metrics"] = {
-        **_select_present(
-            baseline.qor_detail(),
-            _BASELINE_DETAIL_FIELDS,
-        ),
-        **baseline.warning_detail(),
-    }
-    detail[BASELINE_RECIPE_FINGERPRINT_DETAIL] = baseline.recipe_fingerprint or None
-    detail[BASELINE_RECIPE_SNAPSHOT_DETAIL] = baseline.recipe_snapshot or None
-    detail[BASELINE_RUN_EVIDENCE_DETAIL] = baseline.run_evidence or None
-
-
 def _target_summary(
     metrics: SynthMetrics,
     baseline: SynthMetrics | None = None,
@@ -1025,11 +988,9 @@ def _aggregate_detail(
 ) -> dict[str, Any]:
     """Detail for the run-level ``asic_synthesize.json`` (SETUP-F-29b).
 
-    Every number used to live ONLY in the per-target ``synthesis_ok_<tgt>``
-    criteria, leaving the flat aggregate report with ``"detail": {}`` — so a
-    consumer that read the Flow's own report file (the MCP poll path, triage)
-    saw a verdict with no QoR behind it and had to go hunting through
-    ``state.json``. Mirror the per-target summaries here, keyed by target,
+    A consumer that reads the Flow's own report file (the MCP poll path, triage)
+    needs the QoR behind a verdict, not only the verdict. Mirror the per-target
+    summaries here, keyed by target,
     with an explicit ``targets`` list so the run's scope is readable even when
     a target produced no metrics at all.
     """
@@ -1149,8 +1110,7 @@ def _baseline_self_compare_warning(project_root: Path, wt: Path) -> str | None:
     synthesize byte-identical sources on both sides. Paired Checkouts
     instead materialize their pinned or fork-point revision, but can still compare identical RTL.
 
-    Compare the canonical source fingerprint (:func:`compute_source_fingerprint`,
-    the same ``_source_fingerprint`` the criteria records already stamp) of the
+    Compare the canonical source fingerprint (:func:`compute_source_fingerprint`) of the
     two trees. Only flag when the project HAS stealth cores *and* both sides hash
     identical, so a plain project whose git-tracked RTL genuinely didn't change
     between the ref and HEAD isn't nagged about a legitimately-zero delta.
@@ -1220,7 +1180,6 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
 
     request_type = SynthRequest
     argument_adapter = SynthArguments
-    _PAIR_CRITERION_PREFIX = "synthesis_ok_"
 
     def _resolve_job_class(self) -> str:
         """Synthesis is a memory-admitted Sandbox workload."""
@@ -1264,7 +1223,6 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
     # per-target timeout, matrix width, and baseline/current pass count.
     default_timeout: ClassVar[int] = 7200
     satisfies: ClassVar[list[str]] = ["synthesis_ok"]
-    conventional_families: ClassVar[frozenset[str]] = frozenset({"synthesis_ok"})
 
     # The built-in flow is make-driven: run_yosys_syn renders the build tree,
     # then results are interpreted from files under that same directory.
@@ -1400,7 +1358,6 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             getattr(self, "_target_pairs", ()),
             self._target_handle(target),
             flow="synth",
-            basis_bound=self.flow_acceptance.basis_bound,
         )
 
     def _record_recipe_evidence(self, target: str, resolved: Any) -> None:
@@ -2286,16 +2243,6 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             target, metrics, baseline_metrics, baseline_ref, implementation
         )
         self._implementation_reports[target] = implementation
-        if implementation.grade != "error":
-            self._set_config_criterion(
-                target,
-                metrics,
-                baseline_metrics,
-                baseline_ref,
-                implementation=implementation,
-            )
-            if self.state._file_path is not None:
-                self.state.save()
 
     # -- Main run logic -------------------------------------------------------
 
@@ -2615,13 +2562,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
     def _prepare_target_pairs(self, handles: Sequence[TargetHandle]) -> EndpointOutcome | None:
         comparison_error: str | None = None
         try:
-            self._target_pairs = target_pair_plans_for_handles(
-                self.state.criteria,
-                "synthesis_ok_",
-                handles,
-                basis=self.flow_acceptance if self.flow_acceptance.basis_bound else None,
-                flow="synth",
-            )
+            self._target_pairs = target_pair_plans_for_handles(handles, flow="synth")
             self._target_execution_refs = candidate_execution_refs(handles, self._target_pairs)
         except ImplementationComparisonError as exc:
             comparison_error = f"synth: {exc}"
@@ -3334,47 +3275,6 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         elif cur.has_critical:
             reason = "critical conditions"
         return f"{tgt}: {reason}"
-
-    def _set_config_criterion(
-        self,
-        tgt: str,
-        cur: SynthMetrics,
-        base: SynthMetrics | None,
-        baseline_ref: str | None,
-        *,
-        implementation: ImplementationReport | None = None,
-    ) -> None:
-        """Set the synthesis_ok criterion for one target."""
-        plan = self._target_plan(tgt)
-        detail: dict[str, Any] = {
-            **cur.qor_detail(),
-            **cur.structural_detail(),
-            **cur.warning_detail(),
-            "process_count": cur.process_count,
-            **cur.status_detail(),
-            RECIPE_FINGERPRINT_DETAIL: cur.recipe_fingerprint or None,
-            RECIPE_SNAPSHOT_DETAIL: cur.recipe_snapshot or None,
-            RUN_EVIDENCE_DETAIL: cur.run_evidence or None,
-            BASELINE_TARGET_DETAIL: plan.baseline.selector,
-            CANDIDATE_TARGET_DETAIL: plan.candidate.selector,
-            "_baseline_target_identity": plan.baseline.identity,
-            "_candidate_target_identity": plan.candidate.identity,
-            "_metric_map": dict(_CRITERION_METRIC_MAP),
-            "_min_allowed": list(_CRITERION_MIN_ALLOWED),
-        }
-        if base:
-            _add_baseline_criterion_detail(detail, base)
-        if baseline_ref:
-            detail[BASELINE_REF_DETAIL] = getattr(self, "_baseline_full_sha", None) or baseline_ref
-        implementation = implementation or self._implementation_report(
-            tgt, cur, base, baseline_ref
-        )
-        self.set_criterion(
-            f"synthesis_ok_{tgt}",
-            implementation.passed,
-            detail=implementation.envelope(detail),
-            source_target=tgt,
-        )
 
 
 def _synth_target_warnings(top: str, defines: list[str]) -> list[str]:

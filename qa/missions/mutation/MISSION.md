@@ -99,7 +99,7 @@ Try:
   exit codes 0, 1, 2.
 - The equivalent-Mutant note appears only when survivors exist: `--scope
   rtl/counter.sv` shows it, `--scope rtl/alu.sv --count 14` shows none.
-- The criterion detail `mutation_score_<target>` matches the report.
+- The result detail matches the report.
 Look for: a threshold on the wrong base, an `invalid` count or status in the
 report or the result detail, a Mutant that does not build scored,
 the equivalent note on a run without survivors, an exit code off the verdict

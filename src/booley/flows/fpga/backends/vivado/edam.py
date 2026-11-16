@@ -442,7 +442,7 @@ def parse_fpga_reports(text: str) -> dict[str, Any]:
     plus any ``report_utilization`` / ``report_timing_summary`` report files,
     concatenated by the caller) and returns the metric dict
     ``fpga_impl._metrics_from_parsed_reports`` already consumes, so the metric
-    normalization / criterion mapping downstream is unchanged.
+    normalization downstream is unchanged.
 
     Returns a dict with ``lut_count``/``ff_count``/``bram_count``/``dsp_count``
     (numeric|None; BRAM tiles may be fractional), aggregate

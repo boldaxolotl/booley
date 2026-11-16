@@ -186,12 +186,6 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
             "resolve_target_campaign",
         }
     ),
-    "src/booley/flows/target_criteria.py": frozenset(
-        {
-            "CampaignScopeError",
-            "resolve_campaign_scope",
-        }
-    ),
     "tests/criteria/test_campaign_templates.py": frozenset(
         {
             "campaign",
@@ -231,11 +225,6 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
             "test_batched_campaign_launches_one_process_per_given_batch",
             "test_campaign_aggregation_cannot_pass_vacuously",
             "test_campaign_domain_does_not_import_presentation_layers",
-        }
-    ),
-    "tests/flows/test_transport_contract.py": frozenset(
-        {
-            "run_campaign",
         }
     ),
 }

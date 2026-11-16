@@ -1,0 +1,5 @@
+[defaults.coverage]
+tests_failed_max = 0
+
+[sim_generated.coverage]
+cover_property_coverage_min = 100

@@ -1,4 +1,4 @@
-# Goalset: continuity
+# Request: continuity
 
 Implement a Dhrystone self-checking cycle contract. Keep the fixed 100 iterations.
 Validate the deterministic final result in firmware; a mismatch prints an error
@@ -11,35 +11,6 @@ Change only `dhrystone/dhry_1.c` and `dhrystone/testbench.v` plus the ordinary
 Project Target/test definitions needed for `sim_dhry_checked` and its registered
 `dhry` test. Keep that Target selectable for subsequent work. Do not edit RTL.
 
-## Goals
-
-```json
-[
-  {
-    "family": "ELAB",
-    "target": "sim_dhry_checked",
-    "origin": "continuity"
-  },
-  {
-    "family": "SIM",
-    "target": "sim_dhry_checked",
-    "origin": "continuity"
-  },
-  {
-    "family": "CYCLE_COUNT",
-    "target": "sim_dhry_checked",
-    "test": "dhry",
-    "thresholds": {
-      "cycle_count_max": 110000
-    },
-    "origin": "continuity"
-  },
-  {
-    "family": "REVIEW",
-    "review": "tb_quality",
-    "verdict": "done",
-    "origin": "continuity",
-    "target": "sim_dhry_checked"
-  }
-]
-```
+Add the `[sim_dhry_checked.sim]` table with `"dhry.cycle_count_max" = 110000`
+to `metrics.toml` (ask me first; I approve), run a TB-quality Reviewer on the
+Target, and give me a Measured Commit.

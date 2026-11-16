@@ -247,7 +247,6 @@ def _endpoint_end_event(
     display_label: str | None = None,
     dry_run: bool = False,
     identity: DisplayIdentity | None = None,
-    include_criterion: bool = True,
 ) -> dict:
     """Build an endpoint_end display event dict."""
     event = {
@@ -265,16 +264,11 @@ def _endpoint_end_event(
         "output_tokens": result.output_tokens,
         "lines_added": result.lines_added,
         "lines_removed": result.lines_removed,
-        "criterion_key": result.criterion_key,
-        "criterion_met": result.criterion_met,
         "report_text": result.report_text or "",
         "display_lines": result.display_lines or [],
         "summary": result.summary,
         "timestamp": utc_now_rfc3339(),
     }
-    if not include_criterion:
-        del event["criterion_key"]
-        del event["criterion_met"]
     if display_label:
         event["display_label"] = display_label
     return _event_identity(event, identity)
