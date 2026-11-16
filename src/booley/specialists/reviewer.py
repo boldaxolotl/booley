@@ -948,25 +948,6 @@ class ReviewerSpecialist(Specialist):
     default_timeout: int = 1800  # 30 min
     min_timeout: int = 600  # 10 min — read-only, faster
 
-    satisfies: ClassVar[list[str]] = [
-        "review_rtl_spec",
-        "review_rtl_bugs",
-        "review_rtl_protocol",
-        "review_tb_quality",
-        "review_rtl_security",
-        "review_rtl_optimization",
-        "review_rtl_code_style",
-    ]
-    satisfies_args: ClassVar[dict[str, str]] = {
-        "review_rtl_spec": "--category rtl --focus spec",
-        "review_rtl_bugs": "--category rtl --focus bugs",
-        "review_rtl_protocol": "--category rtl --focus protocol",
-        "review_tb_quality": "--category tb --focus quality",
-        "review_rtl_security": "--category rtl --focus security",
-        "review_rtl_optimization": "--category rtl --focus optimization",
-        "review_rtl_code_style": "--category rtl --focus code_style",
-    }
-
     # Reviewer Specialist only reads code through bounded read/search agent capabilities.
     agent_capabilities: ClassVar[list[str]] = ["Read", "Grep", "Glob"]
 

@@ -178,12 +178,9 @@ def _publish_bookkeeping(root, data, repo):
 
 def _publish_ticket(root, data, repo):
     """Retained Ticket state: a local owner."""
-    from booley.criteria.state import DevelopmentState
-
     ticket = data / "tickets/state/audit.json"
-    state = DevelopmentState.load(ticket)
-    state.init_criteria({"lint_clean": True})
-    state.save()
+    ticket.parent.mkdir(parents=True, exist_ok=True)
+    ticket.write_bytes(b'{"schema_version": 1}\n')
     return (ticket,)
 
 

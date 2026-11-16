@@ -6,7 +6,7 @@ of those files must know. The JSON is self-describing: read a report to see its
 fields. User docs ([FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and the
 per-Flow pages) say how to run each Flow and read its verdict.
 
-The reports are evidence that Criteria, resume, and the Coverage
+The reports are evidence that resume and the Coverage
 Analyst read later, often in another process. So every run gets its own
 numbered directory, and files point at each other by relative path plus size and
 SHA-256.
@@ -49,7 +49,7 @@ same report, with `mcp_tool` in place of `flow`. Its `$schema` is
 `booley.simulation-report/v3` for `sim`, `booley.flow-report/v1` for the other
 Flows, and `booley.specialist-report/v1` for Specialists.
 
-- `passed` means exit `0`, whatever the Criteria say.
+- `passed` means exit `0`.
 - `resources` (`cpu_user_s`, `cpu_sys_s`, `peak_rss_mb`) is a process-lifetime
   snapshot. Repeated calls inside one process include earlier work, and a
   resumed run counts only the resuming process. When the platform cannot

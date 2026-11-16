@@ -1220,13 +1220,6 @@ class TestReviewerToolArgs:
         assert "spec" in RTL_FOCUS_CATEGORIES
         assert {"quality"} == TB_FOCUS_CATEGORIES
 
-        satisfies = set(ReviewerSpecialist.satisfies_args.values())
-        for focus in RTL_FOCUS_CATEGORIES:
-            assert f"--category rtl --focus {focus}" in satisfies
-        for focus in TB_FOCUS_CATEGORIES:
-            assert f"--category tb --focus {focus}" in satisfies
-        assert "--category tb --focus spec" not in satisfies
-
     def test_focus_required(self, state_file: Path):
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl"])

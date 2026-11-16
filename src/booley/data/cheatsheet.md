@@ -215,7 +215,6 @@ do not need these files.
 
 | File | Information | Affects |
 |------|-------------|---------|
-| `criteria.toml` | Criteria defined for custom tools | Their producer Flows/Specialists |
 | `mcp_tools/*.py` | Custom Flow, Specialist, or MCP definitions | The defined in-Sandbox endpoints |
 
 ### Skills

@@ -95,9 +95,3 @@ def worst_clock(per_clock: dict[str, ClockTiming]) -> ClockTiming | None:
     if with_wns:
         return min(with_wns, key=lambda pair: pair[0])[1]
     return next(iter(per_clock.values()))
-
-
-def worst_fmax_from_json(raw: Any) -> float | None:
-    """Return the timing-worst clock's Fmax from a persisted clock mapping."""
-    timing = worst_clock(per_clock_from_json(raw))
-    return timing.fmax_mhz if timing is not None else None

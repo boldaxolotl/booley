@@ -19,7 +19,7 @@ lists below stand for what it cannot judge:
 What the scan cannot reach, besides the runtime text above:
 
 * Findings forwarded from owner records the scan does not enumerate (``BootstrapFinding``,
-  the model probe, the upgrade presentation, ``SkippedEndpoint``, ``EndpointValidationError``,
+  the model probe, the upgrade presentation, ``SkippedEndpoint``,
   ``BooleyDirPinError``): the forwarding site is an ``_UNRESOLVED`` entry. Forwards of
   ``EnvironmentFinding``, ``EdaEnvironmentFinding``, ``ConfigFinding`` and ``DiagnosticFinding``
   are checked where their owner builds them.
@@ -176,7 +176,6 @@ _RUNTIME_TUPLE = "message and fix come from an unpacked runtime tuple"
 _EXCEPTION_TEXT = "message is an exception's text, so a remedy in it is invisible to the scan"
 _RETIRED_HINT = "fix is the retired-table hint from a constant mapping, looked up at runtime"
 _OWNER_RECORD = "forwards an owner record's message and fix, built where the owner constructs it"
-_ENDPOINT_FAILURE = "fix is the first EndpointValidationError failure text, built at runtime"
 _MODEL_PROBE = "forwards a model probe's message and fix, built where the probe runs"
 _BOOTSTRAP_FIX = "fix is BootstrapFinding.doctor_fix, built at runtime by the bootstrap owner"
 _CONFIG_ISSUE = "forwards a config issue's message and fix from its owner"
@@ -201,7 +200,6 @@ _UNRESOLVED: dict[str, str] = {
     'fail - audit/project_schema.py::audit_specialist_table "message"': _EXCEPTION_TEXT,
     'fail - flows/target_test_plan_inspection.py::_audit_section_keys "str(exc)"': _EXCEPTION_TEXT,
     'fail - harness/doctor.py::_Reporter.diagnostics "finding.message"': _OWNER_RECORD,
-    'fail - harness/doctor.py::_check_custom_endpoints_and_criteria "custom endpoint/Criteria validation fail"': _ENDPOINT_FAILURE,
     'fail - harness/doctor.py::_check_doctor_target_compatibility "*failure"': _RUNTIME_TUPLE,
     'fail - harness/doctor.py::_check_doctor_targets "*failure"': _RUNTIME_TUPLE,
     'fail - harness/doctor.py::_check_riscv_toolchain "finding.message"': _OWNER_RECORD,
@@ -232,7 +230,7 @@ _UNRESOLVED: dict[str, str] = {
     'warn - harness/host_diagnostics.py::_add_environment "finding.message"': _OWNER_RECORD,
     'warn - harness/setup/readiness.py::_add_config_audit "finding.message"': _OWNER_RECORD,
     'warn host.forgotten-project-stamps harness/host_diagnostics.py::_inspect_forgotten_stamps "f\'{len(orphans)} Sandbox issuance stamp("': _PURGE_COMMAND,
-    'warn project.custom-endpoint-skipped harness/doctor.py::_check_custom_endpoints_and_criteria "custom endpoint"': _SKIPPED_ENDPOINT,
+    'warn project.custom-endpoint-skipped harness/doctor.py::_check_custom_endpoints "custom endpoint"': _SKIPPED_ENDPOINT,
 }
 
 

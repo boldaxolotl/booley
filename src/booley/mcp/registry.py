@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from booley.criteria.endpoint_catalog import EndpointCriterionRelationship
 from booley.mcp.endpoint_config import endpoint_is_enabled, parse_specialist_config
 
 logger = logging.getLogger(__name__)
@@ -27,8 +26,6 @@ class McpToolInfo:
     path: str
     description: str
     code_modifying: bool = False
-    satisfies: tuple[str, ...] = ()
-    satisfies_args: dict[str, str] | None = None
     # Canonical endpoint family: deterministic Flow, Specialist, or a direct
     # non-Flow MCP endpoint.
     kind: str = "mcp_tool"
@@ -230,8 +227,6 @@ def _extract_endpoint_metadata_attrs(node: ast.ClassDef) -> dict[str, Any]:
     name = ""
     description = ""
     code_modifying = False
-    satisfies: list[str] | None = None
-    satisfies_args: dict[str, str] | None = None
 
     for item in node.body:
         # Handle both `name = "x"` (Assign) and `name: str = "x"` (AnnAssign)
@@ -252,17 +247,11 @@ def _extract_endpoint_metadata_attrs(node: ast.ClassDef) -> dict[str, Any]:
             description = val
         elif attr_name == "code_modifying" and isinstance(val, bool):
             code_modifying = val
-        elif attr_name == "satisfies" and isinstance(val, list):
-            satisfies = val
-        elif attr_name == "satisfies_args" and isinstance(val, dict):
-            satisfies_args = val
 
     return {
         "name": name,
         "description": description,
         "code_modifying": code_modifying,
-        "satisfies": satisfies,
-        "satisfies_args": satisfies_args,
     }
 
 
@@ -282,17 +271,11 @@ def _build_mcp_tool_info(
         kind = "specialist"
     else:
         kind = "mcp_tool"
-    # Only the shipped endpoints' declarations are Criteria catalog data (#3512); a
-    # Project endpoint's declaration is not read.
-    satisfies = attrs["satisfies"] if builtin else None
-    satisfies_args = attrs["satisfies_args"] if builtin else None
     return McpToolInfo(
         name=attrs["name"],
         path=rel_path,
         description=attrs["description"],
         code_modifying=attrs["code_modifying"],
-        satisfies=tuple(satisfies) if satisfies else (),
-        satisfies_args=satisfies_args if satisfies_args else None,
         kind=kind,
     )
 
@@ -347,17 +330,3 @@ def _get_constant_value(node: ast.expr) -> Any:  # noqa: PLR0911 — one early r
             result[kv] = vv
         return result
     return None
-
-
-def criterion_endpoint_relationships(
-    endpoints: list[McpToolInfo],
-) -> tuple[EndpointCriterionRelationship, ...]:
-    """Adapt discovered MCP metadata into dependency-neutral immutable values."""
-    return tuple(
-        EndpointCriterionRelationship(
-            command=endpoint.name,
-            satisfies=endpoint.satisfies,
-            arguments=tuple(sorted((endpoint.satisfies_args or {}).items())),
-        )
-        for endpoint in endpoints
-    )

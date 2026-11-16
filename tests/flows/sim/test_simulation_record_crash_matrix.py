@@ -46,8 +46,6 @@ from booley.flows.sim.record.resume import (
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.record_reports import write_compatibility_projection
-from tests.criteria import ledger_support as acceptance_ledger
-from tests.criteria.test_evidence_ledger import _simulation_record_facts, _transaction_state
 from tests.flows.sim.simulation_record_test_support import (
     _admission,
     _coverage_simulation_record_plan,
@@ -831,114 +829,6 @@ def test_pre_sim_evidence_killed_mid_write_resumes(
         [("immutable",), ("legacy-per-test",)],
         lambda root, access: _pre_sim_kill_case(root, monkeypatch, access),
     )
-
-
-_JOURNAL_STAGING_LEFTOVER = pytest.mark.xfail(
-    strict=True,
-    raises=acceptance_ledger.AcceptanceLedgerError,
-    reason="#4280: the staged file a kill leaves makes the retry refuse the transactions directory",
-)
-
-
-@_needs_fork
-@pytest.mark.parametrize(
-    ("boundary", "killed_in"),
-    [
-        ("acceptance_intent", "acceptance/intents/."),
-        ("acceptance_record", "acceptance/evidence/.tmp.acceptance"),
-        pytest.param(
-            "acceptance_commit", "acceptance/transactions/.", marks=_JOURNAL_STAGING_LEFTOVER
-        ),
-        ("acceptance_state", ".runtime/booley_state.tmp"),
-    ],
-)
-def test_acceptance_journal_killed_mid_write_retries_idempotently(
-    tmp_path: Path, boundary: str, killed_in: str
-) -> None:
-    """Guard: the Acceptance Journal stages each write, so a kill mid-write leaves nothing trusted."""
-    log_dir, state, changes = _transaction_state(tmp_path)
-    identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
-    side_file = tmp_path / "side.txt"
-    kill = _KillAtWrite(boundary, "mid-write", side_file, hook_path_opens=True)
-
-    def record() -> object:
-        return acceptance_ledger.record_or_verify_transaction(
-            log_dir,
-            state,
-            changes,
-            acceptance_facts=_simulation_record_facts(),
-            identity=identity,
-            publication_checkpoint=kill,
-        )
-
-    _run_killed(record, tmp_path / "trace.txt")
-    killed_path = Path(side_file.read_text(encoding="utf-8"))
-    assert killed_path.is_relative_to(tmp_path)
-    assert killed_in in killed_path.relative_to(tmp_path).as_posix(), killed_path
-    transaction = record()
-
-    assert len(list((log_dir / "acceptance" / "transactions").glob("*.json"))) == 1
-    assert len(transaction.evidence) == len(changes)
-
-
-@_needs_fork
-def test_compatibility_projection_killed_mid_write_is_retryable(tmp_path: Path) -> None:
-    """Guard: the projection is replaced atomically, so a kill mid-write leaves no partial file."""
-    path = tmp_path / "simulation.json"
-    side_file = tmp_path / "side.txt"
-    kill = _KillAtWrite("compatibility_projection", "mid-write", side_file)
-
-    def write() -> None:
-        write_compatibility_projection(
-            path, {"target": "sim"}, acceptance_committed=True, publication_checkpoint=kill
-        )
-
-    _run_killed(write, tmp_path / "trace.txt")
-    _assert_killed_inside_the_write(side_file, "mid-write", tmp_path, staging=(".tmp",))
-    assert not path.exists()
-    write()
-
-    assert json.loads(path.read_text(encoding="utf-8")) == {"complete": True, "target": "sim"}
-
-
-@pytest.mark.parametrize(
-    "crash_point",
-    [
-        f"{side}:acceptance_{publication}"
-        for publication in ("intent", "record", "commit", "state")
-        for side in ("before", "after")
-    ],
-)
-def test_acceptance_publication_boundary_retry_is_idempotent(
-    tmp_path: Path,
-    crash_point: str,
-) -> None:
-    log_dir, state, changes = _transaction_state(tmp_path)
-    identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
-    crash = _CrashOnce(crash_point)
-
-    with pytest.raises(_InjectedProcessDeath, match=crash_point):
-        acceptance_ledger.record_or_verify_transaction(
-            log_dir,
-            state,
-            changes,
-            acceptance_facts=_simulation_record_facts(),
-            identity=identity,
-            publication_checkpoint=crash,
-        )
-
-    transaction = acceptance_ledger.record_or_verify_transaction(
-        log_dir,
-        state,
-        changes,
-        acceptance_facts=_simulation_record_facts(),
-        identity=identity,
-        publication_checkpoint=crash,
-    )
-    assert state.acceptance_transactions == [transaction.transaction_id]
-    assert len(list((log_dir / "acceptance" / "transactions").glob("*.json"))) == 1
-    assert len(transaction.evidence) == len(changes)
-    assert crash.tripped is True
 
 
 @pytest.mark.parametrize(
