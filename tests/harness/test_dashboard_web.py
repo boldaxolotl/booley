@@ -677,6 +677,7 @@ def _run_page(js: str, scenario: dict, tmp_path: Path) -> dict:
         if os.environ.get("CI"):
             pytest.fail("CI must run the Dashboard page probe: install Node.js")
         pytest.skip("Node.js is required for the Dashboard page probe")
+    tmp_path.mkdir(parents=True, exist_ok=True)
     script = tmp_path / "dashboard.js"
     script.write_bytes(js.encode())
     scenario_file = tmp_path / "scenario.json"
@@ -785,32 +786,36 @@ def test_page_renders_the_snapshot_with_results_collapsed_and_polls(world, monke
     assert "t_new" in two
 
 
-@pytest.mark.parametrize("storage", ["working", "blocked"])
-def test_results_open_state_is_remembered_in_the_browser(world, monkeypatch, tmp_path, storage):
+def test_results_open_state_is_remembered_in_the_browser(world, monkeypatch, tmp_path):
     _job(world, "run-a", world.wt, target="t_a")
 
     with _client(world, monkeypatch) as client:
         first = _reply(client, world.wt)
         _job(world, "run-b", world.wt, target="t_b", ended="2026-10-08T10:00:10Z")
         second = _reply(client, world.wt)
-        probe = _run_page(
-            _page_js(client),
+        js = _page_js(client)
+    probes = {
+        storage: _run_page(
+            js,
             {
                 "search": _search(world.wt),
                 "storage": storage,
                 "toggle_after": 0,
                 "responses": [first, second],
             },
-            tmp_path,
+            tmp_path / storage,
         )
+        for storage in ("working", "blocked")
+    }
 
-    one, two = probe["renders"]
-    assert '<details id="results-section">' in one
-    assert '<details id="results-section" open>' in two
-    assert "t_b" in two
-    assert probe["capture"] == [True]
-    expected = {"booley.dashboard.results-open": "true"} if storage == "working" else {}
-    assert probe["storage"] == expected
+    for storage, probe in probes.items():
+        one, two = probe["renders"]
+        assert '<details id="results-section">' in one, storage
+        assert '<details id="results-section" open>' in two, storage
+        assert "t_b" in two, storage
+        assert probe["capture"] == [True]
+    assert probes["working"]["storage"] == {"booley.dashboard.results-open": "true"}
+    assert probes["blocked"]["storage"] == {}
 
 
 def test_unchanged_results_are_not_rewritten(world, monkeypatch, tmp_path):
@@ -855,43 +860,35 @@ def test_empty_worktree_says_no_jobs_have_run(world, monkeypatch, tmp_path):
         assert bad not in render
 
 
-@pytest.mark.parametrize("kind", ["missing", "unknown", "deleted", "outside", "server-gone"])
-def test_page_shows_the_snapshot_error_instead_of_jobs(world, tmp_path, monkeypatch, kind):
+def test_page_shows_the_snapshot_error_instead_of_jobs(world, tmp_path, monkeypatch):
     deleted = tmp_path / "deleted"
     git(world.main, "worktree", "add", "-q", "-b", "booley/deleted", str(deleted), "HEAD")
     outside = tmp_path / "outside"
     outside.mkdir()
-    for path in (deleted, outside, tmp_path / "nowhere"):
+    nowhere = tmp_path / "nowhere"
+    for path in (deleted, outside, nowhere):
         _job(world, f"run-{path.name}", path, target="leak")
     _job(world, "run-earlier", world.wt, target="earlier")
-    page = {
-        "missing": "",
-        "unknown": _search(tmp_path / "nowhere"),
-        "deleted": _search(deleted),
-        "outside": _search(outside),
-        "server-gone": _search(world.wt),
-    }[kind]
 
     with _client(world, monkeypatch) as client:
-        responses = []
-        if kind in {"deleted", "server-gone"}:
-            responses.append(_reply(client, deleted if kind == "deleted" else world.wt))
-        if kind == "deleted":
-            shutil.rmtree(deleted)
-        if kind == "server-gone":
-            responses.append({"reject": "connection refused"})
-        else:
-            target = {"missing": "", "unknown": tmp_path / "nowhere", "outside": outside}.get(
-                kind, deleted
-            )
-            responses.append(_reply(client, target))
-        probe = _run_page(_page_js(client), {"search": page, "responses": responses}, tmp_path)
+        good_wt = _reply(client, world.wt)
+        good_deleted = _reply(client, deleted)
+        shutil.rmtree(deleted)
+        scenarios = {
+            "missing": ("", [_reply(client, "")]),
+            "unknown": (_search(nowhere), [_reply(client, nowhere)]),
+            "outside": (_search(outside), [_reply(client, outside)]),
+            "deleted": (_search(deleted), [good_deleted, _reply(client, deleted)]),
+            "server-gone": (_search(world.wt), [good_wt, {"reject": "connection refused"}]),
+        }
+        js = _page_js(client)
+    assert scenarios["deleted"][1][-1]["status"] == 404
 
-    expected = "did not answer" if kind == "server-gone" else responses[-1]["body"]["error"]
-    last = probe["renders"][-1]
-    assert expected in last
-    assert 'class="error"' in last
-    for bad in ("leak", "earlier", "<details"):
-        assert bad not in last
-    if kind == "deleted":
-        assert responses[-1]["status"] == 404
+    for kind, (search, responses) in scenarios.items():
+        probe = _run_page(js, {"search": search, "responses": responses}, tmp_path / kind)
+        last = probe["renders"][-1]
+        expected = "did not answer" if kind == "server-gone" else responses[-1]["body"]["error"]
+        assert expected in last, kind
+        assert 'class="error"' in last, kind
+        for bad in ("leak", "earlier", "<details"):
+            assert bad not in last, (kind, bad)
