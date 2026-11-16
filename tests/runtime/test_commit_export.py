@@ -126,19 +126,54 @@ def test_export_holds_exactly_the_commits_tracked_files(tmp_path: Path) -> None:
     assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".out.")] == []
 
 
-def test_export_applies_only_committed_attributes(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("attributes", "expected"),
+    [
+        (
+            "",
+            {
+                "crlf.txt": b"one\r\ntwo\r\n",
+                "data.bin": b"one\ntwo\n",
+                "lf.txt": b"one\ntwo\n",
+            },
+        ),
+        (
+            "*.txt text eol=crlf\n",
+            {
+                ".gitattributes": b"*.txt text eol=crlf\n",
+                "crlf.txt": b"one\r\ntwo\r\n",
+                "data.bin": b"one\ntwo\n",
+                "lf.txt": b"one\r\ntwo\r\n",
+            },
+        ),
+    ],
+    ids=["without-attributes", "with-attributes"],
+)
+def test_export_applies_only_committed_attributes(
+    tmp_path: Path, attributes: str, expected: dict[str, bytes]
+) -> None:
     from booley.runtime.commit_export import export_commit
 
     repo = new_repository(tmp_path / "repo")
-    write(repo / ".gitattributes", "*.txt text eol=crlf\n")
-    write(repo / "a.txt", "one\ntwo\n")
-    write(repo / "b.bin", "one\ntwo\n")
+    if attributes:
+        (repo / ".gitattributes").write_bytes(attributes.encode())
+    (repo / "lf.txt").write_bytes(b"one\ntwo\n")
+    (repo / "crlf.txt").write_bytes(b"one\r\ntwo\r\n")
+    (repo / "data.bin").write_bytes(b"one\ntwo\n")
     head = commit_all(repo)
+    # A conflicting live policy must not reach the export.
+    git(repo, "config", "core.autocrlf", "true")
+    git(repo, "config", "core.eol", "crlf")
+    (repo / ".git/info/attributes").write_bytes(b"* text eol=crlf\n")
 
     root = export_commit(repo, head, tmp_path / "out").root
 
-    assert (root / "a.txt").read_bytes() == b"one\r\ntwo\r\n"
-    assert (root / "b.bin").read_bytes() == b"one\ntwo\n"
+    exported = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    assert exported == expected
 
 
 @pytest.mark.parametrize("place", ["working-tree", "booley-directory", "exists"])
