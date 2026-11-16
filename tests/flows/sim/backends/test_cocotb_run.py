@@ -58,6 +58,7 @@ class TestBuildCocotbTestFilter:
         names = [
             "test_reset",
             "test.count",
+            "testXcount",  # a widened "." would let the selected "test.count" match this
             "a+b",
             "x[0]",
             "t(1)",

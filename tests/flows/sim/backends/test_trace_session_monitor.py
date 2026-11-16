@@ -293,6 +293,8 @@ class TestStallKill:
         """AC2: stopping does not wait out the poll interval."""
         session = TraceSession(tmp_path)
         monitors: list[threading.Thread] = []
+        # Private seam: the thread that `start_monitor` spawns is not exposed, so the test
+        # wraps `_monitor_stalls` to hold it.
         real_monitor = session._monitor_stalls
 
         def recording_monitor(*args):
@@ -339,6 +341,8 @@ class TestStallKill:
         bwave.kill = lambda: events.append("bwave_kill")  # type: ignore[method-assign]
         snapshot: dict[str, bool] = {}
         monitors: list[threading.Thread] = []
+        # Private seam: the thread that `start_monitor` spawns is not exposed, so the test
+        # wraps `_monitor_stalls` to hold it.
         real_monitor = session._monitor_stalls
 
         def recording_monitor(*args):
@@ -396,6 +400,7 @@ def test_spare_simulator_monitor_ignores_idle_pipe(tmp_path, fake_bwave, monkeyp
     conversion = _declared_stream(tmp_path)
     sim_proc = _spawn_sleeper()
     session = TraceSession(tmp_path / "work")
+    threads_before = set(threading.enumerate())
     try:
         session.start_monitor(
             conversion,
@@ -405,18 +410,17 @@ def test_spare_simulator_monitor_ignores_idle_pipe(tmp_path, fake_bwave, monkeyp
             kill_after_stalls=2,
             spare_simulator=True,
         )
+        monitors = [t for t in threading.enumerate() if t not in threads_before]
+        assert monitors, "start_monitor spawned no thread"
         time.sleep(1.0)  # ten stall windows with nothing written
         assert conversion.poll() is None
         assert sim_proc.poll() is None
         sim_proc.kill()
         sim_proc.wait(timeout=5)
         # The monitor ends by itself once the simulator is gone, before any stop request.
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and any(
-            "monitor_stalls" in t.name for t in threading.enumerate()
-        ):
-            time.sleep(0.02)
-        assert not any("monitor_stalls" in t.name for t in threading.enumerate())
+        for monitor in monitors:
+            monitor.join(timeout=5)
+        assert not any(monitor.is_alive() for monitor in monitors)
     finally:
         _kill_all(sim_proc)
         session.stop_monitor()

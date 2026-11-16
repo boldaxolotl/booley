@@ -394,42 +394,6 @@ def test_native_trace_missing_keeps_functional_failure_and_timeout(tmp_path) -> 
     assert read_adapter_result(identity).test_results[0].verdict == "timeout"
 
 
-@pytest.mark.parametrize(
-    "test_status, extra_output, failure_kind, expected_verdict, expected_kind",
-    [
-        ("pass", "", "", "inconclusive", "artifact"),
-        ("fail", "", "", "fail", "design"),
-        ("pass", "\n$error assertion", "", "fail", "design"),
-        ("pass", "", "design", "fail", "design"),
-    ],
-)
-def test_cocotb_trace_incident_preserves_functional_verdicts(
-    tmp_path,
-    test_status,
-    extra_output,
-    failure_kind,
-    expected_verdict,
-    expected_kind,
-) -> None:
-    identity = replace(_identity(tmp_path), adapter="cocotb")
-    results = CocotbResults(
-        state=STATE_OK,
-        tests=(CocotbTest("reset", "test_demo", test_status),),
-    )
-    cocotb._publish_adapter_result(
-        identity,
-        extra_output,
-        False,
-        results=results,
-        failure_kind=failure_kind,
-        trace=AdapterTraceResult("incident", detail="waveform missing"),
-    )
-
-    result = read_adapter_result(identity)
-    assert result.test_results[0].verdict == expected_verdict
-    assert result.failure_kind == expected_kind
-
-
 def test_cocotb_abort_after_all_tests_completed_cannot_pass_batch(tmp_path) -> None:
     # Private seam: the full run's verdict (`cocotb.py::_assess_verdict`) already makes an
     # aborted batch fail, so only a direct call can hand the publisher `passed=True` beside

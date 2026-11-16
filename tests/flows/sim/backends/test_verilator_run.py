@@ -154,6 +154,7 @@ def test_launch_passes_guard_inputs_and_cleans_the_fifo_conversion(
         streams=launch.streams,
     )
     assert isinstance(launch.trace, TraceSession)
+    assert launch.conversion is not None  # the stall monitor needs the converter
     assert fifo_conversion == ["launch", "finish"]
 
 

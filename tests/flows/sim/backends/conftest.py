@@ -123,6 +123,10 @@ def cocotb_config(tool_stub) -> Callable[..., Path]:
         if libpath is not None:
             answers["--lib-name-path"] = libpath
         cases = "".join(f'  {flag}) echo "{text}";;\n' for flag, text in answers.items())
+        # The Icarus library query must name its interface and simulator; any other fails.
+        cases = cases.replace(
+            "  --lib-name-path) ", '  --lib-name-path) [ "$2 $3" = "vpi icarus" ] || exit 2; '
+        )
         version_case = (
             f'  --version) echo "{version}";;\n' if version else "  --version) exit 2;;\n"
         )
