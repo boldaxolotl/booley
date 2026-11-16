@@ -568,20 +568,16 @@ def _plant_entry_without_token(machine: JobSlotStepMachine) -> None:
     )
 
 
-@pytest.mark.parametrize(
-    ("invariant_name", "plant"),
-    [("I1", _plant_third_holder), ("I4", _plant_entry_without_token)],
-)
-def test_checks_run_after_every_step(
-    build_machine: Callable[[], JobSlotStepMachine],
-    invariant_name: str,
-    plant: Callable[[JobSlotStepMachine], None],
-) -> None:
-    machine = build_machine()
-    reaper = machine.start_operation(machine.actors[1], "reap", job_slots.ROLE_INTERACTIVE, 0)
-    plant(machine)
-    with pytest.raises(AssertionError, match=invariant_name):
-        machine.scheduler.grant(reaper)
+def test_checks_run_after_every_step(build_machine: Callable[[], JobSlotStepMachine]) -> None:
+    for invariant_name, plant in (
+        ("I1", _plant_third_holder),
+        ("I4", _plant_entry_without_token),
+    ):
+        machine = build_machine()
+        reaper = machine.start_operation(machine.actors[1], "reap", job_slots.ROLE_INTERACTIVE, 0)
+        plant(machine)
+        with pytest.raises(AssertionError, match=invariant_name):
+            machine.scheduler.grant(reaper)
 
 
 def test_checks_notice_an_entry_that_comes_back(
