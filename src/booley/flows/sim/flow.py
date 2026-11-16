@@ -417,14 +417,6 @@ class SimulateFlow(
         """An explicit resume reads its Targets from the manifest."""
         return self.args.resume_from is not None
 
-    def report_families(self) -> set[str]:
-        """The Simulation Flow judges no Criterion family."""
-        return set()
-
-    def conventional_report_families(self) -> set[str]:
-        """The Simulation Flow judges no Criterion family."""
-        return set()
-
     def prepare_simulation_endpoint(  # noqa: PLR0911 -- ordered pre-admission rejections
         self,
     ) -> PreparedSimulationEndpoint | EndpointOutcome:
@@ -1585,10 +1577,6 @@ class SimulateFlow(
         exit_code = _coverage_record_exit_code(outcomes, coverage_records) or max(
             (_grade_exit_code(grade) for grade in grades), default=EXIT_SUCCESS
         )
-        threshold_missed = any(
-            coverage_record.evaluation["status"] == "fail"
-            for coverage_record in coverage_records.values()
-        )
         report: dict[str, Any] = {
             "report_path": self._report_destination(),
             "default_seeds": self._test_runs.default_seeds,
@@ -1616,7 +1604,6 @@ class SimulateFlow(
         return EndpointOutcome(
             exit_code=exit_code,
             cycle_report_json=self.cycle_report_json or "{}",
-            criterion_met=exit_code == EXIT_SUCCESS and not threshold_missed,
             detail=detail,
             report_text="\n".join(lines),
             display_label=self._simulation_record_completed_display_label(outcomes),

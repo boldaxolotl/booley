@@ -16,13 +16,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
 from booley.flows.endpoint_admission import AdmissionContext
-from booley.flows.prepared_invocation import OrdinaryRunInvocation, PreparedInvocation
+from booley.flows.prepared_invocation import PreparedInvocation
 from booley.runtime import job_slots, oom_priority
 from booley.runtime.job_records import _proc_cmdline
 
 if TYPE_CHECKING:
-    from booley.flows.endpoint_report_criteria import ReportScope
-    from booley.flows.endpoint_state import EndpointState
     from booley.flows.job_estimates import JobRequest
     from booley.flows.mutation.flow import MutationFlow
     from booley.runtime.endpoint_execution import EndpointOutcome
@@ -78,6 +76,3 @@ class MutationInvocation(PreparedInvocation):
     def run(self, admission: object | None) -> EndpointOutcome:
         claims = CampaignClaims(admission if isinstance(admission, AdmissionContext) else None)
         return self.flow.run_with_claims(claims)
-
-    def report_scope(self, endpoint: EndpointState) -> ReportScope:
-        return OrdinaryRunInvocation(self.flow._run).report_scope(endpoint)

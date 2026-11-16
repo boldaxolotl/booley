@@ -249,9 +249,7 @@ def test_structured_and_cli_paths_preserve_acceptance_before_save(flow_type, run
 
         def run(flow=flow):
             flow.set_criterion(key, True, detail={"evidence": "identical"})
-            return EndpointOutcome(
-                criterion_key=key, criterion_met=True, detail={"evidence": "identical"}
-            )
+            return EndpointOutcome(detail={"evidence": "identical"})
 
         replace_run(monkeypatch, flow, run)
         if direct:
@@ -647,159 +645,8 @@ def _display_events(monkeypatch):
     return events
 
 
-def _assert_headline(result, report_dir, name, expected, events=None):
-    """Outcome, persisted report, MCP projection and completion share one headline."""
-    assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
-    report = assert_paired_headline(report_dir, name, expected)
-    if events is not None:
-        end = next(event for event in events if event["type"] == "endpoint_end")
-        assert (end.get("criterion_key", ""), end.get("criterion_met")) == expected
-    return report
-
-
-@pytest.mark.parametrize(
-    "flow_type,family",
-    [
-        (LintFlow, "lint_clean"),
-        (AsicSynthesizeFlow, "synthesis_ok"),
-        (FpgaImplFlow, "fpga_impl_ok"),
-    ],
-)
-@pytest.mark.parametrize("target", ["first", "first,second"])
 @pytest.mark.parametrize("met", [True, False])
-def test_partial_evaluation_final_report_and_completion(
-    external_acceptance_owner, flow_type, family, target, met, runtime, monkeypatch
-):
-    events = _display_events(monkeypatch)
-    flow = flow_type()
-
-    def run():
-        flow.set_criterion(f"{family}_first", met)
-        raise RuntimeError("second workload infrastructure failed")
-
-    replace_run(monkeypatch, flow, run)
-    result = flow.execute(flow.request_type(target=target, work_dir=runtime))
-    expected = (f"{family}_first", met) if target == "first" else ("", None)
-    report = _assert_headline(result, runtime / "flow-reports", flow.name, expected, events)
-    assert report["passed"] is False
-    assert report["exit_code"] == 2
-    assert flow.state.criteria[f"{family}_first"].met is met
-
-
-def test_reused_endpoint_resets_evaluation_before_early_gate(
-    external_acceptance_owner, runtime, monkeypatch
-):
-    from booley.runtime.endpoint_execution import EndpointOutcome
-
-    flow = LintFlow()
-
-    def run():
-        flow.set_criterion("lint_clean_first", True)
-        return EndpointOutcome()
-
-    replace_run(monkeypatch, flow, run)
-    request = flow.request_type(target="first", work_dir=runtime)
-    first = flow.execute(request)
-    _assert_headline(first, runtime / "flow-reports", "lint", ("lint_clean_first", True))
-    monkeypatch.setattr(flow, "_pre_state_gate", lambda: EndpointOutcome(exit_code=2))
-    result = flow.execute(request)
-    assert result.outcome.criterion_key == ""
-    assert result.outcome.criterion_met is None
-    # The early gate publishes nothing: run 1 stays the only persisted and MCP report.
-    assert not (runtime / "flow-reports/lint/2").exists()
-    assert_paired_headline(runtime / "flow-reports", "lint", ("lint_clean_first", True))
-
-
-@pytest.mark.parametrize(
-    "flow_type,family", [(AsicSynthesizeFlow, "synthesis_ok"), (FpgaImplFlow, "fpga_impl_ok")]
-)
-def test_frozen_candidate_bindings_do_not_shrink_after_partial_evaluation(
-    external_acceptance_owner, flow_type, family, runtime, monkeypatch
-):
-    from booley.runtime.endpoint_execution import EndpointOutcome
-
-    _headline_state(
-        runtime,
-        monkeypatch,
-        {f"{family}_first": True, f"{family}_second": True},
-        flow_key_aliases={f"{family}_demo": [f"{family}_first", f"{family}_second"]},
-        strict=True,
-    )
-    flow = flow_type()
-
-    def run():
-        flow.set_criterion(f"{family}_first", False)
-        return EndpointOutcome(exit_code=2)
-
-    replace_run(monkeypatch, flow, run)
-    result = flow.execute(flow.request_type(target="demo", work_dir=runtime))
-    assert result.exit_code == 2
-    _assert_headline(result, runtime / "flow-reports", flow.name, ("", None))
-
-
-@pytest.mark.parametrize(
-    "flow_type,family,eda",
-    [(AsicSynthesizeFlow, "synthesis_ok", "yosys"), (FpgaImplFlow, "fpga_impl_ok", "vivado")],
-)
-def test_single_basis_binding_uses_effective_key_and_ignores_baseline_only_binding(
-    external_acceptance_owner, flow_type, family, eda, runtime, monkeypatch
-):
-    from booley.evidence.acceptance import AcceptanceTargetBinding, ResolvedFlowAcceptance
-    from booley.runtime.endpoint_execution import EndpointOutcome
-
-    (runtime / "design.core").write_text(
-        f"CAPI=2:\nname: acme:lib:dut:1\ntargets:\n  demo:\n    default_tool: {eda}\n    toplevel: dut\n"
-    )
-    key = f"{family}_demo"
-    other = f"{family}_other"
-    _headline_state(
-        runtime,
-        monkeypatch,
-        {key: True, other: True},
-        criterion_params={
-            key: {"target": "acme:lib:dut:1#demo", "_target_selector": "demo"},
-            other: {"target": "acme:lib:dut:1#other", "_target_selector": "other"},
-        },
-        strict=True,
-    )
-    flow = flow_type()
-    bindings = (
-        AcceptanceTargetBinding(
-            flow.name,
-            f"criteria.mandatory.{key}",
-            "acme:lib:dut:1#base",
-            "acme:lib:dut:1#demo",
-            "base",
-            "demo",
-        ),
-        AcceptanceTargetBinding(
-            flow.name,
-            f"criteria.mandatory.{other}",
-            "acme:lib:dut:1#demo",
-            "acme:lib:dut:1#other",
-            "demo",
-            "other",
-        ),
-    )
-
-    class BoundExecution(StandaloneFlowExecution):
-        def validate_and_resolve(self, _request):
-            return ResolvedFlowAcceptance(bindings)
-
-    def run(self):
-        self.set_criterion(key, True)
-        return EndpointOutcome()
-
-    monkeypatch.setattr(flow_type, "_run", run)
-    result = flow.execute(
-        flow.request_type(target="demo", work_dir=runtime), adapter=BoundExecution()
-    )
-    assert result.exit_code == 0
-    _assert_headline(result, runtime / "flow-reports", flow.name, (key, True))
-
-
-@pytest.mark.parametrize("met", [True, False])
-def test_alias_first_headline_ignores_family_key_acceptance_also_binds(
+def test_alias_acceptance_also_binds_the_bare_family(
     external_acceptance_owner, runtime, monkeypatch, met
 ):
     from booley.flows import endpoint_acceptance
@@ -814,7 +661,7 @@ def test_alias_first_headline_ignores_family_key_acceptance_also_binds(
     flow = LintFlow()
 
     def run():
-        # Acceptance may update the alias and the bare family; the report takes the alias.
+        # Acceptance may update the alias and the bare family.
         bound = endpoint_acceptance._bound_criterion_keys(flow, "first")
         assert bound == ["lint_clean_atomic", "lint_clean"]
         flow.set_criterion("lint_clean_first", met)
@@ -822,7 +669,9 @@ def test_alias_first_headline_ignores_family_key_acceptance_also_binds(
 
     replace_run(monkeypatch, flow, run)
     result = flow.execute(flow.request_type(target="first", work_dir=runtime))
-    _assert_headline(result, runtime / "flow-reports", "lint", ("lint_clean_atomic", met))
+    assert result.exit_code == 0
+    assert_paired_headline(runtime / "flow-reports", "lint")
+    assert flow.state.criteria["lint_clean_atomic"].met is met
     assert flow.state.criteria["lint_clean"].met is False
 
 
@@ -837,276 +686,8 @@ def _report_targets(root, names=("first", "second"), flow="sim"):
     (root / "design.core").write_text("CAPI=2:\nname: acme:lib:dut:1\ntargets:\n" + entries)
 
 
-@pytest.mark.parametrize(
-    "flow_type,family",
-    [
-        (LintFlow, "lint_clean"),
-        (AsicSynthesizeFlow, "synthesis_ok"),
-        (FpgaImplFlow, "fpga_impl_ok"),
-    ],
-)
-@pytest.mark.parametrize("met", [True, False])
-def test_prepared_identity_partial_report_is_null(
-    external_acceptance_owner, flow_type, family, met, runtime, monkeypatch
-):
-    from booley.runtime.endpoint_execution import EndpointOutcome
-
-    _report_targets(runtime, flow=flow_type.name)
-    flow = flow_type()
-
-    def run(self):
-        self.set_criterion(f"{family}_first", met)
-        return EndpointOutcome(exit_code=2, report_text="second workload unavailable")
-
-    monkeypatch.setattr(flow_type, "_run", run)
-    result = flow.execute(flow.request_type(target="first,second", work_dir=runtime))
-    assert result.exit_code == 2
-    _assert_headline(result, runtime / "flow-reports", flow.name, ("", None))
-    identities = frozenset({"acme:lib:dut:1#first", "acme:lib:dut:1#second"})
-    assert self_scope(flow) == identities
-    assert flow._report_criteria.targets == identities
-    assert flow.state.criteria[f"{family}_first"].met is met
-
-
-def self_scope(flow):
-    return {handle.identity for handle in flow._selected_target_handles()}
-
-
-def _report_simulation_record_document(handle, inspection, preview, mode, selected):
-    from dataclasses import replace
-
-    from tests.flows.sim.test_simulation_record_flow_planning import _plan
-
-    if mode in {"unfiltered", "coverage"}:
-        from booley.flows.sim.record.flow_planning import plan_coarse_simulation_record
-
-        inspection = replace(
-            inspection, flow_options={"cocotb_module": "tests"} if mode == "unfiltered" else {}
-        )
-        if mode == "coverage":
-            preview = replace(preview, groups=(selected,), commands=(("run",),), run_groups=())
-        document = plan_coarse_simulation_record(
-            handle=handle,
-            inspection=inspection,
-            preview=preview,
-            selected_tests=selected if mode == "coverage" else (),
-            required_suite=selected,
-            revision="abc123",
-            invocation_id=1,
-            execution_id="",
-            trace=False,
-            kind="coverage_aggregate" if mode == "coverage" else "cocotb_batch",
-            required_suite_catalog_backed=True,
-        ).manifest.document
-    else:
-        document = _plan(handle, inspection, preview, selected, catalog_backed=mode != "default")
-    return document
-
-
-def _prepared_report_simulation_record(runtime, mode, resume):
-    from dataclasses import replace
-
-    from booley.flows.sim.flow import PreparedSimulationEndpoint
-    from booley.flows.sim.record.codec import (
-        decode_simulation_record_manifest,
-        encode_simulation_record_manifest,
-    )
-    from booley.flows.sim.record.model import SimulationRecordManifest
-    from booley.flows.sim.record.resume import ValidatedManifestNode, ValidatedResumeManifest
-    from booley.targets.catalog import TargetCatalog
-    from tests.flows.sim.test_simulation_record_flow_planning import _planning_fixture
-
-    project, handle, inspection, preview = _planning_fixture(runtime)
-    (runtime / "design.core").write_text(
-        "CAPI=2:\nname: acme:lib:dut:1\ntargets:\n  sim:\n    flow: sim\n    flow_options: {tool: icarus}\n    toplevel: tb\n"
-    )
-    handle = TargetCatalog.build(runtime).select("sim", for_flow="sim")
-    inspection = replace(inspection, handle=handle)
-    selected = ("reset", "count") if mode != "default" else ()
-    if mode in {"default", "unfiltered"}:
-        preview = replace(preview, groups=((),), commands=(("run",),), run_groups=())
-    document = _report_simulation_record_document(handle, inspection, preview, mode, selected)
-    manifest = decode_simulation_record_manifest(
-        encode_simulation_record_manifest(SimulationRecordManifest(document))
-    )
-    # This is a codec-validated production manifest, not a stub with item.test.
-    suite = ("reset", "count") if mode != "default" else ()
-    cycle_test = "reset" if mode != "default" else "default"
-    node = ValidatedManifestNode(project / "manifest.json", manifest, "unused")
-    validated = ValidatedResumeManifest(node, (), (handle,))
-    prepared = PreparedSimulationEndpoint(
-        (handle,), validated if resume else None, () if resume else ("sim",), {"sim": list(suite)}
-    )
-    return prepared, handle, cycle_test
-
-
-def _report_extension_type(endpoint_kind, key):
-    from typing import ClassVar
-
-    from booley.flows.base import BooleyFlow
-    from booley.runtime.endpoint_execution import EndpointOutcome
-    from booley.specialists.specialist import Specialist
-
-    base = BooleyFlow if endpoint_kind == "flow" else Specialist
-
-    class DrcFlow(base):
-        name = "drc_check"
-
-        def _build_prompt(self):
-            return "unused"
-
-        def _interpret_output(self, output, structured):
-            raise AssertionError("agent not invoked")
-
-        satisfies: ClassVar[list[str]] = ["drc_clean", "drc_rules", "cycle_count"]
-
-        def _add_args(self, parser):
-            parser.add_argument("--test")
-
-        def _run(self):
-            self.set_criterion(key, True)
-            return EndpointOutcome()
-
-    return DrcFlow
-
-
-def _assert_custom_headline(runtime, monkeypatch, endpoint_type, argv, expected):
-    """Run a declared custom endpoint and check every public headline surface."""
-    events = _display_events(monkeypatch)
-    endpoint = endpoint_type()
-    result = endpoint.execute_cli([*argv, "--work-dir", str(runtime)])
-    assert result.exit_code == 0
-    _assert_headline(result, endpoint.args.report_dir, "drc_check", expected, events)
-
-
-@pytest.mark.parametrize("binding", ["name", "identity", "named_identity"])
-@pytest.mark.parametrize("ticket", ["none", "single", "plural"])
-# A Specialist keeps no Criterion state (#4301), so only a Flow has a headline to resolve.
-@pytest.mark.parametrize("endpoint_kind", ["flow"])
-@pytest.mark.parametrize("catalog", [True, False])
-@pytest.mark.parametrize("target", ["first", "first,second"])
-def test_declared_custom_flow_prepared_headline(
-    external_acceptance_owner,
-    runtime,
-    monkeypatch,
-    binding,
-    ticket,
-    endpoint_kind,
-    catalog,
-    target,
-):
-    key = "drc_clean_policy42" if binding == "identity" else "drc_clean_first"
-    other = "drc_rules_policy73" if binding == "identity" else "drc_rules_first"
-    if ticket != "none":
-        criteria = {key: True, **({other: True} if ticket == "plural" else {})}
-        params = {name: {"target": "acme:lib:dut:1#first"} for name in criteria}
-        _headline_state(
-            runtime,
-            monkeypatch,
-            criteria,
-            strict=False,
-            criterion_params=params if binding != "name" else None,
-        )
-    if catalog:
-        _report_targets(runtime)
-    expected = (key, True) if target == "first" and ticket != "plural" else ("", None)
-    endpoint_type = _report_extension_type(endpoint_kind, key)
-    _assert_custom_headline(runtime, monkeypatch, endpoint_type, ["--target", target], expected)
-
-
-@pytest.mark.parametrize("endpoint_kind", ["flow"])
-@pytest.mark.parametrize("target", ["first", "acme:lib:dut:1#first", "other:lib:x#first"])
-@pytest.mark.parametrize("other_target", ["first", "second"])
-def test_custom_fallback_excludes_only_proven_other_target(
-    external_acceptance_owner, runtime, monkeypatch, endpoint_kind, target, other_target
-):
-    _headline_state(
-        runtime,
-        monkeypatch,
-        {"drc_clean_first": True, "drc_rules_policy73": True},
-        strict=False,
-        criterion_params={"drc_rules_policy73": {"target": f"acme:lib:dut:1#{other_target}"}},
-    )
-    # ``other:lib:x`` and ``acme:lib:dut:1`` cannot be one core, so only the
-    # bare ``first`` selector (whose core is unknown) keeps the sibling uncertain.
-    proven_other_core = target == "other:lib:x#first"
-    expected = (
-        ("drc_clean_first", True) if other_target == "second" or proven_other_core else ("", None)
-    )
-    endpoint_type = _report_extension_type(endpoint_kind, "drc_clean_first")
-    _assert_custom_headline(runtime, monkeypatch, endpoint_type, ["--target", target], expected)
-
-
-@pytest.mark.parametrize("endpoint_kind", ["flow"])
-@pytest.mark.parametrize("family", ["drc_rules", "cycle_count"])
-@pytest.mark.parametrize("test", ["selected", "other"])
-def test_custom_identity_uncertainty_respects_selected_workload(
-    external_acceptance_owner, runtime, monkeypatch, endpoint_kind, family, test
-):
-    key = f"{family}_policy73"
-    params = {"target": "acme:lib:dut:1#first", "test": "selected"}
-    if family != "cycle_count":
-        params["test_selector"] = "selected"
-    _headline_state(
-        runtime,
-        monkeypatch,
-        {"drc_clean_first": True, key: True},
-        strict=False,
-        criterion_params={key: params},
-    )
-    expected = ("drc_clean_first", True) if test == "other" else ("", None)
-    endpoint_type = _report_extension_type(endpoint_kind, "drc_clean_first")
-    argv = ["--target", "first", "--test", test]
-    _assert_custom_headline(runtime, monkeypatch, endpoint_type, argv, expected)
-
-
-@pytest.mark.parametrize("endpoint_kind", ["flow"])
-@pytest.mark.parametrize("binding", ["stored_selector", "legacy"])
-@pytest.mark.parametrize("direction", ["bare_to_qualified", "qualified_to_bare"])
-@pytest.mark.parametrize("name", ["first", "second"])
-def test_custom_alternate_selector_keeps_unevaluated_potential(
-    external_acceptance_owner, runtime, monkeypatch, endpoint_kind, binding, direction, name
-):
-    target = "dut#first" if direction == "bare_to_qualified" else "first"
-    selector = name if direction == "bare_to_qualified" else f"dut#{name}"
-    params = {"target": selector}
-    if binding == "stored_selector":
-        params = {"target": f"acme:lib:dut:1#{name}", "_target_selector": selector}
-    _headline_state(
-        runtime,
-        monkeypatch,
-        {"drc_clean_first": True, "drc_rules_policy73": True},
-        strict=False,
-        criterion_params={"drc_rules_policy73": params},
-    )
-    expected = ("", None) if name == "first" else ("drc_clean_first", True)
-    endpoint_type = _report_extension_type(endpoint_kind, "drc_clean_first")
-    _assert_custom_headline(runtime, monkeypatch, endpoint_type, ["--target", target], expected)
-
-
-@pytest.mark.parametrize("endpoint_kind", ["flow"])
-def test_custom_evaluated_uncertain_false_is_a_verdict(
-    external_acceptance_owner, runtime, monkeypatch, endpoint_kind
-):
-    from booley.runtime.endpoint_execution import EndpointOutcome
-
-    key = "drc_clean_policy42"
-    params = {key: {"target": "acme:lib:dut:1#first"}}
-    _headline_state(runtime, monkeypatch, {key: True}, strict=False, criterion_params=params)
-    endpoint_type = _report_extension_type(endpoint_kind, key)
-
-    def run(self):
-        self.set_criterion(key, False)
-        return EndpointOutcome()
-
-    monkeypatch.setattr(endpoint_type, "_run", run)
-    _assert_custom_headline(
-        runtime, monkeypatch, endpoint_type, ["--target", "first"], (key, False)
-    )
-
-
 @pytest.mark.parametrize("name", ["mutation", "coverage_analyst"])
-def test_mutation_flow_and_specialist_public_completion_projects_actual_evaluations(
+def test_mutation_flow_and_specialist_reports_carry_no_criterion(
     external_acceptance_owner, runtime, monkeypatch, name
 ):
     from booley.flows.mutation.flow import MutationFlow
@@ -1127,117 +708,17 @@ def test_mutation_flow_and_specialist_public_completion_projects_actual_evaluati
     def run(self):
         if name == "mutation":
             self.set_criterion("mutation_score_first", False)
-        return McpToolResult(exit_code=1, criterion_key="stale", criterion_met=True)
+        return McpToolResult(exit_code=1)
 
     monkeypatch.setattr(endpoint_type, "_run", run)
+    events = _display_events(monkeypatch)
     result = endpoint_type().execute_cli(
         ["--work-dir", str(runtime), "--report-dir", str(runtime / "reports"), *extras]
     )
-    expected = ("mutation_score_first", False) if name == "mutation" else ("", None)
-    _assert_headline(result, runtime / "reports", name, expected)
-
-
-@pytest.mark.parametrize(
-    ("binding", "expected"),
-    [
-        pytest.param("vendor:b:y:1.0#first", ("mutation_score_first", False), id="other-core"),
-        pytest.param("y#first", ("mutation_score_first", False), id="other-core-partial"),
-        pytest.param("x#first", ("", None), id="same-core-partial"),
-        pytest.param("vendor:a:x:2.0#first", ("", None), id="other-version"),
-        pytest.param("first", ("", None), id="bare"),
-    ],
-)
-def test_mutation_qualified_target_keeps_headline(
-    external_acceptance_owner, runtime, monkeypatch, binding, expected
-):
-    """A qualified ``--target`` excludes a same-name Criterion bound to another core."""
-    from booley.flows.mutation.flow import MutationFlow
-    from booley.mcp.base import EXIT_FAILURE, McpToolResult
-    from tests.target_test_support import write_two_core_sim_project
-
-    write_two_core_sim_project(
-        runtime,
-        '["vendor:a:x:1.0#first"]\ntests = ["one"]\n["vendor:b:y:1.0#first"]\ntests = ["one"]\n',
-        target="first",
-    )
-    _headline_state(
-        runtime,
-        monkeypatch,
-        {"mutation_score_first": False, "mutation_score_otherfirst": False},
-        strict=False,
-        criterion_params={"mutation_score_otherfirst": {"target": binding}},
-    )
-    target = "vendor:a:x:1.0#first"
-
-    def run_campaign(self, _plan):
-        self.set_criterion(f"mutation_score_{target}", False, source_target=target)
-        return McpToolResult(exit_code=EXIT_FAILURE)
-
-    monkeypatch.setattr(MutationFlow, "_prepare_run_plan", lambda _self: object())
-    monkeypatch.setattr(MutationFlow, "_run_campaign", run_campaign)
-    result = MutationFlow().execute_cli(
-        [
-            "--work-dir",
-            str(runtime),
-            "--report-dir",
-            str(runtime / "reports"),
-            "--target",
-            target,
-            "--scope",
-            "x.v",
-        ]
-    )
-    _assert_headline(result, runtime / "reports", "mutation", expected)
-
-
-@pytest.mark.parametrize("mode", ["dry_run", "diagnostic"])
-def test_prepared_lint_without_evaluation_has_null_completion(runtime, monkeypatch, mode):
-    from booley.flows import endpoint_reporting
-    from booley.flows.base import SubprocessResult
-
-    _report_targets(runtime, ("first",), flow="lint")
-    events = []
-    monkeypatch.setattr(endpoint_reporting, "_write_display_event", events.append)
-    monkeypatch.setattr(
-        LintFlow, "_execute", lambda *_args, **_kwargs: SubprocessResult(returncode=0)
-    )
-    flow = LintFlow()
-    result = flow.execute(flow.request_type(target="first", work_dir=runtime, **{mode: True}))
-    assert (result.outcome.criterion_key, result.outcome.criterion_met) == ("", None)
-    assert (events[-1].get("criterion_key", ""), events[-1].get("criterion_met")) == ("", None)
-
-
-def test_public_hooks_see_raw_then_projected_headline(
-    external_acceptance_owner, runtime, monkeypatch
-):
-    from booley.runtime.endpoint_execution import EndpointOutcome
-
-    _report_targets(runtime, ("first",), flow="lint")
-    observed = []
-
-    def run(self):
-        self.set_criterion("lint_clean_first", True)
-        return EndpointOutcome(criterion_key="producer_raw", criterion_met=False)
-
-    from booley.flows.endpoint_state import EndpointState
-
-    original_record = EndpointState.record_acceptance
-    original_post = EndpointState._post_run
-
-    def record(self, prepared, outcome):
-        observed.append(("acceptance", outcome.criterion_key, outcome.criterion_met))
-        return original_record(self, prepared, outcome)
-
-    def post(self, outcome, duration):
-        observed.append(("post", outcome.criterion_key, outcome.criterion_met))
-        return original_post(self, outcome, duration)
-
-    monkeypatch.setattr(LintFlow, "_run", run)
-    monkeypatch.setattr(EndpointState, "record_acceptance", record)
-    monkeypatch.setattr(EndpointState, "_post_run", post)
-    result = LintFlow().execute(LintFlow.request_type(target="first", work_dir=runtime))
-    assert observed == [("acceptance", "producer_raw", False), ("post", "lint_clean_first", True)]
-    _assert_headline(result, runtime / "flow-reports", "lint", ("lint_clean_first", True))
+    assert not hasattr(result.outcome, "criterion_key")
+    assert_paired_headline(runtime / "reports", name)
+    (end,) = (event for event in events if event["type"] == "endpoint_end")
+    assert "criterion_key" not in end and "criterion_met" not in end
 
 
 def test_sim_verbose_mcp_schema_deliberately_exposes_optional_boolean():
@@ -1277,48 +758,10 @@ def external_acceptance_owner(monkeypatch):
     )
 
 
-def test_direct_generic_completion_preserves_empty_criterion_fields():
+def test_completion_event_carries_no_criterion_fields():
     from booley.flows.endpoint_events import _endpoint_end_event
     from booley.runtime.endpoint_execution import EndpointOutcome
 
     event = _endpoint_end_event("generic", None, EndpointOutcome(), 0.0)
-    assert event["criterion_key"] == ""
-    assert event["criterion_met"] is False
-
-
-@pytest.mark.parametrize("strict", [False, True])
-@pytest.mark.parametrize("endpoint_kind", ["flow"])
-def test_custom_headline_keeps_same_name_selector_uncertain(
-    external_acceptance_owner, runtime, monkeypatch, endpoint_kind, strict
-):
-    # A custom endpoint prepares no Target selection, so reporting does not resolve
-    # one either: a same-name selector on another core stays an unevaluated potential.
-    _report_targets(runtime)
-    _headline_state(
-        runtime,
-        monkeypatch,
-        {"drc_clean_first": True, "drc_rules_policy73": True},
-        strict=strict,
-        criterion_params={"drc_rules_policy73": {"target": "other:lib:x#first"}},
-    )
-    endpoint_type = _report_extension_type(endpoint_kind, "drc_clean_first")
-    _assert_custom_headline(runtime, monkeypatch, endpoint_type, ["--target", "first"], ("", None))
-
-
-@pytest.mark.parametrize("endpoint_kind", ["flow"])
-def test_custom_headline_scope_resolves_no_target(
-    external_acceptance_owner, runtime, monkeypatch, endpoint_kind
-):
-    # Non-strict, so admission's own binding gate resolves nothing either.
-    from booley.targets.catalog import TargetCatalog
-
-    _report_targets(runtime)
-    _headline_state(runtime, monkeypatch, {"drc_clean_first": True}, strict=False)
-
-    def refuse(*_args, **_kwargs):
-        raise AssertionError("report headline resolved a Target catalog")
-
-    monkeypatch.setattr(TargetCatalog, "build", refuse)
-    endpoint_type = _report_extension_type(endpoint_kind, "drc_clean_first")
-    argv = ["--target", "first"]
-    _assert_custom_headline(runtime, monkeypatch, endpoint_type, argv, ("drc_clean_first", True))
+    assert "criterion_key" not in event
+    assert "criterion_met" not in event

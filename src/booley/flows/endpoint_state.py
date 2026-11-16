@@ -29,7 +29,6 @@ from booley.flows import (
     execution,
 )
 from booley.flows.cli_help import CliHelp, SurfaceHelp
-from booley.flows.endpoint_report_criteria import ReportCriteria
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.execution_persistence import (
     AcceptanceRecorder,
@@ -134,7 +133,6 @@ class EndpointState(ABC):
         return None
 
     def __init__(self) -> None:
-        self._report_criteria = ReportCriteria()
         self._args: Any = None
         self._state: DevelopmentState | None = None
         self._start_time: float = 0.0
@@ -220,10 +218,6 @@ class EndpointState(ABC):
         """Whether this invocation's Targets come from a manifest, not Target selection."""
         return False
 
-    def report_families(self) -> set[str]:
-        """Criterion families this invocation's report scope plans."""
-        return set(self.satisfies)
-
     def set_report_targets(self, targets: list[str]) -> None:
         """Preserve selection cardinality even when some Targets never resolve."""
         self._eda_tools = {target: self._eda_tools.get(target) for target in targets}
@@ -302,10 +296,6 @@ class EndpointState(ABC):
         if self._evidence_discarded is None:
             self._evidence_discarded = exc.reason
             logger.warning("%s: %s", self.name, exc)
-
-    def record_report_criteria(self, changes: list[CriterionChange]) -> None:
-        """Capture effective evaluated values before durable recording."""
-        self._report_criteria.record(changes)
 
     def _record_acceptance_changes(self, changes: list[CriterionChange]) -> None:
         return endpoint_acceptance._record_acceptance_changes(self, changes)

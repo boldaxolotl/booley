@@ -17,10 +17,10 @@ from booley.runtime.job_records import JobRecord
 from booley.runtime.pid import ProcessState
 from tests.harness.test_dashboard import STAMP, snapshot
 
-HEADERS = ["Job", "Target", "Session", "State", "Result", "Crit", "Elapsed"]
+HEADERS = ["Job", "Target", "Session", "State", "Result", "Elapsed"]
 LONG_TARGET = "asic_synthesize_" + "x" * 64
 PASSED_WITH_WARNINGS = "PASSED with warnings"
-UNMET_CRITERION = {"flow": "sim", "criterion_key": "sim_pass_top", "criterion_met": False}
+OLDER_REPORT_CRITERION = {"flow": "sim", "criterion_key": "sim_pass_top", "criterion_met": False}
 LINT_WARNINGS = {"flow": "lint", "detail": {"total_warnings": 3}}
 
 
@@ -106,7 +106,9 @@ def column_widths(app):
 
 @pytest.mark.asyncio
 async def test_jobs_columns_fit_beside_detail_at_120x30():
-    unmet = make_job("unmet", handle="J-SIM1", state="completed", code=0, report=UNMET_CRITERION)
+    unmet = make_job(
+        "unmet", handle="J-SIM1", state="completed", code=0, report=OLDER_REPORT_CRITERION
+    )
     lint = make_job(
         "lint", "lint", handle="J-LINT1", state="completed", code=0, report=LINT_WARNINGS
     )
@@ -203,8 +205,10 @@ async def test_long_target_truncates_and_result_stays_visible():
 
 
 @pytest.mark.asyncio
-async def test_exit_zero_with_unmet_criterion_shows_passed_and_cross():
-    unmet = make_job("unmet", handle="J-SIM1", state="completed", code=0, report=UNMET_CRITERION)
+async def test_older_report_with_criterion_fields_shows_no_criterion_column():
+    unmet = make_job(
+        "unmet", handle="J-SIM1", state="completed", code=0, report=OLDER_REPORT_CRITERION
+    )
     current = world(unmet)
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(120, 30)) as pilot:
@@ -212,8 +216,8 @@ async def test_exit_zero_with_unmet_criterion_shows_passed_and_cross():
         cells = row_for(app, unmet)
         assert cells[4].plain == "PASSED"
         assert str(cells[4].style) == SEMANTIC_STYLE["pass"]
-        assert cells[5].plain == "✗"
-        assert str(cells[5].style) == SEMANTIC_STYLE["fail"]
+        assert len(cells) == len(HEADERS)
+        assert all(cell.plain not in {"✓", "✗"} for cell in cells)
 
 
 @pytest.mark.asyncio

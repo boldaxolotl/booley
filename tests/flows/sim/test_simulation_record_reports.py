@@ -574,7 +574,6 @@ def test_simulation_record_scan_error_retains_independently_authenticated_hook_l
     line = "pre_run_commands rc=0 duration=0.01s"
     result = EndpointOutcome(
         exit_code=0,
-        criterion_met=True,
         report_text=line,
         detail={"pre_sim_lines": [line], "pre_sim_current": 1},
     )
@@ -582,7 +581,6 @@ def test_simulation_record_scan_error_retains_independently_authenticated_hook_l
         result, ValueError("unrelated result corruption"), retain_authenticated=True
     )
     assert result.exit_code == 2
-    assert result.criterion_met is False
     assert result.detail["pre_sim_lines"] == [line]
     assert result.report_text.count(line) == 1
     assert "Simulation Record integrity failure" in result.report_text
@@ -611,7 +609,6 @@ def test_production_postscan_corruption_preserves_authenticated_current_evidence
     result = flow.run_prepared_simulation(prepared, _admission())
     assert counters["launch"] == 1
     assert result.exit_code == 2
-    assert result.criterion_met is False
     assert result.detail["pre_sim_current"] == 1
     assert len(result.detail["pre_sim_lines"]) == 1
     assert result.report_text.count("pre_run_commands") == 1
@@ -896,7 +893,7 @@ def test_corruption_before_endpoint_keeps_final_integrity_policy(tmp_path, monke
     )
     assert "cycles=17" in evidence["endpoint_text"]
     assert "integrity" not in evidence["endpoint_text"]
-    assert result.exit_code == 2 and result.criterion_met is False
+    assert result.exit_code == 2
     assert "Simulation Record integrity failure:" in result.report_text
     assert flow._simulation_record_outcomes == ()
     assert result.detail["pre_sim_current"] == 2

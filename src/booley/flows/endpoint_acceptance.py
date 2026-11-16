@@ -70,7 +70,6 @@ def set_criterion(
         endpoint.discard_evidence(exc)
         return
     changes = endpoint.state.set_criterion(key, met, detail=stamped_detail)
-    endpoint.record_report_criteria(changes)
     if endpoint.state.file_path is None or endpoint.evidence_discarded is not None:
         return
     try:
@@ -479,6 +478,4 @@ def _record_final_acceptance(endpoint: EndpointState, outcome: EndpointOutcome) 
                 for key in reset_keys
             ]
         )
-    criteria_set = [outcome.criterion_key] if outcome.criterion_key else []
-    criteria_set.extend(f"~{key}" for key in reset_keys)
-    endpoint._pending_criteria_set = tuple(criteria_set)
+    endpoint._pending_criteria_set = tuple(f"~{key}" for key in reset_keys)
