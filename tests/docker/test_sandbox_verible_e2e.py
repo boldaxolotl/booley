@@ -140,8 +140,13 @@ def _lint_in_sandbox(project: Path, target: str = "lint_style"):
     # FuseSoC work and report directories without changing the image identity.
     # Scaffolded projects ship nested directories (`.booley/`) the flow writes
     # runtime state into, so open every directory, not just the root.
+    # Directories an earlier sandbox run created belong to the image user, are
+    # already open to it, and the host user may not chmod them.
     for directory in [project, *(d for d in project.rglob("*") if d.is_dir())]:
-        directory.chmod(directory.stat().st_mode | stat.S_IRWXO)
+        try:
+            directory.chmod(directory.stat().st_mode | stat.S_IRWXO)
+        except PermissionError:
+            continue
     return _run_in_sandbox(
         [
             "python3",
