@@ -27,6 +27,7 @@ _WHOLE_FILES = frozenset(
     {
         "src/booley/config/jobs.py",
         "tests/config/test_jobs.py",
+        "tests/config/test_retired_key_refusals.py",
         "tests/harness/test_cli_retired_jobs_keys.py",
         "tests/harness/test_doctor.py",
         "tests/harness/test_doctor_retired_jobs_main_copy.py",
