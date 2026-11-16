@@ -30,7 +30,6 @@ _REPO_PATH_ALLOWED = {
     "runtime/paths.py",
     # Owns the shipped-doc allowlist and renders the packaged copies, not printed links.
     "runtime/packaged_docs.py",
-    "dev_support/flow_specialist_reference.py",
 }
 
 

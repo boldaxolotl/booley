@@ -530,7 +530,7 @@ def test_document_fields_reach_run_cocotb_sim(tmp_path: Path, monkeypatch):
         build_dir=str(tmp_path / "build"),
         run_cwd=str(tmp_path / "util"),
         timeout_s=120,
-        # Never forwarded: the Cocotb adapter derives its own output directory.
+        # A record attempt's evidence root: the adapter writes there, never into the bundle.
         work_dir=str(tmp_path / "out"),
         eda_tool="icarus",
         cocotb_module="test_counter",
@@ -557,6 +557,7 @@ def test_document_fields_reach_run_cocotb_sim(tmp_path: Path, monkeypatch):
         "cocotb_module": "test_counter",
         "tests": ["b", "a"],  # order kept
         "run_cwd": tmp_path / "util",
+        "work_dir": tmp_path / "out",
         "vcd": True,
         "plusargs": ["verbose"],
         "timeout": 120,
@@ -575,7 +576,6 @@ def test_document_fields_reach_run_cocotb_sim(tmp_path: Path, monkeypatch):
         "seed": 42,
         "trace_convert_timeout": 90,
     }  # fmt: skip
-    assert "work_dir" not in seen
 
     # An untraced launch expects no trace scope, whatever scope the work names;
     # an unseeded, untransported one carries neither.

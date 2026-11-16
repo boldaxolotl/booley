@@ -9,18 +9,19 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from booley.core.boundary import as_int
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
     RUNTIME_EXECUTION_ENV,
     ExecutionId,
-    atomic_write_json,
     child_context_matches,
     execution_paths,
     is_older_child_context,
     read_json,
     request_cancellation,
+    update_execution_record,
 )
 from booley.runtime.pid import (
     DEAD,
@@ -138,14 +139,16 @@ def _publish_recovered_terminal(
     supervisor may have written its real outcome and exited in between; that
     record is left untouched and its ``tree_terminal`` is the answer.
     """
-    paths = execution_paths(execution_id, booley_dir=booley_dir)
-    current = read_json(paths.record) or {}
-    if current.get("state") == "terminal":
-        return current.get("tree_terminal") is True
-    exit_code = as_int(current.get("exit_code"), 125) or 125
-    atomic_write_json(
-        paths.record,
-        {
+    tree_terminal = True
+
+    def change(record: dict[str, Any] | None) -> dict[str, Any] | None:
+        nonlocal tree_terminal
+        current = record or {}
+        if current.get("state") == "terminal":
+            tree_terminal = current.get("tree_terminal") is True
+            return None
+        exit_code = as_int(current.get("exit_code"), 125) or 125
+        return {
             **current,
             "schema_version": PROTOCOL_VERSION,
             "state": "terminal",
@@ -153,9 +156,10 @@ def _publish_recovered_terminal(
             "tree_terminal": True,
             "terminal_cause": "orphan_recovered",
             "updated_at": utc_now_rfc3339(),
-        },
-    )
-    return True
+        }
+
+    update_execution_record(execution_paths(execution_id, booley_dir=booley_dir), change)
+    return tree_terminal
 
 
 def _recover_windows_execution(

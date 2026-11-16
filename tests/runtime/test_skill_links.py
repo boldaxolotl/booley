@@ -128,6 +128,10 @@ def test_manifest_owned_link_retargets_to_new_package(tmp_path: Path) -> None:
     refused = reconcile_skill_links(target, new_packaged)
 
     assert _outcomes(refused) == {"booley-setup": "conflict"}
+    assert refused.events[0].detail == (
+        f"`{target / 'booley-setup'}` is Booley's link to another skill source; "
+        "rerun `booley bootstrap --force` to relink it"
+    )
     assert (target / "booley-setup").resolve(strict=True) == old_skill.resolve()
 
     report = reconcile_skill_links(target, new_packaged, allow_retarget=True)
@@ -254,6 +258,10 @@ def test_foreign_takeover_is_preserved_and_relinquishes_ownership(tmp_path: Path
     report = reconcile_skill_links(target, packaged)
 
     assert _outcomes(report) == {"booley-setup": "conflict"}
+    assert report.events[0].detail == (
+        f"`{link}` is not Booley's: rename it if it is your own skill, "
+        "delete it if it is a dangling link, then rerun `booley bootstrap`"
+    )
     assert link.resolve(strict=True) == foreign.resolve()
     manifest = json.loads((target / MANIFEST_FILENAME).read_text(encoding="utf-8"))
     assert manifest["links"] == {}
@@ -428,7 +436,10 @@ def test_apply_detects_entry_changed_after_planning(tmp_path: Path, monkeypatch)
     report = reconcile_skill_links(target, packaged)
 
     assert _outcomes(report) == {"booley-setup": "conflict"}
-    assert report.events[0].detail == "entry changed during reconciliation"
+    assert report.events[0].detail == (
+        f"`{target / 'booley-setup'}` changed while Booley was linking it; "
+        "rerun `booley bootstrap`"
+    )
 
 
 def test_windows_junction_inspection_error_is_not_a_junction(tmp_path: Path, monkeypatch) -> None:

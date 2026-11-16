@@ -20,6 +20,7 @@ from booley.runtime.execution_records import (
     execution_paths,
     read_json,
     request_cancellation,
+    update_execution_record,
 )
 from booley.runtime.execution_recovery import recover_execution
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -139,18 +140,20 @@ class ChildExecutionRegistry:
         prepared: PreparedChild,
         terminal_cause: str,
     ) -> None:
-        with self._record_lock(prepared.execution_id):
-            paths = execution_paths(prepared.execution_id, booley_dir=self._project_data)
-            terminal = read_json(paths.record)
+        def change(terminal: dict[str, object] | None) -> dict[str, object] | None:
             if terminal is None:
                 raise SimulationRecordIntegrityError("child execution record disappeared")
             if terminal.get("state") == "waiting" and terminal.get("leader") is None:
-                atomic_write_json(paths.record, _terminal_record(terminal_cause))
-                return
+                return _terminal_record(terminal_cause)
             if terminal.get("state") != "terminal" or terminal.get("tree_terminal") is not True:
                 raise SimulationRecordIntegrityError(
                     "child execution lacks process-tree terminal proof"
                 )
+            return None
+
+        with self._record_lock(prepared.execution_id):
+            paths = execution_paths(prepared.execution_id, booley_dir=self._project_data)
+            update_execution_record(paths, change)
 
     def is_terminal(self, execution_id: ExecutionId) -> bool:
         paths = execution_paths(execution_id, booley_dir=self._project_data)

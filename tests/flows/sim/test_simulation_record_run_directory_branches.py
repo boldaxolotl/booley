@@ -248,3 +248,16 @@ def test_run_directory_under_a_former_mount_with_a_foreign_collision_key_is_refu
 
     with pytest.raises(SimulationRecordIntegrityError, match="collision key disagrees"):
         rd.restore_run_directory_from_project_data(document, project_data=root)
+
+
+def test_run_directory_inside_the_evidence_folder_is_refused(tmp_path: Path) -> None:
+    evidence = tmp_path / "attempts" / "0001-a1" / "execution-evidence"
+    inside, _ = _run(tmp_path)
+    inside = dataclasses.replace(inside, path=evidence / "run")
+    same = dataclasses.replace(inside, path=evidence)
+    beside, _ = _run(tmp_path)
+
+    rd.require_run_directory_outside(beside, evidence)
+    for run in (inside, same):
+        with pytest.raises(SimulationRecordIntegrityError, match="evidence folder"):
+            rd.require_run_directory_outside(run, evidence)

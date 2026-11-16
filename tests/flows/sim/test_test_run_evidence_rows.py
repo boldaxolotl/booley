@@ -1,4 +1,4 @@
-"""Per-Test-Run rows in ``simulation.json`` and in Criterion detail (ADR 0072)."""
+"""Per-Test-Run rows in ``simulation.json`` (ADR 0072)."""
 
 from __future__ import annotations
 
@@ -8,13 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.criteria.state import DevelopmentState
-from booley.criteria.templates import cycle_count_criterion_key
-from booley.flows.sim.acceptance import (
-    SimulationAcceptanceCoordinator,
-    _OutcomeEvidence,
-    _simulation_record_projection,
-)
+from booley.flows.sim.acceptance import _simulation_record_projection
 from booley.flows.sim.record import AcceptanceFacts, decode_simulation_projection
 from booley.flows.sim.record.codec import (
     SimulationRecordIntegrityError,
@@ -73,7 +67,7 @@ def test_evidence_rows_refuse_a_manifest_the_facts_do_not_name(tmp_path: Path):
 
 def test_projection_v3_carries_a_row_per_test_run_and_decodes(tmp_path: Path):
     outcome = _outcome(tmp_path, _RESET, _COUNT)
-    projection = _simulation_record_projection(_OutcomeEvidence(outcome))
+    projection = _simulation_record_projection(outcome)
 
     assert projection["$schema"] == "booley.simulation-projection/v4"
     assert projection["test_runs"] == _rows(_RESET, _COUNT, classified=False)
@@ -90,7 +84,7 @@ def test_projection_v3_carries_a_row_per_test_run_and_decodes(tmp_path: Path):
 
 
 def _v3_document(tmp_path: Path) -> dict:
-    projection = _simulation_record_projection(_OutcomeEvidence(_outcome(tmp_path, _RESET)))
+    projection = _simulation_record_projection(_outcome(tmp_path, _RESET))
     return json.loads(json.dumps({**projection, "complete": True}))
 
 
@@ -112,53 +106,11 @@ def test_projection_v3_refuses_an_inexact_test_run_row(tmp_path: Path, alter, me
         decode_simulation_projection(document, coverage_expected=False)
 
 
-def _state(tmp_path: Path, outcome, *, cycle_test: str | None = None) -> DevelopmentState:
-    target = outcome.target
-    criteria = {f"sim_pass_{target['name']}": True}
-    params: dict[str, dict] = {}
-    if cycle_test is not None:
-        key = cycle_count_criterion_key(str(target["name"]), cycle_test)
-        criteria[key] = True
-        params[key] = {
-            "target": f"{target['vlnv']}#{target['name']}",
-            "_target_selector": target["selector"],
-            "test": cycle_test,
-            "cycle_count_max": 100,
-        }
-    state = DevelopmentState.load(tmp_path / "state.json")
-    state.init_criteria(criteria, criterion_params=params, strict=True)
-    return state
-
-
-def test_simulation_and_cycle_criterion_detail_name_their_test_runs(tmp_path: Path):
+def test_evidence_rows_come_from_the_authenticated_manifest(tmp_path: Path):
     outcome = _outcome(tmp_path, _RESET, _COUNT)
-    state = _state(tmp_path, outcome, cycle_test="count")
-
-    changes = SimulationAcceptanceCoordinator._derive_changes(_OutcomeEvidence(outcome), state)
-
-    detail = {change.key: change.detail for change in changes}
-    simulation = detail[f"sim_pass_{outcome.target['name']}"]
-    # Bare Test names stay for today's consumers; the rows are in the same order.
-    assert simulation["selected_tests"] == ["count", "reset"]
-    assert simulation["test_runs"] == _rows(_COUNT, _RESET)
-    cycle = detail[cycle_count_criterion_key(str(outcome.target["name"]), "count")]
-    assert cycle["test"] == "count"
-    assert cycle["test_runs"] == _rows(_COUNT)
-
-
-def test_criterion_detail_rows_come_from_the_authenticated_manifest(tmp_path: Path):
-    outcome = _outcome(tmp_path, _RESET, _COUNT)
-    state = _state(tmp_path, outcome)
     outcome.manifest_path.write_bytes(b"{}\n")
     with pytest.raises(SimulationRecordIntegrityError):
-        SimulationAcceptanceCoordinator._derive_changes(_OutcomeEvidence(outcome), state)
-
-
-def test_a_test_with_several_test_runs_judges_no_criterion(tmp_path: Path):
-    """A Criterion names a Test; several Test Runs of it leave nothing single to judge."""
-    outcome = _outcome(tmp_path, _RESET, _SOAK, _FAULT)
-    state = _state(tmp_path, outcome)
-    assert SimulationAcceptanceCoordinator._derive_changes(_OutcomeEvidence(outcome), state) == []
+        evidence_test_run_rows(outcome)
 
 
 def test_evidence_rows_refuse_an_observation_whose_fingerprint_is_not_recorded(tmp_path: Path):

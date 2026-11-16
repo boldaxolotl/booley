@@ -27,7 +27,6 @@ from .. import output_budget
 from .mode import SimulationMode
 
 if TYPE_CHECKING:
-    from booley.criteria.state import DevelopmentState
     from booley.flows.base import SubprocessResult
     from booley.flows.sim.request import SimRequest
     from booley.targets.domain import TargetHandle
@@ -73,12 +72,8 @@ def _standalone_entries(records: list[_ProbeRecord]) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Standalone-elaboration check (`elaborate_standalone` criterion, ADR 0089)
+# Standalone-elaboration check (ADR 0089)
 # ---------------------------------------------------------------------------
-
-# Criterion key the standalone sweep satisfies. Not per-target: the check
-# covers the union of the selected Targets' RTL source filesets.
-_STANDALONE_CRITERION = "elaborate_standalone"
 
 # Max failing modules echoed inline on the console; the full compiler output
 # for every module is persisted in the standalone run.log either way.
@@ -315,8 +310,6 @@ class StandaloneMixin:
 
         @property
         def args(self) -> SimRequest: ...
-        @property
-        def state(self) -> DevelopmentState: ...
         def _target_handle(self, target: str) -> TargetHandle: ...
         @property
         def _mode(self) -> SimulationMode: ...
@@ -326,14 +319,6 @@ class StandaloneMixin:
             self, cmd: list[str], *, timeout: int | None = None, cwd: Path | None = None
         ) -> SubprocessResult: ...
         def _open_run_log(self, target: str, log_dir: Path) -> None: ...
-        def set_criterion(
-            self,
-            key: str,
-            met: bool,
-            *,
-            detail: dict[str, Any] | None = None,
-            source_target: str | None = None,
-        ) -> None: ...
         def _persist_elab_only_log(self, target: str, output: str) -> str: ...
 
     def _standalone_requested(self) -> bool:
@@ -579,7 +564,7 @@ class StandaloneMixin:
         *,
         primary_ok: bool = True,
     ) -> _StandaloneOutcome:
-        """Run the optional per-module sweep and record its criterion."""
+        """Run the optional per-module sweep."""
         t0 = monotonic()
         recipe = self._prepare_standalone_check(targets)
         if isinstance(recipe, _StandaloneOutcome):
@@ -629,15 +614,6 @@ class StandaloneMixin:
 
     def _plan_standalone_check(self, targets: list[str]) -> _StandalonePlanRecipe:
         """Resolve the complete standalone scope without opening logs or running tools."""
-        bound = self.state.criteria.get(_STANDALONE_CRITERION)
-        expected = (bound.params or {}).get("targets") if bound is not None else None
-        if isinstance(expected, list):
-            catalog = TargetCatalog.build(self.args.work_dir)
-            selected = {catalog.select(target).identity for target in targets}
-            if selected != set(expected):
-                raise ValueError(
-                    "elab-only-standalone must select exactly the Criterion's frozen Target set"
-                )
         try:
             coverage = self._standalone_rtl_scope(targets)
         except (fusesoc_registry.FuseSocError, OSError) as exc:
@@ -645,7 +621,7 @@ class StandaloneMixin:
             raise ValueError(f"could not resolve RTL source scope: {exc}") from exc
         modules, shared = self._scan_standalone_scope(list(coverage))
         if not modules:
-            # Zero modules would make a green criterion vacuous — the same
+            # Zero modules would make a pass vacuous — the same
             # false-pass family the lint toplevel check hard-fails.
             raise ValueError(
                 f"no module declarations found in the RTL source scope "
@@ -697,7 +673,7 @@ class StandaloneMixin:
         log_pointer: str | None,
         elapsed: float,
     ) -> _StandaloneOutcome:
-        """Compose and record one completed standalone sweep verdict."""
+        """Compose one completed standalone sweep verdict."""
         passed = not failures
         module_count = len(recipe.modules)
         # A module shared by two frontends can fail under both: count it once.
@@ -718,7 +694,6 @@ class StandaloneMixin:
             lines.extend(self._standalone_ungraded_lines(unparsed, log_pointer))
         detail = self._standalone_detail(recipe, failures, unparsed, log_pointer)
         detail["mode"] = self._mode.value
-        self.set_criterion(_STANDALONE_CRITERION, passed, detail=detail)
         # `passed` implies no unparsed modules (a gap-only sweep returned above).
         ungraded = f" ({len(unparsed)} ungraded)" if unparsed else ""
         display = (
@@ -822,7 +797,7 @@ class StandaloneMixin:
         capability gap has two things to say; the gap must not swallow the
         failure (nor the reverse). One compact line per ungraded module — the
         failures own the verbose per-module echo — so the reader still learns
-        the criterion covered less than the module count suggests.
+        the sweep covered less than the module count suggests.
         """
         where = f" (see {log_pointer})" if log_pointer else ""
         frontends = "+".join(sorted({u["frontend"] for u in unparsed}))

@@ -65,10 +65,6 @@ against what the RTL happens to do.
 2. The agent replies with the findings and the path to the report. Each
    finding has an ID, a severity, and a location.
 3. Decide which findings to fix, and ask the agent to fix them.
-4. Ask the agent to verify the fixes. A verify rechecks only the open findings
-   of the latest review and looks for nothing new. To argue a finding away,
-   give the agent the reason; the Reviewer accepts or rejects it. A review
-   allows two verifies; after that, run a fresh review.
 
 A new review replaces the findings of the previous one.
 
@@ -86,7 +82,8 @@ touches none of the files in scope finishes without a review.
 Each Reviewer has the other side's files hidden, as your `.core` filesets
 declare them, and any HDL file (`.v`, `.vh`, `.sv`, `.svh`, backups like
 `rom.sv.orig` included) that no fileset declares, unless the review's scope
-names that file. Every other project file, firmware included, is readable
+names that file. A scope that names a file your filesets declare for the
+other side is refused. Every other project file, firmware included, is readable
 context. A finding in a file outside the review's files is kept in the review
 evidence and never counts as open.
 
@@ -104,22 +101,17 @@ In a container terminal:
 ```bash
 booley specialist reviewer --category rtl --focus bugs --scope rtl/fifo.sv
 booley specialist reviewer --category rtl --focus spec --scope rtl/fifo.sv --spec docs/spec.md
-booley specialist reviewer --verify
 ```
 
 | Option | Effect |
 |---|---|
 | `--category rtl\|tb` | Review RTL or testbench code. |
 | `--focus <focus>` | One focus from [the table above](#choosing-a-focus). |
-| `--scope <file,...>` | Files to review. |
+| `--scope <file,...>` | Files to review: Verilog and SystemVerilog (`.v`, `.vh`, `.sv`, `.svh`); with `--category tb` also Python (`.py`) and C/C++ sources and headers. |
 | `--spec <path>` / `--spec-text "<text>"` | The specification to check against (one, not both). Required for `--focus spec`. |
 | `--steer "<text>"` | Extra context for the Reviewer. Repeatable. |
-| `--base <commit>` | [Review only the change](#reviewing-only-a-change) since the merge-base of `<commit>` and HEAD, uncommitted changes included. |
+| `--base <commit>` | [Review only the change](#reviewing-only-a-change) since the merge-base of `<commit>` and HEAD, uncommitted changes included. Pass every file of the category as `--scope` so the Reviewer also reads the files that use the changed ones. |
 | `--fail-on critical\|major\|minor` | Exit 1 when an open finding is at or above that severity. Without it, a completed review exits 0 even with open findings. |
-| `--verify` | Recheck the latest review's open findings. Accepts only `--waive` and `--fail-on`. |
-| `--waive <finding-id> "<reason>"` | With `--verify`: propose a waiver. Repeatable. |
 | `--dry-run` | Preview the call without running the review: lists the checks it would run; a `bugs`, `protocol`, `security`, `optimization` or testbench `quality` review shows two. |
 
 The options every Specialist shares are in [Specialists](SPECIALISTS.md#running-a-specialist).
-[CLI-REFERENCE.md](CLI-REFERENCE.md#reviewer) has the full reference,
-including which source file types each category accepts.

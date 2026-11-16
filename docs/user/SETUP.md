@@ -30,7 +30,8 @@ host (`/booley-setup new` for a new IP). They differ only in the skill mode:
 
 Both paths begin with host-side Project Initialization, then use their own skill mode.
 [Project files](#project-files) lists the files setup writes and where each is
-documented. See also
+documented, and [Projects on this machine](#projects-on-this-machine--host)
+covers listing and forgetting Projects. See also
 [FLOW-SIM.md](FLOW-SIM.md#passfail-sentinels-and-cycle-counts)
 for sentinels (the log-pattern strings that decide a simulation's pass/fail
 verdict) and [SANDBOX.md](SANDBOX.md#commercial-eda-provisioning) for EDA
@@ -199,7 +200,7 @@ skill tells you which defaults it used:
 | --- | --- |
 | Simulator EDA tool | Verilator (default) / Icarus |
 | Testbench style | SystemVerilog (default) / cocotb |
-| Lint EDA tool | Verilator (default) / Verible |
+| Lint | Verilator with all warnings (`-Wall`) and Verible style lint (default both) / either one alone |
 | Flows to enable | ASIC synthesis (default on), FPGA (default off, give the part) |
 | ASIC synthesis mode | `physical` (default) / `logical` |
 | Keep Booley out of git history | off (default) / on |
@@ -214,8 +215,9 @@ What lands, wired together and ready to run:
 - `rtl/my_ip.sv`: a small parameterized counter standing in for your design
 - `tb/tb_my_ip.sv` (or `tb/test_my_ip.py` for cocotb): a self-checking
   testbench with two tests, following the shipped TB style guides
-- `my_ip.core`: one Target per enabled flow (`sim_my_ip`, `lint_my_ip`, and
-  optionally `synth_my_ip` (plus SDC in physical mode), `fpga_my_ip` + XDC)
+- `my_ip.core`: one Target per enabled flow (`sim_my_ip`, `lint_my_ip` with
+  Verilator and `-Wall`, `lint_my_ip_style` with Verible, and optionally
+  `synth_my_ip` (plus SDC in physical mode), `fpga_my_ip` + XDC)
 - `.booley/booley.toml` and [`tests.toml`](TESTS.md), populated rather than
   skeletons
 
@@ -291,7 +293,8 @@ and cleanup. The skill stops for your approval only once, after Step 0.
 - **4 · Doctor.** `booley doctor` is Booley's built-in health check: it audits
   your config, `.core` Targets, toolchain, and sandbox and reports on each
   check, with a fix hint for each failure. `--deep` goes further and
-  runs live sim/lint/synthesis smoke tests against the real EDA tools. Fix every
+  runs live sim/lint/synthesis smoke tests and FPGA implementations against the
+  real EDA tools. Fix every
   `FAIL`, then run `--deep` and fix those too. Setup is done when both pass.
 - **5 · Parity · optional.** Cross-check Booley against the native build system
   when the approved plan selects one.
@@ -313,7 +316,7 @@ Once `booley doctor` (and `--deep`) is green, you're set up. Head to
 
 After `booley init`, run `/booley-setup new` on the host, in your Claude Code or
 Codex chat at the Project Root. It asks the design choices in one batched round
-(IP name, simulator, testbench style, lint tool, flows, synthesis mode, and
+(IP name, simulator, testbench style, lint Targets, flows, synthesis mode, and
 whether to keep Booley out of git history, each with a recommended answer),
 then writes a working,
 green-by-construction project. So there's no feasibility triage and no config
@@ -343,6 +346,44 @@ the selected smoke Test. Re-run the Doctor check
 whenever the shape of the project changes (new Target, new flow, new
 constraints). From there, drive development the normal way: start an
 [Interactive Mode](USAGE.md#interactive-mode) session.
+
+## Projects on this machine · host
+
+`booley projects` manages the list of Projects Booley knows on this computer,
+and what each one holds in Docker:
+
+```bash
+booley projects                          # list known Projects and their EDA Grants
+booley projects discover <dir>...        # find existing Projects under these directories
+booley projects forget <project>         # forget a Project and list what it still holds in Docker
+booley projects forget --purge <project> # also remove its unused images and state volumes
+```
+
+Each successful host `booley init` remembers its Project Root. `booley projects`
+marks each one `present`, `missing`, or `uninitialized`.
+
+`discover` scans only the directories you name and doesn't follow symlinks.
+It stops at each Project it finds, so it doesn't crawl that Project's RTL and
+build trees; to import a Project nested inside another, name its path directly.
+
+`forget` lists what the Project still holds in Docker, with sizes: images,
+agent state volumes (a copy of the agent's login and history), containers, and
+networks. It removes none of them unless you add `--purge`, which removes the
+unused ones, even for a Project already forgotten or deleted. To use a
+forgotten Project again, run `booley init` in it.
+
+<details markdown>
+<summary>With host-installed licensed tools</summary>
+
+`forget` refuses while the Project still has a live Grant (see
+[Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning)).
+
+</details>
+
+For images left over from earlier forgets, run `booley projects prune-keepers`,
+then rerun it with the `--confirm <digest>` it prints. Images marked
+`unrecorded` are kept; remove one with `docker image rm <id>` once no other
+Project uses it.
 
 ## Project files
 

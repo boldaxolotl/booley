@@ -155,7 +155,8 @@ See [Stealth Mode](STEALTH.md).
 ## Check the file
 
 `booley measure --validate` checks the `metrics.toml` of your working tree. It
-needs no commit, measures nothing, and lists every load error at once. Where
+needs no commit, measures nothing, takes no other option, and lists every load
+error at once. Run it in a container terminal. Where
 Booley can give a corrected line, it prints it as a `write instead:` line.
 An unquoted prefixed key or a relative bound gets one; an unknown metric lists
 the metrics of its Flow instead.
@@ -165,21 +166,51 @@ the metrics of its Flow instead.
   write instead: "smoke.cycle_count_max" = 1000
 ```
 
-`booley cheat --metrics` prints each Target's metrics as `metrics.toml` text
-you can paste, with the keys already quoted.
+`booley cheat --metrics` prints each Target's metrics as `metrics.toml` text,
+with the keys already quoted. Save the blocks you keep in
+`.booley/metrics.toml`, give each bound a number, and delete the rest.
+
+Then commit the file: a measurement reads the `metrics.toml` committed with
+the commit it measures.
 
 ## Measure a commit
 
 1. **Commit your work.** `booley measure` never measures uncommitted work.
-2. **Run `booley measure`**, or ask the Developer Agent for a Measured Commit.
-    Booley measures the commit in a clean checkout, one child Flow per table.
-3. **Read the exit status.** 0 means every bound is met, 1 means a bound is
-    unmet, and 2 means a Flow errored or the measurement could not run.
+2. **Run `booley measure [<sha>]`** in a container terminal, or ask the
+    Developer Agent for a Measured Commit. It measures `HEAD` by default, in
+    a clean checkout, one child Flow per table, stores the Measurement Run
+    and prints the report. Measuring `HEAD` notes any uncommitted change to a
+    tracked file and any submodule whose working tree differs from the
+    commit's pin, because neither is measured.
+3. **Read the exit status** in the table below.
 4. **On an unmet bound, fix forward.** Make a new commit, or amend the
     commit, then measure again. Booley stores a Measurement Run for the
     commit's tree, so amending only the message keeps a commit Measured.
 
-[CLI-REFERENCE.md](CLI-REFERENCE.md) lists every flag and exit status.
+The Developer Agent reports the verdict line, the failing rows and the paths
+of the reports, and cancelling it stops the measurement's Flows. The
+Dashboard shows each session's measurement; see
+[The dashboard](USAGE.md#the-dashboard).
+
+A commit that is already Measured is not measured again: the command prints
+its stored run, starts no Flow and exits with status 0. A commit whose latest
+run is unmet, errored, stopped or cancelled is measured again without
+`--again`.
+
+| Option | Effect |
+|---|---|
+| `--base <sha>` | Compare with this commit, or with its merge-base with the measured commit when it is not an ancestor. See [Base runs](#base-runs). |
+| `--all` | Evaluate every table. Without it, the first unmet or errored table stops the run and the later tables are "not evaluated". |
+| `--again` | Measure a commit that is already Measured again and store a second run. |
+| `--target <name>` | Measure only this Target's tables. The run is never stored and never makes the commit Measured; its reports stay in the `measure` Job's directory under `.interactive_logs/standalone/<run_id>/`. |
+| `--json` | Print the report as JSON. |
+
+| Exit status | Meaning |
+|---|---|
+| `0` | Every enforced bound is met. |
+| `1` | A bound is unmet. |
+| `2` | A Flow errored (also when a bound is unmet too), `metrics.toml` declares no table, `--target` names a Target with no table ("nothing to measure"), or the measurement could not run. |
+| `130` | Ctrl-C cancelled the measurement. A run with a finished Flow is stored as cancelled, never as measured. |
 
 ## Give the Developer Agent a relative target
 
@@ -211,10 +242,9 @@ sees it.
 ## Base runs
 
 The Base is the merge-base of your commit with the default branch; `--base`
-names another one and is normalized the same way. A base run is an ordinary
-stored run of the Base's tree. Booley never starts one by itself and it never
-decides a verdict. When one exists, the report adds the Δ column and warns
-where a metric got worse.
+names another one. A base run is an ordinary stored run of the Base's tree.
+Booley never starts one by itself and it never decides a verdict. When one
+exists, the report adds the Δ column and warns where a metric got worse.
 
 Without one, the report prints the command to create it:
 `booley measure --all <base>`. A commit on the default branch's own history

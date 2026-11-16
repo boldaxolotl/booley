@@ -101,7 +101,7 @@ component):
     record/
       manifest.json                    what this run will execute (fixed at start)
       summary.json                     where it stands now
-      build-variants/.../              simulator builds and their results
+      build-variants/.../              shared simulator builds (launched read-only by every attempt) and their results
       work-items/.../attempts/.../     one directory per test or batch, with its attempts
     simulation.json                    the Target's results
     coverage.json                      coverage runs only: the Coverage Record reference
@@ -117,6 +117,29 @@ Three cases add to this layout:
 - **A Cycle Count baseline** gets its own Target directory beside the
   candidate's, for the selector `<target>@baseline-<first 12 characters of the
   baseline revision>`.
+
+### Attempt files
+
+An attempt directory (`work-items/<id>/attempts/<ordinal>-<attempt id>/`) keeps
+each evidence file once:
+
+```text
+attempt.json
+execution-evidence/    the run log, the trace and the adapter result, where the run wrote them
+evidence/              files Booley derives, and copies of files written outside the attempt
+private-build/         builds made per test only
+runtime-inputs/        the attempt's runtime inputs
+pre-sim/               pre-sim command evidence
+coverage-record/       coverage runs only
+```
+
+`execution-evidence/run.log` is the file the live pointer in `progress.json`
+names, so a reader tailing it during the run finds the final log there
+afterwards. The work-item result references the log, the trace and the adapter
+result at `execution-evidence/<name>`. `evidence/` holds the Cocotb transport
+and infrastructure-failure documents Booley derives, plus a copy of any trace
+or adapter file the simulator wrote outside the attempt (for example in a
+configured run directory) whose original is removed with that directory.
 
 Record files reference each other by size and SHA-256, in two forms. Durable
 records (`summary.json`, work-item results) carry the canonical manifest
@@ -179,9 +202,7 @@ attempt, and the enclosing Simulation Record together.
 In `report.json`, `detail.targets[<target>]` keeps each Target's results and a
 `coverage_record` reference to the Target-level `coverage.json`.
 `coverage_metrics` maps each native metric to `{percent, threshold, met}`. A
-threshold miss on a run that executed cleanly still exits `0`; with one
-evaluated
-Criterion, `criterion_met` is `false`.
+threshold miss on a run that executed cleanly still exits `0`.
 
 ## `lint`
 

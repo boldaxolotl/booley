@@ -76,6 +76,7 @@ USER_DOCS = (
     UserDoc("TESTS.md", "tests", "tests.toml", "Reference"),
     UserDoc("SANDBOX.md", "sandbox", "Sandbox", "Reference"),
     UserDoc("STEALTH.md", "stealth", "Stealth Mode", "Reference"),
+    UserDoc("WORKTREES.md", "worktrees", "Worktrees", "Reference"),
     UserDoc("CLI-REFERENCE.md", "cli-reference", "CLI reference", "Reference"),
     UserDoc("SUPPORTED-EDA-TOOLS.md", "supported-eda-tools", "Supported EDA tools", "Reference"),
     UserDoc("DOCTOR.md", "doctor", "Doctor", "Help"),

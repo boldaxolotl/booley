@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.flows.sim.simulation_record_test_support import prerequisite_documents
+
 SIMULATION_RECORD_ID = "01234567-89ab-4def-8123-456789abcdef"
 
 
@@ -13,7 +15,7 @@ def _add_observed_cycles(monkeypatch):
 
     from tests.flows.sim.simulation_record_test_support import _Group
 
-    original = _Group.launch_snapshot
+    original = _Group.launch_bundle
 
     def with_cycles(group, *args):
         outcome = original(group, *args)
@@ -24,12 +26,11 @@ def _add_observed_cycles(monkeypatch):
             ),
         )
 
-    monkeypatch.setattr(_Group, "launch_snapshot", with_cycles)
+    monkeypatch.setattr(_Group, "launch_bundle", with_cycles)
 
 
 def _two_role_simulation_records(tmp_path, monkeypatch):
     """A candidate and a Cycle Count baseline Simulation Record sharing one invocation."""
-    from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.record.model import create_simulation_record_plan
     from booley.flows.sim.record.store import SimulationRecordStore
     from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
@@ -53,7 +54,7 @@ def _two_role_simulation_records(tmp_path, monkeypatch):
         invocation_directory=invocation,
     )
     manifest = SimulationRecordStore(baseline.manifest_path.parent).load_manifest()
-    prerequisites = SimulateFlow._simulation_record_prerequisite_documents(
+    prerequisites = prerequisite_documents(
         create_simulation_record_plan(manifest), baseline.manifest_path.relative_to(invocation)
     )
     _, candidate = _successful_pre_sim_record(
@@ -195,7 +196,6 @@ def test_relative_cycle_criteria_on_two_tests_share_one_baseline_simulation_reco
     Both prerequisites name the same baseline record, which used to be refused
     as a duplicate ("prerequisite identities must be unique") or run as a cycle.
     """
-    from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.record.model import create_simulation_record_plan
     from booley.flows.sim.record.store import SimulationRecordStore
 
@@ -206,7 +206,7 @@ def test_relative_cycle_criteria_on_two_tests_share_one_baseline_simulation_reco
         tmp_path, monkeypatch, _cycle_baseline_manifest(("alpha", "beta")), invocation
     )
     manifest = SimulationRecordStore(baseline.manifest_path.parent).load_manifest()
-    prerequisites = SimulateFlow._simulation_record_prerequisite_documents(
+    prerequisites = prerequisite_documents(
         create_simulation_record_plan(manifest), baseline.manifest_path.relative_to(invocation)
     )
     assert len(prerequisites) == 2
@@ -224,7 +224,6 @@ def test_relative_cycle_criteria_on_two_tests_share_one_baseline_simulation_reco
 
 def _shared_baseline_candidate(tmp_path, monkeypatch):
     """Run a two-Test baseline and a candidate linking both of its work items."""
-    from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.record.model import create_simulation_record_plan
     from booley.flows.sim.record.store import SimulationRecordStore
 
@@ -235,7 +234,7 @@ def _shared_baseline_candidate(tmp_path, monkeypatch):
         tmp_path, monkeypatch, _cycle_baseline_manifest(("alpha", "beta")), invocation
     )
     manifest = SimulationRecordStore(baseline.manifest_path.parent).load_manifest()
-    prerequisites = SimulateFlow._simulation_record_prerequisite_documents(
+    prerequisites = prerequisite_documents(
         create_simulation_record_plan(manifest), baseline.manifest_path.relative_to(invocation)
     )
     candidate, _ = _run_simulation_record(
@@ -362,31 +361,3 @@ def test_an_escaping_work_item_id_is_refused_before_use(tmp_path):
 
     with pytest.raises(SimulationRecordIntegrityError, match="not one contained path component"):
         store.work_item_directory(escaping)
-
-
-def test_planning_refuses_a_duplicate_prerequisite_link():
-    """Two Test Runs of one candidate must not read one baseline work item (#2136)."""
-    from booley.flows.sim.flow import _link_baseline_prerequisites
-    from booley.flows.sim.test_run_invocation import BaselineLink
-    from booley.flows.test_runs import build_test_run
-
-    def document(ordinal):
-        return {
-            "simulation_record_id": SIMULATION_RECORD_ID,
-            "work_item_id": f"item:{ordinal:04d}:0123456789abcdef",
-        }
-
-    alpha, beta, gamma = (build_test_run(name, seed=1) for name in ("alpha", "beta", "gamma"))
-    by_run = {alpha.name: document(0), beta.name: document(1), gamma.name: document(1)}
-
-    def links(*runs):
-        return [BaselineLink("sim", "base", run.test, run) for run in runs]
-
-    # Two links to different work items of one baseline record stay allowed.
-    prerequisites = {"sim": []}
-    _link_baseline_prerequisites(prerequisites, links(alpha, beta), by_run)
-    assert prerequisites["sim"] == [document(0), document(1)]
-
-    prerequisites = {"sim": []}
-    with pytest.raises(ValueError, match=r"Test Run gamma@1.*separate runs"):
-        _link_baseline_prerequisites(prerequisites, links(beta, gamma), by_run)

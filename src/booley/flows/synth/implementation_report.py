@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 _SYNTH_DELTA_METRICS = (
     "area_um2",
     "area_kge",
-    "cells",
+    "cell_count",
     "wire_count",
     "wns_ns",
     "whs_ns",

@@ -44,7 +44,9 @@ The grill covers:
   Yosys + OpenROAD with constrained timing and SDC) or `logical` (Yosys mapped
   area only, no SDC). Ask this dependent choice after ASIC enablement is settled;
 - simulator (Verilator / Icarus) and testbench style (SystemVerilog / cocotb);
-- lint EDA tool (Verilator / Verible);
+- lint Targets: Verilator with `-Wall` plus Verible style lint (recommend both);
+  declining style lint passes `--no-style-lint`, declining the Verilator Target
+  passes `--lint-eda-tool verible`;
 - whether they want `AGENTS.md`;
 - enable metrics now or later? (row 6a; recommend later);
 - one merged git-history question (rows 16 + 20), asked exactly:
@@ -70,7 +72,8 @@ only):
 - **Repo not yet scaffolded** (no `.core`, no RTL): run
   `booley init --scaffold <name>` on the host, passing **every** answer as a flag
   (`booley init --scaffold` asks nothing and defaults a missing flag):
-  `--sim-eda-tool`, `--tb-style`, `--lint-eda-tool`, `--asic`/`--no-asic`,
+  `--sim-eda-tool`, `--tb-style`, `--lint-eda-tool`,
+  `--no-style-lint` (only when declined), `--asic`/`--no-asic`,
   `--synth-mode logical|physical` (only with ASIC), `--fpga-part <part>` (only
   when FPGA is on), plus `--stealth` when the user
   confirmed Yes/hidden in the grill (it writes `enabled = true` and puts the

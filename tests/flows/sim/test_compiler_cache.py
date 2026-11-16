@@ -17,6 +17,7 @@ from booley.flows.sim.compiler_cache import (
     resolve_policy,
 )
 from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 MANAGED = {"OBJCACHE", "CCACHE_DIR", "CCACHE_MAXSIZE", "CCACHE_COMPILERCHECK"}
@@ -101,7 +102,7 @@ def test_missing_ccache_builds_uncached_without_storage(project, tmp_path, monke
     assert "ccache is missing from the build PATH" in caplog.text
 
 
-def test_unset_root_builds_uncached_and_names_refresh(project, caplog):
+def test_unset_root_builds_uncached_and_names_both_workflows(project, caplog):
     root, data = project
     policy = resolve_policy(root, {})
     environment = execution_environment(
@@ -109,7 +110,8 @@ def test_unset_root_builds_uncached_and_names_refresh(project, caplog):
     )
     assert environment["OBJCACHE"] == ""
     assert "CCACHE_DIR" not in environment
-    assert caplog.text.count("booley session refresh") == 1
+    assert caplog.text.count(UNKNOWN_SANDBOX_STEPS) == 1
+    assert caplog.text.count("run booley session refresh") == 0
     assert not (data / ".runtime").exists()
 
 

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -129,8 +131,9 @@ class _GeneratorGroup:
     def bind_authenticated_bundle(self, evidence):
         assert evidence == _build_execution()
 
-    def launch_snapshot(self, snapshot_root, run_cwd):
-        assert snapshot_root.is_dir()
+    def launch_bundle(self, bundle_root, evidence_root, run_cwd):
+        assert bundle_root.is_dir()
+        assert evidence_root.name == "execution-evidence"
         assert run_cwd == self.root / "run"
         test = SimulationTestOutcome("sim", "pass", True, str(self.run_log))
         return SimulationTargetOutcome(
@@ -573,6 +576,36 @@ def test_resume_rejects_linked_manifest_paths_without_writes(
     assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")) == before
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows publishes by rename, never by link")
+def test_resume_validation_discards_a_staged_link_of_the_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A kill between link and unlink leaves the manifest whole with a second link."""
+    manifest = decode_simulation_record_manifest(canonical_json_bytes(_manifest()))
+    published = SimulationRecordStore(tmp_path / "reports/000001/targets/sim/record")
+    published.publish_manifest(manifest)
+    staged = published.manifest_path.with_name(".manifest.json.x.booley-staged")
+    os.link(published.manifest_path, staged)
+    target = manifest.document["target"]
+    monkeypatch.setattr(
+        "booley.flows.sim.record.resume.git_full_sha", lambda _ref, _root: target["revision"]
+    )
+    monkeypatch.setattr(
+        TargetCatalog,
+        "build",
+        lambda checkout: SimpleNamespace(
+            select=lambda _selector, **_kwargs: SimpleNamespace(
+                identity=f"{target['vlnv']}#{target['name']}", project_root=Path(checkout)
+            )
+        ),
+    )
+
+    validated = validate_resume_manifest(published.manifest_path, project_root=tmp_path)
+
+    assert validated.path == published.manifest_path
+    assert not staged.exists()
+
+
 @pytest.mark.parametrize("spelling", ["lexical", "physical", "below"])
 def test_resume_reads_through_the_booley_dir_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str
@@ -921,7 +954,7 @@ def _retarget_topology_manifest(document, revision):
 
 @pytest.mark.parametrize("topology", ["standalone", "linked"])
 def test_resume_baseline_materializes_project_topologies(tmp_path, monkeypatch, topology):
-    from tests.flows.sim.test_cycle_observation import _criterion_flow
+    from booley.flows.sim.mode import SimulationMode
     from tests.flows.test_baseline_worktree import (
         _assert_topology_baseline,
         _project_topology_checkout,
@@ -932,9 +965,10 @@ def test_resume_baseline_materializes_project_topologies(tmp_path, monkeypatch, 
     _candidate, store, _baseline, baseline_store = _linked_simulation_record_stores(
         tmp_path, topology_revisions=(current, revision)
     )
-    flow, _key = _criterion_flow(relative=True)
-    flow._args.work_dir = root
-    flow._args.resume_from = store.manifest_path
+    flow = SimulateFlow()
+    flow._args = MagicMock(
+        work_dir=root, resume_from=store.manifest_path, mode=SimulationMode.SIMULATE
+    )
     roots = []
 
     def validate(path, *, project_root, revision_root):

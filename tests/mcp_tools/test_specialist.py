@@ -553,8 +553,6 @@ def test_single_model_value_ignores_list_memory_and_never_falls_back(
 def test_specialist_result_and_evidence_record_model_and_fallback(
     tmp_path: Path, per_cli_backends, logins
 ) -> None:
-    from booley.flows.endpoint_state import EndpointState
-
     logins.update({"codex"})
     _built, _calls = per_cli_backends(_list_settings())
     endpoint = _named("reviewer")
@@ -573,11 +571,6 @@ def test_specialist_result_and_evidence_record_model_and_fallback(
     }
     assert result.detail["specialist_model"] == expected
     assert "Ran on gpt-6-luna instead of claude-opus-5-5" in result.report_text
-    # The Criterion evidence (what the Review Package copies) carries the same note.
-    detail: dict = {"specialist_model": {"model": "stale"}}
-    with patch.object(EndpointState, "set_criterion") as base:
-        endpoint.set_criterion("review_rtl_bugs_done", True, detail=detail)
-    assert base.call_args.kwargs["detail"]["specialist_model"] == expected
 
 
 class TestTranscriptPath:
@@ -614,9 +607,7 @@ class TestSessionPersistence:
         with patch.dict(os.environ, {"BOOLEY_LOGS_DIR": str(tmp_path)}):
             endpoint._persist_session_id("test-key")
             assert endpoint._load_session_id("test-key") == "sess-abc-123"
-            endpoint._clear_session_id("test-key")
-            assert endpoint._load_session_id("test-key") is None
-            assert not (tmp_path / "test-key.session_id").exists()
+            assert (tmp_path / "test-key.session_id").is_file()
 
     def test_standalone_run_persists_under_project_runtime(
         self,
@@ -634,8 +625,6 @@ class TestSessionPersistence:
         assert endpoint._load_session_id("k") == "sess-xyz"
         # The autouse _set_booley_dir fixture pins BOOLEY_DIR=tmp_path.
         assert (tmp_path / ".runtime" / "sessions" / "k.session_id").exists()
-        endpoint._clear_session_id("k")
-        assert endpoint._load_session_id("k") is None
 
     def test_persist_noop_when_no_project_discoverable(
         self,
@@ -675,11 +664,6 @@ class TestSessionPersistence:
         with patch.dict(os.environ, {"BOOLEY_LOGS_DIR": str(tmp_path)}):
             endpoint._persist_session_id("k")
             assert not (tmp_path / "k.session_id").exists()
-
-    def test_clear_noop_when_no_file(self, tmp_path: Path):
-        endpoint = ReviewSpecialist()
-        with patch.dict(os.environ, {"BOOLEY_LOGS_DIR": str(tmp_path)}):
-            endpoint._clear_session_id("gone")
 
 
 # ===========================================================================

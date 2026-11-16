@@ -22,6 +22,7 @@ from booley.bwave import waveform_store
 from booley.flows.sim import trace_session
 from booley.flows.sim.backends import icarus as icarus_adapter
 from booley.flows.sim.backends import verilator as verilator_adapter
+from booley.flows.sim.backends.declared_streams import DeclaredTraceStreams
 from booley.flows.sim.trace_session import TraceArtifact, TraceInspection, TraceSession
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="named pipes need POSIX")
@@ -182,7 +183,9 @@ def test_declared_vcd_streams_to_trace_ok(adapter, tmp_path, monkeypatch):
     assert out.types() == {"fpu.vcd": "fifo"}
     # Published as the session's own trace.fst, so `bwave register SIM_DIR` finds it.
     assert f"TRACE_OK: {tmp_path / 'work' / 'trace.fst'}" in out.output
-    assert (tmp_path / "work" / "trace_streams" / "0-fpu.fst").is_file()
+    # The streamed store is moved onto trace.fst, so the run keeps one copy.
+    assert not (tmp_path / "work" / "trace_streams" / "0-fpu.fst").exists()
+    assert sorted(p.name for p in (tmp_path / "work").rglob("*.fst")) == ["trace.fst"]
     assert "[SIM_RESULT] PASSED" in out.output
     _no_pipe_left(out.dirs.run, "fpu.vcd")
     # Icarus always converts its own dump.vcd; the declared path is never converted.
@@ -247,12 +250,45 @@ def test_unlinked_or_replaced_path_falls_back(how, tmp_path, monkeypatch):
     _no_pipe_left(out.dirs.run, "fpu.vcd")
 
 
+_NO_HEADER_TEXT = (
+    "streaming fpu.vcd failed: fake bwave: no VCD header (if the testbench seeks in, "
+    "reads back, or reopens this dump, make it write the dump once, front to back, "
+    "or dump FST instead)"
+)
+
+
+def _finished_streams(tmp_path: Path, budget_s: float) -> DeclaredTraceStreams:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    session = TraceSession(tmp_path / "work")
+    session.start_conversion_budget(budget_s)
+    streams = DeclaredTraceStreams.start(session, ("fpu.vcd",), run_dir)
+    streams.close_inputs()
+    streams.finish()
+    return streams
+
+
+def test_failed_stream_names_the_testbench_fix(tmp_path):
+    streams = _finished_streams(tmp_path, 60)
+
+    assert streams.failures == {"fpu.vcd": _NO_HEADER_TEXT}
+
+
+def test_budget_exhausted_stream_keeps_its_text(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_BWAVE_MODE", "never_read")
+    streams = _finished_streams(tmp_path, 0)
+
+    assert streams.failures == {
+        "fpu.vcd": "streaming fpu.vcd failed: no usable waveform was written"
+    }
+
+
 def test_never_opened_pipe_keeps_verdict_and_reports_incident(tmp_path, monkeypatch):
     out = _run("verilator", tmp_path, monkeypatch, "record:fpu.vcd", ["fpu.vcd"])
 
     assert "[SIM_RESULT] PASSED" in out.output
     assert "TRACE_INCIDENT" in out.output
-    assert "streaming fpu.vcd failed: fake bwave: no VCD header" in out.output
+    assert _NO_HEADER_TEXT in out.output
     _no_pipe_left(out.dirs.run, "fpu.vcd")
 
 
@@ -421,3 +457,41 @@ def test_cocotb_launch_clears_a_stale_booley_pipe_first(tmp_path, monkeypatch):
 
     assert seen == [[".b.vcd.booley-pipe", "a.vcd", "b.vcd"]]
     assert os.lstat(run_dir / "a.vcd").st_ino == foreign_inode
+
+
+def test_streamed_store_that_cannot_move_stays_the_trace(tmp_path, monkeypatch):
+    from tests.conftest import MINIMAL_FST_BYTES
+
+    from booley.flows.sim.trace_session import TraceSession
+
+    work = tmp_path / "work"
+    store = work / "trace_streams" / "0-fpu.fst"
+    store.parent.mkdir(parents=True)
+    store.write_bytes(MINIMAL_FST_BYTES)
+    session = TraceSession(work)
+    # A directory in the way: the rename fails, as a cross-device or busy target would.
+    session.work_bwave_path.mkdir()
+
+    assert session.publish_bwave(store, move=True) is None
+    assert store.is_file()
+
+
+def test_streamed_store_moved_before_a_status_write_failure_stays_published(tmp_path, monkeypatch):
+    from tests.conftest import MINIMAL_FST_BYTES
+
+    from booley.flows.sim.trace_session import TraceSession
+
+    work = tmp_path / "work"
+    store = work / "trace_streams" / "0-fpu.fst"
+    store.parent.mkdir(parents=True)
+    store.write_bytes(MINIMAL_FST_BYTES)
+    session = TraceSession(work)
+
+    def failing_event(kind, detail=""):
+        raise OSError("status write failed")
+
+    monkeypatch.setattr(session, "record_event", failing_event)
+
+    assert session.publish_bwave(store, move=True) == session.work_bwave_path
+    assert session.work_bwave_path.is_file()
+    assert not store.exists()

@@ -481,6 +481,23 @@ def test_verified_sources_are_available_only_through_scoped_tool(tmp_path):
     assert model.calls[0].nested_mcp_tools == ["coverage_evidence"]
 
 
+# The persisted report format (booley.coverage-analysis/v4) fixes these keys.
+_REPORT_KEYS = {
+    "$schema",
+    "analysis_scope",
+    "closure_recommendation",
+    "coverage_record_id",
+    "eligibility",
+    "hypotheses",
+    "limitations",
+    "observed_evidence",
+    "recommendations",
+    "source_access",
+    "target",
+    "waiver_candidates",
+}
+
+
 @pytest.mark.parametrize("ignore_native", [False, True])
 def test_stealth_analysis_preserves_project_files(tmp_path, ignore_native):
     path = source_project(tmp_path)
@@ -500,6 +517,28 @@ def test_stealth_analysis_preserves_project_files(tmp_path, ignore_native):
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
     assert report["source_access"] == "report_only"
     assert json.loads(model.calls[0].prompt)["source_access"] == "report_only"
+    assert report["limitations"] == [
+        "Stealth Mode: Booley does not inspect sources, so analysis uses normalized "
+        "report evidence only and no Waiver Candidate is ready for human review."
+    ]
+    assert report["$schema"] == "booley.coverage-analysis/v4"
+    assert set(report) == _REPORT_KEYS
+    assert report["eligibility"] == "eligible"
+
+
+def test_undecodable_configuration_keeps_generic_report_only_limitation(tmp_path):
+    path = source_project(tmp_path)
+    (tmp_path / ".booley").mkdir()
+    (tmp_path / ".booley/booley.toml").write_bytes(b"\xff\xfe")
+    analyst = CoverageAnalystSpecialist(model=Model())
+    analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(path)])
+
+    report = analyst.coverage_analyst(path).to_dict()
+
+    assert report["source_access"] == "report_only"
+    assert report["limitations"] == [
+        "Sources unavailable, unsafe, or stale; analysis uses normalized report evidence only."
+    ]
 
 
 @pytest.mark.parametrize("defect", ["stale", "missing", "core", "closure", "symlink"])
@@ -528,6 +567,11 @@ def test_source_mismatch_degrades_transactionally_to_report_only(tmp_path, defec
     assert report["source_access"] == "report_only"
     assert json.loads(model.calls[0].prompt)["source_access"] == "report_only"
     assert "SECRET" not in model.calls[0].prompt
+    assert report["limitations"] == [
+        "Sources unavailable, unsafe, or stale; analysis uses normalized report evidence only."
+    ]
+    assert set(report) == _REPORT_KEYS
+    assert report["eligibility"] == "eligible"
 
 
 def test_verified_candidate_is_ready_only_for_human_review(tmp_path, monkeypatch):
@@ -582,6 +626,27 @@ def test_cli_analysis_never_loads_or_saves_harness_criteria(tmp_path, monkeypatc
     )
     assert result.exit_code == 0
     assert state.read_text() == "intentionally not a Harness state"
+    assert result.outcome.criterion_key == ""
+
+
+def test_cli_analysis_writes_no_development_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
+    path = persist_coverage_record(tmp_path)
+    result = CoverageAnalystSpecialist(model=Model()).execute_cli(
+        [
+            "--work-dir",
+            str(tmp_path),
+            "--record",
+            str(path),
+            "--report-dir",
+            str(tmp_path / "analysis-reports"),
+        ]
+    )
+    assert result.exit_code == 0
+    assert list(tmp_path.rglob("state.json")) == []
+    assert not (tmp_path / "reviewer-state").exists()
+    assert not (tmp_path / ".interactive_logs").exists()
     assert result.outcome.criterion_key == ""
 
 

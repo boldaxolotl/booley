@@ -59,17 +59,21 @@ def test_store_refuses_a_symlinked_signal(tmp_path):
 
 def test_freshness_reports_unknown_for_missing_future_and_stale_busy_signals():
     assert observed_activity(None, now=NOW).state == activity.UNKNOWN
+    assert observed_activity(None, now=NOW).cause == activity.NO_REPORT
     working = ActivitySignal("k", activity.WORKING, STAMP, "")
     assert observed_activity(working, now=NOW + 60) == activity.Activity(
         activity.WORKING, STAMP, ""
     )
     assert observed_activity(working, now=NOW - 60).state == activity.UNKNOWN
+    assert observed_activity(working, now=NOW - 60).cause == activity.AHEAD
     assert observed_activity(working, now=NOW - 2).state == activity.WORKING
     edge = NOW + activity.BUSY_STALE_AFTER
     assert observed_activity(working, now=edge - 1).state == activity.WORKING
     assert observed_activity(working, now=edge).state == activity.UNKNOWN
     tool = ActivitySignal("k", activity.WAITING_TOOL, STAMP, "sim")
     assert observed_activity(tool, now=edge).state == activity.UNKNOWN
+    assert observed_activity(working, now=edge).cause == activity.STALE_BUSY
+    assert observed_activity(tool, now=edge).cause == activity.STALE_BUSY
     # Waiting for the user is not an activity that goes stale by itself.
     waiting = ActivitySignal("k", activity.WAITING_USER, STAMP)
     assert observed_activity(waiting, now=NOW + 10 * 86400).state == activity.WAITING_USER

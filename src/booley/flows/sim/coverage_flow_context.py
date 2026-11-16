@@ -1,43 +1,20 @@
-"""Translate Simulation's project and Ticket inputs into coverage policy values."""
+"""Translate Simulation's project inputs into coverage policy values."""
 
 from __future__ import annotations
 
 import tomllib
-from fractions import Fraction
 from pathlib import Path
 
 from booley.config.coverage_waiver_inputs import parse_coverage_waiver_config
 from booley.config.project_config import load_test_configuration_field
 from booley.core.boundary import require_dict
 from booley.core.config_paths import resolve_toml
-from booley.criteria.coverage import COVERAGE_MIGRATION_SKELETON, validate_coverage_metrics
-from booley.criteria.state import DevelopmentState
-from booley.criteria.templates import find_retired_criteria
-from booley.flows.execution_persistence import (
-    AcceptanceRecorder,
-    GoalPresentationProvider,
-    execution_goal_name,
-)
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
-from booley.targets.catalog import TargetCatalog
 
 from .coverage_invocation import CoverageProjectContext
-from .coverage_policy import CoverageCriterion, CoverageThreshold
-from .coverage_record import DurableTargetIdentity
 
 
-def coverage_context_for_execution(
-    root: Path, state: DevelopmentState, *, recorder: AcceptanceRecorder
-) -> CoverageProjectContext:
-    """Inject presentation only for executions with a presentation provider."""
-    if isinstance(recorder, GoalPresentationProvider):
-        return coverage_project_context(root, state, recorder=recorder)
-    return coverage_project_context(root, state)
-
-
-def coverage_project_context(
-    root: Path, state: DevelopmentState, *, recorder: AcceptanceRecorder | None = None
-) -> CoverageProjectContext:
+def coverage_project_context(root: Path) -> CoverageProjectContext:
     data = resolve_checkout_booley_dir(root)
     config_path = resolve_toml(data)
     config = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
@@ -49,84 +26,10 @@ def coverage_project_context(
         )
     require_dict(config.get("coverage", {}), field="coverage")
     waivers = parse_coverage_waiver_config(config)
-    policies = (
-        _coverage_policies(root, state)
-        if recorder is None
-        else _coverage_policies(root, state, recorder=recorder)
-    )
     return CoverageProjectContext(
         root,
         data,
         load_test_configuration_field(root, "tests"),
-        policies,
-        waivers,
-        load_test_configuration_field(root, "skip"),
-        criterion_names={}
-        if recorder is None
-        else {
-            key: ", ".join(
-                execution_goal_name(recorder, goal_key)
-                for goal_key in state.flow_key_aliases.get(key) or [key]
-            )
-            for key in policies
-        },
+        waiver_config=waivers,
+        skipped_tests=load_test_configuration_field(root, "skip"),
     )
-
-
-def _coverage_policies(
-    root: Path, state: DevelopmentState, *, recorder: AcceptanceRecorder | None = None
-) -> dict[str, CoverageCriterion]:
-    catalog = TargetCatalog.build(root)
-    grouped: dict[str, tuple[str, dict[str, dict[str, int | float]], str | list[str]]] = {}
-    for key, entry in state.criteria.items():
-        _reject_legacy_coverage(key)
-        if not key.startswith("coverage_"):
-            continue
-        label = key if recorder is None else execution_goal_name(recorder, key)
-        params = entry.params
-        target = catalog.select(
-            str(params.get("_target_selector", params.get("target", ""))), for_flow="sim"
-        )
-        if "_target_selector" in params and params.get("target") != target.identity:
-            raise ValueError(f"{label}: coverage Target identity is stale")
-        metrics = validate_coverage_metrics(params.get("metrics"), field=label)
-        tests = params.get("tests")
-        if tests != "all" and (not isinstance(tests, list) or not tests):
-            raise ValueError(f"{label}: tests must be all or an exact non-empty suite")
-        flow_key = (
-            f"coverage_{target.name}"
-            if key in state.flow_key_aliases.get(f"coverage_{target.name}", [])
-            else key
-        )
-        previous = grouped.get(target.identity)
-        if previous is None:
-            grouped[target.identity] = (flow_key, dict(metrics), tests)
-        else:
-            previous_key, previous_metrics, previous_tests = previous
-            if (
-                previous_key != flow_key
-                or previous_tests != tests
-                or set(previous_metrics) & set(metrics)
-            ):
-                raise ValueError(
-                    f"{label}: conflicting coverage Criteria for Target {target.identity}"
-                )
-            previous_metrics.update(metrics)
-    policies = {}
-    for identity, (key, metrics, tests) in grouped.items():
-        thresholds = tuple(
-            CoverageThreshold(metric, Fraction(str(policy["min_pct"])))
-            for metric, policy in metrics.items()
-        )
-        policies[key] = CoverageCriterion(
-            DurableTargetIdentity(identity),
-            thresholds,
-            None if tests == "all" else tuple(tests),
-        )
-    return policies
-
-
-def _reject_legacy_coverage(key: str) -> None:
-    matches = find_retired_criteria([key])
-    if any(name.startswith("coverage_") for name, _hint in matches):
-        raise ValueError(f"Legacy {key}: replace with {COVERAGE_MIGRATION_SKELETON}")

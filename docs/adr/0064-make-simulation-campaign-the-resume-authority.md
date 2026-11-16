@@ -8,9 +8,8 @@ This ADR's campaign terminology is superseded by
 [ADR 0090](0090-rename-simulation-and-coverage-campaigns-to-records.md): read
 Simulation Campaign as Simulation Record. Its other decisions stand.
 
-`SimulateFlow` remains the CLI and immediate-presentation adapter, while the
-existing endpoint acceptance stage delegates Campaign Outcomes to a dedicated
-`SimulationAcceptanceCoordinator`, the sole Simulation Campaign Criteria owner.
+`SimulateFlow` remains the CLI and immediate-presentation adapter and publishes
+each Campaign Outcome's `simulation.json` projection.
 A deep `SimulationCampaign` module owns the immutable workload plan, Simulator Bundle,
 scheduling, per-work-item durability, aggregation, and explicit resume. An
 immutable `manifest.json` and immutable terminal work-item results are the
@@ -26,8 +25,7 @@ Amendments).
   and capacity accounting would widen the CLI adapter and expose those policies
   to every caller.
 - Making `simulation.json` authoritative was rejected because it is a
-  replaceable compatibility projection whose completion also reflects Criteria
-  publication.
+  replaceable compatibility projection.
 - Inferring the latest resumable run was rejected because an implicit choice can
   combine evidence with the wrong Target or workload.
 
@@ -37,13 +35,14 @@ Resume names one exact Simulation Campaign Manifest. Workload changes fail
 closed, while execution policy may change. Ordinary HDL tests are independently
 resumable; Cocotb and coverage initially publish coarser work-item results that
 match their real execution granularity. Durable evidence precedes terminal
-results, and terminal results precede Criteria publication.
+results, and terminal results precede the `simulation.json` projection.
 
 ## Amendments (2026-10-21)
 
 Recorded while implementing issue #1745. Campaign evidence is authenticated
-when a Simulator Bundle or executable snapshot is
-launched or reused, and trusted on read. A scan decodes each work item's final
-attempt and result and binds them by attempt ID and ordinal. It does not re-read
-the build, bundle or snapshot chain or re-hash evidence files. Retention owns the
-files a completed attempt's result names and its Booley-written build trees.
+when a Simulator Bundle is launched (in place, before launch and after the
+process tree is dead) or reused, and trusted on read. A scan decodes each work
+item's final attempt and result and binds them by attempt ID and ordinal. It
+does not re-read the build or bundle chain or re-hash evidence files.
+Retention owns the files a completed attempt's result names and its
+Booley-written build trees.

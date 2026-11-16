@@ -1119,31 +1119,39 @@ def _resolve_public_ref(project_root: Path | str, token: str) -> TargetRef:
 # ---------------------------------------------------------------------------
 
 
-def _depend_keys(entries: Any) -> set[str]:
-    """VLNV identity keys named by a CAPI2 ``depend:`` list.
+def _depend_entries(entries: Any) -> set[tuple[str, str]]:
+    """``(identity key, written form)`` pairs named by a CAPI2 ``depend:`` list.
 
     A ``depend`` entry may carry a version and a comparison operator
     (``vendor:lib:name``, ``vendor:lib:name:1.2``, ``(>=vendor:lib:name:1.0)``);
     the closure matches on the version-independent ``vendor:library:name``
     identity (:func:`_vlnv_key`), so parentheses, a leading operator, and the
-    version segment are stripped before keying. Non-string / non-list input
-    yields no keys — a malformed ``depend`` is FuseSoC's to reject at resolve.
+    version segment are stripped before keying. The written form keeps the
+    operator and version (without parentheses) so a failure can name the entry
+    as authored. Non-string / non-list input yields no entries — a malformed
+    ``depend`` is FuseSoC's to reject at resolve.
     """
-    keys: set[str] = set()
+    pairs: set[tuple[str, str]] = set()
     if not isinstance(entries, (list, tuple)):
-        return keys
+        return pairs
     for entry in entries:
         if not isinstance(entry, str):
             continue
         for possible in _possible_expression_values(entry):
-            token = possible.strip().strip("()").lstrip("<>=~^! ").strip()
+            written = possible.strip().strip("()").strip()
+            token = written.lstrip("<>=~^! ").strip()
             if token:
-                keys.add(_vlnv_key(token))
-    return keys
+                pairs.add((_vlnv_key(token), written))
+    return pairs
 
 
-def _target_depend_keys(core_doc: Mapping[str, Any], target: str) -> set[str]:
-    """Depend-VLNV keys a single Target pulls in.
+def _fileset_depend_entries(fileset: Mapping[str, Any]) -> set[tuple[str, str]]:
+    """A fileset's ``depend`` plus ``depend_append``, which FuseSoC merges into it."""
+    return _depend_entries(fileset.get("depend")) | _depend_entries(fileset.get("depend_append"))
+
+
+def _target_depend_entries(core_doc: Mapping[str, Any], target: str) -> set[tuple[str, str]]:
+    """Depend entries a single Target pulls in.
 
     Its own ``depend`` plus the ``depend`` of each fileset it references
     (``filesets`` union ``filesets_append``, via :func:`target_fileset_names`, so a
@@ -1153,35 +1161,35 @@ def _target_depend_keys(core_doc: Mapping[str, Any], target: str) -> set[str]:
     target_def = targets.get(target) if isinstance(targets, Mapping) else None
     if not isinstance(target_def, Mapping):
         return set()
-    keys = _depend_keys(target_def.get("depend"))
+    pairs = _depend_entries(target_def.get("depend"))
     filesets = core_doc.get("filesets") or {}
     for fs_name in possible_target_fileset_names(target_def):
         fileset = filesets.get(fs_name) if isinstance(filesets, Mapping) else None
         if isinstance(fileset, Mapping):
-            keys |= _depend_keys(fileset.get("depend"))
-    return keys
+            pairs |= _fileset_depend_entries(fileset)
+    return pairs
 
 
-def _core_depend_keys(core_doc: Mapping[str, Any]) -> set[str]:
-    """Every depend-VLNV key a core declares (all targets + all filesets).
+def _core_depend_entries(core_doc: Mapping[str, Any]) -> set[tuple[str, str]]:
+    """Every depend entry a core declares (all targets + all filesets).
 
     A core reached *transitively* is pulled in generically — a ``depend`` selects
     the whole core, not one Target — so its full depend surface is walked. (A
     *root* core, by contrast, seeds the closure from only its selectable Targets'
     depends, so its other, unselectable Targets never widen the audit scope.)
     """
-    keys: set[str] = set()
+    pairs: set[tuple[str, str]] = set()
     targets = core_doc.get("targets")
     if isinstance(targets, Mapping):
         for target_def in targets.values():
             if isinstance(target_def, Mapping):
-                keys |= _depend_keys(target_def.get("depend"))
+                pairs |= _depend_entries(target_def.get("depend"))
     filesets = core_doc.get("filesets")
     if isinstance(filesets, Mapping):
         for fileset in filesets.values():
             if isinstance(fileset, Mapping):
-                keys |= _depend_keys(fileset.get("depend"))
-    return keys
+                pairs |= _fileset_depend_entries(fileset)
+    return pairs
 
 
 def depended_on_core_keys(project_root: Path | str) -> set[str]:
@@ -1203,7 +1211,7 @@ def depended_on_core_keys(project_root: Path | str) -> set[str]:
             doc = read_core(core_file)
         except FuseSocError:
             continue
-        keys |= _core_depend_keys(doc)
+        keys |= {key for key, _written in _core_depend_entries(doc)}
     return keys
 
 
@@ -1232,6 +1240,49 @@ def _index_core_documents(
     return docs, by_key
 
 
+def _walk_core_closure(
+    project_root: Path,
+    seed_refs: Collection[TargetRef | TargetHandle],
+    *,
+    documents: Mapping[Path, Mapping[str, Any]] | None = None,
+) -> tuple[frozenset[Path], frozenset[str]]:
+    """Walk the dependency cores of *seed_refs*: ``(closure, unprovided entries)``.
+
+    The unprovided entries are the written forms of every ``depend:`` in the
+    closure whose identity no Project core provides.
+    """
+    docs, by_key = _index_core_documents(project_root, documents)
+
+    # Seed the closure with the declaring core of each seeded Target; the first
+    # frontier is only those Targets' depends (precise per-Target — a root core's
+    # *other*, unselectable Targets must not widen the closure).
+    closure: set[Path] = set()
+    unprovided: set[str] = set()
+    frontier: set[tuple[str, str]] = set()
+    for ref in seed_refs:
+        closure.add(ref.core_file)
+        doc = docs.get(ref.core_file)
+        if doc is not None:
+            frontier |= _target_depend_entries(doc, ref.name)
+
+    # BFS the depend graph. Visited-tracking is by core file, so a key whose cores
+    # are all already in the closure contributes nothing — the walk terminates
+    # even on a cyclic depend graph.
+    while frontier:
+        next_frontier: set[tuple[str, str]] = set()
+        for key, written in frontier:
+            providers = by_key.get(key, ())
+            if not providers:
+                unprovided.add(written)
+            for core_file in providers:
+                if core_file in closure:
+                    continue
+                closure.add(core_file)
+                next_frontier |= _core_depend_entries(docs.get(core_file, {}))
+        frontier = next_frontier
+    return frozenset(closure), frozenset(unprovided)
+
+
 def _selectable_core_closure_for_refs(
     project_root: Path,
     seed_refs: Collection[TargetRef | TargetHandle],
@@ -1243,32 +1294,40 @@ def _selectable_core_closure_for_refs(
     A catalog supplies its frozen *documents*. Legacy registry-internal callers
     omit them and get one live document capture without any token selection.
     """
-    docs, by_key = _index_core_documents(project_root, documents)
+    return _walk_core_closure(project_root, seed_refs, documents=documents)[0]
 
-    # Seed the closure with the declaring core of each seeded Target; the first
-    # frontier is only those Targets' depends (precise per-Target — a root core's
-    # *other*, unselectable Targets must not widen the closure).
-    closure: set[Path] = set()
-    frontier: set[str] = set()
-    for ref in seed_refs:
-        closure.add(ref.core_file)
-        doc = docs.get(ref.core_file)
-        if doc is not None:
-            frontier |= _target_depend_keys(doc, ref.name)
 
-    # BFS the depend graph. Visited-tracking is by core file, so a key whose cores
-    # are all already in the closure contributes nothing — the walk terminates
-    # even on a cyclic depend graph.
-    while frontier:
-        next_frontier: set[str] = set()
-        for key in frontier:
-            for core_file in by_key.get(key, ()):
-                if core_file in closure:
-                    continue
-                closure.add(core_file)
-                next_frontier |= _core_depend_keys(docs.get(core_file, {}))
-        frontier = next_frontier
-    return frozenset(closure)
+def _unprovided_dependencies(
+    project_root: Path,
+    seed_refs: Collection[TargetRef | TargetHandle],
+    *,
+    documents: Mapping[Path, Mapping[str, Any]] | None = None,
+) -> tuple[str, ...]:
+    """Written ``depend:`` entries in the closure that no Project core provides, sorted."""
+    return tuple(sorted(_walk_core_closure(project_root, seed_refs, documents=documents)[1]))
+
+
+def unprovided_dependency_hint(dependencies: Sequence[str]) -> str:
+    """The one hint naming ``depend:`` entries no Project ``.core`` provides."""
+    names = ", ".join(f"'{name}'" for name in dependencies)
+    many = len(dependencies) > 1
+    return (
+        f"no Project .core provides {names}: the Sandbox has no FuseSoC libraries "
+        f"and cannot fetch them; copy {'each' if many else 'it'} into the repository "
+        f"as a .core, or drop {'its' if many else 'the'} depend: (check first whether "
+        "the testbench guards its use with an `ifdef` or defines the module itself)"
+    )
+
+
+def unprovided_dependency_suffix(
+    project_root: Path,
+    seed_refs: Collection[TargetRef | TargetHandle],
+    *,
+    documents: Mapping[Path, Mapping[str, Any]] | None = None,
+) -> str:
+    """``"\\n" + hint`` for a failure message, or ``""`` when every depend is provided."""
+    missing = _unprovided_dependencies(project_root, seed_refs, documents=documents)
+    return f"\n{unprovided_dependency_hint(missing)}" if missing else ""
 
 
 def core_relative_to_project(core_file: Path | str, project_root: Path | str, path: str) -> str:
@@ -2156,7 +2215,9 @@ def source_dirs_from_core(
     )
 
 
-def explicit_target_sources(project_root: Path | str, ref: TargetRef) -> CoreSources:
+def explicit_target_sources(
+    project_root: Path | str, ref: TargetRef | TargetHandle
+) -> CoreSources:
     """Raw tag inventory for Doctor; inferred harness roles are not explicit tags."""
     rtl: list[str] = []
     tb: list[str] = []
@@ -2706,8 +2767,14 @@ def _run_setup_command(
     if proc.returncode != 0:
         diagnostic = proc.stderr.strip() or proc.stdout.strip()
         detail = f":\n{diagnostic}" if diagnostic else " with no diagnostic output"
+        hint = (
+            unprovided_dependency_suffix(project_root, [source_ref])
+            if source_ref is not None
+            else ""
+        )
         raise TargetResolutionError(
-            f"fusesoc run --setup --target {target} {vlnv} failed (exit {proc.returncode}){detail}"
+            f"fusesoc run --setup --target {target} {vlnv} failed "
+            f"(exit {proc.returncode}){detail}{hint}"
         )
 
     edam_path = _find_edam(build_root, target)

@@ -106,10 +106,7 @@ def test_shared_endpoint_code_calls_declared_hooks():
 SIMULATION_ACCEPTANCE_NAMES = frozenset(
     {
         "_simulation_record_outcomes",
-        "_simulation_acceptance_outcomes",
-        "record_simulation_record_acceptance",
-        "committed",
-        "transaction_id",
+        "publish_simulation_record_projections",
     }
 )
 
@@ -138,7 +135,6 @@ SIMULATION_PREPARATION_NAMES = frozenset(
     {
         "prepare_simulation_endpoint",
         "run_prepared_simulation",
-        "report_candidate_workloads",
         "_prepared_target_selection",
         "resume_from",
         "mode",

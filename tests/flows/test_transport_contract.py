@@ -13,7 +13,6 @@ from booley.flows.execution_persistence import StandaloneFlowExecution
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintFlow
 from booley.flows.sim.flow import SimulateFlow
-from booley.flows.sim.record_invocation import SimulationRecordInvocation
 from booley.flows.sim.verilator_identity import PINNED_VERILATOR
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.mcp.flow_adapter import flow_schema
@@ -21,6 +20,8 @@ from tests.flows.invocation_doubles import prepare_as, replace_run
 from tests.flows.report_headline import assert_paired_headline
 
 FLOWS = (LintFlow, SimulateFlow, AsicSynthesizeFlow, FpgaImplFlow)
+# The Flows that record Criteria; the Simulation Flow records none.
+CRITERION_FLOWS = (LintFlow, AsicSynthesizeFlow, FpgaImplFlow)
 
 
 def test_standalone_cli_wires_utc_formatter(monkeypatch):
@@ -208,7 +209,7 @@ def _spy_final_acceptance_and_post_run(monkeypatch, flow_type):
     return events
 
 
-@pytest.mark.parametrize("flow_type", FLOWS)
+@pytest.mark.parametrize("flow_type", CRITERION_FLOWS)
 def test_structured_and_cli_paths_preserve_acceptance_before_save(flow_type, runtime, monkeypatch):
     from booley.criteria.state import DevelopmentState
     from booley.runtime.endpoint_execution import EndpointOutcome
@@ -273,7 +274,7 @@ def test_structured_and_cli_paths_preserve_acceptance_before_save(flow_type, run
     assert list((runtime / "logs/acceptance/evidence").glob("*/record.json"))
 
 
-@pytest.mark.parametrize("flow_type", FLOWS)
+@pytest.mark.parametrize("flow_type", CRITERION_FLOWS)
 def test_unbound_typed_request_never_acquires_a_job(flow_type, runtime, monkeypatch):
     from booley.criteria.state import DevelopmentState
 
@@ -662,7 +663,6 @@ def _assert_headline(result, report_dir, name, expected, events=None):
         (LintFlow, "lint_clean"),
         (AsicSynthesizeFlow, "synthesis_ok"),
         (FpgaImplFlow, "fpga_impl_ok"),
-        (SimulateFlow, "sim_pass"),
     ],
 )
 @pytest.mark.parametrize("target", ["first", "first,second"])
@@ -710,58 +710,6 @@ def test_reused_endpoint_resets_evaluation_before_early_gate(
     assert_paired_headline(runtime / "flow-reports", "lint", ("lint_clean_first", True))
 
 
-@pytest.mark.parametrize("resume", [False, True])
-def test_candidate_mapping_excludes_baseline_prerequisite(
-    external_acceptance_owner, runtime, monkeypatch, resume
-):
-    from contextlib import nullcontext
-    from types import SimpleNamespace
-
-    from booley.flows.sim.flow import PreparedSimulationEndpoint
-    from booley.runtime.endpoint_execution import EndpointOutcome
-    from booley.targets.catalog import TargetCatalog
-
-    (runtime / "design.core").write_text(
-        "CAPI=2:\nname: acme:lib:dut:1\ntargets:\n  candidate:\n    flow: sim\n    flow_options: {tool: verilator}\n    toplevel: tb\n  baseline:\n    flow: sim\n    flow_options: {tool: verilator}\n    toplevel: tb\n"
-    )
-    candidate, baseline = TargetCatalog.build(runtime).select_many(
-        "candidate,baseline", for_flow="sim"
-    )
-    _headline_state(runtime, monkeypatch, {"sim_pass_candidate": True}, strict=True)
-    manifest = SimpleNamespace(
-        document={
-            "target": {"vlnv": "acme:lib:dut:1", "name": "candidate", "selector": "candidate"},
-            "required_suite": {"names": ["smoke"], "default_invocation": False},
-            "work_items": [
-                {"role": "candidate", "selection": {"kind": "named", "names": ["smoke"]}}
-            ],
-        }
-    )
-    validated = SimpleNamespace(
-        candidate=SimpleNamespace(manifest=manifest),
-        target_handles=(candidate, baseline),
-        binding_for=lambda _manifest: SimpleNamespace(handle=candidate),
-    )
-    prepared = PreparedSimulationEndpoint(
-        (candidate, baseline),
-        validated if resume else None,
-        () if resume else ("candidate",),
-        {"candidate": ["smoke"]},
-    )
-    flow = SimulateFlow()
-    prepare_as(monkeypatch, flow, SimulationRecordInvocation(flow, prepared))
-    monkeypatch.setattr(EndpointState, "admission", lambda *_args, **_kwargs: nullcontext())
-
-    def run(*_args):
-        flow.set_criterion("sim_pass_candidate", True)
-        return EndpointOutcome()
-
-    monkeypatch.setattr(flow, "run_prepared_simulation", run)
-    result = flow.execute(flow.request_type(target="candidate", work_dir=runtime))
-    assert result.exit_code == 0
-    _assert_headline(result, runtime / "flow-reports", "sim", ("sim_pass_candidate", True))
-
-
 @pytest.mark.parametrize(
     "flow_type,family", [(AsicSynthesizeFlow, "synthesis_ok"), (FpgaImplFlow, "fpga_impl_ok")]
 )
@@ -787,38 +735,6 @@ def test_frozen_candidate_bindings_do_not_shrink_after_partial_evaluation(
     result = flow.execute(flow.request_type(target="demo", work_dir=runtime))
     assert result.exit_code == 2
     _assert_headline(result, runtime / "flow-reports", flow.name, ("", None))
-
-
-def test_override_freezes_parameter_bound_candidate_criteria(
-    external_acceptance_owner, runtime, monkeypatch
-):
-    from booley.runtime.endpoint_execution import EndpointOutcome
-
-    _headline_state(
-        runtime,
-        monkeypatch,
-        {"sim_pass_candidate": True, "cycle_count_policy": True},
-        criterion_params={
-            "cycle_count_policy": {
-                "target": "acme:lib:dut:1#candidate",
-                "_target_selector": "candidate",
-                "test": "smoke",
-                "cycle_count_max": 100,
-            }
-        },
-        strict=True,
-    )
-    flow = SimulateFlow()
-
-    def run():
-        flow.set_criterion("sim_pass_candidate", True)
-        return EndpointOutcome(exit_code=2)
-
-    replace_run(monkeypatch, flow, run)
-    result = flow.execute(flow.request_type(target="candidate", work_dir=runtime))
-    assert result.exit_code == 2
-    _assert_headline(result, runtime / "flow-reports", "sim", ("", None))
-    assert flow.state.criteria["sim_pass_candidate"].met is True
 
 
 @pytest.mark.parametrize(
@@ -927,7 +843,6 @@ def _report_targets(root, names=("first", "second"), flow="sim"):
         (LintFlow, "lint_clean"),
         (AsicSynthesizeFlow, "synthesis_ok"),
         (FpgaImplFlow, "fpga_impl_ok"),
-        (SimulateFlow, "sim_pass"),
     ],
 )
 @pytest.mark.parametrize("met", [True, False])
@@ -938,10 +853,6 @@ def test_prepared_identity_partial_report_is_null(
 
     _report_targets(runtime, flow=flow_type.name)
     flow = flow_type()
-    if flow_type is SimulateFlow:
-        monkeypatch.setattr(
-            flow_type, "prepare_endpoint_invocation", BuiltinFlow.prepare_endpoint_invocation
-        )
 
     def run(self):
         self.set_criterion(f"{family}_first", met)
@@ -1029,36 +940,6 @@ def _prepared_report_simulation_record(runtime, mode, resume):
     return prepared, handle, cycle_test
 
 
-@pytest.mark.parametrize("mode", ["named", "default", "unfiltered", "coverage"])
-@pytest.mark.parametrize("resume", [False, True])
-def test_prepared_simulation_record_plural_mapping_survives_partial_evaluation(
-    external_acceptance_owner, runtime, monkeypatch, mode, resume
-):
-    from booley.runtime.endpoint_execution import EndpointOutcome
-
-    prepared, handle, cycle_test = _prepared_report_simulation_record(runtime, mode, resume)
-    criteria = {"sim_pass_sim": True, "cycle_count_policy": True}
-    if mode == "coverage":
-        criteria["coverage_sim"] = True
-    cycle = {"target": handle.identity, "_target_selector": "sim", "test": cycle_test}
-    params = {"cycle_count_policy": {**cycle, "cycle_count_max": 100}}
-    _headline_state(runtime, monkeypatch, criteria, criterion_params=params, strict=True)
-    monkeypatch.setattr(SimulateFlow, "prepare_simulation_endpoint", lambda self: prepared)
-
-    def run(self, *_args):
-        self.set_criterion("sim_pass_sim", True)
-        return EndpointOutcome(exit_code=2, report_text="cycle workload unavailable")
-
-    monkeypatch.setattr(SimulateFlow, "run_prepared_simulation", run)
-    flow = SimulateFlow()
-    result = flow.execute(
-        flow.request_type(target="sim", work_dir=runtime, coverage=mode == "coverage"),
-        adapter=StandaloneFlowExecution(),
-    )
-    assert result.exit_code == 2, result.outcome.report_text
-    _assert_headline(result, flow.args.report_dir, "sim", ("", None))
-
-
 def _report_extension_type(endpoint_kind, key):
     from typing import ClassVar
 
@@ -1100,7 +981,8 @@ def _assert_custom_headline(runtime, monkeypatch, endpoint_type, argv, expected)
 
 @pytest.mark.parametrize("binding", ["name", "identity", "named_identity"])
 @pytest.mark.parametrize("ticket", ["none", "single", "plural"])
-@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+# A Specialist keeps no Criterion state (#4301), so only a Flow has a headline to resolve.
+@pytest.mark.parametrize("endpoint_kind", ["flow"])
 @pytest.mark.parametrize("catalog", [True, False])
 @pytest.mark.parametrize("target", ["first", "first,second"])
 def test_declared_custom_flow_prepared_headline(
@@ -1132,7 +1014,7 @@ def test_declared_custom_flow_prepared_headline(
     _assert_custom_headline(runtime, monkeypatch, endpoint_type, ["--target", target], expected)
 
 
-@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+@pytest.mark.parametrize("endpoint_kind", ["flow"])
 @pytest.mark.parametrize("target", ["first", "acme:lib:dut:1#first", "other:lib:x#first"])
 @pytest.mark.parametrize("other_target", ["first", "second"])
 def test_custom_fallback_excludes_only_proven_other_target(
@@ -1155,7 +1037,7 @@ def test_custom_fallback_excludes_only_proven_other_target(
     _assert_custom_headline(runtime, monkeypatch, endpoint_type, ["--target", target], expected)
 
 
-@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+@pytest.mark.parametrize("endpoint_kind", ["flow"])
 @pytest.mark.parametrize("family", ["drc_rules", "cycle_count"])
 @pytest.mark.parametrize("test", ["selected", "other"])
 def test_custom_identity_uncertainty_respects_selected_workload(
@@ -1178,7 +1060,7 @@ def test_custom_identity_uncertainty_respects_selected_workload(
     _assert_custom_headline(runtime, monkeypatch, endpoint_type, argv, expected)
 
 
-@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+@pytest.mark.parametrize("endpoint_kind", ["flow"])
 @pytest.mark.parametrize("binding", ["stored_selector", "legacy"])
 @pytest.mark.parametrize("direction", ["bare_to_qualified", "qualified_to_bare"])
 @pytest.mark.parametrize("name", ["first", "second"])
@@ -1202,7 +1084,7 @@ def test_custom_alternate_selector_keeps_unevaluated_potential(
     _assert_custom_headline(runtime, monkeypatch, endpoint_type, ["--target", target], expected)
 
 
-@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+@pytest.mark.parametrize("endpoint_kind", ["flow"])
 def test_custom_evaluated_uncertain_false_is_a_verdict(
     external_acceptance_owner, runtime, monkeypatch, endpoint_kind
 ):
@@ -1221,46 +1103,6 @@ def test_custom_evaluated_uncertain_false_is_a_verdict(
     _assert_custom_headline(
         runtime, monkeypatch, endpoint_type, ["--target", "first"], (key, False)
     )
-
-
-@pytest.mark.parametrize("ticket", ["none", "nonstrict", "strict"])
-@pytest.mark.parametrize("calls", ["both", "aggregate", "elab"])
-def test_combined_prepared_mode_freezes_both_eligible_families(
-    external_acceptance_owner, runtime, monkeypatch, ticket, calls
-):
-    _report_targets(runtime, ("first",))
-    if ticket != "none":
-        criteria = {"elaborate_standalone": True}
-        _headline_state(runtime, monkeypatch, criteria, strict=ticket == "strict")
-
-    from booley.flows.sim.build import BuildOutcome
-    from booley.flows.sim.elab_only import ElabOnlyTargetResult
-    from booley.flows.sim.standalone import _StandaloneOutcome
-
-    def build(self, target):
-        verdict = None if calls == "aggregate" else "pass"
-        return ElabOnlyTargetResult(
-            target,
-            outcome=BuildOutcome(True, verdict, "infrastructure" if verdict is None else None),
-        )
-
-    def sweep(self, targets, **kwargs):
-        if calls == "elab":
-            raise OSError("module sweep infrastructure failed")
-        self.set_criterion("elaborate_standalone", True)
-        return _StandaloneOutcome(passed=True)
-
-    monkeypatch.setattr(SimulateFlow, "_elab_only_preflight", lambda self: ["first"])
-    monkeypatch.setattr(SimulateFlow, "_run_one_elab_only", build)
-    monkeypatch.setattr(SimulateFlow, "_run_standalone_check", sweep)
-    flow = SimulateFlow()
-    result = flow.execute(
-        flow.request_type(target="first", work_dir=runtime, mode="elab_only_standalone")
-    )
-    expected = (
-        ("elaborate_standalone", True) if ticket == "strict" and calls != "elab" else ("", None)
-    )
-    _assert_headline(result, runtime / "flow-reports", "sim", expected)
 
 
 @pytest.mark.parametrize("name", ["mutation", "coverage_analyst"])
@@ -1445,7 +1287,7 @@ def test_direct_generic_completion_preserves_empty_criterion_fields():
 
 
 @pytest.mark.parametrize("strict", [False, True])
-@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+@pytest.mark.parametrize("endpoint_kind", ["flow"])
 def test_custom_headline_keeps_same_name_selector_uncertain(
     external_acceptance_owner, runtime, monkeypatch, endpoint_kind, strict
 ):
@@ -1463,7 +1305,7 @@ def test_custom_headline_keeps_same_name_selector_uncertain(
     _assert_custom_headline(runtime, monkeypatch, endpoint_type, ["--target", "first"], ("", None))
 
 
-@pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
+@pytest.mark.parametrize("endpoint_kind", ["flow"])
 def test_custom_headline_scope_resolves_no_target(
     external_acceptance_owner, runtime, monkeypatch, endpoint_kind
 ):
@@ -1480,97 +1322,3 @@ def test_custom_headline_scope_resolves_no_target(
     endpoint_type = _report_extension_type(endpoint_kind, "drc_clean_first")
     argv = ["--target", "first"]
     _assert_custom_headline(runtime, monkeypatch, endpoint_type, argv, ("drc_clean_first", True))
-
-
-def test_prepared_workload_scope_follows_resolved_test_runs(
-    external_acceptance_owner, runtime, monkeypatch
-):
-    # A named Variant runs Test "count": the cycle Criterion on it is in scope, so a
-    # run that judged only sim_pass reports no headline instead of a partial one.
-    from booley.runtime.endpoint_execution import EndpointOutcome
-
-    prepared, handle, _ = _prepared_report_simulation_record(runtime, "named", False)
-    tests_toml = runtime / ".booley/tests.toml"
-    tests_toml.write_text(
-        '[sim]\nselect = "+test={name}"\ntests = ["reset", "count"]\n\n'
-        '[sim.variants.count]\ndefault = "short"\nshort = []\nsoak = ["+iters=9"]\n'
-    )
-    scope = {"target": handle.identity, "_target_selector": "sim"}
-    params = {
-        "sim_pass_count": {**scope, "test_selector": "count"},
-        "cycle_count_policy": {**scope, "test": "count", "cycle_count_max": 100},
-    }
-    criteria = dict.fromkeys(params, True)
-    _headline_state(runtime, monkeypatch, criteria, criterion_params=params, strict=True)
-    monkeypatch.setattr(SimulateFlow, "prepare_simulation_endpoint", lambda self: prepared)
-
-    def run(self, *_args):
-        self.set_criterion("sim_pass_count", True)
-        return EndpointOutcome(exit_code=2, report_text="cycle workload unavailable")
-
-    monkeypatch.setattr(SimulateFlow, "run_prepared_simulation", run)
-    flow = SimulateFlow()
-    result = flow.execute(flow.request_type(target="sim", work_dir=runtime, test=["count+soak"]))
-    assert result.exit_code == 2, result.outcome.report_text
-    _assert_headline(result, flow.args.report_dir, "sim", ("", None))
-
-
-def test_prepared_workload_scope_keeps_whole_suite_criterion_with_skipped_test(
-    external_acceptance_owner, runtime, monkeypatch
-):
-    # A configured skip leaves "count" out of the run and of the required suite, so the
-    # whole-suite sim_pass Criterion stays planned beside the judged cycle Criterion.
-    from booley.runtime.endpoint_execution import EndpointOutcome
-
-    prepared, handle, _ = _prepared_report_simulation_record(runtime, "named", False)
-    tests_toml = runtime / ".booley/tests.toml"
-    tests_toml.write_text('[sim]\ntests = ["reset", "count"]\nskip = ["count"]\n')
-    scope = {"target": handle.identity, "_target_selector": "sim"}
-    params = {"cycle_count_policy": {**scope, "test": "reset", "cycle_count_max": 100}}
-    criteria = {"sim_pass_sim": True, "cycle_count_policy": True}
-    _headline_state(runtime, monkeypatch, criteria, criterion_params=params, strict=True)
-
-    def prepare(self):
-        assert self._validate_test_plans(["sim"], prepared.test_names_map) is None
-        return prepared
-
-    def run(self, *_args):
-        self.set_criterion("cycle_count_policy", True)
-        return EndpointOutcome(exit_code=2, report_text="reset lost to infrastructure")
-
-    monkeypatch.setattr(SimulateFlow, "prepare_simulation_endpoint", prepare)
-    monkeypatch.setattr(SimulateFlow, "run_prepared_simulation", run)
-    flow = SimulateFlow()
-    result = flow.execute(flow.request_type(target="sim", work_dir=runtime))
-    assert result.exit_code == 2, result.outcome.report_text
-    _assert_headline(result, flow.args.report_dir, "sim", ("", None))
-
-
-def test_prepared_coverage_workload_keeps_declared_suite_with_skipped_test(
-    external_acceptance_owner, runtime, monkeypatch
-):
-    # A coverage manifest records the declared suite, skips included, so a partial
-    # selection leaves the whole-suite sim_pass Criterion out of the planned scope.
-    from booley.runtime.endpoint_execution import EndpointOutcome
-
-    prepared, _, _ = _prepared_report_simulation_record(runtime, "named", False)
-    tests_toml = runtime / ".booley/tests.toml"
-    tests_toml.write_text('[sim]\ntests = ["reset", "count"]\nskip = ["count"]\n')
-    criteria = {"sim_pass_sim": True, "coverage_sim": True}
-    _headline_state(runtime, monkeypatch, criteria, strict=True)
-
-    def prepare(self):
-        assert self._validate_test_plans(["sim"], prepared.test_names_map) is None
-        return prepared
-
-    def run(self, *_args):
-        self.set_criterion("coverage_sim", True)
-        return EndpointOutcome(exit_code=0, report_text="coverage met")
-
-    monkeypatch.setattr(SimulateFlow, "prepare_simulation_endpoint", prepare)
-    monkeypatch.setattr(SimulateFlow, "run_prepared_simulation", run)
-    flow = SimulateFlow()
-    result = flow.execute(
-        flow.request_type(target="sim", work_dir=runtime, coverage=True, test=["reset"])
-    )
-    _assert_headline(result, flow.args.report_dir, "sim", ("coverage_sim", True))

@@ -24,7 +24,10 @@ from booley.flows.test_runs import build_test_run
 from booley.mcp.job_results import _read_report_json
 from booley.runtime.file_lock import LockContentionError
 from tests.conftest import symlink_or_skip
-from tests.flows.sim.simulation_record_test_support import _recorded_simulation_record
+from tests.flows.sim.simulation_record_test_support import (
+    _recorded_simulation_record,
+    prerequisite_documents,
+)
 from tests.flows.sim.test_verilator_build_reuse_record import flow_project
 from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.runtime.test_sandbox_layout import project_alias
@@ -284,6 +287,7 @@ def test_authenticated_coverage_resume_keeps_report_counts(tmp_path, monkeypatch
     if failure:
         assert flow._simulation_record_outcomes == ()
     else:
+        assert flow.state.criteria == {}
         simulation_record = report["detail"]["records"]["sim_0"]
         assert all(item["cycle_count"] is None for item in simulation_record["observations"])
         assert (
@@ -697,7 +701,7 @@ def _current_observed_hook_dag(tmp_path, monkeypatch, flow):
         observer=flow._record_pre_sim_firing,
     )
     manifest = SimulationRecordStore(baseline.manifest_path.parent).load_manifest()
-    prerequisites = flow._simulation_record_prerequisite_documents(
+    prerequisites = prerequisite_documents(
         create_simulation_record_plan(manifest), baseline.manifest_path.relative_to(invocation)
     )
     _, candidate = _successful_pre_sim_record(
@@ -810,7 +814,6 @@ def _published_hook_budget_run(tmp_path, monkeypatch, *, roomy=False, corrupt=Fa
                 f for f in candidate.pre_sim_firings if f.document["role"] == "candidate"
             )
             (firing.path.parents[3] / "result.json").write_text("{}")
-            flow._pending_criteria_set = ("before-final-integrity",)
         result = flow._simulation_record_endpoint_outcome([candidate])
         assert reads == []
         evidence["reads"] = reads
@@ -896,7 +899,6 @@ def test_corruption_before_endpoint_keeps_final_integrity_policy(tmp_path, monke
     assert result.exit_code == 2 and result.criterion_met is False
     assert "Simulation Record integrity failure:" in result.report_text
     assert flow._simulation_record_outcomes == ()
-    assert flow._pending_criteria_set == ()
     assert result.detail["pre_sim_current"] == 2
     assert all(record["terminal"] is False for record in result.detail["pre_sim_runs"])
 
@@ -948,17 +950,13 @@ def test_prior_firing_reauthentication_rejects_byte_identical_symlink_attempt(
     directory = firing.path.parent.parent
     copy = tmp_path / "copied-attempt"
     sidecar_bytes = firing.path.read_bytes()
-    snapshots = list(directory.rglob("simv"))
-    assert len(snapshots) == 1, (
-        "successful Simulation Record must retain one real executable snapshot"
-    )
-    snapshot = snapshots[0]
-    snapshot_relative = snapshot.relative_to(directory)
-    snapshot_bytes, snapshot_mode = snapshot.read_bytes(), snapshot.stat().st_mode
+    # An attempt directory holds no executable: the record keeps one, read-only,
+    # in its shared bundle.
+    assert not list(directory.rglob("simv"))
+    executables = list(directory.parents[3].rglob("simv"))
+    assert len(executables) == 1, "successful Simulation Record must retain one real executable"
+    assert not executables[0].stat().st_mode & 0o222
     directory.rename(copy)
-    assert (copy / snapshot_relative).read_bytes() == snapshot_bytes
-    assert (copy / snapshot_relative).stat().st_mode == snapshot_mode
-    assert not snapshot_mode & 0o222
     assert (copy / "pre-sim/0001.json").read_bytes() == sidecar_bytes
     symlink_or_skip(directory, copy, target_is_directory=True)
     assert firing.path.read_bytes() == sidecar_bytes
@@ -1033,14 +1031,14 @@ def test_alias_normalization_precedes_simulation_preparation(
 
 @pytest.mark.parametrize("error", ["truncated", "schema", "missing"])
 def test_projection_rejects_corrupt_record(tmp_path, error):
-    from booley.flows.sim.acceptance import _OutcomeEvidence, _simulation_record_projection
+    from booley.flows.sim.acceptance import _simulation_record_projection
     from booley.flows.sim.record import decode_simulation_projection
     from tests.flows.sim.test_test_run_evidence_rows import _RESET, _outcome
 
     document = json.loads(
         json.dumps(
             {
-                **_simulation_record_projection(_OutcomeEvidence(_outcome(tmp_path, _RESET))),
+                **_simulation_record_projection(_outcome(tmp_path, _RESET)),
                 "complete": True,
             }
         )

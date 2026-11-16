@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
+from booley.core.host_shell import quote_arg
 from booley.runtime.sandbox_apply import (
     APPLY_DOC_URL,
     UNKNOWN_SANDBOX_STEPS,
     Attachment,
     apply_steps,
-    quote_arg,
 )
 
 SANDBOX_MD = Path(__file__).resolve().parents[2] / "docs" / "user" / "SANDBOX.md"
@@ -80,3 +80,14 @@ def test_project_scoped_steps_keep_the_documented_commands() -> None:
 def test_unknown_sandbox_steps_point_at_the_documented_own_image_section() -> None:
     assert APPLY_DOC_URL in UNKNOWN_SANDBOX_STEPS
     assert "## Applying Sandbox changes" in SANDBOX_MD.read_text(encoding="utf-8")
+
+
+def test_unknown_sandbox_steps_match_the_documented_commands() -> None:
+    documented = _documented()
+    vscode, _ = documented[(Attachment.VSCODE, True)]
+    headless, _ = documented[(Attachment.HEADLESS, True)]
+
+    commands, has_rebuild = _printed(UNKNOWN_SANDBOX_STEPS)
+
+    assert commands == [*vscode, *headless]
+    assert has_rebuild

@@ -8,6 +8,9 @@ from pathlib import Path
 
 from booley.runtime.filesystem_utils import replace_file, unlink_file
 
+STAGED_SUFFIX = ".booley-staged"
+"""Suffix of a durable record staged beside its final name, never read as a record."""
+
 
 class WriteOnceConflictError(RuntimeError):
     """A write-once path already contains different bytes."""

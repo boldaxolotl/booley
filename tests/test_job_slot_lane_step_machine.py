@@ -1,0 +1,827 @@
+"""Simulation Record lanes interleaved with Job slot claimants, one filesystem step at a time.
+
+This extends the machine of ``test_job_slot_step_machine.py`` with a fourth process, ``R``,
+that runs a real ``SimulationRecordCapacity`` over the same slots and a stepped Booley
+Directory: a lane's execution record, its execution-owned entry and every recovery are
+scheduling points that can fail as sharing violations. R has up to two lanes, each one
+thread that opens ``child_permit`` and takes commands (register or unregister a fake
+supervised process, shrink, renew, close), and a supervisor that runs one
+``recover_lost_children`` or ``cancel_waiters`` pass per operation. The standalone claimants'
+``reap`` is the independent reaper, recovering with the real ``recover_execution`` (its
+``/proc`` scan finds no process with a fresh marker, so it proves every lane tree empty).
+Lock waits are scheduling points too: the record's file lock and the registry's lock.
+A supervisor pass is one ``recover_lost_children`` or ``cancel_waiters`` call: the machine does
+not model the production loop stopping the pool after a failed recovery pass.
+Execution recovery scans Linux ``/proc``, so the module runs on Linux only; its fake PIDs are
+above the kernel's PID limit, so no cancellation signal reaches a real process.
+
+Checks after every step, besides the base machine's I2, I3 and I5:
+
+- I1 (override) the holders' Memory Reservations sum to at most the budget.
+- I4 (base, narrowed) process-owned entries only; I7 owns execution-owned ones.
+- I6 an execution record once read terminal is never read non-terminal again.
+- I7 every execution-owned entry is in use (its lane has not ended and R is alive, or it is
+  R's Flow claim) or recoverable now.
+- S (override) a live standalone waiter stays only while the holders leave its claim no room.
+- S2 after the drain, two reaps leave no execution-owned entry but a live R's Flow claim.
+
+``BOOLEY_HYPOTHESIS_EXPLORATORY=1`` selects the base machine's exploratory budget.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import functools
+import json
+import os
+import sys
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import pytest
+from hypothesis import settings
+from hypothesis import strategies as st
+from hypothesis.stateful import precondition, rule, run_state_machine_as_test
+
+from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.sim.record.capacity import (
+    ChildPermit,
+    SimulationRecordCapacity,
+    SimulationRecordCapacityError,
+)
+from booley.flows.sim.record.child_protocol import ChildExecutionRegistry
+from booley.flows.sim.record.codec import SimulationRecordIntegrityError
+from booley.runtime import execution_records, job_slots
+from booley.runtime.execution_records import (
+    ExecutionId,
+    execution_paths,
+    read_json,
+    request_cancellation,
+)
+from booley.runtime.execution_recovery import recover_execution
+from booley.runtime.job_slots import (
+    CLASS_MEMORY,
+    ClaimAbortedError,
+    ClaimLostError,
+    SlotRecovery,
+)
+from tests.flows.sim.simulation_record_test_support import _named_manifest
+from tests.job_slot_steps import (
+    FIRST_ACTOR_PID,
+    LOCK_WAIT_KINDS,
+    Actor,
+    ActorKilled,
+    FakeProcessWorld,
+    StepLock,
+    Worker,
+    stepped_file_lock_wait,
+    stepped_root,
+)
+from tests.test_job_slot_step_machine import (
+    _CLAIM,
+    EXPLORATORY_SETTINGS,
+    PR_SETTINGS,
+    JobSlotStepMachine,
+    _fields,
+    _step_until,
+)
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != "linux", reason="execution recovery scans Linux /proc"
+)
+
+LANE_PR_SETTINGS = settings(PR_SETTINGS, max_examples=20)
+
+_RECORD_INDEX = 3
+
+_PARENT_EXECUTION = ExecutionId("a" * 32)
+_MAX_LANES = 2
+_MAX_REGISTERED = 2
+_SETTLE_STEPS = 400
+_COMMANDS = ("register", "register", "unregister", "unregister", "shrink", "renew", "close")
+# Most rule picks do nothing special: a cancellation or a crash ends what the others build on.
+_RARE = 10
+# What a lane or the supervisor may end with: the checks judge the state it leaves.
+_OUTCOMES = (
+    ClaimAbortedError,
+    ClaimLostError,
+    SimulationRecordCapacityError,
+    SimulationRecordIntegrityError,
+    OSError,
+)
+
+
+@functools.cache
+def _manifest() -> Any:
+    return _named_manifest(("alpha", "beta"))
+
+
+class FakeProcess:
+    """A child no kernel knows: its PID is above the kernel limit, so no signal reaches a process."""
+
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        self.returncode: int | None = None
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        del timeout
+        self.returncode = self.returncode or 0
+        return self.returncode
+
+    def kill(self) -> None:
+        self.returncode = -9
+
+    terminate = kill
+
+
+@dataclass(eq=False)
+class Lane:
+    """One lane thread of R: its identity, its fake processes and how it ended."""
+
+    number: int
+    work_item_id: str
+    worker: Worker | None = None
+    execution_id: str | None = None
+    permit: ChildPermit | None = None
+    registered: list[FakeProcess] = field(default_factory=list)
+    shrinks: int = 0
+    outcome: BaseException | None = None
+
+    @property
+    def label(self) -> str:
+        return f"lane-{self.number}"
+
+    @property
+    def ended(self) -> bool:
+        return self.worker is not None and self.worker.state == "done"
+
+    @property
+    def idle(self) -> bool:
+        return self.worker is not None and self.worker.state == "idle"
+
+    def bind(self, execution_id: str) -> None:
+        self.execution_id = str(execution_id)
+
+
+class RecordProcess(Actor):
+    """The Simulation Record process: a real capacity over R's store and the stepped Booley Directory."""
+
+    def __init__(
+        self,
+        world: FakeProcessWorld,
+        scheduler: Any,
+        root: Path,
+        booley_dir: Path,
+        recover: Callable[[Actor, Any], bool],
+        recovery: SlotRecovery,
+    ) -> None:
+        self.booley_dir = booley_dir
+        self.lanes: list[Lane] = []
+        self.supervisor: Worker | None = None
+        self.cancelled = False
+        self.capacity: SimulationRecordCapacity
+        self.flow_token: job_slots.SlotToken | None = None
+        self._locks: dict[ExecutionId, StepLock] = {}
+        super().__init__(
+            _RECORD_INDEX, world, scheduler, root, recover, name="R", recovery=recovery
+        )
+        self._open()
+
+    def _open(self) -> None:
+        """Build the process: the Flow's claim (once), then a capacity whose lane locks are steps."""
+        self.lanes = []
+        self.supervisor = None
+        self.cancelled = False
+        self._locks = {}
+        if self.flow_token is None:
+            # As ``flow_claim.py`` does before items take their own claims: admitted, then zero.
+            self.flow_token = self.store.acquire(
+                CLASS_MEMORY, pid=self.pid, execution_id=_PARENT_EXECUTION, memory=_CLAIM
+            )
+            self.store.shrink_reservation(self.flow_token, 0)
+        admission = AdmissionContext(
+            "managed",
+            self.store,
+            self.flow_token,
+            job_slots.ROLE_INTERACTIVE,
+            _PARENT_EXECUTION,
+            None,
+            lambda: False,
+        )
+        self.capacity = SimulationRecordCapacity(
+            admission, _manifest(), self.booley_dir, lambda _item: _CLAIM
+        )
+        # The registry's lock is an in-process one held across steps: make its waiters steps.
+        self.capacity._lanes._record_lock = self._record_lock  # type: ignore[method-assign]
+
+    def _record_lock(self, execution_id: ExecutionId) -> StepLock:
+        return self._locks.setdefault(execution_id, StepLock(self.scheduler))
+
+    def restart(self) -> None:
+        """A new process on the same PID: no lanes, and the old Flow claim left to be recovered."""
+        super().restart()
+        self._open()
+
+
+class LaneStepMachine(JobSlotStepMachine):
+    """The three standalone claimants plus one Simulation Record process with lanes."""
+
+    def __init__(self, parent: Path) -> None:
+        self._torn_down = False
+        super().__init__(parent, recovery=self._execution_recovery())
+        self.booley_real = Path(self._temporary.name) / "booley"
+        self.booley_dir = stepped_root(self.booley_real, self.scheduler)
+        self._observer = ChildExecutionRegistry.from_project_data(
+            _manifest(), self.booley_dir, booley_dir=self.booley_dir
+        )
+        root = self.actors[0].root
+        self.record = RecordProcess(
+            self.world,
+            self.scheduler,
+            root,
+            self.booley_dir,
+            self._recover,
+            self._execution_recovery(),
+        )
+        self._terminal: set[str] = set()
+        self._lanes_opened = 0
+        self._fake_pids = 0
+        self._snapshot: dict[str, Any] | None = None
+        self.scheduler.checks = [
+            self._begin_checks,
+            *self.scheduler.checks,
+            self._check_terminal_records,
+            self._check_execution_entries,
+            self._end_checks,
+        ]
+
+    def teardown(self) -> None:
+        if not self._torn_down:
+            self._torn_down = True
+            super().teardown()
+
+    # ----------------------------------------------------------- recovery
+
+    def _execution_recovery(self) -> SlotRecovery:
+        """How every store recovers an execution-owned entry: the real recovery, stepped."""
+        return SlotRecovery(
+            execution_is_terminal=lambda execution_id: self._observer.is_terminal(
+                ExecutionId(execution_id)
+            ),
+            cancel_execution=lambda execution_id: request_cancellation(
+                execution_paths(execution_id, booley_dir=self.booley_dir)
+            ),
+            recover_execution=lambda execution_id: recover_execution(
+                execution_id, booley_dir=self.booley_dir
+            ),
+        )
+
+    # ------------------------------------------------------ lane operations
+
+    def start_lane(self) -> Lane:
+        """Open a lane of R; its thread parks at its first filesystem step."""
+        record = self.record
+        self._lanes_opened += 1
+        items = _manifest().document["work_items"]
+        lane = Lane(
+            self._lanes_opened, str(items[self._lanes_opened % len(items)]["work_item_id"])
+        )
+        record.lanes.append(lane)
+        lane.worker = self.scheduler.start(record, lane.label, lambda: self._run_lane(lane))
+        return lane
+
+    def _run_lane(self, lane: Lane) -> None:
+        record = self.record
+        try:
+            with record.capacity.child_permit(
+                lane.work_item_id,
+                attempt_id=f"attempt-{lane.number}",
+                attempt_ordinal=lane.number,
+                attempt_directory=Path("attempt"),
+                publish=lane.bind,
+                memory=_CLAIM,
+            ) as permit:
+                lane.permit = permit
+                while (name := self.scheduler.await_command()) != "close":
+                    self._lane_command(lane, record, permit, name)
+        except _OUTCOMES as exc:
+            lane.outcome = exc
+
+    def _lane_command(
+        self, lane: Lane, record: RecordProcess, permit: ChildPermit, name: str
+    ) -> None:
+        processes = permit.scope.processes
+        if name == "register":
+            self._fake_pids += 1
+            process = FakeProcess(FIRST_ACTOR_PID + 1000 + self._fake_pids)
+            lane.registered.append(process)
+            processes.register(process)  # type: ignore[arg-type]
+        elif name == "unregister":
+            processes.unregister(lane.registered.pop(0))  # type: ignore[arg-type]
+        elif name == "shrink":
+            lane.shrinks += 1
+            record.store.shrink_reservation(permit.token, 0.5 if lane.shrinks == 1 else 0)
+        elif name == "renew":
+            record.store.renew(permit.token)
+
+    def command_lane(self, lane: Lane, name: str) -> None:
+        """Give an idle lane a command: ``unregister`` with nothing registered becomes ``register``,
+        and ``close`` or ``register`` with the process set full becomes ``unregister``."""
+        assert lane.worker is not None
+        if name == "unregister" and not lane.registered:
+            name = "register"
+        if name == "close" and lane.registered:
+            name = "unregister"
+        if name == "register" and len(lane.registered) >= _MAX_REGISTERED:
+            name = "unregister"
+        self.scheduler.command(lane.worker, name)
+
+    def start_supervisor(self, which: str) -> Worker:
+        """One supervisor pass of R: it parks at its first filesystem or lock step."""
+        record = self.record
+        capacity = record.capacity
+        if which == "cancel":
+            record.cancelled = True
+
+        def work() -> None:
+            try:
+                if which == "cancel":
+                    capacity.cancel_waiters("machine cancel")
+                else:
+                    capacity.recover_lost_children()
+            except _OUTCOMES:
+                pass
+
+        record.supervisor = self.scheduler.start(record, f"supervise-{which}", work)
+        return record.supervisor
+
+    # ---------------------------------------------------------------- rules
+
+    def _record_alive(self) -> bool:
+        return not self.record.killed
+
+    def _idle_lanes(self) -> list[Lane]:
+        return [lane for lane in self.record.lanes if lane.idle] if self._record_alive() else []
+
+    def _registering_lanes(self) -> list[Lane]:
+        return [lane for lane in self._idle_lanes() if len(lane.registered) == 1]
+
+    def _lost_lanes(self) -> list[Lane]:
+        return [
+            lane
+            for lane in self.record.lanes
+            if not lane.ended and lane.permit and lane.permit.lease_health.lost.is_set()
+        ]
+
+    def _supervisor_free(self) -> bool:
+        supervisor = self.record.supervisor
+        return self._record_alive() and (supervisor is None or supervisor.state == "done")
+
+    def _can_open_lane(self) -> bool:
+        lanes = self.record.lanes
+        return (
+            self._record_alive()
+            and not self.record.cancelled
+            and sum(not lane.ended for lane in lanes) < _MAX_LANES
+        )
+
+    def _open_registered_lane(self) -> Lane | None:
+        """A lane that runs, with no fault, to its first command and registers a process."""
+        lane = self.start_lane()
+        self._settled(lane.worker)
+        if lane.idle:
+            self.command_lane(lane, "register")
+            self._settled(lane.worker)
+        return lane if lane in self._registering_lanes() else None
+
+    @precondition(lambda self: self._can_open_lane())
+    @rule(settle=st.booleans())
+    def open_lane(self, settle: bool) -> None:
+        """Open a lane, and with *settle* run it, with no fault, to its first command."""
+        self._settled(self.start_lane().worker, settle)
+
+    @precondition(lambda self: bool(self._idle_lanes()))
+    @rule(which=st.integers(0, 99), name=st.sampled_from(_COMMANDS), settle=st.booleans())
+    def command_a_lane(self, which: int, name: str, settle: bool) -> None:
+        idle = self._idle_lanes()
+        lane = idle[which % len(idle)]
+        self.command_lane(lane, name)
+        self._settled(lane.worker, settle)
+
+    def _settled(self, worker: Worker | None, settle: bool = True) -> None:
+        """With *settle*, run *worker* without faults to its next command or its end, or until
+        it waits (for a lock, or for admission, which may never come): the rules' steps are few."""
+        for _ in range(_SETTLE_STEPS if settle else 0):
+            if worker is None or worker.state != "parked" or worker.pending is None:
+                return
+            if worker.pending[0] in (*LOCK_WAIT_KINDS, "sleep"):
+                return
+            self.scheduler.grant(worker)
+
+    @precondition(lambda self: self._supervisor_free() and bool(self._lost_lanes()))
+    @rule()
+    def recover_lost_children(self) -> None:
+        """The supervisor's recovery pass, once a lane's lease is lost."""
+        self.start_supervisor("recover")
+
+    @precondition(lambda self: self._supervisor_free() and not self.record.cancelled)
+    @rule(pick=st.integers(0, _RARE))
+    def cancel_record(self, pick: int) -> None:
+        """The supervisor's cancellation pass (rare: it ends admission for good)."""
+        if pick == 0:
+            self.start_supervisor("cancel")
+
+    @rule(seconds=st.integers(1, 61), pick=st.integers(0, 2 * _RARE))
+    def advance_clock(self, seconds: int, pick: int) -> None:
+        """Time passes, but a lane's lease should usually outlive the schedule."""
+        if pick == 0:
+            self.world.clock += seconds
+
+    @precondition(lambda self: bool(self._registering_lanes()) or self._can_open_lane())
+    @rule(which=st.integers(0, 99), lapse=st.booleans(), lead=st.integers(0, 2))
+    def contend_record(self, which: int, lapse: bool, lead: int) -> None:
+        """A lane unregisters its last process, while every reaper and the supervisor recover it.
+
+        With *lapse* the lane's lease has run out. The lane takes *lead* steps, then the
+        recoveries run to their ends: the lane's record write meets a recovery that began
+        before it and finished within it, at a different step each time.
+        """
+        lanes = self._registering_lanes() or [self._open_registered_lane()]
+        lane = lanes[which % len(lanes)]
+        if lane is None:
+            return
+        if lapse:
+            self.world.clock += job_slots.LEASE_DURATION_SECONDS + 1
+        self.command_lane(lane, "unregister")
+        assert lane.worker is not None
+        for _ in range(lead):
+            if lane.worker.state == "parked":
+                self.scheduler.grant(lane.worker)
+        recoveries = [
+            self.start_operation(actor, "reap", job_slots.ROLE_INTERACTIVE, 0)
+            for actor in self._idle()
+        ]
+        if self._supervisor_free():
+            recoveries.append(self.start_supervisor("recover"))
+        for worker in recoveries:
+            self._settled(worker)
+
+    @rule(pick=st.integers(0, _RARE), recycle=st.booleans())
+    def crash_record(self, pick: int, recycle: bool) -> None:
+        """R dies (rarely: its lanes and supervisor go with it), and its PID may start a new
+        process at once; or else a dead R restarts."""
+        if pick != 0:
+            return
+        if self._record_alive():
+            self.scheduler.kill_and_wait(self.record)
+        if recycle or not self._record_alive():
+            self.record.restart()
+
+    # ------------------------------------------------------------- checks
+
+    def _owner_of(self, pid: int) -> Actor:
+        if pid == self.record.pid:
+            return self.record
+        assert FIRST_ACTOR_PID <= pid < FIRST_ACTOR_PID + _RECORD_INDEX, (
+            f"an entry names PID {pid}, which no simulated process has"
+        )
+        return super()._owner_of(pid)
+
+    def _reserved_mb(self, payload: dict[str, Any]) -> float:
+        memory = payload.get("memory")
+        reserved = memory.get("reservation_mb") if isinstance(memory, dict) else None
+        return float(reserved) if isinstance(reserved, int | float) else 0.0
+
+    def _check_one_holder_per_slot(self) -> None:
+        reserved = sum(
+            self._reserved_mb(payload)
+            for name, payload in self._entries().items()
+            if name.startswith("h-") and payload is not None
+        )
+        assert reserved <= _CLAIM.budget_mb, (
+            f"I1: holders reserve {reserved} MB of {_CLAIM.budget_mb} MB"
+        )
+
+    def _begin_checks(self) -> None:
+        self._snapshot = {}  # the checks of one step read the directories once between them
+
+    def _end_checks(self) -> None:
+        self._snapshot = None
+
+    def _read_once(self, key: str, read: Callable[[], Any]) -> Any:
+        if self._snapshot is None:
+            return read()
+        return self._snapshot.setdefault(key, read())
+
+    def _entries(self) -> dict[str, dict[str, Any] | None]:
+        return self._read_once("entries", super()._entries)
+
+    def _records(self) -> dict[str, dict[str, Any] | None]:
+        """Execution ID -> record payload (None when unreadable), read around the scheduler."""
+        return self._read_once("records", self._read_records)
+
+    def _read_records(self) -> dict[str, dict[str, Any] | None]:
+        root = self.booley_real / ".runtime" / "executions"
+        directories = sorted(root.iterdir()) if root.is_dir() else []
+        return {path.name: self._payload(path / "record.json") for path in directories}
+
+    @staticmethod
+    def _is_terminal_record(record: dict[str, Any] | None) -> bool:
+        return (
+            record is not None
+            and record.get("state") == "terminal"
+            and record.get("tree_terminal") is True
+        )
+
+    def _check_terminal_records(self) -> None:
+        for execution_id, record in self._records().items():
+            if self._is_terminal_record(record):
+                self._terminal.add(execution_id)
+            elif record is not None and execution_id in self._terminal:
+                raise AssertionError(
+                    f"I6: the record of {execution_id} was terminal and reads {record.get('state')!r}"
+                )
+
+    def _check_execution_entries(self) -> None:
+        records = self._records()
+        for name, payload in self._entries().items():
+            fields = _fields(name)
+            if payload is None or fields is None or payload.get("owner_kind") != "execution":
+                continue
+            execution_id = str(payload.get("execution_id"))
+            owner = self._owner_of(fields[1])
+            in_use = self._execution_in_use(owner, execution_id)
+            recoverable = (
+                self._is_terminal_record(records.get(execution_id))
+                or self._recoverable(owner, fields[0], payload)
+                or payload.get("lease_state") == job_slots.LEASE_CANCELLING
+            )
+            assert in_use or recoverable, (
+                f"I7: {name} of {execution_id} is neither in use nor recoverable: "
+                f"record {records.get(execution_id)}"
+            )
+
+    def _execution_in_use(self, owner: Actor, execution_id: str) -> bool:
+        if owner is not self.record or self.record.killed:
+            return False
+        if execution_id == _PARENT_EXECUTION:
+            return True  # R's Flow claim
+        return any(
+            lane.execution_id == execution_id and not lane.ended for lane in self.record.lanes
+        )
+
+    def _is_flow_claim(self, payload: dict[str, Any]) -> bool:
+        return payload.get("execution_id") == _PARENT_EXECUTION and not self.record.killed
+
+    def _budget_is_full(self, entries: dict[str, dict[str, Any] | None]) -> bool:
+        reserved = sum(
+            self._reserved_mb(payload)
+            for name, payload in entries.items()
+            if name.startswith("h-") and payload is not None
+        )
+        return _CLAIM.budget_mb - reserved < _CLAIM.reservation_mb
+
+    # ------------------------------------------------------------ teardown
+
+    def _wind_down(self) -> None:
+        """Cancel the record, close its lanes, drain, then judge S and S2."""
+        if self._record_alive():
+            # First: a lane still waiting for admission stops only once the record is cancelled.
+            self.start_supervisor("cancel")
+            self._close_lanes()
+        super()._wind_down()
+        self._check_executions_recovered()
+
+    def _close_lanes(self) -> None:
+        for _ in range(4 * _MAX_LANES * (_MAX_REGISTERED + 2)):
+            self.scheduler.drain()
+            idle = self._idle_lanes()
+            if not idle:
+                return
+            for lane in idle:
+                assert lane.worker is not None
+                self.scheduler.command(lane.worker, "unregister" if lane.registered else "close")
+        raise AssertionError("lanes did not close")
+
+    def _check_executions_recovered(self) -> None:
+        """Two reaps leave no execution-owned entry: recovery happened, whatever the record says."""
+        reaper = next((actor for actor in self.actors if not actor.killed), None)
+        if reaper is None and self._record_alive():
+            reaper = self.record
+        if reaper is None:
+            return
+        for _ in range(2):
+            with contextlib.suppress(ActorKilled):
+                reaper.store.reap(CLASS_MEMORY)
+        left = [
+            name
+            for name, payload in self._entries().items()
+            if payload is not None
+            and payload.get("owner_kind") == "execution"
+            and not self._is_flow_claim(payload)
+        ]
+        assert not left, f"S2: execution-owned entries survive two reaps: {left}"
+
+
+# ------------------------------------------------------------------ fixtures
+
+
+@pytest.fixture(autouse=True)
+def _no_inherited_execution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``submit`` links no inherited execution, whatever environment the suite runs in."""
+    monkeypatch.delenv(job_slots.RUNTIME_EXECUTION_ENV, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _stepped_record_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The execution record's file-lock wait is a scheduling point of the thread's scheduler."""
+    monkeypatch.setattr(execution_records, "wait_for_file_lock", stepped_file_lock_wait)
+
+
+@pytest.fixture
+def build_machine(tmp_path: Path) -> Iterator[Callable[[], LaneStepMachine]]:
+    """Builds the machine inside the test body and tears it down, with its threads, afterwards."""
+    built: list[LaneStepMachine] = []
+
+    def build() -> LaneStepMachine:
+        built.append(LaneStepMachine(tmp_path))
+        return built[-1]
+
+    yield build
+    for machine in reversed(built):
+        machine.teardown()
+
+
+# --------------------------------------------------------------------- tests
+
+
+def _run_lane_to_idle(machine: LaneStepMachine, lane: Lane) -> None:
+    machine._settled(lane.worker)
+    assert lane.idle, f"{lane.label} did not reach its first command: {lane.outcome!r}"
+
+
+def _execution_claims(machine: LaneStepMachine) -> list[dict[str, Any]]:
+    payloads = (payload for payload in machine._entries().values() if payload is not None)
+    return [payload for payload in payloads if payload.get("owner_kind") == "execution"]
+
+
+def test_lane_operations_interleave_with_a_standalone_claimant(
+    build_machine: Callable[[], LaneStepMachine],
+) -> None:
+    machine = build_machine()
+    claimant = machine.actors[0]
+    lane = machine.start_lane()
+    assert lane.worker is not None
+    # The lane has prepared its execution and not yet published its entry.
+    _step_until(machine, lane.worker, "hardlink_to", "w-")
+    machine.scheduler.finish(
+        machine.start_operation(claimant, "submit", job_slots.ROLE_INTERACTIVE, 0)
+    )
+    machine.scheduler.finish(
+        machine.start_operation(claimant, "refresh", job_slots.ROLE_INTERACTIVE, 0)
+    )
+    _run_lane_to_idle(machine, lane)
+    owned = [claim["execution_id"] for claim in _execution_claims(machine)]
+    assert owned == [_PARENT_EXECUTION, lane.execution_id]
+    # `register` parks before it takes the record lock, and a reaper runs in between.
+    machine.scheduler.command(lane.worker, "register")
+    _step_until(machine, lane.worker, "open_write", "record.lock")
+    machine.scheduler.finish(
+        machine.start_operation(machine.actors[1], "reap", job_slots.ROLE_INTERACTIVE, 0)
+    )
+    machine.scheduler.finish(lane.worker)
+    assert lane.idle
+    machine.scheduler.command(lane.worker, "shrink")
+    machine.scheduler.finish(lane.worker)
+    claims = [c["memory"]["reservation_mb"] for c in _execution_claims(machine)]
+    assert claims == [0, 0.5]
+
+
+def test_execution_record_checks_run_after_every_step(
+    build_machine: Callable[[], LaneStepMachine],
+) -> None:
+    # I6: a record read terminal and then waiting again.
+    machine = build_machine()
+    lane = machine.start_lane()
+    _run_lane_to_idle(machine, lane)
+    assert lane.execution_id is not None
+    record = execution_paths(lane.execution_id, booley_dir=machine.booley_real).record
+    waiting = record.read_bytes()
+    reaper = machine.start_operation(machine.actors[1], "reap", job_slots.ROLE_INTERACTIVE, 0)
+    record.write_bytes(
+        waiting.replace(b'"state": "waiting"', b'"state": "terminal"').replace(
+            b'"tree_terminal": false', b'"tree_terminal": true'
+        )
+    )
+    machine.scheduler.grant(reaper)
+    record.write_bytes(waiting)
+    with pytest.raises(AssertionError, match="I6"):
+        machine.scheduler.grant(reaper)
+
+    # I7: an execution-owned entry of no lane, with a live owner, a live lease and a waiting record.
+    machine = build_machine()
+    reaper = machine.start_operation(machine.actors[1], "reap", job_slots.ROLE_INTERACTIVE, 0)
+    identity = machine.world.capture_identity(machine.record.pid)
+    assert identity is not None
+    payload = {
+        "owner_kind": "execution",
+        "execution_id": "b" * 32,
+        "lease_state": "active",
+        "lease_expires_at": job_slots.rfc3339_from_epoch(machine.world.clock + 1000),
+        "owner_identity": identity.to_payload(),
+    }
+    (machine.memory_dir / f"h-p0-s0000000099-{machine.record.pid:010d}-0001.json").write_text(
+        json.dumps(payload), encoding="utf-8", newline="\n"
+    )
+    with pytest.raises(AssertionError, match="I7"):
+        machine.scheduler.grant(reaper)
+
+    # S2: recovery refuses an execution whose context names another one, and leaves its entry.
+    machine = build_machine()
+    lane = machine.start_lane()
+    _run_lane_to_idle(machine, lane)
+    assert lane.execution_id is not None
+    context = execution_paths(lane.execution_id, booley_dir=machine.booley_real).context
+    context.write_bytes(context.read_bytes().replace(lane.execution_id.encode(), b"c" * 32))
+    machine.scheduler.kill_and_wait(machine.record)
+    with pytest.raises(AssertionError, match="S2"):
+        machine.teardown()
+
+
+def test_unregister_cannot_replace_recovery_terminal_record(
+    build_machine: Callable[[], LaneStepMachine],
+) -> None:
+    machine = build_machine()
+    reaper_actor = machine.actors[0]
+    lane = machine.start_lane()
+    assert lane.worker is not None
+    _run_lane_to_idle(machine, lane)
+    machine.scheduler.command(lane.worker, "register")
+    machine.scheduler.finish(lane.worker)
+    assert lane.idle and lane.execution_id is not None
+    # The lease runs out while the lane's process is still registered.
+    machine.world.clock += job_slots.LEASE_DURATION_SECONDS + 1
+    machine.scheduler.command(lane.worker, "unregister")
+    _step_until(machine, lane.worker, "open_read", "record.json")
+    machine.scheduler.grant(lane.worker)  # the lane has read the record: still running
+    reaper = machine.start_operation(reaper_actor, "reap", job_slots.ROLE_INTERACTIVE, 0)
+    for _ in range(100):  # below the record lock's timeout
+        if reaper.state != "parked" or reaper.pending == ("lock_wait", ""):
+            break
+        machine.scheduler.grant(reaper)
+    machine.scheduler.drain()
+    record = execution_paths(lane.execution_id, booley_dir=machine.booley_real).record
+    final = machine._payload(record)
+    assert final is not None
+    assert final["state"] == "terminal"
+    assert final["terminal_cause"] == "orphan_recovered"
+    assert reaper.oserror is None
+
+
+def test_lock_waiters_let_the_holder_run(
+    build_machine: Callable[[], LaneStepMachine],
+) -> None:
+    machine = build_machine()
+    lane = machine.start_lane()
+    assert lane.worker is not None
+    _run_lane_to_idle(machine, lane)
+    assert lane.permit is not None
+    # A lost lease keeps the lane from confirming it, so the supervisor may recover it.
+    lane.permit.lease_health.lost.set()
+    machine.scheduler.command(lane.worker, "close")
+    _step_until(machine, lane.worker, "open_write", "record.lock")  # inside mark_terminal's lock
+    supervisor = machine.start_supervisor("recover")
+    for _ in range(50):
+        machine._run_to_visible(supervisor)
+        if supervisor.pending is not None and supervisor.pending[0] == "wait":
+            break
+    assert supervisor.pending is not None and supervisor.pending[0] == "wait"
+    machine.scheduler.drain()
+    assert lane.ended
+    assert supervisor.state == "done"
+
+
+def test_interleaved_lane_schedules(tmp_path: Path) -> None:
+    selected = (
+        EXPLORATORY_SETTINGS
+        if os.environ.get("BOOLEY_HYPOTHESIS_EXPLORATORY") == "1"
+        else LANE_PR_SETTINGS
+    )
+    run_state_machine_as_test(lambda: LaneStepMachine(tmp_path), settings=selected)
+
+
+def test_atomic_write_json_keeps_its_temporary_file_beside_the_named_directory(
+    tmp_path: Path,
+) -> None:
+    real = tmp_path / "real" / "sub"
+    real.mkdir(parents=True)
+    (tmp_path / "link").symlink_to(real, target_is_directory=True)
+    target = tmp_path / "link" / ".." / "record.json"
+    execution_records.atomic_write_json(target, {"state": "waiting"})
+    assert read_json(target) == {"state": "waiting"}
+    assert [path.name for path in tmp_path.rglob(".record.json.*")] == []

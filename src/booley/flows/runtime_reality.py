@@ -25,6 +25,7 @@ from pathlib import Path
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.runtime import session_runtime
 from booley.runtime.platform_paths import run_captured_bounded
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import LINT_EDA_TOOL_FAMILIES, FuseSocError
 
@@ -92,12 +93,14 @@ def _check_session_binary(
     """PASS/FAIL on *binary* being on the Sandbox PATH."""
     flow_name = request.flow_name
     label = f"{flow_name}: '{binary}' on the Sandbox PATH"
-    bake_fix = f"bake {binary} into the Sandbox Image and rebuild (booley init --force)"
     if request.inside_sandbox:
         if shutil.which(binary):
             findings.pass_(label)
         else:
-            findings.fail(f"{flow_name}: '{binary}' is not on this container's PATH", bake_fix)
+            findings.fail(
+                f"{flow_name}: '{binary}' is not on this container's PATH",
+                _bake_fix(request, binary),
+            )
         return
     if not request.runtime_available:
         findings.skip(f"{label} - container runtime unavailable")
@@ -107,10 +110,28 @@ def _check_session_binary(
         result = run_captured_bounded(command, timeout=30)
     except (session_runtime.SessionError, subprocess.SubprocessError, FileNotFoundError) as exc:
         findings.fail(
-            f"{label} (runtime/probe error: {exc})", "run 'booley init --seed' and retry"
+            f"{label} (runtime/probe error: {exc})",
+            session_runtime.sandbox_entry_remedy(request.project_root, exc),
         )
         return
     if result.returncode == 0:
         findings.pass_(label)
     else:
-        findings.fail(f"{flow_name}: '{binary}' is not on the issued Sandbox PATH", bake_fix)
+        findings.fail(
+            f"{flow_name}: '{binary}' is not on the issued Sandbox PATH",
+            _bake_fix(request, binary),
+        )
+
+
+def _bake_fix(request: FlowRuntimeInspectionRequest, binary: str) -> str:
+    """Name how to bake *binary* into the Sandbox Image and recreate the Sandbox.
+
+    Plain ``booley init`` rebuilds an image whose build inputs changed, which
+    baking a binary does, so no ``--force`` is needed.
+    """
+    steps = (
+        UNKNOWN_SANDBOX_STEPS
+        if request.inside_sandbox
+        else session_runtime.sandbox_remedy(request.project_root)
+    )
+    return f"bake {binary} into the Sandbox Image, then recreate the Sandbox: {steps}"
