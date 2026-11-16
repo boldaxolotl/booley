@@ -177,7 +177,8 @@ def _cleanup_interrupted_run_directory(run: RunDirectory, *, identity: Mapping[s
         expected = canonical_json_bytes(dict(identity))
         if not marker.is_file() or marker.read_bytes() != expected:
             raise SimulationRecordIntegrityError(
-                f"refusing to clean unowned run directory: {run.path}"
+                f"refusing to clean unowned run directory: {run.path}; "
+                "move the directory elsewhere, which keeps its files, then retry"
             )
         _remove_owned_tree(run.path)
         removed = True

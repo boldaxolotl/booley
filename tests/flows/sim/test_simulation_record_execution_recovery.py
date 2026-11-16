@@ -658,9 +658,16 @@ def test_stale_run_cleanup_preserves_unmarked_or_mismatched_tree(
     if marker == "mismatched":
         wrong = _run_identity()
         (run.path / ".booley-simulation-attempt.json").write_bytes(canonical_json_bytes(wrong))
-    with pytest.raises(SimulationRecordIntegrityError):
+    with pytest.raises(
+        SimulationRecordIntegrityError,
+        match=r"refusing to clean unowned run directory: .*; "
+        r"move the directory elsewhere, which keeps its files, then retry",
+    ):
         cleanup_interrupted_run_directory(run, identity=identity)
     assert payload.read_text(encoding="utf-8") == "mine"
+    run.path.rename(tmp_path / "kept")
+    assert cleanup_interrupted_run_directory(run, identity=identity) is False
+    assert (tmp_path / "kept/preserve.log").read_text(encoding="utf-8") == "mine"
 
 
 def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_the_lane(

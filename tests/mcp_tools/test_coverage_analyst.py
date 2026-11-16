@@ -481,6 +481,22 @@ def test_verified_sources_are_available_only_through_scoped_tool(tmp_path):
     assert model.calls[0].nested_mcp_tools == ["coverage_evidence"]
 
 
+_REPORT_KEYS = {
+    "$schema",
+    "analysis_scope",
+    "closure_recommendation",
+    "coverage_record_id",
+    "eligibility",
+    "hypotheses",
+    "limitations",
+    "observed_evidence",
+    "recommendations",
+    "source_access",
+    "target",
+    "waiver_candidates",
+}
+
+
 @pytest.mark.parametrize("ignore_native", [False, True])
 def test_stealth_analysis_preserves_project_files(tmp_path, ignore_native):
     path = source_project(tmp_path)
@@ -500,6 +516,13 @@ def test_stealth_analysis_preserves_project_files(tmp_path, ignore_native):
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
     assert report["source_access"] == "report_only"
     assert json.loads(model.calls[0].prompt)["source_access"] == "report_only"
+    assert report["limitations"] == [
+        "Stealth Mode: Booley does not inspect sources, so analysis uses normalized "
+        "report evidence only and no Waiver Candidate is ready for human review."
+    ]
+    assert report["$schema"] == "booley.coverage-analysis/v4"
+    assert set(report) == _REPORT_KEYS
+    assert report["eligibility"] == "eligible"
 
 
 @pytest.mark.parametrize("defect", ["stale", "missing", "core", "closure", "symlink"])
@@ -528,6 +551,11 @@ def test_source_mismatch_degrades_transactionally_to_report_only(tmp_path, defec
     assert report["source_access"] == "report_only"
     assert json.loads(model.calls[0].prompt)["source_access"] == "report_only"
     assert "SECRET" not in model.calls[0].prompt
+    assert report["limitations"] == [
+        "Sources unavailable, unsafe, or stale; analysis uses normalized report evidence only."
+    ]
+    assert set(report) == _REPORT_KEYS
+    assert report["eligibility"] == "eligible"
 
 
 def test_verified_candidate_is_ready_only_for_human_review(tmp_path, monkeypatch):

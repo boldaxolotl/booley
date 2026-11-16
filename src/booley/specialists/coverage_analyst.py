@@ -24,6 +24,7 @@ from booley.flows.sim.coverage_analysis_input import (
     CoverageSourceClosure,
     coverage_sources,
     read_coverage_record,
+    stealth_source_limitation,
     verified_source_snapshot,
 )
 from booley.flows.sim.coverage_evidence import decode_coverage_evidence_audit
@@ -134,6 +135,7 @@ class CoverageAnalystSpecialist(Specialist):
             instruction,
             coverage_record,
             summary=loaded.summary,
+            source_limitation=stealth_source_limitation(self.args.work_dir),
         )
         return report, loaded, coverage_record
 
@@ -145,6 +147,7 @@ class CoverageAnalystSpecialist(Specialist):
         coverage_record_path: Path,
         *,
         summary: CoverageRecordSummary | None = None,
+        source_limitation: str | None = None,
     ) -> CoverageAnalysisReport:
         """Analyze already validated evidence through one scoped tool binding."""
         sources = verified_source_snapshot(coverage_record, sources)
@@ -152,7 +155,11 @@ class CoverageAnalystSpecialist(Specialist):
         self._evidence_sources = sources
         try:
             return CoverageAnalyzer(self._analyze_text).analyze_coverage_record(
-                coverage_record, sources, instruction, summary=summary
+                coverage_record,
+                sources,
+                instruction,
+                summary=summary,
+                source_limitation=source_limitation,
             )
         finally:
             self._evidence_coverage_record_path = None
