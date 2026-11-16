@@ -34,6 +34,7 @@ from booley.runtime import (
 )
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
+from booley.runtime.sandbox_apply import quote_arg
 
 
 @pytest.fixture(autouse=True)
@@ -964,7 +965,8 @@ class _RelayReport:
 
 _RELAY_HEADLESS = "run `booley session down`, then `booley session up --rebuild` on the host"
 _RELAY_VSCODE = (
-    "close VS Code, then on the host run `docker stop box` and `docker rm box`, "
+    f"close VS Code, then on the host run `docker stop {quote_arg('box')}` "
+    f"and `docker rm {quote_arg('box')}`, "
     "run `booley session down` to remove the relay topology, "
     "and reopen the folder in the container"
 )
