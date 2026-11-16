@@ -86,6 +86,42 @@ them outside `workflow_dispatch`. The defaults (four Windows shards, two Ubuntu
 3.11 shards with `loadscope`, six coverage shards) come from measured runs; the
 inputs and their allowed values are in `ci_changes.py`.
 
+## Test time budgets
+
+A test waits on real time in two ways, and both come from
+`tests/time_budget.py`:
+
+- A deadline the test asserts on names its own base budget and scales it:
+  `_HOOK_DEADLINE_S = scaled(5)`.
+- A wait that only stops a hang uses the hang guard, `hang_guard_s()`: 30 s
+  times the factor, rounded up to whole seconds. `SUBPROCESS_TIMEOUT_S` in
+  `tests/subprocess_budget.py` is that value.
+
+The factor is `BOOLEY_TEST_TIME_SCALE`. Unset means 1; a value that is not a
+positive finite number fails the pytest session at startup. The Windows legs
+of every pytest job (the test job, flake-stress, and the weekly full matrix)
+set 2 and run `--timeout=120`. Across the 161 tests that the Windows and Linux
+timing models both measure at 1 s or more, the Windows to Linux time ratio has
+median 1.06, 90th percentile 1.55, and 95th percentile 2.12, so a factor of 2
+covers the usual Windows tail. Ubuntu legs keep factor 1 and `--timeout=60`.
+
+The per-test limit must stay at least twice the hang guard, and at least 60 s:
+after a guard expires the helper still kills the process tree and drains its
+pipes, which takes up to about 32 s more on Windows. `tests/conftest.py`
+refuses a session whose `--timeout` is positive and below that minimum, and
+raises the default limit (120 s) to the minimum when a factor above 2 would
+otherwise push the minimum past it. The check does not cover
+`@pytest.mark.timeout(N)` markers, which size one test explicitly.
+
+The step limit of `Run duration-balanced shard` is 15 minutes: the slowest
+shard step measured over the 47 latest `Tests` runs (2026-11-15 to
+2026-11-16) took 11.3 minutes, and 1.3 times that rounds up to 15, the coverage
+shards' limit. The 12-minute limit of the focused compatibility step stays: it
+is not a shard, and its slowest run took 1.15 minutes. To re-derive, list runs
+with `gh run list --workflow test.yml`, read each job's step times from
+`gh api repos/{owner}/{repo}/actions/runs/<id>/jobs`, and take the largest
+`completed_at - started_at` of that step.
+
 ## Performance telemetry
 
 The `ci-metrics` job runs after `ci-required` and records queue time, runner
