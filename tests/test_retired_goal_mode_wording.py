@@ -43,6 +43,7 @@ ALLOWED_FILES = frozenset(
         "src/booley/data/refs/CHANGELOG.md",
         "tests/test_retired_goal_mode_wording.py",
         "tests/architecture/test_goal_mode_boundaries.py",
+        "tests/config/test_retired_key_refusals.py",
         "tests/config/test_retired.py",
         "tests/core/test_booley_dir_parts.py",
         "tests/harness/test_goal_mode_removed.py",
