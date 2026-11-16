@@ -12,12 +12,13 @@ The Booley user guide. The first time, read **Get started** in order.
 <table>
 <thead><tr><th>Section</th><th>Page</th><th>What it covers</th></tr></thead>
 <tbody>
-<tr><th scope="rowgroup" rowspan="4">Get started</th>
+<tr><th scope="rowgroup" rowspan="5">Get started</th>
 <td><a href="features/">Features</a></td>
 <td>Everything Booley does, and why.</td></tr>
 <tr><td><a href="install/">Install</a></td><td>Install Booley and prepare your machine.</td></tr>
 <tr><td><a href="setup/">Setup</a></td><td>Connect an installed Booley to your RTL project.</td></tr>
 <tr><td><a href="usage/">Usage</a></td><td>Day-to-day work with the Developer Agent and waveforms.</td></tr>
+<tr><td><a href="metrics/">Metrics</a></td><td>Declare Target Metrics and measure a commit against them.</td></tr>
 <tr><th scope="rowgroup" rowspan="9">Flows &amp; Specialists</th><td><a href="flow-reference/">Running Flows</a></td><td>What every Flow shares: Targets, options, and results.</td></tr>
 <tr><td><a href="flow-sim/">Simulation</a></td><td>Run a Target's tests and report which ones passed.</td></tr>
 <tr><td><span class="docs__tree" aria-hidden="true">└</span><a href="coverage/">Coverage</a></td><td>Guide to measuring how much of the RTL your tests exercise.</td></tr>
@@ -27,12 +28,13 @@ The Booley user guide. The first time, read **Get started** in order.
 <tr><td><a href="flow-mutation/">Mutation testing</a></td><td>Plant small bugs in the RTL and check that your tests catch them.</td></tr>
 <tr><td><a href="specialists/">Specialists</a></td><td>LLM helpers that review code and explain coverage.</td></tr>
 <tr><td><span class="docs__tree" aria-hidden="true">└</span><a href="reviewer/">Reviewer</a></td><td>Single-focus AI review of RTL or testbench code.</td></tr>
-<tr><th scope="rowgroup" rowspan="7">Reference</th><td><a href="config/">Config</a></td><td>Project-wide <code>booley.toml</code> settings.</td></tr>
+<tr><th scope="rowgroup" rowspan="8">Reference</th><td><a href="config/">Config</a></td><td>Project-wide <code>booley.toml</code> settings.</td></tr>
 <tr><td><a href="targets/">Targets</a></td><td>Describe how your design builds for every Flow.</td></tr>
 <tr><td><a href="tests/">tests.toml</a></td><td>A sim Target's Tests, Test Variants, and seeds.</td></tr>
 <tr><td><a href="sandbox/">Sandbox</a></td><td>Configure the container Booley and its agents run in.</td></tr>
 <tr><td><a href="stealth/">Stealth Mode</a></td><td>Keep Booley out of your Git history.</td></tr>
-<tr><td><a href="cli-reference/">CLI reference</a></td><td>Every command, Flow, and Specialist.</td></tr>
+<tr><td><a href="worktrees/">Worktrees</a></td><td>Create, list, and remove the checkouts parallel sessions work in.</td></tr>
+<tr><td><a href="cli-reference/">CLI reference</a></td><td>Every command and where it runs.</td></tr>
 <tr><td><a href="supported-eda-tools/">Supported EDA tools</a></td><td>Which tools each Flow drives, and where they come from.</td></tr>
 <tr><th scope="rowgroup" rowspan="2">Help</th><td><a href="doctor/">Doctor</a></td><td>Check that Booley's setup and tools work.</td></tr>
 <tr><td><a href="troubleshooting/">Troubleshooting</a></td><td>Symptoms, causes, and fixes.</td></tr>
