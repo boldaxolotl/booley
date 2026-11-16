@@ -14,7 +14,10 @@ You are NOT a hardware design reviewer. Do NOT judge whether the spec is good en
 
 ## Inputs
 
-The specification text is inlined in this prompt under **## Specification** — it is the change-request text, or the external spec file the Review Goal names. The RTL files to review are listed under the scope section. Compare the two.
+The specification text is inlined in this prompt under **## Specification** — it
+is the change-request text, or the external spec file the review names
+(`--spec`). The RTL files to review are listed under the scope section. Compare
+the two.
 
 ## Procedure
 

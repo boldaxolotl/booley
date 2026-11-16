@@ -22,22 +22,16 @@ All Booley work runs in one container, the **Sandbox**, per opened project
 folder. A human steers the Developer Agent in a VS Code devcontainer
 (Interactive Mode), using the `.booley/` configuration.
 
-The host owns Host Bootstrap, the Sandbox lifecycle, EDA installation
-registrations and Project Grants, the egress proxy, and the idle reaper.
+Booley installed on the host manages Host Bootstrap, the Sandbox lifecycle,
+EDA installation registrations and Project Grants, the egress proxy, and the
+idle reaper.
 Developer Agent commands run only inside the Sandbox, with one known exception
 through shared Git metadata (see [Security & Trust Model](#security--trust-model)).
 
-Preparation runs in one direction:
-
-1. **Host Bootstrap** (`booley bootstrap`) checks host prerequisites and
-   prepares what every Project shares: Booley skills, the PDK cache, the base
-   Sandbox Image, and the host sidecars (egress proxy and idle reaper).
-2. **Project Initialization** (`booley init`) reconciles one Project's files
-   and Git integration. On the host it also prepares the Project's Sandbox
-   Image and then issues the Sandbox specification.
-3. The issued **Sandbox** hosts Interactive Mode.
-
-A later step checks the earlier one but never repairs it. `booley init
+Preparation runs in one direction: [Host
+Bootstrap](../user/INSTALL.md#host-bootstrap), then Project Initialization
+([SETUP.md](../user/SETUP.md)), then the Sandbox. A later step checks the
+earlier one but never repairs it. `booley init
 --force` rebuilds only the Project's own images; when the base image is
 missing or stale it stops and asks for `booley bootstrap --update`. This keeps
 host-wide changes in one command the user runs deliberately
@@ -119,7 +113,7 @@ project folder instead. The Dev Containers extension attaches one container per
 VS Code window; a container per chat tab would need session-to-container
 plumbing the extension lacks. Every session shares one MCP server, one EDA
 stack, and one configuration,
-so an unattended session is just a tab left running.
+so another parallel session is just another tab.
 
 The cost: every session draws on one container's memory and CPU, which makes
 admission control mandatory (next section), and every worktree in the
@@ -218,7 +212,8 @@ it cost about 40 times the tokens. The MCP surface also gives Booley:
 
 ## Interactive Mode
 
-Interactive Mode is the hands-on workflow and the way into the Sandbox.
+Interactive Mode is how a human works with Booley and the way into the
+Sandbox.
 `booley init` issues the Project's devcontainer specification; reopening the
 folder in the container connects VS Code to the Sandbox. On every container
 start, `postStartCommand` starts a loopback MCP server inside the container,
@@ -257,8 +252,8 @@ Evaluation inside this code uses the internal
 
 ## B-Wave
 
-**[B-Wave](../../crates/bwave/GLOSSARY.md)** is the waveform query layer both
-modes use. A trace is too large for an LLM to read, so B-Wave answers
+**[B-Wave](../../crates/bwave/GLOSSARY.md)** is Booley's waveform query layer.
+A trace is too large for an LLM to read, so B-Wave answers
 structured questions about signals, events, values, and time ranges in an FST
 store; `bwave register --build` converts a VCD into one.
 
