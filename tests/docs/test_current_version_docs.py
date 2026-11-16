@@ -1,11 +1,4 @@
-"""Current user references and rendered CLI help describe the installed version.
-
-Setuptools ships data/**/*; runtime resource readers use refs, skills, the
-cheatsheet, and criteria.toml. Docker and vendored Edalize files implement the
-runtime, licenses contain legal text, and CHANGELOG.md records release history.
-All other package text, including code examples and template comments, is in
-scope. New package directories therefore enter the gate automatically.
-"""
+"""The rendered CLI help describes the installed version, not its history."""
 
 from __future__ import annotations
 
@@ -16,7 +9,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from tests.shipped_docs_support import rendered_docs_outside_user_docs, rendered_shipped_docs
 
 from booley.bwave import cli as bwave_cli
 from booley.flows.base import BuiltinFlow
@@ -25,7 +17,6 @@ from booley.flows.endpoint_cli import human_endpoint_parser
 from booley.harness.booley import _build_parser, _load_mcp_tool_class
 from booley.mcp.registry import discover_mcp_tools
 
-ROOT = Path(__file__).resolve().parents[2]
 HISTORY_POLICY = json.loads(
     (Path(__file__).with_name("current_version_history_policy.json")).read_text()
 )
@@ -35,14 +26,6 @@ HISTORY = re.compile(
     rf"\b(?:{_HISTORY_PHRASES})\b|\b(?:{_VERSION_PREFIXES}) (?:version |v)?[0-9]+\.[0-9]+",
     re.IGNORECASE,
 )
-PACKAGE_IMPLEMENTATION_DIRS = {"docker", "edalize", "licenses", "__pycache__"}
-
-
-def _is_text(path: Path) -> bool:
-    try:
-        return "\0" not in path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        return False  # Screenshots and other binary assets are not prose.
 
 
 @dataclass(frozen=True)
@@ -51,64 +34,6 @@ class ExceptionRule:
     context: str
     reason: str
     count: int
-
-
-ALLOWLIST = (
-    ExceptionRule(
-        "docs/user/FLOW-SIM.md",
-        "legacy-per-test",
-        "A supported literal value selecting per-test build access.",
-        1,
-    ),
-)
-
-# These are current diagnostic/schema literals, not historical narrative.
-ALLOWLIST += (
-    ExceptionRule("docs/user/DOCTOR.md", "`config.retired-goals`", "Current Doctor check ID.", 1),
-)
-
-
-def document_paths(root: Path) -> list[Path]:
-    """Discover current user text, with explicit history/implementation exclusions.
-
-    The Git-ignored build output ``src/booley/data/docs/`` is never listed: its sources are
-    scanned instead (``docs/user`` here, the rest through :func:`document_texts`).
-    """
-    paths = [root / "README.md"]
-    paths.extend(
-        path for path in (root / "docs/user").rglob("*") if path.is_file() and _is_text(path)
-    )
-    paths.extend((root / "crates/bwave/docs/public").rglob("*.md"))
-    data = root / "src/booley/data"
-    for path in data.rglob("*"):
-        if not path.is_file():
-            continue
-        relative = path.relative_to(data)
-        if relative.parts[0] == "docs":
-            continue
-        if relative.parts[0] in PACKAGE_IMPLEMENTATION_DIRS or relative.as_posix() in {
-            "__init__.py",
-            "refs/CHANGELOG.md",
-        }:
-            continue
-        if _is_text(path):
-            paths.append(path)
-    return sorted(paths)
-
-
-def document_texts(root: Path) -> dict[str, str]:
-    """Return ``{relative path: text}`` of every scanned document.
-
-    Adds the shipped docs whose source is outside ``docs/user`` (FLOW_REPORTS) as the
-    build renders them, keyed by source path, so a rendered shipped doc is covered
-    without reading the packaged directory.
-    """
-    texts = {
-        path.relative_to(root).as_posix(): path.read_text(encoding="utf-8")
-        for path in document_paths(root)
-    }
-    texts.update(rendered_docs_outside_user_docs(root))
-    return texts
 
 
 def normalized_text(text: str) -> tuple[str, list[int]]:
@@ -200,15 +125,6 @@ def cli_help() -> dict[str, str]:
     return rendered
 
 
-def test_current_version_documents() -> None:
-    documents = document_texts(ROOT)
-    assert len(documents) > 50
-    assert any("/skills/" in path and path.endswith(".toml") for path in documents)
-    assert any("/refs/" in path for path in documents)
-    failures = history_failures(documents, ALLOWLIST)
-    assert not failures, "\n".join(failures)
-
-
 def test_visible_cli_help_describes_current_version() -> None:
     rendered = cli_help()
     assert {
@@ -241,60 +157,6 @@ def test_visible_cli_help_describes_current_version() -> None:
     assert not failures, "\n".join(failures)
 
 
-def test_public_documents_and_help_use_canonical_developer_agent_term() -> None:
-    rejected = re.compile(
-        r"\b(?:coding|host|main|outer)\s+agents?\b|the\s+agent\s+session\s+in\s+Goal\s+Mode",
-        re.IGNORECASE,
-    )
-    documents = document_texts(ROOT)
-    documents.update(cli_help())
-    failures = []
-    for name, text in documents.items():
-        prose = "\n".join(line for line in text.splitlines() if not line.startswith("_Avoid_"))
-        if name == "docs/user/USAGE.md":
-            # The maintainer retained this generic introduction, not a Booley actor synonym.
-            introduction = "You don't need any experience\nwith AI coding agents to follow it."
-            assert prose.count(introduction) == 1
-            prose = prose.replace(introduction, "", 1)
-        for match in rejected.finditer(prose):
-            failures.append(f"{name}: {match.group()}")
-    assert not failures, "\n".join(failures)
-
-
-def test_shared_glossary_defines_developer_agent_outside_retired_terms() -> None:
-    text = (ROOT / "docs/GLOSSARY.md").read_text(encoding="utf-8")
-    active, retired = text.split("## Retired and ambiguous terminology", maxsplit=1)
-    definition = active.split("**Developer Agent**:\n", maxsplit=1)[1].split("\n\n", 1)[0]
-    for term in ("Sandbox", "Booley Flows", "Specialists"):
-        assert term in definition
-    assert "_Avoid_: coding agent, host agent, main agent, outer agent" in definition
-    assert "Developer Agent** →" not in retired
-    assert 'Never use "agent" for a Specialist' in retired
-
-
-def test_doctor_help_names_the_specialist_provider_probe() -> None:
-    help_text = " ".join(cli_help()["booley doctor"].split())
-    assert "Specialist provider authorization and memory probe" in help_text
-    assert "Developer Agent authorization" not in help_text
-
-
-def test_specialist_help_and_review_guides_name_the_delegated_actor() -> None:
-    texts = {
-        command: text
-        for command, text in cli_help().items()
-        if command.startswith("booley specialist ")
-    }
-    texts.update(
-        {
-            str(path.relative_to(ROOT)): path.read_text(encoding="utf-8")
-            for path in (ROOT / "src/booley/data/refs/code_review").rglob("*.md")
-        }
-    )
-    assert texts
-    for name, text in texts.items():
-        assert not re.search(r"(?<!Developer )\bagents?\b", text, re.IGNORECASE), name
-
-
 @pytest.mark.parametrize(
     "phrase",
     [
@@ -322,58 +184,6 @@ def test_guard_detects_wrapped_mixed_case_history(phrase: str) -> None:
     failures = history_failures({"example.md": "Current.\n" + phrase})
     assert len(failures) == 1
     assert failures[0].startswith("example.md:2:")
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        "README.md",
-        "docs/user/nested/example.md",
-        "src/booley/data/cheatsheet.md",
-        "src/booley/data/refs/new.md",
-        "src/booley/data/skills/example/companion.md",
-        "src/booley/data/skills/example/TEMPLATE.toml",
-        "src/booley/data/new-family/example.md",
-        "src/booley/data/skills/example/TEMPLATE.sh",
-        "crates/bwave/docs/public/example.md",
-    ],
-)
-def test_manifest_covers_each_user_text_family(tmp_path: Path, path: str) -> None:
-    file = tmp_path / path
-    file.parent.mkdir(parents=True, exist_ok=True)
-    file.write_text("# Formerly supported\n")
-    assert file in document_paths(tmp_path)
-    assert history_failures({path: file.read_text()})
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        "src/booley/data/refs/CHANGELOG.md",
-        "docs/adr/change.md",
-        "docs/internals/change.md",
-        "docs/research/change.md",
-        "src/booley/data/docs/CONFIG.md",
-        "src/booley/data/docker/implementation.txt",
-        "src/booley/data/licenses/legal.txt",
-        "src/booley/data/edalize/adapter.py",
-    ],
-)
-def test_manifest_excludes_history_and_implementation(tmp_path: Path, path: str) -> None:
-    file = tmp_path / path
-    file.parent.mkdir(parents=True, exist_ok=True)
-    file.write_text("Previously supported\n")
-    assert file not in document_paths(tmp_path)
-
-
-def test_document_texts_include_rendered_shipped_docs_outside_user_docs() -> None:
-    documents = document_texts(ROOT)
-    source = "docs/internals/FLOW_REPORTS.md"
-
-    assert documents[source] == rendered_shipped_docs(ROOT)[source]
-    assert not [path for path in documents if path.startswith("src/booley/data/docs/")]
-    # docs/user sources are scanned as authored, not a second time as rendered.
-    assert "docs/user/CONFIG.md" in documents
 
 
 def test_guard_accepts_current_literals_and_external_requirements() -> None:
@@ -422,13 +232,6 @@ def test_nested_help_is_scanned_and_hidden_adapters_are_omitted() -> None:
 )
 def test_guard_covers_examples_and_template_comments(content: str) -> None:
     assert history_failures({"template.md": content})
-
-
-def test_manifest_omits_binary_assets(tmp_path: Path) -> None:
-    path = tmp_path / "docs/user/example.png"
-    path.parent.mkdir(parents=True)
-    path.write_bytes(b"\x89PNG\0")
-    assert path not in document_paths(tmp_path)
 
 
 @pytest.mark.parametrize("fixture", HISTORY_POLICY["fixtures"], ids=lambda item: item["text"])

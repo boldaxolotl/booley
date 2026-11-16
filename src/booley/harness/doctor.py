@@ -6267,7 +6267,6 @@ def _flow_argv(
         report_dir,
         "--target",
         target,
-        "--diagnostic",
     ]
     if dry_run:
         argv.extend(["--dry-run", "--timeout-ms", "30000"])

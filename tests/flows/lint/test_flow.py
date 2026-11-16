@@ -452,9 +452,7 @@ class TestDoctorTargetAuthority:
             ),
         )
         flow = LintFlow()
-        flow.parse_args(
-            ["--work-dir", str(tmp_path), "--target", "lint_selftest_bad", "--diagnostic"]
-        )
+        flow.parse_args(["--work-dir", str(tmp_path), "--target", "lint_selftest_bad"])
         return flow
 
     def test_public_lint_rejects_doctor_only_target_before_resolution(
@@ -484,7 +482,6 @@ class TestDoctorTargetAuthority:
                     str(tmp_path),
                     "--target",
                     "lint",
-                    "--diagnostic",
                 ]
             )
 

@@ -28,7 +28,6 @@ class FlowRequest:
     target: str
     work_dir: Path = field(default_factory=Path.cwd)
     report_dir: Path | None = None
-    diagnostic: bool = False
     dry_run: bool = False
     timeout_ms: int | None = None
     slug: str = field(default="", init=False, repr=False)
@@ -39,7 +38,6 @@ class FlowRequest:
         self.work_dir = Path(self.work_dir)
         if self.report_dir is not None:
             self.report_dir = Path(self.report_dir)
-        require_bool(vars(self), "diagnostic", field="diagnostic")
         require_bool(vars(self), "dry_run", field="dry_run")
         if self.timeout_ms is not None and require_int(self.timeout_ms, field="timeout_ms") <= 0:
             raise ValueError("timeout_ms must be positive")

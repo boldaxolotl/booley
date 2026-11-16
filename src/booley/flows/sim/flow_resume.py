@@ -237,8 +237,7 @@ class SimulationRecordResumeMixin:
         selector = cast(Mapping[str, str], manifest.document["target"])["selector"]
         workload = cast(Mapping[str, object], manifest.document["workload"])
         trace = " --trace" if workload["trace"] is True else ""
-        # A raw-coverage run of a gated Target is refused without --diagnostic.
-        no_waivers = " --no-waivers --diagnostic" if _manifest_no_waivers(manifest) else ""
+        no_waivers = " --no-waivers" if _manifest_no_waivers(manifest) else ""
         tests = self._frozen_test_run_options(manifest, selector)
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
@@ -683,7 +682,6 @@ class SimulationRecordResumeMixin:
                 test_runs={target["selector"]: runs},
                 trace=cast(bool, workload["trace"]),
                 no_waivers=_manifest_no_waivers(manifest),
-                diagnostic=self.args.diagnostic,
             ),
             context,
         )

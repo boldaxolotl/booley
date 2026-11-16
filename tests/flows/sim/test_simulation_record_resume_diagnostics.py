@@ -72,6 +72,31 @@ def _interrupted_simulation_record(
     return reports, manifest, executions
 
 
+def test_resume_accepts_attempts_recorded_with_the_diagnostic_policy(tmp_path, monkeypatch):
+    reports, manifest, _executions = _interrupted_simulation_record(tmp_path, monkeypatch)
+    old = sorted(manifest.parent.rglob("attempt.json"))
+    for path in old:  # the policy shape every Booley before this change wrote
+        document = json.loads(path.read_bytes())
+        document["policy"]["diagnostic"] = True
+        path.write_bytes(canonical_json_bytes(document))
+    before = {path: path.read_bytes() for path in old}
+
+    def resumed(executor, request):
+        executor.prepare_attempt(request)
+        raise KeyboardInterrupt("resume reached execution")
+
+    monkeypatch.setattr("booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor.execute", resumed)
+    with pytest.raises(KeyboardInterrupt, match="resume reached execution"):
+        SimulateFlow().execute(
+            SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
+        )
+
+    assert {path: path.read_bytes() for path in old} == before
+    new = [path for path in manifest.parent.rglob("attempt.json") if path not in before]
+    assert new
+    assert all("diagnostic" not in json.loads(path.read_bytes())["policy"] for path in new)
+
+
 def _prime_prior_refusal(root, reports, manifest, executions):
     result = SimulateFlow().execute(
         SimRequest(resume_from=manifest, work_dir=root, report_dir=reports)

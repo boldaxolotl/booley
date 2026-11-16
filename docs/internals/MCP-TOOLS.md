@@ -128,7 +128,6 @@ Every endpoint inherits these arguments and adds only its own:
 | `-C`/`--project PATH` | Project Root, on the human CLI; MCP and the internal parser use `work_dir` |
 | `--report-dir` | Where `report.json` lands |
 | `--target` | The Target or Targets to operate on; repeat it or pass a comma-separated list. `self.args.target` always holds one comma-separated string |
-| `--diagnostic` | Run diagnostically: records no evidence |
 
 The MCP schema is generated from the same argparse parser, so a new argument
 reaches both the CLI and MCP without extra code. An endpoint may supply its
