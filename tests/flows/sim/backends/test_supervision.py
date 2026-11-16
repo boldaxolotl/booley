@@ -15,10 +15,11 @@ from typing import Any
 
 import pytest
 
+from booley.bwave import waveform_store
 from booley.flows.run_log import RUN_LOG_IN_PROGRESS_PREFIX, begin_run_log
 from booley.flows.sim.backends import shared
 from booley.flows.sim.backends import supervision as sup
-from booley.flows.sim.backends.declared_streams import DeclaredTraceStreams, _Stream
+from booley.flows.sim.backends.declared_streams import DeclaredTraceStreams
 from booley.flows.sim.backends.supervision import SimulatorLaunch, run_supervised
 from booley.flows.sim.run_guard import SIM_TIME_STALL_MARKER
 from booley.flows.sim.trace_session import TraceSession
@@ -85,30 +86,26 @@ class _FakeTrace:
 # --- precedence: $readmemh fatal > disk budget > sim-time stall > trace stall > timeout ---
 
 
-def test_readmemh_fatal_beats_disk_budget(tmp_path: Path, monkeypatch):
-    _guards(monkeypatch, disk="DISK")
+@pytest.mark.parametrize(
+    ("disk", "stall", "trace_stall", "script", "kind", "fragment"),
+    [
+        ("DISK", None, None, FATAL_THEN_SLEEP, "fatal_init", "missing $readmemh"),
+        ("DISK", "STALL", None, "print('x')", "disk_budget", ""),
+        (None, SIM_TIME_STALL_MARKER, "TRACE", "print('x')", "sim_time_stall", ""),
+    ],
+)
+def test_the_higher_precedence_abort_is_reported(
+    tmp_path: Path, monkeypatch, disk, stall, trace_stall, script, kind, fragment
+):
+    _guards(monkeypatch, disk=disk, stall=stall)
+    trace = _FakeTrace(tmp_path, stall_message=trace_stall) if trace_stall else None
 
-    lines, _, termination = run_supervised(_launch(tmp_path, FATAL_THEN_SLEEP))
+    lines, _, termination = run_supervised(_launch(tmp_path, script, trace=trace))
 
-    assert termination.kind == "fatal_init"
-    assert "missing $readmemh" in "".join(lines)
-
-
-def test_disk_budget_beats_sim_time_stall(tmp_path: Path, monkeypatch):
-    _guards(monkeypatch, disk="DISK", stall="STALL")
-
-    _, _, termination = run_supervised(_launch(tmp_path, "print('x')"))
-
-    assert (termination.kind, termination.detail) == ("disk_budget", "DISK")
-
-
-def test_sim_time_stall_beats_trace_stall(tmp_path: Path, monkeypatch):
-    _guards(monkeypatch, stall=SIM_TIME_STALL_MARKER)
-    trace = _FakeTrace(tmp_path, stall_message="TRACE")
-
-    _, _, termination = run_supervised(_launch(tmp_path, "print('x')", trace=trace))
-
-    assert termination.kind == "sim_time_stall"
+    assert termination.kind == kind
+    assert fragment in "".join(lines)
+    if kind == "disk_budget":
+        assert termination.detail == "DISK"
 
 
 def test_trace_stall_beats_timeout(tmp_path: Path, instant_timer):
@@ -134,18 +131,6 @@ def test_deadline_line_leaves_a_dying_child_to_the_abort_that_started_it(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX signals")
-def test_sigkilled_simulator_is_reported_to_its_command(tmp_path: Path, monkeypatch):
-    report = tmp_path / "kills"
-    monkeypatch.setenv("BOOLEY_JOB_KILL_REPORT", str(report))
-    script = "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"
-
-    _, proc, termination = run_supervised(_launch(tmp_path, script))
-
-    assert (proc.returncode, termination.kind) == (-signal.SIGKILL, "completed")
-    assert len(report.read_text(encoding="utf-8").splitlines()) == 1
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX signals")
 def test_simulator_killed_by_booley_is_not_reported(tmp_path: Path, monkeypatch):
     report = tmp_path / "kills"
     monkeypatch.setenv("BOOLEY_JOB_KILL_REPORT", str(report))
@@ -158,20 +143,29 @@ def test_simulator_killed_by_booley_is_not_reported(tmp_path: Path, monkeypatch)
 
     _, proc, termination = run_supervised(_launch(tmp_path, booley_killed, timeout_s=3))
     assert (proc.returncode, termination.kind) == (-signal.SIGKILL, "timeout")
-    run_supervised(_launch(tmp_path, self_killed))
+    _, proc, termination = run_supervised(_launch(tmp_path, self_killed))
+    assert (proc.returncode, termination.kind) == (-signal.SIGKILL, "completed")
 
     # Only the second death, which nobody in Booley caused, was reported.
     assert len(report.read_text(encoding="utf-8").splitlines()) == 1
 
 
-def test_silent_simulator_is_killed_by_the_timer(tmp_path: Path):
-    """F-13/F-21: a sim that prints nothing is still killed at its budget."""
+CLOSED_STDOUT = (
+    "import os, time; null = os.open(os.devnull, os.O_WRONLY); "
+    "os.dup2(null, 1); os.dup2(null, 2); time.sleep(60)"
+)
+
+
+@pytest.mark.parametrize("script", [SLEEP, CLOSED_STDOUT], ids=["silent", "closed-stdout"])
+def test_a_quiet_simulator_is_killed_at_the_deadline(tmp_path: Path, script: str):
+    """F-13/F-21: a sim that prints nothing, or closes stdout, is still killed at its budget."""
     start = time.monotonic()
-    lines, _, termination = run_supervised(_launch(tmp_path, SLEEP, timeout_s=1))
+    lines, _, termination = run_supervised(_launch(tmp_path, script, timeout_s=1))
 
     assert time.monotonic() - start < KILLED_WITHIN_S
     assert (termination.kind, termination.failure_kind) == ("timeout", "timeout")
-    assert "printed NO output at all" in "".join(lines)
+    if script == SLEEP:
+        assert "printed NO output at all" in "".join(lines)
 
 
 def test_lines_buffered_behind_the_deadline_kill_are_still_read(
@@ -183,19 +177,6 @@ def test_lines_buffered_behind_the_deadline_kill_are_still_read(
 
     assert termination.kind == "timeout"
     assert list(lines)[:2] == ["a\n", "b\n"]
-
-
-def test_child_that_closes_stdout_is_killed_at_the_deadline(tmp_path: Path):
-    """EOF on stdout must not end supervision while the child is still alive."""
-    script = (
-        "import os, time; null = os.open(os.devnull, os.O_WRONLY); "
-        "os.dup2(null, 1); os.dup2(null, 2); time.sleep(60)"
-    )
-    start = time.monotonic()
-    _, _, termination = run_supervised(_launch(tmp_path, script, timeout_s=1))
-
-    assert time.monotonic() - start < KILLED_WITHIN_S
-    assert termination.kind == "timeout"
 
 
 def test_disk_baseline_is_taken_before_the_spawn(tmp_path: Path, monkeypatch):
@@ -447,6 +428,8 @@ class _FirstPollAlive:
 @pytest.mark.parametrize("ending", ["completed", "timeout", "on_line_raises"])
 def test_no_stall_monitor_outlives_the_run(tmp_path: Path, monkeypatch, request, ending: str):
     """AC1: however the run ends, its stall-monitor thread is gone when run_supervised returns."""
+    # Private seam: the monitor thread is private to `TraceSession`; the test must wrap
+    # `_monitor_stalls` to hold its thread and slow its poll.
     monitors: list[tuple[threading.Thread, subprocess.Popen[str]]] = []
     real_monitor = TraceSession._monitor_stalls
 
@@ -493,15 +476,27 @@ def test_no_stall_monitor_outlives_the_run(tmp_path: Path, monkeypatch, request,
             sim_proc.wait(timeout=KILLED_WITHIN_S)
 
 
-def test_declared_stream_monitor_stops_with_the_run(tmp_path: Path, request):
+def test_declared_stream_monitor_stops_with_the_run(
+    tmp_path: Path, request, monkeypatch, fake_bwave
+):
     """Declared streams run without a trace session on the launch; their monitor must still end."""
     request.getfixturevalue("instant_timer")
+    monkeypatch.setenv("FAKE_BWAVE_MODE", "never_read")
+    monkeypatch.setattr(waveform_store, "can_stream_waveform", lambda: True)  # sim conftest: off
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
     session = TraceSession(tmp_path / "work")
-    streams = DeclaredTraceStreams(session)
-    streams._streams.append(_Stream("fpu.vcd", tmp_path / "fpu.sidecar", _IdleConversion()))  # type: ignore[arg-type]
+    streams = DeclaredTraceStreams.start(session, ("fpu.vcd",), run_dir)
+    before = set(threading.enumerate())
 
-    _, _, termination = run_supervised(_launch(tmp_path, SLEEP, streams=streams))
+    try:
+        _, _, termination = run_supervised(_launch(tmp_path, SLEEP, streams=streams))
+        # The default poll interval is 2 s, so an unstopped monitor is still asleep here.
+        leaked = [t.name for t in set(threading.enumerate()) - before if t.is_alive()]
+    finally:
+        session.start_conversion_budget(0)
+        streams.close_inputs()
+        streams.finish()
 
     assert termination.kind == "timeout"
-    # The default poll interval is 2 s, so an unstopped monitor is still asleep here.
-    assert [t.name for t in threading.enumerate() if "_monitor_stalls" in t.name] == []
+    assert leaked == []
