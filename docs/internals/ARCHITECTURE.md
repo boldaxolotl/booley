@@ -217,23 +217,41 @@ it cost about 40 times the tokens. The MCP surface also gives Booley:
 
 Every Flow, Measurement, or Specialist run is a Job, whether the MCP server
 submits it or a human starts it as a Standalone Job. The Job is the whole run,
-not one EDA command. A Job holds a reservation estimated from the Resource
-History and runs while the reservations fit the Memory Budget; excess work
-queues, and a running Job is never preempted; see [ADR
-0087](../adr/0087-admit-jobs-against-a-measured-memory-budget.md).
+not one EDA command. Job admission decides when each Job starts, and memory is
+the only resource it budgets: Jobs started together slow down by competing
+for CPU, but they fail by running out of memory. The design is in
+[ADR 0087](../adr/0087-admit-jobs-against-a-measured-memory-budget.md).
 
-Each reservation is a claim file (see [Why plain files](#why-plain-files)). The
-rule the recovery code protects: a claim becomes free only when the processes
-that used it are provably gone. Otherwise a Job whose root process died could
-free its claim while its EDA child processes still run, and the next Job would
-start on top of them.
+- **Budget.** The Memory Budget is the container's memory limit
+  (`[sandbox].memory`, else the host memory the container sees) minus a
+  reserve for the agents and the MCP server.
+- **Estimate.** A Job reserves its estimated peak memory: the largest recent
+  peak recorded for the same Target and phase, plus headroom. A Job with no
+  history borrows the largest estimate for that phase elsewhere in the
+  Project; with nothing to borrow, it runs alone.
+- **Admission.** A Job starts when its reservation fits in the memory that is
+  free; otherwise it waits, QUEUED, and holds no memory while it waits.
+  Interactive work goes ahead of background work. A later Job may jump ahead
+  of one that doesn't fit yet, but only if it fits now and should finish
+  before the first one could start, so small runs don't wait behind a big
+  synthesis and the big synthesis still gets its turn. A Job estimated above
+  the whole budget waits until nothing else runs, then runs alone. A Job
+  that needs a licensed EDA tool also needs a free seat under the Project's
+  Seat Cap.
+- **Running.** A running Job is never preempted. Its reservation shrinks as
+  its phases finish and never grows, so it never waits partway through.
+- **Out of memory.** Booley ranks processes for the kernel's OOM killer so
+  the newest Job's EDA tools die first and the Developer Agent and the MCP
+  server last. A Job killed this way runs once more, alone, with its estimate
+  raised; a second kill fails it.
+- **Parallel tests.** Each test of a Simulation Record is admitted on its
+  own, so free memory decides how many tests run at once, never more than the
+  cores.
 
-A Simulation Record runs its first test on the Simulation Job's own claim. Each
-further parallel item takes its own child memory claim, sized from the item's
-history, while the reservations fit the Memory Budget; the number of parallel
-items never exceeds the cores. Items whose resolved run directory is the same
-still run one at a time. Losing a child claim's lease stops only that test;
-losing the Job's own claim cancels the run.
+Reservations are plain files (see [Why plain files](#why-plain-files)). Booley
+frees one only when the processes that used it are provably gone; otherwise a
+Job whose root process died could free its memory while its EDA tools still
+run, and the next Job would start on top of them.
 
 ## Booley Flows
 
