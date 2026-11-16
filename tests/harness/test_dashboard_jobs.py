@@ -199,7 +199,7 @@ def test_reported_metrics_and_legacy_elapsed_are_not_invented():
         "completed",
         report={
             "estimated_fmax_mhz": 210.5,
-            "cells": 42,
+            "cell_count": 42,
             "elapsed_s": 5,
             "failure_reason": "timing threshold missed",
             "stdout": "raw log must remain hidden",

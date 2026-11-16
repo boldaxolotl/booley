@@ -180,7 +180,7 @@ def test_synth_run_returns_cell_count_and_per_clock_timing() -> None:
 
     values = metrics.flow_metrics()
 
-    assert values.plain["cell_count"] == 12345 == metrics.qor_detail()["cells"]
+    assert values.plain["cell_count"] == 12345 == metrics.qor_detail()["cell_count"]
     assert values.per_clock["fmax_mhz"] == pytest.approx(
         {"clk_core": 800.0, "clk_io": 166.667}, rel=1e-4
     )
@@ -211,11 +211,24 @@ def test_synth_report_yields_declared_metric_values() -> None:
     values = report_metric_values("synth", detail)
 
     assert set(values) == {"asic"}
+    assert "cells" not in detail["asic"] and detail["asic"]["cell_count"] == 12345
     assert values["asic"].plain == {"area_um2": 52480.0, "area_kge": 65.8, "cell_count": 12345}
     assert values["asic"].per_clock["fmax_mhz"] == pytest.approx(
         {"clk_core": 800.0, "clk_io": 166.667}, rel=1e-4
     )
     assert values["asic"].per_clock["wns_ns"] == pytest.approx({"clk_core": 0.75, "clk_io": -1.0})
+
+
+def test_synth_report_reads_cell_count() -> None:
+    from booley.measurement.flow_metrics import report_metric_values
+
+    stored: dict[str, object] = {"area_kge": 65.8, "cell_count": 12345, "per_clock": {}}
+    values = report_metric_values("synth", {"targets": ["asic"], "asic": stored})
+    assert values["asic"].plain == {"area_kge": 65.8, "cell_count": 12345}
+
+    older = {"area_kge": 65.8, "cells": 12345, "per_clock": {}}
+    values = report_metric_values("synth", {"targets": ["asic"], "asic": older})
+    assert values["asic"].plain == {"area_kge": 65.8}
 
 
 def test_synth_report_returns_every_reported_clock() -> None:

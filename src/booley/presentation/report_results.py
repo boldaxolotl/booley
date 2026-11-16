@@ -306,6 +306,8 @@ def _legacy_simulation(detail: Mapping[str, object]) -> tuple[str, list[ResultLi
 _METRICS = {
     "area_kge": "Area",
     "area_um2": "Area µm²",
+    "cell_count": "Cells",
+    # Synth reports written by v0.4.0 and earlier name the field `cells`.
     "cells": "Cells",
     "wns_ns": "WNS",
     "whs_ns": "Hold slack",
