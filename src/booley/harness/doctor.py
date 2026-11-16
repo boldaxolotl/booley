@@ -3540,9 +3540,7 @@ def _run_project_checks(
     _check_project_trackability(project.project_root, project.booley_dir, reporter.warn_)
     _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
     _check_repo_footprint(project.project_root, reporter.pass_, reporter.warn_)
-    _check_custom_endpoints_and_criteria(
-        project.project_root, reporter.pass_, reporter.warn_, reporter.fail_
-    )
+    _check_custom_endpoints(project.project_root, reporter.pass_, reporter.warn_, reporter.fail_)
     _check_disabled_endpoints(project, reporter.note_)
     if reporter.agent_check_enabled("worker backend health check"):
         _check_agent_backend_health(
@@ -3845,29 +3843,21 @@ def _check_repo_footprint(project_root: Path, _pass: Check, _warn: Check) -> Non
         _pass("no Booley scaffolding files tracked in the repo")
 
 
-def _check_custom_endpoints_and_criteria(
-    project_root: Path, _pass: Check, _warn: Warn, _fail: Fail
-) -> None:
+def _check_custom_endpoints(project_root: Path, _pass: Check, _warn: Warn, _fail: Fail) -> None:
     try:
-        from booley.mcp.endpoint_validation import (
-            EndpointValidationError,
-            validate_custom_endpoints_and_criteria,
-        )
+        from booley.mcp.endpoint_validation import validate_custom_endpoints
 
-        skipped = validate_custom_endpoints_and_criteria(project_root)
-    except EndpointValidationError as exc:
-        _fail("custom endpoint/Criteria validation failed", exc.failures[0])
-        return
+        skipped = validate_custom_endpoints(project_root)
     except SourceCheckoutProjectError as exc:
         _fail(
-            f"custom endpoint/Criteria validation failed: {exc}",
+            f"custom endpoint validation failed: {exc}",
             "run Doctor from the Project's workspace, not a Booley source checkout",
         )
         return
     except (ImportError, OSError, ValueError) as exc:
         _fail(
-            f"custom endpoint/Criteria validation failed: {exc}",
-            "fix .booley/mcp_tools and Criteria configuration",
+            f"custom endpoint validation failed: {exc}",
+            "fix .booley/mcp_tools and the [flows]/[specialists] tables in booley.toml",
         )
         return
     for item in skipped:
@@ -3875,7 +3865,7 @@ def _check_custom_endpoints_and_criteria(
             f"custom endpoint {item.file} skipped: {item.reason}", item.fix
         )
     if not skipped:
-        _pass("custom endpoints and Criteria validated")
+        _pass("custom endpoints validated")
 
 
 def _check_disabled_endpoints(project: ProjectAudit, _note: Check) -> None:

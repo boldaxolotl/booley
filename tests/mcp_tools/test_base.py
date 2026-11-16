@@ -7,12 +7,10 @@ import errno
 import json
 import os
 from pathlib import Path, PurePosixPath
-from typing import ClassVar
 from unittest import mock
 
 import pytest
 
-from booley.criteria.state import DevelopmentState
 from booley.flows import endpoint_admission
 from booley.flows.endpoint_admission import _Claim
 from booley.flows.endpoint_diff import read_source_dirs_from_toml
@@ -287,7 +285,7 @@ def test_endpoint_end_failure_propagates_without_completion_failure() -> None:
 
 def test_dry_run_skips_admission_and_persistent_bookkeeping(tmp_path: Path) -> None:
     state_file = tmp_path / "state.json"
-    DevelopmentState.load(state_file).save()
+    state_file.write_bytes(b'{"opaque": true}\n')
     before = state_file.read_bytes()
 
     class DryRunMcpTool(ConcreteMcpTool):
@@ -364,7 +362,6 @@ class SimLikeMcpTool(ConcreteMcpTool):
     """Dummy simulate endpoint used to assert base guard behavior."""
 
     name = "sim"
-    satisfies: ClassVar[list[str]] = ["sim_pass"]
 
     def _run(self) -> McpToolResult:
         self.set_criterion("sim_pass_default", True)
@@ -375,7 +372,6 @@ class LintLikeMcpTool(ConcreteMcpTool):
     """Dummy lint endpoint used to exercise sealed invocation binding."""
 
     name = "lint"
-    satisfies: ClassVar[list[str]] = ["lint_clean"]
     ran = False
 
     def _run(self) -> McpToolResult:
@@ -520,10 +516,7 @@ def test_code_modifying_tool_resets_nothing_and_keeps_change_statistics(tmp_path
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "base")
     state_file = tmp_path / "state.json"
-    st = DevelopmentState.load(state_file)
-    st.init_criteria({"lint_clean_lite": True}, strict=True)
-    st.set_criterion("lint_clean_lite", True)
-    st.save()
+    state_file.write_bytes(b'{"opaque": true}\n')
     before = state_file.read_bytes()
 
     class CommittingTool(ConcreteMcpTool):
@@ -553,14 +546,10 @@ def test_custom_endpoint_with_hand_set_state_file_runs_and_reports_no_criteria(
     tmp_path: Path,
 ) -> None:
     state_file = tmp_path / "state.json"
-    st = DevelopmentState.load(state_file)
-    st.init_criteria({"lint_clean_other": True}, strict=True)
-    st.save()
+    state_file.write_bytes(b'{"opaque": true}\n')
     before = state_file.read_bytes()
 
     class DeclaringTool(ConcreteMcpTool):
-        satisfies: ClassVar[list[str]] = ["lint_clean"]
-
         def _run(self) -> McpToolResult:
             self.set_criterion("lint_clean_demo", True)
             return McpToolResult(exit_code=EXIT_SUCCESS, report_text="ran")
@@ -605,7 +594,6 @@ class TestHumanModeStderr:
 
     def test_state_backed_failure_reaches_stderr_and_report(self, tmp_path: Path, capsys):
         state_file = tmp_path / "state.json"
-        DevelopmentState.load(state_file).save()
         endpoint = self._FailingMcpTool()
         report_dir = tmp_path / "reports"
         with mock.patch.dict(os.environ, _env_with_state(state_file)):
@@ -681,7 +669,6 @@ class TestHumanModeStderr:
         self, tmp_path: Path, capsys
     ) -> None:
         state_file = tmp_path / "state.json"
-        DevelopmentState.load(state_file).save()
         endpoint = self._SelfPrintingFailMcpTool()
 
         with mock.patch.dict(os.environ, _env_with_state(state_file)):
@@ -696,7 +683,6 @@ class TestHumanModeStderr:
         self, tmp_path: Path, capsys
     ) -> None:
         state_file = tmp_path / "state.json"
-        DevelopmentState.load(state_file).save()
 
         with mock.patch.dict(os.environ, _env_with_state(state_file)):
             rc = self._AnnouncingPassMcpTool().main(["--report-dir", str(tmp_path / "reports")])
@@ -899,7 +885,6 @@ class TestStdoutWitness:
 class TestMcpToolWriteReport:
     def test_report_written(self, tmp_path: Path):
         state_file = tmp_path / "state.json"
-        DevelopmentState.load(state_file).save()
         report_dir = tmp_path / "reports"
 
         env = _env_with_state(state_file)
@@ -915,7 +900,6 @@ class TestMcpToolWriteReport:
 
     def test_no_report_when_no_dir(self, tmp_path: Path):
         state_file = tmp_path / "state.json"
-        DevelopmentState.load(state_file).save()
 
         env = _env_with_state(state_file)
         endpoint = ConcreteMcpTool()
@@ -981,7 +965,6 @@ class TestMcpToolMain:
         expected_exit: int,
     ) -> None:
         state_file = tmp_path / "state.json"
-        DevelopmentState.load(state_file).save()
 
         class LabelledMcpTool(ConcreteMcpTool):
             def _run(self) -> McpToolResult:
@@ -1025,7 +1008,6 @@ class TestMcpToolMain:
 
     def test_exception_returns_actionable_durable_error(self, tmp_path: Path, capsys, caplog):
         state_file = tmp_path / "state.json"
-        DevelopmentState.load(state_file).save()
         report_dir = tmp_path / "reports"
 
         class FailingMcpTool(ConcreteMcpTool):
@@ -1220,7 +1202,6 @@ class TestMainDisplayEvents:
     def test_main_emits_endpoint_start_and_endpoint_end(self, tmp_path: Path):
         """main() brackets _run() with endpoint_start and endpoint_end display events."""
         state_file = tmp_path / "state.json"
-        DevelopmentState.load(state_file).save()
         logs_dir = tmp_path / "logs"
         logs_dir.mkdir()
 
@@ -1248,7 +1229,6 @@ class TestMainDisplayEvents:
     def test_config_aware_false_suppresses_config(self, tmp_path: Path):
         """config_aware=False suppresses config in display events."""
         state_file = tmp_path / "state.json"
-        DevelopmentState.load(state_file).save()
         logs_dir = tmp_path / "logs"
         logs_dir.mkdir()
 
@@ -1276,7 +1256,6 @@ class TestMainDisplayEvents:
     def test_endpoint_end_emitted_on_exception(self, tmp_path: Path):
         """endpoint_end is still written when _run() raises."""
         state_file = tmp_path / "state.json"
-        DevelopmentState.load(state_file).save()
         logs_dir = tmp_path / "logs"
         logs_dir.mkdir()
 
@@ -1316,7 +1295,6 @@ class TestMainDisplayEvents:
         tmp_path: Path,
     ) -> None:
         state_file = tmp_path / "state.json"
-        DevelopmentState.load(state_file).save()
         logs_dir = tmp_path / "logs"
         logs_dir.mkdir()
 
@@ -1355,7 +1333,6 @@ class TestMainDisplayEvents:
     def test_display_tag_overrides_config(self, tmp_path: Path):
         """display_tag property overrides config_aware in display events."""
         state_file = tmp_path / "state.json"
-        DevelopmentState.load(state_file).save()
         logs_dir = tmp_path / "logs"
         logs_dir.mkdir()
 
@@ -1715,7 +1692,6 @@ class TestNoReportDirWarning:
 
     def _run_endpoint(self, argv: list[str], tmp_path: Path):
         state_file = tmp_path / "state.json"
-        DevelopmentState.load(state_file).save()
         endpoint = ConcreteMcpTool()
         with mock.patch.dict(os.environ, _env_with_state(state_file)):
             return endpoint.main([*argv, "--work-dir", str(tmp_path)])

@@ -338,9 +338,9 @@ class TestCheatCommand:
             "AGENTS.md",
         ):
             assert path in basic
-        for path in ("criteria.toml", "mcp_tools/*.py"):
-            assert path not in basic
-            assert path in custom
+        assert "mcp_tools/*.py" not in basic
+        assert "mcp_tools/*.py" in custom
+        assert "criteria.toml" not in out
         assert "Most projects do not need these files" in " ".join(custom.split())
         assert "tickets/<state>/<slug>.md" not in out
         assert "SETUP-PLAN.md" not in out

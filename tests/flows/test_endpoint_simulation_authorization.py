@@ -8,7 +8,6 @@ from typing import cast
 
 import pytest
 
-from booley.criteria.state import DevelopmentState
 from booley.flows.sim.flow import SimulateFlow, SimulationMode
 from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.targets.domain import TargetHandle
@@ -119,9 +118,6 @@ def test_state_backed_simulation_preflight_rejection_reaches_stderr(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    state_file = tmp_path / "state.json"
-    DevelopmentState.load(state_file).save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
     flow = SimulateFlow()
     monkeypatch.setattr(flow, "_pre_state_gate", lambda: None)
     prepare_as(

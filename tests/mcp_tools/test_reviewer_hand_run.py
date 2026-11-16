@@ -16,7 +16,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from booley.evidence.review_receipt import review_receipt_drift
 from booley.evidence.review_vocabulary import ORIGIN_PRE_EXISTING
 from booley.mcp.base import McpToolResult
 from booley.specialists.reviewer import ReviewerSpecialist
@@ -107,7 +106,6 @@ def test_spec_text_is_reviewed_and_reported(
     assert result.exit_code == 0, result.report_text
     assert f"## Specification (source: inline text)\n\n{text}" in prompt_of(invoke)
     assert f"Spec (inline text):\n{text}" in result.report_text
-    assert review_receipt_drift(result.detail, project) == []
 
 
 def test_spec_and_spec_text_together_is_a_usage_error(
@@ -704,39 +702,6 @@ def test_audit_rows_name_their_guide_call(project: Path, monkeypatch: pytest.Mon
     )
     (rejected,) = result.detail["rejected"]
     assert (rejected["guide"], rejected["attempt_id"]) == ("bugs-hunt", attempts["bugs-hunt"])
-
-
-def test_editing_either_bugs_guide_stales_the_receipt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    for number, guide in enumerate(BUGS_GUIDES):
-        project = build_project(tmp_path / f"case{number}", monkeypatch)
-        _assert_guide_edit_stales_receipt(project, monkeypatch, tmp_path / f"data{number}", guide)
-
-
-def _assert_guide_edit_stales_receipt(
-    project: Path, monkeypatch: pytest.MonkeyPatch, package_data: Path, guide: str
-) -> None:
-    import shutil
-
-    from booley.runtime.paths import refs_dir
-
-    shutil.copytree(refs_dir() / "code_review", package_data / "refs/code_review")
-    monkeypatch.setattr("booley.runtime.paths.package_data_dir", lambda: package_data)
-
-    result, _ = review_by_guide(
-        project,
-        monkeypatch,
-        BASE_ARGS,
-        {"bugs-checklist": {"issues": []}, "bugs-hunt": {"issues": []}},
-    )
-    assert review_receipt_drift(result.detail, project) == []
-
-    with (package_data / "refs/code_review/rtl" / f"{guide}.md").open(
-        "a", encoding="utf-8", newline="\n"
-    ) as f:
-        f.write("\nOne more rule.\n")
-    assert review_receipt_drift(result.detail, project) == ["guides"]
 
 
 # --- TB quality: language checklists and one hunt call (issue #4021) ---

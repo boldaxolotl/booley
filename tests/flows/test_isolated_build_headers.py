@@ -20,7 +20,6 @@ import pytest
 import yaml
 
 from booley.core.build_paths import work_root_for
-from booley.criteria.state import DevelopmentState
 from booley.flows import edam as edam_layer
 from booley.flows.fpga.backends.vivado import cache as fpga_cache
 from booley.flows.fpga.flow import FpgaImplFlow
@@ -161,9 +160,6 @@ def real_fusesoc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from booley.runtime.booley_dir import reset_cache
 
     reset_cache()
-    state = tmp_path / "state.json"
-    DevelopmentState.load(state).save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state))
     scratch = tmp_path.parent / f"{tmp_path.name}-fusesoc"
     scratch.mkdir()
     _real_fusesoc(monkeypatch, scratch)

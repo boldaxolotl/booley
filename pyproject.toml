@@ -243,7 +243,6 @@ known-first-party = ["booley"]
 #             upstream PR ships the file byte-identical (ADR 0033).
 "src/booley/flows/sim/trace_session.py" = ["PLR0915"]
 "src/booley/data/edalize/verible.py" = ["RUF012", "PLR0912", "RUF005"]
-"src/booley/criteria/state.py" = ["PLR0912", "N818"]
 "src/booley/mcp/base.py" = ["B027"]
 "src/booley/specialists/reviewer.py" = ["PLR0912"]
 "src/booley/bwave/cli.py" = ["PLR0911", "PLR0912", "PLR0915"]
@@ -336,10 +335,6 @@ include = ["src/booley"]
 # a new module: new code is checked by default, so fix its errors instead. Keep
 # the list sorted.
 exclude = [
-    "src/booley/criteria/actions.py",
-    "src/booley/criteria/presentation.py",
-    "src/booley/criteria/reference.py",
-    "src/booley/criteria/templates.py",
     "src/booley/flows/base.py",
     "src/booley/flows/cli_arguments.py",
     "src/booley/flows/cli_selection.py",

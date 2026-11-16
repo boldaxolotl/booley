@@ -30,7 +30,7 @@ from booley.runtime.supervised_execution import (
     supervised_execution_scope,
 )
 from booley.runtime.timefmt import rfc3339_from_datetime, utc_now_rfc3339
-from tests.flows.test_flow_base import EchoFlow, _env_with_state
+from tests.flows.test_flow_base import EchoFlow, _flow_env
 from tests.subprocess_budget import run_bounded_child
 
 linux_only = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
@@ -65,12 +65,9 @@ def _fresh_label():
 
 @pytest.fixture
 def flow(tmp_path: Path) -> EchoFlow:
-    from booley.criteria.state import DevelopmentState
 
-    state_file = tmp_path / "state.json"
-    DevelopmentState.load(state_file).save()
     echo = EchoFlow()
-    with patch.dict(os.environ, _env_with_state(state_file)):
+    with patch.dict(os.environ, _flow_env()):
         echo.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
     return echo
 
@@ -215,13 +212,10 @@ def test_synth_make_records_yosys_and_openroad_phases(flow, tmp_path):
 
 @linux_only
 def test_synth_history_threads_equal_the_openroad_thread_count(tmp_path, monkeypatch):
-    from booley.criteria.state import DevelopmentState
     from booley.flows.memory_admission import fixed_job_threads
 
-    state_file = tmp_path / "state.json"
-    DevelopmentState.load(state_file).save()
     synth = AsicSynthesizeFlow()
-    with patch.dict(os.environ, _env_with_state(state_file)):
+    with patch.dict(os.environ, _flow_env()):
         synth.parse_args(["--target", "core", "--work-dir", str(tmp_path)])
     synth._execution_role = "baseline"  # no reuse slot
     bin_dir = tmp_path / "bin"

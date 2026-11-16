@@ -611,7 +611,6 @@ class LintFlow(BuiltinFlow[LintRequest]):
         example="booley flow lint --target lint_soc",
     )
     code_modifying: bool = False
-    satisfies: ClassVar[list[str]] = ["lint_clean"]
 
     # The built-in path is make-driven end-to-end in the Sandbox.
 

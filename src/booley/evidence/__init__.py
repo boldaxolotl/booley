@@ -1,1 +1,1 @@
-"""Dependency-neutral values and serialization for Criterion evidence."""
+"""Dependency-neutral values and serialization for Flow evidence."""

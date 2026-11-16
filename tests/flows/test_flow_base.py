@@ -11,21 +11,19 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 
-from booley.criteria.templates import cycle_count_criterion_key
 from booley.flows import base as flow_base
 from booley.flows.base import BooleyFlow, SubprocessResult
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 
 
-def _env_with_state(state_file: Path, slug: str = "test") -> dict[str, str]:
+def _flow_env(slug: str = "test") -> dict[str, str]:
     env = os.environ.copy()
     env["BOOLEY_SLUG"] = slug
-    env["BOOLEY_STATE_FILE"] = str(state_file)
     return env
 
 
@@ -53,47 +51,6 @@ class EchoFlow(BooleyFlow):
 
 
 class TestBooleyFlowExecution:
-    def test_cycle_count_only_ticket_can_invoke_its_bound_target(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from booley.criteria.state import DevelopmentState
-        from booley.runtime import runtime_context
-
-        class CycleCountFlow(EchoFlow):
-            name = "sim"
-            satisfies: ClassVar[list[str]] = ["cycle_count"]
-
-        key = cycle_count_criterion_key("sim_core", "coremark")
-        state_file = tmp_path / "state.json"
-        state = DevelopmentState.load(state_file)
-        state.init_criteria(
-            {key: True},
-            criterion_params={
-                key: {
-                    "target": "sim_core",
-                    "test": "coremark",
-                    "cycle_count_max": 100,
-                }
-            },
-            strict=True,
-        )
-        state.save()
-        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
-
-        flow = CycleCountFlow()
-        with (
-            patch.dict(os.environ, _env_with_state(state_file)),
-            patch.object(
-                flow,
-                "_run",
-                return_value=McpToolResult(exit_code=EXIT_SUCCESS, report_text="ok"),
-            ) as run,
-        ):
-            exit_code = flow.main(["--target", "sim_core", "--work-dir", str(tmp_path)])
-
-        assert exit_code == EXIT_SUCCESS
-        run.assert_called_once_with()
-
     def test_host_entry_is_rejected_before_flow_execution(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
@@ -109,12 +66,8 @@ class TestBooleyFlowExecution:
         assert "Sandbox" in capsys.readouterr().err
 
     def test_successful_execution(self, tmp_path: Path):
-        state_file = tmp_path / "state.json"
-        from booley.criteria.state import DevelopmentState
 
-        DevelopmentState.load(state_file).save()
-
-        env = _env_with_state(state_file)
+        env = _flow_env()
         flow = EchoFlow()
         with patch.dict(os.environ, env):
             flow.parse_args(["--target", "test", "--message", "hello world"])
@@ -124,10 +77,6 @@ class TestBooleyFlowExecution:
 
     def test_command_not_found(self, tmp_path: Path):
         """Verify graceful handling of missing commands."""
-        state_file = tmp_path / "state.json"
-        from booley.criteria.state import DevelopmentState
-
-        DevelopmentState.load(state_file).save()
 
         class MissingCmdFlow(BooleyFlow):
             name = "missing"
@@ -144,7 +93,7 @@ class TestBooleyFlowExecution:
                     return McpToolResult(exit_code=EXIT_ERROR)
                 return McpToolResult()
 
-        env = _env_with_state(state_file)
+        env = _flow_env()
         flow = MissingCmdFlow()
         with patch.dict(os.environ, env):
             flow.parse_args(["--target", "test"])
@@ -152,10 +101,6 @@ class TestBooleyFlowExecution:
         assert result.exit_code == EXIT_ERROR
 
     def test_empty_command(self, tmp_path: Path):
-        state_file = tmp_path / "state.json"
-        from booley.criteria.state import DevelopmentState
-
-        DevelopmentState.load(state_file).save()
 
         class EmptyFlow(BooleyFlow):
             name = "empty"
@@ -170,7 +115,7 @@ class TestBooleyFlowExecution:
             def _interpret_result(self, result):
                 return McpToolResult()
 
-        env = _env_with_state(state_file)
+        env = _flow_env()
         flow = EmptyFlow()
         with patch.dict(os.environ, env):
             flow.parse_args(["--target", "test"])
@@ -182,16 +127,13 @@ class TestResourceEvidence:
     def test_local_execution_without_project_data_uses_temp_cache(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from booley.criteria.state import DevelopmentState
         from booley.runtime.booley_dir import reset_cache
 
-        state_file = tmp_path / "state.json"
-        DevelopmentState.load(state_file).save()
         monkeypatch.delenv("BOOLEY_DIR", raising=False)
         monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
         reset_cache()
         flow = EchoFlow()
-        with patch.dict(os.environ, _env_with_state(state_file), clear=True):
+        with patch.dict(os.environ, _flow_env(), clear=True):
             flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
 
         result = flow._execute_local([sys.executable, "-c", "print('ok')"])
@@ -213,12 +155,9 @@ class TestResourceEvidence:
             "PYTEST_XDIST_TESTRUNUID",
         ):
             monkeypatch.delenv(name, raising=False)
-        from booley.criteria.state import DevelopmentState
 
-        state_file = tmp_path / "state.json"
-        DevelopmentState.load(state_file).save()
         flow = EchoFlow()
-        with patch.dict(os.environ, _env_with_state(state_file)):
+        with patch.dict(os.environ, _flow_env()):
             flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
         script = (
             "import custom_helper, subprocess, sys; "
@@ -242,12 +181,9 @@ class TestResourceEvidence:
 
     @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
     def test_local_execution_measures_descendant_rss(self, tmp_path: Path):
-        state_file = tmp_path / "state.json"
-        from booley.criteria.state import DevelopmentState
 
-        DevelopmentState.load(state_file).save()
         flow = EchoFlow()
-        with patch.dict(os.environ, _env_with_state(state_file)):
+        with patch.dict(os.environ, _flow_env()):
             flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
         result = flow._execute_local(
             [
@@ -265,12 +201,9 @@ class TestBoundaryExecutor:
     """Boundary-named helper is now a local Sandbox subprocess."""
 
     def test_runs_locally_and_stamps_dispatch_time(self, tmp_path: Path):
-        state_file = tmp_path / "state.json"
-        from booley.criteria.state import DevelopmentState
 
-        DevelopmentState.load(state_file).save()
         flow = EchoFlow()
-        with patch.dict(os.environ, _env_with_state(state_file)):
+        with patch.dict(os.environ, _flow_env()):
             flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
         with patch.object(flow, "_execute") as execute:
             execute.return_value = SubprocessResult(returncode=0, stdout="ok")
@@ -294,12 +227,9 @@ class TestOpenRunLog:
     Claiming it at the start is what stops a tail reading that as live."""
 
     def _flow(self, tmp_path: Path) -> EchoFlow:
-        state_file = tmp_path / "state.json"
-        from booley.criteria.state import DevelopmentState
 
-        DevelopmentState.load(state_file).save()
         flow = EchoFlow()
-        with patch.dict(os.environ, _env_with_state(state_file)):
+        with patch.dict(os.environ, _flow_env()):
             flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
         return flow
 
@@ -391,12 +321,8 @@ class TestTimeoutKillsTheWholeTree:
             def _get_timeout(self) -> int:
                 return 2
 
-        state_file = tmp_path / "state.json"
-        from booley.criteria.state import DevelopmentState
-
-        DevelopmentState.load(state_file).save()
         flow = HangFlow()
-        with patch.dict(os.environ, _env_with_state(state_file)):
+        with patch.dict(os.environ, _flow_env()):
             flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
         return flow
 

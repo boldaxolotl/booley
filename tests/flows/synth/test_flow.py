@@ -23,8 +23,6 @@ import pytest
 
 from booley.core.boundary import BoundaryError
 from booley.core.build_paths import work_root_for
-from booley.criteria.state import DevelopmentState
-from booley.evidence.recipe import implementation_comparison_basis
 from booley.evidence.timing import make_clock_timing
 from booley.flows import artifacts
 from booley.flows.base import SubprocessResult
@@ -362,14 +360,9 @@ def test_synth_target_report_slug_is_safe_and_collision_resistant():
 
 @pytest.fixture()
 def state_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Create and return a fresh state file, set env vars."""
-    sf = tmp_path / "state.json"
-    st = DevelopmentState.load(sf)
-    st.slug = "test-ticket"
-    st.save()
+    """Set the slug env var and return the unused state path."""
     monkeypatch.setenv("BOOLEY_SLUG", "test-ticket")
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(sf))
-    return sf
+    return tmp_path / "state.json"
 
 
 @pytest.fixture()
@@ -2107,10 +2100,7 @@ def test_synthesis_run_records_no_criterion(
     state_path = tmp_path / "state.json"
     monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
     if named_state:
-        state = DevelopmentState.load(state_path)
-        state.slug = "test-ticket"
-        state.init_criteria({"synthesis_ok_lite": True})
-        state.save()
+        state_path.write_bytes(b'{"opaque": true}\n')
         monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
         before = state_path.read_bytes()
     flow = AsicSynthesizeFlow()
@@ -3140,9 +3130,6 @@ class TestBuildSynthCmd:
         assert synthesis_recipe_snapshot_fingerprint(
             changed_snapshot
         ) != synthesis_recipe_snapshot_fingerprint(left_snapshot)
-        assert implementation_comparison_basis(
-            changed_snapshot
-        ) != implementation_comparison_basis(left_snapshot)
 
     def test_stable_constraint_identity_preserves_selfcompare_diagnostic(
         self,

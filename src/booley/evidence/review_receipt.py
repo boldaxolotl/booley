@@ -5,10 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from booley.evidence.review_guides import ReviewGuide, declared_guide_names, guide_digest
 
@@ -19,15 +18,10 @@ REVIEW_DETAIL_VERSION = 4
 # filtering rules it ran under, because proposals filtered under old rules were
 # never kept: older receipts must get a fresh review.
 FILTERING_SEMANTICS_REVISION = 1
-_FRESHNESS_ONLY_CONTRACT_FIELDS = frozenset({"scope_hashes"})
 
 
 class ReviewContextError(OSError):
     """Persisted review context can no longer be read."""
-
-
-# Compatibility for callers which catch the old, narrower error name.
-ReviewTicketError = ReviewContextError
 
 
 @dataclass(frozen=True)
@@ -78,15 +72,6 @@ def _text_digest(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def _contract_document_digest(contract: Mapping[str, Any], name: str) -> str:
-    """Current digest of the document a contract names; inline spec text digests itself."""
-    inline = contract.get("spec_text") if name == "spec" else None
-    if isinstance(inline, str):
-        return _text_digest(inline)
-    raw_path = contract.get(f"{name}_source")
-    return _document_digest(Path(raw_path) if isinstance(raw_path, str) and raw_path else None)
-
-
 def _scope_hashes(work_dir: Path, scope: tuple[str, ...]) -> dict[str, str]:
     hashes: dict[str, str] = {}
     for raw in sorted(scope):
@@ -129,158 +114,10 @@ def build_review_contract_detail(invocation: ReviewInvocation) -> dict[str, Any]
         "declared_guides": declared_guide_names(invocation.category, invocation.focus),
     }
     if invocation.spec_text is not None:
-        # Inline text has no file: so the contract carries the reviewed text and freshness can reuse it.
+        # Inline text has no file: so the contract carries the reviewed text and the receipt can reuse it.
         contract.update(
             spec_text=invocation.spec_text,
             spec_source="",
             spec_digest=_text_digest(invocation.spec_text),
         )
     return contract
-
-
-def review_invocation_changed(
-    previous: object,
-    current: Mapping[str, Any],
-) -> bool:
-    """Whether two contracts ask different review questions.
-
-    Scoped source hashes are freshness evidence, not invocation identity: an
-    edit to a reviewed file must preserve its finding lifecycle so the next
-    review can verify or rediscover it.
-    """
-    if not isinstance(previous, Mapping):
-        return True
-
-    def identity(contract: Mapping[str, Any]) -> dict[str, Any]:
-        return {
-            key: value
-            for key, value in contract.items()
-            if key not in _FRESHNESS_ONLY_CONTRACT_FIELDS
-        }
-
-    return identity(previous) != identity(current)
-
-
-def _persisted_document_changed(
-    contract: Mapping[str, Any],
-    name: str,
-    *,
-    allow_missing: bool = False,
-) -> bool:
-    raw_path = contract.get(f"{name}_source")
-    path = Path(raw_path) if isinstance(raw_path, str) and raw_path else None
-    if path is not None and not path.is_file() and not allow_missing:
-        raise ReviewContextError(f"Could not read persisted Reviewer context: {path}")
-    return contract.get(f"{name}_digest") != _contract_document_digest(contract, name)
-
-
-def _recorded_guides(contract: Mapping[str, Any]) -> list[tuple[ReviewGuide, str]] | None:
-    """The guides and digests a contract recorded; None when it records none (a released receipt)."""
-    raw = contract.get("guides")
-    if not isinstance(raw, list):
-        return None
-    recorded: list[tuple[ReviewGuide, str]] = []
-    for row in cast("list[object]", raw):
-        if not isinstance(row, Mapping):
-            return None
-        fields = cast("Mapping[str, object]", row)
-        kind, path, digest = fields.get("kind"), fields.get("path"), fields.get("digest")
-        if kind not in ("checklist", "hunt") or not isinstance(path, str):
-            return None
-        recorded.append((ReviewGuide(kind, path), digest if isinstance(digest, str) else ""))
-    return recorded
-
-
-def _guides_changed(contract: Mapping[str, Any]) -> bool:
-    """Whether a guide the review ran changed, or its focus now declares other guides.
-
-    A contract without recorded guides predates guide digests: its guide content is unknown,
-    so it is stale once rather than trusted.
-    """
-    recorded = _recorded_guides(contract)
-    if recorded is None:
-        return True
-    category, focus = contract.get("category"), contract.get("focus")
-    if contract.get("declared_guides") != declared_guide_names(str(category), str(focus)):
-        return True
-    return any(guide_digest(guide) != digest for guide, digest in recorded)
-
-
-def review_receipt_drift(
-    detail: Mapping[str, Any],
-    work_dir: Path,
-) -> list[str]:
-    """Return changed dimensions for a persisted source-scoped receipt."""
-    contract = detail.get("contract")
-    if (
-        not isinstance(contract, Mapping)
-        or contract.get("filtering_semantics_revision") != FILTERING_SEMANTICS_REVISION
-    ):
-        return ["filtering_semantics"]
-    if detail.get("review_detail_version") != REVIEW_DETAIL_VERSION:
-        # Pre-v4 receipts continue through the legacy source-fingerprint path
-        # in criteria_acceptance. Upgrading Booley must not discard otherwise
-        # current findings and explicit waivers merely because their persisted
-        # representation predates the source-scoped contract.
-        return []
-    contract = detail.get("contract")
-    if not isinstance(contract, Mapping) or contract.get("version") != REVIEW_DETAIL_VERSION:
-        return ["contract_version"]
-    changed = [
-        name
-        for name in ("ticket", "spec")
-        if _persisted_document_changed(
-            contract,
-            name,
-        )
-    ]
-    raw_scope = contract.get("scope")
-    scope = (
-        tuple(item for item in raw_scope if isinstance(item, str))
-        if isinstance(raw_scope, list)
-        else ()
-    )
-    if contract.get("scope_hashes") != _scope_hashes(work_dir, scope):
-        changed.append("scope")
-    if _guides_changed(contract):
-        changed.append("guides")
-    return changed
-
-
-def _current_guides_identity(contract: Mapping[str, Any]) -> dict[str, Any]:
-    """Current digests of the recorded guides and the focus's declared guide names."""
-    recorded = _recorded_guides(contract)
-    return {
-        "recorded": None
-        if recorded is None
-        else {guide.name: guide_digest(guide) for guide, _ in recorded},
-        "declared": declared_guide_names(
-            str(contract.get("category")), str(contract.get("focus"))
-        ),
-    }
-
-
-def current_review_receipt_identity(
-    detail: Mapping[str, Any],
-    work_dir: Path,
-) -> dict[str, Any]:
-    """Return the current read-only inputs used by receipt freshness."""
-    contract = detail.get("contract")
-    if not isinstance(contract, Mapping):
-        return {"contract_version": None}
-    scope_raw = contract.get("scope")
-    scope = (
-        tuple(item for item in scope_raw if isinstance(item, str))
-        if isinstance(scope_raw, list)
-        else ()
-    )
-    documents = {}
-    for name in ("ticket", "spec"):
-        documents[name] = _contract_document_digest(contract, name)
-    return {
-        "version": contract.get("version"),
-        "filtering_semantics_revision": FILTERING_SEMANTICS_REVISION,
-        "documents": documents,
-        "scope_hashes": _scope_hashes(work_dir, scope),
-        "guides": _current_guides_identity(contract),
-    }

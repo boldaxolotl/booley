@@ -26,6 +26,7 @@ from booley.dev_support.flow_specialist_reference import (
 )
 from booley.mcp.registry import discover_mcp_tools
 from booley.runtime.paths import cheatsheet_path
+from booley.specialists.reviewer import RTL_FOCUSES, TB_FOCUS_CATEGORIES
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -131,12 +132,15 @@ def test_purpose_cells_are_summarized_not_the_agent_description() -> None:
 
 def test_specialist_reference_lists_every_reviewer_focus_and_mutation_mode() -> None:
     endpoints = {endpoint.name: endpoint for endpoint in discover_mcp_tools()}
-    reviewer = endpoints["reviewer"]
-    assert set(reviewer.satisfies) == set(_REVIEW_FOCUS_DESCRIPTIONS)
+    assert "reviewer" in endpoints
+    assert set(_REVIEW_FOCUS_DESCRIPTIONS) == {
+        *(("rtl", focus) for focus in RTL_FOCUSES),
+        *(("tb", focus) for focus in TB_FOCUS_CATEGORIES),
+    }
 
     rendered = render_specialists_reference()
-    for args in (reviewer.satisfies_args or {}).values():
-        assert args.split("--focus ", maxsplit=1)[1] in rendered
+    for category, focus in _REVIEW_FOCUS_DESCRIPTIONS:
+        assert f"| `{category}` | `{focus}` |" in rendered
     # Mutation testing is a Flow now: no Specialist table, no Specialist section.
     assert "mutation_tester" not in rendered
     assert "| Campaign | Goal arguments | Interactive Mode arguments |" not in rendered
