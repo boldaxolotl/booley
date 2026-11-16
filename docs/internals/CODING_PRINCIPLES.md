@@ -157,6 +157,39 @@ write them:
   including wrappers that re-call a parametrized test with its own parameters.
 - **Tests that keep dead code alive.** If only a test calls a function,
   delete both.
+- **Repository pins.** Reading a repository file (a workflow, a Dockerfile,
+  `.github/renovate.json`, `.mergify.yml`, a skill, a doc) and asserting its
+  literal text, keys, step order, or layout. Such a test fails when someone
+  edits the file on purpose, not when Booley breaks. Instead, rely on the
+  owning tool's own validation (Renovate's config validator, Mergify,
+  actionlint), run the workflow or script, or leave the text to review. Five
+  kinds of check stay, because each catches a break that neither the tool nor
+  a run reports:
+  - **Supply chain.** What a build or release pulls in, and what untrusted
+    code can reach: every download verified by digest or checksum, no
+    mutable tag (`latest`, a branch name), attestation and provenance on
+    what is published, and no secret or write token reachable by code from
+    a pull request or an update branch. Assert that property alone, not the
+    job order or step names around it.
+  - **Generator or source sync.** Text derived from a source, such as a
+    generated file or a reference doc that lists the CLI's options: the
+    test regenerates it or reads the source (the generator, the parser, the
+    other file) and asserts they agree. An expected value typed into the
+    test is a constant mirror, not a sync check.
+  - **Ratchets.** A count that may only shrink, such as the Pyright
+    exclusion list: the test fails when the count exceeds a ceiling that
+    each fix lowers. A limit the next change may raise is a pin.
+  - **Link and command resolution.** The test follows each link, or runs
+    each documented command, and asserts that it resolves. Asserting that a
+    doc names a given link or command is a pin.
+  - **Gate integrity.** What keeps a required check from going green
+    without doing its work (principle 15): a skipped job never counts as a
+    pass, and every evidence file a job declares reaches an upload that runs
+    even when the job fails. Assert that property, such as the merge rule
+    demanding an explicit success, not the job names or step order around
+    it.
+
+  A test that mixes pins with these checks keeps only the checks.
 
 To check a new test, break the code it covers: flip a condition, swap `min`
 for `max`, drop a call. If the test still passes, it catches nothing.
