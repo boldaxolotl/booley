@@ -11,7 +11,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import booley.flows.sim.build as build_module
-from booley.criteria.state import DevelopmentState
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.build import (
     BuildOutcome,
@@ -44,14 +43,9 @@ def _flow_with_state(tmp_path: Path, targets: list[str]) -> SimulateFlow:
         "CAPI=2:\nname: ::sim:0\ntargets:\n" + target_entries,
         encoding="utf-8",
     )
-    state_file = tmp_path / "state.json"
-    state = DevelopmentState.load(state_file)
-    state.init_criteria({f"elab_pass_{target}": True for target in targets})
-    state.save()
     env = os.environ.copy()
     env.update(
         BOOLEY_SLUG="elab-only-test",
-        BOOLEY_STATE_FILE=str(state_file),
     )
     flow = SimulateFlow()
     with patch.dict(os.environ, env):
@@ -465,7 +459,6 @@ def test_simulation_record_continues_and_applies_error_fail_pass_precedence(
 ) -> None:
     targets = ["clean", "broken", "infra"]
     flow = _flow_with_state(tmp_path, targets)
-    previous_infra_state = flow.state.criteria["elab_pass_infra"].met
     calls: list[str] = []
     outcomes = {
         "clean": BuildOutcome(True, "pass", None, output="ok"),
@@ -501,9 +494,7 @@ def test_simulation_record_continues_and_applies_error_fail_pass_precedence(
     assert f"  report: {(tmp_path / 'reports/sim/1/report.json').resolve()}" in result.report_text
     assert "manifest:" not in result.report_text
     assert calls == targets
-    assert flow.state.criteria["elab_pass_clean"].met is True
-    assert flow.state.criteria["elab_pass_broken"].met is False
-    assert flow.state.criteria["elab_pass_infra"].met is previous_infra_state
+    assert flow.state.criteria == {}
     assert result.detail["mode"] == "elab_only"
     assert [entry["failure_class"] for entry in result.detail["targets"]] == [
         None,

@@ -250,13 +250,11 @@ def test_claim_rejects_literal_removed_after_preflight(tmp_path: Path) -> None:
     assert ".gitkeep" in str(caught.value)
 
 
-def test_missing_literal_run_cwd_blocks_baseline_build_across_the_invocation(
+def test_missing_literal_run_cwd_blocks_every_publication_across_the_invocation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A candidate's missing directory is found before the baseline builds or anything publishes."""
+    """A candidate's missing directory is found before anything builds or publishes."""
     harness = _Harness(tmp_path, monkeypatch, "immutable")
-    baseline_root = tmp_path / "baseline-worktree"
-    (baseline_root / "run").mkdir(parents=True)
 
     def request(manifest, root: Path) -> NewSimulationRecordRunRequest:
         return NewSimulationRecordRunRequest(
@@ -268,12 +266,11 @@ def test_missing_literal_run_cwd_blocks_baseline_build_across_the_invocation(
             _admission(),
         )
 
-    baseline = request(_baseline_manifest(), baseline_root)
     candidate = request(literal_manifest("immutable"), harness.project)
 
     with pytest.raises(SimulationRecordIntegrityError, match=_MISSING):
         SimulateFlow._publish_and_run_simulation_record_requests(
-            SimulationRecord(harness.executor), [baseline], [candidate]
+            SimulationRecord(harness.executor), [candidate]
         )
 
     assert harness.counters["compile"] == 0

@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-from booley.criteria.coverage import COVERAGE_MIGRATION_SKELETON
 from booley.flows.sim import coverage_flow_context
 from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
 
@@ -27,45 +25,15 @@ def test_context_uses_checkout_local_legacy_config_over_cached_override(
     monkeypatch.setenv("BOOLEY_DIR", str(override))
     reset_cache()
     assert resolve_booley_dir() == override
-    monkeypatch.setattr(coverage_flow_context, "_coverage_policies", lambda *_args: {})
     monkeypatch.setattr(
         coverage_flow_context,
         "load_test_configuration_field",
         lambda *_args: {},
     )
 
-    context = coverage_flow_context.coverage_project_context(root, SimpleNamespace())
+    context = coverage_flow_context.coverage_project_context(root)
 
     assert context.project_data_repository == local
     assert context.waiver_config is not None
     assert context.waiver_config.anchor == "rtl_repository"
     assert context.waiver_config.directory == "approved-waivers"
-
-
-def test_runtime_rejects_legacy_coverage_with_current_schema_hint(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = tmp_path / "checkout"
-    (root / ".booley").mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-    monkeypatch.setattr(
-        coverage_flow_context.TargetCatalog,
-        "build",
-        lambda _root: SimpleNamespace(),
-    )
-    monkeypatch.setattr(
-        coverage_flow_context,
-        "load_test_configuration_field",
-        lambda *_args: {},
-    )
-    state = SimpleNamespace(
-        criteria={"coverage_toggle_sim_core": SimpleNamespace(params={})},
-        flow_key_aliases={},
-    )
-
-    with pytest.raises(ValueError) as caught:
-        coverage_flow_context.coverage_project_context(root, state)
-
-    message = str(caught.value)
-    assert "Legacy coverage_toggle_sim_core" in message
-    assert COVERAGE_MIGRATION_SKELETON in message

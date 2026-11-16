@@ -403,12 +403,11 @@ def test_simulation_record_is_sized_from_its_resolved_test_runs(
 
 
 def test_sim_job_with_unresolved_runs_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A resume, and a Cycle Count baseline on another Target, have no Test Runs yet."""
+    """A resume has no Test Runs yet."""
     flow = _sim_flow()
     asked = _resolve(monkeypatch, flow)
 
     assert flow.simulation_record_job_requests(_prepared(resume=object())) is None
-    assert flow.simulation_record_job_requests(_prepared(baselines=("other",))) is None
     assert asked == []
 
 
