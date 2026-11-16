@@ -180,15 +180,13 @@ workspace.
 
 ## The MCP server
 
-On every container start, `postStartCommand` starts a loopback MCP server
-inside the container, so a reopened session reconnects on its own. It is the
-only way the Developer Agent reaches Booley Flows, Measurement, Specialists,
-B-Wave, and runtime status; the agent never spawns EDA tools itself. The server
-submits each Flow, Measurement, or Specialist run as a [Job](#jobs) and
-returns its run id at once; `booley_poll` reads the result. B-Wave queries run
-directly, outside any Job. `BOOLEY_MCP_TOOLS`
-and the nested-agent allowlists control which MCP tools are listed. The MCP
-extension model is in [MCP-TOOLS.md](MCP-TOOLS.md).
+One MCP server runs in the Sandbox. It is the only way the Developer Agent
+reaches Booley Flows, Measurement, Specialists, B-Wave, and runtime status; the
+agent never spawns EDA tools itself. The server submits each Flow, Measurement,
+or Specialist run as a [Job](#jobs) and returns its run id at once;
+`booley_poll` reads the result. B-Wave queries run directly, outside any Job.
+`BOOLEY_MCP_TOOLS` and the nested-agent allowlists control which MCP tools are
+listed. The MCP extension model is in [MCP-TOOLS.md](MCP-TOOLS.md).
 
 ### Why an MCP server
 
