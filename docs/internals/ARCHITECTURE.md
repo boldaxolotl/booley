@@ -104,15 +104,6 @@ mounted in. It stays up when the editor window closes and stops only on
 Setup and image customization are in [SETUP.md](../user/SETUP.md) and
 [SANDBOX.md](../user/SANDBOX.md#custom-sandbox-image).
 
-`runtime/image_lifecycle.py` is the one module that reconciles a Sandbox Image
-and the managed images it is built from, for init, refresh, and Doctor alike.
-Callers get an immutable image identity and typed diagnostics, so none of them
-reimplements Docker freshness rules
-([ADR 0053](../adr/0053-authoritative-session-image-lifecycle.md)). Replacing
-a running Sandbox is a separate roll-forward step (`runtime/session_refresh.py`):
-it keeps no journal and never restores the previous container, so a failure
-names its step and rerunning refresh converges.
-
 ### Why Docker
 
 Booley runs LLM agents that execute real EDA flows against the user's RTL,
