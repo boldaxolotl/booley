@@ -474,3 +474,24 @@ def test_streamed_store_that_cannot_move_stays_the_trace(tmp_path, monkeypatch):
 
     assert session.publish_bwave(store, move=True) is None
     assert store.is_file()
+
+
+def test_streamed_store_moved_before_a_status_write_failure_stays_published(tmp_path, monkeypatch):
+    from tests.conftest import MINIMAL_FST_BYTES
+
+    from booley.flows.sim.trace_session import TraceSession
+
+    work = tmp_path / "work"
+    store = work / "trace_streams" / "0-fpu.fst"
+    store.parent.mkdir(parents=True)
+    store.write_bytes(MINIMAL_FST_BYTES)
+    session = TraceSession(work)
+
+    def failing_event(kind, detail=""):
+        raise OSError("status write failed")
+
+    monkeypatch.setattr(session, "record_event", failing_event)
+
+    assert session.publish_bwave(store, move=True) == session.work_bwave_path
+    assert session.work_bwave_path.is_file()
+    assert not store.exists()

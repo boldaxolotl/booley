@@ -26,6 +26,7 @@ from booley.flows.artifact_durability import (
     durable_create,
     durable_directory,
     durable_in_place,
+    fsync_directory,
 )
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.sim.backends.cocotb_results import decode_results_payload, reconcile
@@ -99,7 +100,12 @@ from .model import (
 )
 from .planning import manifest_digest
 from .pre_sim_evidence import publish_pre_sim_firing
-from .run_directory import RunDirectory, claimed_run_directory, expand_run_directory
+from .run_directory import (
+    RunDirectory,
+    claimed_run_directory,
+    expand_run_directory,
+    require_run_directory_outside,
+)
 from .test_run_binding import observation_test_runs, work_item_test_runs
 
 #: Where a build directory keeps its Simulator Bundle manifest.
@@ -342,6 +348,9 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             "work_item_id": cast(str, request.work_item["work_item_id"]),
             "attempt_id": request.attempt_id,
         }
+        require_run_directory_outside(
+            run_directory, request.attempt_directory / "execution-evidence"
+        )
         with claimed_run_directory(run_directory, identity=identity) as run_cwd:
             return self._run_ready_group(
                 request,
@@ -1889,6 +1898,10 @@ def _outcome_artifact_reference(
         durable_in_place(source)
         raw = source_raw
         destination = live_root / source.resolve().relative_to(live_root.resolve())
+        for directory in destination.parents:  # a nested file's new folders, up to the attempt
+            if not directory.is_relative_to(live_root.parent):
+                break
+            fsync_directory(directory)
     else:
         durable_copy(source, destination)
         raw = destination.read_bytes()

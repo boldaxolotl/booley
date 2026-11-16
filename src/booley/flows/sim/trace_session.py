@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -730,7 +731,8 @@ class TraceSession:
             self._work_dir.mkdir(parents=True, exist_ok=True)
             if move:
                 trace_path.replace(dest)
-                self.record_event("bwave_published", str(dest))
+                with contextlib.suppress(OSError):  # the store is already published
+                    self.record_event("bwave_published", str(dest))
                 return dest
             if dest.exists() and dest.stat().st_mtime >= trace_path.stat().st_mtime:
                 return dest

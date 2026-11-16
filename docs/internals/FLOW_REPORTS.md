@@ -127,7 +127,7 @@ each evidence file once:
 attempt.json
 execution-evidence/    the run log, the trace and the adapter result, where the run wrote them
 evidence/              files Booley derives, and copies of files written outside the attempt
-private-build/         legacy-per-test builds only
+private-build/         builds made per test only
 runtime-inputs/        the attempt's runtime inputs
 pre-sim/               pre-sim command evidence
 coverage-record/       coverage runs only
@@ -139,9 +139,7 @@ afterwards. The work-item result references the log, the trace and the adapter
 result at `execution-evidence/<name>`. `evidence/` holds the Cocotb transport
 and infrastructure-failure documents Booley derives, plus a copy of any trace
 or adapter file the simulator wrote outside the attempt (for example in a
-configured run directory), which is removed with that directory. Results
-written before this layout reference `evidence/<NNNN>-<name>` copies and still
-resolve.
+configured run directory) whose original is removed with that directory.
 
 Record files reference each other by size and SHA-256, in two forms. Durable
 records (`summary.json`, work-item results) carry the canonical manifest

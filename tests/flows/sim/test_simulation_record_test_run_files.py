@@ -43,6 +43,7 @@ def _simulate(
     failing: frozenset[str],
     traced: bool,
     trace_in_work_dir: bool = False,
+    trace_subdir: str = "",
     on_live: Callable[[Launch], None] | None = None,
 ) -> SubprocessResult:
     """The fake simulator: fails the Tests in *failing*; when *traced* it dumps a waveform.
@@ -56,10 +57,11 @@ def _simulate(
     output = f"[SIM_RESULT] {'FAILED' if failed else 'PASSED'}\n"
     if traced:
         dump = (
-            Path(launch.work.work_dir) / "trace.fst"
+            Path(launch.work.work_dir) / trace_subdir / "trace.fst"
             if trace_in_work_dir
             else launch.cwd / f"{'+'.join(launch.tests)}.fst"
         )
+        dump.parent.mkdir(parents=True, exist_ok=True)
         dump.write_bytes(b"waveform")
         output += f"TRACE_OK: {dump}\n"
     return SubprocessResult(returncode=int(failed), stdout=output, duration_s=0.1)
@@ -73,6 +75,7 @@ def _run(
     failing: tuple[str, ...] = (),
     traced: bool = False,
     trace_in_work_dir: bool = False,
+    trace_subdir: str = "",
     on_live: Callable[[Launch], None] | None = None,
     **kwargs: Any,
 ) -> tuple[SimulationRecordSimRun, dict[str, Any]]:
@@ -86,6 +89,7 @@ def _run(
             failing=frozenset(failing),
             traced=traced,
             trace_in_work_dir=trace_in_work_dir,
+            trace_subdir=trace_subdir,
             on_live=on_live,
         ),
         target="lite",
@@ -154,6 +158,40 @@ def test_traced_attempt_keeps_one_copy_of_each_evidence_file(
     assert sum(name.endswith("run.log") for name in names) == 1
     assert sum(name.endswith(".fst") for name in names) == 1
     assert sum(name.startswith("adapter-") for name in names) == 1
+
+
+def test_nested_trace_is_kept_in_place_with_every_new_folder_synced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from booley.flows.sim.record import serial_execution
+
+    synced: list[Path] = []
+    real = serial_execution.fsync_directory
+    monkeypatch.setattr(
+        serial_execution,
+        "fsync_directory",
+        lambda path: (synced.append(Path(path).resolve()), real(path))[1],
+    )
+    _run(
+        tmp_path,
+        monkeypatch,
+        ["bad"],
+        failing=("bad",),
+        traced=True,
+        trace_in_work_dir=True,
+        trace_subdir="wave/dump",
+    )
+    _, document, attempt = _only_work_item(tmp_path)
+
+    (trace,) = [item for item in document["evidence"] if item["kind"] == "trace"]
+    assert trace["path"] == "execution-evidence/wave/dump/trace.fst"
+    for directory in (
+        "execution-evidence/wave/dump",
+        "execution-evidence/wave",
+        "execution-evidence",
+    ):
+        assert (attempt / directory).resolve() in synced
+    assert attempt.resolve() in synced
 
 
 def test_references_and_projection_name_the_kept_files(
