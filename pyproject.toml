@@ -344,7 +344,6 @@ exclude = [
     "src/booley/flows/cli_arguments.py",
     "src/booley/flows/cli_selection.py",
     "src/booley/flows/eda_failures.py",
-    "src/booley/flows/endpoint_acceptance.py",
     "src/booley/flows/endpoint_admission.py",
     "src/booley/flows/endpoint_events.py",
     "src/booley/flows/job_resources.py",

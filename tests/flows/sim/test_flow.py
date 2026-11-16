@@ -289,7 +289,6 @@ def _make_flow(
     flow = SimulateFlow()
     with patch.dict(os.environ, env):
         flow.parse_args(argv)
-    flow.read_state()
     return flow
 
 
@@ -728,7 +727,6 @@ def test_simulation_run_records_no_criterion(
     )
 
     assert run.result.exit_code == exit_code
-    assert run.flow.state.criteria == {}
     assert list(tmp_path.rglob("state.json")) == []
     assert not (tmp_path / "logs").exists()
     report = json.loads((tmp_path / "reports/sim/1/report.json").read_text(encoding="utf-8"))
@@ -748,8 +746,6 @@ def test_simulation_run_records_no_criterion(
 
 def test_simulation_run_leaves_declared_criteria_untouched(tmp_path: Path, monkeypatch):
     """Criteria declared in a state file are neither evaluated, baselined nor recorded."""
-    from tests.flows.sim.test_coverage_flow import _AcceptanceAdapter
-
     state_path = tmp_path / "state.json"
     state = DevelopmentState.load(state_path)
     state.slug, state.ticket_type = "ticket", "implementation"
@@ -767,20 +763,14 @@ def test_simulation_run_leaves_declared_criteria_untouched(tmp_path: Path, monke
     )
     state.save()
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
-    recorder = _AcceptanceAdapter(
-        log_dir=tmp_path / "logs",
-        identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
-    )
+    before = state_path.read_bytes()
     run = run_simulation_record_sim(
-        tmp_path, monkeypatch, {"lite": ["smoke"]}, PASS_PROCESS, target="lite", adapter=recorder
+        tmp_path, monkeypatch, {"lite": ["smoke"]}, PASS_PROCESS, target="lite"
     )
 
     assert run.result.exit_code == EXIT_SUCCESS, run.result.outcome.report_text
     assert run.launched == [("lite", ("smoke",))]
-    saved = DevelopmentState.load(state_path)
-    assert not saved.is_met("sim_pass_lite")
-    assert not saved.is_met("cycle_count_lite_smoke")
-    assert len(saved.acceptance_transactions) == 0
+    assert state_path.read_bytes() == before
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX unreadable-directory regression")

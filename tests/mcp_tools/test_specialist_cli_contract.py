@@ -132,13 +132,13 @@ def test_unknown_or_hidden_never_loads(tmp_path, monkeypatch, name, capsys):
     loader.assert_not_called()
 
 
-def test_host_refusal_precedes_state_reports_and_admission(tmp_path, monkeypatch):
+def test_host_refusal_precedes_reports_and_admission(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "booley.runtime.runtime_context.container_only_error",
         lambda command: f"use booley session enter -- {command}",
     )
     endpoint = ProjectSpecialist()
-    for hook in ["read_state", "_invoke_agent", "write_report"]:
+    for hook in ["_invoke_agent", "write_report"]:
         monkeypatch.setattr(endpoint, hook, Mock(side_effect=AssertionError(hook)))
     result = endpoint.execute_cli(["--work-dir", str(tmp_path)])
     assert result.exit_code == 2
@@ -152,34 +152,29 @@ def test_module_gate_rejects_disabled_specialist(tmp_path, sandbox, capsys):
     register_project_specialist(data)
     (data / "booley.toml").write_text("[specialists.project_review]\nenabled = false\n")
     endpoint = ProjectSpecialist()
-    endpoint.read_state = Mock(side_effect=AssertionError("state loaded"))
     assert endpoint.main(["--work-dir", str(tmp_path)]) == 2
-    endpoint.read_state.assert_not_called()
     output = capsys.readouterr()
     assert "is disabled" in output.out + output.err
 
 
-def test_module_gate_reports_retirement_before_loading_state(tmp_path, sandbox, capsys):
+def test_module_gate_reports_retirement_before_admission(tmp_path, sandbox, capsys):
     data = tmp_path / ".booley"
     data.mkdir()
     (data / "booley.toml").write_text("[mcp_tools.project_review]\nenabled = false\n")
     endpoint = ProjectSpecialist()
-    endpoint.read_state = Mock(side_effect=AssertionError("state loaded"))
 
     assert endpoint.main(["--work-dir", str(tmp_path)]) == 2
-    endpoint.read_state.assert_not_called()
     output = capsys.readouterr()
     assert "[specialists.*]" in output.out + output.err
 
 
-def test_reviewer_gate_rejects_misspelled_setting_before_loading_state(tmp_path, sandbox, capsys):
+def test_reviewer_gate_rejects_misspelled_setting_before_admission(tmp_path, sandbox, capsys):
     from booley.specialists.reviewer import ReviewerSpecialist
 
     data = tmp_path / ".booley"
     data.mkdir()
     (data / "booley.toml").write_text("[specialists.reveiwer]\nenabled = false\n")
     endpoint = ReviewerSpecialist()
-    endpoint.read_state = Mock(side_effect=AssertionError("state loaded"))
 
     assert (
         endpoint.main(
@@ -196,7 +191,6 @@ def test_reviewer_gate_rejects_misspelled_setting_before_loading_state(tmp_path,
         )
         == 2
     )
-    endpoint.read_state.assert_not_called()
     output = capsys.readouterr()
     assert "reveiwer" in output.out + output.err
 
@@ -222,9 +216,7 @@ def test_disabled_gate_uses_selected_project_config(
         root = root / "rtl"
         root.mkdir()
     endpoint = ProjectSpecialist()
-    endpoint.read_state = Mock(side_effect=AssertionError("state loaded"))
     assert endpoint.main(["--work-dir", str(root)]) == 2
-    endpoint.read_state.assert_not_called()
     output = capsys.readouterr()
     assert "is disabled" in output.out + output.err
 

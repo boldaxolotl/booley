@@ -177,7 +177,6 @@ def _make_endpoint(
             lambda *_args, **_kwargs: tb_top,
         )
     del dut_top_module
-    endpoint.read_state()
     return endpoint
 
 
@@ -230,24 +229,6 @@ _CORE_A_FIRST = "vendor:a:x:1.0#first"
 _TWO_CORE_TESTS = (
     f'["{_CORE_A_FIRST}"]\ntests = ["one"]\n["vendor:b:y:1.0#first"]\ntests = ["one"]\n'
 )
-
-
-def _two_core_endpoint(
-    tmp_path: Path,
-    monkeypatch,
-    criteria: dict[str, dict[str, Any]],
-    *,
-    target: str = _CORE_A_FIRST,
-    scope: str | None = "x.v",
-    strict: bool = False,
-) -> MutationFlow:
-    """Endpoint on a two-core Project (both declare ``first``) holding *criteria*."""
-    write_two_core_sim_project(tmp_path, _TWO_CORE_TESTS, target="first")
-    endpoint = _make_endpoint(tmp_path, monkeypatch, target=target, scope=scope, count=None)
-    endpoint.state.init_criteria(
-        dict.fromkeys(criteria, False), criterion_params=criteria, strict=strict
-    )
-    return endpoint
 
 
 def _eighty_percent(count: int) -> int:
@@ -1295,12 +1276,9 @@ def test_hand_run_mutation_records_no_criterion(
     if with_state_file:
         _make_state(tmp_path)
         before = state_path.read_bytes()
-    endpoint, result, _ = _campaign(
-        tmp_path, monkeypatch, count=2, state_file=with_state_file, **fakes
-    )
+    _, result, _ = _campaign(tmp_path, monkeypatch, count=2, state_file=with_state_file, **fakes)
 
     assert result.exit_code == expected_exit, result.report_text
-    assert endpoint.state.criteria == {}
     assert list(tmp_path.rglob("acceptance")) == []
     if with_state_file:
         assert state_path.read_bytes() == before
@@ -1486,22 +1464,6 @@ def test_omitted_scope_defaults_to_the_targets_own_rtl(tmp_path: Path, monkeypat
     # non-Verilog inputs are not mutable.
     assert endpoint.args.scope == "rtl/a.sv,rtl/b.v"
     assert endpoint._validate_scope_against_target(endpoint._scope_files()) is None
-
-
-def test_omitted_scope_ignores_a_criterion_in_state(tmp_path: Path, monkeypatch) -> None:
-    endpoint = _two_core_endpoint(
-        tmp_path,
-        monkeypatch,
-        {"mutation_score_first": {"scope": ["y.v"], "total": 3, "min_detected": 2}},
-        scope=None,
-    )
-
-    assert endpoint._apply_campaign_defaults() is None
-    assert (endpoint.args.scope, endpoint.args.count, endpoint.args.min_detected) == (
-        "x.v",
-        10,
-        None,
-    )
 
 
 @pytest.mark.parametrize("count, expected", [(10, 8), (15, 12), (5, 4)])

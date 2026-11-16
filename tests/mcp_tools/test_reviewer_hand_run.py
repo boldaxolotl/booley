@@ -16,11 +16,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from booley.criteria.presentation import CriterionPresentation
-from booley.criteria.state import DevelopmentState
 from booley.evidence.review_receipt import review_receipt_drift
 from booley.evidence.review_vocabulary import ORIGIN_PRE_EXISTING
-from booley.flows.execution_persistence import NoAcceptanceRecorder, ReviewInputs
 from booley.mcp.base import McpToolResult
 from booley.specialists.reviewer import ReviewerSpecialist
 
@@ -74,7 +71,6 @@ def review(
     """Run one hand-run Reviewer invocation; returns its result and the agent mock."""
     reviewer = ReviewerSpecialist()
     reviewer.parse_args(["--work-dir", str(root), *args])
-    reviewer.read_state()
     invoke = MagicMock(
         return_value=MagicMock(
             output=json.dumps(payload if payload is not None else {"issues": []}),
@@ -267,7 +263,6 @@ def review_by_guide(
     """
     reviewer = reviewer or ReviewerSpecialist()
     reviewer.parse_args(["--work-dir", str(root), *args])
-    reviewer.read_state()
     calls: list[Any] = []
 
     def fake_agent(params: Any) -> Any:
@@ -327,7 +322,6 @@ def test_bugs_review_runs_checklist_and_hunt_concurrently(
     reviewer.parse_args(
         ["--work-dir", str(project), *BASE_ARGS, "--transcript-dir", str(transcripts)]
     )
-    reviewer.read_state()
     result = reviewer._run()
 
     assert result.exit_code == 0, result.report_text
@@ -415,7 +409,6 @@ def test_security_review_runs_checklist_and_hunt_calls(
 
     reviewer = ReviewerSpecialist()
     reviewer.parse_args(["--work-dir", str(project), *SECURITY_ARGS])
-    reviewer.read_state()
     monkeypatch.setattr(reviewer, "_invoke_agent", fake_agent)
     result = reviewer._run()
 
@@ -651,66 +644,6 @@ def test_single_call_review_is_not_retried(project: Path, monkeypatch: pytest.Mo
     assert result.exit_code == 2, result.report_text
     assert invoke.call_count == 1
     assert "retrying" not in result.report_text
-
-
-class GoalShapedRecorder(NoAcceptanceRecorder):
-    """A recorder offering the Goal-era hooks; the Reviewer must not consult them."""
-
-    def review_goal_inputs(self, key: str) -> ReviewInputs:
-        raise AssertionError(f"Reviewer read Goal inputs for {key}")
-
-    def criterion_is_current(self, state: DevelopmentState, key: str) -> bool:
-        return True
-
-    def present_criterion(self, key: str, entry: object) -> CriterionPresentation:
-        return CriterionPresentation("Goal label", "ctx", "", "", "")
-
-
-def goal_shaped_reviewer(project: Path, args: list[str]) -> ReviewerSpecialist:
-    reviewer = ReviewerSpecialist()
-    reviewer._acceptance_recorder = GoalShapedRecorder()
-    reviewer.parse_args(["--work-dir", str(project), *args])
-    reviewer.read_state()
-    return reviewer
-
-
-def test_goal_shaped_recorder_leaves_hand_run_inputs(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A Goal-shaped recorder neither supplies inputs nor restricts options (#3276)."""
-    reviewer = goal_shaped_reviewer(
-        project, [*BASE_ARGS, "--spec-text", "words", "--fail-on", "major"]
-    )
-    calls: list[Any] = []
-
-    def fake_agent(params: Any) -> Any:
-        calls.append(params)
-        issues = [finding("MAJOR")] if guide_of(params) == "bugs-hunt" else []
-        return agent_result({"issues": issues})
-
-    monkeypatch.setattr(reviewer, "_invoke_agent", fake_agent)
-    result = reviewer._run()
-    assert result.exit_code == 1, result.report_text
-    assert len(calls) == 2
-    assert result.detail["contract"]["mode"] == "done"
-    assert "goal_target_surface" not in result.detail["contract"]
-
-
-def test_goal_shaped_recorder_still_refuses_support_only_scope(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Support-only scopes are refused by the source-path validation, never reviewed."""
-    (project / "tb/notes.txt").write_text("support file\n")
-    reviewer = goal_shaped_reviewer(
-        project, ["--category", "tb", "--focus", "quality", "--scope", "tb/notes.txt"]
-    )
-    invoke = MagicMock(return_value=agent_result({"issues": []}))
-    monkeypatch.setattr(reviewer, "_invoke_agent", invoke)
-    result = reviewer._run()
-    assert result.exit_code == 2, result.report_text
-    assert "Goal" not in result.report_text
-    assert "tb/notes.txt" in result.report_text
-    invoke.assert_not_called()
 
 
 def test_single_guide_focus_makes_one_call_as_before(

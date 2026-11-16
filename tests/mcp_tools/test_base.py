@@ -12,12 +12,11 @@ from unittest import mock
 
 import pytest
 
-from booley.core.source_categories import CATEGORY_RTL, CATEGORY_TB
+from booley.core.source_categories import CATEGORY_RTL
 from booley.criteria.state import DevelopmentState
-from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 from booley.flows import endpoint_admission
 from booley.flows.endpoint_admission import _Claim
-from booley.flows.endpoint_diff import _classify_files, read_source_dirs_from_toml
+from booley.flows.endpoint_diff import read_source_dirs_from_toml
 from booley.flows.endpoint_events import _write_display_event
 from booley.flows.endpoint_reporting import _StdoutWitness
 from booley.flows.endpoint_session import _transcript_diagnostic_path
@@ -32,7 +31,7 @@ from booley.mcp.base import (
 from booley.mcp.run_lock import _as_pid, _scan_endpoint_events
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import EndpointOutcome
-from tests.flows.report_headline import assert_paired_headline, final_report_omits_headline
+from tests.flows.report_headline import assert_paired_headline
 
 
 class ConcreteMcpTool(McpTool):
@@ -156,20 +155,20 @@ def test_persistent_report_failure_preserves_primary_diagnosis(
 
 def test_finalize_failure_propagates_without_persisting_replacement_result() -> None:
     class FinalizeFailingMcpTool(ConcreteMcpTool):
-        post_run_called = False
+        publish_called = False
 
         def _finalize_result(self, result: McpToolResult) -> None:
             raise RuntimeError("finalization failed")
 
-        def _post_run(self, result: McpToolResult, duration: float) -> None:
-            self.post_run_called = True
+        def publish_flow_records(self, outcome: McpToolResult) -> None:
+            self.publish_called = True
 
     endpoint = FinalizeFailingMcpTool()
 
     with pytest.raises(RuntimeError, match="finalization failed"):
         endpoint.main([])
 
-    assert endpoint.post_run_called is False
+    assert endpoint.publish_called is False
 
 
 def test_persistence_failure_does_not_hide_the_cli_diagnosis(capsys) -> None:
@@ -177,14 +176,14 @@ def test_persistence_failure_does_not_hide_the_cli_diagnosis(capsys) -> None:
         def _run(self) -> McpToolResult:
             return McpToolResult(exit_code=EXIT_FAILURE, report_text="design failed")
 
-        def _post_run(self, result: McpToolResult, duration: float) -> None:
+        def publish_flow_records(self, outcome: McpToolResult) -> None:
             raise RuntimeError("persistence failed")
 
     result = PersistenceFailingMcpTool().execute_cli([])
 
     assert result.exit_code == EXIT_ERROR
     assert result.outcome.detail["completion_error"] == {
-        "operation": "persist endpoint completion",
+        "operation": "publish Simulation Record projections",
         "type": "RuntimeError",
         "message": "persistence failed",
     }
@@ -192,7 +191,7 @@ def test_persistence_failure_does_not_hide_the_cli_diagnosis(capsys) -> None:
         "WARN: no --report-dir — this test_endpoint verdict is printed only "
         "(no report.json is written for this run)\n"
         "design failed\n"
-        "Completion failure (persist endpoint completion): RuntimeError: persistence failed\n"
+        "Completion failure (publish Simulation Record projections): RuntimeError: persistence failed\n"
     )
 
 
@@ -202,7 +201,7 @@ def test_self_printed_verdict_gets_only_the_completion_suffix(capsys) -> None:
             print("design failed")
             return McpToolResult(exit_code=EXIT_FAILURE, report_text="design failed")
 
-        def _post_run(self, result: McpToolResult, duration: float) -> None:
+        def publish_flow_records(self, outcome: McpToolResult) -> None:
             raise RuntimeError("persistence failed")
 
     result = SelfPrintingPersistenceFailure().execute_cli([])
@@ -211,7 +210,7 @@ def test_self_printed_verdict_gets_only_the_completion_suffix(capsys) -> None:
     assert result.exit_code == EXIT_ERROR
     assert captured.out == "design failed\n"
     assert "design failed" not in captured.err
-    assert "Completion failure (persist endpoint completion)" in captured.err
+    assert "Completion failure (publish Simulation Record projections)" in captured.err
 
 
 def test_self_printed_verdict_gets_only_the_requeue_note(capsys) -> None:
@@ -254,7 +253,7 @@ def test_console_failure_is_normalized_and_recovery_is_attempted() -> None:
 
 def test_endpoint_end_failure_is_suppressed_after_completion_failure() -> None:
     class PersistenceFailingMcpTool(ConcreteMcpTool):
-        def _post_run(self, result: McpToolResult, duration: float) -> None:
+        def publish_flow_records(self, outcome: McpToolResult) -> None:
             raise RuntimeError("persistence failed")
 
     def fail_endpoint_end(event: dict[str, object]) -> None:
@@ -270,7 +269,7 @@ def test_endpoint_end_failure_is_suppressed_after_completion_failure() -> None:
 
     assert result.exit_code == EXIT_ERROR
     assert result.outcome.detail["completion_error"]["operation"] == (
-        "persist endpoint completion"
+        "publish Simulation Record projections"
     )
 
 
@@ -296,13 +295,13 @@ def test_dry_run_skips_admission_and_persistent_bookkeeping(tmp_path: Path) -> N
     class DryRunMcpTool(ConcreteMcpTool):
         JOB_CLASS = job_slots.CLASS_MEMORY
         non_persisting_dry_run = True
-        post_run_called = False
+        publish_called = False
 
         def _add_args(self, parser: argparse.ArgumentParser) -> None:
             parser.add_argument("--dry-run", action="store_true")
 
-        def _post_run(self, result: McpToolResult, duration: float) -> None:
-            self.post_run_called = True
+        def publish_flow_records(self, outcome: McpToolResult) -> None:
+            self.publish_called = True
 
     endpoint = DryRunMcpTool()
     env = _env_with_state(state_file)
@@ -313,7 +312,7 @@ def test_dry_run_skips_admission_and_persistent_bookkeeping(tmp_path: Path) -> N
         result = endpoint.execute_cli(["--dry-run"])
 
     assert result.exit_code == EXIT_SUCCESS
-    assert endpoint.post_run_called is False
+    assert endpoint.publish_called is False
     assert state_file.read_bytes() == before
     acquire_slot.assert_not_called()
 
@@ -321,13 +320,13 @@ def test_dry_run_skips_admission_and_persistent_bookkeeping(tmp_path: Path) -> N
 def test_dry_run_without_preview_opt_in_keeps_normal_lifecycle() -> None:
     class ExistingDryRunMcpTool(ConcreteMcpTool):
         JOB_CLASS = job_slots.CLASS_MEMORY
-        post_run_called = False
+        publish_called = False
 
         def _add_args(self, parser: argparse.ArgumentParser) -> None:
             parser.add_argument("--dry-run", action="store_true")
 
-        def _post_run(self, result: McpToolResult, duration: float) -> None:
-            self.post_run_called = True
+        def publish_flow_records(self, outcome: McpToolResult) -> None:
+            self.publish_called = True
 
     endpoint = ExistingDryRunMcpTool()
     with mock.patch.object(
@@ -336,7 +335,7 @@ def test_dry_run_without_preview_opt_in_keeps_normal_lifecycle() -> None:
         result = endpoint.execute_cli(["--dry-run"])
 
     assert result.exit_code == EXIT_SUCCESS
-    assert endpoint.post_run_called is True
+    assert endpoint.publish_called is True
     acquire.assert_called_once()
 
 
@@ -354,7 +353,7 @@ def test_dry_run_lifecycle_is_snapshotted_before_endpoint_mutates_args() -> None
     endpoint = MutatingDryRunMcpTool()
     with (
         mock.patch.object(endpoint_admission, "_acquire_memory_reservation") as acquire_slot,
-        mock.patch.object(endpoint, "_post_run") as post_run,
+        mock.patch.object(endpoint, "publish_flow_records") as post_run,
     ):
         result = endpoint.execute_cli(["--dry-run"])
 
@@ -395,88 +394,6 @@ def _env_with_state(state_file: Path, slug: str = "test") -> dict[str, str]:
     return env
 
 
-class TestClassifyFiles:
-    """Test diff classification with known prefixes (mocked to be project-agnostic)."""
-
-    @pytest.fixture(autouse=True)
-    def prefix_only_project(self, monkeypatch):
-        # These tests exercise the no-.core fallback, independent of cached roots.
-        monkeypatch.setattr("booley.flows.endpoint_diff._core_classified_sets", lambda _: None)
-
-    def test_rtl_files(self):
-        cats = _classify_files(["rtl/my_module.sv", "rtl/sub/other.v"])
-        assert cats == {CATEGORY_RTL}
-
-    def test_tb_files(self):
-        cats = _classify_files(["tb/my_tb.sv"])
-        assert cats == {CATEGORY_TB}
-
-    def test_fw_files_are_not_special(self):
-        cats = _classify_files(["fw/boot.s"])
-        assert cats == set()
-
-    def test_mixed(self):
-        cats = _classify_files(["rtl/a.sv", "tb/b.sv"])
-        assert cats == {CATEGORY_RTL, CATEGORY_TB}
-
-    def test_unrelated_files(self):
-        cats = _classify_files(["docs/readme.md", "util/script.py"])
-        assert cats == set()
-
-    def test_empty(self):
-        cats = _classify_files([])
-        assert cats == set()
-
-
-class TestClassifyFlatRepo:
-    """ADR 0026: a flat single-file repo classifies by exact file path."""
-
-    def _write_flat_project(self, tmp_path: Path) -> None:
-        # ADR 0026: a flat single-file repo authors a root-level .core; its
-        # tags:[tb] partition (not [sources.*]) is the classification truth.
-        (tmp_path / "picorv32.core").write_text(
-            "CAPI=2:\n"
-            "name: ::picorv32\n"
-            "filesets:\n"
-            "  rtl: {files: [picorv32.v]}\n"
-            "  tb: {files: [picorv32_tb.v], tags: [tb]}\n"
-            "targets:\n"
-            "  sim: {filesets: [rtl, tb], toplevel: picorv32_tb}\n",
-            encoding="utf-8",
-        )
-        (tmp_path / "picorv32.v").write_text("// rtl\n", encoding="utf-8")
-        (tmp_path / "picorv32_tb.v").write_text("// tb\n", encoding="utf-8")
-
-    def test_file_entries_classify_by_exact_path(self, tmp_path: Path):
-        self._write_flat_project(tmp_path)
-        assert _classify_files(["picorv32.v"], tmp_path) == {CATEGORY_RTL}
-        assert _classify_files(["picorv32_tb.v"], tmp_path) == {CATEGORY_TB}
-
-    def test_file_prefix_does_not_leak_to_siblings(self, tmp_path: Path):
-        """cpu.v as an RTL entry must not also claim a sibling cpu.vh."""
-        self._write_flat_project(tmp_path)
-        # A header sharing the stem is NOT the configured file -> unrelated.
-        assert _classify_files(["picorv32.vh"], tmp_path) == set()
-
-    def test_dir_and_file_entries_coexist(self, tmp_path: Path):
-        # A nested RTL source and a root-level tb-tagged file coexist: the .core
-        # partition classifies each by its exact declared path.
-        (tmp_path / "design.core").write_text(
-            "CAPI=2:\n"
-            "name: ::demo\n"
-            "filesets:\n"
-            "  rtl: {files: [rtl/core.sv]}\n"
-            "  tb: {files: [dut_tb.v], tags: [tb]}\n"
-            "targets:\n"
-            "  sim: {filesets: [rtl, tb], toplevel: dut_tb}\n",
-            encoding="utf-8",
-        )
-        (tmp_path / "rtl").mkdir()
-        (tmp_path / "dut_tb.v").write_text("// tb\n", encoding="utf-8")
-        assert _classify_files(["rtl/core.sv"], tmp_path) == {CATEGORY_RTL}
-        assert _classify_files(["dut_tb.v"], tmp_path) == {CATEGORY_TB}
-
-
 class TestMcpToolArgparse:
     def test_common_args_from_env(self, tmp_path: Path):
         state_file = tmp_path / "state.json"
@@ -485,7 +402,7 @@ class TestMcpToolArgparse:
         with mock.patch.dict(os.environ, env):
             args = endpoint.parse_args(["--target", "lite"])
         assert args.slug == "my-ticket"
-        assert args.state_file == state_file
+        assert not hasattr(args, "state_file")
         assert args.target == "lite"
 
     def test_target_help_names_core_targets_not_configs_toml(self, tmp_path: Path):
@@ -521,7 +438,6 @@ class TestMcpToolArgparse:
         with mock.patch.dict(os.environ, env, clear=True):
             args = endpoint.parse_args([])
         assert args.slug == ""
-        assert args.state_file is None
         assert args.report_dir is None
 
     def test_report_dir_from_env(self, tmp_path: Path):
@@ -585,302 +501,88 @@ class TestMcpToolArgparse:
         assert reserved == endpoint_dir / "3"
 
 
-class TestMcpToolGateBehavior:
-    def test_simulate_not_blocked_by_unmet_review_criteria(self, tmp_path: Path):
-        state_file = tmp_path / "state.json"
-        state = DevelopmentState.load(state_file)
-        state.init_criteria(
-            {
-                "review_tb_quality_done": True,
-                "sim_pass_default": True,
-            }
-        )
-        state.save()
+def _git(repo: Path, *args: str) -> str:
+    import subprocess
 
-        (tmp_path / "rtl").mkdir()
-        (tmp_path / "tb").mkdir()
-        (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
-        (tmp_path / "tb" / "tb.sv").write_text("module tb; endmodule\n", encoding="utf-8")
-
-        endpoint = SimLikeMcpTool()
-        env = _env_with_state(state_file)
-        with mock.patch.dict(os.environ, env):
-            exit_code = endpoint.main(["--work-dir", str(tmp_path)])
-
-        assert exit_code == EXIT_SUCCESS
-        saved = DevelopmentState.load(state_file)
-        assert saved.criteria["sim_pass_default"].met is True
-
-    def test_wrong_target_is_rejected_before_run(self, tmp_path: Path, capsys):
-        state_file = tmp_path / "state.json"
-        state = DevelopmentState.load(state_file)
-        state.init_criteria({"lint_clean_lint_uart": True}, strict=True)
-        state.save()
-        endpoint = LintLikeMcpTool()
-
-        with mock.patch.dict(os.environ, _env_with_state(state_file)):
-            exit_code = endpoint.main(["--target", "sim_uart"])
-
-        assert exit_code == EXIT_ERROR
-        assert endpoint.ran is False
-        assert capsys.readouterr().err.count("lint --target lint_uart") == 1
-        assert "lint_clean_sim_uart" not in DevelopmentState.load(state_file).criteria
-
-    def test_project_local_sim_endpoint_with_coverage_is_binding_gated(
-        self, tmp_path: Path, capsys
-    ):
-        """Only the built-in Simulation Flow declares coverage runs outside the generic gate."""
-        state_file = tmp_path / "state.json"
-        state = DevelopmentState.load(state_file)
-        state.init_criteria({"sim_pass_other": True}, strict=True)
-        state.save()
-
-        class CoverageSimTool(SimLikeMcpTool):
-            ran = False
-
-            def _add_args(self, parser: argparse.ArgumentParser) -> None:
-                parser.add_argument("--coverage", action="store_true")
-
-            def _run(self) -> McpToolResult:
-                self.ran = True
-                return McpToolResult(exit_code=EXIT_SUCCESS)
-
-        endpoint = CoverageSimTool()
-        with mock.patch.dict(os.environ, _env_with_state(state_file)):
-            exit_code = endpoint.main(["--target", "demo", "--coverage"])
-
-        assert exit_code == EXIT_ERROR
-        assert endpoint.ran is False
-        assert endpoint.generic_binding_gate_applies() is True
-        assert (
-            "Target(s) demo do not bind an Acceptance Basis criterion" in capsys.readouterr().err
-        )
-
-    def test_qualified_selector_matches_bare_target_criterion_identity(self, tmp_path: Path):
-        (tmp_path / "rtl").mkdir()
-        (tmp_path / "rtl" / "uart.sv").write_text("module uart; endmodule\n")
-        (tmp_path / "uart.core").write_text(
-            "CAPI=2:\n"
-            "name: acme:ip:uart:1.0\n"
-            "filesets:\n"
-            "  rtl: {files: [rtl/uart.sv]}\n"
-            "targets:\n"
-            "  lint_uart:\n"
-            "    flow: lint\n"
-            "    flow_options: {tool: verilator}\n"
-            "    filesets: [rtl]\n"
-            "    toplevel: uart\n",
-            encoding="utf-8",
-        )
-        state_file = tmp_path / "state.json"
-        state = DevelopmentState.load(state_file)
-        state.init_criteria({"lint_clean_lint_uart": True}, strict=True)
-        state.save()
-
-        class BoundLint(LintLikeMcpTool):
-            def _run(self) -> McpToolResult:
-                self.ran = True
-                self.set_criterion(
-                    f"lint_clean_{self.args.target}",
-                    True,
-                    source_target=self.args.target,
-                )
-                return McpToolResult(exit_code=EXIT_SUCCESS)
-
-        endpoint = BoundLint()
-        with mock.patch.dict(os.environ, _env_with_state(state_file)):
-            exit_code = endpoint.main(
-                [
-                    "--work-dir",
-                    str(tmp_path),
-                    "--target",
-                    "acme:ip:uart:1.0#lint_uart",
-                ]
-            )
-
-        assert exit_code == EXIT_SUCCESS
-        assert endpoint.ran is True
-        assert DevelopmentState.load(state_file).criteria["lint_clean_lint_uart"].met is True
-
-    def test_sealed_binding_rejects_inconsistent_callable_selector(self, tmp_path: Path):
-        (tmp_path / "uart.core").write_text(
-            "CAPI=2:\n"
-            "name: acme:ip:uart:1.0\n"
-            "targets:\n"
-            "  lint_uart:\n"
-            "    flow: lint\n"
-            "    flow_options: {tool: verilator}\n"
-            "    toplevel: uart\n",
-            encoding="utf-8",
-        )
-        key = "lint_clean_acme:ip:uart:1.0#lint_uart"
-        state_file = tmp_path / "state.json"
-        state = DevelopmentState.load(state_file)
-        state.init_criteria(
-            {key: True},
-            criterion_params={
-                key: {
-                    "target": "acme:ip:uart:1.0#lint_uart",
-                    "_target_selector": "wrong#lint_uart",
-                }
-            },
-            strict=True,
-        )
-        state.save()
-        endpoint = LintLikeMcpTool()
-
-        with mock.patch.dict(os.environ, _env_with_state(state_file)):
-            exit_code = endpoint.main(["--work-dir", str(tmp_path), "--target", "lint_uart"])
-
-        assert exit_code == EXIT_ERROR
-        assert endpoint.ran is False
-
-    def test_diagnostic_wrong_target_runs_without_evidence(self, tmp_path: Path):
-        state_file = tmp_path / "state.json"
-        state = DevelopmentState.load(state_file)
-        state.init_criteria({"lint_clean_lint_uart": True}, strict=True)
-        state.save()
-        endpoint = LintLikeMcpTool()
-
-        with mock.patch.dict(os.environ, _env_with_state(state_file)):
-            exit_code = endpoint.main(["--target", "sim_uart", "--diagnostic"])
-
-        assert exit_code == EXIT_SUCCESS
-        assert endpoint.ran is True
-        saved = DevelopmentState.load(state_file)
-        assert saved.criteria["lint_clean_lint_uart"].met is False
-        assert "lint_clean_sim_uart" not in saved.criteria
+    return subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", *args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
 
 
-class TestMcpToolSetCriterion:
-    def test_set_criterion_persists(self, tmp_path: Path):
-        state_file = tmp_path / "state.json"
-        st = DevelopmentState.load(state_file)
-        st.slug = "test"
-        st.init_criteria({"lint_clean_lite": True})
-        st.save()
+def test_code_modifying_tool_resets_nothing_and_keeps_change_statistics(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "rtl").mkdir()
+    (repo / "rtl/top.v").write_bytes(b"module top;\nendmodule\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+    state_file = tmp_path / "state.json"
+    st = DevelopmentState.load(state_file)
+    st.init_criteria({"lint_clean_lite": True}, strict=True)
+    st.set_criterion("lint_clean_lite", True)
+    st.save()
+    before = state_file.read_bytes()
 
-        env = _env_with_state(state_file)
-        endpoint = ConcreteMcpTool()
-        with mock.patch.dict(os.environ, env):
-            endpoint.parse_args([])
-        endpoint.read_state()
-        endpoint.set_criterion("lint_clean_lite", True, detail={"warnings": 0})
+    class CommittingTool(ConcreteMcpTool):
+        def _run(self) -> McpToolResult:
+            (repo / "rtl/top.v").write_bytes(b"module top;\nwire a;\nwire b;\nendmodule\n")
+            _git(repo, "commit", "-q", "-a", "-m", "change")
+            return McpToolResult(exit_code=EXIT_SUCCESS)
 
-        # Verify persisted
-        st2 = DevelopmentState.load(state_file)
-        assert st2.is_met("lint_clean_lite") is True
+    env = _env_with_state(state_file)
+    env["BOOLEY_LOGS_DIR"] = str(tmp_path / "logs")
+    env["BOOLEY_RUNTIME_DIR"] = str(tmp_path / "runtime")
+    endpoint = CommittingTool(code_modifying=True, modifies_category=CATEGORY_RTL)
+    with mock.patch.dict(os.environ, env):
+        exit_code = endpoint.main(["--work-dir", str(repo)])
 
-    def test_set_criterion_records_normalized_acceptance_evidence(self, tmp_path: Path):
-        logs_dir = tmp_path / "logs" / "test"
-        state_file = logs_dir / ".runtime" / "booley_state.json"
-        state = DevelopmentState.load(state_file)
-        state.slug = "test"
-        state.init_criteria(
-            {"sim_pass_uart_default": True},
-            strict=True,
-            flow_key_aliases={"sim_pass_default": ["sim_pass_uart_default"]},
-        )
-        state.save()
+    assert exit_code == EXIT_SUCCESS
+    assert state_file.read_bytes() == before
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "runtime/display.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    (end,) = [event for event in events if event["type"] == "endpoint_end"]
+    assert (end["lines_added"], end["lines_removed"]) == (2, 0)
 
-        env = _env_with_state(state_file)
-        env.update(
-            {
-                "BOOLEY_EXECUTION_ID": "execution-2",
-                "BOOLEY_LOGS_DIR": str(logs_dir),
-            }
-        )
-        endpoint = ConcreteMcpTool()
-        with mock.patch.dict(os.environ, env):
-            endpoint.parse_args([])
-            endpoint.read_state()
-            endpoint.set_criterion(
-                "sim_pass_default",
-                True,
-                detail={"pending": [{"summary": "still failing"}]},
-            )
 
-        records = list((logs_dir / "acceptance" / "evidence").glob("*/record.json"))
-        assert len(records) == 1
-        record = json.loads(records[0].read_text(encoding="utf-8"))
-        assert record["criterion"] == "sim_pass_uart_default"
-        assert record["met"] is False
-        assert record["execution_id"] == "execution-2"
+def test_custom_endpoint_with_hand_set_state_file_runs_and_reports_no_criteria(
+    tmp_path: Path,
+) -> None:
+    state_file = tmp_path / "state.json"
+    st = DevelopmentState.load(state_file)
+    st.init_criteria({"lint_clean_other": True}, strict=True)
+    st.save()
+    before = state_file.read_bytes()
 
-    def test_set_criterion_noop_without_state_file(self):
-        """In human mode, set_criterion works but doesn't persist."""
-        endpoint = ConcreteMcpTool()
-        env = {k: v for k, v in os.environ.items() if not k.startswith("BOOLEY_")}
-        with mock.patch.dict(os.environ, env, clear=True):
-            endpoint.parse_args([])
-        endpoint.read_state()
-        # Should not raise
-        endpoint.set_criterion("lint_clean_lite", True)
-        assert endpoint.state.is_met("lint_clean_lite") is True
+    class DeclaringTool(ConcreteMcpTool):
+        satisfies: ClassVar[list[str]] = ["lint_clean"]
 
-    def test_diagnostic_set_criterion_skips_in_memory_evidence(self):
-        """Diagnostic runs never normalize, fingerprint, or record Criteria."""
-        endpoint = ConcreteMcpTool()
-        endpoint.parse_args(["--diagnostic"])
-        endpoint.read_state()
+        def _run(self) -> McpToolResult:
+            self.set_criterion("lint_clean_demo", True)
+            return McpToolResult(exit_code=EXIT_SUCCESS, report_text="ran")
 
-        with (
-            mock.patch.object(
-                endpoint,
-                "_criterion_key_for_source",
-                side_effect=AssertionError("diagnostic run normalized a Criterion"),
-            ),
-            mock.patch.object(
-                endpoint,
-                "_stamp_source_fingerprint",
-                side_effect=AssertionError("diagnostic run fingerprinted evidence"),
-            ),
-        ):
-            endpoint.set_criterion(
-                "lint_clean_lite",
-                True,
-                source_target="lint_selftest_bad",
-            )
+    logs_dir = tmp_path / "logs"
+    env = _env_with_state(state_file)
+    env["BOOLEY_LOGS_DIR"] = str(logs_dir)
+    env["BOOLEY_RUNTIME_DIR"] = str(logs_dir / ".runtime")
+    endpoint = DeclaringTool()
+    with mock.patch.dict(os.environ, env):
+        exit_code = endpoint.main(["--target", "demo"])
 
-        assert "lint_clean_lite" not in endpoint.state.criteria
-
-    def test_verification_fingerprint_is_scoped_to_source_target(self, tmp_path: Path):
-        (tmp_path / "rtl").mkdir()
-        (tmp_path / "tb").mkdir()
-        (tmp_path / "other").mkdir()
-        (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n")
-        (tmp_path / "rtl" / "defs.svh").write_text("`define WIDTH 8\n")
-        (tmp_path / "tb" / "tb.sv").write_text("module tb; endmodule\n")
-        (tmp_path / "other" / "baseline.sv").write_text("module baseline; endmodule\n")
-        (tmp_path / "design.core").write_text(
-            "CAPI=2:\n"
-            "name: ::demo\n"
-            "filesets:\n"
-            "  rtl:\n"
-            "    files: [rtl/dut.sv, {rtl/defs.svh: {is_include_file: true}}]\n"
-            "  tb: {files: [tb/tb.sv], tags: [tb]}\n"
-            "  other: {files: [other/baseline.sv]}\n"
-            "targets:\n"
-            "  sim: {filesets: [rtl, tb], toplevel: tb}\n"
-            "  baseline: {filesets: [other], toplevel: baseline}\n",
-            encoding="utf-8",
-        )
-        state_file = tmp_path / "state.json"
-        state = DevelopmentState.load(state_file)
-        state.init_criteria({"sim_pass_sim": True})
-        state.save()
-        endpoint = ConcreteMcpTool()
-        with mock.patch.dict(os.environ, _env_with_state(state_file)):
-            endpoint.parse_args(["--work-dir", str(tmp_path)])
-        endpoint.read_state()
-
-        endpoint.set_criterion("sim_pass_sim", True, source_target="sim")
-
-        detail = DevelopmentState.load(state_file).criteria["sim_pass_sim"].detail
-        stamp = detail[SOURCE_FINGERPRINT_DETAIL_KEY]
-        assert stamp["target"] == "sim"
-        assert stamp["fingerprint"]["rtl"]["files"] == ["rtl/defs.svh", "rtl/dut.sv"]
-        assert stamp["fingerprint"]["tb"]["files"] == ["tb/tb.sv"]
+    assert exit_code == EXIT_SUCCESS
+    assert state_file.read_bytes() == before
+    events = [
+        json.loads(line)
+        for line in (logs_dir / ".runtime/display.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert events
+    assert "criteria_update" not in {event["type"] for event in events}
 
 
 class TestHumanModeStderr:
@@ -1323,51 +1025,6 @@ class TestMcpToolMain:
             completed_label,
         ]
 
-    def test_success_flow(self, tmp_path: Path):
-        state_file = tmp_path / "state.json"
-        st = DevelopmentState.load(state_file)
-        st.slug = "test"
-        st.init_criteria({"test_criterion": True})
-        st.save()
-
-        env = _env_with_state(state_file)
-        endpoint = ConcreteMcpTool()
-        with mock.patch.dict(os.environ, env):
-            exit_code = endpoint.main([])
-        assert exit_code == EXIT_SUCCESS
-        # Timeline recorded
-        st2 = DevelopmentState.load(state_file)
-        assert len(st2.timeline) == 1
-        assert st2.timeline[0]["mcp_tool"] == "test_endpoint"
-        assert st2.timeline[0]["exit_code"] == 0
-
-    def test_code_modifying_main_records_resets_in_timeline(self, tmp_path: Path):
-        logs_dir = tmp_path / "logs" / "test"
-        state_file = logs_dir / ".runtime" / "booley_state.json"
-        st = DevelopmentState.load(state_file)
-        st.slug = "test"
-        st.init_criteria({"lint_clean_lite": True}, strict=True)
-        st.set_criterion("lint_clean_lite", True)
-        st.save()
-
-        env = _env_with_state(state_file)
-        env["BOOLEY_LOGS_DIR"] = str(logs_dir)
-        endpoint = ConcreteMcpTool(code_modifying=True, modifies_category=CATEGORY_RTL)
-        with mock.patch.dict(os.environ, env):
-            exit_code = endpoint.main([])
-        assert exit_code == EXIT_SUCCESS
-        st2 = DevelopmentState.load(state_file)
-        assert st2.is_met("lint_clean_lite") is False
-        # Timeline records the reset with ~ prefix
-        assert any("~lint_clean_lite" in (e.get("criteria_set") or []) for e in st2.timeline)
-        records = [
-            json.loads(path.read_text(encoding="utf-8"))
-            for path in (logs_dir / "acceptance" / "evidence").glob("*/record.json")
-        ]
-        assert [(record["criterion"], record["reason"]) for record in records] == [
-            ("lint_clean_lite", "source-invalidated")
-        ]
-
     def test_exception_returns_actionable_durable_error(self, tmp_path: Path, capsys, caplog):
         state_file = tmp_path / "state.json"
         DevelopmentState.load(state_file).save()
@@ -1499,89 +1156,6 @@ class TestMcpToolMain:
         assert exit_code == EXIT_SUCCESS
 
 
-class TestCriteriaInvalidation:
-    def test_code_modifying_resets_rtl_and_sim(self, tmp_path: Path):
-        """RTL changes must reset RTL, sim, AND coverage criteria."""
-        state_file = tmp_path / "state.json"
-        st = DevelopmentState.load(state_file)
-        st.init_criteria(
-            {
-                "lint_clean_lite": True,
-                "sim_pass_lite": True,
-                "coverage_toggle": True,
-                "coverage_branch": True,
-            }
-        )
-        st.set_criterion("lint_clean_lite", True)
-        st.set_criterion("sim_pass_lite", True)
-        st.set_criterion("coverage_toggle", True)
-        st.set_criterion("coverage_branch", True)
-        st.save()
-
-        env = _env_with_state(state_file)
-        endpoint = ConcreteMcpTool(code_modifying=True, modifies_category=CATEGORY_RTL)
-        with mock.patch.dict(os.environ, env):
-            endpoint.parse_args([])
-        endpoint.read_state()
-        reset = endpoint.invalidate_dependent_criteria()
-        assert "lint_clean_lite" in reset
-        assert "sim_pass_lite" in reset
-        assert "coverage_toggle" in reset
-        assert "coverage_branch" in reset
-
-    def test_code_modifying_tb_diff_resets_coverage_and_mutation_score(self, tmp_path: Path):
-        """A Project tool (no modifies_category) classifying a TB diff resets TB-dependent Criteria."""
-        logs_dir = tmp_path / "logs" / "test"
-        state_file = logs_dir / ".runtime" / "booley_state.json"
-        st = DevelopmentState.load(state_file)
-        st.slug = "test"
-        st.init_criteria(
-            {"coverage_toggle": True, "mutation_score_default": True, "lint_clean_lite": True},
-            strict=True,
-        )
-        for key in ("coverage_toggle", "mutation_score_default", "lint_clean_lite"):
-            st.set_criterion(key, True)
-        st.save()
-
-        env = _env_with_state(state_file)
-        env["BOOLEY_LOGS_DIR"] = str(logs_dir)
-        endpoint = ConcreteMcpTool(code_modifying=True)
-        with (
-            mock.patch.dict(os.environ, env),
-            mock.patch.object(ConcreteMcpTool, "classify_git_diff", return_value={CATEGORY_TB}),
-        ):
-            exit_code = endpoint.main([])
-        assert exit_code == EXIT_SUCCESS
-        st2 = DevelopmentState.load(state_file)
-        assert st2.is_met("coverage_toggle") is False
-        assert st2.is_met("mutation_score_default") is False
-        assert st2.is_met("lint_clean_lite") is True
-        records = [
-            json.loads(path.read_text(encoding="utf-8"))
-            for path in (logs_dir / "acceptance" / "evidence").glob("*/record.json")
-        ]
-        assert sorted((record["criterion"], record["reason"]) for record in records) == [
-            ("coverage_toggle", "source-invalidated"),
-            ("mutation_score_default", "source-invalidated"),
-        ]
-
-    def test_non_code_modifying_no_reset(self, tmp_path: Path):
-        state_file = tmp_path / "state.json"
-        st = DevelopmentState.load(state_file)
-        st.init_criteria({"lint_clean_lite": True})
-        st.set_criterion("lint_clean_lite", True)
-        st.save()
-
-        env = _env_with_state(state_file)
-        endpoint = ConcreteMcpTool(code_modifying=False)
-        with mock.patch.dict(os.environ, env):
-            endpoint.parse_args([])
-        endpoint.read_state()
-        reset = endpoint.invalidate_dependent_criteria()
-        assert reset == []
-        assert endpoint.state.is_met("lint_clean_lite") is True
-
-
 # ===========================================================================
 # _write_display_event
 # ===========================================================================
@@ -1673,40 +1247,6 @@ class TestMainDisplayEvents:
         assert events[1]["endpoint"] == "test_endpoint"
         assert events[1]["exit_code"] == EXIT_SUCCESS
 
-    def test_endpoint_end_reflects_pre_save_hook_mutation(self, tmp_path: Path):
-        """endpoint_end reports final result after promotion/pre-save hooks run."""
-        state_file = tmp_path / "state.json"
-        DevelopmentState.load(state_file).save()
-        logs_dir = tmp_path / "logs"
-        logs_dir.mkdir()
-
-        class PromotionRejectingMcpTool(ConcreteMcpTool):
-            def _pre_save_hook(self, result: McpToolResult) -> None:
-                result.exit_code = EXIT_FAILURE
-                result.report_text = "promotion failed"
-
-        env = _env_with_state(state_file)
-        env["BOOLEY_LOGS_DIR"] = str(logs_dir)
-        env["BOOLEY_RUNTIME_DIR"] = str(logs_dir / ".runtime")
-        endpoint = PromotionRejectingMcpTool()
-        with mock.patch.dict(os.environ, env):
-            exit_code = endpoint.main([])
-        assert exit_code == EXIT_FAILURE
-
-        all_events = [
-            json.loads(l)
-            for l in (logs_dir / ".runtime" / "display.jsonl")
-            .read_text(
-                encoding="utf-8",
-            )
-            .strip()
-            .splitlines()
-        ]
-        end_evt = next(e for e in all_events if e["type"] == "endpoint_end")
-        assert end_evt["exit_code"] == EXIT_FAILURE
-        assert "criterion_met" not in end_evt
-        assert end_evt["report_text"] == "promotion failed"
-
     def test_config_aware_false_suppresses_config(self, tmp_path: Path):
         """config_aware=False suppresses config in display events."""
         state_file = tmp_path / "state.json"
@@ -1773,7 +1313,7 @@ class TestMainDisplayEvents:
         assert end_evt["report_text"] == report["report_text"]
         assert end_evt["report_text"].startswith("test_endpoint failed: RuntimeError: kaboom")
 
-    def test_acceptance_failure_emits_endpoint_end_without_mutable_persistence(
+    def test_record_publication_failure_emits_endpoint_end(
         self,
         tmp_path: Path,
     ) -> None:
@@ -1782,30 +1322,24 @@ class TestMainDisplayEvents:
         logs_dir = tmp_path / "logs"
         logs_dir.mkdir()
 
-        class AcceptanceFailingMcpTool(ConcreteMcpTool):
-            post_run_called = False
-
-            def _pre_save_hook(self, result: McpToolResult) -> None:
-                raise RuntimeError("acceptance failed")
-
-            def _post_run(self, result: McpToolResult, duration: float) -> None:
-                self.post_run_called = True
+        class PublicationFailingMcpTool(ConcreteMcpTool):
+            def publish_flow_records(self, outcome: McpToolResult) -> None:
+                raise RuntimeError("publication failed")
 
         env = _env_with_state(state_file)
         env["BOOLEY_LOGS_DIR"] = str(logs_dir)
         env["BOOLEY_RUNTIME_DIR"] = str(logs_dir / ".runtime")
-        endpoint = AcceptanceFailingMcpTool()
+        endpoint = PublicationFailingMcpTool()
 
         with mock.patch.dict(os.environ, env):
             result = endpoint.execute_cli([])
 
         assert result.exit_code == EXIT_ERROR
         assert result.outcome.detail["completion_error"] == {
-            "operation": "record acceptance and projections",
+            "operation": "publish Simulation Record projections",
             "type": "RuntimeError",
-            "message": "acceptance failed",
+            "message": "publication failed",
         }
-        assert endpoint.post_run_called is False
         reports = list((logs_dir / ".runtime" / "mcp-tool-reports").glob("*/1/report.json"))
         assert len(reports) == 1
         report = json.loads(reports[0].read_text(encoding="utf-8"))
@@ -2230,82 +1764,6 @@ def test_custom_endpoint_report_and_completion_carry_no_criterion(tmp_path, monk
     assert "criterion_key" not in flat and "criterion_met" not in flat
     completion = next(event for event in events if event["type"] == "endpoint_end")
     assert "criterion_key" not in completion and "criterion_met" not in completion
-
-
-def unbound_specialist(tmp_path, *argv):
-    """A parsed Specialist-kind tool with loaded state and no acceptance owner."""
-    tool = ConcreteMcpTool()
-    tool.endpoint_kind = "specialist"
-    tool.parse_args([*argv, "--report-dir", str(tmp_path / "reports")])
-    tool.read_state()
-    return tool
-
-
-@pytest.mark.parametrize("aliases", [["sim_pass_atomic"], ["sim_pass_atomic", "sim_pass_other"]])
-def test_effective_aliases_and_thresholds_drive_final_report(tmp_path, aliases):
-    tool = unbound_specialist(tmp_path, "--work-dir", str(tmp_path))
-    tool.state.init_criteria(
-        dict.fromkeys(aliases, True), flow_key_aliases={"sim_pass_default": aliases}
-    )
-    tool.set_criterion("sim_pass_default", True, detail={"pending": ["unresolved defect"]})
-    final_report_omits_headline(tool, McpToolResult())
-    assert all(tool.state.criteria[alias].met is False for alias in aliases)
-
-
-def test_recording_failure_retains_effective_report_verdict(tmp_path, monkeypatch):
-    tool = unbound_specialist(tmp_path, "--work-dir", str(tmp_path))
-    tool.state._file_path = tmp_path / "state.json"
-    tool.state.init_criteria({"actual": True}, strict=True)
-
-    def fail(changes):
-        raise OSError("ledger append failed")
-
-    monkeypatch.setattr(tool, "_record_acceptance_changes", fail)
-    with pytest.raises(OSError):
-        tool.set_criterion("actual", False)
-    report = final_report_omits_headline(tool, McpToolResult(exit_code=2))
-    assert tool.state.criteria["actual"].met is False
-    assert report["passed"] is False
-
-
-def test_effective_metric_threshold_overrides_raw_true_in_final_report(tmp_path):
-    tool = unbound_specialist(tmp_path)
-    tool.state.init_criteria(
-        {"synthesis_ok_demo": True}, criterion_params={"synthesis_ok_demo": {"area_max": 100}}
-    )
-    tool.set_criterion("synthesis_ok_demo", True, detail={"area_um2": 200})
-    final_report_omits_headline(tool, McpToolResult())
-    assert tool.state.criteria["synthesis_ok_demo"].met is False
-    assert tool.state.criteria["synthesis_ok_demo"].detail["area_um2"] == 200
-
-
-def test_strict_rejected_evaluation_has_null_final_report(tmp_path):
-    tool = unbound_specialist(tmp_path)
-    tool.state.strict_criteria = True
-    tool.set_criterion("undeclared", False)
-    final_report_omits_headline(tool, McpToolResult())
-    assert "undeclared" not in tool.state.criteria
-
-
-def test_compatibility_detail_refresh_cannot_replace_final_headline(tmp_path, monkeypatch):
-    tool = unbound_specialist(tmp_path)
-    tool.set_criterion("actual", False)
-
-    def refresh(result):
-        result.detail["artifact"] = "retained"
-
-    monkeypatch.setattr(tool, "refresh_report_detail", refresh)
-    report = final_report_omits_headline(tool, McpToolResult())
-    assert tool.state.criteria["actual"].met is False
-    assert report["detail"]["artifact"] == "retained"
-
-
-def test_preexisting_met_state_is_not_a_current_report_evaluation(tmp_path):
-    tool = unbound_specialist(tmp_path)
-    tool.state.init_criteria({"prior": True})
-    tool.state.criteria["prior"].met = True
-    final_report_omits_headline(tool, McpToolResult())
-    assert tool.state.criteria["prior"].met is True
 
 
 def test_project_local_sim_endpoint_writes_project_local_schema(tmp_path):

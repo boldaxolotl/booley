@@ -1,4 +1,4 @@
-"""One selection decides the MCP tool recorder; endpoint commands launch their own module."""
+"""Endpoint commands launch their own module."""
 
 from __future__ import annotations
 
@@ -6,9 +6,6 @@ import collections
 from pathlib import Path
 
 import pytest
-
-from booley.mcp.flow_execution_selection import select_flow_execution
-from booley.mcp.unbound_recorder import UnboundAcceptanceRecorder
 
 try:
     from booley.mcp import server as mcp_server
@@ -43,21 +40,6 @@ def _command(name: str, definition: dict[str, object]) -> list[str]:
         definition,
         collections.defaultdict(int),
     )
-
-
-class TestSelection:
-    @pytest.mark.parametrize("ticket", [False, True])
-    def test_mcp_tool_records_through_the_ticket_recorder(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ticket: bool
-    ) -> None:
-        from tests.mcp_tools.test_base import ConcreteMcpTool
-
-        if ticket:
-            monkeypatch.setenv("BOOLEY_TICKET_FILE", str(tmp_path / "ticket.md"))
-        else:
-            monkeypatch.delenv("BOOLEY_TICKET_FILE", raising=False)
-
-        assert type(ConcreteMcpTool()._acceptance_recorder) is UnboundAcceptanceRecorder
 
 
 class TestEndpointCommand:
@@ -101,10 +83,3 @@ class TestEndpointCommand:
             "--target",
             "lint_uart",
         ]
-
-
-class TestStandaloneSelection:
-    """Every call records through the standalone recorder."""
-
-    def test_selection_builds_the_unbound_recorder(self) -> None:
-        assert type(select_flow_execution().acceptance_recorder()) is UnboundAcceptanceRecorder

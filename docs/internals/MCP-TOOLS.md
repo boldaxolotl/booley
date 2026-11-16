@@ -117,8 +117,7 @@ The built-in Flows use a separate `BuiltinFlow` base with typed requests;
 `McpTool` keep the argparse-based contract that Project extensions depend on.
 
 Every implementation declares literal `name` and `description` class
-attributes. Criterion-aware endpoints also declare `satisfies`, and endpoints
-that edit sources declare `code_modifying = True`.
+attributes, and endpoints that edit sources declare `code_modifying = True`.
 
 ### Common arguments
 
@@ -145,11 +144,11 @@ the same spelling as a shared one keeps your meaning.
 
 `BooleyFlow` runs one subprocess per call: override `_add_args` to add
 arguments, `_build_command` to return the argument list, and
-`_interpret_result` to turn the `SubprocessResult` into an `McpToolResult` and
-Criterion updates. The base handles the timeout, process-tree cleanup, and
-output capture. A Flow that needs more than one subprocess overrides `_run()`
-instead. `_load_flow_config(name, work_dir)` from `booley.flows.flow_config`
-returns its `[flows.<name>]` table.
+`_interpret_result` to turn the `SubprocessResult` into an `McpToolResult`. The
+base handles the timeout, process-tree cleanup, and output capture. A Flow
+that needs more than one subprocess overrides `_run()` instead.
+`_load_flow_config(name, work_dir)` from `booley.flows.flow_config` returns its
+`[flows.<name>]` table.
 
 Booley points Python bytecode and pytest caches for Project endpoints and their
 subprocesses at runtime storage, so a Custom Flow must not depend on cache
@@ -159,7 +158,7 @@ files in the source checkout.
 
 The `Specialist` base runs the model call: override `_add_agent_args` to add
 arguments, `_build_prompt` to build the prompt, and `_interpret_output` to turn
-the model output into an `McpToolResult` and Criterion updates. Do not
+the model output into an `McpToolResult`. Do not
 override `_add_args`; the base uses it to register `--instruction`,
 `--transcript-dir`, `--max-turns`, and `--timeout`, then calls
 `_add_agent_args`.
@@ -185,7 +184,7 @@ A direct subclass implements `_add_args` and `_run()` and returns an
 `McpToolResult`. Prefer `BooleyFlow` for a deterministic subprocess: it gets
 the Flow's admission, timeout, and freshness handling for free.
 
-### `McpToolResult` and `set_criterion()`
+### `McpToolResult`
 
 ```python
 McpToolResult(
@@ -199,55 +198,26 @@ Import `EXIT_ERROR` (2) and `EXIT_FAILURE` (1) from `booley.mcp.base` next to
 it. Keep 1 and 2 apart: 1 says the design failed the check, 2 says the check
 itself could not run, and only 1 may count against the design.
 
-Call `self.set_criterion(key, met)` for each Criterion the run evaluates.
-
 The `Specialist` base fills the token and cost fields, and the base class adds
-`lines_added`/`lines_removed` for code-modifying endpoints.
-
-### `satisfies`, `satisfies_args`, and `per_target`
-
-`satisfies` lists the Criteria an endpoint can evaluate.
-`satisfies_args` maps a Criterion to the CLI arguments that evaluate it; Booley
-shows them to the Developer Agent as hints and never runs them:
-
-```python
-class MultiCheck(Specialist):
-    satisfies = ["check_a", "check_b"]
-    satisfies_args = {"check_a": "--mode a", "check_b": "--mode b"}
-```
-
-Both must be literals. Discovery reads them without importing the file, so a
-computed value such as `satisfies = BASE + ["extra"]` reads as empty, and
-validation warns about it.
-
-A Criterion with `per_target = true` expands to one key per Target, such as
-`drc_clean_variant_a`. Set the expanded keys:
-
-```python
-targets = [item.strip() for item in self.args.target.split(",") if item.strip()]
-for key in [f"drc_clean_{target}" for target in targets] or ["drc_clean"]:
-    self.set_criterion(key, passed)
-```
+`lines_added`/`lines_removed` for code-modifying endpoints. An endpoint that
+still calls `self.set_criterion()` runs as before; the call records nothing.
 
 ### `code_modifying`
 
-After a successful run of an endpoint with `code_modifying = True`, Booley
-classifies the git diff as RTL or testbench changes and resets every Criterion
-whose `category` matches. Leaving the flag off on an endpoint that edits code
-leaves those Criteria looking current. Evidence also carries source and Target
-fingerprints, so a missing flag cannot leave stale evidence looking met.
+The report of a run of an endpoint with `code_modifying = True` carries
+`lines_added` and `lines_removed`, counted from the commits the run made. The
+flag resets no Criterion.
 
 ## Write a custom endpoint
 
 Pick the base from the table above, implement only its hooks, and save the file
 under `mcp_tools/` in the selected Booley Directory. The file is the
-registration. Define every Criterion it names in `satisfies` (see
-[Criteria](#criteria)); an undefined one draws a validation warning.
+registration.
 
 ### Example: a `BooleyFlow`
 
-This Flow runs a Project DRC script, applies its verdict to every selected
-Target, and keeps a broken checker apart from a failing design:
+This Flow runs a Project DRC script and keeps a broken checker apart from a
+failing design:
 
 ```python
 # .booley/mcp_tools/drc_check.py
@@ -261,7 +231,6 @@ class DrcCheckFlow(BooleyFlow):
     name = "drc_check"
     description = "Run project DRC rules against RTL"
     code_modifying = False
-    satisfies = ["drc_clean"]
 
     def _add_args(self, parser):
         parser.add_argument("--rule-set", default="default")
@@ -270,8 +239,6 @@ class DrcCheckFlow(BooleyFlow):
         return [sys.executable, "scripts/run_drc.py", "--rules", self.args.rule_set]
 
     def _interpret_result(self, result: SubprocessResult) -> McpToolResult:
-        targets = [item.strip() for item in self.args.target.split(",") if item.strip()]
-        keys = [f"drc_clean_{target}" for target in targets] or ["drc_clean"]
         evidence = "\n".join(part for part in (result.stdout, result.stderr) if part)
 
         # Contract of scripts/run_drc.py: 0 = clean, 1 = violations;
@@ -283,8 +250,6 @@ class DrcCheckFlow(BooleyFlow):
             )
 
         passed = result.returncode == 0
-        for key in keys:
-            self.set_criterion(key, passed)
         return McpToolResult(
             exit_code=0 if passed else 1,
             report_text=evidence[-2000:],
@@ -307,7 +272,6 @@ class ProtocolReviewerSpecialist(Specialist):
     name = "protocol_reviewer"
     description = "LLM-powered protocol compliance review"
     code_modifying = False
-    satisfies = ["protocol_compliant"]
     agent_capabilities = ["Read", "Grep", "Glob"]
     workspace_access = "read_only"
 
@@ -331,7 +295,6 @@ class ProtocolReviewerSpecialist(Specialist):
                 exit_code=EXIT_ERROR,
                 report_text="Specialist returned no valid VERDICT line",
             )
-        self.set_criterion("protocol_compliant", passed)
         return McpToolResult(
             exit_code=0 if passed else 1,
             report_text=output[-3000:],
@@ -407,18 +370,18 @@ disable it, run `booley doctor`, and request a fresh tool list.
 ## Criteria
 
 A [Criterion](../GLOSSARY.md#execution-and-evidence) is the internal
-condition-plus-evidence form. Producers call `set_criterion()`.
+condition-plus-evidence form. A custom endpoint records none.
 
 ### The Criterion catalog
 
 | Location | Holds |
 |---|---|
 | `data/criteria.toml` in the Booley package | Base Criteria for the built-in endpoints |
-| `criteria.toml` in the Booley Directory | Project Criteria for custom endpoints |
+| `criteria.toml` in the Booley Directory | Project Criteria |
 
 A Project file may not redefine a base Criterion; validation fails on a
-collision. The catalog maps each Criterion to the one endpoint that claims it
-in `satisfies`; two endpoints claiming the same Criterion raise
+collision. The catalog maps each base Criterion to the one built-in endpoint
+that claims it; two built-in endpoints claiming the same Criterion raise
 `CriterionEndpointCatalogError`, while identical repeated claims are accepted.
 
 ```toml
@@ -440,30 +403,20 @@ category        = "none"
 | `description` | string | What the Criterion checks |
 | `workflow_region` | `pre_sim`, `core_loop`, `post_sim` | When it applies: `pre_sim` (before simulation), `core_loop` (the edit-and-test loop), `post_sim` (after simulation); it only orders advice and never blocks a run |
 | `per_target` | `true`, `false` | Whether it expands to one key per Target |
-| `category` | `rtl`, `tb`, `none` | Which source changes reset it |
+| `category` | `rtl`, `tb`, `none` | Which source changes the Criterion depends on |
 
-A `code_modifying` run that changes RTL resets every `rtl` Criterion, and one
-that changes testbench files resets every `tb` Criterion. A `none` Criterion is
-never reset automatically, so its endpoint must reset it after relevant changes
-or it goes stale. Booley still reads the key `phase` in place of
-`workflow_region`, with a warning; rename it.
+No endpoint run resets a Criterion after it changes sources. Booley still reads
+the key `phase` in place of `workflow_region`, with a warning; rename it.
 
-To add a Criterion:
-
-1. Pick a name that is not in the base catalog.
-2. Add its four fields to the Project `criteria.toml`.
-3. Add the base name to one custom endpoint's literal `satisfies` list, and
-   `satisfies_args` hints if the arguments differ per Criterion.
-4. For `per_target = true`, call `set_criterion()` with the expanded
-   `<criterion>_<target>` keys.
-5. Run `booley doctor`, then check the live catalog with `booley cheat`.
+To add a Project Criterion, pick a name that is not in the base catalog, add its
+four fields to the Project `criteria.toml`, run `booley doctor`, and check the
+live catalog with `booley cheat`.
 
 ## Validation and diagnostics
 
 Shared validation in `booley.mcp.endpoint_validation` checks custom endpoint
-metadata and Criterion wiring; `booley doctor` runs it alongside its Project
-checks. None
-of these replaces running the endpoint on a real case.
+metadata and the Project `criteria.toml`; `booley doctor` runs it alongside its
+Project checks. None of these replaces running the endpoint on a real case.
 
 To validate a new endpoint:
 

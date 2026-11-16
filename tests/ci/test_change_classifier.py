@@ -934,14 +934,12 @@ def test_riscv_image_input_requests_extended_image_smoke(tmp_path: Path, path: s
         # PR #351: synthesis changes must exercise the OpenROAD promotion probe.
         ("src/booley/flows/synth/flow.py", False),
         ("src/booley/criteria/unbound_ledger.py", False),
-        ("src/booley/mcp/unbound_recorder.py", False),
         ("src/booley/mcp/project_flow_loader.py", False),
         ("src/booley/runtime/agent_execution.py", False),
         ("tests/criteria/test_evidence_ledger.py", False),
         ("tests/criteria/ledger_support.py", False),
         ("tests/golden/test_golden_acceptance_ledger.py", False),
         ("tests/runtime/test_agent_execution.py", False),
-        ("tests/mcp_tools/test_unbound_recording.py", False),
     ],
 )
 def test_release_regression_paths_request_focused_image_smoke(

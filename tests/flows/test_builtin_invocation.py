@@ -516,9 +516,8 @@ def test_builtin_dry_run_skips_admission_and_normal_persistence(
             "booley.flows.endpoint_admission._acquire_memory_reservation",
             side_effect=AssertionError("dry-run acquired a slot"),
         ),
-        mock.patch.object(
-            EndpointState,
-            "_post_run",
+        mock.patch(
+            "booley.flows.endpoint_reporting._finish_publication",
             side_effect=AssertionError("dry-run entered normal persistence"),
         ),
     ):
@@ -604,9 +603,8 @@ def test_failed_builtin_dry_run_keeps_json_stdout_and_reason_stderr(
             "booley.flows.endpoint_admission._acquire_memory_reservation",
             side_effect=AssertionError("dry-run acquired a slot"),
         ),
-        mock.patch.object(
-            EndpointState,
-            "_post_run",
+        mock.patch(
+            "booley.flows.endpoint_reporting._finish_publication",
             side_effect=AssertionError("dry-run entered normal persistence"),
         ),
     ):

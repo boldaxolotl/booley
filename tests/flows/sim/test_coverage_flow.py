@@ -8,7 +8,6 @@ from types import SimpleNamespace
 import pytest
 
 from booley.criteria.state import DevelopmentState
-from booley.evidence.acceptance import ResolvedFlowAcceptance
 from booley.flows.sim.coverage_progress import CoverageProgress
 from booley.flows.sim.coverage_record_store import load_coverage_record
 from booley.flows.sim.coverage_reference import (
@@ -27,14 +26,8 @@ from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SimulationRunResult
 from booley.mcp.flow_adapter import flow_schema
 from booley.runtime.filesystem_utils import safe_rmtree
-from tests.criteria.ledger_support import FixtureRecorder
 from tests.flows.sim.test_coverage_invocation import project
 from tests.flows.sim.test_coverage_transaction import NativeExecution
-
-
-class _AcceptanceAdapter(FixtureRecorder):
-    def validate_and_resolve(self, _request: SimRequest) -> ResolvedFlowAcceptance:
-        return ResolvedFlowAcceptance(ticket_backed=True)
 
 
 class _SplitMetricsExecution(NativeExecution):
@@ -1063,7 +1056,7 @@ def test_projection_publication_failure_returns_structured_report_with_target_fa
     assert result.exit_code == 2
     assert result.outcome.detail["targets"]["sim_custom"]["simulation"] == "pass"
     assert result.outcome.detail["completion_error"]["operation"] == (
-        "record acceptance and projections"
+        "publish Simulation Record projections"
     )
     assert "acceptance" not in result.outcome.detail
     report = json.loads((tmp_path / "reports/sim/1/report.json").read_text())
@@ -2622,7 +2615,7 @@ def test_coverage_analysis_refuses_a_coverage_record_written_by_booley_0_3_0(tmp
 def test_coverage_summary_failure_publishes_no_projection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A failed last-Target publication leaves the Flow's projection hook unhandled."""
+    """A failed last-Target publication leaves the Flow's projection hook nothing to publish."""
     _prepare_sim_custom_project(tmp_path, monkeypatch)
     retained: list[object] = []
 
@@ -2630,15 +2623,15 @@ def test_coverage_summary_failure_publishes_no_projection(
         retained.append(outcome)
         raise OSError("injected Coverage Record summary publication failure")
 
-    hook_results: list[bool] = []
-    hook = SimulateFlow.record_flow_owned_acceptance
+    held_outcomes: list[bool] = []
+    hook = SimulateFlow.publish_flow_records
 
-    def spy(self, outcome) -> bool:
-        hook_results.append(hook(self, outcome))
-        return hook_results[-1]
+    def spy(self, outcome) -> None:
+        held_outcomes.append(bool(self._simulation_record_outcomes))
+        hook(self, outcome)
 
     monkeypatch.setattr("booley.flows.sim.flow._retain_coverage_record", fail_last_retention)
-    monkeypatch.setattr(SimulateFlow, "record_flow_owned_acceptance", spy)
+    monkeypatch.setattr(SimulateFlow, "publish_flow_records", spy)
     result = SimulateFlow(
         coverage_execution=lambda *_args: _PassingSplitMetricsExecution()
     ).execute(
@@ -2651,19 +2644,8 @@ def test_coverage_summary_failure_publishes_no_projection(
     )
 
     assert result.exit_code == 2
-    assert hook_results == [False]
+    assert held_outcomes == [False]
     assert not list(tmp_path.rglob("simulation.json"))
-
-
-class _SimulationRecordRegisteringAdapter(_AcceptanceAdapter):
-    """Acceptance adapter that records every record it is told to register."""
-
-    def __init__(self, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self.registered: list[object] = []
-
-    def register_simulation_record(self, simulation_record) -> None:
-        self.registered.append(simulation_record)
 
 
 def _tree_snapshot(root: Path) -> dict[str, bytes | None]:
@@ -2696,7 +2678,6 @@ def test_coverage_dry_run_previews_each_target_without_admission_or_mutation(
         raise AssertionError("a dry run must launch nothing")
 
     monkeypatch.setattr(SimulateFlow, "_execute_boundary", record_boundary)
-    adapter = _SimulationRecordRegisteringAdapter(log_dir=tmp_path / "logs")
     before = _tree_snapshot(tmp_path)
 
     result = SimulateFlow(coverage_execution=execution_factory).execute_cli(
@@ -2709,8 +2690,7 @@ def test_coverage_dry_run_previews_each_target_without_admission_or_mutation(
             "sim_0,sim_1",
             "--coverage",
             "--dry-run",
-        ],
-        adapter=adapter,
+        ]
     )
 
     lines = ["sim_0: 1 pending work item(s)", "sim_1: 1 pending work item(s)"]
@@ -2727,7 +2707,6 @@ def test_coverage_dry_run_previews_each_target_without_admission_or_mutation(
     assert all(entry["build_variants"] >= 1 for entry in detail["record_preview"])
     assert detail["mutated"] is False
     assert detail["coverage"] is True
-    assert adapter.registered == []
     assert factory_calls == []
     assert boundary_calls == []
     assert _tree_snapshot(tmp_path) == before
