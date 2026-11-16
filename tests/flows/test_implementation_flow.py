@@ -148,13 +148,21 @@ def test_baseline_and_comparison_errors_become_notes_and_reasons() -> None:
         {"a": _ProbeMetrics(infra_error="baseline broke")}, {"b": comparison_report}
     )
 
-    assert failures == ["baseline a: baseline broke", f"comparison b: {errors[1]}"]
+    assert errors[1:] == [
+        "current required metric 'lut_count' is unavailable",
+        "baseline required metric 'lut_count' is unavailable",
+    ]
+    assert failures == [
+        "baseline a: baseline broke",
+        "comparison b: current required metric 'lut_count' is unavailable",
+        "comparison b: baseline required metric 'lut_count' is unavailable",
+    ]
     assert [line.split(" -- ")[0].strip() for line in notes] == [
         "baseline a: ERROR",
         "comparison b: ERROR",
+        "comparison b: ERROR",
     ]
     assert notes[0].endswith("-- baseline broke")
-    assert notes[1].endswith(f"-- {errors[1]}")
     assert not any("baseline infrastructure error" in line for line in notes + failures)
 
 

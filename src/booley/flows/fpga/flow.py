@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import copy
 import logging
-import os
 import re
 import sys
 import tempfile
@@ -73,7 +72,6 @@ from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.core_projection import native_cores_ignored
 from booley.presentation import colors
 from booley.presentation.terminal_table import render_table
-from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import format_duration, utc_now_rfc3339
@@ -82,7 +80,7 @@ from booley.targets.parameter_integrity import validate_top_parameter_intent
 
 from .. import artifacts, run_evidence
 from .. import edam as edam_layer
-from ..base import BuiltinFlow, SubprocessResult
+from ..base import SubprocessResult
 from ..baseline_worktree import (
     BaselineWorktreeError,
     baseline_worktree,
@@ -95,22 +93,18 @@ from ..implementation_comparison import (
     baseline_execution_context,
     candidate_execution_refs,
     resolve_target_execution_ref,
-    selected_target_handle,
     target_pair_plans_for_handles,
-    target_plan_for_handle,
 )
+from ..implementation_flow import ImplementationFlow
 from ..implementation_publication import (
-    ImplementationProgress,
     ImplementationProgressRun,
-    ImplementationPublisher,
-    target_report_path,
     target_report_slug,
 )
 from ..implementation_report import (
     ImplementationAggregate,
+    ImplementationContext,
     ImplementationReport,
     build_implementation_aggregate,
-    implementation_context,
 )
 from ..invocation import resolve_timeout_ms
 from ..progress_lifecycle import ProgressPublicationError
@@ -176,7 +170,7 @@ def _int_metric(data: dict[str, Any], key: str) -> int | None:
     return as_int(data.get(key), None)
 
 
-class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
+class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
     """Run FPGA implementation for one or more Targets with optional baseline comparison.
 
     The description deliberately does not name Vivado: which EDA Flow backs a
@@ -208,11 +202,6 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
     announce_success_report: bool = True
     conventional_families: ClassVar[frozenset[str]] = frozenset({"fpga_impl_ok"})
 
-    # FPGA implementation is memory-admitted as a Sandbox job.
-    def _resolve_job_class(self) -> str:
-        """FPGA implementation is a memory-admitted Sandbox workload."""
-        return job_slots.CLASS_MEMORY
-
     def _licensed_tools(self) -> tuple[str, ...]:
         """One Job runs its Vivado work units in series: one Vivado seat.
 
@@ -220,12 +209,6 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         instead of being refused for a missing Seat Cap.
         """
         return ("vivado",) if self._flow_enabled() else ()
-
-    def _build_command(self) -> list[str]:
-        return []
-
-    def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:
-        return EndpointOutcome()
 
     def _run(self) -> EndpointOutcome:  # noqa: PLR0911 — linear aggregate orchestration
         # The initially selected worktree, captured before any baseline run
@@ -269,7 +252,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         for target in targets:
             self.record_eda_tool(target, "vivado")
         self._execution_role = "candidate"
-        self._implementation_reports: dict[str, ImplementationReport] = {}
+        self._implementation_reports = {}
         self.reserve_invocation_dir()
         progress = ImplementationProgressRun(
             self.name,
@@ -584,23 +567,6 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             handle,
             build_root=selected_root,
             library_plan=fusesoc_registry.build_library_plan(handle.project_root, selected_root),
-        )
-
-    def _target_handle(self, target: str) -> TargetHandle:
-        """Return the selected handle, reselecting only in a baseline checkout."""
-        return selected_target_handle(
-            getattr(self, "_target_handles", {}),
-            self.args.work_dir,
-            target,
-            flow="fpga",
-        )
-
-    def _target_plan(self, target: str) -> TargetPairPlan:
-        """Look up the total pair plan by canonical candidate identity."""
-        return target_plan_for_handle(
-            getattr(self, "_target_pairs", ()),
-            self._target_handle(target),
-            flow="fpga",
         )
 
     def _prepare_fpga_command(
@@ -1260,88 +1226,6 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             )
         return results
 
-    def _implementation_report(
-        self,
-        target: str,
-        current: FpgaMetrics,
-        baseline: FpgaMetrics | None,
-        baseline_ref: str | None,
-    ) -> ImplementationReport:
-        """Adapt native FPGA evidence to the shared canonical schema."""
-        context = implementation_context(
-            self._target_plan(target),
-            target=target,
-            eda_tool=self._eda_tool,
-            baseline_ran=baseline is not None,
-            requested_baseline_ref=self.args.baseline,
-            resolved_baseline_ref=getattr(self, "_baseline_full_sha", None) or baseline_ref,
-        )
-        return build_fpga_implementation_report(context, current, baseline)
-
-    def _publisher(self) -> ImplementationPublisher:
-        return ImplementationPublisher(
-            work_dir=Path(self.args.work_dir),
-            report_dir=self.args.report_dir,
-            invocation_dir=self.reserve_invocation_dir(),
-        )
-
-    def _write_progress_report(
-        self,
-        targets: list[str],
-        current_results: dict[str, FpgaMetrics],
-        baseline_results: dict[str, FpgaMetrics],
-        *,
-        phase: str,
-        baseline_ref: str | None = None,
-        complete: bool = False,
-    ) -> None:
-        progress = ImplementationProgress(
-            flow=self.name,
-            run_id=os.environ.get("BOOLEY_RUN_ID", ""),
-            targets=tuple(targets),
-            completed_targets=tuple(current_results),
-            baseline_completed_targets=tuple(baseline_results),
-            phase=phase,
-            complete=complete,
-            baseline_ref=baseline_ref,
-            reports=getattr(self, "_implementation_reports", {}),
-        )
-        self._publisher().publish_progress(progress)
-
-    def _persist_target_outcome(
-        self,
-        target: str,
-        current: FpgaMetrics,
-        baseline: FpgaMetrics | None,
-        baseline_ref: str | None,
-    ) -> None:
-        implementation = self._implementation_report(target, current, baseline, baseline_ref)
-        implementation = self._write_target_report(
-            target, current, baseline, baseline_ref, implementation=implementation
-        )
-        self._implementation_reports[target] = implementation
-
-    @staticmethod
-    def _baseline_error_lines(
-        baseline_results: dict[str, FpgaMetrics],
-        reports: dict[str, ImplementationReport],
-    ) -> tuple[list[str], list[str]]:
-        lines: list[str] = []
-        failures: list[str] = []
-        for target, metrics in baseline_results.items():
-            if metrics.infra_error:
-                lines.append(note_line(f"baseline {target}", "ERROR", metrics.infra_error))
-                failures.append(f"baseline {target}: infrastructure error")
-        for target, report in reports.items():
-            comparison = report.canonical.get("comparison")
-            errors = comparison.get("basis_errors", []) if isinstance(comparison, dict) else []
-            for message in errors:
-                if str(message).startswith("baseline infrastructure error:"):
-                    continue
-                lines.append(note_line(f"comparison {target}", "ERROR", str(message)))
-                failures.append(f"comparison {target}: invalid evidence")
-        return lines, failures
-
     def _aggregate_results(
         self,
         configs: list[str],
@@ -1363,7 +1247,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             implementation_reports,
             baseline_ref=getattr(self, "_baseline_full_sha", None) or short_sha,
         )
-        notes, failures = self._baseline_error_lines(baseline_results, implementation_reports)
+        notes, failures = self._baseline_error_notes(baseline_results, implementation_reports)
         self._append_target_notes(notes, failures, configs, current_results)
         verdict = {0: "PASS", 1: "FAIL", 2: "ERROR"}[implementation_aggregate.exit_code]
         suffix = f" ({'; '.join(failures)})" if failures else ""
@@ -1570,55 +1454,45 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             return f"{cfg}: critical conditions: {cur.critical_summary()}"
         return f"{cfg}: failed"
 
-    def _write_target_report(
+    def _build_implementation_report(
         self,
-        cfg: str,
-        cur: FpgaMetrics,
-        base: FpgaMetrics | None,
-        baseline_ref: str | None,
-        *,
-        implementation: ImplementationReport,
+        context: ImplementationContext,
+        current: FpgaMetrics,
+        baseline: FpgaMetrics | None,
     ) -> ImplementationReport:
-        report_dir = self.args.report_dir
-        if report_dir is None:
-            return implementation
-        report_dir.mkdir(parents=True, exist_ok=True)
-        report_path = target_report_path(self.name, cfg, report_dir)
-        report = self._target_report_payload(cfg, cur, base, baseline_ref, report_path)
-        report["passed"] = implementation.passed
-        published = self._publisher().publish_report(implementation, report)
-        return ImplementationReport(published.payload["implementation"])
+        """Adapt native FPGA evidence to the shared canonical schema."""
+        return build_fpga_implementation_report(context, current, baseline)
 
     def _target_report_payload(
         self,
-        cfg: str,
-        cur: FpgaMetrics,
-        base: FpgaMetrics | None,
+        target: str,
+        current: FpgaMetrics,
+        baseline: FpgaMetrics | None,
         baseline_ref: str | None,
         report_path: Path,
     ) -> dict[str, Any]:
-        plan = self._target_plan(cfg)
+        plan = self._target_plan(target)
         report = {
             "flow": self.name,
-            "target": cfg,
+            "target": target,
             "eda_tool": "vivado",
             "timestamp": utc_now_rfc3339(),
-            "passed": cur.passed,
-            "returncode": cur.returncode,
-            "timed_out": cur.timed_out,
-            "infra_error": cur.infra_error,
-            "cached": cur.cached,
-            "cache_fingerprint": cur.cache_fingerprint or None,
-            "metrics": _metrics_detail(cur),
-            "recipe_fingerprint": cur.recipe_fingerprint or None,
-            "recipe_snapshot": cur.recipe_snapshot or None,
-            "run_evidence": cur.run_evidence or None,
-            "cache_consumer_run_id": cur.cache_consumer_run_id or None,
+            "passed": current.passed,
+            "returncode": current.returncode,
+            "timed_out": current.timed_out,
+            "infra_error": current.infra_error,
+            "cached": current.cached,
+            "cache_fingerprint": current.cache_fingerprint or None,
+            "metrics": _metrics_detail(current),
+            "recipe_fingerprint": current.recipe_fingerprint or None,
+            "recipe_snapshot": current.recipe_snapshot or None,
+            "run_evidence": current.run_evidence or None,
+            "cache_consumer_run_id": current.cache_consumer_run_id or None,
             "baseline_ref": baseline_ref,
-            "baseline_metrics": _metrics_detail(base, baseline=True) if base else None,
-            "baseline_recipe_fingerprint": base.recipe_fingerprint if base else None,
-            "baseline_recipe_snapshot": base.recipe_snapshot if base else None,
-            "baseline_run_evidence": base.run_evidence if base else None,
+            "baseline_metrics": _metrics_detail(baseline, baseline=True) if baseline else None,
+            "baseline_recipe_fingerprint": baseline.recipe_fingerprint if baseline else None,
+            "baseline_recipe_snapshot": baseline.recipe_snapshot if baseline else None,
+            "baseline_run_evidence": baseline.run_evidence if baseline else None,
             "baseline_target": plan.baseline.selector,
             "candidate_target": plan.candidate.selector,
             "baseline_target_identity": plan.baseline.identity,
@@ -1629,8 +1503,8 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         # consumer holding only the report can find the log and the rest.
         report["artifacts"] = {
             "report": posix_relpath(report_path, self.args.work_dir),
-            **({"log": cur.log_path} if cur.log_path else {}),
-            **({"live_dirs": dict(cur.dirs)} if cur.dirs else {}),
+            **({"log": current.log_path} if current.log_path else {}),
+            **({"live_dirs": dict(current.dirs)} if current.dirs else {}),
         }
         return report
 

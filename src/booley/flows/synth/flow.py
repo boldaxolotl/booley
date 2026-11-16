@@ -96,7 +96,6 @@ from booley.flows.synth.warnings import WarningSummary
 from booley.flows.terminal_progress import ProgressText
 from booley.fusesoc import fusesoc_registry
 from booley.presentation.terminal_table import render_table
-from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     EXIT_FAILURE,
@@ -114,7 +113,7 @@ from booley.targets.domain import TargetHandle
 from booley.targets.flow_names import config_section
 
 from .. import artifacts, edam
-from ..base import BuiltinFlow, SubprocessResult
+from ..base import SubprocessResult
 from ..baseline_worktree import (
     BaselineWorktreeError,
     baseline_worktree,
@@ -127,21 +126,18 @@ from ..implementation_comparison import (
     baseline_execution_context,
     candidate_execution_refs,
     resolve_target_execution_ref,
-    selected_target_handle,
     target_pair_plans_for_handles,
-    target_plan_for_handle,
 )
+from ..implementation_flow import ImplementationFlow
 from ..implementation_publication import (
-    ImplementationProgress,
     ImplementationProgressRun,
-    ImplementationPublisher,
     target_report_slug,
 )
 from ..implementation_report import (
     ImplementationAggregate,
+    ImplementationContext,
     ImplementationReport,
     build_implementation_aggregate,
-    implementation_context,
 )
 from ..invocation import resolve_timeout_ms
 from ..progress_lifecycle import ProgressPublicationError
@@ -1175,15 +1171,11 @@ def _plan_source_name(project_root: Path, item: fusesoc_registry.ResolvedFile) -
     return fusesoc_registry.mirrored_source_path(project_root, item) or Path(item.name).as_posix()
 
 
-class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
+class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
     """Run ASIC synthesis for one or more Targets with optional baseline comparison."""
 
     request_type = SynthRequest
     argument_adapter = SynthArguments
-
-    def _resolve_job_class(self) -> str:
-        """Synthesis is a memory-admitted Sandbox workload."""
-        return job_slots.CLASS_MEMORY
 
     name: str = "synth"
     description: str = (
@@ -1225,16 +1217,6 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
 
     # The built-in flow is make-driven: run_yosys_syn renders the build tree,
     # then results are interpreted from files under that same directory.
-
-    # -- BooleyFlow abstract methods (unused — we override _run) ----------
-
-    def _build_command(self) -> list[str]:
-        """Not used — _run handles multi-config orchestration directly."""
-        return []
-
-    def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:
-        """Not used — _run handles interpretation directly."""
-        return EndpointOutcome()
 
     # -- Command builder for a single config ----------------------------------
 
@@ -1340,23 +1322,6 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             handle,
             build_root=selected_root,
             library_plan=fusesoc_registry.build_library_plan(handle.project_root, selected_root),
-        )
-
-    def _target_handle(self, target: str) -> TargetHandle:
-        """Return the selected handle, reselecting only in a baseline checkout."""
-        return selected_target_handle(
-            getattr(self, "_target_handles", {}),
-            self.args.work_dir,
-            target,
-            flow="synth",
-        )
-
-    def _target_plan(self, target: str) -> TargetPairPlan:
-        """Look up the total pair plan by canonical candidate identity."""
-        return target_plan_for_handle(
-            getattr(self, "_target_pairs", ()),
-            self._target_handle(target),
-            flow="synth",
         )
 
     def _record_recipe_evidence(self, target: str, resolved: Any) -> None:
@@ -2067,80 +2032,50 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
 
     # -- Report writing -------------------------------------------------------
 
-    def _implementation_report(
+    def _build_implementation_report(
         self,
-        target: str,
-        metrics: SynthMetrics,
-        baseline_metrics: SynthMetrics | None,
-        baseline_ref: str | None,
+        context: ImplementationContext,
+        current: SynthMetrics,
+        baseline: SynthMetrics | None,
     ) -> ImplementationReport:
         """Adapt native synthesis evidence to the shared canonical schema."""
-        context = implementation_context(
-            self._target_plan(target),
-            target=target,
-            eda_tool=self._eda_tool,
-            baseline_ran=baseline_metrics is not None,
-            requested_baseline_ref=self.args.baseline,
-            resolved_baseline_ref=getattr(self, "_baseline_full_sha", None) or baseline_ref,
-        )
         return build_synth_implementation_report(
             context,
-            metrics,
-            baseline_metrics,
+            current,
+            baseline,
             fatal_timing=getattr(self, "_timing_violation_is_fatal", False),
         )
 
-    def _publisher(self) -> ImplementationPublisher:
-        return ImplementationPublisher(
-            work_dir=Path(self.args.work_dir),
-            report_dir=self.args.report_dir,
-            invocation_dir=self.reserve_invocation_dir(),
-        )
-
-    def _write_target_report(
+    def _target_report_payload(
         self,
         target: str,
-        metrics: SynthMetrics,
-        baseline_metrics: SynthMetrics | None,
+        current: SynthMetrics,
+        baseline: SynthMetrics | None,
         baseline_ref: str | None,
-        implementation: ImplementationReport | None = None,
-    ) -> ImplementationReport:
-        """Write per-target JSON report to report_dir."""
-        implementation = implementation or self._implementation_report(
-            target, metrics, baseline_metrics, baseline_ref
-        )
-        report_dir = self.args.report_dir
-        if report_dir is None:
-            return implementation
-        report_dir.mkdir(parents=True, exist_ok=True)
-
+        report_path: Path,
+    ) -> dict[str, Any]:
+        """Return the per-Target JSON report before the canonical verdict is set."""
         report = _build_report_dict(
             self.name,
             target,
-            metrics,
-            baseline_metrics,
+            current,
+            baseline,
             baseline_ref,
             self._compute_delta_pct,
             eda_tool=self._eda_tool,
         )
-        report["passed"] = implementation.passed
         plan = self._target_plan(target)
         report["baseline_target"] = plan.baseline.selector
         report["candidate_target"] = plan.candidate.selector
         report["baseline_target_identity"] = plan.baseline.identity
         report["candidate_target_identity"] = plan.candidate.identity
-        report["run_evidence"] = metrics.run_evidence or None
-        report["baseline_run_evidence"] = (
-            baseline_metrics.run_evidence if baseline_metrics else None
-        )
+        report["run_evidence"] = current.run_evidence or None
+        report["baseline_run_evidence"] = baseline.run_evidence if baseline else None
         run_id = os.environ.get("BOOLEY_RUN_ID", "")
         if run_id:
             report["run_id"] = run_id
-        safe_target = synth_target_report_slug(target)
-        report_path = report_dir / f"synth_{safe_target}.json"
-        self._add_report_artifacts(report, report_dir, report_path, target, metrics)
-        published = self._publisher().publish_report(implementation, report)
-        return ImplementationReport(published.payload["implementation"])
+        self._add_report_artifacts(report, report_path.parent, report_path, target, current)
+        return report
 
     def _add_report_artifacts(
         self,
@@ -2201,47 +2136,6 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             if published:
                 result["timing"] = published
         return result
-
-    def _write_progress_report(
-        self,
-        targets: list[str],
-        current_results: dict[str, SynthMetrics],
-        baseline_results: dict[str, SynthMetrics],
-        *,
-        phase: str,
-        baseline_ref: str | None = None,
-        complete: bool = False,
-    ) -> None:
-        """Checkpoint a long matrix after every target and phase transition."""
-        reports = getattr(self, "_implementation_reports", {})
-        progress = ImplementationProgress(
-            flow=self.name,
-            run_id=os.environ.get("BOOLEY_RUN_ID", ""),
-            targets=tuple(targets),
-            completed_targets=tuple(current_results),
-            baseline_completed_targets=tuple(baseline_results),
-            phase=phase,
-            complete=complete,
-            baseline_ref=baseline_ref,
-            reports=reports,
-        )
-        self._publisher().publish_progress(progress)
-
-    def _persist_target_outcome(
-        self,
-        target: str,
-        metrics: SynthMetrics,
-        baseline_metrics: SynthMetrics | None,
-        baseline_ref: str | None,
-    ) -> None:
-        """Durably record one terminal target before the next one starts."""
-        implementation = self._implementation_report(
-            target, metrics, baseline_metrics, baseline_ref
-        )
-        implementation = self._write_target_report(
-            target, metrics, baseline_metrics, baseline_ref, implementation
-        )
-        self._implementation_reports[target] = implementation
 
     # -- Main run logic -------------------------------------------------------
 
@@ -2479,7 +2373,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         # from a reused instance never leaks into a fresh invocation.
         self._baseline_selfcompare_msg: str | None = None
         self._baseline_full_sha: str | None = None
-        self._implementation_reports: dict[str, ImplementationReport] = {}
+        self._implementation_reports = {}
         self._execution_role = "candidate"
 
         handles = self._selected_target_handles()
@@ -2852,22 +2746,6 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         return self._target_note_lines(tgt, cur), self._timing_violation(tgt, cur), failure
 
     @staticmethod
-    def _comparison_error_lines(
-        reports: dict[str, ImplementationReport],
-    ) -> tuple[list[str], list[str]]:
-        lines: list[str] = []
-        failures: list[str] = []
-        for target, report in reports.items():
-            comparison = report.canonical.get("comparison")
-            errors = comparison.get("basis_errors", []) if isinstance(comparison, dict) else []
-            for message in errors:
-                if str(message).startswith("baseline infrastructure error:"):
-                    continue
-                lines.append(note_line(f"comparison {target}", "ERROR", str(message)))
-                failures.append(f"comparison {target}: {message}")
-        return lines, failures
-
-    @staticmethod
     def _implementation_aggregate_detail(
         targets: list[str],
         current: dict[str, SynthMetrics],
@@ -2962,15 +2840,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         reports: dict[str, ImplementationReport],
     ) -> tuple[list[str], list[str], str | None]:
         """Return the run-level notes, failures and self-compare message."""
-        lines: list[str] = []
-        failures: list[str] = []
-        for target, metrics in baseline_results.items():
-            if metrics.infra_error:
-                lines.append(note_line(f"baseline {target}", "ERROR", metrics.infra_error))
-                failures.append(f"baseline {target}: {metrics.infra_error}")
-        comparison_lines, comparison_failures = self._comparison_error_lines(reports)
-        lines.extend(comparison_lines)
-        failures.extend(comparison_failures)
+        lines, failures = self._baseline_error_notes(baseline_results, reports)
         selfcompare_msg = getattr(self, "_baseline_selfcompare_msg", None)
         if selfcompare_msg:
             lines.append(note_line("", "WARNING", selfcompare_msg))
