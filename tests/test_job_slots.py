@@ -2277,14 +2277,24 @@ class TestStaleGateBreaking:
         with store._promotion_gate(token) as acquired:
             assert acquired
 
-    def test_gate_owner_is_recaptured_after_a_fork(self, root, world, monkeypatch):
-        spawn(world, os.getpid())
-        spawn(world, os.getpid() + 1)
-        store = make_store(root, world)
+    def test_gate_owner_is_recaptured_after_a_fork(self, root, world):
+        current = [os.getpid()]
+        spawn(world, current[0])
+        spawn(world, current[0] + 1)
+        store = SlotStore(
+            root,
+            is_pid_alive=world.is_pid_alive,
+            read_cmdline=world.read_cmdline,
+            now=world.now,
+            sleep=lambda _seconds: None,
+            capture_identity=world.capture_identity,
+            observe_identity=world.observe_identity,
+            getpid=lambda: current[0],
+        )
         first = store._gate_owner()
         assert first.identity is not None
         assert store._gate_owner() is first  # cached while pid and identity hold
-        monkeypatch.setattr(os, "getpid", lambda: first.pid + 1)
+        current[0] = first.pid + 1
         assert store._gate_owner().pid == first.pid + 1
 
     def test_gate_owner_retries_a_failed_identity_capture(self, root, world):
