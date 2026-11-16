@@ -4,7 +4,6 @@ This runbook gives the QA agent running the [mutation
 mission](../../missions/mutation/MISSION.md) the fixture layout, staging, and
 fault files. The mission says what to exercise; this file says exactly how.
 `<asset>` below is `qa/shared/mutation/` in the Booley checkout under test.
-Goal-child rules are not needed: no area here runs a Goal.
 
 ## Fixture
 

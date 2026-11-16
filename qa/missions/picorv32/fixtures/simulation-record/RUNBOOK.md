@@ -2,9 +2,8 @@
 
 This runbook gives the QA agent running the picorv32 mission the exact steps
 for this optional hunt bait ([MISSION.md](../../MISSION.md), `hunt` area): exact
-test selection, manifest authority, interruption and resume, and Goal evidence
-scope on a small Icarus Target. Goal-child rules live in
-[GOAL-CHILD.md](../../../../shared/GOAL-CHILD.md); coverage Simulation
+test selection, manifest authority, interruption and resume, and measurement
+scope on a small Icarus Target. Coverage Simulation
 Record recovery lives in the [coverage
 fixture](../../../../shared/coverage/simulation-record/RUNBOOK.md).
 Automated regressions and `validate_campaign.py` protect the public contracts;
@@ -93,32 +92,27 @@ reference resolves relative to its own Target directory.
    rejection. Restore the catalog exactly and finish the resume successfully.
    Compare the files against a saved copy after every restoration.
 
-## Goal evidence scope
+## Measurement scope
 
-1. Commit the fixture registration, create a clean linked worktree, and start
-   a Codex child with `$booley-goal` naming a `sim` Goal on `sim_campaign`.
-   Follow GOAL-CHILD.md, including `work_dir` on every MCP call that takes it.
-2. Capture the Goal Record and Goal evidence, including the acceptance
-   transaction IDs that `journal` compares, before and after each invocation.
-3. A passing strict subset (`quick`) must leave the Goal unmet.
-4. A new Simulation Record with the complete required suite (`quick`,
-   `slow`, `tail`) must record Goal evidence only after all three Results
-   commit.
-5. If you temporarily add an extra registered test and select it explicitly,
-   its failure must still fail the whole Simulation Record, even though the
-   test is outside the required suite. Restore the catalog and fixture before
-   cleanup.
+1. Commit the fixture registration and a `[sim_campaign.sim]` table in the
+   Booley Directory's repository, and create a clean linked worktree.
+2. A passing `booley flow sim --test quick` makes nothing Measured.
+3. `booley measure` runs the whole registered suite (`quick`, `slow`, `tail`)
+   in a clean checkout and stores one Measurement Run.
+4. A temporarily added failing registered test, committed, makes `tests_failed`
+   unmet (exit 1). Restore the catalog and fixture before cleanup.
 
 ## Cleanup
 
 Before the first mutation, add to `resources.md` the run-owned fixture copy,
-core and catalog entries, report roots, Goal Record, process groups, and every
+core and catalog entries, report roots, measuring worktree, process groups, and
+every
 source or catalog file a negative step changes. When a negative step leaves
 something broken, record the finding, restore only owned bytes, and still run
 the valid control; it does not depend on the negative step passing.
 
-Keep the evidence and reap owned processes. Then finish or explicitly abandon
-the Goal and remove only the run-owned core and catalog entries, report roots
-and Goal Record. Confirm the pinned upstream checkout is byte-for-byte
+Keep the evidence and reap owned processes. Then remove the measuring
+worktree and only the run-owned core and catalog entries and report roots.
+Confirm the pinned upstream checkout is byte-for-byte
 unchanged, the Project catalog no longer lists `sim_campaign`, and every
 `resources.md` row for this fixture is marked released.

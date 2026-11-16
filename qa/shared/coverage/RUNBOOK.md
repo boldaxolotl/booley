@@ -1,11 +1,11 @@
 # Native coverage fixture recipes
 
-This runbook gives the QA agent running the coverage mission the fixed
-stimulus, fault-injection and restoration mechanics behind each area. The
+This runbook gives the QA agent running the coverage mission the fixed stimulus,
+fault-injection and restoration mechanics behind each area. The
 [mission](../../missions/coverage/MISSION.md) says what to exercise and what
-counts as a finding; this file says exactly how. Goal-child rules live in
-[GOAL-CHILD.md](../GOAL-CHILD.md), and the Simulation Record recovery cases
-of area 6 in [simulation-record/RUNBOOK.md](simulation-record/RUNBOOK.md).
+counts as a finding; this file says exactly how. The Simulation Record recovery
+cases of area 6 are in
+[simulation-record/RUNBOOK.md](simulation-record/RUNBOOK.md).
 
 `<asset>` below is `qa/shared/coverage/` in the
 Booley checkout under test.
@@ -26,15 +26,15 @@ initialize it through the public Booley route, and install
 configuration resolves; never assume `.booley`. Keep initialization's other
 configuration. The detached-data waiver case uses a separately initialized
 Booley Directory's repository and its resolved root. Commit the fixture and initialized
-Project files before creating a Goal worktree. Keep mutable report and fault
+Project files before creating a worktree. Keep mutable report and fault
 roots separate from saved evidence.
 
 Two registries exist. `project/project-data/tests.toml` is the diagnostic
 registry every area uses, including the default-skipped `full`, `fail` and
-native/hook fault tests. The coverage Goal area (area 7) swaps in
-`goals/tests.toml`, which differs only in `sim_generated`: there it registers
-exactly `[gap]`, so the Goal's approved `"tests": "all"` is exactly that
-workload. Never edit a registry or a threshold to make an active Goal pass.
+native/hook fault tests. The test-gap closure (area 7) swaps in
+`closure/tests.toml`, which differs only in `sim_generated`: exactly `[gap]`,
+so its coverage table measures that workload. Never edit a registry or a bound
+to get a met verdict.
 
 Each harness Target tests a different classification, so check the
 classification and the resolved source closure, not just the Target name:
@@ -61,36 +61,38 @@ injection settings to a shell shared with unrelated work. Record every
 prefix, suffix, executable and control directory before use. No privileges or
 ptrace are needed.
 
-For every gated policy case, create a clean linked worktree from the committed
-fixture setup, start `booley session enter -- codex ...`, and send
-`$booley-goal` with that case's concrete coverage Goal (see GOAL-CHILD.md).
-Fixture files write thresholds as `{"min_pct": N}`; a Goal's `metrics` takes
-the number `N` directly. Collect through MCP with `work_dir`; plain CLI runs
-are diagnostic only. Keep the Goal Record's `booley_state.json` and the
-intent, transaction and evidence pointers under `logs/acceptance/`. Finish or
-explicitly abandon each Goal before closing its case.
+## Coverage bounds
+
+Write each bound case as one `[<target>.coverage]` table with
+`<metric>_min = N`, where `<metric>` is the coverage metric name
+(`line_coverage`, `branch_coverage`, `expression_coverage`,
+`toggle_coverage`, `cover_property_coverage`) and `N` is the fixture's
+`min_pct`. Commit it on a run-owned branch and run `booley measure --all`. A
+measurement runs the registered suite minus default skips, so a case whose
+suite differs commits a registry with exactly that suite. These commits sit on
+the fixture Project's default branch, which gives them no Base, so no rules
+comparison is expected. Plain `booley flow sim --coverage` runs are the
+collection route and carry no bounds.
 
 ## Named baselines
 
 Create each baseline fresh in the current run, independently of the others;
 never reuse one from an earlier run. Record each baseline's exact report paths
 so later cases can point at them. `baselines.json` holds the same
-Target/test/policy values in machine-readable form; the mission calls a row
+Target/test/bound values in machine-readable form; the mission calls a row
 `baseline.<name>`.
 
 | Baseline | Concrete stimulus and required starting truth |
 |---|---|
 | `native` | Ungated `booley flow sim --target sim_toggle --test half --coverage`: simulation pass, collection complete, `not_requested`, 4/8 toggle points. |
-| `policy` | Enter a coverage Goal with the fixed policy in `baselines.json`: `sim_properties3`, tests `[half]`, `cover_property` 66. Explicit collection yields exactly 2/3 and pass. Snapshot its Goal evidence, state and transaction IDs, then explicitly abandon it. Invalid-policy probes use separate disposable records. |
+| `policy` | Measure `[sim_properties3.coverage] cover_property_coverage_min = 66` (the bound in `baselines.json`) with the registry limited to `[half]`: exactly 2/3, met. Invalid-bound probes use separate disposable commits. |
 | `analysis` | Ungated `sim_hdl --test gap --coverage`: completed Coverage Record and Simulation, verified RTL and tagged TB source closure, eligible and unscored points. Run the real configured Analyst once on the returned exact path. Also collect `sim_properties4` test `half` for property and source controls; keep both exact pointers distinct. |
 | `waiver` | Ungated `sim_waiver` test `run`, then the formal proof and two-point approval binding in "Approved fixture waivers and proof". Seal toggle 1 with exact `[run]`; recollect with the approved set and keep a passing Coverage Record with two waived bit-zero points. Also keep the separate excluded-value example on `sim_properties4` `half`, with its two fixed approvals and `cover_property` 100. |
 | `retention` | Two fresh, independent invocation numbers: `sim_toggle` test `half`, and `sim_properties4` test `half`. Also one multi-Target invocation selecting those two Targets with their complete registry suites. Record each Target pointer separately; their suites differ and are not one common test list. |
 | `custom` | Ungated `sim_custom` test `gap` with working start and write hooks. Recovery for custom-window and native-data faults reruns this exact harness. |
 | `multi` | Ungated `sim_multi` test `run`: two `coverage_dut` instances from one RTL source and `waiver_counter` from another, plus a tagged TB. Group all four metric inventories by source path yourself. |
 | `scale` | Ungated `sim_scale` test `run`: the fixed 4,096-instance Coverage Record for scope and evidence-budget cases. Never adapt it to the observed size. |
-| `analysis-fail` | Seal `sim_properties3` tests `[half]`, `cover_property` 100; collect `half`: 2/3, coverage fail, simulation pass. |
-| `analysis-blocked` | Seal `sim_properties3` tests `[half, full]`, `cover_property` 66; explicitly collect only `half`: valid collection, but the policy is blocked by the missing required `full` test. |
-| `sim-fail` | Seal `sim_custom` tests `[fail]`, `cover_property` 66; collect `fail`: a completed failing simulation with valid native coverage. |
+| `sim-fail` | Ungated `sim_custom` test `fail` with `--coverage`: a completed failing simulation with valid native coverage. |
 
 Large-record cases compile and collect `sim_scale` locally in the current
 run; no cached Coverage Record substitutes. The workload is fixed and needs
@@ -149,14 +151,13 @@ expression and toggle. Property cases check exact property points, run
 incidence and overall `cover_property` totals.
 
 Before relying on the oracle, run `python3 <asset>/evaluator/controls.py <mode>`
-for each of `positive`, `hit-count`, `source-grouping`, `digest` and
-`rational-verdict`. These hand-written minimal pairs test the independent
-evaluator only; they do not stand in for product Coverage Records, and product
-numeric cases still need the real reference/manifest pair and every raw
-per-run file.
+for each of `positive`, `hit-count`, `source-grouping`, `digest`. These
+hand-written minimal pairs test the independent evaluator only; they do not
+stand in for product Coverage Records, and product numeric cases still need the
+real reference/manifest pair and every raw per-run file.
 
 `policies.json` gives every metric case's Target, exact suite, literal
-threshold, expected numerator/denominator and verdict. The `sim_custom` `gap`
+bound, expected numerator/denominator and verdict. The `sim_custom` `gap`
 stimulus runs 18 post-reset edges alternating choices 0 and 1, giving line
 5/7, branch 2/4 and expression 2/3:
 
@@ -166,41 +167,29 @@ stimulus runs 18 post-reset edges alternating choices 0 and 1, giving line
   four invented truth-table bins. Its two false outcomes are hit; its true
   outcome is not.
 
-Thresholds are 70 (line), 50 (branch) and 66 (expression). The AND-policy case
+Bounds are 70 (line), 50 (branch) and 66 (expression). The AND case
 uses line 70 and branch 51: line passes, branch fails. Toggle uses the isolated
 `half` stimulus, 4/8 at 50; property uses 2/3 at 66. Rounding uses exactly 2/3
-at 66.67, which fails. These counts are checked against raw native evidence
+at 66.67, which is unmet. These counts are checked against raw native evidence
 and the control-flow specification, never updated from what the product
 emits.
 
-For the four verdict combinations, use `sim_custom` with exact test `[gap]` or
-`[fail]`; both produce 2/3 cover properties. Thresholds are 66 (coverage pass)
-and 100 (coverage fail). `gap` is a simulation pass; `fail` emits the failure
-sentinel after a valid write and returns nonzero. For blocked evaluation,
-explicitly run test `[gap]` against a separately sealed required suite
-`[full]` at threshold 100; that mismatch is the only seeded fault. Restoration
-returns to the fixed valid suite; it never lowers the failing case's
-threshold. Multi-Target precedence uses the Targets `sim_pass`, `sim_miss` and
+For the verdict combinations, use `sim_custom` with the registry limited to
+`[gap]` or `[fail]` (both produce 2/3 cover properties), a bound of 66 or 100,
+and the default `tests_failed_max = 0`. `gap` is a simulation pass; `fail`
+emits the failure sentinel after a valid write and returns nonzero. Expected:
+gap/66 exit 0; gap/100 exit 1; fail/66 and fail/100 exit 1. Restoration
+returns to the fixed valid registry; it never lowers the failing case's bound.
+Multi-Target precedence uses the Targets `sim_pass`, `sim_miss` and
 `sim_collector_error` that ship in `coverage.core` and the registry, with
-registry tests `[gap]`, `[gap]` and `[native-missing]` and `cover_property`
-thresholds 66, 100 and 66.
+registry tests `[gap]`, `[gap]` and `[native-missing]` and
+`cover_property_coverage_min` bounds 66, 100 and 66.
 
-Authoring negatives ask the Goal child to attempt `goal_enter` through its
-public MCP route, changing one field per request. Save each refusal before any
-record or branch is created; a client or schema rejection of non-finite JSON
-values also counts as a public refusal.
-
-- Empty tests and metrics are a literal empty list and map. There is one
-  Target per Goal.
-- Floors, one per request: 0, -1, 100.01, `true`, NaN, inf and the string
-  `"90"`.
-- A `coverage_*` family or metric name is refused as unknown.
-- Unknown test `not_registered` enters but fails at collection; save that
-  diagnostic and explicitly abandon its disposable record.
-- An unknown metric uses `fsm`. A zero-eligible metric uses a separate
-  Target with no properties and a requested `cover_property` metric.
-- Each collected policy has its own Goal Record and worktree. Same-key Goals
-  combine only compatible suites and merge to the stricter floor.
+`booley measure --validate` negatives go in one file listing them all at once:
+a string `"90"`, `fsm_coverage_min`, an unquoted dotted key and a relative
+bound. Record whether the bounds 0, -1 and 100.01 load (a `_min` above 100
+can never be met). A zero-eligible bound is a `cover_property_coverage_min` on
+a Target with no properties: it is an `error`, never a vacuous met.
 
 Save the validator's raw response.
 
@@ -271,7 +260,7 @@ process group with `boundary.so` preloaded:
 ```bash
 python3 <asset>/faults/filesystem.py --owned <owned-root> --control <new-control-dir> \
   --library <owned>/boundary.so --operation {link,rename,unlink} --suffix <exact-suffix> \
-  [--gate {any,complete,acceptance,interrupt}] [--baseline-state <state.json>] \
+  [--gate {any,complete,interrupt}] \
   [--timeout <seconds>] -- <command...>
 ```
 
@@ -291,7 +280,6 @@ survives.
 |---|---|
 | Coverage Record publication | `link` to the nested Coverage Record manifest (suffix `/coverage-record/coverage.json`); fail before the link. Point-store publication has already completed. The Target `coverage.json` reference is created afterward, by an exclusive open, not a link. |
 | Simulation publication | `rename` to the exact Target `/simulation.json`; fail before the replacement. |
-| Acceptance state | `rename` to the captured Goal Record `goals/<record-id>/booley_state.json`, gate `acceptance`; fail only when the temporary JSON adds an acceptance transaction absent from `--baseline-state`. |
 | Terminal progress | `rename` to the exact invocation `/progress.json`, gate `complete`; fail only when the temporary JSON has `complete: true`. Earlier writes pass through. |
 
 Save the source temporary JSON copied while the syscall was paused, the
@@ -312,12 +300,8 @@ operation:
 
 - A publication retry for an incomplete collection is a **new invocation
   number**; never resume a partial Coverage Record.
-- For the Goal acceptance-state fault after all terminal Results exist, use the
-  child's MCP `sim` exact resume with `work_dir`, as
-  [simulation-record/RUNBOOK.md](simulation-record/RUNBOOK.md) describes.
-
 Never delete a lock to get past active production, and never restore
-acceptance by writing state files: the valid public Flow produces new
+by writing state files: the valid public Flow produces new
 authoritative evidence. Keep every failed transaction for inspection.
 
 ## Native and input corruption recipes
@@ -426,7 +410,7 @@ The simulated-provider cases are deterministic **external input** tests; their
 reports never stand in for a real-model result, and protocol drift in the
 provider fixture is a fixture bug, never a live-model pass. Live closure, advice and
 source modes use the configured provider directly: save its real transcript
-and confirm the Coverage Record, Project, Goals and waiver bytes are unchanged.
+and confirm the Coverage Record, Project and waiver bytes are unchanged.
 The
 model instruction for a gap is:
 
@@ -435,7 +419,7 @@ model instruction for a gap is:
 > for rtl/coverage_dut.sv and verified excerpts for decoder choice 2. Separate
 > immutable observations from hypotheses. Recommend a concrete missing test using
 > only delivered references. State retrieval limitations. Do not run simulation,
-> read waveforms, edit files or Goals, or approve waivers.
+> read waveforms, edit files, or approve waivers.
 
 For Codex, create an executable owned launcher named `codex` that runs
 `faults/provider.py`, ahead of the original on **only that Analyst process's**
@@ -528,13 +512,13 @@ selection, confirm no nested server survives, then make a fresh successful
 one minute for startup, evidence and cleanup; a timeout is a failure to
 report, never a reason to ask a smaller question.
 
-## Coverage Goal cases
+## Test-gap closure cases
 
-The stale-source case uses a separate disposable Goal child and worktree with
-the final improved TB and a fresh passing baseline. It runs under the Goal
-registry (`goals/tests.toml`), which changes only `sim_generated` to `[gap]`.
-Restoration reruns `sim_generated` `gap` in that same active Goal. Report the
-fault result and the restoration result separately.
+The stale-source case uses a separate disposable worktree with the final
+improved TB and a fresh passing collection under `closure/tests.toml`, which
+changes only `sim_generated` to `[gap]`. Restoration reruns `sim_generated`
+`gap` with `--coverage` there. Report the fault result and the restoration
+result separately.
 
 ## Restoration and cleanup
 

@@ -22,13 +22,11 @@ def _read_source_document(source: Path, attempts: int = 100) -> dict:
     raise AssertionError("unreachable")
 
 
-def should_fail(source: Path, gate: str, baseline: set[str]) -> bool:
+def should_fail(source: Path, gate: str) -> bool:
     if gate == "any":
         return True
     document = _read_source_document(source)
-    if gate == "complete":
-        return document.get("complete") is True
-    return bool(set(document.get("acceptance_transactions", [])) - baseline)
+    return document.get("complete") is True
 
 
 def publish_reply(event: Path, answer: str) -> None:
@@ -38,7 +36,7 @@ def publish_reply(event: Path, answer: str) -> None:
     staging.replace(event.with_suffix(".reply"))
 
 
-def service(control: Path, gate: str, baseline: set[str], seen: set[Path], producer: int) -> None:
+def service(control: Path, gate: str, seen: set[Path], producer: int) -> None:
     for event in sorted(control.glob("event-*")):
         if event in seen or "." in event.name:
             continue
@@ -56,7 +54,7 @@ def service(control: Path, gate: str, baseline: set[str], seen: set[Path], produ
             seen.add(event)
             os.killpg(producer, signal.SIGTERM)
             return
-        answer = "F" if should_fail(Path(source), gate, baseline) else "P"
+        answer = "F" if should_fail(Path(source), gate) else "P"
         if source and Path(source).is_file():
             # Preserve the publication predicate before product cleanup removes temp JSON.
             event.with_suffix(".source.json").write_bytes(Path(source).read_bytes())
@@ -106,7 +104,6 @@ def run(
     operation: str,
     suffix: str,
     gate: str,
-    baseline: set[str],
     timeout: int,
 ) -> int:
     """Bound the child process group and preserve handshake evidence on every exit."""
@@ -127,11 +124,11 @@ def run(
     try:
         deadline = time.monotonic() + timeout
         while child.poll() is None and time.monotonic() < deadline:
-            service(control, gate, baseline, seen, child.pid)
+            service(control, gate, seen, child.pid)
             time.sleep(0.01)
         if child.poll() is None:
             raise TimeoutError("owned fault command exceeded operational ceiling")
-        service(control, gate, baseline, seen, child.pid)
+        service(control, gate, seen, child.pid)
         if not (control / ("interrupted" if gate == "interrupt" else "consumed")).exists():
             raise ValueError("fault not injected: intended publication boundary was not reached")
         return child.returncode
@@ -146,16 +143,10 @@ def main() -> None:
     parser.add_argument("--library", type=Path, required=True)
     parser.add_argument("--operation", choices=["link", "rename", "unlink"], required=True)
     parser.add_argument("--suffix", required=True)
-    parser.add_argument(
-        "--gate", choices=["any", "complete", "acceptance", "interrupt"], default="any"
-    )
-    parser.add_argument("--baseline-state", type=Path)
+    parser.add_argument("--gate", choices=["any", "complete", "interrupt"], default="any")
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
-    baseline = set()
-    if args.baseline_state:
-        baseline = set(json.loads(args.baseline_state.read_text())["acceptance_transactions"])
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     raise SystemExit(
         run(
@@ -166,7 +157,6 @@ def main() -> None:
             args.operation,
             args.suffix,
             args.gate,
-            baseline,
             args.timeout,
         )
     )

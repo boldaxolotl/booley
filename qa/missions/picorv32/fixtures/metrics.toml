@@ -1,0 +1,12 @@
+[defaults.sim]
+tests_failed_max = 0
+
+[sim_core.sim]
+track = ["tests_total"]
+
+[lint_core.lint]
+errors_max = 0
+track = ["warnings"]
+
+[synth_core.synth]
+track = ["cell_count", "area_um2", "clk.fmax_mhz"]

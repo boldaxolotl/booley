@@ -24,8 +24,9 @@ the findings format and cleanup bookkeeping.
 ## Mission-specific rules
 - Work on run-owned branches, worktrees and disposable copies. Send `prompts/*.md` verbatim;
   never tell a child where a seeded fault is or how it was made.
-- Follow the shared [Goal-child operating rules](../../shared/GOAL-CHILD.md) whenever you run
-  a Goal.
+- Follow the shared [Developer Agent child
+  rules](../../shared/DEVELOPER-CHILD.md) whenever you
+  ask a child for a Measured Commit.
 
 ## Areas
 
@@ -51,11 +52,13 @@ that log.
 
 Ground only this demo has, so it's worth hunting here:
 - Stealth Mode with projected hidden cores, and the Paired Checkout that a Versioned Booley
-  Directory adds to every worktree and Goal Branch.
+  Directory adds to every worktree.
 - The RISC-V toolchain image: GCC, srec_cat, dtc, Spike and the specs under `/opt/riscv-docs`.
-- A real CPU for Goals: the demo ships its own Goalsets, and this mission adds
-  `goals/continuity.md` (Dhrystone), `goals/evolution.md` (Zbb), `goals/entry-probe.json` and
-  `goals/fpga.json`.
+- A real CPU to measure: commit `fixtures/metrics.toml` in the Booley
+  Directory's own repository
+  (Stealth Mode), and `prompts/continuity.md` (Dhrystone) with its cycle cap as
+  a
+  `"dhry.cycle_count_max"` bound.
 
 Optional bait with known answers. Use any of it, or none:
 - `fixtures/wishbone-fault.md`: a seeded Wishbone bug for an Interactive child to find and fix
@@ -71,7 +74,7 @@ Look for: wrong results reported as success, stale evidence or reports, docs tha
 match behavior, and recovery steps that don't recover.
 
 ### 3. cleanup — Product cleanup (~20 min)
-Use Booley's own cleanup first (Goal abandon or Finish, worktree removal,
+Use Booley's own cleanup first (worktree removal,
 `booley session down`). Then release every `resources.md` row and nothing else. Leave borrowed
 Grants, installations, images and Sessions untouched. Record the final pin state.
 
@@ -87,19 +90,16 @@ Grants, installations, images and Sessions untouched. Record the final pin state
   GitHub Codespaces.
 - The demo has no `[agent]` pin, so Booley defaults to Claude Code. To drive it with Codex, run
   the first init as `booley init --provider codex`.
-- Use unique worktree names and Goal slugs: an existing same-day Goal Branch refuses entry.
-- Integrate every printed branch before cutting the next worktree. When a Paired Checkout was
-  printed, a clean outer tree alone does not prove its branch is current.
-- Entry reads `default.md` only from the primary checkout's `.booley/goalsets/`. A copy
-  committed only in a worktree's Paired Checkout does not trigger the include-or-skip decision.
-- `goals/evolution.md` (Zbb) starts from integrated `goals/continuity.md` work and needs
-  `docs/riscv-zbb-spec.txt` committed before entry. The operator extracts it from the installed
-  manual under `/opt/riscv-docs`: the encodings and semantics of all 18 Zbb ops, HTML tags
-  stripped, at most 30,000 characters (drop examples and commentary first). Record the manual's
-  path, SHA-256 and byte ranges beside it. `goals/fpga.json` targets `fpga_core_zbb`, which
-  exists only after that Goal, and needs Vivado registered and granted.
-- The demo ships `goalsets/zbb.md` and `specs/zbb.md`. If you run this mission's
-  `goals/evolution.md`, the child must not pick up the demo's `zbb` Goalset.
+- Integrate every worktree branch, and its `booley-worktree/<name>` branch,
+  before cutting the next
+  worktree; a clean outer tree alone does not prove the paired branch is
+  current.
+- `booley measure` reads `metrics.toml` from the Booley Directory repository's
+  committed HEAD
+  (Stealth Mode): commit it with `git -C .booley commit`.
+- The demo's README still describes a removed feature in its main event and
+  ships its records, so
+  Doctor warns `goals.leftover`; both are known, not findings.
 - A regrant alone leaves the Session spec stale. Reissue it before any Doctor, FPGA or mount
   check.
 - A failing `booley session enter -- <argv>` exit code is not a Flow verdict: 126 or 127 means

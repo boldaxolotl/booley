@@ -100,16 +100,12 @@ def exercise(mode: str, root: Path) -> None:
         points[0]["hits_by_run"]["r1"] = 3
     elif mode == "source-grouping":
         manifest["source_rollups"][0]["source"] = "rtl/other.sv"
-    elif mode == "rational-verdict":
-        manifest["evaluation"]["status"] = "pass"
     measurements.verify_known_answer(manifest, points, case)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "mode", choices=["positive", "hit-count", "source-grouping", "digest", "rational-verdict"]
-    )
+    parser.add_argument("mode", choices=["positive", "hit-count", "source-grouping", "digest"])
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="coverage-oracle-") as directory:
         try:

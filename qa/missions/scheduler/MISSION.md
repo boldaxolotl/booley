@@ -255,7 +255,6 @@ staged Project and its resources in `resources.md`.
   step depends on the build phase.
 - Every run records new peaks: lower or restore the history before each step
   that depends on a given estimate.
-- A Job bound to a Goal is never requeued after OOM. This mission runs none.
 - Until booley#4048 is fixed, a plain `fpga` run stalls after Vivado's
   "Synthesis finished" with `[vivado] <defunct>` processes under the
   execution supervisor. Check whether the candidate still does this once;

@@ -358,7 +358,7 @@ def test_qa_names_no_goal_mode_surface() -> None:
         for number, line in enumerate(lines, start=1):
             if RETIRED_WORDING.search(DOCTOR_CHECK_IDS.sub("", line)):
                 hits.append(f"{relative.as_posix()}:{number}: {line.strip()}")
-    assert not hits, "QA names a retired Goal Mode surface or 'sign-off':\n" + "\n".join(hits)
+    assert not hits, "QA names a retired Goal surface or 'sign-off':\n" + "\n".join(hits)
 
 
 def test_metrics_fixtures_load_with_the_product_parser() -> None:
