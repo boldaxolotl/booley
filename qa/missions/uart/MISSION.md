@@ -302,7 +302,7 @@ Try:
   global). This step tests the
   per-directory lock, not memory queueing, so it asserts the overlap only.
 - `immutable-presim.toml`: the hook sees no `BOOLEY_BUILD_ROOT` and exits 73. Expect an
-  attributed setup failure, no pass, and unchanged source, bundle and snapshot hashes.
+  attributed setup failure, no pass, and unchanged source and bundle hashes.
 - `legacy-presim.toml`: `legacy-per-test` is disclosed, each test gets its own private build,
   and nothing claims a shared bundle.
 - Optionally cross-check with `fixtures/simulation-record/validate_campaign.py`.

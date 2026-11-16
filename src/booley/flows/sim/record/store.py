@@ -25,6 +25,8 @@ from booley.core.boundary import (
     require_int,
 )
 from booley.flows.artifact_durability import (
+    discard_published_staging,
+    discard_staged_files,
     durable_create,
     durable_directory,
     fsync_directory,
@@ -61,6 +63,7 @@ from .codec import (
     encode_simulation_result,
     linked_manifest_path,
     reads_simulation_record_documents,
+    refuse_retired_document,
     validate_relative_path,
 )
 from .model import (
@@ -164,6 +167,7 @@ class SimulationRecordStore:
         self.booley_dir = booley_dir
 
     def _read(self, path: Path, *, limit: int) -> bytes:
+        discard_published_staging(path)
         return read_bounded(
             path,
             limit=limit,
@@ -217,13 +221,20 @@ class SimulationRecordStore:
 
     @contextmanager
     def mutation_lock(self) -> Iterator[None]:
-        """Fail immediately when another scheduler owns this record."""
+        """Fail immediately when another scheduler owns this record.
+
+        Holding it, discard the staged files a killed publication left in the
+        record and its Target directory: only the lock holder writes there.
+        """
         _require_safe_parents(self.root, self.root, self.booley_dir)
         if not self.root.is_dir():
             raise SimulationRecordIntegrityError("Simulation Record directory disappeared")
         path = self.root / ".lock"
         _require_safe_parents(path, self.root, self.booley_dir)
         with path.open("a+", encoding="utf-8") as stream, nonblocking_file_lock(stream):
+            discard_staged_files(self.root.parent)
+            for staged in self.root.glob(".summary.json.*.tmp"):
+                staged.unlink(missing_ok=True)
             yield
 
     def work_item_directory(self, work_item_id: str) -> Path:
@@ -586,6 +597,7 @@ class SimulationRecordStore:
         attempts = self._attempt_directories(attempts_root)
         decoded_attempts: list[SimulationAttempt] = []
         for ordinal, attempt_directory in enumerate(attempts, start=1):
+            self._refuse_previous_snapshot(attempt_directory)
             attempt_path = attempt_directory / "attempt.json"
             if not attempt_path.exists() and not is_report_link(attempt_path):
                 continue
@@ -615,6 +627,12 @@ class SimulationRecordStore:
             return WorkItemRecovery(work_item_id, "complete", len(attempts), result)
         state = "interrupted" if attempts else "pending"
         return WorkItemRecovery(work_item_id, state, len(attempts), None)
+
+    def _refuse_previous_snapshot(self, attempt_directory: Path) -> None:
+        """Refuse an attempt that holds an older Booley's executable snapshot."""
+        path = attempt_directory / "snapshot" / "snapshot.json"
+        if path.exists() or is_report_link(path):
+            self._decode_located(refuse_retired_document, path, MANIFEST_MAX_BYTES)
 
     def _scan_result(
         self,
@@ -848,8 +866,10 @@ def _load_build_execution(
     matches = [item for item in references if item["kind"] == "simulation_build_execution"]
     if len(matches) != 1:
         raise SimulationRecordIntegrityError("ready shared build lacks exact execution evidence")
+    path = directory / cast(str, matches[0]["path"])
+    discard_published_staging(path)
     document = read_json_object(
-        directory / cast(str, matches[0]["path"]),
+        path,
         limit=RECORD_MAX_BYTES,
         error=SimulationRecordIntegrityError,
         booley_dir=booley_dir,

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from functools import cache
 from itertools import chain
 from pathlib import Path, PurePosixPath
+from typing import Literal, overload
 
 from booley.core.booley_dir import (
     BOOLEY_DIR_NAME,
@@ -129,6 +130,21 @@ def _owning_checkouts(
     return owners
 
 
+@overload
+def discover_project_root(
+    start: Path | None = None,
+    *,
+    required: Literal[False] = False,
+    explicit_selection: bool = False,
+) -> Path: ...
+
+
+@overload
+def discover_project_root(
+    start: Path | None = None, *, required: bool, explicit_selection: bool = False
+) -> Path | None: ...
+
+
 def discover_project_root(
     start: Path | None = None, *, required: bool = False, explicit_selection: bool = False
 ) -> Path | None:
@@ -222,7 +238,7 @@ def _session_owner(checkout: Path) -> Path:
     return common.parent
 
 
-def _session_checkout(selected: Path) -> Path:
+def _session_checkout(selected: Path | None) -> Path:
     current, checkouts = _checkout_candidates(selected)
     if checkouts:
         return checkouts[0]
@@ -270,7 +286,7 @@ def session_store_checkout(selected: Path) -> Path | None:
 
 
 def discover_session_context(
-    selected: Path, *, invocation_cwd: Path | None = None
+    selected: Path | None, *, invocation_cwd: Path | None = None
 ) -> SessionContext:
     """Resolve host session ownership without changing general design discovery."""
     checkout = _session_checkout(selected)
@@ -293,7 +309,7 @@ def discover_session_context(
     return SessionContext(owner, checkout, data, cwd)
 
 
-def linked_auth_error(selected: Path) -> str | None:
+def linked_auth_error(selected: Path | None) -> str | None:
     """Refuse host credential mutation only for a proven linked Project checkout."""
     if os.environ.get("BOOLEY_CONTAINER") == "1":
         return None

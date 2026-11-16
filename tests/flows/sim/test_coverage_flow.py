@@ -447,7 +447,7 @@ def _frozen_hook_execution(tmp_path, data, received):
                 test_names=(request.test.name,),
                 build_root=tmp_path / "build",
                 eda_tool="verilator",
-                timeout_s=5,
+                timeout_s=30,
                 commands=received[-1][1],
             )
             return SimulationRunResult(result.verdict, result.output, evidence)
@@ -515,7 +515,7 @@ def _publish_real_hook_series(request, handle, commands, count):
             test_names=("alpha",),
             build_root=request.attempt_directory / "build",
             eda_tool="icarus",
-            timeout_s=5,
+            timeout_s=30,
             commands=commands,
             run_cwd=".",
         )

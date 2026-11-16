@@ -503,7 +503,7 @@ def test_real_flow_preserves_all_four_build_variants(tmp_path: Path) -> None:
         binaries = {
             hashlib.sha256(path.read_bytes()).hexdigest()
             for path in root.rglob("Vtop")
-            if path.is_file() and "snapshot" not in path.parts
+            if path.is_file()
         }
         assert len(binaries) == len(previous) + 1
         assert previous.issubset(binaries)

@@ -75,7 +75,7 @@ step ends.
 | Name | Fragment | Use |
 |---|---|---|
 | `small-budget` | `[sandbox]` `memory = "<size>"`: the wanted budget plus the reserve (the measured agent, MCP server and Dashboard memory, plus 2 GB); restart the Session as `docs/user/SANDBOX.md` says, read the resulting `budget_mb` in a claim file, and set it back afterwards | Fit one Job and not two, or a set number of Record items |
-| `retired` | `[jobs]` `max_heavy = 2` and `heavy_memory = "22g"` | Retired keys, refused with a fix hint |
+| `retired` | `[jobs]` `max_heavy = 2`, `heavy_memory = "22g"`, `max_light = 4`, `queue_max = 8` and `memory_budget = "20g"`; for the one-key-at-a-time step, one of them | Retired keys, refused with a fix hint |
 | `seats` | Remove `[jobs.seats]`; then `vivado = 0`, `vivado = "x"`, `unknown_tool = 1` under `[jobs.seats]`, and `[jobs] seats = 1` | Seat Cap values, good and bad |
 | `sandbox-oom` | `[sandbox]` `memory = "12g"`; restart the Session as `docs/user/SANDBOX.md` says, and set it back to `"28g"` after area 6 | Real OOM kills without squeezing the host |
 
@@ -90,7 +90,7 @@ step ends.
 | OOM kills | `/sys/fs/cgroup/memory.events` in the Sandbox (`oom_kill` counter); the Flow's `[requeue]` line and its result |
 | Verilator parallelism | The build log, or `ps` during the build: the `make` command line's `-j<N>` |
 | Cores | `nproc` in the Sandbox, and `/sys/fs/cgroup/cpu.max` |
-| Host health | `free -g` and `vmstat 5` on the host during areas 3, 6 and 11 |
+| Host health | `free -g` and `vmstat 5` on the host during areas 3, 6 and 12 |
 
 Record times in UTC and keep every copied claim file and log under the run
 directory's `evidence/`.

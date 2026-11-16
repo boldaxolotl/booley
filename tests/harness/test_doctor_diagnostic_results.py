@@ -18,10 +18,18 @@ from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport,
 from booley.audit.doctor_waivers import load_doctor_waivers
 from booley.config.host_config import SandboxHostPolicy
 from booley.config.project_config import normalize_tests_toml
+from booley.core.host_shell import quote_arg
 from booley.harness import doctor, doctor_deep, host_diagnostics
 from booley.harness.setup import readiness
-from booley.runtime import doctor_stamp, inspection, platform_paths, vaporview
-from booley.runtime.sandbox_apply import quote_arg
+from booley.runtime import (
+    doctor_stamp,
+    inspection,
+    platform_paths,
+    runtime_context,
+    session_runtime,
+    vaporview,
+)
+from booley.runtime.sandbox_apply import Attachment
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 from tests.conftest import symlink_or_skip
@@ -34,6 +42,7 @@ from tests.harness.test_doctor import (
     _patch_environment,
     _write_project,
 )
+from tests.runtime.test_sandbox_remedy_workflows import VSCODE_INIT
 from tests.subprocess_budget import run_bounded_child
 
 
@@ -1165,7 +1174,7 @@ def test_core_audit_skips_core_repository_hygiene_without_targets(tmp_path, monk
 
 _CORE_RESOLUTION_OUTPUT = (
     "  ✗  .core Target 'sim_bad' fails to resolve\n"
-    "     → fix the .core / depends graph\n"
+    "     → fix unit.core (declares Target 'sim_bad') or its depends graph\n"
     "      Parse error. Ignoring file /work/unit.core:\n"
     "      filesets.tb.depend must be array\n"
     "      second line\n"
@@ -1177,8 +1186,9 @@ def test_core_resolution_deep_output_is_pinned(tmp_path, monkeypatch, capsys):
     """The deep ``.core`` resolution rows keep their text, order, excerpt and counts.
 
     The literal was captured from Doctor's own resolution before it moved to its
-    owner and is unchanged by the move; the rows now reach the reporter as the
-    owner's one typed report, and the excerpt is shown without ``--verbose``.
+    owner; only the failing Target's fix changed (it names the ``.core``). The
+    rows now reach the reporter as the owner's one typed report, and the
+    excerpt is shown without ``--verbose``.
     """
     from tests.harness.test_doctor_deep_execution import _core_resolution_project
 
@@ -1327,7 +1337,7 @@ _RUNTIME_ROWS = {
     "binary missing": [
         "  ✓  lint executes in the Sandbox",
         "  ✗  lint: 'verilator' is not on the issued Sandbox PATH",
-        "     → bake verilator into the Sandbox Image and rebuild (booley init --force)",
+        "     → bake verilator into the Sandbox Image, then recreate the Sandbox: " + VSCODE_INIT,
         "  ✓  lint dry-run passed",
     ],
     "runtime unavailable": [
@@ -1355,6 +1365,8 @@ def test_flow_runtime_rows_render_unchanged(tmp_path, monkeypatch, capsys):
         root = tmp_path / name.replace(" ", "-")
         root.mkdir()
         with monkeypatch.context() as patch:
+            patch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+            patch.setattr(session_runtime, "sandbox_attachment", lambda _root: Attachment.VSCODE)
             rows, code, ran = _run_runtime_scenario(root, patch, capsys, **options)
         assert rows == _RUNTIME_ROWS[name], name
         assert code == exit_code, name

@@ -2,50 +2,112 @@
 
 from __future__ import annotations
 
+import glob
 import os
-from contextlib import suppress
+import tempfile
+from collections.abc import Callable
 from pathlib import Path
+from typing import BinaryIO
+
+from booley.runtime.atomic_files import STAGED_SUFFIX
 
 
 def durable_copy(source: Path, destination: Path, *, mode: int = 0o600) -> None:
-    """Copy a regular file and durably publish its directory entry."""
-    durable_directory(destination.parent)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(destination, flags, mode)
-    try:
-        with source.open("rb") as reader, os.fdopen(descriptor, "wb", closefd=False) as writer:
+    """Copy a regular file and durably publish its directory entry.
+
+    The bytes are staged beside *destination* and claimed under its final name
+    only when whole, so a killed writer never leaves a partial record there.
+    """
+
+    def write(writer: BinaryIO) -> None:
+        with source.open("rb") as reader:
             for chunk in iter(lambda: reader.read(64 * 1024), b""):
                 writer.write(chunk)
-            writer.flush()
-            os.fchmod(descriptor, mode)
-            os.fsync(descriptor)
-    except BaseException:
-        with suppress(OSError):
-            destination.unlink()
-        raise
-    finally:
-        os.close(descriptor)
-    fsync_directory(destination.parent)
+
+    _publish(destination, write, mode)
 
 
 def durable_create(destination: Path, raw: bytes, *, mode: int = 0o600) -> None:
-    """Create one immutable byte record and durably publish its name."""
+    """Create one immutable byte record and durably publish its name.
+
+    Raises ``FileExistsError`` and leaves the existing file untouched when
+    *destination* already exists.
+    """
+    _publish(destination, lambda writer: writer.write(raw), mode)
+
+
+def _publish(destination: Path, write: Callable[[BinaryIO], object], mode: int) -> None:
     durable_directory(destination.parent)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(destination, flags, mode)
+    descriptor, raw_staged = tempfile.mkstemp(
+        dir=destination.parent, prefix=f".{destination.name}.", suffix=STAGED_SUFFIX
+    )
+    staged = Path(raw_staged)
     try:
-        with os.fdopen(descriptor, "wb", closefd=False) as writer:
-            writer.write(raw)
-            writer.flush()
-            os.fchmod(descriptor, mode)
-            os.fsync(descriptor)
-    except BaseException:
-        with suppress(OSError):
-            destination.unlink()
-        raise
+        try:
+            with os.fdopen(descriptor, "wb", closefd=False) as writer:
+                write(writer)
+                writer.flush()
+                if os.name != "nt":
+                    os.fchmod(descriptor, mode)
+                os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        _claim(staged, destination, mode)
+        fsync_directory(destination.parent)
     finally:
-        os.close(descriptor)
-    fsync_directory(destination.parent)
+        staged.unlink(missing_ok=True)
+
+
+def _claim(staged: Path, destination: Path, mode: int) -> None:
+    """Give *staged* the final name without replacing an existing one.
+
+    A POSIX hard link is atomic and keeps the staged file's mode. Windows
+    renames and sets the mode afterwards: a read-only file cannot be unlinked
+    there, so a staged file stays writable until it is claimed.
+    """
+    if os.name == "nt":
+        staged.rename(destination)
+        destination.chmod(mode)
+        return
+    os.link(staged, destination)
+    staged.unlink(missing_ok=True)
+
+
+def discard_staged_files(root: Path) -> None:
+    """Remove every staged durable record under *root*.
+
+    The caller must exclude every writer of *root*: no publication may be in
+    flight. A Simulation Record's manifest publication is excluded only because
+    nothing can lock a record before its manifest exists.
+    """
+    for path in root.rglob(f".*{STAGED_SUFFIX}"):
+        if path.is_file() and not path.is_symlink():
+            path.unlink(missing_ok=True)
+
+
+def discard_published_staging(destination: Path) -> None:
+    """Drop the staged link a killed POSIX publication left beside *destination*.
+
+    A kill between the link and the unlink leaves the record complete under its
+    final name with a second link, which single-link readers refuse. Safe
+    without a lock: the writer of such a sibling has already published and only
+    unlinks it with ``missing_ok``. A missing destination is a no-op, so the
+    caller's own read reports it as usual.
+    """
+    try:
+        status = destination.lstat()
+    except FileNotFoundError:
+        return
+    if status.st_nlink <= 1:
+        return
+    pattern = f".{glob.escape(destination.name)}.*{STAGED_SUFFIX}"
+    for sibling in destination.parent.glob(pattern):
+        try:
+            other = sibling.lstat()
+        except FileNotFoundError:
+            continue
+        if (other.st_dev, other.st_ino) == (status.st_dev, status.st_ino):
+            sibling.unlink(missing_ok=True)
 
 
 def fsync_directory(directory: Path) -> None:
@@ -71,4 +133,11 @@ def durable_directory(directory: Path) -> None:
         fsync_directory(path.parent)
 
 
-__all__ = ["durable_copy", "durable_create", "durable_directory", "fsync_directory"]
+__all__ = [
+    "discard_published_staging",
+    "discard_staged_files",
+    "durable_copy",
+    "durable_create",
+    "durable_directory",
+    "fsync_directory",
+]

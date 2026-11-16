@@ -130,7 +130,7 @@ booley coverage uncovered <coverage.json>   # uncovered points of a coverage run
 booley coverage uncovered <coverage.json> --metric branch --source rtl/fifo.sv
 booley doctor                     # check setup and environment health
 booley doctor --concise           # show only problems
-booley doctor --deep              # also run short real simulations, lints, and syntheses
+booley doctor --deep              # also run short real simulations, lints, syntheses, and FPGA implementations
 booley doctor --deep --skip-agent-checks   # skip the agent login and provider checks
 booley targets                    # list Targets
 booley targets --for sim          # only Targets a Flow can use

@@ -1887,8 +1887,13 @@ def test_packaged_install_rejects_exact_local_parent_when_contract_is_unavailabl
         ),
     )
 
-    with pytest.raises(lifecycle.InstalledImageContractError, match="compatibility metadata"):
+    with pytest.raises(
+        lifecycle.InstalledImageContractError, match="compatibility metadata"
+    ) as caught:
         _check_project(root, docker)
+
+    assert "then run the command again" in str(caught.value)
+    assert "session refresh" not in str(caught.value)
 
 
 def _wire_distribution_pull(

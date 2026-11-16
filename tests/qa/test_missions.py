@@ -249,6 +249,7 @@ SCHEDULER_AREAS = [
     "sched-shrink",
     "sched-oom",
     "sched-records",
+    "sched-companions",
     "sched-threads",
     "sched-seats",
     "sched-cutover",

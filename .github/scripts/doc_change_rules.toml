@@ -72,6 +72,7 @@ class = "premerge"
 check = "changed"
 paths = [
   "docs/internals/DOCS_PRINCIPLES.md",
+  "docs/internals/USER_DOCS_PRINCIPLES.md",
   "docs/internals/CODING_PRINCIPLES.md",
 ]
 

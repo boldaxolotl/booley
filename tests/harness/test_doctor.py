@@ -34,6 +34,7 @@ from booley.audit.diagnostic_results import (
     Severity,
 )
 from booley.audit.doctor_waivers import load_doctor_waivers
+from booley.flows.invocation import default_timeout_ms
 from booley.fusesoc import selftest_overlay, target_inspection
 from booley.harness import developer_probe, doctor, doctor_deep, host_diagnostics
 from booley.harness.setup import readiness
@@ -67,6 +68,12 @@ from tests.docker_cli_guard import (
 )
 from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.harness import test_session_runtime as resolution_fixtures
+from tests.runtime.test_sandbox_remedy_workflows import (
+    EXTERNAL,
+    HEADLESS_REFRESH,
+    VSCODE_INIT,
+    VSCODE_SEED,
+)
 from tests.subprocess_budget import run_bounded_child
 
 
@@ -1627,16 +1634,19 @@ def test_deep_timeout_honors_configured_timeout_ms(tmp_path):
                 "sim": {"timeout_ms": 60000},
                 # Unparseable -> floor stands, no crash.
                 "lint": {"timeout_ms": "oops"},
+                # TOML `inf` is a float int() cannot convert -> floor, no crash.
+                "format": {"timeout_ms": float("inf")},
             }
         },
         configs_toml={},
         first_target="",
     )
     assert doctor._deep_timeout_s(project, "synth") == (
-        5400 + doctor._SYNTH_DEEP_FINALIZE_MARGIN_S
+        5400 + doctor._IMPLEMENTATION_DEEP_FINALIZE_MARGIN_S
     )
     assert doctor._deep_timeout_s(project, "sim") == 4290
     assert doctor._deep_timeout_s(project, "lint") == doctor._DEEP_TIMEOUTS_S["lint"]
+    assert doctor._configured_timeout_s(project, "format", 77) == 77
     # No knob at all -> the hardcoded floor.
     bare = doctor.ProjectAudit(
         project_root=tmp_path,
@@ -1647,9 +1657,23 @@ def test_deep_timeout_honors_configured_timeout_ms(tmp_path):
     )
     assert (
         doctor._deep_timeout_s(bare, "synth")
-        == doctor._DEEP_TIMEOUTS_S["synth"] + doctor._SYNTH_DEEP_FINALIZE_MARGIN_S
+        == doctor._DEEP_TIMEOUTS_S["synth"] + doctor._IMPLEMENTATION_DEEP_FINALIZE_MARGIN_S
     )
     assert doctor._deep_timeout_s(bare, "sim") == 4830
+
+    # FPGA: the outer limit sits above the Flow's own default and honors a
+    # larger configured timeout_ms; a smaller one keeps the default.
+    assert default_timeout_ms("fpga") == 7_200_000
+    assert doctor._deep_timeout_s(bare, "fpga") == 7_200 + 180
+    for timeout_ms, expected_s in ((10_800_000, 10_800), (60_000, 7_200)):
+        configured = doctor.ProjectAudit(
+            project_root=tmp_path,
+            booley_dir=tmp_path / ".booley",
+            booley_toml={"flows": {"fpga": {"timeout_ms": timeout_ms}}},
+            configs_toml={},
+            first_target="",
+        )
+        assert doctor._deep_timeout_s(configured, "fpga") == expected_s + 180
 
     custom = doctor.ProjectAudit(
         project_root=tmp_path,
@@ -3342,18 +3366,6 @@ def test_fpga_runtime_probe_checks_vivado_not_resolution_tool(tmp_path, monkeypa
     assert [(r.flow_name, r.targets) for r in requests] == [("fpga", ("fpga_board",))]
 
 
-def test_fpga_deep_notice_names_marked_target_and_manual_command(tmp_path):
-    project = _fpga_doctor_project(tmp_path, marked=True)
-    skips: list[str] = []
-
-    doctor._run_fpga_impl_deep_notice(project, skips.append)
-
-    assert skips == [
-        "fpga deep smoke [fpga_board] skipped - a full FPGA implementation is too "
-        "slow for --deep; smoke it manually end-to-end: booley flow fpga --target fpga_board"
-    ]
-
-
 def _mcp_findings_without_fpga_endpoint(monkeypatch, project) -> list[tuple[str, str]]:
     """Grade, through the owner, a probe payload that lacks the ``fpga`` endpoint."""
     payload = {
@@ -3482,6 +3494,28 @@ def test_image_stale_names_owner_workflow(check, tmp_path, monkeypatch):
         else "on the host run `booley init`, then use Dev Containers: Rebuild Container."
     )
     assert not any(word in warns[0] for word in ("--force", "session refresh", "will not rebuild"))
+
+
+@pytest.mark.parametrize(
+    ("owner", "managed", "steps"),
+    [
+        (Attachment.VSCODE, True, VSCODE_INIT),
+        (Attachment.HEADLESS, True, HEADLESS_REFRESH),
+        (Attachment.VSCODE, False, EXTERNAL + VSCODE_SEED),
+    ],
+    ids=["vscode", "headless", "own-image"],
+)
+def test_image_stale_names_each_owner_workflow(owner, managed, steps, tmp_path, monkeypatch):
+    run, _image = _stale_image_case("derived", tmp_path, monkeypatch)
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(doctor.session_runtime, "sandbox_attachment", lambda _root: owner)
+    monkeypatch.setattr(doctor.session_runtime, "image_is_managed", lambda _root: managed)
+    warns: list[str] = []
+
+    run(lambda _msg: None, warns.append)
+
+    (warning,) = warns
+    assert warning.endswith(steps + ".")
 
 
 def test_image_stale_without_a_project_lists_both_workflows():
@@ -8516,7 +8550,7 @@ _FLOW_CHECK_CASES = {
             (
                 Severity.FAIL,
                 "sim deep check [fast] could not enter the Sandbox: bad issuance",
-                "run 'booley init --seed' and retry",
+                VSCODE_INIT + ", then retry",
                 None,
                 None,
             )
@@ -8549,6 +8583,10 @@ def test_flow_check_report_grades_each_outcome(tmp_path, monkeypatch, case_id):
         error = doctor.session_runtime.SessionError(case.session_error)
         monkeypatch.setattr(
             doctor.session_runtime, "up", lambda _root: (_ for _ in ()).throw(error)
+        )
+        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+        monkeypatch.setattr(
+            doctor.session_runtime, "sandbox_attachment", lambda _root: Attachment.VSCODE
         )
 
     outcome = doctor._run_flow_check(
@@ -8698,6 +8736,132 @@ def test_deep_synth_reports_a_pass_then_a_timeout(tmp_path, monkeypatch):
     assert "timed out" in events[0][1]
     assert len(tracker.missing) == 1
     assert tracker.missing[0].startswith("synth.smoke.")
+
+
+_FPGA_DEEP_DISABLED_SKIPS = [
+    "sim deep check skipped - disabled",
+    "lint deep check skipped - disabled",
+    "synth deep check skipped - disabled",
+]
+
+
+def _run_fpga_deep(
+    project: doctor.ProjectAudit,
+    tmp_path: Path,
+    monkeypatch,
+    fpga_answer,
+):
+    """Run deep checks with a faked FPGA Flow; return the run's evidence."""
+    booley_dir = tmp_path / ".booley"
+    if not booley_dir.exists():
+        _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    base_run = doctor.subprocess.run
+    fpga_commands: list[list[str]] = []
+
+    def run(cmd, **kwargs):
+        if "booley.flows.fpga" not in cmd:
+            return base_run(cmd, **kwargs)
+        fpga_commands.append(list(cmd))
+        return fpga_answer(cmd)
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+    events: list[tuple[str, str]] = []
+    skips: list[str] = []
+    tracker = doctor_deep.DeepCheckTracker()
+    reporter = doctor._Reporter.create()
+    doctor._run_deep_checks(
+        project,
+        doctor._DoctorFlowRuntime(tmp_path, _CONTAINER_CLI),
+        lambda message: events.append(("pass", message)),
+        lambda message, fix="": events.append(("warn", message.check_id)),
+        skips.append,
+        lambda message, fix: events.append(("fail", message)),
+        _diagnostics=lambda report: (
+            events.extend((f.severity.value, f.message) for f in report.findings),
+            reporter.diagnostics(report),
+        ),
+        completeness=tracker,
+    )
+    return events, skips, tracker, fpga_commands, reporter
+
+
+def test_deep_fpga_runs_each_marked_target_like_synth(tmp_path, monkeypatch, capsys):
+    """Deep Doctor runs the FPGA Flow for real on a marked Target and reports it."""
+    project = _fpga_doctor_project(tmp_path, marked=True, fpga_table={})
+
+    events, skips, tracker, fpga_commands, _reporter = _run_fpga_deep(
+        project,
+        tmp_path,
+        monkeypatch,
+        lambda cmd: subprocess.CompletedProcess(cmd, 0, "RESULT: PASS", ""),
+    )
+
+    assert len(fpga_commands) == 1
+    command = fpga_commands[0]
+    assert command[command.index("--target") + 1] == "fpga_board"
+    assert "--no-cache" in command
+    assert "--dry-run" not in command
+    assert events == [("pass", "fpga deep check [fpga_board] passed")]
+    assert skips == _FPGA_DEEP_DISABLED_SKIPS
+    output = colors.strip_ansi(capsys.readouterr().out)
+    assert "fpga deep check [fpga_board] (real EDA run; timeout 2h 03m)" in output
+    assert "booley flow fpga --target" not in output
+    assert tracker.missing == ()
+
+
+def test_deep_fpga_failure_or_timeout_keeps_deep_checks_due(tmp_path, monkeypatch):
+    """A failed or unfinished FPGA run never makes deep checks current."""
+    project = _fpga_doctor_project(tmp_path, marked=True, fpga_table={})
+
+    def timeout(cmd):
+        raise subprocess.TimeoutExpired(cmd, 1)
+
+    answers = (
+        lambda cmd: subprocess.CompletedProcess(cmd, 1, "RESULT: FAIL", ""),
+        lambda cmd: subprocess.CompletedProcess(cmd, 2, "RESULT: ERROR", ""),
+        timeout,
+    )
+    for answer in answers:
+        _events, _skips, tracker, fpga_commands, reporter = _run_fpga_deep(
+            project, tmp_path, monkeypatch, answer
+        )
+
+        assert len(fpga_commands) == 1
+        record = doctor_deep.DeepAttemptSummary(tracker.missing, (), "image").attempt(
+            version=__version__, clean=reporter.result(0).clean
+        )
+        assert record.outcome != doctor_deep.DeepOutcome.SUCCESS
+        if answer is timeout:
+            assert tracker.missing[0].startswith("fpga.smoke.")
+        status = doctor_deep.evaluate_deep_status(record, version=__version__, image_id="image")
+        assert status.current is False
+
+
+def test_deep_fpga_check_absent_when_flow_disabled_or_not_applicable(tmp_path, monkeypatch):
+    """No FPGA deep check, and no FPGA requirement, when the Flow is off or unused."""
+    cases = (
+        (
+            {"enabled": False},
+            True,
+            [*_FPGA_DEEP_DISABLED_SKIPS, "fpga deep check skipped - disabled"],
+        ),
+        (None, False, _FPGA_DEEP_DISABLED_SKIPS),
+    )
+    for fpga_table, marked, expected_skips in cases:
+        project = _fpga_doctor_project(tmp_path, marked=marked, fpga_table=fpga_table)
+
+        _events, skips, tracker, fpga_commands, reporter = _run_fpga_deep(
+            project,
+            tmp_path,
+            monkeypatch,
+            lambda cmd: subprocess.CompletedProcess(cmd, 0, "RESULT: PASS", ""),
+        )
+
+        assert fpga_commands == []
+        assert skips == expected_skips
+        assert tracker.missing == ()
+        assert reporter.result(0).clean
 
 
 _SEAT_FPGA_TABLE = {"flows": {"fpga": {"enabled": True}}}
