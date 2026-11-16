@@ -98,7 +98,7 @@ Inside a table:
   or `<test>.<metric>`. Booley splits a key on its last dot, and the whole key
   must be quoted: `"clk_i.fmax_mhz_min" = 400`. Unquoted, TOML reads the dot
   as a nested table, which `metrics.toml` rejects as a load error.
-- A `mutation` table also takes the integer settings `count` and `seed`; see
+- A `mutation` table also sets how many Mutants and which sample; see
   [Measuring the mutation score](FLOW-MUTATION.md#measuring-the-mutation-score).
 - `track = ["cell_count"]` reports a metric in every measurement without a
   bound, so you see its value over time.
