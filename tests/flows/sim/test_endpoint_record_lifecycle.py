@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -13,19 +11,16 @@ import pytest
 
 _WORK_DIR_NOTICE = "booley: --work-dir is deprecated; use --project instead (removal after one compatibility release)\n"
 
-from booley.flows import endpoint_session
-from booley.flows.endpoint_admission import AdmissionContext
-from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
     AdapterTestResult,
     work_transport_identity,
     write_adapter_result,
 )
-from booley.flows.sim.flow import OrdinarySimulationRecordPlanning, SimulateFlow
+from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record import collect_pre_sim_firings
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
-from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult, execute_endpoint
+from booley.runtime.endpoint_execution import EndpointOutcome
 from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.test_simulation_record_characterization import _AdapterAbortExecution, _plan
 
@@ -64,8 +59,6 @@ def _refresh_hook_workload_identity(document):
 
 
 def _pre_sim_manifest(access, commands, transform):
-    import json
-
     from booley.flows.sim.record.codec import canonical_json_bytes
     from booley.flows.sim.record.planning import finalize_manifest
     from tests.flows.sim.simulation_record_test_support import _legacy_disclosures, _manifest_for
@@ -90,8 +83,6 @@ def _pre_sim_plan(access, commands, transform):
 
 
 def _hook_project(tmp_path, commands, live_commands):
-    import json
-
     project = tmp_path / "project"
     project.mkdir()
     config = project / ".booley"
@@ -173,10 +164,11 @@ def _observed_simulation_record_request(plan, project, invocation, observer):
     )
 
 
-def _public_hook_endpoint(flow, invocation):
+def _report_endpoint(flow, invocation, eda_tool):
+    """Stand in for the endpoint ``write_report`` reads, around a flow that built the outcome."""
     import time
 
-    endpoint = SimpleNamespace(
+    return SimpleNamespace(
         args=SimpleNamespace(report_dir=invocation.parent, slug=""),
         refresh_report_detail=flow.refresh_report_detail,
         name="sim",
@@ -184,7 +176,7 @@ def _public_hook_endpoint(flow, invocation):
         _reserved_invocation_dir=invocation,
         _start_time=time.monotonic(),
         _selected_target="sim",
-        _eda_tool="icarus",
+        _eda_tool=eda_tool,
         _raw_argv=None,
         report_schema="booley.simulation-report/v3",
         _skip_report_detail_refresh=False,
@@ -195,63 +187,6 @@ def _public_hook_endpoint(flow, invocation):
         _console_publication_requested=True,
         _stdout_witness=None,
     )
-    return endpoint
-
-
-@pytest.mark.parametrize("access", ["immutable", "legacy-per-test"])
-def test_successful_pre_sim_firing_reaches_public_reports(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    access: str,
-) -> None:
-    import json
-    import re
-
-    from booley.flows.endpoint_reporting import _publish_console_report, write_report
-
-    invocation, simulation_record = _successful_pre_sim_record(tmp_path, monkeypatch, access)
-    flow = SimulateFlow()
-    flow._reserved_invocation_dir = invocation
-    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
-    result = flow._simulation_record_endpoint_outcome([simulation_record])
-    endpoint = _public_hook_endpoint(flow, invocation)
-    write_report(endpoint, result)
-    _publish_console_report(endpoint, result)
-    lines = re.findall(
-        r"pre_run_commands \(2 line\(s\)\) for sim/alpha: rc=0 in \d+\.\ds",
-        result.report_text,
-    )
-    assert len(lines) == 1
-    assert capsys.readouterr().out.count(lines[0]) == 1
-    report = json.loads((invocation.parent / "sim.json").read_bytes())
-    assert report["detail"]["pre_sim_lines"] == lines
-    assert (invocation / "report.json").read_bytes() == (
-        invocation.parent / "sim.json"
-    ).read_bytes()
-    sidecars = list(invocation.glob("targets/sim/record/work-items/*/attempts/*/pre-sim/*.json"))
-    assert len(sidecars) == 1
-    evidence = json.loads(sidecars[0].read_bytes())
-    assert evidence["returncode"] == 0
-    assert evidence["stdout_tail"] == "hook-out\n"
-    assert evidence["stderr_tail"] == "hook-err\n"
-
-
-@pytest.mark.parametrize("access", ["immutable", "legacy-per-test"])
-def test_failed_hook_reports_real_exit_code_without_changing_adapter_grade(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, access: str
-) -> None:
-    invocation, simulation_record = _successful_pre_sim_record(
-        tmp_path, monkeypatch, access, commands=("echo failed-out; echo failed-err >&2; exit 7",)
-    )
-    flow = SimulateFlow()
-    flow._reserved_invocation_dir = invocation
-    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
-    result = flow._simulation_record_endpoint_outcome([simulation_record])
-    assert result.exit_code == 1
-    assert len(result.detail["pre_sim_lines"]) == 1
-    assert "rc=7" in result.detail["pre_sim_lines"][0]
-    assert simulation_record.pre_sim_firings[0].document["stderr_tail"] == "failed-err\n"
 
 
 def test_downstream_integrity_failure_retains_authenticated_current_hook(
@@ -285,6 +220,8 @@ def test_endpoint_reauthentication_never_renders_corrupt_hook_as_authoritative(
     flow = SimulateFlow()
     flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    # Private seams: the integrity failure and corruption must land between projection and attach,
+    # which no public run exposes.
     result = flow._simulation_record_endpoint_outcome([simulation_record])
     assert result.detail["pre_sim_current"] == 1
     firing = simulation_record.pre_sim_firings[0]
@@ -297,247 +234,10 @@ def test_endpoint_reauthentication_never_renders_corrupt_hook_as_authoritative(
     assert result.detail["pre_sim_unauthenticated_references"]
 
 
-def _recording_invocation(*, borrows: bool, events: list[str]):
-    """Build an invocation recording the admission ``invoke_endpoint`` hands it.
-
-    Its run also appends ``"invoke"`` to *events*, so the lifecycle order stays pinned.
-    """
-    from booley.flows.prepared_invocation import PreparedInvocation
-
-    class RecordingInvocation(PreparedInvocation):
-        borrows_admission = borrows
-
-        def __init__(self) -> None:
-            self.received: list[object | None] = []
-
-        def run(self, admission: object | None) -> EndpointOutcome:
-            events.append("invoke")
-            self.received.append(admission)
-            return EndpointOutcome(report_text="ok")
-
-    return RecordingInvocation()
-
-
-class _Endpoint:
-    def __init__(self) -> None:
-        self.events: list[str] = []
-        self.name = "sim"
-        self.admission_object = object()
-
-    @contextmanager
-    def admission(
-        self, prepared: PreparedExecution, *, requeued: bool = False
-    ) -> Iterator[object]:
-        self.events.append("admit")
-        try:
-            yield self.admission_object
-        finally:
-            self.events.append("release")
-
-    def may_requeue_after_oom(self, prepared: PreparedExecution, admission: object | None) -> bool:
-        return False
-
-    def begin_requeued_attempt(self) -> None:
-        pass
-
-    def invoke_endpoint(
-        self,
-        prepared: PreparedExecution,
-        *,
-        admission: object | None,
-        started: float,
-    ) -> EndpointOutcome:
-        return endpoint_session.invoke_endpoint(
-            self,
-            prepared,
-            admission=admission,
-            started=started,  # type: ignore[arg-type]
-        )
-
-    def _finalize_result(self, outcome: EndpointOutcome) -> None:
-        self.events.append("finalize")
-
-    def publish_records(self, prepared: PreparedExecution, outcome: EndpointOutcome) -> None:
-        self.events.append("publish")
-
-    def finish_execution(
-        self,
-        prepared: PreparedExecution,
-        outcome: EndpointOutcome,
-        *,
-        started: float | None,
-        records_published: bool,
-    ) -> ExecutionResult:
-        self.events.append("finish")
-        return ExecutionResult(outcome.exit_code, outcome)
-
-
-@pytest.mark.parametrize("borrows", [True, False])
-def test_prepared_simulation_record_and_borrowed_admission_are_explicit_values(
-    borrows: bool,
-) -> None:
-    endpoint = _Endpoint()
-    invocation = _recording_invocation(borrows=borrows, events=endpoint.events)
-    prepared = PreparedExecution(None, None, False, False, invocation)
-
-    result = execute_endpoint(endpoint, prepared)
-
-    assert result.outcome.report_text == "ok"
-    # The borrower receives the admission object; any other invocation receives None.
-    assert invocation.received == [endpoint.admission_object if borrows else None]
-    assert endpoint.events == [
-        "admit",
-        "invoke",
-        "finalize",
-        "publish",
-        "finish",
-        "release",
-    ]
-    assert not hasattr(endpoint, "_simulation_prepared")
-    assert not hasattr(endpoint, "_simulation_admission_context")
-
-
-def _request(selector: str) -> SimpleNamespace:
-    return SimpleNamespace(
-        plan=SimpleNamespace(
-            manifest=SimpleNamespace(
-                document={
-                    "target": {
-                        "selector": selector,
-                        "vlnv": "acme:demo:target:1.0",
-                        "name": selector,
-                    }
-                }
-            )
-        )
-    )
-
-
-def _retained_simulation_record_outcome(outcomes: list[object]) -> EndpointOutcome:
-    targets = {f"target-{index}": {"simulation": "pass"} for index, _ in enumerate(outcomes)}
-    return EndpointOutcome(detail={"targets": targets}, report_text="record verdict")
-
-
-def test_completed_simulation_record_survives_per_target_progress_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    flow = SimulateFlow()
-    outcomes = [object(), object()]
-    simulation_record = SimpleNamespace(run=lambda _request: outcomes.pop(0))
-    progress = SimpleNamespace(
-        invocation_dir=tmp_path,
-        checkpoint=lambda **_kwargs: (_ for _ in ()).throw(OSError("progress unavailable")),
-    )
-    monkeypatch.setattr(
-        flow, "_simulation_record_endpoint_outcome", _retained_simulation_record_outcome
-    )
-    monkeypatch.setattr(
-        "booley.flows.sim.flow._retain_coverage_record",
-        lambda _progress, _outcome: None,
-    )
-
-    result = flow._execute_coverage_simulation_record_requests(
-        simulation_record, [_request("first"), _request("second")], progress
-    )
-
-    assert result.exit_code == 2
-    assert result.detail["targets"] == {"target-0": {"simulation": "pass"}}
-    assert result.detail["pending_targets"] == ["second"]
-    assert result.detail["completion_error"]["path"] == str(tmp_path / "progress.json")
-    assert len(outcomes) == 1
-
-
-def test_coverage_authentication_failure_returns_structured_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    flow = SimulateFlow()
-    flow._coverage_prepared = SimpleNamespace(targets=[])
-    completed = [object(), object()]
-    pending = list(completed)
-    simulation_record = SimpleNamespace(run=lambda _request: pending.pop(0))
-    progress = SimpleNamespace(invocation_dir=tmp_path, checkpoint=lambda **_kwargs: None)
-    monkeypatch.setattr(
-        flow, "_simulation_record_endpoint_outcome", _retained_simulation_record_outcome
-    )
-    monkeypatch.setattr(
-        "booley.flows.sim.flow._retain_coverage_record",
-        lambda _progress, _outcome: (_ for _ in ()).throw(ValueError("untrusted record")),
-    )
-
-    result = flow._execute_coverage_simulation_record_requests(
-        simulation_record, [_request("first"), _request("second")], progress
-    )
-
-    assert result.exit_code == 2
-    assert result.detail["records"] == {}
-    assert result.detail["targets"] == {}
-    assert "untrusted record" in result.report_text
-    assert len(pending) == 1
-
-
-def test_all_simulation_records_survive_terminal_progress_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    flow = SimulateFlow()
-    flow._args = SimpleNamespace(report_dir=tmp_path, dry_run=False)
-    flow._coverage_prepared = SimpleNamespace(
-        targets=[
-            SimpleNamespace(handle=SimpleNamespace(selector="first")),
-            SimpleNamespace(handle=SimpleNamespace(selector="second")),
-        ]
-    )
-    returned = [object(), object()]
-    pending = list(returned)
-    simulation_record = SimpleNamespace(run=lambda _request: pending.pop(0))
-    requests = [_request("first"), _request("second")]
-
-    progress = SimpleNamespace(invocation_dir=tmp_path, targets=("first", "second"), outcomes=[])
-    terminal_phases: list[str] = []
-
-    def checkpoint(*, complete: bool = False, phase: str | None = None) -> None:
-        if complete:
-            assert phase is not None
-            terminal_phases.append(phase)
-            raise OSError("terminal progress unavailable")
-
-    progress.checkpoint = checkpoint
-    monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: tmp_path)
-    monkeypatch.setattr(
-        flow,
-        "_coverage_simulation_record_session",
-        lambda _admission, _invocation, _published: (simulation_record, requests),
-    )
-    monkeypatch.setattr("booley.flows.sim.flow.CoverageProgress", lambda *_args: progress)
-    monkeypatch.setattr(
-        flow, "_simulation_record_endpoint_outcome", _retained_simulation_record_outcome
-    )
-    monkeypatch.setattr(
-        "booley.flows.sim.flow._retain_coverage_record",
-        lambda retained, outcome: retained.outcomes.append(outcome),
-    )
-
-    result = flow._execute_simulation_record(
-        AdmissionContext("unmanaged", None, None, "interactive", "", None, lambda: False),
-        flow._coverage_simulation_record_run(),
-    )
-
-    assert result.exit_code == 2
-    assert result.detail["targets"] == {
-        "target-0": {"simulation": "pass"},
-        "target-1": {"simulation": "pass"},
-    }
-    assert result.detail["completion_error"]["operation"] == "publish coverage progress"
-    assert terminal_phases == ["complete", "aborted"]
-    assert pending == []
-
-
 @pytest.mark.parametrize("termination", ["disk_budget", "sim_time_stall"])
 def test_infrastructure_simulation_record_reaches_persisted_endpoint_reports(
     tmp_path: Path, termination: str
 ) -> None:
-    import json
-    import time
-
     from booley.flows.endpoint_reporting import write_report
     from booley.flows.sim.record.coordinator import (
         NewSimulationRecordRunRequest,
@@ -576,24 +276,9 @@ def test_infrastructure_simulation_record_reaches_persisted_endpoint_reports(
     flow._args = SimpleNamespace(
         target=["sim"], result_verbosity="brief", report_dir=invocation.parent
     )
+    # Private seam: projects a returned record; the fixture runs no flow around it.
     result = flow._simulation_record_endpoint_outcome([simulation_record])
-    endpoint = SimpleNamespace(
-        args=SimpleNamespace(report_dir=invocation.parent, slug=""),
-        refresh_report_detail=flow.refresh_report_detail,
-        name="sim",
-        endpoint_kind="flow",
-        _reserved_invocation_dir=invocation,
-        _start_time=time.monotonic(),
-        _selected_target="sim",
-        _eda_tool="verilator",
-        _raw_argv=None,
-        report_schema="booley.simulation-report/v3",
-        _skip_report_detail_refresh=False,
-        _eda_tools={},
-        _pre_run_head=None,
-        _automatic_target_notice="",
-        _automatic_target_notice_published=False,
-    )
+    endpoint = _report_endpoint(flow, invocation, "verilator")
     assert write_report(endpoint, result) == invocation / "report.json"
     assert result.exit_code == 2
     for path in (invocation / "report.json", invocation.parent / "sim.json"):
@@ -622,6 +307,30 @@ def _simulation_record_cli_args(
     return args
 
 
+def _coverage_cli_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, targets: int, reports: str = "reports"
+) -> list[str]:
+    """Create a Project with *targets* verilator Targets named ``sim_<n>``, each with one test.
+
+    Returns the coverage CLI arguments that select every Target and write to *reports*.
+    """
+    from tests.flows.sim.test_coverage_invocation import project
+
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path, ("verilator",) * targets)
+    data = tmp_path / ".booley"
+    data.mkdir()
+    (data / "tests.toml").write_text(
+        "".join(f'[sim_{index}]\ntests = ["half"]\n' for index in range(targets))
+    )
+    return _simulation_record_cli_args(
+        work_dir=tmp_path,
+        report_dir=tmp_path / reports,
+        target=",".join(f"sim_{index}" for index in range(targets)),
+        coverage=True,
+    )
+
+
 @pytest.mark.parametrize("target_count", [1, 2])
 def test_cli_discloses_committed_manifest_before_executor(
     tmp_path: Path,
@@ -629,16 +338,10 @@ def test_cli_discloses_committed_manifest_before_executor(
     capsys: pytest.CaptureFixture[str],
     target_count: int,
 ) -> None:
-    from tests.flows.sim.test_coverage_invocation import project
+    from booley.flows.sim.request import SimRequest
     from tests.flows.sim.test_coverage_transaction import NativeExecution
 
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    project(tmp_path, ("verilator",) * target_count)
-    data = tmp_path / ".booley"
-    data.mkdir()
-    (data / "tests.toml").write_text(
-        "".join(f'[sim_{index}]\ntests = ["half"]\n' for index in range(target_count))
-    )
+    argv = _coverage_cli_project(tmp_path, monkeypatch, target_count, "reports with spaces")
     observed: list[Path] = []
 
     def execution(*_args):
@@ -656,14 +359,7 @@ def test_cli_discloses_committed_manifest_before_executor(
         return NativeExecution()
 
     flow = SimulateFlow(coverage_execution=execution)
-    result = flow.execute_cli(
-        _simulation_record_cli_args(
-            work_dir=str(tmp_path),
-            report_dir=str(tmp_path / "reports with spaces"),
-            target=",".join(f"sim_{index}" for index in range(target_count)),
-            coverage=True,
-        )
-    )
+    result = flow.execute_cli(argv)
     assert result.exit_code == 0
     output = capsys.readouterr()
     assert observed
@@ -675,6 +371,19 @@ def test_cli_discloses_committed_manifest_before_executor(
     assert [path.parents[1].name for path in observed] == [
         f"sim_{index}" for index in range(target_count)
     ]
+    # The typed request runs the same Targets and discloses the manifests on the card only.
+    typed = SimulateFlow(coverage_execution=lambda *_args: NativeExecution()).execute(
+        SimRequest(
+            work_dir=tmp_path,
+            report_dir=tmp_path / "typed",
+            target=argv[argv.index("--target") + 1],
+            coverage=True,
+        )
+    )
+    output = capsys.readouterr()
+    assert typed.exit_code == 0
+    assert output.out == output.err == ""
+    assert typed.outcome.report_text.count("  manifest:") == target_count
 
 
 @pytest.mark.parametrize(
@@ -688,13 +397,8 @@ def test_cli_recovery_paths_survive_failures(
     failure: str,
 ) -> None:
     from booley.flows.sim.record.coordinator import SimulationRecordCancellationError
-    from tests.flows.sim.test_coverage_invocation import project
 
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    project(tmp_path, ("verilator",))
-    data = tmp_path / ".booley"
-    data.mkdir()
-    (data / "tests.toml").write_text('[sim_0]\ntests = ["half"]\n')
+    argv = _coverage_cli_project(tmp_path, monkeypatch, 1)
     seen: list[str] = []
 
     def execution(*_args):
@@ -706,15 +410,12 @@ def test_cli_recovery_paths_survive_failures(
             raise SimulationRecordCancellationError("cancelled")
         raise RuntimeError("executor failed")
 
-    flow = SimulateFlow(coverage_execution=execution)
-
     def checkpoint(boundary: str) -> None:
         if boundary == failure:
             raise KeyboardInterrupt()
 
-    monkeypatch.setattr(flow, "_simulation_record_publication_checkpoint", checkpoint)
-    argv = _simulation_record_cli_args(
-        work_dir=str(tmp_path), report_dir=str(tmp_path / "reports"), target="sim_0", coverage=True
+    flow = SimulateFlow(
+        coverage_execution=execution, simulation_record_publication_checkpoint=checkpoint
     )
     if failure in {"before:manifest_commit", "after:manifest_commit", "interrupt"}:
         with pytest.raises(KeyboardInterrupt):
@@ -747,44 +448,21 @@ def _assert_recovery_announcement(capsys, seen, failure):
         assert path.is_file()
 
 
-def test_typed_simulation_record_execution_is_silent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    from booley.flows.sim.request import SimRequest
-    from tests.flows.sim.test_coverage_invocation import project
-    from tests.flows.sim.test_coverage_transaction import NativeExecution
-
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    project(tmp_path, ("verilator",))
-    data = tmp_path / ".booley"
-    data.mkdir()
-    (data / "tests.toml").write_text('[sim_0]\ntests = ["half"]\n')
-    flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
-    result = flow.execute(
-        SimRequest(
-            work_dir=tmp_path, report_dir=tmp_path / "reports", target="sim_0", coverage=True
-        )
-    )
-    assert result.exit_code == 0
-    output = capsys.readouterr()
-    assert output.out == output.err == ""
-    assert "  manifest: " in result.outcome.report_text
-
-
 def test_same_flow_second_failure_does_not_reuse_manifest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from tests.flows.sim.test_coverage_invocation import project
     from tests.flows.sim.test_coverage_transaction import NativeExecution
 
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    project(tmp_path, ("verilator",))
-    data = tmp_path / ".booley"
-    data.mkdir()
-    (data / "tests.toml").write_text('[sim_0]\ntests = ["half"]\n')
-    flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
-    argv = _simulation_record_cli_args(
-        work_dir=str(tmp_path), report_dir=str(tmp_path / "reports"), target="sim_0", coverage=True
+    argv = _coverage_cli_project(tmp_path, monkeypatch, 1)
+    armed = False
+
+    def fail(boundary: str) -> None:
+        if armed and boundary == "before:manifest_commit":
+            raise OSError("publication failed")
+
+    flow = SimulateFlow(
+        coverage_execution=lambda *_args: NativeExecution(),
+        simulation_record_publication_checkpoint=fail,
     )
     first = flow.execute_cli(argv)
     manifest_line = next(
@@ -792,11 +470,7 @@ def test_same_flow_second_failure_does_not_reuse_manifest(
     )
     capsys.readouterr()
 
-    def fail(boundary: str) -> None:
-        if boundary == "before:manifest_commit":
-            raise OSError("publication failed")
-
-    monkeypatch.setattr(flow, "_simulation_record_publication_checkpoint", fail)
+    armed = True
     second = flow.execute_cli(argv)
     assert second.exit_code == 2
     assert "manifest:" not in second.outcome.report_text
@@ -838,6 +512,7 @@ def test_ordinary_cli_manifest_and_card_paths(
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True)
     flow = SimulateFlow()
+    # Private seam: the cocotb card execution has no public Project fixture.
     monkeypatch.setattr(flow, "_ordinary_simulation_record_plan", lambda *_args, **_kwargs: plan)
     seen: list[Path] = []
 
@@ -912,6 +587,7 @@ def _assert_ordinary_cli_resume(flow, plan, seen, tmp_path, monkeypatch, capsys,
             invoke=lambda *_args, **_kwargs: None, execution_factory=factory
         )
 
+    # Private seam: the cocotb card execution has no public Project fixture.
     monkeypatch.setattr(flow, "_resume_simulation_record_executor", resume_executor)
     resumed = flow.execute_cli(
         _simulation_record_cli_args(
@@ -936,7 +612,6 @@ def test_cli_manifest_is_flushed_before_execution(
 ) -> None:
     import io
 
-    from tests.flows.sim.test_coverage_invocation import project
     from tests.flows.sim.test_coverage_transaction import NativeExecution
 
     class BufferedConsole(io.StringIO):
@@ -952,11 +627,7 @@ def test_cli_manifest_is_flushed_before_execution(
             super().write(self.pending)
             self.pending = ""
 
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    project(tmp_path, ("verilator",))
-    data = tmp_path / ".booley"
-    data.mkdir()
-    (data / "tests.toml").write_text('[sim_0]\ntests = ["half"]\n')
+    argv = _coverage_cli_project(tmp_path, monkeypatch, 1)
     stream = BufferedConsole()
     monkeypatch.setattr("booley.flows.sim.flow.sys.stderr", stream)
 
@@ -971,30 +642,14 @@ def test_cli_manifest_is_flushed_before_execution(
         assert manifest.is_absolute() and manifest.is_file()
         return NativeExecution()
 
-    result = SimulateFlow(coverage_execution=execution).execute_cli(
-        [
-            "--quiet",
-            *_simulation_record_cli_args(
-                work_dir=str(tmp_path),
-                report_dir=str(tmp_path / "reports"),
-                target="sim_0",
-                coverage=True,
-            ),
-        ]
-    )
+    result = SimulateFlow(coverage_execution=execution).execute_cli(["--quiet", *argv])
     assert result.exit_code == 0
 
 
 def test_partial_publication_discloses_only_committed_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from tests.flows.sim.test_coverage_invocation import project
-
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    project(tmp_path, ("verilator", "verilator"))
-    data = tmp_path / ".booley"
-    data.mkdir()
-    (data / "tests.toml").write_text('[sim_0]\ntests = ["half"]\n[sim_1]\ntests = ["half"]\n')
+    argv = _coverage_cli_project(tmp_path, monkeypatch, 2)
     commits = 0
 
     def checkpoint(boundary):
@@ -1009,14 +664,7 @@ def test_partial_publication_discloses_only_committed_target(
 
     result = SimulateFlow(
         coverage_execution=executor, simulation_record_publication_checkpoint=checkpoint
-    ).execute_cli(
-        _simulation_record_cli_args(
-            work_dir=str(tmp_path),
-            report_dir=str(tmp_path / "reports"),
-            target="sim_0,sim_1",
-            coverage=True,
-        )
-    )
+    ).execute_cli(argv)
     output = capsys.readouterr()
     assert result.exit_code == 2
     assert output.err.count("Simulation Record manifest: ") == 1
@@ -1037,6 +685,7 @@ def test_failure_paths_deduplicate_and_start_without_blank_line(tmp_path: Path) 
     flow._args = SimpleNamespace(report_dir=tmp_path / "reports")
     path = tmp_path / "manifest.json"
     with flow.publication_resources:
+        # Private seam: no public run publishes one manifest twice.
         result = flow._with_simulation_record_paths(EndpointOutcome(), [path, path])
     report = (tmp_path / "reports/sim/1/report.json").resolve()
     assert result.report_text == f"  manifest: {path.resolve()}\n  report: {report}"
@@ -1087,18 +736,18 @@ def _public_cycle_simulation_record(tmp_path, monkeypatch):
         )
 
 
-def _cycle_ticket(tmp_path):
+def _cycle_ticket(tmp_path, *, target="acme:lib:dut:1#sim", selector="sim", test="smoke"):
     from booley.criteria.state import DevelopmentState
 
     path = tmp_path / "state.json"
     state = DevelopmentState.load(path)
     state.slug, state.ticket_type = "ticket", "implementation"
-    key = "sim_pass_sim_smoke"
+    key = f"sim_pass_{selector}_{test}"
     params = {
-        "target": "acme:lib:dut:1#sim",
-        "_target_selector": "sim",
-        "test_selector": "smoke",
-        "required_tests": ["smoke"],
+        "target": target,
+        "_target_selector": selector,
+        "test_selector": test,
+        "required_tests": [test],
         "minimum_total": 1,
     }
     state.init_criteria({key: True}, criterion_params={key: params}, strict=True)
@@ -1112,6 +761,8 @@ def _public_cycle_flow(simulation_record, monkeypatch):
     from booley.flows.endpoint_state import EndpointState
 
     flow = SimulateFlow()
+    # Private seams kept: the run is stubbed at the prepared boundary, so the real
+    # state gate and display label have no Project to read.
     monkeypatch.setattr(flow, "_pre_state_gate", lambda: None)
     from booley.flows.sim.flow import PreparedSimulationEndpoint
     from booley.flows.sim.record_invocation import SimulationRecordInvocation
@@ -1119,19 +770,18 @@ def _public_cycle_flow(simulation_record, monkeypatch):
 
     prepared = PreparedSimulationEndpoint((), None, (), {})
     prepare_as(monkeypatch, flow, SimulationRecordInvocation(flow, prepared))
-    monkeypatch.setattr(flow, "_resolve_display_label", lambda: None)
     monkeypatch.setattr(EndpointState, "admission", lambda *_args, **_kwargs: nullcontext(None))
+    monkeypatch.setattr(flow, "_resolve_display_label", lambda: None)
     monkeypatch.setattr(
         flow,
         "run_prepared_simulation",
+        # Private seam: the stubbed run answers with the projection of the record built above.
         lambda *_args: flow._simulation_record_endpoint_outcome([simulation_record]),
     )
     return flow
 
 
 def _cycle_publication_fault(flow, monkeypatch, failure):
-    import json
-
     from booley.flows import endpoint_reporting
     from booley.flows.sim import flow as module
     from booley.flows.sim import record_presentation
@@ -1185,8 +835,6 @@ def _cycle_publication_fault(flow, monkeypatch, failure):
     ],
 )
 def test_public_cycle_metadata_survives_publication_faults(tmp_path, monkeypatch, failure):
-    import json
-
     simulation_record = _public_cycle_simulation_record(tmp_path, monkeypatch)
     path, _state, _key = _cycle_ticket(tmp_path)
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
@@ -1217,111 +865,48 @@ def test_public_cycle_metadata_survives_publication_faults(tmp_path, monkeypatch
 
 @pytest.mark.parametrize("cancelled", [False, True])
 def test_ordinary_partial_failure_keeps_report_counts_separate(tmp_path, monkeypatch, cancelled):
-    from booley.flows.sim.record.coordinator import SimulationRecordCancellationError
-
-    flow = SimulateFlow()
-    simulation_record = _public_cycle_simulation_record(tmp_path, monkeypatch)
-    monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: tmp_path)
-    monkeypatch.setattr(flow, "_write_simulation_record_progress", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(flow, "_candidate_simulation_record_requests", lambda *_args: [])
-
-    def run(*_args, outcomes, **_kwargs):
-        outcomes.append(simulation_record)
-        error = SimulationRecordCancellationError if cancelled else RuntimeError
-        raise error("second target stopped")
-
-    monkeypatch.setattr(flow, "_publish_and_run_simulation_record_requests", run)
-    result = flow._execute_simulation_record(
-        AdmissionContext("unmanaged", None, None, "interactive", "", None, lambda: False),
-        flow._ordinary_simulation_record_run(OrdinarySimulationRecordPlanning((), {})),
+    """The first Target's counts reach the report; nothing publishes and no ticket state moves."""
+    from booley.flows.sim.record.coordinator import (
+        SimulationRecord,
+        SimulationRecordCancellationError,
     )
-    assert result.exit_code != 0
-    assert flow._simulation_record_outcomes == ()
-    if cancelled:
-        assert result.detail == {}
-    _assert_partial_acceptance_policy(flow, result, tmp_path, simulation_record)
-
-
-def test_coverage_cancellation_keeps_completed_report_only_counts(tmp_path, monkeypatch):
-    from booley.flows.sim.record.coordinator import SimulationRecordCancellationError
-
-    flow = SimulateFlow()
-    outcome = _native_cycle_simulation_record(tmp_path, monkeypatch)
-    responses = iter((outcome,))
-
-    def run(_request):
-        try:
-            return next(responses)
-        except StopIteration:
-            raise SimulationRecordCancellationError("cancelled") from None
-
-    monkeypatch.setattr("booley.flows.sim.flow._retain_coverage_record", lambda *_args: None)
-    progress = SimpleNamespace(checkpoint=lambda: None)
-    result = flow._execute_coverage_simulation_record_requests(
-        SimpleNamespace(run=run), [_request("first"), _request("second")], progress
-    )
-    assert result.detail == {}
-    # The finished first Target keeps its public Coverage Record on the stopped card.
-    coverage_record_file = (outcome.manifest_path.parents[1] / "coverage.json").resolve()
-    assert coverage_record_file.is_file()
-    assert result.report_text.splitlines()[-1] == f"  Coverage Record: {coverage_record_file}"
-    assert flow._simulation_record_outcomes == ()
-    assert all(item["cycle_count"] is None for item in outcome.observations)
-    _assert_partial_acceptance_policy(flow, result, tmp_path, outcome)
-
-
-def _native_cycle_simulation_record(tmp_path, monkeypatch):
-    from booley.flows.sim.record.coordinator import SimulationRecord
     from booley.flows.sim.request import SimRequest
-    from tests.flows.sim.test_coverage_flow import NativeExecution, _prepare_coverage_origin
 
+    project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
+    (project / ".booley/tests.toml").write_text('[sim_a]\ntests = ["a"]\n[sim_b]\ntests = ["a"]\n')
+    path = tmp_path / "state.json"
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
+    original_run = SimulationRecord.run
     returned = []
-    original = SimulationRecord.run
+    before = []
 
-    def capture(self, request):
-        outcome = original(self, request)
+    def run(simulation_record, request):
+        if returned:
+            error = SimulationRecordCancellationError if cancelled else RuntimeError
+            raise error("second target stopped")
+        outcome = original_run(simulation_record, request)
         returned.append(outcome)
+        # The ticket asks for the Target that finished, so publishing it would move the state.
+        ticket = _cycle_ticket(
+            tmp_path,
+            target=f"{outcome.target['vlnv']}#{outcome.target['name']}",
+            selector="sim_a",
+            test="a",
+        )[0]
+        before.append(ticket.read_bytes())
         return outcome
 
-    monkeypatch.setattr(SimulationRecord, "run", capture)
-    reports = _prepare_coverage_origin(tmp_path, monkeypatch)
-    flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
+    monkeypatch.setattr(SimulationRecord, "run", run)
     result = flow.execute(
-        SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports)
+        SimRequest(target="sim_a,sim_b", work_dir=project, report_dir=tmp_path / "reports")
     )
-    assert result.exit_code == 0
-    return returned[0]
-
-
-def _assert_partial_acceptance_policy(flow, result, tmp_path, simulation_record):
-    import json
-
-    from booley.flows.endpoint_reporting import write_report
-    from booley.flows.prepared_invocation import OrdinaryRunInvocation
-    from booley.flows.sim.request import SimRequest
-
-    path, _state, _key = _cycle_ticket(tmp_path)
-    flow._args = SimRequest(target="sim", work_dir=tmp_path, report_dir=tmp_path / "reports")
-    context = flow
-    before = path.read_bytes()
-    projections = {p: p.read_bytes() for p in tmp_path.rglob("simulation.json")}
-
-    context.publish_records(
-        PreparedExecution(None, None, False, False, OrdinaryRunInvocation(EndpointOutcome)),
-        result,
-    )
-    assert path.read_bytes() == before
-    assert {p: p.read_bytes() for p in tmp_path.rglob("simulation.json")} == projections
-    with context.publication_resources:
-        context._finalize_result(result)
-        report_path = write_report(context, result)
-    report = json.loads(report_path.read_text())
-    assert report["cycle_counts"] == {
-        str(simulation_record.target["selector"]): [
-            {"test": row["test"], "cycle_count": row["cycle_count"]}
-            for row in simulation_record.observations
-        ]
-    }
+    assert result.exit_code != 0
+    if cancelled:
+        assert "targets" not in result.outcome.detail and "records" not in result.outcome.detail
+    report = json.loads((tmp_path / "reports/sim.json").read_text())
+    assert list(report["cycle_counts"]) == ["sim_a"]
+    assert not list((tmp_path / "reports").glob("sim/*/targets/*/simulation.json"))
+    assert path.read_bytes() == before[0]
 
 
 @pytest.mark.parametrize("unnamed", [False, True])
@@ -1346,6 +931,7 @@ def test_authenticated_nullable_counts_round_trip(tmp_path, monkeypatch, unnamed
         simulation_record = _public_cycle_simulation_record(tmp_path, monkeypatch)
     flow = SimulateFlow()
     flow._args = SimRequest(target="sim", work_dir=tmp_path, report_dir=tmp_path / "reports")
+    # Private seam: projects a returned record; the fixture runs no flow around it.
     result = flow._simulation_record_endpoint_outcome([simulation_record])
     _assert_nullable_cycle_report(flow, result, tmp_path, unnamed)
 
@@ -1358,11 +944,12 @@ def _unnamed_cycle_simulation_record(tmp_path, monkeypatch):
     )
     from booley.flows.sim.record.model import create_simulation_record_plan
     from tests.flows.sim import simulation_record_test_support as fixtures
+    from tests.flows.sim.simulation_record_test_support import _admission, _handle
 
     project = tmp_path / "project"
     project.mkdir()
     (project / "run").mkdir()
-    handle = fixtures._handle(project)
+    handle = _handle(project)
     monkeypatch.setattr(
         "booley.flows.sim.record.serial_execution.TargetCatalog.build",
         lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: handle),
@@ -1380,14 +967,12 @@ def _unnamed_cycle_simulation_record(tmp_path, monkeypatch):
             invocation.parent,
             SimulationRecordPolicy(),
             invocation,
-            fixtures._admission(),
+            _admission(),
         )
     )
 
 
 def _assert_nullable_cycle_report(flow, result, tmp_path, unnamed):
-    import json
-
     from booley.flows.endpoint_reporting import write_report
 
     with flow.publication_resources:
@@ -1401,11 +986,8 @@ def _assert_nullable_cycle_report(flow, result, tmp_path, unnamed):
     assert preview[0]["test"] == expected[0]["test"]
 
 
-@pytest.mark.parametrize("failure", ["run", "retention"])
-def test_coverage_failure_persists_only_returned_outcomes(tmp_path, monkeypatch, failure):
-    from booley.flows.sim.record.coordinator import SimulationRecord
-    from booley.flows.sim.request import SimRequest
-    from tests.flows.sim.test_coverage_flow import NativeExecution, _prepare_coverage_origin
+def _three_target_coverage_origin(tmp_path, monkeypatch):
+    from tests.flows.sim.test_coverage_flow import _prepare_coverage_origin
 
     reports = _prepare_coverage_origin(tmp_path, monkeypatch)
     core = tmp_path / "counter.core"
@@ -1416,47 +998,88 @@ def test_coverage_failure_persists_only_returned_outcomes(tmp_path, monkeypatch,
     (tmp_path / ".booley/tests.toml").write_text(
         '[sim_0]\ntests=["reset"]\n[sim_1]\ntests=["reset"]\n[sim_2]\ntests=["reset"]\n'
     )
+    return reports
+
+
+def _assert_coverage_fault(fault, result, reports, returned, terminal_phases):
+    detail = result.outcome.detail
+    report = json.loads((reports / "sim/1/report.json").read_text())
+    counted = {"progress": 1, "terminal_progress": 3, "retention": 2, "run": 1, "cancel": 1}[fault]
+    assert list(report["cycle_counts"]) == [f"sim_{index}" for index in range(counted)]
+    if fault == "terminal_progress":
+        assert detail["completion_error"]["operation"] == "publish coverage progress"
+        assert terminal_phases == ["complete", "aborted"]
+        assert list(detail["targets"]) == ["sim_0", "sim_1", "sim_2"]
+    elif fault == "progress":
+        assert list(detail["targets"]) == ["sim_0"]
+        assert detail["completion_error"]["path"] == str(reports / "sim/1/progress.json")
+    elif fault == "cancel":
+        assert "targets" not in detail and "records" not in detail
+        assert all(row[0]["cycle_count"] is None for row in report["cycle_counts"].values())
+        coverage_record = (returned[0].manifest_path.parents[1] / "coverage.json").resolve()
+        assert f"  Coverage Record: {coverage_record}" in result.outcome.report_text.splitlines()
+    if fault != "cancel":
+        assert report["detail"]["pending_targets"] == (
+            [] if fault == "terminal_progress" else ["sim_1", "sim_2"]
+        )
+    # Only the Targets the flow retains for publication get a Simulation projection.
+    published = {path.parent.name for path in reports.glob("sim/1/targets/*/simulation.json")}
+    retained = {
+        "progress": {"sim_0"},
+        "terminal_progress": {"sim_0", "sim_1", "sim_2"},
+        "retention": {"sim_0"},
+        "run": {"sim_0"},
+        "cancel": set(),
+    }
+    assert published == retained[fault]
+
+
+@pytest.mark.parametrize("fault", ["progress", "terminal_progress", "retention", "run", "cancel"])
+def test_coverage_target_fault_keeps_completed_targets(tmp_path, monkeypatch, fault):
+    """A fault after some Targets finished keeps their counts apart from what is published."""
+    from booley.flows.sim.coverage_progress import CoverageProgress
+    from booley.flows.sim.record.coordinator import (
+        SimulationRecord,
+        SimulationRecordCancellationError,
+    )
+    from booley.flows.sim.request import SimRequest
+    from tests.flows.sim.test_coverage_flow import NativeExecution
+
+    reports = _three_target_coverage_origin(tmp_path, monkeypatch)
     original_run = SimulationRecord.run
-    original_retain = __import__("booley.flows.sim.flow", fromlist=["_retain_coverage_record"])
-    retain = original_retain._retain_coverage_record
+    original_checkpoint = CoverageProgress.checkpoint
     returned = []
+    terminal_phases = []
 
     def run(simulation_record, request):
-        if failure == "run" and len(returned) == 1:
+        if len(returned) == 1 and fault == "run":
             raise RuntimeError("second run failed before outcome")
+        if len(returned) == 1 and fault == "cancel":
+            raise SimulationRecordCancellationError("cancelled")
         outcome = original_run(simulation_record, request)
         returned.append(outcome)
+        if fault == "retention" and len(returned) == 2:
+            # The real Coverage Record authentication rejects an empty record.
+            (outcome.manifest_path.parents[1] / "coverage.json").write_text("{}")
         return outcome
 
-    def retain_or_fail(progress, outcome):
-        if failure == "retention" and len(returned) == 2:
-            raise OSError("completed second retention failed")
-        return retain(progress, outcome)
+    def checkpoint(progress, *, complete=False, phase=None):
+        if fault == "progress" and not complete and progress.outcomes:
+            raise OSError("progress unavailable")
+        if fault == "terminal_progress" and complete:
+            terminal_phases.append(phase)
+            raise OSError("terminal progress unavailable")
+        return original_checkpoint(progress, complete=complete, phase=phase)
 
     monkeypatch.setattr(SimulationRecord, "run", run)
-    monkeypatch.setattr(original_retain, "_retain_coverage_record", retain_or_fail)
-    flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
-    result = flow.execute(
+    monkeypatch.setattr(CoverageProgress, "checkpoint", checkpoint)
+    result = SimulateFlow(coverage_execution=lambda *_args: NativeExecution()).execute(
         SimRequest(
             target="sim_0,sim_1,sim_2", work_dir=tmp_path, coverage=True, report_dir=reports
         )
     )
-    assert result.exit_code == 2
-    assert len(returned) == (1 if failure == "run" else 2)
-    _assert_coverage_failure_counts(flow, reports, returned)
-
-
-def _assert_coverage_failure_counts(flow, reports, returned):
-    import json
-
-    assert flow._simulation_record_outcomes == tuple(returned[:1])
-    report = json.loads((reports / "sim/1/report.json").read_text())
-    expected = {
-        f"sim_{index}": [{"test": "reset", "cycle_count": None}] for index in range(len(returned))
-    }
-    assert report["cycle_counts"] == expected
-    assert "sim_2" not in report["cycle_counts"]
-    assert report["detail"]["pending_targets"] == ["sim_1", "sim_2"]
+    assert result.exit_code == (130 if fault == "cancel" else 2)
+    _assert_coverage_fault(fault, result, reports, returned, terminal_phases)
 
 
 @pytest.mark.parametrize("access", ["immutable", "legacy-per-test"])
@@ -1479,7 +1102,6 @@ def test_simulation_record_executor_uses_frozen_hook_commands_despite_live_confi
 
 
 def _ordinary_public_hook_fixture(tmp_path, monkeypatch):
-    import json
     import os
 
     from booley.flows.sim.execution import SimulationExecution, SimulationOptions
@@ -1496,7 +1118,9 @@ def _ordinary_public_hook_fixture(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setattr(
-        "booley.flows.sim.build_session._icarus_tool_identity", lambda: "test-tool-closure"
+        # Private seams: the fake-EDA tool identity and execution have no public Project fixture.
+        "booley.flows.sim.build_session._icarus_tool_identity",
+        lambda: "test-tool-closure",
     )
     flow = SimulateFlow()
     # Publication tests must allow for Git for Windows shell startup under CI load.
@@ -1508,22 +1132,38 @@ def _ordinary_public_hook_fixture(tmp_path, monkeypatch):
     return project, flow
 
 
-def test_public_ordinary_prepared_endpoint_reports_each_shared_build_launch(tmp_path, monkeypatch):
-    import json
-
-    from booley.flows.sim.request import SimRequest
-
+@pytest.mark.parametrize("access", ["immutable", "legacy-per-test"])
+@pytest.mark.parametrize("hook_exit", [0, 7])
+def test_public_ordinary_prepared_endpoint_reports_each_shared_build_launch(
+    tmp_path, monkeypatch, capsys, access, hook_exit
+):
     project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
-    result = flow.execute(
-        SimRequest(target="sim_a", work_dir=project, report_dir=tmp_path / "reports")
+    command = "echo public-hook; echo public-err >&2" + ("; exit 7" if hook_exit else "")
+    (project / ".booley/booley.toml").write_text(
+        f"[flows.sim]\npre_run_commands = {json.dumps([command])}\n"
+        f'pre_sim_build_access = "{access}"\n'
     )
-    assert result.exit_code == 0, result.outcome.report_text
+    result = flow.execute_cli(
+        [
+            "--target",
+            "sim_a",
+            "--work-dir",
+            str(project),
+            "--report-dir",
+            str(tmp_path / "reports"),
+        ]
+    )
+    # A failing hook gives the run a nonzero exit; its adapter grade stays what the tests earned.
+    assert result.exit_code == (1 if hook_exit else 0), result.outcome.report_text
     report = json.loads((tmp_path / "reports/sim.json").read_bytes())
     lines = report["detail"]["pre_sim_lines"]
     assert len(lines) == report["detail"]["pre_sim_current"] == 2
-    assert any("for sim_a/a: rc=0" in line for line in lines)
-    assert any("for sim_a/b: rc=0" in line for line in lines)
+    assert any(f"for sim_a/a: rc={hook_exit}" in line for line in lines)
+    assert any(f"for sim_a/b: rc={hook_exit}" in line for line in lines)
     assert all(report["report_text"].count(line) == 1 for line in lines)
+    console = capsys.readouterr().out
+    if not hook_exit:  # a failing run prints its card on the CLI's error path instead
+        assert all(console.count(line) == 1 for line in lines)
     assert (tmp_path / "reports/sim/1/report.json").read_bytes() == (
         tmp_path / "reports/sim.json"
     ).read_bytes()
@@ -1532,11 +1172,12 @@ def test_public_ordinary_prepared_endpoint_reports_each_shared_build_launch(tmp_
     firings = collect_pre_sim_firings(manifest)
     assert len(firings) == 2
     simulation_record_root = manifest.parent
-    assert (
-        len(list(simulation_record_root.glob("build-variants/*/attempts/*/build-result.json")))
-        == 1
-    )
+    # One shared build for immutable access; legacy access builds privately per test.
+    shared_builds = simulation_record_root.glob("build-variants/*/attempts/*/build-result.json")
+    assert len(list(shared_builds)) == (1 if access == "immutable" else 0)
     assert all(firing.document["stdout_tail"] == "public-hook\n" for firing in firings)
+    assert all(firing.document["stderr_tail"] == "public-err\n" for firing in firings)
+    assert all(firing.document["returncode"] == hook_exit for firing in firings)
 
 
 @pytest.mark.parametrize("mode", ["dry_run", "elab_only"])
@@ -1586,7 +1227,6 @@ def test_actual_hook_fires_once_for_two_test_cocotb_batch(tmp_path, monkeypatch)
 
     def two_results(group, bundle, evidence_root, run_cwd):
         outcome = original(group, bundle, evidence_root, run_cwd)
-        import json
 
         evidence_root.mkdir(parents=True, exist_ok=True)
         transport = evidence_root / "cocotb-results.json"
@@ -1624,8 +1264,6 @@ def test_actual_hook_fires_once_for_two_test_cocotb_batch(tmp_path, monkeypatch)
 
 @pytest.mark.parametrize("corrupt", [False, True])
 def test_public_ticket_integrity_downgrade_never_publishes_true(tmp_path, monkeypatch, corrupt):
-    import json
-
     from booley.flows.sim.request import SimRequest
 
     project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
@@ -1638,6 +1276,7 @@ def test_public_ticket_integrity_downgrade_never_publishes_true(tmp_path, monkey
             path.write_text("{}")
         return result
 
+    # Private seam: the record must be corrupted between projection and attach.
     monkeypatch.setattr(flow, "_simulation_record_endpoint_outcome", corrupt_after_projection)
     result = flow.execute(
         SimRequest(target="sim_a", work_dir=project, report_dir=tmp_path / "reports")
@@ -1651,54 +1290,12 @@ def test_public_ticket_integrity_downgrade_never_publishes_true(tmp_path, monkey
         assert len(report["detail"]["pre_sim_lines"]) == 2
 
 
-def test_ordinary_resume_retains_returned_outcome_when_terminal_write_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    flow = SimulateFlow()
-    flow._args = SimpleNamespace(report_dir=tmp_path, dry_run=False)
-    plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True)
-    validated = SimpleNamespace(manifest=plan.manifest, path=tmp_path / "origin" / "manifest.json")
-    recovery = SimpleNamespace(
-        manifest_sha256="sha256:x", completed=(), interrupted=(), pending=()
-    )
-    returned = SimpleNamespace(target=plan.manifest.document["target"], recovery=recovery)
-    phases = []
-
-    def run_resumed(*args):
-        args[-1](validated.path)  # the origin manifest is published before the work runs
-        return returned
-
-    def endpoint(outcomes):
-        assert outcomes == [returned]
-        return EndpointOutcome(report_text="resumed result")
-
-    def checkpoint(_targets, outcomes, *, phase, complete):
-        phases.append(phase)
-        if complete:
-            assert outcomes == [returned]
-            raise OSError("required terminal write unavailable")
-
-    monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: tmp_path)
-    monkeypatch.setattr(flow, "_lock_simulation_record_resume_origin", lambda *_args: None)
-    monkeypatch.setattr(flow, "_run_validated_resume_simulation_record", run_resumed)
-    monkeypatch.setattr(flow, "_simulation_record_endpoint_outcome", endpoint)
-    monkeypatch.setattr(flow, "_write_simulation_record_progress", checkpoint)
-
-    result = flow._execute_simulation_record(
-        AdmissionContext("unmanaged", None, None, "interactive", "", None, lambda: False),
-        flow._resume_simulation_record_run(validated, recovery),
-    )
-
-    assert phases == ["starting", "running", "complete", "aborted"]
-    assert result.report_text.startswith("resumed result")
-    assert result.detail["completion_error"]["operation"] == "publish Simulation progress"
-    assert f"  manifest: {validated.path.resolve()}" in result.report_text.splitlines()
-
-
 _UNADMITTED = {
-    "ordinary": ("sim: Simulation Record has no borrowed admission context", {}),
-    "coverage": ("sim: coverage Simulation Record has no borrowed admission context", {}),
+    "ordinary": ("sim: Simulation Record has no borrowed admission context", {"mode": "simulate"}),
+    "coverage": (
+        "sim: coverage Simulation Record has no borrowed admission context",
+        {"mode": "simulate"},
+    ),
     "resume": (
         "sim: no admission context",
         {"manifest_sha256": "sha256:x", "completed": ["a"], "interrupted": [], "pending": ["b"]},
@@ -1707,105 +1304,126 @@ _UNADMITTED = {
 
 
 @pytest.mark.parametrize("kind", ["ordinary", "coverage", "resume"])
-def test_simulation_record_kinds_refuse_without_admission_before_reserving(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
-) -> None:
-    flow = SimulateFlow()
-    flow._args = SimpleNamespace(report_dir=tmp_path, dry_run=False)
-    flow._coverage_prepared = SimpleNamespace(targets=[])
-    recovery = SimpleNamespace(
-        manifest_sha256="sha256:x", completed=("a",), interrupted=(), pending=("b",)
-    )
-    simulation_records = {
-        "ordinary": lambda: flow._ordinary_simulation_record_run(
-            OrdinarySimulationRecordPlanning((), {})
-        ),
-        "coverage": flow._coverage_simulation_record_run,
-        "resume": lambda: flow._resume_simulation_record_run(SimpleNamespace(), recovery),
-    }
-    monkeypatch.setattr(
-        flow, "reserve_invocation_dir", lambda: pytest.fail("reserved before the admission check")
-    )
+def test_simulation_record_kinds_refuse_without_admission(tmp_path: Path, kind: str) -> None:
+    from booley.flows.sim.flow import PreparedSimulationEndpoint
+    from booley.flows.sim.request import SimRequest
 
-    result = flow._execute_simulation_record(None, simulation_records[kind]())
+    flow = SimulateFlow()
+    flow._args = SimRequest(
+        target="sim", work_dir=tmp_path, report_dir=tmp_path, coverage=kind == "coverage"
+    )
+    flow._coverage_prepared = SimpleNamespace(targets=[])
+    if kind == "resume":
+        # Keeps the private call: a public resume needs a validated manifest on disk.
+        recovery = SimpleNamespace(
+            manifest_sha256="sha256:x", completed=("a",), interrupted=(), pending=("b",)
+        )
+        result = flow._execute_simulation_record(
+            None, flow._resume_simulation_record_run(SimpleNamespace(), recovery)
+        )
+    else:
+        with flow.publication_resources:
+            result = flow.run_prepared_simulation(
+                PreparedSimulationEndpoint((), None, (), {}), None
+            )
 
     text, detail = _UNADMITTED[kind]
     assert (result.exit_code, result.report_text, result.detail) == (2, text, detail)
 
 
-def _faulty_simulation_record(flow, tmp_path, monkeypatch, kind, fault):
-    """Build *kind*'s Simulation Record with its steps stubbed.
+def test_coverage_failure_without_a_prepared_target_reports_the_unmatched_target(
+    tmp_path: Path,
+) -> None:
+    def fail(_request: object) -> None:
+        raise RuntimeError("boom")
 
-    The first step publishes one manifest, then raises ``OSError`` for
-    ``before_result``; for ``completion`` the work returns a result and only the
-    terminal progress write fails.
+    # Keeps the private call: a public run prepares every requested Target, so only a direct
+    # call reaches a failed Target with no prepared Coverage plan.
+    flow = SimulateFlow()
+    flow._coverage_prepared = SimpleNamespace(targets=[])
+    document = {"target": {"selector": "sim_0", "vlnv": "acme:demo:target:1.0", "name": "sim_0"}}
+    request = SimpleNamespace(plan=SimpleNamespace(manifest=SimpleNamespace(document=document)))
+    progress = SimpleNamespace(invocation_dir=tmp_path, checkpoint=lambda **_kwargs: None)
+
+    result = flow._execute_coverage_simulation_record_requests(
+        SimpleNamespace(run=fail), [request], progress
+    )
+
+    assert result.exit_code == 2
+    assert "cannot match failed Target to the prepared Coverage plan (boom)" in result.report_text
+
+
+def _kind_request(tmp_path, monkeypatch, kind):
+    """Build the public flow and request for *kind*; ``resume`` first completes an ordinary run."""
+    from booley.flows.sim.request import SimRequest
+    from tests.flows.sim.test_coverage_flow import NativeExecution, _prepare_coverage_origin
+
+    if kind == "coverage":
+        reports = _prepare_coverage_origin(tmp_path, monkeypatch)
+        flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
+        request = SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports)
+        manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
+    else:
+        project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
+        reports = tmp_path / "reports"
+        request = SimRequest(target="sim_a", work_dir=project, report_dir=reports)
+        manifest = reports / "sim/1/targets/sim_a/record/manifest.json"
+        if kind == "resume":
+            for name in (
+                "booley.flows.sim.flow.git_full_sha",
+                "booley.flows.sim.flow_resume.git_full_sha",
+                "booley.flows.sim.record.resume.git_full_sha",
+            ):
+                monkeypatch.setattr(name, lambda *_args: "a" * 40)
+            assert flow.execute(request).exit_code == 0
+            request = SimRequest(
+                resume_from=manifest, work_dir=project, report_dir=tmp_path / "resumed"
+            )
+            flow = SimulateFlow()
+    return flow, request, manifest
+
+
+def _faulty_kind_run(tmp_path, monkeypatch, kind, fault):
+    """Run *kind* through the public flow with *fault* injected after its manifest is published.
+
+    ``before_result``: the run stops with ``OSError`` once the manifest is committed.
+    ``completion``: the work finishes and only the terminal progress write fails.
+    Returns the result, the manifest ``--resume-from`` needs, and the terminal phases tried.
     """
-    manifest = tmp_path / "manifest.json"
-    done = EndpointOutcome(report_text="verdict")
+    from booley.flows.sim import coverage_progress, live_progress
+    from booley.flows.sim import flow as flow_module
+    from booley.flows.sim.record.coordinator import SimulationRecord
 
-    def work(publish):
-        publish(manifest)
+    flow, request, manifest = _kind_request(tmp_path, monkeypatch, kind)
+    modules = (coverage_progress if kind == "coverage" else flow_module,)
+    original_checkpoint = live_progress.publish_checkpoint
+    original_publish_new = SimulationRecord.publish_new
+    terminal_phases = []
+
+    def checkpoint(path, payload):
+        if payload["complete"] and fault == "completion":
+            terminal_phases.append(payload["phase"])
+            raise OSError("terminal progress unavailable")
+        return original_checkpoint(path, payload)
+
+    def fail_after_publication(record, run_request):
+        result = original_publish_new(record, run_request)
         if fault == "before_result":
             raise OSError("disk gone")
+        return result
 
-    def checkpoint(*_args, phase=None, complete=False):
-        if complete and phase == "complete" and fault == "completion":
-            raise OSError("terminal progress unavailable")
+    def fail_resumed_run(record, run_request):
+        raise OSError("disk gone")
 
-    monkeypatch.setattr(flow, "_simulation_record_endpoint_outcome", lambda _outcomes: done)
-    if kind == "ordinary":
-        publishers = []
-        monkeypatch.setattr(
-            "booley.flows.sim.flow.SimulationRecord",
-            lambda *_args, manifest_published, **_kwargs: publishers.append(manifest_published),
-        )
-
-        def candidates(*_args):
-            work(publishers[0])
-            return []
-
-        monkeypatch.setattr(flow, "_write_simulation_record_progress", checkpoint)
-        monkeypatch.setattr(flow, "_candidate_simulation_record_requests", candidates)
-        monkeypatch.setattr(
-            flow, "_publish_and_run_simulation_record_requests", lambda *_a, **_k: None
-        )
-        return flow._ordinary_simulation_record_run(
-            OrdinarySimulationRecordPlanning((), {})
-        ), manifest
-    if kind == "coverage":
-        progress = SimpleNamespace(targets=("a",), outcomes=[object()], checkpoint=checkpoint)
-
-        def session(_admission, _invocation, publish):
-            work(publish)
-            return None, []
-
-        flow._coverage_prepared = SimpleNamespace(
-            targets=[SimpleNamespace(handle=SimpleNamespace(selector="a"))]
-        )
-        monkeypatch.setattr("booley.flows.sim.flow.CoverageProgress", lambda *_args: progress)
-        monkeypatch.setattr(flow, "_coverage_simulation_record_session", session)
-        monkeypatch.setattr(
-            flow, "_execute_coverage_simulation_record_requests", lambda *_args: done
-        )
-        return flow._coverage_simulation_record_run(), manifest
-    plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True)
-    validated = SimpleNamespace(manifest=plan.manifest, path=manifest)
-    recovery = SimpleNamespace(
-        manifest_sha256="sha256:x", completed=(), interrupted=(), pending=()
-    )
-
-    def resumed(*args):
-        work(args[-1])
-        return SimpleNamespace(recovery=recovery)
-
-    monkeypatch.setattr(flow, "_write_simulation_record_progress", checkpoint)
-    monkeypatch.setattr(flow, "_lock_simulation_record_resume_origin", lambda *_args: None)
-    monkeypatch.setattr(flow, "_run_validated_resume_simulation_record", resumed)
-    monkeypatch.setattr(
-        "booley.flows.sim.flow_resume._fresh_simulation_record_recovery_detail",
-        lambda *_args: {"pending": []},
-    )
-    return flow._resume_simulation_record_run(validated, recovery), manifest
+    for module in modules:
+        monkeypatch.setattr(module, "publish_checkpoint", checkpoint)
+    if kind == "resume":
+        monkeypatch.setattr(flow_module, "publish_checkpoint", checkpoint)
+        if fault == "before_result":
+            monkeypatch.setattr(SimulationRecord, "run", fail_resumed_run)
+    else:
+        monkeypatch.setattr(SimulationRecord, "publish_new", fail_after_publication)
+    return flow.execute(request), manifest, terminal_phases
 
 
 @pytest.mark.parametrize("kind", ["ordinary", "coverage", "resume"])
@@ -1813,17 +1431,8 @@ def _faulty_simulation_record(flow, tmp_path, monkeypatch, kind, fault):
 def test_simulation_record_kind_failure_cards_name_published_manifests(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, fault: str
 ) -> None:
-    flow = SimulateFlow()
-    flow._args = SimpleNamespace(report_dir=tmp_path, dry_run=False)
-    monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: tmp_path)
-    simulation_record, manifest = _faulty_simulation_record(
-        flow, tmp_path, monkeypatch, kind, fault
-    )
-
-    result = flow._execute_simulation_record(
-        AdmissionContext("unmanaged", None, None, "interactive", "", None, lambda: False),
-        simulation_record,
-    )
+    result, manifest, terminal_phases = _faulty_kind_run(tmp_path, monkeypatch, kind, fault)
+    card = result.outcome.report_text
 
     assert result.exit_code == 2
     if fault == "completion":
@@ -1832,17 +1441,19 @@ def test_simulation_record_kind_failure_cards_name_published_manifests(
             "coverage": "publish coverage progress",
             "resume": "publish Simulation progress",
         }[kind]
-        assert result.detail["completion_error"]["operation"] == operation
-        assert result.report_text.startswith("verdict")
+        assert result.outcome.detail["completion_error"]["operation"] == operation
+        assert terminal_phases == ["complete", "aborted"]
+        # The finished work still reaches the card: its verdict is not lost with the write.
+        assert " PASS" in card.splitlines()[0]
     else:
         failed = {
             "ordinary": "Simulation Record execution failed",
             "coverage": "Simulation Record coverage planning failed",
             "resume": "Simulation Record resume failed",
         }[kind]
-        assert result.report_text.startswith(f"{failed}: disk gone")
+        assert card.startswith(f"{failed}: disk gone")
     # Whatever stopped the run, the card names the manifest --resume-from needs.
-    assert result.report_text.splitlines().count(f"  manifest: {manifest.resolve()}") == 1
+    assert card.splitlines().count(f"  manifest: {manifest.resolve()}") == 1
 
 
 @pytest.mark.parametrize("access", ["immutable", "legacy-per-test"])
@@ -1877,6 +1488,8 @@ def test_prepared_ordinary_invoker_observes_owned_attempt_before_launch(
                 observations.append(active["stage"])
         return original(command, timeout=timeout, cwd=cwd)
 
+    # Keeps the private patch: the fixture's engine invoker runs below the
+    # flow's process boundary, where progress.json has no active stage yet.
     monkeypatch.setattr(flow, "_execute_boundary", invoke)
     result = flow.execute(SimRequest(target="sim_a", work_dir=project, report_dir=reports))
     assert result.exit_code == 0, result.outcome.report_text
@@ -1971,6 +1584,7 @@ def test_hook_success_survives_build_failure(tmp_path, monkeypatch):
     flow = SimulateFlow()
     flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    # Private seam: projects a returned record; the fixture runs no flow around it.
     result = flow._simulation_record_endpoint_outcome([simulation_record])
     assert result.exit_code == 1
     assert len(simulation_record.pre_sim_firings) == 1
@@ -2007,33 +1621,30 @@ def test_completed_simulation_record_report_records_tool_and_resources(tmp_path,
     assert report.get("resources") == {"cpu_user_s": 3.75, "cpu_sys_s": 0.75, "peak_rss_mb": 256}
 
 
-@pytest.mark.parametrize("mode", ["simulate", "elab_only"])
+@pytest.mark.parametrize("mode", ["simulate", "elab_only", "coverage"])
 def test_simulation_record_report_records_tools_by_target(tmp_path, monkeypatch, mode):
-    from booley.flows.sim.request import SimRequest
-
-    project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
-    (project / ".booley/tests.toml").write_text('[sim_a]\ntests = ["a"]\n[sim_b]\ntests = ["a"]\n')
-    result = flow.execute(
-        SimRequest(
-            target="sim_a,sim_b", mode=mode, work_dir=project, report_dir=tmp_path / "reports"
-        )
-    )
-    assert result.exit_code == 0, result.outcome.report_text
-    report = json.loads((tmp_path / "reports/sim.json").read_bytes())
-    assert report.get("eda_tools") == {"sim_a": "icarus", "sim_b": "icarus"}
-    assert "eda_tool" not in report
-
-
-def test_coverage_simulation_record_report_records_tool(tmp_path, monkeypatch):
     from booley.flows.sim.request import SimRequest
     from tests.flows.sim.test_coverage_flow import NativeExecution, _prepare_coverage_origin
 
-    reports = _prepare_coverage_origin(tmp_path, monkeypatch)
-    result = SimulateFlow(coverage_execution=lambda *_args: NativeExecution()).execute(
-        SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports)
-    )
-    assert result.exit_code == 0
-    assert json.loads((reports / "sim.json").read_bytes()).get("eda_tool") == "verilator"
+    if mode == "coverage":
+        reports = _prepare_coverage_origin(tmp_path, monkeypatch)
+        flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
+        request = SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports)
+    else:
+        project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
+        (project / ".booley/tests.toml").write_text(
+            '[sim_a]\ntests = ["a"]\n[sim_b]\ntests = ["a"]\n'
+        )
+        reports = tmp_path / "reports"
+        request = SimRequest(target="sim_a,sim_b", mode=mode, work_dir=project, report_dir=reports)
+    result = flow.execute(request)
+    assert result.exit_code == 0, result.outcome.report_text
+    report = json.loads((reports / "sim.json").read_bytes())
+    if mode == "coverage":
+        assert report.get("eda_tool") == "verilator"
+    else:
+        assert report.get("eda_tools") == {"sim_a": "icarus", "sim_b": "icarus"}
+        assert "eda_tool" not in report
 
 
 def test_partial_simulation_record_planning_keeps_known_and_unknown_tools(tmp_path, monkeypatch):
@@ -2048,6 +1659,7 @@ def test_partial_simulation_record_planning_keeps_known_and_unknown_tools(tmp_pa
             raise ValueError("second Target unavailable")
         return original(planned, *args, **kwargs)
 
+    # Private seam: planning of one Target must fail while the other succeeds; no public input does.
     monkeypatch.setattr(flow, "_ordinary_simulation_record_plan", plan)
     result = flow.execute(
         SimRequest(target="sim_a,sim_b", work_dir=project, report_dir=tmp_path / "reports")
@@ -2073,17 +1685,19 @@ def test_pre_sim_read_rejects_result_reference_without_published_firing(tmp_path
 def _spy_simulation_lifecycle(monkeypatch, events, terminal_phases, *, terminal_write_fails):
     """Append lifecycle step names to *events*, optionally failing the terminal progress write."""
 
-    write_progress = SimulateFlow._write_simulation_record_progress
+    from booley.flows.sim import flow as flow_module
+
+    publish_checkpoint = flow_module.publish_checkpoint
     hook = SimulateFlow.publish_flow_records
     refresh = SimulateFlow.refresh_report_detail
 
-    def progress(self, targets, outcomes, *, phase, complete):
-        if complete or phase == "aborted":
-            terminal_phases.append(phase)
+    def progress(path, payload):
+        if payload["complete"]:
+            terminal_phases.append(payload["phase"])
             events.append("terminal")
             if terminal_write_fails:
                 raise OSError("injected terminal progress failure")
-        return write_progress(self, targets, outcomes, phase=phase, complete=complete)
+        return publish_checkpoint(path, payload)
 
     def record(self, outcome):
         hook(self, outcome)
@@ -2093,7 +1707,7 @@ def _spy_simulation_lifecycle(monkeypatch, events, terminal_phases, *, terminal_
         events.append("refresh")
         return refresh(self, result)
 
-    monkeypatch.setattr(SimulateFlow, "_write_simulation_record_progress", progress)
+    monkeypatch.setattr(flow_module, "publish_checkpoint", progress)
     monkeypatch.setattr(SimulateFlow, "publish_flow_records", record)
     monkeypatch.setattr(SimulateFlow, "refresh_report_detail", refresh_detail)
 

@@ -329,10 +329,15 @@ def _stored_result(tmp_path: Path):
     from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
     from booley.flows.sim.record.store import SimulationRecordStore
     from tests.flows.sim.simulation_record_test_support import _admission, _plan
-    from tests.flows.sim.test_simulation_record_characterization import _NoVerdictExecution
+    from tests.flows.sim.test_simulation_record_characterization import (
+        _AdapterAbortExecution,
+        _without_verdict,
+    )
 
     plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True)
-    execution = _NoVerdictExecution(eda_tool="verilator", cocotb=True)
+    execution = _without_verdict(_AdapterAbortExecution, "界" * 4000)(
+        eda_tool="verilator", cocotb=True
+    )
     executor = OrdinaryHdlSerialExecutor(
         invoke=lambda *_args, **_kwargs: None, execution_factory=lambda _options: execution
     )
