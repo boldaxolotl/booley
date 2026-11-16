@@ -7,6 +7,12 @@ from collections.abc import Iterable
 import pytest
 
 from booley.flows.sim.coverage_json import freeze_coverage_mapping
+from booley.flows.sim.coverage_point_query import (
+    coverage_point_covered,
+    coverage_point_detail,
+    coverage_point_matches,
+    uncovered_points,
+)
 from booley.flows.sim.coverage_record import (
     CoveragePoint,
     CoveragePointIdentity,
@@ -55,8 +61,6 @@ def _ids(points: Iterable[CoveragePoint]) -> list[str]:
 
 
 def test_uncovered_points_are_eligible_never_hit_sorted_by_source_line_metric() -> None:
-    from booley.flows.sim.coverage_point_query import uncovered_points
-
     zeta = _point("rtl/zeta.sv", 3)
     late = _point("rtl/alpha.sv", 20)
     early_toggle = _point("rtl/alpha.sv", 4, "toggle", subject={"bit": "q[0]:0->1"})
@@ -78,8 +82,6 @@ def test_uncovered_points_are_eligible_never_hit_sorted_by_source_line_metric() 
 
 
 def test_equal_source_line_metric_ties_break_deterministically() -> None:
-    from booley.flows.sim.coverage_point_query import uncovered_points
-
     inner = _point("rtl/a.sv", 5, hierarchy="TOP.a.inner", subject={"basic_block": 0})
     outer_two = _point("rtl/a.sv", 5, hierarchy="TOP.a", subject={"basic_block": 2})
     outer_one = _point("rtl/a.sv", 5, hierarchy="TOP.a", subject={"basic_block": 1})
@@ -92,8 +94,6 @@ def test_equal_source_line_metric_ties_break_deterministically() -> None:
 
 
 def test_waived_and_unscored_points_are_left_out_and_waived_counted() -> None:
-    from booley.flows.sim.coverage_point_query import uncovered_points
-
     listed = _point("rtl/a.sv", 1)
     waived = _point("rtl/a.sv", 2, kind="waived")
     waived_too = _point("rtl/a.sv", 3, "branch", kind="waived")
@@ -123,8 +123,6 @@ def test_waived_and_unscored_points_are_left_out_and_waived_counted() -> None:
 def test_metric_and_source_filters_match_exactly_and_combine(
     filters: dict[str, str], expected: list[str]
 ) -> None:
-    from booley.flows.sim.coverage_point_query import uncovered_points
-
     named = {
         "a-line": _point("rtl/a.sv", 1),
         "a-branch": _point("rtl/a.sv", 1, "branch", subject={"outcome": "if"}),
@@ -138,8 +136,6 @@ def test_metric_and_source_filters_match_exactly_and_combine(
 
 
 def test_filters_also_narrow_the_waived_count() -> None:
-    from booley.flows.sim.coverage_point_query import uncovered_points
-
     points = [
         _point("rtl/a.sv", 1, kind="waived"),
         _point("rtl/a.sv", 2, "branch", kind="waived"),
@@ -153,8 +149,6 @@ def test_filters_also_narrow_the_waived_count() -> None:
 
 
 def test_no_uncovered_points_gives_an_empty_selection() -> None:
-    from booley.flows.sim.coverage_point_query import uncovered_points
-
     selection = uncovered_points([_point("rtl/a.sv", 1, hits={"run:a": 3})])
 
     assert selection.points == ()
@@ -163,15 +157,11 @@ def test_no_uncovered_points_gives_an_empty_selection() -> None:
 
 
 def test_covered_means_any_run_hit_it() -> None:
-    from booley.flows.sim.coverage_point_query import coverage_point_covered
-
     assert coverage_point_covered(_point("rtl/a.sv", 1, hits={"run:a": 1, "run:b": 4}))
     assert not coverage_point_covered(_point("rtl/a.sv", 1))
 
 
 def test_matches_ignores_filters_left_as_none_and_checks_each_given_one() -> None:
-    from booley.flows.sim.coverage_point_query import coverage_point_matches
-
     point = _point("rtl/a.sv", 1, kind="waived")
 
     assert coverage_point_matches(point)
@@ -195,6 +185,4 @@ def test_matches_ignores_filters_left_as_none_and_checks_each_given_one() -> Non
 def test_point_detail_is_the_subject_value_as_text(
     subject: dict[str, object], detail: str
 ) -> None:
-    from booley.flows.sim.coverage_point_query import coverage_point_detail
-
     assert coverage_point_detail(_point("rtl/a.sv", 1, subject=subject)) == detail
