@@ -13,14 +13,15 @@ from booley.config.project_config import normalize_tests_toml
 from booley.flows.builtin_cli import parse_request
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record.test_run_report import (
-    _recorded_test_runs,
+    simulation_record_test_run_lines,
     simulation_record_test_run_rows,
     test_run_report_lines,
 )
-from booley.flows.sim.record_presentation import (
-    _simulation_record_report_detail,
-    _simulation_record_test_run_lines,
-)
+from booley.flows.sim.record_files import canonical_json
+
+# Private seam: the only public path to the structured rows is a full run's report.json, and
+# the 32-row cap needs 33 Test Runs.
+from booley.flows.sim.record_presentation import _simulation_record_report_detail
 from booley.flows.target_test_plan import build_target_test_plan
 from booley.flows.test_runs import TestRun, build_test_run, test_run_document
 from tests.flows.sim.simulation_record_test_support import _recorded_simulation_record
@@ -67,7 +68,7 @@ def test_rows_join_each_observation_to_its_recorded_test_run(tmp_path: Path):
 def test_report_lists_every_test_run_and_how_to_rerun_each_failure(tmp_path: Path):
     runs = (build_test_run("count", seed=3), build_test_run("count", seed=4), _SOAK)
     outcome = _outcome(tmp_path, runs, (True, False, False))
-    assert _simulation_record_test_run_lines("sim", outcome) == [
+    assert simulation_record_test_run_lines("sim", outcome, default_seed=1) == [
         "  Test Runs: 3 (1 passed, 2 failed)",
         "    PASS         count@3",
         "    FAIL         count@4",
@@ -78,23 +79,31 @@ def test_report_lists_every_test_run_and_how_to_rerun_each_failure(tmp_path: Pat
     ]
 
 
-def test_default_runs_that_pass_add_no_rows_to_the_target_line(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("grades", "tail"),
+    [
+        ((True, True), []),
+        (
+            (True, False),
+            [
+                "  Rerun a failed Test Run with the same seed:",
+                "    booley flow sim --target sim --test=count@1",
+            ],
+        ),
+    ],
+    ids=["passing-adds-no-rows", "failing-lists-rerun-command"],
+)
+def test_default_runs_list_only_failures_on_the_target_line(
+    tmp_path: Path, grades: tuple[bool, ...], tail: list[str]
+):
     runs = (build_test_run("reset", seed=1), build_test_run("count", seed=1))
-    outcome = _outcome(tmp_path, runs, (True, True))
-    assert _simulation_record_test_run_lines("sim", outcome) == []
+    outcome = _outcome(tmp_path, runs, grades)
+    lines = simulation_record_test_run_lines("sim", outcome, default_seed=1)
+    assert (lines[-2:] if tail else lines) == tail
     assert len(simulation_record_test_run_rows(outcome)) == 2
 
 
-def test_a_failing_default_run_is_listed_with_its_rerun_command(tmp_path: Path):
-    runs = (build_test_run("reset", seed=1), build_test_run("count", seed=1))
-    lines = _simulation_record_test_run_lines("sim", _outcome(tmp_path, runs, (True, False)))
-    assert lines[-2:] == [
-        "  Rerun a failed Test Run with the same seed:",
-        "    booley flow sim --target sim --test=count@1",
-    ]
-
-
-def test_rows_and_rerun_commands_are_capped(tmp_path: Path):
+def test_rows_and_rerun_commands_are_capped():
     rows = [
         {**test_run_document(build_test_run("t", seed=n)), "grade": "fail"} for n in range(1, 41)
     ]
@@ -124,10 +133,24 @@ def test_structured_detail_carries_bounded_rows(tmp_path: Path):
     }
 
 
-def test_a_simulation_record_whose_manifest_is_gone_has_no_rows(tmp_path: Path):
+def _gone_manifest(tmp_path: Path, outcome):
+    """The outcome with its manifest deleted."""
+    return SimpleNamespace(manifest_path=tmp_path / "gone.json", observations=outcome.observations)
+
+
+def _hand_edited_fingerprint(tmp_path: Path, outcome):
+    """The outcome whose manifest carries a Test Run fingerprint that no longer matches."""
+    document = json.loads(outcome.manifest_path.read_text())
+    document["work_items"][0]["test_runs"][0]["fingerprint"] = "sha256:" + "0" * 64
+    # Canonical bytes, so the codec accepts the document and only the fingerprint is wrong.
+    outcome.manifest_path.write_bytes(canonical_json(document))
+    return outcome
+
+
+@pytest.mark.parametrize("damage", [_gone_manifest, _hand_edited_fingerprint])
+def test_a_damaged_simulation_record_has_no_rows(tmp_path: Path, damage):
     outcome = _outcome(tmp_path, (_SOAK,), (False,))
-    gone = SimpleNamespace(manifest_path=tmp_path / "gone.json", observations=outcome.observations)
-    assert simulation_record_test_run_rows(gone) == []
+    assert simulation_record_test_run_rows(damage(tmp_path, outcome)) == []
 
 
 _TESTS = {
@@ -191,16 +214,19 @@ def test_rerun_command_of_the_unnamed_invocation(adapter, seed, tail):
     assert plan.resolve(request.test, seed=request.seed) == (failed,)
 
 
-def test_tests_an_unfiltered_cocotb_batch_discovered_get_rows(tmp_path: Path):
-    unnamed = build_test_run(None, seed=9)
+def _batch_outcome(tmp_path: Path, seed: int | None, *graded: tuple[str | None, bool]):
+    """An unnamed-invocation outcome with one fact per ``(discovered name, passed)`` pair."""
+    unnamed = build_test_run(None, seed=seed)
     recorded = _recorded_simulation_record(tmp_path, (unnamed,), ())
-    observations = (
-        recorded.fact(unnamed, discovered="found_a", **_grade_members(passed=True)),
-        recorded.fact(unnamed, discovered="found_b", **_grade_members(passed=False)),
+    observations = tuple(
+        recorded.fact(unnamed, discovered=name, **_grade_members(passed=ok)) for name, ok in graded
     )
-    rows = simulation_record_test_run_rows(
-        SimpleNamespace(manifest_path=recorded.manifest_path, observations=observations)
-    )
+    return SimpleNamespace(manifest_path=recorded.manifest_path, observations=observations)
+
+
+def test_tests_an_unfiltered_cocotb_batch_discovered_get_rows(tmp_path: Path):
+    outcome = _batch_outcome(tmp_path, 9, ("found_a", True), ("found_b", False))
+    rows = simulation_record_test_run_rows(outcome)
     assert [(row["name"], row["grade"]) for row in rows] == [
         ("found_a@9", "pass"),
         ("found_b@9", "fail"),
@@ -209,16 +235,10 @@ def test_tests_an_unfiltered_cocotb_batch_discovered_get_rows(tmp_path: Path):
 
 def test_failed_discovered_tests_share_one_batch_rerun_command(tmp_path: Path):
     """A discovered Test has no registered name to select, so its batch reruns as one."""
-    unnamed = build_test_run(None, seed=9)
-    recorded = _recorded_simulation_record(tmp_path, (unnamed,), ())
-    observations = (
-        recorded.fact(unnamed, discovered="found_a", **_grade_members(passed=True)),
-        recorded.fact(unnamed, discovered="found_b", **_grade_members(passed=False)),
-        recorded.fact(unnamed, discovered="found_c", **_grade_members(passed=False)),
-        recorded.fact(unnamed, discovered="found_d", **_grade_members(passed=False)),
+    outcome = _batch_outcome(
+        tmp_path, 9, ("found_a", True), ("found_b", False), ("found_c", False), ("found_d", False)
     )
-    outcome = SimpleNamespace(manifest_path=recorded.manifest_path, observations=observations)
-    lines = _simulation_record_test_run_lines("sim", outcome)
+    lines = simulation_record_test_run_lines("sim", outcome, default_seed=1)
     assert lines[-2:] == [
         "  Rerun the whole batch with the same seed "
         "(register its test functions as Tests in tests.toml to rerun one alone):",
@@ -230,14 +250,8 @@ def test_failed_discovered_tests_share_one_batch_rerun_command(tmp_path: Path):
 
 def test_batch_run_failure_and_discovered_failures_print_one_shared_command(tmp_path: Path):
     """The unnamed run's own failed row and discovered rows share one command line."""
-    unnamed = build_test_run(None, seed=9)
-    recorded = _recorded_simulation_record(tmp_path, (unnamed,), ())
-    observations = (
-        recorded.fact(unnamed, **_grade_members(passed=False)),
-        recorded.fact(unnamed, discovered="found_b", **_grade_members(passed=False)),
-    )
-    outcome = SimpleNamespace(manifest_path=recorded.manifest_path, observations=observations)
-    lines = _simulation_record_test_run_lines("sim", outcome)
+    outcome = _batch_outcome(tmp_path, 9, (None, False), ("found_b", False))
+    lines = simulation_record_test_run_lines("sim", outcome, default_seed=1)
     assert [line for line in lines if "booley flow sim" in line] == [
         "    booley flow sim --target sim --seed 9"
     ]
@@ -247,18 +261,6 @@ def test_batch_run_failure_and_discovered_failures_print_one_shared_command(tmp_
 
 def test_unseeded_batch_rerun_command_has_no_seed_flag(tmp_path: Path):
     """An unseeded batch reruns with the bare Target command."""
-    unnamed = build_test_run(None, seed=None)
-    recorded = _recorded_simulation_record(tmp_path, (unnamed,), ())
-    observations = (recorded.fact(unnamed, discovered="found_b", **_grade_members(passed=False)),)
-    outcome = SimpleNamespace(manifest_path=recorded.manifest_path, observations=observations)
-    lines = _simulation_record_test_run_lines("sim", outcome)
+    outcome = _batch_outcome(tmp_path, None, ("found_b", False))
+    lines = simulation_record_test_run_lines("sim", outcome, default_seed=1)
     assert lines[-1] == "    booley flow sim --target sim"
-
-
-def test_a_hand_edited_test_run_fingerprint_reads_as_no_recorded_runs(tmp_path: Path):
-    outcome = _outcome(tmp_path, (build_test_run("reset"),), (True,))
-    document = json.loads(outcome.manifest_path.read_text())
-    document["work_items"][0]["test_runs"][0]["fingerprint"] = "sha256:" + "0" * 64
-    outcome.manifest_path.write_text(json.dumps(document))
-
-    assert _recorded_test_runs(outcome.manifest_path) == {}

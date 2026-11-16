@@ -8,16 +8,16 @@ simulator process"), so the concrete Test Runs are passed through.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
 from booley.config.project_config import normalize_tests_toml
-from booley.flows.sim.execution import SimulationExecution, SimulationOptions
-from booley.flows.sim.flow import PlannedTarget
+from booley.flows.base import SubprocessResult
 from booley.flows.target_test_plan import batch_test_runs, build_target_test_plan
+from booley.mcp.base import EXIT_SUCCESS
+from tests.flows.sim.simulation_record_boundary import run_simulation_record_sim
+from tests.flows.sim.test_cocotb import _CORE_FILES, _cocotb_output
 from tests.flows.sim.test_flow_test_run_resolution import _flow
 
 _TESTS = {
@@ -37,7 +37,18 @@ _TESTS = {
         },
     }
 }
-_MAP = {"sim": ["a", "b"]}
+_TESTS_TOML = """\
+[ccfg]
+tests = ["a", "b"]
+[ccfg.variants.a]
+default = "one"
+one = { env = { MODE = "A" } }
+shared = { env = { MODE = "C" } }
+[ccfg.variants.b]
+default = "two"
+two = { env = { MODE = "B" } }
+shared = { env = { MODE = "C" } }
+"""
 
 
 def _plan():
@@ -55,49 +66,25 @@ def test_selected_variants_share_a_batch_their_defaults_could_not():
 
 
 def test_simulation_record_inputs_disclose_the_concrete_test_runs(tmp_path, monkeypatch):
-    flow = _flow(tmp_path, monkeypatch, "--test", "a+shared", "--test", "b+shared")
-    plan = _plan()
-    monkeypatch.setattr(flow, "_target_test_plan", lambda _target: plan)
-    monkeypatch.setattr(flow, "_effective_skips", lambda _target: set())
-    runs = flow._resolve_test_runs("sim", _MAP)
-    disclosed: list[tuple[tuple[str, ...], object]] = []
-    preview = SimpleNamespace(groups=(("a", "b"),), run_groups=(runs,))
-    execution = SimpleNamespace(
-        plan_ordinary_group=lambda _handle, group, test_runs=None: (
-            disclosed.append((group, test_runs)) or {}
+    """Planning prepares the selected Variants' runs; the defaults would refuse the batch."""
+    run = run_simulation_record_sim(
+        tmp_path,
+        monkeypatch,
+        {"ccfg": ["a", "b"]},
+        SubprocessResult(
+            returncode=0,
+            stdout=_cocotb_output([("a", "pass", ""), ("b", "pass", "")]),
+            duration_s=2.0,
         ),
+        files={**_CORE_FILES, ".booley/tests.toml": _TESTS_TOML},
+        target="ccfg",
+        test=("a+shared", "b+shared"),
     )
-    monkeypatch.setattr(flow, "_simulation_execution", lambda: execution)
-    monkeypatch.setattr(
-        "booley.flows.sim.flow.TargetCatalog.build",
-        lambda _root: SimpleNamespace(inspect=lambda _handle: object()),
-    )
-    handle = SimpleNamespace(project_root=tmp_path, selector="sim", identity="sim")
 
-    flow._ordinary_simulation_record_inputs(PlannedTarget("sim", handle, preview), _MAP)
-
-    assert disclosed == [(("a", "b"), runs)]
-    assert [run.name for run in runs] == ["a+shared@1", "b+shared@1"]
-
-
-def test_group_disclosure_prepares_the_test_runs_it_is_given(monkeypatch):
-    execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
-    runs = _plan().resolve(["a+shared", "b+shared"])
-    prepared: list[tuple[tuple[str, ...], object]] = []
-
-    @contextmanager
-    def ordinary_group(_handle, test_names, test_runs=None):
-        prepared.append((test_names, test_runs))
-        yield SimpleNamespace(
-            planning_disclosure=lambda: {"disclosed": True},
-            discard_prepared_generation=lambda: None,
-        )
-
-    monkeypatch.setattr(execution, "ordinary_group", ordinary_group)
-
-    assert execution.plan_ordinary_group(object(), ("a", "b"), runs) == {"disclosed": True}
-    assert execution.plan_ordinary_group(object(), ("a",)) == {"disclosed": True}
-    assert prepared == [(("a", "b"), runs), (("a",), None)]
+    assert run.result.exit_code == EXIT_SUCCESS, run.result.outcome.report_text
+    (launch,) = run.launches
+    assert [work_run.name for work_run in launch.work.test_runs] == ["a+shared@1", "b+shared@1"]
+    assert "    PASS         b+shared@1" in run.result.outcome.report_text.splitlines()
 
 
 def test_resume_discloses_the_test_runs_the_manifest_froze(tmp_path, monkeypatch):
@@ -107,6 +94,9 @@ def test_resume_discloses_the_test_runs_the_manifest_froze(tmp_path, monkeypatch
     for the resume comparison must prepare exactly those runs, not the
     default Variants of the same Tests (which could not even share a batch).
     """
+    # Private seam: the public resume path (see test_simulation_record_test_runs.py) starts
+    # from an ordinary-HDL interruption; a Cocotb record frozen with two non-default Variant
+    # batches cannot be interrupted there, and the call to pin is the re-plan itself.
     from booley.flows.sim import flow_resume as resume_module
     from booley.flows.test_runs import build_test_run
     from tests.flows.sim.test_simulation_record_test_runs import _cocotb_plan

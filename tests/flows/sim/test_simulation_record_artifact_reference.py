@@ -13,15 +13,14 @@ from booley.flows.sim.record import (
 )
 from tests.fusesoc_test_support import symlinked_booley_dir
 
+_REMOVED = object()
 
-def _reference(tmp_path):
-    base = tmp_path / "origin"
-    artifact = base / "record/manifest.json"
-    artifact.parent.mkdir(parents=True)
-    artifact.write_bytes(b'{"record":true}\n')
-    return base, build_artifact_reference(
+
+def _build_origin(artifact, base, *, base_name="origin_target"):
+    """A reference to *artifact* under *base*, as the Simulation Record manifest is referenced."""
+    return build_artifact_reference(
         artifact,
-        base_name="origin_target",
+        base_name=base_name,
         base=base,
         kind="simulation_record_manifest",
         owner="record-id",
@@ -29,89 +28,96 @@ def _reference(tmp_path):
     )
 
 
-def test_reference_resolves_after_complete_base_copy(tmp_path):
-    base, reference = _reference(tmp_path)
-    copied = tmp_path / "copied"
-    shutil.copytree(base, copied)
+def _reference(tmp_path):
+    base = tmp_path / "origin"
+    artifact = base / "record/manifest.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b'{"record":true}\n')
+    return base, _build_origin(artifact, base)
 
-    resolved = resolve_artifact_reference(
+
+def _resolve_origin(reference, bases, *, maximum=1024):
+    return resolve_artifact_reference(
         reference,
-        bases={"origin_target": copied},
+        bases=bases,
         allowed_bases={"origin_target"},
         expected_kind="simulation_record_manifest",
         expected_owner="record-id",
-        maximum=1024,
+        maximum=maximum,
     )
 
-    assert resolved.path == copied / "record/manifest.json"
-    assert resolved.raw == b'{"record":true}\n'
 
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("path_base", "reports_root"),
-        ("path", "/record/manifest.json"),
-        ("path", "record/../manifest.json"),
-        ("path", "record\\manifest.json"),
-        ("path", "record/manifest.json\x00"),
-        ("bytes", 0),
-        ("sha256", "sha256:" + "0" * 64),
-        ("kind", "other"),
-        ("owner", "other"),
-    ],
-)
-def test_reference_rejects_wrong_profile_or_identity(tmp_path, field, value):
-    base, reference = _reference(tmp_path)
-    hostile = {**encode_artifact_reference(reference), field: value}
-
-    with pytest.raises(ArtifactReferenceError):
-        resolve_artifact_reference(
-            hostile,
-            bases={"origin_target": base},
-            allowed_bases={"origin_target"},
-            expected_kind="simulation_record_manifest",
-            expected_owner="record-id",
-            maximum=1024,
-        )
-
-
-def test_reference_rejects_link_below_base(tmp_path):
-    base, reference = _reference(tmp_path)
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (outside / "manifest.json").write_bytes(b'{"record":true}\n')
-    shutil.rmtree(base / "record")
-    (base / "record").symlink_to(outside, target_is_directory=True)
-
-    with pytest.raises(ArtifactReferenceError, match=r"link|escapes"):
-        resolve_artifact_reference(
-            reference,
-            bases={"origin_target": base},
-            allowed_bases={"origin_target"},
-            expected_kind="simulation_record_manifest",
-            expected_owner="record-id",
-            maximum=1024,
-        )
-
-
-def test_reference_encoder_rejects_link_below_base(tmp_path):
+@pytest.fixture
+def linked_base(tmp_path):
+    """A base whose ``record`` entry links to a directory outside it holding a manifest."""
     base = tmp_path / "origin"
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "manifest.json").write_bytes(b'{"record":true}\n')
     base.mkdir()
     (base / "record").symlink_to(outside, target_is_directory=True)
+    return base
+
+
+@pytest.mark.parametrize("layout", ["copy", "hardlink"])
+def test_reference_resolves_after_complete_base_copy(tmp_path, layout):
+    base, reference = _reference(tmp_path)
+    if layout == "copy":
+        resolving = tmp_path / "copied"
+        shutil.copytree(base, resolving)
+    else:
+        resolving = base
+        (base / "record/manifest-alias.json").hardlink_to(base / "record/manifest.json")
+
+    resolved = _resolve_origin(reference, {"origin_target": resolving})
+
+    assert resolved.path == resolving / "record/manifest.json"
+    assert resolved.raw == b'{"record":true}\n'
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("path_base", "reports_root", None),
+        ("path", "/record/manifest.json", None),
+        ("path", "record/../manifest.json", None),
+        ("path", "record\\manifest.json", None),
+        ("path", "record/manifest.json\x00", None),
+        ("bytes", 0, None),
+        ("sha256", "sha256:" + "0" * 64, None),
+        ("kind", "other", None),
+        ("owner", "other", None),
+        ("owner", _REMOVED, "fields are invalid"),
+        ("kind", "", "kind is invalid"),
+    ],
+)
+def test_reference_rejects_wrong_profile_or_identity(tmp_path, field, value, message):
+    base, reference = _reference(tmp_path)
+    hostile = {**encode_artifact_reference(reference), field: value}
+    if value is _REMOVED:
+        del hostile[field]
+
+    with pytest.raises(ArtifactReferenceError, match=message):
+        _resolve_origin(hostile, {"origin_target": base})
+
+
+def test_reference_rejects_link_below_base(tmp_path, linked_base):
+    _base, reference = _reference(tmp_path / "valid")
 
     with pytest.raises(ArtifactReferenceError, match=r"link|escapes"):
-        build_artifact_reference(
-            base / "record/manifest.json",
-            base_name="origin_target",
-            base=base,
-            kind="simulation_record_manifest",
-            owner="record-id",
-            maximum=1024,
-        )
+        _resolve_origin(reference, {"origin_target": linked_base})
+
+
+@pytest.mark.parametrize(
+    ("artifact", "message"),
+    [
+        ("origin/record/manifest.json", r"link|escapes"),
+        ("outside/manifest.json", "outside its declared base"),
+    ],
+)
+def test_reference_encoder_rejects_link_below_base(tmp_path, linked_base, artifact, message):
+    with pytest.raises(ArtifactReferenceError, match=message):
+        _build_origin(tmp_path / artifact, linked_base)
 
 
 def test_report_reference_uses_the_containing_document_after_reports_root_copy(tmp_path):
@@ -122,14 +128,7 @@ def test_report_reference_uses_the_containing_document_after_reports_root_copy(t
     resume_report = reports / "sim/2/report.json"
     resume_report.parent.mkdir(parents=True)
     resume_report.write_text("{}")
-    reference = build_artifact_reference(
-        origin,
-        base_name="reports_root",
-        base=reports,
-        kind="simulation_record_manifest",
-        owner="record-id",
-        maximum=1024,
-    )
+    reference = _build_origin(origin, reports, base_name="reports_root")
     copied = tmp_path / "copied"
     shutil.copytree(reports, copied)
 
@@ -152,14 +151,7 @@ def test_report_reference_accepts_explicit_external_origin_target(tmp_path):
     report = tmp_path / "other-reports/sim/1/report.json"
     report.parent.mkdir(parents=True)
     report.write_text("{}")
-    reference = build_artifact_reference(
-        artifact,
-        base_name="external_origin_target",
-        base=origin,
-        kind="simulation_record_manifest",
-        owner="record-id",
-        maximum=1024,
-    )
+    reference = _build_origin(artifact, origin, base_name="external_origin_target")
 
     resolved = resolve_report_artifact_reference(
         report,
@@ -173,55 +165,11 @@ def test_report_reference_accepts_explicit_external_origin_target(tmp_path):
     assert resolved.path == artifact
 
 
-def test_reference_builder_rejects_artifact_outside_declared_base(tmp_path):
-    base = tmp_path / "origin"
-    base.mkdir()
-    outside = tmp_path / "manifest.json"
-    outside.write_bytes(b"{}\n")
-
-    with pytest.raises(ArtifactReferenceError, match="outside its declared base"):
-        build_artifact_reference(
-            outside,
-            base_name="origin_target",
-            base=base,
-            kind="simulation_record_manifest",
-            owner="record-id",
-            maximum=1024,
-        )
-
-
-def _resolve_origin(reference, bases, *, maximum=1024):
-    return resolve_artifact_reference(
-        reference,
-        bases=bases,
-        allowed_bases={"origin_target"},
-        expected_kind="simulation_record_manifest",
-        expected_owner="record-id",
-        maximum=maximum,
-    )
-
-
 def test_reference_rejects_unavailable_base(tmp_path):
     _base, reference = _reference(tmp_path)
 
     with pytest.raises(ArtifactReferenceError, match="base is unavailable"):
         _resolve_origin(reference, {})
-
-
-@pytest.mark.parametrize(
-    ("mutate", "message"),
-    [
-        (lambda document: document.pop("owner"), "fields are invalid"),
-        (lambda document: document.update(kind=""), "kind is invalid"),
-    ],
-)
-def test_reference_rejects_malformed_document(tmp_path, mutate, message):
-    base, reference = _reference(tmp_path)
-    document = encode_artifact_reference(reference)
-    mutate(document)
-
-    with pytest.raises(ArtifactReferenceError, match=message):
-        _resolve_origin(document, {"origin_target": base})
 
 
 def test_reference_rejects_missing_and_oversized_artifacts(tmp_path):
@@ -298,20 +246,3 @@ def test_reference_follows_only_the_booley_dir_entry(tmp_path, layout):
             follow()
     else:
         follow()
-
-
-def test_artifact_reference_accepts_a_hard_linked_artifact(tmp_path):
-    base, reference = _reference(tmp_path)
-    artifact = base / "record/manifest.json"
-    (base / "record/manifest-alias.json").hardlink_to(artifact)
-
-    resolved = resolve_artifact_reference(
-        reference,
-        bases={"origin_target": base},
-        allowed_bases={"origin_target"},
-        expected_kind="simulation_record_manifest",
-        expected_owner="record-id",
-        maximum=1024,
-    )
-
-    assert resolved.path == artifact
