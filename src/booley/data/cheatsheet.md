@@ -153,11 +153,11 @@ Ask your Developer Agent to call the `reviewer` Specialist with `category="<cate
 
 | Category | Focus | What it checks |
 |----------|-------|----------------|
-| `rtl` | `bugs` | Functional bug patterns, synthesis hazards, reset/width/signing mistakes, and ifdef/config consistency |
+| `rtl` | `bugs` | Functional bug patterns, synthesis hazards, reset/overflow/signing mistakes, and ifdef consistency across built Targets |
 | `rtl` | `protocol` | Bus/protocol rule compliance, handshake behavior, ordering, and clock-domain crossings (CDC) |
 | `rtl` | `spec` | Spec compliance: the RTL implements what the change request/spec requires, no more and no less |
 | `rtl` | `code_style` | Comments, naming, readability, maintainability, magic values, and assertion/cover-point quality |
-| `rtl` | `optimization` | Unused/dead RTL and strict power/performance/area improvements with no functional or engineering trade-off |
+| `rtl` | `optimization` | Functionally dead RTL and strict power/performance/area improvements with no functional or engineering trade-off |
 | `rtl` | `security` | Fault-injection resistance, simple power/timing leakage, secret exposure, and unsafe failure behavior |
 | `tb` | `quality` | False-pass paths in scoped testbench sources, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality |
 

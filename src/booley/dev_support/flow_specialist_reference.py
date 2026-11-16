@@ -106,8 +106,8 @@ _FLOW_KEY_CONTROLS: dict[str, str] = {
 # silently appear as an unexplained row.
 _REVIEW_FOCUS_DESCRIPTIONS: dict[str, str] = {
     "review_rtl_bugs": (
-        "Functional bug patterns, synthesis hazards, reset/width/signing mistakes, "
-        "and ifdef/config consistency"
+        "Functional bug patterns, synthesis hazards, reset/overflow/signing mistakes, "
+        "and ifdef consistency across built Targets"
     ),
     "review_rtl_protocol": (
         "Bus/protocol rule compliance, handshake behavior, ordering, and "
@@ -121,7 +121,7 @@ _REVIEW_FOCUS_DESCRIPTIONS: dict[str, str] = {
         "assertion/cover-point quality"
     ),
     "review_rtl_optimization": (
-        "Unused/dead RTL and strict power/performance/area improvements with no "
+        "Functionally dead RTL and strict power/performance/area improvements with no "
         "functional or engineering trade-off"
     ),
     "review_rtl_security": (
