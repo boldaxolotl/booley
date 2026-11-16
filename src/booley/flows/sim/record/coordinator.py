@@ -70,7 +70,6 @@ class SimulationRecordPolicy:
     timeout_seconds: float | None = None
     build_timeout_seconds: float | None = None
     no_kill: bool = False
-    diagnostic: bool = False
     result_verbosity: str = "compact"
 
     def __post_init__(self) -> None:

@@ -321,11 +321,11 @@ def test_endpoint_help_is_allowed_on_host(tmp_path, capsys):
     for flag in [
         "--project",
         "--report-dir",
-        "--diagnostic",
         "--max-turns",
         "--timeout",
     ]:
         assert flag in output
+    assert "--diagnostic" not in output
     assert "--work-dir" not in output
     assert "--timeout-ms" not in output
 

@@ -832,7 +832,6 @@ def simulation_attempt(request: WorkExecutionRequest) -> tuple[SimulationAttempt
                 else None
             ),
             "no_kill": request.policy.no_kill,
-            "diagnostic": request.policy.diagnostic,
         },
         "started_at": _now(),
     }

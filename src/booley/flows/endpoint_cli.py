@@ -114,17 +114,6 @@ def add_common_args(
             metavar="TARGET[,TARGET...]",
             help=target_help,
         )
-    from booley.flows.cli_help import SurfaceHelp
-
-    parser.add_argument(
-        "--diagnostic",
-        action="store_true",
-        help=SurfaceHelp(
-            "Run diagnostically: records no evidence. Use for a Flow/Target combination "
-            "outside the Project's Criteria.",
-            cli="Run diagnostically: records no evidence.",
-        ),
-    )
 
 
 def human_endpoint_parser(endpoint, *, project: Path | None = None) -> argparse.ArgumentParser:
