@@ -129,7 +129,7 @@ def build_review_contract_detail(invocation: ReviewInvocation) -> dict[str, Any]
         "declared_guides": declared_guide_names(invocation.category, invocation.focus),
     }
     if invocation.spec_text is not None:
-        # Inline text has no file: the contract carries it, so the contract carries the reviewed text.
+        # Inline text has no file: so the contract carries the reviewed text and freshness can reuse it.
         contract.update(
             spec_text=invocation.spec_text,
             spec_source="",

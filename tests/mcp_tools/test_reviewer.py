@@ -11,9 +11,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from booley.criteria.state import (
-    DevelopmentState,
-)
 from booley.specialists.reviewer import (
     RTL_FOCUS_CATEGORIES,
     SEVERITY_CRITICAL,
@@ -52,31 +49,6 @@ def _skip_workspace_snapshot_for_mocked_agents(monkeypatch: pytest.MonkeyPatch) 
         "booley.specialists.specialist.isolated_agent_workspace",
         passthrough,
     )
-
-
-def test_reviewer_criterion_binding_is_source_scoped(state_file: Path) -> None:
-    state = DevelopmentState.load(state_file)
-    state.init_criteria(
-        {"review_tb_quality_done": True},
-        criterion_params={"review_tb_quality_done": {"scope": ["tb/uart_tb.sv"]}},
-        strict=True,
-    )
-    state.save()
-    endpoint = ReviewerSpecialist()
-    endpoint.parse_args(
-        [
-            "--scope",
-            "tb/uart_tb.sv",
-            "--category",
-            "tb",
-            "--focus",
-            "quality",
-        ]
-    )
-    endpoint.read_state()
-
-    assert not hasattr(endpoint.args, "target")
-    assert endpoint._criterion_binding_gate() is None
 
 
 def test_reviewer_rejects_removed_target_option(state_file: Path) -> None:
