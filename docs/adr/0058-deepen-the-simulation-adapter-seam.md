@@ -15,7 +15,7 @@ current attempt's evidence.
 
 - The Simulation Record owns policy: the immutable plan, manifest, durable
   serial scheduling and resume. `SimulateFlow` owns Target and test selection,
-  Cycle Count prerequisites, Criteria, reports and the exit code. Neither
+  Cycle Count prerequisites, reports and the exit code. Neither
   depends on leaf-adapter details.
 - Adapter composition is the only place that selects a simulator. Leaf
   adapters run only their own simulator (launch, verdict normalization, trace

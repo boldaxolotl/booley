@@ -143,12 +143,6 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
             "_campaign_roots",
         }
     ),
-    "src/booley/criteria/templates.py": frozenset(
-        {
-            "TARGET_CAMPAIGN_CRITERIA",
-            "_TARGET_CAMPAIGN_PARAM_REGISTRY",
-        }
-    ),
     "src/booley/flows/mutation/flow.py": frozenset(
         {
             "_apply_campaign_defaults",
@@ -178,16 +172,6 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
             "all_campaign_results_match",
             "describe_target_campaign",
             "resolve_target_campaign",
-        }
-    ),
-    "tests/criteria/test_campaign_templates.py": frozenset(
-        {
-            "campaign",
-            "test_coverage_campaign_expands_shared_policy_per_target",
-            "test_coverage_campaign_rejects_duplicate_target_ownership",
-            "test_coverage_campaign_rejects_invalid_authoring",
-            "test_mutation_campaign_expands_target_and_parameters",
-            "test_mutation_campaign_rejects_incoherent_counts",
         }
     ),
     "tests/flows/mutation/test_flow.py": frozenset(

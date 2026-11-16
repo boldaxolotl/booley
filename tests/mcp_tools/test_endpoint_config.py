@@ -190,14 +190,14 @@ def test_mcp_entry_point_renders_catalog_configuration_error(tmp_path, monkeypat
 
 
 def test_endpoint_validation_reads_the_resolved_booley_directory(tmp_path):
-    from booley.mcp.endpoint_validation import validate_custom_endpoints_and_criteria
+    from booley.mcp.endpoint_validation import validate_custom_endpoints
 
     project = tmp_path / "project-data"
     project.mkdir()
     (tmp_path / "booley.toml").write_text('[project]\ndir = "project-data"\n')
     (project / "booley.toml").write_text("[specialists.reveiwer]\nenabled = false\n")
     with pytest.raises(ValueError, match="reveiwer"):
-        validate_custom_endpoints_and_criteria(tmp_path)
+        validate_custom_endpoints(tmp_path)
 
 
 @pytest.mark.parametrize("names", [(), ("local",)])

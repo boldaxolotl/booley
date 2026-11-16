@@ -1,4 +1,4 @@
-"""Structural and per-endpoint validation of custom MCP endpoints and Criteria."""
+"""Per-endpoint validation of custom MCP endpoints."""
 
 from __future__ import annotations
 
@@ -13,14 +13,6 @@ from booley.runtime.booley_dir import resolve_checkout_booley_dir
 logger = logging.getLogger(__name__)
 
 
-class EndpointValidationError(Exception):
-    """Structural endpoint or Criteria errors that prevent execution."""
-
-    def __init__(self, failures: list[str]) -> None:
-        self.failures = failures
-        super().__init__("Endpoint validation failed:\n  " + "\n  ".join(failures))
-
-
 @dataclass(frozen=True)
 class SkippedEndpoint:
     """A custom endpoint file validation skipped, with why and how to fix it."""
@@ -30,36 +22,17 @@ class SkippedEndpoint:
     fix: str
 
 
-def validate_custom_endpoints_and_criteria(project_root: Path) -> list[SkippedEndpoint]:
-    """Validate custom MCP endpoints and project criteria.
+def validate_custom_endpoints(project_root: Path) -> list[SkippedEndpoint]:
+    """Validate custom MCP endpoints.
 
-    Load order: criteria TOML first, then endpoint scan, then cross-validation.
-
-    Per-endpoint errors (checks 1-5, 7) → skip endpoint or log a warning. A
-    file skipped by checks 1, 3 or 4 is returned. Structural errors (checks 6, 8)
-    → hard-fail.
+    Loads the endpoint config, then checks each custom endpoint file: a file with
+    a syntax error, with no endpoint subclass, or whose name collides with a
+    built-in endpoint is skipped and returned; a retired ``sandbox`` attribute
+    logs a warning.
     """
-    try:
-        # Probe importability up front: if any of these are unavailable, skip
-        # the whole validation (structural checks below re-import the same,
-        # now-cached, names themselves rather than taking them as params).
-        from booley.criteria.templates import (  # noqa: F401
-            load_base_criteria,
-            load_project_criteria,
-            merge_criteria_defs,
-        )
-        from booley.mcp.registry import (  # noqa: F401
-            discover_mcp_tools,
-            extract_mcp_tool_info,
-        )
-    except ImportError:
-        logger.debug("Custom MCP endpoint validation skipped (imports unavailable)")
-        return []
+    from booley.mcp.registry import discover_mcp_tools
 
-    # --- Load criteria and validate structural integrity ---
-    _validate_criteria_structure(project_root)
-
-    # --- Load endpoint config and check structural endpoint errors ---
+    # --- Load endpoint config ---
     specialist_config, flow_config = _load_endpoint_config(project_root)
     custom_mcp_tools_dir = resolve_checkout_booley_dir(project_root) / "mcp_tools"
     # --- Per-endpoint validation (warn + skip on error) ---
@@ -78,28 +51,6 @@ def validate_custom_endpoints_and_criteria(project_root: Path) -> list[SkippedEn
 
     logger.debug("Custom MCP endpoint validation complete")
     return skipped
-
-
-def _validate_criteria_structure(project_root: Path) -> None:
-    """Load and cross-validate criteria definitions.
-
-    Raises EndpointValidationError on criteria conflicts (check 8).
-    """
-    from booley.criteria.templates import (
-        load_base_criteria,
-        load_project_criteria,
-        merge_criteria_defs,
-    )
-
-    base_criteria = load_base_criteria()
-
-    project_criteria_path = resolve_checkout_booley_dir(project_root) / "criteria.toml"
-    project_criteria = load_project_criteria(project_criteria_path)
-
-    _merged, merge_errors = merge_criteria_defs(base_criteria, project_criteria)
-    structural_errors = [f"CRITERIA CONFLICT: {e}" for e in merge_errors]
-    if structural_errors:
-        raise EndpointValidationError(structural_errors)
 
 
 def _warn_retired_sandbox_attr(

@@ -267,44 +267,22 @@ def test_first_smoke_test_reads_the_selected_cores_section(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# _check_custom_endpoints_and_criteria — both FAIL branches
+# _check_custom_endpoints — both FAIL branches
 # ---------------------------------------------------------------------------
 
 
-class TestCustomToolsAndCriteria:
-    def test_ticket_preflight_error_fails_with_first_failure_as_fix(self, tmp_path, monkeypatch):
-        from booley.mcp import endpoint_validation
-
-        def boom(_root):
-            raise endpoint_validation.EndpointValidationError(
-                ["MCP endpoint 'x' has no command", "second"]
-            )
-
-        monkeypatch.setattr(endpoint_validation, "validate_custom_endpoints_and_criteria", boom)
-        rec = _Rec()
-        fixes: list[str] = []
-
-        def fail_with_fix(m: str, fix: str = "") -> None:
-            rec.f(m, fix)
-            fixes.append(fix)
-
-        doctor._check_custom_endpoints_and_criteria(tmp_path, rec.p, rec.w, fail_with_fix)
-        assert rec.kinds() == {"fail"}
-        assert "custom endpoint/Criteria validation failed" in rec.fails()[0]
-        # The first TicketPreflightError failure is surfaced as the fix hint.
-        assert fixes == ["MCP endpoint 'x' has no command"]
-
+class TestCustomEndpoints:
     def test_generic_error_fails_with_message(self, tmp_path, monkeypatch):
         from booley.mcp import endpoint_validation
 
         def boom(_root):
-            raise ValueError("criteria.toml is not a table")
+            raise ValueError("booley.toml is not a table")
 
-        monkeypatch.setattr(endpoint_validation, "validate_custom_endpoints_and_criteria", boom)
+        monkeypatch.setattr(endpoint_validation, "validate_custom_endpoints", boom)
         rec = _Rec()
-        doctor._check_custom_endpoints_and_criteria(tmp_path, rec.p, rec.w, rec.f)
+        doctor._check_custom_endpoints(tmp_path, rec.p, rec.w, rec.f)
         assert rec.kinds() == {"fail"}
-        assert "criteria.toml is not a table" in rec.fails()[0]
+        assert "custom endpoint validation failed: booley.toml is not a table" in rec.fails()[0]
 
     def test_source_checkout_refusal_points_at_the_project_workspace(self, tmp_path, monkeypatch):
         from booley.mcp import endpoint_validation
@@ -313,7 +291,7 @@ class TestCustomToolsAndCriteria:
         def boom(_root):
             raise SourceCheckoutProjectError("refusing the Booley source checkout")
 
-        monkeypatch.setattr(endpoint_validation, "validate_custom_endpoints_and_criteria", boom)
+        monkeypatch.setattr(endpoint_validation, "validate_custom_endpoints", boom)
         rec = _Rec()
         fixes: list[str] = []
 
@@ -321,7 +299,7 @@ class TestCustomToolsAndCriteria:
             rec.f(m, fix)
             fixes.append(fix)
 
-        doctor._check_custom_endpoints_and_criteria(tmp_path, rec.p, rec.w, fail_with_fix)
+        doctor._check_custom_endpoints(tmp_path, rec.p, rec.w, fail_with_fix)
         assert rec.kinds() == {"fail"}
         assert fixes == ["run Doctor from the Project's workspace, not a Booley source checkout"]
 

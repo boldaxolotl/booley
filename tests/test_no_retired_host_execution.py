@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from booley.criteria.templates import eligible_eda_tool_criterion_families
 from booley.feedback import materialize
 from booley.runtime import process_group
 from booley.targets.domain import TargetRef, flow_can_drive
@@ -121,4 +120,3 @@ def test_unsupported_commercial_simulators_have_no_public_eligibility() -> None:
         assert not flow_can_drive("sim", ref)
         with pytest.raises(ValueError, match="not a target-aware Booley Flow"):
             flow_can_drive("elab", ref)
-        assert eligible_eda_tool_criterion_families(tool) == frozenset()

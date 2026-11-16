@@ -11,7 +11,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from booley.criteria.state import DevelopmentState
 from booley.flows.base import SubprocessResult
 from booley.flows.sim import standalone as standalone_mod
 from booley.flows.sim.flow import SimulateFlow
@@ -202,35 +201,6 @@ class TestStandaloneSweep:
         assert [arg for arg in by_module["alu"] if arg.endswith(".sv")] == ["rtl/alu.sv"]
         assert [arg for arg in by_module["top"] if arg.endswith(".sv")] == ["rtl/top.sv"]
         assert all(not arg.startswith("-P") for arg in by_module["alu"])
-
-    def test_declared_target_set_does_not_restrict_the_sweep(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        _write_sources(
-            tmp_path,
-            {
-                "rtl/alu.sv": "module alu; endmodule\n",
-                "rtl/top.sv": "module top; endmodule\n",
-            },
-        )
-        _stub_sources(monkeypatch, ["rtl/alu.sv", "rtl/top.sv"])
-        flow = _make_flow(tmp_path)
-        state = DevelopmentState()
-        state.init_criteria(
-            {"elaborate_standalone": True},
-            criterion_params={"elaborate_standalone": {"targets": ["acme:other:1#x"]}},
-        )
-        flow._state = state
-        flow._record_eda_tool("sim_dut", "icarus")
-        _stub_probes(monkeypatch, flow)
-
-        with flow.publication_resources:
-            outcome = flow._run_standalone_check(["sim_dut"])
-
-        assert outcome.passed
-        assert outcome.detail["modules_checked"] == 2
 
     def test_complete_sweep_shares_one_deadline(
         self,
