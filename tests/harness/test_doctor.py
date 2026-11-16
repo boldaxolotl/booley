@@ -1627,6 +1627,8 @@ def test_deep_timeout_honors_configured_timeout_ms(tmp_path):
                 "sim": {"timeout_ms": 60000},
                 # Unparseable -> floor stands, no crash.
                 "lint": {"timeout_ms": "oops"},
+                # TOML `inf` is a float int() cannot convert -> floor, no crash.
+                "format": {"timeout_ms": float("inf")},
             }
         },
         configs_toml={},
@@ -1637,6 +1639,7 @@ def test_deep_timeout_honors_configured_timeout_ms(tmp_path):
     )
     assert doctor._deep_timeout_s(project, "sim") == 4290
     assert doctor._deep_timeout_s(project, "lint") == doctor._DEEP_TIMEOUTS_S["lint"]
+    assert doctor._configured_timeout_s(project, "format", 77) == 77
     # No knob at all -> the hardcoded floor.
     bare = doctor.ProjectAudit(
         project_root=tmp_path,

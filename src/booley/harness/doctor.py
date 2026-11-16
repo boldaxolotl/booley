@@ -71,6 +71,7 @@ from booley.config.project_config import (
 from booley.core.booley_layout import DOCTOR_TMP_DIR
 from booley.core.boundary import (
     BoundaryError,
+    as_int,
     require_dict,
     require_int,
     require_list,
@@ -5811,14 +5812,10 @@ def _configured_timeout_s(project: ProjectAudit, flow_name: str, floor: int) -> 
     section = config_section(flows, flow_name) if isinstance(flows, dict) else {}
     if not isinstance(section, dict):
         return floor
-    raw = section.get("timeout_ms")
-    if not isinstance(raw, (int, float, str)):
+    configured_ms = as_int(section.get("timeout_ms"))
+    if configured_ms is None:
         return floor
-    try:
-        configured_s = int(raw) // 1000
-    except ValueError:
-        return floor
-    return max(floor, configured_s)
+    return max(floor, configured_ms // 1000)
 
 
 def _display_report_dir(project: ProjectAudit, report_dir: Path) -> str:
