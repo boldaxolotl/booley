@@ -7,8 +7,8 @@ or Job admission. It is not a usage guide: how to use Booley is in
 [USAGE.md](../user/USAGE.md) and [CLI-REFERENCE.md](../user/CLI-REFERENCE.md).
 Terms such as Booley Flow, Target, Specialist, and Sandbox are defined in the
 [glossary](../GLOSSARY.md), the history of each decision is in the ADRs under
-`docs/adr/`, and `tests/architecture/booley_contract.py` enforces which
-packages may import which.
+`docs/adr/`, and an architecture test enforces which packages may import
+which.
 
 ## Overview
 
@@ -18,8 +18,8 @@ the agents' claims: it wraps EDA toolchains as **Booley Flows** with
 structured inputs and machine-checkable results, and exposes those Flows and
 LLM-backed **Specialists** to the Developer Agent through MCP.
 
-[![Booley architecture: on the host, Booley issues and supervises one Sandbox per Project folder, and VS Code attaches to it. In the Sandbox, Developer Agent sessions edit the Project's Git worktrees (the main checkout plus one per concurrent session) and call the one MCP server. The MCP server submits each Booley Flow or Specialist run as a Job, admitted against the Memory Budget. A Flow resolves the Target with FuseSoC, runs the EDA tools, and parses their logs into metrics and report.json. B-Wave queries FST traces outside any Job and opens them in VaporView. Vivado is mounted read-only from the host, and egress goes through the host's egress proxy by default.](../user/assets/architecture.svg#gh-light-mode-only)](../user/assets/architecture.svg)
-[![Booley architecture: on the host, Booley issues and supervises one Sandbox per Project folder, and VS Code attaches to it. In the Sandbox, Developer Agent sessions edit the Project's Git worktrees (the main checkout plus one per concurrent session) and call the one MCP server. The MCP server submits each Booley Flow or Specialist run as a Job, admitted against the Memory Budget. A Flow resolves the Target with FuseSoC, runs the EDA tools, and parses their logs into metrics and report.json. B-Wave queries FST traces outside any Job and opens them in VaporView. Vivado is mounted read-only from the host, and egress goes through the host's egress proxy by default.](../user/assets/architecture-dark.svg#gh-dark-mode-only)](../user/assets/architecture-dark.svg)
+[![Booley architecture: on the host, Booley issues and supervises one Sandbox per Project folder, and VS Code attaches to it. In the Sandbox, Developer Agent sessions edit the Project's Git worktrees (the main checkout plus one per concurrent session) and call the one MCP server. The MCP server submits each Booley Flow or Specialist run as a Job, admitted against the Memory Budget. A Flow resolves the Target with FuseSoC, runs the EDA tools, and parses their logs into metrics and a report. B-Wave queries FST traces outside any Job and opens them in VaporView. Vivado is mounted read-only from the host, and egress goes through the host's egress proxy by default.](../user/assets/architecture.svg#gh-light-mode-only)](../user/assets/architecture.svg)
+[![Booley architecture: on the host, Booley issues and supervises one Sandbox per Project folder, and VS Code attaches to it. In the Sandbox, Developer Agent sessions edit the Project's Git worktrees (the main checkout plus one per concurrent session) and call the one MCP server. The MCP server submits each Booley Flow or Specialist run as a Job, admitted against the Memory Budget. A Flow resolves the Target with FuseSoC, runs the EDA tools, and parses their logs into metrics and a report. B-Wave queries FST traces outside any Job and opens them in VaporView. Vivado is mounted read-only from the host, and egress goes through the host's egress proxy by default.](../user/assets/architecture-dark.svg#gh-dark-mode-only)](../user/assets/architecture-dark.svg)
 
 The diagram reads from the outside in, and so does this page:
 
@@ -183,10 +183,10 @@ workspace.
 One MCP server runs in the Sandbox. It is the only way the Developer Agent
 reaches Booley Flows, Measurement, Specialists, B-Wave, and runtime status; the
 agent never spawns EDA tools itself. The server submits each Flow, Measurement,
-or Specialist run as a [Job](#jobs) and returns its run id at once;
-`booley_poll` reads the result. B-Wave queries run directly, outside any Job.
-`BOOLEY_MCP_TOOLS` and the nested-agent allowlists control which MCP tools are
-listed. The MCP extension model is in [MCP-TOOLS.md](MCP-TOOLS.md).
+or Specialist run as a [Job](#jobs) and returns its run id at once; the agent
+polls for the result. B-Wave queries run directly, outside any Job. Allowlists
+control which MCP tools each agent sees. The MCP extension model is in
+[MCP-TOOLS.md](MCP-TOOLS.md).
 
 ### Why an MCP server
 
@@ -202,63 +202,52 @@ well-documented CLI can match the success rate, but in
 [one Claude Code comparison](https://mariozechner.at/posts/2025-08-15-mcp-vs-cli/)
 it cost about 40 times the tokens. The MCP surface also gives Booley:
 
-- **Schemas with no drift.** `mcp/flow_adapter.py` derives each MCP tool's
-  input schema from the endpoint's argparse parser (custom tools may supply an
-  `mcp_schema()` hook), so the agent never needs a `--help` round-trip and no
-  prompt doc can fall out of date. `bwave` is the exception: its parser uses
-  `REMAINDER`, so its schema is written by hand in `mcp/catalog.py`.
-- **Curated results.** `mcp/report_encoding.py` returns the exit code, the
-  tail of stdout (12,000 characters by default) and stderr, and the main
-  `report.json` fields; the full report travels as structured content. Through
-  a shell the agent gets raw output and has to remember to read the report.
-- **Hidden tools stay hidden.** `BOOLEY_MCP_TOOLS`, the nested-agent
-  allowlists, and the mode rules in `mcp/catalog.py` remove MCP tools from the
-  list the agent sees. With a CLI, the same restriction is only a request in
-  the prompt.
+- **Schemas with no drift.** Each MCP tool's input schema is derived from its
+  command-line parser, so the agent never needs a `--help` round-trip and no
+  prompt doc can fall out of date. `bwave` is the exception: its schema is
+  written by hand.
+- **Curated results.** The server returns the exit code, the tail of stdout
+  (12,000 characters by default) and stderr, and the main report fields; the
+  full report travels as structured content. Through a shell the agent gets raw
+  output and has to remember to read the report.
+- **Hidden tools stay hidden.** Allowlists remove MCP tools from the list the
+  agent sees. With a CLI, the same restriction is only a request in the prompt.
 
 ## Jobs
 
 Every Flow, Measurement, or Specialist run is a Job, whether the MCP server
 submits it or a human starts it as a Standalone Job. The Job is the whole run,
 not one EDA command. A Job holds a reservation estimated from the Resource
-History and runs while the reservations fit the Memory Budget;
-excess work queues, and a running Job is never preempted. The rules are in
-`src/booley/runtime/job_slots.py` and
-[ADR 0087](../adr/0087-admit-jobs-against-a-measured-memory-budget.md).
+History and runs while the reservations fit the Memory Budget; excess work
+queues, and a running Job is never preempted; see [ADR
+0087](../adr/0087-admit-jobs-against-a-measured-memory-budget.md).
 
-Claims are files under `<runtime>/jobs/slots/` (see
-[Why plain files](#why-plain-files)). The rule the recovery code protects: a
-claim becomes free only when the processes that used it are provably gone.
-Otherwise a Job whose root process died could free its claim while its EDA
-child processes still run, and the next Job would start on top of them. This
-spans `runtime/job_slots.py`, `runtime/execution_records.py`,
-`runtime/execution_recovery.py`, and the supervisor.
+Each reservation is a claim file (see [Why plain files](#why-plain-files)). The
+rule the recovery code protects: a claim becomes free only when the processes
+that used it are provably gone. Otherwise a Job whose root process died could
+free its claim while its EDA child processes still run, and the next Job would
+start on top of them.
 
-A Simulation Record (code: `flows/sim/record/`) runs its first test on the
-Simulation Job's own claim. Each further parallel item takes its own child
-memory claim, sized from the item's history, while the reservations fit the
-Memory Budget; the number of parallel items never exceeds the cores. Items
-whose resolved run directory is the same still run one at a time. Losing a
-child claim's lease stops only that test; losing the Job's own claim cancels
-the run.
+A Simulation Record runs its first test on the Simulation Job's own claim. Each
+further parallel item takes its own child memory claim, sized from the item's
+history, while the reservations fit the Memory Budget; the number of parallel
+items never exceeds the cores. Items whose resolved run directory is the same
+still run one at a time. Losing a child claim's lease stops only that test;
+losing the Job's own claim cancels the run.
 
 ## Booley Flows
 
 A **Booley Flow** deterministically turns a structured request into EDA tool
-runs and their logs into metrics and a `report.json`. Once its Job is
-admitted, the Flow resolves the Target with FuseSoC; Edalize builds the EDA
-tool command for lint, sim, and fpga, and synth renders its own Yosys and
-OpenROAD scripts. Mutation testing is a Flow (`booley flow mutation`),
-not a Specialist: it needs no model. The catalog is in
-[CLI-REFERENCE.md](../user/CLI-REFERENCE.md#booley-flows--specialists) and the
-code in `src/booley/flows/`.
+runs and their logs into metrics and a report. Once its Job is admitted, the
+Flow resolves the Target with FuseSoC; Edalize builds the EDA tool command for
+lint, sim, and fpga, and synth renders its own Yosys and OpenROAD scripts.
+Mutation testing is a Flow (`booley flow mutation`), not a Specialist: it needs
+no model. The catalog is in
+[CLI-REFERENCE.md](../user/CLI-REFERENCE.md#booley-flows--specialists).
 
 A built-in Flow that drives interchangeable EDA tools keeps one adapter per
-tool under `src/booley/flows/<flow>/backends/`: simulation has Cocotb, Icarus,
-and Verilator; synthesis has Yosys and OpenROAD; FPGA implementation has
-Vivado. "backends" is only the package name; docs and configuration call the
-external program an **EDA tool**. `src/booley/eda/provisioning/` owns host
-installation and licensing policy.
+EDA tool: simulation has Cocotb, Icarus, and Verilator; synthesis has Yosys
+and OpenROAD; FPGA implementation has Vivado.
 
 ### Why FuseSoC
 
@@ -290,16 +279,15 @@ in `metrics.toml` and checks each result against its bound. A run that meets
 every enforced metric makes a Measured Commit; locally that verdict is
 advisory, and a run in CI is the trusted one
 ([ADR 0092](../adr/0092-measure-commits-against-target-metrics.md)). Through
-MCP, `booley_measure` runs it as one Job.
+MCP it runs as one Job.
 
 ## Specialists
 
 **Specialists** are optional capabilities the Developer Agent invokes for one
 task, with fresh context: the Reviewer and the Coverage Analyst. A Specialist
 didn't write the code it checks, so it judges what is there rather than what
-was intended. `runtime.agent_execution` runs the Agent CLI for
-Specialists and Doctor, and each Specialist runs on the Agent CLI its
-configured model implies; see
+was intended. Each Specialist runs on the Agent CLI its configured model
+implies; see
 [ADR 0084](../adr/0084-run-each-specialist-on-the-agent-cli-its-model-implies.md).
 
 ## B-Wave
@@ -347,11 +335,9 @@ records and evidence, shared caches), lives only in the main checkout's Booley
 Directory, and a command run in any worktree reaches it there. Checkout Booley
 State belongs to one checkout: configuration versioned with its code
 (`booley.toml`, `cores/`, hooks) and the build trees and Flow reports of its
-sources. `booley.core.booley_dir_parts` classifies each path; the path-by-path
-split is in
+sources. The path-by-path split is in
 [ADR 0082](../adr/0082-give-each-concurrent-interactive-session-its-own-worktree.md).
-
-`mcp.unbound_recorder` records evidence for MCP calls.
+The MCP server records evidence for each call.
 
 ### Why plain files
 
