@@ -648,7 +648,7 @@ def test_forget_grant_guard_performs_no_docker_work(
     monkeypatch.setattr(
         project_inventory,
         "_authority_grants",
-        lambda: (SimpleNamespace(project_root=str(project)),),
+        lambda: (SimpleNamespace(project_root=str(project), kind="vivado"),),
     )
     assert _run(_parser().parse_args(["projects", "forget", str(project)])) == 2
     assert "revoke" in capsys.readouterr().err and keeper_host.calls == []
