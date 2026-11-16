@@ -216,122 +216,101 @@ Look for: stale-cache passes, silent fetches, newer checkout as baseline, half-c
 
 ### 9. metrics — Target Metrics and measuring the baseline (~60 min)
 Intent: Target Metrics declared from the docs alone load, measure the baseline,
-and fail closed
-when a number cannot be produced.
+and fail closed when a number cannot be produced.
 Depends on: areas 3-4.
 Try:
-- `booley cheat --metrics`; merge `fixtures/metrics.toml` into `.booley/metrics.toml`;
-  `booley measure --validate` is clean. Negatives, one file listing all at once:
-  an unquoted
-  `rx_clk.fmax_mhz_min` (a `write instead:` line), a relative bound, an unknown
-  metric (lists
-  the Flow's metrics), a table with no metric; `[defaults.synth]` alone measures
-  nothing.
+- `booley cheat --metrics`; merge `fixtures/metrics.toml` into
+  `.booley/metrics.toml`; `booley measure --validate` is clean. Negatives, one
+  file listing all at once: an unquoted `rx_clk.fmax_mhz_min` (a `write
+  instead:` line), a relative bound, an unknown metric (lists the Flow's
+  metrics), a table with no metric; `[defaults.synth]` alone measures nothing.
   Restore.
-- Commit, `booley measure`: one child Flow per table in a clean checkout, a
-  stored
-  Measurement Run, green header, exit 0; the Dashboard session line reads `Measured <sha>`.
+- Commit, `booley measure --base <the commit that registered the tests>` (the
+  default Base is the upstream pin, so the registry would read as "tests
+  changed"): one child Flow per table in a clean checkout, a stored Measurement
+  Run, green header, exit 0; the Dashboard session line reads `Measured <sha>`.
   Again: the stored run, no Flow, exit 0. `--again` stores a second run;
-  `--target synth_mac_10g` is never stored or Measured (reports under
+  `--again --target synth_mac_10g` is never stored or Measured (reports under
   `.interactive_logs/standalone/<run_id>/`); `--json` matches the Markdown
   report.
 - Turn the physical tracked numbers into bounds with slack outside the observed
-  values,
-  per-clock keys quoted and only for clocks the report lists; commit; Measured.
+  values, per-clock keys quoted and only for clocks the report lists; commit;
+  Measured.
 - `error` verdicts, each in a disposable commit: a per-clock bound naming a
-  clock the report
-  does not list (misspelled or optimized out) is `error`, exit 2, never judged
-  against another
-  clock; a Pre-Sim Command or hook that calls `git` fails in the measurement
-  checkout (no
-  `.git`); measuring `HEAD` with a dirty tracked file notes it and measures only
-  the commit.
+  clock the report does not list (misspelled or optimized out) is `error`, exit
+  2, never judged against another clock; a Pre-Sim Command or hook that calls
+  `git` fails in the measurement checkout (no `.git`); measuring `HEAD` with a
+  dirty tracked file notes it and measures only the commit.
 Look for: a bound judged on the wrong clock, an `error` row shown as met or
-unmet, uncommitted
-work measured, a `--target` run that makes a commit Measured.
+unmet, uncommitted work measured, a `--target` run that makes a commit Measured.
 
 ### 10. observability — Verification work as a Measured Commit, and a mutation campaign (~60 min)
 Intent: a child's verification work yields exact observability tests, a real
-mutation tally and
-a Measured Commit.
+mutation tally and a Measured Commit.
 Depends on: area 9's Measured baseline.
 Try:
 - Start a child per the shared child rules with `prompts/observability.md`. The
-  new files are
-  `qa/taxi_eth_mac_10g/test_observability.{py,sv}` and the ordinary Target
-  `sim_mac_10g_observability`; existing Taxi source/tests must stay unchanged.
+  new files are `qa/taxi_eth_mac_10g/test_observability.{py,sv}` and the
+  ordinary Target `sim_mac_10g_observability`; existing Taxi source/tests must
+  stay unchanged.
 - Tests check bad RX FCS (`tuser`, bad-FCS flag, counter 34); all 8 PFC classes
   with quanta 10…80 (exact TX/RX bitmap and quanta, counters 25/57); four-cycle
   underrun (XGMII error termination, counter 3); 16-bit completion tags and
   timestamp vs SFD; `tuser=0` counters vs `tuser=1` strings. Elab, full sim and
   clean TB-quality evidence must bind to the new Target.
 - The child asks before adding the `[sim_mac_10g_observability.sim]` table:
-  approve with a
-  reason. The Measured Commit's report is green and shows the new table.
+  approve with a reason. The Measured Commit's report, measured with `--base`
+  the commit the child started from, shows the new table with every bound met
+  and an amber "tests changed" for the approved registry addition.
 - Mutation on `src/eth/rtl/taxi_eth_mac_10g.sv` has explicit total 8/min 7. The
-  report shows a pristine baseline, 8 Mutants each built and tested in isolation,
-  each detected Mutant's first killing test, and an unchanged source tree afterward.
+  report shows a pristine baseline, 8 Mutants each built and tested in
+  isolation, each detected Mutant's first killing test, and an unchanged source
+  tree afterward.
 - Integrate the worktree's branch using the shared rules. The new Target stays
-  selectable
-  for the repair.
+  selectable for the repair.
 Look for: weakened upstream tests, a source tree changed by mutation, a table
-added without
-approval, a Target lost during integration.
+added without approval, a Target lost during integration.
 
 ### 11. repair — Seeded PFC fault: unmet bound, base run and measured repair (~60 min)
 Intent: the new oracle catches what upstream misses; a blind child restores
-upstream bytes and
-the repair is Measured against its Base.
+upstream bytes and the repair is Measured against its Base.
 Depends on: area 10 integrated; if it failed, log and skip repair; the operator
-does not
-author replacement tests.
+does not author replacement tests.
 Try:
-- Rerun both sims on integrated RTL. Apply `fixtures/pfc-fault.md` in a disposable
-  copy and commit: upstream PFC still passes, new test fails with class 0 seen
-  as class 1 and fresh FST shows the rotation. Save the failure before repair.
-  `booley measure` on the seed: the observability table's `tests_failed` is
-  unmet, exit 1,
-  red header, failing rows first; the upstream table stays met. Without that
-  split, restore
-  and skip.
+- Rerun both sims on integrated RTL. Apply `fixtures/pfc-fault.md` in a
+  disposable copy and commit: upstream PFC still passes, new test fails with
+  class 0 seen as class 1 and fresh FST shows the rotation. Save the failure
+  before repair. `booley measure` on the seed: the observability table's
+  `tests_failed` is unmet, exit 1, red header, failing rows first; the upstream
+  table stays met. Without that split, restore and skip.
 - Base run: the integrated observability commit is the Base and is already
-  Measured, so its
-  stored run is the base run. `--base` naming a commit with no stored run prints
-  `booley measure --all <base>`; the verdict never depends on a base run.
+  Measured, so its stored run is the base run. `--base` naming a commit with no
+  stored run prints `booley measure --all <base>`; the verdict never depends on
+  a base run.
 - Cut a linked worktree from the seed commit; start a new child with
-  `prompts/repair.md` and
-  only bounded visible diagnostics. Require the child's fresh reproduction
-  before editing and
-  evidence-based diagnosis.
+  `prompts/repair.md` and only bounded visible diagnostics. Require the child's
+  fresh reproduction before editing and evidence-based diagnosis.
 - Repair must be byte-identical to upstream and Measured with `--base` at the
-  observability
-  commit: both full sims and elaborations pass, `lint_mac_10g` is clean, logical
-  cells +0%,
-  physical cells/critical path +0% (Δ 0) with identical SDC/library/recipe. RTL
-  bugs review is
-  clean; protocol/spec reviews done; keep the review reports.
+  observability commit: both full sims and elaborations pass, `lint_mac_10g` is
+  clean, logical cells +0%, physical cells/critical path +0% (Δ 0) with
+  identical SDC/library/recipe. RTL bugs review is clean; protocol/spec reviews
+  done; keep the review reports.
 - Message-only amend: amend the Measured repair commit's message; `booley
-  measure` prints the
-  stored run, starts no Flow, exits 0, and the Dashboard reads `Measured <new
-  sha>`. Amend with
-  a one-byte content change: measured again.
+  measure` prints the stored run, starts no Flow, exits 0, and the Dashboard
+  reads `Measured <new sha>`. Amend with a one-byte content change: measured
+  again.
 - Loosened rules, each in a disposable commit with and without a `notes` entry,
-  measured with
-  `--base <the commit holding area 9's final rules>` (the default Base on this
-  run-owned
-  branch is the upstream pin, which has no `metrics.toml`, so rules would read
-  as additions):
-  raise a `_max`, lower a `_min`, `off = [...]`, move a bound to `track`, delete
-  a table →
-  amber "rules loosened" with the note or "(no note)"; a `tests.toml` edit →
-  "tests changed";
+  measured with `--base <the commit holding area 9's final rules>` (the default
+  Base on this run-owned branch is the upstream pin, which has no
+  `metrics.toml`, so rules would read as additions): raise a `_max`, lower a
+  `_min`, `off = [...]`, move a bound to `track`, delete a table → amber "rules
+  loosened" with the note or "(no note)"; a `tests.toml` edit → "tests changed";
   a `booley.toml` edit appears as a protected-set change. Restore byte-exactly.
 - Integrate the repair using the shared rules; on failure keep its branch,
-  report and diff,
-  and restore the post-observability state.
+  report and diff, and restore the post-observability state.
 Look for: Δ against the wrong base, a base run deciding a verdict, a
-message-only amend
-measured again or a content amend kept Measured, a loosening shown green.
+message-only amend measured again or a content amend kept Measured, a loosening
+shown green.
 
 ### 12. sim-record — Simulation Records (~25 min)
 Intent: one shared build, memory-admitted parallel attempts, isolated attempts, resumable batches.

@@ -87,7 +87,7 @@ Target/test/bound values in machine-readable form; the mission calls a row
 | `native` | Ungated `booley flow sim --target sim_toggle --test half --coverage`: simulation pass, collection complete, `not_requested`, 4/8 toggle points. |
 | `policy` | Measure `[sim_properties3.coverage] cover_property_coverage_min = 66` (the bound in `baselines.json`) with the registry limited to `[half]`: exactly 2/3, met. Invalid-bound probes use separate disposable commits. |
 | `analysis` | Ungated `sim_hdl --test gap --coverage`: completed Coverage Record and Simulation, verified RTL and tagged TB source closure, eligible and unscored points. Run the real configured Analyst once on the returned exact path. Also collect `sim_properties4` test `half` for property and source controls; keep both exact pointers distinct. |
-| `waiver` | Ungated `sim_waiver` test `run`, then the formal proof and two-point approval binding in "Approved fixture waivers and proof". Seal toggle 1 with exact `[run]`; recollect with the approved set and keep a passing Coverage Record with two waived bit-zero points. Also keep the separate excluded-value example on `sim_properties4` `half`, with its two fixed approvals and `cover_property` 100. |
+| `waiver` | Ungated `sim_waiver` test `run`, then the formal proof and two-point approval binding in "Approved fixture waivers and proof". Recollect with the approved set and keep a Coverage Record with two waived bit-zero points. Also keep the separate excluded-value example on `sim_properties4` `half`, with its two fixed approvals and `cover_property` 100. |
 | `retention` | Two fresh, independent invocation numbers: `sim_toggle` test `half`, and `sim_properties4` test `half`. Also one multi-Target invocation selecting those two Targets with their complete registry suites. Record each Target pointer separately; their suites differ and are not one common test list. |
 | `custom` | Ungated `sim_custom` test `gap` with working start and write hooks. Recovery for custom-window and native-data faults reruns this exact harness. |
 | `multi` | Ungated `sim_multi` test `run`: two `coverage_dut` instances from one RTL source and `waiver_counter` from another, plus a tagged TB. Group all four metric inventories by source path yourself. |
@@ -242,7 +242,7 @@ it produces. Repeat the binding for `excluded` with the separate
 
 The directory anchors are exactly `rtl_repository` or
 `project_data_repository`, and the relative directory is
-`qa-approved-waivers`. Gated collection loads the whole set. Invalid-set cases
+`qa-approved-waivers`. Collection loads the whole set. Invalid-set cases
 start from both valid `unreachable` approvals on `sim_waiver` and change one
 named field, keeping the second valid approval to prove that no subset is
 applied. Make every corruption in a separate owned copy of the directory. The

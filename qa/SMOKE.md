@@ -27,8 +27,8 @@ first line of the report.
    [`missions/picorv32/fixtures/metrics.toml`](missions/picorv32/fixtures/metrics.toml)
    as `metrics.toml` in the Booley Directory's own repository (`git -C .booley
    commit`; the demo is Stealth); `booley measure --validate` lists no error;
-   in a new worktree (`booley worktree new`) commit a harmless change and run
-   `booley measure`: exit 0, green header, the commit Measured; read the
+   in a new worktree (`booley worktree new <name>`) commit a harmless change
+   and run `booley measure`: exit 0, green header, the commit Measured; read the
    Measurement Report; run it again: it prints the stored run and starts no
    Flow.
 10. Booley's cleanup leaves no orphan containers, worktrees, or branches.

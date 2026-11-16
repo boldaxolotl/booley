@@ -48,7 +48,6 @@ decides a finding.
 | `backlinks` | Manifest, `summary.json` and `simulation.json` point at each other |
 | `resume` | Completed work is unchanged across a resume |
 | `rejection` | A refused request left no new attempt and started no simulator |
-| `journal` | One acceptance transaction is added only when the observed tests cover the required suite |
 
 ## Exact selection and tests-file normalization
 

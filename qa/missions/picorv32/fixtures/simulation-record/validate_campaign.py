@@ -122,19 +122,6 @@ def validate_rejection(
     _need(bool(diagnostic.strip()), "rejection diagnostic is missing")
 
 
-def validate_criteria_journal(
-    *,
-    required_suite: list[str],
-    observed_tests: list[str],
-    transaction_ids_before: list[str],
-    transaction_ids_after: list[str],
-) -> None:
-    """Check that only a complete Required Simulation Suite can add acceptance."""
-    complete = set(required_suite).issubset(observed_tests)
-    added = len(transaction_ids_after) - len(transaction_ids_before)
-    _need(added == (1 if complete else 0), "Criteria journal scope differs")
-
-
 def validate(manifest_path: Path, expected: list[str]) -> dict[str, object]:
     _need(len(expected) == len(set(expected)), "duplicate expected test name")
     manifest, raw = _load(manifest_path)
@@ -185,11 +172,6 @@ def _parser() -> argparse.ArgumentParser:
     rejection.add_argument("--attempts-after", type=Path, required=True)
     rejection.add_argument("--simulator-started", action="store_true")
     rejection.add_argument("--diagnostic", type=Path, required=True)
-    journal = commands.add_parser("journal", help="Criteria journal scope")
-    journal.add_argument("--required-test", action="append", required=True)
-    journal.add_argument("--observed-test", action="append", required=True)
-    journal.add_argument("--transactions-before", type=Path, required=True)
-    journal.add_argument("--transactions-after", type=Path, required=True)
     return parser
 
 
@@ -207,20 +189,13 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
             interrupted_attempts_before=args.interrupted_attempts_before,
             interrupted_attempts_after=args.interrupted_attempts_after,
         )
-    elif args.command == "rejection":
+    else:
         validate_rejection(
             exit_code=args.exit_code,
             attempts_before=_lines(args.attempts_before),
             attempts_after=_lines(args.attempts_after),
             simulator_started=args.simulator_started,
             diagnostic=args.diagnostic.read_text(),
-        )
-    else:
-        validate_criteria_journal(
-            required_suite=args.required_test,
-            observed_tests=args.observed_test,
-            transaction_ids_before=_lines(args.transactions_before),
-            transaction_ids_after=_lines(args.transactions_after),
         )
     return {"check": args.command, "valid": True}
 

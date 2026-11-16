@@ -95,11 +95,10 @@ Grants, installations, images and Sessions untouched. Record the final pin state
   worktree; a clean outer tree alone does not prove the paired branch is
   current.
 - `booley measure` reads `metrics.toml` from the Booley Directory repository's
-  committed HEAD
-  (Stealth Mode): commit it with `git -C .booley commit`.
+  committed HEAD (Stealth Mode): commit it with `git -C .booley commit`.
 - The demo's README still describes a removed feature in its main event and
-  ships its records, so
-  Doctor warns `goals.leftover`; both are known, not findings.
+  ships its records, so Doctor warns `goals.leftover`; both are known, not
+  findings.
 - A regrant alone leaves the Session spec stale. Reissue it before any Doctor, FPGA or mount
   check.
 - A failing `booley session enter -- <argv>` exit code is not a Flow verdict: 126 or 127 means
