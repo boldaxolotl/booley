@@ -777,8 +777,9 @@ _default_pid_alive = is_pid_alive
 class SlotStore:
     """Claim/queue/release over one slots directory. Safe across processes.
 
-    All clock/PID/proc access is injected so tests can simulate multi-process
-    interleavings deterministically; production callers use the defaults.
+    All clock/PID/proc access, including this process's own PID, is injected so
+    tests can simulate multi-process interleavings deterministically; production
+    callers use the defaults.
     """
 
     def __init__(
@@ -792,6 +793,7 @@ class SlotStore:
         capture_identity: Callable[[int], ProcessIdentity | None] = capture_process_identity,
         observe_identity: Callable[[ProcessIdentity], ProcessObservation] = observe_process,
         recovery: SlotRecovery | None = None,
+        getpid: Callable[[], int] = os.getpid,
         inherited_execution_verifier: Callable[
             [object, Path, int], ExecutionId | None
         ] = _default_inherited_execution_verifier,
@@ -804,6 +806,7 @@ class SlotStore:
         self._capture_identity = capture_identity
         self._observe_identity = observe_identity
         self._recovery = recovery or SlotRecovery()
+        self._getpid = getpid
         self._inherited_execution_verifier = inherited_execution_verifier
         self._auto_renew = now is time.time and sleep is time.sleep
         self._renewals: dict[str, tuple[threading.Event, threading.Thread]] = {}
@@ -942,7 +945,7 @@ class SlotStore:
             tmp = request.cls_dir / f".{name}.{lease_id}.tmp"
             try:
                 tmp.write_text(json.dumps(payload) + "\n", encoding="utf-8")
-                os.link(tmp, path)
+                path.hardlink_to(tmp)
             except FileExistsError:
                 continue
             finally:
@@ -1165,7 +1168,7 @@ class SlotStore:
         land between that check and the replace. Reap is the one ungated
         unlinker; see the comment in ``reap``.
         """
-        tmp = token.path.with_name(f".{token.path.name}.{os.getpid()}.rewrite.tmp")
+        tmp = token.path.with_name(f".{token.path.name}.{self._getpid()}.rewrite.tmp")
         try:
             tmp.write_text(json.dumps(self._token_payload(token)) + "\n", encoding="utf-8")
             if not token.path.exists():
@@ -1495,7 +1498,7 @@ class SlotStore:
 
     def _gate_owner(self) -> _GateOwner:
         """This process as a gate owner; recaptured after a fork or a failed capture."""
-        pid = os.getpid()
+        pid = self._getpid()
         owner = self._process_owner
         if owner is None or owner.pid != pid or owner.identity is None:
             owner = _GateOwner(pid, self._capture_identity(pid))
@@ -1540,7 +1543,7 @@ class SlotStore:
         try:
             tmp.write_text(owner.to_text(), encoding="utf-8")
             try:
-                os.link(tmp, gate)
+                gate.hardlink_to(tmp)
             except (FileExistsError, PermissionError):
                 return False
         finally:
