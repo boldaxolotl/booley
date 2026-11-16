@@ -16,8 +16,9 @@ area 1.
 - Upstream RTL (outer repo): https://github.com/chipsalliance/caliptra-rtl @
   `e379800c5467379386f96a9a51a539bd662b608a`, with submodules.
 - Booley Directory: https://github.com/boldaxolotl/booley-prj-caliptra @
-  `6acf3bd2d2612e54f43fba4f88ba71ced795b75f`, cloned as `.booley` inside the upstream checkout, with its
-  `patches/` applied as its README says.
+  `ca574a315dbcd5f297a93020f8b33f78db2b0f1f`,
+  cloned as `.booley` inside the upstream checkout, with its `patches/`
+  applied as its README says.
 - Mission fixtures: the Custom Flow `fixtures/mem_hog.py` and the helper
   `fixtures/history_edit.py`.
 - Tools/host: Linux x86-64 with cgroup v2, at least 30 GB of RAM, 16 cores
@@ -269,9 +270,6 @@ staged Project and its resources in `resources.md`: `booley session down`, then
   execution supervisor. Check whether the candidate still does this once;
   then run every `fpga` step as
   `booley session enter -- /sbin/docker-init -s -- booley flow fpga ...`.
-- The pinned Booley Directory still ships a retired directory, so host Doctor
-  shows WARN `goals.leftover` for it. It comes from the pin, not the
-  candidate; do not file it. Drop this trap once the pin moves past it.
 - Until booley#4534 is fixed, every `sim_caliptra` Record item reserves the
   whole build estimate (the Project has Pre-Sim Commands), and the first item
   runs under the Flow's claim. Do not file either again.
