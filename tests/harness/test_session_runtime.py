@@ -1328,6 +1328,7 @@ class TestInitReconciliation:
             "load_issued_snapshot",
             lambda _root: SimpleNamespace(license_profile=None),
         )
+        monkeypatch.setattr(sr, "sandbox_attachment", lambda _root: Attachment.HEADLESS)
         monkeypatch.setattr(sr, "vscode_session_container", lambda _root: None)
         monkeypatch.setattr(sr.project_image, "project_sandbox_image", lambda _root: "selected")
         monkeypatch.setattr(sr.project_image, "is_managed_sandbox_image", lambda *_args: True)
