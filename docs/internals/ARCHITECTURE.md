@@ -132,15 +132,19 @@ container/host pairs (190 measured legs). Pooled median differences ranged from
 
 Cloud coding agents (Codex cloud, Devin) and research harnesses (SWE-agent,
 OpenHands) start a fresh sandbox per task. Booley uses one container per
-opened project folder instead. The Dev Containers extension attaches one
+opened project folder instead, because EDA Jobs such as synthesis need a lot
+of memory. A container per agent would have to be sized for the largest Job
+that agent might run, which wastes memory while it runs nothing that large.
+In one container, every session's Jobs draw on one Memory Budget, and
+[Job admission](#jobs) schedules them: a Job starts when its memory is free
+and queues until then.
+
+One container also fits VS Code. The Dev Containers extension attaches one
 container per VS Code window; a container per chat tab would need
 session-to-container plumbing the extension lacks. Every session shares one
 MCP server, one EDA stack, and one configuration, so another parallel session
-is just another tab.
-
-The downside is that every session draws on one container's memory and CPU,
-which makes [Job admission](#jobs) mandatory, and every worktree in the
-container shares one trust domain.
+is just another tab. The cost is that every worktree in the container shares
+one trust domain.
 
 ## Agent sessions
 
