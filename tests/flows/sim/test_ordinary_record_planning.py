@@ -6,12 +6,12 @@ Planning previews each Target. A planning error leaves no record state behind.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from booley.flows import base
 from booley.flows.sim.execution import SimulationExecution
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
@@ -44,68 +44,60 @@ def _assert_refused_before_simulation_record_state(
 def _record_simulation_record_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[list[object], list[object]]:
-    """Record invocation reservations and launched processes."""
+    """Record invocation reservations and every non-git process the run launches."""
     reserved: list[object] = []
     started: list[object] = []
     reserve = SimulateFlow.reserve_invocation_dir
-    start = base._start_local_process
 
     def reserving(self: SimulateFlow) -> Path | None:
         reserved.append(self)
         return reserve(self)
 
-    def launching(*args: Any, **kwargs: Any) -> Any:
-        started.append(args)
-        return start(*args, **kwargs)
+    class RecordingPopen(subprocess.Popen):  # type: ignore[type-arg]
+        def __init__(self, args: Any, *rest: Any, **kwargs: Any) -> None:
+            # Planning legitimately asks git for the checkout revision; nothing else may launch.
+            command = [args] if isinstance(args, str) else list(args)
+            if Path(str(command[0])).name != "git":
+                started.append(args)
+            super().__init__(args, *rest, **kwargs)
 
     monkeypatch.setattr(SimulateFlow, "reserve_invocation_dir", reserving)
-    monkeypatch.setattr(base, "_start_local_process", launching)
+    monkeypatch.setattr(subprocess, "Popen", RecordingPopen)
     return reserved, started
 
 
-def test_unresolvable_target_refuses_before_any_simulation_record_state(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("refusal", ["unresolvable-target", "unknown-test"])
+def test_planning_refusal_leaves_no_simulation_record_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, refusal: str
 ) -> None:
     candidate, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
     reserved, started = _record_simulation_record_state(monkeypatch)
+    reports = tmp_path / "reports"
 
     def unresolvable(self: SimulationExecution, handle: Any, selection: Any) -> Any:
         raise fusesoc_registry.FuseSocError("core is not resolvable")
 
-    monkeypatch.setattr(SimulationExecution, "preview", unresolvable)
+    if refusal == "unresolvable-target":
+        monkeypatch.setattr(SimulationExecution, "preview", unresolvable)
+    tests = ("nope",) if refusal == "unknown-test" else None
 
     result = flow.execute(
-        SimRequest(target="sim_a", work_dir=candidate, report_dir=tmp_path / "reports")
+        SimRequest(target="sim_a", test=tests, work_dir=candidate, report_dir=reports)
     )
 
-    _assert_refused_before_simulation_record_state(
-        reserved,
-        started,
-        tmp_path / "reports",
-        result,
-        "sim planning failed: sim_a: core is not resolvable",
-    )
-
-
-def test_unknown_test_is_refused_before_any_report(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    candidate, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
-    reserved, started = _record_simulation_record_state(monkeypatch)
-
-    result = flow.execute(
-        SimRequest(
-            target="sim_a",
-            test=("nope",),
-            work_dir=candidate,
-            report_dir=tmp_path / "reports",
+    if refusal == "unresolvable-target":
+        _assert_refused_before_simulation_record_state(
+            reserved,
+            started,
+            reports,
+            result,
+            "sim planning failed: sim_a: core is not resolvable",
         )
-    )
-
+        return
     assert result.exit_code == _EXIT_ERROR
     assert result.outcome.report_text.startswith(
         "sim: unknown exact test(s) for target 'sim_a': nope. Declared tests: a, b."
     )
     assert reserved == []
     assert started == []
-    assert not (tmp_path / "reports/sim").exists()
+    assert not (reports / "sim").exists()

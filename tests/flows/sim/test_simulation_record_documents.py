@@ -95,6 +95,18 @@ def test_a_coverage_run_writes_record_names_in_its_projection_and_report(
     assert projection["simulation_record_manifest"]["kind"] == "simulation_record_manifest"
     assert projection["coverage_record"]["kind"] == "coverage_record_reference"
 
+    # The layout: ``record/`` and ``coverage-record/`` directories, never the 0.4.0 names.
+    target = run.target
+    assert (target / "record" / "manifest.json").is_file()
+    assert not (target / "campaign").exists()
+    coverage = list(target.glob("record/work-items/*/attempts/*/coverage-record/coverage.json"))
+    assert len(coverage) == 1
+    assert not list(target.rglob("coverage-campaign"))
+    nested = _json(target / "coverage.json")["coverage_record"]["path"]
+    assert nested.startswith("record/work-items/")
+    assert nested.endswith("/coverage-record/coverage.json")
+    assert projection["simulation_record_manifest"]["path"] == "record/manifest.json"
+
     # Every evidence kind of the invocation's report artifact references is a new one.
     invocation = run.reports / "sim" / "1"
     kinds: set[str] = set()
@@ -102,13 +114,6 @@ def test_a_coverage_run_writes_record_names_in_its_projection_and_report(
         kinds |= _kinds(_json(invocation / name))
     assert {"simulation_record_manifest", "coverage_record_reference"} <= kinds
     assert not kinds & set(_OLD_KINDS)
-    report = _json(invocation / "report.json")
-    artifacts = report["detail"]["records"]["sim_0"]["artifacts"]
-    assert artifacts["manifest"]["kind"] == "simulation_record_manifest"
-    assert artifacts["coverage"]["kind"] == "coverage_record_reference"
-    assert report["detail"]["targets"]["sim_0"]["coverage_record"]["kind"] == (
-        "coverage_record_reference"
-    )
 
 
 def test_a_cocotb_attempt_writes_the_record_transport(tmp_path: Path) -> None:

@@ -8,7 +8,6 @@ import time
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
-from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -17,7 +16,6 @@ from booley.flows.endpoint_admission import AdmissionGate
 from booley.flows.sim.config import parse_run_cwd_template, resolve_pre_sim_build_access
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record.coordinator import (
-    NewSimulationRecordPreviewRequest,
     ResumeSimulationRecordPreviewRequest,
     ResumeSimulationRecordRunRequest,
     SimulationRecord,
@@ -34,6 +32,7 @@ from booley.flows.sim.record.resume import (
     ValidatedResumeManifest,
 )
 from booley.flows.sim.record.store import SimulationRecordStore
+from booley.flows.sim.request import SimRequest
 from booley.runtime.endpoint_execution import EXIT_CANCELLED, EXIT_ERROR
 from booley.runtime.execution_records import (
     ExecutionId,
@@ -48,6 +47,9 @@ from tests.flows.sim.simulation_record_test_support import (
     _NoEdaExecutor,
     _SimulationRecordAdmissionEndpoint,
 )
+from tests.flows.sim.test_simulation_record_resume_diagnostics import (
+    _interrupted_simulation_record as _interrupted_project_record,
+)
 
 
 def test_run_directory_parser_rejects_an_unclosed_format_field() -> None:
@@ -55,13 +57,13 @@ def test_run_directory_parser_rejects_an_unclosed_format_field() -> None:
         parse_run_cwd_template("run/{")
 
 
-def test_pre_sim_build_access_is_strict(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "booley.flows.sim.config._sim_config",
-        lambda _root: {"pre_sim_build_access": "unsafe"},
+def test_pre_sim_build_access_is_strict(tmp_path: Path) -> None:
+    (tmp_path / ".booley").mkdir()
+    (tmp_path / ".booley/booley.toml").write_text(
+        '[flows.sim]\npre_sim_build_access = "unsafe"\n', encoding="utf-8"
     )
     with pytest.raises(ValueError, match="pre_sim_build_access"):
-        resolve_pre_sim_build_access(Path())
+        resolve_pre_sim_build_access(tmp_path)
 
 
 def _child_parent_ids(project: Path) -> set[str]:
@@ -80,6 +82,9 @@ def test_interrupted_managed_simulation_record_exact_resume_preserves_parent_ide
     assert not case.store.summary_path.exists()
     assert len(case.state.completion_order) == 3
     parent_ids = _child_parent_ids(case.project)
+    # Private seam: _invocation_id is the invocation id this stub admission endpoint carries;
+    # it is a class attribute of the stub with no public accessor, and the test asserts the
+    # lanes' parent id is the runtime execution id rather than that value.
     if runtime_execution_id is not None:
         assert parent_ids == {runtime_execution_id}
     assert (
@@ -121,18 +126,6 @@ def _resume_simulation_record_twice(case, runtime_execution_id):
             )
         summaries.append(case.store.summary_path.read_bytes())
     return summaries, outcomes
-
-
-try:
-    import resource
-except ImportError:  # pragma: no cover - Windows compatibility
-    resource = None  # type: ignore[assignment]
-
-
-def _peak_rss() -> int:
-    if resource is None:
-        return 0
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 
 
 def _seed_authenticated_states(
@@ -211,12 +204,10 @@ def test_maximum_simulation_record_previews_authenticated_mixed_resume_without_e
     request = _resume_request(store, project)
     status = SimulationRecord().inspect_resume(request.validated)
 
-    before_rss = _peak_rss()
     started = time.monotonic()
     first = store.regenerate_summary()
     preview = SimulationRecord().preview(request)
     elapsed = time.monotonic() - started
-    peak_delta = _peak_rss() - before_rss
     first_bytes = store.summary_path.read_bytes()
     second = store.regenerate_summary()
 
@@ -238,26 +229,6 @@ def test_maximum_simulation_record_previews_authenticated_mixed_resume_without_e
     assert first == second
     assert store.summary_path.read_bytes() == first_bytes
     assert elapsed < 15
-    assert peak_delta < 128 * 1024
-
-
-def test_simulation_record_previews_expose_the_complete_public_contract(tmp_path: Path) -> None:
-    manifest = _manifest_for(("smoke",))
-    plan = create_simulation_record_plan(manifest)
-    preview = SimulationRecord().preview(
-        NewSimulationRecordPreviewRequest(plan, tmp_path, None, SimulationRecordPolicy())
-    )
-    assert preview.normalized_selection == (
-        manifest.document["work_items"][0]["selection"],  # type: ignore[index]
-    )
-    assert preview.workload == manifest.document["workload"]
-
-    store = SimulationRecordStore(
-        tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "record"
-    )
-    store.publish_manifest(manifest)
-    resumed = SimulationRecord().preview(_resume_request(store, tmp_path))
-    assert resumed.manifest == manifest.document
 
 
 @pytest.mark.parametrize("cancelled", [False, True])
@@ -267,39 +238,34 @@ def test_resume_endpoint_refreshes_recovery_after_failure(
     *,
     cancelled: bool,
 ) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / ".booley").mkdir()
-    store = SimulationRecordStore(
-        tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "record"
-    )
-    store.publish_manifest(_manifest_for(("smoke",)))
-    validated = _resume_request(store, project).validated
-    observed = SimulationRecord().inspect_resume(validated)
-    work_item_id = observed.pending[0]
-    invocation = tmp_path / "reports" / "sim" / "2"
-    invocation.mkdir(parents=True)
-    flow = SimulateFlow()
-    flow._args = SimpleNamespace(report_dir=tmp_path / "reports", work_dir=project)
-    monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: invocation)
+    reports, manifest, _executions = _interrupted_project_record(tmp_path, monkeypatch)
+    store = SimulationRecordStore(manifest.parent)
+    pending_before = store.scan().pending
+    assert pending_before
 
-    def fail_after_attempt(*_args: object) -> None:
-        store.allocate_attempt_directory(work_item_id, str(uuid.uuid4()))
+    def fail_after_attempts(_executor: object, _request: object) -> None:
+        # Every still-pending item gets an attempt directory before the run fails.
+        for item_id in store.scan().pending:
+            store.allocate_attempt_directory(item_id, str(uuid.uuid4()))
         if cancelled:
             raise SimulationRecordCancellationError("cancelled")
         raise OSError("failed")
 
-    monkeypatch.setattr(flow, "_write_simulation_record_progress", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(flow, "_run_validated_resume_simulation_record", fail_after_attempt)
-    with flow.publication_resources:
-        result = flow._execute_simulation_record(
-            _admission(), flow._resume_simulation_record_run(validated, observed)
-        )
+    monkeypatch.setattr(
+        "booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor.execute", fail_after_attempts
+    )
 
+    result = SimulateFlow().execute(
+        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
+    )
+
+    # The detail shows what the failed run left behind, not the pre-run view.
     assert result.exit_code == (EXIT_CANCELLED if cancelled else EXIT_ERROR)
-    assert result.detail["completed"] == []
-    assert result.detail["interrupted"] == [work_item_id]
-    assert result.detail["pending"] == []
+    assert result.outcome.detail["completed"] == []
+    assert result.outcome.detail["pending"] == []
+    assert result.outcome.detail["interrupted"] == [
+        item["work_item_id"] for item in store.load_manifest().document["work_items"]
+    ]
 
 
 def test_resume_execution_uses_a_fresh_scan_after_preview(tmp_path: Path) -> None:

@@ -12,6 +12,7 @@ from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -97,27 +98,36 @@ def test_sim_history_keys_name_variants_not_seeds(
     assert runs[-1]["source_bytes"] == initial_bytes + len(appended)
 
 
-def test_sim_request_maps_to_recorded_keys(
+@pytest.mark.parametrize("elab_only", [False, True], ids=["sim-run", "elab-only"])
+def test_request_maps_to_recorded_keys(
     flow_project: Path,  # noqa: F811 -- shared fixture keeps its required name
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    elab_only: bool,
 ) -> None:
-    """The estimator lists the keys a real ``SimulateFlow`` run writes, in run order."""
-    from booley.flows.job_estimates import phase_keys, sim_job_request
+    """The estimator lists the keys a real ``SimulateFlow`` run writes, in run order.
+
+    FuseSoC setup is measured as ``sim_prepare`` too, keyed by no Test Run; an
+    elaboration-only run records that setup and its build (#3787).
+    """
+    from booley.flows.job_estimates import JobRequest, phase_keys, sim_job_request
     from booley.flows.target_test_plan_loading import load_checkout_target_test_plan
 
     booley_dir = flow_project / ".booley"
     monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
-    (booley_dir / "tests.toml").write_text(_TESTS_TOML, encoding="utf-8")
     selectors = ("first+slow@1", "first+fast")
+    selection: dict[str, Any] = {"mode": SimulationMode.ELAB_ONLY}
+    if not elab_only:
+        (booley_dir / "tests.toml").write_text(_TESTS_TOML, encoding="utf-8")
+        selection = {"test": selectors}
 
     result = SimulateFlow().execute(
         SimRequest(
             target="sim",
             work_dir=flow_project,
             report_dir=tmp_path / "reports",
-            test=selectors,
             timeout_ms=30_000,
+            **selection,
         )
     )
     assert result.exit_code == 0, result.outcome.report_text
@@ -127,43 +137,15 @@ def test_sim_request_maps_to_recorded_keys(
         key = resource_history.history_key(record)
         if key not in recorded:
             recorded.append(key)
-    # FuseSoC setup is measured as ``sim_prepare`` too (#3787), keyed by no Test Run.
+    if elab_only:
+        assert list(phase_keys(JobRequest("sim", "sim", test_runs=()))) == recorded
+        assert [key.phase for key in recorded] == ["sim_prepare", "sim_build"]
+        return
     assert [key.phase for key in recorded] == ["sim_prepare", "sim_build", "sim_run", "sim_run"]
     plan = load_checkout_target_test_plan(flow_project, "sim")
     request = sim_job_request(plan, plan.resolve(selectors))
     assert list(phase_keys(request)) == recorded
     assert [key.test_run for key in recorded] == ["", "", "first+slow", "first"]
-
-
-def test_elab_only_request_maps_to_recorded_keys(
-    flow_project: Path,  # noqa: F811 -- shared fixture keeps its required name
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An elaboration-only run records the FuseSoC setup and build its request lists (#3787)."""
-    from booley.flows.job_estimates import JobRequest, phase_keys
-
-    booley_dir = flow_project / ".booley"
-    monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
-
-    result = SimulateFlow().execute(
-        SimRequest(
-            target="sim",
-            work_dir=flow_project,
-            report_dir=tmp_path / "reports",
-            mode=SimulationMode.ELAB_ONLY,
-            timeout_ms=30_000,
-        )
-    )
-    assert result.exit_code == 0, result.outcome.report_text
-
-    recorded: list[resource_history.HistoryKey] = []
-    for record in resource_history.load_records(booley_dir):
-        key = resource_history.history_key(record)
-        if key not in recorded:
-            recorded.append(key)
-    assert list(phase_keys(JobRequest("sim", "sim", test_runs=()))) == recorded
-    assert [key.phase for key in recorded] == ["sim_prepare", "sim_build"]
 
 
 def _fusesoc_killed_by_sigkill(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -187,6 +169,9 @@ def test_oom_killed_fusesoc_setup_requeues_the_job(
     inside the attempt scope that arms a requeue (``tests/runtime`` covers the
     requeue itself: an own OOM kill plus a failed result).
     """
+    # Private seam: ``SimulateFlow.execute`` prepares the Target twice, so the public run
+    # records two ``sim_prepare`` kills; the single-attempt stop on the first OOM kill is only
+    # observable by driving the engine with the Flow's own measured boundary.
     from booley.flows.sim.build import SimulationBuildPreparationError
     from booley.flows.sim.execution.contract import SimulationOptions
     from booley.flows.sim.execution.engine import SimulationExecution

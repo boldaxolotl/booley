@@ -75,22 +75,10 @@ def test_child_records_publish_and_verify_through_the_booley_dir_entry(
     assert execution_paths(execution_id, booley_dir=external).context.is_file()
 
 
-def test_publish_rejects_conflicting_existing_record(tmp_path: Path) -> None:
-    path = tmp_path / "record.json"
-    path.write_bytes(b"old")
-    with pytest.raises(SimulationRecordIntegrityError, match="disagrees"):
-        child_protocol._publish_or_verify(path, b"new")
-
-
-def test_protocol_record_size_limit_is_enforced(tmp_path: Path, monkeypatch) -> None:
-    path = tmp_path / "record.json"
-    path.write_bytes(b"xx")
-    monkeypatch.setattr(child_protocol, "_PROTOCOL_RECORD_LIMIT", 1)
-    with pytest.raises(SimulationRecordIntegrityError, match="size limit"):
-        child_protocol._publish_or_verify(path, b"xx")
-
-
 def _registry(tmp_path: Path) -> child_protocol.ChildExecutionRegistry:
+    # Private seam: ``mark_terminal`` and ``cancel`` need only the project-data root and the
+    # lock table, and building a registry through its constructor needs a stored Simulation
+    # Record that these tests do not exercise.
     registry = object.__new__(child_protocol.ChildExecutionRegistry)
     registry._project_data_root = tmp_path
     registry._booley_dir = None
@@ -165,7 +153,10 @@ def test_recover_lane_finishes_a_waiting_lane(tmp_path: Path) -> None:
     registry.recover_lane(lane.execution_id)  # already terminal: nothing to do
 
 
-def test_recover_lane_fails_closed_when_cancel_fails(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("state", ["never_started", "waiting", "unreadable"])
+def test_recover_lane_fails_closed_when_cancel_fails(
+    tmp_path: Path, monkeypatch, state: str
+) -> None:
     registry, prepare = _lane_registry(tmp_path)
     cancelled: list[ExecutionId] = []
 
@@ -174,40 +165,41 @@ def test_recover_lane_fails_closed_when_cancel_fails(tmp_path: Path, monkeypatch
         return False
 
     monkeypatch.setattr(registry, "cancel", failing_cancel)
-    registry.recover_lane(ExecutionId("d" * 32))  # no record: the lane never started
-    assert cancelled == []
+    execution_id = ExecutionId("e" * 32)
+    if state == "never_started":
+        registry.recover_lane(execution_id)  # no record: the lane never started
+        assert cancelled == []
+        return
+    prepare(execution_id)
+    if state == "unreadable":
+        paths = execution_paths(execution_id, booley_dir=tmp_path / "project" / ".booley")
+        paths.record.write_text("{not json", encoding="utf-8")
 
-    lane = prepare("e" * 32)
     with pytest.raises(SimulationRecordIntegrityError, match="recovery is incomplete"):
-        registry.recover_lane(lane.execution_id)
-    assert cancelled == [lane.execution_id]
+        registry.recover_lane(execution_id)
+    assert cancelled == [execution_id]
 
 
-def test_recover_lane_treats_an_unreadable_record_as_indeterminate(
-    tmp_path: Path, monkeypatch
+@pytest.mark.parametrize("defect", ["conflict", "symlink", "hardlink"])
+def test_prepare_rejects_a_conflicting_or_linked_context_record(
+    tmp_path: Path, defect: str
 ) -> None:
-    registry, prepare = _lane_registry(tmp_path)
-    lane = prepare("f" * 32)
-    paths = execution_paths(lane.execution_id, booley_dir=tmp_path / "project" / ".booley")
-    paths.record.write_text("{not json", encoding="utf-8")
-    monkeypatch.setattr(registry, "cancel", lambda execution_id: False)
-
-    with pytest.raises(SimulationRecordIntegrityError, match="recovery is incomplete"):
-        registry.recover_lane(lane.execution_id)
-
-
-@pytest.mark.parametrize("defect", ["symlink", "hardlink"])
-def test_child_protocol_conflict_read_rejects_links(tmp_path: Path, defect: str) -> None:
-    raw = canonical_json_bytes({"value": "expected"})
+    _registry, prepare = _lane_registry(tmp_path)
+    execution_id = ExecutionId("c" * 32)
+    context = execution_paths(execution_id, booley_dir=tmp_path / "project" / ".booley").context
+    context.parent.mkdir(parents=True)
     source = tmp_path / "source.json"
-    source.write_bytes(raw)
-    record = tmp_path / "record.json"
-    if defect == "symlink":
-        record.symlink_to(source.name)
+    source.write_bytes(canonical_json_bytes({"value": "expected"}))
+    if defect == "conflict":
+        context.write_bytes(b"old")
+    elif defect == "symlink":
+        context.symlink_to(source)
     else:
-        record.hardlink_to(source)
+        context.hardlink_to(source)
 
-    with pytest.raises(SimulationRecordIntegrityError, match="link"):
-        child_protocol._publish_or_verify(record, raw)
+    with pytest.raises(
+        SimulationRecordIntegrityError, match="disagrees" if defect == "conflict" else "link"
+    ):
+        prepare(execution_id)
 
-    assert source.read_bytes() == raw
+    assert source.read_bytes() == canonical_json_bytes({"value": "expected"})

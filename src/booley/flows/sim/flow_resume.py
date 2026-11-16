@@ -128,9 +128,7 @@ def _is_coverage_manifest(manifest: SimulationRecordManifest) -> bool:
 def _unfinished_coverage_work(
     manifest: SimulationRecordManifest, status: SimulationRecordRecoveryStatus
 ) -> tuple[str, ...]:
-    """Coverage work-item ids without a recorded result; empty for other Simulation Records."""
-    if not _is_coverage_manifest(manifest):
-        return ()
+    """Coverage work-item ids without a recorded result; the caller passes a coverage manifest."""
     unfinished = set(status.pending) | set(status.interrupted)
     items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
     return tuple(

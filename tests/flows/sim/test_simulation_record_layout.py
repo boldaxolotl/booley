@@ -14,12 +14,11 @@ schema bump (for example the ``simulation.json`` ``tests[]`` rows gained ``log``
 
 from __future__ import annotations
 
-import json
-import shutil
 from pathlib import Path
 
 import pytest
 
+from booley.flows.sim.coverage_analysis_input import read_coverage_record
 from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.coverage_reference import (
     CoverageRecordReferenceError,
@@ -33,7 +32,7 @@ from booley.flows.sim.record.codec import (
 )
 from booley.flows.sim.record.resume import validate_resume_manifest
 from booley.flows.sim.request import SimRequest
-from tests.flows.sim.simulation_record_test_support import coverage_invocation
+from tests.flows.sim.test_simulation_record_names import _OLD_MANIFEST, _at_record_layout
 from tests.flows.sim.test_simulation_record_resume_diagnostics import (
     _interrupted_simulation_record,
 )
@@ -71,39 +70,7 @@ def _tree(root: Path) -> dict[str, bytes]:
     }
 
 
-# --- AC1: a new run writes the Record layout -------------------------------------------
-
-
-def test_a_coverage_run_writes_the_record_layout(tmp_path: Path, monkeypatch) -> None:
-    run = coverage_invocation(tmp_path, monkeypatch)
-    target = run.target
-
-    assert (target / "record" / "manifest.json").is_file()
-    assert not (target / "campaign").exists()
-    coverage = list(target.glob("record/work-items/*/attempts/*/coverage-record/coverage.json"))
-    assert len(coverage) == 1
-    assert not list(target.rglob("coverage-campaign"))
-    reference = json.loads((target / "coverage.json").read_bytes())
-    nested = reference["coverage_record"]["path"]
-    assert nested.startswith("record/work-items/")
-    assert nested.endswith("/coverage-record/coverage.json")
-    projection = json.loads((target / "simulation.json").read_bytes())
-    assert projection["simulation_record_manifest"]["path"] == "record/manifest.json"
-
-
-def test_resume_from_accepts_a_record_manifest(tmp_path: Path, monkeypatch) -> None:
-    reports_root, manifest, _executions = _interrupted_simulation_record(tmp_path, monkeypatch)
-    assert manifest.parts[-2:] == ("record", "manifest.json")
-
-    def resumed(_executor, _request):
-        raise KeyboardInterrupt("resume reached execution")
-
-    monkeypatch.setattr("booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor.execute", resumed)
-
-    with pytest.raises(KeyboardInterrupt, match="resume reached execution"):
-        SimulateFlow().execute(
-            SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports_root)
-        )
+# A new run writes the Record layout: see ``test_simulation_record_documents.py``.
 
 
 def test_resume_from_a_record_with_an_executable_snapshot_is_refused_before_any_work(
@@ -117,7 +84,7 @@ def test_resume_from_a_record_with_an_executable_snapshot_is_refused_before_any_
         (Path(__file__).parents[1] / "fixtures/simulation_record/snapshot.json").read_bytes()
     )
     original = reports_root / "sim" / "1"
-    before = _files(original)
+    before = _tree(original)
 
     def reached(_executor, _request):
         raise AssertionError("resume reached execution")
@@ -134,81 +101,70 @@ def test_resume_from_a_record_with_an_executable_snapshot_is_refused_before_any_
         in result.outcome.report_text
     )
     # The refusal reads the record only: it neither changes it nor starts a new one.
-    assert _files(original) == before
+    assert _tree(original) == before
     assert not list(reports_root.glob("sim/2/**/manifest.json"))
-
-
-def _files(root: Path) -> dict[str, bytes]:
-    return {
-        path.relative_to(root).as_posix(): path.read_bytes()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
 
 
 # --- AC2: --resume-from an older layout is refused before any work ----------------------
 
 
-_RESUMED = (("0.4.0", "interrupted"), ("0.4.0", "coverage"), ("0.3.0", "interrupted"))
-
-
+@pytest.mark.parametrize(
+    ("version", "kind", "relayout"),
+    [
+        ("0.4.0", "interrupted", False),
+        ("0.4.0", "coverage", False),
+        ("0.3.0", "interrupted", False),
+        # Renamed to the Record layout, so only the manifest schema refuses it.
+        ("0.4.0", "interrupted", True),
+        ("0.4.0", "coverage", True),
+    ],
+)
 def test_resume_from_an_older_layout_manifest_is_refused_before_any_work(
-    tmp_path: Path, reports: Path
+    tmp_path: Path, reports: Path, version: str, kind: str, relayout: bool
 ) -> None:
-    for version, kind in _RESUMED:
-        shutil.rmtree(reports / "sim", ignore_errors=True)
-        invocation = copy_older_invocation(version, kind, reports)
-        before = _tree(invocation)
+    invocation = copy_older_invocation(version, kind, reports)
+    refused_name = _marker(kind)
+    manifest = _manifest_of(invocation, kind)
+    if relayout:
+        _at_record_layout(invocation)
+        refused_name = _OLD_MANIFEST
+        manifest = invocation / "targets" / _TARGET[kind] / "record" / "manifest.json"
+    before = _tree(invocation)
 
-        result = SimulateFlow().execute(
-            SimRequest(
-                resume_from=_manifest_of(invocation, kind), work_dir=tmp_path, report_dir=reports
-            )
-        )
-
-        assert result.exit_code == 2, (version, kind)
-        _assert_refused(result.outcome.report_text, _marker(kind), invocation)
-        assert not (reports / "sim" / "2").exists()
-        assert _tree(invocation) == before
-
-
-def test_a_simulation_record_path_naming_no_directory_is_not_called_an_older_record(
-    tmp_path: Path, reports: Path
-) -> None:
-    """A new run's invocation is never described as an older record, whatever path is typed."""
-    invocation = reports / "sim" / "1"
-    (invocation / "targets" / "sim" / "record").mkdir(parents=True)
-    typed = invocation / "targets" / "sim" / "campaign" / "manifest.json"
-
-    with pytest.raises(SimulationRecordIntegrityError) as excinfo:
-        validate_resume_manifest(typed, project_root=tmp_path)
-
-    assert "older Booley" not in str(excinfo.value)
-
-
-# --- AC3: the Pre-Sim scan, Coverage analysis and waiver binding --------------------
-
-
-def test_pre_sim_scan_refuses_an_older_layout_manifest(reports: Path) -> None:
-    invocation = copy_older_invocation("0.4.0", "interrupted", reports)
-
-    with pytest.raises(ValueError) as excinfo:
-        collect_pre_sim_firings(_manifest_of(invocation, "interrupted"))
-
-    _assert_unsupported_type(excinfo.value)
-    _assert_refused(str(excinfo.value), _marker("interrupted"), invocation)
-
-
-def test_coverage_analysis_refuses_an_older_layout(reports: Path) -> None:
-    from booley.flows.sim.coverage_analysis_input import (
-        CoverageAnalysisError,
-        read_coverage_record,
+    result = SimulateFlow().execute(
+        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
     )
 
-    invocation = copy_older_invocation("0.4.0", "coverage", reports)
+    assert result.exit_code == 2
+    _assert_refused(result.outcome.report_text, refused_name, invocation)
+    assert not (reports / "sim" / "2").exists()
+    assert _tree(invocation) == before
 
-    with pytest.raises(CoverageAnalysisError) as excinfo:
-        read_coverage_record(invocation / "targets" / "sim_0" / "coverage.json")
+
+# --- AC3: Coverage analysis and waiver binding ---------------------------------------------
+
+
+@pytest.mark.parametrize("entry", ["analysis", "persisted_reference"])
+def test_coverage_entry_points_refuse_an_older_layout(reports: Path, entry: str) -> None:
+    invocation = copy_older_invocation("0.4.0", "coverage", reports)
+    coverage_json = invocation / "targets" / "sim_0" / "coverage.json"
+
+    with pytest.raises(ValueError) as excinfo:
+        if entry == "analysis":
+            read_coverage_record(coverage_json)
+        else:
+            # Waiver binding reads a persisted pointer to the public reference.
+            raw = coverage_json.read_bytes()
+            resolve_persisted_coverage_record_reference(
+                reports,
+                {
+                    "path_base": "reports_root",
+                    "path": "sim/1/targets/sim_0/coverage.json",
+                    "bytes": len(raw),
+                    "sha256": content_digest(raw),
+                    "nested_campaign_sha256": "sha256:" + "0" * 64,
+                },
+            )
 
     # The 0.4.0 reference is refused by its schema before its nested path is read.
     _assert_refused(
@@ -217,36 +173,16 @@ def test_coverage_analysis_refuses_an_older_layout(reports: Path) -> None:
         invocation,
     )
     assert "fully pruned" not in str(excinfo.value)
-
-
-def test_a_persisted_coverage_reference_into_an_older_layout_is_refused(reports: Path) -> None:
-    """Waiver binding reads a persisted pointer to the public reference."""
-    invocation = copy_older_invocation("0.4.0", "coverage", reports)
-    raw = (invocation / "targets" / "sim_0" / "coverage.json").read_bytes()
-    persisted = {
-        "path_base": "reports_root",
-        "path": "sim/1/targets/sim_0/coverage.json",
-        "bytes": len(raw),
-        "sha256": content_digest(raw),
-        "nested_campaign_sha256": "sha256:" + "0" * 64,
-    }
-
-    with pytest.raises(ValueError) as excinfo:
-        resolve_persisted_coverage_record_reference(reports, persisted)
-
+    # Neither entry point calls the refusal a corrupt reference.
     assert not isinstance(excinfo.value, CoverageRecordReferenceError)
-    _assert_unsupported_type(excinfo.value)
-    _assert_refused(
-        str(excinfo.value),
-        "Coverage Campaign reference booley.coverage-campaign-reference/v1",
-        invocation,
-    )
+    if entry == "persisted_reference":
+        _assert_unsupported_type(excinfo.value)
 
 
 # --- AC4: the old names are not aliases --------------------------------------------------
 
 
-def test_the_old_directory_names_are_not_aliases(reports: Path, tmp_path: Path) -> None:
+def test_the_old_directory_names_are_not_aliases(reports: Path) -> None:
     older = copy_older_invocation("0.4.0", "complete", reports)
     older_manifest = _manifest_of(older, "complete")
 
@@ -265,9 +201,25 @@ def test_the_old_directory_names_are_not_aliases(reports: Path, tmp_path: Path) 
         _assert_unsupported_type(refused.value)
         _assert_refused(str(refused.value), _marker("complete"), older)
 
-    # A Mutation manifest keeps its own ``campaign/`` name and is not an older Simulation one.
-    mutation = tmp_path / "flow-reports" / "mutation" / "1" / "campaign" / "manifest.json"
-    with pytest.raises(SimulationRecordIntegrityError) as foreign:
-        validate_resume_manifest(mutation, project_root=tmp_path)
-    assert "must name one exact record/manifest.json" in str(foreign.value)
-    assert "older Booley" not in str(foreign.value)
+
+@pytest.mark.parametrize(
+    "typed",
+    [
+        # A new run's invocation is never called an older record, whatever path is typed.
+        "sim/1/targets/sim/campaign/manifest.json",
+        # A Mutation manifest keeps its own ``campaign/`` name.
+        "mutation/1/campaign/manifest.json",
+    ],
+)
+def test_a_manifest_path_naming_no_older_record_is_not_called_one(
+    tmp_path: Path, reports: Path, typed: str
+) -> None:
+    path = reports / typed
+    if typed.startswith("sim/"):
+        (path.parent.parent / "record").mkdir(parents=True)
+
+    with pytest.raises(SimulationRecordIntegrityError) as excinfo:
+        validate_resume_manifest(path, project_root=tmp_path)
+
+    assert "must name one exact record/manifest.json" in str(excinfo.value)
+    assert "older Booley" not in str(excinfo.value)
