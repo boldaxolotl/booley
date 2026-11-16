@@ -5,12 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
-from booley.flows.endpoint_report_criteria import ReportScope
 from booley.flows.prepared_invocation import PreparedInvocation
 from booley.runtime.endpoint_execution import EndpointOutcome
 
 if TYPE_CHECKING:
-    from booley.flows.endpoint_state import EndpointState
     from booley.flows.job_estimates import JobRequest
     from booley.flows.sim.flow import PreparedSimulationEndpoint, SimulateFlow
 
@@ -29,7 +27,3 @@ class SimulationRecordInvocation(PreparedInvocation):
 
     def job_requests(self) -> tuple[JobRequest, ...] | None:
         return self.flow.simulation_record_job_requests(self.prepared)
-
-    def report_scope(self, endpoint: EndpointState) -> ReportScope:
-        """The Simulation Flow judges no Criterion, so nothing is planned."""
-        return ReportScope(targets=frozenset(), planned=frozenset())

@@ -111,7 +111,6 @@ def test_cocotb_target_retains_agent_sim_result_requirement(tmp_path, monkeypatc
         )
 
     assert result.detail["issues"] == 1, result.report_text
-    assert result.criterion_met is True
 
 
 def test_corrective_findings_do_not_complete_terminal_done_review(tmp_path, monkeypatch):
@@ -142,7 +141,7 @@ def test_corrective_findings_do_not_complete_terminal_done_review(tmp_path, monk
             ]
         )
 
-    assert result.criterion_met is True, result.report_text
+    assert result.exit_code == 0, result.report_text
 
 
 def test_interactive_discovery_replaces_done_findings(tmp_path, monkeypatch):
@@ -170,14 +169,12 @@ def test_interactive_discovery_replaces_done_findings(tmp_path, monkeypatch):
             "--focus",
             "code_style",
         ]
-        first = _run_review(argv)
+        _run_review(argv)
         rtl.write_text("module uart; wire changed; endmodule\n")
         second = _run_review(argv)
 
     detail = second.detail
     assert agent.call_count == 2
-    assert first.criterion_met is True
-    assert second.criterion_met is True
     assert detail["issue_list"] == []
     assert detail["issues"] == 0
     assert detail["CRITICAL"] == 0
@@ -216,7 +213,6 @@ def test_explicit_advisory_done_observation_completes(tmp_path, monkeypatch):
         )
 
     detail = result.detail
-    assert result.criterion_met is True
     assert detail["issue_list"][0]["status"] == "advisory"
 
 
@@ -244,11 +240,9 @@ def test_source_edit_has_one_freshness_verdict(tmp_path, monkeypatch):
             return_value=_agent_result(),
         ) as agent,
     ):
-        first = _run_review(common)
-        assert first.criterion_met is True
+        _run_review(common)
         rtl.write_text("module uart; wire changed; endmodule\n")
         second = _run_review(common)
 
     assert agent.call_count == 2
-    assert second.criterion_met is True
     assert "current source" not in second.report_text

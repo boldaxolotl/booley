@@ -126,7 +126,6 @@ _ACCENT = f"color({PALETTE_DODGER_BLUE})"
 _CHROME = f"color({PALETTE_MAUVE})"
 SEMANTIC_STYLE = {
     "pass": "green",
-    "met": "green",
     "warn": "yellow",
     "fail": "bold red",
     "running": _ACCENT,
@@ -146,8 +145,8 @@ DEDICATED_VIEWS = frozenset({"job", "help", "target"})
 WINDOW_ORDER = ("sessions", "jobs", "targets")
 # Terminal columns from which a detail (Jobs) or preview (Sessions) sits beside the list.
 WIDE_COLUMNS = 120
-# Jobs list columns, left to right. Crit repeats the detail's Criterion line as a mark.
-JOB_COLUMNS = ("Job", "Target", "Session", "State", "Result", "Crit", "Elapsed")
+# Jobs list columns, left to right.
+JOB_COLUMNS = ("Job", "Target", "Session", "State", "Result", "Elapsed")
 _TARGET, _RESULT = JOB_COLUMNS.index("Target"), JOB_COLUMNS.index("Result")
 # A Target is cut to this many columns before a Result word is: six name characters,
 # the ellipsis and the gap. The Job detail beside the list shows both in full.
@@ -412,24 +411,14 @@ def _job_cells(job: JobView, now: float, handles: Mapping[str, str] | None) -> t
             presentation.flow_word.value,
             style=SEMANTIC_STYLE.get(presentation.flow_word.semantic, ""),
         )
-        criterion = presentation.criterion
-        crit = (
-            Text(
-                "✓" if criterion.semantic == "met" else "✗",
-                style=SEMANTIC_STYLE[criterion.semantic],
-            )
-            if criterion is not None
-            else Text()
-        )
     else:
-        result, crit = Text(_ELLIPSIS, style="dim"), Text()
+        result = Text(_ELLIPSIS, style="dim")
     return (
         Text(_job_label(job)),
         Text(target) if target else Text(_ABSENT, style="dim"),
         Text(owner) if owner else Text(_ABSENT, style="dim"),
         Text(job.state),
         result,
-        crit,
         Text(format_duration(elapsed) if elapsed is not None else "unavailable"),
     )
 
@@ -501,11 +490,9 @@ def _line_text(rows: tuple[ResultLine, ...] | list[ResultLine]) -> str:
 
 
 def _job_rows(job: JobView, *, now: float | None = None) -> list[ResultLine]:
-    """Compact result, independent acceptance, execution and published artifacts."""
+    """Compact result, execution and published artifacts."""
     result = _job_presentation(job)
     rows = [result.flow_result]
-    if result.criterion is not None:
-        rows.append(result.criterion)
     elapsed = job_elapsed_seconds(job, now)
     duration = format_duration(elapsed) if elapsed is not None else "unavailable"
     rows.append(

@@ -221,11 +221,6 @@ def _results(jobs: Sequence[JobView], worktree: Path, now: float) -> dict[str, A
             "duration_s": job_elapsed_seconds(job, now),
             "report_url": report_url(worktree, job),
         }
-        if presentation.criterion is not None:
-            row["criterion"] = {
-                "text": presentation.criterion.value,
-                "met": presentation.criterion.semantic == "met",
-            }
         rows.append(row)
     return {"jobs": rows, "passed": passed, "failed": failed}
 

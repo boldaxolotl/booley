@@ -626,7 +626,6 @@ def test_cli_analysis_never_loads_or_saves_harness_criteria(tmp_path, monkeypatc
     )
     assert result.exit_code == 0
     assert state.read_text() == "intentionally not a Harness state"
-    assert result.outcome.criterion_key == ""
 
 
 def test_cli_analysis_writes_no_development_state(tmp_path, monkeypatch):
@@ -647,7 +646,6 @@ def test_cli_analysis_writes_no_development_state(tmp_path, monkeypatch):
     assert list(tmp_path.rglob("state.json")) == []
     assert not (tmp_path / "reviewer-state").exists()
     assert not (tmp_path / ".interactive_logs").exists()
-    assert result.outcome.criterion_key == ""
 
 
 @pytest.mark.parametrize("failure", ["timed_out", "max_turns_exhausted"])
