@@ -2,7 +2,7 @@
 
 Two kinds of budget exist:
 
-* a deadline a test asserts on (``_HOOK_DEADLINE_S = scaled(5)``): the test names
+* a deadline a test asserts on (for example ``scaled(5)``): the test names
   its own base budget and ``scaled`` multiplies it by the factor;
 * the hang guard (``hang_guard_s``): one generous budget for waits that only stop
   a hang and assert nothing about time.
@@ -17,6 +17,8 @@ from __future__ import annotations
 import math
 import os
 
+from booley.core.boundary import as_float
+
 SCALE_VARIABLE = "BOOLEY_TEST_TIME_SCALE"
 HANG_GUARD_BASE_S = 30
 
@@ -30,11 +32,9 @@ def time_scale() -> float:
     raw = os.environ.get(SCALE_VARIABLE)
     if raw is None:
         return 1.0
-    try:
-        factor = float(raw)
-    except ValueError:
-        factor = math.nan
-    if not math.isfinite(factor) or factor <= 0:
+    factor = as_float(raw)
+    # A factor whose hang guard overflows to infinity is unusable, so refuse it here.
+    if factor is None or factor <= 0 or not math.isfinite(factor * HANG_GUARD_BASE_S):
         raise TimeScaleError(
             f"{SCALE_VARIABLE}={raw!r} is not a positive finite number; "
             "unset it for 1 or set a factor such as 2"

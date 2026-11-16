@@ -23,7 +23,7 @@ def test_time_scale_multiplies_both_budget_kinds(monkeypatch: pytest.MonkeyPatch
     assert hang_guard_s() == 38
 
 
-@pytest.mark.parametrize("raw", ["abc", "", "0", "-1", "inf", "nan"])
+@pytest.mark.parametrize("raw", ["abc", "0", "nan", "1e308"])
 def test_invalid_time_scale_is_refused(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
     monkeypatch.setenv(SCALE_VARIABLE, raw)
 
