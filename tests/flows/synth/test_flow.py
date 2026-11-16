@@ -2009,7 +2009,9 @@ class TestSingleConfigRun:
         assert data["area_source"] == "yosys_mapped"
         assert "mapped_area_um2" not in data
         assert "post_opt_area_um2" not in data
-        assert data["cells"] == 100
+        assert data["cell_count"] == 100
+        assert "cells" not in data
+        assert data["implementation"]["metrics"]["cell_count"] == 100
         assert data["conditions"]["has_critical"] is False
         assert data["implementation"]["schema_version"] == 1
         assert data["implementation"]["status"]["grade"] == "pass"
@@ -2124,7 +2126,7 @@ class TestSingleConfigRun:
         assert data["timed_out"] is False
         assert data["has_metrics"] is False
         assert data["area_kge"] is None
-        assert data["cells"] is None
+        assert data["cell_count"] is None
         assert "frontend rejected converted Verilog" in data["failure_output"]
 
         st = DevelopmentState.load(state_file)
@@ -2758,6 +2760,11 @@ class TestBaselineFlow:
         assert "baseline" in data
         assert data["baseline"]["ref"] == "abc1234"
         assert data["delta_pct"] == pytest.approx(2.5, rel=0.1)
+        assert data["cell_count"] == 110
+        assert data["baseline"]["cell_count"] == 100
+        assert "cells" not in data["baseline"]
+        deltas = data["implementation"]["comparison"]["deltas"]
+        assert deltas["cell_count"]["delta_pct"] == pytest.approx(10.0)
 
     def test_worktree_setup_failure_rejected(self, state_file: Path, tmp_path: Path):
         """A worktree that cannot be created (bad ref, not a repo) is surfaced
@@ -4186,6 +4193,29 @@ class TestProcessCountCritical:
 
 
 class TestDetailDict:
+    def test_cell_count_threshold_reads_reported_cell_count(self, flow_and_state):
+        flow, _state_file = flow_and_state
+        flow.state.init_criteria(
+            {"synthesis_ok_lite": True},
+            criterion_params={"synthesis_ok_lite": {"cell_count_max": 500}},
+        )
+        synth_output = (
+            "Chip area for top module '\\t': 6400.0\n"
+            "Number of cells: 100\n" + _perclock_marker("clk", 1.0, 0.5, 0.1)
+        )
+        with patch.object(
+            flow,
+            "_execute",
+            return_value=SubprocessResult(
+                returncode=0, stdout=synth_output, stderr="", duration_s=2.0
+            ),
+        ):
+            flow._run()
+        entry = flow.state.criteria.get("synthesis_ok_lite")
+        assert entry is not None
+        assert entry.met is True
+        assert entry.detail["cell_count"] == 100
+
     def test_all_metrics_in_detail(self, flow_and_state, tmp_path: Path):
         flow, state_file = flow_and_state
         synth_output = (
@@ -4213,7 +4243,8 @@ class TestDetailDict:
         d = entry.detail
         assert d["area_um2"] == 6400.0
         assert d["area_kge"] == pytest.approx(8.02005)
-        assert d["cells"] == 100
+        assert d["cell_count"] == 100
+        assert "cells" not in d
         assert d["wire_count"] == 200
         assert d["process_count"] == 0
         # Critical path / Fmax live per-clock in the detail now.
@@ -4819,8 +4850,8 @@ class TestAggregateDetailIsSelfContained:
         detail = _aggregate_detail(["asic_a", "asic_b"], cur)
         assert detail["targets"] == ["asic_a", "asic_b"]
         assert detail["passed"] is True
-        assert detail["asic_a"]["cells"] == 1200
-        assert detail["asic_b"]["cells"] == 99
+        assert detail["asic_a"]["cell_count"] == 1200
+        assert detail["asic_b"]["cell_count"] == 99
         assert detail["asic_a"]["per_clock"]["clk"]["fmax_mhz"] == 800.0
         assert detail["asic_a"]["wns_ns"] == 0.25
 
@@ -4836,7 +4867,7 @@ class TestAggregateDetailIsSelfContained:
         base = {"asic_a": self._metrics(cells=1000)}
         detail = _aggregate_detail(["asic_a"], cur, base, "deadbee")
         assert detail["baseline_ref"] == "deadbee"
-        assert detail["asic_a"]["baseline_metrics"]["cells"] == 1000
+        assert detail["asic_a"]["baseline_metrics"]["cell_count"] == 1000
 
     def test_result_from_aggregate_carries_it(self, tmp_path: Path):
         flow = AsicSynthesizeFlow()

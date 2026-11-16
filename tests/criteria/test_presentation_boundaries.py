@@ -4,36 +4,33 @@ import pytest
 
 from booley.criteria.presentation import _format_criterion_presentation, _format_metric
 
+_METRIC_CASES: list[tuple[str, dict | None, str]] = [
+    ("coverage_sim", {"detail": None, "params": None}, ""),
+    ("coverage_sim", {"detail": {"status": None}}, ""),
+    (
+        "coverage_sim",
+        {"detail": {"status": "pass"}},
+        "pass",
+    ),
+    ("fpga_impl_ok", {"detail": {"lut_count": "bad", "wns_ns": []}}, ""),
+    (
+        "fpga_impl_ok",
+        {"detail": {"lut_count": "1200", "ff_count": 12, "wns_ns": "-0.25"}},
+        "1.2k LUTs | 12 FFs | WNS -0.25ns",
+    ),
+    ("synthesis_ok", {"detail": {"cell_count": object(), "per_clock": []}}, ""),
+    ("synthesis_ok", {"detail": {"cell_count": 1200, "per_clock": {}}}, "1.2k cells"),
+    ("synthesis_ok", {"detail": {"cells": 1200, "per_clock": {}}}, "1.2k cells"),
+    ("mutation_score", {"detail": {"detected": "bad", "total_valid": 0}}, ""),
+    ("lint_clean", {"detail": "not-a-table"}, ""),
+    ("review_correctness", None, ""),
+]
 
-@pytest.mark.parametrize(
-    ("key", "entry", "expected"),
-    [
-        ("coverage_sim", {"detail": None, "params": None}, ""),
-        ("coverage_sim", {"detail": {"status": None}}, ""),
-        (
-            "coverage_sim",
-            {"detail": {"status": "pass"}},
-            "pass",
-        ),
-        ("fpga_impl_ok", {"detail": {"lut_count": "bad", "wns_ns": []}}, ""),
-        (
-            "fpga_impl_ok",
-            {"detail": {"lut_count": "1200", "ff_count": 12, "wns_ns": "-0.25"}},
-            "1.2k LUTs | 12 FFs | WNS -0.25ns",
-        ),
-        ("synthesis_ok", {"detail": {"cells": object(), "per_clock": []}}, ""),
-        ("mutation_score", {"detail": {"detected": "bad", "total_valid": 0}}, ""),
-        ("lint_clean", {"detail": "not-a-table"}, ""),
-        ("review_correctness", None, ""),
-    ],
-)
-def test_malformed_metric_detail_degrades_without_raising(
-    key: str,
-    entry: dict | None,
-    expected: str,
-) -> None:
+
+def test_malformed_metric_detail_degrades_without_raising() -> None:
     """CRT-04/05: external metric payloads cannot crash header rendering."""
-    assert _format_metric(key, entry) == expected
+    for key, entry, expected in _METRIC_CASES:
+        assert _format_metric(key, entry) == expected, (key, entry)
 
 
 @pytest.mark.parametrize(
