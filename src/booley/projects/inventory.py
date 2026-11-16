@@ -11,6 +11,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from booley.core.boundary import BoundaryError, as_str, require_dict, require_list
+from booley.core.host_shell import quote_arg
 from booley.core.private_store import PrivateStore
 from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
@@ -93,9 +94,14 @@ def forget_project(
             identity = _stored_spelling(os.path.normpath(str(project_root)), known)
         else:
             identity = _remembered_identity(project_root, roots)
-        if any(grant.project_root == identity for grant in grants):
+        live = [grant for grant in grants if grant.project_root == identity]
+        if live:
+            commands = " and ".join(
+                f"`booley eda grant revoke --kind {grant.kind} {quote_arg(identity)}`"
+                for grant in live
+            )
             raise ProjectInventoryError(
-                f"cannot forget {identity}: revoke its live Project Grant first"
+                f"cannot forget {identity}: revoke its live Project Grant first with {commands}"
             )
         if before_forget is not None:
             before_forget(Path(identity))
@@ -249,7 +255,11 @@ def _remembered_identity(project_root: Path, roots: set[str]) -> str:
         canonical = str(project_root.resolve(strict=True))
         if canonical in roots:
             return canonical
-    raise ProjectInventoryError(f"Project Root is not remembered: {project_root}")
+    raise ProjectInventoryError(
+        f"Project Root is not remembered: {project_root}; copy the exact path "
+        "from `booley projects`, or for a deleted folder pass the exact absolute "
+        "root to `booley projects forget --purge`"
+    )
 
 
 def _load_roots() -> set[str]:

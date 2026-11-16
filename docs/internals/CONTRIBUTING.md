@@ -36,8 +36,7 @@ pip install -e ".[dev]"     # editable install plus test and lint tools (pytest,
 pytest                      # tests/ serially; pass a path or -k for a fast subset
 ```
 
-A bare `pytest` skips `tests/goals/` until Goal Mode is removed (#3511); run
-those with `pytest tests/goals`. Tests that need the native B-Wave binary skip
+Tests that need the native B-Wave binary skip
 until you build it (see [Agent source-development checks](#agent-source-development-checks)).
 
 CI installs with `-c .github/ci/constraints.txt`, a committed file that pins

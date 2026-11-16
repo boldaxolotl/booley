@@ -32,15 +32,6 @@ Python 3.13 and on Windows 3.11.
 Every complete-suite run uses `-m "not native_bwave"`; the `bwave-integration`
 job runs the `native_bwave` tests, which need the compiled B-Wave binary.
 
-### Goal Mode unit tests
-
-Temporary, until Goal Mode is removed
-([#3511](https://github.com/boldaxolotl/booley/issues/3511)). Collecting
-`tests/` skips `tests/goals/` (`collect_ignore` in `tests/conftest.py`); name
-the path to run them, for example `pytest tests/goals`. Goal source is omitted
-from coverage, and a `tests/goals/` change selects only `lint` (see
-`.github/scripts/ci_goal_tests.py`).
-
 ## Main pushes and the nightly run
 
 A push to `main` runs only the jobs in `MAIN_PUSH_JOBS` (`ci_changes.py`, which

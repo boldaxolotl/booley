@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from tests.goals.conftest import git
+from tests.git_support import git
 
 from booley.runtime import worktree_usage
 

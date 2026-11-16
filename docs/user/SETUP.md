@@ -165,11 +165,8 @@ Where each credential comes from:
 - **Subscription:** usage counts against your plan. When you hit a Claude
   rate limit, Booley waits and retries a Specialist call within its retry and
   timeout budgets; a Codex call stops and must be invoked again after the
-  limit resets. Resume an interrupted Goal session with
-  `goal_status(rules=true)`.
+  limit resets.
 - **API key:** you pay per token.
-
-Both work in Interactive Mode and Goal Mode.
 
 **For long runs, run `booley auth`.** The normal login renews itself
 periodically, and a renewal can sign out every running Developer Agent or
@@ -202,7 +199,7 @@ skill tells you which defaults it used:
 | --- | --- |
 | Simulator EDA tool | Verilator (default) / Icarus |
 | Testbench style | SystemVerilog (default) / cocotb |
-| Lint EDA tool | Verilator (default) / Verible |
+| Lint | Verilator with all warnings (`-Wall`) and Verible style lint (default both) / either one alone |
 | Flows to enable | ASIC synthesis (default on), FPGA (default off, give the part) |
 | ASIC synthesis mode | `physical` (default) / `logical` |
 | Keep Booley out of git history | off (default) / on |
@@ -217,8 +214,9 @@ What lands, wired together and ready to run:
 - `rtl/my_ip.sv`: a small parameterized counter standing in for your design
 - `tb/tb_my_ip.sv` (or `tb/test_my_ip.py` for cocotb): a self-checking
   testbench with two tests, following the shipped TB style guides
-- `my_ip.core`: one Target per enabled flow (`sim_my_ip`, `lint_my_ip`, and
-  optionally `synth_my_ip` (plus SDC in physical mode), `fpga_my_ip` + XDC)
+- `my_ip.core`: one Target per enabled flow (`sim_my_ip`, `lint_my_ip` with
+  Verilator and `-Wall`, `lint_my_ip_style` with Verible, and optionally
+  `synth_my_ip` (plus SDC in physical mode), `fpga_my_ip` + XDC)
 - `.booley/booley.toml` and [`tests.toml`](TESTS.md), populated rather than
   skeletons
 
@@ -294,7 +292,8 @@ and cleanup. The skill stops for your approval only once, after Step 0.
 - **4 · Doctor.** `booley doctor` is Booley's built-in health check: it audits
   your config, `.core` Targets, toolchain, and sandbox and reports on each
   check, with a fix hint for each failure. `--deep` goes further and
-  runs live sim/lint/synthesis smoke tests against the real EDA tools. Fix every
+  runs live sim/lint/synthesis smoke tests and FPGA implementations against the
+  real EDA tools. Fix every
   `FAIL`, then run `--deep` and fix those too. Setup is done when both pass.
 - **5 · Parity · optional.** Cross-check Booley against the native build system
   when the approved plan selects one.
@@ -310,15 +309,13 @@ Each step is also a standalone how-to file in the skill's `steps/` directory if
 you'd rather write it by hand.
 
 Once `booley doctor` (and `--deep`) is green, you're set up. Head to
-[GOAL-MODE.md](GOAL-MODE.md) to set up your first Goal Mode with `/booley-goal` and run it
-with `/booley-goal start`, or start an
-[Interactive Mode](USAGE.md#interactive-mode) session.
+[Interactive Mode](USAGE.md#interactive-mode) to start your first session.
 
 ### A new IP: greenfield mode
 
 After `booley init`, run `/booley-setup new` on the host, in your Claude Code or
 Codex chat at the Project Root. It asks the design choices in one batched round
-(IP name, simulator, testbench style, lint tool, flows, synthesis mode, and
+(IP name, simulator, testbench style, lint Targets, flows, synthesis mode, and
 whether to keep Booley out of git history, each with a recommended answer),
 then writes a working,
 green-by-construction project. So there's no feasibility triage and no config
@@ -346,9 +343,7 @@ testbench, keeping the generated wiring as the pattern. Refresh
 to match the current interface, keeping it buildable and behaviorally failing
 the selected smoke Test. Re-run the Doctor check
 whenever the shape of the project changes (new Target, new flow, new
-constraints). From there, drive development the normal way: see
-[GOAL-MODE.md](GOAL-MODE.md) to set up your first Goal Mode with `/booley-goal` and run it
-with `/booley-goal start`, or start an
+constraints). From there, drive development the normal way: start an
 [Interactive Mode](USAGE.md#interactive-mode) session.
 
 ## Project files
@@ -382,6 +377,5 @@ repository.
   which boundary. The reference the skill's plan step checks against.
 - [USAGE.md](USAGE.md): day-to-day use and Interactive Mode.
 - [CLI-REFERENCE.md](CLI-REFERENCE.md): CLI reference.
-- [GOAL-MODE.md](GOAL-MODE.md): Goal Mode.
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md): the few problems Booley can't
   report by itself.

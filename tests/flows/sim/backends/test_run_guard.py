@@ -482,9 +482,28 @@ def test_find_sim_time_stall_extracts_the_diagnosis():
         "some trailing noise\n"
     )
     found = rg.find_sim_time_stall(output)
-    assert found.startswith(rg.SIM_TIME_STALL_MARKER)
+    assert found == rg.format_sim_time_stall(180)
     assert not found.startswith("ERROR: ")
     assert rg.find_sim_time_stall("nothing to see") == ""
+
+
+def test_sim_time_stall_diagnosis_names_the_fixes_that_work():
+    """#4235: a pin cannot fix the mismatch, so the message names what can."""
+    msg = rg.format_sim_time_stall(180)
+    assert msg.startswith(rg.SIM_TIME_STALL_MARKER)
+    assert "re-pin" not in msg.lower()
+    steps = [
+        "run-loop version mismatch",
+        "cocotb-config --version",
+        "porting the testbench to the image's cocotb 2.x",
+        "`cocotb.start_soon`",
+        "Project image with a matching Verilator",
+        "minutes in Python setup",
+        "sim_time_grace_s",
+        "0 turns this watchdog off",
+    ]
+    positions = [msg.index(step) for step in steps]
+    assert positions == sorted(positions)
 
 
 @pytest.mark.parametrize(

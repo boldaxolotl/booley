@@ -126,6 +126,19 @@ HDL_VSIX = f"/usr/local/libexec/booley/veriloghdl-{_HDL_VERSION}.vsix"
 _LIVE_PREVIEW_VERSION = "0.4.20"
 LIVE_PREVIEW_VSIX = f"/usr/local/libexec/booley/live-server-{_LIVE_PREVIEW_VERSION}.vsix"
 
+# The bundled extensions besides VaporView, as Doctor checks them in the
+# attached window: built from the same pins the spec installs.
+BUNDLED_EXTENSIONS = (
+    _vaporview.BundledExtension("Verilog-HDL", "mshr-h.veriloghdl", _HDL_VERSION, HDL_VSIX),
+    _vaporview.BundledExtension(
+        "Live Preview",
+        "ms-vscode.live-server",
+        _LIVE_PREVIEW_VERSION,
+        LIVE_PREVIEW_VSIX,
+        requirement="Live Preview needs VS Code 1.109 or newer",
+    ),
+)
+
 # Live Preview exposes its in-container HTTP/WebSocket servers through VS
 # Code's remote-port tunnel. VS Code's long-lived local process can retain a
 # dead tunnel after its original container exits, then hand that tunnel to a
@@ -499,8 +512,8 @@ def mask_paths_error(value: object) -> str | None:
     subpaths are accepted: an absolute path would mask an arbitrary container
     path and a ``..`` segment would walk the mask outside the workspace mount —
     either turns a privacy knob into a container-layout editor. Masking
-    ``.booley`` itself is rejected too: the session reads its config,
-    Goal Records, and worktrees through that mount (``BOOLEY_DIR``), so
+    ``.booley`` itself is rejected too: the session reads its config
+    and worktrees through that mount (``BOOLEY_DIR``), so
     hiding the whole dir bricks the runtime — mask *subtrees* of it instead.
     """
     if value is None:

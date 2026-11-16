@@ -11,15 +11,14 @@ from pathlib import Path
 
 import pytest
 from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
-from tests.goals.conftest import git
+from tests.git_support import git
 from tests.subprocess_budget import run_bounded_child
 
 from booley.core.booley_dir import reset_cache, resolve_booley_dir
 from booley.core.booley_layout import BooleyLayoutError
-from booley.goals.model import GoalRecord, GoalState, WorktreeIdentity
-from booley.goals.store import GoalStore, resolve_worktree_identity
 from booley.harness.init_cmd import run_init
 from booley.runtime import booley_dir_migration as migration
+from booley.runtime.worktree_identity import resolve_worktree_identity
 
 OLD = ".booley_project"
 NEW = ".booley"
@@ -73,30 +72,12 @@ def _snapshot(root: Path) -> dict[str, str]:
     }
 
 
-def _record(directory: Path, state: GoalState, worktree: Path) -> GoalRecord:
-    identity = resolve_worktree_identity(worktree, create=True)
-    if identity is None:
-        identity = WorktreeIdentity(str(uuid.uuid4()), "main")
-    record = GoalRecord(
-        id="uart-20261006T101500Z",
-        state=state,
-        worktree=identity,
-        worktree_path=str(worktree),
-        branch="goal/uart",
-        original_ref="refs/heads/main",
-        base_sha="a" * 40,
-        entered_at="2026-10-06T10:15:00Z",
-        input_topology_digest="sha256:" + "e" * 64,
-        input_paths={
-            "rtl": {"path": str(worktree), "identity": [1, 2]},
-            "project": {"path": str(directory), "identity": [1, 3]},
-        },
-        revision=1,
-    )
-    target = directory / "goals" / record.id / "record.json"
+def _leftover_record(directory: Path) -> Path:
+    """Write a leftover ``goals/<id>/record.json`` (a removed feature's data) and return it."""
+    target = directory / "goals" / "uart-20261006T101500Z" / "record.json"
     target.parent.mkdir(parents=True)
-    target.write_text(json.dumps(record.to_json()))
-    return record
+    target.write_text(json.dumps({"id": target.parent.name, "state": "finished"}))
+    return target
 
 
 def test_hard_cut_diagnoses_old_instead_of_ancestor(tmp_path):
@@ -116,17 +97,6 @@ def test_obsolete_environment_refuses_even_with_cached_selection(tmp_path, monke
     monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / NEW))
     with pytest.raises(BooleyLayoutError, match="BOOLEY_DIR"):
         resolve_booley_dir(tmp_path)
-
-
-@pytest.mark.parametrize("state", [GoalState.ENTERING, GoalState.ACTIVE, GoalState.FINISHING])
-def test_init_occupancy_refusal_precedes_all_writes(tmp_path, state, capsys):
-    _repository(tmp_path)
-    (tmp_path / OLD).mkdir()
-    record = _record(tmp_path / OLD, state, tmp_path)
-    before = _snapshot(tmp_path)
-    assert run_init(argparse.Namespace(check_only=False), tmp_path) == 2
-    assert record.id in capsys.readouterr().out
-    assert _snapshot(tmp_path) == before
 
 
 def test_init_check_reports_rename_without_writes_or_bootstrap(tmp_path, capsys):
@@ -160,8 +130,8 @@ def test_moves_detached_worktree_and_nested_copy_or_pair(tmp_path, paired, relat
     (outer / "untracked.v").write_text("precious RTL\n")
     git(tmp_path, "worktree", "lock", "--reason", "preserve", str(outer))
     identity = resolve_worktree_identity(outer, create=True)
-    record = _record(old, GoalState.FINISHED, outer)
-    frozen = (old / "goals" / record.id / "record.json").read_bytes()
+    leftover = _leftover_record(old)
+    frozen = leftover.read_bytes()
     plan = _inspect(tmp_path)
     assert plan is not None
     migration.apply_migration(plan)
@@ -172,8 +142,7 @@ def test_moves_detached_worktree_and_nested_copy_or_pair(tmp_path, paired, relat
     assert resolve_worktree_identity(moved) == identity
     assert "prunable" not in git(tmp_path, "worktree", "list", "--porcelain")
     assert "locked preserve" in git(tmp_path, "worktree", "list", "--porcelain")
-    assert (tmp_path / NEW / "goals" / record.id / "record.json").read_bytes() == frozen
-    assert GoalStore(tmp_path / NEW).load(record.id).worktree == identity
+    assert (tmp_path / NEW / "goals" / leftover.parent.name / "record.json").read_bytes() == frozen
     if paired:
         assert "prunable" not in git(tmp_path / NEW, "worktree", "list", "--porcelain")
         assert Path(git(moved / NEW, "rev-parse", "--show-toplevel")) == moved / NEW
@@ -213,7 +182,7 @@ def test_pull_of_tracked_rename_refuses_both_and_preserves_local_state(tmp_path)
     git(source, "add", "-f", OLD)
     git(source, "commit", "-qm", "Project")
     run_bounded_child(["git", "clone", str(source), str(clone)], check=True)
-    record = _record(clone / OLD, GoalState.ABANDONED, clone)
+    leftover = _leftover_record(clone / OLD)
     migration.apply_migration(_inspect(source))
     git(source, "add", "-A", "--", OLD)
     git(source, "add", "-f", NEW)
@@ -223,7 +192,7 @@ def test_pull_of_tracked_rename_refuses_both_and_preserves_local_state(tmp_path)
     with pytest.raises(BooleyLayoutError, match="both"):
         _inspect(clone)
     assert _snapshot(clone) == before
-    assert (clone / OLD / "goals" / record.id / "record.json").is_file()
+    assert leftover.is_file()
 
 
 def _linked_layout(tmp_path, paired, relative):
@@ -346,17 +315,6 @@ def test_captured_performance_evidence_is_preserved_as_opaque_state(tmp_path):
     assert (
         tmp_path / NEW / "runtime/performance-report.json"
     ).read_bytes() == fixture.read_bytes()
-
-
-def test_post_migration_record_uses_ordinary_current_paths(tmp_path):
-    from booley.goals.status import build_status
-
-    _repository(tmp_path)
-    (tmp_path / OLD).mkdir()
-    migration.apply_migration(_inspect(tmp_path))
-    directory = tmp_path / NEW
-    record = _record(directory, GoalState.ACTIVE, tmp_path)
-    assert build_status(GoalStore(directory), record).record.id == record.id
 
 
 @pytest.mark.parametrize("variant", ["symlink", "read-only"])
@@ -717,14 +675,6 @@ def test_non_git_layout_gate_keeps_host_config_private(tmp_path, monkeypatch):
         assert stat.S_IMODE((config / "booley").stat().st_mode) == 0o700
 
 
-@pytest.mark.parametrize("path", ["/tmp/previous-project", r"C:\previous-project"])
-def test_historical_logical_input_roots_parse_across_platforms(path):
-    from booley.goals.input_identity import parse_bindings
-
-    bindings = {name: {"path": path, "identity": [1, 2]} for name in ("rtl", "project")}
-    assert parse_bindings(bindings) == bindings
-
-
 def test_linked_separate_git_root_reports_owner_instead_of_metadata_as_root(tmp_path):
     root, metadata = tmp_path / "rtl", tmp_path / "metadata"
     root.mkdir()
@@ -749,73 +699,6 @@ def test_unmoved_git_config_keeps_custom_formatting(tmp_path):
     before = config.read_bytes()
     migration.apply_migration(_inspect(tmp_path))
     assert config.read_bytes() == before
-
-
-@pytest.mark.parametrize("prefix", ["/history", r"C:\history"])
-def test_sealed_historical_directory_uses_recorded_path_flavor(tmp_path, prefix):
-    from booley.goals.lifecycle import LifecycleError, _record_directory
-
-    _repository(tmp_path)
-    record = _record(tmp_path / NEW, GoalState.FINISHED, tmp_path)
-    separator = "\\" if prefix.startswith("C:") else "/"
-    stored = prefix + separator + record.id
-    authority = {
-        "record_directory": {
-            "path": stored,
-            "identity": {"record_id": record.id, "worktree": record.worktree.to_json()},
-        }
-    }
-    current = tmp_path / NEW / "goals" / record.id
-    assert str(_record_directory(authority, current, record)) == stored
-    authority["record_directory"]["path"] = prefix + separator + "other-record"
-    with pytest.raises(LifecycleError, match="identity was substituted"):
-        _record_directory(authority, current, record)
-
-
-@pytest.mark.parametrize("flavor", ["posix", "windows"])
-def test_archival_artifact_confinement_preserves_logical_flavor(tmp_path, flavor):
-    from pathlib import PurePosixPath, PureWindowsPath
-    from types import SimpleNamespace
-
-    from booley.goals.lifecycle import (
-        LifecycleError,
-        LifecycleOperation,
-        LifecycleRequest,
-        _validate_result_paths,
-    )
-
-    _repository(tmp_path)
-    directory = tmp_path / NEW
-    record = _record(directory, GoalState.FINISHED, tmp_path)
-    store = GoalStore(directory)
-    request = LifecycleRequest(tmp_path, record.id, str(uuid.uuid4()))
-    record_dir = directory / "goals" / record.id
-    operation = LifecycleOperation(
-        store, SimpleNamespace(record_dir=record_dir), request, tmp_path
-    )
-    operation.directory.mkdir(parents=True)
-    logical = (
-        PureWindowsPath(r"C:\history") if flavor == "windows" else PurePosixPath("/history")
-    ) / record.id
-    authority = {
-        "record_directory": {
-            "path": str(logical),
-            "identity": {"record_id": record.id, "worktree": record.worktree.to_json()},
-        }
-    }
-    (operation.directory / "attempt.authority.json").write_text(json.dumps(authority))
-    original = logical / "operations" / request.operation_id
-    assert str(operation.sealed_directory("attempt")) == str(original)
-    saved = {
-        "status": "finished",
-        "package": str(original / "review-package.json"),
-        "summary": str(original / "SUMMARY.md"),
-        "html": None,
-    }
-    _validate_result_paths(saved, operation)
-    saved["summary"] = str(original / ".." / "SUMMARY.md")
-    with pytest.raises(LifecycleError, match="path differs"):
-        _validate_result_paths(saved, operation)
 
 
 @pytest.mark.parametrize("kind", ["bare", "separate"])
@@ -855,26 +738,3 @@ def test_managed_ignore_rewrite_preserves_unrelated_bytes_and_line_endings(tmp_p
     assert path.read_bytes() == before.replace(
         b"/" + OLD.encode() + b"/", b"/" + NEW.encode() + b"/"
     )
-
-
-def test_goal_store_locks_through_the_windows_adapter(tmp_path, monkeypatch):
-    import os
-    import sys
-    from types import SimpleNamespace
-
-    from booley.core import file_lock
-    from booley.goals import store
-    from booley.goals.status import build_status
-
-    calls = []
-    adapter = SimpleNamespace(
-        LK_NBLCK=1, LK_UNLCK=2, locking=lambda fd, mode, count: calls.append((fd, mode, count))
-    )
-    monkeypatch.setitem(sys.modules, "msvcrt", adapter)
-    monkeypatch.setattr(file_lock, "sys", SimpleNamespace(platform="win32"))
-    monkeypatch.setattr(store, "os", SimpleNamespace(name="nt", getpid=os.getpid, fstat=os.fstat))
-    _repository(tmp_path)
-    directory = tmp_path / NEW
-    record = _record(directory, GoalState.ACTIVE, tmp_path)
-    build_status(GoalStore(directory), record)
-    assert any(mode == adapter.LK_NBLCK for _, mode, _ in calls)

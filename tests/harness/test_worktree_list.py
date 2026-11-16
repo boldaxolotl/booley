@@ -1,4 +1,4 @@
-"""`booley worktree list`: branch, kind, changes, unmerged work, sessions, Goal, last use."""
+"""`booley worktree list`: branch, kind, changes, unmerged work, sessions, last use."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import pytest
 
 from booley.harness import booley as tlr
 from booley.harness import worktree_cmd
-from tests.goals.conftest import git
+from tests.git_support import git
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 
@@ -169,23 +169,6 @@ def test_squash_of_a_branch_that_merged_main_in_counts_as_merged(repo: Path) -> 
     assert states["mm"].unmerged == 0
 
 
-def test_a_goal_store_failure_is_a_diagnostic_not_a_crash(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from booley.goals.store import GoalStore, GoalStoreError
-
-    def fail(self: GoalStore, worktree: Path) -> None:
-        raise GoalStoreError("two Goal Records claim this worktree")
-
-    monkeypatch.setattr(GoalStore, "active_for_worktree", fail)
-    _add(repo, "w")
-
-    states, diagnostics = _collect(repo)
-
-    assert states["w"].goal is None
-    assert any("Goal Mode of worktree w is unavailable" in line for line in diagnostics)
-
-
 def test_a_project_without_a_session_registry_has_no_registry_diagnostic(repo: Path) -> None:
     _add(repo, "w")
 
@@ -208,39 +191,31 @@ def test_detached_worktree_is_listed_as_detached(repo: Path) -> None:
 
 
 @pytest.mark.skipif(not Path("/proc/self/ns/pid").exists(), reason="session scope needs procfs")
-def test_list_reports_live_session_active_goal_and_last_used(repo: Path) -> None:
+def test_list_reports_live_session_and_last_used(repo: Path) -> None:
     from booley.mcp.session_registry import Attribution, SessionRegistry, namespace
     from booley.runtime.handles import HandleStore
     from booley.runtime.worktree_usage import stamp_worktree
-    from tests.goals.test_store import _enter
 
     busy = _add(repo, "busy")
     _add(repo, "idle")
     common = repo / ".booley"
     now = time.time()
-    SessionRegistry(common, quiet_after=3600).upsert(
+    SessionRegistry(common).upsert(
         Attribution("codex:one", "thread", str(busy), "key", namespace=namespace()),
         "sim",
         "completed",
         now=now,
     )
     label = HandleStore(common).reserve("codex:one", "codex")
-    from booley.goals.store import GoalStore
-
-    _enter(GoalStore(common), busy, "fix-20261006T101500Z")
     stamp_worktree(common, "busy")
     stamp = common / "worktrees" / ".last-used" / "busy"
     os.utime(stamp, (now - 120, now - 120))
 
     states, _ = _collect(repo, now)
 
-    assert (states["busy"].sessions, states["busy"].goal) == ((label,), "fix-20261006T101500Z")
+    assert states["busy"].sessions == (label,)
     assert states["busy"].last_used == pytest.approx(now - 120, abs=1)
-    assert (states["idle"].sessions, states["idle"].goal, states["idle"].last_used) == (
-        (),
-        None,
-        None,
-    )
+    assert (states["idle"].sessions, states["idle"].last_used) == ((), None)
 
 
 def test_list_command_prints_one_row_per_worktree(
@@ -253,9 +228,9 @@ def test_list_command_prints_one_row_per_worktree(
     assert worktree_cmd.run(args, repo) == 0
 
     assert capsys.readouterr().out.splitlines() == [
-        "NAME  BRANCH    BOOLEY DIR  UNCOMMITTED  UNMERGED  SESSION  GOAL  LAST USED",
-        "a     booley/a  Snapshot    0            0         -        -     never",
-        "old   detached  Snapshot    0            1         -        -     never",
+        "NAME  BRANCH    BOOLEY DIR  UNCOMMITTED  UNMERGED  SESSION  LAST USED",
+        "a     booley/a  Snapshot    0            0         -        never",
+        "old   detached  Snapshot    0            1         -        never",
     ]
 
 

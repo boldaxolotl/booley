@@ -6,7 +6,7 @@ of those files must know. The JSON is self-describing: read a report to see its
 fields. User docs ([FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and the
 per-Flow pages) say how to run each Flow and read its verdict.
 
-The reports are evidence that Goals, Criteria, resume, and the Coverage
+The reports are evidence that Criteria, resume, and the Coverage
 Analyst read later, often in another process. So every run gets its own
 numbered directory, and files point at each other by relative path plus size and
 SHA-256.
@@ -17,8 +17,8 @@ Booley picks the report root in this order:
 
 1. `--report-dir`, if given.
 2. `$BOOLEY_RUNTIME_DIR/flow-reports`, when that variable is set. Every MCP
-   endpoint subprocess sets it: a Goal-bound call uses the Goal Record's runtime
-   directory, an ordinary Interactive Mode call the server's session runtime
+   endpoint subprocess sets it: an Interactive Mode call uses the server's
+   session runtime
    (`.interactive_logs/<session>/.runtime` in the Booley Directory).
 3. Otherwise, `flow-reports/` in the Booley Directory of the checkout.
 
@@ -51,7 +51,7 @@ Flows, and `booley.specialist-report/v1` for Specialists.
 
 - `passed` means exit `0`, whatever the Criteria say.
 - `criterion_key` and `criterion_met` are optional keys. They appear only on
-  runs with an acceptance identity (normally Goal-bound), and hold a value only
+  runs with an acceptance identity and hold a value only
   when exactly one applicable Criterion maps to the run, it was evaluated, and
   one Target was selected. Otherwise the key is empty and the verdict `null`.
 - `resources` (`cpu_user_s`, `cpu_sys_s`, `peak_rss_mb`) is a process-lifetime
@@ -101,7 +101,7 @@ component):
     record/
       manifest.json                    what this run will execute (fixed at start)
       summary.json                     where it stands now
-      build-variants/.../              simulator builds and their results
+      build-variants/.../              shared simulator builds (launched read-only by every attempt) and their results
       work-items/.../attempts/.../     one directory per test or batch, with its attempts
     simulation.json                    the Target's results
     coverage.json                      coverage runs only: the Coverage Record reference
@@ -179,8 +179,9 @@ attempt, and the enclosing Simulation Record together.
 In `report.json`, `detail.targets[<target>]` keeps each Target's results and a
 `coverage_record` reference to the Target-level `coverage.json`.
 `coverage_metrics` maps each native metric to `{percent, threshold, met}`. A
-threshold miss on a run that executed cleanly still exits `0`; for a Goal-bound
-run with one evaluated Criterion, `criterion_met` is `false`.
+threshold miss on a run that executed cleanly still exits `0`; with one
+evaluated
+Criterion, `criterion_met` is `false`.
 
 ## `lint`
 

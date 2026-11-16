@@ -155,8 +155,7 @@ leaves all of this on a blank slate:
 - `.booley/booley.toml` and `tests.toml` — **comment-only placeholders
   with zero keys**;
 - `.booley/.gitignore`, a `FUSESOC_IGNORE` marker, a managed
-  `.managed/project-git-hooks.pyz` bundle, Project-authored `hooks/`, and four create-only
-  `goalsets/{feature,bugfix,refactor,verification}.md` files;
+  `.managed/project-git-hooks.pyz` bundle, and Project-authored `hooks/`;
 - **no inner git repo** and no `/.booley` exclusion: the skeleton records no
   `[stealth] enabled`, and a missing key means Stealth Mode is off, so
   `.booley/` shows as untracked in the RTL repo until row 16 is executed;
@@ -460,14 +459,14 @@ script lines) as you go.
 - **Git submodules.** Run `git submodule status` in the outer repository and,
   when `.booley` is a standalone Git repository, run
   `git -C .booley submodule status` too. If either has any, add a
-  decision row — but a short one: Goal worktrees get their submodules
+  decision row — but a short one: linked worktrees get their submodules
   reconstructed from local Git objects at the same repository path, never
   cloned, so private SSH URLs are not consulted (mechanics in `/booley-docs/CONFIG.md` →
   "Git submodules"). What the plan owes is the precondition and, if the outer repo
   has heavy submodules nothing builds against, the explicit list:
   - Every selected submodule must be **present, clean, non-shallow, and contain
     the required pinned commit objects** in its owning repository before any
-    Goal work — host-side `git submodule update --init --recursive` in the
+    worktree work — host-side `git submodule update --init --recursive` in the
     outer repo and `git -C .booley submodule update --init --recursive`
     in a standalone paired repo, with no uncommitted submodule work left.
     Worktree setup hard-errors otherwise with the missing path, dirty checkout,
@@ -478,7 +477,7 @@ script lines) as you go.
     `booley.toml`; an explicit empty list selects none, and a non-empty list is
     intersected with the selected revision's gitlinks. Every top-level gitlink
     in a Paired Checkout is materialized. Nested gitlinks are recursive.
-  - Execution-time check: a Goal worktree comes up with the submodule
+  - Execution-time check: a new worktree comes up with the submodule
     populated (the main checkout looking fine proves only the precondition).
 - **Design scale.** Past ~250 files or ~150K LOC (`booley doctor` prints a
   NOTE at that scale), plan for it: an early ingest smoke (an `iverilog`
@@ -637,7 +636,8 @@ separate columns (see "How a row resolves"). The standard checklist:
    they need goes into the sandbox image (row 7). When a hook or generator
    invokes a recipe (for example `make <target>`), propose the tracked recipe
    file and its stimulus sources as additional Protected Inputs: tell the human
-   that Goal Mode will freeze them, check that no build output lands inside a
+   that a Measurement reports their edits, check that no build output lands
+   inside a
    proposed pattern, and record their agreement in this row. Step 2 writes
    `[project].protected_inputs` only from that agreement; see `/booley-docs/CONFIG.md` →
    "Additional Protected Inputs". Two shape constraints to plan against, both
@@ -727,18 +727,24 @@ separate columns (see "How a row resolves"). The standard checklist:
     still need authoring/confirmation, and Red for that Target when no safe seam
     exists. RTL elaboration alone never makes this row Green. An enabled synth
     Target with any unclassified candidate cannot be approved.
-11. **Style lint** — offer Verible style lint as a second lint Target only if
-    the user wants it (offer, never impose). "Never impose" means
-    never inflict a *foreign* style on a repo — it does not mean ignoring the
-    repo's own. **A strong in-repo signal makes this an ordinary inferred row:**
-    a `.rules.verible_lint`/`verible.filelist`, a CI job running
+11. **Lint Targets** — recommend two lint Targets by default: a Verilator lint
+    Target with `verilator_options: [-Wall]` (structural and semantic warnings:
+    `UNUSED*`, `UNDRIVEN`, `GENUNNAMED`, `ASCRANGE`, widths) and a Verible style
+    lint Target (`flow_options: {tool: verible}`). The user can decline either;
+    record each Target as `yes` or `declined` in the row. Reuse the repo's own
+    style rules when they exist: **a strong in-repo signal** (a
+    `.rules.verible_lint`/`verible.filelist`, a CI job running
     `verible-verilog-lint`, or a format/check script driving
-    `verible-verilog-format` (see the source-mutating-helper pile above) all say
-    the project already lints with Verible. With such a signal, propose `yes`
-    with that evidence and reuse the repo's own rules file as a
-    `file_type: veribleLintRules` fileset entry — you are matching the project,
-    not imposing. Unattended: signal ⇒ `yes` (`inferred`/high, not starred);
-    no signal ⇒ `no`, and say so in one line.
+    `verible-verilog-format`; see the source-mutating-helper pile above) says
+    the project already lints with Verible, so record the Verible Target as
+    `yes` with that evidence and reuse the repo's own rules file as a
+    `file_type: veribleLintRules` fileset entry. When the Targets lint upstream
+    RTL the Project does not own, tell the user that `-Wall` and Verible's
+    default rules may report findings there, and how to handle them: waive
+    Verilator findings in a `.vlt` control file with `lint_off -file
+    "<upstream path glob>"`, and scope the Verible Target's fileset to the
+    Project's own RTL. Never drop `-Wall` silently; removing it is the user's
+    recorded decision. Unattended: both `yes` (`inferred`/high, not starred).
 12. **Elaboration Check** — record whether the project needs the stronger
     `sim --mode elab-only-standalone` module sweep; ordinary Simulation already
     records its authenticated build-stage outcome.
@@ -864,14 +870,15 @@ surfaced that the standard list doesn't name: generator steps, **git
 submodules** (a row whenever either participating repository's
 `git submodule status` is non-empty: the host-side
 initialized/clean/full-history precondition, and `[submodules].paths` if only
-some outer gitlinks should reach Goal worktrees), **scope exclusions** (a VHDL twin, a subsystem nobody
+some outer gitlinks should reach linked worktrees), **scope exclusions** (a VHDL
+twin, a subsystem nobody
 targets — say what is excluded and why, never leave it implied), multi-clock
 timing intent, environment modules, a TB stdout tee, unusual directory layouts.
 The checklist is the floor, not the ceiling.
 
 Close with the **execution-time checks** list: every planned verification that
 needs the sandbox (fusesoc target resolution, `-march` compile check, ingest
-smoke, image EDA-tool probes, submodule population in a Goal worktree). Steps
+smoke, image EDA-tool probes, submodule population in a linked worktree). Steps
 2–4 run these; include semantic, frontend, mapped-netlist, and physical-link
 checks for every enabled synthesis Target, plus CDC preservation checks when
 applicable. A failed check that contradicts a decision triggers the deviation
@@ -926,7 +933,7 @@ Refine the decision sheet with concrete options and their tradeoffs:
   confidence. Unattended: take those defaults with confidence, without a star.
 - **Codebase first**: never ask what the repo can answer. Ask to *confirm*
   low-confidence inferences, to *choose* where evidence genuinely
-  under-determines (TB flavor, the Target set / config variants, style lint,
+  under-determines (TB flavor, the Target set / config variants,
   host-EDA-tool placement), and to
   *supply* what only the user knows (license servers, which flows they care
   about, host EDA-tool installs).
@@ -1026,8 +1033,8 @@ compile-flag probe.
    Python deps), see `/booley-docs/SANDBOX.md` → "Custom sandbox image" (its "With the RISC-V image" callout).
 
 2. **Post-setup hook**: build the firmware on demand instead of committing a
-   `.hex`. A Project setup script can run inside the container after a Goal
-   worktree is created, before entry; point it at the repo's software build (Ibex's is a
+   `.hex`. A Project setup script can run inside the container after a
+   worktree is created; point it at the repo's software build (Ibex's is a
    Make target):
 
    ```bash
@@ -1051,10 +1058,7 @@ compile-flag probe.
    looks built from in-repo source; both nudge you toward this build-on-demand
    pattern.
 
-## Goalset policy in the plan
+## Dashboard task in the plan
 
-Record which seeded Goalsets need Project-specific rules. Ask whether a
-`goalsets/default.md` should apply to every Goal entry, and record the answer
-with the existing verification intent. Initialization seeds four Goalsets
-create-only and does not create a default. Also record any requested opt-out of
-the default Dashboard task with `[sandbox].dashboard=false`.
+Record any requested opt-out of the default Dashboard task with
+`[sandbox].dashboard=false`.

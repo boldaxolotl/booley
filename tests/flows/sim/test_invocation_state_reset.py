@@ -1,7 +1,6 @@
 """One Flow object, several invocations: Test Run decisions never carry over (ADR 0072).
 
-Resolved Test Runs (drawn seeds included), the baseline runs and the Goals'
-frozen Test Runs belong to one request. They restart wherever an invocation starts: a
+Resolved Test Runs (drawn seeds included) and the baseline runs belong to one request. They restart wherever an invocation starts: a
 new invocation, a newly parsed request, and the preparation of an execution.
 """
 
@@ -23,23 +22,14 @@ def _names(flow) -> list[str]:
     return [run.name for run in flow._resolve_test_runs("sim", _MAP)]
 
 
-def _decide(flow) -> tuple[str, ...]:
-    """Read the Goals' frozen Test Runs, as an invocation does once (none: no Goal Mode)."""
-    assert flow._frozen_test_runs() is None
-    return tuple(flow._test_runs.fresh_seed_selectors)
-
-
 def test_a_newly_parsed_request_resolves_its_own_test_runs(tmp_path, monkeypatch):
     flow = _flow(tmp_path, monkeypatch, "--test", "stress+soak@9")
     assert _names(flow) == ["stress+soak@9"]
-    assert _decide(flow) == ()
-    assert flow._test_runs.frozen == (None,)  # read once: nothing is frozen outside Goal Mode
 
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim", "--test", "stress"])
 
     assert flow._test_runs == TestRunInvocation()
     assert _names(flow) == ["stress+short@1"]
-    assert _decide(flow) == ()
 
 
 def test_random_seeds_are_drawn_again_for_the_next_invocation(tmp_path, monkeypatch):
@@ -69,7 +59,6 @@ def test_random_seeds_are_drawn_again_for_the_next_invocation(tmp_path, monkeypa
 def test_every_invocation_boundary_starts_the_state_afresh(tmp_path, monkeypatch, boundary):
     flow = _flow(tmp_path, monkeypatch, "--test", "stress+soak@9")
     _names(flow)
-    _decide(flow)
     stale = flow._test_runs
     request = replace(flow.args, test=("stress",))
 
@@ -82,7 +71,6 @@ def test_every_invocation_boundary_starts_the_state_afresh(tmp_path, monkeypatch
     assert flow._test_runs is not stale
     assert flow._test_runs == TestRunInvocation()
     assert _names(flow) == ["stress+short@1"]
-    assert _decide(flow) == ()
 
 
 def test_executing_one_flow_object_twice_uses_each_requests_own_test_runs(tmp_path, monkeypatch):

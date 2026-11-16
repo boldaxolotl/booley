@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sys
 import threading
 import uuid
@@ -306,7 +305,7 @@ class SimulationRecordCapacity:
         try:
             token = store.acquire(
                 CLASS_MEMORY,
-                pid=os.getpid(),
+                pid=store.pid,
                 argv=list(sys.argv),
                 role=self._admission.role,
                 timeout_s=self._admission.timeout_seconds,

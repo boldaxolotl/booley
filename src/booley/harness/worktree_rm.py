@@ -38,11 +38,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast, get_args
 
-from booley.config.goals import quiet_after
 from booley.core.booley_dir import resolve_common_booley_dir, resolve_main_checkout_root
 from booley.core.booley_layout import BooleyLayoutError
 from booley.core.layout_lock import layout_gate
-from booley.goals.store import GoalStore, GoalStoreError
 from booley.harness.worktree_list import (
     Registration,
     WorktreeListError,
@@ -294,7 +292,7 @@ def _resuming(target: _Target, component: _Component) -> bool:
 
 
 def _session_reasons(target: _Target) -> list[str]:
-    registry = SessionRegistry(target.common, quiet_after=quiet_after(target.common))
+    registry = SessionRegistry(target.common)
     snapshot = registry.visible_snapshot(now=time.time(), scope=namespace())
     # A project that never ran a Session has no registry directory: nothing to read.
     if registry.root.exists() and snapshot.diagnostics:
@@ -327,14 +325,6 @@ def _handle_holder_reasons(target: _Target, handles: dict[str, str]) -> list[str
         if observe_process(identity).state not in DEAD_PROCESS_STATES:
             reasons.append(f"live Session {label}")
     return reasons
-
-
-def _goal_reasons(target: _Target) -> list[str]:
-    try:
-        record = GoalStore(target.common, lock_timeout_s=0).active_for_worktree(target.path)
-    except GoalStoreError as exc:
-        return [f"Goal Mode state is unreadable: {exc}"]
-    return [] if record is None else [f"active Goal Record {record.id}"]
 
 
 def _submodule_reasons(checkout: Path, source: Path, subject: str) -> list[str]:
@@ -466,12 +456,12 @@ def _booley_dir_reasons(target: _Target) -> list[str]:
 def _busy_reasons(target: _Target) -> list[str]:
     """Every reason removal would drop work that exists nowhere else.
 
-    Fails closed: an unreadable Session Registry or Goal store is a reason. A
+    Fails closed: an unreadable Session Registry is a reason. A
     Git failure while counting raises :class:`WorktreeListError` (nothing changed).
     """
     reasons: list[str] = []
     if not _resuming(target, target.outer):
-        reasons += _session_reasons(target) + _goal_reasons(target)
+        reasons += _session_reasons(target)
     for component in (target.outer, target.paired):
         if component is not None:
             reasons += _component_reasons(target, component)
@@ -481,8 +471,8 @@ def _busy_reasons(target: _Target) -> list[str]:
 def discard_losses(project_root: Path, name: str) -> list[str]:
     """What removing worktree *name* would lose, in the words of ``rm``'s refusal.
 
-    Read-only: it takes no layout lock and changes nothing. A live Session, an active
-    Goal Record and a Git lock are blockers, not losses; ``remove_worktree`` reports
+    Read-only: it takes no layout lock and changes nothing. A live Session
+    and a Git lock are blockers, not losses; ``remove_worktree`` reports
     them as its refusal. Raises the failures in :data:`REMOVAL_FAILURES`.
     """
     main = resolve_main_checkout_root(project_root)

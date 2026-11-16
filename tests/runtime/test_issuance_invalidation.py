@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
 import threading
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -122,6 +123,54 @@ def test_tampered_invalidation_journal_fails_closed(tmp_path: Path) -> None:
         issuance_invalidation.pending_invalidations()
     with pytest.raises(issuance_invalidation.InvalidationError, match="identity mismatch"):
         issuance_invalidation.recover_project_locked(project_identity)
+    assert journal.exists()
+
+
+def test_misnamed_journal_repair_names_the_cleanup_it_still_owes(tmp_path: Path) -> None:
+    project_identity = str((tmp_path / "project").resolve())
+    different_identity = str((tmp_path / "different-project").resolve())
+    issuance_invalidation.prepare(project_identity)
+    journal = issuance_invalidation.journal_store().path(project_identity)
+    journal.write_text(json.dumps({"project_root": different_identity}), encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def recorder(args: list[str], _timeout: int) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        listing = {"container": "relay\n", "network": "private\n"}.get(args[0], "")
+        return subprocess.CompletedProcess(args, 0, listing if args[1] == "ls" else "", "")
+
+    # Booley's own cleanup for the Project the misnamed file holds: the printed
+    # commands must select exactly what it lists and remove.
+    assert (
+        flexnet_docker.cleanup_project_resources_for_identity(different_identity, runner=recorder)
+        == ()
+    )
+    list_calls = [args for args in calls if args[1] == "ls"]
+    assert [args for args in calls if args[1] == "rm"] == [
+        ["container", "rm", "-f", "relay"],
+        ["network", "rm", "private"],
+    ]
+
+    for refuse in (
+        issuance_invalidation.pending_invalidations,
+        lambda: issuance_invalidation.recover_project_locked(project_identity),
+    ):
+        with pytest.raises(issuance_invalidation.InvalidationError) as caught:
+            refuse()
+        message = str(caught.value)
+        container_rm = (
+            "docker container rm -f $(docker container ls -aq --filter label=booley.project-id="
+        )
+        network_rm = "docker network rm $(docker network ls -q --filter label=booley.project-id="
+        assert container_rm in message
+        assert network_rm in message
+        for args in list_calls:
+            assert "docker " + " ".join(args) + ")" in message
+        assert str(journal) in message
+        assert f"booley init --seed --project {different_identity}" in message
+        assert message.index(container_rm) < message.index(f"remove {journal}")
+        assert message.index(network_rm) < message.index(f"remove {journal}")
+        assert "keep the file and retry" in message
     assert journal.exists()
 
 

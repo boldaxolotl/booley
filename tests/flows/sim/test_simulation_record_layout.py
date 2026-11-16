@@ -33,10 +33,6 @@ from booley.flows.sim.record.codec import (
 )
 from booley.flows.sim.record.resume import validate_resume_manifest
 from booley.flows.sim.request import SimRequest
-from booley.goals.entry import EntryEnvironment
-from booley.goals.finish import finish_goal
-from booley.goals.lifecycle import LifecycleError
-from booley.mcp.goal_completion import completion_environment
 from tests.flows.sim.simulation_record_test_support import coverage_invocation
 from tests.flows.sim.test_simulation_record_resume_diagnostics import (
     _interrupted_simulation_record,
@@ -49,14 +45,9 @@ from tests.flows.sim.test_simulation_record_unsupported_formats import (
 from tests.flows.sim.test_simulation_record_unsupported_formats import (
     reports as _reports_fixture,
 )
-from tests.goals.conftest import layout as _layout_fixture
-from tests.goals.test_finish import request
-from tests.goals.test_generated_inputs import classified
 
 # The report-root fixture of the Part 1 tests, collected here under the same name.
 reports = _reports_fixture
-# The Goal worktree fixture of tests/goals, which the broad suite does not collect.
-layout = _layout_fixture
 
 # The Target of each captured run: ``complete`` ran ``sim``, the others ``sim_0``.
 _TARGET = {"complete": "sim", "interrupted": "sim_0", "coverage": "sim_0"}
@@ -115,6 +106,46 @@ def test_resume_from_accepts_a_record_manifest(tmp_path: Path, monkeypatch) -> N
         )
 
 
+def test_resume_from_a_record_with_an_executable_snapshot_is_refused_before_any_work(
+    tmp_path: Path, monkeypatch
+) -> None:
+    reports_root, manifest, _executions = _interrupted_simulation_record(tmp_path, monkeypatch)
+    (attempt, *_rest) = manifest.parent.glob("work-items/*/attempts/*")
+    snapshot = attempt / "snapshot" / "snapshot.json"
+    snapshot.parent.mkdir()
+    snapshot.write_bytes(
+        (Path(__file__).parents[1] / "fixtures/simulation_record/snapshot.json").read_bytes()
+    )
+    original = reports_root / "sim" / "1"
+    before = _files(original)
+
+    def reached(_executor, _request):
+        raise AssertionError("resume reached execution")
+
+    monkeypatch.setattr("booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor.execute", reached)
+
+    result = SimulateFlow().execute(
+        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports_root)
+    )
+
+    assert result.exit_code == 2
+    assert (
+        "Executable snapshot booley.executable-snapshot/v2 was written by an older Booley"
+        in result.outcome.report_text
+    )
+    # The refusal reads the record only: it neither changes it nor starts a new one.
+    assert _files(original) == before
+    assert not list(reports_root.glob("sim/2/**/manifest.json"))
+
+
+def _files(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
 # --- AC2: --resume-from an older layout is refused before any work ----------------------
 
 
@@ -155,7 +186,7 @@ def test_a_simulation_record_path_naming_no_directory_is_not_called_an_older_rec
     assert "older Booley" not in str(excinfo.value)
 
 
-# --- AC3: the Pre-Sim scan, Coverage analysis and Goal waiver binding --------------------
+# --- AC3: the Pre-Sim scan, Coverage analysis and waiver binding --------------------
 
 
 def test_pre_sim_scan_refuses_an_older_layout_manifest(reports: Path) -> None:
@@ -189,7 +220,7 @@ def test_coverage_analysis_refuses_an_older_layout(reports: Path) -> None:
 
 
 def test_a_persisted_coverage_reference_into_an_older_layout_is_refused(reports: Path) -> None:
-    """Goal waiver binding reads a persisted pointer to the public reference."""
+    """Waiver binding reads a persisted pointer to the public reference."""
     invocation = copy_older_invocation("0.4.0", "coverage", reports)
     raw = (invocation / "targets" / "sim_0" / "coverage.json").read_bytes()
     persisted = {
@@ -240,16 +271,3 @@ def test_the_old_directory_names_are_not_aliases(reports: Path, tmp_path: Path) 
         validate_resume_manifest(mutation, project_root=tmp_path)
     assert "must name one exact record/manifest.json" in str(foreign.value)
     assert "older Booley" not in str(foreign.value)
-
-
-@pytest.mark.timeout(120)
-def test_finish_refuses_an_older_layout_producer_manifest(layout) -> None:
-    """A Goal's 0.4.0 producer manifest is refused: its ``campaign/`` directory marks it old first."""
-    fixture = Path(__file__).parents[1] / "fixtures" / "booley_0_4_0" / "complete" / "sim" / "1"
-    classified(layout, copyto="dhrystone/dhry.hex", older_layout_invocation=fixture)
-    with pytest.raises(LifecycleError) as excinfo:
-        finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))
-    message = str(excinfo.value).replace("\\", "/")
-    assert "was written by an older Booley and is no longer supported" in message
-    assert "targets/sim/campaign" in message
-    assert "/flow-reports/sim/7 and start a fresh run" in message

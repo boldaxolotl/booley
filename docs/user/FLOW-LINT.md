@@ -14,7 +14,8 @@ what all Flows share (choosing Targets, options, logs, exit codes), see
 ## Running lint
 
 1. Check that the Project has a lint Target (`booley targets --for lint` lists
-   them). Project Setup normally creates one;
+   them). Project Setup normally creates a Verilator Target and a Verible
+   style Target;
    [Lint Targets](#lint-targets) shows how to add one.
 2. Ask the Developer Agent, naming the lint Target or Targets:
 
@@ -104,8 +105,7 @@ Each run's files are in its numbered run directory (`lint/3/` above), under
 
 `flow-reports/lint_report.json` is a copy of the latest run's report.
 
-A `LINT:{target}` Goal is met only when that Target has no findings within the
-run's `--scope`, whatever `warnings_as_errors` says. A run with any `--scope`
+A run with any `--scope`
 entry that matches no linted file ends in `ERROR` and records no passing
 result.
 

@@ -112,11 +112,11 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
     commands.add_parser(
         "list",
-        help="Show every worktree's branch, changes, Session, Goal Mode, and last use",
+        help="Show every worktree's branch, changes, Session, and last use",
         description=(
             "List the worktrees under .booley/worktrees with their branch (or "
-            "detached), uncommitted and unmerged work, live Sessions, active Goal "
-            "Mode, and last use. Read-only."
+            "detached), uncommitted and unmerged work, live Sessions, "
+            "and last use. Read-only."
         ),
     )
     remove = commands.add_parser(
@@ -127,7 +127,7 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
             "Checkout first, then the outer worktree. Common Booley State and Flow "
             "reports in the worktree move to .booley/worktrees/.evidence/<name>-<time>/ "
             "first, and the branches stay. Refuses, naming every reason, while the "
-            "worktree has a live Session, an active Goal Mode, uncommitted or unmerged "
+            "worktree has a live Session, uncommitted or unmerged "
             "work, a populated submodule commit that main lacks, a Git lock, or a "
             "damaged checkout; another worktree registered inside it is always "
             "refused. Re-run after an interruption to finish."
@@ -138,7 +138,7 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
         "--force",
         action="store_true",
         help=(
-            "remove even with a live Session, active Goal Mode, uncommitted or "
+            "remove even with a live Session, uncommitted or "
             "unmerged work, or a Git lock; evidence is still kept"
         ),
     )
@@ -149,7 +149,7 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
             "Remove every worktree whose last use is older than AGE (default 7d, or "
             "[worktree].gc_older_than in the main checkout's .booley/booley.toml) with "
             "the same checks as `booley worktree rm`, never forced: a worktree with a "
-            "live Session, an active Goal Mode, or unsaved work is kept, as is one "
+            "live Session or unsaved work is kept, as is one "
             "with no last-used record or that you are inside. Prints each worktree "
             "removed or kept and why."
         ),

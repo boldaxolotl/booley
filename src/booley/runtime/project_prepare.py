@@ -1,4 +1,4 @@
-"""Deterministic Project preparation before Goal admission."""
+"""Deterministic Project preparation before a worktree is used."""
 
 from __future__ import annotations
 

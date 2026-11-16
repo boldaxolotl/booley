@@ -40,7 +40,7 @@ optional is not covered by a primary run.
 | Interactive Mode | [gui/dashboard-live](missions/gui/MISSION.md), [taxi/bwave](missions/taxi/MISSION.md), [taxi/interactive](missions/taxi/MISSION.md), [uart/interactive-surface](missions/uart/MISSION.md), [uart/setup-interactive](missions/uart/MISSION.md) |
 | MCP job control | [taxi/bwave](missions/taxi/MISSION.md), [taxi/interactive](missions/taxi/MISSION.md) |
 | Mode-specific MCP surface | [uart/interactive-surface](missions/uart/MISSION.md) |
-| Job admission control | [scheduler/sched-admission](missions/scheduler/MISSION.md), [scheduler/sched-fullchip](missions/scheduler/MISSION.md) (optional), [scheduler/sched-jump](missions/scheduler/MISSION.md), [scheduler/sched-records](missions/scheduler/MISSION.md), [taxi/sim-record](missions/taxi/MISSION.md), [taxi/interactive](missions/taxi/MISSION.md) |
+| Job admission control | [scheduler/sched-admission](missions/scheduler/MISSION.md), [scheduler/sched-companions](missions/scheduler/MISSION.md), [scheduler/sched-fullchip](missions/scheduler/MISSION.md) (optional), [scheduler/sched-jump](missions/scheduler/MISSION.md), [scheduler/sched-records](missions/scheduler/MISSION.md), [taxi/sim-record](missions/taxi/MISSION.md), [taxi/interactive](missions/taxi/MISSION.md) |
 | Job resource history | [scheduler/sched-history](missions/scheduler/MISSION.md) |
 | Memory reservation shrinking | [scheduler/sched-shrink](missions/scheduler/MISSION.md) |
 | Out-of-memory requeue | [scheduler/sched-oom](missions/scheduler/MISSION.md) |

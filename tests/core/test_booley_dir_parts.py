@@ -54,7 +54,7 @@ ADR_0082_SAMPLES = {
     "reviewer-state/s": "common",
     "handoffs/h.md": "common",
     "tickets/T1/state.json": "common",
-    "goalsets/set.md": "common",
+    "goalsets/set.md": "common",  # leftover directory of a removed feature
     "docker/Dockerfile": "common",
 }
 

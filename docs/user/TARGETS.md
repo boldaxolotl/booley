@@ -28,7 +28,7 @@ express, a per-test build step such as compiling a test's firmware, goes in
    `booley targets <name>` (one Target in detail). `--for sim|lint|synth|fpga`
    shows only the Targets that Flow can run.
 
-Renaming a Target also means updating its `tests.toml` section, any Goals, and
+Renaming a Target also means updating its `tests.toml` section and
 anything else that calls it by name; ask the agent to do all of it in one
 change.
 
@@ -160,9 +160,8 @@ targets:
 ```
 
 The allowed names are `sim`, `lint`, `synth`, and `fpga`. Plain `booley doctor`
-dry-runs each marked Target and `booley doctor --deep` runs it. For `fpga`,
-deep Doctor skips the full implementation and prints the command to run it
-yourself. An unmarked Target still runs whenever you or the agent ask for it.
+dry-runs each marked Target and `booley doctor --deep` runs it. An unmarked
+Target still runs whenever you or the agent ask for it.
 With an enabled `[flows.fpga]` table, Doctor fails until some Target is marked
 `fpga`; set `enabled = false` there if the Project has no FPGA build yet.
 

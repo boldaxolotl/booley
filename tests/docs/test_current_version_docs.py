@@ -62,6 +62,11 @@ ALLOWLIST = (
     ),
 )
 
+# These are current diagnostic/schema literals, not historical narrative.
+ALLOWLIST += (
+    ExceptionRule("docs/user/DOCTOR.md", "`config.retired-goals`", "Current Doctor check ID.", 1),
+)
+
 
 def document_paths(root: Path) -> list[Path]:
     """Discover current user text, with explicit history/implementation exclusions.
@@ -224,7 +229,6 @@ def test_visible_cli_help_describes_current_version() -> None:
     assert (
         not {
             "booley session",
-            "booley goal",
             "booley feedback",
             "booley cleanup",
             "booley upgrade",
@@ -261,13 +265,9 @@ def test_shared_glossary_defines_developer_agent_outside_retired_terms() -> None
     text = (ROOT / "docs/GLOSSARY.md").read_text(encoding="utf-8")
     active, retired = text.split("## Retired and ambiguous terminology", maxsplit=1)
     definition = active.split("**Developer Agent**:\n", maxsplit=1)[1].split("\n\n", 1)[0]
-    for term in ("Sandbox", "Interactive Mode", "Goal Mode", "Booley Flows", "Specialists"):
+    for term in ("Sandbox", "Interactive Mode", "Booley Flows", "Specialists"):
         assert term in definition
-    assert "whether a human is steering or the work is unattended" in definition
-    assert (
-        "_Avoid_: coding agent, host agent, main agent, outer agent, the agent session in Goal Mode"
-        in definition
-    )
+    assert "_Avoid_: coding agent, host agent, main agent, outer agent" in definition
     assert "Developer Agent** →" not in retired
     assert 'Never use "agent" for a Specialist' in retired
 

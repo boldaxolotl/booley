@@ -1,4 +1,4 @@
-"""One selection decides the Flow runner and the MCP tool recorder, exactly as before."""
+"""One selection decides the MCP tool recorder; endpoint commands launch their own module."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from booley.mcp.call_context import resolve_call_context
 from booley.mcp.flow_execution_selection import select_flow_execution
 from booley.mcp.unbound_recorder import UnboundAcceptanceRecorder
 
@@ -43,7 +42,6 @@ def _command(name: str, definition: dict[str, object]) -> list[str]:
         {"target": "lint_uart"},
         definition,
         collections.defaultdict(int),
-        resolve_call_context({}),
     )
 
 
@@ -105,33 +103,8 @@ class TestEndpointCommand:
         ]
 
 
-class TestGoalSelection:
-    """A Goal run binding selects the Goal adapter for every endpoint kind."""
+class TestStandaloneSelection:
+    """Every call records through the standalone recorder."""
 
-    def test_binding_selects_the_goal_adapter(self, tmp_path: Path) -> None:
-        from booley.goals.binding import GoalRunBinding
-        from booley.goals.flow_execution import GoalFlowExecution
-        from booley.goals.model import WorktreeIdentity
-
-        binding = GoalRunBinding(
-            booley_dir=tmp_path,
-            record_id="evidence-20261006T120000Z",
-            record_revision=3,
-            worktree=WorktreeIdentity("12345678-1234-4234-9234-123456789abc", "worktrees/wt"),
-            worktree_root=tmp_path / "wt",
-            goal_branch="goal/evidence-20261006",
-            invocation_id="run-1",
-            spec_revisions=(("lint_clean_top", 1),),
-            protected_paths=(),
-            start_digest="sha256:" + "0" * 64,
-            start_head_digest="sha256:" + "1" * 64,
-            eligible=True,
-        )
-
-        selection = select_flow_execution(binding)
-
-        adapter = selection.acceptance_recorder()
-        assert isinstance(adapter, GoalFlowExecution)
-        assert adapter.binding == binding
-        assert selection.flow_runner_module == "booley.mcp.goal_flow_runner"
-        assert adapter.acceptance_identity()["goal_keys"] == ["lint_clean_top"]
+    def test_selection_builds_the_unbound_recorder(self) -> None:
+        assert type(select_flow_execution().acceptance_recorder()) is UnboundAcceptanceRecorder

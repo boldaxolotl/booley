@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
 
-from booley.goals.store import GoalStore
+from booley.core.booley_dir import reset_cache
 from booley.harness.dashboard.app import job_detail, job_paths
 from booley.harness.dashboard.jobs import JobReader
 from booley.harness.dashboard.resources import ResourceSampler
@@ -18,10 +19,32 @@ from booley.mcp import (
 from booley.runtime import job_records
 from booley.runtime.pid import ProcessIdentity
 from tests.conftest import symlink_or_skip
-from tests.goals import conftest as goal_fixtures
-from tests.goals.conftest import INPUT_PATHS
+from tests.git_support import git
 
-layout = goal_fixtures.layout
+
+@pytest.fixture
+def layout(tmp_path, monkeypatch):
+    """A Project with a Main Booley Directory and one linked worktree."""
+    main = tmp_path / "main"
+    main.mkdir()
+    git(main, "init", "-q", "-b", "main")
+    git(main, "config", "core.autocrlf", "false")
+    (main / "booley.toml").write_text("# root config\n", encoding="utf-8")
+    (main / "rtl.v").write_text("module top; endmodule\n", encoding="utf-8")
+    git(main, "add", "-A")
+    git(main, "commit", "-q", "-m", "base")
+    (main / ".git" / "info" / "exclude").write_text("/.booley\n", encoding="utf-8")
+    control = main / ".booley"
+    worktree = control / "worktrees" / "wt"
+    control.mkdir()
+    git(main, "worktree", "add", "-q", "-b", "work", str(worktree))
+    for booley_dir in (control, worktree / ".booley"):
+        (booley_dir / "mcp_tools").mkdir(parents=True, exist_ok=True)
+        (booley_dir / "booley.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+    monkeypatch.setenv("BOOLEY_DIR", str(control))
+    reset_cache()
+    yield SimpleNamespace(main=main, control=control, worktree=worktree)
+    reset_cache()
 
 
 def snapshot_jobs(
@@ -35,8 +58,7 @@ def snapshot_jobs(
 ):
     options = {} if proc_root is None else {"proc_root": proc_root}
     reader = reader or JobReader(booley_dir, slots_root=slots_root, **options)
-    records = GoalStore(booley_dir).list_records().records
-    return reader.read(records, interactive_root=interactive_root, now=now)
+    return reader.read(interactive_root=interactive_root, now=now)
 
 
 def files(root):
@@ -164,35 +186,6 @@ def test_process_resource_delta_and_reused_identity_are_honest(tmp_path, monkeyp
     assert sampler.sample(identity, now=12, capacity=2) == resources.ProcessResources()
 
 
-def test_retained_goal_roots_are_discovered_without_current_sessions(tmp_path):
-    from booley.goals.model import GoalRecord, GoalState, WorktreeIdentity
-    from booley.goals.paths import record_paths
-    from booley.harness.dashboard.jobs import retained_job_roots
-
-    expected = []
-    for number, state in enumerate((GoalState.ACTIVE, GoalState.FINISHED, GoalState.ABANDONED)):
-        record = GoalRecord(
-            f"fixture{number}-20261008T100000Z",
-            state,
-            WorktreeIdentity("00000000-0000-4000-8000-000000000001", "main"),
-            str(tmp_path),
-            "goal/fixture",
-            "refs/heads/main",
-            "a" * 40,
-            "2026-10-08T10:00:00Z",
-            input_topology_digest="sha256:" + "e" * 64,
-            input_paths=INPUT_PATHS,
-            revision=1,
-        )
-        paths = record_paths(tmp_path, record.id)
-        paths.root.mkdir(parents=True)
-        paths.record_file.write_text(json.dumps(record.to_json()))
-        expected.append(paths.jobs_dir)
-    assert set(retained_job_roots(tmp_path, GoalStore(tmp_path).list_records().records)) == set(
-        expected
-    )
-
-
 def test_reported_metrics_and_legacy_elapsed_are_not_invented():
     from dataclasses import replace
     from pathlib import Path
@@ -270,11 +263,7 @@ def test_server_job_lifecycle_does_not_include_other_interactive_roots(tmp_path,
     historic.mkdir(parents=True)
     monkeypatch.setattr(call_context, "container_jobs_root", lambda: current)
     monkeypatch.setattr(server, "resolve_booley_dir", lambda: tmp_path)
-    assert set(
-        retained_job_roots(
-            tmp_path, GoalStore(tmp_path).list_records().records, interactive_root=current
-        )
-    ) == {current, historic}
+    assert set(retained_job_roots(tmp_path, interactive_root=current)) == {current, historic}
     assert server.job_roots() == (current,)
 
 
@@ -430,9 +419,7 @@ def test_historical_interactive_roots_keep_only_newest_bounded_set(tmp_path, mon
         os.utime(root, (100 + index, 100 + index))
         if index >= 2:
             expected.append(root)
-    assert set(
-        jobs.retained_job_roots(tmp_path, GoalStore(tmp_path).list_records().records)
-    ) == set(expected)
+    assert set(jobs.retained_job_roots(tmp_path)) == set(expected)
 
 
 def test_interactive_history_bounds_enumeration_before_selecting_newest(tmp_path, monkeypatch):
@@ -453,22 +440,7 @@ def test_interactive_history_bounds_enumeration_before_selecting_newest(tmp_path
     monkeypatch.setattr(jobs, "MAX_SCANNED_INTERACTIVE_ROOTS", 2)
     monkeypatch.setattr(jobs, "MAX_INTERACTIVE_ROOTS", 1)
 
-    assert jobs.retained_job_roots(tmp_path, ()) == (roots[1],)
-
-
-def test_on_disk_goal_job_roots_skip_non_goal_directories_and_a_missing_goals_dir(tmp_path):
-    from booley.core.booley_layout import GOALS_DIR_NAME
-    from booley.harness.dashboard import jobs
-
-    assert jobs.on_disk_goal_job_roots(tmp_path) == []
-    goals = tmp_path / GOALS_DIR_NAME
-    (goals / "history").mkdir(parents=True)
-    (goals / "alpha-20260101T000000Z").mkdir()
-    (goals / "stray.txt").write_bytes(b"")
-
-    roots = jobs.on_disk_goal_job_roots(tmp_path)
-
-    assert [root.parent.parent.name for root in roots] == ["alpha-20260101T000000Z"]
+    assert jobs.retained_job_roots(tmp_path) == (roots[1],)
 
 
 def test_dashboard_job_view_preserves_every_observation_field(tmp_path, monkeypatch):
@@ -495,7 +467,7 @@ def test_dashboard_job_view_preserves_every_observation_field(tmp_path, monkeypa
         lambda _self, _roots, **_kw: ObservationSnapshot((observation,), ("history truncated",)),
     )
 
-    snapshot = JobReader(tmp_path).read((), interactive_root=root)
+    snapshot = JobReader(tmp_path).read(interactive_root=root)
 
     # New fields must be given explicit non-default fixture values before this test passes.
     assert all(field.default_factory is MISSING for field in fields(JobObservation))
@@ -519,16 +491,14 @@ def test_report_under_an_allowed_extra_root_is_found(tmp_path):
     report.write_bytes(b'{"run_id": "one", "passed": true}')
     reader = JobReader(project)
 
-    assert reader.read((), interactive_root=root).jobs[0].report is None
+    assert reader.read(interactive_root=root).jobs[0].report is None
 
-    found = reader.read((), interactive_root=root, artifact_roots=(outside,)).jobs[0]
+    found = reader.read(interactive_root=root, artifact_roots=(outside,)).jobs[0]
     assert found.report == {"run_id": "one", "passed": True}
     assert found.report_path == report
 
 
-@pytest.mark.parametrize(
-    "malformed", [{"session_key": 5}, {"binding": []}, {"binding": {"schema": "future"}}]
-)
+@pytest.mark.parametrize("malformed", [{"session_key": 5}, {"work_dir": []}])
 def test_malformed_job_is_isolated_from_other_records(tmp_path, malformed):
     root = tmp_path / "jobs"
     job_records.write_record(rec("good", status="done"), root)
@@ -540,73 +510,7 @@ def test_malformed_job_is_isolated_from_other_records(tmp_path, malformed):
     assert "bad.json" in str(observed.diagnostics)
 
 
-def test_invalid_goal_binding_never_reaches_process_observation(tmp_path, monkeypatch):
-    from booley.runtime.job_observation import _observer
-
-    root = tmp_path / "jobs"
-    job_records.write_record(rec("good", status="done"), root)
-    identity = ProcessIdentity(99, "fixture", 101)
-    job_records.write_record(
-        rec("bad", pid=99, process_identity=identity.to_payload(), binding={"schema": "future"}),
-        root,
-    )
-    monkeypatch.setattr(
-        _observer,
-        "observe_process",
-        lambda *_a, **_k: pytest.fail("invalid Goal binding reached process observation"),
-    )
-
-    observed = JobReader(tmp_path).read((), interactive_root=root)
-
-    assert [job.record.run_id for job in observed.jobs] == ["good"]
-    assert observed.diagnostics == (f"Job record unavailable: {root / 'bad.json'}",)
-
-
-def test_dashboard_goal_rows_and_job_history_share_one_enumeration(tmp_path, monkeypatch):
-    from booley.goals.model import GoalRecord, GoalState, WorktreeIdentity
-    from booley.goals.paths import record_paths
-    from booley.goals.store import RecordScan
-    from booley.harness.dashboard.model import DashboardReader
-
-    record = GoalRecord(
-        "fixture-20261008T100000Z",
-        GoalState.FINISHED,
-        WorktreeIdentity("00000000-0000-4000-8000-000000000001", "main"),
-        str(tmp_path),
-        "goal/fixture",
-        "refs/heads/main",
-        "a" * 40,
-        "2026-10-08T10:00:00Z",
-        input_topology_digest="sha256:" + "e" * 64,
-        input_paths=INPUT_PATHS,
-        revision=1,
-    )
-    paths = record_paths(tmp_path, record.id)
-    paths.root.mkdir(parents=True)
-    paths.record_file.write_text(json.dumps(record.to_json()))
-    # Windows read-only observation requires the producer's initialized lock byte.
-    paths.lock_file.write_bytes(b"\0")
-    job_records.write_record(rec("retained", status="done"), paths.jobs_dir)
-    original = GoalStore.list_records
-    calls = []
-
-    def list_records(store):
-        calls.append(store)
-        # A concurrent change could make a second enumeration select different history.
-        return original(store) if len(calls) == 1 else RecordScan((), ())
-
-    monkeypatch.setattr(GoalStore, "list_records", list_records)
-    snapshot = DashboardReader(tmp_path, tmp_path).read()
-
-    assert len(calls) == 1
-    assert [goal.id for goal in snapshot.goals] == [record.id]
-    assert snapshot.goals[0].terminal_summary == "finished"
-    assert [job.key for job in snapshot.jobs.jobs] == [(str(paths.jobs_dir), "retained")]
-
-
 def test_bounded_scan_examines_current_work_before_older_interactive_sessions(tmp_path):
-
-    from booley.goals.store import GoalStore
     from booley.harness.dashboard import jobs
 
     current = tmp_path / "current/.runtime/jobs"
@@ -614,15 +518,9 @@ def test_bounded_scan_examines_current_work_before_older_interactive_sessions(tm
         root = tmp_path / f".interactive_logs/{index}/.runtime/jobs"
         root.mkdir(parents=True)
         os.utime(root, (100 + index, 100 + index))
-    roots = jobs.retained_job_roots(
-        tmp_path, GoalStore(tmp_path).list_records().records, interactive_root=current
-    )
-    goal_roots = [
-        jobs.record_paths(tmp_path, rec.id).jobs_dir
-        for rec in GoalStore(tmp_path).list_records().records
-    ]
+    roots = jobs.retained_job_roots(tmp_path, interactive_root=current)
     history = [tmp_path / f".interactive_logs/{index}/.runtime/jobs" for index in (2, 1, 0)]
-    assert list(roots) == [current, *goal_roots, *history]
+    assert list(roots) == [current, *history]
 
 
 def test_job_completed_between_refreshes_keeps_recorded_figures(tmp_path, monkeypatch):

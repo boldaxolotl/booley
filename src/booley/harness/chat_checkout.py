@@ -109,12 +109,11 @@ def _live_sessions(common: Path) -> list[tuple[Path, str]]:
 
     An unreadable registry reads as no Session: the lock is the authority, this only widens it.
     """
-    from booley.config.goals import quiet_after
     from booley.mcp.session_registry import SessionRegistry, namespace
     from booley.runtime.handles import HandleStore
 
     try:
-        registry = SessionRegistry(common, quiet_after=quiet_after(common))
+        registry = SessionRegistry(common)
         snapshot = registry.visible_snapshot(now=time.time(), scope=namespace())
     except (OSError, ValueError):
         return []

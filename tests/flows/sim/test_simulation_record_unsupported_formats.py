@@ -17,18 +17,16 @@ from types import SimpleNamespace
 import pytest
 
 from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.record import codec
 from booley.flows.sim.record.codec import (
     canonical_json_bytes,
     decode_simulation_record_manifest,
+    decode_simulation_result,
+    decode_simulator_bundle,
 )
 from booley.flows.sim.record.resume import validate_resume_manifest
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.request import SimRequest
-from booley.flows.sim.unpublished_results import read_unpublished_results
-from booley.goals.simulation_record_accounting import REASON_UNACCOUNTED
-from booley.goals.status import build_status
-from booley.goals.store import GoalStore
-from booley.harness.dashboard.model import project_goal
 from booley.targets.catalog import TargetCatalog
 from tests.flows.sim.simulation_record_test_support import (
     _retained_invocation,
@@ -40,12 +38,6 @@ from tests.flows.sim.test_simulation_record_manifest_codec import (
 )
 from tests.flows.sim.test_simulation_record_resume_diagnostics import (
     _interrupted_simulation_record,
-)
-from tests.goals.conftest import SIM_KEY, layout  # noqa: F401  (fixture)
-from tests.goals.test_simulation_record_accounting import (  # noqa: F401  (fixtures)
-    _SimulationRecord,
-    simulation_record,
-    two,
 )
 
 _MANIFEST = "booley.simulation-campaign-manifest/"
@@ -244,6 +236,74 @@ def test_a_0_3_0_result_is_refused_naming_its_invocation(tmp_path) -> None:
     _assert_refused(str(excinfo.value), _RESULT_V2, reports / "sim/1")
 
 
+_SNAPSHOT_V2 = "booley.executable-snapshot/v2"
+_PREVIOUS_RESULT = "booley.simulation-result/v4"
+_PREVIOUS_BUNDLE = "booley.simulator-bundle/v2"
+
+
+@pytest.mark.parametrize(
+    ("schema", "decode"),
+    [
+        (_PREVIOUS_RESULT, decode_simulation_result),
+        (_PREVIOUS_BUNDLE, decode_simulator_bundle),
+        (_SNAPSHOT_V2, "refuse_retired_document"),
+    ],
+)
+def test_previous_version_documents_are_refused(schema: str, decode) -> None:
+    if isinstance(decode, str):
+        decode = getattr(codec, decode)
+    with pytest.raises(ValueError) as excinfo:
+        decode(canonical_json_bytes({"$schema": schema}))
+
+    _assert_unsupported_type(excinfo.value)
+    _assert_refused(str(excinfo.value), schema)
+
+
+@pytest.mark.parametrize("raw", [b"\xff", b"not json", b"[]", b'{"$schema":"booley.x/v1"}'])
+def test_a_snapshot_document_that_is_not_a_retired_format_is_corrupt(raw: bytes) -> None:
+    with pytest.raises(codec.SimulationRecordIntegrityError):
+        codec.refuse_retired_document(raw)
+
+
+def test_a_previous_version_result_is_refused_naming_its_invocation(tmp_path) -> None:
+    reports, _project_data, store = _retained_invocation(tmp_path)
+    result_path = next(store.root.glob("work-items/*/result.json"))
+    result = json.loads(result_path.read_bytes())
+    result["$schema"] = _PREVIOUS_RESULT
+    result["executable_snapshot"] = result.pop("bundle_verification")
+    _rewrite(result_path, canonical_json_bytes(result))
+
+    with pytest.raises(ValueError) as excinfo:
+        store.scan()
+
+    _assert_unsupported_type(excinfo.value)
+    _assert_refused(str(excinfo.value), _PREVIOUS_RESULT, reports / "sim/1")
+
+
+def test_a_previous_version_executable_snapshot_is_refused_by_scan(tmp_path) -> None:
+    reports, _project_data, store = _retained_invocation(tmp_path)
+    (attempt,) = store.root.glob("work-items/*/attempts/*")
+    snapshot = attempt / "snapshot" / "snapshot.json"
+    snapshot.parent.mkdir()
+    snapshot.write_bytes((_FIXTURES / "simulation_record" / "snapshot.json").read_bytes())
+
+    with pytest.raises(ValueError) as excinfo:
+        store.scan()
+
+    _assert_unsupported_type(excinfo.value)
+    _assert_refused(str(excinfo.value), _SNAPSHOT_V2, reports / "sim/1")
+
+
+def test_the_executable_snapshot_format_is_only_refused() -> None:
+    from booley.flows.sim import record
+
+    assert _SNAPSHOT_V2 in codec._RETIRED_SCHEMAS
+    assert not any(spec[0] == _SNAPSHOT_V2 for spec in codec._DOCUMENT_SPECS.values())
+    for name in ("decode_executable_snapshot", "encode_executable_snapshot", "ExecutableSnapshot"):
+        assert not hasattr(record, name)
+        assert not hasattr(codec, name)
+
+
 def test_resume_ignores_a_leftover_project_child_registry(tmp_path, monkeypatch) -> None:
     """The child-execution registry is no longer read: a malformed entry cannot block resume."""
     reports, manifest, _executions = _interrupted_simulation_record(tmp_path, monkeypatch)
@@ -260,37 +320,3 @@ def test_resume_ignores_a_leftover_project_child_registry(tmp_path, monkeypatch)
         SimulateFlow().execute(
             SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
         )
-
-
-# --- Goal status and the Dashboard (the Goal fixtures live under tests/goals, which the
-# broad run does not collect, so this reader is tested here) ---
-
-
-def test_an_older_layout_simulation_record_reads_as_refused_in_status_and_the_dashboard(
-    two: SimpleNamespace,  # noqa: F811 (fixture imported from tests/goals)
-    simulation_record: _SimulationRecord,  # noqa: F811
-    tmp_path: Path,
-) -> None:
-    """An older Booley's record is refused as too old, never "cannot be read"."""
-    invocation = tmp_path / "reports" / "sim" / "1"
-    shutil.copytree(_FIXTURES / "booley_0_4_0" / "complete" / "sim" / "1", invocation)
-    simulation_record.manifest = invocation / "targets" / "sim" / "campaign" / "manifest.json"
-    simulation_record.start("run-1")
-    two.simulation_record_reader = read_unpublished_results
-
-    store = GoalStore(two.control)
-    view = build_status(
-        store, two.record, work_dir=two.worktree, simulation_record_reader=read_unpublished_results
-    )
-    dashboard = project_goal(store, two.record)
-
-    assert dashboard.status is not None
-    for goals in (view.goals, dashboard.status.goals):
-        goal = next(goal for goal in goals if goal.key == SIM_KEY)
-        assert goal.status == "unmet"
-        assert goal.reason.startswith(REASON_UNACCOUNTED)
-        assert "is refused: " in goal.reason
-        assert "was written by an older Booley and is no longer supported" in goal.reason
-        assert "targets/sim/campaign" in goal.reason
-        assert f"delete the Simulation invocation directory {invocation} and start" in goal.reason
-        assert "cannot be read" not in goal.reason

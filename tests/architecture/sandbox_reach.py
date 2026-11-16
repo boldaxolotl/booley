@@ -66,46 +66,6 @@ class LazyImportCut:
 # Each cut was confirmed by reading every caller of its enclosing functions.
 SANDBOX_ONLY_LAZY_IMPORTS: tuple[LazyImportCut, ...] = (
     LazyImportCut(
-        source="booley.mcp.catalog",
-        targets=("booley.goals.rules", "booley.mcp.flow_adapter", "booley.mcp.goal_tools"),
-        functions=(
-            "_default_interactive_definitions",
-            "_find_mcp_tool_class_in_module",
-            "_import_and_extract",
-            "visible_definitions",
-            "work_dir_guidance",
-        ),
-        callers=frozenset({"booley.mcp.call_context"}),
-        internal_callers=frozenset({"discover_builtin_definitions"}),
-        reason=(
-            "MCP server catalog build (mcp/server.py, mcp/catalog_worker.py) and the Goal "
-            "work-dir refusal raised inside an MCP call (mcp/call_context.py)"
-        ),
-    ),
-    LazyImportCut(
-        source="booley.mcp.flow_execution_selection",
-        targets=(
-            "booley.flows.sim.unpublished_results",
-            "booley.goals.flow_execution",
-            "booley.mcp.goal_freshness",
-        ),
-        functions=("_goal_acceptance_recorder",),
-        callers=frozenset(),
-        internal_callers=frozenset({"select_flow_execution"}),
-        reason=(
-            "the Goal recorder builder runs only for a Goal-bound MCP call; the unbound "
-            "recorder is not cut because every McpTool constructor builds it on the host"
-        ),
-    ),
-    LazyImportCut(
-        source="booley.mcp.call_context",
-        targets=("booley.mcp.sim_baseline_jobs",),
-        functions=("_goal_call_context",),
-        callers=frozenset(),
-        internal_callers=frozenset({"resolve_call_context"}),
-        reason="builds the call context of an MCP tool call bound to a Goal",
-    ),
-    LazyImportCut(
         source="booley.flows.endpoint_acceptance",
         targets=("booley.criteria.actions",),
         functions=("_pending_criterion_invocations",),

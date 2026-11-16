@@ -20,13 +20,12 @@ import pytest
 
 from booley.flows.builtin_cli import parse_request
 from booley.flows.sim.flow import SimulateFlow
-from booley.flows.sim.record import read_durable_results
+from booley.flows.sim.record import codec, read_durable_results
 from booley.flows.sim.record.codec import (
     SimulationRecordIntegrityError,
     canonical_json_bytes,
     decode_bundle_build_attempt,
     decode_bundle_build_result,
-    decode_executable_snapshot,
     decode_simulation_attempt,
     decode_simulation_record_manifest,
     decode_simulation_result,
@@ -68,7 +67,7 @@ _OLD_RECORDS = {
     "booley.bundle-build-attempt/v1": decode_bundle_build_attempt,
     "booley.bundle-build-result/v1": decode_bundle_build_result,
     "booley.simulator-bundle/v1": decode_simulator_bundle,
-    "booley.executable-snapshot/v1": decode_executable_snapshot,
+    "booley.executable-snapshot/v1": codec.refuse_retired_document,
 }
 
 
@@ -108,17 +107,16 @@ def test_a_run_writes_simulation_record_names(tmp_path: Path) -> None:
     assert manifest["$schema"] == "booley.simulation-record-manifest/v1"
     record_id = manifest["simulation_record_id"]
     assert uuid.UUID(record_id).version == 4
-    # Goal Records own the bare ``record_id``, so it must never name a Simulation Record.
+    # The bare ``record_id`` is not a Simulation Record name.
     assert "campaign_id" not in manifest
     assert "record_id" not in manifest
 
     schemas = {
-        "work-items/*/result.json": "booley.simulation-result/v4",
+        "work-items/*/result.json": "booley.simulation-result/v5",
         "work-items/*/attempts/*/attempt.json": "booley.simulation-attempt/v2",
         "build-variants/*/attempts/*/build-attempt.json": "booley.bundle-build-attempt/v2",
         "build-variants/*/attempts/*/build-result.json": "booley.bundle-build-result/v2",
-        "build-variants/*/attempts/*/evidence/bundle.json": "booley.simulator-bundle/v2",
-        "work-items/*/attempts/*/snapshot/snapshot.json": "booley.executable-snapshot/v2",
+        "build-variants/*/attempts/*/evidence/bundle.json": "booley.simulator-bundle/v3",
     }
     for pattern, schema in schemas.items():
         documents = sorted(store.root.glob(pattern))
@@ -213,7 +211,7 @@ def test_a_0_4_0_manifest_is_refused_naming_its_invocation(reports: Path) -> Non
     _assert_unsupported_type(decoded.value)
     _assert_refused(str(decoded.value), _OLD_MANIFEST)
 
-    # Goal status and the Dashboard each read it through this.
+    # The Dashboard reads it through this.
     with pytest.raises(ValueError) as refused:
         read_durable_results(manifest, "sha256:" + "0" * 64)
     _assert_unsupported_type(refused.value)

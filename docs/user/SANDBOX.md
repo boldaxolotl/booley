@@ -83,7 +83,7 @@ memory = "8g"                                  # container memory limit; unset =
 
 `memory` sets the [Memory Budget](CONFIG.md#jobs--concurrency-jobs) that
 admits Jobs; `booley doctor` warns while it is unset. `[sandbox] dashboard` is
-covered in [CONFIG.md](CONFIG.md#dashboard-and-quiet-goal-presence-goals).
+covered in [CONFIG.md](CONFIG.md#dashboard-sandboxdashboard).
 Every `[sandbox]` change takes effect when you
 [apply it](#after-changing-sandbox-settings).
 

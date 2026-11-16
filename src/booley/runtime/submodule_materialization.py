@@ -102,7 +102,7 @@ def materialize_worktree_submodules(worktree: Path, *, missing_only: bool = Fals
 
     Sources are the same paths in the repository's main checkout (and its
     Versioned Booley Directory). ``missing_only`` fills absent or empty gitlink
-    directories and accepts a populated one unchanged: Goal entry's clean check
+    directories and accepts a populated one unchanged: the caller's clean check
     judges its HEAD and dirt. Either selection failing removes everything this call created.
     """
     worktree = worktree.resolve()

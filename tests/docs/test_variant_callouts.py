@@ -1,6 +1,6 @@
 """Variant callouts in docs/user/ carry a fixed label, a variant link, and block formatting.
 
-Rule 26 of docs/internals/DOCS_PRINCIPLES.md keeps text that applies to one
+Rule 26 of docs/internals/USER_DOCS_PRINCIPLES.md keeps text that applies to one
 variant (stealth mode, Windows, a cocotb testbench, host-installed licensed
 tools, your own Sandbox image, the RISC-V image, one EDA tool of a Flow) out of the main flow, in a ``<details markdown>``
 callout. This guard checks the shape of every callout: the label is one of the

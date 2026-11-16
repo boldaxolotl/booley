@@ -19,7 +19,12 @@ import pytest
 
 from booley.harness import init_cmd
 from booley.harness import session_refresh as harness_refresh
-from booley.runtime import issuance_invalidation, session_admission, session_refresh
+from booley.runtime import (
+    issuance_invalidation,
+    runtime_context,
+    session_admission,
+    session_refresh,
+)
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
 from booley.runtime.image_lifecycle import (
@@ -29,8 +34,14 @@ from booley.runtime.image_lifecycle import (
     ProjectImageScope,
     Status,
 )
+from booley.runtime.sandbox_apply import Attachment
 from tests.harness import test_session_runtime as resolution_fixtures
 from tests.runtime import test_session_issuance as issuance_fixtures
+from tests.runtime.test_sandbox_remedy_workflows import (
+    EXTERNAL,
+    HEADLESS_RESEED,
+    VSCODE_SEED,
+)
 
 project_sandbox_resolution = resolution_fixtures.project_sandbox_resolution
 workspace = resolution_fixtures.workspace
@@ -637,14 +648,26 @@ def test_start_state_lookup_failure_keeps_step_and_rerun_advice(host: _Host) -> 
     assert message.endswith(RERUN)
 
 
-def test_refresh_refuses_external_image_with_unchanged_message(
-    host: _Host, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize(
+    ("owner", "steps"),
+    [
+        (Attachment.HEADLESS, EXTERNAL + HEADLESS_RESEED),
+        (Attachment.VSCODE, EXTERNAL + VSCODE_SEED),
+    ],
+    ids=["headless", "vscode-stopped"],
+)
+def test_refresh_refuses_external_image_with_owner_steps(
+    host: _Host, monkeypatch: pytest.MonkeyPatch, owner: Attachment, steps: str
 ) -> None:
     from booley.runtime.image_lifecycle import ImageRole
 
     host.run_old_sandbox()
     plan = SimpleNamespace(nodes=(SimpleNamespace(role=ImageRole.EXTERNAL),))
     monkeypatch.setattr(init_cmd.image_lifecycle, "plan", lambda *_args: plan)
+    monkeypatch.setattr(sr, "image_is_managed", lambda _root: False)
+    monkeypatch.setattr(sr, "sandbox_attachment", lambda _root: owner)
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(runtime_spec, "load_issued_snapshot", lambda _root: object())
     converge = Mock(side_effect=AssertionError("external images are never converged"))
     monkeypatch.setattr(harness_refresh._RuntimeImages, "converge", converge)
 
@@ -652,11 +675,8 @@ def test_refresh_refuses_external_image_with_unchanged_message(
         session_refresh.refresh(host.project, harness_refresh._RuntimeImages())
 
     assert str(caught.value) == (
-        "the selected Sandbox Image cannot use managed refresh: it is externally managed. "
-        "Rebuild/pull it explicitly, then on the host run `booley session down`, "
-        "`booley init --seed`, and `booley session up`."
+        "the selected Sandbox Image cannot use managed refresh: it is externally managed; " + steps
     )
-    assert "booley session refresh" not in str(caught.value)
     converge.assert_not_called()
     assert host.mutations() == []
 

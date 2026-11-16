@@ -2,7 +2,6 @@
 """booley -- CLI entry point for the Booley RTL development harness.
 
 Subcommands:
-    goal      Work with Goal Records and evidence
     chat      Open the Project's default (or --cli chosen) Agent CLI
     worktree  Create, list, remove, or clean up linked worktrees (paired or snapshot Project inputs)
     cheat     Print quick-reference cheatsheet
@@ -17,6 +16,7 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import io
 import itertools
 import logging
 import os
@@ -31,10 +31,10 @@ from contextlib import nullcontext
 from datetime import UTC
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from booley.config.agent import AGENT_CLIS
-from booley.config.jobs import RetiredJobsKeyError, refuse_retired_jobs_keys
+from booley.config.retired import RetiredConfigError, refuse_retired_config
 from booley.core.egress_modes import EGRESS_MODES
 from booley.feedback import cli as feedback_cli
 from booley.harness import (
@@ -62,6 +62,7 @@ if TYPE_CHECKING:
     # of the import path of every `booley` invocation.
     from booley.mcp.registry import McpToolInfo
     from booley.runtime.session_admission import Sandbox
+    from booley.targets.target_surface import TargetDetailPayload
 
 # --- Constants ---
 
@@ -81,7 +82,6 @@ class CommandLocation(Enum):
 
 COMMAND_LOCATIONS = {
     "help": CommandLocation.EITHER,
-    "goal": CommandLocation.SESSION_RUNTIME,
     "dashboard": CommandLocation.SESSION_RUNTIME,
     "chat": CommandLocation.SESSION_RUNTIME,
     "worktree": CommandLocation.SESSION_RUNTIME,
@@ -104,7 +104,7 @@ COMMAND_LOCATIONS = {
     "cleanup": CommandLocation.EITHER,
 }
 
-_HIDDEN_COMMANDS = frozenset({"feedback", "cleanup", "upgrade", "session", "goal", "shell"})
+_HIDDEN_COMMANDS = frozenset({"feedback", "cleanup", "upgrade", "session", "shell"})
 _COMMAND_LOCATION_ORDER = {
     CommandLocation.SESSION_RUNTIME: 0,
     CommandLocation.EITHER: 1,
@@ -123,7 +123,6 @@ class ProjectBinding(Enum):
 
 COMMAND_PROJECT_BINDINGS = {
     "help": ProjectBinding.INDEPENDENT,
-    "goal": ProjectBinding.REQUIRED,
     "dashboard": ProjectBinding.REQUIRED,
     "chat": ProjectBinding.REQUIRED,
     "worktree": ProjectBinding.REQUIRED,
@@ -148,8 +147,8 @@ COMMAND_PROJECT_BINDINGS = {
 }
 
 RETIRED_COMMAND_POINTERS = {
-    command: f"`booley {command}` is not available; Goal Mode replaces it: "
-    "open an agent session in the Sandbox and run /booley-goal"
+    command: f"`booley {command}` is not available; `booley measure` replaces it: "
+    "run `booley measure --help`"
     for command in ("run", "board")
 }
 
@@ -269,8 +268,9 @@ def _force_utf8() -> None:
     """Force UTF-8 for all text I/O — prevents CP1252 encoding errors on Windows."""
     os.environ.setdefault("PYTHONUTF8", "1")
     if sys.stdout.encoding.lower().replace("-", "") != "utf8":
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        for stream in (sys.stdout, sys.stderr):
+            if isinstance(stream, io.TextIOWrapper):
+                stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 def _baked_identity() -> tuple[str, str]:
@@ -445,7 +445,6 @@ def _outer_endpoint_selection(args: argparse.Namespace) -> bool:
 
 def _invoke_endpoint(endpoint, argv, args, **kwargs) -> int:
     from booley.flows.cli_selection import CliInvocation
-    from booley.harness.cli_goal_notice import warn_cli_goal_recording
     from booley.harness.endpoint_help import supports_shared_cli
 
     selected = getattr(args, "_cli_endpoint_project", None)
@@ -458,10 +457,7 @@ def _invoke_endpoint(endpoint, argv, args, **kwargs) -> int:
             file=sys.stderr,
         )
         return 2
-    # Flow code must not import Harness, so the command layer supplies the human advisory.
-    endpoint._cli_invocation = CliInvocation(
-        project=selected, goal_recording_advisory=warn_cli_goal_recording
-    )
+    endpoint._cli_invocation = CliInvocation(project=selected)
     return endpoint.main(argv, **kwargs)
 
 
@@ -547,7 +543,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     add_worktree_subparser(sub)
     _add_utility_subparsers(sub)
-    _add_goal_subparser(sub)
     _add_dashboard_subparser(sub)
 
     _install_project_options(parser)
@@ -686,7 +681,7 @@ def _add_doctor_subparser(sub) -> None:
     doctor_p.add_argument(
         "--deep",
         action="store_true",
-        help="Run real first-config sim/lint/synthesis smoke checks",
+        help="Run real sim/lint/synthesis smoke checks and FPGA implementation",
     )
     doctor_p.add_argument(
         "--skip-agent-checks",
@@ -694,6 +689,28 @@ def _add_doctor_subparser(sub) -> None:
         help=(
             "With --deep, skip agent credential inspection and the live "
             "Specialist provider authorization and memory probe"
+        ),
+    )
+
+
+def _add_init_lint_arguments(init_p) -> None:
+    """Add the scaffold lint Target controls to ``booley init``."""
+    init_p.add_argument(
+        "--lint-eda-tool",
+        choices=("verilator", "verible"),
+        help=(
+            "Scaffold: lint EDA tool of lint_<name> (default verilator, with -Wall; "
+            "verible makes it the only, style, lint Target)"
+        ),
+    )
+    init_p.add_argument(
+        "--style-lint",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        dest="style_lint",
+        help=(
+            "Scaffold: add the Verible style lint Target lint_<name>_style "
+            "(default on with the Verilator lint Target)"
         ),
     )
 
@@ -719,11 +736,7 @@ def _add_init_scaffold_arguments(init_p) -> None:
         choices=("sv", "cocotb"),
         help="Scaffold: testbench style (default sv; cocotb is sandbox-sim only)",
     )
-    init_p.add_argument(
-        "--lint-eda-tool",
-        choices=("verilator", "verible"),
-        help="Scaffold: lint EDA tool (default verilator --lint-only; verible = style lint)",
-    )
+    _add_init_lint_arguments(init_p)
     init_p.add_argument("--lint-tool", action=_RetiredEdaToolOptionAction, help=argparse.SUPPRESS)
     init_p.add_argument(
         "--asic",
@@ -1093,40 +1106,6 @@ def _add_utility_subparsers(sub) -> None:
     _add_shell_subparser(sub)
 
 
-def _add_goal_subparser(sub) -> None:
-    """Add the Goal Mode group `booley goal` (ADR 0067 D13).
-
-    Kept available to the Goal Mode skill without advertising it in top-level help.
-    """
-    goal_p = cast(
-        "argparse.ArgumentParser",
-        sub.add_parser(
-            "goal",
-            help="Inspect or abandon this worktree's Goal Mode; status shows every active Goal Mode in the Project when this worktree hosts none",
-            description="Inspect this worktree's Goal Mode, or every active Goal Mode in the Project when this worktree hosts none. Abandon applies to this worktree's Goal Mode.",
-        ),
-    )
-    goal_sub = goal_p.add_subparsers(
-        dest="goal_command", metavar="{status,abandon}", required=True
-    )
-    status_help = (
-        "Show this worktree's Goal Mode, or every active Goal Mode in the Project "
-        "when this worktree hosts none."
-    )
-    status_p = goal_sub.add_parser("status", help=status_help, description=status_help)
-    detail = status_p.add_mutually_exclusive_group()
-    detail.add_argument("--short", action="store_true", help="One-line summary")
-    detail.add_argument("--long", action="store_true", help="Full detail")
-    abandon_p = goal_sub.add_parser("abandon", help="Abandon this worktree's Goal Mode")
-    abandon_p.add_argument("--record-id", help="Exact expected Goal record for a retry")
-    abandon_p.add_argument("--operation-id", help="Stable UUID operation for a retry")
-    abandon_p.add_argument(
-        "--instruction-quote",
-        default="Human invoked booley goal abandon",
-        help="Human instruction retained in the record",
-    )
-
-
 def _cmd_dashboard(args: argparse.Namespace, project_root: Path) -> int:
     if args.port is not None and not args.web:
         print("booley dashboard: --port needs --web", file=sys.stderr)
@@ -1140,94 +1119,6 @@ def _cmd_dashboard(args: argparse.Namespace, project_root: Path) -> int:
     if args.attach_policy or args.on_attach:
         return run_attach(project_root, policy_only=args.attach_policy)
     return run_dashboard(project_root)
-
-
-def _goal_checkout(args: argparse.Namespace, project_root: Path) -> Path:
-    """Use explicit CLI selection while retaining ambient checkout defaults."""
-    return project_root if hasattr(args, "_cli_selection") else Path.cwd()
-
-
-def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
-    """Show Goal status using the Booley Directory discovered for this command."""
-    if args.goal_command == "status":
-        from booley.criteria.evidence_ledger import AcceptanceLedgerError
-        from booley.goals.diagnostics import is_unnamable_error, unavailable_diagnostic
-        from booley.goals.ended_records import with_last_ended
-        from booley.goals.proposal_errors import ProposalError
-        from booley.goals.state_store import GoalStateError
-        from booley.goals.status import select_status
-        from booley.goals.store import GoalStore, GoalStoreError
-        from booley.harness.goal_status_view import render_goal_status
-        from booley.runtime.booley_dir import resolve_booley_dir
-
-        try:
-            from booley.flows.sim.unpublished_results import read_unpublished_results
-
-            store = GoalStore(resolve_booley_dir(_project_root))
-            checkout = _goal_checkout(args, _project_root)
-            selection = select_status(
-                store, checkout, simulation_record_reader=read_unpublished_results
-            )
-            from booley.mcp.sim_baseline_jobs import schedule_goal_baselines
-
-            for view in selection.views:
-                schedule_goal_baselines(resolve_booley_dir(_project_root), view.record)
-            short = True if args.short else False if args.long else None
-            text = (
-                render_goal_status(
-                    selection.views, short=short, project_wide=selection.project_wide
-                )
-                if selection.views
-                else "No active Goal Mode."
-            )
-            print(with_last_ended(text, store, checkout, project_wide=selection.project_wide))
-            return 0
-        except (GoalStoreError, GoalStateError, ProposalError, AcceptanceLedgerError) as exc:
-            message = unavailable_diagnostic(exc) if is_unnamable_error(exc) else str(exc)
-            print(f"ERROR: {message}", file=sys.stderr)
-            return 2
-    return _abandon_goal_cli(args, _project_root)
-
-
-def _abandon_goal_cli(args: argparse.Namespace, _project_root: Path) -> int:
-    """Render the shared lifecycle result and its exact retry identity."""
-    from booley.goals.abandon import abandon_goal
-    from booley.goals.checkout import CheckoutError
-    from booley.goals.entry import EntryEnvironment
-    from booley.goals.lifecycle import LifecycleError
-    from booley.goals.proposals import ProposalError
-    from booley.goals.store import GoalStore, GoalStoreError
-    from booley.mcp.goal_completion import completion_environment
-    from booley.runtime.booley_dir import resolve_booley_dir
-    from booley.runtime.history_commit import FileCommitError
-
-    try:
-        booley_dir = resolve_booley_dir(_project_root)
-        result = abandon_goal(
-            GoalStore(booley_dir),
-            _goal_checkout(args, _project_root),
-            completion_environment(EntryEnvironment(booley_dir)),
-            record_id=args.record_id,
-            operation_id=args.operation_id,
-            instruction_quote=args.instruction_quote,
-            on_bound=lambda request: print(
-                f"Retry IDs: --record-id {request.record_id} --operation-id {request.operation_id}",
-                flush=True,
-            ),
-        )
-        print(result["message"])
-        return 0
-    except (
-        LifecycleError,
-        GoalStoreError,
-        ProposalError,
-        CheckoutError,
-        FileCommitError,
-        OSError,
-        ValueError,
-    ) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 2
 
 
 def _add_targets_subparser(sub) -> None:
@@ -1395,7 +1286,7 @@ def _parse_cli() -> argparse.Namespace:
     if command in RETIRED_COMMAND_POINTERS:
         parser.exit(2, RETIRED_COMMAND_POINTERS[command] + "\n")
     agent_args: list[str] = []
-    if command == "chat":
+    if command == "chat" and command_index is not None:
         argv, agent_args = _split_chat_tail(argv, command_index)
     args = parser.parse_args(argv)
     if args.command == "chat":
@@ -1404,24 +1295,6 @@ def _parse_cli() -> argparse.Namespace:
         parser.print_help()
         parser.exit()
     return _normalize_args(parser, args)
-
-
-def _live_criterion_endpoint_catalog(project_root: Path):
-    """Compose the active project's Criteria with its discovered endpoints."""
-    from booley.criteria.endpoint_catalog import CriterionEndpointCatalog
-    from booley.mcp.registry import (
-        criterion_endpoint_relationships,
-        discover_mcp_tools,
-    )
-    from booley.runtime.booley_dir import resolve_checkout_booley_dir
-
-    booley_dir = resolve_checkout_booley_dir(project_root)
-    return CriterionEndpointCatalog.load(
-        booley_dir / "criteria.toml",
-        criterion_endpoint_relationships(
-            discover_mcp_tools(project_mcp_tools_dir=booley_dir / "mcp_tools")
-        ),
-    )
 
 
 def _cheat_lists_sections(args: argparse.Namespace) -> bool:
@@ -1468,51 +1341,6 @@ def _cheat_flow_reference(text: str, project_root: Path | None) -> str:
     return text
 
 
-def _cheat_criteria_reference(text: str, project_root: Path | None) -> str:
-    """Splice the active Project's Criteria and endpoint relationships."""
-    try:
-        from booley.criteria.reference import (
-            splice_generated as splice_criteria,
-        )
-        from booley.goals.reference import render_goal_reference as render_criteria_reference
-        from booley.runtime.booley_dir import resolve_checkout_booley_dir
-
-        if project_root is None:
-            raise ValueError("No selected Project for live Criteria")
-        project_criteria = resolve_checkout_booley_dir(project_root) / "criteria.toml"
-        text = splice_criteria(
-            text,
-            render_criteria_reference(
-                _live_criterion_endpoint_catalog(project_root),
-                project_criteria_path=project_criteria,
-            ),
-            name="criteria",
-        )
-    except Exception:  # noqa: BLE001 — best-effort live criteria splice; committed block remains on failure
-        pass
-    return text
-
-
-def _cheat_criteria_params_reference(text: str) -> str:
-    """Splice threshold flavours from the parameter registry."""
-    try:
-        from booley.criteria.reference import (
-            render_criteria_params_reference,
-        )
-        from booley.criteria.reference import (
-            splice_generated as splice_criteria,
-        )
-
-        text = splice_criteria(
-            text,
-            render_criteria_params_reference(),
-            name="criteria-params",
-        )
-    except Exception:  # noqa: BLE001 — best-effort live splice; committed block remains on failure
-        pass
-    return text
-
-
 # Stands for the raw metrics listing while `render` wraps the prose around it.
 _METRICS_PLACEHOLDER = "METRICSLISTING"
 _METRICS_BLOCK = re.compile(
@@ -1548,8 +1376,6 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
         return 1
     text = cs.read_text(encoding="utf-8")
     text = _cheat_flow_reference(text, project_root)
-    text = _cheat_criteria_reference(text, project_root)
-    text = _cheat_criteria_params_reference(text)
     from booley.targets.domain import FuseSocError
 
     try:
@@ -2047,7 +1873,7 @@ def _cmd_specialist(args: argparse.Namespace, project_root: Path) -> int:
 
 def _target_detail_payload(
     project_root: Path, selector: str, *, as_json: bool
-) -> dict[str, object]:
+) -> TargetDetailPayload:
     """Resolve Target detail in-Sandbox, or return actionable host metadata."""
     from booley.targets import target_surface
 
@@ -2247,7 +2073,6 @@ _EARLY_COMMANDS: dict[str, Callable] = {
     "resources": resources_cli.run,
     "coverage": coverage_cli.run,
     "worktree": run_worktree,
-    "goal": _cmd_goal,
     "dashboard": _cmd_dashboard,
     "flow": _cmd_flow,
     "specialist": _cmd_specialist,
@@ -2270,7 +2095,7 @@ def _cmd_eda(args: argparse.Namespace, project_root: Path) -> int:
 _EARLY_COMMANDS["eda"] = _cmd_eda
 
 
-def _handle_early_exits(args: argparse.Namespace, project_root: Path) -> int | None:
+def _handle_early_exits(args: argparse.Namespace, project_root: Path | None) -> int | None:
     """Dispatch non-run subcommands; returns exit code or None for 'run'."""
     handler = _EARLY_COMMANDS.get(args.command)
     if handler is not None:
@@ -2554,6 +2379,7 @@ def _dispatch_main() -> int:
     """Parse CLI, handle early exits, and dispatch the selected command."""
     args = _parse_cli()
     command = _effective_command(args)
+    assert command is not None, "CLI normalization always supplies a command"
 
     default_chat = getattr(args, "default_chat", False)
     if default_chat:
@@ -2567,6 +2393,7 @@ def _dispatch_main() -> int:
     binding = _command_project_binding(command, args)
     project_root = _selected_project_root(command, args, binding)
     if binding not in {ProjectBinding.INDEPENDENT, ProjectBinding.OPTIONAL}:
+        assert project_root is not None, "a Project-bound command resolves a Project Root"
         source_rejection = _reject_source_project_command(command, project_root)
         if source_rejection is not None:
             return source_rejection
@@ -2575,11 +2402,12 @@ def _dispatch_main() -> int:
         project_root = _host_session_selection(command, args, project_root)
 
     if binding is ProjectBinding.REQUIRED:
+        assert project_root is not None, "a REQUIRED command resolves a Project Root"
         _require_command_project(command, project_root)
     # Doctor reports the retired keys as a FAIL; upgrade is booley-heal's first step.
     exempt = command in {"doctor", "upgrade"} or binding is ProjectBinding.INDEPENDENT
     if project_root is not None and not exempt:
-        refuse_retired_jobs_keys(project_root)
+        refuse_retired_config(project_root)
 
     return _dispatch_selected(args, command, project_root, binding)
 
@@ -2638,10 +2466,11 @@ def _dispatch_selected(
     raise AssertionError(f"unhandled command: {command}")
 
 
-def _dispatch_help_candidate(args: argparse.Namespace, project_root: Path) -> int:
+def _dispatch_help_candidate(args: argparse.Namespace, project_root: Path | None) -> int:
     """Keep metadata admission while avoiding execution-path runtime setup."""
     from booley.runtime.layout_consumers import directory_consumer
 
+    assert project_root is not None, "endpoint help applies to Project-bound commands"
     if _outer_endpoint_selection(args):
         args._cli_endpoint_project = project_root
     with directory_consumer(project_root):
@@ -2665,7 +2494,7 @@ def main() -> int:
         ProjectRootDiscoveryError,
         EndpointConfigError,
         ProjectRequiredError,
-        RetiredJobsKeyError,
+        RetiredConfigError,
         SourceCheckoutProjectError,
         runtime_context.EgressModeError,
     ) as exc:

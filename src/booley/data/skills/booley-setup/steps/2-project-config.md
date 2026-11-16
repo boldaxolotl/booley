@@ -72,7 +72,7 @@ Two project-side extension points:
 
 - **`post-setup` hook** — `.booley/hooks/post-setup.sh`, `….py`, or
   extensionless `post-setup` runs in each new sandboxed worktree that
-  `booley worktree new` creates, before Goal entry, and a failure removes the
+  `booley worktree new` creates, and a failure removes the
   worktree again; make it idempotent. It may install/build dependencies, copy
   files, create symlinks, or prepare generated inputs.
 - **Project image** — to add open-source tools and project dependencies that
@@ -270,14 +270,17 @@ Authoring rules:
   file declared with `file_type: vlt` in one of that Target's filesets). Fix
   per Target, and note the waiver in AGENTS.md so a later reader knows it is
   an era gap, not a silenced real bug.
-- **Optional style lint (offer, never impose).** Only if the
-  plan's row 11 says yes: author a **second** lint Target (suggested name
-  `lint_style`) with `flow: lint` + `flow_options: {tool: verible}` over the
-  RTL fileset; it runs `verible-verilog-lint` in the sandbox and sets
-  `LINT:lint_style`. Optional tuning is design-description in the
-  `.core`: a single `file_type: veribleLintRules` rules-config file and/or
-  `file_type: veribleLintWaiver` waiver files in the Target's fileset
-  (analogous to Verilator's `.vlt`). Never change existing Target shapes.
+- **Lint Targets (row 11).** Author the Verilator lint Target with
+  `verilator_options: [-Wall]` unless row 11 declined it, and a second Verible
+  Target (suggested name `lint_<subject>_style`) with `flow: lint` +
+  `flow_options: {tool: verible, booley: {doctor: [lint]}}` over the RTL
+  fileset unless row 11 declined it; it runs `verible-verilog-lint` in the
+  sandbox and sets `LINT:lint_<subject>_style`. Optional tuning is
+  design-description in the `.core`: a single `file_type: veribleLintRules`
+  rules-config file and/or `file_type: veribleLintWaiver` waiver files in the
+  Target's fileset (analogous to Verilator's `.vlt`). For upstream RTL the
+  Project does not own, follow row 11's waiver and fileset-scope guidance.
+  Never change existing Target shapes.
 - **Timing constraints (SDC/XDC) are never authored here.** Wire exactly the
   file that plan row 10 recorded: the repo's own file, referenced in place, or
   the user-supplied file. Use `file_type: SDC` for synthesis and
@@ -571,8 +574,8 @@ The project's testbench flavor — `sv`, `cocotb`, or `mixed` with a default —
 is a **project convention fixed at setup**, not a per-session choice
 and was decided in the plan's row 4 (a mandatory grill
 question in Step 0); read it from `SETUP-PLAN.md`, don't re-ask. Targets
-authored here embody it, and during Goal Mode the Developer Agent follows the
-existing Target's shape.
+authored here embody it, and the Developer Agent follows the existing
+Target's shape.
 
 A **Cocotb Target** is an ordinary sim Target whose flow options declare the
 Python test module. The authoring shape:
@@ -718,10 +721,10 @@ What goes here:
   declared still fails.
 - **Additional Protected Inputs — write only what the human agreed to.**
   `[project].protected_inputs` lists the tracked recipe file a hook or generator
-  invokes and the stimulus sources that recipe consumes. Goal Mode freezes their
-  file set, contents, type, and executable bit; restoring a file clears the
-  violation. Write the entries that plan row 6 records. A candidate you find
-  only now is a decision-level deviation: propose it, explain the freeze, and
+  invokes and the stimulus sources that recipe consumes. A Measurement reports
+  edits to them as protected-set changes. Write the entries that plan row 6
+  records. A candidate you find
+  only now is a decision-level deviation: propose it, explain the reporting, and
   get approval before adding it. Before writing, confirm that every entry
   matches tracked files and that no build output lands inside a pattern; prefer
   `firmware/**/*.c` to `firmware/` when compilation writes into `firmware/`.
@@ -741,7 +744,7 @@ What goes here:
   explicit `default` (older Projects: `provider`) and `auth` values. Carry them forward unchanged; for a
   Project with a missing field, write only the missing field settled during planning. Preserve
   an existing `[agent.git]` identity unchanged; it controls the default author
-  and committer for Interactive and Goal Mode checkouts.
+  and committer for Interactive Mode checkouts.
 - **Feedback redaction — preserve it when present.** Booley never transmits
   feedback. Keep any user-supplied `redact_extra = ["…"]` and
   `redact_identifiers` settings; they affect only an explicit local export. See
@@ -919,18 +922,9 @@ a review artifact (not a question):
 If the user wants contributor guidance next, use Step 3 (AGENTS.md) after the
 approved config is on disk.
 
-## Goalsets
+## Project configuration notes
 
-Goal entry reads Goalsets from the Main Booley Directory
-(`BOOLEY_DIR` in the Sandbox). Edit them there; an edit made only in a
-Worktree Booley Directory inside a worktree is not used.
-
-Read the seeded `goalsets/{feature,bugfix,refactor,verification}.md` files and
-adapt their Goals to the Project's supported Targets and verification intent.
-Preserve existing Project edits. Offer to create `goalsets/default.md` for rules
-that should apply to every entry; create it only when the human selects that
-policy in the setup plan. Goalsets are free-form Markdown translated by the
-Developer Agent, with concrete family/Target examples for `/booley-goal`. Do not put
-`[developer]` or `[jobs].max_tickets` in the Project configuration; Doctor treats
+Do not put `[developer]` or `[jobs].max_tickets` in the Project configuration;
+Doctor treats
 them as ignored settings with delete fixes. Document `[sandbox].dashboard=false`
 when the human opts out of the default Dashboard attachment task.

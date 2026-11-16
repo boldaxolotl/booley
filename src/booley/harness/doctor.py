@@ -71,14 +71,17 @@ from booley.config.project_config import (
 from booley.core.booley_layout import DOCTOR_TMP_DIR
 from booley.core.boundary import (
     BoundaryError,
+    as_int,
     require_dict,
     require_int,
     require_list,
     require_str,
 )
+from booley.core.host_shell import quote_arg
 from booley.flows import execution, runtime_reality, target_test_plan_inspection
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.fpga import vivado_startup
+from booley.flows.invocation import default_timeout_ms
 from booley.flows.sim.backends import cocotb_target_checks
 from booley.flows.sim.config import (
     DEFAULT_SIM_BUILD_TIMEOUT_MS,
@@ -150,7 +153,7 @@ from booley.runtime.image_provenance import is_local_image_id
 from booley.runtime.platform_paths import run_captured_bounded
 from booley.runtime.project_gitignore import missing_gitignore_patterns
 from booley.runtime.resource_history import DOCTOR_RUN_ENV
-from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS, Attachment
 from booley.runtime.session_issuance import SANDBOX_IMAGE_ID_ENV
 from booley.runtime.timefmt import format_clock, format_duration, format_human_datetime
 from booley.runtime.worktree_evidence import untracked_common_paths
@@ -178,20 +181,21 @@ _DEEP_TIMEOUTS_S = {
     "sim": 900,
     "lint": 300,
     "synth": 1800,
+    "fpga": default_timeout_ms("fpga") // 1000,
 }
-# The synthesis Flow's timeout is an inner, per-target boundary. Doctor owns
-# an outer subprocess that must leave time for configure work, process-tree
-# cleanup, boundary interpretation, and the eager terminal report write after
-# that inner boundary expires.
-_SYNTH_DEEP_FINALIZE_MARGIN_S = 180
+# The synthesis and FPGA Flows' timeouts are inner, per-work-unit boundaries.
+# Doctor owns an outer subprocess that must leave time for configure work,
+# process-tree cleanup, boundary interpretation, and the eager terminal report
+# write after that inner boundary expires.
+_IMPLEMENTATION_DEEP_FINALIZE_MARGIN_S = 180
 _SIM_DEEP_FINALIZE_MARGIN_S = 30
 
 # The three core Flow tables remain required project configuration. FPGA is an
-# optional axis: plain Doctor covers it when configured or selected by Target
-# metadata, while deep Doctor deliberately stops short of implementation.
+# optional axis: plain and deep Doctor cover it only when it is configured or
+# selected by Target metadata (see _fpga_doctor_applicable).
 _REQUIRED_FLOW_TABLES = ("sim", "lint", "synth")
 _PLAIN_DOCTOR_FLOWS = (*_REQUIRED_FLOW_TABLES, "fpga")
-_DEEP_DOCTOR_FLOWS = _REQUIRED_FLOW_TABLES
+_DEEP_DOCTOR_FLOWS = _PLAIN_DOCTOR_FLOWS
 # --deep fail-path self-test conventions. Simulation runs its normal smoke test
 # against a project-owned bad overlay; lint uses a conventional known-bad
 # ``.core`` Target. See _run_selftest_checks (QA-4/QA-5).
@@ -692,12 +696,12 @@ _LINE_STATUS = {
 
 #: Counts-table rows in display order: (counter key, label).
 _COUNT_LABELS = (
-    ("pass", "passed"),
-    ("warn", "warnings"),
-    ("waived", "waived"),
-    ("note", "notes"),
-    ("skip", "skipped"),
-    ("fail", "failed"),
+    (Severity.PASS, "passed"),
+    (Severity.WARN, "warnings"),
+    (Severity.WAIVED, "waived"),
+    (Severity.NOTE, "notes"),
+    (Severity.SKIP, "skipped"),
+    (Severity.FAIL, "failed"),
 )
 
 
@@ -962,7 +966,7 @@ def _run_project_phase(
     *,
     read_only: bool,
 ) -> tuple[str | None, ProjectAudit | None]:
-    """Run host, config, Git, and Goal presence checks."""
+    """Run host, config, Git, and leftover-directory checks."""
     _section("Host checks")
     host = host_diagnostics.inspect_host()
     reporter.diagnostics(host.report)
@@ -971,11 +975,11 @@ def _run_project_phase(
     reporter.diagnostics(loaded.report)
     booley_dir, project = loaded.booley_dir, loaded.project
     mode = readiness.ReadinessMode.INSPECT if read_only else readiness.ReadinessMode.RECONCILE
-    # Goal and upgrade-review records are Common Booley State, read from main.
+    # Upgrade-review records are Common Booley State, read from main.
     common_dir = resolve_common_booley_dir(project_root) if booley_dir is not None else None
     _check_upgrade_review(common_dir, reporter)
     _check_legacy_source_stashes(project_root, reporter)
-    _check_goal_presence(project_root, common_dir, reporter)
+    _check_goal_leftovers(common_dir, booley_dir, reporter)
     if project is None:
         reporter.skip_("project setup audit skipped - no valid project config")
     else:
@@ -1072,8 +1076,8 @@ def _check_worktree_booley_pairing(project_root: Path, reporter: _Reporter) -> N
     """Warn when a linked worktree holds a plain copy of a Versioned Booley Directory.
 
     ``booley worktree new`` gives such a worktree a Paired Checkout. A copy
-    made by hand looks healthy, but Goal Mode then records no paired revision
-    and its baselines read the copy's live files instead of versioned ones.
+    made by hand looks healthy, but it records no paired revision, and measurements of
+    its commits read the copy's live files instead of versioned ones.
     """
     from booley.core.booley_layout import BooleyLayoutError
     from booley.runtime.directory_migration_git import primary_checkout
@@ -1093,7 +1097,7 @@ def _check_worktree_booley_pairing(project_root: Path, reporter: _Reporter) -> N
         return  # A Snapshot of a non-versioned Booley Directory is the expected layout.
     _warning_sink(reporter.warn_, "project-data.worktree-unpaired", subject="project-data")(
         f"{local} is a plain copy, not a Paired Checkout of the Versioned Booley Directory "
-        f"{versioned}; Goal Mode and baselines will not use its committed revisions",
+        f"{versioned}; measurements will not use its committed revisions",
         "save any work in this worktree, then recreate it with `booley worktree new <name>` "
         f"from {primary}",
     )
@@ -1259,23 +1263,31 @@ def _common_booley_dir(root: Path, reporter: _Reporter) -> Path | None:
         return None
 
 
-def _check_goal_presence(root: Path, booley_dir: Path | None, reporter: _Reporter) -> None:
-    from booley.harness.dashboard.doctor import inspect_presence
+_GOAL_LEFTOVER_DIRECTORIES = ("goals", "goalsets")
 
-    if booley_dir is None:
-        return
-    common = _common_booley_dir(root, reporter)
-    if common is None:
-        return
-    result = inspect_presence(
-        root, common, inside_sandbox=runtime_context.inside_session_runtime()
-    )
-    if result.unavailable:
-        reporter.skip_(result.unavailable)
-    for finding in result.warnings:
-        reporter.warn_(
-            finding, "inspect the Goal worktree and resume its work, or explicitly abandon it"
-        )
+
+def _check_goal_leftovers(
+    main_booley_dir: Path | None, checkout_booley_dir: Path | None, reporter: _Reporter
+) -> None:
+    """Warn about ``goals/`` and ``goalsets/`` directories an earlier version left behind.
+
+    Goal Mode was removed and nothing reads them; Doctor only looks, and nothing
+    deletes them.
+    """
+    seen: set[Path] = set()
+    for booley_dir in (main_booley_dir, checkout_booley_dir):
+        if booley_dir is None:
+            continue
+        for name in _GOAL_LEFTOVER_DIRECTORIES:
+            leftover = booley_dir / name
+            if leftover in seen or not leftover.is_dir():
+                continue
+            seen.add(leftover)
+            _warning_sink(reporter.warn_, "goals.leftover", subject=str(leftover))(
+                f"{leftover} is left over from Goal Mode, which was removed; "
+                "Booley no longer reads it",
+                "delete it when you no longer need its records",
+            )
 
 
 def _check_upgrade_review(booley_dir: Path | None, reporter: _Reporter) -> None:
@@ -1700,7 +1712,7 @@ def _check_seat_caps(project: ProjectAudit | None, _pass: Check, _fail: Fail) ->
 def _check_sandbox_memory(
     project: ProjectAudit | None,
     _pass: Check,
-    _warn: Check,
+    _warn: Warn,
     _skip: Check,
 ) -> None:
     """ADR 0087: ``[sandbox].memory`` sizes the Memory Budget Jobs are admitted against.
@@ -1958,7 +1970,7 @@ def _run_model_access_probes(
     tracker: doctor_deep.DeepCheckTracker,
     internal_record: _AgentCallRecord | None,
 ) -> None:
-    """Probe every model the ``[models]`` table resolves, so a refusal fails Doctor, not a Goal.
+    """Probe every model the ``[models]`` table resolves, so a refusal fails Doctor, not a later Specialist run.
 
     The memory probe already exercised the internal model. Each distinct Specialist model
     gets one trivial provider turn on the Agent CLI it implies. A gateway fixes the model
@@ -2491,7 +2503,7 @@ def _check_current_runtime_dashboard_extension(_pass: Check, _warn: Check) -> No
 
 
 def _check_current_runtime_git_identity(
-    project: ProjectAudit | None, _pass: Check, _warn: Check, _skip: Check
+    project: ProjectAudit | None, _pass: Check, _warn: Warn, _skip: Check
 ) -> None:
     """Check Git would commit as ``[agent.git]`` and no gitconfig competes with it."""
     if project is None:
@@ -3218,11 +3230,11 @@ def _provider_not_installed_reason(provider: str, *, is_default: bool = True) ->
 def _check_agent_auth_token(
     provider: str,
     _pass: Check,
-    _warn: Check,
+    _warn: Warn,
     _skip: Check,
     policy: str = "subscription",
     *,
-    _fail: Check | None = None,
+    _fail: Fail | None = None,
     plan: auth_token.CredentialPlan | None = None,
     missing_fix: str = "",
     is_default: bool = True,
@@ -3320,7 +3332,7 @@ def _host_login_can_rotate(provider: str) -> bool:
 def _check_oauth_token(
     provider: str,
     _pass: Check,
-    _warn: Check,
+    _warn: Warn,
     _skip: Check,
     policy: str = "subscription",
     *,
@@ -3437,7 +3449,7 @@ def _subscription_expiry_message(
 def _check_subscription_creds_health(
     provider: str,
     _pass: Check,
-    _warn: Check,
+    _warn: Warn,
     policy: str = "subscription",
     *,
     plan: auth_token.CredentialPlan | None = None,
@@ -3540,11 +3552,8 @@ def _run_project_checks(
         return
 
     _check_ticket_leftovers(project.common_booley_dir, reporter.warn_)
-    _check_handle_map_size(project.common_booley_dir, reporter.warn_)
+    _check_handle_map_size(project.common_booley_dir, project.project_root, reporter.warn_)
     _check_project_gitignore(project.booley_dir, reporter.pass_, reporter.warn_)
-    _check_goal_history_ignored(
-        project.project_root, project.booley_dir, reporter.pass_, reporter.warn_
-    )
     _check_project_trackability(project.project_root, project.booley_dir, reporter.warn_)
     _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
     _check_repo_footprint(project.project_root, reporter.pass_, reporter.warn_)
@@ -3606,7 +3615,7 @@ def _check_leftover_board(booley_dir: Path, _warn: Check) -> None:
     for path, message in nonempty.items():
         _warning_sink(_warn, "tickets.leftover-board", subject=path.name)(
             message + suffix,
-            f"move any Ticket you still need into a Goalset or archive it, then delete {path}",
+            f"archive any Ticket you still need, then delete {path}",
         )
 
 
@@ -3621,19 +3630,50 @@ def _check_leftover_guidance(booley_dir: Path, _warn: Check) -> None:
         except OSError as exc:
             warning(
                 f"could not read leftover Ticket guidance in {path}: {exc}",
-                f"check permissions for {path}; move any needed rules into a Goalset before deleting it",
+                f"check permissions for {path}; keep any needed rules in the Project's AGENTS.md before deleting it",
             )
             continue
         shipped = hashlib.sha256(content).hexdigest() in _SHIPPED_TICKET_GUIDANCE_HASHES
         fix = (
             f"delete {path}"
             if shipped
-            else (f"move its rules into a Goalset under .booley/goalsets/, then delete {path}")
+            else (f"move its rules into the Project's AGENTS.md, then delete {path}")
         )
         warning(f"leftover Ticket guidance in {path}", fix)
 
 
-def _check_handle_map_size(booley_dir: Path, _warn: Check) -> None:
+_HANDLE_MAP_VSCODE = (
+    "stop the Sandbox through Dev Containers, then reopen the folder in the container"
+)
+
+
+def _handle_map_restart(project_root: Path) -> str:
+    """Name the smallest step that restarts the MCP server, which prunes handles at start.
+
+    The server starts from ``postStartCommand``, so stopping and resuming the
+    container restarts it. ``booley session down`` would remove a headless
+    container, and refuses a running VS Code one, so neither owner is told to
+    run it. Inside the Sandbox, or when the owner cannot be found, both steps
+    are named.
+    """
+    attachment = None
+    if not runtime_context.inside_session_runtime():
+        try:
+            attachment = session_runtime.sandbox_attachment(project_root)
+        except session_runtime.SessionError:
+            attachment = None
+    if attachment is Attachment.VSCODE:
+        return _HANDLE_MAP_VSCODE
+    if attachment is Attachment.HEADLESS:
+        name = quote_arg(session_runtime.session_container_name(project_root))
+        return f"run `docker stop {name}`, then `booley session up` on the host"
+    return (
+        f"in VS Code, {_HANDLE_MAP_VSCODE}; headless, stop the Sandbox container "
+        "with `docker stop`, then run `booley session up` on the host"
+    )
+
+
+def _check_handle_map_size(booley_dir: Path, project_root: Path, _warn: Check) -> None:
     """Warn when a display handle map nears the cap past which allocation fails."""
     for jobs in (False, True):
         path = handle_maps.HandleStore(booley_dir, jobs=jobs).path
@@ -3646,12 +3686,12 @@ def _check_handle_map_size(booley_dir: Path, _warn: Check) -> None:
             _warning_sink(_warn, "handles.map-size", subject=subject)(
                 f"{subject} handle map {path} is {size / 2**20:.1f} MiB of its "
                 f"{handle_maps.MAX_MAP_BYTES // 2**20} MiB cap",
-                "run `booley session down`, then `booley session up`: the MCP server "
-                "prunes expired handles at start",
+                "restart the Sandbox so its MCP server prunes expired handles at start: "
+                + _handle_map_restart(project_root),
             )
 
 
-def _check_project_gitignore(booley_dir: Path, _pass: Check, _warn: Check) -> None:
+def _check_project_gitignore(booley_dir: Path, _pass: Check, _warn: Warn) -> None:
     """Warn when ``.booley/.gitignore`` lacks a transient-state pattern ``init`` adds.
 
     A missing ``tickets/board/`` pattern leaves closed Tickets' deletions in
@@ -3687,7 +3727,6 @@ def _check_project_trackability(root: Path, booley_dir: Path, _warn: Warn) -> No
         STEALTH_UNSET,
         STEALTH_UNSET_FIX,
         fix,
-        history_probe,
         inspect_project_trackability,
         unrecorded_stealth_exclusions,
     )
@@ -3699,102 +3738,12 @@ def _check_project_trackability(root: Path, booley_dir: Path, _warn: Warn) -> No
             STEALTH_UNSET.format(name=name), STEALTH_UNSET_FIX
         )
     inspection = inspect_project_trackability(root, booley_dir)
-    probe = history_probe(root)
     for group in inspection.ignored:
-        # The existing outer publication check owns this exact synthetic path.
-        if group.history and probe is not None and probe in group.paths:
-            continue
-        check_id = "goals.history-ignored" if group.history else "project.inputs-ignored"
-        _warning_sink(_warn, check_id, subject=group.subject)(group.message, fix())
+        _warning_sink(_warn, "project.inputs-ignored", subject=group.subject)(group.message, fix())
     for error in inspection.errors:
         _warning_sink(_warn, "project.trackability-inspection", subject="inspection-incomplete")(
             error, "repair repository access and rerun booley doctor"
         )
-
-
-def _goal_history_layout_advice(root: Path) -> tuple[str, str]:
-    from booley.runtime.project_repositories import RepositoryCheckoutError, is_git_worktree_root
-
-    project = root / own_booley_dir_repo_path(root)
-    healthy = is_git_worktree_root(project)
-    if (project / ".git").exists() and not healthy:
-        raise RepositoryCheckoutError(f"Booley repository metadata is unavailable at {project}")
-    if healthy:
-        return (
-            " Independently versioned Booley Directory preserves its own history.",
-            "retain the outer exclusion while preserving independent Booley history; "
-            "to publish through RTL, preserve or migrate that history into the RTL repository first, "
-            "then remove the exclusion and rerun booley doctor",
-        )
-    return "", "edit the reported exclusion when publication is wanted, then rerun booley doctor"
-
-
-def _check_goal_history_ignored(root: Path, booley_dir: Path, _pass: Check, _warn: Warn) -> None:
-    """Report preserved explicit exclusions which keep non-Stealth Goal history local."""
-    from booley.commit_policy import stealth_enabled
-    from booley.runtime.project_trackability import history_probe, query_ignores
-
-    if stealth_enabled(root, booley_dir=booley_dir):
-        return
-    relative = history_probe(root)
-    if relative is None:
-        return  # The RTL repository cannot publish that history; trackability owns the layout.
-    inspect_warning = _warning_sink(_warn, "goals.history-inspection")
-    try:
-        matches = query_ignores(root, (relative,))
-        result = subprocess.CompletedProcess(
-            ["git", "check-ignore"],
-            0 if matches else 1,
-            "\n".join(f"{m.source}:{m.line}:{m.pattern}\t{m.path}" for m in matches),
-            "",
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        inspect_warning(
-            f"cannot inspect Goal history exclusions: {exc}",
-            "check Git exclusions and rerun booley doctor",
-        )
-        return
-    _report_goal_history_policy(root, relative, result, _pass, _warn)
-
-
-def _report_goal_history_policy(
-    root: Path, relative: str, result: subprocess.CompletedProcess[str], _pass: Check, _warn: Warn
-) -> None:
-    from booley.runtime.project_repositories import (
-        RepositoryCheckoutError,
-        paired_project_repository,
-    )
-
-    if result.returncode not in {0, 1}:
-        _warning_sink(_warn, "goals.history-ignored")(
-            f"cannot inspect Goal history exclusions: {result.stderr.strip()}",
-            "check Git exclusions and rerun booley doctor",
-        )
-        return
-    try:
-        paired = paired_project_repository(root)
-        layout, hint = _goal_history_layout_advice(root)
-    except RepositoryCheckoutError as exc:
-        _warning_sink(_warn, "goals.history-layout-unreadable")(
-            f"cannot inspect Goal history repository layout: {exc}",
-            "preserve the exclusion and independent history; repair Booley repository metadata "
-            "and rerun booley doctor",
-        )
-        return
-    if result.returncode == 1:
-        _pass(
-            "Goal summaries remain local; Paired Checkout preserves independent Booley history"
-            if paired is not None
-            else "Goal history is eligible for commits"
-        )
-        return
-    _warning_sink(
-        _warn, "goals.history-ignored", subject="independent-booley-history" if layout else None
-    )(
-        f"Goal Session Summary path {relative} is gitignored; summaries remain local. "
-        f"Exclusion: {result.stdout.strip()}{layout}",
-        hint,
-    )
 
 
 def _check_git_state(project_root: Path, _pass: Check, _note: Check, _fail: Fail) -> None:
@@ -4739,8 +4688,7 @@ def _check_target_naming(
         )
         _note(
             f"Target '{name}' in {ref.core_file.name}: {target_naming.violation(name)} "
-            f"— {fix} (renaming also touches tests.toml keys and any "
-            "Goals naming it)"
+            f"— {fix} (renaming also touches tests.toml keys)"
         )
 
 
@@ -5385,6 +5333,8 @@ def _run_deep_checks(
         if not _flow_enabled(project, flow_name):
             _skip(f"{flow_name} deep check skipped - disabled")
             continue
+        if flow_name == "fpga" and not _fpga_doctor_applicable(project):
+            continue
         targets = _doctor_targets(project, flow_name)
         if not targets:
             tracker.require(f"{flow_name}.doctor-targets")
@@ -5408,27 +5358,7 @@ def _run_deep_checks(
             )
             _diagnostics(outcome.report)
             tracker.completed(identifier, outcome.completed)
-    _run_fpga_impl_deep_notice(project, _skip)
     _run_selftest_checks(project, flow_runtime, _pass, _warn, _skip, _fail, completeness=tracker)
-
-
-def _run_fpga_impl_deep_notice(project: ProjectAudit, _skip: Check) -> None:
-    """Disclose that ``fpga_impl`` gets no deep smoke (F-15).
-
-    FPGA is deliberately excluded from :data:`_DEEP_DOCTOR_FLOWS` — a full FPGA
-    implementation is far too slow for ``--deep`` — but it was *silently*
-    absent: ``--deep`` produced no line for it at all. Nothing ever smokes it
-    end-to-end, and nothing said so. Emit an
-    explicit SKIP naming the manual command, so the gap is loud, not invisible.
-    """
-    if not _flow_enabled(project, "fpga"):
-        return
-    for target in _doctor_targets(project, "fpga"):
-        _skip(
-            f"fpga deep smoke [{target}] skipped - a full FPGA implementation is too "
-            "slow for --deep; smoke it manually end-to-end: "
-            f"booley flow fpga --target {target}"
-        )
 
 
 @dataclass(frozen=True)
@@ -5460,7 +5390,10 @@ def _warn_unvalidated_selftest(flow_name: str, _warn: Check) -> None:
     _warning_sink(_warn, "flow.fail-path-unvalidated", subject=flow_name)(
         f"{flow_name} fail-path unvalidated - {requirement} so --deep proves a "
         "known-bad grades as a failure (not a false pass). The setup agent authors "
-        f"the known-bad fixture. {_SELFTEST_FOOTPRINT_NOTE[flow_name]}"
+        f"the known-bad fixture. {_SELFTEST_FOOTPRINT_NOTE[flow_name]} "
+        "A waiver stops this warning counting as a problem but doesn't make deep "
+        f"checks current: deep Doctor stays due until {flow_name} has its known-bad "
+        "fixture, so both its good and bad self-tests run."
     )
 
 
@@ -5559,13 +5492,6 @@ def _run_selftest_checks(
         tracker.completed(f"{flow_name}.selftest.bad", completed)
 
 
-def _sandbox_failure_remedy(exc: session_runtime.SessionError) -> str:
-    """Keep admission-control remediation distinct from stale issuance."""
-    if str(exc).startswith("Sandbox start refused:"):
-        return "free Sandbox capacity using the command in the refusal, then retry"
-    return "run 'booley init --seed' and retry"
-
-
 def _prepare_selftest_invocation(
     project: ProjectAudit,
     flow_name: str,
@@ -5597,7 +5523,7 @@ def _prepare_selftest_invocation(
     except session_runtime.SessionError as exc:
         _fail(
             f"{label} could not enter the Sandbox: {exc}",
-            _sandbox_failure_remedy(exc),
+            session_runtime.sandbox_entry_remedy(project.project_root, exc),
         )
         return None
     env = _doctor_subprocess_env(project)
@@ -5851,7 +5777,8 @@ def _deep_timeout_s(project: ProjectAudit, flow_name: str) -> int:
     """Wall-clock budget for a ``--deep`` Flow smoke, in seconds (F5).
 
     The hardcoded :data:`_DEEP_TIMEOUTS_S` floor is a *minimum*, not the
-    authority. Synthesis honors its configured run budget plus finalization.
+    authority. Synthesis and FPGA honor their configured run budget plus
+    finalization.
     Simulation validates and reserves its distinct build, Pre-Sim, run, and
     finalization budgets. Other legacy calculations retain their established
     fallback behavior for unparseable values.
@@ -5862,8 +5789,8 @@ def _deep_timeout_s(project: ProjectAudit, flow_name: str) -> int:
         planned_s = build_s + DEFAULT_TIMEOUT_S + run_s + _SIM_DEEP_FINALIZE_MARGIN_S
         return max(_DEEP_TIMEOUTS_S["sim"], planned_s)
     timeout_s = _configured_timeout_s(project, flow_name, _DEEP_TIMEOUTS_S[flow_name])
-    if flow_name == "synth":
-        timeout_s += _SYNTH_DEEP_FINALIZE_MARGIN_S
+    if flow_name in ("synth", "fpga"):
+        timeout_s += _IMPLEMENTATION_DEEP_FINALIZE_MARGIN_S
     return timeout_s
 
 
@@ -5898,14 +5825,10 @@ def _configured_timeout_s(project: ProjectAudit, flow_name: str, floor: int) -> 
     section = config_section(flows, flow_name) if isinstance(flows, dict) else {}
     if not isinstance(section, dict):
         return floor
-    raw = section.get("timeout_ms")
-    if raw is None:
+    configured_ms = as_int(section.get("timeout_ms"))
+    if configured_ms is None:
         return floor
-    try:
-        configured_s = int(raw) // 1000
-    except (TypeError, ValueError):
-        return floor
-    return max(floor, configured_s)
+    return max(floor, configured_ms // 1000)
 
 
 def _display_report_dir(project: ProjectAudit, report_dir: Path) -> str:
@@ -6131,7 +6054,7 @@ def _doctor_flow_command(
     except session_runtime.SessionError as exc:
         findings.fail(
             f"{label} could not enter the Sandbox: {exc}",
-            _sandbox_failure_remedy(exc),
+            session_runtime.sandbox_entry_remedy(project.project_root, exc),
         )
         return None
 
@@ -6365,6 +6288,10 @@ def _flow_argv(
     ]
     if dry_run:
         argv.extend(["--dry-run", "--timeout-ms", "30000"])
+    if flow_name == "fpga" and not dry_run:
+        # A warm implementation cache returns stored metrics before Vivado
+        # runs, so a deep run must bypass it to prove the tool works.
+        argv.append("--no-cache")
     if flow_name == "sim":
         if test_override is not None:
             argv.extend(["--test", test_override])

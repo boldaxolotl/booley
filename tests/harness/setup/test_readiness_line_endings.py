@@ -26,7 +26,7 @@ _UNREADABLE = "git.line-endings-unreadable"
 _CRLF_FIX = "booley init   (automatically repairs a clean tree; commit or stash first)"
 _AUTOCRLF_TRUE = (
     "core.autocrlf=true — the tree is LF today, but the next clone or checkout "
-    "will re-create it with CRLF and break Goal Mode"
+    "will re-create it with CRLF and break measurements"
 )
 _AUTOCRLF_UNSET = (
     "core.autocrlf is not set locally — the effective value is false today, but a "

@@ -176,13 +176,13 @@ def test_workload_fingerprint_tracks_pre_sim_program_under_booley_dir(tmp_path, 
     assert edited["digest"] != first["digest"]
 
 
-# Independently captured from origin/main 9da903961 using its original source,
-# surface, Goal resolver and selected-input adapter on the fixture below.
-_GOLDEN_1337 = '{"selected":{"algorithm":"sha256","campaign":{"digest":"eb48344a8e37d572036aef167d9d8279a21edf6245cb1aae0717b702cdced67b","files":[".booley/tests.toml","design.core"]},"rtl":{"digest":"23a11f8393229e2945923aab32a010401bd5c5c4a5d9b6b40884e2ec6d8d5036","files":["data.hex","dut.v"]},"rtl_dirs":["."],"target":"top","tb":{"digest":"6e69edf2b14b48e26a0cac94366c5217b0ce1f49952a2cd6f7391a271fdcaada","files":["tb.py"]},"tb_dirs":["."],"work_dir":"<ROOT>","workload":{"digest":"340bdff048c1c377f96e39b100ea6ceec28610e0fa5ab6012502bc278ccc7216","files":["build.py","data.hex","dut.v","tb.py"]}},"selected_goal":{"algorithm":"sha256","campaign":{"digest":"eb48344a8e37d572036aef167d9d8279a21edf6245cb1aae0717b702cdced67b","files":[".booley/tests.toml","design.core"]},"rtl":{"digest":"23a11f8393229e2945923aab32a010401bd5c5c4a5d9b6b40884e2ec6d8d5036","files":["data.hex","dut.v"]},"rtl_dirs":["."],"target":"top","target_surface":{"digest":"e593942fe084c38f2b8dbf1430681a2bd8b08679e8d575c25b6283e2e7267c58","files":["design.core","data.hex","tb.py","build.py",".booley/tests.toml"]},"tb":{"digest":"6e69edf2b14b48e26a0cac94366c5217b0ce1f49952a2cd6f7391a271fdcaada","files":["tb.py"]},"tb_dirs":["."],"work_dir":"<ROOT>","workload":{"digest":"340bdff048c1c377f96e39b100ea6ceec28610e0fa5ab6012502bc278ccc7216","files":["build.py","data.hex","dut.v","tb.py"]}},"selected_protection":["build.py","dut.v"],"shared":{"algorithm":"sha256","campaign":{"digest":"eb48344a8e37d572036aef167d9d8279a21edf6245cb1aae0717b702cdced67b","files":[".booley/tests.toml","design.core"]},"rtl":{"digest":"23a11f8393229e2945923aab32a010401bd5c5c4a5d9b6b40884e2ec6d8d5036","files":["data.hex","dut.v"]},"rtl_dirs":["."],"target":null,"tb":{"digest":"6e69edf2b14b48e26a0cac94366c5217b0ce1f49952a2cd6f7391a271fdcaada","files":["tb.py"]},"tb_dirs":["."],"work_dir":"<ROOT>","workload":{"digest":"340bdff048c1c377f96e39b100ea6ceec28610e0fa5ab6012502bc278ccc7216","files":["build.py","data.hex","dut.v","tb.py"]}},"surface":{"digest":"8dc44f8b6f15eaede9ebc946a04c3010f5ffc54ad52b12f7a94e3df6236c7ef3","files":["design.core","data.hex","tb.py","build.py",".booley/tests.toml"]}}'
+# Independently captured from origin/main 9da903961 using its original source
+# fingerprint on the fixture below.
+_GOLDEN_1337 = '{"selected":{"algorithm":"sha256","campaign":{"digest":"eb48344a8e37d572036aef167d9d8279a21edf6245cb1aae0717b702cdced67b","files":[".booley/tests.toml","design.core"]},"rtl":{"digest":"23a11f8393229e2945923aab32a010401bd5c5c4a5d9b6b40884e2ec6d8d5036","files":["data.hex","dut.v"]},"rtl_dirs":["."],"target":"top","tb":{"digest":"6e69edf2b14b48e26a0cac94366c5217b0ce1f49952a2cd6f7391a271fdcaada","files":["tb.py"]},"tb_dirs":["."],"work_dir":"<ROOT>","workload":{"digest":"340bdff048c1c377f96e39b100ea6ceec28610e0fa5ab6012502bc278ccc7216","files":["build.py","data.hex","dut.v","tb.py"]}},"shared":{"algorithm":"sha256","campaign":{"digest":"eb48344a8e37d572036aef167d9d8279a21edf6245cb1aae0717b702cdced67b","files":[".booley/tests.toml","design.core"]},"rtl":{"digest":"23a11f8393229e2945923aab32a010401bd5c5c4a5d9b6b40884e2ec6d8d5036","files":["data.hex","dut.v"]},"rtl_dirs":["."],"target":null,"tb":{"digest":"6e69edf2b14b48e26a0cac94366c5217b0ce1f49952a2cd6f7391a271fdcaada","files":["tb.py"]},"tb_dirs":["."],"work_dir":"<ROOT>","workload":{"digest":"340bdff048c1c377f96e39b100ea6ceec28610e0fa5ab6012502bc278ccc7216","files":["build.py","data.hex","dut.v","tb.py"]}}}'
 
 
 def _compatibility_fixture(tmp_path):
-    from tests.goals.conftest import git
+    from tests.git_support import git
 
     git(tmp_path, "init", "-q")
     # The golden digests cover these bytes, so no platform newline translation.
@@ -209,24 +209,12 @@ def _compatibility_fixture(tmp_path):
 def test_shared_and_selected_fingerprints_match_current_layout_golden(tmp_path):
     import json
 
-    from booley.goals.freshness import DEFAULT_RESOLVERS
-    from booley.goals.target_surface import target_surface_fingerprint
-    from booley.mcp.goal_generated_inputs import _committed_only_inputs
-    from booley.targets.catalog import TargetCatalog
-
     _compatibility_fixture(tmp_path)
     rows = {}
     for label, target in (("shared", None), ("selected", "top")):
         value = compute_source_fingerprint(tmp_path, target=target)
         value["work_dir"] = "<ROOT>"
         rows[label] = value
-    rows["selected_goal"] = DEFAULT_RESOLVERS.fingerprint(tmp_path, target="top")
-    rows["selected_goal"]["work_dir"] = "<ROOT>"
-    rows["surface"] = target_surface_fingerprint(tmp_path, None)
-    rows["selected_protection"] = sorted(
-        str(path.relative_to(tmp_path))
-        for path in _committed_only_inputs(tmp_path, TargetCatalog.build(tmp_path), "top")
-    )
     assert rows == json.loads(_GOLDEN_1337)
     assert json.dumps(rows, sort_keys=True, separators=(",", ":")) == _GOLDEN_1337
 

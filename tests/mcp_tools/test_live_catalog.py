@@ -536,7 +536,7 @@ def test_nested_exposure_is_preserved_across_refresh(project, monkeypatch):
             (project / "booley.toml").write_text("[flows.sim]\nenabled = false\n")
             assert set(await tools(client)) == initial - {"sim"}
             assert "booley_poll" in initial
-            assert "goal_enter" not in initial
+            assert not {name for name in initial if name.startswith("goal_")}
 
     asyncio.run(exercise())
 

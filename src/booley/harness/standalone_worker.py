@@ -1,8 +1,7 @@
 """The detached Standalone Job worker: ``python -m booley.harness.standalone_worker <kind> ...``.
 
-Kinds: ``standalone <booley_dir> <run_id>`` runs the Flow or Specialist request
-:func:`submit` wrote beside the Job's ``job.log``; ``goal-baseline <request path>``
-supervises a Goal baseline (:mod:`booley.mcp.sim_baseline_jobs`). The worker stamps
+Kind: ``standalone <booley_dir> <run_id>`` runs the Flow or Specialist request
+:func:`submit` wrote beside the Job's ``job.log``. The worker stamps
 the submitter's pid-less record and writes the terminal state like a shell run.
 A Specialist runs with its worktree's agent settings and a transcript directory
 beside ``job.log``.
@@ -42,7 +41,7 @@ _ENDPOINT_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
 _FALLBACK_STEM = "standalone"
 _PARENT_WATCHDOG_ENV = "BOOLEY_PARENT_WATCHDOG"
 _START_FAILURE_EXIT_CODE = 2
-_USAGE = "usage: standalone_worker (standalone <booley_dir> <run_id> | goal-baseline <path>)"
+_USAGE = "usage: standalone_worker standalone <booley_dir> <run_id>"
 
 
 @dataclass(frozen=True)
@@ -164,12 +163,8 @@ def _run_standalone(booley_dir: Path, run_id: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Dispatch one worker kind; an unknown kind or bad argument count is a usage error."""
+    """Dispatch the worker; an unknown kind or bad argument count is a usage error."""
     args = sys.argv[1:] if argv is None else argv
-    if len(args) == 2 and args[0] == "goal-baseline":
-        from booley.mcp.sim_baseline_jobs import supervise
-
-        return supervise(Path(args[1]))
     if len(args) == 3 and args[0] == "standalone":
         return _run_standalone(Path(args[1]), args[2])
     print(_USAGE, file=sys.stderr)

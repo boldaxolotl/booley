@@ -2646,7 +2646,7 @@ def test_tracked_bundle_reports_untrack_command(
     assert len(tracking) == 1
     assert tracking[0].status == "skip"
     assert command in tracking[0].detail
-    assert "outside active Goal Mode" in tracking[0].detail
+    assert "Commit the intentional removal" in tracking[0].detail
     assert "rerun init" in tracking[0].detail
     assert ctx.results[-1].name == "project_git_hooks"
     assert _print_summary(ctx) == int(check_only and outdated)
