@@ -23,24 +23,26 @@ LINES_PER_SOURCE_LINE = 2
 _DOC_ROOTS = frozenset({"docs", "changelog.d"})
 _HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 # One pass over Rust text: comments, strings and char literals are skipped so
-# the braces and ``;`` that remain are code. A test item starts at a column-0
-# attribute.
+# the braces and ``;`` that remain are code. A test item starts at an
+# attribute that opens its line. Block comments nest, so ``_rust_comment_end``
+# walks them.
 _RUST_TOKEN = re.compile(
     r"""
     (?P<skip>
         //[^\n]*
-      | /\*.*?\*/
       | (?<![A-Za-z0-9_])b?r(?P<hashes>\#*)".*?"(?P=hashes)
       | (?<![A-Za-z0-9_])b?"(?:\\.|[^"\\])*"
       | '(?:\\[^'\n]*|[^'\\\n])'
     )
-  | (?P<attr>^\#\[cfg\(test\)\])
+  | (?P<comment>/\*)
+  | (?P<attr>^[ \t]*\#\[cfg\(test\)\])
   | (?P<open>[{(\[])
   | (?P<close>[})\]])
   | (?P<semi>;)
     """,
     re.VERBOSE | re.DOTALL | re.MULTILINE,
 )
+_RUST_COMMENT_EDGE = re.compile(r"/\*|\*/")
 
 
 @dataclass
@@ -116,6 +118,18 @@ def parse_diff(text: str) -> list[FileDiff]:
     return diffs
 
 
+def _rust_comment_end(text: str, position: int) -> int:
+    """Return where the block comment opened just before *position* ends."""
+    depth = 1
+    while depth:
+        edge = _RUST_COMMENT_EDGE.search(text, position)
+        if edge is None:
+            return len(text)
+        depth += 1 if edge.group() == "/*" else -1
+        position = edge.end()
+    return position
+
+
 def rust_test_lines(text: str) -> set[int]:
     """Return the 1-based lines inside ``#[cfg(test)]`` items of Rust *text*."""
     newlines = [match.start() for match in re.finditer("\n", text)]
@@ -124,8 +138,13 @@ def rust_test_lines(text: str) -> set[int]:
     depth = 0
     braced = False
     active = False
-    for token in _RUST_TOKEN.finditer(text):
+    position = 0
+    while token := _RUST_TOKEN.search(text, position):
+        position = token.end()
         kind = token.lastgroup
+        if kind == "comment":
+            position = _rust_comment_end(text, position)
+            continue
         line = bisect.bisect_left(newlines, token.start()) + 1
         if not active:
             if kind == "attr":
@@ -159,6 +178,7 @@ def _git(repo: str, *args: str) -> str:
         ["git", "-c", "core.quotePath=false", *args],
         cwd=repo,
         check=True,
+        timeout=120,
         capture_output=True,
         encoding="utf-8",
         errors="replace",
@@ -179,8 +199,6 @@ def count_diff(repo: str, base: str, head: str) -> Counts:
             (False, entry.added, entry.new_path, head),
         ):
             kind = _classify(path)
-            if whole_deletion and kind in {"source", "rust"}:
-                continue
             inside = (
                 rust_test_lines(_git(repo, "show", f"{rev}:{path}"))
                 if kind == "rust" and numbers
@@ -188,7 +206,8 @@ def count_diff(repo: str, base: str, head: str) -> Counts:
             )
             for number in numbers:
                 line_kind = ("test" if number in inside else "source") if kind == "rust" else kind
-                _tally(counts, path, line_kind, deleted)
+                if not (whole_deletion and line_kind == "source"):
+                    _tally(counts, path, line_kind, deleted)
     return counts
 
 

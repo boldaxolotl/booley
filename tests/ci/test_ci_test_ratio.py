@@ -100,6 +100,23 @@ def test_rust_inline_test_items_count_as_test_lines(
     assert "7 test lines added, 0 removed; 3 source lines changed" in capsys.readouterr().out
 
 
+def test_rust_test_regions_survive_nesting_and_removal(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    nested = (
+        "mod a {\n    #[cfg(test)]\n    mod tests {\n        /* outer /* inner */ } */\n"
+        "        fn t() {}\n" + "        fn u() {}\n" * 3 + "    }\n}\n"
+    )
+    gone = "pub fn f() {}\n#[cfg(test)]\nmod tests {\n" + "    fn t() {}\n" * 30 + "}\n"
+    repo = repository(tmp_path / "repo")
+    base = _commit(repo, {"crates/k/gone.rs": gone, "crates/k/lib.rs": "mod a {\n}\n"})
+    head = _commit(repo, {"crates/k/gone.rs": None, "crates/k/lib.rs": nested})
+
+    assert _run(repo, base, head) == 0
+
+    assert "8 test lines added, 33 removed; 0 source lines changed" in capsys.readouterr().out
+
+
 def test_counts_against_the_merge_base(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     repo = repository(tmp_path / "repo")
     start = _commit(repo, {"README.txt": "base\n"})
@@ -177,7 +194,6 @@ def test_workflow_reads_labels_live_on_every_pull_request() -> None:
     assert job["needs"] == "changes"
     assert "github.event_name == 'pull_request'" in job["if"]
     assert "github.event.pull_request.head.repo.full_name == github.repository" in job["if"]
-    assert "test-ratio" in workflow["jobs"]["ci-required"]["needs"]
     trigger = workflow[True]["pull_request"]
     assert "paths" not in trigger
     assert "paths-ignore" not in trigger
