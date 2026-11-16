@@ -709,8 +709,12 @@ class TraceSession:
             self.persisted_stderr_path.unlink(missing_ok=True)
             shutil.move(source_stderr, self.persisted_stderr_path)
 
-    def publish_bwave(self, trace_path: Path) -> Path | None:
-        """Copy a valid cached store beside sim artifacts for later lookup."""
+    def publish_bwave(self, trace_path: Path, *, move: bool = False) -> Path | None:
+        """Copy a valid cached store beside sim artifacts for later lookup.
+
+        With *move* the store itself is renamed onto the published name, for a
+        store the run wrote beside it, so the run keeps one copy.
+        """
         if (
             trace_path.suffix != ".fst"
             or not inspect_store(trace_path, probe_reader=False).structurally_usable
@@ -724,6 +728,10 @@ class TraceSession:
             pass
         try:
             self._work_dir.mkdir(parents=True, exist_ok=True)
+            if move:
+                trace_path.replace(dest)
+                self.record_event("bwave_published", str(dest))
+                return dest
             if dest.exists() and dest.stat().st_mtime >= trace_path.stat().st_mtime:
                 return dest
             shutil.copy2(trace_path, dest)
