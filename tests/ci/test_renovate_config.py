@@ -59,17 +59,17 @@ def _docker_arguments(command: str) -> tuple[list[str], list[str]]:
     return names, mounts
 
 
-def _automerge_values(node: object, path: str) -> Iterator[tuple[str, object]]:
-    """Yield the path and value of every key named ``automerge``, at any depth."""
+def _values_named(node: object, name: str, path: str = "") -> Iterator[tuple[str, Any]]:
+    """Yield the path and value of every key called ``name``, at any depth."""
     if isinstance(node, dict):
         for key, value in node.items():
             here = f"{path}.{key}" if path else str(key)
-            if key == "automerge":
+            if key == name:
                 yield here, value
-            yield from _automerge_values(value, here)
+            yield from _values_named(value, name, here)
     elif isinstance(node, list):
         for index, value in enumerate(node):
-            yield from _automerge_values(value, f"{path}[{index}]")
+            yield from _values_named(value, name, f"{path}[{index}]")
 
 
 def test_app_token_reaches_no_update_branch_code() -> None:
@@ -108,18 +108,26 @@ def test_app_token_reaches_no_update_branch_code() -> None:
 
 
 def test_config_never_automerges() -> None:
-    """``automerge`` is false at the top level and wherever else the config mentions it."""
+    """``automerge`` is false wherever the config sets it, and no preset turns it on."""
     config = _config()
     assert config["automerge"] is False
-    for path, value in _automerge_values(config, ""):
+    for path, value in _values_named(config, "automerge"):
         assert value is False, path
+    # A preset such as `:automergeMinor` adds rules that the literal check cannot see.
+    for path, presets in _values_named(config, "extends"):
+        assert not any("automerge" in preset.lower() for preset in presets), path
 
 
 def test_post_upgrade_commands_are_allowlisted_default_branch_scripts() -> None:
     """Only anchored, allowlisted commands run, and only default-branch repository code."""
     workflow = _workflow()
     run_step = _runner_step(workflow)
-    commands: list[str] = _config()["postUpgradeTasks"]["commands"]
+    commands: list[str] = [
+        command
+        for _, block in _values_named(_config(), "postUpgradeTasks")
+        for command in block["commands"]
+    ]
+    assert commands
     patterns: list[str] = json.loads(run_step["env"]["RENOVATE_ALLOWED_COMMANDS"])
     assert patterns
     for pattern in patterns:
