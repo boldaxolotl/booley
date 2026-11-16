@@ -109,7 +109,11 @@ Intent: a later Job jumps the queue only when it surely finishes before the
 front Job could start.
 Try:
 - Holder `synth_ecc_fau` (about 16 min); front waiter `synth_caliptra`, too
-  big to fit beside it; then `lint_ecc` (seconds, own history). `lint_ecc`
+  big to fit beside it; then `lint_ecc` (seconds, own history). A
+  `synth_caliptra` with no `synth` record of its own borrows a smaller
+  Target's estimate and starts at once (booley#4536): then make the front
+  waiter a `mem_hog` whose recorded estimate, set with `history_edit.py`, is
+  above the free budget, and say so in the log. `lint_ecc`
   starts at once and `synth_caliptra` starts when `synth_ecc_fau` ends. Stop
   `synth_caliptra` once it has started unless area 12 runs next.
 - The same with a `mem_hog --hold` longer than the holder's remaining time,
@@ -246,7 +250,8 @@ outside the Sandbox.
 Stop every Flow and `mem_hog`, confirm `runtime/jobs/slots/memory/` is empty,
 restore `booley.toml`, `history.json`, forced-rebuild edits and
 `[sandbox].memory`, restart the Session if its limit changed, and release the
-staged Project and its resources in `resources.md`.
+staged Project and its resources in `resources.md`: `booley session down`, then
+`booley projects forget --purge <project>`, then delete the staged directory.
 
 ## Known traps
 - There is no `booley jobs` command and `booley_status` shows no queue: read
@@ -264,6 +269,12 @@ staged Project and its resources in `resources.md`.
   execution supervisor. Check whether the candidate still does this once;
   then run every `fpga` step as
   `booley session enter -- /sbin/docker-init -s -- booley flow fpga ...`.
+- The pinned Booley Directory still ships a retired directory, so host Doctor
+  shows WARN `goals.leftover` for it. It comes from the pin, not the
+  candidate; do not file it. Drop this trap once the pin moves past it.
+- Until booley#4534 is fixed, every `sim_caliptra` Record item reserves the
+  whole build estimate (the Project has Pre-Sim Commands), and the first item
+  runs under the Flow's claim. Do not file either again.
 - Stealth Mode is on in this Project: a commit message that contains
   "booley" is refused.
 - Parallel sub-agents share the host Sandbox cap (`[sandbox] max_sessions`,
