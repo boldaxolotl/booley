@@ -61,6 +61,7 @@ from booley.runtime.job_slots import (
     ROLE_INTERACTIVE,
     ClaimAbortedError,
     MemoryClaim,
+    SlotRecovery,
     SlotStore,
     SlotToken,
     TokenState,
@@ -290,10 +291,37 @@ def test_cancel_while_a_lane_holds_its_slot_aborts_instead_of_losing_its_lease(
     assert store.snapshot(CLASS_MEMORY) == ([], [])
 
 
+def test_a_cancelled_lane_whose_claim_is_reaped_still_aborts(tmp_path: Path) -> None:
+    """The cancelled execution's claim, reaped by any store scan, is the cancel's loss."""
+    terminal: list[bool] = []
+    store = SlotStore(
+        tmp_path / "slots",
+        recovery=SlotRecovery(execution_is_terminal=lambda _execution_id: bool(terminal)),
+    )
+    outer = _outer_claim(store)
+    capacity = _capacity(_managed(store, outer), tmp_path)
+    try:
+        with (
+            capacity.outer_permit(),
+            pytest.raises(ClaimAbortedError, match="cancellation"),
+            _child_permit(capacity) as permit,
+        ):
+            capacity.cancel_waiters("test cancellation")
+            terminal.append(True)  # the cancel ended the execution; a scan reaps its claim
+            store.snapshot(CLASS_MEMORY)
+            assert store.token_absent(permit.token)
+    finally:
+        store.release(outer)
+
+
+@pytest.mark.parametrize("lost_first", [False, True])
 def test_a_waiter_promoted_after_the_cancel_snapshot_still_aborts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lost_first: bool
 ) -> None:
-    """A queued claim promoted between the cancel's snapshot and its withdrawal aborts."""
+    """A claim promoted between the cancel's snapshot and its withdrawal aborts.
+
+    One an independent recovery already took (``lost_first``) stays a lost lease.
+    """
     store = SlotStore(tmp_path / "slots")
     outer = _outer_claim(store)
     blocker = store.acquire(CLASS_MEMORY, pid=os.getpid(), memory=_holder_claim(1))
@@ -312,6 +340,8 @@ def test_a_waiter_promoted_after_the_cancel_snapshot_still_aborts(
     def promote_then_withdraw(token: SlotToken) -> bool:
         store.release(blocker)
         states.append(refresh(token).state)  # the owner promotes the token first
+        if lost_first:
+            store.begin_token_recovery(token)  # another cause, before the cancel's recovery
         return withdraw(token)
 
     monkeypatch.setattr(store, "refresh", cancel_on_first_poll)
@@ -320,7 +350,7 @@ def test_a_waiter_promoted_after_the_cancel_snapshot_still_aborts(
     try:
         with (
             capacity.outer_permit(),
-            pytest.raises(ClaimAbortedError, match="cancellation"),
+            pytest.raises(LeaseLostError if lost_first else ClaimAbortedError),
             _child_permit(capacity),
         ):
             started.append(True)
