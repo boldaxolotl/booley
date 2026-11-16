@@ -214,9 +214,12 @@ Tests that touch time, processes, sockets, or the filesystem also:
 - Order concurrent steps with events, handshakes, or polling a condition
   against a deadline. A fixed `sleep` before an assertion, or a stand-in that
   waits a fixed time before answering, is a race.
-- Size inner deadlines (`subprocess.run(timeout=...)`, poll loops) from the
-  suite's timeout budget rather than a tight literal; Windows CI fails any test
-  that uses more than 80% of its timeout (see
+- Size inner deadlines (`subprocess.run(timeout=...)`, poll loops) with the
+  shared helper in [`tests/time_budget.py`](../../tests/time_budget.py): a
+  named base budget passed to `scaled`, or `hang_guard_s()` for a wait that only
+  stops a hang (see
+  [Test time budgets](../../.github/ci/README.md#test-time-budgets)).
+  Windows CI fails any test that uses more than 80% of its timeout (see
   [`tests/timeout_headroom.py`](../../tests/timeout_headroom.py)).
 - Bind port 0 and read back the assigned port.
 - Pass on Windows or skip there with the reason: guard POSIX-only signals
