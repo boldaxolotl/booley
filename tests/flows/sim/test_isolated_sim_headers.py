@@ -31,7 +31,6 @@ from booley.flows.sim.build_session import SimulationBuildSession, snapshot_buil
 from booley.flows.sim.coverage_overlay import write_coverage_overlay
 from booley.flows.sim.verilator_coverage import VERILATOR_COVERAGE_INSTRUMENTATION
 from booley.flows.sim.verilator_coverage_execution import prepare_coverage_collection
-from booley.flows.sim.workload import capture_workload_inputs
 from booley.fusesoc.fusesoc_registry import (
     ResolvedFile,
     setup_command_for_handle,
@@ -374,16 +373,6 @@ def test_isolated_icarus_listed_header_edit_changes_or_declines_the_key(
     assert first is None or first != second
 
 
-@pytest.mark.usefixtures("real_fusesoc")
-def test_isolated_mirrored_names_stay_project_relative(tmp_path: Path) -> None:
-    """AC3: workload snapshot rows never show the mirror."""
-    root = _write_project(tmp_path / "proj")
-    prepared = _prepare(root, "sim_verilator")
-    rows = {row["path"] for row in capture_workload_inputs(root, prepared.resolved)}
-    assert {"rtl/top.v", "rtl/inc/listed.vh", "data/plain.hex"} <= rows
-    assert not [path for path in rows if "core-mirror" in path or path.startswith("src/")]
-
-
 @pytest.mark.parametrize(
     ("name", "core", "expected"),
     [
@@ -416,8 +405,6 @@ def test_non_isolated_sim_preparation_is_unchanged(tmp_path: Path, variant: str)
     assert not list(tmp_path.rglob("core-mirror"))
     export = prepared.build_root.resolve() / "src" / "acme_lib_design_1" / "rtl" / "inc"
     assert [Path(d).resolve() for d in prepared.resolved.rtl_include_dirs] == [export]
-    rows = {row["path"] for row in capture_workload_inputs(root, prepared.resolved)}
-    assert any(path.endswith("src/acme_lib_design_1/rtl/top.v") for path in rows)
     assert prepared.core_closure is not None
     assert all("<generation>" not in value for value in prepared.core_closure.values())
 

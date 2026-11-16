@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Literal
 
 from booley.flows.sim.backends.shared import RunTerminationKind, SimulationFailureKind
 from booley.flows.sim.build import BuildOutcome
@@ -149,7 +149,6 @@ class SimulationTestOutcome:
     build: BuildOutcome | None = None
     artifacts: tuple[SimulationArtifactEvidence, ...] = ()
     run_log_path: str = ""
-    workload_snapshot: Mapping[str, Any] | None = None
     phase_timings_s: Mapping[str, float] = field(default_factory=dict)
     resources: Mapping[str, float | int | None] = field(default_factory=dict)
     #: The Test Run this result observed; ``None`` when setup failed before

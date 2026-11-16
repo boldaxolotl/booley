@@ -314,7 +314,6 @@ def test_simulation_record_endpoint_reports_build_timeout_first(tmp_path: Path) 
     with (
         patch.object(SimulateFlow, "reserve_invocation_dir", return_value=invocation),
         patch.object(SimulateFlow, "_write_simulation_record_progress"),
-        patch.object(SimulateFlow, "_plan_simulation_record_baselines", return_value=([], {})),
         patch.object(SimulateFlow, "_candidate_simulation_record_requests", return_value=[]),
         patch.object(
             SimulateFlow, "_publish_and_run_simulation_record_requests", side_effect=error
@@ -323,7 +322,7 @@ def test_simulation_record_endpoint_reports_build_timeout_first(tmp_path: Path) 
         endpoint = flow._execute_simulation_record(
             _admission(),
             flow._ordinary_simulation_record_run(
-                OrdinarySimulationRecordPlanning((), None, {"sim": []})
+                OrdinarySimulationRecordPlanning((), {"sim": []})
             ),
         )
 

@@ -185,7 +185,7 @@ make sense to both readers:
   by the agent as permission for itself.
 - **Every command works as written** for a person typing it and for the agent
   reading it. Give the CLI form beside a tool-call argument
-  (`verify=true`, CLI: `--verify`).
+  (`dry_run=true`, CLI: `--dry-run`).
 - **Gloss agent-only terms once** in the section that uses them: say that a
   `goal_*` name is a Developer Agent tool, not a command, and what `MCP` and
   `work_dir` mean.

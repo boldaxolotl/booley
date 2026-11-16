@@ -160,7 +160,6 @@ _RELEASE_SENSITIVE_PREFIXES = (
     "src/booley/criteria/unbound_ledger.py",
     "src/booley/mcp/unbound_recorder.py",
     "src/booley/runtime/agent_execution.py",
-    "src/booley/specialists/verification_freshness.py",
     "tests/criteria/test_evidence_ledger",
     "tests/criteria/ledger_support.py",
     "tests/golden/test_golden_acceptance_ledger.py",

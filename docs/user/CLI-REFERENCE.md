@@ -59,7 +59,7 @@ booley chat --resume <id>         # Claude: arguments after chat and its options
 booley chat resume --last         # Codex: the same, with its own subcommands
 booley chat -- --help             # the agent CLI's help (Booley's is booley chat --help)
 booley dashboard                  # sessions and Jobs; see Usage
-booley dashboard --web            # serve each worktree's Jobs as JSON (--port PORT, default 8090)
+booley dashboard --web            # serve each worktree's Jobs page and JSON (--port PORT, default 8090)
 booley measure                    # measure HEAD against its committed metrics.toml and store the run
 booley measure <sha> --base <sha> # measure another commit; compare with another Base
 booley measure --all --json       # evaluate every table after a failure; print the report as JSON
@@ -80,8 +80,10 @@ booley worktree gc                # remove idle worktrees (default: a week), whe
 - `--new-worktree` is refused when you run it from inside a linked worktree.
 - If Booley cannot reserve a session handle for a worktree launch, it exits
   with status 2 and suggests `--here`.
-- `booley dashboard --web` serves JSON on `127.0.0.1` until you stop it, on
-  port 8090 unless `--port` names another; `--port` needs `--web`.
+- `booley dashboard --web` serves a page and JSON on `127.0.0.1` until you
+  stop it, on port 8090 unless `--port` names another; `--port` needs `--web`.
+  Open `http://127.0.0.1:<port>/?worktree=<absolute path>` for a worktree's
+  page, which refreshes every 3 s.
   `GET /api/snapshot?worktree=<absolute path>` answers for the main checkout or
   a linked worktree with that worktree's Jobs only: the unfinished Jobs, the
   newest 50 finished Jobs with a `report_url` for each report, and the
@@ -450,9 +452,7 @@ Ask your Developer Agent to call the `reviewer` Specialist with `category="<cate
 
 Also pass `scope="<file,...>"`. Add `spec="<path>"` (required for the `spec` focus) or `spec_text="<text>"` (CLI: `--spec-text`; not with `spec`), or `steer=["<context>"]` for context. A completed review exits 0; pass `fail_on="critical|major|minor"` (CLI: `--fail-on`) to exit 1 when an open finding is at or above that severity. `dry_run=true` previews the call. Each new review replaces the previous findings.
 
-**Changes only:** add `base="<commit>"` (CLI: `--base <commit>`) to review only the `scope` files changed since the merge-base of that commit and HEAD, uncommitted changes included. Unchanged `scope` files that use them are context, the diff and commit messages are given to the Reviewer, and no change in scope exits 0 without a review. Pass every file of the category as the `scope` to give the Reviewer the files that use the changed ones. Findings already present before the change are listed separately as pre-existing and are never open or verified.
-
-**Verify fixes:** after fixing findings, call `reviewer` with `verify=true` (CLI: `--verify`). It rechecks only the latest review's open findings and finds nothing new; none remaining open is a pass. To argue a finding away, add `waive=[["<finding-id>", "<justification>"]]` (CLI: `--waive <finding-id> "<justification>"`, repeatable); the Reviewer accepts or rejects each. `fail_on` (CLI: `--fail-on`) is the one other argument accepted with verify, and counts the findings still open. After two verifies, run a fresh review.
+**Changes only:** add `base="<commit>"` (CLI: `--base <commit>`) to review only the `scope` files changed since the merge-base of that commit and HEAD, uncommitted changes included. Unchanged `scope` files that use them are context, the diff and commit messages are given to the Reviewer, and no change in scope exits 0 without a review. Pass every file of the category as the `scope` to give the Reviewer the files that use the changed ones. Findings already present before the change are listed separately as pre-existing and are never open.
 <!-- END GENERATED: flows -->
 
 ## Running a Flow yourself

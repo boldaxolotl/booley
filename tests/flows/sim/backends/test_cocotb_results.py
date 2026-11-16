@@ -15,6 +15,7 @@ import pytest
 
 from booley.core.boundary import BoundaryError
 from booley.flows.sim.backends import cocotb_results as cr
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 
 
 def _transported(results: cr.CocotbResults, selected: list[str] | None = None):
@@ -270,7 +271,9 @@ class TestFindImportFailure:
     def test_missing_dependency_gets_the_remedy(self):
         detail = cr.find_import_failure(self._CRITICAL)
         assert "pip_requirements" in detail
-        assert "session down" in detail  # the live session is on the stale image
+        assert "then recreate the Sandbox so it runs the new image: " in detail
+        assert detail.endswith(UNKNOWN_SANDBOX_STEPS + ".")
+        assert "session down" not in detail.replace(UNKNOWN_SANDBOX_STEPS, "")
 
     def test_non_import_error_is_echoed_without_the_pip_remedy(self):
         """A syntax error in the TB is an import failure too — but pip won't fix it."""

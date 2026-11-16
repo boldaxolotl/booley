@@ -9,14 +9,12 @@ from types import MappingProxyType
 
 import pytest
 
-from booley.criteria.state import CriterionEntry
 from booley.flows.sim.coverage_policy import (
     ApprovedWaiverSet,
     CoverageCriterion,
     CoverageThreshold,
     evaluate_coverage_record,
 )
-from booley.flows.sim.coverage_projection import project_coverage_criterion
 from booley.flows.sim.coverage_provisional import (
     MAX_PROVISIONAL_CANDIDATES,
     ProvisionalCandidate,
@@ -270,19 +268,6 @@ def test_waiving_every_point_blocks_on_an_empty_denominator() -> None:
     assert verdict.evaluation["diagnostics"][0]["code"] == "COV_EVAL_EMPTY_DENOMINATOR"
     assert verdict.evaluation["diagnostics"][0]["message"] == (
         "Candidates leave no eligible points: line."
-    )
-
-
-def test_provisional_evaluation_projects_through_the_existing_criterion_projection() -> None:
-    coverage_record, criterion = _evaluated(100)
-    verdict = evaluate_provisional_coverage(
-        coverage_record, criterion, [_candidate("u1"), _candidate("u2")]
-    )
-    atomic = CriterionEntry(params={"metrics": {"line": {"min_pct": 100}}})
-
-    assert project_coverage_criterion(atomic, verdict.evaluation, {}, atomic=True)[0] is True
-    assert (
-        project_coverage_criterion(atomic, coverage_record.evaluation, {}, atomic=True)[0] is False
     )
 
 

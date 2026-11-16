@@ -17,7 +17,6 @@ from claude_agent_sdk import ClaudeSDKError
 
 from booley.core.boundary import require_dict
 from booley.core.models import AgentCallParams, AgentResult
-from booley.criteria.state import DevelopmentState
 from booley.flows.cli_help import CliHelp
 from booley.flows.sim.coverage_analysis_input import (
     CoverageAnalysisError,
@@ -98,11 +97,6 @@ class CoverageAnalystSpecialist(Specialist):
     def __init__(self, *, model: Callable[[AgentCallParams], AgentResult] | None = None) -> None:
         self._model = model
         super().__init__()
-
-    def read_state(self) -> DevelopmentState:
-        """Advisory analysis records candidates without setting Criteria."""
-        self._state = DevelopmentState()
-        return self._state
 
     def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(

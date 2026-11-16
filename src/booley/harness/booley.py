@@ -557,7 +557,8 @@ def _add_dashboard_subparser(sub: argparse._SubParsersAction) -> None:
         help="Open the Sandbox Dashboard",
         description=(
             "Open the Sandbox Dashboard: sessions, Jobs and Targets, and Run to start a Booley "
-            "Flow. With --web, serve each worktree's Jobs as JSON instead."
+            "Flow. With --web, serve each worktree's Jobs as a web page and JSON "
+            "instead."
         ),
     )
     attach = dashboard.add_mutually_exclusive_group()
@@ -566,8 +567,8 @@ def _add_dashboard_subparser(sub: argparse._SubParsersAction) -> None:
     attach.add_argument(
         "--web",
         action="store_true",
-        help="Serve each worktree's Jobs as JSON on 127.0.0.1 instead of opening the terminal "
-        "Dashboard",
+        help="Serve each worktree's Jobs page and JSON on 127.0.0.1 instead of opening the "
+        "terminal Dashboard",
     )
     dashboard.add_argument(
         "--port",

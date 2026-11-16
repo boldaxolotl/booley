@@ -38,6 +38,7 @@ from booley.config.gateway import GATEWAY_AUTH, HIDDEN_GATEWAY_ENV, gateway_sett
 from booley.harness.setup.common import banner, err, hint, info, note, ok, warn
 from booley.runtime import auth_token
 from booley.runtime.auth_token import APP_CLAUDE, APP_CODEX, AppCredential
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 
 # Where each app's rotation-free credential comes from, in words.
 _ACQUIRE_HINT = {
@@ -258,8 +259,8 @@ def _reseed_spec(project_root: Path | None) -> bool:
 
     if project_root is None:
         info(
-            "Projects using this stored credential pick it up on `booley session up` "
-            "or `booley init --seed`."
+            "Projects using this stored credential pick it up once their Sandbox is "
+            f"recreated: {UNKNOWN_SANDBOX_STEPS}."
         )
         return True
     return reseed_auth_spec(project_root) == 0

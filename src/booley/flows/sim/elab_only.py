@@ -56,7 +56,6 @@ from booley.targets.domain import (
 )
 
 from .. import edam as edam_layer
-from ..eda_parsers import extract_error_gist
 from .build import (
     BuildOutcome,
     PreparedSimulationBuild,
@@ -83,7 +82,6 @@ from .test_selection import _get_test_envs
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
-    from booley.criteria.state import DevelopmentState
     from booley.flows.base import SubprocessResult
     from booley.flows.sim.mode import SimulationMode
     from booley.flows.sim.request import SimRequest
@@ -140,8 +138,6 @@ class ElabOnlyMixin:
         @property
         def args(self) -> SimRequest: ...
         @property
-        def state(self) -> DevelopmentState: ...
-        @property
         def _mode(self) -> SimulationMode: ...
         def _target_identity(self, target: str) -> str: ...
         def _target_handle(self, target: str) -> TargetHandle: ...
@@ -165,14 +161,6 @@ class ElabOnlyMixin:
         def _execute_boundary(
             self, cmd: list[str], *, timeout: int | None = None, cwd: Path | None = None
         ) -> SubprocessResult: ...
-        def set_criterion(
-            self,
-            key: str,
-            met: bool,
-            *,
-            detail: dict[str, Any] | None = None,
-            source_target: str | None = None,
-        ) -> None: ...
         def _dry_run_result(self, plan: object) -> EndpointOutcome: ...
 
     def _target_sim_env(self, target: str) -> dict[str, str]:
@@ -479,10 +467,7 @@ class ElabOnlyMixin:
         for target in targets:
             with attempt_scope(target, operation="elaboration"):
                 result = self._run_one_elab_only(target)
-            self._record_elab_only_criterion(result)
             self._write_elab_only_target_report(result)
-            if self.state._file_path is not None:
-                self.state.save()
             results.append(result)
             self._write_elab_only_progress(targets, results, phase="running")
         return results
@@ -678,26 +663,6 @@ class ElabOnlyMixin:
             logger.debug("could not persist elab-only log for %s", target, exc_info=True)
             return ""
         return posix_relpath(path, self.args.work_dir)
-
-    def _record_elab_only_criterion(self, result: ElabOnlyTargetResult) -> None:
-        """Write elaboration evidence only when a real design verdict exists."""
-        if result.outcome.verdict is None:
-            return
-        self.set_criterion(
-            f"elab_pass_{result.target}",
-            result.outcome.passed,
-            source_target=result.target,
-            detail={
-                "mode": self._mode.value,
-                "target": result.target,
-                "elapsed_s": round(result.outcome.elapsed_s, 3),
-                "error_gist": (
-                    extract_error_gist(result.outcome.output)
-                    if result.outcome.design_failed
-                    else ""
-                ),
-            },
-        )
 
     @staticmethod
     def _elab_only_exit_code(results: list[ElabOnlyTargetResult]) -> int:

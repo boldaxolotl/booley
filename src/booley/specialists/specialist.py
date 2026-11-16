@@ -480,13 +480,6 @@ class Specialist(McpTool):
             logger.warning("Failed to load session_id from %s", path)
             return None
 
-    def _clear_session_id(self, key: str) -> None:
-        """Delete a persisted session_id file."""
-        path = self._session_file_path(key)
-        if path is not None and path.exists():
-            with contextlib.suppress(OSError):
-                path.unlink()
-
     def _build_resume_params(self, params: AgentCallParams, session_id: str) -> AgentCallParams:
         """Return a copy of params configured for session resume."""
         return dataclasses.replace(params, session_id=session_id, resume_session=True)
@@ -810,19 +803,6 @@ class Specialist(McpTool):
             detail.pop("specialist_model", None)
         else:
             detail["specialist_model"] = self._model_run.note()
-
-    def set_criterion(
-        self,
-        key: str,
-        met: bool,
-        *,
-        detail: dict[str, Any] | None = None,
-        source_target: str | None = None,
-    ) -> None:
-        """Record a Criterion with the model note, which the Review Package then shows."""
-        if detail is not None:
-            self._stamp_model_note(detail)
-        super().set_criterion(key, met, detail=detail, source_target=source_target)
 
     def _finalize_result(self, result: McpToolResult) -> None:
         """Stamp accumulated agent token/cost data onto the McpToolResult."""
