@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.measurement.metrics_file import parse_metrics_as_written
 from booley.runtime.paths import skills_dir
 from booley.runtime.qa_skill_selection import QA_SKILL_NAMES
 
@@ -19,7 +20,6 @@ MISSIONS = sorted(QA_ROOT.glob("missions/*/MISSION.md"))
 ASSET_PREFIXES = (
     "fixtures/",
     "prompts/",
-    "goals/",
     "spec/",
     "evaluator/",
     "probes/",
@@ -177,7 +177,7 @@ def test_gui_mission_follows_the_shared_runbook_in_issue_order() -> None:
         "bwave-gui",
         "stop-resume",
         "terminal-output",
-        "goal-finish",
+        "measure-report",
         "live-preview",
         "matrix",
         "docs-site",
@@ -326,7 +326,7 @@ RETIRED_MUTATION_WORDS = re.compile(r"\b(lock|regen\w*|steer\w*|LLM|proposes|sam
 def test_uart_and_taxi_mutation_areas_describe_the_mutation_flow() -> None:
     areas = {
         "uart": _area_text(QA_ROOT / "missions" / "uart" / "MISSION.md", "reviews-mutation"),
-        "taxi": _area_text(QA_ROOT / "missions" / "taxi" / "MISSION.md", "goal-observability"),
+        "taxi": _area_text(QA_ROOT / "missions" / "taxi" / "MISSION.md", "observability"),
     }
     stale = {
         name: sorted(set(RETIRED_MUTATION_WORDS.findall(text))) for name, text in areas.items()
@@ -334,3 +334,35 @@ def test_uart_and_taxi_mutation_areas_describe_the_mutation_flow() -> None:
     assert not {name: words for name, words in stale.items() if words}, (
         "stale mutation wording (sizing, seeds and selection belong to the mutation mission)"
     )
+
+
+TEXT_SUFFIXES = frozenset(
+    {".md", ".py", ".json", ".toml", ".sv", ".v", ".yaml", ".txt", ".core", ".sdc"}
+)
+# Doctor's current check IDs may be named as the known traps they are.
+DOCTOR_CHECK_IDS = re.compile(r"goals\.leftover|config\.retired-goals")
+RETIRED_WORDING = re.compile(r"\bgoal|sign-?off|signed-off", re.IGNORECASE)
+
+
+def test_qa_names_no_goal_mode_surface() -> None:
+    hits: list[str] = []
+    for path in sorted(QA_ROOT.rglob("*")):
+        relative = path.relative_to(QA_ROOT)
+        if "__pycache__" in relative.parts:
+            continue
+        if RETIRED_WORDING.search(relative.as_posix()):
+            hits.append(f"{relative.as_posix()} (path)")
+        if not path.is_file() or path.suffix not in TEXT_SUFFIXES:
+            continue
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for number, line in enumerate(lines, start=1):
+            if RETIRED_WORDING.search(DOCTOR_CHECK_IDS.sub("", line)):
+                hits.append(f"{relative.as_posix()}:{number}: {line.strip()}")
+    assert not hits, "QA names a retired Goal Mode surface or 'sign-off':\n" + "\n".join(hits)
+
+
+def test_metrics_fixtures_load_with_the_product_parser() -> None:
+    fixtures = sorted(QA_ROOT.rglob("*metrics.toml"))
+    assert fixtures, "QA ships no metrics.toml fixture"
+    for fixture in fixtures:
+        parse_metrics_as_written(fixture.read_bytes())
