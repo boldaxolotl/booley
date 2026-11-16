@@ -1404,17 +1404,10 @@ def _cheat_flow_reference(text: str, project_root: Path | None) -> str:
         )
         from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
-        # No Execution column: keep the terminal table within a terminal width
-        # — a 4th column overflowed and truncated the Sets column (QA_REPORT
-        # A3). Its reader is an agent, which doesn't pick execution backends
-        # anyway; the docs blocks carry the matrix.
         if project_root is None:
             raise ValueError("No selected Project for live reference")
         project_mcp_tools_dir = resolve_checkout_booley_dir(project_root) / "mcp_tools"
-        body = render_flow_reference(
-            project_mcp_tools_dir=project_mcp_tools_dir,
-            execution_column=False,
-        )
+        body = render_flow_reference(project_mcp_tools_dir=project_mcp_tools_dir)
         text = splice_generated(text, body)
         text = splice_generated(
             text,

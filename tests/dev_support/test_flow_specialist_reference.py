@@ -1,7 +1,7 @@
 """Guard the single-source-of-truth Flow and Specialist reference.
 
 The canonical list is rendered by :mod:`booley.dev_support.flow_specialist_reference` from the
-MCP endpoint registry. These tests fail the moment a committed doc block drifts from the
+MCP endpoint registry. These tests fail the moment a committed cheatsheet block drifts from the
 registry, or a newly added tool is silently dropped from the reference — so the
 list can only be updated from one place.
 """
@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from tests.shipped_docs_support import rendered_docs_outside_user_docs
 from tests.source_checkout_support import source_checkout_files
 
@@ -19,10 +18,11 @@ from booley.dev_support.flow_specialist_reference import (
     _PURPOSE_SUMMARY_MAX,
     _REVIEW_FOCUS_DESCRIPTIONS,
     EXCLUDED_MCP_TOOLS,
+    _main,
     extract_generated,
     render_flow_reference,
-    render_flow_specialist_reference,
     render_specialists_reference,
+    splice_generated,
 )
 from booley.goals.capabilities import evidence_goal_name
 from booley.mcp.registry import discover_mcp_tools
@@ -30,33 +30,34 @@ from booley.runtime.paths import cheatsheet_path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# Docs that embed a committed copy of the generated block (base render, no
-# project tools). cheatsheet.md is also spliced live by `booley cheat`, but its
-# committed copy must still match so the raw file is correct.
-_EMBEDDED_DOCS = [
-    REPO_ROOT / "docs" / "user" / "CLI-REFERENCE.md",
-]
-
 REGEN_HINT = (
     "Regenerate with: python -m booley.dev_support.flow_specialist_reference "
-    "docs/user/CLI-REFERENCE.md src/booley/data/cheatsheet.md"
+    "src/booley/data/cheatsheet.md"
 )
 
 
-@pytest.mark.parametrize("doc", _EMBEDDED_DOCS, ids=lambda p: p.name)
-def test_committed_block_matches_registry(doc: Path) -> None:
-    """Each committed block is byte-identical to the current registry render."""
-    assert doc.exists(), f"missing doc: {doc}"
-    committed = extract_generated(doc.read_text(encoding="utf-8"))
-    assert committed == render_flow_specialist_reference(), (
-        f"{doc.name} tools block is stale. {REGEN_HINT}"
+def test_cheatsheet_blocks_match_registry() -> None:
+    """The committed cheatsheet blocks are byte-identical to the registry render.
+
+    `booley cheat` splices them live, but the raw file must be correct too.
+    """
+    text = cheatsheet_path().read_text(encoding="utf-8")
+    assert extract_generated(text) == render_flow_reference(), REGEN_HINT
+    assert extract_generated(text, name="specialists") == render_specialists_reference(), (
+        REGEN_HINT
     )
 
 
-def test_cheatsheet_keeps_tools_and_specialists_in_separate_blocks() -> None:
-    text = cheatsheet_path().read_text(encoding="utf-8")
-    assert extract_generated(text) == render_flow_reference()
-    assert extract_generated(text, name="specialists") == render_specialists_reference()
+def test_regenerating_a_stale_cheatsheet_restores_both_blocks(tmp_path: Path) -> None:
+    """The documented regeneration command rewrites both blocks in place."""
+    committed = cheatsheet_path().read_text(encoding="utf-8")
+    stale = tmp_path / "cheatsheet.md"
+    stale.write_text(
+        splice_generated(splice_generated(committed, "stale"), "stale", name="specialists"),
+        encoding="utf-8",
+    )
+    assert _main([str(stale)]) == 0
+    assert stale.read_text(encoding="utf-8") == committed
 
 
 def test_every_endpoint_is_rendered_or_explicitly_excluded() -> None:
@@ -66,7 +67,7 @@ def test_every_endpoint_is_rendered_or_explicitly_excluded() -> None:
     developer-internal direct MCP tool listed in EXCLUDED_MCP_TOOLS. Adding a new
     direct MCP tool without a decision fails here.
     """
-    rendered = render_flow_specialist_reference()
+    rendered = render_flow_reference() + render_specialists_reference()
     for endpoint in discover_mcp_tools():
         if endpoint.kind in ("flow", "specialist"):
             assert f"`{endpoint.name}`" in rendered, (
@@ -79,21 +80,11 @@ def test_every_endpoint_is_rendered_or_explicitly_excluded() -> None:
             )
 
 
-def test_docs_render_uses_session_runtime_only_shape() -> None:
-    rendered = render_flow_specialist_reference()
-    assert "| Booley Flow | Purpose | Sets |" in rendered
-    assert "Execution (venues)" not in rendered
-
-
-def test_terminal_render_omits_the_execution_column() -> None:
+def test_flow_table_has_three_columns() -> None:
     """`booley cheat` emits a fixed-width table; a 4th column overruns it (A3)."""
-    rendered = render_flow_reference(execution_column=False)
+    rendered = render_flow_reference()
     assert "| Booley Flow | Purpose | Sets |" in rendered
     assert "Execution" not in rendered
-    # Every Booley Flow row still renders when the column is omitted.
-    for flow in discover_mcp_tools():
-        if flow.kind == "flow":
-            assert f"`{flow.name}`" in rendered
 
 
 def test_flows_follow_hardware_flow_order() -> None:
@@ -109,34 +100,21 @@ def test_flows_follow_hardware_flow_order() -> None:
 def test_every_builtin_flow_has_key_controls() -> None:
     flows = {endpoint.name for endpoint in discover_mcp_tools() if endpoint.kind == "flow"}
     assert flows == set(_FLOW_KEY_CONTROLS)
-    rendered = render_flow_reference(execution_column=False)
+    rendered = render_flow_reference()
     for flow_name, controls in _FLOW_KEY_CONTROLS.items():
         assert f"- `{flow_name}`:" in rendered
         assert controls in rendered
 
 
-def test_docs_render_links_flow_reference_instead_of_controls() -> None:
-    """User docs point at FLOW_REFERENCE.md; only `booley cheat` repeats controls."""
-    rendered = render_flow_specialist_reference()
-    assert "[FLOW_REFERENCE.md](FLOW_REFERENCE.md)" in rendered
-    assert "Key Flow-specific controls" not in rendered
-    assert "Common controls" not in rendered
-    for controls in _FLOW_KEY_CONTROLS.values():
-        assert controls not in rendered
-
-
-@pytest.mark.parametrize("execution_column", [True, False])
-def test_purpose_cells_are_summarized_not_the_agent_description(
-    execution_column: bool,
-) -> None:
-    """Purpose is a one-line summary in every render, docs included.
+def test_purpose_cells_are_summarized_not_the_agent_description() -> None:
+    """Purpose is a one-line summary.
 
     Tool descriptions are written for the agent picking flags from them, so
     they carry contract prose (asic_synthesize's SDC rules) that turns a table
-    cell into a ~900-char wall. Both renders target humans; the agent still
+    cell into a ~900-char wall. The cheatsheet targets humans; the agent still
     reads the full description via the MCP schema.
     """
-    rendered = render_flow_reference(execution_column=execution_column)
+    rendered = render_flow_reference()
     assert "A Target with NO SDC is a hard error" not in rendered
     assert "Do NOT use --trace" not in rendered
     for line in rendered.splitlines():

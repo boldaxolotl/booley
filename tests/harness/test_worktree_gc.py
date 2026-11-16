@@ -355,8 +355,8 @@ def test_parse_age_grammar() -> None:
             parse_age(bad)
 
 
-def test_cli_reference_and_config_document_gc() -> None:
-    cli = (REPO_ROOT / "docs/user/CLI-REFERENCE.md").read_text(encoding="utf-8")
+def test_worktrees_page_and_config_document_gc() -> None:
+    cli = (REPO_ROOT / "docs/user/WORKTREES.md").read_text(encoding="utf-8")
     config = (REPO_ROOT / "docs/user/CONFIG.md").read_text(encoding="utf-8")
 
     assert "booley worktree gc [--older-than AGE]" in cli

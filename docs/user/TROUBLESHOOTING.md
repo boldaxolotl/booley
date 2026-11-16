@@ -326,8 +326,8 @@ it finishes the removal.
 A worktree created in the Sandbox can sit at a container path the host can't
 reach, so host Git marks it `prunable`. Don't prune them from the host. Run Git worktree
 commands inside the Sandbox, and remove a worktree with
-`booley worktree rm <name>` (see the
-[CLI reference](https://booley.dev/docs/cli-reference/#worktrees)).
+`booley worktree rm <name>` (see
+[Worktrees](https://booley.dev/docs/worktrees/#removing-a-worktree)).
 
 ### A new worktree fails in the post-setup hook
 
@@ -521,8 +521,8 @@ still has a Grant for a host EDA tool. See
 For images left over from earlier forgets, run `booley projects prune-keepers`,
 then rerun it with the `--confirm <digest>` it prints. Images marked
 `unrecorded` are kept; remove one with `docker image rm <id>` once no other
-Project uses it. See the
-[CLI reference](https://booley.dev/docs/cli-reference/#projects-on-this-machine--host).
+Project uses it. What `forget` lists and keeps is in
+[Projects on this machine](https://booley.dev/docs/setup/#projects-on-this-machine--host).
 
 ### Recover sources hidden by an interrupted older run
 

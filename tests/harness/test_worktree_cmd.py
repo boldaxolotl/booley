@@ -171,7 +171,7 @@ def test_creates_a_worktree_on_its_own_branch_and_prints_its_path(
         "Filling git submodules from the main checkout...\n"
         "Created worktree 'goal-entry' with a Snapshot. "
         "Remove it later with: booley worktree rm goal-entry "
-        "(see https://booley.dev/docs/cli-reference/#worktrees)\n"
+        "(see https://booley.dev/docs/worktrees/#removing-a-worktree)\n"
     )
     # The Snapshot steps still exist for failures; their commands must work.
     steps = worktree_cmd.worktree_removal_instructions(
@@ -181,7 +181,7 @@ def test_creates_a_worktree_on_its_own_branch_and_prints_its_path(
     assert command in steps, "Snapshot removal instructions missing"
     assert "Snapshot" in steps and "same Sandbox" in steps and "Sandbox paths" in steps
     assert "WARNING" not in steps
-    assert "preserve" in steps and "CLI-REFERENCE.md (host doc, not shipped)" in steps
+    assert "preserve" in steps and "WORKTREES.md (host doc, not shipped)" in steps
     assert steps.count("git -C") == 2 and "booley-worktree/" not in steps
     assert shlex.join(["git", "-C", str(project), "branch", "-D", "booley/goal-entry"]) in steps
     assert "populated submodules" in steps and "--force" in steps
@@ -515,7 +515,7 @@ def test_user_command_pairs_committed_project_and_prints_removal(versioned_proje
         .splitlines()[-1]
         .startswith("Created worktree 'real-paired' with a Paired Checkout.")
     )
-    assert "#worktrees" in output.err and "git -C" not in output.err
+    assert "#removing-a-worktree" in output.err and "git -C" not in output.err
     assert _new("real-paired", root) == 1
     error = capsys.readouterr().err
     assert "same Sandbox" in error and "Remove the Paired Checkout first" in error

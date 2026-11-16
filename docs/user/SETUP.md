@@ -30,7 +30,8 @@ host (`/booley-setup new` for a new IP). They differ only in the skill mode:
 
 Both paths begin with host-side Project Initialization, then use their own skill mode.
 [Project files](#project-files) lists the files setup writes and where each is
-documented. See also
+documented, and [Projects on this machine](#projects-on-this-machine--host)
+covers listing and forgetting Projects. See also
 [FLOW-SIM.md](FLOW-SIM.md#passfail-sentinels-and-cycle-counts)
 for sentinels (the log-pattern strings that decide a simulation's pass/fail
 verdict) and [SANDBOX.md](SANDBOX.md#commercial-eda-provisioning) for EDA
@@ -348,6 +349,42 @@ constraints). From there, drive development the normal way: see
 [GOAL-MODE.md](GOAL-MODE.md) to set up your first Goal Mode with `/booley-goal` and run it
 with `/booley-goal start`, or start an
 [Interactive Mode](USAGE.md#interactive-mode) session.
+
+## Projects on this machine · host
+
+`booley projects` manages the list of Projects Booley knows on this computer,
+and what each one holds in Docker:
+
+```bash
+booley projects                          # list known Projects and their EDA Grants
+booley projects discover <dir>...        # find existing Projects under these directories
+booley projects forget <project>         # forget a Project and list what it still holds in Docker
+booley projects forget --purge <project> # also remove its unused images and state volumes
+```
+
+Each successful host `booley init` remembers its Project Root. `booley projects`
+marks each one `present`, `missing`, or `uninitialized`.
+
+`discover` scans only the directories you name and doesn't follow symlinks.
+It stops at each Project it finds, so it doesn't crawl that Project's RTL and
+build trees; to import a Project nested inside another, name its path directly.
+
+`forget` lists what the Project still holds in Docker, with sizes: images,
+agent state volumes (a copy of the agent's login and history), containers, and
+networks. It removes none of them unless you add `--purge`, which removes the
+unused ones, even for a Project already forgotten or deleted. To use a
+forgotten Project again, run `booley init` in it.
+
+<details markdown>
+<summary>With host-installed licensed tools</summary>
+
+`forget` refuses while the Project still has a live Grant (see
+[Commercial EDA provisioning](SANDBOX.md#commercial-eda-provisioning)).
+
+</details>
+
+Images left over from earlier forgets are covered in
+[Docker disk still used after removing a Project](TROUBLESHOOTING.md#docker-disk-still-used-after-removing-a-project).
 
 ## Project files
 

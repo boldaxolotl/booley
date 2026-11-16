@@ -37,7 +37,9 @@ Specialists accept `-C/--project`, `--report-dir`, `--diagnostic`, and, where
 it applies, `--target`. Two options exist only on the command line:
 
 - `--max-turns N` caps the conversation length.
-- `--timeout DURATION` limits each model call, not the whole run.
+- `--timeout DURATION` limits each model call, not the whole run, in the
+  format of a Flow's [`--timeout`](FLOW_REFERENCE.md#common-options). A value
+  below the Specialist's minimum of 10 minutes is raised to it.
 
 Reports go to `mcp-tool-reports/` in the Booley Directory, or under
 `--report-dir`.
@@ -48,9 +50,6 @@ Reports go to `mcp-tool-reports/` in the Booley Directory, or under
   [`[models]`](CONFIG.md#model-selection-models).
 - Turn one off with
   [`enabled = false`](CONFIG.md#flow-and-specialist-availability-enabled).
-
-[CLI-REFERENCE.md](CLI-REFERENCE.md#booley-flows--specialists) lists each
-Specialist's arguments and the Goals it can satisfy.
 
 If a Specialist misbehaves, report it as described in
 [When Booley itself misbehaves](USAGE.md#when-booley-itself-misbehaves).

@@ -354,7 +354,7 @@ linked worktree, `booley chat` starts there whatever this says. See
 `"7d"`). Every `booley chat` launch runs the same cleanup with this age.
 `gc_older_than` is read from the main checkout's `.booley/booley.toml`; a
 worktree's own copy is ignored. `booley worktree gc --older-than AGE` overrides
-it. See [Cleaning up idle worktrees](CLI-REFERENCE.md#worktrees).
+it. See [Cleaning up idle worktrees](WORKTREES.md#cleaning-up-idle-worktrees).
 
 ### Worktree setup hooks (`.booley/hooks/`)
 

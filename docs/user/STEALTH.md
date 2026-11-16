@@ -56,7 +56,7 @@ Doctor warn `stealth.enabled-unset`; add `enabled = true` to keep Stealth, or
 - **Worktrees get a Paired Checkout** of `.booley/`: a checkout of its
   repository's last commit on its own branch, so commit Booley changes there
   before you create a worktree
-  ([CLI-REFERENCE.md](CLI-REFERENCE.md#worktrees)).
+  ([Worktrees](WORKTREES.md#creating-a-worktree)).
 - **Worktree branches are `wt/<name>`**, not `booley/<name>`, so the product
   name does not reach a branch you push.
 

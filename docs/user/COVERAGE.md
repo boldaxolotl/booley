@@ -298,7 +298,7 @@ To run it yourself inside the Sandbox, pass the Target's
 [`coverage.json`](#reading-results):
 
 ```bash
-booley specialist coverage_analyst --campaign <path to coverage.json>
+booley specialist coverage_analyst --record <path to coverage.json> --instruction "<question>"
 ```
 
 ## Disk space

@@ -210,7 +210,7 @@ A fast Simulation Flow mode that compiles, elaborates, and links a simulation Ta
 _Avoid_: syntax check, compile-only, Elaboration Flow, simulation substitute
 
 **Specialist**:
-An optional capability the **Developer Agent** invokes for one task, with fresh context and no history: the Reviewer and the [Coverage Analyst](../src/booley/flows/sim/GLOSSARY.md) ([list](user/CLI-REFERENCE.md#booley-flows--specialists)). Under **Specialist Source Isolation**, one that judges one side of the RTL/testbench divide cannot see the other side's sources, so it reads the spec independently of the code it judges.
+An optional capability the **Developer Agent** invokes for one task, with fresh context and no history: the Reviewer and the [Coverage Analyst](../src/booley/flows/sim/GLOSSARY.md) ([list](user/SPECIALISTS.md)). Under **Specialist Source Isolation**, one that judges one side of the RTL/testbench divide cannot see the other side's sources, so it reads the spec independently of the code it judges.
 _Avoid_: agentic MCP tool, agent, worker; optional blindness, reviewer independence (for Specialist Source Isolation)
 
 **Custom Flow**:
