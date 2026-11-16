@@ -56,6 +56,8 @@ Booley differs from a software ADE in four ways:
 1. **Sandboxed.** The agent and every command it runs stay inside the
    [Sandbox](#the-host-and-the-sandbox) container, with no host command
    channel and, by default, network access only through the egress proxy.
+   That costs an RTL task little: it rarely needs the internet, while a
+   software task often fetches packages or calls web APIs.
 2. **EDA tools included.** The Sandbox Image ships the open-source EDA stack;
    a vendor tool such as Vivado is installed on the host and mounted into the
    Sandbox read-only.
