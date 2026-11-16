@@ -409,7 +409,6 @@ DIRECTION_RULES = (
             exact(name)
             for name in (
                 "booley.flows.target_campaign",
-                "booley.flows.target_criteria",
                 "booley.flows.target_test_suite",
             )
         ),
