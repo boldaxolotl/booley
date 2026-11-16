@@ -4623,7 +4623,7 @@ class TestFailPathSelfTest:
         assert not rec.fails()
         assert len(seen) == 2
         for cmd, env in seen:
-            assert "--diagnostic" in cmd
+            assert "--diagnostic" not in cmd
             assert ticket_vars.keys().isdisjoint(env)
 
     def test_false_pass_on_bad_is_caught(self, tmp_path, monkeypatch):

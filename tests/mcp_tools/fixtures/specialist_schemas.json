@@ -2,11 +2,6 @@
   "coverage_analyst": {
     "additionalProperties": false,
     "properties": {
-      "diagnostic": {
-        "default": false,
-        "description": "Run diagnostically: records no evidence. Use for a Flow/Target combination outside the Project's Criteria.",
-        "type": "boolean"
-      },
       "instruction": {
         "default": "",
         "description": "Freeform instruction for the Specialist (e.g. distilled plan)",
@@ -40,11 +35,6 @@
           "tb"
         ],
         "type": "string"
-      },
-      "diagnostic": {
-        "default": false,
-        "description": "Run diagnostically: records no evidence. Use for a Flow/Target combination outside the Project's Criteria.",
-        "type": "boolean"
       },
       "dry_run": {
         "default": false,
