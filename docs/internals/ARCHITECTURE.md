@@ -350,7 +350,7 @@ Booley keeps all state in files: evidence state as JSON, Job claims, and Job
 records. There is no database or state daemon, so nothing needs installing or
 keeping alive, and any state can be read with `ls` and `cat`. The cost is
 that atomic renames and lock files are the concurrency primitives, and they
-take care to get right. That trade fits Booley's scale: one human per Project.
+take care to get right.
 
 ## Security & Trust Model
 
