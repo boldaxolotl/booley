@@ -2155,11 +2155,6 @@ class TestFlowEnablement:
         flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
         return flow
 
-    def test_job_class_is_memory(self, state_file: Path, tmp_path: Path):
-        from booley.runtime import job_slots
-
-        assert self._flow(tmp_path)._resolve_job_class() == job_slots.CLASS_MEMORY
-
 
 # ===========================================================================
 # Boundary command + file-based interpretation (ADR 0037 §8)

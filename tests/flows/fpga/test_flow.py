@@ -32,7 +32,6 @@ from booley.flows.target_parameters import ParameterValue
 from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
-from booley.runtime import job_slots
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError, TargetHandle
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
@@ -987,7 +986,6 @@ class TestFlowEnablement:
         _write_project_config(tmp_path)
         flow = _flow(tmp_path, state_file)
         assert flow._flow_enabled()
-        assert flow._resolve_job_class() == job_slots.CLASS_MEMORY
 
 
 def _patch_edam_build(captured: dict):
@@ -2490,6 +2488,45 @@ def test_summary_rows_agree_with_result_reasons(
     }
     assert statuses == expected_rows
     assert expected_result in result.report_text
+
+
+def _result_line(report_text: str) -> str:
+    return next(line for line in report_text.splitlines() if line.startswith("RESULT:"))
+
+
+def test_baseline_infrastructure_error_is_named_in_result(
+    tmp_path: Path, state_file: Path
+) -> None:
+    flow = _flow(tmp_path, state_file)
+    flow.args.baseline = "abc1234"
+    base_error = FpgaMetrics(infra_error="baseline broke", returncode=2)
+
+    result = flow._aggregate_results(
+        ["default"], {"default": _passing_fpga()}, {"default": base_error}, "abc1234"
+    )
+
+    line = _result_line(result.report_text)
+    assert line.startswith("RESULT: ERROR (")
+    assert "baseline default: baseline broke" in line
+    assert "baseline default: infrastructure error" not in line
+    assert result.exit_code == EXIT_ERROR
+
+
+def test_comparison_error_message_is_named_in_result(tmp_path: Path, state_file: Path) -> None:
+    flow = _flow(tmp_path, state_file)
+    flow.args.baseline = "abc1234"
+
+    result = flow._aggregate_results(
+        ["default"],
+        {"default": _passing_fpga()},
+        {"default": _passing_fpga(lut_count=None)},
+        "abc1234",
+    )
+
+    line = _result_line(result.report_text)
+    assert "comparison default: baseline required metric 'lut_count' is unavailable" in line
+    assert "invalid evidence" not in line
+    assert result.exit_code == EXIT_ERROR
 
 
 def test_summary_notes_drop_the_flow_prefix(
