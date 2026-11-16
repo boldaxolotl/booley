@@ -81,6 +81,9 @@ class SimulationRecordCapacity:
         # Lease IDs proven held after the child's work, so the child may be
         # published terminal. A later token loss is then normal reaping.
         self._confirmed: set[str] = set()
+        # Lease IDs the cancel moved into recovery after the lane's claim was
+        # promoted behind its snapshot: that loss is the cancel's, not another cause's.
+        self._cancel_recovered: set[str] = set()
         self._gate = threading.Lock()
         self._cause: str | None = None
 
@@ -233,6 +236,10 @@ class SimulationRecordCapacity:
                 try:
                     # A claim admitted as the record was cancelled never starts its item.
                     if self._cancelled():
+                        if permit.lease_health.lost.is_set() and not self._cancel_took_lease(
+                            permit
+                        ):
+                            raise LeaseLostError(lease_lost)
                         raise ClaimAbortedError("record cancellation requested")
                     yield permit
                 except SimulationRecordCapacityError as exc:
@@ -242,7 +249,9 @@ class SimulationRecordCapacity:
                     raise
                 cause = "completed" if self._confirm_lease(permit) else "lease_lost"
                 self._lanes.mark_terminal(prepared, cause)
-                if cause == "lease_lost":
+                if cause == "lease_lost" and not (
+                    self._cancelled() and self._cancel_took_lease(permit)
+                ):
                     raise LeaseLostError(lease_lost)
                 if self._cancelled():
                     raise ClaimAbortedError("record cancellation requested")
@@ -255,8 +264,8 @@ class SimulationRecordCapacity:
 
     def _retire(self, store, child_id: ExecutionId, token: SlotToken) -> None:
         with self._gate:
-            self._waiting.pop(token.lease_id, None)
             self._held.pop(token.lease_id, None)
+            self._cancel_recovered.discard(token.lease_id)
             self._recovered_lost.discard(token.lease_id)
             self._confirmed.discard(token.lease_id)
         if not self._lanes.is_terminal(child_id):
@@ -264,6 +273,11 @@ class SimulationRecordCapacity:
             self._lanes.cancel(child_id)
         if self._lanes.is_terminal(child_id):
             store.release(token)
+
+    def _cancel_took_lease(self, permit: ChildPermit) -> bool:
+        """True when the cancel itself moved this lane's lease toward loss."""
+        with self._gate:
+            return permit.token.lease_id in self._cancel_recovered
 
     @staticmethod
     def _failed_cause(exc: SimulationRecordCapacityError, permit: ChildPermit) -> str:
@@ -324,6 +338,8 @@ class SimulationRecordCapacity:
                 for queued in submitted:
                     self._waiting.pop(queued.lease_id, None)
             raise
+        with self._gate:
+            self._waiting.pop(token.lease_id, None)  # granted: no longer a queued claim
         return token
 
     def cancellation_cause(self) -> str | None:
@@ -352,12 +368,26 @@ class SimulationRecordCapacity:
             return
         with self._gate:
             waiting = tuple(self._waiting.values())
+            held = tuple(
+                permit
+                for lease_id, permit in self._held.items()
+                if lease_id not in self._confirmed
+            )
         for token in waiting:
             if store.cancel_waiter_token(token):
                 continue
             if token.execution_id is not None:
+                # Promoted behind the snapshot: record the cancel's recovery before the loss.
+                if not token.lease_health.lost.is_set():
+                    with self._gate:
+                        self._cancel_recovered.add(token.lease_id)
                 store.begin_token_recovery(token)
                 self._lanes.cancel(token.execution_id)
+        for permit in held:  # a held lane keeps its lease; only its execution is cancelled
+            if not permit.lease_health.lost.is_set() and not store.token_absent(permit.token):
+                with self._gate:  # the cancelled execution's reaped claim is the cancel's loss
+                    self._cancel_recovered.add(permit.token.lease_id)
+            self._lanes.cancel(permit.child_execution_id)
 
     def hold_outer_until(self, exited: threading.Event) -> None:
         """Keep the outer slot held until ``exited`` is set (the last lane left)."""
