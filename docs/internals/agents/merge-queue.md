@@ -10,12 +10,11 @@ publishing PR text and the `confidential-content` check are in
 
 Mergify is the only normal merge path into `main`; GitHub's merge button,
 auto-merge, and `gh pr merge` do not queue a PR. `.mergify.yml` holds the
-configuration (its comments explain each setting) and
-`tests/ci/test_mergify_config.py` pins it. Up to four cumulative candidates of
-up to three PRs each validate at once, each on top of `main` and everything
-queued ahead of it. A failed batch is split to isolate the culprit (see
-[React to a failed batch](#react-to-a-failed-batch)); Mergify retries nothing,
-and a validation round may take 90 minutes.
+configuration; its comments explain each setting. Up to four cumulative
+candidates of up to three PRs each validate at once, each on top of `main`
+and everything queued ahead of it. A failed batch is split to isolate the
+culprit (see [React to a failed batch](#react-to-a-failed-batch)); Mergify
+retries nothing, and a validation round may take 90 minutes.
 
 Mergify validates each candidate through a temporary draft PR from a
 `mergify/merge-queue/` branch; `ci-required` and `confidential-content` must

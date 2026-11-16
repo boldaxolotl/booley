@@ -32,7 +32,6 @@ class FlowRequest:
     dry_run: bool = False
     timeout_ms: int | None = None
     slug: str = field(default="", init=False, repr=False)
-    state_file: Path | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.target, str):

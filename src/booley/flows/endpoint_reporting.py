@@ -12,12 +12,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from booley.flows.endpoint_events import (
-    _emit_criteria_update,
     _endpoint_end_event,
     _endpoint_progress_event,
     _write_display_event,
 )
-from booley.flows.execution_persistence import EvidenceDiscarded, NoAcceptanceRecorder
 from booley.presentation.colors import strip_ansi
 from booley.runtime.endpoint_execution import (
     EXIT_SUCCESS,
@@ -466,17 +464,6 @@ def _resolve_display_label(endpoint: EndpointState) -> str | None:
     return None
 
 
-def _post_run(endpoint: EndpointState, result: EndpointOutcome, duration: float) -> None:
-    """Persist mutable run state after final acceptance.
-
-    The execution coordinator calls ``record_acceptance`` first. That step
-    also runs ``_pre_save_hook`` so this timeline sees the final rather than
-    provisional outcome before saving mutable state.
-    """
-    criteria_set = list(endpoint._pending_criteria_set or ())
-    _persist_run_state(endpoint, result, duration, criteria_set)
-
-
 def _publish_report(endpoint: EndpointState, result: EndpointOutcome) -> None:
     if endpoint.write_report(result) is None:
         endpoint._warn_no_report_artifact()
@@ -514,58 +501,6 @@ def _publish_console_verdict(endpoint: EndpointState, result: EndpointOutcome) -
         print(result.report_text, flush=True)
 
 
-def _persist_run_state(
-    endpoint: EndpointState,
-    result: EndpointOutcome,
-    duration: float,
-    criteria_set: list[str],
-) -> None:
-    if isinstance(endpoint._acceptance_recorder, NoAcceptanceRecorder):
-        return
-    if endpoint.evidence_discarded is not None:
-        return  # a discarded invocation writes nothing, not even its timeline entry
-    endpoint.state.record_mcp_tool_run(
-        endpoint.name,
-        result.exit_code,
-        endpoint_kind=endpoint.endpoint_kind,
-        duration_s=duration,
-        criteria_set=criteria_set or None,
-        cost_usd=result.cost_usd if result.cost_usd else None,
-        args=_endpoint_timeline_args(endpoint),
-    )
-    if endpoint._state is not None and endpoint._state.file_path is not None:
-        try:
-            endpoint.state.save()
-        except EvidenceDiscarded as exc:
-            # First discovered here when the run set no Criterion (B1).
-            endpoint.discard_evidence(exc)
-            report_discarded_evidence(endpoint, result)
-            return
-        _emit_criteria_update(endpoint.state, endpoint._acceptance_recorder)
-
-
-def report_discarded_evidence(endpoint: EndpointState, outcome: EndpointOutcome) -> None:
-    """Prefix the run's own outcome with why its evidence was discarded (B1); idempotent."""
-    reason = endpoint.evidence_discarded
-    if reason is None or "evidence_discarded" in outcome.detail:
-        return
-    prefix = f"evidence discarded: {reason}"
-    outcome.report_text = f"{prefix}\n{outcome.report_text}" if outcome.report_text else prefix
-    outcome.summary = f"{prefix}; {outcome.summary}" if outcome.summary else prefix
-    outcome.detail = {**outcome.detail, "evidence_discarded": reason}
-
-
-def _endpoint_timeline_args(endpoint: EndpointState) -> dict[str, Any] | None:
-    if not endpoint._args:
-        return None
-    values = {
-        attr: value
-        for attr in ("category", "config", "reason", "dry_run")
-        if (value := getattr(endpoint._args, attr, None))
-    }
-    return values or None
-
-
 def _finish_main(
     endpoint: EndpointState,
     result: EndpointOutcome,
@@ -573,7 +508,7 @@ def _finish_main(
     display_label: str | None,
     started: float | None,
     *,
-    acceptance_recorded: bool,
+    records_published: bool,
     dry_run: bool,
     non_persisting_dry_run: bool,
 ) -> int:
@@ -581,7 +516,7 @@ def _finish_main(
     duration = (time.monotonic() - started) if started is not None else 0.0
     try:
         if not non_persisting_dry_run:
-            _finish_publication(endpoint, result, duration, acceptance_recorded)
+            _finish_publication(endpoint, result, records_published)
     finally:
         try:
             try:
@@ -597,7 +532,6 @@ def _finish_main(
                 normalize_completion_error(result, exc, "publish console diagnosis")
                 _recover_report_publication(endpoint, result)
         finally:
-            endpoint._pending_criteria_set = None
             try:
                 _write_display_event(
                     _endpoint_end_event(
@@ -621,20 +555,9 @@ def _finish_main(
 def _finish_publication(
     endpoint: EndpointState,
     result: EndpointOutcome,
-    duration: float,
-    acceptance_recorded: bool,
+    records_published: bool,
 ) -> None:
-    if not acceptance_recorded:
-        _publish_report_with_recovery(endpoint, result, refresh_detail=False)
-        return
-    try:
-        endpoint._post_run(result, duration)
-    except Exception as exc:
-        logger.debug("Endpoint completion persistence failed", exc_info=True)
-        normalize_completion_error(result, exc, "persist endpoint completion")
-        _recover_report_publication(endpoint, result)
-        return
-    _publish_report_with_recovery(endpoint, result)
+    _publish_report_with_recovery(endpoint, result, refresh_detail=records_published)
 
 
 def _publish_report_with_recovery(

@@ -184,7 +184,6 @@ class Bench:
                 *argv,
             ]
         )
-        flow.read_state()
         with patch.object(flow, "_execute_boundary", side_effect=self.boundary):
             outcome = flow._run()
         report = json.loads((self.root / "reports" / f"synth_{target}.json").read_text())

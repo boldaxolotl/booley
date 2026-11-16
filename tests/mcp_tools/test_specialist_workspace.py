@@ -651,7 +651,6 @@ def test_interactive_cpp_review_uses_real_snapshot(tmp_path, monkeypatch, catego
             ",".join(scope),
         ]
     )
-    endpoint.read_state()
     with (
         patch("booley.specialists.specialist._call_agent_sync", side_effect=fake_call),
         patch("booley.specialists.specialist.parent_death_watchdog", return_value=nullcontext()),

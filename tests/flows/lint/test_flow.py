@@ -232,7 +232,6 @@ class TestLintResolution:
         (tmp_path / "rtl" / "top.sv").write_text("module top; endmodule\n")
         flow = LintFlow()
         flow.parse_args(["--work-dir", str(tmp_path), "--target", "lite"])
-        flow.read_state()
         return flow
 
     def test_prepare_drives_make_over_resolved_build_root(
@@ -330,7 +329,6 @@ class TestLintResolution:
         (work_dir / "lint_demo.core").write_text(_LINT_CORE_TEXT, encoding="utf-8")
         flow = LintFlow()
         flow.parse_args(["--work-dir", str(work_dir), "--target", "lite"])
-        flow.read_state()
         command = [sys.executable, "-c", "from fusesoc.main import main; main()"]
         _real_lint_setup(monkeypatch, command, tmp_path)
         prepared = flow._prepare_lint_command(
@@ -377,7 +375,6 @@ class TestLintResolution:
         )
         flow = LintFlow()
         flow.parse_args(["--work-dir", str(work_dir), "--target", "lint_legacy"])
-        flow.read_state()
         handle = TargetCatalog.build(work_dir).select("lint_legacy", for_flow="lint")
         command = [sys.executable, "-c", "from fusesoc.main import main; main()"]
         _real_lint_setup(monkeypatch, command, tmp_path)
@@ -458,7 +455,6 @@ class TestDoctorTargetAuthority:
         flow.parse_args(
             ["--work-dir", str(tmp_path), "--target", "lint_selftest_bad", "--diagnostic"]
         )
-        flow.read_state()
         return flow
 
     def test_public_lint_rejects_doctor_only_target_before_resolution(
@@ -812,7 +808,6 @@ class TestDryRun:
         )
         flow = LintFlow()
         flow.parse_args(["--work-dir", str(tmp_path), "--target", "lite", "--dry-run"])
-        flow.read_state()
         with patch.object(
             fusesoc_registry,
             "_resolve_target",
@@ -840,7 +835,6 @@ class TestDryRun:
         """A config with no ``.core`` Target yields a clean ERROR, not a crash."""
         flow = LintFlow()
         flow.parse_args(["--work-dir", str(tmp_path), "--target", "lite", "--dry-run"])
-        flow.read_state()
         with patch.object(
             fusesoc_registry,
             "_setup_command",
@@ -890,7 +884,6 @@ class TestCriterionSetting:
         )
         flow = LintFlow()
         flow.parse_args(["--target", "lite"])
-        flow.read_state()
         result = flow._run()
 
         assert result.exit_code == EXIT_FAILURE
@@ -944,13 +937,12 @@ def test_hand_run_lint_records_no_criterion(
         )
 
     assert result.exit_code == expected_exit
-    assert flow.state.criteria == {}
     assert not state_path.exists()
     assert list(tmp_path.rglob("acceptance")) == []
 
 
 def test_lint_run_reads_no_development_state(tmp_path: Path) -> None:
-    """The Flow body never touches development state (no ``read_state()`` here)."""
+    """The Flow body never touches development state."""
     process = MagicMock(returncode=0, stdout="", stderr="", timed_out=False, duration_s=0.1)
     flow = LintFlow()
     flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
@@ -999,7 +991,6 @@ class TestWarningsOnlyFatalExit:
         )
         flow = LintFlow()
         flow.parse_args(["--target", "lite"])
-        flow.read_state()
         with patch(
             "booley.flows.lint.flow._lint_warnings_as_errors",
             return_value=False,
@@ -1027,7 +1018,6 @@ class TestWarningsOnlyFatalExit:
         )
         flow = LintFlow()
         flow.parse_args(["--target", "lite"])
-        flow.read_state()
         result = flow._run()
         assert result.exit_code == EXIT_FAILURE
 
@@ -1054,7 +1044,6 @@ class TestWarningsOnlyFatalExit:
         )
         flow = LintFlow()
         flow.parse_args(["--target", "lite"])
-        flow.read_state()
         with patch(
             "booley.flows.lint.flow._lint_warnings_as_errors",
             return_value=False,
@@ -1085,7 +1074,6 @@ class TestErrorVsFailTaxonomy:
     def test_setup_exception_is_an_eda_tool_error(self, tmp_path: Path, state_file: Path):
         flow = LintFlow()
         flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        flow.read_state()
 
         with patch.object(
             LintFlow,
@@ -1143,7 +1131,6 @@ class TestErrorVsFailTaxonomy:
             )
             flow = LintFlow()
             flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-            flow.read_state()
             result = flow._run()
         assert result.exit_code == EXIT_ERROR
         run_log = tmp_path / ".booley/.runtime/edalize/lint/lite/run.log"
@@ -1174,7 +1161,6 @@ class TestErrorVsFailTaxonomy:
             )
             flow = LintFlow()
             flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-            flow.read_state()
             cr = flow._run_lint_target(_target_handle("lite"))
 
         pointer = ".booley/.runtime/edalize/lint/lite/run.log"
@@ -1213,7 +1199,6 @@ class TestErrorVsFailTaxonomy:
                     str(tmp_path / "reports"),
                 ]
             )
-            flow.read_state()
             result = flow._run()
 
         assert "reports/lint/1/artifacts/lite/run.log" in result.report_text
@@ -1228,7 +1213,6 @@ class TestErrorVsFailTaxonomy:
 
         flow = LintFlow()
         flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        flow.read_state()
         seen: dict[str, str] = {}
 
         def _prepare(target: str):
@@ -1294,7 +1278,6 @@ class TestErrorVsFailTaxonomy:
                     str(tmp_path / "reports"),
                 ]
             )
-            flow.read_state()
             result = flow._run()
 
         assert "%Error: rtl/x.v:1:1" in result.report_text
@@ -1315,7 +1298,6 @@ class TestFullRun:
     ):
         flow = LintFlow()
         flow.parse_args(["--target", "lite,full"])
-        flow.read_state()
         with patch.object(
             LintFlow,
             "_prepare_lint_command",
@@ -1351,7 +1333,6 @@ class TestFullRun:
                 "lite",
             ]
         )
-        flow.read_state()
         result = flow._run()
         assert result.exit_code == 0
         captured = capsys.readouterr()
@@ -1378,7 +1359,6 @@ class TestFullRun:
                 "lite",
             ]
         )
-        flow.read_state()
         result = flow._run()
         assert result.exit_code == 1
         captured = capsys.readouterr()
@@ -1437,7 +1417,6 @@ class TestFullRun:
                 str(tmp_path / "reports"),
             ]
         )
-        flow.read_state()
         result = flow._run()
         captured = capsys.readouterr()
         assert "1 unique in-scope warning" in captured.out
@@ -1481,7 +1460,6 @@ class TestFullRun:
                 str(tmp_path / "reports"),
             ]
         )
-        flow.read_state()
 
         with patch.object(
             LintFlow,
@@ -1530,7 +1508,6 @@ class TestFullRun:
                 "mod_a",
             ]
         )
-        flow.read_state()
         result = flow._run()
         captured = capsys.readouterr()
         # Only 1 warning in scope; a scope matched through a warning path is accepted
@@ -1559,7 +1536,6 @@ class TestFullRun:
         )
         flow = LintFlow()
         flow.parse_args(["--target", "lite", "--scope", "rtl/ticket.sv"])
-        flow.read_state()
 
         result = flow._run()
 
@@ -1752,7 +1728,6 @@ class TestStructuredReport:
         def run() -> object:
             flow = LintFlow()
             flow.parse_args(["--target", "lite", "--report-dir", str(report_dir)])
-            flow.read_state()
             return flow._run()
 
         first = run()
@@ -1805,7 +1780,6 @@ class TestStructuredReport:
                 str(report_dir),
             ]
         )
-        flow.read_state()
         flow._run()
 
         report_path = report_dir / "lint_report.json"
@@ -1908,7 +1882,6 @@ class TestStructuredReport:
                 str(report_dir),
             ]
         )
-        flow.read_state()
         flow._run()
 
         data = json.loads((report_dir / "lint_report.json").read_text(encoding="utf-8"))
@@ -1979,8 +1952,6 @@ class TestConfigDiscovery:
             request.getfixturevalue("state_file")
         flow = LintFlow()
         flow.parse_args(["--target", "", "--work-dir", str(tmp_path)])
-        if with_state_file:
-            flow.read_state()
         result = flow._run()
         assert result.exit_code == EXIT_ERROR
         assert "--target is required" in result.report_text
@@ -2077,7 +2048,6 @@ class TestVeribleTargets:
         flow.parse_args(
             ["--work-dir", str(tmp_path), "--target", targets, *(extra or [])],
         )
-        flow.read_state()
         return flow
 
     @patch.object(LintFlow, "_execute")
@@ -2272,7 +2242,6 @@ class TestVeribleTargets:
         flow.parse_args(
             ["--work-dir", str(tmp_path), "--target", "lint_style", "--dry-run"],
         )
-        flow.read_state()
         with patch.object(
             fusesoc_registry,
             "_resolve_target",
@@ -2358,7 +2327,6 @@ class TestLintObservability:
         report_dir = tmp_path / "reports"
         flow = LintFlow()
         flow.parse_args(["--target", "lite", "--report-dir", str(report_dir)])
-        flow.read_state()
         result = flow._run()
         out = capsys.readouterr().out
         assert "[verible]" in out
@@ -2401,7 +2369,6 @@ class TestLintObservability:
         mock_exec.return_value = MagicMock(**self._PROC_CLEAN)
         flow = LintFlow()
         flow.parse_args(["--target", "lite"])
-        flow.read_state()
         with patch.object(
             LintFlow,
             "_prepare_lint_command",
@@ -2441,7 +2408,6 @@ class TestLintObservability:
         mock_exec.return_value = MagicMock(**self._PROC_CLEAN)
         flow = LintFlow()
         flow.parse_args(["--target", "lite"])
-        flow.read_state()
         with patch.object(
             LintFlow,
             "_prepare_lint_command",
@@ -2485,7 +2451,6 @@ class TestLintObservability:
         mock_exec.return_value = MagicMock(**self._PROC_CLEAN)
         flow = LintFlow()
         flow.parse_args(["--work-dir", str(tmp_path), "--target", "smoke_sim"])
-        flow.read_state()
         with pytest.raises(IncompatibleTargetError, match="cannot be driven"):
             flow._run()
         mock_cmd.assert_not_called()
@@ -2528,7 +2493,6 @@ class TestLintObservability:
         )
         flow = LintFlow()
         flow.parse_args(["--target", "lite"])
-        flow.read_state()
         result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
         assert "RESULT: WARN" in capsys.readouterr().out
@@ -2637,7 +2601,6 @@ def test_authored_verible_public_plan(tmp_path: Path, state_file: Path, capsys, 
     _author_verible_alias_core(tmp_path, spelling)
     flow = LintFlow()
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "lint_style", "--dry-run"])
-    flow.read_state()
     result = flow._run()
     plan = json.loads(capsys.readouterr().out)
     assert plan["aggregate_errors"] == []
@@ -2698,7 +2661,6 @@ def test_authored_verible_public_run(
     _real_lint_setup(monkeypatch, _isolated_verible_fusesoc(tmp_path, spelling), tmp_path)
     flow = LintFlow()
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "lint_style"])
-    flow.read_state()
     execute = MagicMock(
         return_value=MagicMock(
             returncode=0,
@@ -2779,7 +2741,6 @@ def test_mixed_lint_rejects_before_preparation(
     flow = LintFlow()
     argv = ["--work-dir", str(tmp_path), "--target", "lint_style"]
     flow.parse_args([*argv, *(["--dry-run"] if dry_run else [])])
-    flow.read_state()
     monkeypatch.setattr(flow, "_execute", execute)
     with pytest.raises(IncompatibleTargetError, match="default_tool does not supply it"):
         flow._run()
@@ -2809,7 +2770,6 @@ def test_job_report_lint_findings_cap(tmp_path, state_file):
         ):
             flow = LintFlow()
             flow.parse_args(["--target", "lite", "--report-dir", str(tmp_path / "reports")])
-            flow.read_state()
             result = flow._run()
         detail = result.detail
         assert "findings" in detail
@@ -2877,7 +2837,6 @@ def test_job_report_lint_findings_targets():
 def test_invocation_report_records_tools_by_target(tmp_path, state_file, target):
     flow = LintFlow()
     flow.parse_args(["--target", target, "--report-dir", str(tmp_path / "reports")])
-    flow.read_state()
     with (
         patch.object(
             flow,
@@ -2992,7 +2951,6 @@ class TestFlowMetrics:
         ):
             flow = LintFlow()
             flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-            flow.read_state()
             return flow._run_lint_target(_target_handle("lite", eda_tool=family))
 
     @pytest.mark.parametrize(

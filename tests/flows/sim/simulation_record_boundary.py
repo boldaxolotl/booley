@@ -115,7 +115,6 @@ def run_simulation_record_sim(
     build: SubprocessResult | None = None,
     report_dir: Path | None = _DEFAULT_REPORT_DIR,
     project_data: Path | None = None,
-    adapter: Any = None,
     **request: Any,
 ) -> SimulationRecordSimRun:
     """Run ``SimulateFlow.execute`` for *targets* with only the process edge faked.
@@ -159,10 +158,7 @@ def run_simulation_record_sim(
     # class attributes, and a test-long undo would restore its patch after it exits.
     with monkeypatch.context() as scoped:
         _install_fakes(scoped, process, build, launches)
-        result = flow.execute(
-            SimRequest(work_dir=tmp_path, report_dir=report_dir, **request),
-            adapter=adapter,
-        )
+        result = flow.execute(SimRequest(work_dir=tmp_path, report_dir=report_dir, **request))
     return SimulationRecordSimRun(result, flow, launches)
 
 
