@@ -83,9 +83,7 @@ booley worktree gc                # remove idle worktrees (default: a week), whe
 - `booley dashboard --web` serves a page and JSON on `127.0.0.1` until you
   stop it, on port 8090 unless `--port` names another; `--port` needs `--web`.
   Open `http://127.0.0.1:<port>/?worktree=<absolute path>` for a worktree's
-  page: it refreshes every 3 s, lists running and queued Jobs above a
-  collapsed Results section, shows the error instead of any Jobs for a
-  worktree it does not accept, and loads nothing from the network.
+  page, which refreshes every 3 s.
   `GET /api/snapshot?worktree=<absolute path>` answers for the main checkout or
   a linked worktree with that worktree's Jobs only: the unfinished Jobs, the
   newest 50 finished Jobs with a `report_url` for each report, and the

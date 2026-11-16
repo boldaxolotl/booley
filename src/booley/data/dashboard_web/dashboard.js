@@ -4,7 +4,7 @@
   var POLL_MS = 3000;
   var STORAGE_KEY = 'booley.dashboard.results-open';
   var FAILED = ['FAILED', 'ERROR'];
-  var PASSED = ['PASSED'];
+  var PASSED = 'PASSED';
   var MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 
   var live = document.getElementById('live');
@@ -33,8 +33,21 @@
     return n >= gib ? (n / gib).toFixed(1) + ' GiB' : (n / (1024 * 1024)).toFixed(1) + ' MiB';
   }
 
+  // Mirrors the Dashboard's duration format; an unknown duration shows nothing.
   function formatDuration(seconds) {
-    var s = Math.max(0, Math.round(seconds));
+    if (seconds === null) {
+      return '';
+    }
+    if (seconds <= 0) {
+      return '0s';
+    }
+    if (seconds < 1) {
+      return seconds.toFixed(1) + 's';
+    }
+    var s = Math.floor(seconds);
+    if (s >= 86400) {
+      return Math.floor(s / 86400) + 'd ' + pad(Math.floor((s % 86400) / 3600)) + 'h';
+    }
     if (s >= 3600) {
       return Math.floor(s / 3600) + 'h ' + pad(Math.floor((s % 3600) / 60)) + 'm';
     }
@@ -45,6 +58,9 @@
   }
 
   function formatTime(stamp) {
+    if (!stamp) {
+      return '';
+    }
     var d = new Date(stamp);
     if (isNaN(d.getTime())) {
       return '';
@@ -53,7 +69,11 @@
       ' ' + MONTHS[d.getMonth()] + ' ' + d.getFullYear();
   }
 
+  // A value the record does not have (no target, no end time) leaves its part out.
   function part(text) {
+    if (text === null || text === '') {
+      return '';
+    }
     return '<span>' + escapeHtml(text) + '</span>';
   }
 
@@ -99,7 +119,7 @@
 
   function resultCardHtml(job) {
     var failed = FAILED.indexOf(job.result) !== -1;
-    var passed = PASSED.indexOf(job.result) !== -1;
+    var passed = job.result.indexOf(PASSED) === 0;
     var cls = failed ? ' failed' : passed ? ' passed' : '';
     var criterion = job.criterion ? part(job.criterion.text) : '';
     var report = job.report_url ?
@@ -160,6 +180,8 @@
           } else {
             showError(body.error);
           }
+        }, function () {
+          showError('The Dashboard server answered HTTP ' + response.status + ' without an error message.');
         });
       })
       .catch(function (err) {

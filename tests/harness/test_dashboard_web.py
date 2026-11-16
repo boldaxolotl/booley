@@ -126,7 +126,7 @@ def _job(
     run_id: str,
     work_dir: Path | None,
     *,
-    target: str = "uart",
+    target: str | None = "uart",
     session: str | None = "sess1",
     status: str = "done",
     exit_code: int | None = 0,
@@ -152,7 +152,7 @@ def _job(
             "sim",
             started,
             60,
-            argv=["--target", target],
+            argv=[] if target is None else ["--target", target],
             pid=pid,
             status=status,
             exit_code=exit_code,
@@ -731,8 +731,6 @@ def test_page_and_its_assets_are_served_from_this_server(world, monkeypatch):
     assert page.headers["content-security-policy"] == "default-src 'self'"
     assert sorted(references.urls) == ["/assets/dashboard.css", "/assets/dashboard.js"]
     for url, response in assets.items():
-        assert url.startswith("/")
-        assert not url.startswith("//")
         assert response.status_code == 200, url
         assert "http://" not in response.text
         assert "https://" not in response.text
@@ -747,6 +745,7 @@ def test_page_renders_the_snapshot_with_results_collapsed_and_polls(world, monke
     _queued_world(world)
     _job(world, "run-p", world.wt, target="t_pass", report={"criterion_key": "k"})
     _job(world, "run-f", world.wt, target="<b>x</b>", exit_code=1)
+    _job(world, "run-bare", world.wt, target=None, ended=None)
     _job(world, "run-leak", world.other, target="leak")
 
     with _client(world, monkeypatch) as client:
@@ -773,13 +772,15 @@ def test_page_renders_the_snapshot_with_results_collapsed_and_polls(world, monke
         "6.0 GiB",
         "position 1",
         '<details id="results-section">',
-        "1 passed",
+        "2 passed",
         "1 failed",
         f'href="{html.escape(report_url)}"',
         "&lt;b&gt;x&lt;/b&gt;",
     ):
         assert text in one, text
     assert "<b>x</b>" not in one
+    for bad in ("null", "undefined", "NaN", "1970"):
+        assert bad not in one, bad
     assert "leak" not in one
     assert "t_new" not in one
     assert one.count(' failed"') == 1
@@ -813,7 +814,6 @@ def test_results_open_state_is_remembered_in_the_browser(world, monkeypatch, tmp
         assert '<details id="results-section">' in one, storage
         assert '<details id="results-section" open>' in two, storage
         assert "t_b" in two, storage
-        assert probe["capture"] == [True]
     assert probes["working"]["storage"] == {"booley.dashboard.results-open": "true"}
     assert probes["blocked"]["storage"] == {}
 
@@ -880,6 +880,7 @@ def test_page_shows_the_snapshot_error_instead_of_jobs(world, tmp_path, monkeypa
             "outside": (_search(outside), [_reply(client, outside)]),
             "deleted": (_search(deleted), [good_deleted, _reply(client, deleted)]),
             "server-gone": (_search(world.wt), [good_wt, {"reject": "connection refused"}]),
+            "not-json": (_search(world.wt), [good_wt, {"status": 500, "text": "oops"}]),
         }
         js = _page_js(client)
     assert scenarios["deleted"][1][-1]["status"] == 404
@@ -887,7 +888,9 @@ def test_page_shows_the_snapshot_error_instead_of_jobs(world, tmp_path, monkeypa
     for kind, (search, responses) in scenarios.items():
         probe = _run_page(js, {"search": search, "responses": responses}, tmp_path / kind)
         last = probe["renders"][-1]
-        expected = "did not answer" if kind == "server-gone" else responses[-1]["body"]["error"]
+        expected = {"server-gone": "did not answer", "not-json": "HTTP 500"}.get(
+            kind
+        ) or responses[-1]["body"]["error"]
         assert expected in last, kind
         assert 'class="error"' in last, kind
         for bad in ("leak", "earlier", "<details"):

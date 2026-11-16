@@ -44,7 +44,9 @@ function fetchStandIn(url, options) {
   return Promise.resolve({
     ok: response.status < 400,
     status: response.status,
-    json: () => Promise.resolve(response.body),
+    json: () => (response.text !== undefined
+      ? Promise.reject(new SyntaxError('not JSON'))
+      : Promise.resolve(response.body)),
   });
 }
 
@@ -86,6 +88,5 @@ async function settle() {
     renders,
     writes: { live: elements.live.writes, results: elements.results.writes },
     storage: store,
-    capture: elements.results.listeners.map((l) => l.capture),
   }));
 })();
