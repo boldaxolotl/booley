@@ -37,6 +37,7 @@ from booley.config.jobs import RETIRED_JOBS_KEYS
 from booley.config.retired import refuse_retired_config
 from booley.core import booley_layout
 from booley.criteria.templates import load_project_criteria
+from booley.flows.sim.config import parse_run_cwd_template
 from booley.flows.synth.backends.yosys import core as yosys_core
 from booley.flows.synth.ppa_config import append_ppa_args
 from booley.flows.synth.recipe import resolve_synth_mode
@@ -677,6 +678,13 @@ CASES: list[Refusal] = [
         _endpoint_sandbox_attr,
     ),
     Refusal(
+        "sim-run-cwd-campaign",
+        ("src/booley/flows/sim/config.py::parse_run_cwd_template",),
+        "{campaign}",
+        "{record}",
+        lambda _env: _raised(lambda: parse_run_cwd_template("{campaign}")),
+    ),
+    Refusal(
         "mcp-tools-directory",
         ("src/booley/mcp/live_catalog.py::custom_directory",),
         "tools",
@@ -694,11 +702,12 @@ BASELINE: frozenset[str] = frozenset()
 NO_REMEDY: dict[str, str] = {}
 
 #: Sites whose phrase hit is not a configuration-key refusal, each with a one-line reason.
+#: ``site#fragment`` exempts only the message containing the fragment; a bare site, all of it.
 NOT_A_KEY: dict[str, str] = {
     "src/booley/config/agent.py::decode_cli_policies": (
         "a policy Booley itself recorded in an older issued Sandbox spec, not user configuration"
     ),
-    "src/booley/config/agent.py::parse_agent_section": (
+    "src/booley/config/agent.py::parse_agent_section#old spelling of default": (
         "provider is still accepted as the old spelling of default; this refuses two "
         "conflicting values, not a retired key"
     ),
@@ -719,6 +728,9 @@ NOT_A_KEY: dict[str, str] = {
     "src/booley/harness/host_sidecars.py::_remove_egress": "reports a removed Docker resource",
     "src/booley/harness/init_cmd.py::_interactive_precondition_failed": (
         "a repository precondition, not a retired key"
+    ),
+    "src/booley/harness/setup/scaffold.py::_cocotb_testbench": (
+        "scaffold text about a renamed cocotb file, not configuration"
     ),
     "src/booley/harness/worktree_rm.py::_move_evidence": "a failure report",
     "src/booley/result_cache/clean_commit.py::_select_participants": (
@@ -799,7 +811,7 @@ _VOCABULARY = re.compile(
     r"\b(?:is|are|was|were) (?:retired|removed|deprecated)\b"
     r"|\bretired (?:key|auth|Flow value|\[)|\bno longer (?:used|read|a Specialist)\b"
     r"|\bneeds migration\b|\blegacy (?:\[|key\b|pipeline)|\bold spelling\b"
-    r"|\bis ignored\b|^retired\b|\bremoved in\b"
+    r"|\bis ignored\b|^retired\b|\bremoved in\b|\bwas renamed\b"
 )
 _PLACEHOLDER = re.compile(r"%[sr]")
 
@@ -809,9 +821,10 @@ class Template:
     site: str
     line: int
     pattern: re.Pattern[str]
+    literal: str
 
 
-def _template(node: ast.expr) -> re.Pattern[str] | None:
+def _template(node: ast.expr) -> tuple[re.Pattern[str], str] | None:
     """A regex for the text *node* can produce, or ``None`` when it is not retirement text."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         parts: list[str | None] = [node.value]
@@ -832,7 +845,7 @@ def _template(node: ast.expr) -> re.Pattern[str] | None:
             pieces.append(".*?")
         else:
             pieces.append(".*?".join(re.escape(piece) for piece in _PLACEHOLDER.split(part)))
-    return re.compile("".join(pieces), re.DOTALL)
+    return re.compile("".join(pieces), re.DOTALL), "".join(part or "" for part in parts)
 
 
 def _docstring_ids(tree: ast.Module) -> set[int]:
@@ -856,9 +869,10 @@ def _templates_in(relative: str, tree: ast.Module) -> Iterator[Template]:
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 inner = f"{scope}.{child.name}" if scope else child.name
             if isinstance(child, ast.expr) and id(child) not in docstrings:
-                pattern = _template(child)
-                if pattern is not None:
-                    yield Template(f"{relative}::{scope or '<module>'}", child.lineno, pattern)
+                found = _template(child)
+                if found is not None:
+                    site = f"{relative}::{scope or '<module>'}"
+                    yield Template(site, child.lineno, *found)
                     continue  # the parts of a template are not templates themselves
             yield from walk(child, inner)
 
@@ -882,15 +896,19 @@ def test_every_retirement_refusal_has_a_case(texts: _Texts) -> None:
     problems = [
         f"declared site not found by the scan: {site}" for site in sorted(declared - scanned)
     ]
+    exempt = [key.partition("#")[::2] for key in NOT_A_KEY]
     problems += [
         f"NOT_A_KEY site not found by the scan: {site}"
-        for site in sorted(set(NOT_A_KEY) - scanned)
+        for site in sorted({site for site, _ in exempt} - scanned)
     ]
     problems += [
-        f"NOT_A_KEY site also has a case: {site}" for site in sorted(set(NOT_A_KEY) & declared)
+        f"NOT_A_KEY site also has a case: {site}"
+        for site in sorted({site for site, _ in exempt} & declared)
     ]
     for template in templates:
-        if template.site in NOT_A_KEY:
+        if any(
+            site == template.site and fragment in template.literal for site, fragment in exempt
+        ):
             continue
         reached = any(
             template.pattern.search(texts.of(case))
