@@ -12,7 +12,7 @@ a text replacement, and a lock stored the result. Two runs on the same RTL could
 pick different mutations, so scores were not reproducible or comparable, and
 every run cost model tokens. Booley now owns a rule-based generator and runs
 mutation testing as a Booley Flow, `booley flow mutation`, with no model and no
-agent CLI. The `mutation_score_<target>` criterion keeps its name.
+agent CLI.
 
 ## Decision
 

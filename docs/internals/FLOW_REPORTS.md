@@ -253,5 +253,5 @@ durable evidence of the one campaign:
 ```
 
 A run without a report directory keeps the variants only under the Booley
-Directory's `.runtime/mutation/` scratch tree. The `mutation_score` Criterion
-is satisfied by `detected >= min_detected`.
+Directory's `.runtime/mutation/` scratch tree. A run passes when
+`detected >= min_detected`.
