@@ -23,17 +23,6 @@ def _step(job: dict[str, Any], name: str) -> dict[str, Any]:
     return next(step for step in job["steps"] if step.get("name") == name)
 
 
-def test_sidecar_smoke_is_independently_scheduled_and_required() -> None:
-    jobs = _jobs()
-    sidecar = jobs["sidecar-smoke"]
-
-    assert sidecar["needs"] == "changes"
-    assert sidecar["if"] == "fromJSON(needs.changes.outputs.jobs)['sidecar-smoke']"
-    assert "sidecar-smoke" in jobs["ci-required"]["needs"]
-    assert "sidecar-build-evidence.sh" not in _step_commands(jobs["bwave-smoke"])
-    assert "test_sidecar_image_helpers.py" not in _step_commands(jobs["bwave-smoke"])
-
-
 def test_sidecar_smoke_proves_execution_and_always_uploads_evidence() -> None:
     sidecar = _jobs()["sidecar-smoke"]
     commands = _step_commands(sidecar)

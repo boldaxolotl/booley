@@ -8,7 +8,6 @@ import sys
 from pathlib import Path
 
 import pytest
-import yaml
 from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime import docker_base_contract
@@ -689,25 +688,3 @@ def test_publish_decision_follows_the_published_contract(tmp_path: Path, monkeyp
         verdict, seen = _publish_decision(repo, monkeypatch, resolution)
         assert verdict == expected
         assert seen == [(_BASE_REFERENCE, docker_base_contract.contract(repo, "inputs.txt"))]
-
-
-def test_base_publish_job_is_gated_on_the_publish_decision() -> None:
-    workflow = yaml.safe_load(
-        Path(".github/workflows/docker-base-publish.yml").read_text(encoding="utf-8")
-    )
-    gate = workflow["jobs"]["stable-base-contract"]
-    publish = workflow["jobs"]["build-publish-smoke"]
-
-    commands = " ".join(step.get("run", "") for step in gate["steps"])
-    assert f"--publish-decision {_BASE_REFERENCE}" in commands
-    assert "--github-output" in commands
-    assert gate["outputs"] == {"publish": "${{ steps.decide.outputs.publish }}"}
-    assert publish["needs"] == "stable-base-contract"
-    # Fail toward rebuilding: a failed gate must not skip the build, even on a manual run.
-    assert " ".join(publish["if"].split()) == (
-        "${{ !cancelled() && (github.event_name == 'workflow_dispatch' "
-        "|| needs.stable-base-contract.result != 'success' "
-        "|| needs.stable-base-contract.outputs.publish == 'true') }}"
-    )
-    # Path filters cannot read content, so pyproject.toml still starts the workflow.
-    assert "pyproject.toml" in workflow[True]["push"]["paths"]

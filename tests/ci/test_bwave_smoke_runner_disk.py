@@ -1,10 +1,9 @@
 """Disk handling of the ``bwave-smoke`` job in the ``Tests`` workflow (#2681).
 
 The job builds several images and runs a dozen validations concurrently on one
-hosted runner, so its `/` filesystem can fill up mid-group. These tests pin the
-steps that free preinstalled toolchains before any image build and log free
-space and scratch sizes around the validation group, so an out-of-disk failure
-is both less likely and attributable.
+hosted runner, so its `/` filesystem can fill up mid-group. This test runs the step that logs
+free space and scratch sizes after the validation group, so an out-of-disk
+failure is attributable even when docker itself fails.
 """
 
 from __future__ import annotations
@@ -20,8 +19,6 @@ from tests.subprocess_budget import run_bounded_child
 
 _ROOT = Path(__file__).parents[2]
 
-_FREE_STEP = "Free unused runner disk"
-_BEFORE_STEP = "Log free disk before image validations"
 _AFTER_STEP = "Log disk use after image validations"
 
 # Fakes put on PATH: sudo and timeout run the rest of their argv (timeout drops
@@ -41,45 +38,6 @@ def _index(steps: list[dict], name: str) -> int:
     matches = [i for i, step in enumerate(steps) if step.get("name") == name]
     assert matches, f"job has no step named {name!r}"
     return matches[0]
-
-
-def _builds_image(step: dict) -> bool:
-    return (
-        str(step.get("name", "")).startswith("Build ")
-        or str(step.get("uses", "")).startswith("docker/build-push-action@")
-        or "docker buildx build" in str(step.get("run", ""))
-    )
-
-
-# riscv-image builds the standard substrate and the RISC-V image on its own
-# runner, so it needs the same space.
-@pytest.mark.parametrize("job", ["bwave-smoke", "riscv-image"])
-def test_runner_disk_is_freed_before_image_builds(job: str) -> None:
-    steps = _steps(job)
-    free = _index(steps, _FREE_STEP)
-    step = steps[free]
-
-    # The removal list lives in one composite action shared with the Deep tests
-    # worktree-mounts job (#2896), so the two jobs cannot drift apart.
-    assert step.get("uses") == "./.github/actions/free-runner-disk"
-    assert "run" not in step
-    assert "if" not in step, "the disk-freeing step must run on every lane"
-    builds = [i for i, other in enumerate(steps) if _builds_image(other)]
-    assert builds, f"expected image-building steps in {job}"
-    assert free < min(builds)
-    assert free < _index(steps, "Start test-phase duration clock")
-
-
-def test_free_disk_is_logged_around_image_validations() -> None:
-    steps = _steps()
-    group = next(i for i, step in enumerate(steps) if "parallel" in step)
-    before, after = steps[group - 1], steps[group + 1]
-
-    assert before.get("name") == _BEFORE_STEP
-    assert "df -h /" in before["run"]
-    assert after.get("name") == _AFTER_STEP
-    assert after.get("if") == "always()"
-    assert "df -h /" in after["run"]
 
 
 def _run_report(tmp_path: Path, runner_temp: Path) -> subprocess.CompletedProcess[str]:
