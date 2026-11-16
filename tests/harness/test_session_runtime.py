@@ -1027,6 +1027,10 @@ class TestIssuedRuntimeDriftFix:
         )
 
         assert "`docker rm active-vscode`" in fix
+        assert (
+            "`docker rm active-vscode` (mounted folders and named volumes survive; "
+            "anything written only inside the container is lost)"
+        ) in fix
         assert "`booley init --seed`" in fix
         assert "for VS Code Sandbox(s)" not in fix
 

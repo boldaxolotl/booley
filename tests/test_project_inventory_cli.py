@@ -165,6 +165,54 @@ def test_projects_forget_human_output_names_root(
     assert "No Docker resources left behind for this Project." in output
 
 
+_UNRECORDED_LINE = (
+    "unrecorded: kept because Booley cannot tell which Project it belongs to; "
+    "remove it with `docker image rm <id>` once no other Project uses it"
+)
+
+
+@pytest.mark.parametrize("case", ["unrecorded", "unused", "json"])
+def test_forget_explains_unrecorded_leftovers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    case: str,
+) -> None:
+    from booley.projects import image_keepers
+
+    project = tmp_path / "project"
+    image = "sha256:" + "7" * 64
+    leftovers = (
+        image_keepers.Leftover(
+            "image", image, "unused" if case == "unused" else "unrecorded", "4.7GB"
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_image_keepers,
+        "forget_project",
+        lambda _project, purge: (project, image_keepers.KeeperRelease("absent", "keeper"), None),
+    )
+    monkeypatch.setattr(runtime_image_keepers, "project_leftovers", lambda _project: leftovers)
+    argv = ["projects", "forget", str(project)] + (["--json"] if case == "json" else [])
+
+    assert _run(_parser().parse_args(argv)) == 0
+
+    output = capsys.readouterr().out
+    if case == "unrecorded":
+        table = render_table(
+            ["Kind", "Name", "Size", "Reason", "Tags"],
+            [["image", image, "4.7GB", "unrecorded", ""]],
+        )
+        assert "\n".join(table) + "\n" + _UNRECORDED_LINE + "\n" in output
+    elif case == "unused":
+        assert "unrecorded:" not in output
+    else:
+        assert "unrecorded:" not in output.replace('"reason": "unrecorded"', "")
+        assert json.loads(output)["leftovers"] == [
+            {"kind": "image", "name": image, "reason": "unrecorded", "size": "4.7GB", "tags": []}
+        ]
+
+
 def test_forget_lists_leftovers_with_sizes_and_tags(
     tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str]
 ) -> None:

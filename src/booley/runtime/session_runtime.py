@@ -1289,9 +1289,10 @@ def _outdated_vscode_container_remedy(names: list[str]) -> str:
     """Name the host repair for running VS Code containers with outdated mounts."""
     joined = " ".join(names)
     return (
-        f"close VS Code, then on the host run `docker stop {joined}` and `docker rm {joined}`, "
-        "run `booley init --seed`, and reopen the folder in the container "
-        "(Dev Containers: Rebuild Container)"
+        f"close VS Code, then on the host run `docker stop {joined}` and `docker rm {joined}` "
+        "(mounted folders and named volumes survive; anything written only inside the "
+        "container is lost), run `booley init --seed`, and reopen the folder in the "
+        "container (Dev Containers: Rebuild Container)"
     )
 
 

@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
+from booley.core.host_shell import quote_arg
 from booley.runtime.sandbox_apply import (
     APPLY_DOC_URL,
     UNKNOWN_SANDBOX_STEPS,
     Attachment,
     apply_steps,
-    quote_arg,
 )
 
 SANDBOX_MD = Path(__file__).resolve().parents[2] / "docs" / "user" / "SANDBOX.md"

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.core import host_shell
 from booley.runtime import sandbox_apply, session_admission, session_runtime
 
 
@@ -51,7 +52,7 @@ def test_egress_recreate_remedy_names_owner_workflow(
     tmp_path: Path, vscode: bool, image: str | None, expected: str
 ) -> None:
     _write_image(tmp_path, image)
-    root = sandbox_apply.quote_arg(str(tmp_path))
+    root = host_shell.quote_arg(str(tmp_path))
 
     remedy = session_admission.recreate_remedy(_listed(tmp_path, vscode=vscode))
 
@@ -64,8 +65,7 @@ def test_egress_remedy_for_a_deleted_headless_project_stops_it(tmp_path: Path) -
     remedy = session_admission.recreate_remedy(_listed(gone, vscode=False))
 
     assert (
-        remedy
-        == f"stop it: run `booley session down --project {sandbox_apply.quote_arg(str(gone))}`"
+        remedy == f"stop it: run `booley session down --project {host_shell.quote_arg(str(gone))}`"
     )
 
 
