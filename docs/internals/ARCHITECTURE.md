@@ -257,8 +257,8 @@ run, and the next Job would start on top of them.
 
 A **Booley Flow** deterministically turns a structured request into EDA tool
 runs and their logs into metrics and a report. Once its Job is admitted, the
-Flow resolves the Target with FuseSoC; Edalize builds the EDA tool command for
-lint, sim, and fpga, and synth renders its own Yosys and OpenROAD scripts.
+Flow resolves the Target with FuseSoC, which also builds the EDA tool command
+for lint, sim, and fpga; synth renders its own Yosys and OpenROAD scripts.
 Mutation testing is a Flow (`booley flow mutation`), not a Specialist: it needs
 no model. The catalog is in
 [CLI-REFERENCE.md](../user/CLI-REFERENCE.md#booley-flows--specialists).
@@ -275,8 +275,8 @@ only trust a result it produced from an invocation it controlled. Booley, not
 the agent's prompt, decides how a Flow runs.
 
 Booley doesn't write that build system itself. FuseSoC is the most mature
-open-source EDA build system and sits directly on Edalize, which generates the
-per-tool command for most Flows. File-list ordering, typed parameters,
+open-source EDA build system and generates the per-tool command for most
+Flows. File-list ordering, typed parameters,
 per-flow targets, and the long tail of EDA tool integrations are code FuseSoC
 maintains.
 
