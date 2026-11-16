@@ -47,11 +47,9 @@ class EchoFlow(BooleyFlow):
         if result.returncode == 0:
             return McpToolResult(
                 exit_code=EXIT_SUCCESS,
-                criterion_key="echo_pass",
-                criterion_met=True,
                 detail={"output": result.stdout.strip()},
             )
-        return McpToolResult(exit_code=EXIT_FAILURE, criterion_met=False)
+        return McpToolResult(exit_code=EXIT_FAILURE)
 
 
 class TestBooleyFlowExecution:
@@ -123,7 +121,6 @@ class TestBooleyFlowExecution:
         flow.read_state()
         result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
-        assert result.criterion_met is True
         assert "hello world" in result.detail.get("output", "")
 
     def test_command_not_found(self, tmp_path: Path):

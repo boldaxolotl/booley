@@ -641,7 +641,6 @@ class TestChannelDisagreement:
         result = endpoint._run()
 
         assert result.exit_code == 0
-        assert result.criterion_met is True
         assert result.detail["issues"] == 1
         assert result.detail[SEVERITY_CRITICAL] == 1
 
@@ -1921,8 +1920,6 @@ class TestFullRtlReview:
         endpoint.read_state()
         result = endpoint._run()
         assert result.exit_code == 0
-        assert result.criterion_met is True
-        assert result.criterion_key == "review_rtl_bugs_done"
         captured = capsys.readouterr()
         assert "RESULT: REVIEWED — NO FINDINGS" in captured.out
 
@@ -2023,8 +2020,6 @@ class TestFullRtlReview:
         endpoint.read_state()
         result = endpoint._run()
         assert result.exit_code == 0
-        assert result.criterion_met is True
-        assert result.criterion_key == "review_rtl_bugs_done"
         captured = capsys.readouterr()
         assert "RESULT: REVIEWED WITH FINDINGS" in captured.out
         assert "critical" in captured.out
@@ -2041,14 +2036,12 @@ class TestFullRtlReview:
         t1.read_state()
         first = t1._run()
         assert first.exit_code == 0
-        assert first.criterion_met is True
 
         t2 = ReviewerSpecialist()
         t2.parse_args(common)
         t2.read_state()
         rerun = t2._run()
         assert rerun.exit_code == 0
-        assert rerun.criterion_met is True
         assert "RESULT: REVIEWED WITH FINDINGS" in rerun.report_text
         # Each bugs review makes two calls (checklist and hunt guides).
         assert mock_agent.call_count == 4
@@ -2102,12 +2095,11 @@ class TestFullRtlReview:
         endpoint.read_state()
         result = endpoint._run()
         assert result.exit_code == 0
-        assert result.criterion_met is True
         assert result.detail["gate_passed"] is True
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_single_focus_security(self, mock_agent, state_file: Path, capsys):
-        """Single focus runs one agent call per guide kind, criterion key reflects focus."""
+        """Single focus runs one agent call per guide kind, one run per focus."""
         mock_agent.return_value = _make_agent_result([])
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(
@@ -2123,7 +2115,6 @@ class TestFullRtlReview:
         endpoint.read_state()
         result = endpoint._run()
         assert result.exit_code == 0
-        assert result.criterion_key == "review_rtl_security_done"
         assert mock_agent.call_count == 2  # security declares a checklist and a hunt guide
 
 
@@ -2247,8 +2238,6 @@ class TestInterpretOutput:
         output = json.dumps({"issues": []})
         result = endpoint._interpret_output(output, None)
         assert result.exit_code == 0
-        assert result.criterion_met is True
-        assert result.criterion_key == "review_rtl_bugs_done"
 
     def test_interpret_with_critical(self, state_file: Path):
         endpoint = ReviewerSpecialist()
@@ -2265,8 +2254,6 @@ class TestInterpretOutput:
         output = json.dumps({"issues": [_make_issue_dict("CRITICAL")]})
         result = endpoint._interpret_output(output, None)
         assert result.exit_code == 0
-        assert result.criterion_met is True
-        assert result.criterion_key == "review_rtl_security_done"
 
 
 # ---------------------------------------------------------------------------

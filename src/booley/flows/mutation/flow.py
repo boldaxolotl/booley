@@ -2683,8 +2683,6 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
 
         return EndpointOutcome(
             exit_code=EXIT_SUCCESS if passed else EXIT_FAILURE,
-            criterion_key=criterion_key,
-            criterion_met=passed,
             detail=detail,
             report_text=report_text,
             display_lines=[display, *artifact_lines],

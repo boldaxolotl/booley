@@ -50,10 +50,6 @@ same report, with `mcp_tool` in place of `flow`. Its `$schema` is
 Flows, and `booley.specialist-report/v1` for Specialists.
 
 - `passed` means exit `0`, whatever the Criteria say.
-- `criterion_key` and `criterion_met` are optional keys. They appear only on
-  runs with an acceptance identity and hold a value only
-  when exactly one applicable Criterion maps to the run, it was evaluated, and
-  one Target was selected. Otherwise the key is empty and the verdict `null`.
 - `resources` (`cpu_user_s`, `cpu_sys_s`, `peak_rss_mb`) is a process-lifetime
   snapshot. Repeated calls inside one process include earlier work, and a
   resumed run counts only the resuming process. When the platform cannot

@@ -302,14 +302,13 @@ def test_recorded_review_uses_one_evidence_file(reviewer, monkeypatch, late_erro
         result = original_execute()
         if late_error:
             result.exit_code = 2
-            result.criterion_met = False
             reviewer._audit["rejected"].append({"raw": "late error"})
         return result
 
     monkeypatch.setattr(reviewer, "_execute_review", finish_execution)
     output(reviewer, monkeypatch, {"issues": []})
     result = reviewer._run()
-    assert result.criterion_met is (not late_error)
+    assert (result.exit_code == 2) is late_error
     path = assert_run_evidence(result)
     assert [call.args[0] for call in write.call_args_list] == [path] * (2 if late_error else 1)
     if late_error:

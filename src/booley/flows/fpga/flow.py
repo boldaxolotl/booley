@@ -238,7 +238,6 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
     # summary on stdout so PASS is never indistinguishable from a no-op.
     announce_success_report: bool = True
     satisfies: ClassVar[list[str]] = ["fpga_impl_ok"]
-    conventional_families: ClassVar[frozenset[str]] = frozenset({"fpga_impl_ok"})
     _PAIR_CRITERION_PREFIX = "fpga_impl_ok_"
 
     # FPGA implementation is memory-admitted as a Sandbox job.

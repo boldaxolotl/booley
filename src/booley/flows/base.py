@@ -507,9 +507,6 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
     # The in-process caller's explicit CLI origin and outer Project; None reads the env marker.
     _cli_invocation: CliInvocation | None = None
 
-    # Families a non-strict Project may judge under conventional names (lint_clean, ...).
-    conventional_families: ClassVar[frozenset[str]] = frozenset()
-
     # The Criterion family whose baseline Targets this Flow also runs (``None``: no pairs).
     _PAIR_CRITERION_PREFIX: ClassVar[str | None] = None
 
@@ -606,10 +603,6 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
         if self._selects_targets:
             return TargetSelectionInvocation(self, self._prepared_target_selection, self._run)
         return OrdinaryRunInvocation(self._run)
-
-    def conventional_report_families(self) -> set[str]:
-        """Families a non-strict Project may judge under their conventional Criterion names."""
-        return set(self.conventional_families)
 
     def _selected_target_selection(self) -> PreparedTargetSelection:
         """Return the complete selection prepared for this invocation."""

@@ -233,11 +233,6 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
             "test_campaign_domain_does_not_import_presentation_layers",
         }
     ),
-    "tests/flows/test_transport_contract.py": frozenset(
-        {
-            "run_campaign",
-        }
-    ),
 }
 
 # Campaign names left to #3045 (the source-fingerprint campaign category).

@@ -88,7 +88,6 @@ _KEPT_SPELLINGS: dict[str, tuple[str, ...]] = {
     ),
     "tests/dev_support/test_mutation_variants.py": ('"campaign/variants"',),
     "tests/dev_support/test_mutation_workspace.py": ('"campaign"',),
-    "tests/flows/test_transport_contract.py": ("run_campaign", "_run_campaign"),
     "tests/mcp_tools/test_specialist_workspace.py": ("mutation/campaign/variants",),
     # Target campaign: the paired-campaign Criteria and the vacuous-suite refusal.
     "src/booley/criteria/templates.py": (

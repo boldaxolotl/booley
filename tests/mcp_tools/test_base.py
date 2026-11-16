@@ -32,7 +32,7 @@ from booley.mcp.base import (
 from booley.mcp.run_lock import _as_pid, _scan_endpoint_events
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import EndpointOutcome
-from tests.flows.report_headline import final_report_omits_headline
+from tests.flows.report_headline import assert_paired_headline, final_report_omits_headline
 
 
 class ConcreteMcpTool(McpTool):
@@ -50,11 +50,7 @@ class ConcreteMcpTool(McpTool):
         parser.add_argument("--extra", default="")
 
     def _run(self) -> McpToolResult:
-        return McpToolResult(
-            exit_code=EXIT_SUCCESS,
-            criterion_key="test_criterion",
-            criterion_met=True,
-        )
+        return McpToolResult(exit_code=EXIT_SUCCESS)
 
 
 def test_documented_mcp_result_name_remains_source_compatible() -> None:
@@ -375,7 +371,7 @@ class SimLikeMcpTool(ConcreteMcpTool):
 
     def _run(self) -> McpToolResult:
         self.set_criterion("sim_pass_default", True)
-        return McpToolResult(exit_code=EXIT_SUCCESS, criterion_key="sim_pass_default")
+        return McpToolResult(exit_code=EXIT_SUCCESS)
 
 
 class LintLikeMcpTool(ConcreteMcpTool):
@@ -1210,17 +1206,12 @@ class TestMcpToolWriteReport:
         endpoint = ConcreteMcpTool()
         with mock.patch.dict(os.environ, env):
             endpoint.parse_args(["--report-dir", str(report_dir)])
-        result = McpToolResult(
-            exit_code=0,
-            criterion_key="lint_clean_lite",
-            criterion_met=True,
-            detail={"warnings": 0},
-        )
+        result = McpToolResult(exit_code=0, detail={"warnings": 0})
         path = endpoint.write_report(result)
         assert path is not None
         data = json.loads(path.read_text(encoding="utf-8"))
         assert data["mcp_tool"] == "test_endpoint"
-        assert data["criterion_met"] is True
+        assert "criterion_key" not in data and "criterion_met" not in data
 
     def test_no_report_when_no_dir(self, tmp_path: Path):
         state_file = tmp_path / "state.json"
@@ -1240,7 +1231,7 @@ class TestMcpToolWriteReport:
         endpoint = ConcreteMcpTool()
         with mock.patch.dict(os.environ, env, clear=True):
             endpoint.parse_args(["--report-dir", str(report_dir)])
-        result = McpToolResult(exit_code=0, criterion_key="test_check", criterion_met=True)
+        result = McpToolResult(exit_code=0)
         path = endpoint.write_report(result)
         assert path is not None
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -1692,7 +1683,6 @@ class TestMainDisplayEvents:
         class PromotionRejectingMcpTool(ConcreteMcpTool):
             def _pre_save_hook(self, result: McpToolResult) -> None:
                 result.exit_code = EXIT_FAILURE
-                result.criterion_met = False
                 result.report_text = "promotion failed"
 
         env = _env_with_state(state_file)
@@ -1714,7 +1704,7 @@ class TestMainDisplayEvents:
         ]
         end_evt = next(e for e in all_events if e["type"] == "endpoint_end")
         assert end_evt["exit_code"] == EXIT_FAILURE
-        assert end_evt["criterion_met"] is False
+        assert "criterion_met" not in end_evt
         assert end_evt["report_text"] == "promotion failed"
 
     def test_config_aware_false_suppresses_config(self, tmp_path: Path):
@@ -2222,52 +2212,24 @@ class TestNoReportDirWarning:
         assert not [r for r in caplog.records if "report-dir" in r.getMessage()]
 
 
-@pytest.mark.parametrize("kind", ["flow", "specialist", "mcp_tool"])
-@pytest.mark.parametrize(
-    "calls",
-    [
-        [],
-        [("actual", False)],
-        [("actual", True), ("actual", False)],
-        [("one", True), ("two", False)],
-    ],
-)
-def test_final_headline_contract_preserves_generic_endpoint(tmp_path, kind, calls):
-    tool = ConcreteMcpTool()
-    tool.endpoint_kind = kind
-    # The schema is declared per endpoint class; this double declares what its kind writes.
-    tool.report_schema = None if kind == "mcp_tool" else f"booley.{kind}-report/v1"
-    tool.parse_args(["--work-dir", str(tmp_path), "--report-dir", str(tmp_path / "reports")])
-    tool.read_state()
-    for key, met in calls:
-        tool.set_criterion(key, met)
-    result = McpToolResult(criterion_key="legacy", criterion_met=True)
-    from booley.flows.endpoint_report_criteria import freeze
-    from booley.flows.prepared_invocation import OrdinaryRunInvocation
+def test_custom_endpoint_report_and_completion_carry_no_criterion(tmp_path, monkeypatch):
+    events = []
+    monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", events.append)
 
-    freeze(tool, OrdinaryRunInvocation(tool._run))
-    report = json.loads(tool.write_report(result).read_text())
-    if kind == "mcp_tool":
-        assert (report["criterion_key"], report["criterion_met"]) == ("legacy", True)
-    else:
-        assert "criterion_key" not in report and "criterion_met" not in report
-    if kind == "mcp_tool":
-        assert "$schema" not in report
-    else:
-        assert report["$schema"] == f"booley.{kind}-report/v1"
+    class EvaluatingTool(ConcreteMcpTool):
+        def _run(self):
+            self.set_criterion("actual", True)
+            return McpToolResult(exit_code=EXIT_SUCCESS)
 
-
-def test_generic_submission_none_key_is_preserved(tmp_path):
-    tool = ConcreteMcpTool()
-    tool.parse_args(["--report-dir", str(tmp_path / "reports")])
-    result = McpToolResult(criterion_key=None, criterion_met=None)
-    from booley.flows.endpoint_report_criteria import freeze
-    from booley.flows.prepared_invocation import OrdinaryRunInvocation
-
-    freeze(tool, OrdinaryRunInvocation(tool._run))
-    report = json.loads(tool.write_report(result).read_text())
-    assert report["criterion_key"] is None
-    assert report["criterion_met"] is None
+    tool = EvaluatingTool()
+    reports = tmp_path / "reports"
+    result = tool.execute_cli(["--work-dir", str(tmp_path), "--report-dir", str(reports)])
+    assert result.exit_code == 0
+    assert_paired_headline(reports, tool.name)
+    flat = json.loads((reports / f"{tool.name}.json").read_text())
+    assert "criterion_key" not in flat and "criterion_met" not in flat
+    completion = next(event for event in events if event["type"] == "endpoint_end")
+    assert "criterion_key" not in completion and "criterion_met" not in completion
 
 
 def unbound_specialist(tmp_path, *argv):
@@ -2286,8 +2248,7 @@ def test_effective_aliases_and_thresholds_drive_final_report(tmp_path, aliases):
         dict.fromkeys(aliases, True), flow_key_aliases={"sim_pass_default": aliases}
     )
     tool.set_criterion("sim_pass_default", True, detail={"pending": ["unresolved defect"]})
-    result = McpToolResult(criterion_key="sim_pass_default", criterion_met=True)
-    final_report_omits_headline(tool, result)
+    final_report_omits_headline(tool, McpToolResult())
     assert all(tool.state.criteria[alias].met is False for alias in aliases)
 
 
@@ -2313,7 +2274,7 @@ def test_effective_metric_threshold_overrides_raw_true_in_final_report(tmp_path)
         {"synthesis_ok_demo": True}, criterion_params={"synthesis_ok_demo": {"area_max": 100}}
     )
     tool.set_criterion("synthesis_ok_demo", True, detail={"area_um2": 200})
-    final_report_omits_headline(tool, McpToolResult(criterion_met=True))
+    final_report_omits_headline(tool, McpToolResult())
     assert tool.state.criteria["synthesis_ok_demo"].met is False
     assert tool.state.criteria["synthesis_ok_demo"].detail["area_um2"] == 200
 
@@ -2322,8 +2283,7 @@ def test_strict_rejected_evaluation_has_null_final_report(tmp_path):
     tool = unbound_specialist(tmp_path)
     tool.state.strict_criteria = True
     tool.set_criterion("undeclared", False)
-    result = McpToolResult(criterion_key="undeclared", criterion_met=False)
-    final_report_omits_headline(tool, result)
+    final_report_omits_headline(tool, McpToolResult())
     assert "undeclared" not in tool.state.criteria
 
 
@@ -2332,8 +2292,6 @@ def test_compatibility_detail_refresh_cannot_replace_final_headline(tmp_path, mo
     tool.set_criterion("actual", False)
 
     def refresh(result):
-        result.criterion_key = "stale"
-        result.criterion_met = True
         result.detail["artifact"] = "retained"
 
     monkeypatch.setattr(tool, "refresh_report_detail", refresh)
@@ -2346,14 +2304,12 @@ def test_preexisting_met_state_is_not_a_current_report_evaluation(tmp_path):
     tool = unbound_specialist(tmp_path)
     tool.state.init_criteria({"prior": True})
     tool.state.criteria["prior"].met = True
-    final_report_omits_headline(tool, McpToolResult(criterion_key="prior", criterion_met=True))
+    final_report_omits_headline(tool, McpToolResult())
     assert tool.state.criteria["prior"].met is True
 
 
 def test_project_local_sim_endpoint_writes_project_local_schema(tmp_path):
     """A Project-local endpoint named ``sim`` is not the Simulation Flow."""
-    from booley.flows.endpoint_report_criteria import freeze
-    from booley.flows.prepared_invocation import OrdinaryRunInvocation
 
     class OtherTool(ConcreteMcpTool):
         name = "other"
@@ -2363,11 +2319,8 @@ def test_project_local_sim_endpoint_writes_project_local_schema(tmp_path):
         if tool.name == "test_endpoint":
             tool.name = "sim"
         tool.parse_args(["--report-dir", str(tmp_path / tool.name / "reports")])
-        freeze(tool, OrdinaryRunInvocation(tool._run))
-        result = McpToolResult(criterion_key="legacy", criterion_met=False)
-        documents[tool.name] = json.loads(tool.write_report(result).read_text())
+        documents[tool.name] = json.loads(tool.write_report(McpToolResult()).read_text())
     sim, other = documents["sim"], documents["other"]
-    assert (sim["criterion_key"], sim["criterion_met"]) == ("legacy", False)
     assert "$schema" not in sim
     assert sim.keys() == other.keys()
 
@@ -2405,90 +2358,3 @@ def test_report_schema_follows_endpoint_kind(tmp_path):
         "custom": "booley.flow-report/v1",
         "lint": "booley.flow-report/v1",
     }
-
-
-@pytest.mark.parametrize("result_type", [McpToolResult, EndpointOutcome])
-@pytest.mark.parametrize("explicit", [False, True])
-def test_generic_default_and_explicit_null_remain_distinct(tmp_path, result_type, explicit):
-    tool = ConcreteMcpTool()
-    tool.parse_args(["--report-dir", str(tmp_path / "reports")])
-    result = result_type(criterion_met=None) if explicit else result_type()
-    report = json.loads(tool.write_report(result).read_text())
-    assert report["criterion_met"] is (None if explicit else False)
-
-
-def test_generic_preparation_does_not_build_reporting_catalog(tmp_path, monkeypatch):
-    from booley.targets.catalog import TargetCatalog
-
-    tool = ConcreteMcpTool()
-    monkeypatch.setattr(
-        TargetCatalog, "build", lambda *_args: pytest.fail("generic reporting resolved Targets")
-    )
-    result = tool.execute_cli(
-        [
-            "--target",
-            "custom",
-            "--work-dir",
-            str(tmp_path),
-            "--report-dir",
-            str(tmp_path / "reports"),
-        ]
-    )
-    assert result.exit_code == 0
-
-
-def test_unprepared_report_does_not_run_catalog_mapping(tmp_path, monkeypatch):
-    from booley.targets.catalog import TargetCatalog
-
-    tool = ConcreteMcpTool()
-    tool.endpoint_kind = "flow"
-    tool.parse_args(
-        [
-            "--target",
-            "missing",
-            "--work-dir",
-            str(tmp_path),
-            "--report-dir",
-            str(tmp_path / "reports"),
-        ]
-    )
-    monkeypatch.setattr(
-        TargetCatalog, "build", lambda *_args: pytest.fail("early reporting resolved Targets")
-    )
-    report = json.loads(tool.write_report(McpToolResult(exit_code=2)).read_text())
-    assert "criterion_key" not in report and "criterion_met" not in report
-
-
-@pytest.mark.parametrize("kind", ["flow", "specialist", "mcp_tool"])
-def test_early_outcome_defaults_project_only_common_endpoints(tmp_path, monkeypatch, kind):
-    from booley.targets.catalog import TargetCatalog
-
-    class EarlyTool(ConcreteMcpTool):
-        endpoint_kind = kind
-
-        def _pre_state_gate(self):
-            return EndpointOutcome(exit_code=2)
-
-    monkeypatch.setattr(
-        TargetCatalog, "build", lambda *_args: pytest.fail("early gate built catalog")
-    )
-    result = EarlyTool().execute_cli(["--target", "custom", "--work-dir", str(tmp_path)])
-    assert result.exit_code == 2
-    assert result.outcome.criterion_key == ""
-    assert result.outcome.criterion_met is (False if kind == "mcp_tool" else None)
-
-
-@pytest.mark.parametrize("key,met", [("", False), (None, None), ("legacy", True)])
-def test_generic_completion_events_preserve_legacy_criterion_values(
-    tmp_path, monkeypatch, key, met
-):
-    events = []
-    monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", events.append)
-    tool = ConcreteMcpTool()
-    monkeypatch.setattr(tool, "_run", lambda: McpToolResult(criterion_key=key, criterion_met=met))
-    result = tool.execute_cli(
-        ["--work-dir", str(tmp_path), "--report-dir", str(tmp_path / "reports")]
-    )
-    assert result.exit_code == 0
-    completion = next(event for event in events if event["type"] == "endpoint_end")
-    assert (completion["criterion_key"], completion["criterion_met"]) == (key, met)

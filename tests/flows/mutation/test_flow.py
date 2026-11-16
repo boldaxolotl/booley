@@ -2041,7 +2041,7 @@ def test_identity_is_in_results_and_criterion_detail(tmp_path: Path, monkeypatch
         "verilator_version": _VERILATOR_VERSION,  # a Verilator Target records its version
         "elaboration": "per-file",  # the scope file alone does not elaborate: undeclared names
     }
-    criterion = endpoint.state.criteria[result.criterion_key].detail
+    criterion = endpoint.state.criteria["mutation_score_lite"].detail
     manifest = json.loads((tmp_path / result.detail["artifacts"]["manifest"]).read_text("utf-8"))
     identity = dict(result.detail["identity"])
     reason = identity.pop("elaboration_fallback")
@@ -2156,7 +2156,6 @@ def test_happy_path_publishes_campaign_artifacts(tmp_path: Path, monkeypatch) ->
     assert all((tmp_path / row["path"]).is_file() for row in variants)
     _assert_durable_campaign(tmp_path, result)
     assert "mutation variant: reports/mutation/1/campaign/variants/" in result.report_text
-    assert result.criterion_key == "mutation_score_lite"
 
 
 def test_mutant_logs_of_an_earlier_run_do_not_survive_a_smaller_run(

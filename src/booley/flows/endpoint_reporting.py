@@ -272,16 +272,12 @@ def write_report(endpoint: EndpointState, result: EndpointOutcome) -> Path | Non
     Also writes a flat ``{endpoint_name}.json`` copy for backward compatibility
     (developer prompt rule 11, MCP ``_try_read_report``).
     """
-    from booley.flows.endpoint_report_criteria import project
-
-    project(endpoint, result)
     report_dir = endpoint.args.report_dir
     if report_dir is None:
         return None
     report_dir.mkdir(parents=True, exist_ok=True)
     if not endpoint._skip_report_detail_refresh:
         endpoint.refresh_report_detail(result)
-    project(endpoint, result)
     report = _report_document(endpoint, result)
     inv_dir = endpoint._reserved_invocation_dir
     if inv_dir is None:
@@ -324,19 +320,11 @@ def _report_document(endpoint: EndpointState, result: EndpointOutcome) -> dict[s
         "slug": endpoint.args.slug or "",
         "target": endpoint._selected_target,
         "exit_code": result.exit_code,
-        "criterion_key": result.criterion_key,
-        "criterion_met": result.criterion_met,
         "detail": result.detail,
         "timestamp": utc_now_rfc3339(),
         "elapsed_s": elapsed_s,
         "passed": passed,
     }
-    if (
-        endpoint.endpoint_kind in {"flow", "specialist"}
-        and not endpoint._acceptance_recorder.acceptance_identity()
-    ):
-        del report["criterion_key"]
-        del report["criterion_met"]
     if endpoint.report_schema is not None:
         report["$schema"] = endpoint.report_schema
     mode = result.detail.get("mode")
@@ -620,10 +608,6 @@ def _finish_main(
                         display_label=display_label,
                         dry_run=dry_run,
                         identity=endpoint._display_identity,
-                        include_criterion=(
-                            endpoint.endpoint_kind not in {"flow", "specialist"}
-                            or bool(endpoint._acceptance_recorder.acceptance_identity())
-                        ),
                     ),
                 )
             except Exception:
