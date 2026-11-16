@@ -12,6 +12,10 @@ points. The mission says what to exercise; this file says exactly how.
    `resources.md`): clone Caliptra at the RTL pin with submodules, clone the
    Project pin as `.booley`, apply `.booley/patches/*.patch` on a `booley`
    branch, and `booley init`. A step the README gets wrong is a finding.
+   Add a `resources.md` row for the Project registration `booley init`
+   creates (its issued Session image tag and agent-state volume), released by
+   `booley session down` then `booley projects forget --purge <project>`
+   before the staged directory is deleted.
 2. Copy `<asset>/fixtures/mem_hog.py` to `.booley/mcp_tools/mem_hog.py` and
    commit it in the Booley Directory.
 3. Run every command through `booley session enter -- ...` from the host.
@@ -85,7 +89,7 @@ step ends.
 | What | Where |
 |---|---|
 | Resource History | `booley resources` and `booley resources --json`; the file `.booley/runtime/resources/history.json` |
-| Memory claims, holders and waiters | `.booley/runtime/jobs/slots/memory/`: `h-*.json` (running) and `w-*.json` (waiting), each with a `memory` object (`budget_mb`, `reservation_mb`, `run_alone`, `seats`, `wall_s`) and `queue_reason`. Copy them while a Job waits or runs; a small loop that copies the directory every few seconds into `evidence/` catches shrinks |
+| Memory claims, holders and waiters | `.booley/runtime/jobs/slots/memory/`: `h-*.json` (running) and `w-*.json` (waiting), each with a `memory` object (`budget_mb`, `reservation_mb`, `run_alone`, `seats`, `wall_s`, `companion`); only a claim requeued after an out-of-memory kill also has `queue_reason`. An ordinary waiter's reason is on the CLI `[slot]` line and in `booley_poll`. Copy them while a Job waits or runs; a small loop that copies the directory every few seconds into `evidence/` catches shrinks |
 | Queue text on the CLI | stderr of the waiting `booley flow` run: a `[slot]` line about every 30 seconds |
 | OOM priority | `cat /proc/<pid>/oom_score_adj` in the Sandbox for each tool process and its coordinator |
 | OOM kills | `/sys/fs/cgroup/memory.events` in the Sandbox (`oom_kill` counter); the Flow's `[requeue]` line and its result |

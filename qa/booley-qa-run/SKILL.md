@@ -69,6 +69,11 @@ to pass to automatic triage.
 - Before creating anything outside the run dir (container, image, worktree,
   branch, registration, grant, remote, mount, background process, file or
   directory), append it to `resources.md`. Cleanup releases exactly those rows.
+  `booley init` on a staged Project is one such step: it registers the Project
+  and creates its issued Session image tag and agent-state volume. Give it one
+  row, released by `booley session down` and then
+  `booley projects forget --purge <project>` before the Project directory is
+  deleted.
 - Write scratch files, backups and probe scripts under `<run-dir>/scratch/<area>/`,
   never `/tmp`. Anything that must live elsewhere gets its row first.
 
