@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import ntpath
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,7 +13,13 @@ import pytest
 
 from booley.core.booley_dir_pin import BooleyDirPinError
 from booley.core.project_identity import project_label_id
-from booley.runtime import image_lifecycle, runtime_context, session_issuance, session_runtime
+from booley.runtime import (
+    image_lifecycle,
+    runtime_context,
+    session_admission,
+    session_issuance,
+    session_runtime,
+)
 from booley.runtime.project_image import project_image_name
 
 VSCODE_INIT = "on the host run `booley init`, then use Dev Containers: Rebuild Container"
@@ -203,6 +210,36 @@ def test_unreachable_docker_asks_for_connectivity(
     monkeypatch.setattr(session_runtime, "resolve_running_sandbox", unreachable)
 
     assert session_runtime.sandbox_remedy(host.root).startswith("restore Docker connectivity")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the hanging docker stub is a POSIX shell script")
+def test_hung_docker_inventory_times_out_to_the_connectivity_remedy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "proj"
+    root.mkdir()
+    calls = tmp_path / "docker-calls"
+    stub = tmp_path / "bin" / "docker"
+    stub.parent.mkdir()
+    # No Sandbox is running; the inventory of all Sandbox containers that follows hangs.
+    stub.write_text(
+        f'#!/bin/sh\necho "$*" >> "{calls}"\ncase "$1 $2" in "ps -a") exec sleep 30;; esac\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{stub.parent}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(session_admission, "_DOCKER_TIMEOUT_S", 2)
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(session_issuance, "load_issued_snapshot", lambda _root: object())
+
+    start = time.monotonic()
+    remedy = session_runtime.sandbox_remedy(root)
+
+    assert time.monotonic() - start < 15
+    assert calls.read_text(encoding="utf-8").splitlines()[-1].startswith("ps -a ")
+    assert remedy == (
+        "restore Docker connectivity and inspect Sandbox ownership on the host before repair"
+    )
 
 
 def test_vscode_spec_refusal_keeps_the_external_image_prefix(host: SimpleNamespace) -> None:

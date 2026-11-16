@@ -9,12 +9,15 @@ import tempfile
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import ExitStack
 from pathlib import Path, PureWindowsPath
-from typing import Any, BinaryIO
+from typing import TYPE_CHECKING, Any, BinaryIO
 
 import pytest
 
 from tests.memory_budget_support import budget_of, pin_budget
 from tests.python_command_support import interpreter_first_path, python_path_entry
+
+if TYPE_CHECKING:
+    from booley.runtime.sandbox_apply import Attachment
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[1]
 
@@ -736,3 +739,21 @@ def fake_bwave(tmp_path, monkeypatch):
     script.chmod(0o755)
     monkeypatch.setattr(waveform_store, "native_bwave_binary", lambda: str(script))
     return script
+
+
+@pytest.fixture
+def fake_sandbox_attachment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Callable[[Attachment | None], None]:
+    """Fake the Sandbox owner inventory so remedy text never asks the host's Docker.
+
+    The owner starts unknown (``None``); call the returned function with an
+    ``Attachment`` to give the Sandbox one.
+    """
+    from booley.runtime import session_runtime
+
+    def attach(owner: Attachment | None) -> None:
+        monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _root: owner)
+
+    attach(None)
+    return attach

@@ -19,6 +19,7 @@ THRESHOLD = handles.MAX_MAP_BYTES * 3 // 4
         pytest.param(True, 1, id="job-above"),
     ],
 )
+@pytest.mark.usefixtures("fake_sandbox_attachment")
 def test_handle_map_size_warns_only_above_three_quarters_of_cap(
     tmp_path, monkeypatch, jobs, excess
 ):
@@ -28,7 +29,6 @@ def test_handle_map_size_warns_only_above_three_quarters_of_cap(
         stream.truncate(THRESHOLD + excess)
     reporter = doctor._Reporter.create()
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _root: None)
     doctor._check_handle_map_size(tmp_path, tmp_path, reporter.warn_)
     findings = reporter.findings
     if not excess:
@@ -50,14 +50,16 @@ _PREFIX = "restart the Sandbox so its MCP server prunes expired handles at start
 
 
 @pytest.mark.parametrize("owner", ["vscode", "headless", "unknown", "inside"])
-def test_handle_map_fix_names_the_restart_for_each_owner(tmp_path, monkeypatch, owner):
+def test_handle_map_fix_names_the_restart_for_each_owner(
+    tmp_path, monkeypatch, fake_sandbox_attachment, owner
+):
     store = handles.HandleStore(tmp_path)
     store.root.mkdir(parents=True)
     with store.path.open("wb") as stream:
         stream.truncate(THRESHOLD + 1)
     attachment = {"vscode": Attachment.VSCODE, "headless": Attachment.HEADLESS}.get(owner)
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: owner == "inside")
-    monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _root: attachment)
+    fake_sandbox_attachment(attachment)
     name = quote_arg(session_runtime.session_container_name(tmp_path))
     reporter = doctor._Reporter.create()
 
