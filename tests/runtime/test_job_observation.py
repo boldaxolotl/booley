@@ -209,6 +209,12 @@ def rec(run="one", **kwargs):
     return job_records.JobRecord(run, "sim", "2026-10-08T10:00:00Z", 60, **kwargs)
 
 
+def own_claim(identity: ProcessIdentity, run="one", **extra) -> str:
+    """An entry as Job admission writes it: the process's claim, labelled with its Job's run ID."""
+    label = job_slots.JobLabel(run, "sim", "a").to_payload()
+    return json.dumps({"owner_identity": identity.to_payload(), "job": label, **extra})
+
+
 def files(root):
     return {
         str(path.relative_to(root)): path.read_bytes()
@@ -276,7 +282,7 @@ def test_observational_slot_state_and_corrupt_entry_isolation(tmp_path, monkeypa
     slots = tmp_path / "slots/memory"
     slots.mkdir(parents=True)
     token = slots / job_slots._entry_name(slot, 1, 1, 99, 0)
-    token.write_text(json.dumps({"owner_identity": identity.to_payload()}))
+    token.write_text(own_claim(identity))
     (slots / job_slots._entry_name("h", 1, 2, 100, 0)).write_text("[]")
     monkeypatch.setattr(
         _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
@@ -297,7 +303,7 @@ def test_observer_reports_queued_memory_claim(tmp_path, monkeypatch):
     slots = tmp_path / "slots/memory"
     slots.mkdir(parents=True)
     token = slots / job_slots._entry_name("w", 1, 1, 99, 0)
-    token.write_text(json.dumps({"owner_identity": identity.to_payload()}))
+    token.write_text(own_claim(identity))
     monkeypatch.setattr(
         _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
     )
@@ -333,10 +339,11 @@ def test_observer_reports_the_memory_wait_of_a_queued_claim(tmp_path, monkeypatc
         "w",
         3,
         99,
-        {
-            "owner_identity": identity.to_payload(),
-            "memory": job_slots.MemoryClaim(1000.0, reservation_mb=400.0).to_payload(),
-        },
+        json.loads(
+            own_claim(
+                identity, memory=job_slots.MemoryClaim(1000.0, reservation_mb=400.0).to_payload()
+            )
+        ),
     )
     monkeypatch.setattr(
         _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
@@ -360,7 +367,7 @@ def test_slot_queued_job_has_no_queue_detail(tmp_path, monkeypatch):
     job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
     slots = tmp_path / "slots/memory"
     slots.mkdir(parents=True)
-    _memory_entry(slots, "w", 1, 99, {"owner_identity": identity.to_payload()})
+    _memory_entry(slots, "w", 1, 99, json.loads(own_claim(identity)))
     monkeypatch.setattr(
         _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
     )
@@ -381,7 +388,7 @@ def test_child_lane_claims_under_the_jobs_pid_do_not_make_its_state_unavailable(
     slots = tmp_path / "slots/memory"
     slots.mkdir(parents=True)
     owner = {"owner_identity": identity.to_payload()}
-    (slots / job_slots._entry_name("h", 1, 1, 99, 0)).write_text(json.dumps(owner))
+    (slots / job_slots._entry_name("h", 1, 1, 99, 0)).write_text(own_claim(identity))
     # A work item's own claim: same PID, but a child execution of the Job.
     child = {**owner, "owner_kind": "execution"}
     (slots / job_slots._entry_name("w", 1, 2, 99, 1)).write_text(json.dumps(child))
@@ -406,7 +413,7 @@ def test_a_held_slot_beside_work_item_memory_claims_is_the_job_not_unavailable(
     memory.mkdir(parents=True)
     # A mutation coordinator: a memory-class companion claim reserving nothing.
     companion = {"budget_mb": 1000, "reservation_mb": 0, "companion": True}
-    coordinator = json.dumps({"owner_identity": identity.to_payload(), "memory": companion})
+    coordinator = own_claim(identity, memory=companion)
     (memory / job_slots._entry_name("h", 1, 1, 99, 0)).write_text(coordinator)
     (memory / job_slots._entry_name(item_kind, 1, 2, 99, 0)).write_text(owner)
     monkeypatch.setattr(
@@ -641,3 +648,67 @@ def test_failed_directory_listing_is_retried_not_cached_as_empty(tmp_path, monke
     assert [job.record.run_id for job in observer.read((), unfinished_roots=(root,)).jobs] == [
         "first"
     ]
+
+
+_EXECUTION_ID = "a1" * 16
+
+
+@pytest.mark.parametrize(
+    ("kind", "state", "position"), [("w", "queued", 1), ("h", "running", None)]
+)
+def test_job_state_follows_its_own_execution_owned_claim(
+    tmp_path, monkeypatch, kind, state, position
+):
+    # `booley session enter` exports the execution ID, so a CLI Job's own claim is execution-owned.
+    identity = ProcessIdentity(99, "fixture", 101)
+    root = tmp_path / "jobs"
+    job_records.write_record(
+        rec(pid=99, process_identity=identity.to_payload(), run_started_at="2026-10-08T10:00:01Z"),
+        root,
+    )
+    slots = tmp_path / "slots/memory"
+    slots.mkdir(parents=True)
+    stamp = "2026-10-08T10:00:00Z"
+    _memory_entry(
+        slots,
+        "h",
+        1,
+        7,
+        {
+            "created_at": stamp,
+            "memory": job_slots.MemoryClaim(1000.0, reservation_mb=500.0).to_payload(),
+        },
+    )
+    claim = job_slots.MemoryClaim(1000.0, reservation_mb=400.0).to_payload()
+    mine = own_claim(identity, owner_kind="execution", execution_id=_EXECUTION_ID, memory=claim)
+    _memory_entry(slots, kind, 2, 99, json.loads(mine))
+    monkeypatch.setattr(
+        _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
+    )
+
+    view = JobObserver(tmp_path, slots_root=slots.parent).read((root,)).jobs[0]
+
+    assert (view.state, view.queue_position) == (state, position)
+
+
+def test_a_cli_campaign_waiting_for_an_item_claim_is_queued(tmp_path, monkeypatch):
+    identity = ProcessIdentity(99, "fixture", 101)
+    root = tmp_path / "jobs"
+    job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
+    slots = tmp_path / "slots/memory"
+    slots.mkdir(parents=True)
+    execution = {"owner_kind": "execution", "execution_id": _EXECUTION_ID}
+    companion = {"budget_mb": 1000, "reservation_mb": 0, "companion": True}
+    _memory_entry(
+        slots, "h", 1, 99, json.loads(own_claim(identity, **execution, memory=companion))
+    )
+    # The item's claim is unlabelled: it inherits the session's execution ID too.
+    item = {"owner_identity": identity.to_payload(), **execution}
+    _memory_entry(slots, "w", 2, 99, item)
+    monkeypatch.setattr(
+        _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
+    )
+
+    view = JobObserver(tmp_path, slots_root=slots.parent).read((root,)).jobs[0]
+
+    assert view.state == "queued"
