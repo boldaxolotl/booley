@@ -515,7 +515,7 @@ def _retired_models_error(models: Mapping[str, Any], default_cli: str) -> Backen
         elif cli not in clis:
             clis.append(cli)
     if "heavy" in models or "light" in models:
-        notes.append("heavy and light overrides have no equivalent and are dropped")
+        notes.append("heavy and light have no equivalent; delete them")
     agent = f'[agent]\nclis = {clis!r}\ndefault = "{default_cli}"\n'.replace("'", '"')
     return BackendConfigError(
         "booley.toml [models] tier keys and [models.roles] are retired: each Specialist now "
