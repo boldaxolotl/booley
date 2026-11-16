@@ -104,7 +104,7 @@ class ScaffoldChoices:
 
 
 class _ScaffoldHostProbe:
-    def is_tracked(self, _root: Path, _path: Path) -> bool:
+    def is_tracked(self, root: Path, path: Path) -> bool:
         return False
 
 
