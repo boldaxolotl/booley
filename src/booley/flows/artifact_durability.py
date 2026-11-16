@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import glob
 import os
+import stat
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -25,6 +26,27 @@ def durable_copy(source: Path, destination: Path, *, mode: int = 0o600) -> None:
                 writer.write(chunk)
 
     _publish(destination, write, mode)
+
+
+def durable_in_place(path: Path, *, mode: int = 0o600) -> None:
+    """Make a regular file that already has its final name durable where it is.
+
+    Opens without following a link, refuses anything but a regular file
+    (``OSError``), gives it *mode* on POSIX, then persists the bytes and the
+    directory entry.
+    """
+    flags = os.O_NOFOLLOW if hasattr(os, "O_NOFOLLOW") else 0
+    flags |= (os.O_RDWR | getattr(os, "O_BINARY", 0)) if os.name == "nt" else os.O_RDONLY
+    descriptor = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OSError(f"not a regular file: {path.name}")
+        if os.name != "nt":
+            os.fchmod(descriptor, mode)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    fsync_directory(path.parent)
 
 
 def durable_create(destination: Path, raw: bytes, *, mode: int = 0o600) -> None:
@@ -139,5 +161,6 @@ __all__ = [
     "durable_copy",
     "durable_create",
     "durable_directory",
+    "durable_in_place",
     "fsync_directory",
 ]
