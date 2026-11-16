@@ -187,7 +187,7 @@ sim_soc: FAIL (Simulation Record 3f2a9c1e-…)
   Test Runs: 3 (2 passed, 1 failed)
     PASS         stress+soak@1804289383
     FAIL         stress+soak@846930886
-      log: /work/.booley/flow-reports/sim/12/targets/sim_soc/record/work-items/0002-…/attempts/0001-…/evidence/0001-run.log
+      log: /work/.booley/flow-reports/sim/12/targets/sim_soc/record/work-items/0002-…/attempts/0001-…/execution-evidence/run.log
     PASS         stress+soak@1681692777
   Rerun a failed Test Run with the same seed:
     booley flow sim --target sim_soc --test=stress+soak@846930886
@@ -219,7 +219,7 @@ sim_dma: PASS (Simulation Record 7b1c44d0-…)
   report: /work/.booley/flow-reports/sim/12/report.json
   Test Runs: 1 (1 passed)
     PASS         irq@1
-      waveform: /work/.booley/flow-reports/sim/12/targets/sim_dma/record/work-items/0001-…/attempts/0001-…/evidence/0003-trace.fst
+      waveform: /work/.booley/flow-reports/sim/12/targets/sim_dma/record/work-items/0001-…/attempts/0001-…/execution-evidence/trace.fst
 ```
 
 The paths:

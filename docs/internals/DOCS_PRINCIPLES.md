@@ -178,7 +178,7 @@ nothing.
 
 The build renders shipped docs into `src/booley/data/docs/`. Never edit a
 rendered copy. Rerun the generator of any generated block you touched
-(CLI-REFERENCE Specialists, ARCHITECTURE).
+(the cheatsheet's Flows and Specialists, ARCHITECTURE).
 
 ### 19. Renaming a heading breaks its anchor
 

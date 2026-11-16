@@ -252,8 +252,9 @@ runs and their logs into metrics and a report. Once its Job is admitted, the
 Flow resolves the Target with FuseSoC, which also builds the EDA tool command
 for lint, sim, and fpga; synth renders its own Yosys and OpenROAD scripts.
 Mutation testing is a Flow (`booley flow mutation`), not a Specialist: it needs
-no model. The catalog is in
-[CLI-REFERENCE.md](../user/CLI-REFERENCE.md#booley-flows--specialists).
+no model. The catalogs are in
+[FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and
+[SPECIALISTS.md](../user/SPECIALISTS.md).
 
 A built-in Flow that drives interchangeable EDA tools keeps one adapter per
 EDA tool: simulation has Cocotb, Icarus, and Verilator; synthesis has Yosys

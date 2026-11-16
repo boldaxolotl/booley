@@ -31,10 +31,6 @@ from booley.flows.display import format_flow_display_label
 from booley.flows.endpoint_context import EndpointContext
 from booley.flows.endpoint_state import EndpointState
 from booley.flows.execution_persistence import FlowExecutionAdapter, StandaloneFlowExecution
-from booley.flows.implementation_comparison import (
-    ImplementationComparisonError,
-    target_pair_plans_for_handles,
-)
 from booley.flows.invocation import resolve_timeout_ms
 from booley.flows.job_estimates import JobRequest
 from booley.flows.job_resources import JobResourceMonitor
@@ -510,9 +506,6 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
     # Families a non-strict Project may judge under conventional names (lint_clean, ...).
     conventional_families: ClassVar[frozenset[str]] = frozenset()
 
-    # The Criterion family whose baseline Targets this Flow also runs (``None``: no pairs).
-    _PAIR_CRITERION_PREFIX: ClassVar[str | None] = None
-
     target_required: bool = False
     target_help: str = SurfaceHelp(
         "FuseSoC .core Target name(s) this run applies to. The CLI flag may be "
@@ -631,24 +624,11 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
     ) -> tuple[JobRequest, ...] | None:
         """The Resource History requests of a Job over *handles* (``None`` when unknown).
 
-        A Flow that pairs each Target with a baseline Target also runs the
-        baseline Target, so its footprint counts toward the Job's reservation.
-        The pairs are built again in ``_run``, which refuses a bad pairing.
+        One request per selected Target. A ``--baseline`` run runs the same
+        Target at the baseline revision, so it adds no further request.
         """
-        selectors = [handle.selector for handle in handles]
-        if self._PAIR_CRITERION_PREFIX is not None:
-            try:
-                pairs = target_pair_plans_for_handles(
-                    self.state.criteria,
-                    self._PAIR_CRITERION_PREFIX,
-                    handles,
-                    basis=self.flow_acceptance if self.flow_acceptance.basis_bound else None,
-                    flow=self.name,
-                )
-            except ImplementationComparisonError:
-                return None
-            selectors.extend(pair.baseline.selector for pair in pairs)
-        return tuple(JobRequest(self.name, selector) for selector in dict.fromkeys(selectors))
+        selectors = dict.fromkeys(handle.selector for handle in handles)
+        return tuple(JobRequest(self.name, selector) for selector in selectors)
 
     @property
     def _paired_project_baseline(self) -> PairedProjectBaseline:

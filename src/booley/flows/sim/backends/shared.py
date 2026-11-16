@@ -302,7 +302,7 @@ class CurrentRunTraces:
                 if match in streamed:
                     # Publish as the session's own trace.fst, like a post-run
                     # conversion, so `bwave register/gui SIM_DIR` finds it.
-                    return TraceSelection(self.session.publish_bwave(match) or match)
+                    return TraceSelection(self.session.publish_bwave(match, move=True) or match)
                 return TraceSelection(match)
             self.session.postprocess(match)
             # Owned-only lookup: the converted store, or the VCD that

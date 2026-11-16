@@ -67,6 +67,11 @@ MAX_SIGNAL_BYTES = 4096
 MAX_TOOL_NAME = 128
 MAX_THREAD_ID = 1024
 
+# Why an activity is unknown, in the words the Dashboard shows.
+NO_REPORT = "no report yet"
+STALE_BUSY = f"no event for {BUSY_STALE_AFTER / 3600:g} h; the client may have stopped"
+AHEAD = "the report's time is ahead of this clock"
+
 
 def process_session_key(identity: ProcessIdentity) -> str:
     """Registry key of a session identified by its agent-client process."""
@@ -108,11 +113,15 @@ class ActivitySignal:
 
 @dataclass(frozen=True)
 class Activity:
-    """What the Dashboard shows: a reported state and when it began, or unknown."""
+    """What the Dashboard shows: a reported state and when it began, or unknown.
+
+    An unknown activity says why in ``cause``; a reported one ignores it.
+    """
 
     state: str = UNKNOWN
     since: str = ""
     tool: str = ""
+    cause: str = NO_REPORT
 
 
 def _parse(raw: bytes, key: str) -> ActivitySignal:
@@ -247,12 +256,12 @@ class ActivityStore:
 
 
 def observed_activity(signal: ActivitySignal | None, *, now: float) -> Activity:
-    """Report a fresh signal; a missing, future or stale busy signal is unknown."""
+    """Report a fresh signal; a missing, future or stale busy signal is unknown, with its cause."""
     if signal is None:
         return Activity()
     age = now - parse_timestamp(signal.at).timestamp()
     if age < -FUTURE_TOLERANCE:
-        return Activity()
+        return Activity(cause=AHEAD)
     if signal.state != WAITING_USER and age >= BUSY_STALE_AFTER:
-        return Activity()
+        return Activity(cause=STALE_BUSY)
     return Activity(signal.state, signal.at, signal.tool)

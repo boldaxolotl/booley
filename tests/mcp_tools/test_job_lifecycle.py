@@ -45,7 +45,7 @@ def context(tmp_path, monkeypatch):
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(job_results, "project_booley_dir", lambda: None)
     monkeypatch.delenv("BOOLEY_MCP_NESTED", raising=False)
-    return CallContext(tmp_path, runtime / "jobs", None, tmp_path / "logs", runtime, overrides)
+    return CallContext(tmp_path, runtime / "jobs", tmp_path / "logs", runtime, overrides)
 
 
 class Activity:
@@ -437,7 +437,7 @@ def test_import_and_execution_work_when_sdk_and_adapter_imports_are_blocked(cont
         from booley.mcp.job_lifecycle import JobLifecycle
         from booley.mcp.report_encoding import ReportEncoder
         root = Path({str(context.runtime_dir)!r})
-        context = CallContext(None, root / 'jobs', None, None, root, {{}})
+        context = CallContext(None, root / 'jobs', None, root, {{}})
         async def run():
             jobs = JobLifecycle()
             run_id = jobs.submit('lint', [sys.executable, '-c', 'print("ok")'], {JOB_TIMEOUT}, context=context)

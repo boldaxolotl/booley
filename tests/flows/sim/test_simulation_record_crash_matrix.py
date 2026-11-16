@@ -18,6 +18,7 @@ import pytest
 
 from booley.flows.sim.execution.contract import (
     PreSimEvidence,
+    SimulationArtifactEvidence,
     SimulationInfrastructureFailure,
     SimulationTargetOutcome,
     SimulationTestOutcome,
@@ -162,9 +163,24 @@ class _CrashGroup:
         assert (bundle_root / "simv").is_file()
         assert evidence_root.name == "execution-evidence"
         assert (run_cwd / "inputs/input.bin").read_bytes() == b"runtime"
-        test = SimulationTestOutcome("sim", "pass", True, str(self.run_log))
+        # The engine writes the run log into the evidence root and reports it.
+        evidence_root.mkdir(exist_ok=True)
+        log = evidence_root / "run.log"
+        log.write_bytes(self.run_log.read_bytes())
+        test = SimulationTestOutcome("sim", "pass", True, str(log))
+        artifact = SimulationArtifactEvidence(
+            "live_run_log", str(log), log.stat().st_size, ("sim",)
+        )
         return SimulationTargetOutcome(
-            "sim", "acme:lib:dut:1#sim", "tb", "icarus", True, "pass", 0.1, (test,)
+            "sim",
+            "acme:lib:dut:1#sim",
+            "tb",
+            "icarus",
+            True,
+            "pass",
+            0.1,
+            (test,),
+            artifacts=(artifact,),
         )
 
 
@@ -308,6 +324,13 @@ def test_serial_publication_boundary_resume_matrix(
         assert result["$schema"] == RESULT_SCHEMA
         assert result["bundle_verification"]["verified_after_exit"] is True
         assert all("test_run" in observation for observation in result["observations"])
+        attempt = (
+            path.parent / "attempts" / f"{result['attempt_ordinal']:04d}-{result['attempt_id']}"
+        )
+        (log,) = [item for item in result["evidence"] if item["kind"] == "live_run_log"]
+        assert log["path"] == "execution-evidence/run.log"
+        kept = (attempt / log["path"]).read_bytes()
+        assert log["sha256"] == "sha256:" + hashlib.sha256(kept).hexdigest()
     assert not list(store.root.glob("work-items/*/attempts/*/snapshot"))
 
 

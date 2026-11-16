@@ -103,6 +103,7 @@ Support for additional commercial EDA tools is coming soon; see the
 - [Architecture](https://booley.dev/docs/architecture/)
 - [Setup](https://booley.dev/docs/setup/)
 - [Usage](https://booley.dev/docs/usage/)
+- [Metric-Driven Development](https://booley.dev/docs/metric-driven-development/)
 - [Flow reference](https://booley.dev/docs/flow-reference/)
 - [Supported EDA tools](https://booley.dev/docs/supported-eda-tools/)
 - [Limitations](https://booley.dev/#limitations)

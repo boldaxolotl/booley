@@ -64,6 +64,20 @@ def _absolute(rendered: str, project_root: Path) -> Path:
     return (path if path.is_absolute() else project_root / path).absolute()
 
 
+def require_run_directory_outside(run: RunDirectory, evidence_root: Path) -> None:
+    """Refuse a run directory that is, or lies inside, the attempt's evidence folder.
+
+    Evidence there is referenced where it is, and an owned run directory is
+    removed when the run ends.
+    """
+    path = Path(os.path.normcase(str(run.path.resolve(strict=False))))
+    root = Path(os.path.normcase(str(evidence_root.resolve(strict=False))))
+    if path.is_relative_to(root):
+        raise SimulationRecordIntegrityError(
+            f"run directory lies inside the attempt's evidence folder: {run.path}"
+        )
+
+
 def literal_run_path(configured: str, *, project_root: Path) -> Path:
     """Return the absolute path a literal run_cwd names."""
     return _absolute(configured, project_root)
@@ -177,7 +191,8 @@ def _cleanup_interrupted_run_directory(run: RunDirectory, *, identity: Mapping[s
         expected = canonical_json_bytes(dict(identity))
         if not marker.is_file() or marker.read_bytes() != expected:
             raise SimulationRecordIntegrityError(
-                f"refusing to clean unowned run directory: {run.path}"
+                f"refusing to clean unowned run directory: {run.path}; "
+                "move the directory elsewhere, which keeps its files, then retry"
             )
         _remove_owned_tree(run.path)
         removed = True

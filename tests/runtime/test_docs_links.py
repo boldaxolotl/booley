@@ -30,7 +30,6 @@ _REPO_PATH_ALLOWED = {
     "runtime/paths.py",
     # Owns the shipped-doc allowlist and renders the packaged copies, not printed links.
     "runtime/packaged_docs.py",
-    "dev_support/flow_specialist_reference.py",
 }
 
 
@@ -183,3 +182,21 @@ def test_sandbox_doc_path_calls_name_shipped_docs() -> None:
         if ast.literal_eval(call.args[0]) not in shipped
     ]
     assert not unshipped, f"sandbox_doc_path() must name a shipped doc: {unshipped}"
+
+
+def test_metric_driven_development_guide_is_registered_under_get_started() -> None:
+    """The guide follows Usage in "Get started", has its published URL, and is packaged."""
+    from booley.runtime.packaged_docs import render_packaged_doc
+
+    files = [doc.file for doc in USER_DOCS]
+    entry = USER_DOCS[files.index("METRIC-DRIVEN-DEVELOPMENT.md")]
+    assert (entry.slug, entry.title, entry.section) == (
+        "metric-driven-development",
+        "Metric-Driven Development",
+        "Get started",
+    )
+    assert files[files.index("USAGE.md") + 1] == entry.file
+    assert docs_url(entry.file) == "https://booley.dev/docs/metric-driven-development/"
+    assert entry.path in SHIPPED_DOCS
+    text = (REPO_ROOT / entry.path).read_text(encoding="utf-8")
+    assert render_packaged_doc(entry.path, text)

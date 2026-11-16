@@ -128,9 +128,7 @@ def test_job_record_is_stamped_with_the_submitting_call():
     from booley.mcp.call_context import CallContext
 
     rec = job_records.JobRecord("one", "sim", "2026-10-08T10:00:00Z", 60)
-    context = CallContext(
-        Path("/fixture"), None, None, None, None, {}, session_key="codex:submitter"
-    )
+    context = CallContext(Path("/fixture"), None, None, None, {}, session_key="codex:submitter")
     server._JobManager._stamp_context(rec, context)
     assert rec.session_key == "codex:submitter"
     assert rec.work_dir == str(context.work_dir)
