@@ -270,14 +270,17 @@ Authoring rules:
   file declared with `file_type: vlt` in one of that Target's filesets). Fix
   per Target, and note the waiver in AGENTS.md so a later reader knows it is
   an era gap, not a silenced real bug.
-- **Optional style lint (offer, never impose).** Only if the
-  plan's row 11 says yes: author a **second** lint Target (suggested name
-  `lint_style`) with `flow: lint` + `flow_options: {tool: verible}` over the
-  RTL fileset; it runs `verible-verilog-lint` in the sandbox and sets
-  `LINT:lint_style`. Optional tuning is design-description in the
-  `.core`: a single `file_type: veribleLintRules` rules-config file and/or
-  `file_type: veribleLintWaiver` waiver files in the Target's fileset
-  (analogous to Verilator's `.vlt`). Never change existing Target shapes.
+- **Lint Targets (row 11).** Author the Verilator lint Target with
+  `verilator_options: [-Wall]` unless row 11 declined it, and a second Verible
+  Target (suggested name `lint_<subject>_style`) with `flow: lint` +
+  `flow_options: {tool: verible, booley: {doctor: [lint]}}` over the RTL
+  fileset unless row 11 declined it; it runs `verible-verilog-lint` in the
+  sandbox and sets `LINT:lint_<subject>_style`. Optional tuning is
+  design-description in the `.core`: a single `file_type: veribleLintRules`
+  rules-config file and/or `file_type: veribleLintWaiver` waiver files in the
+  Target's fileset (analogous to Verilator's `.vlt`). For upstream RTL the
+  Project does not own, follow row 11's waiver and fileset-scope guidance.
+  Never change existing Target shapes.
 - **Timing constraints (SDC/XDC) are never authored here.** Wire exactly the
   file that plan row 10 recorded: the repo's own file, referenced in place, or
   the user-supplied file. Use `file_type: SDC` for synthesis and
