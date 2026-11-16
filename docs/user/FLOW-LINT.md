@@ -14,7 +14,8 @@ what all Flows share (choosing Targets, options, logs, exit codes), see
 ## Running lint
 
 1. Check that the Project has a lint Target (`booley targets --for lint` lists
-   them). Project Setup normally creates one;
+   them). Project Setup normally creates a Verilator Target and a Verible
+   style Target;
    [Lint Targets](#lint-targets) shows how to add one.
 2. Ask the Developer Agent, naming the lint Target or Targets:
 
