@@ -2,13 +2,12 @@
 
 This page is for contributors and agents changing Booley. It explains how
 Booley's parts fit together and why the main ones are built the way they are;
-read it before changing the Sandbox, the MCP server, a Booley Flow,
-or Job admission. It is not a usage guide: how to use Booley is in
+read it before changing the Sandbox, the MCP server, a Booley Flow, or Job
+admission. It is not a usage guide: how to use Booley is in
 [USAGE.md](../user/USAGE.md) and [CLI-REFERENCE.md](../user/CLI-REFERENCE.md).
 Terms such as Booley Flow, Target, Specialist, and Sandbox are defined in the
-[glossary](../GLOSSARY.md), the history of each decision is in the ADRs under
-`docs/adr/`, and an architecture test enforces which packages may import
-which.
+[glossary](../GLOSSARY.md), and an architecture test enforces which packages may
+import which.
 
 ## Overview
 
@@ -71,9 +70,8 @@ Booley differs from a software ADE in four ways:
    measures how well a Target's tests catch injected RTL bugs.
 
 The framing also decides where product work goes: into supervising agents
-(several sessions at once, Job progress, fast review), not into editor
-features. VS Code already is a good editor
-([ADR 0083](../adr/0083-position-booley-as-an-agentic-development-environment.md)).
+(several sessions at once, Job progress, fast review), not into editor features.
+VS Code already is a good editor.
 
 ## The host and the Sandbox
 
@@ -89,8 +87,7 @@ Bootstrap](../user/INSTALL.md#host-bootstrap), then Project Initialization
 earlier one but never repairs it: `booley init --force` rebuilds only the
 Project's own images, and when the base image is missing or stale it stops and
 asks for `booley bootstrap --update`. This keeps host-wide changes in one
-command the user runs deliberately; see
-[ADR 0056](../adr/0056-separate-host-bootstrap-from-project-initialization.md).
+command the user runs deliberately.
 
 The Sandbox is the shared execution and containment boundary. The
 `booley-sandbox` image supplies the open-source simulation, lint, synthesis,
@@ -149,12 +146,10 @@ one trust domain.
 ## Agent sessions
 
 `booley init` issues the Project's devcontainer specification; reopening the
-folder in the container connects VS Code to the Sandbox. `booley chat` (or
-bare `booley`) starts a Developer Agent session in a Sandbox terminal. The
-first session works in the main checkout, and Booley adds a worktree for each
-further concurrent session; see
-[ADR 0082](../adr/0082-give-each-concurrent-interactive-session-its-own-worktree.md).
-See [SETUP.md](../user/SETUP.md) for the lifecycle and
+folder in the container connects VS Code to the Sandbox. `booley chat` (or bare
+`booley`) starts a Developer Agent session in a Sandbox terminal. The first
+session works in the main checkout, and Booley adds a worktree for each further
+concurrent session. See [SETUP.md](../user/SETUP.md) for the lifecycle and
 [USAGE.md](../user/USAGE.md#interactive-mode) for daily use.
 
 The MCP surface is the same for every Agent CLI. A Project lists the Agent CLIs
@@ -164,10 +159,8 @@ sessions and Booley's own calls. Configuration is under
 [`[models]`](../user/CONFIG.md#model-selection-models); sign-in and billing
 are in [SETUP.md](../user/SETUP.md#sign-in-and-billing).
 
-`booley dashboard` is the Sandbox view beside the editor. It shows the
-Sandbox's sessions and Jobs and can start Booley Flows as Standalone Jobs
-([ADR 0068](../adr/0068-booley-dashboard.md),
-[ADR 0086](../adr/0086-launch-flows-and-specialists-from-the-dashboard.md)).
+`booley dashboard` is the Sandbox view beside the editor. It shows the Sandbox's
+sessions and Jobs and can start Booley Flows as Standalone Jobs.
 
 ### Why VS Code
 
@@ -218,9 +211,8 @@ it cost about 40 times the tokens. The MCP surface also gives Booley:
 Every Flow, Measurement, or Specialist run is a Job, whether the MCP server
 submits it or a human starts it as a Standalone Job. The Job is the whole run,
 not one EDA command. Job admission decides when each Job starts, and memory is
-the only resource it budgets: Jobs started together slow down by competing
-for CPU, but they fail by running out of memory. The design is in
-[ADR 0087](../adr/0087-admit-jobs-against-a-measured-memory-budget.md).
+the only resource it budgets: Jobs started together slow down by competing for
+CPU, but they fail by running out of memory.
 
 - **Budget.** The Memory Budget is the container's memory limit
   (`[sandbox].memory`, else the host memory the container sees) minus a
@@ -290,23 +282,19 @@ second source-discovery path and builds Booley didn't control. The one thing a
 
 ## Measurement
 
-Measurement is how a commit is accepted under
-[Metric-Driven Development](../GLOSSARY.md#metric-driven-development-and-reviews):
-`booley measure` runs the Flows of every Target that declares Target Metrics
-in `metrics.toml` and checks each result against its bound. A run that meets
-every enforced metric makes a Measured Commit; locally that verdict is
-advisory, and a run in CI is the trusted one
-([ADR 0092](../adr/0092-measure-commits-against-target-metrics.md)). Through
-MCP it runs as one Job.
+Measurement is how a commit is accepted under [Metric-Driven
+Development](../GLOSSARY.md#metric-driven-development-and-reviews): `booley
+measure` runs the Flows of every Target that declares Target Metrics in
+`metrics.toml` and checks each result against its bound. A run that meets every
+enforced metric makes a Measured Commit; locally that verdict is advisory, and a
+run in CI is the trusted one. Through MCP it runs as one Job.
 
 ## Specialists
 
 **Specialists** are optional capabilities the Developer Agent invokes for one
 task, with fresh context: the Reviewer and the Coverage Analyst. A Specialist
-didn't write the code it checks, so it judges what is there rather than what
-was intended. Each Specialist runs on the Agent CLI its configured model
-implies; see
-[ADR 0084](../adr/0084-run-each-specialist-on-the-agent-cli-its-model-implies.md).
+didn't write the code it checks, so it judges what is there rather than what was
+intended. Each Specialist runs on the Agent CLI its configured model implies.
 
 ## B-Wave
 
@@ -316,10 +304,8 @@ questions about signals, events, values, and time ranges in an FST store;
 `bwave register --build` converts a VCD into one.
 
 B-Wave doesn't render waveforms. When the user needs to see one, `bwave gui`
-opens the relevant signals and time window in VaporView inside VS Code,
-through a Booley extension bridge
-([ADR 0078](../adr/0078-drive-vaporview-through-a-booley-extension-bridge.md)).
-Query and viewing commands are in
+opens the relevant signals and time window in VaporView inside VS Code, through
+a Booley extension bridge. Query and viewing commands are in
 [USAGE.md](../user/USAGE.md#viewing-waveforms).
 
 ### Why FST is the trace contract
@@ -353,9 +339,7 @@ records and evidence, shared caches), lives only in the main checkout's Booley
 Directory, and a command run in any worktree reaches it there. Checkout Booley
 State belongs to one checkout: configuration versioned with its code
 (`booley.toml`, `cores/`, hooks) and the build trees and Flow reports of its
-sources. The path-by-path split is in
-[ADR 0082](../adr/0082-give-each-concurrent-interactive-session-its-own-worktree.md).
-The MCP server records evidence for each call.
+sources. The MCP server records evidence for each call.
 
 ### Why plain files
 
