@@ -1600,7 +1600,7 @@ def _check_worktree_core_shadow_guard(
     _pass: Check,
     _warn: Check,
     *,
-    project_root: Path | None = None,
+    project_root: Path,
 ) -> None:
     """Ensure ``.booley/FUSESOC_IGNORE`` keeps worktree cores out of scan.
 
@@ -1612,6 +1612,8 @@ def _check_worktree_core_shadow_guard(
     this; catch a project that predates the fix (or whose marker was removed),
     escalating the message when a live shadowing ``.core`` is already present.
     """
+    from booley.runtime.worktree_paths import worktree_state_dir
+
     _warn = _warning_sink(_warn, "fusesoc.worktree-core-shadow")
     marker = booley_dir / "FUSESOC_IGNORE"
     if marker.is_file():
@@ -1623,7 +1625,7 @@ def _check_worktree_core_shadow_guard(
     # Authored stealth cores (.booley/cores/, ADR 0036) are sources, not
     # shadow threats — they are scanned deliberately and must not be counted.
     stealth_root = booley_dir / STATE_CORES_SUBDIR
-    worktrees = _worktree_core_directory(booley_dir, project_root)
+    worktrees = worktree_state_dir(project_root, booley_dir=booley_dir) / "worktrees"
     shadow_cores = [
         p
         for sub in (worktrees, booley_dir)
@@ -1642,17 +1644,6 @@ def _check_worktree_core_shadow_guard(
             ".booley/FUSESOC_IGNORE missing; a future worktree's "
             f".core could shadow the source at the Project Root — run {runtime_context.booley_init_hint(code=True)}"
         )
-
-
-def _worktree_core_directory(booley_dir: Path, project_root: Path | None) -> Path:
-    from booley.runtime.worktree_paths import worktree_state_dir
-
-    state = (
-        worktree_state_dir(project_root, booley_dir=booley_dir)
-        if project_root is not None
-        else booley_dir
-    )
-    return state / "worktrees"
 
 
 # Booley Directory subtrees that legitimately hold transient .core COPIES (worktree /
@@ -2689,13 +2680,6 @@ def _run_container_tool_checks(
             ["cocotb-config", "--version"],
             "sandbox image predates cocotb support — rebuild the sandbox image",
         )
-
-
-# RISC-V variant checks fire only when the image bakes this flavour marker
-# (Dockerfile.riscv), so the vanilla base sandbox is never faulted for lacking a
-# cross-toolchain it was never meant to carry.
-_RISCV_IMAGE_FIX = eda_environment.RISCV_IMAGE_FIX
-_RISCV_DOC_FILES = eda_environment.RISCV_DOC_FILES
 
 
 def _check_riscv_toolchain(
