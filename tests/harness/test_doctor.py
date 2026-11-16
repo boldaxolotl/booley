@@ -6587,6 +6587,28 @@ def test_untagged_cpp_warning_does_not_mislabel_hdl_from_another_target(tmp_path
     assert all("shared/tb.sv" not in message for message in harness)
 
 
+def test_explicitly_tagged_cpp_harness_is_not_reported_untagged(tmp_path, monkeypatch):
+    from tests.test_target_catalog import _category_sim_core
+
+    _core_project(tmp_path, monkeypatch, {})
+    _category_sim_core(tmp_path)
+    (tmp_path / "shared" / "tagged.cpp").write_text("// source\n")
+    core = tmp_path / "design.core"
+    core.write_text(
+        core.read_text()
+        .replace(
+            "  harness:\n",
+            "  tagged: {files: [shared/tagged.cpp], file_type: cppSource, tags: [tb]}\n  harness:\n",
+        )
+        .replace("filesets: [rtl, tb, harness]", "filesets: [rtl, tb, harness, tagged]")
+    )
+
+    harness = _warnings(_doctor_run(tmp_path), "sim.harness-untagged").values()
+
+    assert any("shared/main.cpp" in message for message in harness)
+    assert all("shared/tagged.cpp" not in message for message in harness)
+
+
 def _copyto_project(tmp_path, monkeypatch, inputs, *, run_cwd):
     """`ip/input.core` copying each of *inputs* (destination -> source bytes) to its
     `copyto` destination, and a Verilator sim and lint Target that depend on it."""
@@ -6633,16 +6655,19 @@ def test_sim_copyto_collision_warns_with_paths_and_remedies(tmp_path, monkeypatc
     (tmp_path / "same.mem").write_text("source", encoding="utf-8")
     (tmp_path / "file").write_text("obstruction", encoding="utf-8")
     (tmp_path / "elsewhere").mkdir()
-    symlink_or_skip(tmp_path / "link", tmp_path / "elsewhere", target_is_directory=True)
+    flagged = ["collide.mem", "file/x.mem"]
+    try:  # A host that forbids symlinks (Windows without Developer Mode) loses only this row.
+        (tmp_path / "link").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+        flagged.append("link/x.mem")
+    except OSError:
+        pass
 
     result = _doctor_run(tmp_path)
 
     collisions = {
         f.subject: f for f in result.findings if f.check_id == "sim.runtime-input-collision"
     }
-    assert collisions.keys() == {
-        f"sim_copy:{tmp_path / name}" for name in ("collide.mem", "link/x.mem", "file/x.mem")
-    }
+    assert collisions.keys() == {f"sim_copy:{tmp_path / name}" for name in flagged}
     finding = collisions[f"sim_copy:{tmp_path / 'collide.mem'}"]
     assert "lint_copy" not in finding.message
     assert str(tmp_path / "ip" / "payload0.mem") in finding.message
