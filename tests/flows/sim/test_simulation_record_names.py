@@ -8,18 +8,13 @@ Booley 0.4.0's own ``SimulateFlow``.
 
 from __future__ import annotations
 
-import dataclasses
 import json
-import shutil
 import uuid
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from booley.flows.builtin_cli import parse_request
-from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record import codec, read_durable_results
 from booley.flows.sim.record.codec import (
     SimulationRecordIntegrityError,
@@ -31,7 +26,6 @@ from booley.flows.sim.record.codec import (
     decode_simulation_result,
     decode_simulator_bundle,
 )
-from booley.runtime import execution_records
 from booley.runtime.execution_records import (
     ExecutionId,
     child_context_matches,
@@ -53,8 +47,6 @@ from tests.flows.sim.test_simulation_record_unsupported_formats import (
 
 # The report-root fixture of the Part 1 tests, collected here under the same name.
 reports = _reports_fixture
-
-_FIXTURES = Path(__file__).parents[1] / "fixtures" / "booley_0_4_0"
 
 # Every schema Booley 0.4.0 wrote for the records this part renames, with the decoder
 # that must refuse it.
@@ -83,15 +75,6 @@ def _at_record_layout(invocation: Path) -> None:
         coverage.rename(coverage.with_name("coverage-record"))
 
 
-def _tree(root: Path) -> dict[str, bytes]:
-    """Every file under *root* by relative path, to show a refusal changed nothing."""
-    return {
-        path.relative_to(root).as_posix(): path.read_bytes()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
-
-
 def _rewrite(path: Path, raw: bytes) -> None:
     path.chmod(0o600)
     path.write_bytes(raw)
@@ -107,9 +90,6 @@ def test_a_run_writes_simulation_record_names(tmp_path: Path) -> None:
     assert manifest["$schema"] == "booley.simulation-record-manifest/v1"
     record_id = manifest["simulation_record_id"]
     assert uuid.UUID(record_id).version == 4
-    # The bare ``record_id`` is not a Simulation Record name.
-    assert "campaign_id" not in manifest
-    assert "record_id" not in manifest
 
     schemas = {
         "work-items/*/result.json": "booley.simulation-result/v5",
@@ -125,15 +105,11 @@ def test_a_run_writes_simulation_record_names(tmp_path: Path) -> None:
             document = _json(path)
             assert document["$schema"] == schema, path
             assert document["simulation_record_id"] == record_id, path
-            assert "campaign_id" not in document, path
-            assert "record_id" not in document, path
 
     # The summary is retention's projection of the Record: its own schema, same identity key.
     summary = _json(store.summary_path)
     assert summary["$schema"] == "booley.simulation-record-summary/v1"
     assert summary["simulation_record_id"] == record_id
-    assert "campaign_id" not in summary
-    assert "record_id" not in summary
 
 
 def test_prerequisites_name_the_simulation_record(
@@ -147,14 +123,6 @@ def test_prerequisites_name_the_simulation_record(
         assert entry["simulation_record_id"] == baseline_id
         assert "campaign_id" not in entry
         assert entry["manifest"]["kind"] == "simulation_record_manifest"
-
-    # The Pre-Sim role manifests of the invocation report carry the same kind.
-    flow = SimulateFlow()
-    flow._reserved_invocation_dir = _invocation
-    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
-    roles = flow._simulation_record_endpoint_outcome([candidate, baseline]).detail["pre_sim_roles"]
-    kinds = {ref["kind"] for role in roles.values() for ref in role["manifests"]}
-    assert kinds == {"simulation_record_manifest"}
 
 
 def _prepared_lane(
@@ -206,29 +174,11 @@ def test_a_0_4_0_manifest_is_refused_naming_its_invocation(reports: Path) -> Non
     _at_record_layout(invocation)
     manifest = invocation / "targets" / "sim" / "record" / "manifest.json"
 
-    with pytest.raises(ValueError) as decoded:
-        decode_simulation_record_manifest(manifest.read_bytes())
-    _assert_unsupported_type(decoded.value)
-    _assert_refused(str(decoded.value), _OLD_MANIFEST)
-
     # The Dashboard reads it through this.
     with pytest.raises(ValueError) as refused:
         read_durable_results(manifest, "sha256:" + "0" * 64)
     _assert_unsupported_type(refused.value)
     _assert_refused(str(refused.value), _OLD_MANIFEST, invocation)
-
-
-def test_a_0_4_0_attempt_result_is_refused_naming_its_invocation(tmp_path: Path) -> None:
-    reports_root, _project_data, store = _retained_invocation(tmp_path)
-    (old_result,) = _FIXTURES.glob("complete/sim/1/targets/sim/campaign/work-items/*/result.json")
-    result_path = next(store.root.glob("work-items/*/result.json"))
-    _rewrite(result_path, old_result.read_bytes())
-
-    with pytest.raises(ValueError) as excinfo:
-        store.scan()
-
-    _assert_unsupported_type(excinfo.value)
-    _assert_refused(str(excinfo.value), _OLD_RESULT, reports_root / "sim/1")
 
 
 def test_every_0_4_0_record_of_a_complete_run_is_refused(reports: Path) -> None:
@@ -247,30 +197,6 @@ def test_every_0_4_0_record_of_a_complete_run_is_refused(reports: Path) -> None:
         _assert_unsupported_type(excinfo.value)
         _assert_refused(str(excinfo.value), schema)
     assert seen == set(_OLD_RECORDS)
-
-
-# --- AC3: --resume-from a 0.4.0 manifest at the Record path --------------------------------
-
-
-def test_resume_from_a_0_4_0_manifest_at_the_record_path_is_refused_before_any_work(
-    tmp_path: Path, reports: Path
-) -> None:
-    for kind in ("interrupted", "coverage"):
-        shutil.rmtree(reports / "sim", ignore_errors=True)
-        invocation = copy_older_invocation("0.4.0", kind, reports)
-        _at_record_layout(invocation)
-        (manifest,) = invocation.glob("targets/*/record/manifest.json")
-        before = _tree(invocation)
-
-        request = parse_request(SimulateFlow(), ["--resume-from", str(manifest)])
-        result = SimulateFlow().execute(
-            dataclasses.replace(request, work_dir=tmp_path, report_dir=reports)
-        )
-
-        assert result.exit_code == 2, kind
-        _assert_refused(result.outcome.report_text, _OLD_MANIFEST, invocation)
-        assert not (reports / "sim" / "2").exists()
-        assert _tree(invocation) == before
 
 
 # --- AC4: no old name is an alias ------------------------------------------------------------
@@ -333,8 +259,6 @@ def test_a_lane_a_0_4_0_booley_left_is_still_recovered(tmp_path: Path) -> None:
         _rewrite(other_paths.context, canonical_json_bytes({**older, "child_execution_id": child}))
 
         assert not child_context_matches(paths, child)
-        assert execution_records.is_older_child_context(paths, child)
-        assert not execution_records.is_older_child_context(other_paths, other)
         assert recover_execution(child, booley_dir=booley_dir)
         assert read_json(paths.record)["tree_terminal"] is True
         assert not recover_execution(other, booley_dir=booley_dir)

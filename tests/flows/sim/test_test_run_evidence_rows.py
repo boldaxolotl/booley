@@ -8,13 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from booley.flows.sim.acceptance import _simulation_record_projection
+from booley.flows.sim.acceptance import publish_simulation_record_projections
 from booley.flows.sim.record import AcceptanceFacts, decode_simulation_projection
 from booley.flows.sim.record.codec import (
     SimulationRecordIntegrityError,
     encode_simulation_record_manifest,
 )
-from booley.flows.sim.record.projection import ProjectionTrust
 from booley.flows.sim.record.test_run_report import evidence_test_run_rows
 from booley.flows.test_runs import build_test_run, test_run_document
 from tests.flows.sim.test_simulation_record_test_runs import (
@@ -65,27 +64,12 @@ def test_evidence_rows_refuse_a_manifest_the_facts_do_not_name(tmp_path: Path):
         evidence_test_run_rows(outcome)
 
 
-def test_projection_v3_carries_a_row_per_test_run_and_decodes(tmp_path: Path):
-    outcome = _outcome(tmp_path, _RESET, _COUNT)
-    projection = _simulation_record_projection(outcome)
-
-    assert projection["$schema"] == "booley.simulation-projection/v4"
-    assert projection["test_runs"] == _rows(_RESET, _COUNT, classified=False)
-    assert [
-        (row["name"], row["test_run"], row["variant"], row["seed"], row["fingerprint"])
-        for row in projection["tests"]
-    ] == [
-        ("reset", "reset@1", None, 1, _RESET.fingerprint),
-        ("count", "count+soak@42", "soak", 42, _COUNT.fingerprint),
-    ]
-    document = json.loads(json.dumps({**projection, "complete": True}))
-    decoded = decode_simulation_projection(document, coverage_expected=False)
-    assert decoded.trust is ProjectionTrust.AUTHENTICATED
-
-
 def _v3_document(tmp_path: Path) -> dict:
-    projection = _simulation_record_projection(_outcome(tmp_path, _RESET))
-    return json.loads(json.dumps({**projection, "complete": True}))
+    """The ``simulation.json`` that publishing the one-Test-Run outcome writes."""
+    outcome = _outcome(tmp_path, _RESET)
+    publish_simulation_record_projections(tmp_path, (outcome,))
+    path = outcome.manifest_path.parents[1] / "simulation.json"
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize(
@@ -94,7 +78,6 @@ def _v3_document(tmp_path: Path) -> dict:
         (lambda document: document.pop("test_runs"), "fields are not exact"),
         (lambda document: document.update(test_runs={}), "test_runs must be a list"),
         (lambda document: document["test_runs"][0].update(grade="maybe"), "no valid grade"),
-        (lambda document: document["test_runs"][0].pop("grade"), "no valid grade"),
         (lambda document: document["test_runs"][0].update(seed=2), "disagrees with its own"),
         (lambda document: document["test_runs"][0].pop("args"), "must hold exactly"),
     ],

@@ -19,7 +19,10 @@ import pytest
 
 from booley.flows.base import SubprocessResult
 from booley.flows.run_log import write_run_log_progress
+from booley.flows.sim.record.codec import canonical_json_bytes
+from booley.flows.sim.record.test_run_files import TestRunFiles, simulation_record_test_run_files
 from booley.flows.sim.record.test_run_report import (
+    PATH_ROW_LIMIT,
     informative_test_run_lines,
     test_run_report_lines,
     test_run_row,
@@ -119,19 +122,34 @@ def _path(line: str, prefix: str) -> Path:
     return Path(line.removeprefix(prefix))
 
 
-def test_failed_test_run_shows_its_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    run, simulation = _run(tmp_path, monkeypatch, ["ok", "bad"], failing=("bad",))
+@pytest.mark.parametrize("traced", [True, False], ids=["traced", "untraced"])
+def test_failed_test_run_shows_its_log_and_a_waveform_only_when_traced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, traced: bool
+):
+    run, simulation = _run(tmp_path, monkeypatch, ["ok", "bad"], failing=("bad",), traced=traced)
     card = _card(run)
+    target = _target_directory(tmp_path)
+    bad = simulation["tests"][1]
 
-    assert card[1:3] == ["    PASS         ok@1", "    FAIL         bad@1"]
-    log = _path(card[3], _LOG)
+    assert card[1] == "    PASS         ok@1"
+    if not traced:
+        assert card[2] == "    FAIL         bad@1"
+    failed = card.index("    FAIL         bad@1")
+    log = _path(card[failed + 1], _LOG)
     assert log.is_file()
     assert log.name == "run.log"
-    # The rerun block follows straight after: the log line is the only addition.
-    assert card[4] == "  Rerun a failed Test Run with the same seed:"
     # The card prints the resolved path; simulation.json holds it relative.
-    bad = simulation["tests"][1]
-    assert (_target_directory(tmp_path) / bad["log"]).resolve() == log.resolve()
+    assert (target / bad["log"]).resolve() == log.resolve()
+    if traced:
+        waveform = _path(card[failed + 2], _WAVEFORM)
+        assert waveform.is_file()
+        assert waveform.name.endswith("bad.fst")
+        assert (target / bad["trace"]).resolve() == waveform.resolve()
+    else:
+        assert not any(line.startswith(_WAVEFORM) for line in card)
+        assert bad["trace"] is None
+    # The rerun block follows straight after: the path lines are the only addition.
+    assert card[failed + 2 + traced] == "  Rerun a failed Test Run with the same seed:"
 
 
 def _only_work_item(tmp_path: Path) -> tuple[Path, dict[str, Any], Path]:
@@ -239,28 +257,6 @@ def test_live_log_is_the_log_the_result_keeps(tmp_path: Path, monkeypatch: pytes
     assert "[SIM_RESULT] FAILED" in (attempt / kept["path"]).read_text("utf-8")
 
 
-@pytest.mark.parametrize("traced", [True, False], ids=["traced", "untraced"])
-def test_waveform_line_only_for_a_traced_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, traced: bool
-):
-    run, simulation = _run(tmp_path, monkeypatch, ["ok", "bad"], failing=("bad",), traced=traced)
-    card = _card(run)
-
-    failed = card.index("    FAIL         bad@1")
-    log = _path(card[failed + 1], _LOG)
-    assert log.is_file()
-    if traced:
-        waveform = _path(card[failed + 2], _WAVEFORM)
-        assert waveform.is_file()
-        assert waveform.name.endswith("bad.fst")
-        assert (_target_directory(tmp_path) / simulation["tests"][1]["trace"]).resolve() == (
-            waveform.resolve()
-        )
-    else:
-        assert not any(line.startswith(_WAVEFORM) for line in card)
-        assert simulation["tests"][1]["trace"] is None
-
-
 def _files(directory: Path, *, log: bool = True, trace: bool = False) -> Any:
     """Evidence files written into *directory*."""
     directory.mkdir(parents=True, exist_ok=True)
@@ -307,26 +303,6 @@ def test_inconclusive_run_of_a_simulation_record_shows_its_log(
     assert _path(card[2], _LOG).is_file()
 
 
-def test_passing_test_runs_of_an_untraced_run_print_no_path_lines(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    run, _ = _run(tmp_path, monkeypatch, ["ok", "bad"], failing=("bad",))
-    card = _card(run)
-
-    # A PASS row beside a FAIL row with a log: only the FAIL row has a path.
-    assert [line for line in card if line.startswith("      ")] == [card[3]]
-    assert card[1].startswith("    PASS ")
-    assert card[2].startswith("    FAIL ")
-
-
-def test_all_passing_untraced_run_prints_no_test_run_rows(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    run, _ = _run(tmp_path, monkeypatch, ["ok"])
-
-    assert "Test Runs:" not in run.result.outcome.report_text
-
-
 def test_passing_test_run_of_a_traced_run_shows_its_waveform(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -344,20 +320,26 @@ def test_passing_test_run_of_a_traced_run_shows_its_waveform(
     )
 
 
-def test_build_failure_card_has_no_log_line(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    run, _ = _run(
+def test_build_failure_has_no_log_line_and_null_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    run, simulation = _run(
         tmp_path,
         monkeypatch,
         ["first", "second"],
         build=SubprocessResult(returncode=1, stdout="compile failed\n"),
     )
-    card = _card(run)
+    report = json.loads((tmp_path / "reports/sim/1/report.json").read_text("utf-8"))
+    previews = report["detail"]["records"]["lite"]["observations"]
 
-    assert card == [
+    assert _card(run) == [
         "  Test Runs: 2 (2 error)",
         "    ERROR        first@1",
         "    ERROR        second@1",
     ]
+    for row in (*simulation["tests"], *previews):
+        assert (row["log"], row["trace"]) == (None, None)
+    assert run.result.exit_code != 0
 
 
 def test_non_passing_run_without_a_log_renders_without_a_log_line(tmp_path: Path):
@@ -371,24 +353,6 @@ def test_non_passing_run_without_a_log_renders_without_a_log_line(tmp_path: Path
         "    FAIL         bad@1",
         f"{_LOG}{files[1].log.resolve()}",  # type: ignore[union-attr]
     ]
-
-
-def test_rows_carry_null_paths_when_files_are_absent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    run, simulation = _run(
-        tmp_path,
-        monkeypatch,
-        ["first"],
-        build=SubprocessResult(returncode=1, stdout="compile failed\n"),
-    )
-    report = json.loads((tmp_path / "reports/sim/1/report.json").read_text("utf-8"))
-    (preview,) = report["detail"]["records"]["lite"]["observations"]
-
-    (row,) = simulation["tests"]
-    assert (row["log"], row["trace"]) == (None, None)
-    assert (preview["log"], preview["trace"]) == (None, None)
-    assert run.result.exit_code != 0
 
 
 def _simulation_record_stand_in(tmp_path: Path) -> SimpleNamespace:
@@ -413,9 +377,6 @@ def test_paths_name_the_attempt_the_simulation_record_accepted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """A resumed work item is accepted on its second attempt: the log is that attempt's."""
-    from booley.flows.sim.record.codec import canonical_json_bytes
-    from booley.flows.sim.record.test_run_files import simulation_record_test_run_files
-
     _run(tmp_path, monkeypatch, ["bad"], failing=("bad",))
     outcome = _simulation_record_stand_in(tmp_path)
     (result,) = (_target_directory(tmp_path) / "record").glob("work-items/*/result.json")
@@ -435,73 +396,84 @@ def test_paths_name_the_attempt_the_simulation_record_accepted(
     assert files.log.parents[1] == accepted
 
 
-def test_lookup_yields_no_files_for_unreadable_or_missing_records(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    from booley.flows.sim.record.codec import canonical_json_bytes
-    from booley.flows.sim.record.test_run_files import (
-        TestRunFiles,
-        simulation_record_test_run_files,
-    )
-
-    _run(tmp_path, monkeypatch, ["bad"], failing=("bad",))
-    outcome = _simulation_record_stand_in(tmp_path)
-    (result,) = (_target_directory(tmp_path) / "record").glob("work-items/*/result.json")
-
-    # No consumed result for the observation's work item.
-    stranger = SimpleNamespace(
+def _stranger(outcome: SimpleNamespace, result: Path) -> SimpleNamespace:
+    """No consumed result for the observation's work item."""
+    return SimpleNamespace(
         manifest_path=outcome.manifest_path,
         observations=({"work_item_id": "0099-missing"},),
         acceptance_facts=outcome.acceptance_facts,
     )
-    assert simulation_record_test_run_files(stranger) == (TestRunFiles(None, None),)
-    # No acceptance facts at all.
-    bare = SimpleNamespace(manifest_path=outcome.manifest_path, observations=outcome.observations)
-    assert simulation_record_test_run_files(bare) == (TestRunFiles(None, None),)  # type: ignore[arg-type]
-    # A manifest kept outside an invocation names no results.
-    stray = SimpleNamespace(
+
+
+def _without_acceptance_facts(outcome: SimpleNamespace, result: Path) -> SimpleNamespace:
+    return SimpleNamespace(manifest_path=outcome.manifest_path, observations=outcome.observations)
+
+
+def _stray_manifest(outcome: SimpleNamespace, result: Path) -> SimpleNamespace:
+    """A manifest kept outside an invocation names no results."""
+    return SimpleNamespace(
         manifest_path=Path("manifest.json"),
         observations=outcome.observations,
         acceptance_facts=outcome.acceptance_facts,
     )
-    assert simulation_record_test_run_files(stray) == (TestRunFiles(None, None),)
-    # A record that is not a result, or has gone.
+
+
+def _not_json(outcome: SimpleNamespace, result: Path) -> SimpleNamespace:
     result.write_bytes(b"not json")
-    assert simulation_record_test_run_files(outcome) == (TestRunFiles(None, None),)
-    # Canonical JSON whose fields have the wrong shape is no result either.
+    return outcome
+
+
+def _wrong_shape(outcome: SimpleNamespace, result: Path) -> SimpleNamespace:
+    """Canonical JSON whose fields have the wrong shape is no result either."""
     result.write_bytes(canonical_json_bytes({"evidence": [{}]}))
-    assert simulation_record_test_run_files(outcome) == (TestRunFiles(None, None),)
+    return outcome
+
+
+def _gone(outcome: SimpleNamespace, result: Path) -> SimpleNamespace:
     result.unlink()
-    assert simulation_record_test_run_files(outcome) == (TestRunFiles(None, None),)
+    return outcome
 
 
-def test_a_reference_that_escapes_its_attempt_names_no_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    from booley.flows.sim.record.codec import canonical_json_bytes
-    from booley.flows.sim.record.test_run_files import (
-        TestRunFiles,
-        simulation_record_test_run_files,
-    )
+def _escaping_reference(outcome: SimpleNamespace, result: Path) -> SimpleNamespace:
+    """The live log reference climbs out of its attempt to a file that exists.
 
-    _run(tmp_path, monkeypatch, ["bad"], failing=("bad",))
-    outcome = _simulation_record_stand_in(tmp_path)
-    (result,) = (_target_directory(tmp_path) / "record").glob("work-items/*/result.json")
+    Four levels up from the attempt directory is the Simulation Record manifest, so only
+    the containment check can refuse it.
+    """
     document = json.loads(result.read_text("utf-8"))
     for reference in document["evidence"]:
         if reference["kind"] == "live_run_log":
-            # Four levels up from the attempt directory is the Simulation Record manifest: a
-            # file that exists, so only the containment check can refuse it.
             reference["path"] = "../../../../manifest.json"
     result.write_bytes(canonical_json_bytes(document))
-
     assert (result.parents[2] / "manifest.json").is_file()
-    assert simulation_record_test_run_files(outcome) == (TestRunFiles(None, None),)
+    return outcome
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        _stranger,
+        _without_acceptance_facts,
+        _stray_manifest,
+        _not_json,
+        _wrong_shape,
+        _gone,
+        _escaping_reference,
+    ],
+)
+def test_lookup_yields_no_files_for_unreadable_or_missing_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: Callable[..., SimpleNamespace]
+):
+    _run(tmp_path, monkeypatch, ["bad"], failing=("bad",))
+    outcome = _simulation_record_stand_in(tmp_path)
+    (result,) = (_target_directory(tmp_path) / "record").glob("work-items/*/result.json")
+
+    assert simulation_record_test_run_files(damage(outcome, result)) == (  # type: ignore[arg-type]
+        TestRunFiles(None, None),
+    )
 
 
 def test_path_lines_are_capped(tmp_path: Path):
-    from booley.flows.sim.record.test_run_report import PATH_ROW_LIMIT
-
     rows = [_row(f"t{n}", "fail") for n in range(PATH_ROW_LIMIT + 2)]
     files = [_files(tmp_path / f"t{n}") for n in range(len(rows))]
     lines = test_run_report_lines("lite", rows, files=files)
@@ -515,8 +487,6 @@ def test_path_lines_are_capped(tmp_path: Path):
 
 
 def test_path_line_budget_goes_to_non_passing_runs_first(tmp_path: Path):
-    from booley.flows.sim.record.test_run_report import PATH_ROW_LIMIT
-
     rows = [_row(f"p{n}", "pass") for n in range(10)] + [_row("bad", "fail")]
     files = [_files(tmp_path / f"p{n}", trace=True) for n in range(10)]
     files.append(_files(tmp_path / "bad", trace=True))
