@@ -381,7 +381,7 @@ def test_empty_registry_and_load_failure(tmp_path, monkeypatch, capsys):
     assert "missing dependency" in capsys.readouterr().err
 
 
-def test_reviewer_initial_and_verification_calls_round_up(tmp_path, monkeypatch):
+def test_reviewer_review_call_rounds_up(tmp_path, monkeypatch):
     from booley.specialists.reviewer import ReviewerSpecialist
 
     endpoint = ReviewerSpecialist()
@@ -399,15 +399,9 @@ def test_reviewer_initial_and_verification_calls_round_up(tmp_path, monkeypatch)
             "600001",  # just above the reviewer's 10-minute minimum, which a lower value would meet
         ]
     )
-    for hook in [
-        "_build_prompt",
-        "_build_system_prompt",
-        "_build_verify_prompt",
-        "_build_verify_system_prompt",
-    ]:
+    for hook in ["_build_prompt", "_build_system_prompt"]:
         monkeypatch.setattr(endpoint, hook, lambda *_args, **_kwargs: "fixture")
     assert endpoint._single_review_params("bugs").timeout_seconds == 601
-    assert endpoint._verify_agent_params("bugs", {}, None).timeout_seconds == 601
 
 
 @pytest.mark.parametrize("route", ["flow", "specialist"])

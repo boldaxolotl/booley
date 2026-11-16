@@ -26,11 +26,8 @@ from pathlib import Path
 from typing import Any, ClassVar
 from uuid import uuid4
 
-from booley.agent_workspace.state_projection import filter_state_file_for_category
-from booley.core.boundary import as_dict, as_int, as_str_list
+from booley.core.boundary import as_dict, as_str_list
 from booley.core.models import AgentCallParams
-from booley.criteria.freshness import review_policy_digest
-from booley.criteria.state import DevelopmentState
 from booley.evidence.review_guides import (
     REVIEW_GUIDES,
     ReviewGuide,
@@ -61,10 +58,8 @@ from booley.mcp.base import (
 from booley.runtime.booley_dir import own_booley_dir, resolve_common_booley_dir
 from booley.runtime.exception_diagnostics import exception_report_text, log_exception
 from booley.runtime.execution_records import atomic_write_json
-from booley.runtime.file_lock import LockContentionError, nonblocking_file_lock
 from booley.runtime.model_fallback import ModelRun
 from booley.runtime.paths import refs_dir
-from booley.specialists.verification_freshness import refresh_verification_freshness
 from booley.targets.flow_names import config_section
 
 from .review_change import ReviewChange, ReviewChangeError, resolve_review_change
@@ -112,14 +107,6 @@ CONFIDENCE_MEDIUM = "MEDIUM"
 CONFIDENCE_LOW = "LOW"
 ALL_CONFIDENCES = frozenset({CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, CONFIDENCE_LOW})
 
-# Verify-pass per-finding status enum (case-insensitive on input,
-# canonicalized to upper case here).
-VERIFY_STATUS_FIXED = "FIXED"
-VERIFY_STATUS_WAIVED = "WAIVED"
-VERIFY_STATUS_STILL_PRESENT = "STILL_PRESENT"
-ALL_VERIFY_STATUSES = frozenset(
-    {VERIFY_STATUS_FIXED, VERIFY_STATUS_WAIVED, VERIFY_STATUS_STILL_PRESENT}
-)
 ALL_ISSUE_KINDS = frozenset({"code_defect", "proof_gap", "spec_ambiguity"})
 _NON_CORRECTIVE_DISPOSITIONS = frozenset(
     {DISPOSITION_ADVISORY, DISPOSITION_DEFERRED, DISPOSITION_OUT_OF_SCOPE}
@@ -484,20 +471,6 @@ class _DoneReviewOutcome:
     gate_passed: bool
 
 
-@dataclass
-class _CleanVerifyContext:
-    remaining: list[ReviewIssue]
-    output_lines: list[str]
-    existing_detail: dict[str, Any]
-    pending: list[dict[str, Any]]
-    resolved: list[dict[str, Any]]
-    original_issues: int
-    source_digest: str
-    observations: list[dict[str, Any]]
-    elapsed: float
-    crit_key: str
-
-
 def _finding_record(issue: ReviewIssue) -> dict[str, Any]:
     """Return one persisted finding with a stable content-derived identifier."""
     record = issue.to_dict()
@@ -576,39 +549,6 @@ def _validate_issue_dict(
     origin = d.get("origin")
     if require_origin and (not isinstance(origin, str) or origin.lower() not in ALL_ORIGINS):
         errs.append(f"origin must be one of {sorted(ALL_ORIGINS)} (got {origin!r})")
-    return errs
-
-
-def _validate_finding_dict(d: Any) -> list[str]:
-    """Return list of schema violations for one verify-finding dict.
-
-    A FIXED status without a non-blank ``evidence`` string is a schema
-    violation — the verify loop refuses to trust a FIXED claim that has
-    no anchor in the actual code.
-    """
-    if not isinstance(d, dict):
-        return [f"finding must be a JSON object (got {type(d).__name__})"]
-
-    errs: list[str] = []
-    idx = d.get("index")
-    if not isinstance(idx, int) or isinstance(idx, bool) or idx < 1:
-        errs.append(f"index must be a 1-based positive int (got {idx!r})")
-    status_raw = d.get("status")
-    if not isinstance(status_raw, str) or status_raw.upper() not in ALL_VERIFY_STATUSES:
-        errs.append(
-            f"status must be one of {sorted(ALL_VERIFY_STATUSES)} (got {status_raw!r})",
-        )
-    if isinstance(status_raw, str) and status_raw.upper() == VERIFY_STATUS_FIXED:
-        evidence = d.get("evidence")
-        if not isinstance(evidence, str) or not evidence.strip():
-            errs.append(
-                "FIXED status requires a non-empty 'evidence' string "
-                "(format: '<file:line> — <justification>')",
-            )
-    if isinstance(status_raw, str) and status_raw.upper() == VERIFY_STATUS_WAIVED:
-        justification = d.get("justification")
-        if not isinstance(justification, str) or not justification.strip():
-            errs.append("WAIVED status requires a non-empty 'justification' string")
     return errs
 
 
@@ -996,7 +936,7 @@ class ReviewerSpecialist(Specialist):
             "Have an AI reviewer discover findings in the --scope files with one "
             "review focus and list the issues it finds by severity. Use it for a second "
             "opinion on a change before you merge it. The reviewer reads code and "
-            "never edits it. Use --verify to check only the latest review's open findings; only --waive proposals and --fail-on may accompany verification."
+            "never edits it."
         ),
         example="booley specialist reviewer --category rtl --focus bugs --scope rtl/fifo.sv",
     )
@@ -1069,162 +1009,14 @@ class ReviewerSpecialist(Specialist):
         self._review_change: ReviewChange | None = None
         self._full_scope: tuple[str, ...] | None = None
         self._simulation_context: str | None = None
-        self._verify_prior: dict[str, Any] = {}
         self._sampled_contract: dict[str, Any] | None = None
-        self._review_state_bytes: bytes | None = None
-
-    def read_state(self) -> DevelopmentState:
-        """Persist Interactive review history in the resolved Booley Directory."""
-        if self.args.state_file is None:
-            root = Path(self.args.work_dir).resolve()
-            checkout_id = hashlib.sha256(str(root).encode()).hexdigest()[:24]
-            self.args.state_file = (
-                resolve_common_booley_dir(root) / "reviewer-state" / checkout_id / "state.json"
-            )
-        self._review_state_bytes = self._read_review_state_bytes()
-        return super().read_state()
-
-    def _read_review_state_bytes(self) -> bytes | None:
-        try:
-            return Path(self.args.state_file).read_bytes() if self.args.state_file else None
-        except FileNotFoundError:
-            return None
-
-    @staticmethod
-    def _open_findings(detail: dict[str, Any]) -> list[dict[str, Any]]:
-        rows = detail.get("pending", detail.get("issue_list", []))
-        return [
-            {
-                **row,
-                "finding_id": row.get("finding_id")
-                or _finding_record(ReviewIssue.from_dict(row))["finding_id"],
-            }
-            for row in rows
-            if row.get("status") not in {"fixed", "waived", "excluded", "superseded"}
-            and row.get("disposition", "current") == "current"
-            and row.get("origin") != ORIGIN_PRE_EXISTING
-        ]
 
     def _prepare_invocation(self) -> McpToolResult | None:
-        """Resolve caller intent before validating or changing review state."""
-        if self._is_verify_pass():
-            return self._prepare_verify_invocation()
-        if getattr(self.args, "waive", []):
-            return McpToolResult(exit_code=EXIT_ERROR, report_text="--waive requires --verify")
+        """Resolve caller intent before validating the review."""
         if not self.args.category or not self.args.focus:
             return McpToolResult(
                 exit_code=EXIT_ERROR, report_text="Discovery requires --category and --focus"
             )
-        return None
-
-    def _supplied_options(self) -> set[str]:
-        # Every Specialist run enters through parse_args, which records the raw argv.
-        assert self._raw_argv is not None
-        return {word.split("=", 1)[0] for word in self._raw_argv if word.startswith("--")}
-
-    def _prepare_verify_invocation(self) -> McpToolResult | None:
-        allowed = {
-            "--verify",
-            "--waive",
-            "--work-dir",
-            "--project",
-            "--report-dir",
-            "--transcript-dir",
-            "--fail-on",
-        }
-        forbidden = self._supplied_options() - allowed
-        if forbidden:
-            return McpToolResult(
-                exit_code=EXIT_ERROR,
-                report_text=f"--verify accepts only --waive and --fail-on; refused {', '.join(sorted(forbidden))}",
-            )
-        selected = self._latest_review()
-        if selected is None:
-            return McpToolResult(
-                exit_code=EXIT_ERROR,
-                report_text="--verify refused: no prior review with open findings",
-            )
-        _, entry = selected
-        prior = deepcopy(entry.detail)
-        findings = self._open_findings(prior)
-        if not findings:
-            return McpToolResult(
-                exit_code=EXIT_ERROR,
-                report_text="--verify refused: the most recent review has no open findings",
-            )
-        if error := self._validate_waiver_proposals(findings):
-            return error
-        self._restore_verify_context(prior, findings)
-        return None
-
-    def _restore_verify_context(
-        self, prior: dict[str, Any], findings: list[dict[str, Any]]
-    ) -> None:
-        contract = prior["contract"]
-        self.args.category, self.args.focus = contract["category"], contract["focus"]
-        self._resolved_scope = list(contract["scope"])
-        self.args.spec = contract.get("spec_source") or None
-        self.args.spec_text = contract.get("spec_text")
-        self.args.steer = None
-        if "pending" not in prior:
-            prior["resolved"] = [
-                *prior.get("resolved", []),
-                *[
-                    row
-                    for row in prior.get("issue_list", [])
-                    if row.get("status") in {"fixed", "waived", "excluded", "superseded"}
-                ],
-            ]
-        prior.setdefault(
-            "observations",
-            [
-                row
-                for row in prior.get("issue_list", [])
-                if _is_observation(row.get("disposition", "current"), row.get("origin", ""))
-                and row.get("status") not in {"fixed", "waived", "excluded", "superseded"}
-            ],
-        )
-        prior["pending"] = findings
-        self._verify_prior = prior
-
-    def _next_review_order(self) -> int:
-        return 1 + max(
-            (
-                as_int(entry.detail.get("review_call_order"), default=0) or 0
-                for entry in self.state.criteria.values()
-            ),
-            default=0,
-        )
-
-    def _latest_review(self):
-        reviews = [
-            (key, entry)
-            for key, entry in self.state.criteria.items()
-            if key.startswith("review_") and entry.detail.get("contract")
-        ]
-        return (
-            max(
-                reviews,
-                key=lambda item: (
-                    as_int(item[1].detail.get("review_call_order"), default=0) or 0,
-                    item[1].updated_at,
-                    item[0],
-                ),
-            )
-            if reviews
-            else None
-        )
-
-    def _validate_waiver_proposals(self, findings: list[dict[str, Any]]) -> McpToolResult | None:
-        open_ids = {row["finding_id"] for row in findings}
-        seen = set()
-        for finding_id, justification in self.args.waive:
-            if finding_id not in open_ids or finding_id in seen or not justification.strip():
-                return McpToolResult(
-                    exit_code=EXIT_ERROR,
-                    report_text=f"Invalid --waive {finding_id!r}: name an open finding once with a nonempty justification",
-                )
-            seen.add(finding_id)
         return None
 
     def _workspace_isolation_category(self) -> str | None:
@@ -1252,14 +1044,7 @@ class ReviewerSpecialist(Specialist):
     def display_tag(self) -> str | None:
         if not self._args:
             return None
-        tag = f"{self.args.category}/{next(iter(self._parse_focus()), '?')}"
-        if self._is_verify_pass():
-            tag += " verify fix"
-        return tag
-
-    def _is_verify_pass(self) -> bool:
-        """True when this invocation will run verify (not initial) review."""
-        return bool(getattr(self.args, "verify", False))
+        return f"{self.args.category}/{next(iter(self._parse_focus()), '?')}"
 
     def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--scope", default=None, help="Comma-separated review files")
@@ -1272,19 +1057,6 @@ class ReviewerSpecialist(Specialist):
                 "uncommitted changes included; problems already present before the change are "
                 "reported as non-blocking pre-existing observations"
             ),
-        )
-        parser.add_argument(
-            "--verify",
-            action="store_true",
-            help="Verify only the latest review call's open findings; no discovery",
-        )
-        parser.add_argument(
-            "--waive",
-            nargs=2,
-            action="append",
-            default=[],
-            metavar=("FINDING_ID", "JUSTIFICATION"),
-            help="Propose a waiver during --verify; repeatable",
         )
         parser.add_argument(
             "--category",
@@ -1420,9 +1192,6 @@ class ReviewerSpecialist(Specialist):
                 spec_path=Path(spec_arg) if spec_arg else None,
                 spec_text=getattr(self.args, "spec_text", None),
                 steering=self.steering_text(),
-                tb_policy_digest=review_policy_digest(
-                    Path(self.args.work_dir), self.args.category
-                ),
             )
         )
         return contract
@@ -1820,28 +1589,7 @@ object, even after calling the capability.
     # --- Main execution override ---
 
     def _run(self) -> McpToolResult:
-        """Serialize review calls so latest-only verification cannot lose its history."""
-        path = self.state.file_path
-        if path is None or getattr(self.args, "dry_run", False):
-            return self._run_review()
-        lock_path = path.with_suffix(".review.lock")
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            with lock_path.open("a+", encoding="ascii") as lock, nonblocking_file_lock(lock):
-                if self._read_review_state_bytes() != self._review_state_bytes:
-                    self.read_state()
-                try:
-                    return self._run_review()
-                finally:
-                    self._review_state_bytes = self._read_review_state_bytes()
-        except LockContentionError:
-            return McpToolResult(
-                exit_code=EXIT_ERROR,
-                report_text="Another review is running for this state; retry after it finishes.",
-            )
-
-    def _run_review(self) -> McpToolResult:
-        """Single-focus review: discovery or verify of the latest review's findings."""
+        """Single-focus discovery review."""
         self._audit = {"filtered": [], "rejected": []}
         self._non_corrective_issues = []
         self._tb_project_policy = None
@@ -1855,9 +1603,8 @@ object, even after calling the capability.
         self._review_evidence_written = False
         if error := self._prepare_invocation():
             return error
-        prepared = self._prepare_review_run()
-        if isinstance(prepared, McpToolResult):
-            return prepared
+        if invalid := self._prepare_review_run():
+            return invalid
         if getattr(self.args, "dry_run", False):
             return self._dry_run_preview()
         self._review_evidence_path = (
@@ -1866,14 +1613,14 @@ object, even after calling the capability.
             / f"{self._review_run_id}.json"
         )
         self._sampled_contract = self._review_contract_detail()
-        result = self._execute_review(prepared)
-        return self._publish_review_evidence(result, prepared)
+        result = self._execute_review()
+        return self._publish_review_evidence(result)
 
     def _attach_review_evidence(self, detail: dict[str, Any], exit_code: int) -> Path:
-        """Publish evidence before any Criterion can advertise the outcome."""
+        """Write the run's evidence file and name it in *detail*."""
         for name in ("filtered", "rejected"):
             detail.setdefault(name, [])
-        # The audit file and the Criterion it backs must name the same model.
+        # The audit file and the detail it backs must name the same model.
         self._stamp_model_note(detail)
         path = self._review_evidence_path
         detail["audit_evidence"] = str(path)
@@ -1881,8 +1628,7 @@ object, even after calling the capability.
             **detail.get("artifacts", {}),
             "reviewer_evidence": str(path),
         }
-        # Written atomically before any passing Criterion is recorded, so no
-        # Criterion can point at evidence that does not exist.
+        # Written atomically, so the detail never points at partial evidence.
         atomic_write_json(path, {"exit_code": exit_code, "detail": detail})
         self._review_evidence_written = True
         return path
@@ -1906,64 +1652,19 @@ object, even after calling the capability.
             else EXIT_SUCCESS
         )
 
-    def _record_review_detail(
-        self, crit_key: str, met: bool, detail: dict[str, Any], exit_code: int
-    ) -> None:
-        criterion_met = met
-        if self._is_verify_pass():
-            prior_entry = self.state.criteria[crit_key]
-            prior = self._verify_prior
-            detail["contract"] = {
-                key: value
-                for key, value in prior["contract"].items()
-                if not key.startswith("decisions_")
-            }
-            for field in (
-                "_source_fingerprint",
-                "receipt_id",
-                "observation_count",
-                "review_outcome",
-                "gate_passed",
-            ):
-                if field in prior:
-                    detail[field] = deepcopy(prior[field])
-            criterion_met = prior_entry.met
-        self._attach_review_evidence(detail, exit_code)
-        self.set_criterion(crit_key, criterion_met, detail=detail)
-
-    def _publish_review_evidence(self, result: McpToolResult, crit_key: str) -> McpToolResult:
+    def _publish_review_evidence(self, result: McpToolResult) -> McpToolResult:
         """Publish complete evidence even when a review cannot issue a receipt."""
-        prior = self._get_prior_detail(crit_key) or {}
         if result.exit_code == EXIT_ERROR:
             result.detail = {
                 "review_detail_version": REVIEW_DETAIL_VERSION,
                 "contract": self._review_contract_detail(),
-                **prior,
                 **result.detail,
                 **self._audit,
                 "review_error": True,
             }
-        elif not result.detail:
-            result.detail = dict(prior)
         path = self._review_evidence_path
         if not self._review_evidence_written or result.exit_code == EXIT_ERROR:
             self._attach_review_evidence(result.detail, result.exit_code)
-        if result.exit_code == EXIT_ERROR and self.state and not self._is_verify_pass():
-            self.set_criterion(crit_key, False, detail=result.detail)
-        if (
-            self.state
-            and not getattr(self.args, "diagnostic", False)
-            and self.evidence_discarded is None
-        ):
-            entry = self.state.criteria.get(crit_key)
-            if entry is not None:
-                entry.detail.update(
-                    {
-                        name: result.detail[name]
-                        for name in ("filtered", "rejected", "audit_evidence")
-                    }
-                )
-                self.state.save()
         result.report_text += f"\nReviewer evidence: {path}"
         return result
 
@@ -1987,8 +1688,8 @@ object, even after calling the capability.
         """Attach the active audit rows to an outcome."""
         return dict(self._audit)
 
-    def _prepare_review_run(self) -> str | McpToolResult:
-        """Validate source, criterion, and specification inputs."""
+    def _prepare_review_run(self) -> McpToolResult | None:
+        """Validate source and specification inputs."""
         errors = self._validate_args()
         if errors:
             return McpToolResult(
@@ -1996,12 +1697,10 @@ object, even after calling the capability.
                 report_text="Validation errors:\n" + "\n".join(f"  - {e}" for e in errors),
             )
 
-        crit_key = self._criterion_key()
-
         # Scope file existence guard: if review targets don't exist yet
         # (e.g., TB not coded yet), fail early instead of letting the LLM
         # agent silently report "0 issues" on non-existent code.
-        missing = [] if self._is_verify_pass() else self._check_scope_files_exist()
+        missing = self._check_scope_files_exist()
         if missing:
             names = ", ".join(missing)
             return McpToolResult(
@@ -2012,7 +1711,7 @@ object, even after calling the capability.
                 ),
             )
 
-        return self._check_scope_and_spec() or crit_key
+        return self._check_scope_and_spec()
 
     def _check_scope_and_spec(self) -> McpToolResult | None:
         """Resolve the scope contract, require the spec, then narrow to ``--base``.
@@ -2082,10 +1781,7 @@ object, even after calling the capability.
                 spec_text,
             )
         except OSError as exc:
-            recovery = ""
-            if self._is_verify_pass():
-                recovery = " Restore the original specification or start a new Interactive discovery review."
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc) + recovery)
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
         if SPEC_FOCUS not in self._parse_focus() or spec_content is not None:
             return None
         return McpToolResult(
@@ -2117,26 +1813,9 @@ object, even after calling the capability.
             },
         )
 
-    def _execute_review(self, crit_key: str) -> McpToolResult:
-        """Run one validated discovery or verify review."""
-        prior = self._get_prior_detail(crit_key) or {}
-        self._audit = {
-            name: list(prior.get(name) or [])
-            if self._is_verify_pass()
-            or (
-                prior.get("review_error")
-                and prior.get("contract") == self._review_contract_detail()
-            )
-            else []
-            for name in ("filtered", "rejected")
-        }
-
-        self._refresh_review_freshness()
-
+    def _execute_review(self) -> McpToolResult:
+        """Run one validated discovery review."""
         self.emit_progress(f"reviewing {self.args.category}/{next(iter(self._parse_focus()))}")
-
-        if self._is_verify_pass():
-            return self._run_clean_verify(crit_key, self._verify_prior)
 
         # Run single-focus review
         overall_start = time.monotonic()
@@ -2154,89 +1833,6 @@ object, even after calling the capability.
         elapsed = time.monotonic() - overall_start
         return self._build_result(issues, output_lines, elapsed=elapsed)
 
-    # --- Verify ---
-
-    def _refresh_review_freshness(self) -> None:
-        """Mark recorded verification evidence stale when its sources changed."""
-        if self.state:
-            refresh_verification_freshness(
-                self.state,
-                work_dir=Path(self.args.work_dir),
-            )
-
-    def _clean_verify_limit(self, crit_key: str, prior_detail: dict[str, Any]):
-        if prior_detail.get("verify_attempts", 0) >= 2:
-            msg = (
-                f"{crit_key}: 2 verify attempts exhausted — unresolved findings remain. "
-                "Fix them or propose explicit, justified review waivers; findings are never "
-                "waived automatically."
-            )
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=msg)
-        if prior_detail.get("total_verify_cycles", 0) >= 3:
-            msg = (
-                f"{crit_key}: 3 review/resolve cycles exhausted — unresolved findings "
-                "remain. Blocking without creating an automatic waiver."
-            )
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=msg)
-        return None
-
-    def _run_clean_verify(self, crit_key: str, prior_detail: dict[str, Any]) -> McpToolResult:
-        limit = self._clean_verify_limit(crit_key, prior_detail)
-        if limit is not None:
-            return limit
-        self.emit_progress("verify mode: checking if prior findings are resolved")
-        overall_start = time.monotonic()
-        remaining, output_lines, remaining_indices, dispositions = self._run_verify_review(
-            prior_detail
-        )
-        if remaining is None:
-            report = self._provider_failure_report(
-                output_lines, "Verify Reviewer Specialist invocation failed"
-            )
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=report)
-        return self._build_result_clean_verify(
-            remaining,
-            output_lines,
-            prior_detail,
-            remaining_indices=remaining_indices,
-            dispositions=dispositions,
-            elapsed=time.monotonic() - overall_start,
-            crit_key=crit_key,
-        )
-
-    def _review_source_digest(self) -> str:
-        """Return a digest of only the files declared in this review scope."""
-        try:
-            root = Path(self.args.work_dir)
-            rows = [
-                {
-                    "path": path,
-                    "sha256": hashlib.sha256((root / path).read_bytes()).hexdigest(),
-                }
-                for path in sorted(self._parse_scope())
-            ]
-        except OSError:
-            logger.warning("Could not fingerprint sources for review freshness", exc_info=True)
-            return ""
-        return hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
-
-    def _get_prior_detail(self, crit_key: str) -> dict[str, Any] | None:
-        """Retrieve the detail dict for a criterion from state."""
-        if not self.state:
-            return None
-        entries = self.state._resolve_entries(crit_key)
-        if not entries:
-            return None
-        return entries[0].detail
-
-    # --- Verify review ---
-
-    def _review_state_filter(self):
-        return filter_state_file_for_category(
-            getattr(self.args, "state_file", None),
-            self.args.category,
-        )
-
     @staticmethod
     def _provider_failure_report(output_lines: list[str], fallback: str) -> str:
         return next(
@@ -2250,361 +1846,6 @@ object, even after calling the capability.
         log_exception(logger, exc, summary=summary)
         diagnostic_path = self._write_provider_diagnostic(exc, transcript)
         return exception_report_text(self.name, exc, diagnostic_path)
-
-    def _verify_agent_params(
-        self, focus: str, prior_detail: dict[str, Any], prior_sid: str | None
-    ) -> AgentCallParams:
-        params = AgentCallParams(
-            prompt=self._build_verify_prompt(focus, prior_detail, resumed=prior_sid is not None),
-            model=self._resolve_model(),
-            cwd=self.args.work_dir,
-            allowed_agent_capabilities=self.agent_capabilities,
-            disallowed_agent_capabilities=[*self.READ_ONLY_DENY, REPORT_FINDINGS_CAPABILITY],
-            system_prompt=self._build_verify_system_prompt(focus),
-            output_format=self._output_format(),
-            max_turns=self.args.max_turns,
-            timeout_seconds=self.timeout_seconds(),
-            transcript_path=self.transcript_path(),
-            label=f"review-verify-{self.args.category}-{focus}",
-            needs_skills=self._needs_skills(),
-            reasoning_effort=self._resolve_effort(),
-        )
-        return self._build_resume_params(params, prior_sid) if prior_sid is not None else params
-
-    def _run_verify_review(
-        self,
-        prior_detail: dict[str, Any],
-    ) -> tuple[
-        list[ReviewIssue] | None,
-        list[str],
-        set[int],
-        dict[int, dict[str, str]],
-    ]:
-        """Check only open findings in a fresh, read-only Reviewer context."""
-        self._attempt_id = f"{self._review_run_id or self._invocation_id}-{uuid4().hex}"
-        self._audit_phase = "verification"
-        focus = next(iter(self._parse_focus()))
-        # The "no --report-dir, nothing persisted" notice lives in McpTool._post_run:
-        # the gap is every endpoint's, not the reviewer's (SETUP-F-39).
-        output_lines = [
-            f"[review-verify] {self.args.category}/{focus}",
-            *self._spec_report_lines(),
-        ]
-        session_key = f"reviewer-{self.args.category}-{focus}"
-        prior_sid = (
-            None  # A fresh context prevents obsolete discovery steering from influencing verify.
-        )
-        start = time.monotonic()
-        params = self._verify_agent_params(focus, prior_detail, prior_sid)
-        self.emit_progress("invoking verification Specialist")
-        try:
-            with self._review_state_filter():
-                result = self._invoke_agent_with_resume(params)
-                remaining, remaining_indices, dispositions = self._parse_verify_output(
-                    result.output, prior_detail
-                )
-        except Exception as exc:  # noqa: BLE001 — normalize the review-provider boundary
-            output_lines.append(
-                self._record_review_provider_failure(
-                    exc,
-                    params.transcript_path,
-                    f"Verify Reviewer Specialist failed for focus={focus}",
-                )
-            )
-            return None, output_lines, set(), {}
-
-        self._persist_session_id(session_key)
-
-        duration = time.monotonic() - start
-        counts = count_by_severity(remaining)
-        output_lines.append(
-            format_summary_line(self.args.category, focus, len(remaining), counts, duration)
-        )
-        return remaining, output_lines, remaining_indices, dispositions
-
-    def _build_verify_prompt(
-        self,
-        focus: str,
-        prior_detail: dict[str, Any],
-        *,
-        resumed: bool = False,
-    ) -> str:
-        """List open findings and explicit waiver proposals, with current source context."""
-        issue_list = self._open_findings(prior_detail)
-
-        sections: list[str] = []
-
-        if resumed:
-            sections.append(
-                "The coder has attempted fixes since your last review. "
-                "Re-read the files and check which of your findings are resolved.\n"
-            )
-        else:
-            sections.append("Verify whether the following issues have been fixed.\n")
-            scope = self._parse_scope()
-            sections.append("Files in scope:\n")
-            for path in scope:
-                sections.append(f"  - {path}")
-            sections.append("")
-
-        sections.append(f"## Focus: {focus}\n")
-
-        proposals = getattr(self.args, "waive", [])
-        if proposals:
-            sections.append("## Waiver proposals (Reviewer decides each justification)")
-            sections.append(json.dumps(dict(proposals), ensure_ascii=False))
-
-        if not resumed:
-            spec_section = self._build_spec_section()
-            if spec_section:
-                sections.append(spec_section)
-            if self.args.category == "tb":
-                sections.append(self._simulation_context_section())
-                sections.append(self._build_tb_project_policy_section())
-
-        sections.append("## Original findings to verify\n")
-        sections.extend(self._verify_finding_lines(issue_list, resumed=resumed))
-        sections.append("")
-
-        sections.append(self._verify_output_instructions())
-        return "\n".join(sections)
-
-    @staticmethod
-    def _verify_finding_lines(issue_list: list[dict[str, Any]], *, resumed: bool) -> list[str]:
-        sections: list[str] = []
-        for i, iss in enumerate(issue_list, 1):
-            sev = iss.get("severity", "?")
-            summary = iss.get("summary", "?")
-            file = iss.get("file", "?")
-            line = iss.get("line", "?")
-            prior_status = iss.get("status", "")
-            status_note = (
-                " (was STILL_PRESENT in prior verify)" if prior_status == "still_present" else ""
-            )
-            sections.append(
-                f"{i}. ID={iss.get('finding_id', '')} [{sev}] {file}:{line} — {summary}{status_note}"
-            )
-            if not resumed:
-                spec_clause = iss.get("spec_clause")
-                if spec_clause:
-                    sections.append(f'   Spec clause: "{spec_clause}"')
-                fix_suggestion = iss.get("fix_suggestion")
-                if fix_suggestion:
-                    sections.append(f"   Original suggestion: {fix_suggestion}")
-        return sections
-
-    def _build_verify_system_prompt(self, focus: str) -> str:
-        """System prompt for verify mode — check fixes, don't find new issues."""
-        return (
-            f"You are verifying fixes for a {self.args.category} code review "
-            f"(focus: {focus}).\n\n"
-            "Your ONLY job is to check whether each original finding has been "
-            "fixed. Do NOT report new issues. For each finding, read the "
-            "relevant code and determine: FIXED, WAIVED, or STILL_PRESENT. WAIVED "
-            "means the issue intentionally remains and a concrete justification is "
-            "accepted for user review; it is not a source-code or linter waiver.\n\n"
-            "IMPORTANT: You MUST report a status for EVERY listed finding, "
-            "not just the ones you think changed. Omitted findings keep "
-            "their prior status, which may not reflect reality.\n\n"
-            "EVIDENCE REQUIRED: Every FIXED status MUST include an "
-            "``evidence`` field naming the exact file:line and a one-line "
-            "justification anchored in the current code. A FIXED claim "
-            "without concrete evidence will be rejected and treated as "
-            "STILL_PRESENT — do not rubber-stamp.\n\n"
-            "JUSTIFICATION REQUIRED: Every WAIVED status MUST include a specific "
-            "``justification`` grounded in the current code, Goal, or Project "
-            "policy. WAIVED is allowed only for an explicit waiver proposal for that finding ID. Every accepted waiver is persisted and shown to the user, "
-            "regardless of severity. Reject vague convenience claims as "
-            "STILL_PRESENT.\n\n"
-            "Use Read, Grep, and Glob to inspect the current code."
-        )
-
-    @staticmethod
-    def _verify_output_instructions() -> str:
-        """Output format for verify review."""
-        return """\
-## Output Format (STRICT SCHEMA — malformed findings are rejected)
-
-You MUST report a status for EVERY original finding — omitting one
-means it keeps its prior status, which may not be what you intend.
-
-Per-finding schema (all fields required unless noted):
-  - index:    1-based positive integer into the original findings list
-  - status:   "FIXED" | "WAIVED" | "STILL_PRESENT"   (exact, uppercase)
-  - evidence: REQUIRED when status = "FIXED"; format
-              "<file:line> — <one-line justification>" anchored in code
-              you actually read. Omit when status = "STILL_PRESENT".
-  - justification: REQUIRED when status = "WAIVED"; explain specifically why
-                   leaving the finding in place is acceptable. This text is
-                   persisted and shown to the user regardless of severity.
-
-```json
-{
-  "findings": [
-    {
-      "index": 1,
-      "status": "FIXED",
-      "evidence": "rtl/mod_a.sv:42 — renamed clk_i to clk in port list"
-    },
-    {
-      "index": 2,
-      "status": "WAIVED",
-      "justification": "The Goal deliberately preserves this externally visible timing"
-    }
-  ]
-}
-```
-
-Schema enforcement (applied upstream by the harness):
-  - FIXED without a non-blank ``evidence`` string is demoted to
-    STILL_PRESENT. No rubber-stamping.
-  - WAIVED without a non-blank ``justification`` string is demoted to
-    STILL_PRESENT. Every waiver is user-visible.
-  - Bad index, unknown status, or wrong field types drop the finding;
-    the affected original issue falls back to STILL_PRESENT.
-  - Malformed JSON or a missing ``findings`` wrapper causes every
-    original finding to be treated as STILL_PRESENT.
-"""
-
-    def _parse_verify_output(
-        self,
-        output: str,
-        prior_detail: dict[str, Any],
-    ) -> tuple[list[ReviewIssue], set[int], dict[int, dict[str, str]]]:
-        """Return open issues, their indices, and validated dispositions.
-
-        Strict-schema parser: each finding is validated against
-        :func:`_validate_finding_dict`. Findings that fail validation
-        are handled two ways depending on the failure mode:
-
-        - FIXED-without-evidence or WAIVED-without-justification is demoted
-          to STILL_PRESENT (refuses to rubber-stamp).
-        - Any other schema violation (bad index, unknown status, wrong
-          type) drops the finding entirely; the affected original issue
-          falls back to its prior status (STILL_PRESENT by default).
-
-        Malformed JSON or a missing ``findings`` wrapper is logged and
-        treated as "no explicit statuses" — every still-open issue
-        defaults to STILL_PRESENT (fail-closed).
-        """
-        # ``pending`` is the new field; fall back to legacy ``issue_list``
-        # so persisted review cycles can resume after a restart.
-        issue_list = self._open_findings(prior_detail)
-
-        diagnostics: list[dict[str, Any]] = []
-        issue_count = len(issue_list)
-        dispositions = self._extract_verify_dispositions(output, diagnostics, issue_count)
-        self._refuse_unsolicited_waivers(dispositions, issue_list, diagnostics)
-        self._record_rejections(diagnostics, "verification")
-
-        # For issues the model didn't mention, fall back to prior status.
-        # Issues previously verified as "fixed" stay fixed unless the model
-        # explicitly says STILL_PRESENT; issues without prior status (first
-        # verify pass) default to STILL_PRESENT for safety.
-        remaining: list[ReviewIssue] = []
-        remaining_indices: set[int] = set()
-        for i, iss_dict in enumerate(issue_list, 1):
-            if i in dispositions:
-                if dispositions[i]["status"] == VERIFY_STATUS_STILL_PRESENT:
-                    remaining.append(ReviewIssue.from_dict(iss_dict))
-                    remaining_indices.add(i)
-            elif iss_dict.get("status") != "fixed":
-                remaining.append(ReviewIssue.from_dict(iss_dict))
-                remaining_indices.add(i)
-        return remaining, remaining_indices, dispositions
-
-    def _refuse_unsolicited_waivers(self, dispositions, issue_list, diagnostics) -> None:
-        requested = dict(getattr(self.args, "waive", []))
-        for index, disposition in list(dispositions.items()):
-            if disposition["status"] == VERIFY_STATUS_WAIVED:
-                finding_id = issue_list[index - 1].get("finding_id")
-                if finding_id not in requested:
-                    dispositions[index] = {"status": VERIFY_STATUS_STILL_PRESENT}
-                    diagnostics.append({"index": index, "reason": "unsolicited_waiver"})
-
-    @staticmethod
-    def _extract_verify_dispositions(
-        output: str,
-        diagnostics: list[dict[str, Any]] | None = None,
-        issue_count: int | None = None,
-    ) -> dict[int, dict[str, str]]:
-        """Pull validated per-index dispositions out of Specialist output.
-
-        Applies the strict finding schema (see ``_validate_finding_dict``)
-        at the parsing boundary. Schema violations are logged and
-        either demoted (FIXED-without-evidence → STILL_PRESENT) or
-        dropped (everything else).
-        """
-        data = _find_balanced_json_object(output, "findings")
-        if data is None:
-            logger.warning(
-                "Verification Specialist output had no recognizable findings JSON "
-                "wrapper — every original finding will be treated as "
-                "STILL_PRESENT (fail-closed)",
-            )
-            return {}
-
-        diagnostics = diagnostics if diagnostics is not None else []
-        raw_findings = data["findings"]
-        if not isinstance(raw_findings, list):
-            diagnostics.append(
-                {"ordinal": 1, "raw": raw_findings, "errors": ["findings wrapper must be a list"]}
-            )
-            return {}
-        dispositions: dict[int, dict[str, str]] = {}
-        for ord_idx, finding in enumerate(raw_findings, 1):
-            errs = _validate_finding_dict(finding)
-            idx = finding.get("index") if isinstance(finding, dict) else None
-            if not errs and issue_count is not None and isinstance(idx, int) and idx > issue_count:
-                errs.append("index exceeds the pending finding count")
-            if errs:
-                diagnostic = {"ordinal": ord_idx, "raw": finding, "errors": errs}
-                if isinstance(idx, int) and not isinstance(idx, bool) and idx >= 1:
-                    diagnostic["verifier_index"] = idx
-                diagnostics.append(diagnostic)
-                # Missing FIXED/WAIVED support is a rubber-stamp attempt. Demote
-                # the targeted index to STILL_PRESENT rather than drop
-                # the finding (otherwise a previously-fixed item would
-                # silently stay fixed).
-                idx = finding.get("index") if isinstance(finding, dict) else None
-                only_support_missing = (
-                    len(errs) == 1
-                    and ("evidence" in errs[0] or "justification" in errs[0])
-                    and isinstance(idx, int)
-                    and idx >= 1
-                )
-                if only_support_missing and isinstance(idx, int):
-                    logger.warning(
-                        "Verify finding #%d (idx=%d) lacks required disposition "
-                        "support — demoting to STILL_PRESENT",
-                        ord_idx,
-                        idx,
-                    )
-                    dispositions[idx] = {"status": VERIFY_STATUS_STILL_PRESENT}
-                    continue
-                logger.warning(
-                    "Rejecting verify finding #%d due to schema violations: %s",
-                    ord_idx,
-                    "; ".join(errs),
-                )
-                continue
-            disposition = {"status": finding["status"].upper()}
-            for support_field in ("evidence", "justification"):
-                value = finding.get(support_field)
-                if isinstance(value, str) and value.strip():
-                    disposition[support_field] = value.strip()
-            dispositions[finding["index"]] = disposition
-        return dispositions
-
-    @staticmethod
-    def _extract_verify_statuses(output: str) -> dict[int, str]:
-        """Backward-compatible status-only view used by older callers/tests."""
-        return {
-            index: disposition["status"]
-            for index, disposition in ReviewerSpecialist._extract_verify_dispositions(
-                output
-            ).items()
-        }
 
     def _capability_channel_findings(
         self,
@@ -2998,7 +2239,7 @@ Schema enforcement (applied upstream by the harness):
             f"INFO: guide calls reported {per_call}; merged {merged} exact duplicate(s)"
         )
         self._non_corrective_issues = observations
-        # The first call's session is the one persisted; a later verify never resumes it.
+        # The first call's session is the one persisted.
         session = next(
             (s for run in runs if isinstance(s := getattr(run.result, "session_id", None), str)),
             None,
@@ -3043,9 +2284,8 @@ Schema enforcement (applied upstream by the harness):
         self._guide_call_rows = [run.evidence_row() for run in runs] if len(runs) > 1 else []
         self.emit_progress(f"invoking Reviewer Specialist ({self.args.category}/{focus})")
         try:
-            with self._review_state_filter():
-                self._invoke_guide_calls(runs)
-                issues = self._collect_guide_calls(focus, runs, output_lines)
+            self._invoke_guide_calls(runs)
+            issues = self._collect_guide_calls(focus, runs, output_lines)
         except Exception as exc:  # noqa: BLE001 — normalize the review-provider boundary
             output_lines.append(
                 self._record_review_provider_failure(
@@ -3147,7 +2387,6 @@ Schema enforcement (applied upstream by the harness):
     ) -> dict[str, Any]:
         return {
             "review_detail_version": REVIEW_DETAIL_VERSION,
-            "review_call_order": self._next_review_order(),
             **self._audit_detail(),
             **self._guide_calls_detail(),
             "issues": len(outcome.issues),
@@ -3219,7 +2458,7 @@ Schema enforcement (applied upstream by the harness):
         exit_code = self._completed_exit_code(
             [row["severity"] for row in done_outcome.corrective_records]
         )
-        self._record_review_detail(crit_key, True, detail, exit_code)
+        self._attach_review_evidence(detail, exit_code)
         return McpToolResult(
             exit_code=exit_code,
             criterion_key=crit_key,
@@ -3228,166 +2467,6 @@ Schema enforcement (applied upstream by the harness):
             detail=detail,
             report_text=report_text,
         )
-
-    # --- Verify result builders ---
-
-    def _build_result_clean_verify(
-        self,
-        remaining: list[ReviewIssue],
-        output_lines: list[str],
-        existing_detail: dict[str, Any],
-        *,
-        remaining_indices: set[int],
-        dispositions: dict[int, dict[str, str]],
-        elapsed: float,
-        crit_key: str,
-    ) -> McpToolResult:
-        """Build a verify-only result without running discovery."""
-        pending, resolved, original_issues = self._split_verify_findings(
-            existing_detail, remaining_indices, dispositions
-        )
-        source_digest = self._review_source_digest()
-        observations = list(existing_detail.get("observations", []))
-        return self._finish_clean_verify(
-            _CleanVerifyContext(
-                remaining=remaining,
-                output_lines=output_lines,
-                existing_detail=existing_detail,
-                pending=pending,
-                resolved=resolved,
-                original_issues=original_issues,
-                source_digest=source_digest,
-                observations=observations,
-                elapsed=elapsed,
-                crit_key=crit_key,
-            )
-        )
-
-    def _finish_clean_verify(self, context: _CleanVerifyContext) -> McpToolResult:
-        counts = count_by_severity(context.remaining)
-        met = not context.pending
-        status, count_str = _format_status_and_counts(counts, met)
-        checked = {row["finding_id"] for row in self._open_findings(context.existing_detail)}
-        status_lines = [
-            f"{row['finding_id']}: {row.get('status', 'still_present').upper()} — {row.get('summary', '')}"
-            for row in [*context.pending, *context.resolved]
-            if row.get("finding_id") in checked
-        ]
-        context.output_lines.extend(status_lines)
-        context.output_lines.append(f"\nVERIFY RESULT: {status} ({count_str})")
-        waiver_lines = self._clean_verify_waiver_lines(context.resolved)
-        if waiver_lines:
-            context.output_lines.extend(["", "ACCEPTED WAIVERS (user-visible):", *waiver_lines])
-        report_text = "\n".join(context.output_lines)
-        print(report_text)
-        detail, verify_attempts = self._clean_verify_detail(context, counts)
-        exit_code = self._completed_exit_code([row["severity"] for row in context.pending])
-        self._record_review_detail(context.crit_key, met, detail, exit_code)
-        if met:
-            focus = next(iter(self._parse_focus()))
-            self._clear_session_id(f"reviewer-{self.args.category}-{focus}")
-        lines = [f"{count_str}, verify {status} (attempt {verify_attempts}/2)"]
-        lines.extend(f"  {line}" for line in status_lines)
-        lines.extend(f"  {line}" for line in waiver_lines)
-        return McpToolResult(
-            exit_code=exit_code,
-            criterion_key=context.crit_key,
-            criterion_met=self.state.criteria[context.crit_key].met,
-            display_lines=lines,
-            detail=detail,
-            report_text=report_text,
-        )
-
-    @staticmethod
-    def _clean_verify_waiver_lines(resolved: list[dict[str, Any]]) -> list[str]:
-        return [
-            f"[WAIVED {item.get('severity', '?')}] "
-            f"{item.get('file', '?')}:{item.get('line', '?')} — "
-            f"{item.get('summary', '?')} — Justification: "
-            f"{item.get('justification', '')}"
-            for item in resolved
-            if item.get("status") == "waived"
-        ]
-
-    def _clean_verify_detail(
-        self, context: _CleanVerifyContext, counts: dict[str, int]
-    ) -> tuple[dict[str, Any], int]:
-        verify_attempts = context.existing_detail.get("verify_attempts", 0) + 1
-        detail: dict[str, Any] = {
-            "review_detail_version": REVIEW_DETAIL_VERSION,
-            "review_call_order": self._next_review_order(),
-            **self._audit_detail(),
-            **self._guide_calls_detail(),
-            "issues": len(context.remaining),
-            "pending": context.pending,
-            "resolved": context.resolved,
-            "observations": context.observations,
-            **counts,
-            "verification_only": True,
-            "verify_attempts": verify_attempts,
-            "total_verify_cycles": context.existing_detail.get("total_verify_cycles", 0) + 1,
-            "original_issues": context.original_issues,
-            "elapsed_s": round(context.elapsed, 1),
-            "review_source_digest": context.source_digest,
-            "contract": {
-                **{
-                    k: v
-                    for k, v in context.existing_detail["contract"].items()
-                    if not k.startswith("decisions_")
-                },
-                "scope_hashes": self._review_contract_detail()["scope_hashes"],
-            },
-        }
-        detail["issue_list"] = [*context.pending, *context.resolved, *context.observations]
-        return detail, verify_attempts
-
-    def _split_verify_findings(
-        self,
-        existing_detail: dict[str, Any],
-        remaining_indices: set[int],
-        dispositions: dict[int, dict[str, str]],
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
-        """Split prior open findings into pending vs resolved for a verify pass.
-
-        Returns (pending, resolved, original_issues), where resolved carries
-        forward previously-resolved items plus those fixed this cycle.
-        """
-        # Split current cycle's findings into pending vs resolved using the
-        # 1-based remaining_indices from _parse_verify_output. Source list
-        # is the prior cycle's open set (``pending``), with fallback to the
-        # legacy ``issue_list`` to resume persisted review cycles.
-        prior_pending = self._open_findings(existing_detail)
-        pending: list[dict[str, Any]] = []
-        newly_resolved: list[dict[str, Any]] = []
-        for i, iss_dict in enumerate(prior_pending, 1):
-            entry = dict(iss_dict)
-            if i in remaining_indices:
-                entry["status"] = "still_present"
-                pending.append(entry)
-            else:
-                disposition = dispositions.get(i, {"status": VERIFY_STATUS_FIXED})
-                if disposition["status"] == VERIFY_STATUS_WAIVED:
-                    entry["status"] = "waived"
-                    entry["justification"] = disposition["justification"]
-                else:
-                    entry["status"] = "fixed"
-                    if evidence := disposition.get("evidence"):
-                        entry["evidence"] = evidence
-                entry["disposition_actor"] = "reviewer_agent"
-                newly_resolved.append(entry)
-
-        # Carry forward any previously-resolved items so the resolved
-        # history grows monotonically across verify cycles.
-        prior_resolved = existing_detail.get("resolved", [])
-        resolved = list(prior_resolved) + newly_resolved
-
-        # original_issues anchors on the first pass; prefer the stored
-        # value, fall back to pending+resolved length (round-trip safe).
-        original_issues = existing_detail.get(
-            "original_issues",
-            len(pending) + len(newly_resolved),
-        )
-        return pending, resolved, original_issues
 
     # --- _interpret_output (required by ABC, but _run is overridden) ---
 
