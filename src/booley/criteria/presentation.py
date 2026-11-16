@@ -378,7 +378,8 @@ def _format_synthesis_metric(d: dict, stale: bool) -> str:
     """Compact synthesis summary used when no threshold is configured."""
     if stale:
         return "?"
-    cells = as_int(d.get("cells"))
+    # synthesis_ok entries recorded by v0.4.0 and earlier name it `cells`.
+    cells = as_int(d.get("cell_count", d.get("cells")))
     fmax = worst_fmax_from_json(as_dict(d.get("per_clock"), default={}))
     parts = []
     if cells is not None:
