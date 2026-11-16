@@ -12,7 +12,14 @@ from pathlib import Path
 import pytest
 
 from booley.runtime import job_slots, memory_budget
-from booley.runtime.job_slots import CLASS_MEMORY, HOLDING, QUEUED, ClaimLostError, SlotStore
+from booley.runtime.job_slots import (
+    CLASS_MEMORY,
+    HOLDING,
+    QUEUED,
+    ClaimAbortedError,
+    ClaimLostError,
+    SlotStore,
+)
 from tests.conftest import symlink_or_skip
 
 
@@ -84,3 +91,23 @@ def test_memory_claim_gives_up_relisting_a_listed_entry_that_stays_gone(
     symlink_or_skip(holder.path, tmp_path / "nowhere")  # listed, yet it never reads or exists
 
     assert store.refresh(waiter).state == QUEUED
+
+
+def test_queued_memory_claim_stops_waiting_when_the_record_is_cancelled(tmp_path: Path) -> None:
+    """A cancel that reaches a polling waiter ends its wait and withdraws its entry."""
+    store = SlotStore(tmp_path / "slots")
+    claim = job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=600.0)
+    holder = store.submit(CLASS_MEMORY, pid=os.getpid(), memory=claim)
+    assert store.refresh(holder).state == HOLDING
+
+    with pytest.raises(ClaimAbortedError, match="aborted while waiting"):
+        store.acquire(
+            CLASS_MEMORY,
+            pid=os.getpid(),
+            memory=claim,
+            poll_interval=0.01,
+            should_abort=lambda: True,
+        )
+
+    assert [token.lease_id for token in store.observe(CLASS_MEMORY)[0]] == [holder.lease_id]
+    assert store.observe(CLASS_MEMORY)[1] == []
