@@ -541,7 +541,7 @@ def test_invalid_waivers_block_every_coverage_run(tmp_path, invalid):
         assert results[False][0][0] == "COV_WAIVER_DIRECTORY_UNSAFE"
 
 
-def test_no_waivers_diagnostic_criterion_skips_invalid_waivers(tmp_path):
+def test_no_waivers_criterion_skips_invalid_waivers(tmp_path):
     from fractions import Fraction
 
     from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold

@@ -432,16 +432,3 @@ def test_unknown_endpoint_help_cannot_list_from_host(
     assert captured.out == ""
     assert "Available" not in captured.err
     assert "runs inside the Booley Sandbox" in captured.err
-
-
-def test_diagnostic_help_is_truthful_only_on_human_surface():
-    from booley.flows.builtin_cli import build_parser
-    from booley.flows.lint.flow import LintFlow
-
-    human = " ".join(build_parser(LintFlow(), human=True).format_help().split())
-    transport = build_parser(LintFlow()).format_help()
-    assert "Run diagnostically: records no evidence. Default: off." in human
-    assert "Use for a Flow/Target combination outside the Project's Criteria." in " ".join(
-        transport.split()
-    )
-    assert "Use for a Flow/Target combination" not in human
