@@ -38,7 +38,7 @@ FINISH_STEP_CAP = 300
 # Above the kernel PID limit, so no fake PID can name a host process.
 FIRST_ACTOR_PID = 4_194_401
 
-_READ_KINDS = frozenset(
+READ_KINDS = frozenset(
     {
         "exists",
         "is_dir",
@@ -259,7 +259,10 @@ class StepScheduler:
 
     def sleep(self, seconds: float) -> None:
         """The stores' injected sleep: a checkpoint that advances the machine clock when granted."""
-        advance = lambda: setattr(self.world, "clock", self.world.clock + seconds)  # noqa: E731
+
+        def advance() -> None:
+            self.world.clock += seconds
+
         self.call("sleep", Path(), advance)
 
     def _step(
@@ -295,7 +298,7 @@ class StepScheduler:
     def _note_access(self, worker: Worker, kind: str, name: str) -> None:
         if name.endswith(".tmp") or not name:
             return
-        if kind in _READ_KINDS:
+        if kind in READ_KINDS:
             self._readers.setdefault(name, set()).add(worker.actor)
         else:
             others = self._readers.pop(name, set()) - {worker.actor}

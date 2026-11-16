@@ -51,6 +51,7 @@ from booley.runtime.job_slots import MemoryClaim, SlotToken
 from booley.runtime.pid import ProcessIdentity
 from tests.job_slot_steps import (
     FIRST_ACTOR_PID,
+    READ_KINDS,
     Actor,
     ActorKilled,
     FakeProcessWorld,
@@ -88,7 +89,10 @@ _OPERATIONS = ("submit", "refresh", "refresh", "renew", "renew", "release", "can
 _MAX_TOKENS = 2
 _ADVANCES = ("step", "fault", "fault", "run", "run", "finish")
 _ACTORS = 3
-_NO_SLEEP: Callable[[float], None] = lambda _seconds: None  # noqa: E731
+
+
+def _no_sleep(_seconds: float) -> None:
+    """A retry sleep that returns at once."""
 
 
 def _fields(name: str) -> tuple[str, int, str] | None:
@@ -352,7 +356,7 @@ class JobSlotStepMachine(RuleBasedStateMachine):
     @staticmethod
     def _payload(path: Path) -> dict[str, Any] | None:
         try:
-            payload = json.loads(read_file_bytes(path, sleep=_NO_SLEEP).decode("utf-8"))
+            payload = json.loads(read_file_bytes(path, sleep=_no_sleep).decode("utf-8"))
         except (FileNotFoundError, ValueError):
             return None
         return payload if isinstance(payload, dict) else None
@@ -464,18 +468,7 @@ def _visible(worker: Worker) -> bool:
     """Whether the thread's next step changes what other processes can see."""
     assert worker.pending is not None
     kind, name = worker.pending
-    reads = {
-        "exists",
-        "is_dir",
-        "is_symlink",
-        "stat",
-        "glob",
-        "iterdir",
-        "read_bytes",
-        "open_read",
-        "sleep",
-    }
-    return kind not in reads and not name.endswith(".tmp")
+    return kind not in READ_KINDS and not name.endswith(".tmp")
 
 
 @pytest.fixture(autouse=True)
@@ -494,7 +487,7 @@ def build_machine(tmp_path: Path) -> Any:
         return built[-1]
 
     yield build
-    for machine in built:
+    for machine in reversed(built):
         machine.teardown()
 
 
