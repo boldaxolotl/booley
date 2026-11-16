@@ -585,9 +585,7 @@ def _format_mcp_tool_result(
         stderr_truncated=stderr_truncated,
     )
 
-    rendered = "\n".join(parts)
-    reason = (report or {}).get("detail", {}).get("evidence_discarded")
-    return f"evidence discarded: {reason}\n{rendered}" if reason else rendered
+    return "\n".join(parts)
 
 
 class ReportEncoder:

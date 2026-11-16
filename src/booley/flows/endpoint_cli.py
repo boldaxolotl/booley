@@ -247,9 +247,6 @@ def apply_environment(args, endpoint_kind: str) -> None:
     """Resolve Session/Ticket context equally for typed and CLI requests."""
     # Ticket context from env vars (set by developer or explicit board validate)
     args.slug = os.environ.get("BOOLEY_SLUG", "")
-    state_env = os.environ.get("BOOLEY_STATE_FILE", "")
-    # Specialists keep no state, so a hand-set variable never makes one load or save it.
-    args.state_file = Path(state_env) if state_env and endpoint_kind != "specialist" else None
     # report-dir: CLI flag wins, then env var, then None
     if args.report_dir is None:
         runtime_env = os.environ.get("BOOLEY_RUNTIME_DIR", "")

@@ -1,8 +1,8 @@
 """Per-invocation execution state and shared endpoint services.
 
-Parsing, acceptance, admission and publication have separate owners. Built-in
-Flows and legacy adapters use the same recording and publication operations;
-this module does not construct parsers.
+Parsing, admission and publication have separate owners. Built-in Flows and
+legacy adapters use the same publication operation; this module does not
+construct parsers.
 """
 
 from __future__ import annotations
@@ -16,13 +16,7 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from booley.criteria.state import (
-    CriterionChange,
-    DevelopmentState,
-)
-from booley.evidence.acceptance import ResolvedFlowAcceptance
 from booley.flows import (
-    endpoint_acceptance,
     endpoint_admission,
     endpoint_reporting,
     endpoint_session,
@@ -30,14 +24,6 @@ from booley.flows import (
 )
 from booley.flows.cli_help import CliHelp, SurfaceHelp
 from booley.flows.endpoint_session import PreparedExecution
-from booley.flows.execution_persistence import (
-    AcceptanceRecorder,
-    EvidenceDiscarded,
-    FlowExecutionAdapter,
-    StandaloneFlowExecution,
-    criterion_source_target_for,
-    state_persistence_for,
-)
 from booley.flows.job_estimates import JobRequest
 from booley.flows.memory_admission import MemoryAdmissionPlan, measure_memory_claim
 from booley.flows.prepared_invocation import OrdinaryRunInvocation, PreparedInvocation
@@ -45,6 +31,7 @@ from booley.flows.progress_lifecycle import retire_progress_of_requeued_attempt
 from booley.runtime import job_slots
 from booley.runtime.display_identity import DisplayIdentity
 from booley.runtime.endpoint_execution import (
+    EXIT_CANCELLED,
     OOM_REQUEUE_MARKER,
     EndpointOutcome,
     ExecutionResult,
@@ -53,7 +40,6 @@ from booley.runtime.endpoint_execution import (
 
 if TYPE_CHECKING:
     from booley.flows.terminal_progress import TerminalProgress
-    from booley.targets.domain import TargetHandle
 
 logger = logging.getLogger(__name__)
 
@@ -81,10 +67,8 @@ class EndpointState(ABC):
     description: str = ""
     # Human `--help` wording; ``description`` stays the agent-facing tool text.
     cli_help: ClassVar[CliHelp | None] = None
-    # Does this endpoint modify code? If True, post-run git diff triggers invalidation.
+    # Does this endpoint modify code? If True, the report carries the run's change statistics.
     code_modifying: bool = False
-    # Category of code this endpoint modifies (rtl, tb, or None for auto-detect)
-    modifies_category: str | None = None
     # Does this endpoint operate per Target? False suppresses the Target in display headers.
     config_aware: bool = True
     # Target-aware deterministic Flows override this so both argparse and the
@@ -109,10 +93,6 @@ class EndpointState(ABC):
             "with commas. List available Targets with `booley targets`."
         ),
     )
-    # Criteria this endpoint can satisfy (must match names in criteria.toml)
-    satisfies: ClassVar[list[str]] = []
-    # Per-criterion CLI args hint for the developer (criterion -> args string)
-    satisfies_args: ClassVar[dict[str, str]] = {}
 
     def _flow_enabled(self) -> bool:
         """Return whether this Flow is enabled in the scoped config."""
@@ -134,7 +114,6 @@ class EndpointState(ABC):
 
     def __init__(self) -> None:
         self._args: Any = None
-        self._state: DevelopmentState | None = None
         self._start_time: float = 0.0
         self._pre_run_head: str | None = None
         self._raw_argv: list[str] | None = None
@@ -160,17 +139,12 @@ class EndpointState(ABC):
         # Set for the duration of _run(); console publication reads it to avoid
         # echoing a verdict block the endpoint already printed itself (F-28).
         self._stdout_witness: endpoint_reporting._StdoutWitness | None = None
-        self._pending_criteria_set: tuple[str, ...] | None = None
         # The underlying EDA tool that actually ran (e.g. "verilator",
         # "verible", "yosys", "vivado"). Endpoints set this at target-resolution
         # time; write_report() emits it as ``eda_tool`` so reports say which
         # binary produced the result — distinct from the Booley Flow name.
         self._eda_tool: str | None = None
         self._eda_tools: dict[str, str | None] = {}
-        # Why this invocation's evidence was discarded (B1); reset per invocation.
-        self._evidence_discarded: str | None = None
-        self.configure_flow_execution(StandaloneFlowExecution())
-        self.flow_acceptance: ResolvedFlowAcceptance = ResolvedFlowAcceptance()
 
     def reset_report_metadata(self) -> None:
         """Start resolved EDA identity afresh for every invocation."""
@@ -188,16 +162,15 @@ class EndpointState(ABC):
         """Refresh derived report detail before it is written; most endpoints have none."""
         return
 
-    def record_flow_owned_acceptance(self, outcome: EndpointOutcome) -> bool:
-        """Record Flow-owned final acceptance for *outcome*; return whether it was handled.
+    def publish_flow_records(self, outcome: EndpointOutcome) -> None:
+        """Publish the Flow's own records for *outcome*; the default publishes none."""
+        return
 
-        The default handles nothing, so shared Criterion recording and invalidation apply.
-        """
-        return False
-
-    def generic_binding_gate_applies(self) -> bool:
-        """Whether the shared Criterion binding gate checks this invocation's Targets."""
-        return True
+    def publish_records(self, prepared: PreparedExecution, outcome: EndpointOutcome) -> None:
+        """Publish this run's records unless it was a non-persisting dry run or cancelled."""
+        if prepared.non_persisting_dry_run or outcome.exit_code == EXIT_CANCELLED:
+            return
+        self.publish_flow_records(outcome)
 
     def transcript_path(self) -> Path | None:
         """Path of this invocation's agent transcript, or ``None`` when it keeps none."""
@@ -231,39 +204,11 @@ class EndpointState(ABC):
         if len(self._eda_tools) == 1:
             self._eda_tool = eda_tool or None
 
-    def configure_flow_execution(self, adapter: FlowExecutionAdapter) -> None:
-        """Use one adapter as the authority for Flow admission and recording."""
-        self.execution_adapter: FlowExecutionAdapter = adapter
-        self._acceptance_recorder: AcceptanceRecorder = adapter
-
     @property
     def args(self) -> Any:
         if self._args is None:
             raise RuntimeError("execution input has not been prepared")
         return self._args
-
-    # --- State access ---
-
-    def read_state(self) -> DevelopmentState:
-        """Load development state from disk.
-
-        When state_file is None (human mode), returns an empty in-memory state.
-        Either way the state saves through the strategy the recorder supplies.
-        """
-        sf = self.args.state_file
-        persistence = state_persistence_for(self._acceptance_recorder)
-        if sf is None:
-            # No file path => the default strategy's save() is a no-op.
-            self._state = DevelopmentState.in_memory(persistence)
-        else:
-            self._state = DevelopmentState.load(sf, persistence)
-        return self._state
-
-    @property
-    def state(self) -> DevelopmentState:
-        if self._state is None:
-            raise RuntimeError("read_state() not called")
-        return self._state
 
     def set_criterion(
         self,
@@ -273,48 +218,8 @@ class EndpointState(ABC):
         detail: dict[str, Any] | None = None,
         source_target: str | None = None,
     ) -> None:
-        return endpoint_acceptance.set_criterion(
-            self, key, met, detail=detail, source_target=source_target
-        )
-
-    @property
-    def evidence_discarded(self) -> str | None:
-        """Why this invocation's evidence was discarded, or ``None`` while it was not."""
-        return self._evidence_discarded
-
-    def reset_evidence_discard(self) -> None:
-        """Start a new invocation whose evidence has not been discarded."""
-        self._evidence_discarded = None
-
-    def discard_evidence(self, exc: EvidenceDiscarded) -> None:
-        """Record that this invocation's evidence was discarded; the first reason wins.
-
-        Nothing more is written for the invocation: the endpoint skips its
-        remaining state saves, and the recorder that raised *exc* refuses any
-        it is still asked for.
-        """
-        if self._evidence_discarded is None:
-            self._evidence_discarded = exc.reason
-            logger.warning("%s: %s", self.name, exc)
-
-    def _record_acceptance_changes(self, changes: list[CriterionChange]) -> None:
-        return endpoint_acceptance._record_acceptance_changes(self, changes)
-
-    def _criterion_key_for_source(self, key: str, source_target: str | None) -> str:
-        return endpoint_acceptance._criterion_key_for_source(self, key, source_target)
-
-    def _stamp_source_fingerprint(
-        self,
-        key: str,
-        met: bool,
-        detail: dict[str, Any] | None,
-        *,
-        source_target: str | None,
-    ) -> dict[str, Any] | None:
-        source_target = criterion_source_target_for(self._acceptance_recorder, key, source_target)
-        return endpoint_acceptance._stamp_source_fingerprint(
-            self, key, met, detail, source_target=source_target
-        )
+        """Accept a Criterion verdict from a Project endpoint and record nothing."""
+        return
 
     def emit_progress(self, line: str) -> None:
         return endpoint_reporting.emit_progress(self, line)
@@ -341,40 +246,31 @@ class EndpointState(ABC):
     def _get_head_sha(self) -> str | None:
         return endpoint_reporting._get_head_sha(self)
 
-    # --- Git diff classification ---
-
-    def classify_git_diff(self) -> set[str]:
-        return endpoint_acceptance.classify_git_diff(self)
-
-    def invalidate_dependent_criteria(self) -> list[str]:
-        return endpoint_acceptance.invalidate_dependent_criteria(self)
-
     # --- Pre-run guardrails ---
 
     def _default_target_args(self) -> None:
-        return endpoint_acceptance._default_target_args(self)
+        """Default well-known CLI arguments from the selected Target."""
+        if hasattr(self.args, "tb_top") and not getattr(self.args, "tb_top", None):
+            target = getattr(self.args, "target", "")
+            if target:
+                from booley.flows.flow_config import tb_top_for_target
+
+                tb_top = tb_top_for_target(
+                    target,
+                    getattr(self.args, "work_dir", None),
+                    resolved=None,
+                )
+                if tb_top:
+                    self.args.tb_top = tb_top
 
     def _requested_targets(self) -> list[str]:
-        return endpoint_acceptance._requested_targets(self)
-
-    def _bound_criterion_keys(self, target: str) -> list[str]:
-        return endpoint_acceptance._bound_criterion_keys(self, target)
-
-    def _bound_criterion_keys_for_target(self, target: TargetHandle) -> list[str]:
-        return endpoint_acceptance._bound_criterion_keys_for_target(self, target)
-
-    def _criterion_target_matches(
-        self,
-        params: dict[str, Any],
-        invoked: str,
-        invoked_identity: str | None,
-    ) -> bool:
-        return endpoint_acceptance._criterion_target_matches(
-            self, params, invoked, invoked_identity
-        )
-
-    def _criterion_binding_gate(self) -> EndpointOutcome | None:
-        return endpoint_acceptance._criterion_binding_gate(self)
+        """Return normalized Target tokens without resolving or invoking EDA."""
+        raw = getattr(self.args, "target", "")
+        values = raw if isinstance(raw, list) else [raw]
+        targets: list[str] = []
+        for value in values:
+            targets.extend(part.strip() for part in str(value or "").split(",") if part.strip())
+        return targets
 
     def _is_non_persisting_dry_run(self) -> bool:
         """Return whether this invocation is an opted-in preview-only run."""
@@ -393,7 +289,7 @@ class EndpointState(ABC):
         return endpoint_reporting._stamp_git_diff_stats(self, result)
 
     def _pre_state_gate(self) -> EndpointOutcome | None:
-        """Reject before loading mutable ticket state; subclasses may override."""
+        """Reject before the Target is prepared and the run admitted; subclasses may override."""
         return None
 
     def _apply_pre_state_gate(self) -> EndpointOutcome | None:
@@ -442,7 +338,6 @@ class EndpointState(ABC):
             except (OSError, ValueError) as exc:
                 self._requeue_cleanup_errors.append(exc)
         self._reserved_invocation_dir = None
-        self.reset_evidence_discard()
 
     def invoke_endpoint(
         self,
@@ -461,18 +356,11 @@ class EndpointState(ABC):
         outcome: EndpointOutcome,
         *,
         started: float | None,
-        acceptance_recorded: bool,
+        records_published: bool,
     ) -> ExecutionResult:
         return endpoint_session.finish_execution(
-            self, prepared, outcome, started=started, acceptance_recorded=acceptance_recorded
+            self, prepared, outcome, started=started, records_published=records_published
         )
-
-    def record_acceptance(
-        self,
-        prepared: PreparedExecution,
-        outcome: EndpointOutcome,
-    ) -> None:
-        return endpoint_acceptance.record_acceptance(self, prepared, outcome)
 
     def _finish_main(
         self,
@@ -481,7 +369,7 @@ class EndpointState(ABC):
         display_label: str | None,
         started: float | None,
         *,
-        acceptance_recorded: bool,
+        records_published: bool,
         dry_run: bool,
         non_persisting_dry_run: bool,
     ) -> int:
@@ -491,7 +379,7 @@ class EndpointState(ABC):
             display_target,
             display_label,
             started,
-            acceptance_recorded=acceptance_recorded,
+            records_published=records_published,
             dry_run=dry_run,
             non_persisting_dry_run=non_persisting_dry_run,
         )
@@ -533,16 +421,8 @@ class EndpointState(ABC):
     def _resolve_display_label(self) -> str | None:
         return endpoint_reporting._resolve_display_label(self)
 
-    def _post_run(self, result: EndpointOutcome, duration: float) -> None:
-        return endpoint_reporting._post_run(self, result, duration)
-
     def _publish_console_report(self, result: EndpointOutcome) -> None:
         return endpoint_reporting._publish_console_report(self, result)
-
-    def _pre_save_hook(self, result: EndpointOutcome) -> None:
-        """Hook for subclasses to mutate ``self.state`` (or *result*) just before
-        ``state.save()`` runs.  Default no-op."""
-        return
 
     def execute_prepared(self) -> ExecutionResult:
         """Run configured input through the same gates and coordinator as CLI."""

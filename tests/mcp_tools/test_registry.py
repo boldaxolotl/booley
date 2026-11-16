@@ -529,6 +529,20 @@ def test_typed_builtin_base_preserves_import_free_metadata(tmp_path, base):
     assert (info.name, info.kind, info.satisfies) == ("lint", "flow", ("lint_clean",))
 
 
+def test_project_endpoint_satisfies_is_not_read(tmp_path):
+    source = tmp_path / "custom.py"
+    source.write_text(
+        "class Custom(McpTool):\n"
+        '    name = "custom"\n'
+        '    description = "Check"\n'
+        '    satisfies = ["x"]\n'
+        '    satisfies_args = {"x": "custom --target {target}"}\n'
+    )
+    info = extract_mcp_tool_info(source, builtin=False)
+    assert info is not None
+    assert (info.name, info.satisfies, info.satisfies_args) == ("custom", (), None)
+
+
 def test_mutation_is_a_builtin_flow():
     assert "mutation" in BUILTIN_FLOW_PACKAGES
     info = next(item for item in discover_mcp_tools() if item.name == "mutation")

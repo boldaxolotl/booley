@@ -38,7 +38,6 @@ from .execution import (
 from .execution.engine import simulation_adapter_kind, target_test_plan
 
 if TYPE_CHECKING:
-    from booley.flows.execution_persistence import FlowExecutionAdapter
     from booley.flows.sim.request import SimRequest
     from booley.flows.sim.test_run_invocation import TestRunInvocation
     from booley.targets.domain import TargetHandle
@@ -82,7 +81,6 @@ class SimulationTestSelectionMixin:
 
     if TYPE_CHECKING:
         # Host members SimulateFlow provides; Pyright checks them against the host.
-        execution_adapter: FlowExecutionAdapter
         _test_runs: TestRunInvocation
 
         @property

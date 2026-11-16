@@ -12,7 +12,6 @@ from typing import cast
 
 import pytest
 
-from booley.flows.endpoint_acceptance import record_acceptance
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.prepared_invocation import OrdinaryRunInvocation
 from booley.flows.sim.acceptance import publish_simulation_record_projections
@@ -172,8 +171,7 @@ def _flow_with_simulation_record_outcomes(*selectors: str) -> SimulateFlow:
 
 
 def _record_final(flow: SimulateFlow, outcome: EndpointOutcome) -> None:
-    record_acceptance(
-        flow,
+    flow.publish_records(
         PreparedExecution(None, None, False, False, OrdinaryRunInvocation(EndpointOutcome)),
         outcome,
     )
@@ -181,14 +179,12 @@ def _record_final(flow: SimulateFlow, outcome: EndpointOutcome) -> None:
 
 def test_cancelled_simulation_record_suppresses_acceptance_publication(monkeypatch) -> None:
     flow = _flow_with_simulation_record_outcomes("partial")
-    flow._pending_criteria_set = ("sim",)
     received: list[tuple[object, ...]] = []
-    monkeypatch.setattr(flow, "record_flow_owned_acceptance", lambda _outcome: received.append(()))
+    monkeypatch.setattr(flow, "publish_flow_records", lambda _outcome: received.append(()))
 
     _record_final(flow, EndpointOutcome(exit_code=EXIT_CANCELLED))
 
     assert received == []
-    assert flow._pending_criteria_set == ()
 
 
 def test_acceptance_readiness_requires_strict_superset_grade() -> None:

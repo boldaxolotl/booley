@@ -287,7 +287,6 @@ def test_authenticated_coverage_resume_keeps_report_counts(tmp_path, monkeypatch
     if failure:
         assert flow._simulation_record_outcomes == ()
     else:
-        assert flow.state.criteria == {}
         simulation_record = report["detail"]["records"]["sim_0"]
         assert all(item["cycle_count"] is None for item in simulation_record["observations"])
         assert (

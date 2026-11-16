@@ -666,8 +666,6 @@ def test_standalone_simulation_record_final_report_is_run_local(tmp_path, monkey
     flow = run.flow
     with flow.publication_resources:
         final_report_omits_headline(flow, run.result.outcome)
-    assert flow.state.criteria == {}
-    assert flow.state._file_path is None
 
 
 def test_simulation_record_scan_takes_a_published_infrastructure_verdict_as_published(

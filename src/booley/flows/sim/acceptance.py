@@ -6,7 +6,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.flows.execution_persistence import AcceptanceRecordingError
 from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.coverage_reference import (
     MAX_REFERENCE_BYTES,
@@ -28,6 +27,10 @@ from booley.flows.sim.record_reports import (
     simulation_booley_dir,
     write_compatibility_projection,
 )
+
+
+class AcceptanceRecordingError(RuntimeError):
+    """A Simulation Record projection could not be published."""
 
 
 @dataclass(frozen=True, slots=True)

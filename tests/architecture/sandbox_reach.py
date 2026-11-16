@@ -64,19 +64,7 @@ class LazyImportCut:
 
 
 # Each cut was confirmed by reading every caller of its enclosing functions.
-SANDBOX_ONLY_LAZY_IMPORTS: tuple[LazyImportCut, ...] = (
-    LazyImportCut(
-        source="booley.flows.endpoint_acceptance",
-        targets=("booley.criteria.actions",),
-        functions=("_pending_criterion_invocations",),
-        callers=frozenset(),
-        internal_callers=frozenset({"_criterion_binding_gate"}),
-        reason=(
-            "endpoint acceptance during execution, which Doctor runs only through a Sandbox "
-            "subprocess"
-        ),
-    ),
-)
+SANDBOX_ONLY_LAZY_IMPORTS: tuple[LazyImportCut, ...] = ()
 
 
 @dataclass(frozen=True)

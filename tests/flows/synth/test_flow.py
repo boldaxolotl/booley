@@ -24,7 +24,6 @@ import pytest
 from booley.core.boundary import BoundaryError
 from booley.core.build_paths import work_root_for
 from booley.criteria.state import DevelopmentState
-from booley.evidence.fields import BASELINE_TARGET_PARAM
 from booley.evidence.recipe import implementation_comparison_basis
 from booley.evidence.timing import make_clock_timing
 from booley.flows import artifacts
@@ -185,7 +184,6 @@ def _layer_target_handle(project_root: Path | str, selector: str) -> TargetHandl
 def _dry_run_flow(work_dir: Path, target: str = "lite") -> AsicSynthesizeFlow:
     flow = AsicSynthesizeFlow()
     flow.parse_args(["--target", target, "--work-dir", str(work_dir), "--dry-run"])
-    flow.read_state()
     return flow
 
 
@@ -388,7 +386,6 @@ def flow_and_state(state_file: Path, tmp_path: Path):
             str(tmp_path / "reports"),
         ]
     )
-    flow.read_state()
     return flow, state_file
 
 
@@ -1384,7 +1381,6 @@ class TestDryRun:
                 "--dry-run",
             ]
         )
-        flow.read_state()
         with patch.object(
             fusesoc_registry,
             "_resolve_target",
@@ -1448,7 +1444,6 @@ class TestDryRun:
                 "--dry-run",
             ]
         )
-        flow.read_state()
         with patch.object(
             fusesoc_registry,
             "_resolve_target",
@@ -1485,7 +1480,6 @@ class TestDryRun:
                 "--dry-run",
             ]
         )
-        flow.read_state()
         with patch.object(fusesoc_registry, "_resolve_target", side_effect=_real_resolve):
             result = flow._run()
             dry_plan = flow._flow_plan
@@ -1547,7 +1541,6 @@ class TestDryRun:
         def plans(checkout: Path):
             flow = AsicSynthesizeFlow()
             flow.parse_args(["--target", "syn", "--work-dir", str(checkout), "--dry-run"])
-            flow.read_state()
             with (
                 patch.object(
                     fusesoc_registry, "resolve_target_handle", side_effect=_real_resolve_handle
@@ -1646,7 +1639,6 @@ class TestNoConfigs:
                 str(tmp_path),
             ]
         )
-        flow.read_state()
         result = flow._run()
         assert result.exit_code == EXIT_ERROR
 
@@ -2132,7 +2124,6 @@ def test_synthesis_run_records_no_criterion(
             str(tmp_path / "reports"),
         ]
     )
-    flow.read_state()
 
     with patch.object(flow, "_execute", return_value=process):
         result = flow._run()
@@ -2140,9 +2131,7 @@ def test_synthesis_run_records_no_criterion(
     assert result.exit_code == exit_code
     if named_state:
         assert state_path.read_bytes() == before
-        assert not flow.state.is_met("synthesis_ok_lite")
     else:
-        assert flow.state.criteria == {}
         assert list(tmp_path.rglob("state.json")) == []
     assert not (tmp_path / "logs").exists()
     rules = TableRules(
@@ -2174,7 +2163,6 @@ class TestFlowEnablement:
     def _flow(tmp_path: Path) -> AsicSynthesizeFlow:
         flow = AsicSynthesizeFlow()
         flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        flow.read_state()
         return flow
 
     def test_job_class_is_memory(self, state_file: Path, tmp_path: Path):
@@ -2645,7 +2633,6 @@ class TestMultiConfig:
                 str(tmp_path / "reports"),
             ]
         )
-        flow.read_state()
 
         call_count = 0
 
@@ -2705,7 +2692,6 @@ class TestBaselineFlow:
                 "v1.0",
             ]
         )
-        flow.read_state()
 
         # Track execute calls — first is baseline (in the worktree), second is
         # the current run (in the real project tree).
@@ -2770,10 +2756,10 @@ class TestBaselineFlow:
         deltas = data["implementation"]["comparison"]["deltas"]
         assert deltas["cell_count"]["delta_pct"] == pytest.approx(10.0)
 
-    def test_criterion_never_chooses_the_baseline_target(
+    def test_baseline_pairs_each_target_with_itself(
         self, state_file: Path, tmp_path: Path
     ) -> None:
-        """``--baseline`` pairs each Target with itself, whatever a state-file Criterion pins."""
+        """``--baseline`` pairs each Target with itself."""
         from booley.flows.job_estimates import JobRequest
 
         flow = AsicSynthesizeFlow()
@@ -2788,11 +2774,6 @@ class TestBaselineFlow:
                 "--report-dir",
                 str(tmp_path / "reports"),
             ]
-        )
-        flow.read_state()
-        flow.state.init_criteria(
-            {"synthesis_ok_lite": True},
-            criterion_params={"synthesis_ok_lite": {BASELINE_TARGET_PARAM: "synth_before"}},
         )
         handle = _layer_target_handle(tmp_path, "lite")
 
@@ -2819,7 +2800,6 @@ class TestBaselineFlow:
                 "bogus-ref",
             ]
         )
-        flow.read_state()
 
         def boom(project_root, ref, *, paired_project):
             del paired_project
@@ -2855,7 +2835,6 @@ class TestBaselineFlow:
                 str(tmp_path / "reports"),
             ]
         )
-        flow.read_state()
         infra_metrics = SynthMetrics(
             returncode=2,
             infra_error="FuseSoC could not resolve submodule source vendor/ip/top.sv",
@@ -2909,7 +2888,6 @@ class TestBaselineFlow:
                 str(tmp_path / "reports"),
             ]
         )
-        flow.read_state()
         return flow
 
     def _run_paired_baseline(
@@ -3074,7 +3052,6 @@ class TestBaselineFlow:
                 "v1.0",
             ]
         )
-        flow.read_state()
 
         exited = []
 
@@ -3320,7 +3297,6 @@ class TestBuildSynthCmd:
         )
         flow = AsicSynthesizeFlow()
         flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        flow.read_state()
         with patch.object(
             fusesoc_registry,
             "_resolve_target",
@@ -3344,7 +3320,6 @@ class TestBuildSynthCmd:
         flow.parse_args(
             ["--target", "lite", "--work-dir", str(tmp_path), "--ppa-profile", "balanced"]
         )
-        flow.read_state()
         with patch.object(
             fusesoc_registry,
             "_resolve_target",
@@ -3388,7 +3363,6 @@ class TestBuildSynthCmd:
         )
         flow = AsicSynthesizeFlow()
         flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path), *cli_args])
-        flow.read_state()
         with patch.object(
             fusesoc_registry,
             "_resolve_target",
@@ -3535,7 +3509,6 @@ class TestBuildSynthCmd:
                 str(tmp_path),
             ]
         )
-        flow.read_state()
         with patch.object(
             fusesoc_registry,
             "_resolve_target",
@@ -3596,7 +3569,6 @@ class TestBuildSynthCmd:
         """--frontend slang on the Flow CLI reaches run_yosys_syn."""
         flow = AsicSynthesizeFlow()
         flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path), "--frontend", "slang"])
-        flow.read_state()
         with patch.object(
             fusesoc_registry,
             "_resolve_target",
@@ -3615,7 +3587,6 @@ class TestBuildSynthCmd:
         )
         flow = AsicSynthesizeFlow()
         flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        flow.read_state()
         with patch.object(
             fusesoc_registry,
             "_resolve_target",
@@ -3634,7 +3605,6 @@ class TestBuildSynthCmd:
         )
         flow = AsicSynthesizeFlow()
         flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        flow.read_state()
         with (
             patch.object(
                 fusesoc_registry,
@@ -3661,7 +3631,6 @@ class TestBuildSynthCmd:
         )
         flow = AsicSynthesizeFlow()
         flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        flow.read_state()
         with patch.object(
             fusesoc_registry,
             "_resolve_target",
@@ -3681,7 +3650,6 @@ class TestBuildSynthCmd:
         )
         flow = AsicSynthesizeFlow()
         flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        flow.read_state()
         with (
             patch.object(
                 fusesoc_registry,
@@ -3762,7 +3730,6 @@ class TestBuildSynthCmd:
         flow.parse_args(
             ["--target", "lite", "--work-dir", str(tmp_path), "--no-flatten"],
         )
-        flow.read_state()
         with patch.object(
             fusesoc_registry,
             "_resolve_target",
@@ -3782,7 +3749,6 @@ class TestBuildSynthCmd:
         )
         flow = AsicSynthesizeFlow()
         flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        flow.read_state()
         with patch.object(
             fusesoc_registry,
             "_resolve_target",
@@ -3829,7 +3795,6 @@ class TestFlowConfigBoundary:
         )
         flow = AsicSynthesizeFlow()
         flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        flow.read_state()
         return flow
 
     def test_bool_synth_mode_rejected(self, state_file: Path, tmp_path: Path):
@@ -3977,7 +3942,6 @@ class TestTimingReportPaths:
         (booley_dir / "booley.toml").write_text(f"[flows.synth]\n{toml_body}", encoding="utf-8")
         flow = AsicSynthesizeFlow()
         flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        flow.read_state()
         return flow
 
     @staticmethod
@@ -4328,7 +4292,6 @@ class TestSynthResolution:
                 str(work_dir),
             ]
         )
-        flow.read_state()
 
         with patch.object(fusesoc_registry, "_resolve_target", side_effect=_real_resolve):
             cmd = flow._build_synth_cmd("syn")
@@ -4765,7 +4728,6 @@ class TestAggregateDetailIsSelfContained:
     def test_result_from_aggregate_carries_it(self, tmp_path: Path):
         flow = AsicSynthesizeFlow()
         flow.parse_args(["--work-dir", str(tmp_path), "--target", "asic_a"])
-        flow.read_state()
         result = flow._aggregate_results(["asic_a"], {"asic_a": self._metrics()}, {}, None)
         assert result.detail["targets"] == ["asic_a"]
         assert result.detail["asic_a"]["area_um2"] == 500.0
@@ -4924,7 +4886,6 @@ class TestIncompleteResourceResults:
                 "asic",
             ]
         )
-        flow.read_state()
         failure = EndpointOutcome(exit_code=EXIT_ERROR, report_text="baseline failed")
 
         with patch.object(flow, "_run_baseline_configs", return_value=(failure, None)):
@@ -4945,7 +4906,6 @@ class TestIncompleteResourceResults:
                 "asic_a,asic_b",
             ]
         )
-        flow.read_state()
         first = SynthMetrics(area_um2=500.0, area_kge=1.0, cells=100)
         calls = 0
 
@@ -6186,7 +6146,6 @@ def test_invocation_report_records_tools_by_target(flow_and_state, tmp_path, tar
             str(tmp_path / "reports"),
         ]
     )
-    flow.read_state()  # parse_args starts a new invocation
     with patch.object(
         flow,
         "_execute",

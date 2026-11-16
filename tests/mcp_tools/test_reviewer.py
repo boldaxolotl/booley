@@ -129,7 +129,6 @@ def test_dry_run_does_not_invoke_agent_or_update_receipts(
             "--dry-run",
         ]
     )
-    endpoint.read_state()
     with patch.object(endpoint, "_run_single_review") as review:
         result = endpoint._run()
 
@@ -541,7 +540,6 @@ class TestReportFindingsCapture:
                 "bugs",
             ]
         )
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 2
@@ -566,7 +564,6 @@ class TestReportFindingsCapture:
                 "bugs",
             ]
         )
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 0
@@ -595,7 +592,6 @@ class TestReportFindingsCapture:
                 "bugs",
             ]
         )
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 2
@@ -637,7 +633,6 @@ class TestChannelDisagreement:
         )
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 0
@@ -655,7 +650,6 @@ class TestChannelDisagreement:
         )
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 2
@@ -673,7 +667,6 @@ class TestChannelDisagreement:
         )
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 2
@@ -698,7 +691,6 @@ class TestChannelDisagreement:
         )
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
 
         result = endpoint._run()
 
@@ -720,7 +712,6 @@ class TestChannelDisagreement:
         )
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 0
@@ -740,7 +731,6 @@ class TestChannelDisagreement:
         )
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 2
@@ -767,7 +757,6 @@ class TestChannelDisagreement:
         )
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 2
@@ -806,7 +795,6 @@ class TestChannelDisagreement:
         )
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 2  # Specialist error, NOT gate_passed: true
@@ -840,7 +828,6 @@ class TestChannelDisagreement:
         )
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 2
@@ -859,7 +846,6 @@ class TestChannelDisagreement:
         )
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 2
@@ -890,7 +876,6 @@ class TestChannelDisagreement:
         )
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 0
@@ -917,7 +902,6 @@ def _run_mirror_review(calls: list[list[dict]], canonical: list[dict]) -> int:
         )
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         return endpoint._run().exit_code
 
 
@@ -980,7 +964,6 @@ class TestReadOnlyEnforcement:
         mock_agent.return_value = _make_report_findings_result([], output='{"issues": []}')
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         endpoint._run()
 
         params = mock_agent.call_args[0][0]
@@ -1005,7 +988,6 @@ class TestNoReportDirNotice:
         mock_agent.return_value = _make_report_findings_result([], output='{"issues": []}')
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
         result = endpoint._run()
 
         assert "no --report-dir" not in result.report_text
@@ -1015,7 +997,6 @@ class TestNoReportDirNotice:
         mock_agent.return_value = _make_report_findings_result([], output='{"issues": []}')
         endpoint = ReviewerSpecialist()
         endpoint.parse_args([*_review_args(), "--report-dir", str(tmp_path / "rep")])
-        endpoint.read_state()
         result = endpoint._run()
 
         assert "no --report-dir" not in result.report_text
@@ -1046,7 +1027,6 @@ class TestUpstreamReviewRejection:
                 "bugs",
             ]
         )
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 2  # EXIT_ERROR
@@ -1092,7 +1072,6 @@ class TestUpstreamReviewRejection:
                 "bugs",
             ]
         )
-        endpoint.read_state()
         result = endpoint._run()
 
         # Only the valid CRITICAL is counted; _done completion is independent
@@ -1251,7 +1230,6 @@ class TestReviewerToolArgs:
     def test_focus_required(self, state_file: Path):
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl"])
-        endpoint.read_state()
         result = endpoint._run()
         assert result.exit_code == 2
         assert "--focus" in result.report_text
@@ -1622,7 +1600,6 @@ class TestPromptConstruction:
         endpoint.parse_args(
             ["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "code_style"]
         )
-        endpoint.read_state()
 
         system = endpoint._build_system_prompt("code_style")
 
@@ -1980,7 +1957,6 @@ class TestFullRtlReview:
                 "bugs",
             ]
         )
-        endpoint.read_state()
         result = endpoint._run()
         assert result.exit_code == 0
         captured = capsys.readouterr()
@@ -2016,7 +1992,6 @@ class TestFullRtlReview:
                 str(spec),
             ]
         )
-        endpoint.read_state()
 
         result = endpoint._run()
 
@@ -2049,7 +2024,6 @@ class TestFullRtlReview:
                 str(tmp_path),
             ]
         )
-        endpoint.read_state()
 
         system = endpoint._build_system_prompt("bugs")
         assert "Anchor each finding in a Goal, supplied specification, accepted decision" in system
@@ -2080,7 +2054,6 @@ class TestFullRtlReview:
                 "bugs",
             ]
         )
-        endpoint.read_state()
         result = endpoint._run()
         assert result.exit_code == 0
         captured = capsys.readouterr()
@@ -2096,13 +2069,11 @@ class TestFullRtlReview:
         mock_agent.return_value = _make_agent_result([_make_issue_dict("CRITICAL")])
         t1 = ReviewerSpecialist()
         t1.parse_args(common)
-        t1.read_state()
         first = t1._run()
         assert first.exit_code == 0
 
         t2 = ReviewerSpecialist()
         t2.parse_args(common)
-        t2.read_state()
         rerun = t2._run()
         assert rerun.exit_code == 0
         assert "RESULT: REVIEWED WITH FINDINGS" in rerun.report_text
@@ -2121,13 +2092,11 @@ class TestFullRtlReview:
 
         t1 = ReviewerSpecialist()
         t1.parse_args(common)
-        t1.read_state()
         t1._run()
 
         mock_agent.return_value = _make_agent_result([])
         t2 = ReviewerSpecialist()
         t2.parse_args([*common, "--steer", "attempt 1"])
-        t2.read_state()
         rerun = t2._run()
         assert rerun.exit_code == 0
         assert rerun.detail["issues"] == 0
@@ -2155,7 +2124,6 @@ class TestFullRtlReview:
                 "bugs",
             ]
         )
-        endpoint.read_state()
         result = endpoint._run()
         assert result.exit_code == 0
         assert result.detail["gate_passed"] is True
@@ -2175,7 +2143,6 @@ class TestFullRtlReview:
                 "security",
             ]
         )
-        endpoint.read_state()
         result = endpoint._run()
         assert result.exit_code == 0
         assert mock_agent.call_count == 2  # security declares a checklist and a hunt guide
@@ -2202,7 +2169,6 @@ class TestFullTbReview:
                 "quality",
             ]
         )
-        endpoint.read_state()
         result = endpoint._run()
         assert result.exit_code == 0
         captured = capsys.readouterr()
@@ -2234,7 +2200,6 @@ class TestAgentFailure:
                 str(transcript_dir),
             ]
         )
-        endpoint.read_state()
         result = endpoint._run()
         assert result.exit_code == 2
 
@@ -2259,7 +2224,6 @@ def test_provider_failure_keeps_reviewer_outcome_and_persists_traceback(
             str(tmp_path / "transcripts"),
         ]
     )
-    endpoint.read_state()
     caplog.set_level("DEBUG")
 
     with patch.object(endpoint, "_invoke_agent", side_effect=RuntimeError("boom")):
@@ -2410,7 +2374,6 @@ class TestRtlSpecFocus:
         if ticket is not None:
             argv += ["--spec", str(ticket)]
         endpoint.parse_args(argv)
-        endpoint.read_state()
         return endpoint
 
     def test_system_prompt_includes_spec_guide(self, state_file: Path, ticket_md: Path):
@@ -2471,7 +2434,6 @@ class TestTbQualityPrompt:
                 "quality",
             ]
         )
-        endpoint.read_state()
         system = endpoint._build_system_prompt("quality")
         assert "Review methodology" in system
 
@@ -2491,7 +2453,6 @@ class TestTbQualityPrompt:
                 "quality",
             ]
         )
-        endpoint.read_state()
         system = endpoint._build_system_prompt("quality")
         assert "Ternary string expression in display/sentinel calls" in system
         assert "$display((total_failed == 0) ?" in system
@@ -2503,7 +2464,6 @@ class TestTbQualityPrompt:
         endpoint.parse_args(
             ["--scope", "tb/mod_a_tb.sv", "--category", "tb", "--focus", "quality"]
         )
-        endpoint.read_state()
         system = endpoint._build_system_prompt("quality")
 
         assert "[Icarus only]" in system
@@ -2718,12 +2678,10 @@ class TestDeadEndMessagesNameARealAction:
 
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(common)
-        endpoint.read_state()
         endpoint._run()
 
         endpoint = ReviewerSpecialist()
         endpoint.parse_args([*common, "--steer", "fixed finding"])
-        endpoint.read_state()
         result = endpoint._run()
 
         assert result.exit_code == 0
@@ -2868,15 +2826,11 @@ def test_unbound_done_findings_do_not_claim_goal_approval(
 def test_standalone_done_findings_print_no_approval_notice(
     mock_agent, state_file: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """A standalone recorder gets the same `done` report as an interactive run."""
-    from booley.flows.execution_persistence import StandaloneFlowExecution
-
+    """A standalone run gets the same `done` report as an interactive run."""
     monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
     endpoint = ReviewerSpecialist()
-    endpoint.configure_flow_execution(StandaloneFlowExecution())
     endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"])
     mock_agent.return_value = _make_agent_result([_make_issue_dict("CRITICAL")])
-    endpoint.read_state()
     result = endpoint._run()
     assert "RESULT: REVIEWED WITH FINDINGS" in result.report_text
     assert "explicit human approval" not in result.report_text
@@ -2916,7 +2870,6 @@ def test_cpp_opposite_role_refuses_before_provider(tmp_path, name):
     endpoint.parse_args(
         ["--work-dir", str(tmp_path), "--scope", name, "--category", "tb", "--focus", "quality"]
     )
-    endpoint.read_state()
     with patch("booley.specialists.specialist._call_agent_sync") as provider:
         result = endpoint._run()
     assert result.exit_code == 2

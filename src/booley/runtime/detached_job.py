@@ -36,7 +36,6 @@ _SOURCE_ROOT = str(Path(__file__).resolve().parents[2])
 def detached_environment() -> dict[str, str]:
     """Keep EDA provisioning but remove candidate evidence and execution routing."""
     excluded = {
-        "BOOLEY_STATE_FILE",
         "BOOLEY_SLUG",
         "BOOLEY_LOGS_DIR",
         "BOOLEY_RUNTIME_DIR",

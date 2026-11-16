@@ -21,8 +21,7 @@ DECLARED_NAMES = frozenset(
         "_eda_tools",
         "prepare_target_endpoint",
         "_skip_report_detail_refresh",
-        "record_flow_owned_acceptance",
-        "generic_binding_gate_applies",
+        "publish_flow_records",
         "prepare_endpoint_invocation",
         "manifest_names_targets",
     }
@@ -112,9 +111,6 @@ SIMULATION_ACCEPTANCE_NAMES = frozenset(
 
 
 def test_shared_acceptance_code_has_no_simulation_branches():
-    comparisons = _compares_with_sim(_parse(FLOWS / "endpoint_acceptance.py"))
-    assert comparisons == [], f"endpoint_acceptance.py compares a name with 'sim': {comparisons}"
-
     lookups = sorted(
         f"{path.name}:{node.lineno} {node.func.id}({node.args[1].value!r})"
         for path in FLOWS.glob("endpoint_*.py")

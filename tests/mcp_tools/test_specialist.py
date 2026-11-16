@@ -116,7 +116,6 @@ class TestTimeoutClamping:
         assert endpoint.args.timeout_ms == 600000  # not clamped at parse time
         # Clamping happens in _run() — test via mock
         with patch.object(endpoint, "_invoke_agent", side_effect=RuntimeError("skip")):
-            endpoint.read_state()
             endpoint._start_time = 0
             with contextlib.suppress(RuntimeError):
                 endpoint._run()
@@ -131,7 +130,6 @@ class TestTimeoutClamping:
             endpoint.parse_args(["--timeout-ms", "3600000"])
         # Run the clamping step in _run(); an above-minimum timeout must survive it.
         with patch.object(endpoint, "_invoke_agent", side_effect=RuntimeError("skip")):
-            endpoint.read_state()
             endpoint._start_time = 0
             with contextlib.suppress(RuntimeError):
                 endpoint._run()
@@ -245,7 +243,6 @@ def _launch(endpoint: Specialist, tmp_path: Path) -> McpToolResult:
                 str(tmp_path / "transcripts"),
             ]
         )
-        endpoint.read_state()
         return endpoint._run()
 
 
