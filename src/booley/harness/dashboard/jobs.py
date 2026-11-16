@@ -5,8 +5,8 @@ from __future__ import annotations
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
-from itertools import islice
 from pathlib import Path
+from typing import NamedTuple
 
 from booley.core.booley_layout import INTERACTIVE_LOGS_DIR_NAME
 from booley.core.boundary import as_dict, as_float
@@ -23,8 +23,6 @@ from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 
 MAX_INTERACTIVE_ROOTS = 64
-# History selection has its own enumeration bound, independent of record projection.
-MAX_SCANNED_INTERACTIVE_ROOTS = 4096
 TERMINAL_JOB_STATES = frozenset({"completed", "failed", "cancelled"})
 # An orphaned process is known dead even though its Job record never finalized.
 FINISHED_JOB_STATES = TERMINAL_JOB_STATES | {"orphaned"}
@@ -82,30 +80,31 @@ class JobSnapshot:
     diagnostics: tuple[str, ...] = ()
 
 
-def retained_job_roots(
-    booley_dir: Path, *, interactive_root: Path | None = None
-) -> tuple[Path, ...]:
-    """Interactive roots: the caller's own root, then older sessions newest first.
+class RetainedRoots(NamedTuple):
+    """Job roots split by what is read from them."""
 
-    Ordered by what a bounded scan must not lose.
+    # Finished-Job history is read from these: the caller's root, then the newest sessions.
+    history: tuple[Path, ...]
+    # Every other session root, newest first: only its unfinished Jobs are read.
+    older: tuple[Path, ...]
+
+
+def retained_job_roots(booley_dir: Path, *, interactive_root: Path | None = None) -> RetainedRoots:
+    """Interactive roots: the caller's own root and the newest sessions, then the rest.
+
+    Ordered by what a bounded scan must not lose. Every session root is statted once.
     """
     roots = [] if interactive_root is None else [interactive_root]
-    history = []
-    for path in islice(
-        booley_dir.glob(f"{INTERACTIVE_LOGS_DIR_NAME}/*/.runtime/jobs"),
-        MAX_SCANNED_INTERACTIVE_ROOTS,
-    ):
+    sessions = []
+    for path in booley_dir.glob(f"{INTERACTIVE_LOGS_DIR_NAME}/*/.runtime/jobs"):
         try:
-            history.append((path.stat().st_mtime_ns, path))
+            sessions.append((path.stat().st_mtime_ns, path))
         except OSError:
             continue
-    roots.extend(
-        path
-        for _, path in sorted(history, key=lambda item: item[0], reverse=True)[
-            :MAX_INTERACTIVE_ROOTS
-        ]
-    )
-    return tuple(dict.fromkeys(roots))
+    newest_first = [path for _, path in sorted(sessions, key=lambda item: item[0], reverse=True)]
+    history = dict.fromkeys((*roots, *newest_first[:MAX_INTERACTIVE_ROOTS]))
+    older = (path for path in newest_first[MAX_INTERACTIVE_ROOTS:] if path not in history)
+    return RetainedRoots(tuple(history), tuple(older))
 
 
 class JobReader:
@@ -133,13 +132,15 @@ class JobReader:
         now: float | None = None,
         artifact_roots: Sequence[Path] = (),
     ) -> JobSnapshot:
-        """Read the retained Job history into one display snapshot.
+        """Read the retained Job history and every unfinished Job into one display snapshot.
 
         Reports are also found under *artifact_roots* (a checkout's own Booley
         Directory outside the Main Booley Directory).
         """
         roots = retained_job_roots(self._booley_dir, interactive_root=interactive_root)
-        observed = self._observer.read(roots, artifact_roots=artifact_roots)
+        observed = self._observer.read(
+            roots.history, unfinished_roots=roots.older, artifact_roots=artifact_roots
+        )
         catalogs: dict[str, TargetCatalog | None] = {}
         handles, diagnostics = HandleStore(self._booley_dir, jobs=True).snapshot()
         owners, owner_diagnostics = (

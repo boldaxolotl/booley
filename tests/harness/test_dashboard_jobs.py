@@ -263,7 +263,8 @@ def test_server_job_lifecycle_does_not_include_other_interactive_roots(tmp_path,
     historic.mkdir(parents=True)
     monkeypatch.setattr(call_context, "container_jobs_root", lambda: current)
     monkeypatch.setattr(server, "resolve_booley_dir", lambda: tmp_path)
-    assert set(retained_job_roots(tmp_path, interactive_root=current)) == {current, historic}
+    retained = retained_job_roots(tmp_path, interactive_root=current)
+    assert set(retained.history) == {current, historic}
     assert server.job_roots() == (current,)
 
 
@@ -419,28 +420,11 @@ def test_historical_interactive_roots_keep_only_newest_bounded_set(tmp_path, mon
         os.utime(root, (100 + index, 100 + index))
         if index >= 2:
             expected.append(root)
-    assert set(jobs.retained_job_roots(tmp_path)) == set(expected)
-
-
-def test_interactive_history_bounds_enumeration_before_selecting_newest(tmp_path, monkeypatch):
-    from pathlib import Path
-
-    from booley.harness.dashboard import jobs
-
-    roots = [tmp_path / f".interactive_logs/{index}/.runtime/jobs" for index in range(3)]
-    for index, root in enumerate(roots):
-        root.mkdir(parents=True)
-        os.utime(root, (100 + index, 100 + index))
-    original = Path.glob
-
-    def glob(path, pattern):
-        return iter(roots) if path == tmp_path else original(path, pattern)
-
-    monkeypatch.setattr(Path, "glob", glob)
-    monkeypatch.setattr(jobs, "MAX_SCANNED_INTERACTIVE_ROOTS", 2)
-    monkeypatch.setattr(jobs, "MAX_INTERACTIVE_ROOTS", 1)
-
-    assert jobs.retained_job_roots(tmp_path) == (roots[1],)
+    retained = jobs.retained_job_roots(tmp_path)
+    assert set(retained.history) == set(expected)
+    assert retained.older == tuple(
+        tmp_path / f".interactive_logs/{index}/.runtime/jobs" for index in (1, 0)
+    )
 
 
 def test_dashboard_job_view_preserves_every_observation_field(tmp_path, monkeypatch):
@@ -520,7 +504,7 @@ def test_bounded_scan_examines_current_work_before_older_interactive_sessions(tm
         os.utime(root, (100 + index, 100 + index))
     roots = jobs.retained_job_roots(tmp_path, interactive_root=current)
     history = [tmp_path / f".interactive_logs/{index}/.runtime/jobs" for index in (2, 1, 0)]
-    assert list(roots) == [current, *history]
+    assert list(roots.history) == [current, *history]
 
 
 def test_job_completed_between_refreshes_keeps_recorded_figures(tmp_path, monkeypatch):
@@ -793,3 +777,111 @@ def test_symlinked_transcript_dir_is_not_linked(tmp_path):
     assert view.transcript_dir == ""
     assert "Transcripts:" not in job_detail(view)
     assert str(run_dir / "transcripts") not in job_paths(view)
+
+
+def _old_session_jobs_world(tmp_path):
+    """65 recent session roots; the oldest holds every kind of record."""
+    from booley.runtime import job_slots
+
+    logs = tmp_path / ".interactive_logs"
+    for index in range(65):
+        (logs / f"new{index}/.runtime/jobs").mkdir(parents=True)
+        os.utime(logs / f"new{index}/.runtime/jobs", (2_000_000_000, 2_000_000_000))
+    old = logs / "old/.runtime/jobs"
+    standalone = standalone_jobs_dir(tmp_path)
+    identities = {pid: ProcessIdentity(pid, "boot", 1) for pid in range(4_194_306, 4_194_312)}
+    spawning, queued, running, standalone_run, orphan = (
+        rec(name, status="running", **extra)
+        for name, extra in (
+            ("spawning", {}),
+            ("queued", {"pid": 4_194_306, "process_identity": identities[4_194_306].to_payload()}),
+            (
+                "running",
+                {
+                    "pid": 4_194_307,
+                    "process_identity": identities[4_194_307].to_payload(),
+                    "run_started_at": "2026-10-08T10:00:01Z",
+                },
+            ),
+            (
+                "standalone",
+                {
+                    "pid": 4_194_308,
+                    "process_identity": identities[4_194_308].to_payload(),
+                    "run_started_at": "2026-10-08T10:00:01Z",
+                },
+            ),
+            ("orphan", {"pid": 4_194_309, "process_identity": identities[4_194_309].to_payload()}),
+        )
+    )
+    for record in (spawning, queued, running, orphan):
+        job_records.write_record(record, old)
+    job_records.write_record(rec("finished", status="done", exit_code=0), old)
+    job_records.write_record(standalone_run, standalone)
+    directory = job_slots.slots_dir(tmp_path) / "memory"
+    directory.mkdir(parents=True)
+    claim = job_slots.MemoryClaim(6144.0, reservation_mb=100.0).to_payload()
+    for state, seq, pid, owner in (
+        ("h", 1, 4_194_310, None),
+        ("w", 2, 4_194_306, identities[4_194_306]),
+    ):
+        name = job_slots._entry_name(state, 1, seq, pid, 0)
+        payload = {"created_at": "2026-10-08T10:00:00Z", "memory": claim}
+        if owner is not None:
+            payload["owner_identity"] = owner.to_payload()
+        (directory / name).write_bytes(json.dumps(payload).encode())
+    for path in (old, standalone):
+        os.utime(path, (1_000, 1_000))
+    return identities
+
+
+def test_dashboard_model_lists_unfinished_jobs_of_old_sessions(tmp_path, monkeypatch):
+    from booley.harness.dashboard.model import DashboardReader
+    from booley.runtime.job_observation import _observer
+    from booley.runtime.pid import ProcessObservation, ProcessState
+
+    monkeypatch.delenv("BOOLEY_SLOTS_DIR", raising=False)
+    identities = _old_session_jobs_world(tmp_path)
+    dead = identities[4_194_309]
+
+    def observe(identity, *, proc_root):
+        state = ProcessState.DEAD if identity == dead else ProcessState.RUNNING
+        return ProcessObservation(state)
+
+    monkeypatch.setattr(_observer, "observe_process", observe)
+
+    jobs = DashboardReader(tmp_path, tmp_path).read().jobs.jobs
+
+    assert {job.record.run_id: job.state for job in jobs} == {
+        "spawning": "spawning",
+        "queued": "queued",
+        "running": "running",
+        "standalone": "running",
+    }
+
+
+def test_refresh_skips_records_of_unchanged_old_sessions(tmp_path, monkeypatch):
+    from booley.runtime.job_observation import _observer
+
+    logs = tmp_path / ".interactive_logs"
+    newest = []
+    for index in range(2064):
+        root = logs / f"{index}/.runtime/jobs"
+        job_records.write_record(rec(f"r{index}", status="done"), root)
+        stamp = 3_000_000 + index if index >= 2000 else 1_000 + index
+        os.utime(root, (stamp, stamp))
+        if index >= 2000:
+            newest.append(root / f"r{index}.json")
+    reader = JobReader(tmp_path)
+    assert len(reader.read().jobs) == 64
+    parsed = []
+    parse = _observer._parse_job
+
+    def spy(path):
+        parsed.append(path)
+        return parse(path)
+
+    monkeypatch.setattr(_observer, "_parse_job", spy)
+
+    assert len(reader.read().jobs) == 64
+    assert sorted(parsed) == sorted(newest)
