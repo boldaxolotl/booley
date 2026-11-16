@@ -3,9 +3,10 @@
 This runbook is for agents and maintainers who review, land, add, hold, or stop
 dependency updates. Renovate is Booley's only update bot: its configuration is
 `.github/renovate.json`, and `.github/workflows/renovate.yml` runs it every 4
-hours and on `workflow_dispatch`. `tests/ci/test_renovate_config.py` pins that
-configuration and parts of this page. Landing a PR follows
-[merge-queue.md](merge-queue.md).
+hours and on `workflow_dispatch`. `tests/ci/test_renovate_config.py` checks
+that the App token reaches no update-branch code, that nothing automerges, and
+that post-upgrade commands stay within the runner's allowlist. Landing a PR
+follows [merge-queue.md](merge-queue.md).
 
 ## How updates arrive
 
@@ -107,14 +108,12 @@ release. An OpenROAD PR therefore carries `ready-for-human`. Its
    command also needs a pattern in `RENOVATE_ALLOWED_COMMANDS` in
    `.github/workflows/renovate.yml`.
    `test_post_upgrade_commands_are_allowlisted_default_branch_scripts` checks
-   both.
+   the pattern.
 3. Give each literal copy of the pin elsewhere a custom manager, or a
    `prBodyNotes` entry when no rewrite can reach it. Write each pin once per
    manifest: Renovate tracks one copy of a name per file, so extras that need
    the same pin compose by self-reference (`dev = ["booley-rtl[test,quality]"]`).
-   `test_manifests_write_each_pin_once` enforces this.
-4. Assign a group rule in `packageRules`, and keep its exact-name selectors in
-   step with `tests/ci/test_renovate_config.py`.
+4. Assign a group rule in `packageRules`.
 5. Validate with the strict check: the `renovate-config` CI job, or
    `renovate-config-validator --strict --no-global .github/renovate.json` from
    the Renovate runner image.
@@ -132,11 +131,10 @@ places that move together:
    gives the same reason and says how to lift it.
 
 Renovate reads only the rule; the comment tells the next reader why the pin
-stays. `test_version_holds_agree_with_renovate_rules` fails when one exists
-without the other or the versions differ. To lift a hold, delete the comment
-and the rule in one PR, then bump the pin. A security fix can still propose a
-held package (see [How updates arrive](#how-updates-arrive)): check such a PR
-against the reason for the hold.
+stays. To lift a hold, delete the comment and the rule in one PR, then bump
+the pin. A security fix can still propose a held package (see
+[How updates arrive](#how-updates-arrive)): check such a PR against the reason
+for the hold.
 
 ## Stop Renovate
 
