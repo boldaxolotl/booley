@@ -254,8 +254,8 @@ def _timing_report_paths(work_dir: Path) -> int | None:
 
     ``None`` when unset, so the backend default applies and the configure argv
     stays unchanged. The count is a report-size policy, not a recipe input: it
-    must not enter the recipe fingerprint (a count change would otherwise change
-    the fingerprint), which is why it lives here and not in a Target's ``advanced_settings_openroad``.
+    must not enter the recipe fingerprint, which is why it lives here and not in
+    a Target's ``advanced_settings_openroad``.
 
     Raises ``BoundaryError`` on anything but an integer of at least 1.
     """

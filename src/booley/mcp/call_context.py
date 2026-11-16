@@ -1,10 +1,9 @@
 """Per-call facts the MCP server resolves once for each tool call.
 
-A tool call runs against one checkout, records its jobs under one root, and
-reads one state file. Before this module the server answered each of those
-questions with its own read of ``arguments`` or ``os.environ`` at the point of
-use. :func:`resolve_call_context` is now the one place that decides them, so a
-later resolver can retarget a whole call (jobs, state, logs, and the endpoint
+A tool call runs against one checkout and records its jobs under one root.
+Before this module the server answered each of those questions with its own
+read of ``arguments`` or ``os.environ`` at the point of use. :func:`resolve_call_context` is now the one place that decides them, so a
+later resolver can retarget a whole call (jobs, logs, and the endpoint
 subprocess environment) without touching every reader.
 
 Ordinary calls use the explicit ``work_dir`` or the server's cwd, the
