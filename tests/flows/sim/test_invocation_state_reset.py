@@ -84,11 +84,11 @@ def test_executing_one_flow_object_twice_uses_each_requests_own_test_runs(tmp_pa
     replace_run(monkeypatch, flow, run)
     # The host/Sandbox location gate is not what this test is about.
     monkeypatch.setattr(flow, "_pre_state_gate", lambda: None)
-    base = replace(flow.args, report_dir=tmp_path / "reports", diagnostic=True)
+    base = replace(flow.args, report_dir=tmp_path / "reports")
 
     flow.execute(replace(base, test=("stress+soak@9",)))
     flow.execute(replace(base, test=("stress@7", "reset")))
-    flow.execute(replace(base, test=("stress",), diagnostic=False))
+    flow.execute(replace(base, test=("stress",)))
 
     assert seen == [
         ["stress+soak@9"],

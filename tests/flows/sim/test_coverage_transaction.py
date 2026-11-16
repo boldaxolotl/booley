@@ -450,7 +450,7 @@ def _run_with_waivers(
         criteria={"coverage_sim_0": criterion} if gated else {},
         waiver_config=waiver_config,
     )
-    request = CoverageInvocationRequest(("sim_0",), no_waivers=no_waivers, diagnostic=no_waivers)
+    request = CoverageInvocationRequest(("sim_0",), no_waivers=no_waivers)
     prepared = prepare_coverage_invocation(request, context)
     plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim" / invocation)
     return plan, run_target(plan, NativeExecution())
@@ -559,7 +559,7 @@ def test_no_waivers_diagnostic_criterion_skips_invalid_waivers(tmp_path):
         waiver_config=CoverageWaiverConfig("rtl_repository", "../unsafe"),
     )
     prepared = prepare_coverage_invocation(
-        CoverageInvocationRequest(("sim_0",), no_waivers=True, diagnostic=True), context
+        CoverageInvocationRequest(("sim_0",), no_waivers=True), context
     )
     plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
     outcome = run_target(plan, NativeExecution())
